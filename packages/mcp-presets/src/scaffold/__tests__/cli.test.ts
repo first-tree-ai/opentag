@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -88,6 +88,30 @@ describe("catalog:add", () => {
     const { err, run } = await fixture();
     expect(await run(["--url", "https://mcp.acme.test/mcp"])).toBe(1);
     expect(err.join("")).toContain("--category");
+  });
+
+  it("never replaces an existing icon and leaves the catalog untouched", async () => {
+    const { dir, run } = await fixture();
+    await writeFile(join(dir, "icons", "acme.png"), "original");
+    const source = join(dir, "source.png");
+    await writeFile(source, "replacement");
+    expect(
+      await run(["--url", "https://mcp.acme.test/mcp", "--category", category, "--write", "--icon-file", source]),
+    ).toBe(1);
+    expect(await readFile(join(dir, "icons", "acme.png"), "utf8")).toBe("original");
+    expect(await readFile(join(dir, "mcp-catalog.yaml"), "utf8")).toBe("# catalog\n");
+  });
+
+  it("removes the icon it created when the catalog append fails", async () => {
+    const { dir, run } = await fixture();
+    await rm(join(dir, "mcp-catalog.yaml"));
+    await mkdir(join(dir, "mcp-catalog.yaml")); // appending to a directory fails with EISDIR
+    const source = join(dir, "source.png");
+    await writeFile(source, "png");
+    expect(
+      await run(["--url", "https://mcp.acme.test/mcp", "--category", category, "--write", "--icon-file", source]),
+    ).toBe(1);
+    await expect(readFile(join(dir, "icons", "acme.png"), "utf8")).rejects.toThrow();
   });
 
   it("prints JSON when asked", async () => {

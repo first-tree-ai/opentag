@@ -1,4 +1,4 @@
-import { appendFile, copyFile } from "node:fs/promises";
+import { appendFile, constants, copyFile, rm } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { checkOutboundUrl } from "@opentag/shared";
 import type { McpCatalogCategory, McpCatalogEntry } from "../mcp-catalog.gen.js";
@@ -106,7 +106,7 @@ async function applyIcon(
   values: Values,
   scaffold: { id: string; yaml: string; iconFile: string; todos: readonly string[] },
   deps: CliDeps,
-): Promise<{ yaml: string; todos: readonly string[] }> {
+): Promise<{ yaml: string; todos: readonly string[]; created?: URL }> {
   const source = values["icon-file"];
   if (source === undefined) return scaffold;
   if (!values.write) {
@@ -116,11 +116,24 @@ async function applyIcon(
     };
   }
   const iconFile = `${scaffold.id}.${source.toLowerCase().endsWith(".png") ? "png" : "svg"}`;
-  await copyFile(source, new URL(`icons/${iconFile}`, deps.packageDir));
+  const target = new URL(`icons/${iconFile}`, deps.packageDir);
+  // COPYFILE_EXCL refuses an existing icon, so a write never replaces someone's reviewed asset.
+  await copyFile(source, target, constants.COPYFILE_EXCL);
   return {
     yaml: scaffold.yaml.replace(`icon: ${scaffold.iconFile}`, `icon: ${iconFile}`),
     todos: scaffold.todos.filter((todo) => !todo.startsWith("icon:")),
+    created: target,
   };
+}
+
+/** Append the entry; if that fails, remove only the icon this invocation created. */
+async function appendEntry(yaml: string, createdIcon: URL | undefined, deps: CliDeps): Promise<void> {
+  try {
+    await appendFile(new URL("mcp-catalog.yaml", deps.packageDir), `\n${yaml}`);
+  } catch (error) {
+    if (createdIcon !== undefined) await rm(createdIcon, { force: true });
+    throw error;
+  }
 }
 
 async function execute(argv: readonly string[], deps: CliDeps): Promise<void> {
@@ -141,8 +154,8 @@ async function execute(argv: readonly string[], deps: CliDeps): Promise<void> {
   if (!probe.ok) throw new CliError(probe.reason);
 
   const scaffold = scaffoldEntry(toScaffoldInput(values, url, probe), deps.entries, deps.categories);
-  const { yaml, todos } = await applyIcon(values, scaffold, deps);
-  if (values.write) await appendFile(new URL("mcp-catalog.yaml", deps.packageDir), `\n${yaml}`);
+  const { yaml, todos, created } = await applyIcon(values, scaffold, deps);
+  if (values.write) await appendEntry(yaml, created, deps);
   deps.stdout(render(values, scaffold.id, yaml, probe, todos));
 }
 

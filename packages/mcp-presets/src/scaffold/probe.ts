@@ -8,8 +8,30 @@
  * untrusted: `safeText` makes it a bounded single-line string before it reaches a YAML comment.
  * Node-only: it is not exported from the package entry, which the Web App imports.
  */
-/** Newest first. A server negotiates down in its `initialize` result; a 400 retries the next one. */
-export const PROBE_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18"] as const;
+import { MCP_MODERN_PROTOCOL_VERSION } from "@opentag/shared";
+
+/**
+ * The probe speaks the modern stateless era first (`server/discover`), and falls back to the legacy
+ * `initialize` handshake only when the body of a 400/404/405 is not a modern JSON-RPC error. This is
+ * the decision `docs/design/mcp-server-integration.md` ("Downgrade to an older Server") specifies and
+ * `packages/server/src/services/mcp/mcp-transport.ts` implements; the Server's copy cannot be imported
+ * from here, so the small decision seam is repeated.
+ */
+const LEGACY_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18"] as const;
+const SUPPORTED_VERSIONS: readonly string[] = [MCP_MODERN_PROTOCOL_VERSION, ...LEGACY_PROTOCOL_VERSIONS];
+/** MCP-registered codes only a modern Server emits; a generic `-32601` deliberately is not one. */
+const RPC_HEADER_MISMATCH = -32020;
+const RPC_MISSING_CLIENT_CAPABILITY = -32021;
+const RPC_UNSUPPORTED_PROTOCOL_VERSION = -32022;
+const MODERN_ERROR_CODES: readonly number[] = [
+  RPC_HEADER_MISMATCH,
+  RPC_MISSING_CLIENT_CAPABILITY,
+  RPC_UNSUPPORTED_PROTOCOL_VERSION,
+];
+const META_VERSION = "io.modelcontextprotocol/protocolVersion";
+const META_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities";
+const META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo";
+const CLIENT_INFO = { name: "opentag-catalog-add", version: "1.0.0" };
 const MAX_TOOLS = 256;
 const MAX_PAGES = 20;
 const MAX_DESCRIPTION = 500;
@@ -41,6 +63,7 @@ export type McpProbeResult =
       /** Present only when the endpoint answered `initialize` anonymously. */
       readonly serverInfo?: McpProbeServerInfo;
       readonly protocolVersion?: string;
+      readonly protocolEra?: "modern" | "legacy";
       /** Empty unless `toolsComplete`: a partial inventory would understate the risk. */
       readonly tools: readonly McpProbeTool[];
       /** False when `tools/list` failed, was malformed, or was cut off by a bound. */
@@ -129,8 +152,6 @@ export function classifyChallenge(header: string | null): { kind: ProbeAuthKind 
   return { kind: "bearer", evidence: `401 with a Bearer challenge: ${shown}` };
 }
 
-type Post = (body: unknown, extra?: { version?: string; sessionId?: string }) => Promise<Response>;
-
 function readTool(tool: unknown): McpProbeTool | undefined {
   if (!isRecord(tool)) return undefined;
   const name = str(tool.name);
@@ -143,39 +164,51 @@ function readTool(tool: unknown): McpProbeTool | undefined {
   return { name, sideEffect, ...(description === undefined ? {} : { description }) };
 }
 
+/** One request in an established era; the era decides the headers and the body shape. */
+type Call = (id: number, method: string, params: Record<string, unknown>) => Promise<Response>;
+
+interface Session {
+  readonly era: "modern" | "legacy";
+  readonly version: string;
+  readonly call: Call;
+  /** The legacy `notifications/initialized`; the modern era has no handshake to finish. */
+  readonly afterInitialize?: () => Promise<unknown>;
+  readonly serverInfo: McpProbeServerInfo;
+}
+
+/** `nextCursor` is absent (or `null`), or a non-empty string; anything else fails the page. */
+function readCursor(value: unknown): { cursor?: string } | undefined {
+  if (value === undefined || value === null) return {};
+  return typeof value === "string" && value.length > 0 ? { cursor: value } : undefined;
+}
+
 /** Read one `tools/list` page; `undefined` means the page failed or was malformed. */
 async function readToolsPage(
-  post: Post,
+  session: Session,
   id: number,
-  extra: { version: string; sessionId?: string },
   cursor: string | undefined,
 ): Promise<{ tools: unknown[]; nextCursor?: string } | undefined> {
-  const listed = await post(
-    { jsonrpc: "2.0", id, method: "tools/list", params: cursor === undefined ? {} : { cursor } },
-    extra,
-  );
+  const listed = await session.call(id, "tools/list", cursor === undefined ? {} : { cursor });
   if (!listed.ok) return undefined;
   const result = (await readRpcMessage(listed, id))?.result;
   if (!isRecord(result) || !Array.isArray(result.tools)) return undefined;
-  const nextCursor = str(result.nextCursor);
-  return { tools: result.tools, ...(nextCursor === undefined ? {} : { nextCursor }) };
+  const next = readCursor(result.nextCursor);
+  if (next === undefined) return undefined;
+  return { tools: result.tools, ...(next.cursor === undefined ? {} : { nextCursor: next.cursor }) };
 }
 
 /**
  * Page `tools/list` to exhaustion. Risk is the strongest effect of ANY tool, so a failed, malformed,
  * or truncated listing is reported as incomplete rather than returned as a partial inventory.
  */
-async function listTools(
-  post: Post,
-  extra: { version: string; sessionId?: string },
-): Promise<{ tools: McpProbeTool[]; complete: boolean }> {
+async function listTools(session: Session): Promise<{ tools: McpProbeTool[]; complete: boolean }> {
   const incomplete = { tools: [], complete: false };
   try {
-    await post({ jsonrpc: "2.0", method: "notifications/initialized" }, extra);
+    await session.afterInitialize?.();
     const tools = new Map<string, McpProbeTool>();
     let cursor: string | undefined;
     for (let page = 0; page < MAX_PAGES; page++) {
-      const body = await readToolsPage(post, 2 + page, extra, cursor);
+      const body = await readToolsPage(session, 2 + page, cursor);
       if (body === undefined) return incomplete;
       for (const raw of body.tools) {
         const tool = readTool(raw);
@@ -198,65 +231,144 @@ function readServerInfo(result: Record<string, unknown>): McpProbeServerInfo {
   return Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined));
 }
 
+type Fetcher = (body: unknown, headers: Record<string, string>) => Promise<Response>;
+
+function modernCall(send: Fetcher, version: string): Call {
+  return (id, method, params) =>
+    send(
+      {
+        jsonrpc: "2.0",
+        id,
+        method,
+        params: {
+          ...params,
+          _meta: { [META_VERSION]: version, [META_CAPABILITIES]: {}, [META_CLIENT_INFO]: CLIENT_INFO },
+        },
+      },
+      { "mcp-protocol-version": version, "mcp-method": method },
+    );
+}
+
+/** The JSON-RPC error in a failure body, if the body is one. */
+async function rpcErrorOf(response: Response): Promise<{ code: number; data?: unknown } | undefined> {
+  try {
+    const body: unknown = JSON.parse(await response.text());
+    const error = isRecord(body) ? body.error : undefined;
+    return isRecord(error) && typeof error.code === "number" ? { code: error.code, data: error.data } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Newest version from a modern server's `supported` list that this probe speaks, if any. */
+function pickSupported(data: unknown): string | undefined {
+  const supported = isRecord(data) && Array.isArray(data.supported) ? data.supported : [];
+  return SUPPORTED_VERSIONS.find((version) => supported.includes(version));
+}
+
+type DiscoverOutcome =
+  | { kind: "session"; session: Session }
+  | { kind: "auth"; response: Response }
+  | { kind: "legacy" }
+  | { kind: "failed"; reason: string };
+
+/** `server/discover`, retried once with a version the modern peer advertised; never a downgrade. */
+async function discoverModern(send: Fetcher, version: string, retried = false): Promise<DiscoverOutcome> {
+  const call = modernCall(send, version);
+  const response = await call(1, "server/discover", {});
+  if (response.status === 401) return { kind: "auth", response };
+  if ([400, 404, 405].includes(response.status)) {
+    const error = await rpcErrorOf(response);
+    if (error === undefined || !MODERN_ERROR_CODES.includes(error.code)) return { kind: "legacy" };
+    const next = error.code === RPC_UNSUPPORTED_PROTOCOL_VERSION ? pickSupported(error.data) : undefined;
+    if (next === undefined || retried) {
+      return { kind: "failed", reason: `the modern server rejected protocol ${version} (JSON-RPC ${error.code})` };
+    }
+    return discoverModern(send, next, true);
+  }
+  if (!response.ok) return { kind: "failed", reason: `server/discover answered HTTP ${response.status}` };
+  const message = await readRpcMessage(response, 1);
+  if (!isRecord(message?.result)) return { kind: "legacy" };
+  return { kind: "session", session: { era: "modern", version, call, serverInfo: readServerInfo(message.result) } };
+}
+
+/** The legacy `initialize` handshake. A 400 retries the next older version. */
+async function initializeLegacy(send: Fetcher): Promise<Exclude<DiscoverOutcome, { kind: "legacy" }>> {
+  let response: Response | undefined;
+  for (const version of LEGACY_PROTOCOL_VERSIONS) {
+    response = await send(
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: version, capabilities: {}, clientInfo: CLIENT_INFO },
+      },
+      {},
+    );
+    if (response.status !== 400) break;
+  }
+  if (response === undefined) return { kind: "failed", reason: "no protocol version was attempted" };
+  if (response.status === 401) return { kind: "auth", response };
+  if (!response.ok) {
+    return {
+      kind: "failed",
+      reason: `initialize answered HTTP ${response.status}; this is not a Streamable HTTP MCP endpoint`,
+    };
+  }
+  const result = (await readRpcMessage(response, 1))?.result;
+  if (!isRecord(result)) return { kind: "failed", reason: "initialize answered 2xx but not with a JSON-RPC result" };
+
+  const negotiated = str(result.protocolVersion);
+  const version =
+    negotiated !== undefined && (LEGACY_PROTOCOL_VERSIONS as readonly string[]).includes(negotiated)
+      ? negotiated
+      : "2025-06-18";
+  const sessionId = response.headers.get("mcp-session-id") ?? undefined;
+  const sessionHeaders = {
+    "mcp-protocol-version": version,
+    ...(sessionId === undefined ? {} : { "mcp-session-id": sessionId }),
+  };
+  return {
+    kind: "session",
+    session: {
+      era: "legacy",
+      version,
+      serverInfo: readServerInfo(result),
+      call: (id, method, params) => send({ jsonrpc: "2.0", id, method, params }, sessionHeaders),
+      afterInitialize: () => send({ jsonrpc: "2.0", method: "notifications/initialized" }, sessionHeaders),
+    },
+  };
+}
+
 export async function probeMcpEndpoint(url: string, options: ProbeOptions = {}): Promise<McpProbeResult> {
   const doFetch = options.fetch ?? fetch;
   const timeout = options.timeoutMs ?? 15_000;
-  const post: Post = (body, extra) =>
+  const send: Fetcher = (body, headers) =>
     doFetch(url, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json, text/event-stream",
-        ...(extra?.version === undefined ? {} : { "mcp-protocol-version": extra.version }),
-        ...(extra?.sessionId === undefined ? {} : { "mcp-session-id": extra.sessionId }),
-      },
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...headers },
       body: JSON.stringify(body),
       redirect: "manual",
       signal: AbortSignal.timeout(timeout),
     });
 
-  let response: Response | undefined;
   try {
-    for (const version of PROBE_PROTOCOL_VERSIONS) {
-      response = await post({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "initialize",
-        params: {
-          protocolVersion: version,
-          capabilities: {},
-          clientInfo: { name: "opentag-catalog-add", version: "1.0.0" },
-        },
-      });
-      if (response.status !== 400) break;
-    }
-    if (response === undefined) return { ok: false, reason: "no protocol version was attempted" };
-
-    if (response.status === 401) {
-      const { kind, evidence } = classifyChallenge(response.headers.get("www-authenticate"));
+    const discovered = await discoverModern(send, MCP_MODERN_PROTOCOL_VERSION);
+    const outcome = discovered.kind === "legacy" ? await initializeLegacy(send) : discovered;
+    if (outcome.kind === "failed") return { ok: false, reason: outcome.reason };
+    if (outcome.kind === "auth") {
+      const { kind, evidence } = classifyChallenge(outcome.response.headers.get("www-authenticate"));
       return { ok: true, authKind: kind, evidence, tools: [], toolsComplete: false };
     }
-    if (!response.ok) {
-      return {
-        ok: false,
-        reason: `initialize answered HTTP ${response.status}; this is not a Streamable HTTP MCP endpoint`,
-      };
-    }
-    const result = (await readRpcMessage(response, 1))?.result;
-    if (!isRecord(result)) return { ok: false, reason: "initialize answered 2xx but not with a JSON-RPC result" };
-
-    const protocolVersion = str(result.protocolVersion) ?? "2025-06-18";
-    const sessionId = response.headers.get("mcp-session-id") ?? undefined;
-    const listed = await listTools(post, {
-      version: protocolVersion,
-      ...(sessionId === undefined ? {} : { sessionId }),
-    });
+    const { session } = outcome;
+    const listed = await listTools(session);
     return {
       ok: true,
       authKind: "none",
-      evidence: "initialize answered anonymously",
-      serverInfo: readServerInfo(result),
-      protocolVersion,
+      evidence: `${session.era === "modern" ? "server/discover" : "initialize"} answered anonymously (protocol ${session.version})`,
+      serverInfo: session.serverInfo,
+      protocolVersion: session.version,
+      protocolEra: session.era,
       tools: listed.tools,
       toolsComplete: listed.complete,
     };

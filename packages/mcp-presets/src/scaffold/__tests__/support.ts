@@ -6,8 +6,25 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
   });
 }
 
+/** What a pre-modern server answers to `server/discover`: 404 with the generic method-not-found. */
+export function legacyOnly(inner: typeof fetch): typeof fetch {
+  return (async (url: string, init: RequestInit) => {
+    const body = JSON.parse(String(init.body)) as { method: string };
+    if (body.method === "server/discover") {
+      return new Response(
+        JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: -32601, message: "Method not found" } }),
+        {
+          status: 404,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    }
+    return inner(url, init);
+  }) as unknown as typeof fetch;
+}
+
 export function anonymousFetch(calls: string[] = []): typeof fetch {
-  return (async (_url: string, init: RequestInit) => {
+  return legacyOnly((async (_url: string, init: RequestInit) => {
     const body = JSON.parse(String(init.body)) as { method: string };
     calls.push(body.method);
     if (body.method === "initialize") {
@@ -35,12 +52,12 @@ export function anonymousFetch(calls: string[] = []): typeof fetch {
       });
     }
     return new Response(null, { status: 202 });
-  }) as unknown as typeof fetch;
+  }) as unknown as typeof fetch);
 }
 
 /** A server whose `tools/list` spans two pages; the later page holds the destructive tool. */
 export function pagedFetch(headers: Array<Record<string, string>> = []): typeof fetch {
-  return (async (_url: string, init: RequestInit) => {
+  return legacyOnly((async (_url: string, init: RequestInit) => {
     headers.push(init.headers as Record<string, string>);
     const body = JSON.parse(String(init.body)) as { id?: number; method: string; params?: { cursor?: string } };
     if (body.method === "initialize") {
@@ -61,5 +78,5 @@ export function pagedFetch(headers: Array<Record<string, string>> = []): typeof 
       });
     }
     return new Response(null, { status: 202 });
-  }) as unknown as typeof fetch;
+  }) as unknown as typeof fetch);
 }

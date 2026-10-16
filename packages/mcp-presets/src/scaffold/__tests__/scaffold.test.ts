@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { MCP_CATALOG_CATEGORIES, MCP_CATALOG_ENTRIES } from "../../mcp-catalog.gen.js";
 import { capabilitiesFromTools, deriveId, nextOrder, scaffoldEntry, slugify } from "../entry.js";
 import { classifyChallenge, parseRpcBody, probeMcpEndpoint, safeText } from "../probe.js";
-import { anonymousFetch, pagedFetch } from "./support.js";
+import { anonymousFetch, legacyOnly, pagedFetch } from "./support.js";
 
 describe("probeMcpEndpoint", () => {
   it("reads serverInfo and annotated tools from an anonymous endpoint", async () => {
@@ -70,7 +70,7 @@ describe("probe transport", () => {
   });
 
   it("fails closed when a continuation page fails or a tool is malformed", async () => {
-    const failing = (async (_url: string, init: RequestInit) => {
+    const failing = legacyOnly((async (_url: string, init: RequestInit) => {
       const body = JSON.parse(String(init.body)) as { id?: number; method: string; params?: { cursor?: string } };
       if (body.method === "initialize") {
         return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { serverInfo: {} } }), {
@@ -84,7 +84,7 @@ describe("probe transport", () => {
         );
       }
       return new Response("", { status: 500 });
-    }) as unknown as typeof fetch;
+    }) as unknown as typeof fetch);
     expect(await probeMcpEndpoint("https://x.test/mcp", { fetch: failing })).toMatchObject({
       ok: true,
       tools: [],
@@ -131,6 +131,118 @@ describe("probe transport", () => {
     }) as unknown as typeof fetch;
     const result = await probeMcpEndpoint("https://x.test/mcp", { fetch: open, timeoutMs: 2000 });
     expect(result).toMatchObject({ ok: true, authKind: "none", serverInfo: { name: "open" } });
+  });
+});
+
+describe("protocol eras", () => {
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+  /** A conforming modern peer: no `initialize`, `server/discover` plus stateless `tools/list`. */
+  function modernPeer(
+    seen: Array<{ method: string; headers: Record<string, string>; meta: unknown }> = [],
+  ): typeof fetch {
+    return (async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { id: number; method: string; params?: { _meta?: unknown } };
+      seen.push({ method: body.method, headers: init.headers as Record<string, string>, meta: body.params?._meta });
+      if (body.method === "server/discover") {
+        return json({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: { serverInfo: { name: "Modern" }, supportedVersions: ["2026-07-28"] },
+        });
+      }
+      if (body.method === "tools/list") {
+        return json({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: { tools: [{ name: "ping", annotations: { readOnlyHint: true } }], nextCursor: null },
+        });
+      }
+      return json({ jsonrpc: "2.0", id: body.id, error: { code: -32601, message: "nf" } }, 404);
+    }) as unknown as typeof fetch;
+  }
+
+  it("probes a modern-only peer with server/discover and per-request metadata", async () => {
+    const seen: Array<{ method: string; headers: Record<string, string>; meta: unknown }> = [];
+    const result = await probeMcpEndpoint("https://x.test/mcp", { fetch: modernPeer(seen) });
+    expect(result).toMatchObject({
+      ok: true,
+      authKind: "none",
+      protocolEra: "modern",
+      protocolVersion: "2026-07-28",
+      toolsComplete: true,
+    });
+    expect(seen.map((call) => call.method)).toEqual(["server/discover", "tools/list"]);
+    expect(seen[0]?.headers).toMatchObject({ "mcp-protocol-version": "2026-07-28", "mcp-method": "server/discover" });
+    expect(seen[0]?.meta).toMatchObject({ "io.modelcontextprotocol/protocolVersion": "2026-07-28" });
+  });
+
+  it("falls back to initialize when the 404 body is not a modern error", async () => {
+    const result = await probeMcpEndpoint("https://x.test/mcp", { fetch: anonymousFetch() });
+    expect(result).toMatchObject({ ok: true, protocolEra: "legacy" });
+  });
+
+  it("retries with an advertised version and never downgrades on a modern error", async () => {
+    const versions: string[] = [];
+    const strict = (async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { id: number; method: string };
+      const version = (init.headers as Record<string, string>)["mcp-protocol-version"] ?? "";
+      versions.push(`${body.method}@${version}`);
+      if (version === "2026-07-28") {
+        return json(
+          {
+            jsonrpc: "2.0",
+            id: body.id,
+            error: { code: -32022, message: "version", data: { supported: ["2025-11-25"] } },
+          },
+          400,
+        );
+      }
+      return json({
+        jsonrpc: "2.0",
+        id: body.id,
+        result: body.method === "tools/list" ? { tools: [] } : { serverInfo: { name: "S" } },
+      });
+    }) as unknown as typeof fetch;
+    expect(await probeMcpEndpoint("https://x.test/mcp", { fetch: strict })).toMatchObject({
+      ok: true,
+      authKind: "none",
+    });
+    expect(versions).toEqual(["server/discover@2026-07-28", "server/discover@2025-11-25", "tools/list@2025-11-25"]);
+
+    const rejecting = (async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { id: number; method: string };
+      versions.push(body.method);
+      return json({ jsonrpc: "2.0", id: body.id, error: { code: -32020, message: "mismatch" } }, 400);
+    }) as unknown as typeof fetch;
+    versions.length = 0;
+    expect(await probeMcpEndpoint("https://x.test/mcp", { fetch: rejecting })).toMatchObject({ ok: false });
+    expect(versions).toEqual(["server/discover"]);
+  });
+
+  it("treats a numeric or empty nextCursor as an incomplete inventory and null as absent", async () => {
+    const withCursor = (cursor: unknown) =>
+      (async (_url: string, init: RequestInit) => {
+        const body = JSON.parse(String(init.body)) as { id: number; method: string };
+        if (body.method === "server/discover")
+          return json({ jsonrpc: "2.0", id: body.id, result: { serverInfo: { name: "C" } } });
+        return json({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: { tools: [{ name: "r", annotations: { readOnlyHint: true } }], nextCursor: cursor },
+        });
+      }) as unknown as typeof fetch;
+    for (const cursor of [123, ""]) {
+      expect(await probeMcpEndpoint("https://x.test/mcp", { fetch: withCursor(cursor) })).toMatchObject({
+        ok: true,
+        tools: [],
+        toolsComplete: false,
+      });
+    }
+    expect(await probeMcpEndpoint("https://x.test/mcp", { fetch: withCursor(null) })).toMatchObject({
+      toolsComplete: true,
+    });
   });
 });
 

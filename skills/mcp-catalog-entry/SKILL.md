@@ -63,7 +63,8 @@ curl -sS -i -X POST <endpoint> \
 
 ### Shortcut: scaffold from the endpoint
 
-`pnpm catalog:add --url <endpoint>` runs the credential-free `initialize` above for you, then reads
+`pnpm catalog:add --url <endpoint>` runs a credential-free probe for you: `server/discover` first (the modern, stateless era), and the
+`initialize` handshake above only when a 400/404/405 body is not a modern JSON-RPC error. It then reads
 `serverInfo` and `tools/list`, classifies the authorization method from the `401` challenge, and prints
 a ready-to-edit registry-style YAML entry with the evidence as comments. The tool inventory comes from
 `tools/list`, each tool's `side_effect` from its `readOnlyHint` / `destructiveHint` annotations (a tool

@@ -136,15 +136,120 @@ test("rejects a plain HTTP remote", (t) => {
   });
 });
 
-test("rejects a server-sent-events remote", (t) => {
-  assertRejected(t, /remotes\[0\]\.type: must be "streamable-http"/, {
+/** A self-hosted package a catalog may record as data. */
+function stdioPackage(overrides = {}) {
+  return {
+    registry_type: "npm",
+    identifier: "@scope/server",
+    version: "1.2.3",
+    runtime_hint: "npx",
+    transport: "stdio",
+    ...overrides,
+  };
+}
+
+/** An entry with packages and no remote. */
+function packagesOnly(overrides = {}) {
+  const { remotes: _remotes, ...rest } = entry({ auth: { methods: ["none"], default_kind: "none" } });
+  return { ...rest, packages: [stdioPackage()], ...overrides };
+}
+
+test("accepts a packages-only entry as data and marks it not installable", (t) => {
+  const fixture = fixtureDirectory(t, {
+    entries: [
+      packagesOnly({
+        prerequisites: ["Node.js 22"],
+        platforms: ["linux", "macos"],
+        packages: [
+          stdioPackage({
+            package_arguments: [
+              { type: "named", name: "--port", value: "8080" },
+              { type: "positional", value: "serve" },
+            ],
+            environment_variables: [{ name: "SERVER_API_KEY", is_secret: true, is_required: true }],
+          }),
+        ],
+      }),
+    ],
+  });
+  const result = runGenerator(fixture.root);
+  assert.equal(result.status, 0, result.stderr);
+  const generated = readFileSync(fixture.target, "utf8");
+  assert.match(generated, /installable: false/);
+  assert.match(generated, /registryType: "npm"/);
+  assert.match(generated, /platforms: \["linux", "macos"\]/);
+  const entryBlock = generated.slice(generated.indexOf("export const MCP_CATALOG_ENTRIES"));
+  assert.doesNotMatch(entryBlock, /^\s{4}url:/m);
+  assert.doesNotMatch(entryBlock, /^\s{4}defaultAuthKind:/m);
+});
+
+test("keeps a mixed entry installable through its streamable-http remote", (t) => {
+  const fixture = fixtureDirectory(t, { entries: [entry({ packages: [stdioPackage()] })] });
+  const result = runGenerator(fixture.root);
+  assert.equal(result.status, 0, result.stderr);
+  const generated = readFileSync(fixture.target, "utf8");
+  assert.match(generated, /installable: true/);
+  assert.match(generated, /url: "https:\/\/mcp\.notion\.com\/mcp"/);
+  assert.match(generated, /registryType: "npm"/);
+});
+
+test("records an sse remote as data without making the entry installable", (t) => {
+  const fixture = fixtureDirectory(t, {
     entries: [entry({ remotes: [{ type: "sse", url: "https://mcp.example.com/sse" }] })],
+  });
+  const result = runGenerator(fixture.root);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(readFileSync(fixture.target, "utf8"), /installable: false/);
+});
+
+test("rejects an entry with neither packages nor remotes", (t) => {
+  const { remotes: _remotes, ...rest } = entry();
+  assertRejected(t, /must match a schema in anyOf/, { entries: [rest] });
+});
+
+test("rejects an unknown package registry type", (t) => {
+  assertRejected(t, /packages\[0\]\.registry_type: must be one of npm, pypi, oci, nuget, mcpb/, {
+    entries: [packagesOnly({ packages: [stdioPackage({ registry_type: "cargo" })] })],
   });
 });
 
-test("rejects a stdio package entry", (t) => {
-  assertRejected(t, /\.packages: unknown property/, {
-    entries: [entry({ packages: [{ registry: "npm", name: "@scope/server" }] })],
+test("rejects a named package argument without a name", (t) => {
+  assertRejected(t, /package_arguments\[0\]\.name: is required for a named argument/, {
+    entries: [packagesOnly({ packages: [stdioPackage({ package_arguments: [{ type: "named", value: "1" }] })] })],
+  });
+});
+
+test("rejects a secret that carries a default value", (t) => {
+  assertRejected(t, /environment_variables\[0\]\.default: a secret must not carry a default/, {
+    entries: [
+      packagesOnly({
+        packages: [stdioPackage({ environment_variables: [{ name: "SERVER_TOKEN", is_secret: true, default: "x" }] })],
+      }),
+    ],
+  });
+});
+
+test("rejects a credential-looking secret variable that is not marked secret", (t) => {
+  assertRejected(t, /environment_variables\[0\]\.is_secret: "SERVER_API_KEY" looks like a credential/, {
+    entries: [packagesOnly({ packages: [stdioPackage({ environment_variables: [{ name: "SERVER_API_KEY" }] })] })],
+  });
+});
+
+test("rejects a credential in a package value", (t) => {
+  assertRejected(t, /environment_variables\[0\]\.value: looks like a credential/, {
+    entries: [
+      packagesOnly({
+        packages: [
+          stdioPackage({ environment_variables: [{ name: "REGION", value: "ghp_abcdefghijklmnopqrstuvwx" }] }),
+        ],
+      }),
+    ],
+  });
+});
+
+test("rejects a runtime hint that does not run the registry type", (t) => {
+  assertRejected(t, /packages\[0\]\.runtime_hint: "uvx" does not run a npm package/, {
+    entries: [packagesOnly({ packages: [stdioPackage({ runtime_hint: "uvx" })] })],
   });
 });
 

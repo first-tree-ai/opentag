@@ -84,6 +84,42 @@ export type McpCatalogTool = {
   sideEffect: McpCatalogSideEffect;
 };
 
+export type McpCatalogRemote = {
+  type: "streamable-http" | "sse";
+  url: string;
+};
+
+export type McpCatalogPackageArgument = {
+  type: "positional" | "named";
+  name?: string;
+  value?: string;
+  default?: string;
+  description?: string;
+  isRequired?: boolean;
+  isSecret?: boolean;
+};
+
+export type McpCatalogEnvironmentVariable = {
+  name: string;
+  value?: string;
+  default?: string;
+  description?: string;
+  isRequired?: boolean;
+  isSecret?: boolean;
+};
+
+export type McpCatalogPlatform = "linux" | "macos" | "windows";
+
+export type McpCatalogPackage = {
+  registryType: "npm" | "pypi" | "oci" | "nuget" | "mcpb";
+  identifier: string;
+  version: string;
+  runtimeHint?: "npx" | "uvx" | "docker" | "dnx";
+  transport: "stdio" | "streamable-http";
+  packageArguments?: McpCatalogPackageArgument[];
+  environmentVariables?: McpCatalogEnvironmentVariable[];
+};
+
 export type McpCatalogEntry = {
   /** The slug: the Server definition name and the card id the Web App keys on. */
   id: string;
@@ -93,8 +129,11 @@ export type McpCatalogEntry = {
   title: McpCatalogLocalizedText;
   description: McpCatalogLocalizedText;
   whenToUse: McpCatalogLocalizedText;
-  url: string;
-  defaultAuthKind: MCPAuthKind;
+  /** True when the entry has a streamable-http remote the Server accepts; only these are addable. */
+  installable: boolean;
+  /** The flat connection fields below are present exactly when `installable` is true. */
+  url?: string;
+  defaultAuthKind?: MCPAuthKind;
   authHeader?: string;
   authScheme?: string;
   extraHeaders?: Record<string, string>;
@@ -120,9 +159,20 @@ export type McpCatalogEntry = {
     notes?: McpCatalogLocalizedText;
   };
   tools?: McpCatalogTool[];
+  remotes?: McpCatalogRemote[];
+  packages?: McpCatalogPackage[];
+  prerequisites?: string[];
+  platforms?: McpCatalogPlatform[];
   repository?: string;
   license?: string;
   maintainers?: string[];
+};
+
+/** An entry a card may offer to add: it has the remote endpoint the Server create contract accepts. */
+export type McpInstallableCatalogEntry = McpCatalogEntry & {
+  installable: true;
+  url: string;
+  defaultAuthKind: MCPAuthKind;
 };
 
 /** The JSON Schema every source entry was validated against, with the supported locales injected. */
@@ -131,7 +181,7 @@ export const MCP_CATALOG_ENTRY_SCHEMA = {
   $id: "packages/mcp-presets/schema/mcp-catalog-entry.schema.json",
   title: "OpenTag MCP catalog entry",
   description:
-    "One hosted (remote Streamable HTTP) MCP Server in the OpenTag marketplace catalog. The generator injects the supported locales into `$defs.localizedText` from apps/web/project.inlang/settings.json and runs the cross-field checks this schema cannot express.",
+    "One hosted (remote Streamable HTTP) MCP Server in the OpenTag marketplace catalog. The generator injects the supported locales into `$defs.localizedText` from apps/web/project.inlang/settings.json and runs the cross-field checks this schema cannot express. An entry lists `packages` (self-hosted, run in a sandbox), `remotes` (hosted endpoints), or both. Only an entry with a streamable-http remote is installable today.",
   type: "object",
   additionalProperties: false,
   required: [
@@ -145,7 +195,6 @@ export const MCP_CATALOG_ENTRY_SCHEMA = {
     "status",
     "auth",
     "risk",
-    "remotes",
     "catalog",
     "homepage",
   ],
@@ -280,18 +329,86 @@ export const MCP_CATALOG_ENTRY_SCHEMA = {
         },
       },
     },
-    remotes: {
-      description: "OpenTag is hosted, so only remote Streamable HTTP endpoints are listed.",
+    packages: {
+      description: "Self-hosted stdio or HTTP packages, recorded as data. They are not installable yet.",
       type: "array",
       minItems: 1,
-      maxItems: 1,
+      maxItems: 8,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["registry_type", "identifier", "version", "transport"],
+        properties: {
+          registry_type: {
+            enum: ["npm", "pypi", "oci", "nuget", "mcpb"],
+          },
+          identifier: {
+            type: "string",
+            minLength: 1,
+            maxLength: 256,
+            pattern: "^\\S+$",
+          },
+          version: {
+            type: "string",
+            minLength: 1,
+            maxLength: 64,
+            pattern: "^\\S+$",
+          },
+          runtime_hint: {
+            enum: ["npx", "uvx", "docker", "dnx"],
+          },
+          transport: {
+            enum: ["stdio", "streamable-http"],
+          },
+          package_arguments: {
+            type: "array",
+            maxItems: 32,
+            items: {
+              $ref: "#/$defs/packageArgument",
+            },
+          },
+          environment_variables: {
+            type: "array",
+            maxItems: 32,
+            items: {
+              $ref: "#/$defs/environmentVariable",
+            },
+          },
+        },
+      },
+    },
+    prerequisites: {
+      description: "What a user needs before the package can run, such as an account or a tool.",
+      type: "array",
+      maxItems: 16,
+      items: {
+        type: "string",
+        minLength: 1,
+        maxLength: 200,
+      },
+    },
+    platforms: {
+      description: "Operating systems the package supports. Omit when it runs everywhere.",
+      type: "array",
+      minItems: 1,
+      uniqueItems: true,
+      items: {
+        enum: ["linux", "macos", "windows"],
+      },
+    },
+    remotes: {
+      description:
+        "Hosted endpoints. Only a `streamable-http` remote makes an entry installable; `sse` is recorded as data.",
+      type: "array",
+      minItems: 1,
+      maxItems: 4,
       items: {
         type: "object",
         additionalProperties: false,
         required: ["type", "url"],
         properties: {
           type: {
-            const: "streamable-http",
+            enum: ["streamable-http", "sse"],
           },
           url: {
             type: "string",
@@ -414,7 +531,84 @@ export const MCP_CATALOG_ENTRY_SCHEMA = {
         pattern: "\\S",
       },
     },
+    packageArgument: {
+      type: "object",
+      additionalProperties: false,
+      required: ["type"],
+      properties: {
+        type: {
+          enum: ["positional", "named"],
+        },
+        name: {
+          description: "Required when `type` is `named`, for example `--port`.",
+          type: "string",
+          minLength: 1,
+          maxLength: 128,
+          pattern: "^\\S+$",
+        },
+        value: {
+          type: "string",
+          maxLength: 1024,
+        },
+        default: {
+          type: "string",
+          maxLength: 1024,
+        },
+        description: {
+          type: "string",
+          minLength: 1,
+          maxLength: 500,
+        },
+        is_required: {
+          type: "boolean",
+        },
+        is_secret: {
+          description: "A secret argument carries no `value` or `default`.",
+          type: "boolean",
+        },
+      },
+    },
+    environmentVariable: {
+      type: "object",
+      additionalProperties: false,
+      required: ["name"],
+      properties: {
+        name: {
+          type: "string",
+          pattern: "^[A-Z_][A-Z0-9_]*$",
+          maxLength: 128,
+        },
+        value: {
+          type: "string",
+          maxLength: 1024,
+        },
+        default: {
+          type: "string",
+          maxLength: 1024,
+        },
+        description: {
+          type: "string",
+          minLength: 1,
+          maxLength: 500,
+        },
+        is_required: {
+          type: "boolean",
+        },
+        is_secret: {
+          description: "A secret variable carries no `value` or `default`.",
+          type: "boolean",
+        },
+      },
+    },
   },
+  anyOf: [
+    {
+      required: ["packages"],
+    },
+    {
+      required: ["remotes"],
+    },
+  ],
 } as const;
 
 /** Tab order is this array's order. */
@@ -519,8 +713,15 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Use when the task needs to find, read, or update pages and wikis in Notion.",
       zh: "当任务需要查找、阅读或更新 Notion 中的页面和知识库时使用。",
     },
+    installable: true,
     url: "https://mcp.notion.com/mcp",
     defaultAuthKind: "oauth",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.notion.com/mcp",
+      },
+    ],
     category: "docs",
     website: "https://www.notion.com",
     iconIsOfficial: true,
@@ -555,9 +756,16 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Use when the task needs to find or read files in Google Drive.",
       zh: "当任务需要在 Google Drive 中查找或读取文件时使用。",
     },
+    installable: true,
     url: "https://drivemcp.googleapis.com/mcp/v1",
     defaultAuthKind: "oauth",
     oauthScopes: ["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/drive.file"],
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://drivemcp.googleapis.com/mcp/v1",
+      },
+    ],
     category: "docs",
     website: "https://workspace.google.com/products/drive/",
     iconIsOfficial: true,
@@ -594,6 +802,7 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Use when the task needs to read or edit a Google Docs document.",
       zh: "当任务需要阅读或编辑 Google Docs 文档时使用。",
     },
+    installable: true,
     url: "https://docsmcp.googleapis.com/mcp/v1",
     defaultAuthKind: "oauth",
     oauthScopes: [
@@ -601,6 +810,12 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       "https://www.googleapis.com/auth/drive.file",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/documents",
+    ],
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://docsmcp.googleapis.com/mcp/v1",
+      },
     ],
     category: "docs",
     website: "https://workspace.google.com/products/docs/",
@@ -643,6 +858,7 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Use when the task needs to read or edit a Google Slides presentation.",
       zh: "当任务需要阅读或编辑 Google Slides 演示文稿时使用。",
     },
+    installable: true,
     url: "https://slidesmcp.googleapis.com/mcp/v1",
     defaultAuthKind: "oauth",
     oauthScopes: [
@@ -650,6 +866,12 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       "https://www.googleapis.com/auth/drive.file",
       "https://www.googleapis.com/auth/presentations.readonly",
       "https://www.googleapis.com/auth/presentations",
+    ],
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://slidesmcp.googleapis.com/mcp/v1",
+      },
     ],
     category: "docs",
     website: "https://workspace.google.com/products/slides/",
@@ -692,9 +914,16 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Use when the task needs to search mail or draft a reply in Gmail.",
       zh: "当任务需要在 Gmail 中搜索邮件或起草回复时使用。",
     },
+    installable: true,
     url: "https://gmailmcp.googleapis.com/mcp/v1",
     defaultAuthKind: "oauth",
     oauthScopes: ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.compose"],
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://gmailmcp.googleapis.com/mcp/v1",
+      },
+    ],
     category: "communication",
     website: "https://workspace.google.com/products/gmail/",
     iconIsOfficial: true,
@@ -731,6 +960,7 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Use when the task needs to search conversations or send a message in Google Chat.",
       zh: "当任务需要在 Google Chat 中搜索会话或发送消息时使用。",
     },
+    installable: true,
     url: "https://chatmcp.googleapis.com/mcp/v1",
     defaultAuthKind: "oauth",
     oauthScopes: [
@@ -739,6 +969,12 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       "https://www.googleapis.com/auth/chat.messages.readonly",
       "https://www.googleapis.com/auth/chat.messages.create",
       "https://www.googleapis.com/auth/chat.users.readstate",
+    ],
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://chatmcp.googleapis.com/mcp/v1",
+      },
     ],
     category: "communication",
     website: "https://workspace.google.com/products/chat/",
@@ -782,12 +1018,19 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Use when the task needs to view events or check availability in Google Calendar.",
       zh: "当任务需要查看 Google Calendar 的日程或空闲时间时使用。",
     },
+    installable: true,
     url: "https://calendarmcp.googleapis.com/mcp/v1",
     defaultAuthKind: "oauth",
     oauthScopes: [
       "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
       "https://www.googleapis.com/auth/calendar.events.freebusy",
       "https://www.googleapis.com/auth/calendar.events.readonly",
+    ],
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://calendarmcp.googleapis.com/mcp/v1",
+      },
     ],
     category: "communication",
     website: "https://workspace.google.com/products/calendar/",
@@ -829,12 +1072,19 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Use when the task needs contact or colleague details from Google People.",
       zh: "当任务需要查询 Google People 中的联系人或同事资料时使用。",
     },
+    installable: true,
     url: "https://people.googleapis.com/mcp/v1",
     defaultAuthKind: "oauth",
     oauthScopes: [
       "https://www.googleapis.com/auth/directory.readonly",
       "https://www.googleapis.com/auth/userinfo.profile",
       "https://www.googleapis.com/auth/contacts.readonly",
+    ],
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://people.googleapis.com/mcp/v1",
+      },
     ],
     category: "communication",
     website: "https://developers.google.com/people",
@@ -875,8 +1125,15 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Use when the task needs to find or update Linear issues and projects.",
       zh: "当任务需要查找或更新 Linear 的工单与项目时使用。",
     },
+    installable: true,
     url: "https://mcp.linear.app/mcp",
     defaultAuthKind: "oauth",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.linear.app/mcp",
+      },
+    ],
     category: "projects",
     website: "https://linear.app",
     iconIsOfficial: true,
@@ -911,8 +1168,15 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Use when the task needs to find or update Asana tasks and projects.",
       zh: "当任务需要查找或更新 Asana 的任务与项目时使用。",
     },
+    installable: true,
     url: "https://mcp.asana.com/v2/mcp",
     defaultAuthKind: "oauth",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.asana.com/v2/mcp",
+      },
+    ],
     category: "projects",
     website: "https://asana.com",
     iconIsOfficial: true,
@@ -947,8 +1211,15 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Use when the task needs to read or update items on monday.com boards.",
       zh: "当任务需要读取或更新 monday.com 看板中的任务时使用。",
     },
+    installable: true,
     url: "https://mcp.monday.com/mcp",
     defaultAuthKind: "oauth",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.monday.com/mcp",
+      },
+    ],
     category: "projects",
     website: "https://monday.com",
     iconIsOfficial: true,
@@ -983,8 +1254,15 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Use when the task needs to find or update Jira work items or Confluence pages.",
       zh: "当任务需要查找或更新 Jira 工作项或 Confluence 页面时使用。",
     },
+    installable: true,
     url: "https://mcp.atlassian.com/v2/mcp?tools=all",
     defaultAuthKind: "oauth",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.atlassian.com/v2/mcp?tools=all",
+      },
+    ],
     category: "projects",
     website: "https://www.atlassian.com",
     iconIsOfficial: true,
@@ -1019,8 +1297,15 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Use when the task needs fresh web sources or research material.",
       zh: "当任务需要最新的网页资料或调研素材时使用。",
     },
+    installable: true,
     url: "https://mcp.exa.ai/mcp",
     defaultAuthKind: "none",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.exa.ai/mcp",
+      },
+    ],
     category: "search",
     website: "https://exa.ai",
     iconIsOfficial: true,
@@ -1054,8 +1339,15 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Use when the task needs web search results or the content of specific pages.",
       zh: "当任务需要网页搜索结果或指定页面的内容时使用。",
     },
+    installable: true,
     url: "https://mcp.tavily.com/mcp",
     defaultAuthKind: "none",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.tavily.com/mcp",
+      },
+    ],
     category: "search",
     website: "https://tavily.com",
     iconIsOfficial: true,
@@ -1089,8 +1381,15 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Use when the task needs the content of web pages in a clean, readable form.",
       zh: "当任务需要以清晰可读的形式获取网页内容时使用。",
     },
+    installable: true,
     url: "https://mcp.firecrawl.dev/v2/mcp",
     defaultAuthKind: "none",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.firecrawl.dev/v2/mcp",
+      },
+    ],
     category: "search",
     website: "https://www.firecrawl.dev",
     iconIsOfficial: true,
@@ -1124,8 +1423,15 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Use when the task needs to read a Figma design or inspect its layout.",
       zh: "当任务需要读取 Figma 设计稿或查看其布局时使用。",
     },
+    installable: true,
     url: "https://mcp.figma.com/mcp",
     defaultAuthKind: "oauth",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.figma.com/mcp",
+      },
+    ],
     category: "design",
     website: "https://www.figma.com",
     iconIsOfficial: true,
@@ -1160,8 +1466,15 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Use when the task needs to create or export a design in Canva.",
       zh: "当任务需要在 Canva 中创建设计或导出文件时使用。",
     },
+    installable: true,
     url: "https://mcp.canva.com/mcp",
     defaultAuthKind: "oauth",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.canva.com/mcp",
+      },
+    ],
     category: "design",
     website: "https://www.canva.com",
     iconIsOfficial: true,
@@ -1196,6 +1509,7 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Use when the task needs to read or update spreadsheet data in Google Sheets.",
       zh: "当任务需要读取或更新 Google Sheets 中的表格数据时使用。",
     },
+    installable: true,
     url: "https://sheetsmcp.googleapis.com/mcp/v1",
     defaultAuthKind: "oauth",
     oauthScopes: [
@@ -1203,6 +1517,12 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       "https://www.googleapis.com/auth/drive.file",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
       "https://www.googleapis.com/auth/spreadsheets",
+    ],
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://sheetsmcp.googleapis.com/mcp/v1",
+      },
     ],
     category: "data",
     website: "https://workspace.google.com/products/sheets/",
@@ -1245,8 +1565,15 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Use when the task needs to find or update records in an Airtable base.",
       zh: "当任务需要查找或更新 Airtable 数据表中的记录时使用。",
     },
+    installable: true,
     url: "https://mcp.airtable.com/mcp",
     defaultAuthKind: "oauth",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.airtable.com/mcp",
+      },
+    ],
     category: "data",
     website: "https://www.airtable.com",
     iconIsOfficial: true,
@@ -1281,8 +1608,15 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Use when the task needs product usage or conversion data from Amplitude.",
       zh: "当任务需要 Amplitude 中的产品使用或转化数据时使用。",
     },
+    installable: true,
     url: "https://mcp.amplitude.com/mcp",
     defaultAuthKind: "oauth",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.amplitude.com/mcp",
+      },
+    ],
     category: "data",
     website: "https://amplitude.com",
     iconIsOfficial: true,
@@ -1317,8 +1651,15 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Use when the task needs to investigate errors, stack traces, or performance problems in Sentry.",
       zh: "当任务需要在 Sentry 中排查错误、堆栈或性能问题时使用。",
     },
+    installable: true,
     url: "https://mcp.sentry.dev/mcp",
     defaultAuthKind: "oauth",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.sentry.dev/mcp",
+      },
+    ],
     category: "development",
     website: "https://sentry.io",
     iconIsOfficial: true,
@@ -1353,8 +1694,15 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Use when the task needs to query a Supabase database or inspect its logs.",
       zh: "当任务需要查询 Supabase 数据库或查看其日志时使用。",
     },
+    installable: true,
     url: "https://mcp.supabase.com/mcp",
     defaultAuthKind: "oauth",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.supabase.com/mcp",
+      },
+    ],
     category: "development",
     website: "https://supabase.com",
     iconIsOfficial: true,
@@ -1389,8 +1737,15 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Use when the task needs Microsoft product roadmap or Azure update information.",
       zh: "当任务需要 Microsoft 产品路线图或 Azure 更新信息时使用。",
     },
+    installable: true,
     url: "https://www.microsoft.com/releasecommunications/mcp",
     defaultAuthKind: "none",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://www.microsoft.com/releasecommunications/mcp",
+      },
+    ],
     category: "development",
     website: "https://www.microsoft.com",
     iconIsOfficial: true,
@@ -1424,8 +1779,15 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Use when the task needs to find or update customer records in HubSpot.",
       zh: "当任务需要查找或更新 HubSpot 中的客户资料时使用。",
     },
+    installable: true,
     url: "https://mcp.hubspot.com",
     defaultAuthKind: "oauth",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.hubspot.com",
+      },
+    ],
     category: "sales",
     website: "https://www.hubspot.com",
     iconIsOfficial: true,
@@ -1460,8 +1822,15 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Use when the task needs to look up payments or subscriptions in Stripe.",
       zh: "当任务需要在 Stripe 中查询支付或订阅信息时使用。",
     },
+    installable: true,
     url: "https://mcp.stripe.com",
     defaultAuthKind: "oauth",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.stripe.com",
+      },
+    ],
     category: "finance",
     website: "https://stripe.com",
     iconIsOfficial: true,
@@ -1496,8 +1865,15 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Use when the task needs to run an action in an app the user connected to Zapier.",
       zh: "当任务需要在用户已接入 Zapier 的应用中执行操作时使用。",
     },
+    installable: true,
     url: "https://mcp.zapier.com/api/v1/connect",
     defaultAuthKind: "oauth",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.zapier.com/api/v1/connect",
+      },
+    ],
     category: "automation",
     website: "https://zapier.com",
     iconIsOfficial: true,

@@ -176,7 +176,7 @@ async function readEntryValidator(locales) {
   const text = schema.$defs.localizedText.properties[locales[0]] ?? schema.$defs.localizedText.properties.en;
   schema.$defs.localizedText.properties = Object.fromEntries(locales.map((locale) => [locale, text]));
   schema.$defs.localizedText.required = [...locales];
-  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false });
   addFormats(ajv);
   return { schema, validate: ajv.compile(schema) };
 }
@@ -206,7 +206,7 @@ function validateOutboundUrl(value, at, violations) {
   const url = MCPServerUrlSchema.safeParse(value);
   if (!url.success) return;
   const verdict = checkOutboundUrl(url.data, { allowLoopback: false });
-  if ("failure" in verdict) violations.push(`${at}.remotes[0].url: ${verdict.failure.message}`);
+  if ("failure" in verdict) violations.push(`${at}: ${verdict.failure.message}`);
 }
 
 /** Auth rules that relate two fields of a schema-valid entry. */
@@ -250,12 +250,12 @@ function validateHeader(header, where, violations) {
 }
 
 /** The remote's headers, split into the create payload's auth header and static extra headers. */
-function readHeaders(row, at, violations) {
+function readHeaders(remote, remoteAt, violations) {
   const names = new Set();
   const extraHeaders = {};
   let auth;
-  for (const [index, header] of (row.remotes[0].headers ?? []).entries()) {
-    const where = `${at}.remotes[0].headers[${index}]`;
+  for (const [index, header] of (remote.headers ?? []).entries()) {
+    const where = `${remoteAt}.headers[${index}]`;
     const key = header.name.toLowerCase();
     if (names.has(key)) violations.push(`${where}.name: duplicate header "${header.name}"`);
     names.add(key);
@@ -274,6 +274,88 @@ function readHeaders(row, at, violations) {
   };
 }
 
+const RUNTIME_HINT_BY_REGISTRY = { npm: "npx", pypi: "uvx", oci: "docker", nuget: "dnx" };
+const SECRET_NAME_PATTERN = /(?:^|_)(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|PRIVATE_?KEY|CREDENTIALS?)(?:$|_)/;
+/** Shapes of well-known credentials; a catalog value that matches one is refused outright. */
+const CREDENTIAL_VALUE_PATTERNS = [
+  /\bsk-[A-Za-z0-9_-]{16,}/,
+  /\bgh[pousr]_[A-Za-z0-9]{20,}/,
+  /\bxox[abprs]-[A-Za-z0-9-]{10,}/,
+  /\bAKIA[0-9A-Z]{16}\b/,
+  /\bBearer\s+\S{8,}/i,
+  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\./,
+  /:\/\/[^/\s:@]+:[^/\s@]+@/,
+];
+
+/** A package argument or environment variable: the secret and credential rules. */
+function validatePackageValue(item, where, violations) {
+  const carried = ["value", "default"].filter((key) => item[key] !== undefined);
+  if (item.is_secret === true) {
+    for (const key of carried) violations.push(`${where}.${key}: a secret must not carry a ${key}`);
+  }
+  for (const key of carried) {
+    if (CREDENTIAL_VALUE_PATTERNS.some((pattern) => pattern.test(item[key]))) {
+      violations.push(`${where}.${key}: looks like a credential; the catalog carries none`);
+    }
+  }
+}
+
+/** Cross-field rules for one package that the schema cannot express. */
+function validatePackage(pkg, where, violations) {
+  const hint = RUNTIME_HINT_BY_REGISTRY[pkg.registry_type];
+  if (pkg.runtime_hint !== undefined && hint !== undefined && pkg.runtime_hint !== hint) {
+    violations.push(`${where}.runtime_hint: "${pkg.runtime_hint}" does not run a ${pkg.registry_type} package`);
+  }
+  for (const [index, argument] of (pkg.package_arguments ?? []).entries()) {
+    const at = `${where}.package_arguments[${index}]`;
+    if (argument.type === "named" && argument.name === undefined) {
+      violations.push(`${at}.name: is required for a named argument`);
+    }
+    if (argument.type === "positional" && argument.name !== undefined) {
+      violations.push(`${at}.name: a positional argument has no name`);
+    }
+    validatePackageValue(argument, at, violations);
+  }
+  const seen = new Set();
+  for (const [index, variable] of (pkg.environment_variables ?? []).entries()) {
+    const at = `${where}.environment_variables[${index}]`;
+    if (seen.has(variable.name)) violations.push(`${at}.name: duplicate variable "${variable.name}"`);
+    seen.add(variable.name);
+    if (SECRET_NAME_PATTERN.test(variable.name) && variable.is_secret !== true) {
+      violations.push(`${at}.is_secret: "${variable.name}" looks like a credential and must be marked secret`);
+    }
+    validatePackageValue(variable, at, violations);
+  }
+}
+
+/** The packages read into the camelCase shape the module carries. */
+function packagesFrom(packages) {
+  return packages?.map((pkg) => ({
+    registryType: pkg.registry_type,
+    identifier: pkg.identifier,
+    version: pkg.version,
+    runtimeHint: pkg.runtime_hint,
+    transport: pkg.transport,
+    packageArguments: pkg.package_arguments?.map((argument) => ({
+      type: argument.type,
+      name: argument.name,
+      value: argument.value,
+      default: argument.default,
+      description: argument.description,
+      isRequired: argument.is_required,
+      isSecret: argument.is_secret,
+    })),
+    environmentVariables: pkg.environment_variables?.map((variable) => ({
+      name: variable.name,
+      value: variable.value,
+      default: variable.default,
+      description: variable.description,
+      isRequired: variable.is_required,
+      isSecret: variable.is_secret,
+    })),
+  }));
+}
+
 /** The fields the catalog itself owns: category membership. The icon file is checked in `resolveIcons`. */
 function validateCatalogMembership(row, at, categoryIds, violations) {
   if (!categoryIds.has(row.catalog.category)) {
@@ -282,7 +364,7 @@ function validateCatalogMembership(row, at, categoryIds, violations) {
 }
 
 /** A schema-valid entry, read into the shape the generated module carries. */
-function catalogEntryFrom(row, headers) {
+function catalogEntryFrom(row, remote, headers) {
   const slug = row.id.slice("mcp/".length);
   return {
     id: slug,
@@ -291,10 +373,14 @@ function catalogEntryFrom(row, headers) {
     title: row.name,
     description: row.summary,
     whenToUse: row.when_to_use,
-    url: row.remotes[0].url,
-    defaultAuthKind: row.auth.default_kind,
-    ...headers,
-    oauthScopes: row.auth.oauth?.scopes,
+    // Only an entry with a streamable-http remote is installable; the flat connection fields follow it.
+    installable: remote !== undefined,
+    ...(remote === undefined ? {} : { url: remote.url, defaultAuthKind: row.auth.default_kind, ...headers }),
+    oauthScopes: remote === undefined ? undefined : row.auth.oauth?.scopes,
+    remotes: row.remotes?.map((entry) => ({ type: entry.type, url: entry.url })),
+    packages: packagesFrom(row.packages),
+    prerequisites: row.prerequisites,
+    platforms: row.platforms,
     category: row.catalog.category,
     website: row.homepage,
     icon: row.catalog.icon,
@@ -344,9 +430,19 @@ function collectEntries(rows, categoryIds, validate, violations) {
     validateAuth(row, at, violations);
     validateRisk(row, at, violations);
     validateCatalogMembership(row, at, categoryIds, violations);
-    const entry = catalogEntryFrom(row, readHeaders(row, at, violations));
-    validateCreatePayload(entry, at, violations);
-    validateOutboundUrl(entry.url, at, violations);
+    const remotes = row.remotes ?? [];
+    const headersByRemote = remotes.map((candidate, remoteIndex) => {
+      const remoteAt = `${at}.remotes[${remoteIndex}]`;
+      validateOutboundUrl(candidate.url, `${remoteAt}.url`, violations);
+      return readHeaders(candidate, remoteAt, violations);
+    });
+    for (const [packageIndex, pkg] of (row.packages ?? []).entries()) {
+      validatePackage(pkg, `${at}.packages[${packageIndex}]`, violations);
+    }
+    const remoteIndex = remotes.findIndex((candidate) => candidate.type === "streamable-http");
+    const remote = remotes[remoteIndex];
+    const entry = catalogEntryFrom(row, remote, headersByRemote[remoteIndex]);
+    if (remote !== undefined) validateCreatePayload(entry, at, violations);
     // A removed entry is validated like any other, then withheld so no surface can offer it.
     if (entry.status !== "removed") entries.push(entry);
   });
@@ -467,6 +563,42 @@ function emitModule(categories, entries, locales, icons, entrySchema) {
     "  sideEffect: McpCatalogSideEffect;",
     "};",
     "",
+    "export type McpCatalogRemote = {",
+    '  type: "streamable-http" | "sse";',
+    "  url: string;",
+    "};",
+    "",
+    "export type McpCatalogPackageArgument = {",
+    '  type: "positional" | "named";',
+    "  name?: string;",
+    "  value?: string;",
+    "  default?: string;",
+    "  description?: string;",
+    "  isRequired?: boolean;",
+    "  isSecret?: boolean;",
+    "};",
+    "",
+    "export type McpCatalogEnvironmentVariable = {",
+    "  name: string;",
+    "  value?: string;",
+    "  default?: string;",
+    "  description?: string;",
+    "  isRequired?: boolean;",
+    "  isSecret?: boolean;",
+    "};",
+    "",
+    'export type McpCatalogPlatform = "linux" | "macos" | "windows";',
+    "",
+    "export type McpCatalogPackage = {",
+    '  registryType: "npm" | "pypi" | "oci" | "nuget" | "mcpb";',
+    "  identifier: string;",
+    "  version: string;",
+    '  runtimeHint?: "npx" | "uvx" | "docker" | "dnx";',
+    '  transport: "stdio" | "streamable-http";',
+    "  packageArguments?: McpCatalogPackageArgument[];",
+    "  environmentVariables?: McpCatalogEnvironmentVariable[];",
+    "};",
+    "",
     "export type McpCatalogEntry = {",
     "  /** The slug: the Server definition name and the card id the Web App keys on. */",
     "  id: string;",
@@ -476,8 +608,11 @@ function emitModule(categories, entries, locales, icons, entrySchema) {
     "  title: McpCatalogLocalizedText;",
     "  description: McpCatalogLocalizedText;",
     "  whenToUse: McpCatalogLocalizedText;",
-    "  url: string;",
-    "  defaultAuthKind: MCPAuthKind;",
+    "  /** True when the entry has a streamable-http remote the Server accepts; only these are addable. */",
+    "  installable: boolean;",
+    "  /** The flat connection fields below are present exactly when `installable` is true. */",
+    "  url?: string;",
+    "  defaultAuthKind?: MCPAuthKind;",
     "  authHeader?: string;",
     "  authScheme?: string;",
     "  extraHeaders?: Record<string, string>;",
@@ -503,9 +638,20 @@ function emitModule(categories, entries, locales, icons, entrySchema) {
     "    notes?: McpCatalogLocalizedText;",
     "  };",
     "  tools?: McpCatalogTool[];",
+    "  remotes?: McpCatalogRemote[];",
+    "  packages?: McpCatalogPackage[];",
+    "  prerequisites?: string[];",
+    "  platforms?: McpCatalogPlatform[];",
     "  repository?: string;",
     "  license?: string;",
     "  maintainers?: string[];",
+    "};",
+    "",
+    "/** An entry a card may offer to add: it has the remote endpoint the Server create contract accepts. */",
+    "export type McpInstallableCatalogEntry = McpCatalogEntry & {",
+    "  installable: true;",
+    "  url: string;",
+    "  defaultAuthKind: MCPAuthKind;",
     "};",
     "",
     "/** The JSON Schema every source entry was validated against, with the supported locales injected. */",

@@ -61,6 +61,15 @@ curl -sS -i -X POST <endpoint> \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"catalog-verify","version":"1.0.0"}}}'
 ```
 
+### Shortcut: scaffold from the endpoint
+
+`pnpm catalog:add --url <endpoint>` runs the credential-free `initialize` above for you, then reads
+`serverInfo` and `tools/list`, classifies the authorization method from the `401` challenge, and prints
+a ready-to-edit YAML entry with the evidence as comments. It is a dry run by default; `--write`
+appends the entry to `mcp-catalog.yaml` and `--icon-file <path>` copies the icon. Every guessed field
+is listed under "Review before committing": the copy, the website, and the icon still need a human.
+The scaffold supplies facts, not decisions: still confirm them against the provider's documentation.
+
 ## Step 2 — Choose the entry identity
 
 - `id` — `mcp/<slug>`: the slug is lowercase letters, then letters, digits, and hyphens. It must be

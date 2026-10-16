@@ -379,6 +379,45 @@ test("real local OAuth popup cancellation removes new setup and reconnect retain
   }
 });
 
+for (const interruption of ["cancel", "close", "deny", "mobile Back"] as const) {
+  test(`a working OAuth credential survives reauthorization interruption (${interruption})`, async ({ page }) => {
+    const upstream = await peer("oauth");
+    try {
+      const current = await agent(page);
+      const initial = page.waitForEvent("popup");
+      await openAdd(page, current.id, upstream.url);
+      await (await initial).getByRole("link", { name: "Approve", exact: true }).click();
+      await expectReady(page, current.id);
+      const installed = (await mounts(page, current.id))[0];
+      if (!installed) throw new Error("Missing working installation");
+      const mobile = interruption === "mobile Back";
+      if (mobile) await page.setViewportSize({ width: 390, height: 844 });
+      await page.getByRole("button", { name: installed.name, exact: true }).click();
+      const details = page.getByRole("dialog", { name: installed.name, exact: true });
+      const opening = mobile ? undefined : page.waitForEvent("popup");
+      await details.getByRole("button", { name: "Reauthorize", exact: true }).click();
+      const consent = opening ? await opening : page;
+      await consent.getByRole("heading", { name: "Local consent fixture", exact: true }).waitFor();
+      if (interruption === "cancel") await details.getByRole("button", { name: "Cancel", exact: true }).click();
+      else if (interruption === "close") await consent.close();
+      else if (interruption === "deny")
+        await consent.getByRole("link", { name: "Cancel sign-in", exact: true }).click();
+      else await page.goBack();
+      await expect
+        .poll(async () => (await mounts(page, current.id))[0]?.authorization)
+        .toMatchObject({ kind: "oauth", status: "active", hasCredential: true });
+      const probe = await page.request.post(`/api/v1/agents/${current.id}/mcp-servers/${installed.mcpServerId}/probe`, {
+        headers: current.headers,
+      });
+      expect(probe.ok()).toBeTruthy();
+      expect((await probe.json()).probeState).toBe("succeeded");
+      expect((await mounts(page, current.id))[0]?.mcpServerId).toBe(installed.mcpServerId);
+    } finally {
+      await upstream.stop();
+    }
+  });
+}
+
 test("Discover retains search across a real OAuth cancellation and successful retry", async ({ page }) => {
   const upstream = await peer("oauth");
   try {

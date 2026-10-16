@@ -117,7 +117,6 @@ function createMcpOAuthSession(
     interruption.current = undefined;
     setPhase("preparing");
     try {
-      await browserApi.revokeMcpAuthorization(context.agentId, context.serverId);
       if (abort.signal.aborted) return "cancelled" as const;
       const result = await mutate({
         mcpServerId: context.serverId,

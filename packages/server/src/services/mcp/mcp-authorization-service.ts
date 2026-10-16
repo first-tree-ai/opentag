@@ -1,5 +1,5 @@
 import { MCP_ACCOUNT_TOOL_SNAPSHOT_MAX_BYTES } from "@opentag/shared";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { type agentMcpServers, agents, mcpServerAuthorizations } from "../../db/schema/index.js";
 import { hashSecret } from "../auth/security.js";
@@ -152,26 +152,45 @@ export class McpAuthorizationService {
       });
   }
 
-  /** Drop the credential and the snapshot. The mount stays; the Agent is simply unauthorized again. */
+  /** A guarded cancellation ends only that flow; an explicit revoke also drops the credential. */
   async revoke(accountId: string, agentId: string, mcpServerId: string, expectedOAuthState?: string): Promise<void> {
     await this.#servers.requireAgentBinding(accountId, agentId, mcpServerId);
     const now = this.#now();
+    const endedFlow = {
+      state: null,
+      stateExpiresAt: null,
+      pkceCiphertext: null,
+      loginSessionHash: null,
+      flowAuthorizationServer: null,
+      flowOauthResource: null,
+      revision: sql`${mcpServerAuthorizations.revision} + 1`,
+      updatedAt: now,
+    };
+    if (expectedOAuthState !== undefined) {
+      const cancelled = await this.#database
+        .update(mcpServerAuthorizations)
+        .set(endedFlow)
+        .where(
+          and(
+            eq(mcpServerAuthorizations.agentId, agentId),
+            eq(mcpServerAuthorizations.mcpServerId, mcpServerId),
+            eq(mcpServerAuthorizations.state, hashSecret(expectedOAuthState)),
+            isNotNull(mcpServerAuthorizations.ciphertext),
+          ),
+        )
+        .returning({ id: mcpServerAuthorizations.id });
+      if (cancelled.length) return;
+    }
     const removed = await this.#database
       .update(mcpServerAuthorizations)
       .set({
+        ...endedFlow,
         status: "revoked",
         ciphertext: null,
         keyId: null,
-        // The credential and its audience go together; the flow's resource follows `state` below.
+        // The credential and its audience are cleared together.
         oauthResource: null,
         accessTokenExpiresAt: null,
-        state: null,
-        stateExpiresAt: null,
-        pkceCiphertext: null,
-        // Paired with `state` by `mcp_server_authorizations_flow_binding_shape`; clearing one alone is
-        // refused by the datastore, and this is the write that ends the row's flow.
-        loginSessionHash: null,
-        flowOauthResource: null,
         refreshClaimId: null,
         refreshClaimedAt: null,
         probeState: "pending",
@@ -180,15 +199,16 @@ export class McpAuthorizationService {
         toolsCount: null,
         toolsTruncated: false,
         failureCode: null,
-        revision: sql`${mcpServerAuthorizations.revision} + 1`,
-        updatedAt: now,
       })
       .where(
         and(
           eq(mcpServerAuthorizations.agentId, agentId),
           eq(mcpServerAuthorizations.mcpServerId, mcpServerId),
           ...(expectedOAuthState !== undefined
-            ? [eq(mcpServerAuthorizations.state, hashSecret(expectedOAuthState))]
+            ? [
+                eq(mcpServerAuthorizations.state, hashSecret(expectedOAuthState)),
+                isNull(mcpServerAuthorizations.ciphertext),
+              ]
             : []),
         ),
       )

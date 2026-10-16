@@ -926,6 +926,13 @@ GET    /api/v1/mcp-servers/oauth/callback                unauthenticated; the st
 GET    /oauth/client-metadata.json                       unauthenticated; this deployment's CIMD document
 ```
 
+The authorization DELETE accepts an optional `{ expectedOAuthState }` body to cancel one OAuth
+attempt. A matching flow with an existing credential keeps that credential, its status, audience,
+and snapshot; only the flow fields are cleared. Without a credential, cancellation revokes the
+provisional authorization. A mismatched or completed attempt returns `MCP_OAUTH_FLOW_INVALID`.
+The request without a body remains an explicit credential revocation. Cancelling a replacement flow
+with an active credential also schedules a tool probe, so the UI does not wait for the background scan.
+
 `GET /api/v1/mcp-servers` returns, per row: `boundAgentCount`, `authorizedAgentCount`,
 `lastProbedAt`, `defaultAuthKind`, `authHeader`, `authScheme`. Both counts exclude deleted Agents.
 `authorizedAgentCount` counts only `status='active'` rows, because the number answers "how many

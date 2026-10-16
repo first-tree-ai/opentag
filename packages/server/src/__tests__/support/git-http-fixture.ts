@@ -81,8 +81,13 @@ function cgiHeader(line: string): { name: string; value: string } | undefined {
 /** Writes a CGI document as an HTTP response: header block, blank line, body. */
 function applyCgiDocument(document: Buffer, response: ServerResponse): void {
   const separator = document.indexOf("\r\n\r\n");
-  const head = separator < 0 ? "" : document.subarray(0, separator).toString("utf8");
-  const body = separator < 0 ? Buffer.alloc(0) : document.subarray(separator + 4);
+  if (separator < 0) {
+    response.writeHead(500);
+    response.end("Git backend did not return a CGI document");
+    return;
+  }
+  const head = document.subarray(0, separator).toString("utf8");
+  const body = document.subarray(separator + 4);
   let status = 200;
   for (const line of head.split("\r\n")) {
     const header = cgiHeader(line);
@@ -120,10 +125,25 @@ function serveGitBackend(root: string): Promise<{ server: Server; port: number }
         },
         stdio: ["pipe", "pipe", "pipe"],
       });
-      child.stdin.end(Buffer.concat(chunks));
       const output: Buffer[] = [];
+      let failed = false;
+      child.on("error", () => {
+        failed = true;
+      });
+      child.stdin.on("error", (error: NodeJS.ErrnoException) => {
+        // CGI can reject the method/path before consuming the request. Preserve that response;
+        // other pipe failures must not turn a broken backend into a successful HTTP response.
+        if (error.code !== "EPIPE") failed = true;
+      });
       child.stdout.on("data", (chunk: Buffer) => output.push(chunk));
-      child.on("close", () => applyCgiDocument(Buffer.concat(output), response));
+      child.stderr.resume();
+      child.on("close", (code) => {
+        if (failed || code !== 0) {
+          response.writeHead(500);
+          response.end("Git backend failed");
+        } else applyCgiDocument(Buffer.concat(output), response);
+      });
+      child.stdin.end(Buffer.concat(chunks));
     });
   });
   return new Promise((resolve) => {

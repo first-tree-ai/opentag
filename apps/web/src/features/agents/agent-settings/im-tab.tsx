@@ -1,5 +1,5 @@
 import type { AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
-import { useEffect, useRef, useState } from "react";
+import { type RefObject, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../../api.js";
 import { spaceScriptBoundary } from "../../../i18n/format.js";
 import { FeishuSetup } from "../../../im/feishu-setup.js";
@@ -145,65 +145,27 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                                 />
                               </span>
                             </div>
-                            <div className="flex flex-wrap items-center gap-2">
-                              <MessagingAppActions
-                                agentId={agent.id}
-                                binding={binding}
-                                onAgentChanged={onAgentChanged}
-                                busy={feishuSetup.loading || slackConfiguration.loading}
-                                feishuBusy={feishuSetup.loading}
-                                onSlack={
-                                  agent.slackOAuthAvailable !== false
-                                    ? () => void connectSlack("reauthorize")
-                                    : undefined
-                                }
-                                onFeishu={(intent, target) => {
-                                  activeFeishuTriggerRef.current = target;
-                                  void connectFeishu(intent);
-                                }}
-                              />
-                              <Button
-                                ref={disableBindingButtonRef}
-                                variant="secondary-destructive"
-                                onClick={() => {
-                                  setConfirmationError(undefined);
-                                  setConfirmation({ bindingId: binding.id, provider: binding.provider });
-                                }}
-                              >
-                                {spaceScriptBoundary(
-                                  m.im_disconnect({ providerName: messagingProviderLabel(binding.provider) }),
-                                )}
-                              </Button>
-                            </div>
                           </>
-                        ) : (
-                          <>
-                            {/*
-                             * Neither channel is the recommended one — which app a team already lives in decides this,
-                             * not us — so both connect actions share one neutral variant and carry their own mark.
-                             */}
-                            <div className="flex flex-wrap gap-3">
-                              <SlackConnectButton
-                                available={agent.slackOAuthAvailable}
-                                loading={slackConfiguration.loading}
-                                onConnect={connectSlack}
-                              />
-                              <SlackCustomApp agentId={agent.id} onSaved={onAgentChanged} />
-                              <Button
-                                icon={<ProviderIcon className="size-4" provider="feishu" />}
-                                loading={feishuSetup.loading}
-                                disabled={feishuSetup.loading}
-                                variant="secondary"
-                                onClick={(event) => {
-                                  activeFeishuTriggerRef.current = event.currentTarget;
-                                  void connectFeishu();
-                                }}
-                              >
-                                {m.im_connect_feishu({ provider: messagingProviderLabel("feishu") })}
-                              </Button>
-                            </div>
-                          </>
-                        )}
+                        ) : null}
+                        <MessagingConnectionActions
+                          agent={agent}
+                          binding={binding}
+                          onAgentChanged={onAgentChanged}
+                          busy={feishuSetup.loading || slackConfiguration.loading}
+                          feishuBusy={feishuSetup.loading}
+                          disconnectRef={disableBindingButtonRef}
+                          onSlack={
+                            agent.slackOAuthAvailable !== false ? () => void connectSlack("reauthorize") : undefined
+                          }
+                          onDisconnect={(current) => {
+                            setConfirmationError(undefined);
+                            setConfirmation({ bindingId: current.id, provider: current.provider });
+                          }}
+                          onFeishu={(intent, target) => {
+                            activeFeishuTriggerRef.current = target;
+                            void connectFeishu(intent);
+                          }}
+                        />
                       </section>
                       {feishuSetup.feedback}
 
@@ -264,7 +226,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
           description={spaceScriptBoundary(
             m.im_disconnect_description({ providerName: messagingProviderLabel(confirmation.provider) }),
           )}
-          returnFocusRef={disableBindingButtonRef}
+          returnFocusRef={confirmation?.provider === "slack" ? messagingHeadingRef : disableBindingButtonRef}
           title={spaceScriptBoundary(
             m.im_disconnect_title({ providerName: messagingProviderLabel(confirmation.provider) }),
           )}
@@ -290,25 +252,73 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
   );
 }
 
-function MessagingAppActions({
-  agentId,
+/** The Slack dialog stays mounted across the unbound-to-bound refresh. */
+function MessagingConnectionActions({
+  agent,
   binding,
   onAgentChanged,
   busy,
   feishuBusy,
+  disconnectRef,
   onSlack,
+  onDisconnect,
   onFeishu,
 }: {
-  agentId: string;
-  binding: ImBindingSummary;
+  agent: AgentDetailView;
+  binding: ImBindingSummary | null | undefined;
   onAgentChanged: () => void;
   busy: boolean;
   feishuBusy: boolean;
+  disconnectRef: RefObject<HTMLButtonElement | null>;
   onSlack?: () => void;
+  onDisconnect: (binding: ImBindingSummary) => void;
+  onFeishu: (intent: "create" | "reauthorize" | "replace", target: HTMLButtonElement) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-3">
+      {binding?.provider !== "feishu" ? (
+        <SlackCustomApp
+          agentId={agent.id}
+          bindingId={binding?.id}
+          onSaved={onAgentChanged}
+          manualOnly={agent.computerKind === "cloud"}
+          onOAuth={binding ? onSlack : undefined}
+          onDisconnect={binding ? () => onDisconnect(binding) : undefined}
+        />
+      ) : null}
+      {binding?.provider === "feishu" ? (
+        <>
+          <MessagingAppActions binding={binding} busy={busy} feishuBusy={feishuBusy} onFeishu={onFeishu} />
+          <Button ref={disconnectRef} variant="secondary-destructive" onClick={() => onDisconnect(binding)}>
+            {spaceScriptBoundary(m.im_disconnect({ providerName: messagingProviderLabel(binding.provider) }))}
+          </Button>
+        </>
+      ) : !binding ? (
+        <Button
+          icon={<ProviderIcon className="size-4" provider="feishu" />}
+          loading={feishuBusy}
+          disabled={feishuBusy}
+          variant="secondary"
+          onClick={(event) => onFeishu("create", event.currentTarget)}
+        >
+          {m.im_connect_feishu({ provider: messagingProviderLabel("feishu") })}
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+function MessagingAppActions({
+  binding,
+  busy,
+  feishuBusy,
+  onFeishu,
+}: {
+  binding: ImBindingSummary;
+  busy: boolean;
+  feishuBusy: boolean;
   onFeishu: (intent: "reauthorize" | "replace", target: HTMLButtonElement) => void;
 }) {
-  if (binding.provider === "slack")
-    return <SlackCustomApp agentId={agentId} bindingId={binding.id} onSaved={onAgentChanged} onOAuth={onSlack} />;
   return (
     <>
       {messagingRecoveryLabel(binding) ? (
@@ -325,29 +335,6 @@ function MessagingAppActions({
         {m.im_change_bot()}
       </Button>
     </>
-  );
-}
-
-function SlackConnectButton({
-  available,
-  loading,
-  onConnect,
-}: {
-  available?: boolean;
-  loading: boolean;
-  onConnect: () => void | Promise<void>;
-}) {
-  if (available === false) return null;
-  return (
-    <Button
-      icon={<ProviderIcon className="size-4" provider="slack" />}
-      loading={loading}
-      disabled={loading}
-      variant="secondary"
-      onClick={() => void onConnect()}
-    >
-      {m.im_connect_slack({ provider: messagingProviderLabel("slack") })}
-    </Button>
   );
 }
 

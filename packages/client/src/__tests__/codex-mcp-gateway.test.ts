@@ -6,6 +6,7 @@ import type {
   CodexAppServerRequest,
   InteractiveCodexAppServerClient,
 } from "../providers/codex/app-server-wire.js";
+import { assertCodexSocketProfile, codexSocketPermissions } from "../providers/codex/socket-permissions.js";
 
 vi.setConfig({ testTimeout: 10_000 });
 
@@ -43,11 +44,17 @@ class ScriptedCodexClient implements InteractiveCodexAppServerClient {
   readonly #notifications = new Set<(message: CodexAppServerMessage) => void>();
   #threads = 0;
   #turn = 0;
-  start: Handler = async () => {
+  start: Handler = async (params) => {
     this.#threads += 1;
-    return { thread: { id: `thread-${this.#threads}` } };
+    return {
+      thread: { id: `thread-${this.#threads}` },
+      ...(params.permissions ? { activePermissionProfile: { id: params.permissions } } : {}),
+    };
   };
-  resume: Handler = async (params) => ({ thread: { id: params.threadId } });
+  resume: Handler = async (params) => ({
+    thread: { id: params.threadId },
+    ...(params.permissions ? { activePermissionProfile: { id: params.permissions } } : {}),
+  });
   unsubscribe: Handler = async () => ({ status: "unsubscribed" });
 
   async initialize(): Promise<void> {}
@@ -490,4 +497,137 @@ describe("Codex MCP gateway delivery", () => {
       code: "configuration_invalid",
     });
   });
+});
+
+describe("Codex execution socket permissions", () => {
+  it("rotates exact sockets on a reused thread and removes them for a run without GitHub", async () => {
+    const { client, runtime } = await persistedRuntime();
+    for (const [runId, sockets] of [
+      ["first", ["/tmp/first.sock"]],
+      ["second", ["/tmp/second.sock"]],
+      ["none", undefined],
+    ] as const) {
+      await runtime.prompt({ ...prompt(runId), allowedUnixSockets: sockets });
+    }
+    const reloads = client.params.filter((p) => p.method === "thread/resume").slice(-3);
+    expect(reloads[0]?.params).toMatchObject({
+      permissions: "opentag-execution",
+      config: { permissions: { "opentag-execution": { network: { unix_sockets: { "/tmp/first.sock": "allow" } } } } },
+    });
+    expect(reloads[0]?.params).not.toHaveProperty("sandbox");
+    expect(JSON.stringify(reloads[1]?.params)).not.toContain("first.sock");
+    expect(JSON.stringify(reloads[1]?.params)).toContain("second.sock");
+    expect(reloads[2]?.params).toMatchObject({ sandbox: "workspace-write", config: { mcp_servers: {} } });
+    expect(reloads[2]?.params).not.toHaveProperty("permissions");
+    const turns = client.params.filter((p) => p.method === "turn/start").slice(-3);
+    expect(turns[0]?.params).toMatchObject({ permissions: "opentag-execution" });
+    expect(turns[0]?.params).not.toHaveProperty("sandboxPolicy");
+    expect(turns[2]?.params).toMatchObject({ sandboxPolicy: { type: "workspaceWrite", networkAccess: false } });
+  });
+
+  it("does not start a turn when required socket permissions cannot attach", async () => {
+    const { client, runtime } = await persistedRuntime();
+    client.resume = async () => {
+      throw Error("reload failed");
+    };
+    const before = client.params.filter((p) => p.method === "turn/start").length;
+    await runtime.prompt({ ...prompt("failed"), allowedUnixSockets: ["/tmp/required.sock"] });
+    expect(client.params.filter((p) => p.method === "turn/start")).toHaveLength(before);
+  });
+
+  it("attaches sockets together with MCP and preserves both when MCP is removed", async () => {
+    const { client, runtime } = await persistedRuntime();
+    await runtime.prompt({ ...prompt("combined", true), allowedUnixSockets: ["/tmp/current.sock"] });
+    expect(client.params.filter((p) => p.method === "thread/resume").at(-1)?.params).toMatchObject({
+      config: {
+        ...ATTACHED_CONFIG,
+        permissions: { "opentag-execution": { network: { unix_sockets: { "/tmp/current.sock": "allow" } } } },
+      },
+    });
+  });
+});
+
+it("fails closed when an older Codex ignores socket permission profiles", async () => {
+  const { client, runtime } = await persistedRuntime();
+  client.resume = async (params) => ({ thread: { id: params.threadId } });
+  const before = client.params.filter((p) => p.method === "turn/start").length;
+  const result = await runtime.prompt({ ...prompt("unsupported-profile"), allowedUnixSockets: ["/tmp/current.sock"] });
+  expect(result.status).toBe("failed");
+  expect(client.params.filter((p) => p.method === "turn/start")).toHaveLength(before);
+});
+
+it("requires socket permissions before starting an unpersisted thread", async () => {
+  const { client, factory } = setup();
+  const runtime = await factory.create(createRequest());
+  const sockets = ["/tmp/first.sock"];
+  const run = runtime.prompt({ ...prompt("first-with-socket"), allowedUnixSockets: sockets });
+  sockets[0] = "/tmp/mutated.sock";
+  expect((await run).status).toBe("completed");
+  expect(JSON.stringify(client.params.filter((p) => p.method === "thread/start").at(-1))).toContain("first.sock");
+  expect(JSON.stringify(client.params)).not.toContain("mutated.sock");
+});
+
+describe("Codex socket permission boundary", () => {
+  const policy = {
+    fileSystem: "workspace-write",
+    network: "disabled",
+    approvals: "on-request",
+    tools: { mode: "provider-default" },
+  } as const;
+  const workspace = { cwd: "/workspace" };
+  it("keeps existing unrestricted or network-enabled policies and avoids empty exceptions", () => {
+    expect(codexSocketPermissions(undefined, workspace, policy)).toBeUndefined();
+    expect(codexSocketPermissions([], workspace, policy)).toBeUndefined();
+    expect(
+      codexSocketPermissions(["/tmp/current.sock"], workspace, { ...policy, fileSystem: "unrestricted" }),
+    ).toBeUndefined();
+    expect(codexSocketPermissions(["/tmp/current.sock"], workspace, { ...policy, network: "enabled" })).toBeUndefined();
+  });
+  it.each([
+    { sockets: Array.from({ length: 9 }, () => "/tmp/socket") },
+    { sockets: ["relative.sock"] },
+    { sockets: ["/tmp/*"] },
+    { sockets: ["/tmp/line\n.sock"] },
+    { sockets: ["/tmp/nul\0.sock"] },
+  ])("rejects invalid socket descriptors %j", ({ sockets }) => {
+    expect(() => codexSocketPermissions(sockets, workspace, policy)).toThrow("Invalid execution Unix socket path");
+  });
+  it("preserves filesystem roots and restricts network to the execution socket", () => {
+    expect(
+      codexSocketPermissions(
+        ["/tmp/current.sock"],
+        { ...workspace, writableRoots: ["/workspace", "/safe/replies"] },
+        policy,
+      ),
+    ).toEqual({
+      features: { network_proxy: true },
+      permissions: {
+        "opentag-execution": {
+          extends: ":workspace",
+          filesystem: { "/workspace": "write", "/safe/replies": "write" },
+          network: {
+            enabled: true,
+            mode: "limited",
+            domains: {},
+            allow_local_binding: false,
+            unix_sockets: { "/tmp/current.sock": "allow" },
+          },
+        },
+      },
+    });
+    expect(
+      codexSocketPermissions(["/tmp/current.sock"], workspace, { ...policy, fileSystem: "read-only" }),
+    ).toMatchObject({ permissions: { "opentag-execution": { extends: ":read-only" } } });
+    expect(
+      codexSocketPermissions(["/tmp/current.sock"], workspace, { ...policy, fileSystem: "read-only" }),
+    ).not.toHaveProperty("permissions.opentag-execution.filesystem");
+  });
+  it.each([undefined, null, "opentag-execution", { id: "wrong" }])(
+    "requires explicit profile acknowledgement %j",
+    (profile) => {
+      expect(() => assertCodexSocketProfile({ activePermissionProfile: profile }, { permissions: {} })).toThrow(
+        "did not acknowledge",
+      );
+    },
+  );
 });

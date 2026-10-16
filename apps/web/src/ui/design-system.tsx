@@ -692,6 +692,7 @@ export function Dialog({
   open = true,
   returnFocusRef,
   role = "dialog",
+  showCloseButton = true,
   title,
 }: {
   busy?: boolean;
@@ -707,6 +708,7 @@ export function Dialog({
   open?: boolean;
   returnFocusRef?: RefObject<HTMLElement | null>;
   role?: "dialog" | "alertdialog";
+  showCloseButton?: boolean;
   title: ReactNode;
 }) {
   const id = useId();
@@ -755,22 +757,27 @@ export function Dialog({
               </KumoDialog.Title>
             </div>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
-            {headerActions}
-            <Button
-              aria-label={
-                closeLabel ?? (typeof title === "string" ? m.common_close_title({ title }) : m.common_close_dialog())
-              }
-              className="shrink-0"
-              disabled={busy}
-              shape="square"
-              size="compact"
-              variant="ghost"
-              onClick={onClose}
-            >
-              <Icon name="close" />
-            </Button>
-          </div>
+          {headerActions || showCloseButton ? (
+            <div className="flex shrink-0 items-center gap-2">
+              {headerActions}
+              {showCloseButton ? (
+                <Button
+                  aria-label={
+                    closeLabel ??
+                    (typeof title === "string" ? m.common_close_title({ title }) : m.common_close_dialog())
+                  }
+                  className="shrink-0"
+                  disabled={busy}
+                  shape="square"
+                  size="compact"
+                  variant="ghost"
+                  onClick={onClose}
+                >
+                  <Icon name="close" />
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
         </header>
         {description ? (
           <KumoDialog.Description className="mb-4 text-sm text-kumo-subtle">{description}</KumoDialog.Description>

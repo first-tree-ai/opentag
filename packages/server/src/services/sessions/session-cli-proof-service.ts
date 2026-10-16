@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { RUNTIME_CAPABILITY, type SessionReconcileRequest } from "@opentag/shared";
+import { RUNTIME_CAPABILITY, type RuntimeUserTaskSource, type SessionReconcileRequest } from "@opentag/shared";
 import { and, eq, isNull } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
@@ -12,9 +12,11 @@ import {
   sessions,
 } from "../../db/schema/index.js";
 import type { ConnectionRegistry } from "../../runtime/connection-registry.js";
+import type { PreparedSessionReconcile } from "../../runtime/runtime-domain-owner.js";
 import { cloudInstanceIdFor } from "../sandboxes/cloud-runtime-fence.js";
 
 export interface SessionCliSourceContext {
+  userTaskSource?: RuntimeUserTaskSource;
   agentId: string;
   computerId: string;
   connectionInstanceId: string;
@@ -97,18 +99,29 @@ export class SessionCliProofService {
   readonly #registry: Pick<ConnectionRegistry, "currentInstanceId" | "supportsCapability">;
   readonly #cloud: SessionCliCloudProofAuthority | undefined;
   readonly #tokenKey: Buffer;
+  readonly #executionLive: ((executionId: string) => Promise<boolean>) | undefined;
+  readonly #executions:
+    | Pick<import("../../runtime-credentials/execution-registry.js").RuntimeExecutionRegistry, "get">
+    | undefined;
   readonly #now: () => Date;
 
   constructor(
     database: DatabaseClient,
     registry: Pick<ConnectionRegistry, "currentInstanceId" | "supportsCapability">,
     tokenKey: Uint8Array,
-    options: { now?: () => Date; cloud?: SessionCliCloudProofAuthority } = {},
+    options: {
+      now?: () => Date;
+      executionLive?: (executionId: string) => Promise<boolean>;
+      cloud?: SessionCliCloudProofAuthority;
+      executions?: Pick<import("../../runtime-credentials/execution-registry.js").RuntimeExecutionRegistry, "get">;
+    } = {},
   ) {
     if (tokenKey.byteLength !== 32) throw new Error("The Session CLI proof key must contain exactly 32 bytes");
     this.#database = database;
     this.#registry = registry;
     this.#cloud = options.cloud;
+    this.#executions = options.executions;
+    this.#executionLive = options.executionLive;
     this.#tokenKey = createHmac("sha256", tokenKey).update("opentag/session-cli-proof/v1", "utf8").digest();
     this.#now = options.now ?? (() => new Date());
   }
@@ -236,17 +249,24 @@ export class SessionCliProofService {
         placementGeneration: sessionCliProofs.placementGeneration,
         proofId: sessionCliProofs.proofId,
         sessionId: sessionCliProofs.sessionId,
+        updatedAt: sessionCliProofs.updatedAt,
       })
       .from(sessionCliProofs)
       .where(eq(sessionCliProofs.sessionId, input.sessionId))
       .limit(1)
       .for("update");
+    // Ready can reuse its token, but must supersede an earlier pending stop even within one clock tick.
+    const updatedAt = new Date(Math.max(this.#now().getTime(), (existing?.updatedAt.getTime() ?? -1) + 1));
     if (
       existing?.computerId === input.computerId &&
       existing.placementGeneration === input.placementGeneration &&
       existing.connectionInstanceId === input.connectionInstanceId &&
       reuseWhen(existing)
     ) {
+      await transaction
+        .update(sessionCliProofs)
+        .set({ updatedAt })
+        .where(eq(sessionCliProofs.sessionId, input.sessionId));
       return {
         proofId: existing.proofId,
         token: this.#deriveToken(existing),
@@ -266,7 +286,7 @@ export class SessionCliProofService {
         placementGeneration: input.placementGeneration,
         connectionInstanceId: input.connectionInstanceId,
         createdAt: now,
-        updatedAt: now,
+        updatedAt,
       })
       .onConflictDoUpdate({
         target: sessionCliProofs.sessionId,
@@ -276,7 +296,7 @@ export class SessionCliProofService {
           computerId: input.computerId,
           placementGeneration: input.placementGeneration,
           connectionInstanceId: input.connectionInstanceId,
-          updatedAt: now,
+          updatedAt,
         },
       });
     return { proofId, token };
@@ -286,18 +306,36 @@ export class SessionCliProofService {
     computerId: string,
     connectionInstanceId: string,
     request: SessionReconcileRequest,
-  ): Promise<SessionReconcileRequest> {
+  ): Promise<PreparedSessionReconcile> {
     if (request.desired === "stopped") {
-      await this.revoke({
-        sessionId: request.sessionId,
-        computerId,
-        placementGeneration: request.placementGeneration,
-        connectionInstanceId,
-      });
-      return request;
+      const [proof] = await this.#database
+        .select({ proofId: sessionCliProofs.proofId, updatedAt: sessionCliProofs.updatedAt })
+        .from(sessionCliProofs)
+        .where(
+          and(
+            eq(sessionCliProofs.sessionId, request.sessionId),
+            eq(sessionCliProofs.computerId, computerId),
+            eq(sessionCliProofs.placementGeneration, request.placementGeneration),
+            eq(sessionCliProofs.connectionInstanceId, connectionInstanceId),
+          ),
+        )
+        .limit(1);
+      return {
+        request,
+        onResult: async (result) => {
+          if (result.status !== "stopped" || !proof) return;
+          await this.revoke({
+            sessionId: request.sessionId,
+            computerId,
+            placementGeneration: request.placementGeneration,
+            connectionInstanceId,
+            expectedProof: proof,
+          });
+        },
+      };
     }
     if (!this.#registry.supportsCapability(computerId, connectionInstanceId, RUNTIME_CAPABILITY.sessionCollaboration)) {
-      return request;
+      return { request };
     }
     const sessionCliProof = await this.mint({
       sessionId: request.sessionId,
@@ -305,7 +343,7 @@ export class SessionCliProofService {
       placementGeneration: request.placementGeneration,
       connectionInstanceId,
     });
-    return { ...request, sessionCliProof };
+    return { request: { ...request, sessionCliProof } };
   }
 
   async revoke(input: {
@@ -313,6 +351,7 @@ export class SessionCliProofService {
     computerId: string;
     placementGeneration: number;
     connectionInstanceId: string;
+    expectedProof?: { proofId: string; updatedAt: Date };
   }): Promise<void> {
     await this.#database.transaction(async (transaction) => {
       const [placement] = await transaction
@@ -335,6 +374,12 @@ export class SessionCliProofService {
             eq(sessionCliProofs.computerId, input.computerId),
             eq(sessionCliProofs.placementGeneration, input.placementGeneration),
             eq(sessionCliProofs.connectionInstanceId, input.connectionInstanceId),
+            ...(input.expectedProof
+              ? [
+                  eq(sessionCliProofs.proofId, input.expectedProof.proofId),
+                  eq(sessionCliProofs.updatedAt, input.expectedProof.updatedAt),
+                ]
+              : []),
           ),
         );
     });
@@ -359,7 +404,7 @@ export class SessionCliProofService {
     await this.#database.delete(sessionCliProofs).where(eq(sessionCliProofs.connectionInstanceId, connectionId));
   }
 
-  async authenticate(token: string): Promise<SessionCliSourceContext> {
+  async authenticate(token: string, executionId?: string): Promise<SessionCliSourceContext> {
     if (!token || token.length > 4096) throw invalidProof();
     const [row] = await this.#database
       .select({
@@ -408,8 +453,24 @@ export class SessionCliProofService {
     ) {
       throw invalidProof();
     }
+    const execution = executionId ? this.#executions?.get(executionId) : undefined;
+    const userTaskSource =
+      execution &&
+      execution.purpose === "execution" &&
+      execution.sessionId === row.sessionId &&
+      execution.agentId === row.agentId &&
+      (await this.#executionLive?.(execution.executionId)) === true &&
+      execution.computerId === row.computerId &&
+      execution.placementGeneration === row.placementGeneration &&
+      execution.instanceId ===
+        (row.computerKind === "cloud"
+          ? this.#cloud?.connection(row.connectionInstanceId)?.instanceId
+          : row.connectionInstanceId)
+        ? { sessionId: execution.sessionId, source: execution.source }
+        : undefined;
     return {
       agentId: row.agentId,
+      ...(userTaskSource ? { userTaskSource } : {}),
       computerId: row.computerId,
       connectionInstanceId: row.connectionInstanceId,
       ...(row.creatorSessionId ? { creatorSessionId: row.creatorSessionId } : {}),

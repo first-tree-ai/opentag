@@ -7,6 +7,7 @@
   "computer_check_status": "检查状态",
   "computer_checking_status": "正在检查…",
   "computer_cloud": "云端电脑",
+  "computer_connect_another_action": "连接另一台电脑",
   "computer_connection_restored": "已连接",
   "computer_delete_button": "移除电脑",
   "computer_delete_confirm_description": "这台电脑会从你的账户中移除，它的连接密钥也会立即失效。如需再次使用，请把它作为新电脑重新连接。",

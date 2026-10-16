@@ -24,6 +24,7 @@ import {
 import { AgentRuntimeOptionsSchema } from "./runtime-configuration-options.js";
 import { RUNTIME_PROVIDER_CLI_REQUIREMENT_OPERATION, RuntimeRequestIdSchema } from "./runtime-protocol.js";
 import { SessionMessageScheduledOriginSchema } from "./schedules.js";
+import { SlackAutoSetupRuntimeRequestSchema } from "./slack-auto-setup.js";
 import { TurnActivityRequestSchema, TurnActivityResultSchema } from "./turn-activity.js";
 import { TurnOutgoingReplySnapshotSchema } from "./turn-outgoing-reply.js";
 
@@ -1208,6 +1209,7 @@ export type RuntimeApprovalResult = z.infer<typeof RuntimeApprovalResultSchema>;
 export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   RuntimeApprovalDecisionSchema,
   ContextTreeOperationFrameSchema,
+  SlackAutoSetupRuntimeRequestSchema,
   SessionReconcileRequestSchema,
   DirectImMessageDeliveryRequestSchema,
   RuntimeImSteerRequestSchema,

@@ -2,15 +2,23 @@ import type { MeResponse } from "@opentag/shared/browser";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
 import { getLocale, isLocale, LOCALE_LABELS, locales, setLocale, toLocale } from "../../i18n/locale.js";
+import { messagingProviderLabel } from "../../im/provider-label.js";
 import * as m from "../../paraglide/messages.js";
 import { Button, Field, KumoInputControl, Select, SettingsList, SettingsRow, Text } from "../../ui/design-system.js";
 import { Page } from "../layout/page.js";
 import { useAccount } from "../session/session-context.js";
 import { CloudBillingSettings } from "./cloud-billing-settings.js";
 import { GitHubIntegrationSettings } from "./github-integration-settings.js";
+import { SlackAgentProvisionCode } from "./slack-agent-provision-code.js";
 
-export function AccountPage() {
+export function AccountPage({ slackProvision = false }: { slackProvision?: boolean }) {
   const { me, refreshMe } = useAccount();
+  if (slackProvision)
+    return (
+      <Page title={m.account_slack_provision_title({ provider: messagingProviderLabel("slack") })}>
+        <SlackAgentProvisionCode />
+      </Page>
+    );
   return (
     <Page title={m.account_page_title()} description={m.account_page_description()}>
       <AccountSettings refreshMe={refreshMe} user={me.user} />

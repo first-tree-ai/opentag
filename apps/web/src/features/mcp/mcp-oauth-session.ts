@@ -1,6 +1,6 @@
 import { MCP_ERROR_CODES } from "@opentag/shared/browser";
 import { useEffect, useReducer, useRef } from "react";
-import { ApiError } from "../../api.js";
+import { ApiError, browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
 import {
   closeMcpOAuthWindow,
@@ -8,12 +8,13 @@ import {
   prepareMcpOAuthWindow,
   waitMcpOAuthWindow,
 } from "./mcp-oauth-window.js";
-import { useStartMcpOAuth } from "./mcp-queries.js";
+import { useMcpInvalidation, useStartMcpOAuth } from "./mcp-queries.js";
 import { consumeMcpReturn, type McpReturnContext, rememberMcpReturn } from "./mcp-return-context.js";
 
-/** Sessions survive card filtering and remain isolated until the owning dialog unmounts. */
+/** Closing a view releases its rendering subscription, not an authorization already submitted. */
 export function useMcpOAuthSessions(agentId: string) {
   const mutation = useStartMcpOAuth(agentId);
+  const invalidate = useMcpInvalidation(agentId);
   const mutationRef = useRef(mutation);
   mutationRef.current = mutation;
   const [, refresh] = useReducer((version: number) => version + 1, 0);
@@ -23,7 +24,6 @@ export function useMcpOAuthSessions(agentId: string) {
     mounted.current = true;
     return () => {
       mounted.current = false;
-      for (const session of sessions.current.values()) session.dispose();
     };
   }, []);
   return (key: string) => {
@@ -34,6 +34,7 @@ export function useMcpOAuthSessions(agentId: string) {
         () => {
           if (mounted.current) refresh();
         },
+        invalidate,
       );
       sessions.current.set(key, session);
     }
@@ -45,7 +46,11 @@ export function useMcpOAuthSession(agentId: string) {
   return useMcpOAuthSessions(agentId)("default");
 }
 
-function createMcpOAuthSession(mutate: ReturnType<typeof useStartMcpOAuth>["mutateAsync"], refresh: () => void) {
+function createMcpOAuthSession(
+  mutate: ReturnType<typeof useStartMcpOAuth>["mutateAsync"],
+  refresh: () => void,
+  invalidate: () => Promise<unknown>,
+) {
   const controller: { current: AbortController | undefined } = { current: undefined };
   const fallback: {
     current:
@@ -75,18 +80,36 @@ function createMcpOAuthSession(mutate: ReturnType<typeof useStartMcpOAuth>["muta
   const setBlocked = (blocked: boolean) => update({ blocked });
   const setNotice = (notice: string | undefined) => update({ notice });
   const interruption: { current: "cancelled" | "timeout" | undefined } = { current: undefined };
-  const dispose = () => {
-    controller.current?.abort();
-    fallback.current?.finish("cancelled");
+  let attempt: { context: McpReturnContext; state?: string; cancellation?: Promise<boolean> } | undefined;
+  const cancelFlow = async (): Promise<boolean> => {
+    const current = attempt;
+    if (!current?.state) return false;
+    current.cancellation ??= browserApi
+      .revokeMcpAuthorization(current.context.agentId, current.context.serverId, current.state)
+      .then(() => false)
+      .catch(async (error: unknown) => {
+        if (!(error instanceof ApiError) || error.code !== MCP_ERROR_CODES.OAUTH_FLOW_INVALID) throw error;
+        const latest = (await browserApi.agentMcpServers(current.context.agentId)).servers.find(
+          (row) => row.mcpServerId === current.context.serverId,
+        );
+        return Boolean(latest?.authorization?.hasCredential && latest.authorization.status === "active");
+      });
+    return current.cancellation;
   };
-  const cancel = () => {
+  const cancel = async () => {
     interruption.current = "cancelled";
-    setNotice(m.mcp_oauth_cancelled());
+    setNotice(undefined);
     controller.current?.abort();
     fallback.current?.finish("cancelled");
+    try {
+      await cancelFlow();
+    } catch {
+      setNotice(m.mcp_setup_cleanup_failed());
+    }
   };
   const start = async (context: McpReturnContext, scopes?: readonly string[], prepared?: McpOAuthWindow) => {
     const reserved = prepared ?? prepareMcpOAuthWindow();
+    attempt = { context };
     const abort = new AbortController();
     controller.current = abort;
     setDetached(false);
@@ -94,18 +117,20 @@ function createMcpOAuthSession(mutate: ReturnType<typeof useStartMcpOAuth>["muta
     interruption.current = undefined;
     setPhase("preparing");
     try {
+      if (abort.signal.aborted) return "cancelled" as const;
       const result = await mutate({
         mcpServerId: context.serverId,
         ...(scopes?.length ? { scopes: [...scopes] } : {}),
       });
-      if (abort.signal.aborted || reserved.popup?.closed) {
-        setNotice(m.mcp_oauth_cancelled());
-        return "cancelled" as const;
-      }
-      setPhase("waiting");
-      if (!reserved.popup)
-        return await redirectFallback(result.authorizationUrl, context, reserved.mobile, abort.signal);
-      return await completeWindow(reserved.popup, result.authorizationUrl, context, abort.signal);
+      attempt.state = new URL(result.authorizationUrl).searchParams.get("state") ?? undefined;
+      const outcome = await finishAuthorization(
+        result.authorizationUrl,
+        { ...context, oauthState: attempt.state },
+        reserved,
+        abort.signal,
+      );
+      if (outcome === "authorized") await invalidate();
+      return outcome;
     } finally {
       abort.abort();
       closeMcpOAuthWindow(reserved.popup);
@@ -115,13 +140,29 @@ function createMcpOAuthSession(mutate: ReturnType<typeof useStartMcpOAuth>["muta
       setPhase(undefined);
     }
   };
+  async function finishAuthorization(
+    url: string,
+    context: McpReturnContext,
+    reserved: McpOAuthWindow,
+    signal: AbortSignal,
+  ) {
+    if (signal.aborted || reserved.popup?.closed) return cancelledResult();
+    setPhase("waiting");
+    const completed = reserved.popup
+      ? await completeWindow(reserved.popup, url, context, signal)
+      : await redirectFallback(url, context, reserved.mobile, signal);
+    return completed === "cancelled" ? cancelledResult() : completed;
+  }
+  async function cancelledResult() {
+    return (await cancelFlow()) ? ("authorized" as const) : ("cancelled" as const);
+  }
   async function completeWindow(popup: Window, url: string, context: McpReturnContext, signal: AbortSignal) {
     const returned = await waitMcpOAuthWindow(popup, url, context, signal, () => setDetached(true));
     const interruption = oauthInterruption(returned);
     if (interruption) {
       // The ref is read by the calling operation after this async session settles.
       setInterruption(returned === "timeout" ? "timeout" : "cancelled");
-      setNotice(interruption);
+      setNotice(returned === "timeout" ? interruption : undefined);
       return "cancelled" as const;
     }
     setPhase("checking");
@@ -202,7 +243,6 @@ function createMcpOAuthSession(mutate: ReturnType<typeof useStartMcpOAuth>["muta
     start,
     cancel,
     openFallback,
-    dispose,
     interruption,
     get phase() {
       return state.phase;

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
 import { agentId, installApi, resetWebAppState } from "./support/app-fixtures.js";
@@ -45,19 +45,19 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByText("Model & reasoning")).toBeNull();
   });
 
-  it.each([
-    ["integrations", "GitHub repositories"],
-    ["skills", "Skills"],
-  ])("keeps a direct Agent %s URL available without exposing its navigation preview", async (section, heading) => {
-    installApi();
-    window.history.replaceState({}, "", `/agents/${agentId}/${section}`);
-    render(<App />);
+  it.each([["skills", "Skills"]])(
+    "keeps a direct Agent %s URL available without exposing its navigation preview",
+    async (section, heading) => {
+      installApi();
+      window.history.replaceState({}, "", `/agents/${agentId}/${section}`);
+      render(<App />);
 
-    expect(await screen.findByRole("heading", { name: heading })).toBeTruthy();
-    expect(window.location.pathname).toBe(`/agents/${agentId}/${section}`);
-    expect(screen.getByRole("complementary", { name: "Agent navigation" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: section === "skills" ? "Skills" : "Integrations" })).toBeNull();
-  });
+      expect(await screen.findByRole("heading", { name: heading })).toBeTruthy();
+      expect(window.location.pathname).toBe(`/agents/${agentId}/${section}`);
+      expect(screen.getByRole("complementary", { name: "Agent navigation" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: section === "skills" ? "Skills" : "Integrations" })).toBeNull();
+    },
+  );
 
   it("does not preserve the removed Agent Access surface", async () => {
     installApi();
@@ -73,4 +73,13 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: "Page not found" })).toBeTruthy();
     expect(vi.mocked(fetch)).not.toHaveBeenCalled();
   });
+});
+
+it("redirects historical Agent integration links to the existing Account settings", async () => {
+  resetWebAppState();
+  installApi();
+  window.history.replaceState({}, "", `/agents/${agentId}/integrations`);
+  render(<App />);
+  await waitFor(() => expect(window.location.pathname).toBe("/account"));
+  expect(screen.queryByRole("checkbox", { name: "Use with this Agent" })).toBeNull();
 });

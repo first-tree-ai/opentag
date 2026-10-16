@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { GOOGLE_WORKSPACE_MCP_AUTHORIZATION_SERVER, isGoogleWorkspaceMcpEndpoint } from "@opentag/shared";
+import {
+  CANVA_DEVELOPER_PORTAL_AUTHORIZATION_SERVER,
+  GOOGLE_WORKSPACE_MCP_AUTHORIZATION_SERVER,
+  isCanvaDeveloperPortalMcpEndpoint,
+  isGoogleWorkspaceMcpEndpoint,
+  MCP_CATALOG_DEPLOYMENT_ENDPOINTS,
+  type MCPCatalogEndpoint,
+} from "@opentag/shared";
 import { and, eq, isNull, lte, or, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { agents, mcpClientRegistrations, mcpServerAuthorizations } from "../../db/schema/index.js";
@@ -52,7 +59,51 @@ export interface McpOAuthFlowServiceOptions {
    * mechanism, and the secret is presented only at that authorization server's token endpoint.
    */
   googleMcpClient?: { clientId: string; clientSecret: string };
+  /**
+   * The deployment's Canva Developer Portal OAuth client, present only when the
+   * `OPENTAG_MCP_CANVA_CLIENT_*` pair is configured. It is offered only to the Developer Portal MCP
+   * endpoint that resolves `https://www.canva.com`. The waitlist endpoint at `mcp.canva.com` keeps its
+   * automatic resolution either way.
+   */
+  canvaMcpClient?: { clientId: string; clientSecret: string };
   now?: () => Date;
+}
+
+/**
+ * One OAuth client this deployment registered with a provider out of band and configured through the
+ * environment. Both halves of the binding are required before it is offered: the Server's effective
+ * origin must be the provider's own, and the discovered issuer must be exactly the provider's.
+ */
+interface DeploymentOAuthClient {
+  matchesEndpoint: (effectiveUrl: string) => boolean;
+  issuer: string;
+  clientId: string;
+  clientSecret: string;
+  authorizationParams?: Record<string, string>;
+  /** The catalog entry whose endpoint this client requires, when it differs from the shipped one. */
+  catalogId?: string;
+}
+
+function deploymentOAuthClients(options: McpOAuthFlowServiceOptions): readonly DeploymentOAuthClient[] {
+  const clients: DeploymentOAuthClient[] = [];
+  if (options.googleMcpClient) {
+    clients.push({
+      matchesEndpoint: isGoogleWorkspaceMcpEndpoint,
+      issuer: GOOGLE_WORKSPACE_MCP_AUTHORIZATION_SERVER,
+      ...options.googleMcpClient,
+      // Google issues a refresh token only for an offline request, and again only with fresh consent.
+      authorizationParams: { access_type: "offline", prompt: "consent" },
+    });
+  }
+  if (options.canvaMcpClient) {
+    clients.push({
+      matchesEndpoint: isCanvaDeveloperPortalMcpEndpoint,
+      issuer: CANVA_DEVELOPER_PORTAL_AUTHORIZATION_SERVER,
+      ...options.canvaMcpClient,
+      catalogId: "canva",
+    });
+  }
+  return clients;
 }
 
 export interface StartedMcpOAuth {
@@ -63,7 +114,7 @@ export interface StartedMcpOAuth {
 export class McpOAuthFlowService {
   readonly #cipher: McpCredentialCipher;
   readonly #database: DatabaseClient;
-  readonly #googleMcpClient: { clientId: string; clientSecret: string } | undefined;
+  readonly #deploymentClients: readonly DeploymentOAuthClient[];
   readonly #now: () => Date;
   readonly #oauth: McpOAuthClient;
   readonly #servers: McpServerService;
@@ -71,10 +122,21 @@ export class McpOAuthFlowService {
   constructor(options: McpOAuthFlowServiceOptions) {
     this.#cipher = options.cipher;
     this.#database = options.database;
-    this.#googleMcpClient = options.googleMcpClient;
+    this.#deploymentClients = deploymentOAuthClients(options);
     this.#now = options.now ?? (() => new Date());
     this.#oauth = options.oauth;
     this.#servers = options.servers;
+  }
+
+  /**
+   * The catalog entries whose endpoint this deployment replaces, because a configured client requires
+   * a different endpoint than the one the catalog ships. No client material is returned.
+   */
+  catalogEndpoints(): MCPCatalogEndpoint[] {
+    return this.#deploymentClients.flatMap((client) => {
+      const url = client.catalogId === undefined ? undefined : MCP_CATALOG_DEPLOYMENT_ENDPOINTS[client.catalogId];
+      return client.catalogId === undefined || url === undefined ? [] : [{ catalogId: client.catalogId, url }];
+    });
   }
 
   /**
@@ -334,27 +396,28 @@ export class McpOAuthFlowService {
   }
 
   /**
-   * The deployment's pre-registered Google client, resolved rather than stored, or undefined when
-   * this flow must not use it.
+   * The deployment's pre-registered client for this flow (Google or Canva), resolved rather than
+   * stored, or undefined when this flow must not use one.
    *
-   * Two conditions are deliberate, and both are required. The Server's effective origin must be one
-   * of the eight Google Workspace endpoints, so a hostile Server that merely advertises Google as
-   * its authorization server cannot obtain a Google credential for its own endpoint; and the
-   * discovered issuer must be exactly Google's, so a Google endpoint that unexpectedly resolves
-   * elsewhere does not receive a client bound to Google. The client is never written to
-   * `mcp_client_registrations`: configuration stays authoritative, so unsetting the variables stops
-   * its use immediately instead of leaving a stale row behind.
+   * Two conditions are deliberate, and both are required. The Server's effective origin must be the
+   * provider's own, so a hostile Server that merely advertises that provider as its authorization
+   * server cannot obtain a credential for its own endpoint; and the discovered issuer must be exactly
+   * the provider's, so a provider endpoint that unexpectedly resolves elsewhere does not receive a
+   * client bound to that provider. The client is never written to `mcp_client_registrations`:
+   * configuration stays authoritative, so unsetting the variables stops its use immediately instead
+   * of leaving a stale row behind.
    */
-  #googleClient(effectiveUrl: string, issuer: string): McpClientCredentials | undefined {
-    if (!this.#googleMcpClient) return undefined;
-    if (!isGoogleWorkspaceMcpEndpoint(effectiveUrl)) return undefined;
-    if (issuer !== GOOGLE_WORKSPACE_MCP_AUTHORIZATION_SERVER) return undefined;
+  #deploymentClient(effectiveUrl: string, issuer: string): McpClientCredentials | undefined {
+    const configured = this.#deploymentClients.find(
+      (client) => client.issuer === issuer && client.matchesEndpoint(effectiveUrl),
+    );
+    if (!configured) return undefined;
     return {
       source: "preregistered",
-      clientId: this.#googleMcpClient.clientId,
-      clientSecret: this.#googleMcpClient.clientSecret,
+      clientId: configured.clientId,
+      clientSecret: configured.clientSecret,
       tokenEndpointAuthMethod: "client_secret_basic",
-      authorizationParams: { access_type: "offline", prompt: "consent" },
+      ...(configured.authorizationParams ? { authorizationParams: configured.authorizationParams } : {}),
     };
   }
 
@@ -367,13 +430,13 @@ export class McpOAuthFlowService {
    * and the credential was destroyed — so authorizing a second Agent silently killed the first.
    *
    * Order of preference, matching the discovery rules:
-   * - the deployment's Google client, when this Server is one it is bound to;
+   * - the deployment's Google or Canva client, when this Server is one it is bound to;
    * - a `preregistered` row, which is the deployment's own client and always wins;
    * - an existing DCR row, reused as-is;
    * - otherwise a fresh registration, which is the only case that writes the row.
    *
    * A CIMD client is not a row at all — it is this deployment's URL — so it is resolved rather than
-   * looked up, and `registrationId` stays null for it. The Google client likewise has no row: it is
+   * looked up, and `registrationId` stays null for it. A deployment client likewise has no row: it is
    * derived from configuration, so its `registrationId` stays null too.
    */
   async #clientForStart(
@@ -381,8 +444,8 @@ export class McpOAuthFlowService {
     effectiveUrl: string,
     metadata: McpAuthorizationServerMetadata,
   ): Promise<{ client: McpClientCredentials; registrationId: string | null }> {
-    const google = this.#googleClient(effectiveUrl, metadata.issuer);
-    if (google) return { client: google, registrationId: null };
+    const deployment = this.#deploymentClient(effectiveUrl, metadata.issuer);
+    if (deployment) return { client: deployment, registrationId: null };
     const preregistered = await this.#readPreregistered(accountId, metadata.issuer);
     if (preregistered) {
       const row = await this.#readRegistrationRow(accountId, metadata.issuer, "preregistered");
@@ -579,6 +642,7 @@ export class McpOAuthFlowService {
        */
       await this.#failFlow(
         authorization.id,
+        query.state,
         query.error === "access_denied" ? MCP_ERROR_CODES.OAUTH_DENIED : MCP_ERROR_CODES.OAUTH_FAILED,
       );
       throw new McpServiceError(
@@ -587,7 +651,7 @@ export class McpOAuthFlowService {
       );
     }
     if (!query.code) {
-      await this.#failFlow(authorization.id, MCP_ERROR_CODES.OAUTH_FLOW_INVALID);
+      await this.#failFlow(authorization.id, query.state, MCP_ERROR_CODES.OAUTH_FLOW_INVALID);
       throw new McpServiceError(MCP_ERROR_CODES.OAUTH_FLOW_INVALID, "The authorization response carried no code");
     }
     try {
@@ -611,6 +675,7 @@ export class McpOAuthFlowService {
       if (error instanceof McpServiceError && error.code === MCP_ERROR_CODES.OAUTH_FLOW_INVALID) throw error;
       await this.#failFlow(
         authorization.id,
+        query.state,
         error instanceof McpServiceError && error.category === "transient" ? undefined : MCP_ERROR_CODES.OAUTH_FAILED,
       );
       throw error;
@@ -644,8 +709,8 @@ export class McpOAuthFlowService {
     const binding = { mcpServerId, agentId, authorizationServer: metadata.issuer };
     const codeVerifier = this.#cipher.decryptPkceVerifier(binding, requirePkce(authorization));
     /*
-     * The effective URL is read before the client, because the deployment Google client is offered
-     * only to the Google Workspace origins and the URL is half of that decision.
+     * The effective URL is read before the client, because a deployment client is offered only to
+     * its provider's origins and the URL is half of that decision.
      */
     const context = await this.#servers.readProbeContext(accountId, agentId, mcpServerId);
     const effective = McpServerService.resolveEffectiveConfig(context.server, context.binding);
@@ -693,7 +758,10 @@ export class McpOAuthFlowService {
         pkceCiphertext: null,
         loginSessionHash: null,
         probeState: "pending",
-        revision: sql`${authorization.revision} + 1`,
+        refreshClaimId: null,
+        refreshClaimedAt: null,
+        refreshGeneration: sql`${mcpServerAuthorizations.refreshGeneration} + 1`,
+        revision: sql`${mcpServerAuthorizations.revision} + 1`,
         updatedAt: now,
       })
       /*
@@ -824,7 +892,7 @@ export class McpOAuthFlowService {
    * Passing no code means the failure is transient — the flow's state is cleared and the row is left
    * `pending` for a retry, the one case where waiting is still the right answer.
    */
-  async #failFlow(id: string, failureCode: string | undefined): Promise<void> {
+  async #failFlow(id: string, issuedState: string, failureCode: string | undefined): Promise<void> {
     await this.#database
       .update(mcpServerAuthorizations)
       .set({
@@ -845,7 +913,7 @@ export class McpOAuthFlowService {
             }),
         updatedAt: this.#now(),
       })
-      .where(eq(mcpServerAuthorizations.id, id));
+      .where(and(eq(mcpServerAuthorizations.id, id), eq(mcpServerAuthorizations.state, hashSecret(issuedState))));
   }
 
   /**
@@ -856,9 +924,9 @@ export class McpOAuthFlowService {
    * register a second one and then present the first one's code under it — which a strict
    * authorization server refuses with `invalid_client`.
    *
-   * CIMD and the deployment's Google client are the two mechanisms with no row to record: both are
-   * derived rather than looked up, and both are by construction the same client the authorization
-   * request named.
+   * CIMD and the deployment clients are the mechanisms with no row to record: they are derived
+   * rather than looked up, and they are by construction the same client the authorization request
+   * named.
    */
   async #readClientCredentials(
     accountId: string,
@@ -867,12 +935,11 @@ export class McpOAuthFlowService {
     clientRegistrationId: string | null,
   ): Promise<McpClientCredentials> {
     /*
-     * The deployment's Google client is resolved the same way `start` resolved it — same origin,
-     * same issuer — so the callback and every refresh present the client the authorization request
-     * named. Nothing else could have named a client at this issuer.
+     * A deployment client is resolved the same way `start` resolved it — same origin, same issuer —
+     * so the callback and every refresh present the client the authorization request named.
      */
-    const google = this.#googleClient(effectiveUrl, metadata.issuer);
-    if (google) return google;
+    const deployment = this.#deploymentClient(effectiveUrl, metadata.issuer);
+    if (deployment) return deployment;
     /*
      * A pre-registered client is stable for the Account and issuer, so it is preferred: it is what
      * the authorization request named, and there is exactly one of them per pair.
@@ -996,7 +1063,7 @@ export class McpOAuthFlowService {
         );
       }
       const metadata = await this.#oauth.authorizationServerMetadata(row.accountId, requireIssuer(row));
-      // The deployment Google client is bound to the origin, not just the issuer.
+      // A deployment client is bound to the origin, not just the issuer.
       const client = await this.#readClientCredentials(
         row.accountId,
         effective.url,

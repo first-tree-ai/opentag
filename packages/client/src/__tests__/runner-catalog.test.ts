@@ -7,7 +7,7 @@ describe("runner provider CLI catalog plans", () => {
     const plans = linuxAmd64ProviderCliPlans();
     expect(plans.map((plan) => [plan.provider, plan.version, plan.command])).toEqual([
       ["feishu", "1.0.92", "lark-cli"],
-      ["slack", "4.7.0", "slack"],
+      ["slack", "4.10.0", "slack"],
     ]);
     const slack = PROVIDER_CLI_CATALOG.find((entry) => entry.provider === "slack");
     const lark = PROVIDER_CLI_CATALOG.find((entry) => entry.provider === "feishu");

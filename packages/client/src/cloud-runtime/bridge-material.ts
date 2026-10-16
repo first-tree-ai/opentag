@@ -8,6 +8,7 @@ import {
   buildRuntimeProxyEnvironment,
   providerRoutingEnvironment,
   type RuntimeProxyExecutionLayout,
+  renderRuntimeProxyGhConfig,
   renderRuntimeProxyGitConfig,
   renderRuntimeProxyGitCredentialHelper,
   renderRuntimeProxyProviderLauncher,
@@ -101,6 +102,7 @@ export async function publishExecutionMaterial(
     slackConfigDir: "/tmp/opentag/slack",
   };
   const environment = buildRuntimeProxyEnvironment({
+    executionId: relay.executionId,
     adapterCaCertPath: layout.adapterCaCertPath,
     cliMetadata: (provider) => relay.cliMetadataFor(provider),
     connectProxyUrl: `http://127.0.0.1:${CLOUD_CONNECT_PROXY_PORT}`,
@@ -109,6 +111,10 @@ export async function publishExecutionMaterial(
     slackApiHost: `https://127.0.0.1:${CLOUD_SLACK_API_PORT}`,
   });
   const routing = providerRoutingEnvironment(environment);
+  // This directory is mounted read-only. Native gh must find a current config before
+  // startup, rather than trying to create or migrate one inside the execution mount.
+  await mkdir(join(published, "gh-config"), { mode: 0o755 });
+  await writePublicFile(join(published, "gh-config", "config.yml"), renderRuntimeProxyGhConfig());
   await writePublicFile(
     join(published, "environment.json"),
     JSON.stringify({ executionId: relay.executionId, environment }),
@@ -139,6 +145,7 @@ export async function publishExecutionMaterial(
     0o555,
   );
   await writePublicFile(join(published, "bin", "gh"), renderRuntimeProxyProviderLauncher("gh"), 0o555);
+  await writePublicFile(join(published, "bin", "git"), renderRuntimeProxyProviderLauncher("git"), 0o555);
   return published;
 }
 

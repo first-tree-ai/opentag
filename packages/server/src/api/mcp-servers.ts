@@ -19,13 +19,16 @@ import {
   AGENT_MCP_SERVER_TEMPLATE,
   AGENT_MCP_SERVERS_TEMPLATE,
   AttachMCPServerRequestSchema,
+  CancelMCPOAuthRequestSchema,
   CreateMCPServerRequestSchema,
   ListAgentMCPServersResponseSchema,
   ListAvailableMCPServersResponseSchema,
   ListMCPServersResponseSchema,
+  MCP_CATALOG_ENDPOINTS_PATH,
   MCP_OAUTH_CALLBACK_PATH,
   MCP_SERVER_BY_ID_TEMPLATE,
   MCP_SERVERS_PATH,
+  MCPCatalogEndpointsResponseSchema,
   MCPProbeResponseSchema,
   MCPServerDetailSchema,
   MCPServerSchema,
@@ -70,6 +73,16 @@ export function registerMcpServerRoutes(
   const { authorization, flows, servers } = options;
 
   // ------------------------------------------------------------ Account pool
+
+  /*
+   * The catalog endpoints this deployment replaces. The Web App reads it before it creates a Server
+   * from a catalog card, so a provider whose deployment client needs another endpoint gets that one.
+   * Only the catalog ID and the endpoint are returned, never client material.
+   */
+  app.get(MCP_CATALOG_ENDPOINTS_PATH, { preHandler }, async (_request, reply) => {
+    const response = MCPCatalogEndpointsResponseSchema.parse({ endpoints: flows.catalogEndpoints() });
+    return reply.header("Cache-Control", "no-store").code(200).send(response);
+  });
 
   app.get(MCP_SERVERS_PATH, { preHandler }, async (request, reply) => {
     const response = ListMCPServersResponseSchema.parse({
@@ -161,8 +174,16 @@ export function registerMcpServerRoutes(
   app.delete(AGENT_MCP_AUTHORIZATION_TEMPLATE, { preHandler }, async (request, reply) => {
     const { agentId, mcpServerId } = parseRequest(AgentServerParamsSchema, request.params);
     const userId = authenticatedUserId(request);
-    await authorization.revoke(userId, agentId, mcpServerId);
-    return reply.code(200).send(await servers.readAgentServer(userId, agentId, mcpServerId));
+    const cancellation =
+      request.body === undefined ? undefined : parseRequest(CancelMCPOAuthRequestSchema, request.body);
+    if (cancellation) await authorization.revoke(userId, agentId, mcpServerId, cancellation.expectedOAuthState);
+    else await authorization.revoke(userId, agentId, mcpServerId);
+    const current = await servers.readAgentServer(userId, agentId, mcpServerId);
+    if (cancellation && current.authorization?.status === "active" && current.authorization.hasCredential)
+      void authorization.probe(userId, agentId, mcpServerId).catch(() => {
+        request.log.warn({ agentId, mcpServerId }, "MCP tools could not be refreshed after cancelling reauthorization");
+      });
+    return reply.code(200).send(current);
   });
 
   app.post(AGENT_MCP_AUTHORIZATION_OAUTH_TEMPLATE, { preHandler }, async (request, reply) => {

@@ -30,5 +30,13 @@
   "account_retry_refresh": "Retry refresh",
   "account_save_profile": "Save account profile",
   "account_saving": "Saving…",
+  "account_slack_provision_code": "One-time operation code",
+  "account_slack_provision_copied": "Copied. Paste it into the Agent conversation. Valid for {minutes} minutes.",
+  "account_slack_provision_description": "Generate a one-time code for this operation and paste it into the Agent conversation. This code cannot sign in to your Account. The new Agent uses the current Computer, the source Agent Runtime Provider and their default execution policy and time limit.",
+  "account_slack_provision_error": "Unable to generate a code. Try again.",
+  "account_slack_provision_generate": "Generate and copy code",
+  "account_slack_provision_generating": "Generating…",
+  "account_slack_provision_manual": "Copy the code below and paste it into the Agent conversation. Valid for {minutes} minutes.",
+  "account_slack_provision_title": "Create an Agent with its own {provider} App",
   "account_unsaved_changes": "Unsaved changes"
 }

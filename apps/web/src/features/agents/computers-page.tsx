@@ -92,25 +92,24 @@ function ComputerContent({
   onConnected: () => void;
 }) {
   const navigate = useNavigate();
-  const [connecting, setConnecting] = useState(false);
+  const [connectionBaseline, setConnectionBaseline] = useState<readonly string[] | null>(null);
+  const connecting = connectionBaseline !== null;
+  // A newly redeemed, still-offline Computer belongs to the active create attempt. Do not mount
+  // its recovery card until that attempt confirms it online, or it would issue an extra repair.
+  const visibleComputers = connectionBaseline
+    ? computers.filter((computer) => connectionBaseline.includes(computer.computerId))
+    : computers;
   // Redemption can populate inventory before the daemon starts. Keep the exact attempt mounted
   // until it confirms online, so this intermediate state never offers a second connection attempt.
   const finishConnection = () => {
-    setConnecting(false);
+    setConnectionBaseline(null);
     onConnected();
   };
-  if (connecting)
-    return <FirstComputer connecting onStart={() => setConnecting(true)} onConnected={finishConnection} />;
-  if (computers.length === 0)
-    return computerId ? (
-      <ComputerMissing />
-    ) : confirmed ? (
-      <FirstComputer connecting={false} onStart={() => setConnecting(true)} onConnected={finishConnection} />
-    ) : null;
+  if (computers.length === 0 && computerId && !connecting) return <ComputerMissing />;
   return (
     <div className="grid min-w-0 gap-4">
       {computerId && !computers.some((computer) => computer.computerId === computerId) ? <ComputerMissing /> : null}
-      {computers.map((computer) => (
+      {visibleComputers.map((computer) => (
         <ComputerManagement
           computer={computer}
           confirmed={confirmed}
@@ -121,27 +120,43 @@ function ComputerContent({
           onDeleted={() => void navigate(accountComputerLink(undefined, fromAgent))}
         />
       ))}
+      {confirmed || connecting ? (
+        <ComputerConnection
+          additional={(connectionBaseline ?? computers).length > 0}
+          connecting={connecting}
+          onStart={() => setConnectionBaseline(computers.map((computer) => computer.computerId))}
+          onConnected={finishConnection}
+        />
+      ) : null}
     </div>
   );
 }
 
-function FirstComputer({
+function ComputerConnection({
+  additional,
   connecting,
   onStart,
   onConnected,
 }: {
+  additional: boolean;
   connecting: boolean;
   onStart: () => void;
   onConnected: () => void;
 }) {
+  if (additional && !connecting)
+    return (
+      <Button className="w-fit" onClick={onStart}>
+        {m.computer_connect_another_action()}
+      </Button>
+    );
   return (
-    <section aria-labelledby="first-computer-heading" className="grid gap-6 ui-surface bg-kumo-base p-6">
+    <section aria-labelledby="connect-computer-heading" className="grid gap-6 ui-surface bg-kumo-base p-6">
       <div className="grid gap-3">
         <span aria-hidden="true" className="grid size-12 place-items-center rounded-lg bg-kumo-tint">
           <Icon name="laptop" className="size-6" />
         </span>
-        <Text as="h2" id="first-computer-heading" variant="heading">
-          {m.computer_first_heading()}
+        <Text as="h2" id="connect-computer-heading" variant="heading">
+          {additional ? m.computer_connect_another_action() : m.computer_first_heading()}
         </Text>
         <p className="max-w-prose text-sm text-kumo-subtle">{m.computer_first_description()}</p>
       </div>

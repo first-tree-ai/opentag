@@ -1,9 +1,9 @@
-import type { GitHubRepositoryBinding } from "@opentag/shared";
 import { and, asc, eq, inArray, isNotNull, lte, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { githubConnections } from "../../db/schema/index.js";
 import { boundedGitHubErrorCode } from "./errors.js";
 import type { GitHubConnectionRow } from "./rows.js";
+import { gitHubConnectionColumns } from "./rows.js";
 import { GITHUB_RECHECK_INTERVAL_MS, GITHUB_RECHECK_RETRY_DELAY_MS, githubWorkerBatchLimit } from "./timing.js";
 
 /** The fencing snapshot a recheck worker captures before any external GitHub call. */
@@ -23,7 +23,6 @@ export interface GitHubActiveConnectionSnapshot {
   githubHost: string;
   appId: string;
   githubUserId: string;
-  bindings: GitHubRepositoryBinding[];
   authorizationVersion: bigint;
   recheckGeneration: bigint;
   credentialGeneration: bigint;
@@ -36,10 +35,9 @@ export type GitHubRecheckOutcome =
   | { kind: "healthy" }
   | { kind: "transient_failure"; errorCode: string }
   /**
-   * The credential still authenticates, but live admission no longer covers the current bindings
-   * (scope reduction, removed repository or installation). The authorization version bumps so
-   * previously issued runtime access dies, the row stays active for reconfiguration, and the
-   * recheck stays required until a bindings update re-proves admission.
+   * The credential still authenticates, but a verified permission invalidation advances the
+   * authorization version. Connection health is rechecked independently; each target operation
+   * must always prove current user/App access.
    */
   | { kind: "permission_revoked"; errorCode: string }
   | { kind: "unauthorized"; errorCode: string };
@@ -57,12 +55,14 @@ export type GitHubRecheckCommitResult =
 export class GitHubConnectionRecheckStore {
   private readonly now: () => Date;
   private readonly recheckIntervalMs: number;
+  private readonly appId: string | undefined;
   private readonly retryDelayMs: number;
 
   constructor(
     private readonly database: DatabaseClient,
-    options: { now?: () => Date; recheckIntervalMs?: number; retryDelayMs?: number } = {},
+    options: { appId?: string; now?: () => Date; recheckIntervalMs?: number; retryDelayMs?: number } = {},
   ) {
+    this.appId = options.appId;
     this.now = options.now ?? (() => new Date());
     this.recheckIntervalMs = options.recheckIntervalMs ?? GITHUB_RECHECK_INTERVAL_MS;
     this.retryDelayMs = options.retryDelayMs ?? GITHUB_RECHECK_RETRY_DELAY_MS;
@@ -71,7 +71,7 @@ export class GitHubConnectionRecheckStore {
   async listDueForRecheck(input: { limit: number }): Promise<GitHubRecheckDueConnection[]> {
     const now = this.now();
     const rows = await this.database
-      .select()
+      .select(gitHubConnectionColumns())
       .from(githubConnections)
       .where(and(eq(githubConnections.status, "active"), lte(githubConnections.nextRecheckAt, now)))
       .orderBy(asc(githubConnections.nextRecheckAt))
@@ -126,16 +126,13 @@ export class GitHubConnectionRecheckStore {
     return updated.length;
   }
 
-  /** Active connections whose current bindings reference one installation; bounded, IDs only. */
-  async listActiveConnectionIdsByInstallation(installationId: string): Promise<string[]> {
+  /** Connections of this deployment App are invalidated conservatively; no installation directory is stored. */
+  async listActiveConnectionIdsByInstallation(_installationId: string): Promise<string[]> {
     const rows = await this.database
       .select({ id: githubConnections.id })
       .from(githubConnections)
       .where(
-        and(
-          eq(githubConnections.status, "active"),
-          sql`${githubConnections.repositoryBindings} @> ${JSON.stringify([{ installationId }])}::jsonb`,
-        ),
+        and(eq(githubConnections.status, "active"), this.appId ? eq(githubConnections.appId, this.appId) : undefined),
       )
       .orderBy(asc(githubConnections.id))
       .limit(1000);
@@ -190,13 +187,12 @@ export class GitHubConnectionRecheckStore {
   }
 
   /**
-   * The full active snapshot a recheck worker needs after the due scan: bindings to re-verify and
-   * the sealed credential to verify with. Fencing versions travel with it so a commit can only
+   * The active identity and sealed credential a recheck worker needs after the due scan. Fencing versions travel with it so a commit can only
    * land on the exact row state the scan observed. Never logged.
    */
   async getActiveRecheckSnapshot(connectionId: string): Promise<GitHubActiveConnectionSnapshot | null> {
     const [row] = await this.database
-      .select()
+      .select(gitHubConnectionColumns())
       .from(githubConnections)
       .where(and(eq(githubConnections.id, connectionId), eq(githubConnections.status, "active")))
       .limit(1);
@@ -216,7 +212,6 @@ export class GitHubConnectionRecheckStore {
       githubHost: row.githubHost,
       appId: row.appId,
       githubUserId: row.githubUserId,
-      bindings: row.repositoryBindings,
       authorizationVersion: row.authorizationVersion,
       recheckGeneration: row.recheckGeneration,
       credentialGeneration: row.credentialGeneration,
@@ -292,7 +287,7 @@ export class GitHubConnectionRecheckStore {
     }
     if (outcome.kind === "permission_revoked") {
       // The credential is still valid and stays; issued runtime access dies with the version bump,
-      // and the required recheck keeps the row dirty until a bindings update re-proves admission.
+      // and the required connection recheck will refresh credential health.
       return {
         authorizationVersion: sql`${githubConnections.authorizationVersion} + 1`,
         nextRecheckAt: new Date(now.getTime() + this.retryDelayMs),

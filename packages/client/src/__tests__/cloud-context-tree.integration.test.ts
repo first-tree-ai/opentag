@@ -150,7 +150,8 @@ exec /usr/bin/git "$@"
     GIT_AUTHOR_NAME: "OpenTag Test",
     GIT_COMMITTER_EMAIL: "opentag-test@localhost",
     GIT_COMMITTER_NAME: "OpenTag Test",
-    OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: "acme/memory", role: "context_tree" }]),
+    GH_TOKEN: "execution-local-handle",
+    OPENTAG_PROVIDER_PROXY_URL: "http://127.0.0.1:1234",
     // Execution-scoped material must reach CLI children but never the saved workspace.
     OPENTAG_TEST_EXECUTION_SECRET: "execution-secret-0123456789abcdef",
     PATH: path,

@@ -41,10 +41,7 @@ publication deduplication remains keyed by normalized repository identity. Durab
 prevents a lost response from causing a second publication. Uncertain publication requires resolution
 rather than an automatic retry.
 
-Cloud settings verify the requested repository's exact current `context_tree` binding, admission,
-branch, and live Tree head. They recheck the same binding and authorization/credential versions
-before committing. Multiple Context Tree grants are allowed; each Agent/repository/role grant is
-still unique, including across connections. Existing branch and publication policy remains authoritative.
+Local and Cloud connect settings verify the requested repository on the Server using the Account's current GitHub connection, live per-target admission, the repository default branch, and the pinned Tree verifier. They recheck connection/credential versions before committing. No Agent repository binding is consulted. The alias/repository selection is working-purpose configuration, not a GitHub allowlist. Local preparation and Cloud execution use only their execution-local proxy environment and never fall back to host GitHub credentials.
 
 ## Local preparation
 

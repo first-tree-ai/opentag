@@ -40,7 +40,7 @@ const CLOUD_MODEL_CATALOG_MAX_RESPONSE_BYTES = 256 * 1024;
  * preference only — never an allowlist entry: every choice still comes from the validated Router
  * list, and explicit per-Agent model selections are unaffected.
  */
-const CLOUD_MODEL_PREFERRED_DEFAULT_MODEL = "gemini-3.8-flash";
+const CLOUD_MODEL_PREFERRED_DEFAULT_MODEL = "gemini-4-argon";
 
 /**
  * Put the preferred model first while retaining the relative order of every other model. The

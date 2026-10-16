@@ -9,8 +9,7 @@ export type GitHubInstallationTokenErrorCode =
   | "GITHUB_API_RESPONSE_INVALID"
   | "GITHUB_API_HTTP_ERROR"
   | "GITHUB_API_RATE_LIMITED"
-  | "GITHUB_APP_AUTH_FAILED"
-  | "GITHUB_TOKEN_VALIDATION_FAILED";
+  | "GITHUB_APP_AUTH_FAILED";
 
 export class GitHubInstallationTokenError extends Error {
   readonly code: GitHubInstallationTokenErrorCode;
@@ -29,27 +28,6 @@ export class GitHubInstallationTokenError extends Error {
     this.retryAfterSeconds = options.retryAfterSeconds;
   }
 }
-
-export type GitHubInstallationPermissionLevel = "read" | "write";
-
-export type GitHubInstallationTokenPermissions = {
-  contents: GitHubInstallationPermissionLevel;
-  pull_requests?: GitHubInstallationPermissionLevel;
-  checks?: "read";
-  actions?: "read";
-};
-
-export type MintGitHubInstallationTokenInput = {
-  installationId: string;
-  repositoryId: string;
-  permissions: GitHubInstallationTokenPermissions;
-  signal?: AbortSignal;
-};
-
-export type MintedGitHubInstallationToken = {
-  token: string;
-  expiresAt: Date;
-};
 
 export type GitHubInstallationTokenClientOptions = {
   appId: string;

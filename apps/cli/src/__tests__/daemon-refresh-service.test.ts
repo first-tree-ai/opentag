@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -104,9 +104,25 @@ describe("systemd refreshDefinition", () => {
     );
     expect(restarts).toHaveLength(0);
 
-    // An up-to-date unit is left alone: no rewrite, no reload.
+    const withToken = rewritten.replace(
+      "[Install]",
+      'Environment="CLAUDE_CODE_OAUTH_TOKEN=synthetic-token"\n\n[Install]',
+    );
+    await writeFile(unitPath, withToken);
+    const refreshed = await backend.refreshDefinition();
+    expect(refreshed.drifted).toBe(false);
+    expect((await stat(unitPath)).mode & 0o777).toBe(0o600);
+    expect(await readFile(unitPath, "utf8")).toContain("CLAUDE_CODE_OAUTH_TOKEN=synthetic-token");
+    await backend.installAndStart();
+    expect(await readFile(unitPath, "utf8")).toContain("CLAUDE_CODE_OAUTH_TOKEN=synthetic-token");
+
+    // An unchanged legacy definition still needs private permissions, without a reload.
     runner.run.mockClear();
+    const stable = await readFile(unitPath, "utf8");
+    await chmod(unitPath, 0o644);
     await backend.refreshDefinition();
+    expect((await stat(unitPath)).mode & 0o777).toBe(0o600);
+    expect(await readFile(unitPath, "utf8")).toBe(stable);
     expect(runner.run.mock.calls.filter(([, args]) => args.includes("daemon-reload"))).toHaveLength(0);
   });
 });
@@ -116,9 +132,19 @@ describe("launchd refreshDefinition", () => {
     const userHome = await tempDir("opentag-launchd-refresh-user-");
     const home = await tempDir("opentag-launchd-refresh-home-");
     const invocation = { args: [], program: "/Users/test/.local/bin/opentag-staging" };
+    let loaded = true;
     const runner = fakeRunner((_, args) => {
-      if (args[0] === "print" && args[1] === "gui/1000") return result(0, "domain", "");
-      if (args[0] === "print") return result(0, "pid = 4242\nstate = running\n", "");
+      switch (args[0]) {
+        case "bootout":
+          loaded = false;
+          break;
+        case "bootstrap":
+          loaded = true;
+          break;
+        case "print":
+          if (args[1] === "gui/1000") return result(0, "domain", "");
+          return loaded ? result(0, "pid = 4242\nstate = running\n", "") : result(113, "", "Could not find service");
+      }
       return result(0, "", "");
     });
     const backend = createLaunchdBackend({
@@ -145,9 +171,25 @@ describe("launchd refreshDefinition", () => {
     );
     expect(supervisorMutations).toHaveLength(0);
 
-    // Up-to-date definition files are left alone.
+    const withToken = (await readFile(plistPath, "utf8")).replace(
+      "<key>PATH</key>",
+      "<key>CLAUDE_CODE_OAUTH_TOKEN</key><string>synthetic-token</string>\n    <key>PATH</key>",
+    );
+    await writeFile(plistPath, withToken);
+    const refreshed = await backend.refreshDefinition();
+    expect(refreshed.drifted).toBe(false);
+    expect((await stat(plistPath)).mode & 0o777).toBe(0o600);
+    expect(await readFile(plistPath, "utf8")).toContain("<string>synthetic-token</string>");
+    await backend.installAndStart();
+    expect(await readFile(plistPath, "utf8")).toContain("<string>synthetic-token</string>");
+
+    // Preserve an unchanged credential-bearing plist while migrating its old public mode.
     runner.run.mockClear();
+    const stable = await readFile(plistPath, "utf8");
+    await chmod(plistPath, 0o644);
     await backend.refreshDefinition();
+    expect((await stat(plistPath)).mode & 0o777).toBe(0o600);
+    expect(await readFile(plistPath, "utf8")).toBe(stable);
     expect(runner.run.mock.calls.filter(([, args]) => ["bootout", "bootstrap"].includes(String(args[0])))).toHaveLength(
       0,
     );

@@ -29,6 +29,7 @@ import { CloudCapacityExceededError } from "../services/sandboxes/errors.js";
 import { loadSandboxRecordBySessionId } from "../services/sandboxes/owned-sandbox.js";
 import { ImDeliveryInputError, validateFreshImRequest } from "./im-delivery-content.js";
 import type { DeliveryOccupancySubject } from "./im-delivery-custody.js";
+import { cappedRetryDelayMs } from "./im-delivery-retry.js";
 import type { CloudSessionAllocationPort } from "./im-delivery-worker.types.js";
 
 /**
@@ -575,11 +576,9 @@ export function cloudDispatchFailureCode(error: CloudDeliveryDispatchError): str
 
 /**
  * Transient dispatch failures (Runner not ready yet, model grant temporarily unavailable) retry
- * with a capped exponential backoff derived from the existing `attemptCount`. Local deliveries
- * keep their unchanged fixed retry: only these Cloud codes pass a delay to `recordFailure`.
+ * with the capped exponential backoff in `cappedRetryDelayMs`. Other Cloud failures keep the
+ * fixed retry: only these codes pass a delay to `recordFailure`.
  */
-const CLOUD_RETRY_BASE_DELAY_MS = 2_000;
-const CLOUD_RETRY_MAX_DELAY_MS = 30_000;
 
 /** The Cloud failures that back off instead of retrying on the fixed cadence. */
 const TRANSIENT_CLOUD_DISPATCH_CODES = new Set([
@@ -587,11 +586,7 @@ const TRANSIENT_CLOUD_DISPATCH_CODES = new Set([
   "IM_DELIVERY_CLOUD_MODEL_UNAVAILABLE",
 ]);
 
-/** `attemptCount` is the post-claim attempt number: 1 -> 2 s, 2 -> 4 s, … capped at 30 s. */
-export function cloudDispatchRetryDelayMs(attemptCount: number): number {
-  const exponent = Math.min(Math.max(0, Math.trunc(attemptCount) - 1), 20);
-  return Math.min(CLOUD_RETRY_BASE_DELAY_MS * 2 ** exponent, CLOUD_RETRY_MAX_DELAY_MS);
-}
+export const cloudDispatchRetryDelayMs = cappedRetryDelayMs;
 
 export type PersistedDeliveryRequest =
   | { status: "absent" }

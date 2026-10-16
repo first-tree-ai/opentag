@@ -11,6 +11,7 @@ async function openAdvanced() {
   wrap(<McpPage agentId={AGENT_ID} />);
   await openDetails();
   click("Advanced settings");
+  await screen.findByRole("radio", { name: "Account sign-in" });
 }
 
 describe("MCP advanced settings by authentication method", () => {
@@ -21,11 +22,11 @@ describe("MCP advanced settings by authentication method", () => {
       const update = vi.spyOn(browserApi, "updateAgentMcpServer").mockResolvedValue(entry());
       await openAdvanced();
       expect(Boolean(screen.queryByLabelText("Auth header"))).toBe(kind === "bearer");
-      expect(Boolean(screen.queryByLabelText("Token prefix"))).toBe(kind === "bearer");
-      expect(Boolean(screen.queryByText("API key / token"))).toBe(kind === "bearer");
+      expect(Boolean(screen.queryByLabelText("Prefix"))).toBe(kind === "bearer");
+
       fireEvent.change(screen.getByLabelText("Header name"), { target: { value: "X-Tenant-ID" } });
       fireEvent.change(screen.getByLabelText("Header value"), { target: { value: "tenant-example" } });
-      click("Save changes");
+      click("Save");
       await waitFor(() =>
         expect(update).toHaveBeenCalledWith(AGENT_ID, SERVER_ID, { extraHeaders: { "x-tenant-id": "tenant-example" } }),
       );
@@ -37,13 +38,13 @@ describe("MCP advanced settings by authentication method", () => {
     stub([entry({ authorization: null })], { ...defaults, server: { ...defaults.server, defaultAuthKind: kind } });
     await openAdvanced();
     await waitFor(() => expect(Boolean(screen.queryByLabelText("Auth header"))).toBe(kind === "bearer"));
-    expect(Boolean(screen.queryByLabelText("Token prefix"))).toBe(kind === "bearer");
-    expect(screen.queryByRole("radio")).toBeNull();
+    expect(Boolean(screen.queryByLabelText("Prefix"))).toBe(kind === "bearer");
+    expect(screen.getAllByRole("radio")).toHaveLength(3);
   });
 
   it.each([
-    ["oauth", "x-api-key", true],
-    ["oauth", "authorization", false],
+    ["oauth", "x-api-key", false],
+    ["oauth", "authorization", true],
     ["bearer", "x-api-key", true],
     ["none", "authorization", false],
   ] as const)("validates %s extra header %s against the configured auth header", async (kind, header, invalid) => {
@@ -55,7 +56,7 @@ describe("MCP advanced settings by authentication method", () => {
     ]);
     await openAdvanced();
     fireEvent.change(screen.getByLabelText("Header name"), { target: { value: header } });
-    expect(screen.getByRole("button", { name: "Save changes" }).hasAttribute("disabled")).toBe(invalid);
+    expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(invalid);
     expect(Boolean(screen.queryByText(/Check the header names and values/))).toBe(invalid);
   });
 
@@ -73,22 +74,19 @@ describe("MCP advanced settings by authentication method", () => {
     const update = vi.spyOn(browserApi, "updateAgentMcpServer");
     await openAdvanced();
     expect((screen.getByLabelText("Auth header") as HTMLInputElement).value).toBe("x-api-key");
-    click("Authentication");
     fireEvent.click(screen.getByRole("radio", { name: "No authentication" }));
-    click("Continue");
-    await screen.findByLabelText("Connector address");
-    expect(screen.queryByLabelText("Auth header")).toBeNull();
-    expect(screen.queryByLabelText("Token prefix")).toBeNull();
+    click("Save");
+    await waitFor(() => expect(screen.queryByLabelText("Auth header")).toBeNull());
+    await waitFor(() => expect(screen.queryByLabelText("Prefix")).toBeNull());
     expect(update).not.toHaveBeenCalled();
-    click("Authentication");
     fireEvent.click(screen.getByRole("radio", { name: "API key or token" }));
     fireEvent.change(screen.getByLabelText("API key or token", { selector: 'input[type="password"]' }), {
       target: { value: "example-key" },
     });
-    click("Save credentials");
-    await screen.findByLabelText("Connector address");
+    click("Save");
+    await screen.findByRole("button", { name: "Update" });
     expect((screen.getByLabelText("Auth header") as HTMLInputElement).value).toBe("x-api-key");
-    expect((screen.getByLabelText("Token prefix") as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("Prefix") as HTMLInputElement).value).toBe("");
     expect(update).not.toHaveBeenCalled();
   });
 
@@ -97,6 +95,6 @@ describe("MCP advanced settings by authentication method", () => {
     await openAdvanced();
     expect(screen.queryByRole("button", { name: "Edit account defaults" })).toBeNull();
     expect(screen.queryByRole("button", { name: /Use account default/ })).toBeNull();
-    expect(screen.queryByRole("radio")).toBeNull();
+    expect(screen.getAllByRole("radio")).toHaveLength(3);
   });
 });

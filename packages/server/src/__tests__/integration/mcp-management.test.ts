@@ -1875,7 +1875,11 @@ describe("Agent-level overrides", () => {
         .select()
         .from(mcpServerAuthorizations)
         .where(eq(mcpServerAuthorizations.id, row?.id as string));
-      expect(after).toMatchObject({ status: "active", oauthResource: origin, refreshGeneration: 1 });
+      expect(after).toMatchObject({
+        status: "active",
+        oauthResource: origin,
+        refreshGeneration: (row?.refreshGeneration ?? 0) + 1,
+      });
     } finally {
       await fixture.stop();
     }

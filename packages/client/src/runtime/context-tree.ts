@@ -393,10 +393,7 @@ export class ContextTreeManager {
       this.#cache.delete(cwd);
     }
     // Current authority is part of in-flight identity too: revoked grants cannot reuse work.
-    const identity = JSON.stringify([
-      target,
-      this.#managedCredentials ? (environment?.OPENTAG_GITHUB_REPOSITORIES ?? null) : null,
-    ]);
+    const identity = JSON.stringify([target, this.#managedCredentials ? (environment?.GH_TOKEN ?? null) : null]);
     let active = this.#inFlight.get(cwd);
     if (active?.target !== identity) {
       const results = this.#initialResults(cwd, connections, environment);
@@ -560,12 +557,12 @@ export class ContextTreeManager {
   }
 
   #managedFailure(
-    repository: string,
+    _repository: string,
     environment: Readonly<Record<string, string | undefined>> | undefined,
   ): string | undefined {
     if (!this.#managedCredentials) return undefined;
     if (!environment) return "AUTHENTICATION_REQUIRED";
-    return managedRepositoryAllowed(environment, repository) ? undefined : "GITHUB_PERMISSION";
+    return hasManagedGitHubTransport(environment) ? undefined : "GITHUB_PERMISSION";
   }
 
   async #connect(
@@ -689,29 +686,12 @@ export function mergeContextTreeEnvironment(
   return merged;
 }
 
-/**
- * True when the execution-local GitHub metadata grants this repository. Managed Context Tree
- * preparation must never reach a repository outside the current execution's granted set; this is
- * a consistency pre-check only, and the GitHub proxy still revalidates the exact target on every
- * request.
- */
-export function managedRepositoryAllowed(
-  environment: Readonly<Record<string, string | undefined>>,
-  repository: string,
-): boolean {
-  const raw = environment.OPENTAG_GITHUB_REPOSITORIES;
-  if (typeof raw !== "string" || raw.length === 0) return false;
-  let entries: unknown;
-  try {
-    entries = JSON.parse(raw);
-  } catch {
-    return false;
-  }
-  if (!Array.isArray(entries)) return false;
-  const wanted = repository.toLowerCase();
-  return entries.some((entry) => {
-    if (!entry || typeof entry !== "object") return false;
-    const { fullName, role } = entry as { fullName?: unknown; role?: unknown };
-    return role === "context_tree" && typeof fullName === "string" && fullName.toLowerCase() === wanted;
-  });
+/** Managed transports need execution-local routing, never an Agent repository allowlist. */
+export function hasManagedGitHubTransport(environment: Readonly<Record<string, string | undefined>>): boolean {
+  return (
+    typeof environment.GH_TOKEN === "string" &&
+    environment.GH_TOKEN.length > 0 &&
+    typeof environment.OPENTAG_PROVIDER_PROXY_URL === "string" &&
+    environment.OPENTAG_PROVIDER_PROXY_URL.length > 0
+  );
 }

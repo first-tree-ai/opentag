@@ -1,5 +1,5 @@
 import { chmod, mkdir, readdir, readFile, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { RuntimeImOutboxContext } from "@opentag/shared";
 import { assertWithin, ensurePrivateDirectory, writeDurableFile } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
@@ -35,6 +35,7 @@ export interface RuntimeProxyExecutionLayout {
 
 export interface RuntimeProxyEnvironmentInput {
   readonly adapterCaCertPath: string;
+  readonly executionId?: string;
   readonly cliMetadata: (provider: RuntimeProxyProvider) => RuntimeProxyCliMetadata | undefined;
   readonly connectProxyUrl: string;
   readonly handles: ReadonlyMap<RuntimeProxyProvider, string>;
@@ -65,9 +66,21 @@ export function buildRuntimeProxyEnvironment(input: RuntimeProxyEnvironmentInput
   const environment: Record<string, string | undefined> = {
     // Scrub ambient platform credentials and agent-forwarding from CLI subprocesses.
     OPENTAG_GITHUB_REPOSITORIES: undefined,
+    OPENTAG_EXECUTION_ID: input.executionId,
+    GH_HOST: undefined,
     GH_ENTERPRISE_TOKEN: undefined,
     GITHUB_ENTERPRISE_TOKEN: undefined,
     GITHUB_TOKEN: undefined,
+    GH_TOKEN: undefined,
+    GH_CONFIG_DIR: join(input.layout.executionDir, "gh-config"),
+    GIT_CONFIG_PARAMETERS: undefined,
+    GIT_ASKPASS: undefined,
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "credential.helper",
+    GIT_CONFIG_VALUE_0: "",
+    GIT_CONFIG_GLOBAL: input.layout.gitConfigPath,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_TERMINAL_PROMPT: "0",
     GIT_SSH: undefined,
     GIT_SSH_COMMAND: undefined,
     SSH_AGENT_PID: undefined,
@@ -75,11 +88,9 @@ export function buildRuntimeProxyEnvironment(input: RuntimeProxyEnvironmentInput
   };
   const github = input.handles.get("github");
   if (github !== undefined) {
-    const cli = input.cliMetadata("github");
-    const repositories = cli?.provider === "github" ? cli.repositories : [];
     Object.assign(environment, {
+      GH_HOST: "github.com",
       GH_TOKEN: github,
-      OPENTAG_GITHUB_REPOSITORIES: JSON.stringify(repositories),
       GH_PROMPT_DISABLED: "1",
       GIT_CONFIG_COUNT: "2",
       GIT_CONFIG_KEY_0: "credential.helper",
@@ -119,14 +130,12 @@ export function buildRuntimeProxyEnvironment(input: RuntimeProxyEnvironmentInput
       SLACK_USER_TOKEN: undefined,
     } satisfies Record<string, string | undefined>);
   }
-  if (github !== undefined || slack !== undefined) {
-    // GitHub Git/gh and the Slack CLI (including its fixed-origin file handles) reach the
-    // execution adapter through these two scoped inputs. Nothing else reads them.
-    Object.assign(environment, {
-      [RUNTIME_PROXY_PROVIDER_URL_KEY]: input.connectProxyUrl,
-      [RUNTIME_PROXY_PROVIDER_CA_KEY]: input.adapterCaCertPath,
-    } satisfies Record<string, string>);
-  }
+  // GitHub Git/gh and the Slack CLI (including its fixed-origin file handles) reach the
+  // execution adapter through these two scoped inputs. Nothing else reads them.
+  Object.assign(environment, {
+    [RUNTIME_PROXY_PROVIDER_URL_KEY]: input.connectProxyUrl,
+    [RUNTIME_PROXY_PROVIDER_CA_KEY]: input.adapterCaCertPath,
+  } satisfies Record<string, string>);
   return environment;
 }
 
@@ -160,21 +169,23 @@ export function providerRoutingEnvironment(
 export function renderRuntimeProxyGitConfig(input: {
   readonly caCertPath: string;
   readonly connectProxyUrl: string;
+  readonly privateGitProxyUrl?: string;
 }): string {
   return `[http]
 \tproxy = ${quoteGitConfigValue("")}
 [http "https://github.com"]
 \tproxy = ${quoteGitConfigValue(input.connectProxyUrl)}
 \tsslCAInfo = ${quoteGitConfigValue(input.caCertPath)}
-`;
+\tsslCAPath = ${quoteGitConfigValue(dirname(input.caCertPath))}
+${input.privateGitProxyUrl ? `[http "http://github.com"]\n\tproxy = ${quoteGitConfigValue(input.privateGitProxyUrl)}\n` : ""}`;
 }
 
 function quoteGitConfigValue(value: string): string {
   return /[\s#"';]/.test(value) ? `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"` : value;
 }
 
-export function renderRuntimeProxyGitCredentialHelper(handle: string): string {
-  // The helper answers only the github.com HTTPS credential query with the local handle.
+export function renderRuntimeProxyGitCredentialHelper(handle: string, privateHttp = false): string {
+  // HTTPS is the default. Local publication also permits HTTP through its private GitHub-only Unix channel.
   return `#!/bin/sh
 ${RUNTIME_PROXY_GIT_HELPER_MARKER}
 # OpenTag execution-local Git credential helper; do not edit.
@@ -189,7 +200,7 @@ while IFS= read -r line; do
   esac
   [ -n "$host" ] && [ -n "$protocol" ] && break
 done
-if [ "$host" = "github.com" ] && [ "$protocol" = "https" ]; then
+if [ "$host" = "github.com" ] && ${privateHttp ? '{ [ "$protocol" = "https" ] || [ "$protocol" = "http" ]; }' : '[ "$protocol" = "https" ]'}; then
   printf 'username=x-access-token\\npassword=%s\\n' '${handle.replaceAll("'", "'\"'\"'")}'
 fi
 exit 0
@@ -222,8 +233,22 @@ if [ ! -r '${environmentFilePath.replaceAll("'", "'\"'\"'")}' ]; then
   exit 1
 fi
 . '${environmentFilePath.replaceAll("'", "'\"'\"'")}'
-exec "$real_binary" "$@"
+${
+  binary === "gh"
+    ? `if [ -n "$OPENTAG_GH_CACHE_HOME" ]; then
+  XDG_CACHE_HOME=$OPENTAG_GH_CACHE_HOME
+  export XDG_CACHE_HOME
+fi
+`
+    : ""
+}${binary === "git" ? renderRuntimeProxyGitPreamble() : ""}exec "$real_binary" "$@"
 `;
+}
+
+/** Native gh migrates unversioned config at startup, even for `--version`. Pre-migrate
+ * generated configuration so sandboxed CLIs never need to write execution material. */
+export function renderRuntimeProxyGhConfig(githubApiSocketPath?: string): string {
+  return `version: "1"\n${githubApiSocketPath ? `http_unix_socket: ${JSON.stringify(githubApiSocketPath)}\n` : ""}`;
 }
 
 /**
@@ -240,6 +265,40 @@ export function renderRuntimeProxyScopePreamble(): string {
   CURL_CA_BUNDLE=$OPENTAG_PROVIDER_CA_PATH
   export HTTPS_PROXY https_proxy NO_PROXY no_proxy SSL_CERT_FILE CURL_CA_BUNDLE
 fi`;
+}
+
+/** Keep injected CA settings for other origins; older Git retains the authenticated CONNECT route. */
+function renderRuntimeProxyGitPreamble(): string {
+  return `# Generic config preserves caller trust while GitHub's more specific execution CA wins.
+if [ "\${GIT_SSL_CAINFO+x}" = x ]; then
+  set -- -c "http.sslCAInfo=$GIT_SSL_CAINFO" "$@"
+fi
+if [ "\${GIT_SSL_CAPATH+x}" = x ]; then
+  set -- -c "http.sslCAPath=$GIT_SSL_CAPATH" "$@"
+fi
+unset GIT_SSL_CAINFO GIT_SSL_CAPATH
+if [ -r "$GIT_CONFIG_GLOBAL" ] && grep -q 'socks5h://localhost/' "$GIT_CONFIG_GLOBAL"; then
+  git_version=$("$real_binary" --version) || exit 1
+  git_version=\${git_version#git version }
+  git_major=\${git_version%%.*}
+  git_rest=\${git_version#*.}
+  git_minor=\${git_rest%%.*}
+  case "$git_major:$git_minor" in
+    :*|*:|*[!0-9:]*) echo "opentag: cannot verify native Git Unix proxy support" >&2; exit 1 ;;
+  esac
+  if [ "$git_major" -lt 2 ] || { [ "$git_major" -eq 2 ] && [ "$git_minor" -lt 47 ]; }; then
+    if [ -z "$OPENTAG_PROVIDER_PROXY_URL" ]; then
+      echo "opentag: the execution Git CONNECT proxy is unavailable" >&2
+      exit 1
+    fi
+    # Older Git drops SOCKS paths: retain HTTPS CONNECT without granting any sandbox TCP.
+    set -- -c "http.http://github.com.proxy=$OPENTAG_PROVIDER_PROXY_URL" "$@"
+  else
+    # HTTP is confined to the private Unix channel, as with native gh. Stored remote URLs stay HTTPS.
+    set -- -c "url.http://github.com/.insteadOf=https://github.com/" "$@"
+  fi
+fi
+`;
 }
 
 /**
@@ -270,7 +329,7 @@ if [ -z "$real_binary" ]; then
   exit 127
 fi
 ${renderRuntimeProxyScopePreamble()}
-exec "$real_binary" "$@"
+${binary === "git" ? renderRuntimeProxyGitPreamble() : ""}exec "$real_binary" "$@"
 `;
 }
 
@@ -331,6 +390,8 @@ export class RuntimeProxyMaterialStore {
     readonly environment: RuntimeProxyEnvironment;
     readonly executionId: string;
     readonly handles: ReadonlyMap<RuntimeProxyProvider, string>;
+    readonly githubApiSocketPath?: string;
+    readonly githubGitSocketPath?: string;
     readonly platform: NodeJS.Platform;
     readonly sessionId: string;
   }): Promise<RuntimeProxyExecutionLayout> {
@@ -339,26 +400,55 @@ export class RuntimeProxyMaterialStore {
     await mkdir(layout.larkConfigDir, { mode: 0o700, recursive: true });
     await mkdir(layout.slackConfigDir, { mode: 0o700, recursive: true });
     const github = input.handles.get("github");
+    // gh officially supports HTTP over a Unix socket. A private execution socket avoids
+    // changing the macOS trust store (Go <=1.26 ignores SSL_CERT_FILE there). Every request
+    // still authenticates its local handle and crosses the same Server policy/Relay boundary.
+    const configDir = join(layout.executionDir, "gh-config");
+    await mkdir(configDir, { mode: 0o700, recursive: true });
+    await writeDurableFile(
+      join(configDir, "config.yml"),
+      renderRuntimeProxyGhConfig(github !== undefined ? input.githubApiSocketPath : undefined),
+      0o600,
+    );
     // Provider CLIs opened from the stable env file get the standard routing variables there; the
     // manifest stays scoped so the Agent runtime environment never turns them global.
     const routing = providerRoutingEnvironment(input.environment);
+    if (routing.HTTPS_PROXY !== undefined && routing.SSL_CERT_FILE !== undefined) {
+      await writeDurableFile(
+        layout.gitConfigPath,
+        renderRuntimeProxyGitConfig({
+          caCertPath: routing.SSL_CERT_FILE,
+          connectProxyUrl: routing.HTTPS_PROXY,
+          ...(github !== undefined && input.githubGitSocketPath
+            ? { privateGitProxyUrl: `socks5h://localhost${input.githubGitSocketPath}` }
+            : {}),
+        }),
+        0o600,
+      );
+    } else {
+      await writeDurableFile(layout.gitConfigPath, "", 0o600);
+    }
     if (github !== undefined) {
-      if (routing.HTTPS_PROXY !== undefined && routing.SSL_CERT_FILE !== undefined) {
-        await writeDurableFile(
-          layout.gitConfigPath,
-          renderRuntimeProxyGitConfig({
-            caCertPath: routing.SSL_CERT_FILE,
-            connectProxyUrl: routing.HTTPS_PROXY,
-          }),
-          0o600,
-        );
-      } else {
-        await writeDurableFile(layout.gitConfigPath, "", 0o600);
-      }
-      await writeDurableFile(layout.gitCredentialHelperPath, renderRuntimeProxyGitCredentialHelper(github), 0o700);
+      await writeDurableFile(
+        layout.gitCredentialHelperPath,
+        renderRuntimeProxyGitCredentialHelper(github, input.githubGitSocketPath !== undefined),
+        0o700,
+      );
       await chmod(layout.gitCredentialHelperPath, 0o700);
     }
-    const serialized = serializeEnvironment({ ...input.environment, ...routing }, input.platform);
+    const serialized = serializeEnvironment(
+      {
+        ...input.environment,
+        ...routing,
+        // Only the Local gh shim consumes this pointer. Reuse the adapter's private temporary
+        // directory and close cleanup; never redirect the Agent's or another CLI's cache.
+        OPENTAG_GH_CACHE_HOME:
+          github !== undefined && input.githubApiSocketPath
+            ? join(dirname(input.githubApiSocketPath), "cache")
+            : undefined,
+      },
+      input.platform,
+    );
     const marked = `${EXECUTION_MARKER_PREFIX}${input.executionId}\n${serialized}`;
     await writeDurableFile(this.environmentFilePath(input.sessionId), marked, 0o600);
     // JSON has no `undefined`: unset markers serialize as null and the launcher deletes them.

@@ -103,6 +103,10 @@ export {
   RefreshTokenRequestSchema,
   type RefreshTokenResponse,
   RefreshTokenResponseSchema,
+  SLACK_AGENT_PROVISION_CODE_PREFIX,
+  type SlackAgentProvisionCodeResponse,
+  SlackAgentProvisionCodeResponseSchema,
+  SlackAgentProvisionCodeSchema,
   type UpdateUserProfileRequest,
   UpdateUserProfileRequestSchema,
   UserDisplayNameSchema,
@@ -231,6 +235,7 @@ export {
 export * from "./execution-services.js";
 export * from "./github-integration.js";
 export * from "./github-management.js";
+export * from "./github-proxy-http.js";
 export { type ServerHealth, ServerHealthSchema } from "./health.js";
 export {
   ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE,
@@ -332,6 +337,7 @@ export {
   agentSkillsInstallPath,
   agentSkillsInstallResolvePath,
   agentSkillsPath,
+  agentSlackAutoSetupPath,
   agentSlackConfigurationPath,
   agentSlackEventsPath,
   agentSlackOAuthStartPath,
@@ -364,6 +370,7 @@ export {
   IM_BINDING_DIAGNOSTICS_TEMPLATE,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
+  MCP_CATALOG_ENDPOINTS_PATH,
   MCP_CLIENT_METADATA_PATH,
   MCP_OAUTH_CALLBACK_PATH,
   MCP_SERVER_BY_ID_TEMPLATE,
@@ -381,6 +388,7 @@ export {
   RUNTIME_AGENT_SCHEDULE_RESUME_TEMPLATE,
   RUNTIME_AGENT_SCHEDULE_TEMPLATE,
   RUNTIME_AGENT_SCHEDULES_PATH,
+  RUNTIME_AGENT_SLACK_PROVISION_PATH,
   RUNTIME_DURABLE_WORK_PATH,
   RUNTIME_IM_RESOURCE_TEMPLATE,
   RUNTIME_SKILL_BUNDLE_TEMPLATE,
@@ -697,6 +705,9 @@ export * from "./skill.js";
 export * from "./skill-discovery.js";
 export * from "./skill-preset.js";
 export * from "./skill-source.js";
+export * from "./slack-agent-provision.js";
+export * from "./slack-app-manifest.js";
+export * from "./slack-auto-setup.js";
 export * from "./slack-configuration.js";
 export {
   BOUNDED_DIAGNOSTIC_SERIALIZATION_BYTES,

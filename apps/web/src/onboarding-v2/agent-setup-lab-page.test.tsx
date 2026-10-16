@@ -294,10 +294,14 @@ describe("agent setup lab page", () => {
 
     await chooseOption("Screen state", "Connect messaging");
     fireEvent.click(await screen.findByRole("button", { name: /Slack/ }));
-    fireEvent.click(await screen.findByRole("button", { name: "Finish Slack install" }));
+    fireEvent.change(await screen.findByLabelText("Code"), { target: { value: "lab-code" } });
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await screen.findByText("Send a message to verify.");
+    fireEvent.click(screen.getByRole("button", { name: "Close Connect Slack" }));
     fireEvent.click(await screen.findByRole("button", { name: "Observe messaging handoff" }));
     expect(await screen.findByText("reviewer is ready.")).toBeTruthy();
     expect(window.location.pathname).not.toContain("slack");
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/im-binding/slack"))).toBe(false);
   });
 
   it("only offers the connected messaging override when that preset uses it", async () => {

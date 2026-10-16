@@ -2,11 +2,11 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { RuntimeBusinessFrame, RuntimeConnectionState } from "../runtime/runtime-connection.js";
 import { RuntimeCredentialEnvironmentManager } from "../runtime/runtime-credential-environment-manager.js";
-import { runtimeProxyErrorReason } from "../runtime/runtime-credential-frames.js";
+import { parseRuntimeCredentialServerFrame, runtimeProxyErrorReason } from "../runtime/runtime-credential-frames.js";
 import {
   RuntimeCredentialRelay,
   RuntimeCredentialRelayError,
@@ -25,6 +25,11 @@ import {
   renderRuntimeProxyGitCredentialHelper,
   renderRuntimeProxyShim,
 } from "../runtime/runtime-proxy-material.js";
+import {
+  installTurnTarget,
+  makeTurnPlanHarness,
+  writeExternalTurnSelection,
+} from "./fixtures/provider-cli-turn-plan.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 
 const homes: string[] = [];
@@ -187,7 +192,7 @@ function succeededGrant(
         ? { provider: "feishu", appId: "cli-app", teamBrand: "feishu" }
         : provider === "slack"
           ? { provider: "slack", teamId: "T1", botUserId: "U1" }
-          : { provider: "github", connectionId: "connection-1", repositories: [] },
+          : { provider: "github", connectionId: "connection-1", authority: "user-task" },
   };
 }
 
@@ -201,7 +206,7 @@ function cliMetadata(provider: "github" | "slack" | "feishu"): Record<string, un
     };
   }
   if (provider === "slack") return { provider: "slack", teamId: "T1", botUserId: "U1" };
-  return { provider: "github", connectionId: "connection-1", repositories: [] };
+  return { provider: "github", connectionId: "connection-1", authority: "user-task" };
 }
 
 function openResultFrame(
@@ -649,9 +654,103 @@ describe("RuntimeCredentialEnvironmentManager", () => {
     await strict.close();
   });
 
-  it("materializes handles and loopback settings without capabilities, then cleans up exactly", async () => {
+  it.each(["local", "cloud"] as const)(
+    "materializes provider-scoped handles and cleans up exactly in %s",
+    async (placement) => {
+      const home = await temporaryHome();
+      const harness = relayHarness({ providers: ["feishu", "github"] });
+      const manager = new RuntimeCredentialEnvironmentManager({
+        connection: harness.connection,
+        dataConnectionFactory: harness.relayOptions.dataConnectionFactory,
+        home,
+        logger: { debug() {}, warn() {} },
+        mode: "proxy",
+        now: harness.relayOptions.now,
+        platform: "linux",
+        serverUrl: "https://runtime.example",
+        ...(placement === "cloud"
+          ? {
+              sandboxForSession: () => ({
+                sandboxId: randomUUID(),
+                resourceUid: "cloud-fixture",
+                environmentGeneration: 1,
+              }),
+            }
+          : {}),
+      });
+      const prepared = await manager.prepare({
+        sessionId: "session-1",
+        agentId: "agent-1",
+        placementGeneration: 1,
+        run: {
+          runId: randomUUID(),
+          source: { kind: "delivery", deliveryId: "delivery-1", turnId: randomUUID() },
+        },
+      });
+      try {
+        expect(prepared.executionId).toBe(EXECUTION_ID);
+        expect(prepared.providers).toEqual(["feishu", "github"]);
+        if (placement === "local")
+          expect(prepared.allowedUnixSockets).toEqual([
+            expect.stringMatching(/\/g\.sock$/),
+            expect.stringMatching(/\/git\.sock$/),
+          ]);
+        else expect(prepared.allowedUnixSockets).toBeUndefined();
+        expect(prepared.provider).toBe("feishu");
+        expect(prepared.slackApiHost).toBeUndefined();
+        expect(prepared.slackConfigDir).toBeUndefined();
+        const turn = await makeTurnPlanHarness({ openTagHome: home });
+        homes.push(turn.accountHome, turn.openTagHome);
+        const target = await installTurnTarget(join(turn.accountHome, "bin"));
+        await writeExternalTurnSelection(turn.layout, "feishu", target);
+        const frozen = await turn.manager.prepare({
+          provider: "feishu",
+          sessionId: "session-1",
+          runId: randomUUID(),
+          slackApiHost: prepared.slackApiHost,
+          environmentManifest: prepared.environmentManifest,
+        });
+        expect(frozen.plan.provider).toBe("feishu");
+        expect(frozen.plan).not.toHaveProperty("slackApiHost");
+        const environment = manager.environmentForSession("session-1") ?? {};
+        const gitConfig = await readFile(environment.GIT_CONFIG_GLOBAL as string, "utf8");
+        if (placement === "local") expect(gitConfig).toContain("socks5h://localhost/");
+        else {
+          expect(gitConfig).not.toContain("socks5h:");
+          expect(gitConfig).toContain("http://127.0.0.1:");
+        }
+        const envFile = await readFile(prepared.path, "utf8");
+        expect(environment.GH_TOKEN).toMatch(/^otrh_/);
+        expect(envFile).toContain(environment.GH_TOKEN as string);
+        expect(envFile).toContain("# opentag-execution: ");
+        expect(envFile).not.toContain(CAPABILITY_1);
+        expect(envFile).not.toContain("export GITHUB_TOKEN=");
+        expect(environment).not.toHaveProperty("GH_REPO");
+        expect(environment).not.toHaveProperty("XDG_CACHE_HOME");
+        expect(await readFile(prepared.environmentManifest as string, "utf8")).not.toContain("CACHE_HOME");
+        // The Agent runtime env stays scoped: only the standard provider CLI variables may turn
+        // these routing inputs into a proxy/CA, and the sourced env file does exactly that.
+        expect(environment[RUNTIME_PROXY_PROVIDER_URL_KEY]).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+        expect(environment[RUNTIME_PROXY_PROVIDER_CA_KEY]).toContain("loopback-ca.pem");
+        for (const key of ["HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy", "SSL_CERT_FILE"]) {
+          expect(environment).not.toHaveProperty(key);
+        }
+        expect(envFile).toContain(`export HTTPS_PROXY='${environment[RUNTIME_PROXY_PROVIDER_URL_KEY]}'`);
+        expect(envFile).toContain(`export SSL_CERT_FILE='${environment[RUNTIME_PROXY_PROVIDER_CA_KEY]}'`);
+        expect(environment.LARKSUITE_CLI_TENANT_ACCESS_TOKEN).toMatch(/^otrh_/);
+        expect(manager.shimDirForSession("session-1")).toContain("bin");
+        expect(manager.executionIdForSession("session-1")).toBe(EXECUTION_ID);
+      } finally {
+        await manager.cleanup("session-1", prepared.executionId);
+      }
+      await expect(stat(prepared.path)).rejects.toMatchObject({ code: "ENOENT" });
+      await manager.close();
+    },
+  );
+
+  it.each(["local", "cloud"] as const)("keeps Feishu validation free of Slack arguments in %s", async (placement) => {
     const home = await temporaryHome();
-    const harness = relayHarness({ providers: ["feishu", "github"] });
+    const harness = relayHarness({ providers: ["feishu"] });
     const manager = new RuntimeCredentialEnvironmentManager({
       connection: harness.connection,
       dataConnectionFactory: harness.relayOptions.dataConnectionFactory,
@@ -661,45 +760,32 @@ describe("RuntimeCredentialEnvironmentManager", () => {
       now: harness.relayOptions.now,
       platform: "linux",
       serverUrl: "https://runtime.example",
-    });
-    const prepared = await manager.prepare({
-      sessionId: "session-1",
-      agentId: "agent-1",
-      placementGeneration: 1,
-      run: {
-        runId: randomUUID(),
-        source: { kind: "delivery", deliveryId: "delivery-1", turnId: randomUUID() },
-      },
+      ...(placement === "cloud"
+        ? {
+            sandboxForSession: () => ({
+              sandboxId: randomUUID(),
+              resourceUid: "cloud-fixture",
+              environmentGeneration: 1,
+            }),
+          }
+        : {}),
     });
     try {
-      expect(prepared.executionId).toBe(EXECUTION_ID);
-      expect(prepared.providers).toEqual(["feishu", "github"]);
-      expect(prepared.provider).toBe("feishu");
-      const environment = manager.environmentForSession("session-1") ?? {};
-      const envFile = await readFile(prepared.path, "utf8");
-      expect(environment.GH_TOKEN).toMatch(/^otrh_/);
-      expect(envFile).toContain(environment.GH_TOKEN as string);
-      expect(envFile).toContain("# opentag-execution: ");
-      expect(envFile).not.toContain(CAPABILITY_1);
-      expect(envFile).not.toContain("export GITHUB_TOKEN=");
-      expect(environment).not.toHaveProperty("GH_REPO");
-      // The Agent runtime env stays scoped: only the standard provider CLI variables may turn
-      // these routing inputs into a proxy/CA, and the sourced env file does exactly that.
-      expect(environment[RUNTIME_PROXY_PROVIDER_URL_KEY]).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
-      expect(environment[RUNTIME_PROXY_PROVIDER_CA_KEY]).toContain("loopback-ca.pem");
-      for (const key of ["HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy", "SSL_CERT_FILE"]) {
-        expect(environment).not.toHaveProperty(key);
-      }
-      expect(envFile).toContain(`export HTTPS_PROXY='${environment[RUNTIME_PROXY_PROVIDER_URL_KEY]}'`);
-      expect(envFile).toContain(`export SSL_CERT_FILE='${environment[RUNTIME_PROXY_PROVIDER_CA_KEY]}'`);
-      expect(environment.LARKSUITE_CLI_TENANT_ACCESS_TOKEN).toMatch(/^otrh_/);
-      expect(manager.shimDirForSession("session-1")).toContain("bin");
-      expect(manager.executionIdForSession("session-1")).toBe(EXECUTION_ID);
+      const session = await manager.prepareValidationSession({
+        agentId: "agent-1",
+        placementGeneration: 1,
+        validationRunId: randomUUID(),
+      });
+      expect(session.arguments).toEqual([]);
+      expect(session.slackApiHost).toBeUndefined();
+      expect(session.environment.LARKSUITE_CLI_TENANT_ACCESS_TOKEN).toMatch(/^otrh_/);
+      const request = harness.connection.requests.find((frame) => frame.type === "runtime:execution:open");
+      if (placement === "cloud") expect(request).toHaveProperty("sandbox.resourceUid", "cloud-fixture");
+      else expect(request).not.toHaveProperty("sandbox");
+      await session.cleanup();
     } finally {
-      await manager.cleanup("session-1", prepared.executionId);
+      await manager.close();
     }
-    await expect(stat(prepared.path)).rejects.toMatchObject({ code: "ENOENT" });
-    await manager.close();
   });
 
   it("opens a validation-scoped execution with the Server-issued validationRunId and releases it", async () => {
@@ -793,22 +879,117 @@ describe("RuntimeCredentialEnvironmentManager", () => {
     };
     const firstPrepared = await manager.prepare(subject);
     expect(firstPrepared.executionId).toBe(EXECUTION_ID);
+    const firstCache = join(dirname(firstPrepared.allowedUnixSockets?.[0] as string), "cache", "gh");
+    await mkdir(firstCache, { recursive: true });
+    await writeFile(join(firstCache, "run-log.zip"), "old cache");
     const secondPrepared = await manager.prepare(subject);
     expect(secondPrepared.executionId).toBe("99999999-9999-4999-8999-999999999999");
+    await expect(stat(firstCache)).rejects.toMatchObject({ code: "ENOENT" });
+    const secondCache = join(dirname(secondPrepared.allowedUnixSockets?.[0] as string), "cache", "gh");
+    await mkdir(secondCache, { recursive: true });
+    await writeFile(join(secondCache, "run-log.zip"), "new cache");
 
     // A stale cleanup for the replaced execution must leave the successor material alone.
     await manager.cleanup("session-1", EXECUTION_ID);
     const successorEnv = await readFile(secondPrepared.path, "utf8");
     expect(successorEnv).toContain("otrh_");
     expect(manager.executionIdForSession("session-1")).toBe(secondPrepared.executionId);
+    expect(await readFile(join(secondCache, "run-log.zip"), "utf8")).toBe("new cache");
 
     await manager.cleanup("session-1", secondPrepared.executionId);
     await expect(stat(secondPrepared.path)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(secondCache)).rejects.toMatchObject({ code: "ENOENT" });
     await manager.close();
+  });
+
+  it.each(["revocation", "shutdown"])("removes the Local gh cache on %s", async (reason) => {
+    const home = await temporaryHome();
+    const harness = relayHarness({ providers: ["github"] });
+    const manager = new RuntimeCredentialEnvironmentManager({
+      connection: harness.connection,
+      dataConnectionFactory: harness.relayOptions.dataConnectionFactory,
+      home,
+      logger: { debug() {}, warn() {} },
+      mode: "proxy",
+      now: harness.relayOptions.now,
+      platform: "linux",
+      serverUrl: "https://runtime.example",
+    });
+    try {
+      const prepared = await manager.prepare({
+        sessionId: "cache-session",
+        agentId: "agent-1",
+        placementGeneration: 1,
+        run: { runId: randomUUID(), source: { kind: "delivery", deliveryId: "d", turnId: randomUUID() } },
+      });
+      const cache = join(dirname(prepared.allowedUnixSockets?.[0] as string), "cache", "gh");
+      await mkdir(cache, { recursive: true });
+      await writeFile(join(cache, "run-log.zip"), "fixture cache");
+      if (reason === "revocation")
+        harness.connection.emit({ type: "runtime:credential:revoked", executionId: EXECUTION_ID, code: "owner_lost" });
+      else await manager.close();
+      await expect
+        .poll(async () =>
+          stat(cache).then(
+            () => true,
+            () => false,
+          ),
+        )
+        .toBe(false);
+      expect(prepared.signal?.aborted).toBe(true);
+    } finally {
+      await manager.close();
+    }
   });
 });
 
 describe("runtime proxy material", () => {
+  it.each(["local", "no-socket", "no-grant"])(
+    "scopes the published gh cache without changing caller or Git environment: %s",
+    async (mode) => {
+      const home = await temporaryHome();
+      const store = new RuntimeProxyMaterialStore({ home });
+      const sessionId = randomUUID();
+      const realBin = join(home, "real-bin");
+      await mkdir(realBin);
+      for (const name of ["git", "gh"]) {
+        await writeFile(join(realBin, name), '#!/bin/sh\nprintf "%s|%s\\n" "$XDG_CACHE_HOME" "$HOME"\n', {
+          mode: 0o700,
+        });
+      }
+      const socket = join(home, "socket-dir", "g.sock");
+      await store.publish({
+        sessionId,
+        executionId: EXECUTION_ID,
+        adapterCaCertPath: join(home, "ca.pem"),
+        environment: {},
+        platform: process.platform,
+        handles: mode === "no-grant" ? new Map() : new Map([["github", "otrh_fixture"]]),
+        ...(mode === "no-socket" ? {} : { githubApiSocketPath: socket }),
+      });
+      const result = await runWithInput(
+        "/bin/sh",
+        ["-c", 'gh --version; git status; printf "%s|%s\\n" "$XDG_CACHE_HOME" "$HOME"'],
+        "",
+        {
+          env: {
+            PATH: `${store.shimDir(sessionId)}:${realBin}:/usr/bin:/bin`,
+            HOME: home,
+            XDG_CACHE_HOME: "/caller-cache",
+            OPENTAG_GH_CACHE_HOME: "/stale-cache",
+          },
+        },
+      );
+      expect(result.code).toBe(0);
+      expect(result.stdout.trim().split("\n")).toEqual([
+        `${mode === "local" ? join(dirname(socket), "cache") : "/caller-cache"}|${home}`,
+        `/caller-cache|${home}`,
+        `/caller-cache|${home}`,
+      ]);
+      expect(await readFile(store.manifestPath(sessionId), "utf8")).not.toContain("CACHE_HOME");
+    },
+  );
+
   it("builds an execution environment with handles and CA only", () => {
     const environment = buildRuntimeProxyEnvironment({
       adapterCaCertPath: "/exec/loopback-ca.pem",
@@ -817,17 +998,7 @@ describe("runtime proxy material", () => {
         return {
           provider: "github",
           connectionId: "connection",
-          repositories: [
-            {
-              repositoryId: "1",
-              fullName: "owner/repository",
-              role: "context_tree",
-              access: "write",
-              publish: "pull_request",
-              branch: "refs/heads/master",
-              workBranchPrefix: "refs/heads/opentag/11111111-1111-4111-8111-111111111111/context_tree/",
-            },
-          ],
+          authority: "user-task",
         };
       },
       connectProxyUrl: "http://127.0.0.1:1234",
@@ -847,14 +1018,35 @@ describe("runtime proxy material", () => {
       slackApiHost: "https://127.0.0.1:5678",
     });
     expect(environment.GH_TOKEN).toBe("otrh_github");
-    expect(JSON.parse(environment.OPENTAG_GITHUB_REPOSITORIES ?? "[]")).toEqual([
-      expect.objectContaining({
-        fullName: "owner/repository",
-        branch: "refs/heads/master",
-        publish: "pull_request",
-        workBranchPrefix: expect.stringContaining("/context_tree/"),
-      }),
-    ]);
+    expect(environment.GH_CONFIG_DIR).toBe("/exec/gh-config");
+    expect(environment.OPENTAG_GITHUB_REPOSITORIES).toBeUndefined();
+    const denied = buildRuntimeProxyEnvironment({
+      adapterCaCertPath: "/exec/loopback-ca.pem",
+      cliMetadata: (provider) => {
+        if (provider === "feishu") return { provider: "feishu", appId: "cli-app", teamBrand: "feishu" };
+        return {
+          provider: "github",
+          connectionId: "connection",
+          authority: "user-task",
+        };
+      },
+      connectProxyUrl: "http://127.0.0.1:1234",
+      handles: new Map(),
+      layout: {
+        adapterCaCertPath: "/exec/loopback-ca.pem",
+        executionDir: "/exec",
+        gitConfigPath: "/exec/gitconfig",
+        gitCredentialHelperPath: "/exec/git-credential-helper.sh",
+        larkConfigDir: "/exec/lark-config",
+        slackConfigDir: "/exec/slack-config",
+      },
+      slackApiHost: "https://127.0.0.1:5678",
+    });
+    expect(denied.GH_TOKEN).toBeUndefined();
+    expect(denied.GH_CONFIG_DIR).toBe("/exec/gh-config");
+    expect(denied.GIT_CONFIG_VALUE_0).toBe("");
+    expect(denied.GIT_CONFIG_GLOBAL).toBe("/exec/gitconfig");
+    expect(denied[RUNTIME_PROXY_PROVIDER_URL_KEY]).toBe("http://127.0.0.1:1234");
     expect(environment.LARKSUITE_CLI_TENANT_ACCESS_TOKEN).toBe("otrh_feishu");
     expect(environment.SLACK_BOT_TOKEN).toBe("otrh_slack");
     expect(environment[RUNTIME_PROXY_PROVIDER_URL_KEY]).toBe("http://127.0.0.1:1234");
@@ -974,3 +1166,24 @@ function runWithInput(
     child.stdin.end(input);
   });
 }
+
+it("discards old Server GitHub assignments while keeping valid IM execution and the upgrade channel usable", () => {
+  const providers = [
+    {
+      provider: "github",
+      bindingId: "legacy-connection",
+      cli: { provider: "github", connectionId: "legacy-connection", repositories: [{ fullName: "private/legacy" }] },
+    },
+    { provider: "slack", bindingId: "slack", cli: { provider: "slack", teamId: "T1", botUserId: "B1" } },
+  ];
+  const frame = parseRuntimeCredentialServerFrame({
+    type: "runtime:execution:result",
+    requestId: randomUUID(),
+    executionId: EXECUTION_ID,
+    status: "succeeded",
+    expiresAt: new Date(Date.now() + 60000).toISOString(),
+    providers,
+  });
+  expect(frame).toMatchObject({ status: "succeeded", providers: [providers[1]] });
+  expect(JSON.stringify(frame)).not.toContain("private/legacy");
+});

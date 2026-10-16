@@ -31,6 +31,12 @@ importers:
       '@vitest/coverage-v8':
         specifier: 5.0.1
         version: 5.0.1(vitest@5.0.1)
+      ajv:
+        specifier: ^8.20.0
+        version: 8.20.0
+      ajv-formats:
+        specifier: ^3.0.1
+        version: 3.0.1(ajv@8.20.0)
       lefthook:
         specifier: ^2.1.14
         version: 2.1.14
@@ -314,9 +320,6 @@ importers:
       fflate:
         specifier: ^0.8.3
         version: 0.8.3
-      graphql:
-        specifier: 17.0.2
-        version: 17.0.2
       jose:
         specifier: ^6.2.10
         version: 6.2.10
@@ -354,6 +357,9 @@ importers:
       drizzle-kit:
         specifier: ^0.31.10
         version: 0.31.10
+      graphql:
+        specifier: 17.0.2
+        version: 17.0.2
       testcontainers:
         specifier: ^12.1.0
         version: 12.1.0

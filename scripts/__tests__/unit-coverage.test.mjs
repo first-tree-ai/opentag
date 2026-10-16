@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -14,6 +15,7 @@ import {
   projectCoverageInclude,
   ratchetCoverageFloors,
   summarizeTestResults,
+  TEST_REPORTER_FLAGS,
   validateCoverageManifest,
   validateRepositoryCoverageManifest,
   writeAggregateReports,
@@ -351,6 +353,43 @@ test("captured process errors remain visible alongside assertion failures", () =
 
 test("successful test runs do not produce failure diagnostics", () => {
   assert.deepEqual(formatTestFailureLines({ status: 0, stdout: "Tests passed", stderr: "warning" }), []);
+});
+
+test("real Vitest unhandled errors stay visible when every assertion passes", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const configPath = join(directory, "vitest.config.mjs");
+    const reportPath = join(directory, "test-results.json");
+    await writeFile(
+      configPath,
+      'export default { test: { globals: true, include: ["probe.test.js"], maxWorkers: 1 } };',
+    );
+    await writeFile(
+      join(directory, "probe.test.js"),
+      `it("passes despite an unhandled rejection", async () => {
+        void Promise.reject(new Error("coverage-unhandled-regression"));
+        await new Promise(setImmediate);
+        expect(1).toBe(1);
+      });`,
+    );
+    const result = spawnSync(
+      process.execPath,
+      [
+        join(repoRoot, "node_modules/vitest/vitest.mjs"),
+        "run",
+        "--root",
+        directory,
+        "--config",
+        configPath,
+        ...TEST_REPORTER_FLAGS(reportPath),
+      ],
+      { cwd: repoRoot, encoding: "utf8", timeout: 15_000 },
+    );
+    assert.equal(result.status, 1, result.stderr);
+    const report = JSON.parse(await readFile(reportPath, "utf8"));
+    assert.equal(report.numPassedTests, 1);
+    assert.equal(report.numFailedTests, 0);
+    assert.match(formatTestFailureLines({ ...result, report }).join("\n"), /coverage-unhandled-regression/);
+  });
 });
 
 const sharedProject = { name: "shared", root: "packages/shared", sources: "packages/shared/src" };

@@ -63,6 +63,7 @@ import {
   agentSkillsInstallPath,
   agentSkillsInstallResolvePath,
   agentSkillsPath,
+  agentSlackAutoSetupPath,
   agentSlackConfigurationPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,
@@ -99,7 +100,6 @@ import {
   feishuSetupAttemptCheckPath,
   feishuSetupAttemptPath,
   GITHUB_INTEGRATION_AUTHORIZATION_PATH,
-  GITHUB_INTEGRATION_BINDINGS_PATH,
   GITHUB_INTEGRATION_DISCONNECT_PATH,
   GITHUB_INTEGRATION_PATH,
   type GitHubConnectionStatus,
@@ -146,8 +146,11 @@ import {
   ListTaskRepliesResponseSchema,
   type ListTasksResponse,
   ListTasksResponseSchema,
+  MCP_CATALOG_ENDPOINTS_PATH,
   type MCPAgentServer,
   MCPAgentServerSchema,
+  type MCPCatalogEndpointsResponse,
+  MCPCatalogEndpointsResponseSchema,
   type MCPProbeResponse,
   MCPProbeResponseSchema,
   type MCPServer,
@@ -176,6 +179,10 @@ import {
   type SkillArchiveFormat,
   type SkillDetail,
   SkillDetailSchema,
+  SlackAgentProvisionCodeResponseSchema,
+  type SlackAutoSetupRequest,
+  type SlackAutoSetupResponse,
+  SlackAutoSetupResponseSchema,
   type SlackConfigurationResult,
   SlackConfigurationResultSchema,
   type SlackConfigurationView,
@@ -199,7 +206,6 @@ import {
   taskRepliesPath,
   type UnbindAgentMessagingRequest,
   type UpdateAgentRequest,
-  type UpdateGitHubConnectionBindingsRequest,
   type UpdateMCPBindingRequest,
   type UpdateMCPServerRequest,
   type UpdateSkillRequest,
@@ -311,6 +317,14 @@ export class BrowserApi {
     return this.request(CLOUD_BILLING_CHECKOUT_PATH, CloudCreditCheckoutResponseSchema, {
       method: "POST",
       body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  issueSlackAgentProvisionCode() {
+    return this.request(HTTP_PATHS.meConnectCodes, SlackAgentProvisionCodeResponseSchema, {
+      method: "POST",
+      body: JSON.stringify({ purpose: "slack-agent-provision" }),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
     });
   }
@@ -605,6 +619,14 @@ export class BrowserApi {
     });
   }
 
+  autoSetupSlack(agentId: string, input: SlackAutoSetupRequest): Promise<SlackAutoSetupResponse> {
+    return this.request(agentSlackAutoSetupPath(agentId), SlackAutoSetupResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
   slackConfiguration(agentId: string): Promise<SlackConfigurationView> {
     return this.request(agentSlackConfigurationPath(agentId), SlackConfigurationViewSchema);
   }
@@ -734,14 +756,6 @@ export class BrowserApi {
     return this.request(githubIntegrationRepositoriesPath(cursor), GitHubRepositoryDiscoveryPageSchema);
   }
 
-  updateGitHubBindings(input: UpdateGitHubConnectionBindingsRequest): Promise<GitHubConnectionStatus> {
-    return this.request(GITHUB_INTEGRATION_BINDINGS_PATH, GitHubConnectionStatusSchema, {
-      method: "PUT",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
-  }
-
   disconnectGitHub(): Promise<GitHubConnectionStatus | undefined> {
     return this.requestOptional(GITHUB_INTEGRATION_DISCONNECT_PATH, GitHubConnectionStatusSchema, {
       method: "POST",
@@ -758,6 +772,11 @@ export class BrowserApi {
    */
   mcpServers(): Promise<ListMCPServersResponse> {
     return this.request(mcpServersPath(), ListMCPServersResponseSchema);
+  }
+
+  /** The catalog endpoints this deployment replaces because it configured a client for them. */
+  mcpCatalogEndpoints(): Promise<MCPCatalogEndpointsResponse> {
+    return this.request(MCP_CATALOG_ENDPOINTS_PATH, MCPCatalogEndpointsResponseSchema);
   }
 
   mcpServer(mcpServerId: string): Promise<MCPServerDetail> {
@@ -830,10 +849,14 @@ export class BrowserApi {
     });
   }
 
-  revokeMcpAuthorization(agentId: string, mcpServerId: string): Promise<MCPAgentServer> {
+  revokeMcpAuthorization(agentId: string, mcpServerId: string, expectedOAuthState?: string): Promise<MCPAgentServer> {
     return this.request(agentMcpAuthorizationPath(agentId, mcpServerId), MCPAgentServerSchema, {
       method: "DELETE",
-      headers: this.csrfHeaders(),
+      ...(expectedOAuthState !== undefined ? { body: JSON.stringify({ expectedOAuthState }) } : {}),
+      headers: {
+        ...(expectedOAuthState !== undefined ? { "content-type": "application/json" } : {}),
+        ...this.csrfHeaders(),
+      },
     });
   }
 

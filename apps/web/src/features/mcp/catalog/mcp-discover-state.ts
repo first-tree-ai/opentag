@@ -1,45 +1,55 @@
-import { MCP_CATALOG_ENTRIES, type McpCatalogEntry } from "@opentag/mcp-presets";
+import type { McpInstallableCatalogEntry } from "@opentag/mcp-presets";
 import { CreateMCPServerRequestSchema, type MCPAgentServer, type MCPServer } from "@opentag/shared/browser";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../../api.js";
 import * as m from "../../../paraglide/messages.js";
-import { connectionFailure, useMcpConnectionOperation } from "../mcp-connection.js";
-import { allowsOAuthDiscovery, connectionAuthKind } from "../mcp-connection-model.js";
+import { connectionFailure, requiresOAuth, useMcpConnectionOperation } from "../mcp-connection.js";
+import { connectionAuthKind } from "../mcp-connection-model.js";
+import { connectorFeedback, isAuthorizationFeedback } from "../mcp-feedback.js";
 import { actionError } from "../mcp-form-model.js";
-import { useMcpOAuthSessions } from "../mcp-oauth-session.js";
+import { createMcpInstallation } from "../mcp-installation.js";
+import { type McpOAuthSession, useMcpOAuthSessions } from "../mcp-oauth-session.js";
 import { closeMcpOAuthWindow, type McpOAuthWindow, prepareMcpOAuthWindow } from "../mcp-oauth-window.js";
-import { useAttachMcpServer, useCreateMcpServer, useDetachMcpServer, useMcpServers } from "../mcp-queries.js";
+import {
+  useAttachMcpServer,
+  useCreateMcpServer,
+  useDetachMcpServer,
+  useMcpInstallationDefinitions,
+} from "../mcp-queries.js";
 import type { McpReturnContext } from "../mcp-return-context.js";
 import { discardMcpSetup } from "../mcp-setup-cleanup.js";
-import { catalogFailure, type McpCatalogFeedback } from "./mcp-catalog-feedback.js";
-import { findAccountServer, findCatalogBinding, findCatalogEntryByUrl } from "./mcp-catalog-model.js";
+import { useMcpCatalogEntries } from "./mcp-catalog-entries.js";
+import type { McpCatalogFeedback } from "./mcp-catalog-feedback.js";
+import { findCatalogBinding, findCatalogEntryByUrl } from "./mcp-catalog-model.js";
 
 export type DiscoverProps = {
+  open?: boolean;
   agentId: string;
   agentName: string;
   mounted: MCPAgentServer[];
   onClose: () => void;
-  onAdded: (entry: MCPAgentServer, catalog: McpCatalogEntry, server?: MCPServer) => void;
+  onAdded: (entry: MCPAgentServer, catalog: McpInstallableCatalogEntry, server?: MCPServer) => void;
   initialContext?: McpReturnContext;
   initialOutcome?: "cancelled" | "failed";
 };
-type Setup = { catalog: McpCatalogEntry; binding: MCPAgentServer; server?: MCPServer; temporary: boolean };
-type Pending = { checking: boolean; action: "add" | "connect" };
+type Setup = { catalog: McpInstallableCatalogEntry; binding: MCPAgentServer; server?: MCPServer; temporary: boolean };
+type Pending = { checking: boolean; action: "add" | "connect"; serverId?: string };
+type Failure = McpCatalogFeedback & { serverId?: string };
 const catalogAction = (binding?: MCPAgentServer): "add" | "connect" => (binding ? "connect" : "add");
 
-/** Keep Discover mounted until the user finishes, and never detach a pre-existing connection. */
+/** Page-owned setup survives closing Discover and never detaches a pre-existing connection. */
 export function useMcpDiscoverState(props: DiscoverProps) {
-  const account = useMcpServers();
-  const servers = account.data?.servers ?? [];
+  const definitions = useMcpInstallationDefinitions(props.mounted, props.initialContext?.serverId);
+  const servers = definitions.servers;
+  const servedCatalog = useMcpCatalogEntries();
+  // A card may still change its endpoint until the deployment's catalog endpoints have loaded.
+  const loading = definitions.isPending || servedCatalog.isPending;
   const create = useCreateMcpServer(props.agentId);
   const attach = useAttachMcpServer(props.agentId);
   const detach = useDetachMcpServer(props.agentId);
   const operation = useMcpConnectionOperation(props.agentId);
   const [error, setError] = useState<string | undefined>(
     props.initialOutcome === "failed" ? m.mcp_oauth_return_failed() : undefined,
-  );
-  const [notice, setNotice] = useState<string | undefined>(
-    props.initialOutcome === "cancelled" ? m.mcp_oauth_cancelled() : undefined,
   );
   const [restoring, setRestoring] = useState(false);
   const [pending, setPending] = useState<Record<string, Pending>>({});
@@ -57,14 +67,20 @@ export function useMcpDiscoverState(props: DiscoverProps) {
       else delete next[id];
       return next;
     });
-  const [connectedIds, setConnectedIds] = useState<string[]>([]);
-  const [failures, setFailures] = useState<Record<string, McpCatalogFeedback>>({});
+  const [failures, setFailures] = useState<Record<string, Failure>>({});
   const setFailure = useCallback(
-    (feedback: McpCatalogFeedback) => setFailures((all) => ({ ...all, [feedback.entryId]: feedback })),
+    (feedback: Failure) => setFailures((all) => ({ ...all, [feedback.entryId]: feedback })),
     [],
   );
   const created = useRef(new Map<string, MCPServer>());
   const inFlight = useRef(new Set<string>());
+  const observed = useRef(new Set<string>());
+  useEffect(() => {
+    for (const [id, server] of created.current) {
+      if (props.mounted.some((row) => row.mcpServerId === server.id)) observed.current.add(server.id);
+      else if (observed.current.has(server.id) && !inFlight.current.has(id)) created.current.delete(id);
+    }
+  }, [props.mounted]);
   const alive = useRef(true);
   const preparedWindows = useRef(new Map<string, McpOAuthWindow>());
   const view = useRef({
@@ -76,49 +92,72 @@ export function useMcpDiscoverState(props: DiscoverProps) {
     alive.current = true;
     return () => {
       alive.current = false;
-      for (const prepared of preparedWindows.current.values()) closeMcpOAuthWindow(prepared.popup);
     };
   }, []);
-  const restoreStarted = useRef(false);
+  const restoreStarted = useRef<string | undefined>(undefined);
   useEffect(() => {
     const context = props.initialContext;
-    if (!context || restoreStarted.current || account.isPending) return;
-    restoreStarted.current = true;
+    if (!context || restoreStarted.current === context.serverId || definitions.isPending) return;
+    restoreStarted.current = context.serverId;
+    view.current = {
+      query: context.query ?? "",
+      categoryId: context.categoryId ?? "",
+      scrollTop: context.scrollTop ?? 0,
+    };
     const catalog = findCatalogEntryByUrl(
       servers.find((server) => server.id === context.serverId)?.url ?? "",
-      MCP_CATALOG_ENTRIES,
+      servedCatalog.entries,
     );
     if (props.initialOutcome === "failed" && catalog) {
-      setFailure({ entryId: catalog.id, phase: "error", label: m.mcp_connection_failed() });
+      setFailure({
+        entryId: catalog.id,
+        serverId: context.serverId,
+        phase: "error",
+        label: m.mcp_connection_failed(),
+      });
       setError(undefined);
     }
-    if (!context.newBinding) return;
+    if (!context.newBinding || props.initialOutcome !== "cancelled") return;
     setRestoring(true);
     void (async () => {
       const current = (await browserApi.agentMcpServers(props.agentId)).servers.find(
         (entry) => entry.mcpServerId === context.serverId,
       );
-      if (current && !current.authorization?.hasCredential) await detach.mutateAsync(context.serverId);
+      if (current)
+        await discardMcpSetup(props.agentId, context.serverId, (id) => detach.mutateAsync(id), context.oauthState);
     })()
       .catch((cause) => setError(actionError(cause, m.mcp_setup_cleanup_failed())))
       .finally(() => setRestoring(false));
-  }, [props.initialContext, props.initialOutcome, props.agentId, account.isPending, detach, servers, setFailure]);
+  }, [
+    props.initialContext,
+    props.initialOutcome,
+    props.agentId,
+    definitions.isPending,
+    servedCatalog.entries,
+    detach,
+    servers,
+    setFailure,
+  ]);
   async function discard(setup: Setup) {
-    if (setup.temporary)
-      await discardMcpSetup(props.agentId, setup.binding.mcpServerId, (id) => detach.mutateAsync(id));
+    if (!setup.temporary) return;
+    const removed = await discardMcpSetup(props.agentId, setup.binding.mcpServerId, (id) => detach.mutateAsync(id));
+    if (removed) created.current.delete(setup.catalog.id);
   }
-  async function resolveSetup(catalog: McpCatalogEntry): Promise<Setup> {
+  async function resolveSetup(catalog: McpInstallableCatalogEntry): Promise<Setup> {
     const existing = findCatalogBinding(catalog, servers, props.mounted);
     if (existing)
       return {
         catalog,
         binding: existing,
-        temporary: false,
+        temporary:
+          created.current.get(catalog.id)?.id === existing.mcpServerId &&
+          existing.authorization?.status !== "active" &&
+          !existing.authorization?.hasCredential,
         server: servers.find((server) => server.id === existing.mcpServerId),
       };
-    let server = findAccountServer(catalog, servers) ?? created.current.get(catalog.id);
+    let server = created.current.get(catalog.id);
     if (!server) {
-      server = await create.mutateAsync(
+      server = await createMcpInstallation(
         CreateMCPServerRequestSchema.parse({
           name: catalog.name,
           url: catalog.url,
@@ -127,6 +166,7 @@ export function useMcpDiscoverState(props: DiscoverProps) {
           authScheme: catalog.authScheme,
           extraHeaders: catalog.extraHeaders,
         }),
+        create.mutateAsync,
       );
       created.current.set(catalog.id, server);
     }
@@ -137,18 +177,23 @@ export function useMcpDiscoverState(props: DiscoverProps) {
     const kind = connectionAuthKind(setup.binding.effective.url, setup.binding, setup.server);
     const session = getSession(setup.catalog.id);
     const result = await operation.run(
-      { binding: setup.binding, kind, allowOAuthDiscovery: allowsOAuthDiscovery(setup.binding.effective.url, kind) },
+      { binding: setup.binding, kind },
       {
         oauthSession: session,
+        reauthorize: connectorFeedback(setup.binding).action === "authorize",
         token,
         source: "discover",
         oauthWindow: prepared,
-        isAlive: () => alive.current,
+        isAlive: () => true,
         returnContext: { ...view.current, newBinding: setup.temporary },
         onTools: () =>
           setPending((all) => ({
             ...all,
-            [setup.catalog.id]: { action: all[setup.catalog.id]?.action ?? "add", checking: true },
+            [setup.catalog.id]: {
+              action: all[setup.catalog.id]?.action ?? "add",
+              serverId: setup.binding.mcpServerId,
+              checking: true,
+            },
           })),
       },
     );
@@ -157,11 +202,15 @@ export function useMcpDiscoverState(props: DiscoverProps) {
       await discard(setup);
       setKeySetup(setup.catalog.id);
       if (session.interruption.current === "timeout")
-        setFailure({ entryId: setup.catalog.id, phase: "error", label: m.mcp_authorization_incomplete() });
+        setFailure({
+          entryId: setup.catalog.id,
+          serverId: setup.binding.mcpServerId,
+          phase: "error",
+          label: m.mcp_authorization_incomplete(),
+        });
     } else if (result === "connected") {
       setKeySetup(setup.catalog.id);
-      setConnectedIds((ids) => [...new Set([...ids, setup.catalog.id])]);
-      props.onAdded(setup.binding, setup.catalog, setup.server);
+      if (alive.current) props.onAdded(setup.binding, setup.catalog, setup.server);
     }
     return result;
   }
@@ -172,17 +221,18 @@ export function useMcpDiscoverState(props: DiscoverProps) {
       (window.matchMedia("(max-width: 640px)").matches && inFlight.current.size > 0)
     );
   }
-  async function addFromCatalog(catalog: McpCatalogEntry, token?: string) {
+  async function addFromCatalog(catalog: McpInstallableCatalogEntry, token?: string) {
     if (cannotStart(catalog.id)) return;
     inFlight.current.add(catalog.id);
     const knownBinding = findCatalogBinding(catalog, servers, props.mounted);
-    const knownServer = findAccountServer(catalog, servers);
-    const kind = connectionAuthKind(knownBinding?.effective.url ?? catalog.url, knownBinding, knownServer);
-    const prepared = kind === "oauth" ? prepareMcpOAuthWindow() : undefined;
+    const knownServer = servers.find((server) => server.id === knownBinding?.mcpServerId);
+    const prepared = prepareCatalogOAuth(catalog, knownBinding, knownServer);
     if (prepared) preparedWindows.current.set(catalog.id, prepared);
-    setPending((all) => ({ ...all, [catalog.id]: { checking: false, action: catalogAction(knownBinding) } }));
+    setPending((all) => ({
+      ...all,
+      [catalog.id]: { checking: false, action: catalogAction(knownBinding), serverId: knownBinding?.mcpServerId },
+    }));
     setError(undefined);
-    setNotice(undefined);
     setFailures((all) => {
       const next = { ...all };
       delete next[catalog.id];
@@ -191,10 +241,11 @@ export function useMcpDiscoverState(props: DiscoverProps) {
     let setup: Setup | undefined;
     try {
       setup = keySetups[catalog.id] ?? (await resolveSetup(catalog));
-      if (!alive.current) {
-        await discard(setup);
-        return;
-      }
+      const serverId = setup.binding.mcpServerId;
+      setPending((all) => ({
+        ...all,
+        [catalog.id]: { action: catalogAction(knownBinding), checking: false, serverId },
+      }));
       await runSetup(setup, prepared, token);
     } catch (cause) {
       await reportFailure(cause, catalog, setup, token);
@@ -211,21 +262,17 @@ export function useMcpDiscoverState(props: DiscoverProps) {
       }
     }
   }
-  async function reportFailure(cause: unknown, catalog: McpCatalogEntry, setup?: Setup, token?: string) {
-    if (token) setError(connectionFailure(cause, catalog.defaultAuthKind));
+  async function reportFailure(cause: unknown, catalog: McpInstallableCatalogEntry, setup?: Setup, token?: string) {
+    const label = connectionFailure(cause, setup?.binding.authorization?.kind ?? catalog.defaultAuthKind);
+    if (token) setError(label);
     else
       setFailure({
         entryId: catalog.id,
+        serverId: setup?.binding.mcpServerId,
         phase: "error",
-        label: catalogFailure(cause),
+        label,
+        action: isAuthorizationFeedback(label) ? "authorize" : "retry",
       });
-    if (!setup || token) return;
-    try {
-      await discard(setup);
-      setKeySetup(setup.catalog.id);
-    } catch {
-      setFailure({ entryId: catalog.id, phase: "error", label: m.mcp_setup_cleanup_failed() });
-    }
   }
   async function cancelKey() {
     const setup = keySetup;
@@ -248,26 +295,57 @@ export function useMcpDiscoverState(props: DiscoverProps) {
       });
     }
   }
-  const feedback = { ...failures };
-  for (const [id, attempt] of Object.entries(pending)) {
-    feedback[id] = discoverFeedback(id, attempt.checking, getSession(id));
-  }
+  const { feedback, connections } = discoverPresentation(pending, failures, created.current, getSession);
   return {
-    account,
+    definitions,
+    catalog: servedCatalog,
+    loading,
     servers,
     error,
-    notice,
     busy,
     keyBusy,
     catalogBusy,
     pending,
     keySetup,
-    connectedIds,
     feedback,
+    connections,
+    clearFailure: (serverId: string) =>
+      setFailures((all) =>
+        Object.fromEntries(Object.entries(all).filter(([, failure]) => failure.serverId !== serverId)),
+      ),
     addFromCatalog,
     cancelKey,
     view,
   };
+}
+
+function prepareCatalogOAuth(catalog: McpInstallableCatalogEntry, binding?: MCPAgentServer, server?: MCPServer) {
+  const kind = connectionAuthKind(binding?.effective.url ?? catalog.url, binding, server);
+  if (kind !== "oauth") return undefined;
+  const reauthorize = Boolean(binding && connectorFeedback(binding).action === "authorize");
+  if (binding && !requiresOAuth({ binding, kind }, reauthorize)) return undefined;
+  return prepareMcpOAuthWindow();
+}
+
+/** Both surfaces read the same attempt; dismissing the directory does not transfer its ownership. */
+function discoverPresentation(
+  pending: Record<string, Pending>,
+  failures: Record<string, Failure>,
+  created: ReadonlyMap<string, MCPServer>,
+  getSession: ReturnType<typeof useMcpOAuthSessions>,
+) {
+  const feedback = { ...failures };
+  const connections: Record<string, { pending?: boolean; oauth?: McpOAuthSession; error?: string }> = {};
+  for (const failure of Object.values(failures)) {
+    if (failure.serverId) connections[failure.serverId] = { error: failure.label };
+  }
+  for (const [id, attempt] of Object.entries(pending)) {
+    const oauth = getSession(id);
+    feedback[id] = discoverFeedback(id, attempt.checking, oauth);
+    const serverId = attempt.serverId ?? created.get(id)?.id;
+    if (serverId) connections[serverId] = { pending: true, oauth };
+  }
+  return { feedback, connections };
 }
 
 function discoverFeedback(
@@ -277,15 +355,15 @@ function discoverFeedback(
 ): McpCatalogFeedback {
   const phase = oauth.blocked ? "blocked" : (oauth.phase ?? (checking ? "checking" : "preparing"));
   const labels = {
-    preparing: m.mcp_connecting(),
+    preparing: m.mcp_oauth_preparing(),
     waiting: m.mcp_catalog_waiting(),
-    checking: m.mcp_oauth_checking(),
+    checking: m.mcp_add_loading_tools(),
     blocked: m.mcp_catalog_page_blocked(),
   };
   return {
     entryId,
     phase,
-    label: labels[phase],
+    label: phase === "preparing" && !oauth.phase ? m.mcp_saving() : labels[phase],
     onCancel: oauth.phase && oauth.phase !== "checking" ? oauth.cancel : undefined,
     onOpen: () => void oauth.openFallback(),
   };

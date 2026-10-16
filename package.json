@@ -30,6 +30,7 @@
     "notices:write": "node scripts/third-party-notices.mjs --write",
     "theme:generate": "node scripts/generate-web-theme.mjs",
     "catalog:generate": "tsx scripts/generate-mcp-catalog.mjs",
+    "catalog:add": "tsx --tsconfig scripts/tsconfig.scripts.json packages/mcp-presets/src/scaffold/main.ts",
     "presets:check-candidate": "tsx --tsconfig scripts/tsconfig.scripts.json scripts/check-skill-preset-candidate.mjs",
     "presets:generate": "tsx --tsconfig scripts/tsconfig.scripts.json scripts/generate-skill-presets.mjs",
     "skills:check": "tsx --tsconfig scripts/tsconfig.scripts.json scripts/check-skill-bundles.mjs"
@@ -38,6 +39,8 @@
     "@biomejs/biome": "^2.5.14",
     "@types/node": "^26.6.1",
     "@vitest/coverage-v8": "5.0.1",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "lefthook": "^2.1.14",
     "tsdown": "^0.23.0",
     "tsx": "^4.23.13",

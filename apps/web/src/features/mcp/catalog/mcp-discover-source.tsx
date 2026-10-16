@@ -1,23 +1,26 @@
-import type { McpCatalogCategory, McpCatalogEntry } from "@opentag/mcp-presets";
+import type { McpCatalogCategory, McpInstallableCatalogEntry } from "@opentag/mcp-presets";
 import type { MCPAgentServer, MCPServer } from "@opentag/shared/browser";
 import { useState } from "react";
 import { getLocale } from "../../../i18n/locale.js";
 import * as m from "../../../paraglide/messages.js";
 import { Button, Field, KumoInputControl, Select } from "../../../ui/design-system.js";
+import { authorizationAction, connectorFeedback } from "../mcp-feedback.js";
 import { McpServiceIcon } from "../mcp-service-icon.js";
 import { McpCatalogActions, McpCatalogDescription, type McpCatalogFeedback } from "./mcp-catalog-feedback.js";
 import {
   catalogEntryState,
   entriesInCategory,
+  findCatalogBinding,
   localizedText,
   type McpCatalogEntryState,
   matchesCatalogEntry,
+  offeredEntries,
 } from "./mcp-catalog-model.js";
 
 /** Stays mounted during prerequisite guidance, preserving search, category, and scroll position. */
 export function McpDiscoverSource({
   categories,
-  entries,
+  entries: catalogEntries,
   servers,
   mounted,
   busy,
@@ -29,18 +32,19 @@ export function McpDiscoverSource({
   feedback,
 }: {
   categories: readonly McpCatalogCategory[];
-  entries: readonly McpCatalogEntry[];
+  entries: readonly McpInstallableCatalogEntry[];
   servers: readonly MCPServer[];
   mounted: readonly MCPAgentServer[];
   busy: boolean;
   pending?: Record<string, { action: "add" | "connect" }>;
-  onAdd: (entry: McpCatalogEntry) => void;
+  onAdd: (entry: McpInstallableCatalogEntry) => void;
   connectedIds?: string[];
   initialView?: { query: string; categoryId: string };
   onViewChange?: (view: { query: string; categoryId: string }) => void;
   feedback?: Record<string, McpCatalogFeedback>;
 }) {
   const locale = getLocale();
+  const entries = offeredEntries(catalogEntries);
   // Navigation depends on the full directory, never on search results or connection status.
   const shownCategories = categories.filter((category) => entriesInCategory(entries, category.id).length >= 2);
   const [categoryId, setCategoryId] = useState(
@@ -130,7 +134,7 @@ export function McpDiscoverSource({
               connecting={Boolean(pending[entry.id])}
               pendingAction={pending[entry.id]?.action}
               onAdd={onAdd}
-              feedback={feedback?.[entry.id]}
+              feedback={catalogFeedback(entry, servers, mounted, feedback?.[entry.id])}
             />
           ))}
         </ul>
@@ -150,10 +154,10 @@ export function McpCatalogCard({
   pendingAction,
   feedback,
 }: {
-  entry: McpCatalogEntry;
+  entry: McpInstallableCatalogEntry;
   state?: McpCatalogEntryState;
   busy: boolean;
-  onAdd: (entry: McpCatalogEntry) => void;
+  onAdd: (entry: McpInstallableCatalogEntry) => void;
   connecting?: boolean;
   pendingAction?: "add" | "connect";
   feedback?: McpCatalogFeedback;
@@ -182,4 +186,28 @@ export function McpCatalogCard({
       </div>
     </li>
   );
+}
+
+function catalogFeedback(
+  entry: McpInstallableCatalogEntry,
+  servers: readonly MCPServer[],
+  mounted: readonly MCPAgentServer[],
+  local?: McpCatalogFeedback,
+): McpCatalogFeedback | undefined {
+  const binding = findCatalogBinding(entry, servers, mounted);
+  if (local)
+    return {
+      ...local,
+      actionLabel: local.action === "authorize" && binding ? authorizationAction(binding) : local.actionLabel,
+    };
+  if (!binding?.enabled) return;
+  const feedback = connectorFeedback(binding);
+  if (!feedback.label) return;
+  return {
+    entryId: entry.id,
+    phase: feedback.neutral ? (binding.authorization?.probeState === "pending" ? "checking" : "notice") : "error",
+    label: feedback.label,
+    action: feedback.action,
+    actionLabel: feedback.action === "authorize" ? authorizationAction(binding) : undefined,
+  };
 }

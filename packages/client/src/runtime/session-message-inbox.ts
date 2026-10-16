@@ -346,11 +346,13 @@ export class SessionMessageInbox {
       });
       const sessionKind = this.#runtimeManager.sessionKind(sessionId);
       let outboxContext: RuntimeImOutboxContext | undefined;
+      let allowedUnixSockets: readonly string[] | undefined;
       if (sessionKind === "visible") {
         phase = "credential";
         const prepared = await this.#prepareCredentials(sessionId, next.request);
         credentialPrepared = true;
         preparedExecutionId = prepared.executionId;
+        allowedUnixSockets = prepared.allowedUnixSockets;
         executionSignal = prepared.signal;
         if (!prepared.outboxContext) {
           this.#logger.warn(
@@ -371,6 +373,7 @@ export class SessionMessageInbox {
       ensureRunSignal().throwIfAborted();
       const result = await runtime.prompt({
         runId,
+        allowedUnixSockets,
         /*
          * The processing clock is sampled HERE — after the queue drain, admission reservation,
          * credential preparation, and `waitForIdle()` — so the Agent sees the actual processing

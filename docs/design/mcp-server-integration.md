@@ -458,7 +458,7 @@ Operator setup:
 - Create an OAuth client of type **Web application** in Google Cloud and register
   `<OPENTAG_PUBLIC_URL>/api/v1/mcp-servers/oauth/callback` as an authorized redirect URI.
 - On the OAuth consent screen's data access, add every scope the eight catalog entries request
-  (`oauthScopes` in `packages/mcp-presets/mcp-catalog.yaml`). The entries carry Google's
+  (`auth.oauth.scopes` in `packages/mcp-presets/mcp-catalog.yaml`). The entries carry Google's
   recommended per-product subset, which deliberately avoids restricted scopes such as
   `https://mail.google.com/`.
 - Google issues a refresh token only for `access_type=offline`, with `prompt=consent` on
@@ -471,6 +471,46 @@ The client is resolved from configuration, never stored, and it is offered only 
 Server's effective origin is one of the eight Google endpoints and the issuer canonicalizes to
 Google's — a Server that merely names Google as its authorization server cannot borrow it. Unsetting
 the variables takes effect immediately and leaves nothing to clean up.
+
+#### The deployment Canva client
+
+Canva serves two MCP endpoints, and they are not interchangeable:
+
+| Endpoint | Authorization server | Client |
+| --- | --- | --- |
+| `https://mcp.canva.com/mcp` | `https://mcp.canva.com` | Waitlist client: a client metadata document or dynamic registration, no secret |
+| `https://api.canva.com/connect/v1/mcp` | `https://www.canva.com` | Developer Portal client: a client ID, a client secret, and redirect URLs the integration manages |
+
+The catalog ships the waitlist endpoint, which works without configuration through the automatic
+resolution above. A deployment that wants Canva to use its own Developer Portal client configures
+`OPENTAG_MCP_CANVA_CLIENT_ID` and `OPENTAG_MCP_CANVA_CLIENT_SECRET` — both together or neither; a
+half-configured pair fails startup. Operator setup:
+
+- In the Canva Developer Portal, create an app, turn on **Canva MCP** under the integration
+  methods, copy the client ID, and generate a client secret.
+- Add `<OPENTAG_PUBLIC_URL>/api/v1/mcp-servers/oauth/callback` as a redirect URL. For the hosted
+  deployment this is `https://app.opentag.build/api/v1/mcp-servers/oauth/callback`.
+- The flow requests the scopes that the endpoint's protected resource metadata advertises in
+  `scopes_supported`, and authenticates at Canva's token endpoint with `client_secret_basic`.
+
+The client follows the same rules as the Google client: it is resolved from configuration and never
+stored, and it is offered only when the Server's effective origin is exactly `https://api.canva.com`
+and the discovered issuer is exactly `https://www.canva.com`. The waitlist endpoint never receives
+it, so authorizations on that endpoint keep their client whether or not the pair is configured.
+
+The catalog follows the configuration. `GET /api/v1/mcp-catalog/endpoints` returns the catalog
+entries whose endpoint the deployment replaces — `{ "catalogId": "canva", "url":
+"https://api.canva.com/connect/v1/mcp" }` when the pair is configured, and nothing otherwise — and
+never returns client material. The Web App reads it before Discover offers a card, so the Canva card
+creates its Server on the Developer Portal endpoint only when the deployment has the client for it.
+The Web App accepts only the replacement that `MCP_CATALOG_DEPLOYMENT_ENDPOINTS` names for that
+entry, and it recognizes both Canva endpoints as Canva for icons, titles, and the OAuth default. If
+the read fails, the catalog stays as shipped.
+
+A served entry keeps its shipped endpoint as an identity. Existing mounts recognize every endpoint
+of the entry and continue working through their own client. A new Web installation uses the
+preferred endpoint and creates an independent definition, with name-conflict handling if an older
+installation already holds the catalog name.
 
 ### The authorization round trip
 
@@ -510,7 +550,7 @@ On a mismatch, the response's `error`, `error_description`, and `error_uri` are 
 adopted — a mismatched response is evidence of an attack, not a hint about what went wrong.
 
 **Scopes**, in priority order: scopes an explicit request names (the CLI's `--scopes`, or a catalog
-entry's `oauthScopes`); otherwise the challenge's `scope`; otherwise the Protected Resource Metadata
+entry's `auth.oauth.scopes`); otherwise the challenge's `scope`; otherwise the Protected Resource Metadata
 document's `scopes_supported`; otherwise no `scope` parameter at all. The protected resource's own
 list is the fallback the specification names, and it is load-bearing for Google, whose authorization
 endpoint rejects a request carrying no `scope`. `offline_access` is added only when the
@@ -886,6 +926,13 @@ GET    /api/v1/mcp-servers/oauth/callback                unauthenticated; the st
 GET    /oauth/client-metadata.json                       unauthenticated; this deployment's CIMD document
 ```
 
+The authorization DELETE accepts an optional `{ expectedOAuthState }` body to cancel one OAuth
+attempt. A matching flow with an existing credential keeps that credential, its status, audience,
+and snapshot; only the flow fields are cleared. Without a credential, cancellation revokes the
+provisional authorization. A mismatched or completed attempt returns `MCP_OAUTH_FLOW_INVALID`.
+The request without a body remains an explicit credential revocation. Cancelling a replacement flow
+with an active credential also schedules a tool probe, so the UI does not wait for the background scan.
+
 `GET /api/v1/mcp-servers` returns, per row: `boundAgentCount`, `authorizedAgentCount`,
 `lastProbedAt`, `defaultAuthKind`, `authHeader`, `authScheme`. Both counts exclude deleted Agents.
 `authorizedAgentCount` counts only `status='active'` rows, because the number answers "how many
@@ -975,7 +1022,7 @@ edit, and remove.
   continue following shared definitions; this UI change does not introduce connection snapshots or
   alter API, CLI, authorization-header validation, or database behavior.
 - **Remove** disconnects this Agent and drops its credential. The shared definition remains available
-  to the configured-connector list and the CLI's definition-management commands.
+  in the backend registry and can still be managed by the CLI's definition-management commands.
 - **Authorize** chooses the method for this Agent and, for OAuth, navigates the top-level browsing
   context to the authorization server rather than fetching the URL.
 - **View tools (N)** sits on the right of a dedicated tool footer, separated from the Server's
@@ -998,23 +1045,34 @@ edit, and remove.
 The Connectors page keeps its existing layout and actions. **Discover** opens the service directory;
 **Add custom** opens a compact **Add custom connector** dialog. The Chinese entry labels are
 **发现** and **自定义**, and the custom dialog title is **添加自定义连接器**. The custom dialog contains:
-**Connector URL**, an optional **Choose a configured connector (N)** disclosure, and **Cancel / Connect**. There is
+An input with localized URL guidance and **Connect**, with dismissal through the header close button
+or Escape. **Connector URL** remains its screen-reader label; opening focuses the input. There is
 no source switch, name field, authentication picker, or header editor in this entry flow. Discover,
 manual configuration, and configuration import remain implementation capabilities rather than entry
 points in this dialog.
 
-Configured Account definitions that are not already mounted on this Agent are available through a
-single collapsed disclosure. Opening it shows every available definition in a bounded, scrollable
-list, with a name and URL on each row. There is no search, recent shortcut grid, or View all action.
-Selecting a row fills the URL, collapses the list, and returns focus to the disclosure without making
-a request. Its label becomes **Selected: {name} · Change**, and opening it again shows the selected row.
-Editing the URL clears the selection and its credential draft. Complete HTTP(S) endpoint URLs are required; only
-outer whitespace is trimmed, and configuration snippets, commands, multiple addresses, userinfo,
-and fragments are refused. One matching definition is reused; ambiguous matches require explicit
-selection. Service names are suggested automatically, with collision handling.
+Web installations are independent per Agent. Add custom offers only a URL; it neither lists the
+Account's definitions nor selects one by URL. Discover creates a new definition from the served
+catalog defaults when this Agent has no installation. Existing installations of this Agent remain
+available for connection, retry, and management, including URL overrides and every known endpoint
+of a deployment-replaced catalog entry.
 
-Connect reuses the existing create, attach, authorization, OAuth, and probe APIs. Saved configuration
-and exact preset matches provide authentication defaults; Bearer defaults reveal an API-key field
+Names are generated automatically from an exact preset or the URL's host. Creation tries the base
+name first; only `MCP_SERVER_NAME_CONFLICT` reads the Account's names and retries with a bounded,
+case-insensitive numeric suffix. A matching URL never selects another definition. Both add entry
+points share this operation. Confirmed definitions are retained within the current journey for
+attachment and authorization retries. Account definitions do not gate the ordinary Add button or
+first-use dialog. Reads of overridden definitions and OAuth return state are limited to this Agent's
+installations and the explicitly returned ID.
+
+Complete HTTP(S) endpoint URLs are required; only outer whitespace is trimmed, and configuration
+snippets, commands, multiple addresses, userinfo, and fragments are refused. Entering an already
+installed endpoint locates the current Agent's connection instead of creating another one. The
+backend registry and shared configuration semantics remain available through the API and CLI;
+this Web change does not migrate historical shared mounts or change OAuth client registration reuse.
+
+Connect uses the existing create, attach, authorization, OAuth, and probe APIs.
+Exact preset matches provide new-installation authentication defaults; Bearer defaults reveal an API-key field
 only after Connect, and OAuth defaults start provider sign-in directly. An unknown endpoint starts
 with an anonymous probe; an explicit authentication rejection permits an OAuth attempt through the
 existing discovery flow. The transport retains the shared `MCP_AUTH_REJECTION_SUMMARY` in probe errors,
@@ -1025,17 +1083,18 @@ while switching addresses discards that attempt. OAuth stores only Agent/Server 
 return view; cancellation restores this same dialog against its existing binding. Credentials remain
 strictly per Agent.
 
-The dialog is 440px wide and bounded by the viewport with 16px margins. URL-only entry uses 256px;
-the collapsed configured-connector disclosure uses 288px regardless of the number of choices.
-Opening the list expands downward to 480px while keeping the header and URL field in place;
-selection restores the compact height. API-key entry replaces the picker and uses 336px on desktop
-or 352px at widths up to 600px; the collapsed disclosure uses 304px on those narrow viewports.
-Loading and errors retain their current step's geometry. Available
-choices exclude the bindings present when the dialog opened, so an in-progress binding does not
-remove a choice during error recovery. Validation and connection feedback share a reserved line
-below the URL, or below the key when it is present. Explicit steps animate height over 160ms,
-with reduced-motion support. The list and constrained content can scroll while the footer remains
-visible.
+The dialog is 440px wide and bounded by the viewport with 16px margins. URL-only entry uses 216px;
+API-key entry uses 304px on desktop and 320px at widths up to 600px. The opening top anchor stays
+fixed when key collection expands downward. Feedback is reserved below the URL or key, and loading
+and errors retain the current step's geometry. The body scrolls within the viewport while the
+footer remains visible. Steps animate over 160ms with reduced-motion support.
+
+The list, Settings, Authentication, Tools, removal copy, and accessible names use one display-title
+function. A known catalog endpoint with its preset name or a numeric installation suffix displays
+the localized catalog title. Custom names remain verbatim. No display-name field is stored; IDs,
+raw names, and gateway tool namespaces retain their existing semantics. Removing or cancelling a
+new installation still detaches its mount; an unmounted definition remains in the backend registry
+but is not offered as a Web installation source.
 
 ### Importing a Server from another client's configuration
 
@@ -1121,7 +1180,7 @@ Directory cards place the service name and description on the left, with **Add**
 right rather than in a separate footer row. Limited-access labels sit beside the service name.
 On narrow screens, descriptions span the card width.
 
-Adding creates or reuses the Account definition and mounts it to this Agent. The directory closes as
+Adding creates this Agent's independent definition and mounts it to this Agent. The directory closes as
 soon as the mount is confirmed, and the management list highlights the service without waiting for
 authorization or tools. OAuth services immediately navigate to the provider without another confirmation.
 Bearer services open the shared authentication dialog with the known method fixed and no connection
@@ -1157,8 +1216,8 @@ use their user-supplied description, with the effective URL as the fallback when
 Subtitles stay on one line with truncation and a full-text tooltip; the complete URL remains in settings.
 An empty tool result is inspected in the existing tool browser. Authentication preserves the binding's
 effective settings and extra-header inheritance; catalog scopes are supplied only for its exact endpoint.
-Account definitions retain their chosen default authentication kind when reused. Catalog defaults apply
-to newly created definitions.
+Existing installations retain their chosen authentication kind. Catalog defaults apply to newly
+created definitions; other Agents' configuration and headers are never used to prefill them.
 
 UI validation captures use an isolated local MCP/OAuth fixture deployment: [desktop](assets/mcp-discover/desktop.png),
 [320px](assets/mcp-discover/mobile-320.png), [390px](assets/mcp-discover/mobile-390.png), and
@@ -1170,7 +1229,8 @@ The catalog is committed repository data in the `@opentag/mcp-presets` workspace
 | Source | Holds |
 | --- | --- |
 | `packages/mcp-presets/mcp-categories.yaml` | the category set: id, a localized label, and the tab order |
-| `packages/mcp-presets/mcp-catalog.yaml` | the entries: slug, localized title and description, URL, default authorization kind, category, provider site, icon, order, optional bearer header configuration, and an optional `oauthScopes` list — the scopes the provider's consent screen is configured for |
+| `packages/mcp-presets/mcp-catalog.yaml` | the entries, one registry-style record each: `id` (`mcp/<slug>`), localized `name`, `summary`, and `when_to_use`, `capabilities`, `status`, `auth` (`methods`, `default_kind`, and `oauth.scopes` — the scopes the provider's consent screen is configured for), `risk`, `remotes` endpoints with their header configuration and/or self-hosted `packages` (with `prerequisites` and `platforms`), `catalog` placement (category, order, icon), and `homepage` |
+| `packages/mcp-presets/schema/mcp-catalog-entry.schema.json` | the JSON Schema (draft 2020-12) every entry is validated against; the generator injects the supported locales |
 | `packages/mcp-presets/icons/` | the monochrome card marks referenced by the entries |
 
 `scripts/generate-mcp-catalog.mjs` compiles the sources into
@@ -1187,15 +1247,22 @@ and category rules, the icon, and the gates to run — is a first-party Skill at
 uploads it explicitly, and the Presets catalog never offers it.
 
 The current Add server flow uses an exact catalog endpoint match to supply authentication defaults
-and a suggested name. Account definitions are reused before creating another definition.
-`default_auth_kind` remains a prefill for the new authorization, never a statement about the Server.
+and a suggested name. Each Web installation creates its own definition; the Account registry is consulted only to resolve
+a creation-name conflict.
+`auth.default_kind` remains a prefill for the new authorization, never a statement about the Server.
 
-An entry's `oauthScopes`, when present, travel as the OAuth start request's explicit scopes, so the
+An entry's `auth.oauth.scopes`, when present, travel as the OAuth start request's explicit scopes, so the
 provider's consent screen is asked for exactly the scopes the catalog author recorded. An entry that
 declares none leaves scope selection to the flow's own discovery rules. The Add server flow consults
 scopes only for an exact endpoint match. Google's entries
 carry Google's recommended per-product subsets, which deliberately exclude restricted scopes such as
 `https://mail.google.com/`.
+
+An entry may also configure `auth.bearer` with `url`, `auth_header`, and `auth_scheme` when
+`auth.methods` includes `bearer`. The generator validates these settings against the shared create
+and outbound URL contracts and emits the flat `keyAuth` field for the Details authentication switch.
+An empty scheme sends the key without a prefix. The catalog contains connection settings only;
+users enter their credentials in Details.
 
 A provider may be listed only when credentials-free discovery of its published endpoint succeeds
 under the identity rules above. Three entries exist because of that path: **Atlassian**,
@@ -1206,8 +1273,23 @@ known limitation: its authorization server advertises `client_secret_post` and `
 `client_secret_basic` the dynamic-registration path presents, so its authorization stays unverified
 until token-endpoint authentication-method support exists (issue #814 tracks the follow-up).
 
+Discover lists only `active` entries. A `deprecated` or `archived` entry is compiled but hidden, and
+a `removed` entry is not emitted. Discover search also matches an entry's `keywords`, `aliases`,
+`tags`, `capabilities`, and `when_to_use` text. The compiled module keeps the flat card fields the
+Web App reads (`id` as the slug, `title`, `description`, `url`, `defaultAuthKind`, `oauthScopes`,
+`category`, `website`, `iconUrl`, `order`) as values derived from the registry fields, and adds
+`registryId`, `whenToUse`, `capabilities`, `status`, `risk`, and `auth`.
+
 The generator refuses, at build time, at minimum:
 
+- an entry that does not validate against the entry schema: an unknown key, a non-HTTPS remote, an
+  unknown package registry type, an unknown `status`, a missing locale, or neither `packages` nor
+  `remotes`;
+- a package whose named argument has no name, whose secret carries a value or default, whose
+  credential-looking variable is not marked secret, or whose value looks like a credential;
+- an `auth.default_kind` that is not in `auth.methods`, or an `oauth` method without an `auth.oauth`
+  block (and the reverse);
+- a `risk.side_effects` weaker than the strongest tool side effect, or a duplicate tool name;
 - an entry URL the outbound policy would refuse;
 - a create payload the Server would reject — the entry is validated by `CreateMCPServerRequestSchema`
   itself, so its name, auth header and scheme, and extra headers follow the same rules the Server
@@ -1215,14 +1297,18 @@ The generator refuses, at build time, at minimum:
 - an entry that names a category the category source does not declare;
 - a declared category that no entry references, so the tab bar never shows a tab that leads nowhere;
 - a duplicate entry or category id;
-- an `oauthScopes` list that is empty, carries a blank or oversized scope, or exceeds the start
-  request's bounds;
+- an `auth.oauth.scopes` list that is empty, carries a blank or oversized scope, or exceeds the
+  start request's bounds;
 - a localized field that omits any supported locale, taken from the i18n project settings;
 - an entry whose referenced icon file does not exist;
 - a compiled module that does not match its sources.
 
-Only remote Streamable HTTP Servers may be listed: OpenTag is a hosted service and cannot run a user's
-local stdio subprocess.
+Only a Server with a remote Streamable HTTP endpoint is **installable**. An entry may also record
+self-hosted `packages` (stdio and similar) as catalog data: the deployment has sandboxes, but the
+Server create contract and runtime do not run packages yet, so such an entry is emitted with
+`installable: false`, carries no flat connection fields, is withheld from Discover and URL matching,
+and is exposed read-only in the public catalog (with package values and defaults omitted). An SSE
+remote is data only as well. This document's Server-create contract is unchanged.
 
 **Staleness is not asserted by `pnpm check`.** Whether a listed endpoint still answers, and whether its
 authorization method is still what the catalog says, cannot be decided without the public network, and

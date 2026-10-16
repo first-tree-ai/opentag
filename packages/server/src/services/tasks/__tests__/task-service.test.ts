@@ -1,4 +1,4 @@
-import type { ImContentV1, TaskTurn, TurnReportRequest } from "@opentag/shared";
+import { agentAvatarPath, type ImContentV1, type TaskTurn, type TurnReportRequest } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createUnitDatabase, type UnitDatabase } from "../../../__tests__/support/unit-database.js";
@@ -280,6 +280,31 @@ async function groupTopic(bindingId: string, rootExternalId = "om_root") {
 }
 
 describe("TaskService", () => {
+  it("projects the current agent logo through the same-origin avatar path in lists and conversations", async () => {
+    const { agent, binding, bootstrap, service } = await fixture();
+    const channel = await createSession(binding.id, { channelId: DM, conversationKind: "dm" });
+    const message = await createMessage(binding.id, { channelId: DM, text: "Hello" });
+    await createDelivery(channel.id, message.id, { at: minutes(1), reported: true });
+
+    const readAgent = async () => [
+      (await service.list(bootstrap.userId, { limit: 50 })).tasks[0]?.agent,
+      (await service.get(bootstrap.userId, message.id, { limit: 50 })).task.agent,
+    ];
+    for (const summary of await readAgent()) expect(summary?.avatarPath).toBeUndefined();
+
+    await unitDatabase.database
+      .update(imBindings)
+      .set({ botAvatarUrl: "https://example.com/private-agent-logo.png" })
+      .where(eq(imBindings.id, binding.id));
+    for (const summary of await readAgent()) {
+      expect(summary?.avatarPath).toBe(agentAvatarPath(agent.id));
+      expect(summary).not.toHaveProperty("avatarSourceUrl");
+    }
+
+    await unitDatabase.database.update(imBindings).set({ botAvatarUrl: null }).where(eq(imBindings.id, binding.id));
+    for (const summary of await readAgent()) expect(summary?.avatarPath).toBeUndefined();
+  });
+
   it("groups a root message and its reply chain into one Task keyed by the earliest message", async () => {
     const { agent, binding, bootstrap, service } = await fixture();
     const { channel, thread, root, reply } = await groupTopic(binding.id);

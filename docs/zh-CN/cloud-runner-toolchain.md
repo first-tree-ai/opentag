@@ -29,7 +29,7 @@ Client `0.0.0` 不是 Runner 版本。
 | `context-tree` | 来自 `apps/cli` 的 `@first-tree-ai/context-tree@0.1.16`（不是第二份独立 pin） |
 | `git` | 继承自按 digest 固定的 Node 镜像（`2.39.5`，构建期断言；不经 apt 下载） |
 | `gh` | GitHub CLI `2.100.0`，校验和验证的 linux/amd64 release |
-| `slack` / `lark-cli` | 已审阅的 Provider CLI catalog（Slack `4.7.0`，Lark `1.0.92`），带 skip-update 环境变量/参数 |
+| `slack` / `lark-cli` | 已审阅的 Provider CLI catalog（Slack `4.10.0`，Lark `1.0.92`），带 skip-update 环境变量/参数 |
 
 Slack/Lark 原生可执行文件在 root 拥有的内部目录 `/opt/opentag/tools/internal/` 中保留上游
 basename；`/opt/opentag/tools/bin/` 面向用户的命令是托管 launcher，因此已审阅的 catalog

@@ -44,6 +44,10 @@ import { RequestValidationError } from "./api/request-validation.js";
 import { registerRunnerWorkspaceRoutes } from "./api/runner-workspace.js";
 import type { RuntimeRoutesOptions } from "./api/runtime.js";
 import { type RuntimeAgentRoutesOptions, registerRuntimeAgentRoutes } from "./api/runtime-agent.js";
+import {
+  type RuntimeAgentSlackProvisionOptions,
+  registerRuntimeAgentSlackProvision,
+} from "./api/runtime-agent-slack-provision.js";
 import { type RuntimeDurableWorkRoutesOptions, registerRuntimeDurableWorkRoutes } from "./api/runtime-durable-work.js";
 import type { RuntimeProviderProxyRoutesOptions } from "./api/runtime-provider-proxy.js";
 import { type RuntimeSessionRoutesOptions, registerRuntimeSessionRoutes } from "./api/runtime-sessions.js";
@@ -212,6 +216,7 @@ export interface CreateAppOptions {
   runtimeSessions?: RuntimeSessionRoutesOptions;
   /** Session-proof-authenticated Agent self-configuration (`opentag agent self`). */
   runtimeAgent?: RuntimeAgentRoutesOptions;
+  runtimeAgentSlackProvision?: RuntimeAgentSlackProvisionOptions;
   /** Session-proof-authenticated Agent Schedule management (`opentag agent self schedule`). */
   runtimeAgentSchedules?: RuntimeAgentScheduleRoutesOptions;
   /** Account-facing Schedule list/show/pause/resume/delete; no Account create or update exists. */
@@ -511,10 +516,14 @@ export function safeInboundRequestId(header: string | string[] | undefined): str
 /** Routes authenticated by the Session CLI proof rather than an Account or machine credential. */
 function registerSessionProofRoutes(
   app: FastifyInstance,
-  options: Pick<CreateAppOptions, "runtimeAgent" | "runtimeAgentSchedules" | "runtimeSessions">,
+  options: Pick<
+    CreateAppOptions,
+    "runtimeAgent" | "runtimeAgentSlackProvision" | "runtimeAgentSchedules" | "runtimeSessions"
+  >,
 ): void {
   if (options.runtimeSessions) registerRuntimeSessionRoutes(app, options.runtimeSessions);
   if (options.runtimeAgent) registerRuntimeAgentRoutes(app, options.runtimeAgent);
+  if (options.runtimeAgentSlackProvision) registerRuntimeAgentSlackProvision(app, options.runtimeAgentSlackProvision);
   if (options.runtimeAgentSchedules) registerRuntimeAgentScheduleRoutes(app, options.runtimeAgentSchedules);
 }
 

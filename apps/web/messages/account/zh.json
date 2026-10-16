@@ -30,5 +30,13 @@
   "account_retry_refresh": "重试刷新",
   "account_save_profile": "保存账户资料",
   "account_saving": "保存中…",
+  "account_slack_provision_code": "一次性操作码",
+  "account_slack_provision_copied": "已复制，请粘贴回 Agent 对话。有效期 {minutes} 分钟。",
+  "account_slack_provision_description": "生成本次操作的一次性码，粘贴回 Agent 对话。此码不能用于登录 Account。 新 Agent 使用当前 Computer、来源 Agent 的 Runtime Provider 及其默认执行策略和时长。",
+  "account_slack_provision_error": "无法生成操作码，请重试。",
+  "account_slack_provision_generate": "生成并复制操作码",
+  "account_slack_provision_generating": "正在生成…",
+  "account_slack_provision_manual": "请复制下方操作码并粘贴回 Agent 对话。有效期 {minutes} 分钟。",
+  "account_slack_provision_title": "创建 Agent 并绑定独立 {provider} App",
   "account_unsaved_changes": "未保存的更改"
 }

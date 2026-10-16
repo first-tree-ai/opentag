@@ -273,7 +273,7 @@ Cloud model choices come from the Router's authenticated `GET /models` response 
 base URL and credential. The Router applies tenant permissions and model availability. The
 Server uses one bounded, short-lived catalog for model selection, configuration validation,
 dispatch and model grants. An Agent without an explicit model uses the catalog default:
-`gemini-3.8-flash` when the validated catalog offers it, otherwise the first validated Router
+`gemini-4-argon` when the validated catalog offers it, otherwise the first validated Router
 model. The Server publishes the selected default first and preserves the relative order of the
 other models for client compatibility; an explicit model must be in the current
 catalog. Failed refreshes and empty lists are unavailable,

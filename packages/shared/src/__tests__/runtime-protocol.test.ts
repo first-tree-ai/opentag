@@ -33,6 +33,19 @@ import {
 } from "../runtime-protocol.js";
 
 describe("runtime protocol", () => {
+  it("negotiates Slack auto setup only with approval-aware peers without requiring the capability", () => {
+    const v1 = { [RUNTIME_CAPABILITY.slackAutoSetup]: { min: 1, max: 1 } };
+    expect(negotiateRuntimeCapabilities(v1, RUNTIME_SERVER_CAPABILITY_OFFERS)).toEqual({});
+    expect(negotiateRuntimeCapabilities(RUNTIME_CLIENT_CAPABILITY_OFFERS, v1)).toEqual({});
+    expect(
+      negotiateRuntimeCapabilities(
+        { [RUNTIME_CAPABILITY.slackAutoSetup]: { min: 2, max: 2 } },
+        RUNTIME_SERVER_CAPABILITY_OFFERS,
+      ),
+    ).toEqual({ [RUNTIME_CAPABILITY.slackAutoSetup]: 2 });
+    expect(RUNTIME_REQUIRED_CLIENT_CAPABILITIES).not.toContain(RUNTIME_CAPABILITY.slackAutoSetup);
+    expect(RUNTIME_REQUIRED_SERVER_CAPABILITIES).not.toContain(RUNTIME_CAPABILITY.slackAutoSetup);
+  });
   it("requires the Computer identity on a successful auth result and an error code on failure", () => {
     const ok = {
       type: "auth:result" as const,

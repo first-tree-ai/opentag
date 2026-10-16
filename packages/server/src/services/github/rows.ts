@@ -1,8 +1,22 @@
 import type { GitHubConnectionStatus } from "@opentag/shared";
-import type { githubConnections } from "../../db/schema/index.js";
+import { getTableColumns } from "drizzle-orm";
+import { githubConnections } from "../../db/schema/index.js";
 import { GITHUB_CONNECTION_ERROR_CODES, GitHubConnectionServiceError } from "./errors.js";
 
-export type GitHubConnectionRow = typeof githubConnections.$inferSelect;
+export type GitHubConnectionRow = Omit<
+  typeof githubConnections.$inferSelect,
+  "repositoryBindings" | "bindingsSchemaVersion"
+>;
+
+/** Exclude retained legacy JSON even from internal credential/status reads. */
+export function gitHubConnectionColumns() {
+  const {
+    repositoryBindings: _legacy,
+    bindingsSchemaVersion: _version,
+    ...columns
+  } = getTableColumns(githubConnections);
+  return columns;
+}
 
 /**
  * Maps a stored row to the nonsecret status DTO. Secret columns — credential ciphertext and key IDs,
@@ -18,8 +32,6 @@ export function toGitHubConnectionStatus(row: GitHubConnectionRow): GitHubConnec
     githubUserId: row.githubUserId,
     githubLogin: row.githubLogin,
     status: row.status,
-    bindingsSchemaVersion: row.bindingsSchemaVersion,
-    bindings: row.repositoryBindings,
     authorizationVersion: row.authorizationVersion.toString(),
     credentialGeneration: row.credentialGeneration.toString(),
     accessExpiresAt: row.accessExpiresAt?.toISOString() ?? null,

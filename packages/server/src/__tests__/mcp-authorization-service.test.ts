@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentMcpServers, agents, mcpServerAuthorizations, mcpServers, users } from "../db/schema/index.js";
+import { hashSecret } from "../services/auth/security.js";
 import { ApplicationCipher } from "../services/crypto.js";
 import { MCP_ERROR_CODES } from "../services/mcp/errors.js";
 import { McpAuthorizationService } from "../services/mcp/mcp-authorization-service.js";
@@ -741,5 +742,44 @@ describe("McpAuthorizationService.readProbeOutcome", () => {
       protocolEra: "modern",
       protocolVersion: "2026-07-28",
     });
+  });
+});
+
+describe("OAuth attempt cancellation", () => {
+  it("cancels only the matching pending flow and refuses an older attempt", async () => {
+    const ids = await seed();
+    const { authorization } = build();
+    await unit.database.insert(mcpServerAuthorizations).values({
+      agentId: ids.agentId,
+      mcpServerId: ids.mcpServerId,
+      kind: "oauth",
+      status: "pending",
+      state: hashSecret("new-attempt"),
+      stateExpiresAt: new Date(Date.now() + 60_000),
+      pkceCiphertext: "sealed-verifier",
+      loginSessionHash: "browser-binding",
+    });
+    await expect(
+      authorization.revoke(ids.accountId, ids.agentId, ids.mcpServerId, "old-attempt"),
+    ).rejects.toMatchObject({ code: MCP_ERROR_CODES.OAUTH_FLOW_INVALID });
+    expect((await readRow(ids))?.state).toBe(hashSecret("new-attempt"));
+    await authorization.revoke(ids.accountId, ids.agentId, ids.mcpServerId, "new-attempt");
+    expect(await readRow(ids)).toMatchObject({ status: "revoked", state: null, ciphertext: null, tools: null });
+  });
+
+  it("cannot clear a credential already committed by a callback", async () => {
+    const ids = await seed();
+    const { authorization, probe } = build();
+    await authorization.setBearerOrNone(ids.accountId, ids.agentId, ids.mcpServerId, {
+      kind: "bearer",
+      bearerKey: "current-token",
+    });
+    probe.probe.mockResolvedValue(probeSuccess());
+    await authorization.probe(ids.accountId, ids.agentId, ids.mcpServerId);
+    const before = await readRow(ids);
+    await expect(
+      authorization.revoke(ids.accountId, ids.agentId, ids.mcpServerId, "completed-attempt"),
+    ).rejects.toMatchObject({ code: MCP_ERROR_CODES.OAUTH_FLOW_INVALID });
+    expect(await readRow(ids)).toEqual(before);
   });
 });

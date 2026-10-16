@@ -13,7 +13,7 @@ const GOOD_OUTPUTS: Readonly<Record<string, string>> = {
   "opentag --version": "0.0.5\n",
   "lark-cli --version": "lark-cli version 1.0.92\n",
   "lark-cli im --help": "Message and group chat management\n\nPrefer a +-prefixed shortcut.\n",
-  "slack version": "Using slack v4.7.0\n",
+  "slack version": "Using slack v4.10.0\n",
   "slack api --help": "Call any Slack API method directly.\n",
 };
 
@@ -158,19 +158,19 @@ describe("runner tool probes", () => {
     {
       name: "slack",
       key: "slack version",
-      output: "Using slack.bin v4.7.0\n",
+      output: "Using slack.bin v4.10.0\n",
       why: "renamed slack.bin breaks the reviewed catalog pattern",
     },
     {
       name: "slack",
       key: "slack version",
-      output: "old Using slack v4.7.0\n",
+      output: "old Using slack v4.10.0\n",
       why: "leading wrapper on the Slack banner",
     },
     {
       name: "slack",
       key: "slack version",
-      output: "Using slack v4.7.0 (beta)\n",
+      output: "Using slack v4.10.0 (beta)\n",
       why: "trailing wrapper on the Slack banner",
     },
     {
@@ -213,7 +213,7 @@ describe("runner tool probes", () => {
     const probes = await probeRunnerTools({
       execFile: router({
         ...GOOD_OUTPUTS,
-        "slack version": "Using slack v4.7.0\nUpdate checks are disabled.\n",
+        "slack version": "Using slack v4.10.0\nUpdate checks are disabled.\n",
         "lark-cli --version": "lark-cli version 1.0.92\nbuilt from the pinned release\n",
       }),
       env: { HOME: "/tmp" },

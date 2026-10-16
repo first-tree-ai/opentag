@@ -10,6 +10,7 @@ import {
   UpdateAgentScheduleRequestSchema,
 } from "@opentag/shared";
 import { CommandError } from "../command/policy.js";
+import { currentSessionExecutionId } from "../session/execution.js";
 import { resolveSessionProofContext } from "../session/index.js";
 
 export interface ScheduleSelfApiClient
@@ -52,11 +53,16 @@ export interface UpdateScheduleOptions extends ScheduleSelfDependencies, Schedul
   timezone?: string;
 }
 
-async function context(dependencies: ScheduleSelfDependencies): Promise<{ api: ScheduleSelfApiClient; proof: string }> {
+async function context(
+  dependencies: ScheduleSelfDependencies,
+): Promise<{ api: ScheduleSelfApiClient; proof: string; executionId?: string }> {
   if ((dependencies.api && !dependencies.proof) || (dependencies.proof && !dependencies.api)) {
     throw new Error("Schedule command test dependencies must provide both api and proof");
   }
-  if (dependencies.api && dependencies.proof) return { api: dependencies.api, proof: dependencies.proof };
+  if (dependencies.api && dependencies.proof) {
+    const executionId = await currentSessionExecutionId(dependencies.environment ?? {});
+    return { api: dependencies.api, proof: dependencies.proof, ...(executionId ? { executionId } : {}) };
+  }
   const environment = dependencies.environment ?? process.env;
   if (!environment.OPENTAG_SESSION_PROOF_FILE) {
     throw new CommandError(
@@ -106,10 +112,12 @@ export async function runAgentSelfScheduleCreate(options: CreateScheduleOptions)
     schedule: ruleFromOptions(options, true),
     timezone: options.timezone,
   });
-  const { api, proof } = await context(options);
+  const { api, proof, executionId } = await context(options);
   // A transport timeout is indeterminate. The caller sees it and can list/show; there is no
   // automatic POST retry that could create a second schedule.
-  return api.createRuntimeAgentSchedule(proof, input);
+  return executionId
+    ? api.createRuntimeAgentSchedule(proof, input, { executionId })
+    : api.createRuntimeAgentSchedule(proof, input);
 }
 
 export async function runAgentSelfScheduleList(
@@ -147,9 +155,12 @@ export async function runAgentSelfScheduleUpdate(
     ...(options.timezone !== undefined ? { timezone: options.timezone } : {}),
   };
   const preflight = UpdateAgentScheduleRequestSchema.parse({ expectedRevision: 1, ...mutation });
-  const { api, proof } = await context(options);
+  const { api, proof, executionId } = await context(options);
   const current = await api.getRuntimeAgentSchedule(proof, scheduleId);
-  return api.updateRuntimeAgentSchedule(proof, scheduleId, { ...preflight, expectedRevision: current.revision });
+  const input = { ...preflight, expectedRevision: current.revision };
+  return executionId
+    ? api.updateRuntimeAgentSchedule(proof, scheduleId, input, { executionId })
+    : api.updateRuntimeAgentSchedule(proof, scheduleId, input);
 }
 
 export async function runAgentSelfSchedulePause(
@@ -165,9 +176,11 @@ export async function runAgentSelfScheduleResume(
   scheduleId: string,
   dependencies: ScheduleSelfDependencies = {},
 ): Promise<AgentSchedule> {
-  const { api, proof } = await context(dependencies);
+  const { api, proof, executionId } = await context(dependencies);
   const current = await api.getRuntimeAgentSchedule(proof, scheduleId);
-  return api.resumeRuntimeAgentSchedule(proof, scheduleId, current.revision);
+  return executionId
+    ? api.resumeRuntimeAgentSchedule(proof, scheduleId, current.revision, { executionId })
+    : api.resumeRuntimeAgentSchedule(proof, scheduleId, current.revision);
 }
 
 export async function runAgentSelfScheduleDelete(

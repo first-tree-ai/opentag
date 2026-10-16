@@ -1,20 +1,59 @@
-# Connector settings refinement
+# Connector management
 
-Updated: 2026-10-12.
+The list keeps two right-hand rows: the enable switch and an ellipsis menu above, a short reason and
+recovery action below. Successful snapshots have no Connected badge, success dot, or tool count.
+Disabled connectors use only the switch. Identity opens Details; the menu contains Details and
+Delete. A compact confirmation shows “Delete {name}?” above “This Agent won’t be able to use {name}
+until you add it again.” Cancel and Delete sit at the bottom right, with initial focus on Cancel.
+There is no duplicate close button; Escape cancels. It removes this Agent's installation and its
+unused definition; a historical definition still used by another Agent is retained.
 
-The current UI uses Connectors, Add custom, and Discover. Existing screenshots record the UI before this rename; the MCP protocol and page URL remain unchanged.
+Feedback describes only known evidence: Authorization expired, Authorization failed, Cannot reach
+service, Request timed out, or Couldn't load tools. More specific rejection or revocation copy requires
+explicit provider evidence; an internal revoked row alone does not establish provider revocation.
+Authentication recovery uses Authorize or Reauthorize; tool loading uses Retry. A completed empty
+inventory shows No tools available without a retry. Partial inventories remain usable. There are no
+error popovers or raw upstream responses.
 
-These screenshots show the current React components after reconciliation with the connector management journeys on `main`. They use disposable sample data in a local preview, not a signed-in provider account.
+Discover retains its card layout. Progress or an error replaces the description; its action remains
+in the original action area. Completion restores the description and shows only a gray check mark,
+with an accessible Added label. It preserves search, category, scroll, and an open directory. Closing
+the directory does not interrupt OAuth; explicit Cancel and blocked-popup Open remain in the card.
+The close button remains available during OAuth. The list reads the same in-progress attempt, so
+closing Discover preserves Authorizing and Cancel, then shows tool loading or the failure in place.
+Reopening the directory preserves a failed attempt until retry, and the same connector cannot start
+another authorization while its Discover attempt is running.
 
-- [Desktop settings (1440 × 900)](settings-desktop.jpg)
-- [Desktop authentication (1440 × 900)](authentication-desktop.jpg)
-- [Settings (320 × 640)](settings-320.jpg)
-- [Authorization required (320 × 640)](disconnected-320.jpg)
+Preset Details contains the name, logo, close button, a visible copyable Connector address, and
+Authentication. Account sign-in uses Authorize or Reauthorize. A saved API key or token is masked and
+has Update; editing uses Save and Cancel. A preset with multiple configured methods offers Use API
+key or token or Use account sign-in. Selecting an alternative is local until submission. Switching to
+OAuth uses Authorize. Tools, Advanced settings, deletion, credential clearing, and a global save
+footer are absent. Custom Details keeps editable connection settings and Advanced settings.
 
-The settings page keeps the Connector address label, removes the redundant Agent scope sentence and Connector information disclosure, and uses consistent 44 px navigation rows with restrained hover backgrounds. Back returns to the parent; Close and Escape dismiss the entire flow. Drafts, disclosure state and scroll positions survive returning from child dialogs. Dirty connection settings must still be saved before authentication.
+In Details, OAuth feedback sits beside Authorize or Reauthorize, above the alternative-method link;
+on narrow screens it wraps below the action. Editing failures remain with the authentication fields.
+URL validation stays below its input, and connection or configuration failures stay by their form's
+submission action. Discover's key form has only Cancel and Save, with inline feedback under the key;
+its catalog retains the close button and per-card feedback.
 
-Authentication reserves space for its method-specific content, so switching between browser sign-in, a token and no authentication leaves the dialog position and footer unchanged. Settings and authentication share a top anchor and scroll their body when viewport space is limited. Tools uses the initial list size with a minimum list area, caps at the remaining viewport height, and keeps its height while filtering.
+Preset defaults and alternate key endpoint/header rules live in packages/mcp-presets/mcp-catalog.yaml;
+the generator validates them and emits the public registry. Existing installations are not rewritten.
+Submission replaces the saved configuration without candidate validation, backup, or rollback.
+OAuth success followed by a tool failure retains credentials and supports Retry.
+Retry from the list or Discover does not open an authorization window when credentials remain active.
+OAuth completion immediately refreshes authorization data, including when started from Details.
+Retry reads the latest confirmed authorization. A failed method switch keeps the preset form and
+submitted configuration. Editable fields stay disabled while a credential write is pending;
+OAuth Cancel and Open remain available during authorization.
 
-Browser layout checks covered 320, 390, 768 and 1440 px widths, a short viewport, connected and authorization-required settings, header mode switching, all three authentication methods, Tools filtering and empty results. At 320 px, expanded settings scroll internally and preserve the footer. The current 1440 px authentication dialog measured the same top and height for all three methods; Tools kept its dimensions for a no-match query.
+Browser journeys use fictional provider responses. Actual provider consent and platform-client setup
+are not verified by those tests.
 
-Before reconciliation, a separate local end-to-end run exercised the actual application, Fastify, PostgreSQL and a controlled MCP/OAuth provider: save/cancel, header modes, token authentication, browser OAuth, draft rebasing, tool refresh/search, long lists and removal. That provider used client-ID metadata documents. Real Notion/Linear authorization and dynamic client registration (DCR) were not validated. The independent review's existing DCR registration-binding finding remains outside this change.
+UI evidence verified on 2026-10-15; browser checks cover 320px, 390px, 768px, and 1440px:
+
+- [Discover during authorization, 1440px](./discover-current-1440.png)
+- [Preset Details with an authorization error, 1440px](./details-current-1440.png)
+- [Preset Details with an authorization error, 320px](./details-current-320.png)
+
+Other screenshots in this directory show the previous design.

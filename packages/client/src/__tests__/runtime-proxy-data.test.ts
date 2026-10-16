@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type WebSocket as ServerWebSocket, WebSocketServer } from "ws";
 import type { RuntimeProxyStreamResponse } from "../runtime/runtime-proxy-data-client.js";
-import { RuntimeProxyDataConnection } from "../runtime/runtime-proxy-data-client.js";
+import { RuntimeProxyDataConnection, RuntimeProxyDataError } from "../runtime/runtime-proxy-data-client.js";
 import {
   generateExecutionCa,
   type RuntimeProxyAdapterStreamRequest,
@@ -227,7 +227,10 @@ describe("RuntimeProxyDataConnection", () => {
       headers: {},
     };
     try {
-      await expect(connection.openStream(request)).rejects.toMatchObject({ code: "stream_error" });
+      await expect(connection.openStream(request)).rejects.toMatchObject({
+        code: "stream_error",
+        upstreamCode: "upstream_denied",
+      });
       await expect(connection.openStream(request)).rejects.toMatchObject({ code: "stream_error" });
       await expect(connection.openStream(request)).rejects.toMatchObject({ code: "connection_lost" });
     } finally {
@@ -512,6 +515,46 @@ describe("RuntimeProxyDataConnection", () => {
     for (const pending of started) await expect(pending).rejects.toBeInstanceOf(Error);
   });
 
+  it("keeps active uploads alive beyond the opening idle timeout", async () => {
+    const fixture = await startDataFixture((socket) =>
+      socket.on("message", (data, binary) => {
+        if (binary) return;
+        const frame = decodeJson(data);
+        if (frame.type === "auth") socket.send(JSON.stringify({ type: "ready", executionId: EXECUTION_ID }));
+        if (frame.type === "end") {
+          socket.send(JSON.stringify({ type: "response", streamId: frame.streamId, status: 204, headers: {} }));
+          socket.send(JSON.stringify({ type: "end", streamId: frame.streamId }));
+        }
+      }),
+    );
+    const connection = await RuntimeProxyDataConnection.connect({
+      executionId: EXECUTION_ID,
+      ticket: "ticket-value-with-enough-bytes-1234",
+      url: fixture.url,
+      openTimeoutMs: 100,
+    });
+    try {
+      const response = await connection.openStream({
+        capability: "cap",
+        provider: "github",
+        bindingId: "b",
+        method: "POST",
+        path: "/team/code.git/git-receive-pack",
+        headers: {},
+        body: (async function* () {
+          for (let i = 0; i < 10; i++) {
+            await wait(30);
+            yield bytesOf("pack");
+          }
+        })(),
+      });
+      expect(response.status).toBe(204);
+      expect(connection.closed).toBe(false);
+    } finally {
+      await connection.close();
+    }
+  });
+
   it("cancels with the open_timeout code when a stream never gets a response", async () => {
     const fixture = await startDataFixture((socket, requests) => {
       socket.on("message", (data, isBinary) => {
@@ -537,8 +580,8 @@ describe("RuntimeProxyDataConnection", () => {
           path: "/user",
           headers: {},
         }),
-      ).rejects.toMatchObject({ code: "aborted" });
-      // The client told the Server why: the open deadline expired, not a consumer cancel.
+      ).rejects.toMatchObject({ code: "open_timeout" });
+      // Both the caller and Server retain the timeout cause rather than a consumer cancel.
       await wait(20);
       expect(fixture.requests).toContainEqual(expect.objectContaining({ code: "open_timeout", type: "cancel" }));
       expect(connection.activeStreamCount).toBe(0);
@@ -1646,10 +1689,10 @@ describe("RuntimeProxyLoopbackAdapter", () => {
     tunnel.destroy();
   });
 
-  it("fails CA generation through the real OpenSSL CLI when the material directory is unusable", async () => {
+  it("fails CA generation when the material directory is unusable", async () => {
     const root = await mkdtemp(join(tmpdir(), "opentag-adapter-ca-"));
     roots.push(root);
-    // A plain file where the material directory must be makes OpenSSL's real key write fail.
+    // A plain file cannot hold the private CA material.
     const blocked = join(root, "blocked");
     await writeFile(blocked, "not a directory");
     await expect(generateExecutionCa(blocked)).rejects.toMatchObject({
@@ -1930,7 +1973,7 @@ describe("RuntimeProxyLoopbackAdapter", () => {
     while (raw.indexOf("\r\n\r\n") < 0) raw = Buffer.concat([raw, await onceData(tunnel)]);
     const head = raw.subarray(0, raw.indexOf("\r\n\r\n")).toString("utf8");
     expect(head).toContain("503");
-    expect(head.toLowerCase()).toContain("text/plain");
+    expect(head.toLowerCase()).toContain("application/json");
     tunnel.destroy();
   });
 
@@ -2016,5 +2059,79 @@ describe("RuntimeProxyLoopbackAdapter", () => {
     expect(response.status).toBeGreaterThanOrEqual(400);
     // The declared length alone rejects the body before it is read or forwarded.
     expect(harness.requests).toHaveLength(0);
+  });
+});
+
+describe("GitHub proxy typed HTTP failures (Cloud CONNECT)", () => {
+  it.each([
+    ["scope_denied", 403],
+    ["GITHUB_RATE_LIMITED", 429],
+    ["GITHUB_UPSTREAM_UNAVAILABLE", 503],
+    ["secret-token-value", 503],
+  ] as const)("maps %s without exposing raw errors", async (code, status) => {
+    const harness = await startAdapter({
+      response: () => {
+        throw new RuntimeProxyDataError("stream_error", "private raw credential", undefined, code);
+      },
+    });
+    const ca = await readFile(harness.adapter.caCertPath);
+    const tunnel = await connectTunnel(Number(new URL(harness.adapter.connectProxyUrl).port), "api.github.com", ca);
+    try {
+      writeRequest(tunnel, {
+        method: "GET",
+        path: "/repos/team/fixture",
+        headers: { authorization: "token otrh_valid" },
+      });
+      const response = await readHttpResponse(tunnel);
+      expect(response.status).toBe(status);
+      expect(response.headers["content-type"]).toBe("application/json");
+      expect(JSON.parse(response.body)).toEqual({
+        message: code === "secret-token-value" ? "upstream_unavailable" : code,
+        code: code === "secret-token-value" ? "upstream_unavailable" : code,
+      });
+      expect(response.body).not.toContain("private raw credential");
+    } finally {
+      tunnel.destroy();
+    }
+  });
+});
+
+describe("native HTTP protocol compatibility", () => {
+  it.each([false, true])("supports old-server reads and explicitly gates HEAD (v2=%s)", async (version2) => {
+    const readyVersion = version2 ? { httpVersion: 2 } : {};
+    const fixture = await startDataFixture((socket, requests) =>
+      socket.on("message", (data, binary) => {
+        if (binary) return;
+        const frame = decodeJson(data);
+        if (frame.type === "auth")
+          socket.send(JSON.stringify({ type: "ready", executionId: EXECUTION_ID, ...readyVersion }));
+        if (frame.type === "open") {
+          requests.push(frame);
+          socket.send(JSON.stringify({ type: "response", streamId: frame.streamId, status: 204, headers: {} }));
+          socket.send(JSON.stringify({ type: "end", streamId: frame.streamId }));
+        }
+      }),
+    );
+    const connection = await connectData(fixture.url);
+    const request = {
+      provider: "github" as const,
+      bindingId: "b",
+      capability: "cap",
+      method: "HEAD",
+      path: "/user",
+      headers: {},
+    };
+    try {
+      if (version2) expect((await connection.openStream(request)).status).toBe(204);
+      else
+        await expect(connection.openStream(request)).rejects.toMatchObject({
+          upstreamCode: "github_protocol_upgrade_required",
+        });
+      expect((await connection.openStream({ ...request, method: "GET" })).status).toBe(204);
+      expect(connection.closed).toBe(false);
+      expect(fixture.requests.map((frame) => frame.method)).toEqual(version2 ? ["HEAD", "GET"] : ["GET"]);
+    } finally {
+      await connection.close();
+    }
   });
 });

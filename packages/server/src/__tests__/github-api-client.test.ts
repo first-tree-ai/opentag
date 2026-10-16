@@ -993,3 +993,56 @@ describe("GitHubApiClient deadline and transport failure precedence", () => {
     expect((failure as GitHubApiClientError).details).toEqual({ retryAfterSeconds: 42, status });
   });
 });
+
+describe("GitHubApiClient exact target lookup", () => {
+  it("uses only the fixed repository endpoint with the current user token", async () => {
+    const fetcher = vi.fn(async () =>
+      jsonResponse(200, {
+        id: 123,
+        full_name: "owner/requested",
+        private: true,
+        default_branch: "main",
+        permissions: { pull: true, push: false, admin: false },
+      }),
+    );
+    const client = clientWithFetch(fetcher);
+    expect(await client.getRepository({ accessToken: "ghu_current", fullName: "owner/requested" })).toMatchObject({
+      repositoryId: "123",
+      fullName: "owner/requested",
+      permissions: { pull: true, push: false },
+    });
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://api.github.com/repos/owner/requested",
+      expect.objectContaining({
+        redirect: "error",
+        headers: expect.objectContaining({ authorization: "Bearer ghu_current" }),
+      }),
+    );
+  });
+  it.each(["../foreign", "owner/repo?token=x", "owner/repo/extra", "owner/%2fother"])(
+    "rejects an unsafe target %s before network",
+    async (fullName) => {
+      const fetcher = vi.fn();
+      await expect(clientWithFetch(fetcher).getRepository({ accessToken: "ghu_current", fullName })).rejects.toThrow();
+      expect(fetcher).not.toHaveBeenCalled();
+    },
+  );
+});
+
+it("proves exact user/App installation membership with a bounded probe and no catalog traversal", async () => {
+  const fetcher = vi.fn(async () => jsonResponse(200, { total_count: 50000, repositories: [{}] }));
+  await clientWithFetch(fetcher).assertUserInstallationAccess({ accessToken: "ghu_current", installationId: "777" });
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(fetcher).toHaveBeenCalledWith(
+    "https://api.github.com/user/installations/777/repositories?per_page=1&page=1",
+    expect.objectContaining({
+      method: "GET",
+      redirect: "error",
+      headers: expect.objectContaining({ authorization: "Bearer ghu_current" }),
+    }),
+  );
+  const inaccessible = clientWithFetch(async () => jsonResponse(404, {}));
+  await expect(
+    inaccessible.assertUserInstallationAccess({ accessToken: "ghu_current", installationId: "777" }),
+  ).rejects.toThrow();
+});

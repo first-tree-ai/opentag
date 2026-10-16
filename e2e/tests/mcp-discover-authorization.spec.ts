@@ -61,7 +61,7 @@ for (const width of [1440, 736]) {
     await card.getByRole("button", { name: "Add: Airtable", exact: true }).click();
     const tab = await tabPromise;
     await expect(tab.getByRole("link", { name: "Finish authorization" })).toBeVisible();
-    await expect(card.getByRole("status")).toHaveText("Waiting for authorization…");
+    await expect(card.getByRole("status")).toHaveText("Authorizing…");
     await expect(card.getByRole("button", { name: "Cancel: Airtable", exact: true })).toBeEnabled();
     await expect(dialog).toBeVisible();
     await expectHeight(card, height);
@@ -70,11 +70,11 @@ for (const width of [1440, 736]) {
     await page.screenshot({ path: test.info().outputPath(`discover-waiting-${width}.png`) });
     fixture.completeOAuth(agentId);
     await tab.getByRole("link", { name: "Finish authorization" }).click();
-    await expect(card.getByRole("status")).toHaveText("Checking connection…");
+    await expect(card.getByRole("status")).toHaveText("Loading tools…");
     await expect(card.getByRole("button", { name: /Cancel/ })).toHaveCount(0);
     await expectHeight(card, height);
     fixture.releaseProbe();
-    await expect(card).toContainText("Connected");
+    await expect(card.getByRole("img", { name: "Added", exact: true })).toBeVisible();
     await expect(card.locator(".mcp-catalog-card-description")).toHaveText(originalDescription);
     await expectHeight(card, height);
     await expect(dialog.getByRole("button", { name: "Data & Analytics", exact: true })).toHaveAttribute(
@@ -82,6 +82,19 @@ for (const width of [1440, 736]) {
       "true",
     );
     await expectNoPageOverflow(page);
+    await dialog.getByRole("button", { name: "Close Discover", exact: true }).click();
+    await page.getByRole("button", { name: "Airtable", exact: true }).click();
+    const details = page.getByRole("dialog", { name: "Airtable", exact: true });
+    await expect(details.getByLabel("Connector address")).toHaveAttribute("readonly", "");
+    await expect(details.getByRole("button", { name: "Tools", exact: true })).toHaveCount(0);
+    await expect(details.getByRole("button", { name: "Advanced settings", exact: true })).toHaveCount(0);
+    const writeCount = fixture.writes.length;
+    await details.getByRole("button", { name: "Use API key or token", exact: true }).click();
+    await expect(details.getByLabel("API key or token")).toBeVisible();
+    await details.getByRole("button", { name: "Cancel", exact: true }).click();
+    expect(fixture.writes).toHaveLength(writeCount);
+    await expectAccessible(page);
+    await page.screenshot({ path: test.info().outputPath(`preset-details-${width}.png`) });
   });
 }
 
@@ -94,7 +107,7 @@ test("Discover cancel restores the original card and removes only its provisiona
   const tabPromise = page.waitForEvent("popup");
   await card.getByRole("button", { name: "Add: Airtable", exact: true }).click();
   const tab = await tabPromise;
-  await expect(card.getByRole("status")).toHaveText("Waiting for authorization…");
+  await expect(card.getByRole("status")).toHaveText("Authorizing…");
   await card.getByRole("button", { name: "Cancel: Airtable", exact: true }).click();
   await expect(card.getByRole("button", { name: "Add: Airtable", exact: true })).toBeEnabled();
   await expect(card.getByRole("alert")).toHaveCount(0);
@@ -127,7 +140,7 @@ test("mobile keeps a long connector card's height stable while preparing authori
   await expectHeight(card, height);
 });
 
-test("Discover failure offers Reconnect in the original action area and reuses the definition", async ({ page }) => {
+test("Discover failure offers Authorize in the original action area and reuses the definition", async ({ page }) => {
   const agentId = await createAgent(page, "Discover retry");
   const fixture = await mcpFixture(page);
   fixture.failOAuth();
@@ -135,16 +148,16 @@ test("Discover failure offers Reconnect in the original action area and reuses t
   const height = (await card.boundingBox())?.height;
   if (!height) throw new Error("Missing card geometry");
   await card.getByRole("button", { name: "Add: Airtable", exact: true }).click();
-  await expect(card.getByRole("alert")).toHaveText("Connection failed");
-  await expect(card.getByRole("button", { name: "Reconnect: Airtable", exact: true })).toBeEnabled();
+  await expect(card.getByRole("alert")).toHaveText("Authorization failed");
+  await expect(card.getByRole("button", { name: "Authorize: Airtable", exact: true })).toBeEnabled();
   await expect(dialog).not.toContainText("Private upstream detail");
   await expectHeight(card, height);
   fixture.allowOAuth();
   await consentFixture(page);
   const tabPromise = page.waitForEvent("popup");
-  await card.getByRole("button", { name: "Reconnect: Airtable", exact: true }).click();
+  await card.getByRole("button", { name: "Authorize: Airtable", exact: true }).click();
   const tab = await tabPromise;
-  await expect(card.getByRole("status")).toHaveText("Waiting for authorization…");
+  await expect(card.getByRole("status")).toHaveText("Authorizing…");
   expect(fixture.servers).toHaveLength(1);
   await card.getByRole("button", { name: "Cancel: Airtable", exact: true }).click();
   await expect(card.getByRole("button", { name: "Add: Airtable", exact: true })).toBeEnabled();
@@ -175,10 +188,10 @@ test("blocked authorization opens a normal tab from its card and preserves Disco
   const tab = await tabPromise;
   await expect(tab.getByRole("link", { name: "Finish authorization" })).toBeVisible();
   await expect(dialog).toBeVisible();
-  await expect(card.getByRole("status")).toHaveText("Waiting for authorization…");
+  await expect(card.getByRole("status")).toHaveText("Authorizing…");
   fixture.completeOAuth(agentId);
   await tab.getByRole("link", { name: "Finish authorization" }).click();
-  await expect(card).toContainText("Connected");
+  await expect(card.getByRole("img", { name: "Added", exact: true })).toBeVisible();
 });
 
 for (const finishFirst of ["cancel", "success"] as const) {
@@ -193,20 +206,20 @@ for (const finishFirst of ["cancel", "success"] as const) {
     const firstPopup = page.waitForEvent("popup");
     await airtable.getByRole("button", { name: "Add: Airtable", exact: true }).click();
     const first = await firstPopup;
-    await expect(airtable.getByRole("status")).toHaveText("Waiting for authorization…");
+    await expect(airtable.getByRole("status")).toHaveText("Authorizing…");
     await search.fill("Google Calendar");
     const calendar = dialog.getByRole("listitem").filter({ has: page.getByText("Google Calendar", { exact: true }) });
     const secondPopup = page.waitForEvent("popup");
     await calendar.getByRole("button", { name: "Add: Google Calendar", exact: true }).click();
     const second = await secondPopup;
-    await expect(calendar.getByRole("status")).toHaveText("Waiting for authorization…");
+    await expect(calendar.getByRole("status")).toHaveText("Authorizing…");
     const calendarId = fixture.servers.find((server) => server.name === "google-calendar")?.id;
     if (!calendarId) throw new Error("Missing calendar definition");
     fixture.completeOAuth(agentId, calendarId);
     await second.getByRole("link", { name: "Finish authorization" }).click();
-    await expect(calendar.getByRole("status")).toHaveText("Checking connection…");
+    await expect(calendar.getByRole("status")).toHaveText("Loading tools…");
     await search.fill("Airtable");
-    await expect(airtable.getByRole("status")).toHaveText("Waiting for authorization…");
+    await expect(airtable.getByRole("status")).toHaveText("Authorizing…");
     if (finishFirst === "cancel") {
       await airtable.getByRole("button", { name: "Cancel: Airtable", exact: true }).click();
       await expect(airtable.getByRole("button", { name: "Add: Airtable", exact: true })).toBeEnabled();
@@ -216,13 +229,14 @@ for (const finishFirst of ["cancel", "success"] as const) {
       if (!airtableId) throw new Error("Missing Airtable definition");
       fixture.completeOAuth(agentId, airtableId);
       await first.getByRole("link", { name: "Finish authorization" }).click();
-      await expect(airtable.getByRole("status")).toHaveText("Checking connection…");
+      await expect(airtable.getByRole("status")).toHaveText("Loading tools…");
     }
     fixture.releaseProbe();
     await search.fill("Google Calendar");
-    await expect(calendar).toContainText("Connected");
+    await expect(calendar.getByRole("img", { name: "Added", exact: true })).toBeVisible();
     await dialog.getByRole("button", { name: "Data & Analytics", exact: true }).click();
-    if (finishFirst === "success") await expect(airtable).toContainText("Connected");
+    if (finishFirst === "success")
+      await expect(airtable.getByRole("img", { name: "Added", exact: true })).toBeVisible();
     else await expect(airtable.getByRole("button", { name: "Add: Airtable", exact: true })).toBeEnabled();
     await expectAccessible(page);
     await expectNoPageOverflow(page);

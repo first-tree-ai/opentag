@@ -63,6 +63,76 @@ describe("Account Computer management", () => {
     expect(JSON.parse(String(repairRequests()[0]?.[1]?.body))).toEqual({ mode: "create" });
   });
 
+  it.each([
+    { name: "one local computer", computers: [{ ...twoReadyComputers[0] }] },
+    { name: "multiple computers", computers: twoReadyComputers },
+    { name: "a cloud computer", computers: [{ ...twoReadyComputers[0], kind: "cloud" }] },
+  ])("connects another computer alongside $name only after an explicit action", async ({ computers }) => {
+    installApi({ computers });
+    openComputer(`?computerId=${computerId}&fromAgent=${agentId}`);
+    const connect = await screen.findByRole("button", { name: "Connect another computer" });
+    expect(repairRequests()).toHaveLength(0);
+    fireEvent.click(connect);
+    await waitFor(() => expect(repairRequests()).toHaveLength(1));
+    expect(JSON.parse(String(repairRequests()[0]?.[1]?.body))).toEqual({ mode: "create" });
+    expect(screen.getByRole("heading", { name: "Ada's Mac" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Connect another computer" })).toBeNull();
+    expect(await screen.findByRole("button", { name: "Copy command" })).toBeTruthy();
+  });
+
+  it("keeps an additional connection pending until the exact new computer comes online", async () => {
+    let online = false;
+    const connectedAt = new Date().toISOString();
+    installApi({
+      computers: (issued) => [
+        { ...twoReadyComputers[0] },
+        ...(issued ? [{ ...twoReadyComputers[1], connectedAt, connectionStatus: online ? "online" : "offline" }] : []),
+      ],
+    });
+    const api = vi.mocked(fetch).getMockImplementation();
+    if (!api) throw new Error("API fixture is missing");
+    vi.mocked(fetch).mockImplementation(async (path, init) => {
+      if (String(path).startsWith("/api/v1/computer-connect-codes/"))
+        return new Response(
+          JSON.stringify({
+            connectCodeId: String(path).split("/").at(-1),
+            state: "redeemed",
+            computerId: secondComputerId,
+            redeemedAt: connectedAt,
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      return api(path, init);
+    });
+    openComputer();
+    fireEvent.click(await screen.findByRole("button", { name: "Connect another computer" }));
+    expect(await screen.findByText("Command accepted. Waiting for OpenTag to come online…")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Ada's Mac" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Zulu Tower" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Connect another computer" })).toBeNull();
+    expect(repairRequests()).toHaveLength(1);
+
+    online = true;
+    fireEvent(window, new Event("focus"));
+    expect(await screen.findByRole("button", { name: "Connect another computer" }, { timeout: 3_000 })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Zulu Tower" })).toBeTruthy();
+    expect(screen.getAllByText("Online")).toHaveLength(2);
+    expect(repairRequests()).toHaveLength(1);
+    expect(vi.mocked(fetch).mock.calls.some(([path]) => String(path).endsWith("/computer/rebind"))).toBe(false);
+  });
+
+  it("withdraws the additional connection entry when a cached inventory can no longer be confirmed", async () => {
+    let failed = false;
+    installApi({ bound: true, computerReadStatus: () => (failed ? 503 : undefined) });
+    openComputer();
+    expect(await screen.findByRole("button", { name: "Connect another computer" })).toBeTruthy();
+    failed = true;
+    fireEvent(window, new Event("focus"));
+    expect(await screen.findByText("Status unavailable")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Connect another computer" })).toBeNull();
+    expect(repairRequests()).toHaveLength(0);
+  });
+
   it("shows every computer on one page even through an existing targeted link", async () => {
     installApi({ computers: twoReadyComputers });
     openComputer(`?computerId=${secondComputerId}`);

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { browserApi } from "../api.js";
 import { AgentSetupPage } from "./agent-setup-page.js";
@@ -28,6 +28,7 @@ it("offers a custom Slack App in the creation guide even without OAuth setup act
     identityClosure: null,
     handoff: null,
   });
+  vi.spyOn(browserApi, "autoSetupSlack").mockResolvedValue({ status: "failed", code: "computer_unavailable" });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const result = render(
     <QueryClientProvider client={client}>
@@ -36,10 +37,18 @@ it("offers a custom Slack App in the creation guide even without OAuth setup act
   );
   try {
     fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Use your own Slack App" }));
-    expect(await screen.findByRole("link", { name: "Create App in Slack" })).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Connect Slack" })).not.toHaveProperty("disabled", true),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Connect Slack" }));
+    expect(await screen.findByRole("dialog", { name: "Connect Slack" })).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Manual setup" })).not.toHaveProperty("disabled", true),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Manual setup" }));
+    expect(await screen.findByRole("link", { name: "Create App" })).toBeTruthy();
     expect(screen.getByLabelText("Signing Secret")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close Connect Slack" }));
     fireEvent.click(screen.getByRole("button", { name: "Set up later" }));
     expect(openAgent).toHaveBeenCalledTimes(1);
     expect(oauth).not.toHaveBeenCalled();

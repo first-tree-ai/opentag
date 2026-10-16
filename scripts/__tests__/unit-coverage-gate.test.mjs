@@ -193,6 +193,7 @@ test("root and package tooling config modules are excluded without excluding sou
   for (const path of [
     "vitest.coverage.config.ts",
     "packages/client/vitest.agent-runtime.config.ts",
+    "packages/mcp-presets/vitest.config.ts",
     "apps/web/vite.config.ts",
     "packages/server/drizzle.config.ts",
   ]) {
@@ -200,6 +201,7 @@ test("root and package tooling config modules are excluded without excluding sou
   }
   assert.equal(isSupportedSourcePath("apps/web/src/vite.config.ts"), true);
   assert.equal(isSupportedSourcePath("packages/server/src/config.ts"), true);
+  assert.equal(isSupportedSourcePath("packages/mcp-presets/src/scaffold/main.ts"), true);
   assert.equal(isSupportedSourcePath("tools/vitest.config.ts"), true);
 });
 

@@ -746,6 +746,36 @@ describe("parseServerConfig", () => {
     }
   });
 
+  it("requires the MCP Canva client pair to be configured together", () => {
+    // Absent and empty both mean "no deployment Canva client": Canva keeps automatic resolution.
+    expect(parseServerConfig(required).mcpCanvaOAuth).toBeUndefined();
+    expect(
+      parseServerConfig({
+        ...required,
+        OPENTAG_MCP_CANVA_CLIENT_ID: "",
+        OPENTAG_MCP_CANVA_CLIENT_SECRET: "   ",
+      }).mcpCanvaOAuth,
+    ).toBeUndefined();
+    const configured = parseServerConfig({
+      ...required,
+      OPENTAG_MCP_CANVA_CLIENT_ID: "canva-client",
+      OPENTAG_MCP_CANVA_CLIENT_SECRET: "canva-secret",
+    });
+    expect(configured).toMatchObject({ mcpCanvaOAuth: { clientId: "canva-client", clientSecret: "canva-secret" } });
+    // The two deployment clients are independent: configuring Canva configures nothing for Google.
+    expect(configured.mcpGoogleOAuth).toBeUndefined();
+    expect(() => parseServerConfig({ ...required, OPENTAG_MCP_CANVA_CLIENT_ID: "canva-client" })).toThrow(
+      /OPENTAG_MCP_CANVA_CLIENT_ID and OPENTAG_MCP_CANVA_CLIENT_SECRET/,
+    );
+    // The all-or-none error names the variables and never echoes configured material.
+    try {
+      parseServerConfig({ ...required, OPENTAG_MCP_CANVA_CLIENT_SECRET: "canva-secret" });
+      expect.unreachable("partial MCP Canva client configuration must fail");
+    } catch (error) {
+      expect(error instanceof Error ? error.message : String(error)).not.toContain("canva-secret");
+    }
+  });
+
   it("uses OPENTAG_ENV as the channel source without interpreting the hostname", () => {
     const config = parseServerConfig({
       ...required,

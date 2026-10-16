@@ -70,7 +70,8 @@ export class ContextTreeOperationService {
     input: ContextTreeOperationRequest,
   ): Promise<ContextTreeOperationResponse> {
     if (config.computerId === null) return { status: "failed", code: "computer_unavailable" };
-    if (this.cloud && (await this.cloud.computerKind(config.computerId)) === "cloud") {
+    const kind = await this.cloud?.computerKind(config.computerId);
+    if (this.cloud && kind && (action === "connect" || kind === "cloud")) {
       return this.cloud.run({
         accountId: userId,
         agentId,

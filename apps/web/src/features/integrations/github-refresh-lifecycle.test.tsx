@@ -3,7 +3,6 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../../api.js";
 import { GitHubIntegrationSettings } from "../account/github-integration-settings.js";
-import { AgentGitHubRepositories } from "./agent-github-repositories.js";
 
 const AGENT_ID = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const connection: GitHubConnectionStatus = {
@@ -14,8 +13,6 @@ const connection: GitHubConnectionStatus = {
   githubUserId: "42",
   githubLogin: "octocat",
   status: "active",
-  bindingsSchemaVersion: 1,
-  bindings: [],
   authorizationVersion: "2",
   credentialGeneration: "1",
   accessExpiresAt: "2026-10-13T16:00:00.000Z",
@@ -63,16 +60,13 @@ function stubCommon() {
   vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [] } as never);
   vi.spyOn(browserApi, "imBinding").mockResolvedValue(undefined);
   vi.spyOn(browserApi, "githubRepositories").mockResolvedValue(page);
-  vi.spyOn(browserApi, "updateGitHubBindings").mockResolvedValue(connection);
 }
 
 afterEach(() => vi.restoreAllMocks());
 
-describe.each(["Account", "Agent"] as const)("%s GitHub refresh lifecycle", (surface) => {
+describe("Account GitHub refresh lifecycle", () => {
   function mount() {
-    return render(
-      surface === "Account" ? <GitHubIntegrationSettings /> : <AgentGitHubRepositories agentId={AGENT_ID} />,
-    );
+    return render(<GitHubIntegrationSettings />);
   }
 
   it.each([false, true])("keeps focus and announces a refresh (existing installation=%s)", async (existing) => {
@@ -103,7 +97,6 @@ describe.each(["Account", "Agent"] as const)("%s GitHub refresh lifecycle", (sur
     expect(status.getAttribute("aria-atomic")).toBe("true");
     expect(document.activeElement).toBe(refresh);
     expect(screen.getByRole("button", { name: "Refresh installations" })).toBe(refresh);
-    expect(browserApi.updateGitHubBindings).not.toHaveBeenCalled();
 
     const repeated = deferred<typeof page>();
     vi.mocked(browserApi.githubRepositories).mockReturnValueOnce(repeated.promise);
@@ -139,7 +132,6 @@ describe.each(["Account", "Agent"] as const)("%s GitHub refresh lifecycle", (sur
     await waitFor(() => expect(screen.getByRole("status").textContent).toContain("0 installations"));
     expect(screen.queryByRole("alert")).toBeNull();
     expect(document.activeElement).toBe(refresh);
-    expect(browserApi.updateGitHubBindings).not.toHaveBeenCalled();
   });
 
   it("does not steal focus when the user moves during refresh", async () => {
@@ -183,94 +175,7 @@ describe.each(["Account", "Agent"] as const)("%s GitHub refresh lifecycle", (sur
     retry.focus();
     fireEvent.click(retry);
     await waitFor(() => expect(screen.getByRole("status").textContent).toContain("refreshed"));
-    expect(document.activeElement).toBe(screen.getByRole("status"));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("status")));
     expect(screen.getByRole("link", { name: "Install GitHub App" })).toBeTruthy();
-  });
-});
-
-describe("Agent GitHub action isolation", () => {
-  it("blocks refresh and save during pagination and announces the last page with a focus target", async () => {
-    stubCommon();
-    vi.mocked(browserApi.githubRepositories).mockResolvedValueOnce({ ...page, nextCursor: "next-page" });
-    const pending = deferred<typeof page>();
-    vi.mocked(browserApi.githubRepositories).mockReturnValueOnce(pending.promise);
-    render(<AgentGitHubRepositories agentId={AGENT_ID} />);
-    const more = await screen.findByRole("button", { name: "Load more repositories" });
-    fireEvent.click(screen.getByRole("checkbox", { name: "Use with this Agent" }));
-    more.focus();
-    fireEvent.click(more);
-    const refresh = screen.getByRole("button", { name: "Refresh installations" });
-    expect(refresh.getAttribute("aria-disabled")).toBe("true");
-    expect((screen.getByRole("button", { name: "Save repository access" }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(refresh);
-    fireEvent.click(screen.getByRole("button", { name: "Save repository access" }));
-    await waitFor(() => expect(browserApi.githubRepositories).toHaveBeenCalledTimes(2));
-    expect(browserApi.updateGitHubBindings).not.toHaveBeenCalled();
-    pending.resolve({
-      ...page,
-      repositories: [{ ...repository, repositoryId: "987654322", fullName: "octocat/second" }],
-    });
-    expect(await screen.findByText("octocat/second")).toBeTruthy();
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("status")));
-    expect(screen.getByRole("status").textContent).toBe("Repository list updated: 2 repositories shown.");
-  });
-
-  it("blocks pagination during refresh without showing a saving state", async () => {
-    stubCommon();
-    vi.mocked(browserApi.githubRepositories).mockResolvedValueOnce({ ...page, nextCursor: "next-page" });
-    const pending = deferred<typeof page>();
-    vi.mocked(browserApi.githubRepositories).mockReturnValueOnce(pending.promise);
-    render(<AgentGitHubRepositories agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Refresh installations" }));
-    const more = screen.getByRole("button", { name: "Load more repositories" }) as HTMLButtonElement;
-    expect(more.disabled).toBe(true);
-    fireEvent.click(more);
-    await waitFor(() => expect(browserApi.githubRepositories).toHaveBeenCalledTimes(2));
-    expect(screen.queryByRole("button", { name: "Saving…" })).toBeNull();
-    pending.resolve(page);
-    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("refreshed"));
-    expect(browserApi.updateGitHubBindings).not.toHaveBeenCalled();
-  });
-
-  it("shows Saving only for a grant write and blocks discovery while it is pending", async () => {
-    stubCommon();
-    vi.mocked(browserApi.githubRepositories).mockResolvedValueOnce({ ...page, nextCursor: "next-page" });
-    const pending = deferred<GitHubConnectionStatus>();
-    vi.mocked(browserApi.updateGitHubBindings).mockReturnValueOnce(pending.promise);
-    render(<AgentGitHubRepositories agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("checkbox", { name: "Use with this Agent" }));
-    const save = screen.getByRole("button", { name: "Save repository access" });
-    save.focus();
-    fireEvent.click(save);
-    expect(screen.getByRole("button", { name: "Saving…" })).toBeTruthy();
-    const refresh = screen.getByRole("button", { name: "Refresh installations" });
-    expect(refresh.getAttribute("aria-disabled")).toBe("true");
-    fireEvent.click(refresh);
-    fireEvent.click(screen.getByRole("button", { name: "Load more repositories" }));
-    expect(browserApi.githubRepositories).toHaveBeenCalledTimes(1);
-    pending.resolve({
-      ...connection,
-      bindings: vi.mocked(browserApi.updateGitHubBindings).mock.calls[0]?.[0].bindings ?? [],
-    });
-    expect(await screen.findByText("Repository access saved.")).toBeTruthy();
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("status")));
-  });
-
-  it("keeps a failed pagination cursor and restores the control's lost focus", async () => {
-    stubCommon();
-    vi.mocked(browserApi.githubRepositories).mockResolvedValueOnce({ ...page, nextCursor: "next-page" });
-    const pending = deferred<typeof page>();
-    vi.mocked(browserApi.githubRepositories).mockReturnValueOnce(pending.promise);
-    render(<AgentGitHubRepositories agentId={AGENT_ID} />);
-    const more = await screen.findByRole("button", { name: "Load more repositories" });
-    more.focus();
-    fireEvent.click(more);
-    more.blur();
-    pending.reject(new Error("Next page failed"));
-    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Next page failed");
-    await waitFor(() => expect(document.activeElement).toBe(more));
-    expect(screen.getByRole("button", { name: "Load more repositories" })).toBe(more);
-    expect(screen.getByRole("status").textContent).toBe("");
-    expect(browserApi.updateGitHubBindings).not.toHaveBeenCalled();
   });
 });

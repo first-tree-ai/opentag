@@ -8,9 +8,9 @@ import {
 } from "@opentag/shared";
 import { and, eq, isNull } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
-import { accountCliLoginCodes, users } from "../../db/schema/index.js";
+import { users } from "../../db/schema/index.js";
+import { consumeAccountConnectCode } from "./connect-code-service.js";
 import { AuthServiceError, invalidCredential } from "./errors.js";
-import { hashSecret } from "./security.js";
 import type { AuthTokenProvider } from "./token-provider.js";
 
 export interface AuthServiceOptions {
@@ -61,52 +61,7 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
    * the caller asks for another code rather than holding one that has already been redeemed.
    */
   async exchangeConnectCode(code: string, expectedUserId?: string): Promise<ConnectCodeExchangeResponse> {
-    const now = this.#now();
-    const codeHash = hashSecret(code);
-    const userId = await this.#database.transaction(async (transaction) => {
-      const [connectCode] = await transaction
-        .select()
-        .from(accountCliLoginCodes)
-        .where(eq(accountCliLoginCodes.tokenHash, codeHash))
-        .for("update");
-      if (!connectCode) {
-        throw invalidCredential("AUTH_INVALID_CODE", "The connect code is invalid");
-      }
-      if (connectCode.consumedAt) {
-        throw invalidCredential("AUTH_CODE_CONSUMED", "The connect code has already been used");
-      }
-      if (connectCode.expiresAt <= now) {
-        throw invalidCredential("AUTH_CODE_EXPIRED", "The connect code has expired");
-      }
-
-      const [user] = await transaction.select().from(users).where(eq(users.id, connectCode.userId)).limit(1);
-      const [issuer] = await transaction.select().from(users).where(eq(users.id, connectCode.issuedByUserId)).limit(1);
-      if (!user || !issuer) {
-        throw invalidCredential("AUTH_INVALID_CODE", "The connect code is invalid");
-      }
-      if (user.suspendedAt || issuer.suspendedAt) {
-        throw invalidCredential("AUTH_USER_SUSPENDED", "The user account is suspended");
-      }
-      if (expectedUserId && expectedUserId !== user.id) {
-        throw new AuthServiceError(
-          "AUTH_USER_MISMATCH",
-          "deterministic",
-          "The connect code belongs to another user",
-          409,
-        );
-      }
-
-      // Conditional, so a code two callers reach at once is redeemed by exactly one of them.
-      const [consumed] = await transaction
-        .update(accountCliLoginCodes)
-        .set({ consumedAt: now })
-        .where(and(eq(accountCliLoginCodes.id, connectCode.id), isNull(accountCliLoginCodes.consumedAt)))
-        .returning({ id: accountCliLoginCodes.id });
-      if (!consumed) {
-        throw invalidCredential("AUTH_CODE_CONSUMED", "The connect code has already been used");
-      }
-      return user.id;
-    });
+    const userId = await consumeAccountConnectCode(this.#database, code, "login", expectedUserId, this.#now());
 
     // Outside the transaction: the credential store has its own connection, and nothing here holds a row lock now.
     return { ...(await this.#authTokens.issuePairForUser(userId)), tokenType: "Bearer" as const };

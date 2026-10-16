@@ -124,7 +124,7 @@ describe("Integration CLI install-only discovery", () => {
     const lark = join(bin, "lark-cli");
     const slack = join(bin, "slack");
     await writeFile(lark, `#!/bin/sh\ntouch "${sentinel}"\necho 'lark-cli version 1.0.92'\n`, { mode: 0o700 });
-    await writeFile(slack, `#!/bin/sh\ntouch "${sentinel}"\necho 'Using slack v4.7.0'\n`, { mode: 0o700 });
+    await writeFile(slack, `#!/bin/sh\ntouch "${sentinel}"\necho 'Using slack v4.10.0'\n`, { mode: 0o700 });
     await chmod(lark, 0o700);
     await chmod(slack, 0o700);
     await writeFile(join(root, "credentials.json"), '{"token":"secret"}\n', { mode: 0o600 });

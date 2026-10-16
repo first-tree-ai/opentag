@@ -125,9 +125,14 @@ export function stub(servers: MCPAgentServer[], detailValue: MCPServerDetail = d
   vi.spyOn(browserApi, "mcpServer").mockResolvedValue(detailValue);
   vi.spyOn(browserApi, "availableMcpServers").mockResolvedValue({ servers: [] });
   vi.spyOn(browserApi, "mcpServers").mockResolvedValue({ servers: [] });
+  vi.spyOn(browserApi, "revokeMcpAuthorization").mockResolvedValue(entry({ authorization: null }));
+  vi.spyOn(browserApi, "removeMcpServer").mockResolvedValue(undefined);
+  vi.spyOn(browserApi, "mcpCatalogEndpoints").mockResolvedValue({ endpoints: [] });
 }
 
 export function wrap(children: ReactNode): RenderResult {
+  if (!Element.prototype.scrollIntoView)
+    Object.defineProperty(Element.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const root = createRootRoute({ component: () => children });
   const router = createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ["/"] }) });
@@ -140,19 +145,14 @@ export function wrap(children: ReactNode): RenderResult {
   );
 }
 
-export async function openDetails() {
-  if (screen.queryByRole("dialog", { name: "linear" })) return;
-  fireEvent.click(await screen.findByRole("button", { name: "linear" }, { timeout: 10000 }));
-  await screen.findByRole("dialog", { name: "linear" });
-}
-export async function openTools() {
-  await openDetails();
-  fireEvent.click(screen.getByRole("button", { name: "Tools" }));
-  await screen.findByRole("dialog", { name: "Tools" });
+export async function openDetails(name = "linear") {
+  if (screen.queryByRole("dialog", { name })) return;
+  fireEvent.click(await screen.findByRole("button", { name }, { timeout: 10000 }));
+  await screen.findByRole("dialog", { name });
 }
 export async function openRemove() {
-  await openDetails();
-  fireEvent.click(screen.getByRole("button", { name: "Remove from agent" }));
+  fireEvent.click(await screen.findByRole("button", { name: "More actions for linear" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Delete" }));
   await screen.findByRole("alertdialog");
 }
 export async function openAdd() {
@@ -165,7 +165,7 @@ export async function openAdd() {
 }
 export async function newAddress(url = "https://mcp.example.com/mcp") {
   await openAdd();
-  fireEvent.change(await screen.findByLabelText("Connector URL"), { target: { value: url } });
+  fireEvent.change(await screen.findByLabelText("Connector address"), { target: { value: url } });
 }
 
 export function authorization() {

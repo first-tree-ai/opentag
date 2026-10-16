@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  agentAvatarPath,
   ListTasksResponseSchema,
   TASK_TITLE_MAX_LENGTH,
   TaskAttachmentSchema,
   TaskCancelResponseSchema,
   TaskDetailSchema,
   TaskStatusSchema,
+  TaskSummarySchema,
   TaskTitleUpdateRequestSchema,
   TaskTitleUpdateResponseSchema,
   taskByIdPath,
@@ -30,6 +32,19 @@ const summary = {
 };
 
 describe("Task browser contracts", () => {
+  it("accepts optional same-origin agent logos and rejects external avatar URLs", () => {
+    for (const avatarPath of [undefined, null, agentAvatarPath(summary.agent.id)]) {
+      const task = { ...summary, agent: { ...summary.agent, avatarPath } };
+      expect(TaskSummarySchema.parse(task).agent.avatarPath).toBe(avatarPath);
+    }
+    expect(() =>
+      TaskSummarySchema.parse({
+        ...summary,
+        agent: { ...summary.agent, avatarPath: "https://example.com/logo.png" },
+      }),
+    ).toThrow();
+  });
+
   it("parses paginated summaries and encodes Session identifiers in detail paths", () => {
     expect(ListTasksResponseSchema.parse({ tasks: [summary], nextCursor: "cursor" })).toEqual({
       tasks: [summary],

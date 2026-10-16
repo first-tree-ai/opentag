@@ -7,6 +7,7 @@ export type McpReturnContext = {
   scrollTop?: number;
   categoryId?: string;
   newBinding?: boolean;
+  oauthState?: string;
 };
 const KEY = "opentag:mcp:oauth-return";
 const MAX_AGE = 30 * 60 * 1000;
@@ -22,6 +23,7 @@ export function rememberMcpReturn(context: McpReturnContext): void {
         scrollTop: context.scrollTop,
         categoryId: context.categoryId,
         newBinding: context.newBinding,
+        oauthState: context.oauthState,
         savedAt: Date.now(),
       }),
     );
@@ -52,6 +54,9 @@ export function consumeMcpReturn(agentId: string, serverId?: string): McpReturnC
       agentId,
       serverId,
       source: item.source as McpReturnContext["source"],
+      ...(typeof item.oauthState === "string" && item.oauthState.length > 0 && item.oauthState.length <= 256
+        ? { oauthState: item.oauthState }
+        : {}),
       ...(typeof item.categoryId === "string" ? { categoryId: item.categoryId.slice(0, 100) } : {}),
       ...(item.newBinding === true ? { newBinding: true } : {}),
       ...(typeof item.query === "string" ? { query: item.query.slice(0, 1000) } : {}),

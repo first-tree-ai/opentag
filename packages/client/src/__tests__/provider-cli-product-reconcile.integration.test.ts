@@ -146,9 +146,9 @@ describe("provider CLI product reconcile", () => {
     closers.push(async () => server.close());
     const fixture = makeFixtureCatalog({
       provider: "slack",
-      version: "4.7.0",
+      version: "4.10.0",
       baseUrl: server.baseUrl,
-      executableContent: slackProductCliScript({ invocationLog, version: "4.7.0" }),
+      executableContent: slackProductCliScript({ invocationLog, version: "4.10.0" }),
     });
     routes.set(fixture.routePath, fixture.archive);
     const manager = new ProviderCliManager({
@@ -175,9 +175,9 @@ describe("provider CLI product reconcile", () => {
     expect(server.requests.length).toBeGreaterThan(0);
     expect(sentTypes(runtime)).toEqual(["provider-cli:artifact:status:checking", "provider-cli:artifact:status:ready"]);
     const selection = await readProviderCliSelection(manager.layout, "slack");
-    expect(selection).toMatchObject({ generation: 1, selection: { kind: "managed", version: "4.7.0" } });
+    expect(selection).toMatchObject({ generation: 1, selection: { kind: "managed", version: "4.10.0" } });
     const ready = await reconciler.readySelectionForRun("slack");
-    expect(ready).toMatchObject({ generation: 1, version: "4.7.0" });
+    expect(ready).toMatchObject({ generation: 1, version: "4.10.0" });
 
     await runtime.emit(grantFrame());
     expect(runtime.send).toHaveBeenCalledWith(
@@ -198,9 +198,9 @@ describe("provider CLI product reconcile", () => {
     expect(ensure).toHaveBeenCalledTimes(1);
 
     const replacement = join(accountHome, "slack-next");
-    await writeFile(replacement, slackProductCliScript({ invocationLog, version: "4.7.0" }), { mode: 0o700 });
+    await writeFile(replacement, slackProductCliScript({ invocationLog, version: "4.10.0" }), { mode: 0o700 });
     const identity = await computeFileIdentity(replacement);
-    const fingerprint = computeTargetFingerprint(identity, "4.7.0");
+    const fingerprint = computeTargetFingerprint(identity, "4.10.0");
     await writeProviderCliSelection(
       manager.layout,
       "slack",
@@ -209,7 +209,7 @@ describe("provider CLI product reconcile", () => {
         executablePath: identity.path,
         fingerprint,
         trust: "catalog-verified",
-        version: "4.7.0",
+        version: "4.10.0",
       },
       selection ?? undefined,
     );
@@ -219,6 +219,6 @@ describe("provider CLI product reconcile", () => {
     await runtime.emit({ ...requirement, requestId: repairRequestId, credentialGeneration: 3 });
     const recovered = await reconciler.readySelectionForRun("slack");
     expect(recovered?.generation).toBeGreaterThan(1);
-    expect(recovered?.version).toBe("4.7.0");
+    expect(recovered?.version).toBe("4.10.0");
   }, 20_000);
 });

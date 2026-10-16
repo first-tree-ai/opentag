@@ -291,7 +291,7 @@ class ScriptedPiClient implements PiRpcClient {
 }
 
 describe("cloud-turn-worker", () => {
-  it.each(["gemini-3.8-flash", "kimi-k3", "gpt-6-astra"])(
+  it.each(["gemini-4-argon", "gemini-3.8-flash", "kimi-k3", "gpt-6-astra"])(
     "declares verified image input for the exact issued model %s without extending the grant",
     (model) => {
       const request = turnRequest("/run/opentag-execution/turn-image");
@@ -310,15 +310,18 @@ describe("cloud-turn-worker", () => {
     },
   );
 
-  it.each(["glm-5.3", "glm-5.3-flashx", "unknown-vision-model", "gemini-3.8-flash-unverified-alias"])(
-    "keeps text input for unverified model %s without inferring capabilities from a name",
-    (model) => {
-      const request = turnRequest("/run/opentag-execution/turn-text");
-      request.model = { ...MODEL, model };
-      const models = JSON.parse(cloudTurnPiDocuments(request).modelsJson);
-      expect(models.providers.opentag.models[0].input).toEqual(["text"]);
-    },
-  );
+  it.each([
+    "glm-5.3",
+    "glm-5.3-flashx",
+    "unknown-vision-model",
+    "gemini-3.8-flash-unverified-alias",
+    "gemini-4-argon-unverified-alias",
+  ])("keeps text input for unverified model %s without inferring capabilities from a name", (model) => {
+    const request = turnRequest("/run/opentag-execution/turn-text");
+    request.model = { ...MODEL, model };
+    const models = JSON.parse(cloudTurnPiDocuments(request).modelsJson);
+    expect(models.providers.opentag.models[0].input).toEqual(["text"]);
+  });
 
   it("renders the model grant as a disposable OpenAI-compatible provider document set", () => {
     const documents = cloudTurnPiDocuments(turnRequest("/run/opentag-execution/turn-1"));
@@ -651,6 +654,7 @@ describe("cloud-turn-worker", () => {
                 directories = [environment.SLACK_CONFIG_DIR as string, environment.LARKSUITE_CLI_CONFIG_DIR as string];
                 expect(environment.OPENTAG_SLACK_CONFIG_DIR).toBe(directories[0]);
                 const shell = await readFile(environment.OPENTAG_PROVIDER_ENV_FILE as string, "utf8");
+                expect(shell.split("\n")[0]).toBe(`# opentag-execution: ${manifest.executionId}`);
                 for (const directory of directories) {
                   expect((await stat(directory)).mode & 0o777).toBe(0o700);
                   expect(directory.startsWith(root)).toBe(false);
@@ -683,15 +687,20 @@ describe("cloud-turn-worker", () => {
       fileContent?: string;
       fileMode?: number;
       inputText?: string;
+      ghCache?: string;
     } = {};
     const createPiFactory = (input: { environment: Record<string, string> }): CloudTurnPiFactory => {
       observed.environmentFile = input.environment.OPENTAG_PROVIDER_ENV_FILE;
+      expect(input.environment.XDG_CACHE_HOME).toBeUndefined();
+      observed.ghCache = join(input.environment.HOME as string, ".cache", "gh");
       return {
         create: async () =>
           ({
             close: async () => undefined,
             prompt: async (request: AgentPromptRequest) => {
               observed.inputText = request.input.items.map((item) => item.text).join("\n");
+              await mkdir(observed.ghCache as string, { recursive: true });
+              await writeFile(join(observed.ghCache as string, "run-log.zip"), "fixture cache");
               if (observed.environmentFile) {
                 observed.fileContent = await readFile(observed.environmentFile, "utf8");
                 observed.fileMode = (await stat(observed.environmentFile)).mode & 0o777;
@@ -727,6 +736,8 @@ describe("cloud-turn-worker", () => {
     // The per-turn secret file is scratch-only: never part of the persistent Pi continuity dir.
     expect(observed.environmentFile?.startsWith(continuity)).toBe(false);
     await expect(stat(observed.environmentFile as string)).rejects.toThrow();
+    expect(observed.ghCache?.startsWith(continuity)).toBe(false);
+    await expect(stat(observed.ghCache as string)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("never starts Pi when the execution deadline fires during Context Tree preparation", async () => {
@@ -833,6 +844,7 @@ describe("cloud-turn-worker", () => {
     const executionDir = await fixtureExecution(root, "turn-1");
     const controller = new AbortController();
     let child: ChildProcess | undefined;
+    let ghCache: string | undefined;
     let markPromptStarted: () => void = () => undefined;
     const promptStarted = new Promise<void>((resolve) => {
       markPromptStarted = resolve;
@@ -847,6 +859,10 @@ describe("cloud-turn-worker", () => {
       sessionDirectory: string;
     }): CloudTurnPiFactory => ({
       create: async () => {
+        expect(input.environment.XDG_CACHE_HOME).toBeUndefined();
+        ghCache = join(input.environment.HOME as string, ".cache", "gh");
+        await mkdir(ghCache, { recursive: true });
+        await writeFile(join(ghCache, "run-log.zip"), "cancelled fixture cache");
         const spawnedChild = spawn(process.execPath, ["-e", "setInterval(() => undefined, 1_000)"], {
           stdio: "ignore",
         });
@@ -888,6 +904,7 @@ describe("cloud-turn-worker", () => {
     expect(child?.signalCode ?? (child?.exitCode === null ? null : "exited")).toBe("SIGTERM");
     expect(completion.outcome).toBe("cancelled");
     expect(completion.errorReason).toBe("client_shutdown");
+    await expect(stat(ghCache as string)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
 

@@ -152,6 +152,7 @@ async function fixture(
       socket: runtimeSocket,
       negotiatedCapabilities: {
         [RUNTIME_CAPABILITY.runtimeCredential]: 1,
+        [RUNTIME_CAPABILITY.githubUserTask]: 1,
         [RUNTIME_CAPABILITY.providerProxy]: 1,
       },
     },
@@ -205,6 +206,7 @@ async function fixture(
     instanceId,
     negotiatedCapabilities: {
       [RUNTIME_CAPABILITY.runtimeCredential]: 1,
+      [RUNTIME_CAPABILITY.githubUserTask]: 1,
       [RUNTIME_CAPABILITY.providerProxy]: 1,
     },
     signal: new AbortController().signal,
@@ -626,6 +628,24 @@ describe("RuntimeCredentialOwner GitHub source and Cloud control", () => {
     });
   }
 
+  it("keeps an older peer's execution usable without offering new GitHub authority", async () => {
+    const admit = vi.fn(async () => ({
+      connectionId: "connection-live",
+      authorizationVersion: "1",
+      credentialGeneration: "1",
+    }));
+    const state = await fixture({ gitHubAdmission: { admit } });
+    cleanup.push(() => state.owner.close());
+    const capabilities = { ...state.context.negotiatedCapabilities };
+    delete capabilities[RUNTIME_CAPABILITY.githubUserTask];
+    const result = await state.owner.handle(openFrame(), { ...state.context, negotiatedCapabilities: capabilities });
+    expect(result).toMatchObject({ status: "succeeded" });
+    expect(result && "providers" in result ? result.providers : []).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ provider: "github" })]),
+    );
+    expect(admit).not.toHaveBeenCalled();
+  });
+
   it("passes the exact frame source to GitHub admission at candidate discovery", async () => {
     const inputs: Array<{ source?: unknown }> = [];
     const admission: RuntimeGitHubAdmission = {
@@ -635,7 +655,6 @@ describe("RuntimeCredentialOwner GitHub source and Cloud control", () => {
           connectionId: "connection-live",
           authorizationVersion: "v1",
           credentialGeneration: "1",
-          bindings: [{ repositoryId: "1", fullName: "acme/repo", role: "code", access: "read" }],
         };
       },
     };
@@ -654,28 +673,13 @@ describe("RuntimeCredentialOwner GitHub source and Cloud control", () => {
     for (const input of inputs) expect(input.source).toEqual(source);
   });
 
-  it("propagates the exact GitHub repository scope into the initial execution-open result", async () => {
+  it("exposes only user-task authority without a repository directory", async () => {
     const sessionId = "00000000-0000-4000-8000-0000000000a2";
     const admission: RuntimeGitHubAdmission = {
       admit: async (): Promise<RuntimeGitHubAdmissionResult> => ({
         connectionId: "connection-live",
         authorizationVersion: "v1",
         credentialGeneration: "1",
-        bindings: [
-          {
-            repositoryId: "1",
-            fullName: "acme/repo",
-            role: "context_tree",
-            access: "write",
-            scope: {
-              agentId: AGENT,
-              role: "context_tree",
-              access: "write",
-              branch: "refs/heads/master",
-              publish: "pull_request",
-            },
-          },
-        ],
       }),
     };
     const scopeResolver = new FakeScopeResolver();
@@ -696,17 +700,7 @@ describe("RuntimeCredentialOwner GitHub source and Cloud control", () => {
           cli: {
             provider: "github",
             connectionId: "connection-live",
-            repositories: [
-              {
-                repositoryId: "1",
-                fullName: "acme/repo",
-                role: "context_tree",
-                access: "write",
-                branch: "refs/heads/master",
-                publish: "pull_request",
-                workBranchPrefix: `refs/heads/opentag/${sessionId}/context_tree/`,
-              },
-            ],
+            authority: "user-task",
           },
         },
       ],

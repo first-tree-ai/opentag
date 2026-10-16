@@ -17,6 +17,8 @@ import {
   AGENT_MCP_PROBE_TEMPLATE,
   AGENT_MCP_SERVER_TEMPLATE,
   AGENT_MCP_SERVERS_TEMPLATE,
+  CANVA_DEVELOPER_PORTAL_MCP_URL,
+  MCP_CATALOG_ENDPOINTS_PATH,
   MCP_ERROR_CODES,
   MCP_OAUTH_CALLBACK_PATH,
   MCP_SERVERS_PATH as MCP_SERVERS_PATH_TEMPLATE,
@@ -124,7 +126,11 @@ interface Harness {
     revoke: ReturnType<typeof vi.fn>;
     setBearerOrNone: ReturnType<typeof vi.fn>;
   };
-  flows: { redirectFor: ReturnType<typeof vi.fn>; start: ReturnType<typeof vi.fn> };
+  flows: {
+    catalogEndpoints: ReturnType<typeof vi.fn>;
+    redirectFor: ReturnType<typeof vi.fn>;
+    start: ReturnType<typeof vi.fn>;
+  };
   servers: Record<
     | "attachServer"
     | "createServer"
@@ -163,7 +169,9 @@ function authService(): UserAuthService {
   };
 }
 
-function build(options: { secureCookies?: boolean } = {}): Harness {
+function build(
+  options: { secureCookies?: boolean; catalogEndpoints?: { catalogId: string; url: string }[] } = {},
+): Harness {
   const servers = {
     attachServer: vi.fn(async () => AGENT_SERVER_DTO),
     createServer: vi.fn(async () => SERVER_DTO),
@@ -186,6 +194,7 @@ function build(options: { secureCookies?: boolean } = {}): Harness {
     setBearerOrNone: vi.fn(async () => undefined),
   };
   const flows = {
+    catalogEndpoints: vi.fn(() => options.catalogEndpoints ?? []),
     redirectFor: vi.fn(() => `${PUBLIC_ORIGIN}/agents/${AGENT}/mcp?server=${SERVER}&mcp_oauth=success`),
     start: vi.fn(async () => ({
       authorizationUrl: "https://auth.example.com/authorize?state=s1",
@@ -238,6 +247,24 @@ async function send(
     status: response.statusCode,
   };
 }
+
+describe("MCP catalog endpoints", () => {
+  it("returns an empty list when the deployment replaces no catalog endpoint", async () => {
+    const { app, flows } = build();
+    const { body, response, status } = await send(app, "GET", MCP_CATALOG_ENDPOINTS_PATH);
+    expect(status).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(body).toEqual({ endpoints: [] });
+    expect(flows.catalogEndpoints).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns the replaced endpoint and nothing that identifies the client", async () => {
+    const { app } = build({ catalogEndpoints: [{ catalogId: "canva", url: CANVA_DEVELOPER_PORTAL_MCP_URL }] });
+    const { body, status } = await send(app, "GET", MCP_CATALOG_ENDPOINTS_PATH);
+    expect(status).toBe(200);
+    expect(body).toEqual({ endpoints: [{ catalogId: "canva", url: CANVA_DEVELOPER_PORTAL_MCP_URL }] });
+  });
+});
 
 describe("MCP Server definition pool", () => {
   it("lists the Account's definitions without caching them", async () => {
@@ -453,6 +480,36 @@ describe("MCP per-Agent authorization", () => {
     expect(authorization.revoke).toHaveBeenCalledWith(ACCOUNT, AGENT, SERVER);
   });
 
+  it("conditionally cancels only the named OAuth attempt", async () => {
+    const { app, authorization } = build();
+    const { status } = await send(app, "DELETE", AGENT_MCP_AUTHORIZATION_TEMPLATE_PATH, {
+      payload: { expectedOAuthState: "issued-state" },
+    });
+    expect(status).toBe(200);
+    expect(authorization.revoke).toHaveBeenCalledWith(ACCOUNT, AGENT, SERVER, "issued-state");
+  });
+  it("refreshes tools when cancellation preserves a working credential", async () => {
+    const { app, authorization, servers } = build();
+    servers.readAgentServer.mockResolvedValue({
+      ...AGENT_SERVER_DTO,
+      authorization: { kind: "oauth", status: "active", hasCredential: true },
+    });
+    const { body, status } = await send(app, "DELETE", AGENT_MCP_AUTHORIZATION_TEMPLATE_PATH, {
+      payload: { expectedOAuthState: "issued-state" },
+    });
+    expect(status).toBe(200);
+    expect(body.authorization).toMatchObject({ status: "active", hasCredential: true });
+    expect(authorization.probe).toHaveBeenCalledWith(ACCOUNT, AGENT, SERVER);
+  });
+  it("rejects an invalid cancellation body before changing authorization", async () => {
+    const { app, authorization } = build();
+    const { status } = await send(app, "DELETE", AGENT_MCP_AUTHORIZATION_TEMPLATE_PATH, {
+      payload: { expectedOAuthState: "", credential: "unused" },
+    });
+    expect(status).toBe(400);
+    expect(authorization.revoke).not.toHaveBeenCalled();
+  });
+
   it("refuses an authorization request that pairs a kind with the wrong key field", async () => {
     const { app, authorization } = build();
     for (const payload of [
@@ -554,6 +611,7 @@ describe("MCP probe route", () => {
 
 describe("MCP management authentication", () => {
   const routes = [
+    ["GET", MCP_CATALOG_ENDPOINTS_PATH],
     ["GET", MCP_SERVERS_PATH],
     ["POST", MCP_SERVERS_PATH],
     ["GET", `${MCP_SERVERS_PATH}/${SERVER}`],

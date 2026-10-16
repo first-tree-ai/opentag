@@ -288,6 +288,43 @@ function validateMcpGoogleClientPair(
 }
 
 /**
+ * The MCP Canva client is a Canva Developer Portal client. It follows the same rule as the Google
+ * one: a half-configured pair fails startup, while an absent pair keeps the catalog's Canva card on
+ * the waitlist endpoint and its automatic client resolution (CIMD, then DCR).
+ */
+function validateMcpCanvaClientPair(
+  value: {
+    OPENTAG_MCP_CANVA_CLIENT_ID?: string | undefined;
+    OPENTAG_MCP_CANVA_CLIENT_SECRET?: string | undefined;
+  },
+  context: z.RefinementCtx,
+): void {
+  if (Boolean(value.OPENTAG_MCP_CANVA_CLIENT_ID) === Boolean(value.OPENTAG_MCP_CANVA_CLIENT_SECRET)) return;
+  context.addIssue({
+    code: "custom",
+    message: "OPENTAG_MCP_CANVA_CLIENT_ID and OPENTAG_MCP_CANVA_CLIENT_SECRET must be configured together",
+  });
+}
+
+/**
+ * The resolved MCP Canva client, spread into the config: absent unless both variables are set, in
+ * which case the flow offers it to Canva's Developer Portal MCP endpoint, and the catalog's Canva
+ * card creates its Server on that endpoint.
+ */
+function resolveMcpCanvaOAuth(parsed: {
+  OPENTAG_MCP_CANVA_CLIENT_ID?: string | undefined;
+  OPENTAG_MCP_CANVA_CLIENT_SECRET?: string | undefined;
+}): { mcpCanvaOAuth?: { clientId: string; clientSecret: string } } {
+  if (!parsed.OPENTAG_MCP_CANVA_CLIENT_ID || !parsed.OPENTAG_MCP_CANVA_CLIENT_SECRET) return {};
+  return {
+    mcpCanvaOAuth: {
+      clientId: parsed.OPENTAG_MCP_CANVA_CLIENT_ID,
+      clientSecret: parsed.OPENTAG_MCP_CANVA_CLIENT_SECRET,
+    },
+  };
+}
+
+/**
  * The resolved MCP Google client, spread into the config: absent unless both variables are set, in
  * which case the flow offers it to the Google Workspace endpoints whose discovery resolves Google.
  */
@@ -394,6 +431,8 @@ const ServerEnvironmentSchema = z
     OPENTAG_MCP_ALLOW_LOOPBACK: booleanString("false"),
     OPENTAG_MCP_GOOGLE_CLIENT_ID: z.string().min(1).optional(),
     OPENTAG_MCP_GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
+    OPENTAG_MCP_CANVA_CLIENT_ID: z.string().min(1).optional(),
+    OPENTAG_MCP_CANVA_CLIENT_SECRET: z.string().min(1).optional(),
     OPENTAG_GOOGLE_CLIENT_ID: z.string().min(1).optional(),
     OPENTAG_GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
     OPENTAG_SLACK_CLIENT_ID: z.string().min(1).optional(),
@@ -523,6 +562,7 @@ const ServerEnvironmentSchema = z
       context.addIssue({ code: "custom", message: "Google client id and secret must be configured together" });
     }
     validateMcpGoogleClientPair(value, context);
+    validateMcpCanvaClientPair(value, context);
     const slackOAuthValues = [
       value.OPENTAG_SLACK_CLIENT_ID,
       value.OPENTAG_SLACK_CLIENT_SECRET,
@@ -846,6 +886,14 @@ export interface ServerConfig {
    * The secret stays inside the flow service; it is never logged or returned.
    */
   mcpGoogleOAuth?: { clientId: string; clientSecret: string };
+  /**
+   * The deployment's Canva Developer Portal MCP OAuth client, present only when both variables are
+   * configured together. The flow offers it only to the Developer Portal MCP endpoint that resolves
+   * `https://www.canva.com`; without it, the catalog's Canva card keeps the waitlist endpoint and its
+   * automatic client resolution. The secret stays inside the flow service; it is never logged or
+   * returned.
+   */
+  mcpCanvaOAuth?: { clientId: string; clientSecret: string };
   port: number;
   /** Peers trusted to set `X-Forwarded-*`; `false` keys `request.ip` on the socket peer. */
   trustProxy: TrustProxyConfig;
@@ -987,6 +1035,8 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_MCP_ALLOW_LOOPBACK: environment.OPENTAG_MCP_ALLOW_LOOPBACK,
     OPENTAG_MCP_GOOGLE_CLIENT_ID: emptyToUndefined(environment.OPENTAG_MCP_GOOGLE_CLIENT_ID),
     OPENTAG_MCP_GOOGLE_CLIENT_SECRET: emptyToUndefined(environment.OPENTAG_MCP_GOOGLE_CLIENT_SECRET),
+    OPENTAG_MCP_CANVA_CLIENT_ID: emptyToUndefined(environment.OPENTAG_MCP_CANVA_CLIENT_ID),
+    OPENTAG_MCP_CANVA_CLIENT_SECRET: emptyToUndefined(environment.OPENTAG_MCP_CANVA_CLIENT_SECRET),
     OPENTAG_GOOGLE_CLIENT_ID: environment.OPENTAG_GOOGLE_CLIENT_ID,
     OPENTAG_GOOGLE_CLIENT_SECRET: environment.OPENTAG_GOOGLE_CLIENT_SECRET,
     OPENTAG_SLACK_CLIENT_ID: emptyToUndefined(environment.OPENTAG_SLACK_CLIENT_ID),
@@ -1104,6 +1154,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     logLevel: parsed.OPENTAG_LOG_LEVEL,
     mcpAllowLoopback: !isHostedEnvironment(parsed.OPENTAG_ENV) && parsed.OPENTAG_MCP_ALLOW_LOOPBACK,
     ...resolveMcpGoogleOAuth(parsed),
+    ...resolveMcpCanvaOAuth(parsed),
     observability: {
       tracing: {
         endpoint: parsed.OPENTAG_OTEL_ENDPOINT,

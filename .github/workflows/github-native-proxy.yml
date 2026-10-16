@@ -1,0 +1,113 @@
+name: GitHub Native Proxy
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-native-proxy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-gh:
+    name: Native gh (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 10.12.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Download the pinned official gh without using host credentials
+        shell: bash
+        run: |
+          version=$(node --input-type=module -e 'import {RUNNER_PINS} from "./scripts/runner/pins.mjs"; process.stdout.write(RUNNER_PINS.gh.version)')
+          case "$(uname -s)/$(uname -m)" in
+            Linux/x86_64) target=linux_amd64; extension=tar.gz ;;
+            Darwin/arm64) target=macOS_arm64; extension=zip ;;
+            Darwin/x86_64) target=macOS_amd64; extension=zip ;;
+            *) exit 1 ;;
+          esac
+          archive="gh_${version}_${target}.${extension}"
+          root="$RUNNER_TEMP/opentag-native-gh"
+          mkdir -p "$root"
+          curl --fail --location --retry 2 "https://github.com/cli/cli/releases/download/v${version}/${archive}" -o "$root/$archive"
+          curl --fail --location --retry 2 "https://github.com/cli/cli/releases/download/v${version}/gh_${version}_checksums.txt" -o "$root/checksums.txt"
+          cd "$root"
+          awk -v file="$archive" '$2 == file' checksums.txt > selected-checksum.txt
+          test -s selected-checksum.txt
+          shasum -a 256 -c selected-checksum.txt
+          if [ "$extension" = zip ]; then unzip -q "$archive"; else tar -xzf "$archive"; fi
+          binary="$root/gh_${version}_${target}/bin/gh"
+          chmod +x "$binary"
+          "$binary" --version
+          echo "OPENTAG_TEST_GH_BINARY=$binary" >> "$GITHUB_ENV"
+      - name: Install the reviewed Slack CLI for offline HTTPS regressions
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync } from "node:fs";
+          import { join } from "node:path";
+          import { ProviderCliManager } from "./packages/client/dist/index.mjs";
+          const manager = new ProviderCliManager({
+            accountHome: join(process.env.RUNNER_TEMP, "opentag-native-slack"),
+            env: { PATH: process.env.PATH },
+          });
+          const result = await manager.ensure("slack", { mode: "managed-only", pathUpdate: false });
+          if (!result.ok || !result.selected) throw new Error(JSON.stringify(result));
+          appendFileSync(process.env.GITHUB_ENV, `OPENTAG_TEST_SLACK_BINARY=${result.selected.path}\n`);
+          NODE
+      - name: Slack native HTTPS, identity and message regressions
+        run: |
+          command -v openssl
+          openssl version
+          pnpm --filter @opentag/client exec vitest run src/__tests__/slack-native-proxy.test.ts --maxWorkers=1
+      - name: Install the pinned Codex sandbox for offline macOS permission regressions
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          root="$RUNNER_TEMP/opentag-native-codex"
+          npm install --prefix "$root" --ignore-scripts --no-audit --no-fund @openai/codex@0.159.0
+          binary="$root/node_modules/.bin/codex"
+          "$binary" --version
+          echo "OPENTAG_TEST_CODEX_BINARY=$binary" >> "$GITHUB_ENV"
+      - name: Record actual Git and TLS toolchains
+        shell: bash
+        run: |
+          command -v git
+          git --version --build-options
+          if [ "$(uname -s)" = Darwin ]; then
+            otool -L "$(git --exec-path)/git-remote-https"
+            /usr/bin/curl -V
+            /usr/bin/git --version --build-options
+          fi
+      - name: Local and Cloud authority, transport and native command regressions
+        shell: bash
+        run: |
+          pnpm --filter @opentag/client exec vitest run src/__tests__/github-native-gh.test.ts src/__tests__/github-native-gh-cache.test.ts src/__tests__/github-native-git.test.ts src/__tests__/runtime-proxy-git-socket.test.ts src/__tests__/runtime-proxy-network-scope.test.ts src/__tests__/runtime-credential-relay.test.ts src/__tests__/cloud-sandbox-credential-bridge.test.ts src/__tests__/cloud-turns-bridge-failure.test.ts --maxWorkers=1
+          pnpm --filter @opentag/server exec vitest run src/__tests__/github-native-gh.test.ts src/__tests__/github-native-git.test.ts src/__tests__/github-provider-adapter.test.ts src/__tests__/github-http-compatibility.test.ts src/__tests__/github-runtime-policy.test.ts src/__tests__/github-stream-authorization.test.ts src/__tests__/runtime-credentials-transport.test.ts src/__tests__/github-user-task-db.test.ts src/__tests__/github-user-token-client.test.ts --maxWorkers=1
+      - name: Retain system Git compatibility without relaxing sandbox policy
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          OPENTAG_TEST_GIT_BINARY: /usr/bin/git
+          OPENTAG_TEST_CODEX_BINARY: ""
+        run: pnpm --filter @opentag/client exec vitest run src/__tests__/github-native-git.test.ts --maxWorkers=1
+      - name: Concurrent Cloud native Git and gh fixtures
+        if: runner.os == 'Linux'
+        shell: bash
+        run: pnpm --filter @opentag/client exec vitest run src/__tests__/github-native-git.test.ts src/__tests__/github-native-gh.test.ts --maxWorkers=2 --testNamePattern 'Cloud published transport'

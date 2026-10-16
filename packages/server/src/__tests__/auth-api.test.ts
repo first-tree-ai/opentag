@@ -249,6 +249,52 @@ describe("auth HTTP API", () => {
     expect(issuer.issueForUser).toHaveBeenCalledWith("53e2babe-e4ac-4e2c-b7d1-d092d5a4568e");
   });
 
+  it("issues only the fixed operation purpose through the existing authenticated, CSRF-protected endpoint", async () => {
+    const authService = createAuthService();
+    const code = "slack-provision.one-time-operation-code";
+    const issuer: ConnectCodeIssuer = {
+      issueForUser: vi.fn().mockResolvedValue({
+        code,
+        expiresAt: new Date("2030-01-01T00:15:00Z"),
+        expiresIn: 900,
+        issuedAt: new Date("2030-01-01T00:00:00Z"),
+      }),
+    };
+    const app = createApp({
+      authService,
+      connectCode: { environment: "staging", issuer, publicUrl: "https://dev.example.com" },
+      betterAuth: signedInBrowser("53e2babe-e4ac-4e2c-b7d1-d092d5a4568e"),
+      browserAuth: { publicOrigin: "https://dev.example.com", sessionTtlSeconds: 3600, secureCookies: true },
+    });
+    apps.push(app);
+    const payload = { purpose: "slack-agent-provision" };
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: HTTP_PATHS.meConnectCodes,
+          headers: { cookie: "opentag.session_token=session" },
+          payload,
+        })
+      ).statusCode,
+    ).toBe(403);
+    expect(issuer.issueForUser).not.toHaveBeenCalled();
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.meConnectCodes,
+      headers: { authorization: "Bearer access" },
+      payload,
+    });
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toEqual({ code, expiresIn: 900, issuedAt: "2030-01-01T00:00:00.000Z" });
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(issuer.issueForUser).toHaveBeenCalledExactlyOnceWith(
+      "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
+      "slack-agent-provision",
+    );
+    expect(response.body).not.toContain("bootstrapCommand");
+  });
+
   it("requires same-origin CSRF for browser connect-code issuance", async () => {
     const authService = createAuthService();
     const issuer: ConnectCodeIssuer = {

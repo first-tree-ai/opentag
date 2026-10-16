@@ -7,6 +7,7 @@
   "computer_check_status": "Check status",
   "computer_checking_status": "Checking…",
   "computer_cloud": "Cloud computer",
+  "computer_connect_another_action": "Connect another computer",
   "computer_connection_restored": "Connected",
   "computer_delete_button": "Remove computer",
   "computer_delete_confirm_description": "This computer is removed from your account and its connection key stops working. To use it again, connect it as a new computer.",

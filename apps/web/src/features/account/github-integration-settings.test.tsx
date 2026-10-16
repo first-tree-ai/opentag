@@ -23,8 +23,6 @@ function connection(overrides: Partial<GitHubConnectionStatus> = {}): GitHubConn
     githubUserId: "42",
     githubLogin: "octocat",
     status: "active",
-    bindingsSchemaVersion: 1,
-    bindings: [],
     authorizationVersion: "2",
     credentialGeneration: "1",
     accessExpiresAt: "2026-09-16T08:00:00.000Z",
@@ -81,43 +79,16 @@ describe("GitHubIntegrationSettings", () => {
     );
   });
 
-  it("shows the connected identity, installations, and bound repositories", async () => {
-    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(
-      overview(
-        connection({
-          bindings: [
-            {
-              bindingId: "9f0f2f6c-2f5c-4d43-a9fb-9a1c9f000001",
-              installationId: "55123456",
-              repositoryId: "987654321",
-              fullNameDisplay: "octocat/hello-world",
-              agentScopes: [{ agentId: "1a63a21e-f6c7-4474-91ea-4dabf0566a24", role: "code", access: "read" }],
-            },
-          ],
-        }),
-      ),
-    );
+  it("shows the connected identity without a saved repository list", async () => {
+    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection()));
     vi.spyOn(browserApi, "githubRepositories").mockResolvedValue({
-      installations: [
-        {
-          installationId: "55123456",
-          accountLogin: "octocat",
-          accountType: "Organization",
-          repositorySelection: "selected",
-          suspended: false,
-        },
-      ],
+      installations: [],
       repositories: [],
       nextCursor: null,
-      truncatedInstallations: [],
     });
     render(<GitHubIntegrationSettings />);
-
-    expect(await screen.findByText("Connected as @octocat.")).toBeTruthy();
-    expect(screen.getByText("Connected")).toBeTruthy();
-    expect(screen.getByText("octocat")).toBeTruthy();
-    expect(screen.getByText("octocat/hello-world")).toBeTruthy();
-    expect(screen.getByText("Repositories (1)")).toBeTruthy();
+    expect(await screen.findByText(/Connected as/)).toBeTruthy();
+    expect(screen.queryByText(/bound repositories/i)).toBeNull();
   });
 
   it("reports the bounded callback outcome and clears the query parameters", async () => {
@@ -335,8 +306,8 @@ describe("GitHubIntegrationSettings states", () => {
     render(<GitHubIntegrationSettings />);
 
     expect(await screen.findByText("No installations found.")).toBeTruthy();
-    expect(screen.getByText("No repositories are enabled for Agents.")).toBeTruthy();
-    expect(screen.getByText("Repositories (0)")).toBeTruthy();
+    expect(screen.queryByText("No repositories are enabled for Agents.")).toBeNull();
+    expect(screen.queryByText("Repositories (0)")).toBeNull();
     const install = screen.getByRole("link", { name: "Install GitHub App" });
     expect(install.getAttribute("href")).toBe("/api/v1/integrations/github/installation");
     expect(install.getAttribute("target")).toBe("_blank");
@@ -382,7 +353,6 @@ describe("GitHubIntegrationSettings states", () => {
         repositories: [],
         nextCursor: null,
       });
-      const save = vi.spyOn(browserApi, "updateGitHubBindings");
       render(<GitHubIntegrationSettings />);
 
       expect(await screen.findByText(suspended ? "octocat (suspended)" : "octocat")).toBeTruthy();
@@ -411,7 +381,6 @@ describe("GitHubIntegrationSettings states", () => {
       expect(discover).toHaveBeenCalledTimes(2);
       expect(screen.getByRole("link", { name: "Install GitHub App" })).toBeTruthy();
       expect(screen.getByRole("button", { name: "Refresh installations" })).toBeTruthy();
-      expect(save).not.toHaveBeenCalled();
     },
   );
 

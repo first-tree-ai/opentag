@@ -645,6 +645,7 @@ export class SessionCollaborationService {
     try {
       const attempt = await this.#sessions.createInternalSessionWithMessage({
         creatorSessionId: source.sessionId,
+        ...(source.userTaskSource ? { userTaskSource: source.userTaskSource } : {}),
         creatorInstallationId: source.installationId,
         creatorConnectionInstanceId: source.connectionInstanceId,
         creatorComputerId: source.computerId,
@@ -668,6 +669,7 @@ export class SessionCollaborationService {
       const attempt = await this.#sessions.authorizeAndRecordMessage({
         messageId: input.messageId,
         sourceSessionId: source.sessionId,
+        ...(source.userTaskSource ? { userTaskSource: source.userTaskSource } : {}),
         sourceInstallationId: source.installationId,
         sourceComputerId: source.computerId,
         sourceConnectionInstanceId: source.connectionInstanceId,

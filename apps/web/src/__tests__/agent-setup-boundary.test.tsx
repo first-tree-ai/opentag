@@ -517,7 +517,11 @@ describe("Agent Setup route boundary", () => {
   });
 
   it("asks for an explicit choice when the Account has several active Agents", async () => {
-    installAgentSetupApi({ agentList: [agentListItem, secondAgentListItem], setupCompletedAt: null });
+    const avatarPath = `/api/v1/agents/${agentId}/avatar`;
+    installAgentSetupApi({
+      agentList: [{ ...agentListItem, avatarPath }, secondAgentListItem],
+      setupCompletedAt: null,
+    });
     window.history.replaceState({}, "", "/agents/setup");
     render(<App />);
 
@@ -525,9 +529,17 @@ describe("Agent Setup route boundary", () => {
     // Nothing is picked for the reader: no canonical redirect and no creation happens on its own.
     expect(window.location.search).not.toContain("agentId=");
     expect(agentCreationPosts()).toHaveLength(0);
-    expect(screen.getByRole("link", { name: "Reviewer" })).toBeTruthy();
+    const reviewer = screen.getByRole("link", { name: "Reviewer" });
+    const logo = reviewer.querySelector("img");
+    expect(logo?.getAttribute("src")).toBe(avatarPath);
+    fireEvent.error(logo as HTMLImageElement);
+    expect(reviewer.querySelector("img")).toBeNull();
+    expect(reviewer.querySelector('[aria-hidden="true"]')?.textContent).toBe("R");
+    const helper = screen.getByRole("link", { name: "Helper" });
+    expect(helper.querySelector("img")).toBeNull();
+    expect(helper.querySelector('[aria-hidden="true"]')?.textContent).toBe("H");
 
-    fireEvent.click(screen.getByRole("link", { name: "Helper" }));
+    fireEvent.click(helper);
 
     await waitFor(() => expect(window.location.search).toContain(`agentId=${secondAgentId}`));
     expect(window.location.pathname).toBe("/agents/setup");

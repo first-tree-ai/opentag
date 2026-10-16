@@ -52,7 +52,9 @@ import { RuntimeApprovalOwner } from "./runtime/runtime-approval-owner.js";
 import { PostgresRuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
 import { RuntimeDomainOwner } from "./runtime/runtime-domain-owner.js";
 import { PostgresRuntimeDurableWorkStore } from "./runtime/runtime-durable-work-store.js";
+import { SlackAutoSetupOwner } from "./runtime/slack-auto-setup-owner.js";
 import { AgentRuntimeOptionsService } from "./services/agents/agent-runtime-options-service.js";
+import { AgentSlackProvisionService } from "./services/agents/agent-slack-provision-service.js";
 import { CloudContextTreeOperations } from "./services/agents/cloud-context-tree-operations.js";
 import { ContextTreeOperationService } from "./services/agents/context-tree-operation-service.js";
 import {
@@ -64,6 +66,7 @@ import {
   CloudAgentRuntimeTester,
   DatabaseAgentOwnerResolver,
 } from "./services/agents/index.js";
+import { SlackAutoSetupService } from "./services/agents/slack-auto-setup-service.js";
 import {
   AuthService,
   ConnectCodeService,
@@ -83,6 +86,7 @@ import { ApplicationCipher } from "./services/crypto.js";
 import { createGitHubIntegration } from "./services/github/index.js";
 import { GitHubInstallationTokenClient } from "./services/github/installation-token-client.js";
 import { GitHubCredentialCipher } from "./services/github-credential-material.js";
+import { GitHubUserTokenLeases } from "./services/github-proxy/user-token-leases.js";
 import { ExternalCallPolicy } from "./services/im/external-call-policy.js";
 import { ImMessageInbox, ImResourceService } from "./services/im/index.js";
 import { SlackWorkingStore } from "./services/im/slack-working-store.js";
@@ -385,14 +389,18 @@ function cloudSessionAuthorityOptions(
 }
 
 function createContextTreeServices(
-  management: NonNullable<ReturnType<typeof createGitHubIntegration>>["management"] | undefined,
+  github: ReturnType<typeof createGitHubIntegration> | undefined,
   imBindings: ImBindingService,
   agents: AgentService,
   owner: ContextTreeOperationOwner,
 ) {
   const computerKind = (computerId: string) => imBindings.computerKind(computerId);
-  const cloudContextTreeOperations = management
-    ? new CloudContextTreeOperations({ management, computerKind })
+  const cloudContextTreeOperations = github
+    ? new CloudContextTreeOperations({
+        management: github.management,
+        computerKind,
+        leases: new GitHubUserTokenLeases(github.userTokens),
+      })
     : undefined;
   return {
     cloudContextTreeOperations,
@@ -778,12 +786,11 @@ export async function startServer(): Promise<void> {
     const sandboxService = new SandboxService(database, sessionService, { cloudIdentities });
     const taskService = new TaskService(database);
     const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
-    const sessionCliProofService = new SessionCliProofService(
-      database,
-      registry,
-      config.encryptionKey,
-      sessionAuthority.proof,
-    );
+    const sessionCliProofService = new SessionCliProofService(database, registry, config.encryptionKey, {
+      ...sessionAuthority.proof,
+      executions: platformRuntime.credentials.owner.executionRegistry,
+      executionLive: (id) => platformRuntime.credentials.owner.isExecutionLive(id),
+    });
     const skillRuntime = createSkillRuntime(config, database, serviceLogger("skills"));
     const slackWorkingStore = new SlackWorkingStore(database);
     const domainOwner = new RuntimeDomainOwner(registry, custody, {
@@ -813,6 +820,7 @@ export async function startServer(): Promise<void> {
     const contextTreeOperationOwner = new ContextTreeOperationOwner(registry);
     const agentRuntimeOptionsOwner = new AgentRuntimeOptionsOwner(registry);
     const agentRuntimeTestOwner = new AgentRuntimeTestOwner(registry);
+    const slackAutoSetupOwner = new SlackAutoSetupOwner(registry);
     const agentService = new AgentService(database, {
       ...optionalCloudUsage(config, cloudUsage),
       cloudIdentitiesEnabled: cloudIdentities.enabled,
@@ -834,7 +842,7 @@ export async function startServer(): Promise<void> {
         ),
     });
     const { cloudContextTreeOperations, contextTreeOperationService } = createContextTreeServices(
-      github?.management,
+      github,
       imBindingService,
       agentService,
       contextTreeOperationOwner,
@@ -1024,6 +1032,13 @@ export async function startServer(): Promise<void> {
        * reach beyond the Google-hosted endpoints.
        */
       googleMcpClient: config.mcpGoogleOAuth,
+      /*
+       * The deployment's Canva Developer Portal client, present only when the
+       * OPENTAG_MCP_CANVA_CLIENT_* pair is configured. The flow offers it only to the Developer
+       * Portal endpoint that resolves Canva's issuer, and it also makes the catalog's Canva card
+       * create its Server on that endpoint.
+       */
+      canvaMcpClient: config.mcpCanvaOAuth,
     });
     const mcpRefreshWorker = new McpRefreshWorker({
       authorization: mcpAuthorization,
@@ -1126,6 +1141,13 @@ export async function startServer(): Promise<void> {
       imBindingService,
       feishuSetupService,
       slackConfiguration: {
+        autoSetup: new SlackAutoSetupService({
+          agents: agentService,
+          slack: slackConfigurationService,
+          owner: slackAutoSetupOwner,
+          publicOrigin: config.publicUrl,
+          officialSigningSecret: config.slackOAuth?.signingSecret,
+        }),
         service: slackConfigurationService,
         publicOrigin: config.publicUrl,
         officialSigningSecret: config.slackOAuth?.signingSecret,
@@ -1177,6 +1199,7 @@ export async function startServer(): Promise<void> {
         registry,
         domainOwner,
         agentRuntimeTestOwner,
+        slackAutoSetupOwner,
         agentRuntimeOptionsOwner,
         contextTreeOperationOwner,
         providerCliReconcileOwner,
@@ -1190,6 +1213,15 @@ export async function startServer(): Promise<void> {
           mcp: mcpServers,
           owners: new DatabaseAgentOwnerResolver(database),
           proofs: sessionCliProofService,
+        }),
+      },
+      runtimeAgentSlackProvision: {
+        service: new AgentSlackProvisionService({
+          database,
+          agents: agentService,
+          slack: slackConfigurationService,
+          proofs: sessionCliProofService,
+          publicOrigin: config.publicUrl,
         }),
       },
       runtimeAgentSchedules: { service: scheduleService },

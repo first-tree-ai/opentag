@@ -10,6 +10,29 @@ binary and `~/.opentag`; preview builds use the separate `open-tag-staging` pack
 Login installs and starts the daemon service by default. Use `--no-start` for credential-only login. The public daemon
 commands are `install`, `start`, `stop`, `restart`, `status`, and `uninstall`; v0.1 does not provide a Windows service.
 
+## Persistent runtime credentials
+
+Put daemon-only runtime environment values in `<OPENTAG_HOME>/config/daemon.env` (production default:
+`~/.opentag/config/daemon.env`). Keep the Home and config directories private and the file mode at `0600`.
+The daemon loads this file at startup; non-empty values already supplied by its supervisor take precedence.
+Restart the daemon after changing the file, once its current work can safely stop. Never share credential values.
+For unattended Claude subscription access, use the token created by `claude setup-token` as
+`CLAUDE_CODE_OAUTH_TOKEN`, rather than copying a short-lived access token from native login storage.
+
+Service installation and upgrade refresh preserve existing custom environment values in launchd plists and
+environment directives in the systemd unit. Installation and refresh enforce mode `0600` even when the definition content is unchanged, because it may contain secrets. OpenTag still regenerates its executable and managed `PATH`,
+`OPENTAG_HOME`, and `OPENTAG_SERVICE_MODE`. On Linux, the service entrypoint sets these three values after systemd
+applies environment files and removals, so custom directives cannot change the daemon's Home or service mode.
+Systemd drop-ins are separate files and remain untouched.
+An unsupported or ambiguous launchd environment is rejected before any definition is overwritten. Only supported UTF-8 XML environments are preserved; binary plists and other encodings must be converted first or use `config/daemon.env`.
+
+Claude readiness always consults the CLI's authentication status using the same setting sources as execution.
+Explicit credentials targeting the default Anthropic endpoint are additionally checked with one bounded, read-only
+Models API request per readiness check. Equivalent official URLs (including the default port and host case) receive the same check. When both `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` are set, the check sends both authentication headers. A rejected credential requires sign-in or replacement; connectivity, permission, rate-limit,
+and service failures remain retryable unavailability. This check makes no model generation request and does not
+prove access to a particular model or available quota. Native login storage, custom gateways, Bedrock, Vertex,
+and Foundry remain under the Claude CLI's credential handling; OpenTag does not read or renew their tokens.
+
 ## Targeted Computer preparation
 
 `opentag connect <code>` (also `opentag computer connect <code>`) binds the Computer named by the one-time setup flow.

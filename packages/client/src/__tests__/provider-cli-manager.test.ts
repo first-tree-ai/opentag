@@ -507,7 +507,7 @@ describe("ProviderCliManager ensure", () => {
   });
 
   it("reports the managed installation as globally active through the shim", async () => {
-    const { server, catalog } = await makeManagedCatalog("slack", "4.7.0");
+    const { server, catalog } = await makeManagedCatalog("slack", "4.10.0");
     try {
       const { accountHome, layout } = await makeManager({});
       const manager = new ProviderCliManager({
@@ -522,9 +522,9 @@ describe("ProviderCliManager ensure", () => {
       expect(result.globalCommand.active).toBe(true);
       // The launcher runs the managed slack target with the skip-update flag handled.
       const { stdout } = await execFileAsync(join(layout.bin, "slack"), ["version"]);
-      expect(stdout.trim()).toBe("Using slack v4.7.0");
+      expect(stdout.trim()).toBe("Using slack v4.10.0");
       const shimmed = await execFileAsync(join(layout.publicBinDir, "slack"), ["version"]);
-      expect(shimmed.stdout.trim()).toBe("Using slack v4.7.0");
+      expect(shimmed.stdout.trim()).toBe("Using slack v4.10.0");
     } finally {
       await server.close();
     }

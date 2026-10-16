@@ -10,7 +10,7 @@ import type {
   TaskTurn,
   TurnReportRequest,
 } from "@opentag/shared";
-import { TASK_CANCELLED_DELIVERY_REASON, TaskTitleSchema } from "@opentag/shared";
+import { agentAvatarPath, TASK_CANCELLED_DELIVERY_REASON, TaskTitleSchema } from "@opentag/shared";
 import { and, asc, eq, inArray, isNull, or, type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DatabaseClient } from "../../db/client.js";
@@ -47,6 +47,7 @@ interface TaskSummaryRow extends Record<string, unknown> {
   agentId: string;
   agentName: string;
   agentDisplayName: string;
+  agentAvatarSourceUrl: string | null;
   runtimeProvider: AgentRuntimeProvider;
   provider: "feishu" | "slack";
   conversationKind: "channel" | "dm" | "group_dm";
@@ -222,6 +223,7 @@ function toSummary(row: TaskSummaryRow): TaskSummary {
       id: row.agentId,
       name: row.agentName,
       displayName: row.agentDisplayName,
+      ...(row.agentAvatarSourceUrl ? { avatarPath: agentAvatarPath(row.agentId) } : {}),
       runtimeProvider: row.runtimeProvider,
     },
     source: {
@@ -410,6 +412,7 @@ function topicCtes(input: { accountId: string; agentId?: string; scope?: TopicSc
         a.id as agent_id,
         a.name as agent_name,
         a.display_name as agent_display_name,
+        b.bot_avatar_url as agent_avatar_source_url,
         a.runtime_provider
       from im_bindings b
       inner join agents a on a.id = b.agent_id
@@ -1238,6 +1241,7 @@ export class TaskService {
         sb.agent_id as "agentId",
         sb.agent_name as "agentName",
         sb.agent_display_name as "agentDisplayName",
+        sb.agent_avatar_source_url as "agentAvatarSourceUrl",
         sb.runtime_provider as "runtimeProvider",
         sb.provider,
         coalesce(ch.conversation_kind, 'channel') as "conversationKind",

@@ -7,6 +7,11 @@ defined by the shipped Provider CLI management foundation. OpenTag-managed Provi
 CLIs are account-global commands that the user may also invoke directly; only an
 authorized Turn receives OpenTag-projected credentials.
 
+Slack requires CLI `4.10.0` or later. Its Go 1.27 certificate loader honors the execution-scoped
+`SSL_CERT_FILE` on macOS, so native identity checks and message sends can use the existing HTTPS proxy.
+See the [Slack release](https://github.com/slackapi/slack-cli/releases/tag/v4.10.0) and
+[Go certificate changes](https://go.dev/doc/go1.27#crypto/x509).
+
 OpenTag owns inbound IM routing, Integration credentials, temporary Client credential projection, and provider-native inbound references. It does not expose a message send, reply, Reaction, or upload API.
 
 The targeted first-setup `opentag connect` command is the only installer for both official Provider CLIs during

@@ -28,7 +28,7 @@ describe("provider CLI product Turn gate", () => {
     const harness = await makeTurnPlanHarness();
     tempHomes.push(harness.accountHome, harness.openTagHome);
     const target = await installTurnTarget(join(harness.accountHome, "bin"), "slack");
-    await writeExternalTurnSelection(harness.layout, "slack", target, "4.7.0");
+    await writeExternalTurnSelection(harness.layout, "slack", target, "4.10.0");
     const configDir = await makePrivateSlackConfigDir(harness.accountHome);
     const order: string[] = [];
     const prompt = vi.fn(async (request: { runId: string }) => {
@@ -42,7 +42,7 @@ describe("provider CLI product Turn gate", () => {
         command: "slack",
         provider: "slack",
         selectionKind: "external",
-        selectionVersion: "4.7.0",
+        selectionVersion: "4.10.0",
         sessionId,
         targetPath: target,
       });
@@ -131,7 +131,7 @@ describe("provider CLI product Turn gate", () => {
     const internal = await makeTurnPlanHarness();
     tempHomes.push(missing.accountHome, missing.openTagHome, internal.accountHome, internal.openTagHome);
     const target = await installTurnTarget(join(internal.accountHome, "bin"), "slack");
-    await writeExternalTurnSelection(internal.layout, "slack", target, "4.7.0");
+    await writeExternalTurnSelection(internal.layout, "slack", target, "4.10.0");
     const configDir = await makePrivateSlackConfigDir(internal.accountHome);
     const ensureRuntime = vi.fn();
     const create = vi.fn((input) => ({

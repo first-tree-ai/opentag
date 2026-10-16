@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AgentRuntimeProviderSchema } from "./agent.js";
+import { AgentRuntimeProviderSchema, AgentSummarySchema } from "./agent.js";
 import { ImProviderSchema } from "./im-binding.js";
 import {
   ImAttentionSchema,
@@ -53,6 +53,7 @@ export const TaskSummarySchema = z
         id: z.string().uuid(),
         name: z.string().min(1),
         displayName: z.string().min(1),
+        avatarPath: AgentSummarySchema.shape.avatarPath,
         runtimeProvider: AgentRuntimeProviderSchema,
       })
       .strict(),

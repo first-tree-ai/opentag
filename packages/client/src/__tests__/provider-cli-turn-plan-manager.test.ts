@@ -103,7 +103,7 @@ describe("ProviderCliTurnPlanManager prepare", () => {
       code: "active_run_conflict",
     });
     const slackTarget = await installTurnTarget(join(accountHome, "bin-slack"), "slack");
-    await writeExternalTurnSelection(layout, "slack", slackTarget, "4.7.0");
+    await writeExternalTurnSelection(layout, "slack", slackTarget, "4.10.0");
     const configDir = await makePrivateSlackConfigDir(accountHome);
     await expect(
       manager.prepare({
@@ -119,7 +119,7 @@ describe("ProviderCliTurnPlanManager prepare", () => {
   it("publishes a managed plan with artifact identity", async () => {
     const { accountHome, layout, manager } = await trackedHarness();
     const target = await installTurnTarget(join(accountHome, "bin"), "slack");
-    const artifactId = await writeManagedTurnSelection(layout, "slack", target, "4.7.0");
+    const artifactId = await writeManagedTurnSelection(layout, "slack", target, "4.10.0");
     const configDir = await makePrivateSlackConfigDir(accountHome);
     const prepared = await manager.prepare({
       provider: "slack",
@@ -139,7 +139,7 @@ describe("ProviderCliTurnPlanManager prepare", () => {
   it("freezes the caller Slack config dir and refuses a Feishu config dir", async () => {
     const slack = await trackedHarness();
     const slackTarget = await installTurnTarget(join(slack.accountHome, "bin"), "slack");
-    await writeExternalTurnSelection(slack.layout, "slack", slackTarget, "4.7.0");
+    await writeExternalTurnSelection(slack.layout, "slack", slackTarget, "4.10.0");
     const configDir = await makePrivateSlackConfigDir(slack.accountHome);
     const prepared = await slack.manager.prepare({
       provider: "slack",
@@ -454,7 +454,7 @@ describe("ProviderCliTurnPlanManager prepare", () => {
   it("publishes Slack proxy plans and reports the account layout", async () => {
     const { accountHome, layout, manager } = await trackedHarness();
     const target = await installTurnTarget(join(accountHome, "bin"), "slack");
-    const artifactId = await writeManagedTurnSelection(layout, "slack", target, "4.7.0");
+    const artifactId = await writeManagedTurnSelection(layout, "slack", target, "4.10.0");
     const configDir = await makePrivateSlackConfigDir(accountHome);
     const environmentManifest = join(accountHome, "environment.json");
     expect(manager.layout).toEqual(layout);
@@ -474,7 +474,7 @@ describe("ProviderCliTurnPlanManager prepare", () => {
       slackApiHost: "https://127.0.0.1:9",
     });
 
-    await writeExternalTurnSelection(layout, "slack", target, "4.7.0");
+    await writeExternalTurnSelection(layout, "slack", target, "4.10.0");
     const external = await manager.prepare({
       provider: "slack",
       sessionId: "s-external-proxy",
@@ -509,7 +509,7 @@ describe("ProviderCliTurnPlanManager prepare", () => {
 
     const slack = await trackedHarness();
     const slackTarget = await installTurnTarget(join(slack.accountHome, "bin"), "slack");
-    await writeExternalTurnSelection(slack.layout, "slack", slackTarget, "4.7.0");
+    await writeExternalTurnSelection(slack.layout, "slack", slackTarget, "4.10.0");
     await expect(
       slack.manager.prepare({
         provider: "slack",
@@ -937,7 +937,7 @@ describe("Provider CLI Turn plan schema", () => {
       ...feishuExternal,
       provider: "slack" as const,
       command: "slack" as const,
-      selectionVersion: "4.7.0",
+      selectionVersion: "4.10.0",
       configDir,
     };
     expect(parseProviderCliTurnPlan(slackExternal)).toMatchObject({ provider: "slack", configDir });
@@ -957,7 +957,7 @@ describe("Provider CLI Turn plan schema", () => {
     const slackManaged = {
       ...slackExternal,
       selectionKind: "managed" as const,
-      artifactId: "4.7.0/test-platform/aa".padEnd(64, "a"),
+      artifactId: "4.10.0/test-platform/aa".padEnd(64, "a"),
     };
     expect(parseProviderCliTurnPlan(slackManaged).selectionKind).toBe("managed");
     expect(() => parseProviderCliTurnPlan({ ...slackExternal, selectionKind: "managed" })).toThrow(
@@ -1065,7 +1065,7 @@ describe("Provider CLI Turn plan schema", () => {
     const slackManaged = {
       ...slack,
       selectionKind: "managed",
-      artifactId: "4.7.0/test-platform/aa",
+      artifactId: "4.10.0/test-platform/aa",
     };
     expect(parseProviderCliTurnPlan({ ...slack, slackApiHost: apiHost })).toMatchObject({ slackApiHost: apiHost });
     expect(parseProviderCliTurnPlan(slackManaged)).toMatchObject({ selectionKind: "managed" });

@@ -3,7 +3,6 @@ import {
   RUNTIME_CAPABILITY,
   RUNTIME_PROTOCOL_V2,
   type RuntimeChannelTarget,
-  RuntimeCredentialServerFrameSchema,
   type RuntimeNegotiatedCapabilities,
   type RuntimeProtocolVersion,
   redactForLog,
@@ -11,6 +10,7 @@ import {
 } from "@opentag/shared";
 import type { RawData } from "ws";
 import type { ClientLogger } from "../observability/logger.js";
+import { parseRuntimeCredentialServerFrame } from "./runtime-credential-frames.js";
 
 export type RuntimeBusinessFrame = Readonly<Record<string, unknown>> & { readonly type: string };
 
@@ -29,8 +29,8 @@ export type RuntimeBusinessFrame = Readonly<Record<string, unknown>> & { readonl
 export function parseServerBusinessFrame(value: unknown): RuntimeBusinessFrame | undefined {
   const domain = ServerRuntimeBusinessFrameSchema.safeParse(value);
   if (domain.success) return domain.data;
-  const credential = RuntimeCredentialServerFrameSchema.safeParse(value);
-  return credential.success ? (credential.data as unknown as RuntimeBusinessFrame) : undefined;
+  const credential = parseRuntimeCredentialServerFrame(value);
+  return credential ? (credential as unknown as RuntimeBusinessFrame) : undefined;
 }
 
 export function notifyTarget(

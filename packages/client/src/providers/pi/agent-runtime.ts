@@ -1027,6 +1027,7 @@ export function piAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = process.en
     "OPENTAG_HOME",
     "OPENTAG_PROVIDER_ENV_FILE",
     "OPENTAG_SESSION_PROOF_FILE",
+    "OPENTAG_EXECUTION_ID",
     "PATH",
     "PATHEXT",
     "PI_CODING_AGENT_DIR",

@@ -213,7 +213,7 @@ describe("executeProviderCliTurnPlan Slack config directory", () => {
     const nest = join(harness.accountHome, "nest");
     const configDir = await makePrivateSlackConfigDir(nest, "cfg");
     const target = await installTurnTarget(join(harness.accountHome, "bin"), "slack");
-    await writeExternalTurnSelection(harness.layout, "slack", target, "4.7.0");
+    await writeExternalTurnSelection(harness.layout, "slack", target, "4.10.0");
     const prepared = await harness.manager.prepare({ provider: "slack", sessionId: "s-1", runId: "run-1", configDir });
     await rm(nest, { recursive: true, force: true });
     await writeFile(nest, "", { mode: 0o600 });
@@ -230,7 +230,7 @@ describe("executeProviderCliTurnPlan Slack config directory", () => {
     await symlink(realParent, linkParent);
     const configDir = join(linkParent, "cfg");
     const target = await installTurnTarget(join(harness.accountHome, "bin"), "slack");
-    await writeExternalTurnSelection(harness.layout, "slack", target, "4.7.0");
+    await writeExternalTurnSelection(harness.layout, "slack", target, "4.10.0");
     const prepared = await harness.manager.prepare({ provider: "slack", sessionId: "s-1", runId: "run-1", configDir });
     await expect(
       execute(prepared, harness.layout.plans, { provider: "slack", argv: ["api", "auth.test"] }),
@@ -241,7 +241,7 @@ describe("executeProviderCliTurnPlan Slack config directory", () => {
     const harness = await trackedHarness();
     const configDir = await makePrivateSlackConfigDir(harness.accountHome);
     const target = await installTurnTarget(join(harness.accountHome, "bin"), "slack");
-    await writeExternalTurnSelection(harness.layout, "slack", target, "4.7.0");
+    await writeExternalTurnSelection(harness.layout, "slack", target, "4.10.0");
     const prepared = await harness.manager.prepare({ provider: "slack", sessionId: "s-1", runId: "run-1", configDir });
     const spawned: (readonly string[])[] = [];
     await expect(
@@ -261,7 +261,7 @@ describe("executeProviderCliTurnPlan Slack config directory", () => {
     const harness = await trackedHarness();
     const configDir = await makePrivateSlackConfigDir(harness.accountHome);
     const target = await installTurnTarget(join(harness.accountHome, "bin"), "slack");
-    await writeExternalTurnSelection(harness.layout, "slack", target, "4.7.0");
+    await writeExternalTurnSelection(harness.layout, "slack", target, "4.10.0");
     const prepared = await harness.manager.prepare({
       provider: "slack",
       sessionId: "s-1",
@@ -407,7 +407,7 @@ describe("executeProviderCliTurnPlan environment ownership", () => {
     const harness = await trackedHarness();
     const configDir = await makePrivateSlackConfigDir(harness.accountHome);
     const target = await installTurnTarget(join(harness.accountHome, "bin"), "slack");
-    await writeExternalTurnSelection(harness.layout, "slack", target, "4.7.0");
+    await writeExternalTurnSelection(harness.layout, "slack", target, "4.10.0");
     const prepared = await harness.manager.prepare({
       provider: "slack",
       sessionId: "s-1",

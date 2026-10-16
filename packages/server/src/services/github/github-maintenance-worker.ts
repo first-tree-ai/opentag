@@ -34,14 +34,12 @@ import {
   GITHUB_REFRESH_OUTCOME_UNKNOWN_ERROR_CODE,
   type GitHubCredentialRefreshStore,
 } from "./github-refresh-store.js";
-import type { GitHubRepositoryAdmissionService } from "./repository-admission.js";
 
 export interface GitHubMaintenanceWorkerOptions {
   refreshStore: GitHubCredentialRefreshStore;
   recheckStore: GitHubConnectionRecheckStore;
   cipher: GitHubCredentialCipher;
   api: GitHubApiClient;
-  admission: GitHubRepositoryAdmissionService;
   /** Delay between the end of one tick and the start of the next. */
   intervalMs?: number;
   /** Soft per-tick time budget; the current row always finishes, the next one waits for a tick. */
@@ -98,7 +96,6 @@ export class GitHubMaintenanceWorker {
   readonly #recheckStore: GitHubConnectionRecheckStore;
   readonly #cipher: GitHubCredentialCipher;
   readonly #api: GitHubApiClient;
-  readonly #admission: GitHubRepositoryAdmissionService;
   readonly #intervalMs: number;
   readonly #tickBudgetMs: number;
   readonly #batchLimit: number;
@@ -114,7 +111,6 @@ export class GitHubMaintenanceWorker {
     this.#recheckStore = options.recheckStore;
     this.#cipher = options.cipher;
     this.#api = options.api;
-    this.#admission = options.admission;
     this.#intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
     this.#tickBudgetMs = options.tickBudgetMs ?? DEFAULT_TICK_BUDGET_MS;
     this.#batchLimit = options.batchLimit ?? DEFAULT_BATCH_LIMIT;
@@ -339,14 +335,6 @@ export class GitHubMaintenanceWorker {
       if (user.id !== snapshot.githubUserId) {
         return { kind: "unauthorized", errorCode: GITHUB_IDENTITY_MISMATCH_CODE };
       }
-      if (snapshot.bindings.length === 0) return { kind: "healthy" };
-      await this.#admission.verifyAdmission({
-        accessToken,
-        connectionId: snapshot.connectionId,
-        authorizationVersion: snapshot.authorizationVersion,
-        githubUserId: snapshot.githubUserId,
-        bindings: snapshot.bindings,
-      });
       return { kind: "healthy" };
     } catch (error) {
       // The token was live when the snapshot was taken but expired while /user or admission was

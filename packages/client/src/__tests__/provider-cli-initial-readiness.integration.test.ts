@@ -136,9 +136,9 @@ describe("provider CLI initial readiness", () => {
       {
         kind: "external",
         executablePath: identity.path,
-        fingerprint: computeTargetFingerprint(identity, "4.7.0"),
+        fingerprint: computeTargetFingerprint(identity, "4.10.0"),
         trust: "catalog-verified",
-        version: "4.7.0",
+        version: "4.10.0",
       },
       before ?? undefined,
     );
@@ -251,7 +251,7 @@ async function createHarness(provider: "feishu" | "slack") {
   tempDirs.push(accountHome, openTagHome);
   await mkdir(openTagHome, { recursive: true, mode: 0o700 });
   const bin = join(accountHome, "bin");
-  const target = await writeFakeCli(bin, provider, { version: provider === "slack" ? "4.7.0" : "1.0.92" });
+  const target = await writeFakeCli(bin, provider, { version: provider === "slack" ? "4.10.0" : "1.0.92" });
   const manager = new ProviderCliManager({
     accountHome,
     env: { PATH: bin },

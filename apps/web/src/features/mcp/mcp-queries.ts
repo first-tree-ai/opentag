@@ -2,10 +2,11 @@ import type {
   ListAgentMCPServersResponse,
   ListAvailableMCPServersResponse,
   MCPAgentServer,
+  MCPCatalogEndpointsResponse,
   MCPServer,
   MCPServerDetail,
 } from "@opentag/shared/browser";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { browserApi } from "../../api.js";
 import { queryKeys } from "../../query/keys.js";
 import { LIVE_REFETCH_INTERVAL_MS, liveResourceQueryOptions } from "../../query/live.js";
@@ -15,7 +16,7 @@ import { LIVE_REFETCH_INTERVAL_MS, liveResourceQueryOptions } from "../../query/
  *
  * The per-Agent read polls on the ordinary live cadence because an authorization completes out of
  * band: the browser leaves for the authorization server and comes back, and the probe result lands
- * afterwards. Polling the row is what makes the tool count appear without a reload — which is why
+ * afterwards. Polling the row updates authorization and tool-loading feedback without a reload, so
  * `probeState` is persisted on the row rather than inferred from a read timestamp.
  */
 
@@ -27,6 +28,19 @@ export function useMcpServers() {
   });
 }
 
+/**
+ * The catalog endpoints this deployment replaces. They change only when the deployment's
+ * configuration changes, which needs a restart, so the read is not polled.
+ */
+const CATALOG_ENDPOINTS_STALE_TIME_MS = 5 * 60_000;
+export function useMcpCatalogEndpoints() {
+  return useQuery({
+    queryKey: queryKeys.mcp.catalogEndpoints(),
+    queryFn: (): Promise<MCPCatalogEndpointsResponse> => browserApi.mcpCatalogEndpoints(),
+    staleTime: CATALOG_ENDPOINTS_STALE_TIME_MS,
+  });
+}
+
 export function useMcpServerDetail(mcpServerId: string | undefined) {
   return useQuery({
     ...liveResourceQueryOptions,
@@ -34,6 +48,28 @@ export function useMcpServerDetail(mcpServerId: string | undefined) {
     queryFn: (): Promise<MCPServerDetail> => browserApi.mcpServer(mcpServerId as string),
     enabled: mcpServerId !== undefined,
   });
+}
+
+/** Read only this Agent's overridden definitions and the explicitly restored installation. */
+export function useMcpInstallationDefinitions(mounted: readonly MCPAgentServer[], restoredId?: string) {
+  const ids = new Set(mounted.filter((entry) => entry.overridden.url).map((entry) => entry.mcpServerId));
+  if (restoredId) ids.add(restoredId);
+  const queries = useQueries({
+    queries: [...ids].map((id) => ({
+      ...liveResourceQueryOptions,
+      queryKey: queryKeys.mcp.server(id),
+      queryFn: () => browserApi.mcpServer(id),
+    })),
+  });
+  // Cached metadata remains usable after a failed background refetch.
+  const failure = queries.find((query) => query.isError && !query.data);
+  return {
+    servers: queries.flatMap((query) => (query.data ? [query.data.server] : [])),
+    isPending: queries.some((query) => query.isPending),
+    isError: Boolean(failure),
+    error: failure?.error,
+    refetch: () => Promise.all(queries.map((query) => query.refetch())),
+  };
 }
 
 const PROBE_REFETCH_INTERVAL_MS = 1_000;
@@ -83,7 +119,7 @@ export function useAvailableMcpServers(agentId: string, enabled: boolean) {
  * definition edit also invalidates every other Agent that uses it, which the pool invalidation and
  * the live cadence between them cover.
  */
-function useMcpInvalidation(agentId?: string) {
+export function useMcpInvalidation(agentId?: string) {
   const queryClient = useQueryClient();
   return async () => {
     await Promise.all([
@@ -169,20 +205,6 @@ export function useSetMcpAuthorization(agentId: string) {
   return useMutation({
     mutationFn: (input: { mcpServerId: string } & Parameters<typeof browserApi.setMcpAuthorization>[2]) =>
       browserApi.setMcpAuthorization(agentId, input.mcpServerId, bodyOf(input)),
-    onSuccess: async (entry) => {
-      queryClient.setQueryData<ListAgentMCPServersResponse>(queryKeys.mcp.agentServers(agentId), (previous) =>
-        mergeAgentServer(previous, entry),
-      );
-      await invalidate();
-    },
-  });
-}
-
-export function useRevokeMcpAuthorization(agentId: string) {
-  const invalidate = useMcpInvalidation(agentId);
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (mcpServerId: string) => browserApi.revokeMcpAuthorization(agentId, mcpServerId),
     onSuccess: async (entry) => {
       queryClient.setQueryData<ListAgentMCPServersResponse>(queryKeys.mcp.agentServers(agentId), (previous) =>
         mergeAgentServer(previous, entry),

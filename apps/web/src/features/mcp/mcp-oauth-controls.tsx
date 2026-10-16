@@ -6,9 +6,6 @@ export function McpOAuthControls({ session, className = "" }: { session: McpOAut
   if (!session.phase && !session.notice) return null;
   return (
     <div className={`grid gap-2 ${className}`} aria-live="polite">
-      {session.detached && session.phase === "waiting" ? (
-        <p className="text-sm text-kumo-subtle">{m.mcp_oauth_window_detached()}</p>
-      ) : null}
       {session.notice ? <p className="text-sm text-kumo-subtle">{session.notice}</p> : null}
       {session.phase ? (
         <div className="flex flex-wrap items-center gap-3">

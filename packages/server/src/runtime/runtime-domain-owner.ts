@@ -95,6 +95,11 @@ export type RuntimeDispatchAdmission<T> = (
   operation: (onDispatched: () => void) => Promise<T>,
 ) => Promise<{ admitted: false } | { admitted: true; result: Promise<T> }>;
 
+export interface PreparedSessionReconcile {
+  request: SessionReconcileRequest;
+  onResult?(result: SessionReconcileResult): Promise<void>;
+}
+
 export interface RuntimeDomainOwnerOptions {
   logger?: ServiceLogger;
   maxPendingRequests?: number;
@@ -108,7 +113,7 @@ export interface RuntimeDomainOwnerOptions {
     computerId: string,
     instanceId: string,
     request: SessionReconcileRequest,
-  ): Promise<SessionReconcileRequest>;
+  ): Promise<PreparedSessionReconcile>;
   requestTimeoutMs?: number;
 }
 
@@ -125,6 +130,8 @@ interface PendingBase<TRequest, TResult> {
 
 interface PendingReconcile extends PendingBase<SessionReconcileRequest, SessionReconcileResult> {
   kind: "reconcile";
+  onResult?: PreparedSessionReconcile["onResult"];
+  completing?: boolean;
 }
 
 interface PendingDelivery extends PendingBase<DirectImMessageDeliveryRequest, ImMessageDeliveryResult> {
@@ -186,9 +193,10 @@ function createPendingRequest(
   base: PendingRequestBase,
   inputHash: string | undefined,
   semanticHash: string | undefined,
+  onResult?: PreparedSessionReconcile["onResult"],
 ): PendingRequest {
   if (kind === "reconcile") {
-    return { ...base, kind, request: base.request as SessionReconcileRequest } as PendingReconcile;
+    return { ...base, kind, request: base.request as SessionReconcileRequest, onResult } as PendingReconcile;
   }
   if (kind === "delivery") {
     return {
@@ -328,7 +336,7 @@ export class RuntimeDomainOwner {
           onDispatched?.();
           operation = existing.promise;
         } else {
-          operation = preparation(computerId, instanceId, request).then((value) =>
+          operation = preparation(computerId, instanceId, request).then((prepared) =>
             this.#withDispatchAdmission(
               admission,
               (admissionDispatched) =>
@@ -338,12 +346,13 @@ export class RuntimeDomainOwner {
                   "reconcile",
                   computerId,
                   instanceId,
-                  value,
-                  computeReconcilePayloadHash(value),
+                  prepared.request,
+                  computeReconcilePayloadHash(prepared.request),
                   undefined,
                   undefined,
                   admissionDispatched,
                   signal,
+                  prepared.onResult,
                 ) as Promise<SessionReconcileResult>,
               onDispatched,
             ),
@@ -810,6 +819,7 @@ export class RuntimeDomainOwner {
     semanticHash?: string,
     onDispatched?: () => void,
     signal?: AbortSignal,
+    onReconcileResult?: PreparedSessionReconcile["onResult"],
   ): Promise<SessionReconcileResult | ImMessageDeliveryResult | RuntimeImSteerResult | SessionMessageDeliveryResult> {
     const existing = this.#pending.get(request.requestId);
     if (existing) {
@@ -894,7 +904,7 @@ export class RuntimeDomainOwner {
       resolve: resolvePromise,
       timer,
     };
-    const pending = createPendingRequest(kind, base, inputHash, semanticHash);
+    const pending = createPendingRequest(kind, base, inputHash, semanticHash, onReconcileResult);
     this.#pending.set(request.requestId, pending);
     const dispatch = this.#registry.send(computerId, instanceId, request);
     void dispatch
@@ -942,7 +952,7 @@ export class RuntimeDomainOwner {
     context: RuntimeBusinessContext,
   ): Promise<void> {
     const pending = this.#pending.get(requestId);
-    if (!pending || pending.kind !== kind) return;
+    if (!pending || pending.kind !== kind || pending.completing) return;
     if (!this.#matchesContext(pending, context)) return;
     if (
       result.sessionId !== pending.request.sessionId ||
@@ -950,10 +960,20 @@ export class RuntimeDomainOwner {
     ) {
       return;
     }
-    if (result.status !== "rejected") {
-      await this.#custody.claimRetainedReports(pending.request, result.retainedReports ?? [], context);
+    pending.completing = true;
+    try {
+      if (result.status !== "rejected") {
+        await this.#custody.claimRetainedReports(pending.request, result.retainedReports ?? [], context);
+      }
+      if (this.#pending.get(requestId) !== pending) return;
+      await pending.onResult?.(result);
+      this.#settle(pending, result);
+    } catch (error) {
+      if (this.#pending.get(requestId) !== pending) return;
+      this.#pending.delete(requestId);
+      clearTimeout(pending.timer);
+      pending.reject(error instanceof Error ? error : new Error("Reconcile result processing failed"));
     }
-    this.#settle(pending, result);
   }
 
   async #completeDelivery(result: ImMessageDeliveryResult, context: RuntimeBusinessContext): Promise<void> {

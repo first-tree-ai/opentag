@@ -1,4 +1,4 @@
-import type { McpCatalogEntry } from "@opentag/mcp-presets";
+import type { McpInstallableCatalogEntry } from "@opentag/mcp-presets";
 import { MCP_ERROR_CODES, type MCPAgentServer, type MCPServer } from "@opentag/shared/browser";
 import { useQuery } from "@tanstack/react-query";
 import { type RefObject, useEffect, useRef, useState } from "react";
@@ -9,22 +9,29 @@ import { queryKeys } from "../../query/keys.js";
 import { Banner, Button, Icon, Loader, Text } from "../../ui/design-system.js";
 import { useMcpCatalogConnection } from "./catalog/mcp-catalog-connection.js";
 import { McpDiscoverDialog } from "./catalog/mcp-discover-dialog.js";
+import { useMcpDiscoverState } from "./catalog/mcp-discover-state.js";
 import { McpAddDialog } from "./mcp-add-dialog.js";
-import { McpConnectDialog } from "./mcp-connect-dialog.js";
 import { actionError } from "./mcp-form-model.js";
-import { McpOAuthControls } from "./mcp-oauth-controls.js";
 import { readMcpOAuthOutcome } from "./mcp-oauth-outcome.js";
+import type { McpOAuthSession } from "./mcp-oauth-session.js";
 import { publishMcpOAuthWindowReturn, readMcpOAuthWindowReturn } from "./mcp-oauth-window.js";
-import { useAgentMcpServers, useDetachMcpServer, useMcpServers, useUpdateMcpBinding } from "./mcp-queries.js";
+import { useAgentMcpServers, useDetachMcpServer, useUpdateMcpBinding } from "./mcp-queries.js";
 import { consumeMcpReturn, consumePendingMcpSetupReturn, type McpReturnContext } from "./mcp-return-context.js";
 import { McpServerCard, type ServerAction } from "./mcp-server-card.js";
+import { McpConfirmDialog } from "./mcp-server-dialogs.js";
 import { McpSettingsDialog } from "./mcp-settings-dialog.js";
 import { discardMcpSetup } from "./mcp-setup-cleanup.js";
+import { mcpTitle } from "./mcp-title.js";
 
 type Panel =
   | { kind: "none" }
   | { kind: "add"; serverId?: string; authenticationError?: string }
-  | { kind: "discover"; entry?: McpCatalogEntry; context?: McpReturnContext; outcome?: "cancelled" | "failed" }
+  | {
+      kind: "discover";
+      entry?: McpInstallableCatalogEntry;
+      context?: McpReturnContext;
+      outcome?: "cancelled" | "failed";
+    }
   | {
       kind: ServerAction | "tools";
       entry: MCPAgentServer;
@@ -49,7 +56,6 @@ function McpManagementPage({ agentId }: { agentId: string }) {
   const identity = useQuery({ queryKey: queryKeys.agents.detail(agentId), queryFn: () => browserApi.agent(agentId) });
   const agentName = identity.data?.displayName ?? agentId;
   const mounted = useAgentMcpServers(agentId);
-  const account = useMcpServers();
   const detach = useDetachMcpServer(agentId);
   const servers = mounted.data?.servers ?? [];
   const connection = useMcpCatalogConnection(agentId);
@@ -103,7 +109,7 @@ function McpManagementPage({ agentId }: { agentId: string }) {
     });
   }, [returnContext, outcome, mounted.isPending, servers]);
   useEffect(() => {
-    if (returnContext?.source !== "add" || restored.current || mounted.isPending || account.isPending) return;
+    if (returnContext?.source !== "add" || restored.current || mounted.isPending) return;
     const entry = servers.find((server) => server.mcpServerId === returnContext.serverId);
     if (!entry) return;
     restored.current = true;
@@ -111,14 +117,14 @@ function McpManagementPage({ agentId }: { agentId: string }) {
       const restoreAdd = () =>
         setPanel({ kind: "add", serverId: entry.mcpServerId, authenticationError: m.mcp_oauth_return_failed() });
       if (returnContext.newBinding) {
-        void discardMcpSetup(agentId, entry.mcpServerId, (id) => detach.mutateAsync(id))
+        void discardMcpSetup(agentId, entry.mcpServerId, (id) => detach.mutateAsync(id), returnContext.oauthState)
           .then(restoreAdd)
           .catch(() => {
             setPanel({ kind: "add", serverId: entry.mcpServerId, authenticationError: m.mcp_setup_cleanup_failed() });
           });
       } else restoreAdd();
     }
-  }, [returnContext, outcome, mounted.isPending, account.isPending, servers, agentId, detach]);
+  }, [returnContext, outcome, mounted.isPending, servers, agentId, detach]);
   const [removed, setRemoved] = useState<string>();
   const addTrigger = useRef<HTMLButtonElement>(null);
   const neighbors = useRef<string[]>([]);
@@ -130,7 +136,7 @@ function McpManagementPage({ agentId }: { agentId: string }) {
   const close = () => setPanel({ kind: "none" });
   const removedServer = (entry: MCPAgentServer) => {
     close();
-    setRemoved(m.mcp_removed({ server: entry.name }));
+    setRemoved(m.mcp_removed({ server: mcpTitle(entry) }));
     requestAnimationFrame(() => {
       const next = neighbors.current.map((id) => document.getElementById(`mcp-server-${id}-details`)).find(Boolean);
       (next ?? addTrigger.current)?.focus({ preventScroll: true });
@@ -141,15 +147,29 @@ function McpManagementPage({ agentId }: { agentId: string }) {
     close();
     setHighlight(id);
   };
-  const connect = async (entry: MCPAgentServer, token?: string, definition?: MCPServer) => {
+  const connect = async (entry: MCPAgentServer, token?: string, definition?: MCPServer, reauthorize = false) => {
+    if (discover.connections[entry.mcpServerId]?.pending) return;
+    discover.clearFailure(entry.mcpServerId);
     if (entry.mcpServerId === outcome?.mcpServerId) setReturnedFailure(false);
-    const result = await connection.connect(entry, token, definition);
+    const result = await connection.connect(entry, token, definition, reauthorize);
     if (result === "key") setPanel({ kind: "authorize", entry });
     else if (result === "connected") locate(entry.mcpServerId);
   };
-  const addedFromCatalog = (entry: MCPAgentServer, _catalog: McpCatalogEntry, _definition?: MCPServer) => {
+  const addedFromCatalog = (entry: MCPAgentServer, _catalog: McpInstallableCatalogEntry, _definition?: MCPServer) => {
+    if (connection.failure?.binding.mcpServerId === entry.mcpServerId) connection.clearFailure();
     setHighlight(entry.mcpServerId);
   };
+  const discoverProps = {
+    open: panel.kind === "discover",
+    agentId,
+    agentName,
+    mounted: servers,
+    ...restoredDiscoverProps(returnContext, outcome),
+    ...discoverPanelProps(panel),
+    onClose: close,
+    onAdded: addedFromCatalog,
+  };
+  const discover = useMcpDiscoverState(discoverProps);
   useEffect(() => {
     if (!outcome?.mcpServerId || mounted.isPending) return;
     document.getElementById(`mcp-server-${outcome.mcpServerId}`)?.scrollIntoView({ block: "nearest" });
@@ -161,14 +181,8 @@ function McpManagementPage({ agentId }: { agentId: string }) {
           <Icon name="integrations" />
           {m.mcp_discover_action()}
         </Button>
-        <AddServerButton
-          buttonRef={addTrigger}
-          disabled={addDisabled}
-          loading={account.isPending}
-          onClick={() => setPanel({ kind: "add" })}
-        />
+        <AddServerButton buttonRef={addTrigger} disabled={addDisabled} onClick={() => setPanel({ kind: "add" })} />
       </PageHeader>
-      <McpOAuthControls session={connection.oauth} />
       {returnedFailure && mounted.isSuccess && !servers.some((entry) => entry.mcpServerId === outcome?.mcpServerId) ? (
         <Banner variant="error">{m.mcp_authorize_failed()}</Banner>
       ) : null}
@@ -196,20 +210,30 @@ function McpManagementPage({ agentId }: { agentId: string }) {
               agentId={agentId}
               agentName={agentName}
               highlighted={highlight === entry.mcpServerId}
-              connecting={connection.connectingId === entry.mcpServerId}
+              connecting={
+                connection.connectingId === entry.mcpServerId ||
+                Boolean(discover.connections[entry.mcpServerId]?.pending)
+              }
               connectionError={
                 panel.kind === "authorize"
                   ? undefined
-                  : (connection.errorFor(entry.mcpServerId) ??
+                  : (discover.connections[entry.mcpServerId]?.error ??
+                    connection.errorFor(entry.mcpServerId) ??
                     returnedConnectionError(outcome, entry.mcpServerId, returnedFailure))
               }
               onRetry={() => void connect(entry)}
+              oauthSession={
+                connection.connectingId === entry.mcpServerId
+                  ? connection.oauth
+                  : discover.connections[entry.mcpServerId]?.oauth
+              }
               onAction={(kind) => {
-                if (kind === "authorize") {
-                  void connect(entry);
+                if (kind === "authorize" && entry.authorization?.kind === "oauth") {
+                  void connect(entry, undefined, undefined, true);
                   return;
                 }
                 connection.clearFailure();
+                discover.clearFailure(entry.mcpServerId);
                 const index = servers.indexOf(entry);
                 neighbors.current = [...servers.slice(index + 1), ...servers.slice(0, index).reverse()].map(
                   (server) => server.mcpServerId,
@@ -233,10 +257,11 @@ function McpManagementPage({ agentId }: { agentId: string }) {
         </div>
       ) : null}
       {removed ? (
-        <p role="status" className="text-sm text-kumo-subtle">
+        <p role="status" className="sr-only">
           {removed}
         </p>
       ) : null}
+      <McpDiscoverDialog {...discoverProps} state={discover} />
       <McpPanel
         panel={panel}
         agentId={agentId}
@@ -245,25 +270,30 @@ function McpManagementPage({ agentId }: { agentId: string }) {
         onClose={close}
         onLocate={locate}
         onRemoved={removedServer}
-        onCatalogAdded={addedFromCatalog}
         connecting={Boolean(connection.connectingId)}
         connectionError={panel.kind === "authorize" ? connection.errorFor(panel.entry.mcpServerId) : undefined}
-        onConnect={(entry, token) => void connect(entry, token)}
-        onCredentialChange={connection.clearFailure}
         onCompleted={(entry) => locate(entry.mcpServerId)}
       />
     </section>
   );
 }
+function restoredDiscoverProps(context: McpReturnContext | undefined, outcome: ReturnType<typeof readMcpOAuthOutcome>) {
+  return context?.source === "discover"
+    ? { initialContext: context, initialOutcome: discoverReturnOutcome(outcome) }
+    : {};
+}
+function discoverPanelProps(panel: Panel) {
+  return panel.kind === "discover"
+    ? { initialEntry: panel.entry, initialContext: panel.context, initialOutcome: panel.outcome }
+    : {};
+}
 function AddServerButton({
   buttonRef,
   disabled,
-  loading,
   onClick,
 }: {
   buttonRef: RefObject<HTMLButtonElement | null>;
   disabled: boolean;
-  loading: boolean;
   onClick: () => void;
 }) {
   return (
@@ -271,8 +301,7 @@ function AddServerButton({
       ref={buttonRef}
       variant="secondary"
       aria-label={m.mcp_create_action()}
-      disabled={disabled || loading}
-      loading={loading}
+      disabled={disabled}
       onClick={onClick}
     >
       <Icon name="plus" />
@@ -289,17 +318,11 @@ function McpPanel({
   onLocate,
   onCompleted,
   onRemoved,
-  onCatalogAdded,
-  connecting,
   connectionError,
-  onConnect,
-  onCredentialChange,
 }: {
   panel: Panel;
-  connecting: boolean;
+  connecting?: boolean;
   connectionError?: string;
-  onConnect: (entry: MCPAgentServer, token: string) => void;
-  onCredentialChange: () => void;
   agentId: string;
   agentName: string;
   servers: MCPAgentServer[];
@@ -307,22 +330,9 @@ function McpPanel({
   onLocate: (id: string) => void;
   onCompleted: (entry: MCPAgentServer) => void;
   onRemoved: (entry: MCPAgentServer) => void;
-  onCatalogAdded: (entry: MCPAgentServer, catalog: McpCatalogEntry, server?: MCPServer) => void;
 }) {
   if (panel.kind === "none") return null;
-  if (panel.kind === "discover")
-    return (
-      <McpDiscoverDialog
-        agentId={agentId}
-        agentName={agentName}
-        mounted={servers}
-        initialEntry={panel.entry}
-        initialContext={panel.context}
-        initialOutcome={panel.outcome}
-        onClose={onClose}
-        onAdded={onCatalogAdded}
-      />
-    );
+  if (panel.kind === "discover") return null;
   if (panel.kind === "add")
     return (
       <McpAddDialog
@@ -337,29 +347,18 @@ function McpPanel({
       />
     );
   if (!("entry" in panel)) return null;
-  // A tool browser follows new snapshots after refresh; edit drafts retain their opening baseline.
+  // Dialogs follow saved connection updates; Settings rebases its own local drafts.
   const current = servers.find((entry) => entry.mcpServerId === panel.entry.mcpServerId) ?? panel.entry;
   const props = { agentId, agentName, entry: current, onClose };
   switch (panel.kind) {
     case "authorize":
-      return (
-        <McpConnectDialog
-          entry={current}
-          busy={connecting}
-          error={connectionError}
-          onChange={onCredentialChange}
-          onClose={() => {
-            onCredentialChange();
-            onLocate(current.mcpServerId);
-          }}
-          onConnect={(token) => onConnect(current, token)}
-        />
-      );
+      return <McpSettingsDialog {...props} initialAuthentication authenticationError={connectionError} />;
+    case "delete":
+      return <McpConfirmDialog {...props} onConfirmed={() => onRemoved(current)} />;
     case "edit":
       return (
         <McpSettingsDialog
           {...props}
-          onRemoved={() => onRemoved(current)}
           initialAuthentication={Boolean(panel.authenticationError)}
           authenticationError={panel.authenticationError}
         />
@@ -368,10 +367,6 @@ function McpPanel({
       return (
         <McpSettingsDialog
           {...props}
-          onRemoved={() => onRemoved(current)}
-          initialTools
-          initialQuery={panel.context?.query}
-          initialScrollTop={panel.context?.scrollTop}
           initialAuthentication={Boolean(panel.authenticationError)}
           authenticationError={panel.authenticationError}
         />
@@ -387,6 +382,7 @@ function McpRow({
   connecting,
   connectionError,
   onRetry,
+  oauthSession,
 }: {
   agentId: string;
   agentName: string;
@@ -396,6 +392,7 @@ function McpRow({
   connecting: boolean;
   connectionError?: string;
   onRetry: () => void;
+  oauthSession?: McpOAuthSession;
 }) {
   const update = useUpdateMcpBinding(agentId);
   const [error, setError] = useState<string>();
@@ -430,6 +427,7 @@ function McpRow({
       toggling={update.isPending}
       error={error}
       connectionError={connectionError}
+      oauthSession={oauthSession}
     />
   );
 }

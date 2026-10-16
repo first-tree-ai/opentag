@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type ServerResponse } from "node:http";
-import type { MCPAuthKind } from "@opentag/shared/browser";
+import type { MCPAgentServer, MCPAuthKind } from "@opentag/shared/browser";
 import type { Page, Route } from "@playwright/test";
 import { baseURL } from "../playwright.config.js";
 import { expectAccessible, expectNoPageOverflow, expectWithinViewport } from "./browser-contract.js";
 import { expect, smokeTest as test } from "./fixtures.js";
+
+// Real API scenarios share the Account's definition-name namespace.
+test.describe.configure({ mode: "default" });
 
 async function agent(page: Page) {
   const csrf = (await page.context().cookies()).find((cookie) => cookie.name === "opentag_csrf")?.value;
@@ -157,47 +160,125 @@ async function peer(kind: MCPAuthKind, isolated = false, toolCount = 1) {
   };
 }
 
-async function openAdd(page: Page, id: string, url: string) {
+async function openAdd(page: Page, id: string, url: string, kind: MCPAuthKind = "oauth") {
   await page.goto(`/agents/${id}/mcp`);
   await page.getByRole("button", { name: "Add custom", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Add custom connector", exact: true });
-  await dialog.getByLabel("Connector URL", { exact: true }).fill(url);
+  await dialog.getByLabel("Connector address", { exact: true }).fill(url);
+  await dialog
+    .getByRole("radio", {
+      name: kind === "none" ? "No authentication" : kind === "bearer" ? "API key or token" : "Account sign-in",
+      exact: true,
+    })
+    .click();
   await dialog.getByRole("button", { name: "Connect", exact: true }).click();
   return dialog;
 }
 async function mounts(page: Page, id: string) {
-  return (await (await page.request.get(`/api/v1/agents/${id}/mcp-servers`)).json()).servers as {
-    mcpServerId: string;
-    authorization: { kind: MCPAuthKind } | null;
-  }[];
+  return (await (await page.request.get(`/api/v1/agents/${id}/mcp-servers`)).json()).servers as MCPAgentServer[];
+}
+
+async function expectReady(page: Page, id: string) {
+  await expect
+    .poll(async () => {
+      const rows = await mounts(page, id);
+      return (
+        rows.length === 1 &&
+        rows[0]?.authorization?.status === "active" &&
+        rows[0]?.authorization.probeState === "succeeded"
+      );
+    })
+    .toBe(true);
+  await expect(page.locator('[data-ui="mcp-server-list"]')).toBeVisible();
+  await expect(page.locator('[data-ui="mcp-server-list"]').getByText("Connected", { exact: true })).toHaveCount(0);
 }
 
 async function discoverPeer(page: Page, current: Awaited<ReturnType<typeof agent>>, url: string) {
-  const created = await page.request.post("/api/v1/mcp-servers", {
-    headers: current.headers,
-    data: { name: `discover-${randomUUID()}`, url: url, defaultAuthKind: "oauth" },
-  });
-  expect(created.ok()).toBeTruthy();
-  const serverId = ((await created.json()) as { id: string }).id;
-  // Reuse a real local peer through one catalog entry, without contacting an external provider.
+  const fixture = { id: "" };
+  // Rewrite only catalog identity; creation, deletion, credentials and provider calls remain real.
   await page.context().route("**/api/v1/mcp-servers", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    const response = await route.fetch({ postData: { ...route.request().postDataJSON(), url } });
+    if (!response.ok()) return route.fulfill({ response });
+    const definition = await response.json();
+    fixture.id = definition.id;
+    await route.fulfill({ response, json: { ...definition, url: "https://mcp.linear.app/mcp" } });
+  });
+  await page.context().route("**/api/v1/mcp-servers/*", async (route) => {
     const response = await route.fetch();
+    if (route.request().method() !== "GET" || !response.ok()) return route.fulfill({ response });
     const body = await response.json();
+    await route.fulfill({ response, json: { ...body, server: { ...body.server, url: "https://mcp.linear.app/mcp" } } });
+  });
+  await page.context().route(`**/api/v1/agents/${current.id}/mcp-servers`, async (route) => {
+    const response = await route.fetch();
+    if (!response.ok()) return route.fulfill({ response });
+    const body = await response.json();
+    const identify = (entry: MCPAgentServer) =>
+      entry.mcpServerId === fixture.id ? { ...entry, overridden: { ...entry.overridden, url: true } } : entry;
     await route.fulfill({
       response,
-      json: {
-        ...body,
-        servers: body.servers.map((server: { id: string }) =>
-          server.id === serverId ? { ...server, url: "https://mcp.linear.app/mcp" } : server,
-        ),
-      },
+      json: body.servers ? { ...body, servers: body.servers.map(identify) } : identify(body),
     });
   });
-  return serverId;
+  return fixture;
 }
 
+test("real API creates independent installations across Agents despite Account name conflicts", async ({ page }) => {
+  const upstream = await peer("none");
+  try {
+    const first = await agent(page);
+    const second = await agent(page);
+    let nameConflicts = 0;
+    page.on("response", (response) => {
+      if (
+        new URL(response.url()).pathname === "/api/v1/mcp-servers" &&
+        response.request().method() === "POST" &&
+        response.status() === 409
+      )
+        nameConflicts++;
+    });
+    const ids: string[] = [];
+    for (const current of [first, second]) {
+      const dialog = await openAdd(page, current.id, upstream.url, "none");
+      await expect(dialog).toBeHidden();
+      await expectReady(page, current.id);
+      const installed = await mounts(page, current.id);
+      expect(installed).toHaveLength(1);
+      const id = installed[0]?.mcpServerId;
+      if (!id) throw new Error("Missing independently created installation");
+      ids.push(id);
+    }
+    expect(ids[0]).not.toBe(ids[1]);
+    expect(nameConflicts).toBeGreaterThanOrEqual(1);
+    const definitions = (await (await page.request.get("/api/v1/mcp-servers")).json()).servers as {
+      id: string;
+      name: string;
+      url: string;
+      boundAgentCount: number;
+    }[];
+    const own = definitions.filter((definition) => definition.url === upstream.url);
+    expect(own).toHaveLength(2);
+    expect(new Set(own.map((definition) => definition.name)).size).toBe(2);
+    expect(own.map((definition) => definition.boundAgentCount)).toEqual([1, 1]);
+    const duplicate = await openAdd(page, second.id, upstream.url, "none");
+    await expect(duplicate).toBeHidden();
+    expect(await mounts(page, second.id)).toHaveLength(1);
+    const revoked = await page.request.delete(`/api/v1/agents/${first.id}/mcp-servers/${ids[0]}/authorization`, {
+      headers: first.headers,
+    });
+    expect(revoked.ok()).toBeTruthy();
+    expect((await mounts(page, first.id))[0]?.authorization).toMatchObject({ status: "revoked" });
+    expect((await mounts(page, second.id))[0]?.authorization).toMatchObject({ kind: "none", status: "active" });
+    await page.reload();
+    await expectReady(page, second.id);
+  } finally {
+    await upstream.stop();
+  }
+});
+
 for (const kind of ["bearer", "none"] as const) {
-  test(`real local ${kind} failure retries without creating or binding twice`, async ({ page }) => {
+  test(`real local ${kind} failure preserves the appropriate installation lifecycle`, async ({ page }) => {
     const upstream = await peer(kind);
     try {
       const current = await agent(page);
@@ -207,31 +288,43 @@ for (const kind of ["bearer", "none"] as const) {
           data: { name: `key-${randomUUID()}`, url: upstream.url, defaultAuthKind: "bearer" },
         });
         expect(created.ok()).toBeTruthy();
+        const serverId = ((await created.json()) as { id: string }).id;
+        expect(
+          (
+            await page.request.post(`/api/v1/agents/${current.id}/mcp-servers`, {
+              headers: current.headers,
+              data: { mcpServerId: serverId, enabled: true },
+            })
+          ).ok(),
+        ).toBeTruthy();
+        await page.goto(`/agents/${current.id}/mcp`);
+        await page.getByRole("button", { name: "Authorize", exact: true }).click();
       } else upstream.unavailable(true);
-      const dialog = await openAdd(page, current.id, upstream.url);
+      const dialog =
+        kind === "bearer" ? page.getByRole("dialog") : await openAdd(page, current.id, upstream.url, "none");
       if (kind === "bearer") {
-        await expect(dialog.getByLabel("API key", { exact: true })).toBeFocused();
-        await dialog.getByLabel("API key", { exact: true }).fill("wrong-key");
-        await dialog.getByRole("button", { name: "Connect", exact: true }).click();
-        await expect(dialog).toContainText("Invalid API key. Try again.");
-      } else await expect(dialog).toContainText("Couldn’t load tools. Try again.");
+        await dialog.locator('input[type="password"]').fill("wrong-key");
+        await dialog.getByRole("button", { name: "Save", exact: true }).click();
+        await expect(dialog).toContainText("Authorization failed");
+      } else await expect(dialog).toContainText("Couldn't load tools");
       const initial = await mounts(page, current.id);
       expect(initial).toHaveLength(1);
-      await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-      await expect.poll(() => mounts(page, current.id)).toHaveLength(0);
-      if (kind === "none") upstream.unavailable(false);
-      const retryDialog = await openAdd(page, current.id, upstream.url);
+      await dialog.getByRole("button", { name: /^Close / }).click();
+      await expect.poll(() => mounts(page, current.id)).toHaveLength(1);
+      upstream.unavailable(false);
+      if (kind === "bearer") await page.getByRole("button", { name: "Reauthorize", exact: true }).click();
       if (kind === "bearer") {
-        const input = retryDialog.getByLabel("API key", { exact: true });
-        await expect(input).toBeFocused();
-        await input.fill("fixture-key");
-        await retryDialog.getByRole("button", { name: "Connect", exact: true }).click();
-      }
+        const retry = page.getByRole("dialog");
+        await retry.locator('input[type="password"]').fill("fixture-key");
+        await retry.getByRole("button", { name: "Save", exact: true }).click();
+        await expect(retry.getByRole("button", { name: "Update", exact: true })).toBeVisible();
+        await retry.getByRole("button", { name: /^Close / }).click();
+      } else await page.getByRole("button", { name: "Retry", exact: true }).click();
       await expect(page.getByRole("dialog")).toHaveCount(0);
-      await expect(page.locator('[data-ui="mcp-server-list"]')).toContainText("Connected");
-      await expect(page.locator(`[id="mcp-server-${initial[0]?.mcpServerId}"]`)).toBeFocused();
-      expect(await mounts(page, current.id)).toHaveLength(1);
-      expect((await mounts(page, current.id))[0]?.mcpServerId).toBe(initial[0]?.mcpServerId);
+      await expectReady(page, current.id);
+      const final = await mounts(page, current.id);
+      expect(final).toHaveLength(1);
+      expect(final[0]?.mcpServerId).toBe(initial[0]?.mcpServerId);
     } finally {
       await upstream.stop();
     }
@@ -246,13 +339,13 @@ test("real local OAuth popup cancellation removes new setup and reconnect retain
     const dialog = await openAdd(page, current.id, upstream.url);
     const cancelled = await firstWindow;
     await cancelled.getByRole("link", { name: "Cancel sign-in" }).click();
-    await expect(dialog).toContainText("Sign-in was cancelled. You can try again.");
+    await expect(dialog.getByRole("button", { name: "Connect", exact: true })).toBeEnabled();
     await expect.poll(() => mounts(page, current.id)).toHaveLength(0);
     const approveWindow = page.waitForEvent("popup");
     await dialog.getByRole("button", { name: "Connect", exact: true }).click();
     const approved = await approveWindow;
     await approved.getByRole("link", { name: "Approve", exact: true }).click();
-    await expect(page.locator('[data-ui="mcp-server-list"]')).toContainText("Connected");
+    await expectReady(page, current.id);
     const initial = await mounts(page, current.id);
     expect(initial).toHaveLength(1);
     const serverId = initial[0]?.mcpServerId;
@@ -262,21 +355,23 @@ test("real local OAuth popup cancellation removes new setup and reconnect retain
     expect(revoked.ok()).toBeTruthy();
     await page.reload();
     const retryWindow = page.waitForEvent("popup");
-    await page.getByRole("button", { name: "Reconnect", exact: true }).click();
+    await page.getByRole("button", { name: /^(Authorize|Reauthorize)$/, exact: true }).click();
     const retry = await retryWindow;
     await retry.getByRole("link", { name: "Cancel sign-in" }).click();
-    await expect(page.getByText("Sign-in was cancelled. You can try again.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Authorize", exact: true })).toBeEnabled();
     expect(await mounts(page, current.id)).toHaveLength(1);
     const failureWindow = page.waitForEvent("popup");
-    await page.getByRole("button", { name: "Reconnect", exact: true }).click();
+    await page.getByRole("button", { name: /^(Authorize|Reauthorize)$/, exact: true }).click();
     upstream.tokenFailure(true);
     await (await failureWindow).getByRole("link", { name: "Approve", exact: true }).click();
-    await expect(page.getByRole("alert")).toContainText("Couldn’t start sign-in. Try again.");
+    await expect(
+      page.locator('[data-ui="mcp-server-list"]').getByText("Authorization failed", { exact: true }),
+    ).toBeVisible();
     upstream.tokenFailure(false);
     const finalWindow = page.waitForEvent("popup");
-    await page.getByRole("button", { name: "Reconnect", exact: true }).click();
+    await page.getByRole("button", { name: /^(Authorize|Reauthorize)$/, exact: true }).click();
     await (await finalWindow).getByRole("link", { name: "Approve", exact: true }).click();
-    await expect(page.locator('[data-ui="mcp-server-list"]')).toContainText("Connected");
+    await expectReady(page, current.id);
     expect((await mounts(page, current.id))[0]?.mcpServerId).toBe(serverId);
     expect(await mounts(page, current.id)).toHaveLength(1);
   } finally {
@@ -284,11 +379,50 @@ test("real local OAuth popup cancellation removes new setup and reconnect retain
   }
 });
 
+for (const interruption of ["cancel", "close", "deny", "mobile Back"] as const) {
+  test(`a working OAuth credential survives reauthorization interruption (${interruption})`, async ({ page }) => {
+    const upstream = await peer("oauth");
+    try {
+      const current = await agent(page);
+      const initial = page.waitForEvent("popup");
+      await openAdd(page, current.id, upstream.url);
+      await (await initial).getByRole("link", { name: "Approve", exact: true }).click();
+      await expectReady(page, current.id);
+      const installed = (await mounts(page, current.id))[0];
+      if (!installed) throw new Error("Missing working installation");
+      const mobile = interruption === "mobile Back";
+      if (mobile) await page.setViewportSize({ width: 390, height: 844 });
+      await page.getByRole("button", { name: installed.name, exact: true }).click();
+      const details = page.getByRole("dialog", { name: installed.name, exact: true });
+      const opening = mobile ? undefined : page.waitForEvent("popup");
+      await details.getByRole("button", { name: "Reauthorize", exact: true }).click();
+      const consent = opening ? await opening : page;
+      await consent.getByRole("heading", { name: "Local consent fixture", exact: true }).waitFor();
+      if (interruption === "cancel") await details.getByRole("button", { name: "Cancel", exact: true }).click();
+      else if (interruption === "close") await consent.close();
+      else if (interruption === "deny")
+        await consent.getByRole("link", { name: "Cancel sign-in", exact: true }).click();
+      else await page.goBack();
+      await expect
+        .poll(async () => (await mounts(page, current.id))[0]?.authorization)
+        .toMatchObject({ kind: "oauth", status: "active", hasCredential: true });
+      const probe = await page.request.post(`/api/v1/agents/${current.id}/mcp-servers/${installed.mcpServerId}/probe`, {
+        headers: current.headers,
+      });
+      expect(probe.ok()).toBeTruthy();
+      expect((await probe.json()).probeState).toBe("succeeded");
+      expect((await mounts(page, current.id))[0]?.mcpServerId).toBe(installed.mcpServerId);
+    } finally {
+      await upstream.stop();
+    }
+  });
+}
+
 test("Discover retains search across a real OAuth cancellation and successful retry", async ({ page }) => {
   const upstream = await peer("oauth");
   try {
     const current = await agent(page);
-    const serverId = await discoverPeer(page, current, upstream.url);
+    const discovery = await discoverPeer(page, current, upstream.url);
     await page.goto(`/agents/${current.id}/mcp`);
     await page.getByRole("button", { name: "Discover", exact: true }).click();
     const discover = page.getByRole("dialog", { name: "Discover", exact: true });
@@ -305,25 +439,51 @@ test("Discover retains search across a real OAuth cancellation and successful re
     const success = page.waitForEvent("popup");
     await discover.getByRole("button", { name: "Add: Linear", exact: true }).click();
     await (await success).getByRole("link", { name: "Approve", exact: true }).click();
-    await expect(discover).toContainText("Connected");
+    await expect(discover.getByRole("img", { name: "Added", exact: true })).toBeVisible();
     await expect(discover.getByLabel("Search connectors", { exact: true })).toHaveValue("Linear");
-    expect((await mounts(page, current.id))[0]?.mcpServerId).toBe(serverId);
+    expect((await mounts(page, current.id))[0]?.mcpServerId).toBe(discovery.id);
     await page.screenshot({ path: test.info().outputPath("discover-oauth-connected.png") });
     await discover.getByRole("button", { name: "Close Discover", exact: true }).click();
-    await expect(page.locator('[data-ui="mcp-server-list"]')).toContainText("Connected");
-    await expect(page.locator('[data-ui="mcp-server-row"]')).not.toHaveClass(/outline-kumo-ring/);
+    await expectReady(page, current.id);
+    await expect(page.locator('[data-ui="mcp-server-row"]')).not.toHaveClass(/bg-kumo-tint/);
   } finally {
     await upstream.stop();
   }
 });
 
+function mcpEntrySources(
+  kind: MCPAuthKind,
+  first: string,
+  second: string,
+  third: string,
+): [string, "add" | "discover" | "list"][] {
+  const sources: [string, "add" | "discover" | "list"][] = [[third, "list"]];
+  if (kind === "oauth") sources.unshift([first, "add"], [second, "discover"]);
+  return sources;
+}
+
+async function startCatalogConnection(page: Page, source: "add" | "discover" | "list", kind: MCPAuthKind, url: string) {
+  if (source === "add") {
+    await page.getByRole("button", { name: "Add custom", exact: true }).click();
+    await page.getByLabel("Connector address", { exact: true }).fill(url);
+    await page.getByRole("dialog").getByRole("button", { name: "Connect", exact: true }).click();
+  } else if (source === "discover") {
+    await page.getByRole("button", { name: "Discover", exact: true }).click();
+    await page.getByRole("button", { name: "Add: Linear", exact: true }).click();
+  } else await page.getByRole("button", { name: "Authorize", exact: true }).click();
+  if (source === "list" && kind === "oauth")
+    await page.getByRole("dialog").getByRole("button", { name: "Authorize", exact: true }).click();
+}
+
 /** Compare all three UI entries against the same definition; MCP/OAuth management responses are fixtures. */
 for (const kind of ["oauth", "bearer", "none"] as const) {
-  test(`Add, Discover and list use the same configured ${kind} path`, async ({ page }) => {
+  test(`catalog additions and existing ${kind} list connections retain their authentication behavior`, async ({
+    page,
+  }) => {
     const first = await agent(page);
     const second = await agent(page);
     const third = await agent(page);
-    // A shipped catalog URL is used only to exercise Discover's exact definition reuse.
+    // New catalog installations use OAuth; existing list connections retain their method.
     const serverId = randomUUID();
     const stamp = "2026-10-12T00:00:00.000Z";
     const definition = {
@@ -394,7 +554,7 @@ for (const kind of ["oauth", "bearer", "none"] as const) {
     }
     async function respondDefinition(route: Route, path: string): Promise<boolean> {
       if (path === "/api/v1/mcp-servers") {
-        await route.fulfill({ json: { servers: [definition] } });
+        await route.fulfill({ json: route.request().method() === "POST" ? definition : { servers: [definition] } });
         return true;
       }
       if (path === `/api/v1/mcp-servers/${serverId}`) {
@@ -409,6 +569,11 @@ for (const kind of ["oauth", "bearer", "none"] as const) {
         return;
       }
       if (path.endsWith("/authorization")) {
+        if (route.request().method() === "DELETE") {
+          current.authorization = null;
+          await route.fulfill({ json: current });
+          return;
+        }
         current.authorization = {
           kind,
           status: "active",
@@ -416,10 +581,10 @@ for (const kind of ["oauth", "bearer", "none"] as const) {
           scopes: null,
           accessTokenExpiresAt: null,
           authorizationServer: null,
-          probeState: "pending",
+          probeState: "succeeded",
           probedAt: null,
           probeError: null,
-          toolsCount: null,
+          toolsCount: 1,
           toolsTruncated: false,
           failureCode: null,
           revision: 1,
@@ -448,46 +613,52 @@ for (const kind of ["oauth", "bearer", "none"] as const) {
       });
     }
     const oauthFailureCopy = {
-      add: "Couldn’t start sign-in. Try again.",
-      discover: "Connection failed",
-      list: "Couldn’t start sign-in. Try again.",
+      add: "Authorization failed",
+      discover: "Authorization failed",
+      list: "Authorization failed",
     };
-    for (const [id, source] of [
-      [first.id, "add"],
-      [second.id, "discover"],
-      [third.id, "list"],
-    ] as const) {
+    const sources = mcpEntrySources(kind, first.id, second.id, third.id);
+    const addedCount = Number(kind === "oauth") * 2;
+    for (const [id, source] of sources) {
       await page.goto(`/agents/${id}/mcp`);
-      if (source === "add") {
-        await page.getByRole("button", { name: "Add custom", exact: true }).click();
-        await page.getByLabel("Connector URL", { exact: true }).fill(definition.url);
-        await page.getByRole("dialog").getByRole("button", { name: "Connect", exact: true }).click();
-      } else if (source === "discover") {
-        await page.getByRole("button", { name: "Discover", exact: true }).click();
-        await page.getByRole("button", { name: "Add: Linear", exact: true }).click();
-      } else await page.getByRole("button", { name: "Connect", exact: true }).click();
+      await startCatalogConnection(page, source, kind, definition.url);
       if (kind === "oauth") {
-        await expect(page.getByText(oauthFailureCopy[source])).toBeVisible();
-        await expect(page.getByRole("radio")).toHaveCount(0);
+        await expect(page.getByRole("dialog").getByText(oauthFailureCopy[source], { exact: true })).toBeVisible();
+        await expect(page.getByRole("radio")).toHaveCount(source === "add" ? 3 : 0);
       } else if (kind === "bearer") {
         const dialog = page.getByRole("dialog");
-        const input = dialog.getByLabel(source === "add" ? "API key" : "API key or token", { exact: true });
-        await expect(input).toBeFocused();
+        const input = dialog.locator('input[type="password"]');
+        await expect(input).toBeVisible();
         await expect(dialog.getByRole("radio")).toHaveCount(0);
         await input.fill("fixture-key");
-        await page.keyboard.press("Enter");
-        if (source !== "discover") await expect(dialog).toBeHidden();
+        await dialog.getByRole("button", { name: "Save", exact: true }).click();
+        await expect(dialog.getByRole("button", { name: "Update", exact: true })).toBeVisible();
+        await dialog.getByRole("button", { name: "Close Linear", exact: true }).click();
       }
-      if (kind !== "oauth") await expect(page.locator('[data-ui="mcp-server-list"]')).toContainText("Connected");
-      expect(entries.get(id)).toHaveLength(kind === "oauth" && source === "discover" ? 0 : 1);
+      if (kind === "none") {
+        const dialog = page.getByRole("dialog");
+        await dialog.getByRole("button", { name: "Save", exact: true }).click();
+        await dialog.getByRole("button", { name: "Close Linear", exact: true }).click();
+      }
+      if (kind !== "oauth") {
+        await expect
+          .poll(() => (entries.get(id)?.[0]?.authorization as { probeState?: string })?.probeState)
+          .toBe("succeeded");
+        await expect(
+          page.locator('[data-ui="mcp-server-list"]').getByRole("button", { name: /^(Authorize|Reauthorize|Retry)$/ }),
+        ).toHaveCount(0);
+      }
+      expect(entries.get(id)).toHaveLength(1);
     }
-    expect(writes.filter((path) => path === "/api/v1/mcp-servers")).toHaveLength(0);
-    expect(writes.filter((path) => path.endsWith("/mcp-servers"))).toHaveLength(2);
+    expect(writes.filter((path) => path === "/api/v1/mcp-servers")).toHaveLength(addedCount);
+    expect(writes.filter((path) => path.startsWith("/api/v1/agents/") && path.endsWith("/mcp-servers"))).toHaveLength(
+      addedCount,
+    );
   });
 }
 
 for (const width of [320, 390, 768, 1440]) {
-  test(`keyboard, credential focus, settings choices and disabled copy at ${width}px`, async ({ page }) => {
+  test(`keyboard and custom authentication settings at ${width}px`, async ({ page }) => {
     const upstream = await peer("none");
     try {
       const current = await agent(page);
@@ -498,41 +669,45 @@ for (const width of [320, 390, 768, 1440]) {
       });
       expect(created.ok()).toBeTruthy();
       const serverId = ((await created.json()) as { id: string }).id;
-      const attached = await page.request.post(`/api/v1/agents/${current.id}/mcp-servers`, {
-        headers: current.headers,
-        data: { mcpServerId: serverId, enabled: true },
-      });
-      expect(attached.ok()).toBeTruthy();
+      expect(
+        (
+          await page.request.post(`/api/v1/agents/${current.id}/mcp-servers`, {
+            headers: current.headers,
+            data: { mcpServerId: serverId, enabled: true },
+          })
+        ).ok(),
+      ).toBeTruthy();
       await page.setViewportSize({ width, height: 844 });
       await page.goto(`/agents/${current.id}/mcp`);
-      await page.getByRole("button", { name: "Connect", exact: true }).focus();
+      await page.getByRole("button", { name: "Authorize", exact: true }).focus();
       await page.keyboard.press("Enter");
       const dialog = page.getByRole("dialog");
-      await expect(dialog.getByLabel("API key or token", { exact: true })).toBeFocused();
-      await expect(dialog.getByRole("radio")).toHaveCount(0);
+      const key = dialog.locator('input[type="password"]');
+      await expect(key).toHaveAccessibleName("API key or token");
+      await key.focus();
+      await expect(key).toBeFocused();
+      await expect(dialog.getByRole("radio")).toHaveCount(3);
       await expectWithinViewport(dialog);
-      await expectWithinViewport(dialog.getByRole("button", { name: "Connect", exact: true }));
+      await expectWithinViewport(dialog.getByRole("button", { name: "Save", exact: true }));
       await expectNoPageOverflow(page);
       await expectAccessible(page);
-      await page.screenshot({ path: test.info().outputPath(`mcp-connect-${width}.png`) });
+      await page.screenshot({ path: test.info().outputPath(`mcp-authentication-${width}.png`) });
       await page.keyboard.press("Escape");
       await expect(dialog).toBeHidden();
-      await expect(page.locator(`#mcp-server-${serverId}`)).toBeFocused();
+      await expect(page.getByRole("button", { name: "Authorize", exact: true })).toBeFocused();
       await page.getByRole("button", { name, exact: true }).click();
-      await page.getByRole("button", { name: "Authentication", exact: true }).click();
-      await expect(page.getByRole("radio")).toHaveCount(3);
-      await page.getByRole("radio", { name: "No authentication", exact: true }).click();
-      await page.getByRole("button", { name: "Continue", exact: true }).click();
+      await dialog.getByRole("radio", { name: "No authentication", exact: true }).click();
+      await dialog.getByRole("button", { name: "Save", exact: true }).click();
       await expect.poll(async () => (await mounts(page, current.id))[0]?.authorization?.kind).toBe("none");
-      await expect(page.getByRole("dialog", { name, exact: true })).toBeVisible();
-      await page.getByRole("button", { name: `Close ${name}`, exact: true }).click();
-      await expect(page.getByRole("dialog")).toHaveCount(0);
+      await expect(dialog.getByRole("button", { name: "Tools", exact: true })).toHaveCount(0);
+      await dialog.getByRole("button", { name: `Close ${name}`, exact: true }).click();
       const toggle = page.getByRole("switch", { name: `Allow MCP Connect review to use ${name}` });
       await toggle.click();
-      await expect(page.locator('[data-ui="mcp-server-row"]')).toContainText("Disabled");
-      await expect(page.getByText(/Settings kept|Disabled for/)).toHaveCount(0);
+      await expect(toggle).not.toBeChecked();
+      await expect(page.locator('[data-ui="mcp-server-row"] .mcp-server-actions')).toBeEmpty();
       await toggle.click();
       await expect(toggle).toBeChecked();
+      await expectReady(page, current.id);
       expect((await mounts(page, current.id))[0]?.authorization?.kind).toBe("none");
     } finally {
       await upstream.stop();
@@ -550,9 +725,9 @@ test("OAuth callback survives a provider isolating its browsing context", async 
     await popup.getByRole("heading", { name: "Local consent fixture" }).waitFor();
     // Let the closed-window monitor run while the provider applies its isolation policy.
     await popup.waitForTimeout(1200);
-    await expect(dialog).toContainText("Complete sign-in in the authorization window.");
+    await expect(dialog).toContainText("Authorizing…");
     await popup.getByRole("link", { name: "Approve", exact: true }).click();
-    await expect(page.locator('[data-ui="mcp-server-list"]')).toContainText("Connected");
+    await expectReady(page, current.id);
   } finally {
     await upstream.stop();
   }
@@ -563,7 +738,7 @@ test("mobile Discover restores search after cancellation, browser Back, and succ
   try {
     await page.setViewportSize({ width: 390, height: 844 });
     const current = await agent(page);
-    const serverId = await discoverPeer(page, current, upstream.url);
+    const discovery = await discoverPeer(page, current, upstream.url);
     await page.goto(`/agents/${current.id}/mcp`);
     await page.getByRole("button", { name: "Discover", exact: true }).click();
     const discover = page.getByRole("dialog", { name: "Discover", exact: true });
@@ -581,9 +756,9 @@ test("mobile Discover restores search after cancellation, browser Back, and succ
     await expect.poll(() => mounts(page, current.id)).toHaveLength(0);
     await discover.getByRole("button", { name: "Add: Linear", exact: true }).click();
     await page.getByRole("link", { name: "Approve", exact: true }).click();
-    await expect(discover).toContainText("Connected");
+    await expect(discover.getByRole("img", { name: "Added", exact: true })).toBeVisible();
     await expect(discover.getByLabel("Search connectors", { exact: true })).toHaveValue("Linear");
-    expect((await mounts(page, current.id))[0]?.mcpServerId).toBe(serverId);
+    expect((await mounts(page, current.id))[0]?.mcpServerId).toBe(discovery.id);
     await expectAccessible(page);
     await expectNoPageOverflow(page);
     await page.screenshot({ path: test.info().outputPath("discover-oauth-mobile-connected.png") });
@@ -602,7 +777,7 @@ test("explicit cancellation removes new setup and ignores a late callback", asyn
     const approve = await popup.getByRole("link", { name: "Approve", exact: true }).getAttribute("href");
     if (!approve) throw new Error("Missing local callback");
     await dialog.getByRole("button", { name: "Cancel", exact: true }).first().click();
-    await expect(dialog).toContainText("Sign-in was cancelled. You can try again.");
+    await expect(dialog.getByRole("button", { name: "Connect", exact: true })).toBeEnabled();
     await expect.poll(() => mounts(page, current.id)).toHaveLength(0);
     await page.request.get(approve);
     expect(await mounts(page, current.id)).toHaveLength(0);
@@ -611,35 +786,49 @@ test("explicit cancellation removes new setup and ignores a late callback", asyn
   }
 });
 
-test("changing Add custom input still cancels the setup it created", async ({ page }) => {
+test("changing Add custom input preserves the submitted installation when the dialog closes", async ({ page }) => {
   const upstream = await peer("none");
   try {
     const current = await agent(page);
     upstream.unavailable(true);
-    const dialog = await openAdd(page, current.id, upstream.url);
-    await expect(dialog).toContainText("Couldn’t load tools. Try again.");
+    const dialog = await openAdd(page, current.id, upstream.url, "none");
+    await expect(dialog).toContainText("Couldn't load tools");
     expect(await mounts(page, current.id)).toHaveLength(1);
-    await dialog.getByLabel("Connector URL", { exact: true }).fill("https://another.example/mcp");
-    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await dialog.getByLabel("Connector address", { exact: true }).fill("https://another.example/mcp");
+    await dialog.getByRole("button", { name: "Close Add custom connector", exact: true }).click();
     await expect(dialog).toBeHidden();
-    await expect.poll(() => mounts(page, current.id)).toHaveLength(0);
+    await expect.poll(() => mounts(page, current.id)).toHaveLength(1);
+    expect((await mounts(page, current.id))[0]?.effective.url).toBe(upstream.url);
   } finally {
     await upstream.stop();
   }
 });
 
-async function approveToolsAuthorization(page: Page, blocked: boolean) {
-  let consent = page;
-  if (blocked) {
-    const reopened = page.waitForEvent("popup");
-    await page.getByRole("button", { name: "Open authorization page", exact: true }).click();
-    consent = await reopened;
+test("editing Add custom away and back retries the submitted installation without duplicating it", async ({ page }) => {
+  const upstream = await peer("none");
+  try {
+    const current = await agent(page);
+    upstream.unavailable(true);
+    const dialog = await openAdd(page, current.id, upstream.url, "none");
+    await expect(dialog).toContainText("Couldn't load tools");
+    const initial = await mounts(page, current.id);
+    expect(initial).toHaveLength(1);
+    await dialog.getByLabel("Connector address", { exact: true }).fill(`${upstream.url}x`);
+    await dialog.getByLabel("Connector address", { exact: true }).fill(upstream.url);
+    upstream.unavailable(false);
+    await dialog.getByRole("button", { name: "Connect", exact: true }).click();
+    await expect(dialog).toBeHidden();
+    await expect
+      .poll(async () => (await mounts(page, current.id)).map((entry) => entry.mcpServerId))
+      .toEqual(initial.map((entry) => entry.mcpServerId));
+    await expectReady(page, current.id);
+  } finally {
+    await upstream.stop();
   }
-  await consent.getByRole("link", { name: "Approve", exact: true }).click();
-}
+});
 
 for (const returnMode of ["mobile", "blocked popup"] as const) {
-  test(`Tools OAuth restores search and scroll with ${returnMode}`, async ({ page }) => {
+  test(`Details OAuth returns to the same connector with ${returnMode}`, async ({ page }) => {
     const upstream = await peer("oauth", false, 20);
     try {
       const current = await agent(page);
@@ -647,38 +836,24 @@ for (const returnMode of ["mobile", "blocked popup"] as const) {
       await openAdd(page, current.id, upstream.url);
       await (await opening).getByRole("link", { name: "Approve", exact: true }).click();
       await expect(page.getByRole("dialog")).toHaveCount(0);
-      await expect(page.locator('[data-ui="mcp-server-list"]')).toContainText("Connected");
-      const serverId = (await mounts(page, current.id))[0]?.mcpServerId;
-      if (!serverId) throw new Error("Missing connected fixture");
-      const name = (
-        (await (await page.request.get(`/api/v1/mcp-servers/${serverId}`)).json()).server as { name: string }
-      ).name;
+      await expectReady(page, current.id);
+      const installed = (await mounts(page, current.id))[0];
+      if (!installed) throw new Error("Missing connected fixture");
+      const serverId = installed.mcpServerId;
+      const name = installed.name;
       upstream.expire();
-      await page.request.post(`/api/v1/agents/${current.id}/mcp-servers/${serverId}/probe`, {
-        headers: current.headers,
-      });
-      // Probe failures retain tools. Model the refresh worker's expired status at the UI boundary;
-      // the authorization, callback and subsequent probe still run through the real stack.
-      await page.route(`**/api/v1/agents/${current.id}/mcp-servers`, async (route) => {
-        if (route.request().method() !== "GET") return route.continue();
-        const response = await route.fetch();
-        const body = await response.json();
-        for (const entry of body.servers) {
-          if (entry.mcpServerId === serverId && entry.authorization?.probeState === "failed")
-            entry.authorization.status = "expired";
-        }
-        await route.fulfill({ response, json: body });
-      });
+      expect(
+        (
+          await page.request.post(`/api/v1/agents/${current.id}/mcp-servers/${serverId}/probe`, {
+            headers: current.headers,
+          })
+        ).ok(),
+      ).toBeTruthy();
       await page.setViewportSize({ width: returnMode === "mobile" ? 390 : 1440, height: 844 });
       await page.reload();
       await page.getByRole("button", { name, exact: true }).click();
-      await page.getByRole("button", { name: "Tools", exact: true }).click();
-      await page.getByRole("textbox", { name: "Search tools", exact: true }).fill("fixture");
-      const toolList = page.getByRole("region", { name: "Tools discovered with this Agent’s credential", exact: true });
-      await toolList.hover();
-      await page.mouse.wheel(0, 200);
-      await expect.poll(() => toolList.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
-      const scrollTop = await toolList.evaluate((element) => element.scrollTop);
+      const details = page.getByRole("dialog", { name, exact: true });
+      await expect(details.getByRole("button", { name: "Tools", exact: true })).toHaveCount(0);
       if (returnMode === "blocked popup")
         await page.evaluate(() => {
           const open = window.open;
@@ -691,16 +866,21 @@ for (const returnMode of ["mobile", "blocked popup"] as const) {
             return open.apply(window, args);
           };
         });
-      const reconnect = page.getByRole("dialog").getByRole("button", { name: "Reconnect", exact: true });
-      await expect(reconnect).toBeVisible();
-      await reconnect.click();
-      await expect(
-        page.getByRole("dialog").getByRole("heading", { name: "Authentication", exact: true }),
-      ).toBeVisible();
-      await reconnect.click();
-      await approveToolsAuthorization(page, returnMode === "blocked popup");
-      await expect(page.getByRole("textbox", { name: "Search tools", exact: true })).toHaveValue("fixture");
-      await expect.poll(() => toolList.evaluate((element) => element.scrollTop)).toBe(scrollTop);
+      await details.getByRole("button", { name: "Reauthorize", exact: true }).click();
+      let consent = page;
+      if (returnMode === "blocked popup") {
+        const reopened = page.waitForEvent("popup");
+        await details.getByRole("button", { name: "Open authorization page", exact: true }).click();
+        consent = await reopened;
+      }
+      await consent.getByRole("link", { name: "Approve", exact: true }).click();
+      await expect(details).toBeVisible();
+      await expect(details.getByLabel("Connector address", { exact: true })).toHaveValue(upstream.url);
+      await expect(details.getByRole("radio", { name: "Account sign-in", exact: true })).toBeChecked();
+      await expectReady(page, current.id);
+      expect((await mounts(page, current.id))[0]?.mcpServerId).toBe(serverId);
+      await expectNoPageOverflow(page);
+      await expectAccessible(page);
     } finally {
       await upstream.stop();
     }
@@ -714,10 +894,10 @@ const discoverCopy = {
     close: "Close Discover",
     search: "Search connectors",
     add: "Add: Linear",
-    preparing: "Connecting…",
+    preparing: "Authorizing…",
     cancel: "Cancel: Linear",
-    reconnect: "Reconnect: Linear",
-    failed: "Connection failed",
+    reconnect: "Authorize: Linear",
+    failed: "Authorization failed",
   },
   zh: {
     title: "发现",
@@ -725,10 +905,10 @@ const discoverCopy = {
     close: "关闭 发现",
     search: "搜索连接器",
     add: "添加: Linear",
-    preparing: "正在连接…",
+    preparing: "正在授权…",
     cancel: "取消: Linear",
-    reconnect: "重新连接: Linear",
-    failed: "连接失败",
+    reconnect: "授权: Linear",
+    failed: "授权失败",
   },
 } as const;
 
@@ -828,7 +1008,7 @@ for (const locale of ["en", "zh"] as const) {
         await expect(card.getByRole("alert")).toHaveText(copy.failed);
         await expect(card.getByRole("button", { name: copy.reconnect, exact: true })).toBeEnabled();
         await expect.poll(async () => (await card.boundingBox())?.height).toBe(height);
-        await expect.poll(() => mounts(page, current.id)).toHaveLength(0);
+        await expect.poll(() => mounts(page, current.id)).toHaveLength(1);
         await expect(dialog.getByLabel(copy.search, { exact: true })).toHaveValue("Linear");
         await expectAccessible(page);
         await expectNoPageOverflow(page);

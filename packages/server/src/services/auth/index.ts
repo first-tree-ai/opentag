@@ -6,11 +6,13 @@ export {
   type UserAuthService,
 } from "./auth-service.js";
 export {
+  type AccountConnectCodePurpose,
   buildConnectBootstrapCommand,
   CONNECT_CODE_TTL_SECONDS,
   type ConnectCodeIssuer,
   ConnectCodeService,
   type ConnectCodeServiceOptions,
+  consumeAccountConnectCode,
   type IssuedConnectCode,
   issueConnectCodeInTransaction,
 } from "./connect-code-service.js";

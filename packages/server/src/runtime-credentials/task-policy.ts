@@ -14,8 +14,7 @@ export interface RuntimeTaskPolicyInput {
 }
 
 /**
- * Authoritative task delegation port. The parent wires the real Account/owner delegation
- * configuration; there is deliberately no public allow-boolean: a deployment either injects an
+ * Authoritative task delegation port. The parent wires the real user-task admission; there is deliberately no public allow-boolean: a deployment either injects an
  * authoritative policy or keeps the default denial for GitHub execution.
  */
 export interface RuntimeTaskPolicy {
@@ -25,7 +24,7 @@ export interface RuntimeTaskPolicy {
 /**
  * Default policy: IM acquires are permitted only for the Session's own active binding (the same
  * trust basis as the existing `im:credential` grant); GitHub execution is denied until explicit
- * Account/owner task delegation is configured. An IM sender is never a GitHub grant.
+ * source-checked user-task policy is wired. A bare IM identity is insufficient.
  */
 export class DefaultRuntimeTaskPolicy implements RuntimeTaskPolicy {
   authorize(input: RuntimeTaskPolicyInput): "permit" | "deny" {

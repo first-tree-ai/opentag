@@ -15,7 +15,13 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../api.js";
 import { AgentSetupPage, type AgentSetupPageProps, setupSnapshotIsTransitional } from "./agent-setup-page.js";
-import { deferred, SETUP_AGENT_ID, SETUP_COMPUTER_ID, setupAgent } from "./agent-setup-test-fixtures.js";
+import {
+  deferred,
+  SETUP_AGENT_ID,
+  SETUP_COMPUTER_ID,
+  setupAgent,
+  setupSlackConfiguration,
+} from "./agent-setup-test-fixtures.js";
 import type { AgentSetupAdapter } from "./setup-adapter.js";
 import { createMemorySetupAdapter, type MemorySetupSeed } from "./setup-memory-adapter.js";
 
@@ -23,6 +29,7 @@ import { createMemorySetupAdapter, type MemorySetupSeed } from "./setup-memory-a
 async function settle(rounds = 6): Promise<void> {
   await act(async () => {
     for (let index = 0; index < rounds; index += 1) await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
   });
 }
 
@@ -84,7 +91,8 @@ const onlineReviewMac = {
 
 beforeEach(() => {
   vi.useFakeTimers();
-  vi.spyOn(browserApi, "slackConfiguration").mockRejectedValue(new ApiError(404, "old server"));
+  vi.spyOn(browserApi, "slackConfiguration").mockResolvedValue(setupSlackConfiguration());
+  vi.spyOn(browserApi, "autoSetupSlack").mockResolvedValue({ status: "authorization_required", ticket: "test-ticket" });
 });
 
 afterEach(() => {
@@ -177,24 +185,20 @@ describe("AgentSetupPage action failures", () => {
       new ApiError(502, "upstream", "SLACK_UPSTREAM_UNAVAILABLE", "transient"),
       "Slack is unavailable right now. Check the connection and try again.",
     ],
-    ["no code", new Error("network"), "Couldn’t connect Slack. Start the connection again from this Agent."],
+    ["no code", new Error("network"), "Connection failed. Try again."],
   ])("explains a refused Slack start with %s", async (_label, cause, message) => {
     const memory = createMemorySetupAdapter({ agent: setupAgent() });
-    renderSetup(
-      failingAdapter(memory, {
-        startSlackInstall: vi.fn(async () => {
-          throw cause;
-        }),
-      }),
-    );
+    vi.mocked(browserApi.autoSetupSlack).mockRejectedValue(cause);
+    renderSetup(memory.adapter);
     await settle();
     continueFromPreparation();
+    await settle();
 
     fireEvent.click(screen.getByRole("button", { name: /Slack/ }));
     await settle();
 
     expect(screen.getByRole("alert").textContent).toBe(message);
-    expect(screen.getByRole("button", { name: /Slack/ }).hasAttribute("disabled")).toBe(false);
+    expect(screen.getByRole("button", { name: "Close Connect Slack" })).not.toHaveProperty("disabled", true);
   });
 
   it.each([
@@ -375,7 +379,7 @@ describe("AgentSetupPage messaging recovery", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1);
     });
-    expect(screen.getByRole("button", { name: "Reconnect" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Continue" })).toHaveProperty("disabled", true);
     expect(screen.queryByRole("button", { name: "Update permissions" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Change bot" })).toBeNull();
   });

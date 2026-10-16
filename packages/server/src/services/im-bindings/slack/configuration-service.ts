@@ -8,6 +8,7 @@ import {
   type SlackConfigurationIntent,
   type SlackConfigurationResult,
   type SlackConfigurationView,
+  type SlackProvisionCredentials,
 } from "@opentag/shared";
 import { and, eq, ne } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../../db/client.js";
@@ -159,6 +160,7 @@ export class SlackConfigurationService {
     callerUserId: string,
     agentId: string,
     input: SaveSlackConfigurationRequest,
+    expectedIdentity?: Pick<SlackProvisionCredentials, "appId" | "teamId" | "botUserId">,
   ): Promise<SlackConfigurationResult> {
     await this.#imBindings.assertCanManage(callerUserId, agentId);
     await this.#agent(agentId, this.#database);
@@ -206,6 +208,7 @@ export class SlackConfigurationService {
     this.#validateScopes(installation);
     const appId = await this.#inspectApp(botAccessToken, installation);
     this.#validateInstallation(appId, installation);
+    assertExpectedSlackIdentity(expectedIdentity, appId, installation);
     assertSameSlackIdentity(previous, appId, installation);
     return this.#activate(
       callerUserId,
@@ -473,4 +476,24 @@ function assertSameSlackIdentity(
     "Credential updates must keep the same App, Team and Bot",
     "credential",
   );
+}
+
+function assertExpectedSlackIdentity(
+  expectedIdentity: Pick<SlackProvisionCredentials, "appId" | "teamId" | "botUserId"> | undefined,
+  appId: string,
+  installation: SlackInstallationInspection,
+): void {
+  if (
+    expectedIdentity &&
+    (appId !== expectedIdentity.appId ||
+      installation.teamId !== expectedIdentity.teamId ||
+      installation.botUserId !== expectedIdentity.botUserId)
+  ) {
+    throw new SlackConfigurationServiceError(
+      "SLACK_BINDING_IDENTITY_MISMATCH",
+      409,
+      "The Bot Token does not match the App, Team and Bot being provisioned",
+      "credential",
+    );
+  }
 }

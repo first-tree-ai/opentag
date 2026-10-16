@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { GOOGLE_WORKSPACE_MCP_AUTHORIZATION_SERVER } from "@opentag/shared";
+import {
+  CANVA_DEVELOPER_PORTAL_AUTHORIZATION_SERVER,
+  CANVA_DEVELOPER_PORTAL_MCP_URL,
+  GOOGLE_WORKSPACE_MCP_AUTHORIZATION_SERVER,
+} from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -13,9 +17,11 @@ import {
 import { hashSecret } from "../services/auth/security.js";
 import { ApplicationCipher } from "../services/crypto.js";
 import { MCP_ERROR_CODES } from "../services/mcp/errors.js";
+import { McpAuthorizationService } from "../services/mcp/mcp-authorization-service.js";
 import { McpCredentialCipher } from "../services/mcp/mcp-credential-cipher.js";
 import { MCP_OAUTH_STATE_TTL_MS, McpOAuthClient } from "../services/mcp/mcp-oauth.js";
 import { McpOAuthFlowService, orderIssuers } from "../services/mcp/mcp-oauth-flow-service.js";
+import type { McpProbe } from "../services/mcp/mcp-probe.js";
 import { McpServerService } from "../services/mcp/mcp-server-service.js";
 import { McpOutboundFetcher } from "../services/mcp/mcp-url-policy.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
@@ -59,6 +65,21 @@ const GOOGLE_AS_URL = `${GOOGLE_ISSUER}/.well-known/oauth-authorization-server`;
 const GOOGLE_TOKEN_URL = `${GOOGLE_ISSUER}/token`;
 const GOOGLE_CLIENT = { clientId: "google-client-id", clientSecret: "google-client-secret" };
 
+// Canva's Developer Portal endpoint, which serves clients that have a client ID and secret.
+const CANVA_MCP_URL = CANVA_DEVELOPER_PORTAL_MCP_URL;
+const CANVA_PRM_URL = "https://api.canva.com/.well-known/oauth-protected-resource/connect/v1/mcp";
+const CANVA_ISSUER = CANVA_DEVELOPER_PORTAL_AUTHORIZATION_SERVER;
+const CANVA_AS_URL = `${CANVA_ISSUER}/.well-known/oauth-authorization-server`;
+const CANVA_TOKEN_URL = "https://api.canva.com/auth/v1/oauth/token";
+const CANVA_CLIENT = { clientId: "canva-client-id", clientSecret: "canva-client-secret" };
+// Canva's waitlist endpoint, which the catalog ships and which resolves a client automatically.
+const CANVA_WAITLIST_MCP_URL = "https://mcp.canva.com/mcp";
+const CANVA_WAITLIST_PRM_URL = "https://mcp.canva.com/.well-known/oauth-protected-resource/mcp";
+const CANVA_WAITLIST_ISSUER = "https://mcp.canva.com";
+const CANVA_WAITLIST_AS_URL = `${CANVA_WAITLIST_ISSUER}/.well-known/oauth-authorization-server`;
+const CANVA_WAITLIST_TOKEN_URL = `${CANVA_WAITLIST_ISSUER}/token`;
+const CANVA_WAITLIST_REGISTER_URL = `${CANVA_WAITLIST_ISSUER}/register`;
+
 interface StubResponse {
   status: number;
   body?: string;
@@ -94,7 +115,11 @@ function oauthNode(routes: RouteMap) {
 
 function build(
   routes: RouteMap,
-  options: { now?: () => Date; googleMcpClient?: { clientId: string; clientSecret: string } } = {},
+  options: {
+    now?: () => Date;
+    googleMcpClient?: { clientId: string; clientSecret: string };
+    canvaMcpClient?: { clientId: string; clientSecret: string };
+  } = {},
 ) {
   const { calls, fetchImpl } = oauthNode(routes);
   const fetcher = new McpOutboundFetcher({
@@ -163,6 +188,59 @@ function googleRoutes(overrides: Record<string, unknown> = {}): RouteMap {
   };
 }
 
+/**
+ * Canva's Developer Portal discovery shape, as published: the challenge names a path-inserted
+ * protected-resource document, which names `https://www.canva.com` as the issuer. That issuer offers
+ * neither dynamic registration nor a client metadata document, and it does not advertise its token
+ * endpoint authentication methods.
+ */
+function canvaRoutes(overrides: Record<string, unknown> = {}): RouteMap {
+  return {
+    [CANVA_PRM_URL]: doc({
+      resource: CANVA_MCP_URL,
+      authorization_servers: [CANVA_ISSUER],
+      scopes_supported: ["profile:read", "design:meta:read"],
+    }),
+    [CANVA_AS_URL]: doc({
+      issuer: CANVA_ISSUER,
+      authorization_endpoint: `${CANVA_ISSUER}/api/oauth/authorize`,
+      token_endpoint: CANVA_TOKEN_URL,
+      response_types_supported: ["code"],
+      code_challenge_methods_supported: ["S256"],
+      ...overrides,
+    }),
+  };
+}
+
+/** Canva's waitlist discovery shape: its own issuer, with CIMD and dynamic registration. */
+function canvaWaitlistRoutes(overrides: Record<string, unknown> = {}): RouteMap {
+  return {
+    [CANVA_WAITLIST_PRM_URL]: doc({
+      resource: CANVA_WAITLIST_MCP_URL,
+      authorization_servers: [CANVA_WAITLIST_ISSUER],
+      scopes_supported: ["profile:read", "design:meta:read"],
+    }),
+    [CANVA_WAITLIST_AS_URL]: doc({
+      issuer: CANVA_WAITLIST_ISSUER,
+      authorization_endpoint: `${CANVA_WAITLIST_ISSUER}/authorize`,
+      token_endpoint: CANVA_WAITLIST_TOKEN_URL,
+      registration_endpoint: CANVA_WAITLIST_REGISTER_URL,
+      token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post", "none"],
+      client_id_metadata_document_supported: true,
+      ...overrides,
+    }),
+    [CANVA_WAITLIST_REGISTER_URL]: doc({ client_id: "dcr_canva", client_secret: "cs_canva" }),
+  };
+}
+
+function basicAuth(client: { clientId: string; clientSecret: string }): string {
+  return `Basic ${Buffer.from(`${client.clientId}:${client.clientSecret}`).toString("base64")}`;
+}
+
+function authorizationHeader(call: { init: RequestInit } | undefined): string | null {
+  return new Headers((call?.init.headers ?? {}) as Record<string, string>).get("authorization");
+}
+
 interface Seeded {
   accountId: string;
   agentId: string;
@@ -219,6 +297,21 @@ describe("orderIssuers", () => {
   it("keeps the document's order when the recorded issuer is gone or absent", () => {
     expect(orderIssuers(["https://a", "https://b"], null)).toEqual(["https://a", "https://b"]);
     expect(orderIssuers(["https://a", "https://b"], "https://gone")).toEqual(["https://a", "https://b"]);
+  });
+});
+
+describe("McpOAuthFlowService.catalogEndpoints", () => {
+  it("replaces no catalog endpoint without a deployment Canva client", () => {
+    expect(build({}).flows.catalogEndpoints()).toEqual([]);
+    // The Google client works on the endpoints the catalog already ships.
+    expect(build({}, { googleMcpClient: GOOGLE_CLIENT }).flows.catalogEndpoints()).toEqual([]);
+  });
+
+  it("replaces the Canva entry with the Developer Portal endpoint and returns no client material", () => {
+    const endpoints = build({}, { canvaMcpClient: CANVA_CLIENT }).flows.catalogEndpoints();
+    expect(endpoints).toEqual([{ catalogId: "canva", url: CANVA_MCP_URL }]);
+    expect(JSON.stringify(endpoints)).not.toContain(CANVA_CLIENT.clientId);
+    expect(JSON.stringify(endpoints)).not.toContain(CANVA_CLIENT.clientSecret);
   });
 });
 
@@ -475,6 +568,165 @@ describe("McpOAuthFlowService.start", () => {
     const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
     expect(new URL(started.authorizationUrl).searchParams.get("client_id")).toBe("dcr_default");
     expect(started.authorizationUrl).not.toContain(GOOGLE_CLIENT.clientId);
+  });
+
+  it("uses the deployment Canva client for the Developer Portal endpoint and registers nothing", async () => {
+    const ids = await seed(CANVA_MCP_URL);
+    const { calls, flows } = build(canvaRoutes(), { canvaMcpClient: CANVA_CLIENT });
+    const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    const authorizationUrl = new URL(started.authorizationUrl);
+    expect(`${authorizationUrl.origin}${authorizationUrl.pathname}`).toBe(`${CANVA_ISSUER}/api/oauth/authorize`);
+    expect(authorizationUrl.searchParams.get("client_id")).toBe(CANVA_CLIENT.clientId);
+    expect(authorizationUrl.searchParams.get("redirect_uri")).toBe(
+      `${PUBLIC_ORIGIN}/api/v1/mcp-servers/oauth/callback`,
+    );
+    expect(authorizationUrl.searchParams.get("resource")).toBe(CANVA_MCP_URL);
+    expect(authorizationUrl.searchParams.get("scope")).toBe("profile:read design:meta:read");
+    expect(authorizationUrl.searchParams.get("code_challenge_method")).toBe("S256");
+    // Google's refresh-token parameters belong to the Google client only.
+    expect(authorizationUrl.searchParams.has("access_type")).toBe(false);
+    expect(authorizationUrl.searchParams.has("prompt")).toBe(false);
+    expect(started.authorizationUrl).not.toContain(CANVA_CLIENT.clientSecret);
+    expect(calls.map((call) => call.url)).toEqual([CANVA_PRM_URL, CANVA_AS_URL]);
+    expect(await unit.database.select().from(mcpClientRegistrations)).toEqual([]);
+    const row = await readAuthorization(ids);
+    expect(row?.clientRegistrationId).toBeNull();
+    expect(row?.flowAuthorizationServer).toBe(CANVA_ISSUER);
+  });
+
+  it("presents the deployment Canva client at the callback and on refresh", async () => {
+    const ids = await seed(CANVA_MCP_URL);
+    const { calls, flows } = build(
+      {
+        ...canvaRoutes(),
+        [CANVA_TOKEN_URL]: doc({ access_token: "at_1", refresh_token: "rt_1", expires_in: 600 }),
+      },
+      { canvaMcpClient: CANVA_CLIENT },
+    );
+    const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    await flows.callback({ code: "code-1", state: stateOf(started.authorizationUrl) }, FLOW_SECRET);
+    const row = await readAuthorization(ids);
+    expect(row?.status).toBe("active");
+    expect(row?.authorizationServer).toBe(CANVA_ISSUER);
+    expect(row?.oauthResource).toBe(CANVA_MCP_URL);
+    const tokenCalls = calls.filter((call) => call.url === CANVA_TOKEN_URL);
+    expect(tokenCalls).toHaveLength(1);
+    expect(authorizationHeader(tokenCalls[0])).toBe(basicAuth(CANVA_CLIENT));
+    const exchange = new URLSearchParams(String(tokenCalls[0]?.init.body));
+    expect(exchange.get("grant_type")).toBe("authorization_code");
+    expect(exchange.get("redirect_uri")).toBe(`${PUBLIC_ORIGIN}/api/v1/mcp-servers/oauth/callback`);
+    expect(exchange.get("resource")).toBe(CANVA_MCP_URL);
+    // Basic authentication carries the client; the form body does not repeat it.
+    expect(exchange.has("client_id")).toBe(false);
+
+    await flows.refreshAuthorization(row?.id as string);
+    const refreshed = calls.filter((call) => call.url === CANVA_TOKEN_URL);
+    expect(refreshed).toHaveLength(2);
+    expect(authorizationHeader(refreshed[1])).toBe(basicAuth(CANVA_CLIENT));
+    expect(new URLSearchParams(String(refreshed[1]?.init.body)).get("grant_type")).toBe("refresh_token");
+    expect(await unit.database.select().from(mcpClientRegistrations)).toEqual([]);
+    expect((await readAuthorization(ids))?.status).toBe("active");
+  });
+
+  it("cannot authorize the Developer Portal endpoint without a deployment Canva client", async () => {
+    const ids = await seed(CANVA_MCP_URL);
+    const { flows } = build(canvaRoutes(), { googleMcpClient: GOOGLE_CLIENT });
+    await expect(flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET)).rejects.toMatchObject({
+      code: MCP_ERROR_CODES.OAUTH_FAILED,
+    });
+  });
+
+  it("keeps the waitlist endpoint on CIMD even when a deployment Canva client is configured", async () => {
+    /*
+     * The waitlist endpoint belongs to another authorization server, which never issued the
+     * deployment's Developer Portal client, so existing waitlist authorizations keep their client.
+     */
+    const ids = await seed(CANVA_WAITLIST_MCP_URL);
+    const { calls, flows } = build(
+      {
+        ...canvaWaitlistRoutes(),
+        [CANVA_WAITLIST_TOKEN_URL]: doc({ access_token: "at_1", refresh_token: "rt_1", expires_in: 600 }),
+      },
+      { canvaMcpClient: CANVA_CLIENT },
+    );
+    const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    expect(new URL(started.authorizationUrl).searchParams.get("client_id")).toBe(
+      `${PUBLIC_ORIGIN}/oauth/client-metadata.json`,
+    );
+    await flows.callback({ code: "code-1", state: stateOf(started.authorizationUrl) }, FLOW_SECRET);
+    const row = await readAuthorization(ids);
+    await flows.refreshAuthorization(row?.id as string);
+    const tokenCalls = calls.filter((call) => call.url === CANVA_WAITLIST_TOKEN_URL);
+    expect(tokenCalls).toHaveLength(2);
+    for (const call of tokenCalls) {
+      expect(authorizationHeader(call)).toBeNull();
+      expect(new URLSearchParams(String(call.init.body)).get("client_id")).toBe(
+        `${PUBLIC_ORIGIN}/oauth/client-metadata.json`,
+      );
+    }
+    expect(JSON.stringify(calls)).not.toContain(CANVA_CLIENT.clientSecret);
+    expect((await readAuthorization(ids))?.status).toBe("active");
+  });
+
+  it("keeps the waitlist endpoint on dynamic registration when CIMD is unsupported", async () => {
+    const ids = await seed(CANVA_WAITLIST_MCP_URL);
+    const { flows } = build(canvaWaitlistRoutes({ client_id_metadata_document_supported: false }));
+    const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    expect(new URL(started.authorizationUrl).searchParams.get("client_id")).toBe("dcr_canva");
+    const [registration] = await unit.database.select().from(mcpClientRegistrations);
+    expect(registration).toMatchObject({
+      source: "dcr",
+      clientId: "dcr_canva",
+      authorizationServer: CANVA_WAITLIST_ISSUER,
+    });
+  });
+
+  it("does not offer the deployment Canva client to a non-Canva endpoint that claims Canva", async () => {
+    const ids = await seed();
+    const { calls, flows } = build(
+      {
+        [PRM_URL]: doc({ resource: MCP_URL, authorization_servers: [CANVA_ISSUER] }),
+        [CANVA_AS_URL]: doc({
+          issuer: CANVA_ISSUER,
+          authorization_endpoint: `${CANVA_ISSUER}/api/oauth/authorize`,
+          token_endpoint: CANVA_TOKEN_URL,
+          registration_endpoint: `${CANVA_ISSUER}/register`,
+        }),
+        [`${CANVA_ISSUER}/register`]: doc({ client_id: "dcr_evil", client_secret: "cs_evil" }),
+      },
+      { canvaMcpClient: CANVA_CLIENT },
+    );
+    const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    expect(new URL(started.authorizationUrl).searchParams.get("client_id")).toBe("dcr_evil");
+    expect(JSON.stringify(calls)).not.toContain(CANVA_CLIENT.clientSecret);
+  });
+
+  it("does not offer the deployment Canva client when the Developer Portal endpoint resolves another issuer", async () => {
+    const ids = await seed(CANVA_MCP_URL);
+    const { flows } = build(
+      {
+        [CANVA_PRM_URL]: doc({ resource: CANVA_MCP_URL, authorization_servers: [ISSUER] }),
+        [AS_URL]: asMetadata({ registration_endpoint: REGISTER_URL }),
+        [REGISTER_URL]: doc({ client_id: "dcr_default", client_secret: "cs_default" }),
+      },
+      { canvaMcpClient: CANVA_CLIENT },
+    );
+    const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    expect(new URL(started.authorizationUrl).searchParams.get("client_id")).toBe("dcr_default");
+    expect(started.authorizationUrl).not.toContain(CANVA_CLIENT.clientId);
+  });
+
+  it("offers each provider only its own deployment client when both are configured", async () => {
+    const canva = await seed(CANVA_MCP_URL);
+    const google = await seed(GOOGLE_MCP_URL);
+    const { flows } = build(
+      { ...canvaRoutes(), ...googleRoutes() },
+      { googleMcpClient: GOOGLE_CLIENT, canvaMcpClient: CANVA_CLIENT },
+    );
+    const canvaStarted = await flows.start(canva.accountId, canva.agentId, canva.mcpServerId, [], FLOW_SECRET);
+    const googleStarted = await flows.start(google.accountId, google.agentId, google.mcpServerId, [], FLOW_SECRET);
+    expect(new URL(canvaStarted.authorizationUrl).searchParams.get("client_id")).toBe(CANVA_CLIENT.clientId);
+    expect(new URL(googleStarted.authorizationUrl).searchParams.get("client_id")).toBe(GOOGLE_CLIENT.clientId);
   });
 
   it("prefers the deployment's pre-registered client and stores no new registration", async () => {
@@ -1628,5 +1880,99 @@ describe("McpOAuthFlowService.refreshAuthorization", () => {
     });
     // The credential stays for a later reauthorization; only the verdict is recorded.
     expect(after?.ciphertext).not.toBeNull();
+  });
+});
+
+describe("OAuth concurrent write protection", () => {
+  it("does not let a delayed exchange failure erase a newer flow", async () => {
+    const ids = await seed();
+    let secondState = "";
+    const { flows } = build({
+      ...discoverableAs(),
+      [TOKEN_URL]: async () => {
+        const newer = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+        secondState = stateOf(newer.authorizationUrl);
+        return doc({ error: "invalid_grant" }, 400);
+      },
+    });
+    const first = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    await expect(
+      flows.callback({ code: "old-code", state: stateOf(first.authorizationUrl) }, FLOW_SECRET),
+    ).rejects.toBeDefined();
+    expect(await readAuthorization(ids)).toMatchObject({
+      state: hashSecret(secondState),
+      status: "pending",
+      failureCode: null,
+    });
+  });
+
+  it("invalidates an old refresh claim when a callback commits a new credential", async () => {
+    const ids = await seed();
+    const claim = randomUUID();
+    const { flows } = build({
+      ...discoverableAs(),
+      [TOKEN_URL]: async () => {
+        await unit.database
+          .update(mcpServerAuthorizations)
+          .set({ refreshClaimId: claim, refreshClaimedAt: new Date() })
+          .where(eq(mcpServerAuthorizations.agentId, ids.agentId));
+        return doc({ access_token: "new-token", expires_in: 3600 });
+      },
+    });
+    const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    await flows.callback({ code: "new-code", state: stateOf(started.authorizationUrl) }, FLOW_SECRET);
+    expect(await readAuthorization(ids)).toMatchObject({
+      status: "active",
+      refreshClaimId: null,
+      refreshClaimedAt: null,
+      refreshGeneration: 1,
+    });
+  });
+});
+
+describe("cancelling reauthorization", () => {
+  it("preserves the working credential after starting and cancelling a replacement flow", async () => {
+    const ids = await seed();
+    const { flows, cipher, servers } = build({
+      ...discoverableAs(),
+      [TOKEN_URL]: doc({
+        access_token: "old-token",
+        refresh_token: "old-refresh",
+        token_type: "Bearer",
+        expires_in: 3600,
+      }),
+    });
+    const initial = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    await flows.callback({ code: "initial-code", state: stateOf(initial.authorizationUrl) }, FLOW_SECRET);
+    const before = await readAuthorization(ids);
+    const replacement = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    const authorization = new McpAuthorizationService({
+      database: unit.database,
+      cipher,
+      servers,
+      probe: { probe: vi.fn() } as unknown as McpProbe,
+    });
+    await authorization.revoke(ids.accountId, ids.agentId, ids.mcpServerId, stateOf(replacement.authorizationUrl));
+    const after = await readAuthorization(ids);
+    expect(after).toMatchObject({
+      status: "active",
+      ciphertext: before?.ciphertext,
+      keyId: before?.keyId,
+      authorizationServer: before?.authorizationServer,
+      oauthResource: before?.oauthResource,
+      tools: before?.tools,
+      state: null,
+      stateExpiresAt: null,
+      pkceCiphertext: null,
+      loginSessionHash: null,
+      flowOauthResource: null,
+    });
+    expect(
+      (await authorization.resolveActiveCredential(ids.accountId, ids.agentId, ids.mcpServerId))?.credential,
+    ).toMatchObject({ accessToken: "old-token", refreshToken: "old-refresh" });
+    await expect(
+      flows.callback({ code: "late-code", state: stateOf(replacement.authorizationUrl) }, FLOW_SECRET),
+    ).rejects.toMatchObject({ code: MCP_ERROR_CODES.OAUTH_FLOW_INVALID });
+    expect((await readAuthorization(ids))?.ciphertext).toBe(before?.ciphertext);
   });
 });

@@ -963,6 +963,7 @@ function cloudCredentialStack(
     instanceId: connection.instanceId,
     negotiatedCapabilities: {
       [RUNTIME_CAPABILITY.runtimeCredential]: 1,
+      [RUNTIME_CAPABILITY.githubUserTask]: 1,
       [RUNTIME_CAPABILITY.providerProxy]: 1,
       [RUNTIME_CAPABILITY.sessionCollaboration]: CLOUD_SESSION_COLLABORATION_VERSION,
     },
@@ -1048,7 +1049,6 @@ describe("Cloud internal collaboration execution at the production credential bo
         connectionId: "connection-github",
         authorizationVersion: "42",
         credentialGeneration: "7",
-        bindings: [{ repositoryId: "1", fullName: "acme/repo", role: "code", access: "read" }],
       }),
     };
     const stack = cloudCredentialStack(state, {
@@ -1142,6 +1142,7 @@ describe("Cloud internal collaboration execution at the production credential bo
       ...stack.context,
       negotiatedCapabilities: {
         [RUNTIME_CAPABILITY.runtimeCredential]: 1,
+        [RUNTIME_CAPABILITY.githubUserTask]: 1,
         [RUNTIME_CAPABILITY.providerProxy]: 1,
       },
     });
@@ -1303,6 +1304,7 @@ describe("Cloud internal collaboration execution at the production credential bo
         instanceId: INSTANCE_ID,
         negotiatedCapabilities: {
           [RUNTIME_CAPABILITY.runtimeCredential]: 1,
+          [RUNTIME_CAPABILITY.githubUserTask]: 1,
           [RUNTIME_CAPABILITY.providerProxy]: 1,
           [RUNTIME_CAPABILITY.sessionCollaboration]: CLOUD_SESSION_COLLABORATION_VERSION,
         },

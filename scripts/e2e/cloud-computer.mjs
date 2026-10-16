@@ -39,7 +39,7 @@ Commands:
 
 Runner toolchain options:
   node scripts/e2e/cloud-computer.mjs runner-toolchain --help
-  See docs/cloud-runner-toolchain.md for isolated model configuration and image reuse.
+  See docs/system/cloud/cloud-runner-toolchain.md for isolated model configuration and image reuse.
 
 Requirements for local-pi:
   - Docker, used only to start a disposable postgres:17-alpine container

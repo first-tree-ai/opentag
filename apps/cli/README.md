@@ -80,7 +80,7 @@ and requests an upgrade/recheck instead of guessing a provider or claiming local
 Pi runs with unrestricted filesystem access, enabled network access, and no approval prompts in Local mode.
 OpenTag rejects unsupported stricter Pi execution settings. Selecting Pi does not create an OS sandbox.
 Automatic extensions and ambient skills/context discovery are disabled; packaged Context Tree skills are explicit.
-See the [Agent Runtime contract](../../docs/design/agent-runtime-contract.md) for Session persistence and recovery.
+See the [Agent Runtime contract](../../docs/system/runtime/agent-runtime-contract.md) for Session persistence and recovery.
 
 ## Command result and exit-code contract
 

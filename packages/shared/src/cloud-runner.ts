@@ -32,7 +32,7 @@ import { TurnActivityRequestSchema, TurnActivityResultSchema } from "./turn-acti
 export const RUNNER_WS_PROTOCOL_VERSION = 1;
 /**
  * E4 Cloud-delivery capability negotiated inside the existing protocol version 1 auth/welcome
- * exchange (E3 compatibility contract, `docs/cloud-runner-execution.md`). A new Runner requests it
+ * exchange (E3 compatibility contract, `docs/system/cloud/cloud-runner-execution.md`). A new Runner requests it
  * in the auth frame; a Cloud-enabled Server echoes it in the welcome ONLY for a requesting
  * connection whose current allocation UID is already tracked. Legacy E3 channels never receive
  * E4 frames.

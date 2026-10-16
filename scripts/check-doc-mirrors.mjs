@@ -32,14 +32,6 @@ export function discoverMirrorPairs(repositoryRoot) {
     pairs.set(canonical, path);
   }
 
-  const docsMirrorRoot = join(root, "docs", "zh-CN");
-  if (existsSync(docsMirrorRoot)) {
-    for (const path of walkMarkdownFiles(docsMirrorRoot, docsMirrorRoot)) {
-      const mirror = `docs/zh-CN/${path}`;
-      pairs.set(`docs/${path}`, mirror);
-    }
-  }
-
   return pairs;
 }
 
@@ -47,13 +39,12 @@ export function discoverMirrorPairs(repositoryRoot) {
 export function expectedMirrorPath(canonicalPath) {
   if (!canonicalPath.endsWith(".md")) return null;
   if (canonicalPath.endsWith(".zh-CN.md")) return null;
-  if (canonicalPath.includes("/zh-CN/") || canonicalPath.startsWith("docs/zh-CN/")) return null;
-  if (canonicalPath.startsWith("docs/design/")) return null;
+  if (canonicalPath.includes("/zh-CN/")) return null;
+  // `docs/` is the English-only Context Tree knowledge base; only root documents keep mirrors.
   if (!canonicalPath.includes("/")) {
     if (ROOT_CANONICAL_EXCLUSIONS.has(canonicalPath)) return null;
     return canonicalPath.replace(/\.md$/, ".zh-CN.md");
   }
-  if (canonicalPath.startsWith("docs/")) return `docs/zh-CN/${canonicalPath.slice("docs/".length)}`;
   return null;
 }
 

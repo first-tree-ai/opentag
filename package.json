@@ -38,6 +38,8 @@
     "@biomejs/biome": "^2.5.14",
     "@types/node": "^26.6.1",
     "@vitest/coverage-v8": "5.0.1",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "lefthook": "^2.1.14",
     "tsdown": "^0.23.0",
     "tsx": "^4.23.13",

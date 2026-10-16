@@ -124,7 +124,12 @@ function createMcpOAuthSession(
         ...(scopes?.length ? { scopes: [...scopes] } : {}),
       });
       attempt.state = new URL(result.authorizationUrl).searchParams.get("state") ?? undefined;
-      const outcome = await finishAuthorization(result.authorizationUrl, context, reserved, abort.signal);
+      const outcome = await finishAuthorization(
+        result.authorizationUrl,
+        { ...context, oauthState: attempt.state },
+        reserved,
+        abort.signal,
+      );
       if (outcome === "authorized") await invalidate();
       return outcome;
     } finally {

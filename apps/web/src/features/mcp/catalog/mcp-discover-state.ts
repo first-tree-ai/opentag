@@ -124,7 +124,8 @@ export function useMcpDiscoverState(props: DiscoverProps) {
       const current = (await browserApi.agentMcpServers(props.agentId)).servers.find(
         (entry) => entry.mcpServerId === context.serverId,
       );
-      if (current) await discardMcpSetup(props.agentId, context.serverId, (id) => detach.mutateAsync(id));
+      if (current)
+        await discardMcpSetup(props.agentId, context.serverId, (id) => detach.mutateAsync(id), context.oauthState);
     })()
       .catch((cause) => setError(actionError(cause, m.mcp_setup_cleanup_failed())))
       .finally(() => setRestoring(false));

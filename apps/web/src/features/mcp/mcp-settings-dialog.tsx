@@ -139,7 +139,7 @@ function AuthenticationSection({ state }: { state: SettingsState }) {
     <section className="grid gap-3" aria-label={m.mcp_auth_label()}>
       <div className="flex items-center justify-between gap-3">
         {preset ? <span className="text-sm font-medium">{m.mcp_auth_label()}</span> : null}
-        {preset && (!authEdited || draft.kind === "oauth") ? (
+        {preset && (!authEdited || draft.kind !== "bearer") ? (
           <span className="text-sm text-kumo-subtle">{methodLabel(draft.kind)}</span>
         ) : null}
       </div>

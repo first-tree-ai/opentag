@@ -28,8 +28,22 @@ export async function deleteMcpInstallation(
 }
 
 /** Remove only a mount this journey created, and preserve credentials from a late successful callback. */
-export async function discardMcpSetup(agentId: string, serverId: string, detach: (id: string) => Promise<unknown>) {
-  const current = (await browserApi.agentMcpServers(agentId)).servers.find((entry) => entry.mcpServerId === serverId);
+export async function discardMcpSetup(
+  agentId: string,
+  serverId: string,
+  detach: (id: string) => Promise<unknown>,
+  oauthState?: string,
+) {
+  let current = (await browserApi.agentMcpServers(agentId)).servers.find((entry) => entry.mcpServerId === serverId);
+  if (current?.authorization?.status === "pending" && oauthState) {
+    try {
+      await browserApi.revokeMcpAuthorization(agentId, serverId, oauthState);
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.code !== MCP_ERROR_CODES.OAUTH_FLOW_INVALID) throw error;
+      return false;
+    }
+    current = (await browserApi.agentMcpServers(agentId)).servers.find((entry) => entry.mcpServerId === serverId);
+  }
   const auth = current?.authorization;
   const keepCredential = auth?.status === "active";
   if (!current) return true;

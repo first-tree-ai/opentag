@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../../api.js";
 import { McpPage } from "./mcp-page.js";
 import { rememberMcpReturn } from "./mcp-return-context.js";
-import { AGENT_ID, authorization, entry, openAdd, openDetails, stub, wrap } from "./mcp-test-fixtures.js";
+import { AGENT_ID, authorization, detail, entry, openAdd, openDetails, stub, wrap } from "./mcp-test-fixtures.js";
 
 afterEach(() => vi.restoreAllMocks());
 describe("MCP connector list", () => {
@@ -101,6 +101,36 @@ describe("MCP connector list", () => {
 });
 
 describe("MCP authorization returns", () => {
+  it("restores Discover search from the first render after same-tab authorization", async () => {
+    rememberMcpReturn({ agentId: AGENT_ID, serverId: entry().mcpServerId, source: "discover", query: "Linear" });
+    window.history.replaceState({}, "", `/agents/${AGENT_ID}/mcp?mcp_oauth=success&server=${entry().mcpServerId}`);
+    stub([entry()]);
+    wrap(<McpPage agentId={AGENT_ID} />);
+    const dialog = await screen.findByRole("dialog", { name: "Discover" });
+    await waitFor(() =>
+      expect((within(dialog).getByLabelText("Search connectors") as HTMLInputElement).value).toBe("Linear"),
+    );
+  });
+  it.each(["bearer", "none"] as const)(
+    "preserves an installed preset's %s definition before its first authorization",
+    async (kind) => {
+      const row = entry({
+        name: "linear",
+        authorization: null,
+        effective: { ...entry().effective, url: "https://mcp.linear.app/mcp", extraHeaders: {} },
+      });
+      const metadata = detail(1);
+      stub([row], { ...metadata, server: { ...metadata.server, url: row.effective.url, defaultAuthKind: kind } });
+      const oauth = vi.spyOn(browserApi, "startMcpOAuth");
+      wrap(<McpPage agentId={AGENT_ID} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Authorize" }));
+      const dialog = await screen.findByRole("dialog", { name: "Linear" });
+      if (kind === "bearer")
+        await within(dialog).findByLabelText("API key or token", { selector: "input[type=password]" });
+      else await within(dialog).findByText("No authentication");
+      expect(oauth).not.toHaveBeenCalled();
+    },
+  );
   it("clears a successful OAuth return without displaying a connected badge", async () => {
     window.history.replaceState({}, "", `/agents/${AGENT_ID}/mcp?mcp_oauth=success&server=${entry().mcpServerId}`);
     stub([entry()]);

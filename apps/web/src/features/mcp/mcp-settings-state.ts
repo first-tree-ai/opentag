@@ -35,8 +35,8 @@ export function useMcpSettings({
 }) {
   const catalog = useMcpCatalogEntries();
   const preset = settingsPreset(entry, catalog.entries);
-  const detail = useMcpServerDetail(entry.authorization || preset ? undefined : entry.mcpServerId);
-  const authenticationReady = Boolean(entry.authorization || preset || detail.data);
+  const detail = useMcpServerDetail(entry.authorization ? undefined : entry.mcpServerId);
+  const authenticationReady = Boolean(entry.authorization || detail.data);
   const initialAuthOpened = useRef(false);
   const kind = entry.authorization
     ? connectionAuthKind(entry.effective.url, entry, detail.data?.server)

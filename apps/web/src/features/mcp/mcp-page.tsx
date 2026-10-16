@@ -117,7 +117,7 @@ function McpManagementPage({ agentId }: { agentId: string }) {
       const restoreAdd = () =>
         setPanel({ kind: "add", serverId: entry.mcpServerId, authenticationError: m.mcp_oauth_return_failed() });
       if (returnContext.newBinding) {
-        void discardMcpSetup(agentId, entry.mcpServerId, (id) => detach.mutateAsync(id))
+        void discardMcpSetup(agentId, entry.mcpServerId, (id) => detach.mutateAsync(id), returnContext.oauthState)
           .then(restoreAdd)
           .catch(() => {
             setPanel({ kind: "add", serverId: entry.mcpServerId, authenticationError: m.mcp_setup_cleanup_failed() });
@@ -164,6 +164,7 @@ function McpManagementPage({ agentId }: { agentId: string }) {
     agentId,
     agentName,
     mounted: servers,
+    ...restoredDiscoverProps(returnContext, outcome),
     ...discoverPanelProps(panel),
     onClose: close,
     onAdded: addedFromCatalog,
@@ -275,6 +276,11 @@ function McpManagementPage({ agentId }: { agentId: string }) {
       />
     </section>
   );
+}
+function restoredDiscoverProps(context: McpReturnContext | undefined, outcome: ReturnType<typeof readMcpOAuthOutcome>) {
+  return context?.source === "discover"
+    ? { initialContext: context, initialOutcome: discoverReturnOutcome(outcome) }
+    : {};
 }
 function discoverPanelProps(panel: Panel) {
   return panel.kind === "discover"

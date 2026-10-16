@@ -14,6 +14,7 @@ describe("MCP OAuth return view", () => {
       source: "tools" as const,
       query: "issue",
       scrollTop: 120,
+      oauthState: "returned-state",
       token: "must-not-be-stored",
     };
     rememberMcpReturn(view);
@@ -24,6 +25,7 @@ describe("MCP OAuth return view", () => {
       source: "tools",
       query: "issue",
       scrollTop: 120,
+      oauthState: "returned-state",
     });
     expect(consumeMcpReturn(AGENT_ID, SERVER_ID)).toBeUndefined();
   });

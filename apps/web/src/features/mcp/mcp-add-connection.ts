@@ -114,6 +114,7 @@ export function useMcpAddConnection(props: McpAddProps) {
 
   async function resolveServer(current: Attempt): Promise<MCPServer> {
     if (current.server) return current.server;
+    if (current.binding) return (await browserApi.mcpServer(current.binding.mcpServerId)).server;
     return await createMcpInstallation(newServerInput(current), create.mutateAsync);
   }
   async function resolveBinding(current: Attempt) {
@@ -146,10 +147,7 @@ export function useMcpAddConnection(props: McpAddProps) {
   }
   function installedBinding(value: string) {
     const preset = findCatalogEntryByUrl(value, MCP_CATALOG_ENTRIES);
-    // Locating this dialog's temporary setup would close and discard the same mount.
-    const installed = props.mounted.filter(
-      (entry) => !discarded.current.has(entry.mcpServerId) && !provisional.current.has(entry.mcpServerId),
-    );
+    const installed = props.mounted.filter((entry) => !discarded.current.has(entry.mcpServerId));
     return (
       installed.find((entry) => comparableUrl(entry.effective.url) === comparableUrl(value)) ??
       (preset ? findCatalogBinding(preset, definitions.servers, installed) : undefined)
@@ -159,6 +157,11 @@ export function useMcpAddConnection(props: McpAddProps) {
     if (current.server || current.binding) return false;
     const installed = installedBinding(current.url);
     if (!installed) return false;
+    if (provisional.current.has(installed.mcpServerId)) {
+      current.binding = installed;
+      current.temporary = true;
+      return false;
+    }
     props.onLocate(installed.mcpServerId);
     return true;
   }

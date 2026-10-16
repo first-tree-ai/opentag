@@ -159,6 +159,24 @@ describe("MCP custom installation", () => {
     expect(calls.attach).toHaveBeenCalledTimes(1);
     expect(calls.auth).toHaveBeenLastCalledWith(AGENT_ID, SERVER_ID, { kind: "bearer", bearerKey: "new-key" });
   });
+  it("reuses its submitted installation after editing the URL away and back", async () => {
+    stub([]);
+    const calls = writes();
+    calls.probe.mockResolvedValueOnce({ ...ready, probeState: "failed", probeError: "Fixture unavailable" });
+    wrap(<McpPage agentId={AGENT_ID} />);
+    const url = "https://docs.example.com/mcp";
+    await newAddress(url);
+    method("No authentication");
+    connect();
+    await screen.findByText("Couldn't load tools");
+    fireEvent.change(screen.getByLabelText("Connector address"), { target: { value: `${url}/other` } });
+    fireEvent.change(screen.getByLabelText("Connector address"), { target: { value: url } });
+    connect();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(calls.create).toHaveBeenCalledTimes(1);
+    expect(calls.attach).toHaveBeenCalledTimes(1);
+    expect(calls.probe).toHaveBeenCalledTimes(2);
+  });
   it("retains a completed empty tool result", async () => {
     stub([]);
     const calls = writes();

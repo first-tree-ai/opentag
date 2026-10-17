@@ -63,6 +63,19 @@ depend on the public network, external providers, or a running PostgreSQL instan
 the root coverage configuration or investigating repository-wide coverage gaps; the scheduled `Unit Coverage` workflow
 owns the recurring baseline measurement.
 
+## Knowledge base and testing records
+
+`docs/` is OpenTag's knowledge base, maintained as a Context Tree (start at `docs/NODE.md`):
+
+- Read the relevant `docs/` pages before changing a documented behavior, and update them in the same pull request.
+  Code is the ground truth when a page disagrees; fix the page from source evidence.
+- Every directory has a `NODE.md` index and every page has `title` and `description` frontmatter. Place a page in the
+  narrowest existing domain, list it in that domain's `NODE.md`, and prefer editing an existing page over adding one.
+- Write current truth in English only. Leave delivery history, PR references, and dated status to Git and pull requests.
+- `pnpm check` runs `context-tree verify` on `docs/`.
+
+Test plans, acceptance runs, UI screenshots, and validation evidence belong in `testing/`, never in `docs/`.
+
 ## Database migrations
 
 Adding a migration under `packages/server/drizzle` requires two extra steps, or CI fails even when
@@ -80,7 +93,7 @@ whichever merges second must renumber its migration and journal entry, then bump
 ## Code and Git conventions
 
 - Use English for code, comments, GitHub files, and canonical repository documentation.
-- Keep Chinese mirrors synchronized with their canonical English documents.
+- Keep Chinese mirrors of root documents (`*.zh-CN.md`) synchronized with their canonical English documents.
 - Use explicit error handling; never swallow failures or log credentials.
 - Keep changes scoped and avoid adding empty packages or placeholder directories.
 - Run `pnpm check` before every commit. Use `pnpm format` to fix formatting and resolve any remaining lint errors.

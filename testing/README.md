@@ -1,6 +1,54 @@
-# Test evidence
+# Testing
 
-Repository acceptance records belong here. Keep credentials, production message contents, and
-machine-specific operational logs outside the repository.
+Test plans, acceptance harnesses, and recorded validation evidence for OpenTag. This material is kept out of the
+[knowledge base](../docs/NODE.md): it describes how a change was or should be verified, not how the product works.
+Each verification page links back to the knowledge-base page it supports. Keep credentials, production message
+contents, and machine-specific operational logs outside the repository.
 
-- [IM delivery claim query acceptance](./im-delivery-claim/README.md)
+## Plans and harnesses
+
+- [Agent Runtime Provider test plan](agent-runtime-test-plan.md)
+- [Cloud Computer acceptance harness](cloud-computer.md)
+- [Slack local live acceptance](slack-live-acceptance.md)
+
+## Verification by feature
+
+- [Agent Runtime contract](verification/agent-runtime-contract.md)
+- [Agent Skills](verification/agent-skills.md)
+- [Cloud billing](verification/cloud-billing.md)
+- [Cloud Computer](verification/cloud-computer.md)
+- [Cloud Context Tree and Session collaboration](verification/cloud-context.md)
+- [Cloud Pi image input](verification/cloud-pi-image-input.md)
+- [Cloud Runner execution](verification/cloud-runner-execution.md)
+- [Cloud Runner toolchain](verification/cloud-runner-toolchain.md)
+- [Cloud workspace persistence](verification/cloud-workspace-persistence.md)
+- [Context Tree integration](verification/context-tree-integration.md)
+- [Custom Slack Apps](verification/custom-slack-apps.md)
+- [GitHub platform integration](verification/github-platform-integration.md)
+- [IM delivery claim queries](im-delivery-claim/README.md)
+- [IM content and attachment delivery](verification/im-content-delivery.md)
+- [MCP Server integration](verification/mcp-server-integration.md)
+- [Release guide](verification/releasing.md)
+- [Skill details reader](verification/skill-details-reader.md)
+- [Installing Skills from a remote source](verification/skill-remote-install.md)
+- [Staging onboarding reset](verification/staging-onboarding-reset.md)
+- [Web App analytics](verification/web-analytics.md)
+- [Web tools](verification/web-tools.md)
+- [Web UI contract](verification/web-ui-contract.md)
+
+## Web UI evidence
+
+Screenshots and browser checks for Web UI changes, one directory per change:
+
+- [computer-recovery](web-ui/computer-recovery/README.md)
+- [computer-status-alignment](web-ui/computer-status-alignment/README.md)
+- [connector-polish](web-ui/connector-polish/README.md)
+- [discover-categories](web-ui/discover-categories/README.md)
+- [mcp-add-server](web-ui/mcp-add-server/README.md)
+- [mcp-management](web-ui/mcp-management/README.md)
+- [mcp-settings-refinement](web-ui/mcp-settings-refinement/README.md)
+- [mcp-settings-simplification](web-ui/mcp-settings-simplification/README.md)
+- [mcp-unified-connect](web-ui/mcp-unified-connect/README.md)
+- [sidebar-navigation](web-ui/sidebar-navigation/README.md)
+- [skill-reader](web-ui/skill-reader/README.md)
+- [skills-management](web-ui/skills-management/README.md)

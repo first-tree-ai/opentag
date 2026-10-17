@@ -5,7 +5,7 @@
  * `SkillObjectStore`, upload validation and deterministic re-packing, and `SkillService` with the
  * Account, Computer, and Agent CLI surfaces. Storage is optional at deploy time; without it, listing
  * works and bundle operations fail with `SKILL_STORAGE_UNAVAILABLE`. See
- * docs/design/agent-skills.md.
+ * docs/system/capabilities/agent-skills.md.
  */
 
 export {

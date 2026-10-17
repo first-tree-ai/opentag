@@ -8,7 +8,7 @@ import { AgentDisplayNameSchema } from "./agent.js";
  * authorization (Bearer key or OAuth). The runtime half — how a running Agent actually reaches those
  * Servers — is `./mcp-gateway.ts`, and no credential defined here is ever delivered to a Provider:
  * the gateway resolves an Agent's authorization on the Server and calls upstream itself. See
- * `docs/design/mcp-server-integration.md`.
+ * `docs/system/capabilities/mcp-server-integration.md`.
  *
  * Every schema here is strict and browser-compatible. None of them ever carries secrets: no
  * credential ciphertext or key IDs, no OAuth state/PKCE material, no bearer key values, and no
@@ -244,7 +244,7 @@ export const MCPServerUrlSchema = z
  *
  * The description keeps a writer bound and a reader bound, and the reader's must never be the
  * narrower one. A stored snapshot is durable state: a rollback restores the older Server image while
- * the rows it wrote stay behind (`docs/deploying.md`). If both bounds moved together, the first
+ * the rows it wrote stay behind (`docs/operations/deploying.md`). If both bounds moved together, the first
  * re-probe after a release could write a description the previous reader rejects — and because it
  * parses the whole snapshot array at once, that reader would drop every tool for the Server, not
  * just the oversized one. The reader therefore moves first, accepting descriptions no current writer

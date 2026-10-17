@@ -1,43 +1,22 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const DIVERGENCE_MARKER = "<!-- doc-mirror: allow-divergence -->";
 
 const ROOT_CANONICAL_EXCLUSIONS = new Set(["AGENTS.md"]);
 
-function toPosix(path) {
-  return path.split(sep).join("/");
-}
-
-function walkMarkdownFiles(directory, root = directory) {
-  const files = [];
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) files.push(...walkMarkdownFiles(path, root));
-    else if (entry.isFile() && entry.name.endsWith(".md")) files.push(toPosix(relative(root, path)));
-  }
-  return files;
-}
-
-/** Return the canonical file and its expected mirror for every mirror candidate in the checkout. */
+/** Root documents keep mirrors; the docs knowledge base is maintained only in English. */
 export function discoverMirrorPairs(repositoryRoot) {
   const root = resolve(repositoryRoot);
   const pairs = new Map();
 
-  for (const path of walkMarkdownFiles(root)) {
-    if (!path.endsWith(".zh-CN.md") || path.includes("/")) continue;
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const path = entry.name;
+    if (!entry.isFile() || !path.endsWith(".zh-CN.md")) continue;
     const canonical = path.replace(/\.zh-CN\.md$/, ".md");
     pairs.set(canonical, path);
-  }
-
-  const docsMirrorRoot = join(root, "docs", "zh-CN");
-  if (existsSync(docsMirrorRoot)) {
-    for (const path of walkMarkdownFiles(docsMirrorRoot, docsMirrorRoot)) {
-      const mirror = `docs/zh-CN/${path}`;
-      pairs.set(`docs/${path}`, mirror);
-    }
   }
 
   return pairs;
@@ -47,14 +26,8 @@ export function discoverMirrorPairs(repositoryRoot) {
 export function expectedMirrorPath(canonicalPath) {
   if (!canonicalPath.endsWith(".md")) return null;
   if (canonicalPath.endsWith(".zh-CN.md")) return null;
-  if (canonicalPath.includes("/zh-CN/") || canonicalPath.startsWith("docs/zh-CN/")) return null;
-  if (canonicalPath.startsWith("docs/design/")) return null;
-  if (!canonicalPath.includes("/")) {
-    if (ROOT_CANONICAL_EXCLUSIONS.has(canonicalPath)) return null;
-    return canonicalPath.replace(/\.md$/, ".zh-CN.md");
-  }
-  if (canonicalPath.startsWith("docs/")) return `docs/zh-CN/${canonicalPath.slice("docs/".length)}`;
-  return null;
+  if (canonicalPath.includes("/") || ROOT_CANONICAL_EXCLUSIONS.has(canonicalPath)) return null;
+  return canonicalPath.replace(/\.md$/, ".zh-CN.md");
 }
 
 function parseDiff(diff) {

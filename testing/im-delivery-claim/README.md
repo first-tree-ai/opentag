@@ -46,6 +46,8 @@ asserts plan shape and behavior rather than hardware-dependent latency threshold
 Repository checks, build, typecheck, and schema drift passed. PostgreSQL integration passed all
 737 tests in 57 files. Client Agent Runtime coverage passed 640 tests with 100% statements,
 branches, functions, and lines. The final focused delivery suite passed 120 tests.
+The full Server unit run and a focused observability-mock correction covered 3,874 passing tests
+with 16 existing skips; the corrected observability file passed all 26 tests at the default timeout.
 
 The default `pnpm test` run hit two existing five-second deadlines in the Client Context Tree
 end-to-end file and stopped the parallel Server/Web run. The Client and its dependencies are
@@ -72,8 +74,9 @@ are diagnostic observations under concurrent local load, not latency acceptance 
 
 ## Operational limits
 
-An independent read-only agent review covered the complete change and the final removal of obsolete SQL
-helpers before PR creation. It found no blocking defects. Additional fault injection verified that
+An independent read-only agent review covered the complete change, the final removal of obsolete SQL
+helpers, the strict index-plan assertion, and the observability mock correction before PR creation.
+All blocking findings were resolved and re-reviewed. Additional fault injection verified that
 a failed scan releases the single-flight gate, queued explicit calls continue, and stopping the
 worker prevents queued or later scans from starting.
 

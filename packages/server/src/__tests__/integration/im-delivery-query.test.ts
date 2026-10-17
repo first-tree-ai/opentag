@@ -66,7 +66,8 @@ async function explain(query: { sql: string; params: unknown[] }, generic: boole
 }
 function expectActiveIndex(plan: Plan) {
   const nodes = flatten(plan.Plan);
-  expect(nodes.map((node) => node["Index Name"])).toContain("im_delivery_work_idx");
+  // Reject BitmapOr plans that combine the work index with indexes containing historical rows.
+  expect(nodes.map((node) => node["Index Name"]).filter(Boolean)).toEqual(["im_delivery_work_idx"]);
   expect(
     nodes.filter((node) => node["Relation Name"] === "im_message_deliveries").map((node) => node["Node Type"]),
   ).not.toContain("Seq Scan");

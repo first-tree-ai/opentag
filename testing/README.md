@@ -2,7 +2,8 @@
 
 Test plans, acceptance harnesses, and recorded validation evidence for OpenTag. This material is kept out of the
 [knowledge base](../docs/NODE.md): it describes how a change was or should be verified, not how the product works.
-Each verification page links back to the knowledge-base page it supports.
+Each verification page links back to the knowledge-base page it supports. Keep credentials, production message
+contents, and machine-specific operational logs outside the repository.
 
 ## Plans and harnesses
 
@@ -24,6 +25,7 @@ Each verification page links back to the knowledge-base page it supports.
 - [Context Tree integration](verification/context-tree-integration.md)
 - [Custom Slack Apps](verification/custom-slack-apps.md)
 - [GitHub platform integration](verification/github-platform-integration.md)
+- [IM delivery claim queries](im-delivery-claim/README.md)
 - [IM content and attachment delivery](verification/im-content-delivery.md)
 - [MCP Server integration](verification/mcp-server-integration.md)
 - [Release guide](verification/releasing.md)

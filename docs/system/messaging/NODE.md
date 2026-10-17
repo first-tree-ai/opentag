@@ -15,6 +15,8 @@ provider CLIs.
   Session messages, attention, and the human-visible send path.
 - **[IM Channel and Thread Sessions](thread-sessions.md)** — lazy Thread
   Sessions, direct continuity, observer copies, and thread history.
+- **[IM delivery claim queries](im-delivery-claim.md)** — indexed delivery
+  selection, eligibility hints, and transactional custody checks.
 - **[IM content and attachment delivery](im-content-delivery.md)** — how
   provider message structure and resources become Agent input.
 - **[Internal Session collaboration](internal-session-collaboration.md)** — the

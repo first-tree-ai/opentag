@@ -8,22 +8,14 @@ import {
   runtimeFrameByteLength,
   truncateImText,
 } from "@opentag/shared";
-import { and, desc, eq, gt, inArray, isNotNull, isNull, like, lt, ne, notExists, or, type SQL, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, lt, ne, notExists, or } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { alias } from "drizzle-orm/pg-core";
 import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
-import {
-  agents,
-  computers,
-  imBindings,
-  imMessageDeliveries,
-  imMessages,
-  sessionPlacements,
-  sessions,
-} from "../db/schema/index.js";
+import { imBindings, imMessageDeliveries, imMessages, type sessions } from "../db/schema/index.js";
 import { threadRootExternalId } from "../services/im/provider-thread-context.js";
-import { DISPATCH_CLAIM_PREFIX } from "./im-delivery-claim.js";
 import { deliveryMessageText, ImDeliveryInputError } from "./im-delivery-content.js";
+import { DeliveryCustodySnapshot, loadDeliveryContexts, readDeliveryCustody } from "./im-delivery-work-query.js";
 import { runtimeProviderMessageRef } from "./runtime-provider-message-ref.js";
 
 /**
@@ -32,20 +24,12 @@ import { runtimeProviderMessageRef } from "./runtime-provider-message-ref.js";
  * frame-fitting rule, without growing the worker further.
  */
 
-export type CustodyQuery = Pick<DatabaseClient | DatabaseTransaction, "select">;
+export type CustodyQuery = Pick<DatabaseClient | DatabaseTransaction, "select" | "execute">;
 
 export interface ClaimLease {
   assertOwned(): Promise<boolean>;
   stop(): Promise<void>;
 }
-
-/** Columns shared by the deliveries table and its custody alias. */
-export type CustodyDeliveryColumns = {
-  state: AnyPgColumn;
-  reportedAt: AnyPgColumn;
-  dispatchRequestId: AnyPgColumn;
-  lastErrorCode: AnyPgColumn;
-};
 
 /**
  * The concurrency scope of one delivery. A Local Computer executes one Turn at a time for its
@@ -81,41 +65,6 @@ export function occupancyScopeKey(scope: DeliveryOccupancyScope): string {
   return scope.kind === "agent" ? `agent:${scope.agentId}` : `session:${scope.sessionId}`;
 }
 
-/** One side of the occupancy comparison: a column or a bound value for each identity. */
-export interface OccupancyRef {
-  deliveryId: AnyPgColumn | string;
-  sessionId: AnyPgColumn | string;
-  agentId: AnyPgColumn | string;
-  /** True when this side occupies its whole Agent (Local), false for Session-scoped Cloud. */
-  local: SQL;
-}
-
-/**
- * Whether two deliveries cannot execute concurrently: the same Session, or the same Agent with at
- * least one Agent-scoped (Local) occupant. The claim subquery and the pre-dispatch recheck share
- * this one rule, so the atomic claim decision and the last-boundary check can never diverge.
- * Composed as one SQL template because either side may be a column or a bound value.
- */
-export function occupancyConflict(candidate: OccupancyRef, other: OccupancyRef): SQL {
-  return sql`(${other.deliveryId} <> ${candidate.deliveryId}) and (
-    (${other.sessionId} = ${candidate.sessionId})
-    or ((${other.agentId} = ${candidate.agentId}) and ((${candidate.local}) or (${other.local})))
-  )`;
-}
-
-const AGENT_SCOPED: SQL = sql.raw("true");
-const SESSION_SCOPED: SQL = sql.raw("false");
-
-/** The scope-checked value form of one side of {@link occupancyConflict}. */
-export function occupancyRefFor(subject: DeliveryOccupancySubject): OccupancyRef {
-  return {
-    deliveryId: subject.deliveryId,
-    sessionId: subject.sessionId,
-    agentId: subject.agentId,
-    local: subject.computerKind === "cloud" ? SESSION_SCOPED : AGENT_SCOPED,
-  };
-}
-
 export async function hasOtherCustody(database: CustodyQuery, subject: DeliveryOccupancySubject): Promise<boolean> {
   return (await findOtherCustody(database, subject)) !== undefined;
 }
@@ -124,50 +73,15 @@ export async function hasOtherCustody(database: CustodyQuery, subject: DeliveryO
  * The occupancy owner of another delivery, if any, computed from committed custody. Used as the
  * last-boundary recheck before any frame reaches a runtime; `skip locked` claims that another
  * Worker has only claimed (not committed) leave no durable trace, which is why the claim itself
- * also evaluates the scope rule in its SQL and the Agent-scoped advisory lock serializes it.
+ * rechecks the same snapshot rule under the Agent-scoped advisory lock.
  */
 export async function findOtherCustody(database: CustodyQuery, subject: DeliveryOccupancySubject) {
-  const otherPlacement = alias(sessionPlacements, "occupancy_other_placement");
-  const otherComputer = alias(computers, "occupancy_other_computer");
-  const [row] = await database
-    .select({
-      id: imMessageDeliveries.id,
-      sessionId: imMessageDeliveries.sessionId,
-      state: imMessageDeliveries.state,
-      reportedAt: imMessageDeliveries.reportedAt,
-      turnId: imMessageDeliveries.turnId,
-      reportOwnerInstanceId: imMessageDeliveries.reportOwnerInstanceId,
-    })
-    .from(imMessageDeliveries)
-    .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
-    .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
-    .innerJoin(agents, eq(agents.id, imBindings.agentId))
-    .leftJoin(otherPlacement, eq(otherPlacement.sessionId, imMessageDeliveries.sessionId))
-    .leftJoin(otherComputer, eq(otherComputer.id, otherPlacement.computerId))
-    .where(
-      and(
-        isNull(sessions.endedAt),
-        eq(imBindings.status, "active"),
-        ne(agents.status, "deleted"),
-        uncertainAgentCustody(imMessageDeliveries),
-        occupancyConflict(occupancyRefFor(subject), {
-          deliveryId: imMessageDeliveries.id,
-          sessionId: imMessageDeliveries.sessionId,
-          agentId: imBindings.agentId,
-          local: eq(otherComputer.kind, "local"),
-        }),
-      ),
-    )
-    .limit(1);
-  return row;
-}
-
-export function uncertainAgentCustody(delivery: CustodyDeliveryColumns) {
-  return or(
-    and(eq(delivery.state, "accepted"), isNull(delivery.reportedAt)),
-    and(inArray(delivery.state, ["pending", "expired"]), isNotNull(delivery.dispatchRequestId)),
-    and(eq(delivery.state, "pending"), like(delivery.lastErrorCode, `${DISPATCH_CLAIM_PREFIX}%`)),
+  const rows = await readDeliveryCustody(database);
+  const contexts = await loadDeliveryContexts(
+    database,
+    rows.map((row) => row.sessionId),
   );
+  return new DeliveryCustodySnapshot(rows, contexts).other(subject);
 }
 
 /** The columns that define ingress order within one Session. */

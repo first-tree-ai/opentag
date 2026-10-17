@@ -49,10 +49,12 @@ export interface ImDeliveryJanitorInput {
 export async function runImDeliverySteerRecovery(
   database: DatabaseClient,
   options: Pick<ImDeliveryJanitorOptions, "clock" | "expiryBatchSize">,
+  onDeliverySettled?: (deliveryId: string) => void,
 ): Promise<void> {
   const now = options.clock();
   const sessionService = new SessionService(database);
-  await database.transaction(async (transaction) => {
+  const terminalizedIds = await database.transaction(async (transaction) => {
+    const terminalizedIds: string[] = [];
     const targets = (await transaction.execute(sql`
       select target.id as target_id
       from im_message_deliveries as target
@@ -88,9 +90,12 @@ export async function runImDeliverySteerRecovery(
       for update of target skip locked
     `)) as Array<{ target_id: string }>;
     for (const target of targets) {
-      await requeueSteeredDeliveries(transaction, target.target_id, now, sessionService);
+      const recovered = await requeueSteeredDeliveries(transaction, target.target_id, now, sessionService);
+      terminalizedIds.push(...recovered.terminalizedIds);
     }
+    return terminalizedIds;
   });
+  for (const deliveryId of terminalizedIds) onDeliverySettled?.(deliveryId);
 }
 
 export function resolveImDeliveryJanitorConfig(input: ImDeliveryJanitorInput): ImDeliveryJanitorConfig {
@@ -220,8 +225,12 @@ export interface ImDeliveryJanitorOptions {
   feishuInboundReceiptsRetentionMs: number;
 }
 
-export async function runImDeliveryExpiry(database: DatabaseClient, options: ImDeliveryJanitorOptions): Promise<void> {
-  await runImDeliverySteerRecovery(database, options);
+export async function runImDeliveryExpiry(
+  database: DatabaseClient,
+  options: ImDeliveryJanitorOptions,
+  onDeliverySettled?: (deliveryId: string) => void,
+): Promise<void> {
+  await runImDeliverySteerRecovery(database, options, onDeliverySettled);
   const now = options.clock().getTime();
   const expiryNow = new Date(now).toISOString();
   // A pending row has exactly one bounded deadline. Local rows expire at the ingress deadline.
@@ -231,7 +240,7 @@ export async function runImDeliveryExpiry(database: DatabaseClient, options: ImD
   // Accepted-unreported custody is never pending and is never expired. A missing placement or
   // Computer row fails conservative. The guard precedes the batch limit so a dispatched Cloud
   // backlog cannot starve Local expiry.
-  await database.execute(sql`
+  const expired = (await database.execute(sql`
     with expired as (
       select delivery.id
       from im_message_deliveries as delivery
@@ -265,7 +274,9 @@ export async function runImDeliveryExpiry(database: DatabaseClient, options: ImD
     set state = 'expired', reason = 'ttl'
     from expired
     where delivery.id = expired.id
-  `);
+    returning delivery.id
+  `)) as Array<{ id: string }>;
+  for (const delivery of expired) onDeliverySettled?.(delivery.id);
 }
 
 export async function runImDeliveryRetention(

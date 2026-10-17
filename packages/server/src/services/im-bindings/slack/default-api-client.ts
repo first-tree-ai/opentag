@@ -90,6 +90,33 @@ export class DefaultSlackApiClient implements SlackApiClient {
     }
   }
 
+  async setFailureReaction(input: {
+    token: string;
+    channelId: string;
+    externalMessageId: string;
+    failed: boolean;
+  }): Promise<void> {
+    const method = input.failed ? "reactions.add" : "reactions.remove";
+    const url = this.#policy.admitUrl(`https://slack.com/api/${method}`);
+    const result = await this.#policy.run(
+      `slack.${method}`,
+      async (signal) => {
+        const response = await this.#fetch(url.toString(), {
+          method: "POST",
+          redirect: "error",
+          signal,
+          headers: { authorization: `Bearer ${input.token}`, "content-type": "application/json" },
+          body: JSON.stringify({ channel: input.channelId, timestamp: input.externalMessageId, name: "warning" }),
+        });
+        if (!response.ok) throw new Error("SLACK_FAILURE_REACTION_UNAVAILABLE");
+        return z.object({ ok: z.boolean(), error: z.string().optional() }).parse(await response.json());
+      },
+      { circuitKey: `slack:${method}`, maxAttempts: 1, timeoutMs: 3_000 },
+    );
+    const alreadyApplied = result.error === (input.failed ? "already_reacted" : "no_reaction");
+    if (!result.ok && !alreadyApplied) throw new Error("SLACK_FAILURE_REACTION_UNAVAILABLE");
+  }
+
   async botProfile(token: string, botUserId: string): Promise<BotProfile> {
     const result = await this.#policy.run(
       "slack.users.info",

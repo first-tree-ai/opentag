@@ -121,11 +121,16 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
   readonly #database: DatabaseClient;
   readonly #sessions: SessionService;
   readonly #now: () => Date;
+  readonly #onDeliverySettled?: (deliveryId: string) => void;
 
-  constructor(database: DatabaseClient, options: { now?: () => Date } = {}) {
+  constructor(
+    database: DatabaseClient,
+    options: { now?: () => Date; onDeliverySettled?: (deliveryId: string) => void } = {},
+  ) {
     this.#database = database;
     this.#sessions = new SessionService(database);
     this.#now = options.now ?? (() => new Date());
+    this.#onDeliverySettled = options.onDeliverySettled;
   }
 
   async beginDeliveryDispatch(
@@ -487,7 +492,8 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
     report: TurnReportRequest,
     context: RuntimeBusinessContext,
   ): Promise<TurnReportResult["status"] | undefined> {
-    return this.#database.transaction(async (transaction) => {
+    const terminalizedIds: string[] = [];
+    const status = await this.#database.transaction(async (transaction) => {
       const scope = await this.#deliveryScope(transaction, report.deliveryId);
       if (!scope) return undefined;
       if (!recordTurnIdentityMatches(scope, report)) return "conflict";
@@ -507,10 +513,14 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
         .where(eq(imMessageDeliveries.id, report.deliveryId));
       await finishSlackWorkingTurn(transaction, report.deliveryId, this.#now());
       if (report.outcome !== "completed") {
-        await requeueSteeredDeliveries(transaction, report.deliveryId, this.#now(), this.#sessions);
+        const recovered = await requeueSteeredDeliveries(transaction, report.deliveryId, this.#now(), this.#sessions);
+        terminalizedIds.push(...recovered.terminalizedIds);
       }
-      return "recorded";
+      return "recorded" as const;
     });
+    if (status === "recorded" || status === "already_recorded") this.#onDeliverySettled?.(report.deliveryId);
+    for (const deliveryId of terminalizedIds) this.#onDeliverySettled?.(deliveryId);
+    return status;
   }
 
   async #steerTargetMatches(

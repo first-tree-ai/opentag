@@ -16,7 +16,8 @@ Subscription login is preserved.
 Pi always runs without approvals and has no permission settings or permission extension.
 
 Native command rules allow Feishu and Slack message reads, sends, edits, reactions, conversation
-lookup, and native attachment commands. Run the CLIs directly: the managed launcher loads the
+lookup, native attachment commands, and `opentag` (`opentag-dev`, `opentag-staging`) and
+`context-tree` CLI commands. Run the CLIs directly: the managed launcher loads the
 Turn credentials. Quoted literal multiline bodies and JSON content use the native CLI; there is no
 reply helper. Simple compound commands and pipelines are checked by the provider, with explicit
 rules for `head`, `tail`, `cat`, `echo`, `printf`, `jq`, `wc`, `stat`, and `sleep` (rate limits).

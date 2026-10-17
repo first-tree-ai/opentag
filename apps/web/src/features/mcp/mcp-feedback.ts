@@ -6,6 +6,7 @@ import {
 } from "@opentag/shared/browser";
 import * as m from "../../paraglide/messages.js";
 import { connectionPreset } from "./mcp-connection-model.js";
+import { hasMcpToolSnapshot } from "./mcp-tool-snapshot.js";
 
 export type McpFeedback = { label?: string; action?: "authorize" | "retry"; neutral?: boolean };
 
@@ -45,7 +46,8 @@ export function connectorFeedback(entry: MCPAgentServer, error?: string): McpFee
   }
   if (auth.probeState === "failed")
     return probeFeedback(auth.probeError, auth.kind, Boolean(connectionPreset(entry.effective.url)));
-  if (auth.probeState === "pending") return { label: m.mcp_add_loading_tools(), neutral: true };
+  if (auth.probeState === "pending" && !hasMcpToolSnapshot(entry))
+    return { label: m.mcp_add_loading_tools(), neutral: true };
   if (auth.toolsCount === 0 && !auth.toolsTruncated) return { label: m.mcp_tools_zero(), neutral: true };
   return {};
 }

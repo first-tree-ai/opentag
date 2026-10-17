@@ -14,6 +14,7 @@ Start with the [Quick Start](../README.md#quick-start) or the [development guide
 - [Runtime protocol](./runtime-protocol.md)
 - [Web tools](./web-tools.md)
 - [IM Channel and Thread Sessions](./thread-sessions.md)
+- [IM delivery claim queries](./im-delivery-claim.md)
 - [Direct provider CLI messaging](./direct-provider-cli.md)
 - [Internal Session collaboration](./internal-session-collaboration.md)
 - [Agent permissions and chat approvals](./agent-permissions.md)

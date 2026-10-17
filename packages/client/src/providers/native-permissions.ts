@@ -4,6 +4,8 @@ import type { EffectiveRuntimeSnapshot } from "@opentag/shared";
 
 // Native parsers check every segment of compound commands against these prefixes.
 const MESSAGING_COMMANDS: readonly (readonly string[])[] = [
+  ["opentag"],
+  ["context-tree"],
   ["lark-cli", "--help"],
   ["lark-cli", "skills", "read"],
   ["lark-cli", "im", "--help"],

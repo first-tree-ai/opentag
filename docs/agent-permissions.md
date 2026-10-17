@@ -15,9 +15,9 @@ are practical guardrails, not isolation from writable skills or approval-free fi
 Subscription login is preserved.
 Pi always runs without approvals and has no permission settings or permission extension.
 
-Native command rules allow Feishu and Slack message reads, sends, edits, reactions, conversation
-lookup, and native attachment commands. Run the CLIs directly: the managed launcher loads the
-Turn credentials. Quoted literal multiline bodies and JSON content use the native CLI; there is no
+Native command rules allow `opentag` and `context-tree` CLI commands, as well as Feishu and Slack
+message reads, sends, edits, reactions, conversation lookup, and native attachment commands. Run the
+CLIs directly: the managed launcher loads the Turn credentials. Quoted literal multiline bodies and JSON content use the native CLI; there is no
 reply helper. Simple compound commands and pipelines are checked by the provider, with explicit
 rules for `head`, `tail`, `cat`, `echo`, `printf`, `jq`, `wc`, `stat`, and `sleep` (rate limits).
 Other actions follow native checks, including any active skill permission grants.

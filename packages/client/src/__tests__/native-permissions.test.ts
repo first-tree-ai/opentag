@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 import { claudePermissionRules, prepareCodexPermissionRules } from "../providers/native-permissions.js";
 
 const messagingPrefixes = [
+  ["opentag"],
+  ["context-tree"],
   ["lark-cli", "im", "+messages-reply"],
   ["lark-cli", "im", "+chat-messages-list"],
   ["lark-cli", "im", "+messages-resources-download"],

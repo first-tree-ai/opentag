@@ -66,8 +66,11 @@ Session lifecycle state.
 
 ## Management writes
 
-Agent rebind locks its target Computer before its owned Agent, matching targeted
-Computer repair. Computer access mutations retain their Account guard with
+Agent rebind and targeted Computer connect-code issuance/exchange lock the Agent
+before the Computer, matching scheduled dispatch admission and IM inbound
+persistence. Exchange reuses that locked Agent row for binding validation and
+mutation; untargeted exchange does not lock an Agent. Computer access mutations
+retain their Account guard with
 `FOR NO KEY UPDATE`: it serializes those mutations and conflicts with Account
 updates/deletion while allowing the KEY SHARE required by existing ownership
 foreign keys. Agent creation and rebind add no Account lock or query.
@@ -78,8 +81,8 @@ Agent creation, placement changes, and credential exchange retain their small
 transactions so related durable facts commit together. Connection cleanup and
 Runtime notifications run after commit.
 
-Agent mutation queries select the caller's ownership in the locking predicate,
-then validate lifecycle and revision while holding the row lock. A foreign or
+AgentService mutation queries select the caller's ownership in the locking
+predicate, then validate lifecycle and revision while holding the row lock. A foreign or
 missing Agent returns the same not-found result without waiting for a foreign
 Agent row lock. Detail and configuration reads apply the same ownership
 predicate in their first query.

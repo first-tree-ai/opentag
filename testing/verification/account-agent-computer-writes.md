@@ -5,7 +5,10 @@ and the [Server/Client boundary](../../docs/system/server-client-boundary.md).
 
 ## Scope and invariants
 
-- Agent rebind acquires its existing target Computer lock before its existing owned Agent lock.
+- Agent rebind and targeted Computer connect-code issuance/exchange acquire their existing Agent
+  lock before the Computer lock, matching scheduled dispatch admission and IM inbound persistence.
+  Exchange reuses the locked Agent row for binding validation and mutation; untargeted exchange
+  retains its existing path without an Agent query or lock.
 - Computer access mutations use their existing Account guard with `FOR NO KEY UPDATE`, compatible
   with ownership FK KEY SHARE. The reset's Computer-revocation phase uses that same guard; its final
   cleanup verification keeps its existing stronger lock.
@@ -22,7 +25,8 @@ Run:
 
 ```sh
 pnpm --filter @opentag/server exec vitest run \
-  src/__tests__/integration/account-agent-computer-locks.test.ts --maxWorkers=1
+  src/__tests__/integration/account-agent-computer-locks.test.ts \
+  src/__tests__/integration/account-agent-admission-locks.test.ts --maxWorkers=1
 ```
 
 The suite uses the checked-in full migration chain and independent PostgreSQL connections, not
@@ -44,11 +48,25 @@ before its existing FK check; they are removed afterward and are never installed
 | Owner changes while a legitimate caller waits | Mutation returns 404 with no partial write |
 | Agent is deleted while a legitimate caller waits | Mutation returns 404 with no partial write |
 | Agent is suspended while a legitimate caller waits | Mutation returns the expected lifecycle 409 with no partial write |
+| Scheduled dispatch admission vs same-Computer rebind, targeted issuance, or targeted exchange | Both commit; dispatch is admitted |
+| IM inbound persistence vs same-Computer rebind, targeted issuance, or targeted exchange | Both commit; inbound creates a Delivery |
 
 Before the lock-order/strength fix, the first five cases each reproduced a PostgreSQL `40P01` through
 real Service entry points against main `9f80f340`; the other six then-present cases passed. The final
-12-case suite passes after the fix. Victim selection is PostgreSQL's choice, not an asserted contract.
-These are local synthetic regressions, not evidence of production incidents.
+12-case suite covers these interleavings. The admission suite adds six cases using the real
+`SessionService.withScheduledDispatchAdmission` and `ImMessageInbox.ingest` entry points. An external
+test-only Computer row lock queues management first, then admission; `pg_stat_activity` confirms
+both are waiting before that gate is released. The fixture includes the Agent runtime config, an
+active IM binding, a Session and placement, and a valid schedule. No production hook or fixed sleep
+is needed.
+
+The admission cases all reproduced `40P01` on the initial PR head `3be722d9`. Replacing only its
+AgentService with the base `9f80f340` implementation made both rebind cases pass while targeted
+issuance/exchange still deadlocked. This distinguishes the introduced rebind regression from the
+pre-existing targeted-management inversion. The final fix retains Agent-first rebind and moves
+the existing targeted issuance/exchange Agent lock before Computer access. Victim selection is
+PostgreSQL's choice, not an asserted contract. These are local synthetic regressions, not evidence
+of production incidents.
 
 ## Credential exchange and Runtime fencing
 
@@ -75,27 +93,32 @@ registered. Outbound sends to the revoked instance fail.
 Local run: 2026-10-19, Node 24.20.0, pnpm 10.12.1, PostgreSQL 17.11 with 64 migrations.
 Validation applies to this PR's implementation; raw machine-specific logs stay outside the repository.
 
-- Targeted PostgreSQL concurrency: 12 tests passed.
-- Related Service/registry regression: 7 files / 141 tests passed before the final additional
-  no-Account-lock case; the full suites below include that case.
+- Targeted PostgreSQL concurrency: 18 tests passed. Together with repair/rebind boundaries and the
+  three validation-precedence cases, the focused run passed 3 files / 28 tests.
 - `pnpm check`, `pnpm build`, and `pnpm typecheck` passed.
 - `pnpm test` passed: 691 repository-script tests and 9,965 package tests (22 existing skips).
-- Full PostgreSQL integration: 59 files / 755 tests passed, including all new concurrency cases.
+- Full PostgreSQL integration: 60 files / 764 tests passed, including all concurrency and
+  validation-precedence cases.
 - Client Agent Runtime coverage: 29 files / 640 tests passed; statements, branches, functions, and
   lines each reached 100%.
-- An earlier full run hit a 5-second timeout in the Client Context Tree member-memory test. Its
-  isolated 7-test file and the subsequent complete default `pnpm test` run both passed without
-  changing test code or timeouts.
+- The first full integration run overlapped unit/coverage checks and had two 5-second timeouts in
+  existing reset and migration cases (762 passed / 2 timed out). Both complete files then passed
+  in isolation: 26 tests. The subsequent full default-parameter run passed after the other suites
+  finished, without source or timeout changes; the failed and isolated runs remain in the local evidence.
 
 ## Cost and remaining limits
 
 The successful management paths have the same number of transactions, queries, and locked rows as
-before; the change reorders two existing locks and weakens an existing Account guard. Capturing
+before; the change reorders existing targeted-management locks and weakens an existing Account guard. Capturing
 revoked IDs adds `RETURNING` to an existing UPDATE, with no extra round trip; the active-credential
 unique index bounds that projection to at most one ID per Computer.
 
-Existing same-Account access mutations remain serialized. Target validation now precedes Agent
-validation during rebind; invalid targets return their existing Computer 404 before Agent checks.
+Existing same-Account access mutations remain serialized. Rebind retains its original Agent-first
+validation. Targeted issuance locks Agent first but keeps Computer validation before Agent validation:
+a missing/foreign Computer still returns `COMPUTER_NOT_FOUND` even if the Agent is also invalid;
+an owned Computer with a missing Agent still returns `RESOURCE_NOT_FOUND`. Exchange retains its
+existing target validation and transactional rollback behavior. Business rules and error precedence
+are unchanged; the three issuance combinations have explicit Service regressions.
 The post-commit wait can add up to one second to exchange latency. Its deadline stops waiting; it
 cannot cancel arbitrary callback code. Credential-scoped cleanup prevents that late work from
 closing a newer credential's connection.

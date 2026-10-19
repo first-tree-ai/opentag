@@ -1136,12 +1136,12 @@ export class AgentService {
 
   async rebindById(callerUserId: string, agentId: string, computerId: string): Promise<AgentAdminConfig> {
     const result = await this.#database.transaction(async (transaction) => {
-      const target = await this.#lockOwnedComputer(transaction, callerUserId, computerId);
       const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
       this.#requireManagePermission(scope);
       if (scope.agent.status !== "active") {
         throw this.#lifecycleConflict("Only an active Agent can be rebound to a Computer");
       }
+      const target = await this.#lockOwnedComputer(transaction, callerUserId, computerId);
       await this.#assertRebindMode(transaction, scope.computerId, target, scope.agent.runtimeProvider);
       const active = await transaction
         .select({

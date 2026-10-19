@@ -1,15 +1,15 @@
 <div align="center">
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/opentag-logo-on-dark.png">
-  <img src="docs/assets/opentag-logo.png" alt="OpenTag" width="72">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/.assets/opentag-logo-on-dark.png">
+  <img src="docs/.assets/opentag-logo.png" alt="OpenTag" width="72">
 </picture>
 
 # OpenTag
 
 Your model, your machine, your AI coworker
 
-[Website](https://opentag.build/?utm_source=github&utm_medium=readme&utm_campaign=opentag-site) · [Quick Start](#quick-start) · [Docs](./docs/README.md) · [Contributing](./CONTRIBUTING.md) · [Security](./SECURITY.md)
+[Website](https://opentag.build/?utm_source=github&utm_medium=readme&utm_campaign=opentag-site) · [Quick Start](#quick-start) · [Docs](./docs/NODE.md) · [Contributing](./CONTRIBUTING.md) · [Security](./SECURITY.md)
 
 English | [简体中文](./README.zh-CN.md)
 
@@ -30,7 +30,7 @@ that run on your own machine and use your model provider of choice.
 - **Open-source** and **self-hostable**
 
 <p align="center">
-  <img src="docs/assets/opentag-walkthrough.gif" alt="OpenTag in four steps: bring your own subscription, an AI worker in your team chat, shared knowledge kept on your own machine, and connecting the rest of your stack." width="100%">
+  <img src="docs/.assets/opentag-walkthrough.gif" alt="OpenTag in four steps: bring your own subscription, an AI worker in your team chat, shared knowledge kept on your own machine, and connecting the rest of your stack." width="100%">
 </p>
 
 ## Quick Start
@@ -55,7 +55,7 @@ Keep this computer on while your agent is working.
 **4. Start chatting**
 
 Finish the setup steps to add OpenTag to Slack or Lark, then send your agent a message in a channel or
-direct message. For Slack, see the [additional setup instructions](./docs/slack-app-setup.md).
+direct message. For Slack, see the [additional setup instructions](./docs/system/messaging/slack-app-setup.md).
 
 ## Self-hosting and local development
 
@@ -69,4 +69,4 @@ Issues and pull requests are welcome; start with the [Contributing guide](./CONT
 
 ## License
 
-OpenTag is licensed under the [Apache License 2.0](./LICENSE). See the [trademarks and asset provenance record](./docs/trademarks.md) for third-party marks and assets.
+OpenTag is licensed under the [Apache License 2.0](./LICENSE). See the [trademarks and asset provenance record](./docs/product/trademarks.md) for third-party marks and assets.

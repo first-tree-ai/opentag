@@ -1,0 +1,7 @@
+# Cloud billing: verification and acceptance
+
+Test and acceptance material for [Cloud billing](../../docs/product/cloud-billing.md).
+
+## Acceptance testing
+
+Use a disposable router PostgreSQL/Redis pair, the OpenTag test database, and Stripe test mode. Verify a normal completion and a streamed completion record exactly the router counts (including cache reads/writes), with one corresponding credit debit. Replay settlement and confirm counts and balance are unchanged. Interrupt a stream, inspect pending status, and confirm the OpenTag worker settles the same call within the next recovery tick after the router finalizes, without another model execution. Leave one call unresolved and confirm another call can proceed; fill both slots with unresolved calls and confirm new requests pause until settlement or an operator write-off. Confirm rejected requests do not debit, tenant keys cannot read each other's usage, malformed or unknown usage remains pending, and billing-disabled cloud calls still appear in usage. Assign a second test plan while a call is outstanding: the outstanding call must keep its original rates, new calls must use the assigned plan, and another Account must keep its default. Confirm different models use the same plan rates and unknown plans reject new calls without blocking settlement. Finally complete a test Checkout and replay its signed webhook to verify a single credit grant.

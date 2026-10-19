@@ -61,7 +61,7 @@ pnpm --filter @opentag/server start
 Claude Code，然后在第二个终端中运行页面生成的连接命令。
 
 按照聊天设置流程连接 Slack 或飞书，然后给 Agent 发消息。
-Slack 的额外设置步骤见[配置指南](./docs/zh-CN/slack-app-setup.md)。
+Slack 的额外设置步骤见[配置指南](./docs/system/messaging/slack-app-setup.md)。
 
 ## 管理员操作
 
@@ -148,7 +148,7 @@ pnpm --filter @opentag/server start
 | `packages/client` | 服务器客户端和本地 Agent 运行时 |
 | `packages/shared` | 共用 schema 和类型 |
 
-界面翻译请参阅 [Web 国际化](./docs/zh-CN/i18n.md)。
+界面翻译请参阅 [Web 国际化](./docs/system/web/i18n.md)。
 
 ## 检查
 
@@ -216,8 +216,8 @@ pnpm exec turbo run test --concurrency=2 -- --shard=1/3
 `http://127.0.0.1:8000/api/v1/auth/callback/google`，并在本地配置中设置 `OPENTAG_GOOGLE_CLIENT_ID`
 和 `OPENTAG_GOOGLE_CLIENT_SECRET`。
 
-- [部署指南](./docs/zh-CN/deploying.md) — 部署配置与运维。
-- [Runtime 协议](./docs/zh-CN/runtime-protocol.md) — 服务器与 Agent 的通信。
-- [Provider CLI](./docs/zh-CN/direct-provider-cli.md) — Codex 和 Claude Code 集成。
-- [可观测性](./docs/zh-CN/observability.md) — 服务器追踪与诊断。
-- [发布指南](./docs/zh-CN/releasing.md) — 通过 GitHub Actions 发布。
+- [部署指南](./docs/operations/deploying.md) — 部署配置与运维。
+- [Runtime 协议](./docs/system/runtime/runtime-protocol.md) — 服务器与 Agent 的通信。
+- [Provider CLI](./docs/system/messaging/direct-provider-cli.md) — Codex 和 Claude Code 集成。
+- [可观测性](./docs/operations/observability.md) — 服务器追踪与诊断。
+- [发布指南](./docs/operations/releasing.md) — 通过 GitHub Actions 发布。

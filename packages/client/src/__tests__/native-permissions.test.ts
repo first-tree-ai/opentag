@@ -22,6 +22,10 @@ const messagingPrefixes = [
   ["wc"],
   ["stat"],
   ["sleep"],
+  ["opentag-dev"],
+  ["opentag-staging"],
+  ["opentag"],
+  ["context-tree"],
 ];
 
 describe("Native permission configuration", () => {

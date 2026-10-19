@@ -6,7 +6,7 @@
  *
  * Also delivered here: the runtime gateway. An Agent reaches its bound Servers through one inbound
  * MCP endpoint on this Server, which resolves that Agent's own credentials and calls upstream, so no
- * upstream credential is ever delivered to a Provider. See docs/design/mcp-server-integration.md.
+ * upstream credential is ever delivered to a Provider. See docs/system/capabilities/mcp-server-integration.md.
  */
 
 export {

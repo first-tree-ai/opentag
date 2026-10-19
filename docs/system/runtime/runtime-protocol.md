@@ -1,0 +1,142 @@
+---
+title: "Runtime protocol compatibility"
+description: "Runtime protocol v2 version layers, capability negotiation, and connection fencing between Client and Server."
+---
+
+# Runtime protocol compatibility
+
+## Scope
+
+Runtime protocol v2 removes the release-time dependency between the OpenTag Client and Server. It keeps the existing v1 dialect and its separately negotiated Provider-readiness extension frozen for rolling upgrades, then adds capability negotiation plus a per-connection fence. Domain delivery, Turn, and Session idempotency remain owned by their existing request identities and hashes.
+
+This phase does not add durable drain state, a minimum secure Client release policy, or a persistent generic request ledger.
+
+## Version layers
+
+- **Protocol version** changes the handshake, control-frame state machine, or connection fencing. The current version is v2; the Server also accepts frozen v1.
+- **Schema version** belongs to one domain payload or persisted artifact. An additive field does not require a global protocol bump; a semantic or incompatible payload change requires that domain's schema or capability version to change.
+- **Capability version** identifies one namespaced behavior contract, including its request/result schemas and semantics. Offers are inclusive `{min,max}` ranges. Unknown optional offers are ignored.
+- **Provider-readiness version** describes the schema for dynamic Computer-plus-Provider observations. It is negotiated independently from behavior capabilities and never proves authorization or durable support.
+- **Release version** is diagnostic and policy input only. It is not proof of wire compatibility.
+
+## v2 state machine and handshake
+
+```text
+disconnected -> connecting -> authenticating -> welcoming -> registering -> registered
+                         \-> terminal rejection
+                         \-> explicit v1 fallback -> connecting
+```
+
+1. The Client sends a strict v2 `auth` bootstrap frame with its supported protocol range.
+2. After authentication, the Server sends an extensible v2 `server:welcome` with its protocol range, capability offers, required Client capabilities, heartbeat policy, and an optional acknowledgement of the independently offered Provider-readiness schema.
+3. The Client computes the highest version in every capability intersection, validates required capabilities, and sends a strict v2 `computer:register` with its offers and required Server capabilities. It includes dynamic Computer-plus-Provider readiness only when the Server acknowledged that separate schema.
+4. The Server repeats the intersection, rejects missing requirements, registers the Computer, creates a random `connectionId`, and returns the final negotiated map.
+5. The Client recomputes and compares the final map before entering `registered`.
+
+For each capability, selection is `min(local.max, remote.max)` when that value is at least `max(local.min, remote.min)`. A required capability without an intersection closes the connection with `PROTOCOL_CAPABILITY_UNSUPPORTED`.
+
+## Rolling compatibility
+
+| Client | Server | Result |
+| --- | --- | --- |
+| v1 | v1 | Frozen v1 handshake |
+| v1 | v2 | Server's frozen v1 adapter |
+| v2 | v1 | A second connection uses v1 only after a matching `PROTOCOL_VERSION_UNSUPPORTED` response |
+| v2 | v2 | v2 negotiation and connection fencing |
+
+Roll out Server v2 before Client v2. A v2 Client never falls back after a timeout, transport failure, TLS failure, malformed response, unmatched error, or incompatible welcome. Once an old Server explicitly selects the fallback, that Client process stays on v1 until restart; this avoids a rejection loop while allowing a later restart to probe v2 again.
+
+## Provider-readiness vocabulary
+
+Provider-readiness versioning is independent of transport protocol v1/v2. Its v1
+vocabulary is frozen to `codex` and `claude-code`; v2 adds `pi`. Both vocabularies
+are explicit lists, so adding a product provider cannot silently expand a wire version.
+
+A new Client sends both `x-opentag-provider-readiness: 1` and
+`x-opentag-provider-readiness-v2: 2`. A new Server selects v2 only after that explicit
+opt-in and acknowledges `{version: 2, providers: [...]}` in its welcome. An old
+Server sees its original v1 header and returns only its original vocabulary.
+The Client reports only the providers acknowledged by that connection, and the
+Server rejects unnegotiated observations on registration and heartbeat.
+
+| Client offer | New Server response |
+| --- | --- |
+| No recognized readiness header | Readiness omitted |
+| v1 only | v1, Codex and Claude Code |
+| v1 plus v2, or v2 only | v2, Codex, Claude Code, and Pi |
+| Unsupported v2 value plus valid v1 | v1, Codex and Claude Code |
+
+The same headers control the Account Computer-list HTTP projection. Legacy callers
+retain the v1 provider list, explicit v2 callers may receive Pi, and callers without
+a recognized opt-in receive no readiness extension. The stored/live observations
+remain complete; HTTP compatibility filtering does not change provider admission.
+
+The Computer projection also respects the active daemon's negotiated provider set.
+A provider outside that set is `unavailable` with no probe timestamp; a negotiated
+provider awaiting a fresh observation remains `checking`. Thus a new Web/CLI caller
+can see that Pi is unavailable on a v1-only daemon instead of waiting indefinitely.
+Replacing the connection replaces this support boundary as well.
+
+## Local model options and cache ownership
+
+The optional `runtime.agentRuntimeOptions` capability (version 1) serves
+`GET /api/v1/agents/:agentId/runtime-options?model=...`. The Server checks Account
+ownership, resolves the Agent's bound Local Computer and provider, then sends an
+`agent-runtime:options` request to that Computer's current daemon. The Client queries
+the native provider CLI and returns model IDs and reasoning efforts for the selected
+model. The Server rechecks Agent placement before returning the response.
+
+| Data | Location and identity | Lifetime |
+| --- | --- | --- |
+| Web query result | Browser memory, keyed by `agentId`, `computerId`, provider, and model | Fresh for 30 seconds; a visible model page polls every 30 seconds; focus and reconnect request again; signing out clears the cache |
+| Server request | In-memory pending map, keyed by a random `requestId` and fenced by `computerId` and `instanceId` | Removed on completion, cancellation, or timeout; no model catalog is persisted |
+| Native provider catalog | Owned by the CLI and its local provider configuration | Provider-specific; OpenTag does not clear or persist this cache |
+| Saved model and effort | PostgreSQL `agent_runtime_configs`, keyed by `agent_id` | Written only when configuration is saved, with an expected-revision check |
+
+The HTTP response uses `Cache-Control: no-store`. The model page updates automatically
+while mounted and visible, and stops polling when hidden, unmounted, or its Computer
+is offline. Background updates preserve unsaved selections and do not show a loading
+message over confirmed options. Each update is a new native query, not a background
+catalog upload or a provider-cache purge. Computers do not overwrite
+a shared Server catalog. A response from another Computer or an old daemon instance
+cannot complete the pending request.
+
+The Web model selector uses successful native results without adding preset suggestions,
+including when the native catalog is empty. Presets are used only while no confirmed
+native result is available, with the existing loading or unavailable feedback. Saved
+IDs and custom input remain available. Suggestions are not proof of account access.
+Reasoning efforts use the selected model's native metadata; an empty list stays empty,
+while unknown metadata keeps suggested values explicitly unconfirmed.
+
+Directory queries require the provider to be ready and reuse the same selected CLI
+factory as task creation and resume, including its executable path and provider
+environment. A query never discovers a separate CLI or initiates readiness repair.
+This does not migrate already-running processes when a CLI installation changes.
+
+Refreshing options does not save Agent configuration or modify the local CLI's
+defaults. Saving `null` model or effort values means inheriting local configuration;
+these are per-Agent overrides, not per-Computer model catalogs.
+
+## Parsing and fencing
+
+- The base v1 handshake and control schemas remain strict and byte-compatible. A Client offers the optional, separately versioned Provider-readiness extension through its WebSocket headers; only an acknowledging Server may add its welcome field and accept readiness on register or heartbeat frames.
+- v2 authentication, registration, required capabilities, and fence fields are strict and fail closed.
+- v2 welcome fields and capability offers are additive. Unknown optional fields and offers do not activate behavior.
+- Unknown required capabilities, unknown control frames, malformed known frames, binary frames, oversized frames, and unknown business frames fail closed.
+- Every v2 heartbeat and business frame carries the Server-issued `connectionId`. Both peers reject a missing or stale value before domain parsing or side effects. Bootstrap/error frames stay unversioned so an unsupported peer can reject a connection safely; they remain bound to the exact socket. The transport removes the fence before passing a business frame to a domain schema, so it cannot change a domain idempotency hash.
+- `instanceId` fences a daemon process lifetime; `connectionId` fences one registered socket; placement generation continues to fence Session placement. The Server registry still verifies the exact current socket before and after sends.
+- Transport queues are never replayed across sockets. Domain retries reuse their stable `requestId` and semantic payload hash under the existing domain policy.
+
+## Channel target advertisement
+
+The optional `runtime.channelTarget` capability (version 1) lets a connected Client learn the exact channel latest target for automatic upgrades. When the capability is negotiated, every v2 `heartbeat:result` may carry an optional `channelTarget` field: the Server's release channel and the exact SemVer it currently advertises, read from the channel's published release pointer. The field is additive and negotiated, so older Clients with strict heartbeat schemas never receive it, and a Client behind an older Server simply sees no target. The Client treats only an exact version-string match as already current; SemVer precedence is used solely to reject an older target, while an equal-precedence target with different build metadata is installed. A target for another channel is rejected before any upgrade decision.
+
+## Adversarial checks
+
+The implementation and tests cover downgrade attempts with unmatched errors, missing required capabilities, unknown optional capabilities, invalid ranges, unacknowledged or unadmitted Provider readiness, out-of-order control frames, stale connection IDs, replacement sockets, frame-size limits, and mismatched negotiated maps. Authentication happens before capability use; capability negotiation cannot grant authorization or readiness.
+
+## Release and rollback
+
+Release gates are the v1/v2 compatibility matrix, package tests, build, typecheck, lint/format checks, and the Client Agent Runtime coverage gate. Deploy the dual-stack Server with v2 capabilities at their existing behavior versions, then canary the v2 Client.
+
+Before a new capability changes durable data or semantics, rollback is a Server image rollback and Client v1 fallback. After such a capability is activated, its own expand/contract and rollback plan is required; protocol negotiation is not a database rollback mechanism. Keep v1 until fleet telemetry and an explicit deprecation decision justify removal.

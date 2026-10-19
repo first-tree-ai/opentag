@@ -45,7 +45,7 @@ export interface ImDeliveryJanitorInput {
   feishuInboundReceiptsRetentionMs?: number;
 }
 
-/** Recover children whose target already has a non-completed terminal outcome or a stale failure marker. */
+/** Recover children after a non-completed terminal outcome or an explicitly recognized stale failure. */
 export async function runImDeliverySteerRecovery(
   database: DatabaseClient,
   options: Pick<ImDeliveryJanitorOptions, "clock" | "expiryBatchSize">,
@@ -78,8 +78,13 @@ export async function runImDeliverySteerRecovery(
               target.state = 'accepted'
               and target.reported_at is null
               and target.next_attempt_at <= ${now.toISOString()}::timestamptz
-              and target.last_error_code is not null
-              and target.last_error_code not like 'IM_DELIVERY_CLAIM_%'
+              and target.last_error_code in (
+                'IM_DELIVERY_RECOVERY_FAILED',
+                'IM_DELIVERY_RUNTIME_UNAVAILABLE',
+                'IM_DELIVERY_PLACEMENT_STALE',
+                'IM_DELIVERY_RECOVERY_PAYLOAD_INVALID',
+                'IM_DELIVERY_AGENT_CUSTODY_FENCED'
+              )
             )
           )
         )

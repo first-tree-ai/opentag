@@ -89,6 +89,11 @@ const RECOVERY_RETRY_CODES: Record<SessionReconcileResult["status"], string> = {
   recovery_required: "IM_DELIVERY_RECOVERY_REQUIRED",
   rejected: "IM_DELIVERY_RECOVERY_REJECTED",
 };
+const EXPECTED_RECOVERY_CODES = new Set([
+  RECOVERY_RETRY_CODES.busy,
+  RECOVERY_RETRY_CODES.running,
+  RECOVERY_RETRY_CODES.reporting,
+]);
 function positiveWorkerLimit(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive safe integer`);
   return value;
@@ -1074,7 +1079,7 @@ export class ImDeliveryWorker {
       .returning({ id: imMessageDeliveries.id });
     if (!updated) return;
     setActiveSpanAttributes(outcomeAttrs("deferred", code));
-    this.#onDiagnostic(code);
+    if (!EXPECTED_RECOVERY_CODES.has(code)) this.#onDiagnostic(code);
     this.#onMetric({ name: "retry", value: 1 });
   }
 

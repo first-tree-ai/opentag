@@ -385,6 +385,7 @@ export class AgentTurnRunner {
     const timer = setTimeout(() => timeout.abort("turn_timeout"), timeoutMs);
     timer.unref();
     abortExpiredTurn(owner.request, startedAt, timeout);
+    const expiredBeforeStart = timeout.signal.aborted;
     const signal = AbortSignal.any([shutdownSignal, timeout.signal]);
     const trace = new TurnTraceBuffer({
       sender: this.#connection,
@@ -433,7 +434,7 @@ export class AgentTurnRunner {
         this.#reportFailure(owner, completion, returnedFailure(result, completion));
     } catch (error) {
       turn.phase = "reporting";
-      completion = completionForError(error, signal.reason);
+      completion = completionForError(error, signal.reason, expiredBeforeStart);
       this.#logger.warn(
         {
           ...fields,
@@ -850,12 +851,16 @@ function errorFieldsForLog(error: unknown): { errorCode?: string } {
   return {};
 }
 
-export function completionForError(error: unknown, abortReason: unknown): TurnCompletion {
+export function completionForError(error: unknown, abortReason: unknown, expiredBeforeStart = false): TurnCompletion {
   if (abortReason === "client_shutdown") {
     return { outcome: "cancelled", executionEffects: "may_have_occurred", errorReason: "client_shutdown" };
   }
   if (abortReason === "turn_timeout") {
-    return { outcome: "failed", executionEffects: "may_have_occurred", errorReason: "turn_timeout" };
+    return {
+      outcome: "failed",
+      executionEffects: expiredBeforeStart ? "not_started" : "may_have_occurred",
+      errorReason: "turn_timeout",
+    };
   }
   if (error instanceof ImCredentialEnvironmentError || error instanceof ProviderCliTurnPlanError) {
     return { outcome: "failed", executionEffects: "not_started", errorReason: "credential_unavailable" };

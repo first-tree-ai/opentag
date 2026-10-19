@@ -250,16 +250,43 @@ describe("steered delivery recovery", () => {
     });
   });
 
-  it("runs the recovery from the janitor sweep", async () => {
+  it.each([
+    "IM_DELIVERY_RECOVERY_FAILED",
+    "IM_DELIVERY_RUNTIME_UNAVAILABLE",
+    "IM_DELIVERY_PLACEMENT_STALE",
+    "IM_DELIVERY_RECOVERY_PAYLOAD_INVALID",
+    "IM_DELIVERY_AGENT_CUSTODY_FENCED",
+  ])("runs the recovery from the janitor sweep for %s", async (lastErrorCode) => {
     const fixture = await seedFixture(unit);
     await unit.database
       .update(imMessageDeliveries)
-      .set({ lastErrorCode: "IM_DELIVERY_RECOVERY_FAILED", nextAttemptAt: NOW })
+      .set({ lastErrorCode, nextAttemptAt: NOW })
       .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
 
     await runImDeliverySteerRecovery(unit.database, { clock: () => NOW, expiryBatchSize: 10 });
 
     expect([...(await deliveryRows(unit, fixture)).values()].every((row) => row.state === "pending")).toBe(true);
+  });
+
+  it.each([
+    "IM_DELIVERY_RECOVERY_BUSY",
+    "IM_DELIVERY_RECOVERY_RUNNING",
+    "IM_DELIVERY_RECOVERY_REPORTING",
+    "IM_DELIVERY_RECOVERY_REQUIRED",
+    "IM_DELIVERY_RECOVERY_REJECTED",
+    "IM_DELIVERY_RECOVERY_AWAITING_REPORT",
+    "IM_DELIVERY_FUTURE_OBSERVATION",
+  ])("keeps steered custody for the non-terminal observation %s", async (lastErrorCode) => {
+    const fixture = await seedFixture(unit);
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ lastErrorCode, nextAttemptAt: NOW })
+      .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+    const before = await deliveryRows(unit, fixture);
+
+    await runImDeliverySteerRecovery(unit.database, { clock: () => NOW, expiryBatchSize: 10 });
+
+    expect(await deliveryRows(unit, fixture)).toEqual(before);
   });
 
   it("runs the recovery from a non-completed terminal report", async () => {

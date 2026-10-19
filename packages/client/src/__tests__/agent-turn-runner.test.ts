@@ -590,7 +590,11 @@ describe("AgentTurnRunner", () => {
       await vi.advanceTimersByTimeAsync(1);
       await h.runner.settled();
       expect(h.create).toHaveBeenCalledExactlyOnceWith(
-        expect.objectContaining({ outcome: "failed", errorReason: "turn_timeout" }),
+        expect.objectContaining({
+          outcome: "failed",
+          executionEffects: "may_have_occurred",
+          errorReason: "turn_timeout",
+        }),
       );
       expect(h.markReporting).toHaveBeenCalledOnce();
       expect(h.submit).toHaveBeenCalledOnce();
@@ -609,7 +613,7 @@ describe("AgentTurnRunner", () => {
     expect(h.prompt).not.toHaveBeenCalled();
     expect(h.prepare).not.toHaveBeenCalled();
     expect(h.create).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ outcome: "failed", errorReason: "turn_timeout" }),
+      expect.objectContaining({ outcome: "failed", executionEffects: "not_started", errorReason: "turn_timeout" }),
     );
     expect(h.markReporting).toHaveBeenCalledOnce();
     expect(h.submit).toHaveBeenCalledOnce();

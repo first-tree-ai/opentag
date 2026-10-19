@@ -61,7 +61,7 @@ Open <http://127.0.0.1:8000> and choose **Developer sign-in**. In **Agents**, fo
 choose Codex or Claude Code, then run the generated connection command in a second terminal.
 
 Follow the chat setup for Slack or Lark / Feishu, then send your agent a message.
-For Slack, see the [additional setup instructions](./docs/slack-app-setup.md).
+For Slack, see the [additional setup instructions](./docs/system/messaging/slack-app-setup.md).
 
 ## Admin operations
 
@@ -154,7 +154,7 @@ After dependency changes, run `pnpm install` before building.
 | `packages/client` | Server client and local agent runtime |
 | `packages/shared` | Shared schemas and types |
 
-For UI translations, see [Web i18n](./docs/i18n.md).
+For UI translations, see [Web i18n](./docs/system/web/i18n.md).
 
 ## Checks
 
@@ -226,8 +226,8 @@ To use Google sign-in locally, configure a Google Web OAuth client with callback
 `http://127.0.0.1:8000/api/v1/auth/callback/google`, then set `OPENTAG_GOOGLE_CLIENT_ID` and
 `OPENTAG_GOOGLE_CLIENT_SECRET` in your local settings.
 
-- [Deployment](./docs/deploying.md) — deployment configuration and operations.
-- [Runtime protocol](./docs/runtime-protocol.md) — communication between the server and agents.
-- [Provider CLIs](./docs/direct-provider-cli.md) — Codex and Claude Code integration.
-- [Observability](./docs/observability.md) — server tracing and diagnostics.
-- [Releases](./docs/releasing.md) — publishing through GitHub Actions.
+- [Deployment](./docs/operations/deploying.md) — deployment configuration and operations.
+- [Runtime protocol](./docs/system/runtime/runtime-protocol.md) — communication between the server and agents.
+- [Provider CLIs](./docs/system/messaging/direct-provider-cli.md) — Codex and Claude Code integration.
+- [Observability](./docs/operations/observability.md) — server tracing and diagnostics.
+- [Releases](./docs/operations/releasing.md) — publishing through GitHub Actions.

@@ -1,7 +1,7 @@
 # OpenTag Kumo UI
 
 The canonical product composition and acceptance rules live in
-[`docs/design/web-ui-contract.md`](../../../../docs/design/web-ui-contract.md). This document records the Kumo-specific
+[`docs/system/web/web-ui-contract.md`](../../../../docs/system/web/web-ui-contract.md). This document records the Kumo-specific
 implementation choices behind that interface.
 
 OpenTag uses Kumo `2.13.1` with Tailwind CSS v4. `src/app.css` is the only

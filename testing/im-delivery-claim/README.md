@@ -86,4 +86,4 @@ Many distinct Cloud Sessions can also cause one serial head lookup per Session; 
 fixtures cover the incident's concentrated backlog, not every possible distribution.
 The five-second hint TTL may delay work after metadata changes; final checks always bypass it.
 Existing timeout/backoff/terminal-state behavior is outside this change. A live rollout must use
-the [index prebuild and health checks](../../docs/im-delivery-claim.md#deployment-and-rollback).
+the [index prebuild and health checks](../../docs/system/messaging/im-delivery-claim.md#deployment-and-rollback).

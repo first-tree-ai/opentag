@@ -20,7 +20,7 @@ import { type HeaderPair, type RawEntry, readEntries } from "./mcp-import-reader
  * Nothing here logs, echoes, or interpolates a detected token — it lives on
  * `MCPImportServer.credential`, which only the dialog's authorization step consumes. The shapes this
  * accepts and the reasons an entry can be refused are documented in
- * `docs/design/mcp-server-integration.md`.
+ * `docs/system/capabilities/mcp-server-integration.md`.
  */
 
 /** The paste bound, in UTF-8 bytes, applied before any parser runs. */

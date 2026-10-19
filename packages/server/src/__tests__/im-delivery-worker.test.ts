@@ -27,6 +27,7 @@ import { BackgroundFailureSupervisor } from "../observability/background-failure
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { ImDeliveryInputError, validateFreshImRequest } from "../runtime/im-delivery-content.js";
 import { fitDeliveryFrame } from "../runtime/im-delivery-custody.js";
+import { runImDeliverySteerRecovery } from "../runtime/im-delivery-janitor.js";
 import { ImDeliveryWorker } from "../runtime/im-delivery-worker.js";
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import { EffectiveRuntimeSnapshotAssemblerError } from "../services/runtime-config/errors.js";
@@ -983,62 +984,90 @@ describe("ImDeliveryWorker database workflow", () => {
   );
 
   it.each([
-    ["busy", "IM_DELIVERY_RECOVERY_BUSY"],
-    ["running", "IM_DELIVERY_RECOVERY_RUNNING"],
-    ["reporting", "IM_DELIVERY_RECOVERY_REPORTING"],
-    ["recovery_required", "IM_DELIVERY_RECOVERY_REQUIRED"],
-    ["rejected", "IM_DELIVERY_RECOVERY_REJECTED"],
-    ["ready", "IM_DELIVERY_RECOVERY_AWAITING_REPORT"],
-    ["stopped", "IM_DELIVERY_RECOVERY_AWAITING_REPORT"],
-  ] as const)("defers an accepted %s response without releasing or re-executing custody", async (status, code) => {
-    const fixture = await workerFixture(unit);
-    let clock = Date.now();
-    await unit.database
-      .update(imMessageDeliveries)
-      .set({
-        state: "accepted",
-        inputHash: "frozen-hash",
-        turnId: "original-turn",
-        reportOwnerInstanceId: fixture.instanceId,
-        acceptedAt: new Date(clock),
-        nextAttemptAt: new Date(clock - 1),
-      })
-      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
-    const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, { reconcileStatus: status });
-    const diagnostic = vi.fn();
-    const worker = new ImDeliveryWorker({
-      database: unit.database,
-      domain: domain as never,
-      assembler: { assembleForSession: vi.fn() },
-      registry: fixture.registry,
-      now: () => new Date(clock),
-      onDiagnostic: diagnostic,
-    });
-    for (const delay of [2_000, 4_000, 8_000, 16_000, 30_000, 30_000]) {
-      const before = domain.requestReconcile.mock.calls.length;
-      await worker.runOnce();
-      const [row] = await unit.database
+    ["busy", "IM_DELIVERY_RECOVERY_BUSY", false],
+    ["running", "IM_DELIVERY_RECOVERY_RUNNING", false],
+    ["reporting", "IM_DELIVERY_RECOVERY_REPORTING", false],
+    ["recovery_required", "IM_DELIVERY_RECOVERY_REQUIRED", true],
+    ["rejected", "IM_DELIVERY_RECOVERY_REJECTED", true],
+    ["ready", "IM_DELIVERY_RECOVERY_AWAITING_REPORT", true],
+    ["stopped", "IM_DELIVERY_RECOVERY_AWAITING_REPORT", true],
+  ] as const)(
+    "defers an accepted %s response without releasing or re-executing custody",
+    async (status, code, abnormal) => {
+      const seeded = await steerFixture(unit);
+      const fixture = { ...seeded, deliveryId: seeded.rootDeliveryId };
+      let clock = Date.now();
+      await unit.database
+        .update(imMessageDeliveries)
+        .set({
+          state: "accepted",
+          inputHash: "frozen-hash",
+          turnId: "original-turn",
+          reportOwnerInstanceId: fixture.instanceId,
+          acceptedAt: new Date(clock),
+          nextAttemptAt: new Date(clock - 1),
+        })
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      await unit.database
+        .update(imMessageDeliveries)
+        .set({
+          state: "steered",
+          inputHash: "child-semantic-hash",
+          steerTargetDeliveryId: fixture.deliveryId,
+          steeredAt: new Date(clock),
+          lastErrorCode: "IM_DELIVERY_STEERED",
+        })
+        .where(eq(imMessageDeliveries.id, seeded.deliveryId));
+      const [child] = await unit.database
         .select()
         .from(imMessageDeliveries)
-        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
-      expect(row).toMatchObject({
-        state: "accepted",
-        turnId: "original-turn",
-        inputHash: "frozen-hash",
-        reportOwnerInstanceId: fixture.instanceId,
-        reportedAt: null,
-        resultHash: null,
-        lastErrorCode: code,
+        .where(eq(imMessageDeliveries.id, seeded.deliveryId));
+      const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, { reconcileStatus: status });
+      const diagnostic = vi.fn();
+      const worker = new ImDeliveryWorker({
+        database: unit.database,
+        domain: domain as never,
+        assembler: { assembleForSession: vi.fn() },
+        registry: fixture.registry,
+        now: () => new Date(clock),
+        onDiagnostic: diagnostic,
       });
-      expect(row?.nextAttemptAt.getTime()).toBe(clock + delay);
-      expect(domain.requestReconcile).toHaveBeenCalledTimes(before + 1);
-      await worker.runOnce();
-      expect(domain.requestReconcile).toHaveBeenCalledTimes(before + 1);
-      clock += delay;
-    }
-    expect(diagnostic).toHaveBeenCalledWith(code);
-    expect(domain.requestDelivery).not.toHaveBeenCalled();
-  });
+      for (const delay of [2_000, 4_000, 8_000, 16_000, 30_000, 30_000]) {
+        const before = domain.requestReconcile.mock.calls.length;
+        await worker.runOnce();
+        const [row] = await unit.database
+          .select()
+          .from(imMessageDeliveries)
+          .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+        expect(row).toMatchObject({
+          state: "accepted",
+          turnId: "original-turn",
+          inputHash: "frozen-hash",
+          reportOwnerInstanceId: fixture.instanceId,
+          reportedAt: null,
+          resultHash: null,
+          lastErrorCode: code,
+        });
+        expect(row?.nextAttemptAt.getTime()).toBe(clock + delay);
+        expect(domain.requestReconcile).toHaveBeenCalledTimes(before + 1);
+        await worker.runOnce();
+        expect(domain.requestReconcile).toHaveBeenCalledTimes(before + 1);
+        // Run maintenance in the gap after backoff expires, before the next claim clears the code.
+        clock += delay + 500;
+        await runImDeliverySteerRecovery(unit.database, { clock: () => new Date(clock), expiryBatchSize: 10 });
+        const [afterJanitor] = await unit.database
+          .select()
+          .from(imMessageDeliveries)
+          .where(eq(imMessageDeliveries.id, seeded.deliveryId));
+        expect(afterJanitor).toEqual(child);
+      }
+      if (abnormal) expect(diagnostic).toHaveBeenCalledTimes(6);
+      else expect(diagnostic).not.toHaveBeenCalled();
+      if (abnormal) expect(diagnostic).toHaveBeenCalledWith(code);
+      expect(domain.requestDelivery).not.toHaveBeenCalled();
+      expect(domain.requestSteer).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(["reported", "newer-attempt"] as const)("does not overwrite a %s race after reconcile", async (race) => {
     const fixture = await workerFixture(unit);

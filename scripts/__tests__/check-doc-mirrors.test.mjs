@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -84,6 +84,32 @@ test("changing canonical and mirror documents together passes", () => {
   }
 });
 
+test("English-only knowledge pages do not require updates to legacy docs mirrors", () => {
+  const fixtureData = fixture();
+  try {
+    mkdirSync(join(fixtureData.root, "docs/zh-CN"), { recursive: true });
+    writeFileSync(join(fixtureData.root, "docs/guide.md"), "# Guide\n\nOriginal text.\n");
+    writeFileSync(join(fixtureData.root, "docs/zh-CN/guide.md"), "# 指南\n\n历史文本。\n");
+    writeFileSync(join(fixtureData.root, "docs/zh-CN/legacy.md"), "# 历史页面\n");
+    runGit(fixtureData.root, "add", "docs");
+    runGit(fixtureData.root, "commit", "--quiet", "-m", "legacy documentation");
+    const base = runGit(fixtureData.root, "rev-parse", "HEAD");
+
+    writeFileSync(join(fixtureData.root, "docs/guide.md"), "# Guide\n\nUpdated English text.\n");
+    writeFileSync(
+      join(fixtureData.root, "docs/new-guide.md"),
+      "---\ntitle: New guide\ndescription: English knowledge page.\n---\n\n# New guide\n",
+    );
+    runGit(fixtureData.root, "add", "docs");
+    runGit(fixtureData.root, "commit", "--quiet", "-m", "update English knowledge pages");
+    const result = runChecker(fixtureData.root, base, "HEAD");
+    assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+    assert.match(result.stdout, /1 pairs discovered/);
+  } finally {
+    rmSync(fixtureData.root, { recursive: true, force: true });
+  }
+});
+
 test("the divergence marker suppresses the mirror requirement for its section", () => {
   const fixtureData = fixture({ marker: true });
   try {
@@ -128,4 +154,11 @@ test("a >1 MiB non-Markdown change does not mask a missing mirror", () => {
   } finally {
     rmSync(fixtureData.root, { recursive: true, force: true });
   }
+});
+
+test("knowledge-base pages under docs/ need no Chinese mirror", async () => {
+  const { expectedMirrorPath } = await import("../check-doc-mirrors.mjs");
+  assert.equal(expectedMirrorPath("docs/system/messaging/thread-sessions.md"), null);
+  assert.equal(expectedMirrorPath("docs/NODE.md"), null);
+  assert.equal(expectedMirrorPath("README.md"), "README.zh-CN.md");
 });

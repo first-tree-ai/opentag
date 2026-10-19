@@ -39,7 +39,13 @@ import {
   runWithAbortSignal,
 } from "../../agent-runtime/validation.js";
 import { createLogger } from "../../observability/logger.js";
-import { type PiRpcClient, PiRpcError, PiRpcProcess, type PiRpcProcessSpawnOptions } from "./rpc-wire.js";
+import {
+  PI_RPC_REQUEST_TIMEOUT_MS,
+  type PiRpcClient,
+  PiRpcError,
+  PiRpcProcess,
+  type PiRpcProcessSpawnOptions,
+} from "./rpc-wire.js";
 
 const execFileAsync = promisify(execFile);
 const PI_BINDING_SCHEMA_VERSION = 1;
@@ -106,6 +112,8 @@ interface PiRuntimeOptions {
   readonly createClient: (args: readonly string[], extraEnvironment?: Readonly<Record<string, string>>) => PiRpcClient;
   readonly eventSink: AgentRuntimeEventSink;
   readonly policy: AgentRuntimePolicy;
+  /** Budget for Pi to accept a prompt, counted only outside native compaction. */
+  readonly promptAcceptanceTimeoutMs?: number;
   readonly resume: boolean;
   readonly sessionDirectory?: string;
   readonly skillPaths?: readonly string[];
@@ -170,6 +178,13 @@ interface PiTool {
   readonly name: string;
 }
 
+interface PiPromptAcceptanceClock {
+  /** Starts a fresh acceptance window. */
+  readonly arm: () => void;
+  /** Stops counting while Pi compacts before it accepts the prompt. */
+  readonly pause: () => void;
+}
+
 export class PiAgentRuntime extends BaseAgentRuntime {
   readonly #mcpAdapterEntry?: string;
   readonly #sessionId: string;
@@ -179,6 +194,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   readonly #skillArgs: readonly string[];
   readonly #systemPrompt: string;
   readonly #createClient: (args: readonly string[], extraEnvironment?: Readonly<Record<string, string>>) => PiRpcClient;
+  readonly #promptAcceptanceTimeoutMs: number;
   readonly #tools = new Map<string, PiTool>();
   #client?: PiRpcClient;
   #unsubscribe?: () => void;
@@ -186,6 +202,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   #eventTail: Promise<void> = Promise.resolve();
   #terminal?: Deferred<PiTerminal>;
   #promptAccepted?: Deferred<void>;
+  #promptAcceptanceClock?: PiPromptAcceptanceClock;
   #providerFailure?: Error;
   #currentTurnId?: string;
   #currentAssistant?: PiAssistantMessage;
@@ -201,6 +218,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   #pendingSessionFileHash = "";
   #terminalClaimed = false;
   #compacting = false;
+  #closingForAbort = false;
   #mcpEnabled = false;
 
   constructor(options: PiRuntimeOptions) {
@@ -220,6 +238,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     this.#skillArgs = (options.skillPaths ?? []).flatMap((path) => ["--skill", path]);
     this.#systemPrompt = options.systemPrompt;
     this.#createClient = options.createClient;
+    this.#promptAcceptanceTimeoutMs = options.promptAcceptanceTimeoutMs ?? PI_RPC_REQUEST_TIMEOUT_MS;
     this.#sessionExists = options.resume;
   }
 
@@ -246,8 +265,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
         "Pi get_state returned invalid data",
       );
       await this.#restoreSessionState(state, context);
-      await client.request({ type: "prompt", message: piInput(request) }, context.signal);
-      this.#promptAccepted?.resolve();
+      await this.#requestPrompt(client, piInput(request), context.signal);
       const terminal = await this.#terminal?.promise;
       /* v8 ignore next -- resetRun always creates the terminal before Provider I/O begins. */
       if (!terminal) throw protocolError("Pi run has no terminal state");
@@ -275,6 +293,48 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       throw new AgentProviderError("provider_error", cleanupFailure.message, { cause: cleanupFailure });
     }
     return result;
+  }
+
+  /**
+   * Pi 0.84.2 acknowledges `prompt` only after its preflight, and that preflight runs native
+   * threshold compaction before the new message is admitted: a full summary model call whose
+   * latency grows with the conversation. The acceptance budget therefore counts only time outside
+   * compaction. `compaction_start` pauses it and `compaction_end` grants a fresh window, while the
+   * compaction itself stays bounded by the Run signal (Turn deadline and cancellation, which close
+   * the process because RPC abort cannot stop native compaction). An expired window keeps the
+   * shared RPC timeout error, so classification is unchanged. An interrupt that closed Pi before
+   * acceptance is not a Provider failure: `abortProvider` owns the aborted terminal instead.
+   */
+  async #requestPrompt(client: PiRpcClient, message: unknown, signal: AbortSignal): Promise<void> {
+    const expired = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const pause = (): void => {
+      clearTimeout(timer);
+      timer = undefined;
+    };
+    const arm = (): void => {
+      pause();
+      timer = setTimeout(() => expired.abort(), this.#promptAcceptanceTimeoutMs);
+      timer.unref();
+    };
+    this.#promptAcceptanceClock = { arm, pause };
+    arm();
+    try {
+      await client.request({ type: "prompt", message }, AbortSignal.any([signal, expired.signal]), { timeoutMs: null });
+      this.#promptAccepted?.resolve();
+    } catch (error) {
+      if (this.#closingForAbort && error instanceof PiRpcError && error.code === "aborted") {
+        this.#promptAccepted?.reject(error);
+        return;
+      }
+      if (expired.signal.aborted && !signal.aborted) {
+        throw new PiRpcError("timeout", "Pi RPC request timed out: prompt");
+      }
+      throw error;
+    } finally {
+      pause();
+      this.#promptAcceptanceClock = undefined;
+    }
   }
 
   async #restoreSessionState(
@@ -359,6 +419,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     }
     // Pi 0.84.2 RPC abort does not abort native compaction. Keep the Session on
     // disk, and report cancellation only after the owned process has exited.
+    this.#closingForAbort = true;
     await client.close();
     await this.#eventTail;
     if (!this.#terminalClaimed) this.#terminal?.resolve({ status: "aborted", stopReason: "aborted" });
@@ -388,6 +449,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     this.#tools.clear();
     this.#terminalClaimed = false;
     this.#compacting = false;
+    this.#closingForAbort = false;
   }
 
   #arguments(request: AgentPromptRequest): readonly string[] {
@@ -423,8 +485,14 @@ export class PiAgentRuntime extends BaseAgentRuntime {
 
   #enqueue(message: Readonly<Record<string, unknown>>): void {
     this.#claimTerminalAtIngress(message);
-    if (message.type === "compaction_start") this.#compacting = true;
-    if (message.type === "compaction_end") this.#compacting = false;
+    if (message.type === "compaction_start") {
+      this.#compacting = true;
+      this.#promptAcceptanceClock?.pause();
+    }
+    if (message.type === "compaction_end") {
+      this.#compacting = false;
+      this.#promptAcceptanceClock?.arm();
+    }
     const next = this.#eventTail.then(async () => {
       /* v8 ignore next -- unsubscribe detaches the only event source before Run context cleanup. */
       if (!this.#context) return;
@@ -694,8 +762,9 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   }
 
   /**
-   * Pi native auto-compaction runs INSIDE the same run: the events arrive between `agent_end`
-   * and `agent_settled`, so they never resolve the terminal here — the run stays in progress
+   * Pi native auto-compaction runs INSIDE the same run: the events arrive before the prompt is
+   * accepted (threshold compaction in preflight) or between `agent_end` and `agent_settled`, so
+   * they never resolve the terminal here — the run stays in progress
    * through the summary request, any recovery, and the continued agent loop, and only
    * `agent_settled` settles it. A successful `compaction_end` carries the summary request's usage
    * in `result.usage`; it is folded into the existing usage aggregate exactly once (the serial
@@ -820,6 +889,7 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
     readonly version: string;
   }>;
   readonly #sessionDirectory?: string;
+  readonly #promptAcceptanceTimeoutMs?: number;
 
   constructor(options: PiAgentRuntimeFactoryOptions = {}) {
     if (options.mcpAdapterEntry && !isAbsolute(options.mcpAdapterEntry)) {
@@ -827,6 +897,7 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
     }
     this.#mcpAdapterEntry = options.mcpAdapterEntry;
     this.#createSessionId = options.createSessionId ?? randomUUID;
+    this.#promptAcceptanceTimeoutMs = options.process?.requestTimeoutMs;
     const environment = piAgentRuntimeEnvironment(options.process?.env ?? process.env);
     const command = options.process?.command ?? "pi";
     const prefix = options.process?.args ?? [];
@@ -971,6 +1042,9 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
           ),
         eventSink: request.eventSink,
         policy: request.policy,
+        ...(this.#promptAcceptanceTimeoutMs === undefined
+          ? {}
+          : { promptAcceptanceTimeoutMs: this.#promptAcceptanceTimeoutMs }),
         resume: mode === "resume",
         sessionDirectory: this.#sessionDirectory,
         skillPaths: request.skillPaths,

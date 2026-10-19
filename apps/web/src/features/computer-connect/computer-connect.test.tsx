@@ -23,9 +23,6 @@ const OTHER_COMPUTER_ID = "63e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const COMMAND = "opentag computer connect --server https://opentag.example.com -- connect-code";
 const REPLACEMENT_COMMAND = "opentag computer connect --server https://opentag.example.com -- replacement-connect-code";
 const REDEEMED_AT = "2026-08-20T00:00:01.000Z";
-// What the block both shows and copies for `Ada's Mac`: the POSIX null command, with the
-// apostrophe closed and reopened so the sentence cannot escape its quotes.
-const REPAIR_COMMENT = ": 'Run this command to reconnect OpenTag on Ada'\\''s Mac.'";
 
 const computer: Computer = {
   computerId: COMPUTER_ID,
@@ -63,8 +60,10 @@ async function flushAsync(): Promise<void> {
   });
 }
 
-function commandIsShown(command: string): boolean {
-  return [...document.querySelectorAll("code")].some((node) => node.textContent?.includes(command));
+function expandedTaskIncludesCommand(command: string): boolean {
+  const expand = screen.queryByRole("button", { name: "Show full instructions" });
+  if (expand) fireEvent.click(expand);
+  return [...document.querySelectorAll(".ots-command__code")].some((node) => node.textContent?.includes(command));
 }
 
 describe("ComputerConnect", () => {
@@ -97,16 +96,14 @@ describe("ComputerConnect", () => {
     expect(skeleton?.classList.contains("ots-command-pending")).toBe(true);
     expect(skeleton?.textContent).toContain("[connection command pending]");
     expect(skeleton?.textContent).not.toContain("opentag.example.com");
-    expect(screen.queryByRole("button", { name: "Copy command" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy for AI assistant" })).toBeNull();
     expect(screen.queryByRole("code")).toBeNull();
 
     issued.resolve({ connectCodeId: CONNECT_CODE_ID, bootstrapCommand: COMMAND, expiresIn: 900, issuedAt: NOW });
     await flushAsync();
-    expect(commandIsShown(COMMAND)).toBe(true);
-    expect(screen.getByRole("button", { name: "Copy command" })).toBeTruthy();
-    expect(
-      screen.getByText("Paste this command into your coding assistant on the computer you’re connecting."),
-    ).toBeTruthy();
+    expect(expandedTaskIncludesCommand(COMMAND)).toBe(true);
+    expect(screen.getByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
+    expect(screen.getByText("Copy the task to your AI assistant on this computer.")).toBeTruthy();
     expect(screen.getByRole("status").textContent).toContain("Waiting for your computer");
     const remaining = screen.getByText("Expires in 15:00");
     expect(remaining.closest('[role="status"]')).toBeNull();
@@ -136,6 +133,41 @@ describe("ComputerConnect", () => {
       }),
     );
   });
+
+  it.each(["current", "another"] as const)(
+    "copies the same complete connection task for the %s computer",
+    async (executionLocation) => {
+      const issue = vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+        connectCodeId: CONNECT_CODE_ID,
+        bootstrapCommand: COMMAND,
+        expiresIn: 900,
+        issuedAt: NOW,
+      });
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+      render(<ComputerConnect executionLocation={executionLocation} intent={{ mode: "create" }} />);
+      await flushAsync();
+      expect(
+        screen.getByText(
+          executionLocation === "current"
+            ? "Copy the task to your AI assistant on this computer."
+            : "Copy the task to your AI assistant on the target computer. Return here to continue setup when it connects.",
+        ),
+      ).toBeTruthy();
+      const region = screen.getByRole("region", { name: "Connect computer" });
+      expect(region.textContent).not.toContain(COMMAND);
+      fireEvent.click(screen.getByRole("button", { name: "Copy for AI assistant" }));
+      await flushAsync();
+      const payload = writeText.mock.calls[0]?.[0] as string;
+      expect(payload).toContain(COMMAND);
+      expect(payload).toContain("Preserve a working connection");
+      expect(payload).toContain("Do not redeem an already-used authorization");
+      expect(payload).not.toContain("target computer");
+      fireEvent.click(screen.getByRole("button", { name: "Show full instructions" }));
+      expect(region.textContent).toBe(payload);
+      expect(issue).toHaveBeenCalledExactlyOnceWith({ mode: "create" });
+    },
+  );
 
   it("uses the translated fallback for a transport issuance failure", async () => {
     vi.spyOn(browserApi, "issueComputerConnectCode").mockRejectedValue(new TypeError("Failed to fetch"));
@@ -184,12 +216,13 @@ describe("ComputerConnect", () => {
     await flushAsync();
 
     expect(issue).toHaveBeenCalledWith({ mode: "repair", targetComputerId: COMPUTER_ID });
-    expect(screen.getByText("Paste this command into your coding assistant on Ada's Mac.")).toBeTruthy();
-    expect(screen.getByText(REPAIR_COMMENT)).toBeTruthy();
+    expect(screen.getByText("Copy the task to your AI assistant on Ada's Mac.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Show full instructions" }));
+    expect(screen.getByRole("region", { name: "Restore connection" }).textContent).toContain(COMPUTER_ID);
     expect(screen.getByRole("status").textContent).toContain(`Waiting for ${computer.displayName} to reconnect`);
   });
 
-  it("copies a comment the terminal ignores instead of one zsh tries to run", async () => {
+  it("copies the complete targeted recovery task before expansion", async () => {
     vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
       connectCodeId: CONNECT_CODE_ID,
       bootstrapCommand: COMMAND,
@@ -206,17 +239,16 @@ describe("ComputerConnect", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Repair connection" }));
     await flushAsync();
-    fireEvent.click(screen.getByRole("button", { name: "Copy command" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy for AI assistant" }));
     await flushAsync();
 
-    /*
-     * A leading `#` is only a comment where `interactive_comments` is set, which zsh leaves off for
-     * interactive use, so the pasted line answered `command not found: #` before the real command
-     * ran. `Ada's Mac` also carries the apostrophe that would otherwise close the quoted sentence
-     * and hand the rest of it to the shell as commands.
-     */
-    expect(writeText).toHaveBeenCalledWith(`${REPAIR_COMMENT}\n${COMMAND}`);
-    expect(REPAIR_COMMENT.startsWith("#")).toBe(false);
+    const payload = writeText.mock.calls[0]?.[0] as string;
+    expect(payload).toContain(`Computer: ${computer.displayName}`);
+    expect(payload).toContain(`Computer ID: ${COMPUTER_ID}`);
+    expect(payload).toContain(COMMAND);
+    expect(payload).toContain("Preserve the original Computer ID, Agent assignments, and user data");
+    fireEvent.click(screen.getByRole("button", { name: "Show full instructions" }));
+    expect(screen.getByRole("region", { name: "Restore connection" }).textContent).toBe(payload);
   });
 
   it("adopts only the Computer named by this code's Server verdict", async () => {
@@ -346,13 +378,13 @@ describe("ComputerConnect", () => {
     render(<ComputerConnect intent={{ mode: "create" }} />);
     await flushAsync();
 
-    expect(commandIsShown(COMMAND)).toBe(true);
+    expect(expandedTaskIncludesCommand(COMMAND)).toBe(true);
     expect(screen.getByRole("alert").textContent).toContain("Couldn’t check the connection status.");
     expect(screen.getByRole("alert").textContent).not.toContain("Failed to fetch");
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_500);
     });
-    expect(commandIsShown(COMMAND)).toBe(true);
+    expect(expandedTaskIncludesCommand(COMMAND)).toBe(true);
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -391,7 +423,7 @@ describe("ComputerConnect", () => {
     render(<ComputerConnect intent={{ mode: "create" }} onConnected={onConnected} />);
     await flushAsync();
     await vi.waitFor(() => {
-      expect(screen.queryByRole("button", { name: "Copy command" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Copy for AI assistant" })).toBeNull();
     });
     expect(document.querySelector('[data-ui="computer-connect-expiry"]')).toBeNull();
     computers.mockResolvedValue({ computers: [computer] });
@@ -420,7 +452,7 @@ describe("ComputerConnect", () => {
     inventory.mockResolvedValue({ computers: [{ ...computer, connectionStatus: "disconnected", connectedAt: null }] });
     await act(async () => vi.advanceTimersByTimeAsync(1_500));
     expect(screen.getByRole("button", { name: "Get a new command" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Copy command" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy for AI assistant" })).toBeNull();
     expect(onConnected).not.toHaveBeenCalled();
     expect(browserApi.issueComputerConnectCode).toHaveBeenCalledOnce();
   });
@@ -442,10 +474,10 @@ describe("ComputerConnect", () => {
     render(<ComputerConnect intent={{ mode: "create" }} />);
     await flushAsync();
 
-    expect(commandIsShown(COMMAND)).toBe(false);
+    expect(expandedTaskIncludesCommand(COMMAND)).toBe(false);
     expect(screen.getByText("This command is no longer valid.")).toBeTruthy();
     expect(screen.getByRole("status").textContent).toContain("This command is no longer valid.");
-    expect(screen.queryByRole("button", { name: "Copy command" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy for AI assistant" })).toBeNull();
     expect(screen.getByRole("button", { name: "Get a new command" })).toBeTruthy();
   });
 
@@ -470,15 +502,15 @@ describe("ComputerConnect", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_000);
     });
-    expect(commandIsShown(COMMAND)).toBe(false);
+    expect(expandedTaskIncludesCommand(COMMAND)).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Get a new command" }));
     expect(screen.getByRole("status").textContent).toContain("Preparing connection command");
     await flushAsync();
 
     expect(issue).toHaveBeenCalledTimes(2);
-    expect(commandIsShown(COMMAND)).toBe(false);
-    expect(commandIsShown(REPLACEMENT_COMMAND)).toBe(true);
-    expect((screen.getByRole("button", { name: "Copy command" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(expandedTaskIncludesCommand(COMMAND)).toBe(false);
+    expect(expandedTaskIncludesCommand(REPLACEMENT_COMMAND)).toBe(true);
+    expect((screen.getByRole("button", { name: "Copy for AI assistant" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("waits for an in-flight deadline verdict before offering a replacement", async () => {
@@ -520,7 +552,7 @@ describe("ComputerConnect", () => {
 
     expect(computers).not.toHaveBeenCalled();
     expect(onConnected).not.toHaveBeenCalled();
-    expect(commandIsShown(REPLACEMENT_COMMAND)).toBe(true);
+    expect(expandedTaskIncludesCommand(REPLACEMENT_COMMAND)).toBe(true);
   });
 
   it("keeps replacement failure retryable without showing an expired command", async () => {
@@ -541,8 +573,8 @@ describe("ComputerConnect", () => {
     fireEvent.click(screen.getByRole("button", { name: "Get a new command" }));
     await flushAsync();
 
-    expect(commandIsShown(COMMAND)).toBe(false);
-    expect(screen.queryByRole("button", { name: "Copy command" })).toBeNull();
+    expect(expandedTaskIncludesCommand(COMMAND)).toBe(false);
+    expect(screen.queryByRole("button", { name: "Copy for AI assistant" })).toBeNull();
     const alert = screen.getByRole("alert");
     expect(alert.textContent).toContain("Couldn’t prepare the connection command.");
     expect(alert.textContent).not.toContain("Failed to fetch");
@@ -562,11 +594,11 @@ describe("ComputerConnect", () => {
     await flushAsync();
     expect(screen.getByRole("alert").textContent).toContain("Couldn’t prepare the connection command.");
     expect(screen.getByRole("alert").closest(".ots-command__body")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Copy command" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy for AI assistant" })).toBeNull();
     expect(screen.queryByText("opentag.example.com")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     await flushAsync();
-    expect(commandIsShown(COMMAND)).toBe(true);
+    expect(expandedTaskIncludesCommand(COMMAND)).toBe(true);
   });
 
   it("issues only once when Strict Mode replays its mount effect", async () => {
@@ -585,7 +617,7 @@ describe("ComputerConnect", () => {
     await flushAsync();
 
     expect(issue).toHaveBeenCalledOnce();
-    expect(commandIsShown(COMMAND)).toBe(true);
+    expect(expandedTaskIncludesCommand(COMMAND)).toBe(true);
   });
 
   it("cleans up timers and ignores a late poll after unmount", async () => {

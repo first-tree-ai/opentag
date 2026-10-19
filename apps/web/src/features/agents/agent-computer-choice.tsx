@@ -1,6 +1,6 @@
 import type { AccountComputerSummary } from "@opentag/shared/browser";
 import { useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
 import { queryKeys } from "../../query/keys.js";
@@ -70,17 +70,10 @@ function computersReadAfterMount(query: ReturnType<typeof useComputersQuery>) {
   return query.isSuccess && query.isFetchedAfterMount ? query.data.computers : undefined;
 }
 
-function isReachableComputer(computer: AccountComputerSummary): boolean {
-  return computer.connectionStatus !== "disconnected";
-}
-
-function soleReachableComputer(
-  computers: readonly AccountComputerSummary[] | undefined,
-): AccountComputerSummary | undefined {
+function soleComputer(computers: readonly AccountComputerSummary[] | undefined): AccountComputerSummary | undefined {
   if (computers === undefined) return undefined;
   if (computers.length !== 1) return undefined;
   const computer = computers[0];
-  if (computer === undefined || !isReachableComputer(computer)) return undefined;
   return computer;
 }
 
@@ -90,9 +83,9 @@ function soleReachableComputer(
  * An Account may hold no Computers, one, or several, and the surface answers each honestly. With
  * several, which one an Agent runs on is the reader's to say and nothing here decides it for them:
  * binding on list order would hand an Agent a durable home on the strength of an array index. With
- * exactly one reachable Computer, Setup can reuse it automatically; Settings requires an explicit
- * selection. With none reachable, connecting is the answer, and the connect step names the machine
- * it connected.
+ * exactly one Computer, Setup can reuse it automatically; Settings requires an explicit selection.
+ * Connection status determines whether that Computer needs recovery, not whether it exists.
+ * Only an empty Local inventory offers a new connection.
  *
  * It is shared because the two places an Agent can be found without a Computer -- its Settings, and
  * an onboarding run that resumed into it -- must resolve it the same way; the second copy is how the
@@ -102,6 +95,7 @@ export function AgentComputerChoice({
   adapter,
   autoBindSole = true,
   agentId,
+  children,
   inventoryAdapter,
   onBound,
 }: {
@@ -110,6 +104,8 @@ export function AgentComputerChoice({
   /** Setup may reuse the sole Computer; merely opening Settings must not change placement. */
   autoBindSole?: boolean;
   agentId: string;
+  /** Setup places its heading and summary around the choice using this same confirmed inventory. */
+  children?: (choice: ReactNode, multiple: boolean) => ReactNode;
   /** Keeps Internal Tools on its in-memory Account instead of reading or mutating the Server. */
   inventoryAdapter?: AgentComputerInventoryAdapter;
   /**
@@ -136,8 +132,8 @@ export function AgentComputerChoice({
   const attempted = useRef<string | undefined>(undefined);
   // Older inventory responses omit kind for Local Computers; Cloud identities are never Local bind targets.
   const connected = inventory.computers?.filter((computer) => computer.kind !== "cloud");
-  const sole = soleReachableComputer(connected);
-  const hasReachableComputer = connected?.some(isReachableComputer) ?? false;
+  const sole = soleComputer(connected);
+  const present = (choice: ReactNode) => (children ? children(choice, (connected?.length ?? 0) > 1) : choice);
   const soleTarget = sole ? `${agentId}:${sole.computerId}` : undefined;
 
   const bind = useCallback(
@@ -188,15 +184,15 @@ export function AgentComputerChoice({
     setBinding(false);
   }, [agentId]);
 
-  // Only one reachable Computer is unambiguous. Several Computers, or a retained disconnected one,
-  // is a question for the reader, and an automatic bind must never start from either state.
+  // Only one Computer is unambiguous. Several Computers require an explicit choice, even when
+  // only one is online. Binding a disconnected Computer does not restore its authorization.
   useEffect(() => {
     if (!autoBindSole || !sole || !soleTarget || attempted.current === soleTarget) return;
     void bind(sole);
   }, [autoBindSole, sole, soleTarget, bind]);
 
   if (connected === undefined) {
-    return (
+    return present(
       <div className="grid gap-2">
         {inventory.error ? (
           <>
@@ -210,14 +206,14 @@ export function AgentComputerChoice({
         ) : (
           <p>{m.agents_computer_choice_loading()}</p>
         )}
-      </div>
+      </div>,
     );
   }
 
   // Keyed on what was actually being bound, not on the inventory, so a Computer the connect step
   // just produced can still report its failure and be retried -- without issuing a second code.
   if (error && pending && connected.length <= 1) {
-    return (
+    return present(
       <div className="grid gap-4">
         <Banner variant="error" role="alert" description={error} />
         <div>
@@ -225,27 +221,32 @@ export function AgentComputerChoice({
             {m.common_try_again()}
           </Button>
         </div>
-      </div>
+      </div>,
     );
   }
 
   if (sole && autoBindSole) {
-    return <p>{m.agents_computer_choice_binding({ name: sole.displayName })}</p>;
+    return present(<p>{m.agents_computer_choice_binding({ name: sole.displayName })}</p>);
   }
 
   // `pending` covers the moment after a Computer enrols: it is on the Account, but this query has
   // not been told about it, and offering to connect another one there would be wrong.
-  if (!hasReachableComputer && pending) {
-    return <p>{m.agents_computer_choice_binding({ name: pending.displayName })}</p>;
+  if (connected.length === 0 && pending) {
+    return present(<p>{m.agents_computer_choice_binding({ name: pending.displayName })}</p>);
   }
 
-  return (
+  return present(
     <div className="grid min-w-0 gap-4 wrap-anywhere">
       {error ? <Banner variant="error" role="alert" description={error} /> : null}
       {connected.length > 0 ? (
-        <ComputerChoices computers={connected} binding={binding} onSelect={(computer) => void bind(computer)} />
+        <ComputerChoices
+          computers={connected}
+          binding={binding}
+          showHeading={!children}
+          onSelect={(computer) => void bind(computer)}
+        />
       ) : null}
-      {!hasReachableComputer ? (
+      {connected.length === 0 ? (
         <div className="grid gap-2">
           {/*
            * The connect step reports the machine it connected, so what gets bound is the Computer that
@@ -260,22 +261,24 @@ export function AgentComputerChoice({
           />
         </div>
       ) : null}
-    </div>
+    </div>,
   );
 }
 
 function ComputerChoices({
   computers,
   binding,
+  showHeading,
   onSelect,
 }: {
   computers: readonly AccountComputerSummary[];
   binding: boolean;
+  showHeading: boolean;
   onSelect: (computer: AccountComputerSummary) => void;
 }) {
   return (
     <div className="grid min-w-0 gap-3">
-      {computers.length > 1 ? (
+      {showHeading && computers.length > 1 ? (
         <Text as="h3" variant="heading">
           {m.agents_computer_choice_existing_heading()}
         </Text>

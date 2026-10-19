@@ -23,7 +23,7 @@ Consistency comes from these sources and the rules below:
 | [primitives.css](apps/web/src/ui/primitives.css) | Shared text, button, control, surface, and dialog recipes |
 | [design-system.tsx](apps/web/src/ui/design-system.tsx) | Product intents, refs, labels, states, and Kumo compatibility |
 | [app.css](apps/web/src/app.css) | Stylesheet entry, font loading, browser defaults, shell layout |
-| [web-ui-contract.md](docs/design/web-ui-contract.md) | Composition, behavior, accessibility, and verification |
+| [web-ui-contract.md](docs/system/web/web-ui-contract.md) | Composition, behavior, accessibility, and verification |
 | [KUMO.md](apps/web/src/ui/KUMO.md) | Library-specific implementation details |
 
 Edit tokens, then run `pnpm theme:generate`. Commit the generated stylesheet with the source.

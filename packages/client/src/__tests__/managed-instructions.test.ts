@@ -207,12 +207,15 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
       expect(prompt).toContain("## Agent\n\nagent");
       expect(prompt).toContain("You are a visible Session");
       expect(prompt).toContain("Session kind: visible");
-      expect(prompt).toContain("Lean toward a lively, friendly tone");
+      expect(prompt).toContain("When you speak, be warm and natural");
+      expect(prompt).not.toContain("lively");
       expect(prompt).toContain(
-        'For a lengthy user task, add one emoji reaction meaning "received, working on it" to the original user message via the provider CLI before starting task work (for example, Feishu OnIt or the provider\'s equivalent).',
+        'When you take on a lengthy task, first add one emoji reaction meaning "received, working on it" to the original message via the provider CLI before starting task work (for example, Feishu OnIt or the provider\'s equivalent).',
       );
       expect(prompt).toContain("Do not use approval or completion reactions such as thumbs-up or check marks");
-      expect(prompt).toContain("Skip it only for duplicate acknowledgments and observer deliveries");
+      expect(prompt).toContain(
+        "Do not react to messages you are not acting on, duplicate acknowledgments, or observer deliveries",
+      );
       expect(prompt).not.toContain("optionally");
       expect(prompt).not.toContain("unnecessary");
       expect(prompt).toContain("OpenTag internal Sessions and Provider-native subagents are separate mechanisms");
@@ -236,7 +239,32 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
       );
       expect(prompt).toContain("Creator Session: session-parent-1");
       expect(prompt).not.toContain("emoji");
-      expect(prompt).not.toContain("lively, friendly tone");
+      expect(prompt).not.toContain("be warm and natural");
+      expect(prompt).not.toContain("## When to speak");
+    }
+  });
+
+  it("states the reply decision once for visible Sessions, the same for people and agents", () => {
+    for (const base of [session, cloudSession]) {
+      const prompt = renderManagedSystemPrompt(snapshot, base);
+      expect(prompt.match(/## When to speak/g)).toHaveLength(1);
+      expect(prompt).toContain("Apply the same rules whoever the sender is, a person or another agent.");
+      // Addressed: reply by default, with narrow exceptions.
+      expect(prompt).toContain("`direct` (a DM or an @-mention of you): reply by default.");
+      expect(prompt).toContain('closes the loop on something you already finished ("thanks", "ok", 👍)');
+      expect(prompt).toContain("the sender asks for no reply or says it is FYI");
+      expect(prompt).toContain("When unsure, reply.");
+      // Listening: Thread follow-ups and overheard channel messages default to silence.
+      expect(prompt).toContain("or a follow-up in a Thread you were brought into earlier): stay silent by default.");
+      expect(prompt).toContain(
+        "People talking to each other, even about your topic or with a question you could answer",
+      );
+      expect(prompt).toContain("Being in a Thread is not being addressed; judge every message on its own.");
+      expect(prompt).toContain("When unsure, stay silent.");
+      // Loop brake: no courtesy sends, never answer another agent's acknowledgement.
+      expect(prompt).toContain("Never send a message only to acknowledge, thank, agree, restate, or summarize");
+      expect(prompt).toContain("Never answer another agent's acknowledgement.");
+      expect(prompt).toContain("send one self-contained message and stop");
     }
   });
 

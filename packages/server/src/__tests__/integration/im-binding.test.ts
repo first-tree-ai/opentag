@@ -2157,7 +2157,8 @@ describe("IM binding persistence", () => {
         .from(imMessageDeliveries)
         .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
         .where(eq(imMessageDeliveries.id, firstReply.deliveryIds[0] as string));
-      expect(firstThreadDelivery).toMatchObject({ attention: "direct", kind: "thread" });
+      // Root-direct continuity admits the unaddressed reply, but the reply itself does not address the Agent.
+      expect(firstThreadDelivery).toMatchObject({ attention: "ambient", kind: "thread" });
 
       const followUp = await inbox.ingest(
         value.imBindingId,
@@ -2170,15 +2171,23 @@ describe("IM binding persistence", () => {
         }),
       );
       const [followUpDelivery] = await value.database
-        .select({ attention: imMessageDeliveries.attention, sessionId: sessions.id, kind: sessions.kind })
+        .select({
+          attention: imMessageDeliveries.attention,
+          sessionId: sessions.id,
+          kind: sessions.kind,
+          expiresAt: imMessageDeliveries.expiresAt,
+        })
         .from(imMessageDeliveries)
         .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
         .where(eq(imMessageDeliveries.id, followUp.deliveryIds[0] as string));
       expect(followUpDelivery).toEqual({
-        attention: "direct",
+        attention: "ambient",
         kind: "thread",
         sessionId: firstThreadDelivery?.sessionId,
+        expiresAt: expect.any(Date),
       });
+      // Continuity keeps the direct retention window even though the follow-up is ambient.
+      expect((followUpDelivery?.expiresAt.getTime() ?? 0) - Date.now()).toBeGreaterThan(2 * 24 * 60 * 60 * 1000);
 
       const unrelatedRoot = revisionEvent({
         providerEventId: "unrelated-root",
@@ -2344,7 +2353,7 @@ describe("IM binding persistence", () => {
           .from(imMessageDeliveries)
           .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
           .where(eq(imMessageDeliveries.messageId, reply.messageId as string)),
-      ).toEqual([{ attention: "direct", kind: "thread", threadKey: "2100.100" }]);
+      ).toEqual([{ attention: "ambient", kind: "thread", threadKey: "2100.100" }]);
     } finally {
       await value.sql.end();
     }
@@ -2443,7 +2452,7 @@ describe("IM binding persistence", () => {
           .from(imMessageDeliveries)
           .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
           .where(eq(imMessageDeliveries.messageId, continuation.messageId as string)),
-      ).toEqual([{ attention: "direct", kind: "thread", sessionId: threadSessionId }]);
+      ).toEqual([{ attention: "ambient", kind: "thread", sessionId: threadSessionId }]);
     } finally {
       await value.sql.end();
     }
@@ -2540,7 +2549,7 @@ describe("IM binding persistence", () => {
     }
   });
 
-  it("upgrades only undispatched ambient Thread deliveries when a direct root arrives out of order", async () => {
+  it("extends retention only for undispatched ambient Thread deliveries when a direct root arrives out of order", async () => {
     const value = await fixture();
     try {
       await value.database.update(agents).set({ receiveMode: "all_message" }).where(eq(agents.id, value.agent.id));
@@ -2581,12 +2590,13 @@ describe("IM binding persistence", () => {
           revisionKey: "1",
         }),
       );
-      expect(
-        await value.database
-          .select({ attention: imMessageDeliveries.attention })
-          .from(imMessageDeliveries)
-          .where(eq(imMessageDeliveries.id, correlatedThread?.id as string)),
-      ).toEqual([{ attention: "ambient" }]);
+      const [dispatched] = await value.database
+        .select({ attention: imMessageDeliveries.attention, expiresAt: imMessageDeliveries.expiresAt })
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, correlatedThread?.id as string));
+      expect(dispatched?.attention).toBe("ambient");
+      // A dispatched delivery is frozen: the direct root does not extend it.
+      expect((dispatched?.expiresAt.getTime() ?? 0) - Date.now()).toBeLessThanOrEqual(24 * 60 * 60 * 1000);
 
       const pendingReply = await inbox.ingest(
         value.imBindingId,
@@ -2609,24 +2619,29 @@ describe("IM binding persistence", () => {
           revisionKey: "1",
         }),
       );
-      expect(
-        await value.database
-          .select({ attention: imMessageDeliveries.attention, kind: sessions.kind })
-          .from(imMessageDeliveries)
-          .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
-          .where(eq(imMessageDeliveries.messageId, pendingReply.messageId as string)),
-      ).toEqual(
+      const pendingScopes = await value.database
+        .select({
+          attention: imMessageDeliveries.attention,
+          kind: sessions.kind,
+          expiresAt: imMessageDeliveries.expiresAt,
+        })
+        .from(imMessageDeliveries)
+        .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+        .where(eq(imMessageDeliveries.messageId, pendingReply.messageId as string));
+      expect(pendingScopes.map(({ attention, kind }) => ({ attention, kind }))).toEqual(
         expect.arrayContaining([
-          { attention: "direct", kind: "thread" },
+          { attention: "ambient", kind: "thread" },
           { attention: "ambient", kind: "channel" },
         ]),
       );
+      const pendingThread = pendingScopes.find((scope) => scope.kind === "thread");
+      expect((pendingThread?.expiresAt.getTime() ?? 0) - Date.now()).toBeGreaterThan(2 * 24 * 60 * 60 * 1000);
     } finally {
       await value.sql.end();
     }
   });
 
-  it("upgrades every pending Feishu Thread delivery when later events omit the out-of-order rootId", async () => {
+  it("admits every pending Feishu Thread delivery when later events omit the out-of-order rootId", async () => {
     const value = await unboundFixture();
     try {
       const imBindingId = await value.imBindingService.activateFeishu({
@@ -2722,7 +2737,7 @@ describe("IM binding persistence", () => {
       await inbox.ingest(imBindingId, 1, root);
       expect(rootHistoryLookups).toBe(lookupsBeforeDirectRoot);
 
-      const upgradedDeliveries = await value.database
+      const admittedDeliveries = await value.database
         .select({ attention: imMessageDeliveries.attention, externalMessageId: imMessages.externalMessageId })
         .from(imMessageDeliveries)
         .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
@@ -2733,11 +2748,11 @@ describe("IM binding persistence", () => {
             eq(sessions.kind, "thread"),
           ),
         );
-      expect(upgradedDeliveries).toHaveLength(2);
-      expect(upgradedDeliveries).toEqual(
+      expect(admittedDeliveries).toHaveLength(2);
+      expect(admittedDeliveries).toEqual(
         expect.arrayContaining([
-          { attention: "direct", externalMessageId: "om_out_of_order_reply_1" },
-          { attention: "direct", externalMessageId: "om_out_of_order_reply_2" },
+          { attention: "ambient", externalMessageId: "om_out_of_order_reply_1" },
+          { attention: "ambient", externalMessageId: "om_out_of_order_reply_2" },
         ]),
       );
     } finally {
@@ -2815,6 +2830,90 @@ describe("IM binding persistence", () => {
     }
   });
 
+  it("keeps continuity retention when an unknown Feishu revision inherits an ambient Thread follow-up", async () => {
+    const value = await unboundFixture();
+    try {
+      const imBindingId = await value.imBindingService.activateFeishu({
+        agentId: value.agent.id,
+        appId: "cli_retention",
+        teamId: "workspace_retention",
+        botOpenId: "ou_retention_bot",
+        teamBrand: "feishu",
+        appSecret: "secret",
+        grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
+      });
+      await value.database.update(agents).set({ receiveMode: "mention_only" }).where(eq(agents.id, value.agent.id));
+      const inbox = new ImMessageInbox(value.database);
+      const threadEvent = (providerEventId: string, externalMessageId: string, occurredAt: string) => {
+        const event = revisionEvent({
+          providerEventId,
+          externalMessageId,
+          operation: "created",
+          occurredAt,
+          revisionKey: "1",
+        });
+        event.externalAppId = "cli_retention";
+        event.externalTeamId = "workspace_retention";
+        event.providerContext = {
+          provider: "feishu",
+          chatType: "group",
+          threadId: "omt_retention",
+          rootId: "om_retention_root",
+        };
+        event.message.threadKey = "omt_retention";
+        return event;
+      };
+      const addressed = threadEvent("feishu-retention-addressed", "om_retention_addressed", "2026-08-19T00:00:01.000Z");
+      addressed.mentions = [{ externalId: "ou_retention_bot", displayName: "Assistant" }];
+      await inbox.ingest(imBindingId, 1, addressed);
+      const followUpEvent = threadEvent(
+        "feishu-retention-follow-up",
+        "om_retention_follow_up",
+        "2026-08-19T00:00:02.000Z",
+      );
+      followUpEvent.mentions = [];
+      const followUp = await inbox.ingest(imBindingId, 1, followUpEvent);
+
+      const recalled = revisionEvent({
+        providerEventId: "feishu-retention-recalled",
+        externalMessageId: "om_retention_follow_up",
+        operation: "deleted",
+        occurredAt: "2026-08-19T00:00:03.000Z",
+        revisionKey: "2",
+      });
+      recalled.externalAppId = "cli_retention";
+      recalled.externalTeamId = "workspace_retention";
+      recalled.providerContext = { provider: "feishu" };
+      recalled.conversation.kind = "unknown";
+      recalled.message.threadKey = null;
+      recalled.mentions = [];
+      const revision = await inbox.ingest(imBindingId, 1, recalled);
+
+      const retained = async (deliveryId: string | undefined) => {
+        const [row] = await value.database
+          .select({
+            attention: imMessageDeliveries.attention,
+            kind: sessions.kind,
+            expiresAt: imMessageDeliveries.expiresAt,
+          })
+          .from(imMessageDeliveries)
+          .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+          .where(eq(imMessageDeliveries.id, deliveryId as string));
+        return row;
+      };
+      const original = await retained(followUp.deliveryIds[0]);
+      const inherited = await retained(revision.deliveryIds[0]);
+      expect(original).toMatchObject({ attention: "ambient", kind: "thread" });
+      expect(inherited).toMatchObject({ attention: "ambient", kind: "thread" });
+      // The recall keeps the follow-up's direct-continuity window instead of falling back to one day.
+      for (const row of [original, inherited]) {
+        expect((row?.expiresAt.getTime() ?? 0) - Date.now()).toBeGreaterThan(2 * 24 * 60 * 60 * 1000);
+      }
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("keeps all-message Channel ambient fan-out independent and does not implicitly revive ended Threads", async () => {
     const value = await fixture();
     try {
@@ -2848,7 +2947,7 @@ describe("IM binding persistence", () => {
         .where(eq(imMessageDeliveries.messageId, admission.messageId as string));
       expect(scopes).toEqual(
         expect.arrayContaining([
-          { attention: "direct", kind: "thread", threadKey: "4000.100" },
+          { attention: "ambient", kind: "thread", threadKey: "4000.100" },
           { attention: "ambient", kind: "channel", threadKey: null },
         ]),
       );

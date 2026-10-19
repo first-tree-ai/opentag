@@ -218,7 +218,7 @@ follows the category source.
 
 If the task needs a *new field*, that is a contract change, not an entry: the generator, the
 generated module's type and the catalog model, the component that renders it, their tests, and
-`docs/design/mcp-server-integration.md` all move together.
+`docs/system/capabilities/mcp-server-integration.md` all move together.
 
 ## Staleness
 

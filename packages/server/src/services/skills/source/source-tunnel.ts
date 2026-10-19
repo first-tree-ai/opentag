@@ -71,7 +71,8 @@ export class SkillSourceTunnel {
     this.#port = port;
     this.#policy = { allowLoopback: options.allowLoopback };
     this.#resolveAddresses = options.resolveAddresses ?? resolveAllAddresses;
-    this.#dial = options.dial ?? ((target) => netConnect(target));
+    this.#dial =
+      options.dial ?? ((target) => netConnect({ host: target.address, family: target.family, port: target.port }));
     this.#connectTimeoutMs = options.connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
   }
 

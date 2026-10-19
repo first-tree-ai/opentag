@@ -55,6 +55,7 @@ describe("retired ownership persistence allowlist", () => {
       resolve(repoRoot, "apps/web/src"),
       resolve(repoRoot, "apps/web/messages"),
       resolve(repoRoot, "docs"),
+      resolve(repoRoot, "testing"),
       resolve(repoRoot, "e2e"),
       resolve(repoRoot, "scripts"),
       resolve(repoRoot, ".github/workflows"),

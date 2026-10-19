@@ -1,15 +1,15 @@
 <div align="center">
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/opentag-logo-on-dark.png">
-  <img src="docs/assets/opentag-logo.png" alt="OpenTag" width="72">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/.assets/opentag-logo-on-dark.png">
+  <img src="docs/.assets/opentag-logo.png" alt="OpenTag" width="72">
 </picture>
 
 # OpenTag
 
 你的模型、你的机器、你的 AI 同事
 
-[官网](https://opentag.build/zh?utm_source=github&utm_medium=readme&utm_campaign=opentag-site) · [快速开始](#快速开始) · [文档](./docs/zh-CN/README.md) · [贡献指南](./CONTRIBUTING.zh-CN.md) · [安全策略](./SECURITY.zh-CN.md)
+[官网](https://opentag.build/zh?utm_source=github&utm_medium=readme&utm_campaign=opentag-site) · [快速开始](#快速开始) · [文档](./docs/NODE.md) · [贡献指南](./CONTRIBUTING.zh-CN.md) · [安全策略](./SECURITY.zh-CN.md)
 
 [English](./README.md) | 简体中文
 
@@ -32,7 +32,7 @@ OpenTag 是一个开源、多模型的 AI 同事。在 Slack 和飞书里，和�
 > 权威来源：[README.md](./README.md)　·　同步日期：2026-10-01
 
 <p align="center">
-  <img src="docs/assets/opentag-walkthrough.gif" alt="OpenTag 的四个步骤：自带订阅、团队群里的 AI worker、留在你自己机器上的共享知识，以及连接你的其余工具。" width="100%">
+  <img src="docs/.assets/opentag-walkthrough.gif" alt="OpenTag 的四个步骤：自带订阅、团队群里的 AI worker、留在你自己机器上的共享知识，以及连接你的其余工具。" width="100%">
 </p>
 
 ## 快速开始
@@ -56,7 +56,7 @@ OpenTag 是一个开源、多模型的 AI 同事。在 Slack 和飞书里，和�
 **4. 开始聊天**
 
 完成剩余设置，将 OpenTag 添加到 Slack 或飞书，然后在频道或私信中给 Agent 发消息。
-Slack 的额外设置步骤见[配置指南](./docs/zh-CN/slack-app-setup.md)。
+Slack 的额外设置步骤见[配置指南](./docs/system/messaging/slack-app-setup.md)。
 
 ## 自托管与本地开发
 
@@ -70,4 +70,4 @@ OpenTag 开源且可自托管。如需从源码在本地运行 Server，请按�
 
 ## 许可证
 
-OpenTag 使用 [Apache License 2.0](./LICENSE)。第三方标识和素材来源见[商标与素材来源记录](./docs/zh-CN/trademarks.md)。
+OpenTag 使用 [Apache License 2.0](./LICENSE)。第三方标识和素材来源见[商标与素材来源记录](./docs/product/trademarks.md)。

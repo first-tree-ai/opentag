@@ -17,7 +17,7 @@ import {
 /**
  * The probe speaks the modern stateless era first (`server/discover`), and falls back to the legacy
  * `initialize` handshake only when the body of a 400/404/405 is not a modern JSON-RPC error. This is
- * the decision `docs/design/mcp-server-integration.md` ("Downgrade to an older Server") specifies and
+ * the decision `docs/system/capabilities/mcp-server-integration.md` ("Downgrade to an older Server") specifies and
  * `packages/server/src/services/mcp/mcp-transport.ts` implements; the Server's copy cannot be imported
  * from here, so the small decision seam is repeated.
  */

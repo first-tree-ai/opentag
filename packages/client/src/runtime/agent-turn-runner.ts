@@ -685,14 +685,14 @@ export function buildAgentInput(
   const provider = request.content.providerRef.provider;
   const observer = request.replyRole === "observer";
   /*
-   * Attention states what the inbound message means to this Session. The generic owner guidance
-   * ("handle the message", "choose whether to reply") would contradict an observer delivery, which
-   * never handles the task, so an observer gets only the fact plus a pointer to the reply role.
+   * Attention states only whether this message addresses the Agent; the reply decision rules live once
+   * in the managed system prompt ("When to speak"). An observer copy never handles the task, so it gets
+   * the fact plus the reply-role restriction instead of any reply guidance.
    */
   const attentionFact =
     request.attention === "direct"
-      ? "A human explicitly addressed this Agent/Session."
-      : "This Agent overheard the message.";
+      ? "This message addresses you (a DM or an @-mention)."
+      : "This message does not address you; you are listening (an overheard channel message or a Thread follow-up).";
   const { attentionMeaning, actionInstruction } = observer
     ? {
         attentionMeaning: `${attentionFact} Treat it as ambient channel context only; the observer reply role below governs what this Session may do with it.`,
@@ -701,18 +701,18 @@ export function buildAgentInput(
       }
     : request.attention === "direct"
       ? {
-          attentionMeaning: `${attentionFact} If this Session is the reply owner, handle the request and report its result to that human through the provider CLI, including after an approval decision. If the task fails or is blocked, explain that through the provider CLI too. Only omit a message when the human explicitly requested silence or a different provider action instead.`,
+          attentionMeaning: `${attentionFact} Reply by default; the narrow exceptions are in "When to speak".`,
           actionInstruction:
-            "Before ending this Turn, send a concise completion, failure, or blocker update to the IM participant with the provider CLI. Your final text to OpenTag does not count as the reply. If the human explicitly asked for silence or a different provider action instead, honor that request. This does not waive a pre-work reaction required by the managed instructions.",
+            "A reply, including the result after an approval decision or a failure or blocker update, reaches the IM participant only through the provider CLI before this Turn ends; your final text to OpenTag does not count as the reply.",
         }
       : {
-          attentionMeaning: `${attentionFact} Use the conversation context to choose whether to reply, react, send proactively, or take no action; by default avoid meaningless, duplicate, intrusive, or attention-seeking intervention.`,
+          attentionMeaning: `${attentionFact} Stay silent by default; reply only when it is clearly meant for you, per "When to speak".`,
           actionInstruction:
-            "If you choose to reply, react, or send proactively, run the provider CLI command before ending this Turn. Choosing not to reply remains valid; it does not waive a pre-work reaction required by the managed instructions.",
+            "Ending this Turn without any provider action is the expected outcome when the message is not meant for you. If it is, reply through the provider CLI before this Turn ends.",
         };
   const replyRoleMeaning = observer
     ? "A Thread Session owns the provider reply and the task execution for this same message. Use this Channel delivery only for ambient channel context; do not reply, react, or perform any other provider mutation for this message, and do not investigate, execute or repeat, delegate, or create artifacts for that task. Finish this observer Turn without tool calls or task work."
-    : "This Session is the reply owner for this message. For direct requests, deliver the result through the provider CLI before ending the Turn. For ambient messages, choose whether a provider action is useful.";
+    : "This Session owns any reply to this message; whether to reply follows the attention above.";
   // Rebind the provider's native user-facing output to OpenTag's runtime console. Merely saying that
   // final text is not auto-sent is too weak when the provider treats its final channel as the reply.
   const context = [
@@ -737,7 +737,6 @@ export function buildAgentInput(
     }),
     `Attention: ${request.attention}`,
     `Attention meaning: ${attentionMeaning}`,
-    "Attention does not change provider CLI or credential availability for this Turn.",
     `Reply role: ${observer ? "observer" : "owner"}`,
     `Reply role meaning: ${replyRoleMeaning}`,
     "Reply role constrains task execution and provider actions for this delivery; it does not change this Session's authority or credential availability.",

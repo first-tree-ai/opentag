@@ -99,6 +99,7 @@ function ComputerContent({
   const visibleComputers = connectionBaseline
     ? computers.filter((computer) => connectionBaseline.includes(computer.computerId))
     : computers;
+  const additional = visibleComputers.some((computer) => computer.kind !== "cloud");
   // Redemption can populate inventory before the daemon starts. Keep the exact attempt mounted
   // until it confirms online, so this intermediate state never offers a second connection attempt.
   const finishConnection = () => {
@@ -122,7 +123,7 @@ function ComputerContent({
       ))}
       {confirmed || connecting ? (
         <ComputerConnection
-          additional={(connectionBaseline ?? computers).length > 0}
+          additional={additional}
           connecting={connecting}
           onStart={() => setConnectionBaseline(computers.map((computer) => computer.computerId))}
           onConnected={finishConnection}
@@ -161,7 +162,11 @@ function ComputerConnection({
         <p className="max-w-prose text-sm text-kumo-subtle">{m.computer_first_description()}</p>
       </div>
       {connecting ? (
-        <ComputerConnect intent={{ mode: "create" }} onConnected={onConnected} />
+        <ComputerConnect
+          executionLocation={additional ? "another" : "current"}
+          intent={{ mode: "create" }}
+          onConnected={onConnected}
+        />
       ) : (
         <Button className="w-fit" onClick={onStart}>
           {m.computer_connect_entry_action()}

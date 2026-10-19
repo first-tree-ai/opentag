@@ -1,4 +1,3 @@
-import type { RefObject } from "react";
 import * as m from "../../../paraglide/messages.js";
 import { SettingsSaveActions } from "./settings-layout.js";
 
@@ -7,19 +6,17 @@ export function SoulFooter({
   dirty,
   empty,
   feedback,
-  footerRef,
   onDiscard,
 }: {
   busy: boolean;
   dirty: boolean;
   empty: boolean;
   feedback: { kind: "error" | "success"; text: string } | undefined;
-  footerRef: RefObject<HTMLDivElement | null>;
   onDiscard: () => void;
 }) {
   if (!dirty && !feedback) return null;
   return (
-    <div className="grid gap-3" ref={footerRef}>
+    <div className="grid gap-3">
       {dirty ? (
         <>
           <SettingsSaveActions

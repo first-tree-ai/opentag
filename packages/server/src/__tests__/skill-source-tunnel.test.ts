@@ -6,8 +6,13 @@ import {
   // A value, not a type: the deadline case needs a socket that is deliberately never connected.
   Socket,
 } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SkillSourceTunnel, type SkillSourceTunnelOptions } from "../services/skills/source/source-tunnel.js";
+
+vi.mock("node:net", async (importOriginal) => {
+  const net = await importOriginal<typeof import("node:net")>();
+  return { ...net, connect: vi.fn(net.connect) };
+});
 
 /**
  * The address-pinning tunnel git dials through.
@@ -25,6 +30,7 @@ afterEach(async () => {
   await Promise.all(
     openServers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))),
   );
+  vi.mocked(netConnect).mockReset();
 });
 
 /** A loopback origin that answers every request with one body and records what it received. */
@@ -99,6 +105,25 @@ function exchange(port: number, request: string): Promise<string> {
 }
 
 describe("SkillSourceTunnel", () => {
+  it.each([
+    { address: "203.0.113.10", family: 4 },
+    { address: "2606:4700:4700::1111", family: 6 },
+  ])("passes the approved IPv$family address as the TCP host for CONNECT", async ({ address, family }) => {
+    const origin = await originServer("pinned origin");
+    const started = await tunnel({ resolveAddresses: async () => [address] });
+    const request = `CONNECT example.test:${origin.port} HTTP/1.1\r\nhost: example.test:${origin.port}\r\n\r\nGET / HTTP/1.1\r\nhost: example.test\r\nconnection: close\r\n\r\n`;
+    const net = await vi.importActual<typeof import("node:net")>("node:net");
+    const response = exchange(Number(new URL(started.proxyUrl).port), request);
+
+    // Intercept only the upstream TCP connection, after exchange has opened the proxy client.
+    // A local origin keeps this independent of the public network while the assertion checks
+    // the real default dialer: passing `address` instead of `host` silently dials localhost.
+    vi.mocked(netConnect).mockImplementationOnce(() => net.connect(origin.port, "127.0.0.1"));
+
+    expect(await response).toContain("pinned origin");
+    expect(netConnect).toHaveBeenLastCalledWith({ host: address, family, port: origin.port });
+  });
+
   it("forwards a plain-HTTP request to the origin and closes the connection", async () => {
     const origin = await originServer("forwarded");
     const started = await tunnel({ allowLoopback: true });

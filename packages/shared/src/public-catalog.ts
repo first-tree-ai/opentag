@@ -10,7 +10,7 @@ import { SkillPresetCategoryIdSchema } from "./skill-preset.js";
  * `@opentag/skill-presets` and the MCP marketplace in `@opentag/mcp-presets` — served anonymously to
  * the official website. Every field is something a card renders: no archive identity, no per-Agent
  * install state, and no MCP endpoint URL or authorization prefill configuration. See
- * `docs/deploying.md` for the origin rules.
+ * `docs/operations/deploying.md` for the origin rules.
  *
  * Browser-compatible like every module the browser entrypoint re-exports: it imports nothing from
  * the Node standard library.

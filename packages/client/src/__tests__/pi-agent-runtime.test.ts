@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentRuntimeBinding, AgentRuntimeEvent, CreateAgentRuntimeRequest } from "../agent-runtime/types.js";
 import { PiAgentRuntime, PiAgentRuntimeFactory, piAgentRuntimeEnvironment } from "../providers/pi/agent-runtime.js";
-import { type PiRpcClient, PiRpcError } from "../providers/pi/rpc-wire.js";
+import { type PiRpcClient, PiRpcError, type PiRpcRequestOptions } from "../providers/pi/rpc-wire.js";
 
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
 const SESSION_FILE = `/sessions/${SESSION_ID}.jsonl`;
@@ -618,6 +618,102 @@ describe("PiAgentRuntime", () => {
     await runtime.close();
   });
 
+  it("lets preflight compaction outlast the prompt acceptance budget, then runs the prompt", async () => {
+    const client = new PreflightPiClient();
+    const events: AgentRuntimeEvent[] = [];
+    const runtime = await preflightFactory(client).create(
+      createRequest((event) => {
+        events.push(event);
+      }),
+    );
+    const run = runtime.prompt({ runId: "run-preflight-compaction", input: input("next message") });
+    await vi.waitFor(() => expect(client.promptPending).toBe(true));
+    // Pi owns the acceptance deadline only outside compaction: the RPC timer is disabled.
+    expect(client.promptOptions).toEqual([{ timeoutMs: null }]);
+
+    // Pi 0.84.2 compacts in prompt preflight, before it acknowledges the prompt.
+    client.emit({ type: "compaction_start", reason: "threshold" });
+    await vi.waitFor(() => expect(providerEventPayloadTypes(events)).toContain("compaction_start"));
+    await sleep(PROMPT_ACCEPTANCE_TIMEOUT_MS * 4);
+    expect(runtime.state).toMatchObject({ phase: "running", activeRunId: "run-preflight-compaction" });
+    expect(client.promptPending).toBe(true);
+
+    client.emit({
+      type: "compaction_end",
+      reason: "threshold",
+      aborted: false,
+      willRetry: false,
+      result: {
+        summary: "condensed history",
+        firstKeptEntryId: "entry-9",
+        tokensBefore: 242_732,
+        estimatedTokensAfter: 30_000,
+        usage: { input: 102_439, output: 1_766, cacheRead: 0, cacheWrite: 0 },
+      },
+    });
+    client.acceptPrompt();
+    emitAssistantAnswer(client, "final answer");
+    client.emit({ type: "agent_settled" });
+    await expect(run).resolves.toMatchObject({
+      status: "completed",
+      output: [{ type: "text", text: "final answer" }],
+      // The summary request's usage joins the answer's usage (102,439 + 10 + 5).
+      usage: { inputTokens: 102_454, cachedInputTokens: 2, outputTokens: 1_769 },
+    });
+    await runtime.close();
+  });
+
+  it("still times out a prompt Pi never accepts outside compaction", async () => {
+    const client = new PreflightPiClient();
+    const runtime = await preflightFactory(client).create(createRequest(() => undefined));
+    await expect(runtime.prompt({ runId: "run-stuck-preflight", input: input("hello") })).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_error", message: "Pi RPC request timed out: prompt" },
+    });
+    expect(client.closed).toBe(true);
+    await runtime.close();
+  });
+
+  it("grants a fresh acceptance window after compaction and times out when Pi stays silent", async () => {
+    const client = new PreflightPiClient();
+    const events: AgentRuntimeEvent[] = [];
+    const runtime = await preflightFactory(client).create(
+      createRequest((event) => {
+        events.push(event);
+      }),
+    );
+    const run = runtime.prompt({ runId: "run-silent-after-compaction", input: input("hello") });
+    await vi.waitFor(() => expect(client.promptPending).toBe(true));
+    client.emit({ type: "compaction_start", reason: "threshold" });
+    await sleep(PROMPT_ACCEPTANCE_TIMEOUT_MS * 2);
+    const endedAt = Date.now();
+    client.emit({ type: "compaction_end", reason: "threshold", aborted: false, willRetry: false });
+    await expect(run).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_error", message: "Pi RPC request timed out: prompt" },
+    });
+    // The window restarted at compaction_end instead of resuming the time spent before it.
+    expect(Date.now() - endedAt).toBeGreaterThanOrEqual(PROMPT_ACCEPTANCE_TIMEOUT_MS - 5);
+    expect(events).toContainEqual(expect.objectContaining({ type: "provider_warning", code: "pi_compaction_failed" }));
+    await runtime.close();
+  });
+
+  it("bounds cancellation during preflight compaction by closing Pi", async () => {
+    const client = new PreflightPiClient();
+    const runtime = await preflightFactory(client).create(createRequest(() => undefined));
+    const run = runtime.prompt({ runId: "run-preflight-cancel", input: input("hello") });
+    await vi.waitFor(() => expect(client.promptPending).toBe(true));
+    client.emit({ type: "compaction_start", reason: "threshold" });
+    await vi.waitFor(() => expect(runtime.state.phase).toBe("running"));
+
+    await runtime.abort({ expectedRunId: "run-preflight-cancel", reason: "user stop" });
+    // RPC abort cannot reach native compaction, so the adapter closes the process instead.
+    expect(client.commands.some((command) => command.type === "abort")).toBe(false);
+    expect(client.closed).toBe(true);
+    await expect(run).resolves.toMatchObject({ status: "aborted", error: { code: "run_aborted" } });
+    await runtime.close();
+  });
+
   it("survives a failed compaction, the native retry, and settles from the real outcome", async () => {
     const client = new ScriptedPiClient("hold");
     const events: AgentRuntimeEvent[] = [];
@@ -1066,7 +1162,7 @@ function assistantMessage(stopReason: "aborted" | "error" | "stop"): Readonly<Re
  * Emit a complete business answer through `agent_end` WITHOUT `agent_settled`, leaving the run in
  * the exact window where pinned Pi 0.84.2 performs native auto-compaction.
  */
-function emitAssistantAnswer(client: ScriptedPiClient, text: string): void {
+function emitAssistantAnswer(client: { emit(message: Readonly<Record<string, unknown>>): void }, text: string): void {
   const assistant = {
     role: "assistant",
     content: [{ type: "text", text }],
@@ -1093,6 +1189,94 @@ function providerEventPayloadTypes(events: readonly AgentRuntimeEvent[]): unknow
   return events
     .filter((event) => event.type === "provider_event")
     .map((event) => (event.payload as { type?: unknown }).type);
+}
+
+const PROMPT_ACCEPTANCE_TIMEOUT_MS = 50;
+
+function preflightFactory(client: PreflightPiClient): PiAgentRuntimeFactory {
+  return new PiAgentRuntimeFactory({
+    createSessionId: () => SESSION_ID,
+    createClient: () => client,
+    probeRunner: async () => ({ credential: true, rpc: true, version: "fixture" }),
+    process: { requestTimeoutMs: PROMPT_ACCEPTANCE_TIMEOUT_MS },
+  });
+}
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+/**
+ * A Pi that holds `prompt` acceptance until the test releases it, the way Pi 0.84.2 holds the
+ * acknowledgement through preflight compaction. Like the real wire, abort and close reject it.
+ */
+class PreflightPiClient implements PiRpcClient {
+  readonly commands: Readonly<Record<string, unknown>>[] = [];
+  readonly promptOptions: (PiRpcRequestOptions | undefined)[] = [];
+  readonly #listeners = new Set<(message: Readonly<Record<string, unknown>>) => void>();
+  #pendingPrompt?: { readonly resolve: () => void; readonly reject: (error: Error) => void };
+  closed = false;
+
+  get promptPending(): boolean {
+    return this.#pendingPrompt !== undefined;
+  }
+
+  async request(
+    command: Readonly<Record<string, unknown>>,
+    signal?: AbortSignal,
+    options?: PiRpcRequestOptions,
+  ): Promise<unknown> {
+    this.commands.push(command);
+    if (command.type === "get_state") {
+      return {
+        sessionId: SESSION_ID,
+        sessionFile: SESSION_FILE,
+        messageCount: 0,
+        model: { id: "fixture-model", provider: "fixture" },
+      };
+    }
+    if (command.type !== "prompt") throw new Error(`unexpected Pi command: ${String(command.type)}`);
+    this.promptOptions.push(options);
+    return new Promise<undefined>((resolve, reject) => {
+      const settle = () => {
+        this.#pendingPrompt = undefined;
+        signal?.removeEventListener("abort", onAbort);
+      };
+      const onAbort = () => {
+        settle();
+        reject(new PiRpcError("aborted", "Pi RPC request was aborted"));
+      };
+      this.#pendingPrompt = {
+        resolve: () => {
+          settle();
+          resolve(undefined);
+        },
+        reject: (error) => {
+          settle();
+          reject(error);
+        },
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
+  acceptPrompt(): void {
+    this.#pendingPrompt?.resolve();
+  }
+
+  subscribe(listener: (message: Readonly<Record<string, unknown>>) => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+
+  emit(message: Readonly<Record<string, unknown>>): void {
+    for (const listener of this.#listeners) listener(message);
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+    this.#pendingPrompt?.reject(new PiRpcError("aborted", "Pi RPC is closing"));
+  }
 }
 
 function piFactory(client: ScriptedPiClient): PiAgentRuntimeFactory {

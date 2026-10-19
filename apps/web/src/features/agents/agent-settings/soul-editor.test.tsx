@@ -94,4 +94,22 @@ describe("Soul editor height", () => {
     expect(editor.style.height).toBe("450px");
     expect(editor.style.overflowY).toBe("auto");
   });
+
+  it("releases space reserved for stacked preset controls when the layout widens", () => {
+    let width = 500;
+    const measure = vi.mocked(Element.prototype.getBoundingClientRect).getMockImplementation();
+    if (!measure) throw new Error("Layout measurement mock missing");
+    vi.mocked(Element.prototype.getBoundingClientRect).mockImplementation(function (this: Element) {
+      const bounds = measure.call(this);
+      const height = (this as HTMLElement).dataset.testid === "soul-footer" ? (width < 800 ? 300 : 104) : bounds.height;
+      return { ...bounds, width, right: width, height, bottom: bounds.top + height };
+    });
+    render(<EditorWithActions value="Long working principles" />);
+    for (const observer of observers) observer.flush();
+    const editor = screen.getByRole("textbox", { name: "Soul" }) as HTMLTextAreaElement;
+    expect(editor.style.height).toBe("432px");
+    width = 900;
+    fireEvent(window, new Event("resize"));
+    expect(editor.style.height).toBe("588px");
+  });
 });

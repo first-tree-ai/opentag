@@ -1346,11 +1346,11 @@ function ComputerSetupSection({
   );
 }
 
-function ComputerStepHeader({ name }: { readonly name: string }) {
+function ComputerStepHeader({ name, title }: { readonly name: string; readonly title?: string }) {
   return (
     <header className="grid gap-1" data-ui="agent-setup-computer-header">
       <Text as="h1" size="lg" variant="heading">
-        {m.onboarding_v2_connect_title()}
+        {title ?? m.onboarding_v2_connect_title()}
       </Text>
       <p className="flex items-start gap-2 text-sm text-kumo-subtle m-0">
         <span aria-hidden="true" className="shrink-0 text-kumo-brand">
@@ -1411,28 +1411,35 @@ function NotBoundComputerSection({
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const canBind = snapshot.actions.some((action) => action.kind === "bind-computer");
-  return (
-    <section className="otv2-computer-step flex flex-col" data-state="not-bound" data-ui="agent-setup-computer">
-      <ComputerStepHeader name={name} />
+  const renderChoice = (choice: ReactNode, multiple = false) => (
+    <>
+      <ComputerStepHeader name={name} title={multiple ? m.agents_computer_choice_existing_heading() : undefined} />
       <div className="otv2-computer-step__body">
         <ComputerSummary
-          status={m.onboarding_v2_connect_no_computer_status()}
-          title={m.onboarding_v2_connect_no_computer_title()}
+          status={
+            multiple ? m.onboarding_v2_connect_not_selected_status() : m.onboarding_v2_connect_no_computer_status()
+          }
+          title={multiple ? m.onboarding_v2_connect_not_selected_title() : m.onboarding_v2_connect_no_computer_title()}
           tone="neutral"
         />
-        {/*
-         * Giving an Agent a Computer is the same work here as in its Settings, so the same surface
-         * does it — including the choice when the Account genuinely has one to make.
-         */}
-        {canBind ? (
-          <AgentComputerChoice
-            adapter={computerConnectAdapter}
-            agentId={agentId}
-            inventoryAdapter={inventoryAdapter}
-            onBound={onChanged}
-          />
-        ) : null}
+        {choice}
       </div>
+    </>
+  );
+  return (
+    <section className="otv2-computer-step flex flex-col" data-state="not-bound" data-ui="agent-setup-computer">
+      {canBind ? (
+        <AgentComputerChoice
+          adapter={computerConnectAdapter}
+          agentId={agentId}
+          inventoryAdapter={inventoryAdapter}
+          onBound={onChanged}
+        >
+          {renderChoice}
+        </AgentComputerChoice>
+      ) : (
+        renderChoice(null)
+      )}
     </section>
   );
 }

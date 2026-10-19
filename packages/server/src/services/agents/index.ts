@@ -22,6 +22,12 @@ export {
   type AgentSetupServiceOptions,
 } from "./agent-setup-service.js";
 export {
+  AgentTransferError,
+  type AgentTransferInput,
+  type AgentTransferRejection,
+  type AgentTransferResult,
+} from "./agent-transfer.js";
+export {
   CLOUD_AGENT_RUNTIME_TEST_TIMEOUT_MS,
   CloudAgentRuntimeTester,
   type CloudAgentRuntimeTesterOptions,

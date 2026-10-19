@@ -63,6 +63,53 @@ choose Codex or Claude Code, then run the generated connection command in a seco
 Follow the chat setup for Slack or Lark / Feishu, then send your agent a message.
 For Slack, see the [additional setup instructions](./docs/system/messaging/slack-app-setup.md).
 
+## Admin operations
+
+Two commands act on the database directly instead of going through the server. Both need the settings from
+`.env.local` and a current `dist/` (`pnpm build`):
+
+- `pnpm --filter @opentag/server bootstrap:admin` creates the first Account on a fresh database.
+- `pnpm --filter @opentag/server transfer:agent` moves an existing Agent to another Account.
+
+### Transfer an Agent to another Account
+
+```bash
+set -a
+source .env.local
+set +a
+OPENTAG_TRANSFER_AGENT_ID=<agent-uuid> \
+OPENTAG_TRANSFER_TARGET_ACCOUNT_ID=<account-uuid> \
+OPENTAG_TRANSFER_SLACK=disable \
+  pnpm --filter @opentag/server transfer:agent
+```
+
+The Agent must be suspended. The command runs in one transaction and prints the result as JSON; it also writes a redacted
+audit line to stderr. A rejected precondition - the Agent is not suspended, the target Account already has an Agent with
+that name, or a Turn can still land on the old Computer - exits non-zero and names the reason in that line. Unbinding the
+messaging connection does not clear the Turn check: the pending Delivery survives in the database, so the command keeps
+refusing until that Turn is reconciled.
+
+Suspend the Agent while its Computer is online: this command has no Runtime connection, so it relies on the suspension
+having already stopped the Sessions and retired the previous Computer's placement. That stop is best effort, so a
+Computer that was offline at suspend time is not retried.
+
+Everything keyed by the Agent alone moves with it: Skills, instructions and history. The Computer is detached, so the
+Agent shows no Computer until the new owner binds one. The MCP mounts and their stored credentials are deleted, because
+the Server definitions they point at belong to the previous Account.
+
+Schedules are kept as records but paused (`enabled = false`, no next occurrence), and the result reports how many were
+paused. Each Schedule pins one target conversation, and that conversation ends with the transfer, so it could no longer
+dispatch. The new owner recreates the Schedule from a conversation they own.
+
+Per-Agent usage history (token counts and outcomes, no message content) is keyed by the Agent, so the new owner's usage
+view includes Turns the source Account ran. Billing history itself is not touched.
+
+`OPENTAG_TRANSFER_SLACK` selects what happens to the messaging binding:
+
+- `disable` (default) disables the binding and releases an unused Slack installation.
+- `keep` leaves a Slack binding and its installation serving the Agent under the new owner. A Feishu binding cannot be
+  kept and is rejected with `im_binding_keep_unsupported`.
+
 ## Stop and restart
 
 Press Ctrl+C in the server terminal to stop the server. To start it again, run from the repository root:

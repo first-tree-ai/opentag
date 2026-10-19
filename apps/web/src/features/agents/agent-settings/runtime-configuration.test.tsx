@@ -793,11 +793,11 @@ describe("RuntimeConfigurationForm", () => {
   });
 
   it.each([
-    ["Engineering", "Help our startup ship reliable software."],
-    ["Design", "Help our startup make simple, usable product interfaces."],
-    ["Product", "Help our startup decide what to build next."],
-    ["Growth", "Help our startup acquire and activate customers."],
-    ["Operations", "Help our startup turn decisions into follow-through."],
+    ["Engineering", "Help our team ship reliable software."],
+    ["Design", "Help our team make simple, usable product interfaces."],
+    ["Product", "Help our team decide what to build next."],
+    ["Growth", "Help our team acquire and activate customers."],
+    ["Operations", "Help our team turn decisions into follow-through."],
   ])("loads %s as an editable draft without saving", (title, role) => {
     const save = vi.fn();
     render(<RuntimeConfigurationForm initialConfig={config} save={save} section="instructions" />);

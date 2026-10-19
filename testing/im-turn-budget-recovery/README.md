@@ -26,12 +26,16 @@ Contract: [IM delivery claim queries](../../docs/system/messaging/im-delivery-cl
   recover children; all deferred response codes and unknown observations preserve custody.
 - Real PostgreSQL coverage accepts and steers children through the custody store, then verifies
   that a due deferred code followed by expiry maintenance leaves the children unchanged.
+- The existing Cloud queue plan check uses explicit message and delivery statistics. A controlled
+  stale-statistics setup keeps background auto-analyze out of the experiment, verifies the seeded
+  row estimate, and retains the strict primary-key lookup and no-message-sequential-scan assertions.
 
 Focused commands:
 
 ```sh
 pnpm --filter @opentag/client exec vitest run src/__tests__/turn-timeout.test.ts src/__tests__/agent-turn-runner.test.ts src/__tests__/turn-activity-reporter.test.ts
 pnpm --filter @opentag/server exec vitest run src/__tests__/im-delivery-worker.test.ts src/__tests__/im-delivery-retry.test.ts src/__tests__/im-delivery-recovery.test.ts src/__tests__/im-delivery-janitor.test.ts
+pnpm --filter @opentag/server exec vitest run src/__tests__/integration/im-delivery-query.test.ts src/__tests__/im-delivery-selector.test.ts --maxWorkers=1
 ```
 
 ## Validation
@@ -40,6 +44,7 @@ pnpm --filter @opentag/server exec vitest run src/__tests__/im-delivery-worker.t
 - `pnpm test` passed: 691 script tests and 9,992 workspace tests; 22 existing skips.
 - Focused Client budget/runner/activity tests: 68 passed. Server worker/retry/recovery/janitor tests: 84 passed.
 - PostgreSQL integration: 746 passed in 58 files.
+- CI fixture follow-up: 13 query-plan/selector tests passed with background auto-analyze disabled.
 - Agent Runtime coverage: 642 passed, with 100% statements, branches, functions, and lines.
 
 ## Limits

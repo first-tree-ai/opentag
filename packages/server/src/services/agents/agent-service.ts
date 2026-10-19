@@ -816,7 +816,7 @@ export class AgentService {
       .innerJoin(creator, eq(creator.id, agents.createdByUserId))
       .leftJoin(imBindings, and(eq(imBindings.agentId, agents.id), ne(imBindings.status, "disabled")))
       .leftJoin(computers, eq(computers.id, agents.computerId))
-      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
+      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
       .limit(1);
     if (!row || row.createdByUserId !== callerUserId) throw resourceNotFound();
     const recoveryStartedAt = new Date(this.#now().getTime() - AGENT_ACTIVITY_RECOVERY_WINDOW_MS);
@@ -1136,12 +1136,12 @@ export class AgentService {
 
   async rebindById(callerUserId: string, agentId: string, computerId: string): Promise<AgentAdminConfig> {
     const result = await this.#database.transaction(async (transaction) => {
+      const target = await this.#lockOwnedComputer(transaction, callerUserId, computerId);
       const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
       this.#requireManagePermission(scope);
       if (scope.agent.status !== "active") {
         throw this.#lifecycleConflict("Only an active Agent can be rebound to a Computer");
       }
-      const target = await this.#lockOwnedComputer(transaction, callerUserId, computerId);
       await this.#assertRebindMode(transaction, scope.computerId, target, scope.agent.runtimeProvider);
       const active = await transaction
         .select({
@@ -1599,7 +1599,7 @@ export class AgentService {
     const [row] = await transaction
       .select({ agent: agents, computerId: agents.computerId })
       .from(agents)
-      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
+      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
       .limit(1)
       .for("update");
     if (!row || row.agent.createdByUserId !== callerUserId) throw resourceNotFound();
@@ -1730,7 +1730,7 @@ export class AgentService {
     const [row] = await executor
       .select({ agent: agents, computerId: agents.computerId })
       .from(agents)
-      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
+      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
       .limit(1);
     if (!row || row.agent.createdByUserId !== callerUserId) throw resourceNotFound();
     return { agent: row.agent, canManage: true, computerId: row.computerId };
@@ -1745,7 +1745,7 @@ export class AgentService {
       .select({ agent: agents, computerId: agents.computerId, runtimeConfig: agentRuntimeConfigs })
       .from(agents)
       .innerJoin(agentRuntimeConfigs, eq(agentRuntimeConfigs.agentId, agents.id))
-      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
+      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
       .limit(1);
     if (!row || row.agent.createdByUserId !== callerUserId) throw resourceNotFound();
     return {

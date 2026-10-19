@@ -578,10 +578,28 @@ export class ConnectionRegistry {
     return count;
   }
 
-  async closeComputer(computerId: string, close: RuntimeCloseReason = CREDENTIAL_ROTATED_CLOSE): Promise<boolean> {
+  async closeComputer(
+    computerId: string,
+    close: RuntimeCloseReason = CREDENTIAL_ROTATED_CLOSE,
+    credentialIds?: readonly string[],
+  ): Promise<boolean> {
+    let closed = false;
+    let closeFailure: { error: unknown } | undefined;
+    try {
+      closed = this.#closeComputerConnection(computerId, close, credentialIds);
+    } catch (error) {
+      closeFailure = { error };
+    }
     await (this.#registrationTails.get(computerId) ?? Promise.resolve());
+    const closedAfterRegistration = this.#closeComputerConnection(computerId, close, credentialIds);
+    if (closeFailure) throw closeFailure.error;
+    return closedAfterRegistration || closed;
+  }
+
+  #closeComputerConnection(computerId: string, close: RuntimeCloseReason, credentialIds?: readonly string[]): boolean {
     const entry = this.#entries.get(computerId);
     if (!entry) return false;
+    if (credentialIds && (!entry.control || !credentialIds.includes(entry.control.credentialId))) return false;
     this.#entries.delete(computerId);
     entry.socket.close(close.code, close.reason);
     return true;

@@ -9,7 +9,7 @@ export async function lockActiveAccount(transaction: DatabaseTransaction, accoun
     .from(users)
     .where(eq(users.id, accountId))
     .limit(1)
-    .for("update");
+    .for("no key update");
   if (!user || user.suspendedAt) {
     throw new AuthServiceError("AUTH_USER_SUSPENDED", "deterministic", "The user account is suspended", 403);
   }

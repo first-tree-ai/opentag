@@ -52,6 +52,20 @@ reports can then be reconciled after reconnect or Server restart without
 starting a second Turn. Placement generation and connection-instance checks
 fence every acceptance and report.
 
+Computer repair commits installation replacement, old credential revocation,
+new credential issuance, and connect-code consumption in one transaction. The
+Server then waits at most one second for connection cleanup. A cleanup failure
+or timeout is logged separately and does not replace the committed exchange
+response. Cleanup targets only the revoked credential IDs, so a delayed close
+cannot evict a subsequent connection authenticated with another credential.
+
+The committed repair clears the current instance. Registration, heartbeat,
+and queued Runtime business frames independently validate the active credential;
+delivery and approval authority also require the current instance and connection.
+Closing the old socket is cleanup, rather than the authority that revokes it.
+Work already executing on an offline Client cannot be physically stopped by
+Server credential revocation alone.
+
 ## Readiness
 
 Provider readiness, provider CLI artifact readiness, and current Integration

@@ -11,6 +11,7 @@ import {
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { agents, computerConnectCodes, computerCredentials, computers } from "../../db/schema/index.js";
+import type { ServiceLogger } from "../../observability/service-logger.js";
 import { AuthServiceError, generateSecret, hashSecret } from "../auth/index.js";
 import { lockActiveAccount } from "./account-lock.js";
 import { uniqueConstraintName } from "./pg-errors.js";
@@ -20,6 +21,7 @@ const COMPUTER_CONNECT_CODE_PREFIX = "otcc_";
 const TARGETED_CONNECT_CODE_RANDOM_BYTES = 16;
 const TARGETED_CONNECT_CODE_PAYLOAD_BYTES = 16 + TARGETED_CONNECT_CODE_RANDOM_BYTES;
 const MACHINE_TOKEN_PREFIX = "otmc_";
+const CREDENTIAL_ROTATION_CLOSE_TIMEOUT_MS = 1_000;
 const SAFE_SHELL_ARG_PATTERN = /^[A-Za-z0-9_@%+=:,./-]+$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const LEGACY_TARGETED_CONNECT_CODE_PATTERN =
@@ -80,7 +82,8 @@ export interface ComputerAuthVerifier {
 
 export interface MachineAuthServiceOptions {
   now?: () => Date;
-  onCredentialRotated?: (computerId: string) => Promise<void> | void;
+  onCredentialRotated?: (computerId: string, revokedCredentialIds: readonly string[]) => Promise<void> | void;
+  logger?: ServiceLogger;
 }
 
 type ConnectCodeRow = typeof computerConnectCodes.$inferSelect;
@@ -89,11 +92,13 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
   readonly #onCredentialRotated?: MachineAuthServiceOptions["onCredentialRotated"];
+  readonly #logger?: ServiceLogger;
 
   constructor(database: DatabaseClient, options: MachineAuthServiceOptions = {}) {
     this.#database = database;
     this.#now = options.now ?? (() => new Date());
     this.#onCredentialRotated = options.onCredentialRotated;
+    this.#logger = options.logger;
   }
 
   async issueForAccount(
@@ -165,7 +170,7 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
   async exchangeConnectCode(input: ComputerConnectExchangeInput): Promise<ComputerConnectExchangeResult> {
     const clientSupportsRuntimeProvider = clientSupportsComputerRuntimeProvider(input.clientVersion);
     const tokenHash = hashSecret(input.code);
-    const result = await this.#database.transaction(async (transaction) => {
+    const { result, revokedCredentialIds } = await this.#database.transaction(async (transaction) => {
       // All access mutations lock Account before code and Computer. Read the immutable issuer first,
       // then re-read and validate under the code lock: disconnect/reset cannot race a redemption.
       const [issuer] = await transaction
@@ -214,15 +219,42 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
         throw invalidMachineCredential("AUTH_CODE_CONSUMED", "The Computer connect code has already been used");
       }
       return {
-        ...targetedIdentityEvidence(targetAgentId, boundRuntimeProvider, clientSupportsRuntimeProvider),
-        credentialId: credential.id,
-        computerId: computer.id,
-        installationId: input.installationId,
-        machineToken: `${MACHINE_TOKEN_PREFIX}${credential.id}.${credential.secret}`,
+        revokedCredentialIds: credential.revokedCredentialIds,
+        result: {
+          ...targetedIdentityEvidence(targetAgentId, boundRuntimeProvider, clientSupportsRuntimeProvider),
+          credentialId: credential.id,
+          computerId: computer.id,
+          installationId: input.installationId,
+          machineToken: `${MACHINE_TOKEN_PREFIX}${credential.id}.${credential.secret}`,
+        },
       };
     });
-    await this.#onCredentialRotated?.(result.computerId);
+    await this.#closeRotatedConnection(result.computerId, revokedCredentialIds);
     return result;
+  }
+
+  async #closeRotatedConnection(computerId: string, revokedCredentialIds: readonly string[]): Promise<void> {
+    if (!this.#onCredentialRotated) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.resolve().then(() => this.#onCredentialRotated?.(computerId, revokedCredentialIds)),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("Connection close timed out")),
+            CREDENTIAL_ROTATION_CLOSE_TIMEOUT_MS,
+          );
+          timer.unref();
+        }),
+      ]);
+    } catch (error) {
+      this.#logger?.warn(
+        { computerId, errorType: error instanceof Error ? error.name : "UnknownError" },
+        "Connection close failed; Computer credentials remain rotated",
+      );
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   async verifyMachineToken(machineToken: string): Promise<ComputerAuthContext> {
@@ -564,7 +596,7 @@ async function rotateComputerCredentials(
   computerId: string,
   accountId: string,
   now: Date,
-): Promise<{ id: string; secret: string }> {
+): Promise<{ id: string; secret: string; revokedCredentialIds: string[] }> {
   const [computer] = await transaction
     .select({ id: computers.id })
     .from(computers)
@@ -573,10 +605,11 @@ async function rotateComputerCredentials(
   if (!computer) {
     throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
   }
-  await transaction
+  const revoked = await transaction
     .update(computerCredentials)
     .set({ revokedByUserId: accountId, revokedAt: now })
-    .where(and(eq(computerCredentials.computerId, computerId), isNull(computerCredentials.revokedAt)));
+    .where(and(eq(computerCredentials.computerId, computerId), isNull(computerCredentials.revokedAt)))
+    .returning({ id: computerCredentials.id });
   const credentialId = randomUUID();
   const secret = generateSecret(32);
   const secretHash = hashSecret(secret);
@@ -587,7 +620,7 @@ async function rotateComputerCredentials(
     issuedByUserId: accountId,
     issuedAt: now,
   });
-  return { id: credentialId, secret };
+  return { id: credentialId, secret, revokedCredentialIds: revoked.map((credential) => credential.id) };
 }
 
 function matchesSecretHash(expectedHash: string, secret: string): boolean {

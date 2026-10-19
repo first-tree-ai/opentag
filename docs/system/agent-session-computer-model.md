@@ -64,6 +64,26 @@ without consulting readiness. Readiness can affect route availability and Turn
 execution, but it cannot silently rewrite the Agent's Provider or create a
 Session lifecycle state.
 
+## Management writes
+
+Agent rebind locks its target Computer before its owned Agent, matching targeted
+Computer repair. Computer access mutations retain their Account guard with
+`FOR NO KEY UPDATE`: it serializes those mutations and conflicts with Account
+updates/deletion while allowing the KEY SHARE required by existing ownership
+foreign keys. Agent creation and rebind add no Account lock or query.
+
+The staging/development reset uses the same weaker guard during Computer access
+revocation. Its separate final cleanup verification keeps its existing lock.
+Agent creation, placement changes, and credential exchange retain their small
+transactions so related durable facts commit together. Connection cleanup and
+Runtime notifications run after commit.
+
+Agent mutation queries select the caller's ownership in the locking predicate,
+then validate lifecycle and revision while holding the row lock. A foreign or
+missing Agent returns the same not-found result without waiting for a foreign
+Agent row lock. Detail and configuration reads apply the same ownership
+predicate in their first query.
+
 ## Rationale
 
 Stable Session identity lets messages and people address work without knowing

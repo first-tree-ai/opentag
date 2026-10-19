@@ -13,6 +13,8 @@ contents, and machine-specific operational logs outside the repository.
 
 ## Verification by feature
 
+- [Account, Agent, and Computer management writes](verification/account-agent-computer-writes.md)
+
 - [Agent Runtime contract](verification/agent-runtime-contract.md)
 - [Agent Skills](verification/agent-skills.md)
 - [Cloud billing](verification/cloud-billing.md)

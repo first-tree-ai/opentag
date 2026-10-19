@@ -1,5 +1,5 @@
 import type { GitHubConnectionStatus, GitHubIntegrationOverview } from "@opentag/shared/browser";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../../api.js";
 import { GitHubIntegrationSettings } from "./github-integration-settings.js";
@@ -42,437 +42,182 @@ afterEach(() => {
   window.history.replaceState({}, "", "/account");
 });
 
-describe("GitHubIntegrationSettings", () => {
-  it("explains an unavailable deployment instead of showing demo integrations", async () => {
+async function openAccountMenu() {
+  fireEvent.click(await screen.findByRole("button", { name: "GitHub account actions" }));
+  return screen.findByRole("menu");
+}
+
+describe("GitHub account settings", () => {
+  it("explains deployment unavailability without unusable controls or health badges", async () => {
     vi.spyOn(browserApi, "githubIntegration").mockResolvedValue({
       availability: { available: false, githubHost: "github.com", appId: null },
       connection: null,
     });
     render(<GitHubIntegrationSettings />);
-
     expect(await screen.findByText("GitHub integration unavailable")).toBeTruthy();
-    expect(screen.getByText("Not configured")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Connect GitHub" })).toBeNull();
-    expect(screen.queryByText("Demo")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Authorize GitHub" })).toBeNull();
+    expect(screen.queryByText("Not configured")).toBeNull();
   });
 
-  it("starts a real authorization with the Server-owned surface contract", async () => {
-    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(null));
-    const start = vi.spyOn(browserApi, "startGitHubAuthorization").mockResolvedValue({
-      connectionId: CONNECTION_ID,
-      authorizationUrl: "https://github.com/login/oauth/authorize?client_id=Iv1.client&state=opaque",
-      expiresAt: "2026-09-16T00:10:00.000Z",
-    });
-    render(<GitHubIntegrationSettings />);
-
-    fireEvent.click(await screen.findByRole("button", { name: "Connect GitHub" }));
-    await waitFor(() =>
-      expect(start).toHaveBeenCalledWith({
-        intent: "create",
-        returnSurface: "account-integrations",
-        agentId: null,
-      }),
-    );
-    // The browser only ever navigates to the URL the Server authored; it never composes one.
-    expect(new URL("https://github.com/login/oauth/authorize?client_id=Iv1.client&state=opaque").hostname).toBe(
-      "github.com",
-    );
-  });
-
-  it("shows the connected identity without a saved repository list", async () => {
+  it("shows the saved identity and server-owned repository management without discovery", async () => {
     vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection()));
-    vi.spyOn(browserApi, "githubRepositories").mockResolvedValue({
-      installations: [],
-      repositories: [],
-      nextCursor: null,
-    });
+    const discover = vi.spyOn(browserApi, "githubRepositories").mockRejectedValue(new Error("GitHub outage"));
     render(<GitHubIntegrationSettings />);
-    expect(await screen.findByText(/Connected as/)).toBeTruthy();
-    expect(screen.queryByText(/bound repositories/i)).toBeNull();
+    expect(await screen.findByText("@octocat")).toBeTruthy();
+    expect(screen.getByText("Shared by all your Agents.")).toBeTruthy();
+    const link = screen.getByRole("link", { name: "Manage on GitHub" });
+    expect(link.getAttribute("href")).toBe("/api/v1/integrations/github/installation");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(discover).not.toHaveBeenCalled();
+    expect(screen.queryByText("Connected")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Refresh installations" })).toBeNull();
+    const menu = await openAccountMenu();
+    expect(within(menu).getByRole("menuitem", { name: "Change account" })).toBeTruthy();
+    expect(within(menu).getByRole("menuitem", { name: "Remove account" })).toBeTruthy();
   });
 
-  it("reports the bounded callback outcome and clears the query parameters", async () => {
-    window.history.replaceState({}, "", "/account?github_oauth=error&github_oauth_error=GITHUB_OAUTH_DENIED&keep=1");
-    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(null));
-    render(<GitHubIntegrationSettings />);
-
-    expect(await screen.findByText("GitHub authorization was denied.")).toBeTruthy();
-    expect(window.location.search).toBe("?keep=1");
-  });
-
-  it("routes a different-user reauthorization to the explicit replace action", async () => {
-    window.history.replaceState({}, "", "/account?github_oauth=error&github_oauth_error=GITHUB_IDENTITY_MISMATCH");
-    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(
-      overview(connection({ status: "reauthorization_required" })),
-    );
-    render(<GitHubIntegrationSettings />);
-
-    expect(
-      await screen.findByText(
-        "That authorization returned a different GitHub account. Use a different account to replace it.",
-      ),
-    ).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Use a different account" })).toBeTruthy();
-    expect(screen.queryByRole("link", { name: "Install GitHub App" })).toBeNull();
-  });
-
-  it("disconnects through the API and reloads the resulting state", async () => {
-    const summary = vi
-      .spyOn(browserApi, "githubIntegration")
-      .mockResolvedValueOnce(overview(connection()))
-      .mockResolvedValueOnce(overview(null));
-    vi.spyOn(browserApi, "githubRepositories").mockResolvedValue({
-      installations: [],
-      repositories: [],
-      nextCursor: null,
-      truncatedInstallations: [],
-    });
-    const disconnect = vi.spyOn(browserApi, "disconnectGitHub").mockResolvedValue(connection({ status: "revoked" }));
-    render(<GitHubIntegrationSettings />);
-
-    fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
-    await waitFor(() => expect(disconnect).toHaveBeenCalledTimes(1));
-    expect(await screen.findByText("GitHub disconnected.")).toBeTruthy();
-    expect(await screen.findByRole("button", { name: "Connect GitHub" })).toBeTruthy();
-    expect(summary).toHaveBeenCalledTimes(2);
-  });
-
-  it("surfaces a controlled conflict from the Server as product language", async () => {
-    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection()));
-    vi.spyOn(browserApi, "githubRepositories").mockResolvedValue({
-      installations: [],
-      repositories: [],
-      nextCursor: null,
-      truncatedInstallations: [],
-    });
-    vi.spyOn(browserApi, "startGitHubAuthorization").mockRejectedValue(
-      new ApiError(409, "The connection changed", "GITHUB_CONNECTION_CONFLICT"),
-    );
-    render(<GitHubIntegrationSettings />);
-
-    fireEvent.click(await screen.findByRole("button", { name: "Reconnect" }));
-    expect(await screen.findByText("The connection changed. Reload and try again.")).toBeTruthy();
-  });
-
-  it("explains a reauthorization requirement with the reconnect action", async () => {
-    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(
-      overview(
-        connection({
-          status: "reauthorization_required",
-          githubLogin: "octocat",
-          lastErrorCode: "GITHUB_CREDENTIAL_INVALID",
-        }),
-      ),
-    );
-    render(<GitHubIntegrationSettings />);
-
-    expect(await screen.findByText("Reconnect needed")).toBeTruthy();
-    expect(screen.getByText("Reconnect GitHub")).toBeTruthy();
-    expect(screen.getAllByRole("button", { name: "Reconnect" })).toHaveLength(2);
-  });
-});
-
-/**
- * The connection states, the wording each one uses, and the Server-controlled failures. The suite
- * above covers the happy paths; this one covers the states a real connection spends time in.
- */
-describe("GitHubIntegrationSettings states", () => {
-  it("says it is loading rather than showing a disconnected Account", async () => {
-    vi.spyOn(browserApi, "githubIntegration").mockReturnValue(new Promise(() => undefined) as never);
-    render(<GitHubIntegrationSettings />);
-
-    expect(await screen.findByText("Loading GitHub connection…")).toBeTruthy();
-    expect(screen.queryByText("No GitHub account is connected.")).toBeNull();
-  });
-
-  it("reports a failed load and offers to try again", async () => {
-    vi.spyOn(browserApi, "githubIntegration").mockRejectedValue(new Error("The overview is unavailable"));
-    render(<GitHubIntegrationSettings />);
-
-    expect(await screen.findByText("The overview is unavailable")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
-  });
-
-  it("uses the bounded sentence when the load fails with something that is not an error", async () => {
-    vi.spyOn(browserApi, "githubIntegration").mockRejectedValue("plain string");
-    render(<GitHubIntegrationSettings />);
-
-    expect(await screen.findByText("The GitHub request could not be completed.")).toBeTruthy();
-  });
-
-  it("re-reads the connection when the reader asks to try again", async () => {
-    const overviewCall = vi
-      .spyOn(browserApi, "githubIntegration")
-      .mockRejectedValueOnce(new Error("The overview is unavailable"))
-      .mockResolvedValue(overview(null));
-    render(<GitHubIntegrationSettings />);
-
-    fireEvent.click(await screen.findByRole("button", { name: "Try again" }));
-
-    expect(await screen.findByRole("button", { name: "Connect GitHub" })).toBeTruthy();
-    expect(overviewCall).toHaveBeenCalledTimes(2);
-  });
-
-  it("explains a pending authorization and offers to finish or cancel it", async () => {
-    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection({ status: "pending" })));
-    render(<GitHubIntegrationSettings />);
-
-    expect(await screen.findByText("Connecting")).toBeTruthy();
-    expect(screen.getByText("The GitHub authorization was started but not finished.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Finish connecting" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
-  });
-
-  it("finishes a pending authorization by starting one rather than composing a URL", async () => {
-    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection({ status: "pending" })));
-    const start = vi.spyOn(browserApi, "startGitHubAuthorization").mockResolvedValue({
-      connectionId: CONNECTION_ID,
-      authorizationUrl: "https://github.com/login/oauth/authorize?state=opaque",
-      expiresAt: "2026-09-16T00:10:00.000Z",
-    });
-    render(<GitHubIntegrationSettings />);
-
-    fireEvent.click(await screen.findByRole("button", { name: "Finish connecting" }));
-
-    await waitFor(() =>
-      expect(start).toHaveBeenCalledWith({
-        intent: "create",
-        returnSurface: "account-integrations",
-        agentId: null,
-      }),
-    );
-  });
-
-  it("cancels a pending authorization by disconnecting it", async () => {
-    vi.spyOn(browserApi, "githubIntegration")
-      .mockResolvedValueOnce(overview(connection({ status: "pending" })))
-      .mockResolvedValueOnce(overview(null));
-    const disconnect = vi.spyOn(browserApi, "disconnectGitHub").mockResolvedValue(connection({ status: "revoked" }));
-    render(<GitHubIntegrationSettings />);
-
-    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
-
-    await waitFor(() => expect(disconnect).toHaveBeenCalledTimes(1));
-  });
-
-  it("labels a revoked connection as disconnected", async () => {
-    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection({ status: "revoked" })));
-    render(<GitHubIntegrationSettings />);
-
-    expect(await screen.findByText("Disconnected")).toBeTruthy();
-  });
-
-  it("labels an unrecognized connection state as replaced, not as active", async () => {
-    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection({ status: "superseded" })));
-    render(<GitHubIntegrationSettings />);
-
-    expect(await screen.findByText("Replaced")).toBeTruthy();
-  });
-
-  it("offers the explicit replace action, which authorizes a different account", async () => {
-    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection()));
-    vi.spyOn(browserApi, "githubRepositories").mockResolvedValue({
-      installations: [],
-      repositories: [],
-      nextCursor: null,
-      truncatedInstallations: [],
-    });
-    const start = vi.spyOn(browserApi, "startGitHubAuthorization").mockResolvedValue({
-      connectionId: CONNECTION_ID,
-      authorizationUrl: "https://github.com/login/oauth/authorize?state=opaque",
-      expiresAt: "2026-09-16T00:10:00.000Z",
-    });
-    render(<GitHubIntegrationSettings />);
-
-    fireEvent.click(await screen.findByRole("button", { name: "Use a different account" }));
-
-    await waitFor(() =>
-      expect(start).toHaveBeenCalledWith({
-        intent: "replace",
-        returnSurface: "account-integrations",
-        agentId: null,
-      }),
-    );
-  });
-
-  it("says the installation list is empty rather than leaving the row blank", async () => {
-    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection()));
-    vi.spyOn(browserApi, "githubRepositories").mockResolvedValue({
-      installations: [],
-      repositories: [],
-      nextCursor: null,
-      truncatedInstallations: [],
-    });
-    render(<GitHubIntegrationSettings />);
-
-    expect(await screen.findByText("No installations found.")).toBeTruthy();
-    expect(screen.queryByText("No repositories are enabled for Agents.")).toBeNull();
-    expect(screen.queryByText("Repositories (0)")).toBeNull();
-    const install = screen.getByRole("link", { name: "Install GitHub App" });
-    expect(install.getAttribute("href")).toBe("/api/v1/integrations/github/installation");
-    expect(install.getAttribute("target")).toBe("_blank");
-    expect(install.getAttribute("rel")).toContain("noopener");
-
-    vi.mocked(browserApi.githubRepositories).mockResolvedValue({
-      installations: [
-        {
-          installationId: "55123456",
-          accountLogin: "octocat",
-          accountType: "User",
-          repositorySelection: "selected",
-          suspended: false,
-        },
-      ],
-      repositories: [],
-      nextCursor: null,
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Refresh installations" }));
-    expect(await screen.findByText("octocat")).toBeTruthy();
-    expect(screen.queryByText("No installations found.")).toBeNull();
-    expect(screen.getByRole("link", { name: "Install GitHub App" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Refresh installations" })).toBeTruthy();
-  });
-
-  it.each([
-    { accountType: "User", suspended: false },
-    { accountType: "Organization", suspended: false },
-    { accountType: "Organization", suspended: true },
-  ] as const)(
-    "keeps installation and refresh available for an existing $accountType installation (suspended=$suspended)",
-    async ({ accountType, suspended }) => {
-      vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection()));
-      const existing = {
-        installationId: "55123456",
-        accountLogin: "octocat",
-        accountType,
-        repositorySelection: "selected" as const,
-        suspended,
-      };
-      const discover = vi.spyOn(browserApi, "githubRepositories").mockResolvedValue({
-        installations: [existing],
-        repositories: [],
-        nextCursor: null,
-      });
+  it.each([null, "pending", "revoked", "superseded"] as const)(
+    "offers authorization for %s without exposing internal lifecycle labels",
+    async (status) => {
+      vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(status ? connection({ status }) : null));
+      const start = vi.spyOn(browserApi, "startGitHubAuthorization").mockRejectedValue(new Error("Controlled stop"));
       render(<GitHubIntegrationSettings />);
-
-      expect(await screen.findByText(suspended ? "octocat (suspended)" : "octocat")).toBeTruthy();
-      expect(screen.getByRole("link", { name: "Install GitHub App" }).getAttribute("href")).toBe(
-        "/api/v1/integrations/github/installation",
+      fireEvent.click(await screen.findByRole("button", { name: "Authorize GitHub" }));
+      await waitFor(() =>
+        expect(start).toHaveBeenCalledWith({ intent: "create", returnSurface: "account-integrations", agentId: null }),
       );
-
-      discover.mockResolvedValue({
-        installations: [
-          existing,
-          {
-            ...existing,
-            installationId: "55123457",
-            accountLogin: "another-org",
-            accountType: "Organization",
-            suspended: false,
-          },
-        ],
-        repositories: [],
-        nextCursor: null,
-      });
-      fireEvent.click(screen.getByRole("button", { name: "Refresh installations" }));
-
-      expect(await screen.findByText("another-org")).toBeTruthy();
-      expect(screen.getByText(suspended ? "octocat (suspended)" : "octocat")).toBeTruthy();
-      expect(discover).toHaveBeenCalledTimes(2);
-      expect(screen.getByRole("link", { name: "Install GitHub App" })).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Refresh installations" })).toBeTruthy();
+      expect(screen.queryByText("Connecting")).toBeNull();
     },
   );
 
-  it("marks a suspended installation instead of presenting it as usable", async () => {
+  it("changes identity directly with the explicit replace intent", async () => {
     vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection()));
-    vi.spyOn(browserApi, "githubRepositories").mockResolvedValue({
-      installations: [
-        {
-          installationId: "55123456",
-          accountLogin: "octocat",
-          accountType: "Organization",
-          repositorySelection: "selected",
-          suspended: true,
-        },
-      ],
-      repositories: [],
-      nextCursor: null,
-      truncatedInstallations: [],
-    });
+    const start = vi.spyOn(browserApi, "startGitHubAuthorization").mockRejectedValue(new Error("Controlled stop"));
     render(<GitHubIntegrationSettings />);
-
-    expect(await screen.findByText("octocat (suspended)")).toBeTruthy();
+    const menu = await openAccountMenu();
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Change account" }));
+    await waitFor(() =>
+      expect(start).toHaveBeenCalledWith({ intent: "replace", returnSurface: "account-integrations", agentId: null }),
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByText("@octocat")).toBeTruthy();
   });
 
-  it("says a connection has no login when the Server did not record one", async () => {
-    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection({ githubLogin: null })));
-    vi.spyOn(browserApi, "githubRepositories").mockResolvedValue({
-      installations: [],
-      repositories: [],
-      nextCursor: null,
-      truncatedInstallations: [],
-    });
+  it("shows an intervention only when the server requires reauthorization", async () => {
+    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(
+      overview(connection({ status: "reauthorization_required" })),
+    );
+    const start = vi.spyOn(browserApi, "startGitHubAuthorization").mockRejectedValue(new Error("Controlled stop"));
     render(<GitHubIntegrationSettings />);
-
-    expect(await screen.findByText("GitHub account connected.")).toBeTruthy();
-    expect(screen.queryByText(/^Connected as @/)).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Authorize again" }));
+    await waitFor(() =>
+      expect(start).toHaveBeenCalledWith({
+        intent: "reauthorize",
+        returnSurface: "account-integrations",
+        agentId: null,
+      }),
+    );
+    expect(screen.getByText("@octocat")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Manage on GitHub" })).toBeTruthy();
   });
 
-  it("reports a granted authorization as connected, with the default banner tone", async () => {
-    window.history.replaceState({}, "", "/account?github_oauth=success");
-    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(null));
+  it("confirms shared removal and lets cancellation leave the account untouched", async () => {
+    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection()));
+    const disconnect = vi.spyOn(browserApi, "disconnectGitHub").mockResolvedValue(connection({ status: "revoked" }));
     render(<GitHubIntegrationSettings />);
-
-    expect(await screen.findByText("GitHub connected.")).toBeTruthy();
-    await waitFor(() => expect(window.location.search).toBe(""));
-  });
-
-  it("reports an error outcome from the callback and clears the parameters", async () => {
-    window.history.replaceState({}, "", "/account?github_oauth=error&github_oauth_error=GITHUB_RATE_LIMITED");
-    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(null));
-    render(<GitHubIntegrationSettings />);
-
-    expect(await screen.findByText("GitHub rate limit reached. Try again shortly.")).toBeTruthy();
-    await waitFor(() => expect(window.location.search).toBe(""));
-  });
-
-  it("does not re-read the connection twice when the button is pressed while it is working", async () => {
-    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(null));
-    let resolve!: (value: unknown) => void;
-    const pending = new Promise((done) => {
-      resolve = done;
-    });
-    const start = vi.spyOn(browserApi, "startGitHubAuthorization").mockReturnValue(pending as never);
-    render(<GitHubIntegrationSettings />);
-
-    fireEvent.click(await screen.findByRole("button", { name: "Connect GitHub" }));
-    fireEvent.click(screen.getByRole("button", { name: "Working…" }));
-
-    resolve({ connectionId: CONNECTION_ID, authorizationUrl: "https://github.com/x", expiresAt: "e" });
-    await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
-  });
-
-  it("refuses a disconnect that arrives while another action is still running", async () => {
-    // The pending-state row has both a finish and a cancel; the second press must be ignored while
-    // the first is in flight, or one reader action becomes two Server calls.
-    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection({ status: "pending" })));
-    let resolve!: (value: unknown) => void;
-    const pending = new Promise((done) => {
-      resolve = done;
-    });
-    const start = vi.spyOn(browserApi, "startGitHubAuthorization").mockReturnValue(pending as never);
-    const disconnect = vi.spyOn(browserApi, "disconnectGitHub").mockResolvedValue(connection());
-    render(<GitHubIntegrationSettings />);
-
-    fireEvent.click(await screen.findByRole("button", { name: "Finish connecting" }));
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-
-    await Promise.resolve();
+    fireEvent.click(within(await openAccountMenu()).getByRole("menuitem", { name: "Remove account" }));
+    const dialog = await screen.findByRole("dialog", { name: "Remove GitHub account?" });
+    expect(within(dialog).getByText(/All your Agents will lose GitHub access through @octocat/)).toBeTruthy();
+    expect(within(dialog).getByText(/App installation on GitHub will remain/)).toBeTruthy();
     expect(disconnect).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(disconnect).not.toHaveBeenCalled();
+    fireEvent.click(within(await openAccountMenu()).getByRole("menuitem", { name: "Remove account" }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Remove account" }));
+    expect(await screen.findByText("GitHub account removed.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Authorize GitHub" })).toBeTruthy();
+    expect(disconnect).toHaveBeenCalledTimes(1);
+  });
 
-    resolve({ connectionId: CONNECTION_ID, authorizationUrl: "https://github.com/x", expiresAt: "e" });
-    await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+  it("keeps failed removal in its dialog and fences repeated confirmation", async () => {
+    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection()));
+    let fail!: (error: Error) => void;
+    const disconnect = vi
+      .spyOn(browserApi, "disconnectGitHub")
+      .mockReturnValueOnce(
+        new Promise((_, reject) => {
+          fail = reject;
+        }),
+      )
+      .mockResolvedValue(connection({ status: "revoked" }));
+    render(<GitHubIntegrationSettings />);
+    fireEvent.click(within(await openAccountMenu()).getByRole("menuitem", { name: "Remove account" }));
+    const dialog = await screen.findByRole("dialog");
+    const confirm = within(dialog).getByRole("button", { name: "Remove account" });
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    expect((within(dialog).getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true);
+    fail(new Error("Controlled removal failure"));
+    expect(await within(dialog).findByRole("alert")).toHaveProperty("textContent", "Controlled removal failure");
+    expect(screen.getByText("@octocat")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove account" }));
+    expect(await screen.findByText("GitHub account removed.")).toBeTruthy();
+    expect(disconnect).toHaveBeenCalledTimes(2);
+  });
+
+  it("makes organization help available by an explicit accessible toggle", async () => {
+    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection()));
+    render(<GitHubIntegrationSettings />);
+    const help = await screen.findByRole("button", { name: "About GitHub repository access" });
+    expect(help.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(help);
+    expect(help.getAttribute("aria-expanded")).toBe("true");
+    expect(
+      screen.getByText(/An existing organization installation does not require another installation/),
+    ).toBeTruthy();
+    fireEvent.click(help);
+    expect(screen.queryByText(/An existing organization installation/)).toBeNull();
+  });
+
+  it("uses a neutral fallback when the recorded login is unavailable", async () => {
+    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection({ githubLogin: null })));
+    render(<GitHubIntegrationSettings />);
+    expect(await screen.findByText("GitHub account")).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "GitHub account actions" })).toBeTruthy();
+    expect(screen.queryByText("GitHub account connected.")).toBeNull();
+  });
+
+  it.each([
+    ["error&github_oauth_error=GITHUB_OAUTH_DENIED", "GitHub authorization was denied."],
+    ["success", "GitHub authorization completed."],
+    [
+      "error&github_oauth_error=GITHUB_IDENTITY_MISMATCH",
+      "That authorization returned a different GitHub account. Choose Change account to replace it.",
+    ],
+  ])("reports the bounded callback outcome %s once", async (query, text) => {
+    window.history.replaceState({}, "", `/account?github_oauth=${query}&keep=1`);
+    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection()));
+    render(<GitHubIntegrationSettings />);
+    expect(await screen.findByText(text)).toBeTruthy();
+    expect(window.location.search).toBe("?keep=1");
+  });
+
+  it("retains edits when the navigation guard cannot preserve them", async () => {
+    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(null));
+    const start = vi.spyOn(browserApi, "startGitHubAuthorization");
+    render(
+      <GitHubIntegrationSettings
+        beforeAuthorize={() => {
+          throw new Error("Save your edit first");
+        }}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Authorize GitHub" }));
+    expect(await screen.findByText("Save your edit first")).toBeTruthy();
+    expect(start).not.toHaveBeenCalled();
   });
 });
 
@@ -495,7 +240,7 @@ describe("GitHubIntegrationSettings failure language", () => {
     vi.spyOn(browserApi, "startGitHubAuthorization").mockRejectedValue(new ApiError(409, "raw upstream", code));
     render(<GitHubIntegrationSettings />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Connect GitHub" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Authorize GitHub" }));
 
     expect(await screen.findByText(sentence)).toBeTruthy();
     expect(screen.queryByText("raw upstream")).toBeNull();
@@ -508,7 +253,7 @@ describe("GitHubIntegrationSettings failure language", () => {
     );
     render(<GitHubIntegrationSettings />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Connect GitHub" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Authorize GitHub" }));
 
     expect(await screen.findByText("Something unmapped happened")).toBeTruthy();
   });
@@ -518,7 +263,7 @@ describe("GitHubIntegrationSettings failure language", () => {
     vi.spyOn(browserApi, "startGitHubAuthorization").mockRejectedValue({ status: 500 } as never);
     render(<GitHubIntegrationSettings />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Connect GitHub" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Authorize GitHub" }));
 
     expect(await screen.findByText("The GitHub request could not be completed.")).toBeTruthy();
   });
@@ -528,7 +273,7 @@ describe("GitHubIntegrationSettings failure language", () => {
     vi.spyOn(browserApi, "startGitHubAuthorization").mockRejectedValue(new ApiError(500, ""));
     render(<GitHubIntegrationSettings />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Connect GitHub" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Authorize GitHub" }));
 
     expect(await screen.findByText("The GitHub request could not be completed.")).toBeTruthy();
   });

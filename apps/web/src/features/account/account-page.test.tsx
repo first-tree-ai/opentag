@@ -50,3 +50,57 @@ describe("AccountSettings language selector", () => {
     await waitFor(() => expect(setLocale).toHaveBeenCalledWith("zh"));
   });
 });
+
+describe("Account profile authorization drafts", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    window.sessionStorage.clear();
+  });
+
+  it("restores a draft after a document round trip without submitting a profile write", async () => {
+    const guard = { current: null as (() => void) | null };
+    const refresh = vi.fn();
+    const first = render(<AccountSettings navigationGuardRef={guard} refreshMe={refresh} user={user} />);
+    fireEvent.change(screen.getByRole("textbox", { name: "Display name" }), { target: { value: "Unsaved name" } });
+    guard.current?.();
+    first.unmount();
+    render(<AccountSettings refreshMe={refresh} user={user} />);
+    expect((screen.getByRole("textbox", { name: "Display name" }) as HTMLInputElement).value).toBe("Unsaved name");
+    expect(screen.getByText("Unsaved changes")).toBeTruthy();
+    expect(refresh).not.toHaveBeenCalled();
+    expect(window.sessionStorage.getItem("opentag.account-profile-navigation-draft")).toBeNull();
+  });
+
+  it.each(["other-account", "changed-profile", "expired", "future", "malformed"] as const)(
+    "does not restore a %s draft",
+    (reason) => {
+      const draft = {
+        accountId: reason === "other-account" ? "another-id" : user.id,
+        confirmedName: reason === "changed-profile" ? "An old name" : user.displayName,
+        displayName: "Stale private name",
+        createdAt:
+          reason === "expired" ? Date.now() - 31 * 60_000 : reason === "future" ? Date.now() + 60_000 : Date.now(),
+      };
+      window.sessionStorage.setItem(
+        "opentag.account-profile-navigation-draft",
+        reason === "malformed" ? "{bad" : JSON.stringify(draft),
+      );
+      render(<AccountSettings refreshMe={vi.fn()} user={user} />);
+      expect((screen.getByRole("textbox", { name: "Display name" }) as HTMLInputElement).value).toBe(user.displayName);
+      expect(window.sessionStorage.getItem("opentag.account-profile-navigation-draft")).toBeNull();
+    },
+  );
+
+  it("keeps edits on screen and prevents navigation when tab storage fails", () => {
+    const guard = { current: null as (() => void) | null };
+    render(<AccountSettings navigationGuardRef={guard} refreshMe={vi.fn()} user={user} />);
+    fireEvent.change(screen.getByRole("textbox", { name: "Display name" }), { target: { value: "Keep this draft" } });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("Storage disabled");
+    });
+    expect(() => guard.current?.()).toThrow("Save or discard the edit before authorizing GitHub.");
+    expect((screen.getByRole("textbox", { name: "Display name" }) as HTMLInputElement).value).toBe("Keep this draft");
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    expect(() => guard.current?.()).not.toThrow();
+  });
+});

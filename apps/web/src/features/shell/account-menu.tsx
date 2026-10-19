@@ -6,6 +6,7 @@ import { initials } from "../../i18n/format.js";
 import * as m from "../../paraglide/messages.js";
 import { queryKeys } from "../../query/keys.js";
 import { Button, DropdownMenu, Icon, Loader, Sidebar, Tooltip } from "../../ui/design-system.js";
+import { clearProfileNavigationDraft } from "../account/profile-navigation-draft.js";
 import { useAccount } from "../session/session-context.js";
 import { MenuItemIcon } from "./menu-item-icon.js";
 
@@ -35,6 +36,7 @@ export function AccountMenu({
     try {
       await browserApi.logout();
       // End the Account-owned cache before login navigation so a later Account cannot see it.
+      clearProfileNavigationDraft();
       endSession();
       void navigate({ replace: true, to: "/login" });
     } catch (cause) {

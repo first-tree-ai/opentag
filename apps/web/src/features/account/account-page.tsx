@@ -1,5 +1,5 @@
 import type { MeResponse } from "@opentag/shared/browser";
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import { type FormEvent, type Ref, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
 import { getLocale, isLocale, LOCALE_LABELS, locales, setLocale, toLocale } from "../../i18n/locale.js";
 import { messagingProviderLabel } from "../../im/provider-label.js";
@@ -9,10 +9,16 @@ import { Page } from "../layout/page.js";
 import { useAccount } from "../session/session-context.js";
 import { CloudBillingSettings } from "./cloud-billing-settings.js";
 import { GitHubIntegrationSettings } from "./github-integration-settings.js";
+import {
+  clearProfileNavigationDraft,
+  preserveProfileNavigationDraft,
+  readProfileNavigationDraft,
+} from "./profile-navigation-draft.js";
 import { SlackAgentProvisionCode } from "./slack-agent-provision-code.js";
 
 export function AccountPage({ slackProvision = false }: { slackProvision?: boolean }) {
   const { me, refreshMe } = useAccount();
+  const profileNavigation = useRef<(() => void) | null>(null);
   if (slackProvision)
     return (
       <Page title={m.account_slack_provision_title({ provider: messagingProviderLabel("slack") })}>
@@ -21,9 +27,9 @@ export function AccountPage({ slackProvision = false }: { slackProvision?: boole
     );
   return (
     <Page title={m.account_page_title()} description={m.account_page_description()}>
-      <AccountSettings refreshMe={refreshMe} user={me.user} />
+      <AccountSettings key={me.user.id} navigationGuardRef={profileNavigation} refreshMe={refreshMe} user={me.user} />
+      <GitHubIntegrationSettings beforeAuthorize={() => profileNavigation.current?.()} />
       <CloudBillingSettings />
-      <GitHubIntegrationSettings />
     </Page>
   );
 }
@@ -31,13 +37,15 @@ export function AccountPage({ slackProvision = false }: { slackProvision?: boole
 export function AccountSettings({
   refreshMe,
   user,
+  navigationGuardRef,
 }: {
   refreshMe: () => Promise<MeResponse>;
   user: MeResponse["user"];
+  navigationGuardRef?: Ref<() => void>;
 }) {
   const saveInFlight = useRef(false);
   const confirmedDisplayNameRef = useRef(user.displayName);
-  const [displayName, setDisplayName] = useState(user.displayName);
+  const [displayName, setDisplayName] = useState(() => readProfileNavigationDraft(user.id, user.displayName));
   const [saving, setSaving] = useState(false);
   const syncInFlight = useRef(false);
   const [syncing, setSyncing] = useState(false);
@@ -50,6 +58,17 @@ export function AccountSettings({
   const [error, setError] = useState<string>();
   const confirmedDisplayName = unsyncedDisplayName ?? user.displayName;
   const dirty = displayName !== confirmedDisplayName;
+
+  // A restored draft is consumed once; future authorization captures the current edits again.
+  useEffect(clearProfileNavigationDraft, []);
+  useImperativeHandle(
+    navigationGuardRef,
+    () => () => {
+      if (saving || syncing) throw new Error(m.account_error_profile_navigation_busy());
+      preserveProfileNavigationDraft(user.id, confirmedDisplayName, displayName);
+    },
+    [user.id, confirmedDisplayName, displayName, saving, syncing],
+  );
 
   useEffect(() => {
     if (confirmedDisplayNameRef.current === user.displayName) return;
@@ -69,6 +88,7 @@ export function AccountSettings({
     setError(undefined);
     try {
       const updated = await browserApi.updateProfile({ displayName });
+      clearProfileNavigationDraft();
       setDisplayName(updated.displayName);
       await syncAccount(updated.displayName);
     } catch (cause) {
@@ -169,6 +189,7 @@ export function AccountSettings({
               disabled={saving}
               variant="ghost"
               onClick={() => {
+                clearProfileNavigationDraft();
                 setDisplayName(confirmedDisplayName);
                 setMessage(undefined);
                 setError(undefined);

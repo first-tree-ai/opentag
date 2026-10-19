@@ -4,3 +4,4 @@ Repository acceptance records belong here. Keep credentials, production message 
 machine-specific operational logs outside the repository.
 
 - [IM delivery claim query acceptance](./im-delivery-claim/README.md)
+- [IM Turn budget and recovery acceptance](./im-turn-budget-recovery/README.md)

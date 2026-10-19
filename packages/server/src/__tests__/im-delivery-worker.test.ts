@@ -6,6 +6,7 @@ import {
   type DirectImMessageDeliveryRequest,
   RUNTIME_CAPABILITY,
   type RuntimeImSteerRequest,
+  type SessionReconcileResult,
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -980,6 +981,130 @@ describe("ImDeliveryWorker database workflow", () => {
         expect(diagnostic).toHaveBeenCalledWith("IM_DELIVERY_RECOVERY_PAYLOAD_INVALID");
     },
   );
+
+  it.each([
+    ["busy", "IM_DELIVERY_RECOVERY_BUSY"],
+    ["running", "IM_DELIVERY_RECOVERY_RUNNING"],
+    ["reporting", "IM_DELIVERY_RECOVERY_REPORTING"],
+    ["recovery_required", "IM_DELIVERY_RECOVERY_REQUIRED"],
+    ["rejected", "IM_DELIVERY_RECOVERY_REJECTED"],
+    ["ready", "IM_DELIVERY_RECOVERY_AWAITING_REPORT"],
+    ["stopped", "IM_DELIVERY_RECOVERY_AWAITING_REPORT"],
+  ] as const)("defers an accepted %s response without releasing or re-executing custody", async (status, code) => {
+    const fixture = await workerFixture(unit);
+    let clock = Date.now();
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        state: "accepted",
+        inputHash: "frozen-hash",
+        turnId: "original-turn",
+        reportOwnerInstanceId: fixture.instanceId,
+        acceptedAt: new Date(clock),
+        nextAttemptAt: new Date(clock - 1),
+      })
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, { reconcileStatus: status });
+    const diagnostic = vi.fn();
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: domain as never,
+      assembler: { assembleForSession: vi.fn() },
+      registry: fixture.registry,
+      now: () => new Date(clock),
+      onDiagnostic: diagnostic,
+    });
+    for (const delay of [2_000, 4_000, 8_000, 16_000, 30_000, 30_000]) {
+      const before = domain.requestReconcile.mock.calls.length;
+      await worker.runOnce();
+      const [row] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      expect(row).toMatchObject({
+        state: "accepted",
+        turnId: "original-turn",
+        inputHash: "frozen-hash",
+        reportOwnerInstanceId: fixture.instanceId,
+        reportedAt: null,
+        resultHash: null,
+        lastErrorCode: code,
+      });
+      expect(row?.nextAttemptAt.getTime()).toBe(clock + delay);
+      expect(domain.requestReconcile).toHaveBeenCalledTimes(before + 1);
+      await worker.runOnce();
+      expect(domain.requestReconcile).toHaveBeenCalledTimes(before + 1);
+      clock += delay;
+    }
+    expect(diagnostic).toHaveBeenCalledWith(code);
+    expect(domain.requestDelivery).not.toHaveBeenCalled();
+  });
+
+  it.each(["reported", "newer-attempt"] as const)("does not overwrite a %s race after reconcile", async (race) => {
+    const fixture = await workerFixture(unit);
+    const clock = Date.now();
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        state: "accepted",
+        inputHash: "frozen-hash",
+        turnId: "original-turn",
+        reportOwnerInstanceId: fixture.instanceId,
+        acceptedAt: new Date(clock),
+        nextAttemptAt: new Date(clock - 1),
+      })
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    const winningTime = new Date(clock + 60_000);
+    const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, {
+      reconcileStatus: "busy",
+      onReconcile: async () => {
+        await unit.database
+          .update(imMessageDeliveries)
+          .set({
+            ...(race === "reported"
+              ? {
+                  reportedAt: new Date(clock),
+                  resultHash: "settled-hash",
+                  turnReport: {
+                    type: "turn:report" as const,
+                    requestId: randomUUID(),
+                    deliveryId: fixture.deliveryId,
+                    turnId: "original-turn",
+                    sessionId: fixture.sessionId,
+                    agentId: fixture.agentId,
+                    placementGeneration: 1,
+                    outcome: "completed" as const,
+                    executionEffects: "completed" as const,
+                    resultHash: "settled-hash",
+                    traceSummary: { lastSequence: 0, droppedEvents: 0 },
+                  },
+                }
+              : { attemptCount: 2 }),
+            lastErrorCode: "winner",
+            nextAttemptAt: winningTime,
+          })
+          .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      },
+    });
+    const diagnostic = vi.fn();
+    await new ImDeliveryWorker({
+      database: unit.database,
+      domain: domain as never,
+      assembler: { assembleForSession: vi.fn() },
+      registry: fixture.registry,
+      now: () => new Date(clock),
+      onDiagnostic: diagnostic,
+    }).runOnce();
+    const [row] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    expect(row?.lastErrorCode).toBe("winner");
+    expect(row?.nextAttemptAt).toEqual(winningTime);
+    if (race === "reported") expect(row?.resultHash).toBe("settled-hash");
+    expect(diagnostic).not.toHaveBeenCalled();
+    expect(domain.requestDelivery).not.toHaveBeenCalled();
+  });
 
   it("recovers accepted custody with pinned and legacy snapshots, including failures", async () => {
     const pinned = await workerFixture(unit);
@@ -2285,7 +2410,7 @@ function fakeDomain(
     deliveryStatus?: string;
     deliveryReason?: string;
     reconcileFailure?: boolean;
-    reconcileStatus?: "ready" | "rejected" | "busy" | "stopped";
+    reconcileStatus?: SessionReconcileResult["status"];
     deliveryFailure?: boolean;
     onReconcile?: () => Promise<void>;
     steerStatus?: string;

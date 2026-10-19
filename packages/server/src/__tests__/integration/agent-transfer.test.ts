@@ -7,12 +7,16 @@ import {
   agents,
   computers,
   imBindings,
+  imMessageDeliveries,
+  imMessages,
   sessionPlacements,
   sessions,
   slackInstallations,
   users,
 } from "../../db/schema/index.js";
 import { AgentService } from "../../services/agents/agent-service.js";
+import { ApplicationCipher } from "../../services/crypto.js";
+import { ImBindingService } from "../../services/im-bindings/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 let testDatabase: MigratedTestDatabase;
@@ -36,6 +40,116 @@ async function createAccount(client: ReturnType<typeof createDatabaseClient>, la
 }
 
 describe("Agent transfer against PostgreSQL", () => {
+  it("keeps an accepted unreported Turn blocking transfer after messaging is unbound", async () => {
+    const client = createDatabaseClient(databaseUrl);
+    try {
+      const source = await createAccount(client, "custody-source");
+      const target = await createAccount(client, "custody-target");
+      const [computer] = await client.database
+        .insert(computers)
+        .values({
+          ownerAccountId: source,
+          currentInstallationId: crypto.randomUUID(),
+          displayName: "custody workstation",
+          platform: "linux",
+          arch: "x64",
+          clientVersion: "0.0.2",
+        })
+        .returning();
+      if (!computer) throw new Error("Computer fixture was not created");
+
+      const agentsService = new AgentService(client.database);
+      const created = await agentsService.createForAccount(source, {
+        computerId: computer.id,
+        displayName: "Custody bot",
+        name: "custody-bot",
+        runtimeProvider: "codex",
+      });
+
+      const [binding] = await client.database
+        .insert(imBindings)
+        .values({
+          agentId: created.id,
+          provider: "feishu",
+          status: "active",
+          externalAppId: "cli-custody",
+          externalBotId: "feishu-bot",
+          credentialSchemaVersion: 1,
+          credentialGeneration: 1,
+          encryptedCredential: "sealed",
+          activatedAt: new Date(),
+        })
+        .returning();
+      if (!binding) throw new Error("IM binding fixture was not created");
+      const [session] = await client.database
+        .insert(sessions)
+        .values({
+          imBindingId: binding.id,
+          channelId: "channel-custody",
+          conversationKind: "channel",
+          kind: "channel",
+          threadKey: null,
+        })
+        .returning();
+      if (!session) throw new Error("Session fixture was not created");
+      await client.database
+        .insert(sessionPlacements)
+        .values({ sessionId: session.id, computerId: computer.id, generation: 1 });
+      const [message] = await client.database
+        .insert(imMessages)
+        .values({
+          imBindingId: binding.id,
+          channelId: "channel-custody",
+          externalMessageId: "message-custody",
+          providerRevisionKey: "1",
+          operation: "created",
+          direction: "inbound",
+          authorKind: "human",
+          authorExternalId: "human-custody",
+          content: {
+            version: 1,
+            fallbackText: "Accepted",
+            blocks: [{ type: "text", text: "Accepted" }],
+            truncated: false,
+          },
+          providerContext: { provider: "feishu", chatType: "group" },
+          occurredAt: new Date(),
+        })
+        .returning();
+      if (!message) throw new Error("Message fixture was not created");
+      await client.database.insert(imMessageDeliveries).values({
+        messageId: message.id,
+        sessionId: session.id,
+        attention: "direct",
+        state: "accepted",
+        placementGeneration: 1,
+        inputHash: crypto.randomUUID(),
+        turnId: `turn-${crypto.randomUUID()}`,
+        reportOwnerInstanceId: crypto.randomUUID(),
+        acceptedAt: new Date(),
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      await agentsService.suspendById(source, created.id);
+
+      await expect(
+        transferAgent(client.database, { agentId: created.id, targetAccountId: target }),
+      ).rejects.toMatchObject({ reason: "sessions_blocked" });
+
+      const imBindingService = new ImBindingService(client.database, new ApplicationCipher(Buffer.alloc(32, 7)));
+      await agentsService.reactivateById(source, created.id);
+      await imBindingService.unbindForAgent(source, created.id, { provider: "feishu", bindingId: binding.id });
+      await agentsService.suspendById(source, created.id);
+
+      await expect(
+        transferAgent(client.database, { agentId: created.id, targetAccountId: target }),
+      ).rejects.toMatchObject({ reason: "sessions_blocked" });
+      const [unmoved] = await client.database.select().from(agents).where(eq(agents.id, created.id));
+      expect(unmoved).toMatchObject({ createdByUserId: source, computerId: computer.id, status: "suspended" });
+    } finally {
+      await client.sql.end();
+    }
+  });
+
   it("moves a suspended Agent and keeps its Slack installation serving the new owner", async () => {
     const client = createDatabaseClient(databaseUrl);
     try {

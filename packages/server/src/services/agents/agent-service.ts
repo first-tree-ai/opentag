@@ -1409,9 +1409,16 @@ export class AgentService {
     agentId: string,
   ): Promise<AgentSessionStopTarget[]> {
     const targets = await this.#activeSessionTargets(transaction, agentId);
+    // The post-commit stop list is deliberately limited to active placements, but custody is not:
+    // unbinding ends Sessions without settling deliveries that an old Computer may still report.
+    const custodySessions = await transaction
+      .select({ sessionId: sessions.id })
+      .from(sessions)
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .where(eq(imBindings.agentId, agentId));
     const blocked = await this.#sessionsHaveUncertainDeliveries(
       transaction,
-      targets.map((target) => target.sessionId),
+      custodySessions.map((session) => session.sessionId),
     );
     if (blocked) throw new AgentTransferError("sessions_blocked");
     return targets;

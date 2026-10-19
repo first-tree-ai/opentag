@@ -22,6 +22,8 @@ import {
 } from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import { AgentService } from "../../services/agents/agent-service.js";
+import { ApplicationCipher } from "../../services/crypto.js";
+import { ImBindingService } from "../../services/im-bindings/index.js";
 import { DEFAULT_AGENT_RUNTIME_CONFIG } from "../../services/runtime-config/index.js";
 import { transferAgent } from "../transfer-agent.js";
 
@@ -201,6 +203,38 @@ async function createPendingDelivery(bindingId: string, sessionId: string) {
   });
 }
 
+async function createAcceptedDelivery(bindingId: string, sessionId: string) {
+  const [message] = await unitDatabase.database
+    .insert(imMessages)
+    .values({
+      imBindingId: bindingId,
+      channelId: "channel-fixture",
+      externalMessageId: `message-${crypto.randomUUID()}`,
+      providerRevisionKey: "1",
+      operation: "created",
+      direction: "inbound",
+      authorKind: "human",
+      authorExternalId: "human-fixture",
+      content: { version: 1, fallbackText: "Accepted", blocks: [{ type: "text", text: "Accepted" }], truncated: false },
+      providerContext: { provider: "feishu", chatType: "group" },
+      occurredAt: NOW,
+    })
+    .returning();
+  if (!message) throw new Error("Message fixture was not created");
+  await unitDatabase.database.insert(imMessageDeliveries).values({
+    messageId: message.id,
+    sessionId,
+    attention: "direct",
+    state: "accepted",
+    placementGeneration: 1,
+    inputHash: crypto.randomUUID(),
+    turnId: `turn-${crypto.randomUUID()}`,
+    reportOwnerInstanceId: crypto.randomUUID(),
+    acceptedAt: NOW,
+    expiresAt: new Date(NOW.getTime() + 60_000),
+  });
+}
+
 async function createMcpMount(accountId: string, agentId: string) {
   const [server] = await unitDatabase.database
     .insert(mcpServers)
@@ -366,6 +400,35 @@ describe("transferAgent", () => {
     const session = await createSession(binding.id, computer.id);
     await createPendingDelivery(binding.id, session.id);
 
+    await expect(transfer({ agentId: created.id, targetAccountId })).rejects.toMatchObject({
+      reason: "sessions_blocked",
+    });
+    expect(await agentRow(created.id)).toMatchObject({ createdByUserId: source, computerId: computer.id });
+  });
+
+  it("still rejects an accepted unreported Turn after messaging is unbound", async () => {
+    const source = await createAccount("source");
+    const targetAccountId = await createAccount("target");
+    const computer = await createComputer(source);
+    const created = await createAgent(source, computer.id);
+    const binding = await createFeishuBinding(created.id);
+    const session = await createSession(binding.id, computer.id);
+    await createAcceptedDelivery(binding.id, session.id);
+    await service().suspendById(source, created.id);
+
+    await expect(transfer({ agentId: created.id, targetAccountId })).rejects.toMatchObject({
+      reason: "sessions_blocked",
+    });
+
+    const imBindingService = new ImBindingService(unitDatabase.database, new ApplicationCipher(Buffer.alloc(32, 7)), {
+      now: () => NOW,
+    });
+    await service().reactivateById(source, created.id);
+    await imBindingService.unbindForAgent(source, created.id, { provider: "feishu", bindingId: binding.id });
+    await service().suspendById(source, created.id);
+
+    const [endedSession] = await unitDatabase.database.select().from(sessions).where(eq(sessions.id, session.id));
+    expect(endedSession?.endedAt).toEqual(NOW);
     await expect(transfer({ agentId: created.id, targetAccountId })).rejects.toMatchObject({
       reason: "sessions_blocked",
     });

@@ -63,6 +63,40 @@ choose Codex or Claude Code, then run the generated connection command in a seco
 Follow the chat setup for Slack or Lark / Feishu, then send your agent a message.
 For Slack, see the [additional setup instructions](./docs/slack-app-setup.md).
 
+## Admin operations
+
+Two commands act on the database directly instead of going through the server. Both need the settings from
+`.env.local` and a current `dist/` (`pnpm build`):
+
+- `pnpm --filter @opentag/server bootstrap:admin` creates the first Account on a fresh database.
+- `pnpm --filter @opentag/server transfer:agent` moves an existing Agent to another Account.
+
+### Transfer an Agent to another Account
+
+```bash
+set -a
+source .env.local
+set +a
+OPENTAG_TRANSFER_AGENT_ID=<agent-uuid> \
+OPENTAG_TRANSFER_TARGET_ACCOUNT_ID=<account-uuid> \
+OPENTAG_TRANSFER_SLACK=disable \
+  pnpm --filter @opentag/server transfer:agent
+```
+
+The Agent must be suspended. The command runs in one transaction and prints the result as JSON; it also writes a redacted
+audit line to stderr. A rejected precondition - the Agent is not suspended, the target Account already has an Agent with
+that name, or a Turn can still land on the old Computer - exits non-zero and names the reason in that line.
+
+Everything keyed by the Agent alone moves with it: Skills, Schedules, instructions and history. Two things cannot move.
+The Computer is detached, so the Agent shows no Computer until the new owner binds one. The MCP mounts and their stored
+credentials are deleted, because the Server definitions they point at belong to the previous Account.
+
+`OPENTAG_TRANSFER_SLACK` selects what happens to the messaging binding:
+
+- `disable` (default) disables the binding and releases an unused Slack installation.
+- `keep` leaves a Slack binding and its installation serving the Agent under the new owner. A Feishu binding cannot be
+  kept and is rejected with `im_binding_keep_unsupported`.
+
 ## Stop and restart
 
 Press Ctrl+C in the server terminal to stop the server. To start it again, run from the repository root:

@@ -84,7 +84,7 @@ OPENTAG_TRANSFER_SLACK=disable \
 
 Agent 必须处于暂停（suspended）状态。命令在单个事务内完成，以 JSON 输出结果，同时向 stderr 写一条脱敏的审计日志。
 前置条件不满足时命令以非零状态退出，并在该日志行里写明原因：Agent 未暂停、目标账号下已有同名 Agent、或者仍有 Turn 可能落到
-旧的 Computer 上。
+旧的 Computer 上。解绑消息连接不会清除 Turn 检查：那条未完成的 Delivery 仍留在数据库中，因此在它被处理完之前，命令会持续拒绝。
 
 请在 Computer 在线时暂停 Agent：本命令没有 Runtime 连接，依赖暂停步骤已经停止 Session 并让旧 Computer 的 placement 退役。
 那次停止是尽力而为的，暂停时离线的 Computer 不会被本命令重试。

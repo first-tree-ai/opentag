@@ -23,11 +23,12 @@ import {
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import { AgentService } from "../../services/agents/agent-service.js";
 import { ApplicationCipher } from "../../services/crypto.js";
-import { ImBindingService } from "../../services/im-bindings/index.js";
+import { disableImBindingInTransaction, ImBindingService } from "../../services/im-bindings/index.js";
 import { DEFAULT_AGENT_RUNTIME_CONFIG } from "../../services/runtime-config/index.js";
 import { transferAgent } from "../transfer-agent.js";
 
 const NOW = new Date("2026-08-24T12:00:00.000Z");
+const REPORT_OWNER = "11111111-1111-4111-8111-111111111111";
 
 let unitDatabase: UnitDatabase;
 
@@ -175,7 +176,11 @@ async function createSession(bindingId: string, computerId: string) {
   return session;
 }
 
-async function createPendingDelivery(bindingId: string, sessionId: string) {
+/**
+ * `pending`: never sent. `accepted`: a Turn the Computer owns and has not reported. `expired`: a
+ * send with a dispatch request nobody proved. Only `pending` is cleared by ending the Session.
+ */
+async function createDelivery(bindingId: string, sessionId: string, state: "pending" | "accepted" | "expired") {
   const [message] = await unitDatabase.database
     .insert(imMessages)
     .values({
@@ -193,12 +198,21 @@ async function createPendingDelivery(bindingId: string, sessionId: string) {
     })
     .returning();
   if (!message) throw new Error("Message fixture was not created");
+  const dispatched = state === "expired";
   await unitDatabase.database.insert(imMessageDeliveries).values({
     messageId: message.id,
     sessionId,
     attention: "direct",
-    state: "pending",
+    state,
     placementGeneration: 1,
+    dispatchRequestId: dispatched ? crypto.randomUUID() : null,
+    dispatchInputHash: dispatched ? crypto.randomUUID() : null,
+    // Only a send that actually left needs a payload; the constraint permits it for any dispatched row.
+    dispatchPayload: dispatched ? ({ invalid: true } as never) : null,
+    inputHash: state === "accepted" ? crypto.randomUUID() : null,
+    turnId: state === "accepted" ? `turn-${crypto.randomUUID()}` : null,
+    reportOwnerInstanceId: state === "accepted" ? REPORT_OWNER : null,
+    acceptedAt: state === "accepted" ? NOW : null,
     expiresAt: new Date(NOW.getTime() + 60_000),
   });
 }
@@ -398,7 +412,7 @@ describe("transferAgent", () => {
     const created = await suspendedAgent(source, computer.id);
     const binding = await createFeishuBinding(created.id);
     const session = await createSession(binding.id, computer.id);
-    await createPendingDelivery(binding.id, session.id);
+    await createDelivery(binding.id, session.id, "pending");
 
     await expect(transfer({ agentId: created.id, targetAccountId })).rejects.toMatchObject({
       reason: "sessions_blocked",
@@ -434,6 +448,51 @@ describe("transferAgent", () => {
     });
     expect(await agentRow(created.id)).toMatchObject({ createdByUserId: source, computerId: computer.id });
   });
+  for (const custody of ["accepted", "expired"] as const) {
+    it(`still refuses the transfer after an unbind leaves an unsettled ${custody} Turn behind`, async () => {
+      const source = await createAccount("source");
+      const targetAccountId = await createAccount("target");
+      const computer = await createComputer(source);
+      const created = await suspendedAgent(source, computer.id);
+      const binding = await createFeishuBinding(created.id);
+      const session = await createSession(binding.id, computer.id);
+      await createDelivery(binding.id, session.id, custody);
+      const mcpServer = await createMcpMount(source, created.id);
+      const schedule = await createSchedule(created.id, session.id);
+      const revisionBefore = (await agentRow(created.id)).revision;
+
+      await expect(transfer({ agentId: created.id, targetAccountId })).rejects.toMatchObject({
+        reason: "sessions_blocked",
+      });
+
+      // The real unbind path ends the binding's Sessions; the unreported Turn's custody does not end with them.
+      await unitDatabase.database.transaction((transaction) =>
+        disableImBindingInTransaction(transaction, binding.id, NOW),
+      );
+      const [unbound] = await unitDatabase.database.select().from(imBindings).where(eq(imBindings.id, binding.id));
+      expect(unbound).toMatchObject({ status: "disabled" });
+      const [endedSession] = await unitDatabase.database.select().from(sessions).where(eq(sessions.id, session.id));
+      expect(endedSession?.endedAt).toEqual(NOW);
+
+      await expect(transfer({ agentId: created.id, targetAccountId })).rejects.toMatchObject({
+        reason: "sessions_blocked",
+      });
+
+      expect(await agentRow(created.id)).toMatchObject({
+        createdByUserId: source,
+        computerId: computer.id,
+        revision: revisionBefore,
+      });
+      expect(await unitDatabase.database.select().from(agentMcpServers)).toHaveLength(1);
+      expect(await unitDatabase.database.select().from(mcpServerAuthorizations)).toHaveLength(1);
+      const [keptSchedule] = await unitDatabase.database
+        .select()
+        .from(agentSchedules)
+        .where(eq(agentSchedules.id, schedule.id));
+      expect(keptSchedule).toMatchObject({ enabled: true, nextTriggerAt: NOW });
+      expect(mcpServer.id).toBeTruthy();
+    });
+  }
 
   it("moves ownership, detaches the Computer, and keeps Account-independent data", async () => {
     const source = await createAccount("source");

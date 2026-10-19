@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { transferAgent } from "../../admin/transfer-agent.js";
 import { createDatabaseClient } from "../../db/client.js";
@@ -16,7 +16,7 @@ import {
 } from "../../db/schema/index.js";
 import { AgentService } from "../../services/agents/agent-service.js";
 import { ApplicationCipher } from "../../services/crypto.js";
-import { ImBindingService } from "../../services/im-bindings/index.js";
+import { disableImBindingInTransaction, ImBindingService } from "../../services/im-bindings/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 let testDatabase: MigratedTestDatabase;
@@ -263,6 +263,125 @@ describe("Agent transfer against PostgreSQL", () => {
           runtimeProvider: "codex",
         }),
       ).rejects.toMatchObject({ code: "AGENT_NAME_CONFLICT" });
+    } finally {
+      await client.sql.end();
+    }
+  });
+
+  it("refuses the transfer after an unbind ends the Session holding an unreported Turn", async () => {
+    const client = createDatabaseClient(databaseUrl);
+    try {
+      const source = await createAccount(client, "custody-source");
+      const target = await createAccount(client, "custody-target");
+      const [computer] = await client.database
+        .insert(computers)
+        .values({
+          ownerAccountId: source,
+          currentInstallationId: crypto.randomUUID(),
+          displayName: "custody workstation",
+          platform: "linux",
+          arch: "x64",
+          clientVersion: "0.0.2",
+        })
+        .returning();
+      if (!computer) throw new Error("Computer fixture was not created");
+
+      const agentsService = new AgentService(client.database);
+      const created = await agentsService.createForAccount(source, {
+        computerId: computer.id,
+        displayName: "Custody bot",
+        name: "custody-bot",
+        runtimeProvider: "codex",
+      });
+      await agentsService.suspendById(source, created.id);
+
+      const [binding] = await client.database
+        .insert(imBindings)
+        .values({
+          agentId: created.id,
+          provider: "feishu",
+          status: "active",
+          externalAppId: `cli-${crypto.randomUUID().slice(0, 8)}`,
+          externalBotId: "feishu-bot",
+          credentialSchemaVersion: 1,
+          credentialGeneration: 1,
+          encryptedCredential: "sealed",
+          activatedAt: new Date(),
+        })
+        .returning();
+      if (!binding) throw new Error("IM binding fixture was not created");
+      const [session] = await client.database
+        .insert(sessions)
+        .values({
+          imBindingId: binding.id,
+          channelId: "channel-custody",
+          conversationKind: "channel",
+          kind: "channel",
+          threadKey: null,
+        })
+        .returning();
+      if (!session) throw new Error("Session fixture was not created");
+      await client.database
+        .insert(sessionPlacements)
+        .values({ sessionId: session.id, computerId: computer.id, generation: 1 });
+      const [message] = await client.database
+        .insert(imMessages)
+        .values({
+          imBindingId: binding.id,
+          channelId: "channel-custody",
+          externalMessageId: "message-custody",
+          providerRevisionKey: "1",
+          operation: "created",
+          direction: "inbound",
+          authorKind: "human",
+          authorExternalId: "human-fixture",
+          content: {
+            version: 1,
+            fallbackText: "Unreported",
+            blocks: [{ type: "text", text: "Unreported" }],
+            truncated: false,
+          },
+          providerContext: { provider: "feishu", chatType: "group" },
+          occurredAt: new Date(),
+        })
+        .returning();
+      if (!message) throw new Error("Message fixture was not created");
+      /** Accepted with `reportedAt = null`: the Computer owns this Turn and never reported it. */
+      await client.database.insert(imMessageDeliveries).values({
+        messageId: message.id,
+        sessionId: session.id,
+        attention: "direct",
+        state: "accepted",
+        placementGeneration: 1,
+        inputHash: crypto.randomUUID(),
+        turnId: `turn-${crypto.randomUUID()}`,
+        reportOwnerInstanceId: crypto.randomUUID(),
+        acceptedAt: new Date(),
+        expiresAt: new Date(Date.now() + 600_000),
+      });
+
+      await expect(
+        transferAgent(client.database, { agentId: created.id, targetAccountId: target }),
+      ).rejects.toMatchObject({ reason: "sessions_blocked" });
+
+      await client.database.transaction((transaction) =>
+        disableImBindingInTransaction(transaction, binding.id, new Date()),
+      );
+      const [unbound] = await client.database.select().from(imBindings).where(eq(imBindings.id, binding.id));
+      expect(unbound).toMatchObject({ status: "disabled" });
+      expect(
+        await client.database
+          .select({ id: sessions.id })
+          .from(sessions)
+          .where(and(eq(sessions.imBindingId, binding.id), isNull(sessions.endedAt))),
+      ).toEqual([]);
+
+      // The Session ended, the custody question did not: the transfer must still refuse.
+      await expect(
+        transferAgent(client.database, { agentId: created.id, targetAccountId: target }),
+      ).rejects.toMatchObject({ reason: "sessions_blocked" });
+      const [unchanged] = await client.database.select().from(agents).where(eq(agents.id, created.id));
+      expect(unchanged).toMatchObject({ createdByUserId: source, computerId: computer.id, status: "suspended" });
     } finally {
       await client.sql.end();
     }

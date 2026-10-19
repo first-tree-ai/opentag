@@ -24,7 +24,7 @@ import {
   type UpdateAgentRequest,
   UpdateAgentRequestSchema,
 } from "@opentag/shared";
-import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
@@ -348,6 +348,23 @@ function uniqueConstraintName(error: unknown): string | undefined {
     current = "cause" in current ? current.cause : undefined;
   }
   return undefined;
+}
+
+/**
+ * A Delivery that may still produce a Turn on the Computer that took it.
+ *
+ * The three branches are distinct failure shapes, and each is the only one its state allows:
+ * `pending` was never sent, `accepted` without `reportedAt` is a Turn the Computer owns and has not
+ * reported, and `expired` with a dispatch request id is a send nobody proved. `steered` rows are
+ * excluded on purpose: their work was folded into the root Delivery they point at (the constraint
+ * forbids them a Turn of their own), so the root row carries the custody question.
+ */
+function unsettledDeliveryCondition(): ReturnType<typeof or> {
+  return or(
+    eq(imMessageDeliveries.state, "pending"),
+    and(eq(imMessageDeliveries.state, "accepted"), isNull(imMessageDeliveries.reportedAt)),
+    and(eq(imMessageDeliveries.state, "expired"), isNotNull(imMessageDeliveries.dispatchRequestId)),
+  );
 }
 
 function mergeCloudUsage(
@@ -1207,20 +1224,31 @@ export class AgentService {
     sessionIds: readonly string[],
   ): Promise<boolean> {
     if (sessionIds.length === 0) return false;
-    const deliveries = await transaction
-      .select({
-        dispatchRequestId: imMessageDeliveries.dispatchRequestId,
-        reportedAt: imMessageDeliveries.reportedAt,
-        state: imMessageDeliveries.state,
-      })
+    const [uncertain] = await transaction
+      .select({ id: imMessageDeliveries.id })
       .from(imMessageDeliveries)
-      .where(inArray(imMessageDeliveries.sessionId, [...sessionIds]));
-    return deliveries.some(
-      (delivery) =>
-        delivery.state === "pending" ||
-        (delivery.state === "accepted" && delivery.reportedAt === null) ||
-        (delivery.state === "expired" && delivery.dispatchRequestId !== null),
-    );
+      .where(and(inArray(imMessageDeliveries.sessionId, [...sessionIds]), unsettledDeliveryCondition()))
+      .limit(1);
+    return uncertain !== undefined;
+  }
+
+  /**
+   * The same question asked of the whole Agent, over every Session of every binding it ever had.
+   *
+   * Ended Sessions and disabled bindings count: unbinding ends a binding's Sessions but leaves an
+   * accepted Turn with the Computer that owns it, so a check limited to live Sessions would let a
+   * transfer move ownership while that Turn is still out. A Session with no placement counts too —
+   * the Delivery rows are the evidence, not the placement.
+   */
+  async #agentSessionsHaveUncertainDeliveries(transaction: DatabaseTransaction, agentId: string): Promise<boolean> {
+    const [uncertain] = await transaction
+      .select({ id: imMessageDeliveries.id })
+      .from(imMessageDeliveries)
+      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .where(and(eq(imBindings.agentId, agentId), unsettledDeliveryCondition()))
+      .limit(1);
+    return uncertain !== undefined;
   }
 
   async #moveSessionPlacements(
@@ -1409,18 +1437,9 @@ export class AgentService {
     agentId: string,
   ): Promise<AgentSessionStopTarget[]> {
     const targets = await this.#activeSessionTargets(transaction, agentId);
-    // The post-commit stop list is deliberately limited to active placements, but custody is not:
-    // unbinding ends Sessions without settling deliveries that an old Computer may still report.
-    const custodySessions = await transaction
-      .select({ sessionId: sessions.id })
-      .from(sessions)
-      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
-      .where(eq(imBindings.agentId, agentId));
-    const blocked = await this.#sessionsHaveUncertainDeliveries(
-      transaction,
-      custodySessions.map((session) => session.sessionId),
-    );
-    if (blocked) throw new AgentTransferError("sessions_blocked");
+    if (await this.#agentSessionsHaveUncertainDeliveries(transaction, agentId)) {
+      throw new AgentTransferError("sessions_blocked");
+    }
     return targets;
   }
 
@@ -1743,6 +1762,7 @@ export class AgentService {
     }
   }
 
+  /** Only what still needs a stop request: live Sessions on a current placement. */
   async #activeSessionTargets(transaction: DatabaseTransaction, agentId: string): Promise<AgentSessionStopTarget[]> {
     return transaction
       .select({

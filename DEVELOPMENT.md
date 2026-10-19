@@ -85,7 +85,9 @@ OPENTAG_TRANSFER_SLACK=disable \
 
 The Agent must be suspended. The command runs in one transaction and prints the result as JSON; it also writes a redacted
 audit line to stderr. A rejected precondition - the Agent is not suspended, the target Account already has an Agent with
-that name, or a Turn can still land on the old Computer - exits non-zero and names the reason in that line.
+that name, or a Turn can still land on the old Computer - exits non-zero and names the reason in that line. Unbinding the
+messaging connection does not clear the Turn check: the pending Delivery survives in the database, so the command keeps
+refusing until that Turn is reconciled.
 
 Suspend the Agent while its Computer is online: this command has no Runtime connection, so it relies on the suspension
 having already stopped the Sessions and retired the previous Computer's placement. That stop is best effort, so a

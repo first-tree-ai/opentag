@@ -91,3 +91,21 @@ Machine-specific raw logs stay outside the repository.
   and lines each reached 100%.
 - Full PostgreSQL integration: 61 files / 788 tests passed with the default two-worker command,
   including all 24 new cases. The full integration run followed unit/coverage completion.
+
+## CI report-wait regression
+
+The first remote Node 24 unit shard failed in the existing Client recovery test while its default
+one-second `vi.waitFor` awaited the next Turn Report. Client product code is unchanged. A test-only
+1.1-second delay in the fake connection's final-report send reproduced the same assertion failure;
+this demonstrates the short-wait assumption, rather than establishing the remote runner's exact delay.
+
+That one wait now observes the fake connection's actual frame event and returns the indexed report.
+The report assertions and the enclosing test's five-second deadline remain unchanged; no product
+timeout or retry policy is altered. The same delayed-send experiment passes afterward, and the
+complete 15-case Client Turn file passes. The delay injection is local research only, not a fixed
+sleep added to the checked-in suite.
+
+A concurrent local revalidation also hit an existing CLI auto-update one-second wait (`installing`
+instead of `blocked`). Its full five-case file and the complete CLI suite then passed unchanged.
+The subsequent quiet full-repository run passed all 691 script and 9,983 package tests; no CLI code
+or timeout was changed. Both failed and successful logs remain in the local evidence.

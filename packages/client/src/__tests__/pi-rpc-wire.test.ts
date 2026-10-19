@@ -150,6 +150,40 @@ describe("PiRpcProcess", () => {
     await writeFailure.close();
   });
 
+  it("overrides the request timeout per command and leaves a null timeout to the caller", async () => {
+    const answered = await rpcProcess("normal");
+    await expect(answered.request({ type: "get_state" }, undefined, { timeoutMs: null })).resolves.toMatchObject({
+      sessionId: "11111111-1111-4111-8111-111111111111",
+    });
+    await answered.close();
+
+    const child = fakeChild();
+    const process = fakeProcess(child, { requestTimeoutMs: 60_000 });
+    await expect(process.request({ type: "get_state" }, undefined, { timeoutMs: 1 })).rejects.toMatchObject({
+      code: "timeout",
+      message: "Pi RPC request timed out: get_state",
+    });
+    for (const timeoutMs of [0, 1.5, Number.POSITIVE_INFINITY]) {
+      await expect(process.request({ type: "get_state" }, undefined, { timeoutMs })).rejects.toMatchObject({
+        code: "protocol",
+      });
+    }
+
+    const controller = new AbortController();
+    const unbounded = process.request({ type: "prompt", message: "hello" }, controller.signal, { timeoutMs: null });
+    const settled = vi.fn();
+    unbounded.then(settled, settled);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(settled).not.toHaveBeenCalled();
+    controller.abort();
+    await expect(unbounded).rejects.toMatchObject({ code: "aborted" });
+
+    const untilClose = process.request({ type: "prompt", message: "hello" }, undefined, { timeoutMs: null });
+    child.emit("close", 0, null);
+    await expect(untilClose).rejects.toBeInstanceOf(PiRpcError);
+    await process.close();
+  });
+
   it("propagates child and listener failures", async () => {
     const erroredChild = fakeChild();
     const errored = fakeProcess(erroredChild);

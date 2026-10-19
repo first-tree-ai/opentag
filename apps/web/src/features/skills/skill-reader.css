@@ -82,6 +82,17 @@
   margin: 0 auto;
   padding: 2.5rem 3rem 4rem;
 }
+.skill-reader-summary {
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 1.5rem 3rem 0;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.skill-reader-summary + .skill-reader-article {
+  padding-top: 1.5rem;
+}
 .skill-reader-markdown {
   font-size: 0.9375rem;
   line-height: 1.85;
@@ -260,6 +271,9 @@
   }
   .skill-reader-article {
     padding: 1.5rem 1.25rem 3rem;
+  }
+  .skill-reader-summary {
+    padding: 1.25rem 1.25rem 0;
   }
   .skill-reader-markdown h1 {
     font-size: 1.5rem;

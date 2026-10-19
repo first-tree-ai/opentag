@@ -35,7 +35,7 @@ reviewer；若静默满七天，且距该评论已过至少两天，bot 会将�
 请勿提交 credentials、本地环境文件、构建产物或漏洞详情。安全问题请按 [SECURITY.zh-CN.md](./SECURITY.zh-CN.md)
 中的私密流程报告。
 
-维护者必须使用 [docs/zh-CN/releasing.md](./docs/zh-CN/releasing.md) 中说明的仓库 release workflow。禁止本地
+维护者必须使用 [docs/operations/releasing.md](./docs/operations/releasing.md) 中说明的仓库 release workflow。禁止本地
 npm 发布、绕开受保护流程创建 production tag，以及回退到 token 发布。
 
 ## 代码所有权

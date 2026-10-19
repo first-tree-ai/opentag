@@ -93,6 +93,11 @@ function SkillReader({ skill }: { skill: Skill }) {
         />
         {/* biome-ignore lint/a11y/noNoninteractiveTabindex: Keyboard users must scroll the reading region. */}
         <section className="skill-reader-scroll" ref={scroll} tabIndex={0} aria-label={path} aria-busy={file.isPending}>
+          {skill.description ? (
+            <p className="skill-reader-summary ui-text text-kumo-subtle" data-text-size="sm">
+              {skill.description}
+            </p>
+          ) : null}
           {file.isPending ? (
             <Loading />
           ) : file.isError ? (

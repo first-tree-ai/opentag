@@ -7,12 +7,18 @@
  * Providers is an explicit unbind followed by the fresh choice.
  */
 
-import type { AgentSetupSnapshot } from "@opentag/shared/browser";
+import type { AccountComputerSummary, AgentSetupSnapshot } from "@opentag/shared/browser";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, BrowserApi, browserApi } from "../api.js";
-import { AgentSetupPage, BOUNDED_POLL_ATTEMPTS, BOUNDED_POLL_WINDOW_MS, SETUP_POLL_MS } from "./agent-setup-page.js";
+import {
+  AgentSetupPage,
+  type AgentSetupPageProps,
+  BOUNDED_POLL_ATTEMPTS,
+  BOUNDED_POLL_WINDOW_MS,
+  SETUP_POLL_MS,
+} from "./agent-setup-page.js";
 import {
   deferred,
   pendingSlackConfiguration,
@@ -65,6 +71,7 @@ function renderSetup(
   adapter: AgentSetupAdapter,
   props: {
     agentId?: string;
+    computerAdapter?: AgentSetupPageProps["computerAdapter"];
     onExternalNavigation?: (url: string) => void;
     onOpenAgent?: () => void;
     onReady?: (agentId: string) => Promise<void> | void;
@@ -78,6 +85,7 @@ function renderSetup(
       <AgentSetupPage
         adapter={adapter}
         agentId={props.agentId ?? SETUP_AGENT_ID}
+        computerAdapter={props.computerAdapter}
         onExternalNavigation={props.onExternalNavigation}
         onOpenAgent={props.onOpenAgent}
         onReady={props.onReady}
@@ -207,6 +215,69 @@ afterEach(() => {
 });
 
 describe("AgentSetupPage stages", () => {
+  it.each(["offline", "disconnected"] as const)(
+    "takes a sole %s Computer through recovery without creating another",
+    async (connectionStatus) => {
+      const computer: AccountComputerSummary = {
+        ...SETUP_COMPUTER_IDENTITY,
+        connectionStatus,
+        connectedAt: null,
+        lastSeenAt: null,
+        observedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        agentIds: [],
+      };
+      const memory = createMemorySetupAdapter({ agent: setupAgent({ computer: null }), computers: [computer] });
+      const issue = vi.spyOn(memory.computerAdapter.connect, "issue");
+      renderSetup(memory.adapter, { computerAdapter: memory.computerAdapter });
+      await settle(12);
+      expect(screen.getByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: /Use this computer:/ })).toBeNull();
+      expect(issue).toHaveBeenCalledOnce();
+      expect(issue.mock.calls[0]?.[0]).toMatchObject({ mode: "repair", target: { computerId: SETUP_COMPUTER_ID } });
+      memory.controls.completeComputerConnection();
+      await advance(1_500);
+      await settle();
+      expect((await memory.adapter.readSnapshot(SETUP_AGENT_ID)).computer).toMatchObject({
+        kind: "bound",
+        computerId: SETUP_COMPUTER_ID,
+        connectionStatus: "online",
+      });
+      expect((await memory.computerAdapter.inventory.computers()).computers).toHaveLength(1);
+      expect(issue).toHaveBeenCalledOnce();
+      expect(screen.queryByRole("button", { name: "Copy for AI assistant" })).toBeNull();
+    },
+  );
+
+  it("describes multiple existing Computers as an Agent choice without offering a new connection", async () => {
+    const inventory = createMemorySetupAdapter({ agent: setupAgent() });
+    const [computer] = (await inventory.computerAdapter.inventory.computers()).computers;
+    if (!computer) throw new Error("Missing fixture Computer");
+    const memory = createMemorySetupAdapter({
+      agent: setupAgent({ computer: null }),
+      computers: [
+        computer,
+        { ...computer, computerId: crypto.randomUUID(), displayName: "Spare", connectionStatus: "disconnected" },
+      ],
+    });
+    const bind = vi.spyOn(memory.computerAdapter.inventory, "bindComputer");
+    const issue = vi.spyOn(memory.computerAdapter.connect, "issue");
+    renderSetup(memory.adapter, { computerAdapter: memory.computerAdapter });
+    await settle();
+    expect(screen.getByRole("heading", { name: "Choose a computer for this Agent", level: 1 })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Connect your computer" })).toBeNull();
+    expect(screen.getByText("No computer selected for this Agent")).toBeTruthy();
+    expect(screen.getByText("Not selected")).toBeTruthy();
+    expect(screen.queryByText("No computer connected")).toBeNull();
+    expect(screen.getAllByRole("button", { name: /Use this computer:/ })).toHaveLength(2);
+    expect(bind).not.toHaveBeenCalled();
+    expect(issue).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Use this computer: Spare" }));
+    await settle(12);
+    expect(bind).toHaveBeenCalledOnce();
+    expect(issue.mock.calls[0]?.[0]).toMatchObject({ mode: "repair", target: { displayName: "Spare" } });
+  });
+
   it("offers the shared bind surface when the Agent has no Computer", async () => {
     const issue = mockComputerInventory();
     const memory = createMemorySetupAdapter({ agent: setupAgent({ computer: null }) });
@@ -283,7 +354,7 @@ describe("AgentSetupPage stages", () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
     renderSetup(memory.adapter);
     await settle();
-    expect(screen.getByRole("button", { name: "Copy instructions" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Get connection help" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Assistant requested a repair?" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();

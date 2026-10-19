@@ -12,7 +12,7 @@ const translations = [
     offline: "Offline",
     restore: "Restore connection",
     repair: "Repair connection",
-    copy: "Copy instructions",
+    copy: "Copy for AI assistant",
     back: "Back to Reviewer settings",
   },
   {
@@ -22,7 +22,7 @@ const translations = [
     offline: "离线",
     restore: "恢复连接",
     repair: "修复连接",
-    copy: "复制指令",
+    copy: "复制给 AI 助手",
     back: "返回 Reviewer 设置",
   },
 ];
@@ -48,10 +48,13 @@ describe("Computer localization", () => {
       screen.getByRole("button", { name: copy.locale === "en" ? "Show full instructions" : "展开完整指令" }),
     );
     expect(await screen.findByRole("button", { name: copy.copy })).toBeTruthy();
-    expect(screen.getByRole("region", { name: copy.restore }).textContent).toContain("opentag doctor --json");
+    expect(screen.getByRole("region", { name: copy.restore }).textContent).toContain(computerId);
     if (copy.locale === "zh") {
       expect(screen.queryByRole("heading", { name: "运行环境" })).toBeNull();
-      expect(screen.getByRole("main").textContent).not.toMatch(/计算机|账号|\bComputer\b|运行时/);
+      // The assistant task deliberately names the Computer ID; the surrounding UI stays localized.
+      const task = screen.getByRole("region", { name: copy.restore }).textContent ?? "";
+      expect(task).toContain("Computer ID");
+      expect(screen.getByRole("main").textContent?.replace(task, "")).not.toMatch(/计算机|账号|\bComputer\b|运行时/);
     }
     fireEvent.click(await screen.findByRole("link", { name: copy.back }));
     expect(await screen.findByRole("link", { name: copy.restore })).toBeTruthy();

@@ -1,6 +1,6 @@
 import { and, eq, exists, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
-import { computers, imMessageDeliveries, sandboxes } from "../db/schema/index.js";
+import { imMessageDeliveries, sandboxes } from "../db/schema/index.js";
 import type { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
 import type { ReadyRunnerAllocation } from "../services/sandboxes/sandbox-runner-service.js";
 import type { CloudSessionAllocationPort } from "./im-delivery-worker.types.js";
@@ -9,21 +9,6 @@ const CLOUD_READINESS_RETRY_CODES = ["IM_DELIVERY_CLOUD_ENVIRONMENT_NOT_READY", 
 
 export function isCloudReadinessRetry(code: string): boolean {
   return CLOUD_READINESS_RETRY_CODES.includes(code);
-}
-
-/** A targeted wakeup uses the normal claim transaction and all its ordering/custody guards. */
-export function readySessionClaimGuard(sessionId?: string) {
-  if (!sessionId) return undefined;
-  return and(
-    eq(imMessageDeliveries.sessionId, sessionId),
-    eq(computers.kind, "cloud"),
-    eq(imMessageDeliveries.state, "pending"),
-    isNull(imMessageDeliveries.dispatchRequestId),
-    or(
-      inArray(imMessageDeliveries.lastErrorCode, CLOUD_READINESS_RETRY_CODES),
-      isNull(imMessageDeliveries.lastErrorCode),
-    ),
-  );
 }
 
 interface ReadyWakeupInput {

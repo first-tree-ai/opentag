@@ -134,32 +134,65 @@ describe("AgentComputerChoice over a cached inventory", () => {
     await flush();
     await act(async () => release([]));
 
-    expect(
-      await screen.findByText("Paste this command into your coding assistant on the computer you’re connecting."),
-    ).toBeTruthy();
+    expect(await screen.findByText("Copy the task to your AI assistant on this computer.")).toBeTruthy();
     expect(rebind).not.toHaveBeenCalled();
   });
 
-  it("keeps a sole disconnected Computer explicit and offers another connection", async () => {
-    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [disconnectedComputer] });
-    vi.spyOn(browserApi, "issueComputerConnectCode").mockReturnValue(new Promise(() => undefined));
-    const rebind = vi.spyOn(browserApi, "rebindAgentComputer").mockResolvedValue(boundConfig);
+  it.each(["offline", "disconnected"] as const)(
+    "automatically selects a sole %s Computer without connecting another",
+    async (connectionStatus) => {
+      vi.spyOn(browserApi, "computers").mockResolvedValue({
+        computers: [{ ...disconnectedComputer, connectionStatus }],
+      });
+      const issue = vi.spyOn(browserApi, "issueComputerConnectCode");
+      const rebind = vi.spyOn(browserApi, "rebindAgentComputer").mockResolvedValue(boundConfig);
 
+      render(
+        <QueryClientProvider client={createQueryClient()}>
+          <AgentComputerChoice agentId={AGENT_ID} onBound={() => undefined} />
+        </QueryClientProvider>,
+      );
+
+      await waitFor(() => expect(rebind).toHaveBeenCalledWith(AGENT_ID, COMPUTER_ID));
+      expect(rebind).toHaveBeenCalledTimes(1);
+      expect(issue).not.toHaveBeenCalled();
+      expect(screen.queryByRole("button", { name: /Use this computer:/ })).toBeNull();
+    },
+  );
+
+  it("requires an explicit choice for a sole disconnected Computer in Settings", async () => {
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [disconnectedComputer] });
+    const issue = vi.spyOn(browserApi, "issueComputerConnectCode");
+    const rebind = vi.spyOn(browserApi, "rebindAgentComputer").mockResolvedValue(boundConfig);
     render(
       <QueryClientProvider client={createQueryClient()}>
-        <AgentComputerChoice agentId={AGENT_ID} onBound={() => undefined} />
+        <AgentComputerChoice agentId={AGENT_ID} autoBindSole={false} onBound={() => undefined} />
       </QueryClientProvider>,
     );
-
-    expect(await screen.findByText(/Disconnected/)).toBeTruthy();
-    expect(
-      screen.getByText("Paste this command into your coding assistant on the computer you’re connecting."),
-    ).toBeTruthy();
+    const useComputer = await screen.findByRole("button", { name: "Use this computer: Ada's Mac" });
     expect(rebind).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("button", { name: "Use this computer: Ada's Mac" }));
+    fireEvent.click(useComputer);
     await waitFor(() => expect(rebind).toHaveBeenCalledWith(AGENT_ID, COMPUTER_ID));
+    expect(issue).not.toHaveBeenCalled();
   });
+
+  it.each(["online", "disconnected"] as const)(
+    "does not choose or connect another when multiple Computers include a %s one",
+    async (connectionStatus) => {
+      vi.spyOn(browserApi, "computers").mockResolvedValue({
+        computers: [disconnectedComputer, { ...spareComputer, connectionStatus }],
+      });
+      const issue = vi.spyOn(browserApi, "issueComputerConnectCode");
+      const rebind = vi.spyOn(browserApi, "rebindAgentComputer").mockResolvedValue(boundConfig);
+      renderOverCachedInventory();
+      const useSpare = await screen.findByRole("button", { name: "Use this computer: Spare" });
+      expect(screen.getAllByRole("button", { name: /Use this computer:/ })).toHaveLength(2);
+      expect(rebind).not.toHaveBeenCalled();
+      expect(issue).not.toHaveBeenCalled();
+      fireEvent.click(useSpare);
+      await waitFor(() => expect(rebind).toHaveBeenCalledWith(AGENT_ID, OTHER_COMPUTER_ID));
+    },
+  );
 
   it("still binds by itself once the fresh read confirms the one Computer", async () => {
     const release = heldRead();
@@ -207,9 +240,7 @@ describe("AgentComputerChoice over a cached inventory", () => {
     const rebind = vi.spyOn(browserApi, "rebindAgentComputer").mockResolvedValue(boundConfig);
     renderOverCachedInventory();
 
-    expect(
-      await screen.findByText("Paste this command into your coding assistant on the computer you’re connecting."),
-    ).toBeTruthy();
+    expect(await screen.findByText("Copy the task to your AI assistant on this computer.")).toBeTruthy();
     expect(screen.queryByText("Cloud")).toBeNull();
     expect(screen.queryByRole("button", { name: /Use this computer:/ })).toBeNull();
     expect(rebind).not.toHaveBeenCalled();

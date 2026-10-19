@@ -42,7 +42,7 @@ describe("completed Computer recovery", () => {
       const onConnected = vi.fn(),
         props = { confirmed: true, adapter, onConnected, onDeleted: vi.fn() };
       const view = await renderInRouter(<ComputerManagement {...props} computer={computer} />);
-      expect(await screen.findByRole("button", { name: "Copy instructions" })).toBeTruthy();
+      expect(await screen.findByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
       screen.getByRole("button", { name: "Show full instructions" }).focus();
       const card = document.querySelector('[data-ui="computer-management"]');
       await act(async () => {
@@ -51,10 +51,10 @@ describe("completed Computer recovery", () => {
       await waitFor(() => expect(onConnected).toHaveBeenCalledOnce());
       expect(document.activeElement).toBe(card);
       view.rerender(<ComputerManagement {...props} computer={{ ...computer, connectionStatus: "online" }} />);
-      expect(screen.queryByRole("button", { name: "Copy instructions" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Copy for AI assistant" })).toBeNull();
       adapter.computers.mockResolvedValue({ computers: [{ ...computer, connectionStatus }] });
       view.rerender(<ComputerManagement {...props} computer={{ ...computer, connectionStatus }} />);
-      expect(await screen.findByRole("button", { name: "Copy instructions" })).toBeTruthy();
+      expect(await screen.findByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
       expect(screen.queryByText("Connected")).toBeNull();
       expect(adapter.issue).toHaveBeenCalledTimes(2);
       expect(onConnected).toHaveBeenCalledOnce();

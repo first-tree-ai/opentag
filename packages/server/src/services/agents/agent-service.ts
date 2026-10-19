@@ -24,12 +24,13 @@ import {
   type UpdateAgentRequest,
   UpdateAgentRequestSchema,
 } from "@opentag/shared";
-import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   agentMcpServers,
   agentRuntimeConfigs,
+  agentSchedules,
   agents,
   computers,
   imBindings,
@@ -37,6 +38,7 @@ import {
   mcpServerAuthorizations,
   sessionPlacements,
   sessions,
+  slackOAuthNonces,
   users,
 } from "../../db/schema/index.js";
 import type { CloudUsageService } from "../cloud-usage.js";
@@ -44,6 +46,7 @@ import { disableImBindingInTransaction } from "../im-bindings/index.js";
 import { lockMcpBindings } from "../mcp/index.js";
 import { resolveAgentRuntimeConfig } from "../runtime-config/index.js";
 import type { CloudModelCatalog } from "../sandboxes/cloud-model-catalog.js";
+import { AgentTransferError, type AgentTransferInput, type AgentTransferResult } from "./agent-transfer.js";
 import { AgentServiceError, resourceNotFound } from "./errors.js";
 
 type AgentRow = typeof agents.$inferSelect;
@@ -345,6 +348,23 @@ function uniqueConstraintName(error: unknown): string | undefined {
     current = "cause" in current ? current.cause : undefined;
   }
   return undefined;
+}
+
+/**
+ * A Delivery that may still produce a Turn on the Computer that took it.
+ *
+ * The three branches are distinct failure shapes, and each is the only one its state allows:
+ * `pending` was never sent, `accepted` without `reportedAt` is a Turn the Computer owns and has not
+ * reported, and `expired` with a dispatch request id is a send nobody proved. `steered` rows are
+ * excluded on purpose: their work was folded into the root Delivery they point at (the constraint
+ * forbids them a Turn of their own), so the root row carries the custody question.
+ */
+function unsettledDeliveryCondition(): ReturnType<typeof or> {
+  return or(
+    eq(imMessageDeliveries.state, "pending"),
+    and(eq(imMessageDeliveries.state, "accepted"), isNull(imMessageDeliveries.reportedAt)),
+    and(eq(imMessageDeliveries.state, "expired"), isNotNull(imMessageDeliveries.dispatchRequestId)),
+  );
 }
 
 function mergeCloudUsage(
@@ -1183,23 +1203,52 @@ export class AgentService {
   }
 
   async #assertSessionsCanRebind(transaction: DatabaseTransaction, active: ActiveSessionPlacement[]): Promise<void> {
-    const sessionIds = active.map((row) => row.sessionId);
-    if (sessionIds.length === 0) return;
-    const deliveries = await transaction
-      .select({
-        dispatchRequestId: imMessageDeliveries.dispatchRequestId,
-        reportedAt: imMessageDeliveries.reportedAt,
-        state: imMessageDeliveries.state,
-      })
+    if (
+      await this.#sessionsHaveUncertainDeliveries(
+        transaction,
+        active.map((row) => row.sessionId),
+      )
+    ) {
+      throw this.#rebindBlocked();
+    }
+  }
+
+  /**
+   * A Session is uncertain while a Turn can still land on the Computer it is placed on: pending
+   * delivery, an accepted delivery whose Turn was never reported, or an expired dispatch whose
+   * custody nobody proved. Moving or discarding such a Session would split one Turn across two
+   * owners, so every caller that takes a Session away from its Computer refuses instead.
+   */
+  async #sessionsHaveUncertainDeliveries(
+    transaction: DatabaseTransaction,
+    sessionIds: readonly string[],
+  ): Promise<boolean> {
+    if (sessionIds.length === 0) return false;
+    const [uncertain] = await transaction
+      .select({ id: imMessageDeliveries.id })
       .from(imMessageDeliveries)
-      .where(inArray(imMessageDeliveries.sessionId, sessionIds));
-    const blocked = deliveries.some(
-      (delivery) =>
-        delivery.state === "pending" ||
-        (delivery.state === "accepted" && delivery.reportedAt === null) ||
-        (delivery.state === "expired" && delivery.dispatchRequestId !== null),
-    );
-    if (blocked) throw this.#rebindBlocked();
+      .where(and(inArray(imMessageDeliveries.sessionId, [...sessionIds]), unsettledDeliveryCondition()))
+      .limit(1);
+    return uncertain !== undefined;
+  }
+
+  /**
+   * The same question asked of the whole Agent, over every Session of every binding it ever had.
+   *
+   * Ended Sessions and disabled bindings count: unbinding ends a binding's Sessions but leaves an
+   * accepted Turn with the Computer that owns it, so a check limited to live Sessions would let a
+   * transfer move ownership while that Turn is still out. A Session with no placement counts too —
+   * the Delivery rows are the evidence, not the placement.
+   */
+  async #agentSessionsHaveUncertainDeliveries(transaction: DatabaseTransaction, agentId: string): Promise<boolean> {
+    const [uncertain] = await transaction
+      .select({ id: imMessageDeliveries.id })
+      .from(imMessageDeliveries)
+      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .where(and(eq(imBindings.agentId, agentId), unsettledDeliveryCondition()))
+      .limit(1);
+    return uncertain !== undefined;
   }
 
   async #moveSessionPlacements(
@@ -1246,17 +1295,7 @@ export class AgentService {
         .for("update");
       if (imBinding) await disableImBindingInTransaction(transaction, imBinding.id, now);
       await transaction.delete(agentRuntimeConfigs).where(eq(agentRuntimeConfigs.agentId, agentId));
-      /*
-       * The Agent's MCP mounts and credentials go with it.
-       *
-       * Deleting an Agent is a soft delete, so the `on delete cascade` on those tables never fires on
-       * this path — without this the rows survived forever, holding a credential the Account can no
-       * longer see, reach, or revoke through any route. Onboarding reset already cleaned them up
-       * explicitly for the same reason; this is the other deletion path.
-       */
-      await lockMcpBindings(transaction, eq(agentMcpServers.agentId, agentId));
-      await transaction.delete(mcpServerAuthorizations).where(eq(mcpServerAuthorizations.agentId, agentId));
-      await transaction.delete(agentMcpServers).where(eq(agentMcpServers.agentId, agentId));
+      await this.#deleteMcpBindings(transaction, agentId);
       const [deleted] = await transaction
         .update(agents)
         .set({ status: "deleted", updatedAt: now, revision: sql`${agents.revision} + 1` })
@@ -1270,6 +1309,286 @@ export class AgentService {
       previousComputerId: result.computerId ?? undefined,
     });
     await this.#stopSessionsBestEffort(result.targets);
+  }
+
+  /**
+   * Moves a suspended Agent to another Account. There is no runtime admin role, so this is only
+   * reachable from the operator CLI (`src/admin/transfer-agent.ts`); it still takes the Agent row
+   * lock and repeats every precondition inside the transaction, because an operator's read is stale
+   * the moment it returns.
+   *
+   * Skills, instructions and history are keyed by `agent_id` alone, so they move intact. What cannot
+   * move is whatever points at data the source Account owns — the Computer, the MCP mounts and their
+   * sealed credentials (the definitions in `mcp_servers` are Account-scoped, so a mount would expose
+   * another Account's Server and credential to the new owner), and the Schedules' target
+   * conversations, which is why the Schedules are paused rather than left live.
+   */
+  async transferToAccount(input: AgentTransferInput): Promise<AgentTransferResult> {
+    const result = await this.#database.transaction(async (transaction) => {
+      const { agent, computerKind } = await this.#lockAgentForTransfer(transaction, input.agentId);
+      const target = await this.#assertTransferTarget(transaction, agent, input.targetAccountId);
+      const targets = await this.#assertTransferSessionsClear(transaction, agent.id);
+      const runtimeConfig = await this.#lockRuntimeConfig(transaction, agent.id);
+      const imBinding = await this.#lockLiveMessagingBinding(transaction, agent.id);
+      const now = this.#now();
+      const imBindingOutcome = await this.#settleTransferMessaging(transaction, agent.id, imBinding, input.slack, now);
+      await this.#deleteMcpBindings(transaction, agent.id);
+      /*
+       * Every `agent_schedules` row pins one target Session, and that Session ends with the transfer
+       * below (its placement, its Computer and its conversation history belong to the previous owner).
+       * A Schedule whose target has ended resolves `permanent / target_invalid` on its next occurrence
+       * and would be auto-disabled then, so it is paused here instead: the row and its rule stay
+       * readable, and the new owner retargets it from a conversation they own.
+       */
+      const schedulesPaused = await this.#pauseTransferredSchedules(transaction, agent.id, now);
+      await this.#endAgentSessions(transaction, agent.id, now);
+      const runtimeConfigReset = await this.#resetTransferredRuntimeConfig(
+        transaction,
+        agent.id,
+        runtimeConfig,
+        computerKind,
+        now,
+      );
+      const revision = await this.#moveAgentToAccount(transaction, agent.id, target.id, now);
+      return {
+        agentId: agent.id,
+        imBinding: imBindingOutcome,
+        previousComputerId: agent.computerId,
+        revision,
+        runtimeConfigReset,
+        schedulesPaused,
+        slack: input.slack,
+        sourceAccountId: agent.createdByUserId,
+        targetAccountId: target.id,
+        targets,
+      };
+    });
+    await this.#notifyProviderCliPlacement({
+      agentId: input.agentId,
+      previousComputerId: result.previousComputerId ?? undefined,
+    });
+    await this.#stopSessionsBestEffort(result.targets);
+    return {
+      agentId: result.agentId,
+      imBinding: result.imBinding,
+      previousComputerId: result.previousComputerId,
+      revision: result.revision,
+      runtimeConfigReset: result.runtimeConfigReset,
+      schedulesPaused: result.schedulesPaused,
+      slack: result.slack,
+      sourceAccountId: result.sourceAccountId,
+      targetAccountId: result.targetAccountId,
+    };
+  }
+
+  /** Locks the transfer target Agent row and its previous Computer kind. */
+  async #lockAgentForTransfer(
+    transaction: DatabaseTransaction,
+    agentId: string,
+  ): Promise<{ agent: AgentRow; computerKind: "local" | "cloud" | null }> {
+    const [row] = await transaction
+      .select({ agent: agents, computerKind: computers.kind })
+      .from(agents)
+      .leftJoin(computers, eq(computers.id, agents.computerId))
+      .where(eq(agents.id, agentId))
+      .limit(1)
+      .for("update", { of: agents });
+    if (!row || row.agent.status === "deleted") throw new AgentTransferError("agent_not_found");
+    if (row.agent.status !== "suspended") throw new AgentTransferError("agent_not_suspended");
+    return row;
+  }
+
+  /** Resolves the destination Account and proves the name is free there. */
+  async #assertTransferTarget(
+    transaction: DatabaseTransaction,
+    agent: AgentRow,
+    targetAccountId: string,
+  ): Promise<{ id: string }> {
+    const [target] = await transaction
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.id, targetAccountId))
+      .limit(1);
+    if (!target) throw new AgentTransferError("target_account_not_found");
+    if (target.id === agent.createdByUserId) throw new AgentTransferError("same_account");
+    // Same key as creation, so a concurrent create of this name under the target Account serializes
+    // instead of both passing their own name check.
+    await transaction.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`agent-name:${target.id}:${agent.name}`}, 0))`,
+    );
+    const [nameConflict] = await transaction
+      .select({ id: agents.id })
+      .from(agents)
+      .where(
+        and(
+          eq(agents.createdByUserId, target.id),
+          sql`lower(${agents.name}) = ${agent.name.toLowerCase()}`,
+          ne(agents.status, "deleted"),
+        ),
+      )
+      .limit(1);
+    if (nameConflict) throw new AgentTransferError("name_conflict");
+    return target;
+  }
+
+  /** Returns the Sessions the caller must stop after commit, or refuses an unsettled Turn. */
+  async #assertTransferSessionsClear(
+    transaction: DatabaseTransaction,
+    agentId: string,
+  ): Promise<AgentSessionStopTarget[]> {
+    const targets = await this.#activeSessionTargets(transaction, agentId);
+    if (await this.#agentSessionsHaveUncertainDeliveries(transaction, agentId)) {
+      throw new AgentTransferError("sessions_blocked");
+    }
+    return targets;
+  }
+
+  async #lockLiveMessagingBinding(
+    transaction: DatabaseTransaction,
+    agentId: string,
+  ): Promise<{ id: string; provider: "feishu" | "slack" } | undefined> {
+    const [imBinding] = await transaction
+      .select({ id: imBindings.id, provider: imBindings.provider })
+      .from(imBindings)
+      .where(and(eq(imBindings.agentId, agentId), ne(imBindings.status, "disabled")))
+      .limit(1)
+      .for("update");
+    return imBinding;
+  }
+
+  /**
+   * Applies the operator's `slack` choice and drops the previous owner's pending Slack OAuth flow.
+   *
+   * A Slack OAuth nonce is the one Account-scoped record in the messaging link: it names the user who
+   * started the flow. A flow still in flight was started by the previous owner, so it must not be
+   * redeemable against an Agent that now belongs to someone else. The callback would refuse it too
+   * (`assertCanManage`), but the pending row is deleted rather than left to fail.
+   */
+  async #settleTransferMessaging(
+    transaction: DatabaseTransaction,
+    agentId: string,
+    imBinding: { id: string; provider: "feishu" | "slack" } | undefined,
+    slack: AgentTransferInput["slack"],
+    now: Date,
+  ): Promise<AgentTransferResult["imBinding"]> {
+    let outcome: AgentTransferResult["imBinding"] = "none";
+    if (imBinding && slack === "keep") {
+      if (imBinding.provider !== "slack") throw new AgentTransferError("im_binding_keep_unsupported");
+      outcome = "kept";
+    } else if (imBinding) {
+      await disableImBindingInTransaction(transaction, imBinding.id, now);
+      outcome = "disabled";
+    }
+    await transaction
+      .delete(slackOAuthNonces)
+      .where(and(eq(slackOAuthNonces.agentId, agentId), isNull(slackOAuthNonces.consumedAt)));
+    return outcome;
+  }
+
+  /**
+   * Resets the runtime config fields that were validated against the previous Computer or Account.
+   * Everything else (`instructions`, `permissions`, `reasoningEffort`, `maxDurationMs`) is
+   * provider-scoped and stays.
+   *
+   * - `contextTrees`: a connection is authorized through the source Account's GitHub transport and
+   *   materialized on the source Computer. Those repositories are someone else's project selection,
+   *   so a different Account must attach its own trees.
+   * - `model`: an explicit model on a Cloud Computer was admitted only against the Cloud Router
+   *   catalog. The Agent has no Computer after the transfer, so a Local runtime may not recognize the
+   *   name; `null` restores the platform default.
+   */
+  async #resetTransferredRuntimeConfig(
+    transaction: DatabaseTransaction,
+    agentId: string,
+    runtimeConfig: AgentRuntimeConfigRow,
+    computerKind: "local" | "cloud" | null,
+    now: Date,
+  ): Promise<AgentTransferResult["runtimeConfigReset"]> {
+    const resetContextTrees = runtimeConfig.contextTrees.length > 0;
+    const resetModel = computerKind === "cloud" && runtimeConfig.model !== null;
+    const reset: AgentTransferResult["runtimeConfigReset"] = [
+      ...(resetContextTrees ? (["contextTrees"] as const) : []),
+      ...(resetModel ? (["model"] as const) : []),
+    ];
+    if (reset.length === 0) return reset;
+    await transaction
+      .update(agentRuntimeConfigs)
+      .set({
+        ...(resetContextTrees ? { contextTrees: [] } : {}),
+        ...(resetModel ? { model: null } : {}),
+        revision: sql`nextval('runtime_config_revision_sequence')`,
+        updatedAt: now,
+      })
+      .where(eq(agentRuntimeConfigs.agentId, agentId));
+    return reset;
+  }
+
+  async #moveAgentToAccount(
+    transaction: DatabaseTransaction,
+    agentId: string,
+    targetAccountId: string,
+    now: Date,
+  ): Promise<number> {
+    const [updated] = await transaction
+      .update(agents)
+      .set({
+        createdByUserId: targetAccountId,
+        computerId: null,
+        revision: sql`${agents.revision} + 1`,
+        updatedAt: now,
+      })
+      .where(and(eq(agents.id, agentId), eq(agents.status, "suspended")))
+      .returning({ revision: agents.revision });
+    if (!updated) throw new AgentTransferError("agent_not_suspended");
+    return updated.revision;
+  }
+
+  /**
+   * The Agent's MCP mounts and credentials go with it.
+   *
+   * Deleting an Agent is a soft delete and a transfer keeps the row, so the `on delete cascade` on
+   * those tables never fires on either path — without this the rows survived forever, holding a
+   * credential the Account can no longer see, reach, or revoke through any route. Onboarding reset
+   * already cleaned them up explicitly for the same reason; these are the other two paths.
+   */
+  async #deleteMcpBindings(transaction: DatabaseTransaction, agentId: string): Promise<void> {
+    await lockMcpBindings(transaction, eq(agentMcpServers.agentId, agentId));
+    await transaction.delete(mcpServerAuthorizations).where(eq(mcpServerAuthorizations.agentId, agentId));
+    await transaction.delete(agentMcpServers).where(eq(agentMcpServers.agentId, agentId));
+  }
+
+  async #pauseTransferredSchedules(transaction: DatabaseTransaction, agentId: string, now: Date): Promise<number> {
+    const paused = await transaction
+      .update(agentSchedules)
+      .set({
+        enabled: false,
+        nextTriggerAt: null,
+        revision: sql`${agentSchedules.revision} + 1`,
+        updatedAt: now,
+      })
+      .where(and(eq(agentSchedules.agentId, agentId), eq(agentSchedules.enabled, true)))
+      .returning({ id: agentSchedules.id });
+    return paused.length;
+  }
+
+  async #endAgentSessions(transaction: DatabaseTransaction, agentId: string, now: Date): Promise<void> {
+    const bindings = await transaction
+      .select({ id: imBindings.id })
+      .from(imBindings)
+      .where(eq(imBindings.agentId, agentId));
+    if (bindings.length === 0) return;
+    await transaction
+      .update(sessions)
+      .set({ endedAt: now, revision: sql`${sessions.revision} + 1` })
+      .where(
+        and(
+          inArray(
+            sessions.imBindingId,
+            bindings.map((binding) => binding.id),
+          ),
+          isNull(sessions.endedAt),
+        ),
+      );
   }
 
   async #lockAgentScopeForMutation(
@@ -1443,6 +1762,7 @@ export class AgentService {
     }
   }
 
+  /** Only what still needs a stop request: live Sessions on a current placement. */
   async #activeSessionTargets(transaction: DatabaseTransaction, agentId: string): Promise<AgentSessionStopTarget[]> {
     return transaction
       .select({

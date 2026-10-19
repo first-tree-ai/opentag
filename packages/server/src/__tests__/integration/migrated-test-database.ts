@@ -14,8 +14,8 @@ export interface MigratedTestDatabase {
 
 // Stable-schema suites can preserve the migration ledger and clear only application data.
 // Migration contract tests intentionally use their own empty-schema setup instead of this helper.
-export async function startMigratedTestDatabase(): Promise<MigratedTestDatabase> {
-  const container = await startPostgresTestContainer();
+export async function startMigratedTestDatabase(image?: string): Promise<MigratedTestDatabase> {
+  const container = await startPostgresTestContainer(image);
   const databaseUrl = container.getConnectionUri();
 
   try {

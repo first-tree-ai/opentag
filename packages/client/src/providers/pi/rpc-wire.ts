@@ -40,15 +40,28 @@ export interface PiRpcSpawnOptions {
   ) => ChildProcessWithoutNullStreams;
 }
 
+export interface PiRpcRequestOptions {
+  /**
+   * Overrides the process-wide request timeout for this command. `null` disables the built-in
+   * timer: the caller must bound the request with its own signal, which process exit and
+   * `close()` still back up.
+   */
+  readonly timeoutMs?: number | null;
+}
+
 export interface PiRpcClient {
-  request(command: Readonly<Record<string, unknown>>, signal?: AbortSignal): Promise<unknown>;
+  request(
+    command: Readonly<Record<string, unknown>>,
+    signal?: AbortSignal,
+    options?: PiRpcRequestOptions,
+  ): Promise<unknown>;
   subscribe(listener: (message: Readonly<Record<string, unknown>>) => void): () => void;
   close(graceMs?: number): Promise<void>;
 }
 
 interface PendingRequest {
   readonly command: string;
-  readonly timer: ReturnType<typeof setTimeout>;
+  readonly timer?: ReturnType<typeof setTimeout>;
   readonly reject: (error: Error) => void;
   readonly resolve: (value: unknown) => void;
 }
@@ -118,7 +131,15 @@ export class PiRpcProcess implements PiRpcClient {
     return () => this.#listeners.delete(listener);
   }
 
-  request(command: Readonly<Record<string, unknown>>, signal?: AbortSignal): Promise<unknown> {
+  request(
+    command: Readonly<Record<string, unknown>>,
+    signal?: AbortSignal,
+    options?: PiRpcRequestOptions,
+  ): Promise<unknown> {
+    const timeoutMs = options?.timeoutMs === undefined ? this.#requestTimeoutMs : options.timeoutMs;
+    if (timeoutMs !== null && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1)) {
+      return Promise.reject(new PiRpcError("protocol", "Pi RPC timeoutMs must be a positive safe integer or null"));
+    }
     if (this.#failure || this.#closed) {
       return Promise.reject(this.#failure ?? new PiRpcError("exited", "Pi RPC is closed"));
     }
@@ -141,11 +162,14 @@ export class PiRpcProcess implements PiRpcClient {
         cleanup();
         reject(new PiRpcError("aborted", "Pi RPC request was aborted"));
       };
-      const timer = setTimeout(() => {
-        cleanup();
-        reject(new PiRpcError("timeout", `Pi RPC request timed out: ${commandType}`));
-      }, this.#requestTimeoutMs);
-      timer.unref();
+      const timer =
+        timeoutMs === null
+          ? undefined
+          : setTimeout(() => {
+              cleanup();
+              reject(new PiRpcError("timeout", `Pi RPC request timed out: ${commandType}`));
+            }, timeoutMs);
+      timer?.unref();
       this.#pending.set(id, {
         command: commandType,
         timer,

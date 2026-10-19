@@ -14,8 +14,8 @@ class IntegrationPostgreSqlContainer extends PostgreSqlContainer {
   }
 }
 
-export async function startPostgresTestContainer(): Promise<StartedPostgreSqlContainer> {
-  const container = await new IntegrationPostgreSqlContainer("postgres:17-alpine")
+export async function startPostgresTestContainer(image = "postgres:17-alpine"): Promise<StartedPostgreSqlContainer> {
+  const container = await new IntegrationPostgreSqlContainer(image)
     .withLabels({ "opentag.test.postgres": "integration" })
     .start();
 

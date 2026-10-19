@@ -1,6 +1,6 @@
 import { lstat, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { EffectiveRuntimeSnapshot } from "@opentag/shared";
+import { ChannelNameSchema, type EffectiveRuntimeSnapshot, getChannelConfig } from "@opentag/shared";
 
 // Native parsers check every segment of compound commands against these prefixes.
 const MESSAGING_COMMANDS: readonly (readonly string[])[] = [
@@ -78,6 +78,8 @@ const MESSAGING_COMMANDS: readonly (readonly string[])[] = [
   ["wc"],
   ["stat"],
   ["sleep"],
+  ...ChannelNameSchema.options.map((channel) => [getChannelConfig(channel).binName]),
+  ["context-tree"],
 ];
 
 export function allowedCommandsForPolicy(snapshot: EffectiveRuntimeSnapshot): readonly string[] {

@@ -73,7 +73,7 @@ import { assembleContextTreeSkills, assembleRunnerToolSkills } from "./skills.js
 /** Pi custom provider name for the Server-mediated model path. */
 export const CLOUD_MODEL_PI_PROVIDER = "opentag";
 /**
- * Verified image inputs for exact Cloud model IDs; see docs/cloud-pi-image-input.md.
+ * Verified image inputs for exact Cloud model IDs; see docs/system/cloud/cloud-pi-image-input.md.
  * This describes an already-issued model, never admits a model or guesses from its name.
  * Unknown IDs keep Pi's text-only behavior until their capabilities are verified.
  */

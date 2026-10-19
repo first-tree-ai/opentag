@@ -61,7 +61,48 @@ pnpm --filter @opentag/server start
 Claude Code，然后在第二个终端中运行页面生成的连接命令。
 
 按照聊天设置流程连接 Slack 或飞书，然后给 Agent 发消息。
-Slack 的额外设置步骤见[配置指南](./docs/zh-CN/slack-app-setup.md)。
+Slack 的额外设置步骤见[配置指南](./docs/system/messaging/slack-app-setup.md)。
+
+## 管理员操作
+
+有两个命令直接操作数据库，不经过服务器。两者都需要 `.env.local` 中的配置，以及最新的 `dist/`（`pnpm build`）：
+
+- `pnpm --filter @opentag/server bootstrap:admin` 在空数据库上创建第一个账号。
+- `pnpm --filter @opentag/server transfer:agent` 把一个已有 Agent 转移到另一个账号。
+
+### 把 Agent 转移到另一个账号
+
+```bash
+set -a
+source .env.local
+set +a
+OPENTAG_TRANSFER_AGENT_ID=<agent-uuid> \
+OPENTAG_TRANSFER_TARGET_ACCOUNT_ID=<account-uuid> \
+OPENTAG_TRANSFER_SLACK=disable \
+  pnpm --filter @opentag/server transfer:agent
+```
+
+Agent 必须处于暂停（suspended）状态。命令在单个事务内完成，以 JSON 输出结果，同时向 stderr 写一条脱敏的审计日志。
+前置条件不满足时命令以非零状态退出，并在该日志行里写明原因：Agent 未暂停、目标账号下已有同名 Agent、或者仍有 Turn 可能落到
+旧的 Computer 上。解绑消息连接不会清除 Turn 检查：那条未完成的 Delivery 仍留在数据库中，因此在它被处理完之前，命令会持续拒绝。
+
+请在 Computer 在线时暂停 Agent：本命令没有 Runtime 连接，依赖暂停步骤已经停止 Session 并让旧 Computer 的 placement 退役。
+那次停止是尽力而为的，暂停时离线的 Computer 不会被本命令重试。
+
+只按 Agent 归属的数据会一起转移：Skills、instructions 与历史。Computer 会被解绑，因此在新账号绑定自己的 Computer 之前，
+该 Agent 不显示 Computer。MCP 挂载及其保存的凭据会被删除，因为它们指向的 Server 定义属于原账号。
+
+Schedules 保留为记录但被暂停（`enabled = false`，没有下次触发时间），结果中会报告暂停了多少条。每条 Schedule 都绑定一个
+目标会话，而该会话随转移结束，因此它无法继续投递。新账号需要从自己拥有的会话重新创建 Schedule。
+
+按 Agent 归属的使用历史（token 数量与结果，不含消息内容）跟 Agent 走，因此新账号的用量视图会包含原账号执行过的 Turn。
+账单历史本身不会被改动。
+
+`OPENTAG_TRANSFER_SLACK` 决定消息绑定的处理方式：
+
+- `disable`（默认）禁用绑定，并释放不再使用的 Slack installation。
+- `keep` 保留 Slack 绑定及其 installation，在新账号下继续为该 Agent 提供服务。飞书绑定无法保留，会以
+  `im_binding_keep_unsupported` 拒绝。
 
 ## 停止与重启
 
@@ -107,7 +148,7 @@ pnpm --filter @opentag/server start
 | `packages/client` | 服务器客户端和本地 Agent 运行时 |
 | `packages/shared` | 共用 schema 和类型 |
 
-界面翻译请参阅 [Web 国际化](./docs/zh-CN/i18n.md)。
+界面翻译请参阅 [Web 国际化](./docs/system/web/i18n.md)。
 
 ## 检查
 
@@ -175,8 +216,8 @@ pnpm exec turbo run test --concurrency=2 -- --shard=1/3
 `http://127.0.0.1:8000/api/v1/auth/callback/google`，并在本地配置中设置 `OPENTAG_GOOGLE_CLIENT_ID`
 和 `OPENTAG_GOOGLE_CLIENT_SECRET`。
 
-- [部署指南](./docs/zh-CN/deploying.md) — 部署配置与运维。
-- [Runtime 协议](./docs/zh-CN/runtime-protocol.md) — 服务器与 Agent 的通信。
-- [Provider CLI](./docs/zh-CN/direct-provider-cli.md) — Codex 和 Claude Code 集成。
-- [可观测性](./docs/zh-CN/observability.md) — 服务器追踪与诊断。
-- [发布指南](./docs/zh-CN/releasing.md) — 通过 GitHub Actions 发布。
+- [部署指南](./docs/operations/deploying.md) — 部署配置与运维。
+- [Runtime 协议](./docs/system/runtime/runtime-protocol.md) — 服务器与 Agent 的通信。
+- [Provider CLI](./docs/system/messaging/direct-provider-cli.md) — Codex 和 Claude Code 集成。
+- [可观测性](./docs/operations/observability.md) — 服务器追踪与诊断。
+- [发布指南](./docs/operations/releasing.md) — 通过 GitHub Actions 发布。

@@ -5,6 +5,7 @@ export function useSoulEditorHeight(
   editorRef: RefObject<HTMLTextAreaElement | null>,
   exampleRef: RefObject<HTMLDivElement | null>,
   footerRef: RefObject<HTMLDivElement | null>,
+  exampleVisible = value.length === 0,
 ) {
   const sizing = useRef({
     width: 0,
@@ -28,12 +29,16 @@ export function useSoulEditorHeight(
     function measureLayout() {
       const width = editor.getBoundingClientRect().width;
       const widthChanged = width !== state.width;
-      if (widthChanged) state.exampleHeight = 0;
+      if (widthChanged) {
+        state.exampleHeight = 0;
+        state.footerHeight = 0;
+      }
       state.width = width;
       // Keep the layout stable when a mobile keyboard reduces the viewport during editing.
       const keyboardMayBeOpen = window.matchMedia("(pointer: coarse)").matches && document.activeElement === editor;
       if (!keyboardMayBeOpen || widthChanged) state.viewportHeight = window.innerHeight;
-      if (value.length === 0 && example) state.exampleHeight = example.getBoundingClientRect().height + 2;
+      state.exampleHeight =
+        value.length === 0 && exampleVisible && example ? example.getBoundingClientRect().height + 2 : 0;
       // Reserve the measured action area after it closes so successful updates do not enlarge the editor.
       state.footerHeight = Math.max(state.footerHeight, footerRef.current?.getBoundingClientRect().height ?? 0);
     }
@@ -96,7 +101,7 @@ export function useSoulEditorHeight(
       window.removeEventListener("resize", resizeEditor);
       document.fonts?.removeEventListener("loadingdone", resizeEditor);
     };
-  }, [value, editorRef, exampleRef, footerRef]);
+  }, [value, editorRef, exampleRef, footerRef, exampleVisible]);
 }
 
 function editorHeights(editor: HTMLTextAreaElement, exampleHeight: number) {

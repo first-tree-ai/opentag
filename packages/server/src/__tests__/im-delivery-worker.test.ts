@@ -35,7 +35,7 @@ describe("ImDeliveryWorker diagnostics", () => {
   it("contains a scheduler database failure and emits only a bounded diagnostic code", async () => {
     const diagnostic = vi.fn();
     const database = {
-      transaction: vi.fn().mockRejectedValue(new Error("secret provider response must not escape")),
+      execute: vi.fn().mockRejectedValue(new Error("secret provider response must not escape")),
     };
     const worker = new ImDeliveryWorker({
       assembler: { assembleForSession: vi.fn() },
@@ -61,7 +61,7 @@ describe("ImDeliveryWorker diagnostics", () => {
       onCounter: (name, labels) => counters.push({ name, labels }),
     });
     const database = {
-      transaction: vi.fn().mockRejectedValue(new Error("claim failed")),
+      execute: vi.fn().mockRejectedValue(new Error("claim failed")),
     };
     const worker = new ImDeliveryWorker({
       assembler: { assembleForSession: vi.fn() },

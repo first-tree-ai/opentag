@@ -23,6 +23,8 @@
   "onboarding_v2_completed": "已完成",
   "onboarding_v2_connect_no_computer_status": "未连接",
   "onboarding_v2_connect_no_computer_title": "尚未连接电脑",
+  "onboarding_v2_connect_not_selected_status": "未选择",
+  "onboarding_v2_connect_not_selected_title": "尚未为此 Agent 选择电脑",
   "onboarding_v2_connect_offline": "离线",
   "onboarding_v2_connect_online": "在线",
   "onboarding_v2_connect_privacy": "{name} 在你的电脑上运行，消息和结果经由 OpenTag 传递。",

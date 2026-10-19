@@ -7,13 +7,19 @@ import { ApiError, browserApi } from "../../../api.js";
 import { createQueryClient } from "../../../query/client.js";
 import { queryKeys } from "../../../query/keys.js";
 import { LIVE_REFETCH_INTERVAL_MS } from "../../../query/live.js";
+import { TooltipProvider } from "../../../ui/design-system.js";
 import { RuntimeConfigurationForm, runtimeConfigurationFromForm } from "./runtime-configuration.js";
+import { soulPresets } from "./soul-presets.js";
 
 const queryClients: QueryClient[] = [];
 function render(element: ReactElement) {
   const client = createQueryClient();
   queryClients.push(client);
-  return testingRender(<QueryClientProvider client={client}>{element}</QueryClientProvider>);
+  return testingRender(
+    <QueryClientProvider client={client}>
+      <TooltipProvider>{element}</TooltipProvider>
+    </QueryClientProvider>,
+  );
 }
 beforeEach(() => {
   vi.spyOn(browserApi, "agentRuntimeOptions").mockRejectedValue(new ApiError(501, "Older client"));
@@ -784,6 +790,148 @@ describe("RuntimeConfigurationForm", () => {
       expectedRevision: 4,
       runtimeConfig: { instructions: "Updated instructions." },
     });
+  });
+
+  it.each([
+    ["Engineering", "Help our team ship reliable software."],
+    ["Design", "Help our team make simple, usable product interfaces."],
+    ["Product", "Help our team decide what to build next."],
+    ["Growth", "Help our team acquire and activate customers."],
+    ["Operations", "Help our team turn decisions into follow-through."],
+  ])("loads %s as an editable draft without saving", (title, role) => {
+    const save = vi.fn();
+    render(<RuntimeConfigurationForm initialConfig={config} save={save} section="instructions" />);
+    const editor = screen.getByRole("textbox", { name: "Soul" }) as HTMLTextAreaElement;
+    const presets = screen.getByRole("group", { name: "Choose a starting point" });
+    expect(
+      within(presets)
+        .getAllByRole("button")
+        .map((button) => button.textContent?.trim()),
+    ).toEqual(["Engineering", "Design", "Product", "Growth", "Operations", "Scratch"]);
+
+    fireEvent.click(within(presets).getByRole("button", { name: title }));
+    expect(editor.value).toContain(role);
+    expect(editor.value.trim().split(/\s+/).length).toBeLessThanOrEqual(70);
+    expect(within(presets).getByRole("button", { name: title }).getAttribute("aria-pressed")).toBe("true");
+    expect(save).not.toHaveBeenCalled();
+
+    fireEvent.change(editor, { target: { value: `${editor.value}\nMy own principle.` } });
+    expect(within(presets).getByRole("button", { name: title }).getAttribute("aria-pressed")).toBe("false");
+    expect(screen.queryByRole("button", { name: "Undo preset" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect(editor.value).toBe(config.runtimeConfig.instructions);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("undoes preset switches without losing the previous custom draft", () => {
+    render(<RuntimeConfigurationForm initialConfig={config} save={vi.fn()} section="instructions" />);
+    const editor = screen.getByRole("textbox", { name: "Soul" }) as HTMLTextAreaElement;
+    fireEvent.change(editor, { target: { value: "Keep this unsaved custom workflow." } });
+    fireEvent.click(screen.getByRole("button", { name: "Design" }));
+    fireEvent.click(screen.getByRole("button", { name: "Undo preset" }));
+    expect(editor.value).toBe("Keep this unsaved custom workflow.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Design" }));
+    const designDraft = editor.value;
+    fireEvent.click(screen.getByRole("button", { name: "Engineering" }));
+    fireEvent.click(screen.getByRole("button", { name: "Undo preset" }));
+    expect(editor.value).toBe(designDraft);
+    expect(screen.getByRole("button", { name: "Design" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("starts from scratch without loading or saving example instructions and can undo", () => {
+    const save = vi.fn();
+    render(<RuntimeConfigurationForm initialConfig={config} save={save} section="instructions" />);
+    const editor = screen.getByRole("textbox", { name: "Soul" }) as HTMLTextAreaElement;
+    fireEvent.change(editor, { target: { value: "Keep my unsaved workflow." } });
+    fireEvent.click(screen.getByRole("button", { name: "Scratch" }));
+    expect(editor.value).toBe("");
+    expect(screen.queryByText("Example")).toBeNull();
+    expect(screen.getByRole("button", { name: "Scratch" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByText("Apply to clear Soul.")).toBeTruthy();
+    expect(save).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo preset" }));
+    expect(editor.value).toBe("Keep my unsaved workflow.");
+    fireEvent.click(screen.getByRole("button", { name: "Scratch" }));
+    fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect(editor.value).toBe(config.runtimeConfig.instructions);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("starts with a blank editor when choosing scratch on an already empty Soul", () => {
+    const save = vi.fn();
+    render(
+      <RuntimeConfigurationForm
+        initialConfig={{ ...config, runtimeConfig: { ...config.runtimeConfig, instructions: "" } }}
+        save={save}
+        section="instructions"
+      />,
+    );
+    expect(screen.getByText("Example")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Scratch" }));
+    expect(screen.getByRole("textbox", { name: "Soul" })).toHaveProperty("value", "");
+    expect(screen.queryByText("Example")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Apply changes" })).toBeNull();
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("explains Scratch when it receives keyboard focus", async () => {
+    render(<RuntimeConfigurationForm initialConfig={config} save={vi.fn()} section="instructions" />);
+    fireEvent.keyDown(document, { key: "Tab" });
+    act(() => screen.getByRole("button", { name: "Scratch" }).focus());
+    expect(await screen.findByText("Start with a blank Soul.")).toBeTruthy();
+  });
+
+  it("applies the chosen manifest explicitly and disables preset changes while saving", async () => {
+    let resolveSave!: (updated: AgentAdminConfig) => void;
+    const save = vi.fn(
+      () =>
+        new Promise<AgentAdminConfig>((resolve) => {
+          resolveSave = resolve;
+        }),
+    );
+    render(<RuntimeConfigurationForm initialConfig={config} save={save} section="instructions" />);
+    fireEvent.click(screen.getByRole("button", { name: "Operations" }));
+    const instructions = (screen.getByRole("textbox", { name: "Soul" }) as HTMLTextAreaElement).value;
+    fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
+    for (const button of within(screen.getByRole("group", { name: "Choose a starting point" })).getAllByRole(
+      "button",
+    )) {
+      expect(button).toHaveProperty("disabled", true);
+    }
+    expect(screen.getByRole("button", { name: "Undo preset" })).toHaveProperty("disabled", true);
+    expect(save).toHaveBeenCalledWith({ expectedRevision: 4, runtimeConfig: { instructions } });
+    resolveSave({
+      ...config,
+      revision: 5,
+      runtimeConfig: { ...config.runtimeConfig, revision: 8, instructions },
+    });
+    expect(await screen.findByRole("status")).toHaveProperty("textContent", "Changes applied.");
+    expect(screen.queryByRole("button", { name: "Undo preset" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Apply changes" })).toBeNull();
+  });
+
+  it("can undo loading the saved preset over an unsaved custom draft", () => {
+    const savedPreset = soulPresets()[1];
+    if (!savedPreset) throw new Error("Design preset missing");
+    render(
+      <RuntimeConfigurationForm
+        initialConfig={{
+          ...config,
+          runtimeConfig: { ...config.runtimeConfig, instructions: savedPreset.instructions },
+        }}
+        save={vi.fn()}
+        section="instructions"
+      />,
+    );
+    const editor = screen.getByRole("textbox", { name: "Soul" }) as HTMLTextAreaElement;
+    fireEvent.change(editor, { target: { value: "My unsaved custom draft." } });
+    fireEvent.click(screen.getByRole("button", { name: "Design" }));
+    expect(screen.queryByRole("button", { name: "Apply changes" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Undo preset" }));
+    expect(editor.value).toBe("My unsaved custom draft.");
+    expect(screen.getByRole("button", { name: "Apply changes" })).toBeTruthy();
   });
 
   it("disables Soul controls while applying and clears feedback on the next edit", async () => {

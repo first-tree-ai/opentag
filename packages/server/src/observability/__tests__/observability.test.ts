@@ -19,6 +19,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import WebSocket from "ws";
 import { createApp, ignoreHttpTraceRoute } from "../../app.js";
 import { ConnectionRegistry, RuntimeRegistrySendError } from "../../runtime/connection-registry.js";
+import { ImDeliverySelector } from "../../runtime/im-delivery-selector.js";
 import { ImDeliveryWorker } from "../../runtime/im-delivery-worker.js";
 import { RuntimeDomainOwner } from "../../runtime/runtime-domain-owner.js";
 import { ImInboundPersistenceError, ImMessageInbox } from "../../services/im/im-message-inbox.js";
@@ -489,7 +490,7 @@ describe("background and WebSocket tracing", () => {
 
     const emptyWorker = new ImDeliveryWorker({
       assembler: {} as never,
-      database: { transaction: vi.fn().mockResolvedValue(undefined) } as never,
+      database: { execute: vi.fn().mockResolvedValue([]), select: vi.fn(() => resolvedQuery([])) } as never,
       domain: {} as never,
       registry: {} as never,
     });
@@ -512,7 +513,15 @@ describe("background and WebSocket tracing", () => {
       domain: {} as never,
       registry: {} as never,
     });
-    await expect(failingWorker.runOnce()).rejects.toBe(deliveryFailure);
+    // Supply a selected candidate; this test exercises the real post-claim dispatch trace.
+    const candidates = vi.spyOn(ImDeliverySelector.prototype, "candidates").mockImplementationOnce(async function* () {
+      yield { row: { id: randomUUID(), sessionId: randomUUID() }, context: { agentId: randomUUID() } } as never;
+    });
+    try {
+      await expect(failingWorker.runOnce()).rejects.toBe(deliveryFailure);
+    } finally {
+      candidates.mockRestore();
+    }
 
     const capture = JSON.stringify(
       exporter
@@ -1141,6 +1150,7 @@ interface ResolvedQuery<T> extends Promise<T[]> {
   from(): ResolvedQuery<T>;
   innerJoin(): ResolvedQuery<T>;
   limit(): ResolvedQuery<T>;
+  orderBy(): ResolvedQuery<T>;
   where(): ResolvedQuery<T>;
 }
 
@@ -1152,6 +1162,7 @@ function resolvedQuery<T>(rows: T[]): ResolvedQuery<T> {
     from: () => query,
     innerJoin: () => query,
     limit: () => query,
+    orderBy: () => query,
     where: () => query,
   });
   return query;

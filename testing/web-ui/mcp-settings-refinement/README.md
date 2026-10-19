@@ -57,6 +57,10 @@ OAuth completion immediately refreshes authorization data, including when starte
 Retry reads the latest confirmed authorization. A failed method switch keeps the preset form and
 submitted configuration. Editable fields stay disabled while a credential write is pending;
 OAuth Cancel and Open remain available during authorization.
+Retry that starts OAuth uses the connector's existing session too. A network failure followed by
+Retry and a blocked authorization window retains Open window, Cancel, and dialog dismissal,
+including after closing and reopening Details. Failed key or anonymous-method saves remain local
+to the form and do not create a misleading tool Retry on the installed connector.
 
 The list, Details, and Discover keep a previous tool snapshot visible during background refresh.
 Loading tools is shown before the first completed snapshot; explicit authorization and Retry retain

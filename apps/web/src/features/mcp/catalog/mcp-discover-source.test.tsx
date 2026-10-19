@@ -501,6 +501,40 @@ describe("Discover installation and recovery", () => {
 });
 
 describe("Discover authorization lifecycle", () => {
+  it("keeps a blocked OAuth retry visible and cancellable after reopening Details", async () => {
+    const browser = fakeMcpOAuthBrowser();
+    try {
+      stub([]);
+      const calls = stubCatalogWrites();
+      calls.mounts.push(mountFor(serverFor("alpha"), null));
+      calls.oauth.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+      wrap(<McpPage agentId={AGENT_ID} />);
+      await openDiscover();
+      fireEvent.click(card("Alpha").getByRole("button", { name: "Authorize: Alpha" }));
+      await card("Alpha").findByText("Cannot reach service");
+      fireEvent.click(screen.getByRole("button", { name: "Close Discover" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Alpha" }));
+      browser.open.mockReturnValue(null);
+      fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+      const dialog = within(screen.getByRole("dialog"));
+      await dialog.findByRole("button", { name: "Open window" });
+      expect(dialog.getByRole("button", { name: "Cancel" }).hasAttribute("disabled")).toBe(false);
+      expect(dialog.getByRole("button", { name: "Close Alpha" }).hasAttribute("disabled")).toBe(false);
+      fireEvent.click(dialog.getByRole("button", { name: "Close Alpha" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Alpha" }));
+      await within(screen.getByRole("dialog")).findByRole("button", { name: "Open window" });
+      expect(calls.oauth).toHaveBeenCalledTimes(2);
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      await screen.findByRole("button", { name: "Authorize" });
+      fireEvent.click(screen.getByRole("button", { name: "Close Alpha" }));
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Discover" }).hasAttribute("disabled")).toBe(false),
+      );
+      expect(calls.probe).not.toHaveBeenCalled();
+    } finally {
+      browser.restore();
+    }
+  });
   it("retains search and category after success and shows only a check mark", async () => {
     const browser = fakeMcpOAuthBrowser();
     try {

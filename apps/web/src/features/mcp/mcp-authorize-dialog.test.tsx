@@ -22,6 +22,24 @@ const key = () =>
   screen.getByLabelText("API key or token", { selector: "input:not([type=radio])" }) as HTMLInputElement;
 
 describe("MCP inline authentication", () => {
+  it.each(["bearer", "none"] as const)("keeps a failed %s save local without offering a tool retry", async (kind) => {
+    stub([entry()]);
+    vi.spyOn(browserApi, "setMcpAuthorization").mockRejectedValue(new ApiError(503, "private detail"));
+    const probe = vi.spyOn(browserApi, "probeMcpServer");
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openDetails();
+    if (kind === "bearer") {
+      click("Update");
+      fireEvent.change(key(), { target: { value: "replacement-key" } });
+    } else fireEvent.click(screen.getByRole("radio", { name: "No authentication" }));
+    click("Save");
+    await within(screen.getByRole("dialog")).findByText("Couldn't save changes");
+    click("Close linear");
+    expect(screen.queryByText("Couldn't save changes")).toBeNull();
+    await openDetails();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(probe).not.toHaveBeenCalled();
+  });
   it("keeps method selection local until Save and has no clear-credentials action", async () => {
     stub([entry()]);
     const authorize = vi

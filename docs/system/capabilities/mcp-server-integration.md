@@ -1031,6 +1031,9 @@ Closing Details or Discover does not cancel an ongoing OAuth attempt. Both views
 attempt, prevent duplicate authorization for that connector, and provide explicit cancellation.
 A successful recovery clears earlier local failure feedback. OAuth completion refreshes the saved
 Agent data immediately; a failed tool probe keeps the credential and offers **Retry**.
+If Retry needs OAuth, it uses the same connector session as Details so blocked-window recovery,
+cancellation, and closing/reopening the dialog remain available. A failed key or anonymous-method
+save remains a local form error; it does not turn into a tool-probe failure on the list.
 
 ### Adding a Connector
 

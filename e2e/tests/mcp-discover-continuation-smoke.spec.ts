@@ -23,6 +23,47 @@ async function consentFixture(page: Page) {
   });
 }
 
+test("Details OAuth retry stays recoverable when its authorization window is blocked", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const agentId = await createAgent(page, "Blocked OAuth retry in Details");
+  const definition = { ...server("firecrawl", "oauth"), url: "https://mcp.firecrawl.dev/v2/mcp-oauth" };
+  const fixture = await mcpFixture(page, [definition]);
+  fixture.mounts.set(agentId, [binding(definition)]);
+  fixture.allowOAuth();
+  let attempts = 0;
+  await page.route("**/authorization/oauth", async (route) => {
+    attempts += 1;
+    if (attempts === 1) await route.abort("aborted");
+    else await route.fallback();
+  });
+  await page.addInitScript(() => {
+    window.open = () => null;
+  });
+  const { dialog, card } = await openFirecrawl(page, agentId);
+  await card.getByRole("button", { name: "Authorize: Firecrawl", exact: true }).click();
+  await expect(card.getByRole("alert")).toHaveText("Cannot reach service");
+  await dialog.getByRole("button", { name: "Close Discover", exact: true }).click();
+  await page.getByRole("button", { name: "Firecrawl", exact: true }).click();
+  const details = page.getByRole("dialog", { name: "Firecrawl", exact: true });
+  await details.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(details.getByRole("button", { name: "Open window", exact: true })).toBeEnabled();
+  await expect(details.getByRole("button", { name: "Cancel", exact: true })).toBeEnabled();
+  await details.getByRole("button", { name: "Close Firecrawl", exact: true }).click();
+  const row = page.locator('[data-ui="mcp-server-row"]');
+  await expect(row.getByText("Authorizing…", { exact: true })).toBeVisible();
+  await row.getByRole("button", { name: "Firecrawl", exact: true }).click();
+  await expect(details.getByRole("button", { name: "Open window", exact: true })).toBeEnabled();
+  expect(attempts).toBe(2);
+  await details.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(details.getByRole("button", { name: "Authorize", exact: true })).toBeEnabled();
+  await details.getByRole("button", { name: "Close Firecrawl", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Discover", exact: true })).toBeEnabled();
+  expect(fixture.mounts.get(agentId)).toHaveLength(1);
+  expect(fixture.writes.filter((write) => write.path.endsWith("/probe"))).toHaveLength(0);
+  await expectAccessible(page);
+  await expectNoPageOverflow(page);
+});
+
 for (const outcome of ["success", "cancel"] as const) {
   test(`Discover can close during OAuth and Details can ${outcome} the same attempt`, async ({ page }) => {
     const agentId = await createAgent(page, "Discover continuation");

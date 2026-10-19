@@ -126,7 +126,7 @@ export function useMcpSettings({
   const reportFailure = (authenticate: boolean) => {
     const label = authenticate && draft.kind === "oauth" ? m.mcp_authorization_issue() : m.mcp_save_failed();
     setFailure({ label, authentication: authenticate });
-    if (authenticate) onAuthenticationFeedback?.(label);
+    if (authenticate && draft.kind === "oauth") onAuthenticationFeedback?.(label);
   };
   const submissionBlocked = Boolean(authorization.oauth.phase) || retrying || !configValid;
   const submit = async (forceAuth = false) => {

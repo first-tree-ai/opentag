@@ -58,8 +58,8 @@ function McpManagementPage({ agentId }: { agentId: string }) {
   const mounted = useAgentMcpServers(agentId);
   const detach = useDetachMcpServer(agentId);
   const servers = mounted.data?.servers ?? [];
-  const connection = useMcpCatalogConnection(agentId);
   const detailOAuth = useMcpOAuthSessions(agentId);
+  const connection = useMcpCatalogConnection(agentId, detailOAuth);
   const [detailFailures, setDetailFailures] = useState<Record<string, string | undefined>>({});
   const addDisabled = mounted.isPending || mounted.isError || Boolean(connection.connectingId);
   const [{ outcome, returnContext }] = useState(() => {

@@ -50,6 +50,7 @@ export async function transferAgent(
         previousComputerId: result.previousComputerId,
         revision: result.revision,
         runtimeConfigReset: result.runtimeConfigReset,
+        schedulesPaused: result.schedulesPaused,
       },
       "Agent transferred to another Account",
     );

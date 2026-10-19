@@ -87,9 +87,20 @@ The Agent must be suspended. The command runs in one transaction and prints the 
 audit line to stderr. A rejected precondition - the Agent is not suspended, the target Account already has an Agent with
 that name, or a Turn can still land on the old Computer - exits non-zero and names the reason in that line.
 
-Everything keyed by the Agent alone moves with it: Skills, Schedules, instructions and history. Two things cannot move.
-The Computer is detached, so the Agent shows no Computer until the new owner binds one. The MCP mounts and their stored
-credentials are deleted, because the Server definitions they point at belong to the previous Account.
+Suspend the Agent while its Computer is online: this command has no Runtime connection, so it relies on the suspension
+having already stopped the Sessions and retired the previous Computer's placement. That stop is best effort, so a
+Computer that was offline at suspend time is not retried.
+
+Everything keyed by the Agent alone moves with it: Skills, instructions and history. The Computer is detached, so the
+Agent shows no Computer until the new owner binds one. The MCP mounts and their stored credentials are deleted, because
+the Server definitions they point at belong to the previous Account.
+
+Schedules are kept as records but paused (`enabled = false`, no next occurrence), and the result reports how many were
+paused. Each Schedule pins one target conversation, and that conversation ends with the transfer, so it could no longer
+dispatch. The new owner recreates the Schedule from a conversation they own.
+
+Per-Agent usage history (token counts and outcomes, no message content) is keyed by the Agent, so the new owner's usage
+view includes Turns the source Account ran. Billing history itself is not touched.
 
 `OPENTAG_TRANSFER_SLACK` selects what happens to the messaging binding:
 

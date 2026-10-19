@@ -1,5 +1,5 @@
 import { type AgentPermissions, type AgentRuntimeProvider, FEISHU_REQUIRED_TENANT_SCOPES } from "@opentag/shared";
-import { eq } from "drizzle-orm";
+import { and, eq, isNotNull, lte, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createUnitDatabase, type UnitDatabase } from "../../__tests__/support/unit-database.js";
 import {
@@ -255,6 +255,20 @@ async function createSchedule(agentId: string, targetSessionId: string) {
   return schedule;
 }
 
+/** The Scheduler's own candidate predicate: enabled, with a claimable occurrence in the past. */
+function dueScheduleIds() {
+  return unitDatabase.database
+    .select({ id: agentSchedules.id })
+    .from(agentSchedules)
+    .where(
+      and(
+        eq(agentSchedules.enabled, true),
+        isNotNull(agentSchedules.nextTriggerAt),
+        lte(agentSchedules.nextTriggerAt, sql`clock_timestamp()`),
+      ),
+    );
+}
+
 async function agentRow(agentId: string) {
   const [row] = await unitDatabase.database.select().from(agents).where(eq(agents.id, agentId));
   if (!row) throw new Error("Agent row disappeared");
@@ -381,6 +395,7 @@ describe("transferAgent", () => {
       previousComputerId: computer.id,
       revision: created.revision + 2,
       runtimeConfigReset: [],
+      schedulesPaused: 1,
       slack: "disable",
       sourceAccountId: source,
       targetAccountId,
@@ -403,7 +418,15 @@ describe("transferAgent", () => {
       .select()
       .from(agentSchedules)
       .where(eq(agentSchedules.id, schedule.id));
-    expect(scheduleRow).toEqual(schedule);
+    // Kept as a record, paused because its pinned target Session ended with the transfer.
+    expect(scheduleRow).toMatchObject({
+      id: schedule.id,
+      prompt: schedule.prompt,
+      schedule: schedule.schedule,
+      enabled: false,
+      nextTriggerAt: null,
+    });
+    expect(scheduleRow?.revision).toBe(schedule.revision + 1);
 
     expect(await unitDatabase.database.select().from(agentMcpServers)).toEqual([]);
     expect(await unitDatabase.database.select().from(mcpServerAuthorizations)).toEqual([]);
@@ -475,6 +498,32 @@ describe("transferAgent", () => {
       computerId: null,
     });
   });
+
+  for (const slack of ["disable", "keep"] as const) {
+    it(`pauses Schedules that can no longer dispatch (slack=${slack})`, async () => {
+      const source = await createAccount("source");
+      const targetAccountId = await createAccount("target");
+      const computer = await createComputer(source);
+      const created = await suspendedAgent(source, computer.id);
+      const { binding } = await createSlackBinding(created.id);
+      const session = await createSession(binding.id, computer.id);
+      const schedule = await createSchedule(created.id, session.id);
+      expect(await dueScheduleIds()).toEqual([{ id: schedule.id }]);
+
+      const result = await transfer({ agentId: created.id, targetAccountId, slack });
+
+      expect(result.schedulesPaused).toBe(1);
+      expect(await dueScheduleIds()).toEqual([]);
+      const [paused] = await unitDatabase.database
+        .select()
+        .from(agentSchedules)
+        .where(eq(agentSchedules.id, schedule.id));
+      expect(paused).toMatchObject({ enabled: false, nextTriggerAt: null });
+      // The target the Schedule pinned is gone, which is why the row had to be paused rather than kept live.
+      const [endedTarget] = await unitDatabase.database.select().from(sessions).where(eq(sessions.id, session.id));
+      expect(endedTarget?.endedAt).toEqual(NOW);
+    });
+  }
 
   it("refuses to keep a Feishu binding", async () => {
     const source = await createAccount("source");
@@ -596,7 +645,7 @@ describe("transferAgent audit log", () => {
     await transferAgent(unitDatabase.database, { agentId: created.id, targetAccountId }, { logger });
     expect(entries.at(-1)).toMatchObject({
       level: "info",
-      bindings: { agentId: created.id, sourceAccountId: source, targetAccountId, slack: "disable" },
+      bindings: { agentId: created.id, sourceAccountId: source, targetAccountId, slack: "disable", schedulesPaused: 0 },
     });
 
     await expect(

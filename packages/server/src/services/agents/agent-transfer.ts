@@ -53,6 +53,11 @@ export interface AgentTransferResult {
   revision: number;
   /** Runtime config fields reset because they were only valid under the previous Computer. */
   runtimeConfigReset: ("contextTrees" | "model")[];
+  /**
+   * Schedules paused because their pinned target Session ends with the transfer. The rows stay so the
+   * new owner can see what existed, but a paused Schedule never dispatches.
+   */
+  schedulesPaused: number;
   slack: "disable" | "keep";
   sourceAccountId: string;
   targetAccountId: string;

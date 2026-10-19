@@ -86,9 +86,17 @@ Agent 必须处于暂停（suspended）状态。命令在单个事务内完成�
 前置条件不满足时命令以非零状态退出，并在该日志行里写明原因：Agent 未暂停、目标账号下已有同名 Agent、或者仍有 Turn 可能落到
 旧的 Computer 上。
 
-只按 Agent 归属的数据会一起转移：Skills、Schedules、instructions 与历史。有两类数据无法随之转移。Computer 会被解绑，
-因此在新账号绑定自己的 Computer 之前，该 Agent 不显示 Computer。MCP 挂载及其保存的凭据会被删除，因为它们指向的
-Server 定义属于原账号。
+请在 Computer 在线时暂停 Agent：本命令没有 Runtime 连接，依赖暂停步骤已经停止 Session 并让旧 Computer 的 placement 退役。
+那次停止是尽力而为的，暂停时离线的 Computer 不会被本命令重试。
+
+只按 Agent 归属的数据会一起转移：Skills、instructions 与历史。Computer 会被解绑，因此在新账号绑定自己的 Computer 之前，
+该 Agent 不显示 Computer。MCP 挂载及其保存的凭据会被删除，因为它们指向的 Server 定义属于原账号。
+
+Schedules 保留为记录但被暂停（`enabled = false`，没有下次触发时间），结果中会报告暂停了多少条。每条 Schedule 都绑定一个
+目标会话，而该会话随转移结束，因此它无法继续投递。新账号需要从自己拥有的会话重新创建 Schedule。
+
+按 Agent 归属的使用历史（token 数量与结果，不含消息内容）跟 Agent 走，因此新账号的用量视图会包含原账号执行过的 Turn。
+账单历史本身不会被改动。
 
 `OPENTAG_TRANSFER_SLACK` 决定消息绑定的处理方式：
 

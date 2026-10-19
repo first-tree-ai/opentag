@@ -30,6 +30,7 @@ import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   agentMcpServers,
   agentRuntimeConfigs,
+  agentSchedules,
   agents,
   computers,
   imBindings,
@@ -1288,11 +1289,11 @@ export class AgentService {
    * lock and repeats every precondition inside the transaction, because an operator's read is stale
    * the moment it returns.
    *
-   * Everything the Agent owns is Account-independent and stays: Skills, Schedules, the runtime config
-   * row and history are all keyed by `agent_id` alone. What cannot move is whatever points at data
-   * the source Account owns — the Computer, the MCP mounts and their sealed credentials (the
-   * definitions in `mcp_servers` are Account-scoped, so a mount would expose another Account's Server
-   * and credential to the new owner).
+   * Skills, instructions and history are keyed by `agent_id` alone, so they move intact. What cannot
+   * move is whatever points at data the source Account owns — the Computer, the MCP mounts and their
+   * sealed credentials (the definitions in `mcp_servers` are Account-scoped, so a mount would expose
+   * another Account's Server and credential to the new owner), and the Schedules' target
+   * conversations, which is why the Schedules are paused rather than left live.
    */
   async transferToAccount(input: AgentTransferInput): Promise<AgentTransferResult> {
     const result = await this.#database.transaction(async (transaction) => {
@@ -1304,6 +1305,14 @@ export class AgentService {
       const now = this.#now();
       const imBindingOutcome = await this.#settleTransferMessaging(transaction, agent.id, imBinding, input.slack, now);
       await this.#deleteMcpBindings(transaction, agent.id);
+      /*
+       * Every `agent_schedules` row pins one target Session, and that Session ends with the transfer
+       * below (its placement, its Computer and its conversation history belong to the previous owner).
+       * A Schedule whose target has ended resolves `permanent / target_invalid` on its next occurrence
+       * and would be auto-disabled then, so it is paused here instead: the row and its rule stay
+       * readable, and the new owner retargets it from a conversation they own.
+       */
+      const schedulesPaused = await this.#pauseTransferredSchedules(transaction, agent.id, now);
       await this.#endAgentSessions(transaction, agent.id, now);
       const runtimeConfigReset = await this.#resetTransferredRuntimeConfig(
         transaction,
@@ -1319,6 +1328,7 @@ export class AgentService {
         previousComputerId: agent.computerId,
         revision,
         runtimeConfigReset,
+        schedulesPaused,
         slack: input.slack,
         sourceAccountId: agent.createdByUserId,
         targetAccountId: target.id,
@@ -1336,6 +1346,7 @@ export class AgentService {
       previousComputerId: result.previousComputerId,
       revision: result.revision,
       runtimeConfigReset: result.runtimeConfigReset,
+      schedulesPaused: result.schedulesPaused,
       slack: result.slack,
       sourceAccountId: result.sourceAccountId,
       targetAccountId: result.targetAccountId,
@@ -1518,6 +1529,20 @@ export class AgentService {
     await lockMcpBindings(transaction, eq(agentMcpServers.agentId, agentId));
     await transaction.delete(mcpServerAuthorizations).where(eq(mcpServerAuthorizations.agentId, agentId));
     await transaction.delete(agentMcpServers).where(eq(agentMcpServers.agentId, agentId));
+  }
+
+  async #pauseTransferredSchedules(transaction: DatabaseTransaction, agentId: string, now: Date): Promise<number> {
+    const paused = await transaction
+      .update(agentSchedules)
+      .set({
+        enabled: false,
+        nextTriggerAt: null,
+        revision: sql`${agentSchedules.revision} + 1`,
+        updatedAt: now,
+      })
+      .where(and(eq(agentSchedules.agentId, agentId), eq(agentSchedules.enabled, true)))
+      .returning({ id: agentSchedules.id });
+    return paused.length;
   }
 
   async #endAgentSessions(transaction: DatabaseTransaction, agentId: string, now: Date): Promise<void> {

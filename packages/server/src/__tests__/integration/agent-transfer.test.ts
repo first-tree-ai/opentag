@@ -2,7 +2,16 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { transferAgent } from "../../admin/transfer-agent.js";
 import { createDatabaseClient } from "../../db/client.js";
-import { agents, computers, imBindings, slackInstallations, users } from "../../db/schema/index.js";
+import {
+  agentSchedules,
+  agents,
+  computers,
+  imBindings,
+  sessionPlacements,
+  sessions,
+  slackInstallations,
+  users,
+} from "../../db/schema/index.js";
 import { AgentService } from "../../services/agents/agent-service.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
@@ -69,18 +78,46 @@ describe("Agent transfer against PostgreSQL", () => {
         })
         .returning();
       if (!installation) throw new Error("Slack installation fixture was not created");
-      await client.database.insert(imBindings).values({
+      const [binding] = await client.database
+        .insert(imBindings)
+        .values({
+          agentId: created.id,
+          provider: "slack",
+          status: "active",
+          externalAppId: "A1",
+          externalTeamId: "T1",
+          externalBotId: "B1",
+          credentialSchemaVersion: 1,
+          credentialGeneration: 1,
+          slackInstallationId: installation.id,
+          slackRouteKind: "default",
+          activatedAt: new Date(),
+        })
+        .returning();
+      if (!binding) throw new Error("IM binding fixture was not created");
+      const [session] = await client.database
+        .insert(sessions)
+        .values({
+          imBindingId: binding.id,
+          channelId: "channel-transfer",
+          conversationKind: "channel",
+          kind: "channel",
+          threadKey: null,
+        })
+        .returning();
+      if (!session) throw new Error("Session fixture was not created");
+      await client.database
+        .insert(sessionPlacements)
+        .values({ sessionId: session.id, computerId: computer.id, generation: 1 });
+      // `agent_schedules_disabled_next_null` is the constraint the pause must satisfy in one write.
+      await client.database.insert(agentSchedules).values({
         agentId: created.id,
-        provider: "slack",
-        status: "active",
-        externalAppId: "A1",
-        externalTeamId: "T1",
-        externalBotId: "B1",
-        credentialSchemaVersion: 1,
-        credentialGeneration: 1,
-        slackInstallationId: installation.id,
-        slackRouteKind: "default",
-        activatedAt: new Date(),
+        targetSessionId: session.id,
+        name: "daily-digest",
+        prompt: "Summarize the day",
+        schedule: { kind: "cron", expression: "0 9 * * *" },
+        timezone: "UTC",
+        nextTriggerAt: new Date(Date.now() - 60_000),
       });
 
       await expect(
@@ -89,6 +126,7 @@ describe("Agent transfer against PostgreSQL", () => {
         agentId: created.id,
         imBinding: "kept",
         previousComputerId: computer.id,
+        schedulesPaused: 1,
         sourceAccountId: source,
         targetAccountId: target,
       });
@@ -97,6 +135,11 @@ describe("Agent transfer against PostgreSQL", () => {
       expect(moved).toMatchObject({ createdByUserId: target, computerId: null, status: "suspended" });
       const [keptBinding] = await client.database.select().from(imBindings).where(eq(imBindings.agentId, created.id));
       expect(keptBinding).toMatchObject({ status: "active", slackInstallationId: installation.id });
+      const [pausedSchedule] = await client.database
+        .select()
+        .from(agentSchedules)
+        .where(eq(agentSchedules.agentId, created.id));
+      expect(pausedSchedule).toMatchObject({ enabled: false, nextTriggerAt: null, name: "daily-digest" });
 
       // The unique (account, lower(name)) index still covers the target Account after the move.
       await expect(

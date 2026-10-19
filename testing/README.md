@@ -31,6 +31,7 @@ contents, and machine-specific operational logs outside the repository.
 - [IM content and attachment delivery](verification/im-content-delivery.md)
 - [MCP Server integration](verification/mcp-server-integration.md)
 - [Release guide](verification/releasing.md)
+- [Session collaboration writes](verification/session-collaboration-writes.md)
 - [Skill details reader](verification/skill-details-reader.md)
 - [Installing Skills from a remote source](verification/skill-remote-install.md)
 - [Staging onboarding reset](verification/staging-onboarding-reset.md)

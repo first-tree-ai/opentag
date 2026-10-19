@@ -24,7 +24,7 @@ async function consentFixture(page: Page) {
 }
 
 for (const outcome of ["success", "cancel"] as const) {
-  test(`Discover can close during OAuth and the list can ${outcome} the same attempt`, async ({ page }) => {
+  test(`Discover can close during OAuth and Details can ${outcome} the same attempt`, async ({ page }) => {
     const agentId = await createAgent(page, "Discover continuation");
     const fixture = await mcpFixture(page);
     fixture.allowOAuth();
@@ -45,12 +45,15 @@ for (const outcome of ["success", "cancel"] as const) {
       .locator('[data-ui="mcp-server-row"]')
       .filter({ has: page.getByRole("button", { name: "Firecrawl", exact: true }) });
     await expect(row.getByText("Authorizing…", { exact: true })).toBeVisible();
-    await expect(row.getByRole("button", { name: "Cancel", exact: true })).toBeEnabled();
+    await expect(row.getByRole("button", { name: "Cancel", exact: true })).toHaveCount(0);
     await expect(row.getByRole("button", { name: /^(Authorize|Reauthorize)$/ })).toHaveCount(0);
     await expect(row.getByRole("switch")).toBeDisabled();
     await expect(row.getByRole("button", { name: "More actions for Firecrawl", exact: true })).toBeDisabled();
     if (outcome === "cancel") {
-      await row.getByRole("button", { name: "Cancel", exact: true }).click();
+      await row.getByRole("button", { name: "Firecrawl", exact: true }).click();
+      const details = page.getByRole("dialog", { name: "Firecrawl", exact: true });
+      await details.getByRole("button", { name: "Cancel", exact: true }).click();
+      await expect(details).toBeHidden();
       await expect(row).toBeHidden();
       await page.getByRole("button", { name: "Discover", exact: true }).click();
       await expect(card.getByRole("button", { name: "Add: Firecrawl", exact: true })).toBeEnabled();
@@ -92,7 +95,7 @@ for (const width of [1440, 320]) {
       .locator('[data-ui="mcp-server-row"]')
       .filter({ has: page.getByRole("button", { name: "Firecrawl", exact: true }) });
     await expect(row.getByText("Authorization failed", { exact: true })).toBeVisible();
-    await expect(row.getByRole("button", { name: "Authorize", exact: true })).toBeEnabled();
+    await expect(row.getByRole("button", { name: "Authorize", exact: true })).toHaveCount(0);
     await expect(row.getByRole("button", { name: "Cancel", exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Discover", exact: true }).click();
     await expect(card.getByRole("alert")).toHaveText("Authorization failed");
@@ -147,10 +150,10 @@ for (const source of ["list", "discover"] as const) {
     if (source === "discover") {
       await page.getByRole("button", { name: "Discover", exact: true }).click();
       await page.getByLabel("Search connectors").fill("Firecrawl");
-    }
+    } else await page.getByRole("button", { name: "Firecrawl", exact: true }).click();
     const surface =
       source === "list"
-        ? page.locator('[data-ui="mcp-server-list"]')
+        ? page.getByRole("dialog", { name: "Firecrawl", exact: true })
         : page.getByRole("dialog", { name: "Discover", exact: true });
     await page.getByRole("button", { name: source === "list" ? "Retry" : "Retry: Firecrawl", exact: true }).click();
     await expect(surface.getByText("Loading tools…", { exact: true })).toBeVisible();

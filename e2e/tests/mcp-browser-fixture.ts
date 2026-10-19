@@ -50,6 +50,11 @@ export async function createAgent(page: Page, displayName: string) {
   return ((await response.json()) as { id: string }).id;
 }
 
+export async function chooseAuthentication(page: Page, method: string) {
+  await page.getByRole("combobox", { name: "Authentication", exact: true }).click();
+  await page.getByRole("option", { name: method, exact: true }).click();
+}
+
 /** Sign-in, Agent creation, navigation, and the built app are real; MCP management responses are fixtures. */
 export async function mcpFixture(page: Page, servers: MCPServer[] = []) {
   const mounts = new Map<string, MCPAgentServer[]>();

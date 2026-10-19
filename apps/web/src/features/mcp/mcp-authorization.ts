@@ -7,7 +7,7 @@ import {
 import { useRef } from "react";
 import { browserApi } from "../../api.js";
 import { type AuthDraft, bindingPatch, headerRows } from "./mcp-form-model.js";
-import { useMcpOAuthSession } from "./mcp-oauth-session.js";
+import { type McpOAuthSession, useMcpOAuthSession } from "./mcp-oauth-session.js";
 import { closeMcpOAuthWindow, prepareMcpOAuthWindow } from "./mcp-oauth-window.js";
 import { useSetMcpAuthorization, useUpdateMcpBinding } from "./mcp-queries.js";
 import type { McpReturnContext } from "./mcp-return-context.js";
@@ -24,10 +24,11 @@ export function validAuth(draft: AuthDraft): boolean {
 }
 
 /** Settings take effect on submission; no candidate credentials or rollback state are stored. */
-export function useMcpAuthorization(agentId: string) {
+export function useMcpAuthorization(agentId: string, session?: McpOAuthSession) {
   const authorize = useSetMcpAuthorization(agentId);
   const update = useUpdateMcpBinding(agentId);
-  const oauth = useMcpOAuthSession(agentId);
+  const localSession = useMcpOAuthSession(agentId);
+  const oauth = session ?? localSession;
   const inFlight = useRef(false);
   const prepareConfiguration = async (entry: MCPAgentServer, draft: AuthDraft, config?: MCPEffectiveConfig) => {
     const patch = config ? bindingPatch(entry, { ...config, headers: headerRows(config.extraHeaders) }) : {};

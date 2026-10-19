@@ -58,9 +58,7 @@ describe("MCP service icons", () => {
       entry: server,
       agentName: "Agent",
       onAction: vi.fn(),
-      onProbe: vi.fn(),
       onToggle: vi.fn(),
-      probing: false,
       toggling: false,
     };
     const { container, rerender } = render(<McpServerCard {...props} />);
@@ -77,15 +75,7 @@ describe("MCP service icons", () => {
   it("uses the neutral connection icon for an unverified catalog asset", () => {
     const server = entry({ effective: { ...entry().effective, url: "https://mcp.unverified.test/mcp" } });
     const { container } = render(
-      <McpServerCard
-        entry={server}
-        agentName="Agent"
-        onAction={vi.fn()}
-        onProbe={vi.fn()}
-        onToggle={vi.fn()}
-        probing={false}
-        toggling={false}
-      />,
+      <McpServerCard entry={server} agentName="Agent" onAction={vi.fn()} onToggle={vi.fn()} toggling={false} />,
     );
     expect(container.querySelector("img")).toBeNull();
     expect(container.querySelector(".mcp-server-identity svg")).toBeTruthy();

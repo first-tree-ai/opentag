@@ -1,9 +1,9 @@
 import { MCP_AUTH_REJECTION_SUMMARY, MCP_ERROR_CODES } from "@opentag/shared/browser";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../../api.js";
 import { McpPage } from "./mcp-page.js";
-import { AGENT_ID, authorization, entry, SERVER_ID, stub, wrap } from "./mcp-test-fixtures.js";
+import { AGENT_ID, authorization, entry, openDetails, SERVER_ID, stub, wrap } from "./mcp-test-fixtures.js";
 
 const rejection = `${MCP_ERROR_CODES.UPSTREAM_ERROR}: ${MCP_AUTH_REJECTION_SUMMARY}`;
 const ready = {
@@ -31,6 +31,7 @@ describe("MCP recovery actions", () => {
     const oauth = vi.spyOn(browserApi, "startMcpOAuth");
     const probe = vi.spyOn(browserApi, "probeMcpServer").mockResolvedValue(ready);
     wrap(<McpPage agentId={AGENT_ID} />);
+    await openDetails();
     fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
     await waitFor(() => expect(probe).toHaveBeenCalledWith(AGENT_ID, SERVER_ID));
     expect(oauth).not.toHaveBeenCalled();
@@ -44,9 +45,10 @@ describe("MCP recovery actions", () => {
       const oauth = vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "private detail"));
       const probe = vi.spyOn(browserApi, "probeMcpServer");
       wrap(<McpPage agentId={AGENT_ID} />);
+      await openDetails();
       fireEvent.click(await screen.findByRole("button", { name: "Reauthorize" }));
-      await screen.findByText("Authorization failed");
-      expect(screen.queryByRole("dialog")).toBeNull();
+      await within(screen.getByRole("dialog")).findByText("Authorization failed");
+      expect(screen.getByRole("dialog")).toBeTruthy();
       fireEvent.click(screen.getByRole("button", { name: "Reauthorize" }));
       await waitFor(() => expect(oauth).toHaveBeenCalledTimes(2));
       expect(probe).not.toHaveBeenCalled();
@@ -56,8 +58,8 @@ describe("MCP recovery actions", () => {
     stub([entry({ authorization: { ...authorization(), probeState: "failed", probeError: rejection } })]);
     const probe = vi.spyOn(browserApi, "probeMcpServer");
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Reauthorize" }));
-    await screen.findByRole("dialog");
+    await openDetails();
+    fireEvent.click(await screen.findByRole("button", { name: "Update" }));
     expect(screen.getByLabelText("API key or token", { selector: "input[type=password]" })).toBeTruthy();
     expect(probe).not.toHaveBeenCalled();
   });
@@ -75,8 +77,7 @@ describe("MCP recovery actions", () => {
     ]);
     const oauth = vi.spyOn(browserApi, "startMcpOAuth");
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Authorize" }));
-    await screen.findByRole("dialog");
+    await openDetails();
     expect(screen.getByRole("radio", { name: "No authentication" }).getAttribute("aria-checked")).toBe("true");
     expect(oauth).not.toHaveBeenCalled();
   });
@@ -95,15 +96,17 @@ describe("MCP recovery actions", () => {
     );
     const authorize = vi.spyOn(browserApi, "setMcpAuthorization");
     wrap(<McpPage agentId={AGENT_ID} />);
-    const retry = await screen.findByRole("button", { name: "Retry" });
-    expect(screen.getByText("Request timed out")).toBeTruthy();
+    await openDetails();
+    const dialog = within(screen.getByRole("dialog"));
+    const retry = await dialog.findByRole("button", { name: "Retry" });
+    expect(dialog.getByText("Request timed out")).toBeTruthy();
     fireEvent.click(retry);
     await waitFor(() => expect(probe).toHaveBeenCalledWith(AGENT_ID, SERVER_ID));
-    expect(screen.getByText("Loading tools…")).toBeTruthy();
+    expect(dialog.getByText("Loading tools…")).toBeTruthy();
     fireEvent.click(retry);
     expect(probe).toHaveBeenCalledTimes(1);
     finish(ready);
-    await waitFor(() => expect(screen.queryByText("Loading tools…")).toBeNull());
+    await waitFor(() => expect(dialog.queryByText("Loading tools…")).toBeNull());
     expect(authorize).not.toHaveBeenCalled();
     expect(browserApi.revokeMcpAuthorization).not.toHaveBeenCalled();
   });

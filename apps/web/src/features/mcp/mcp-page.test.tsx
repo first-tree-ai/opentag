@@ -19,21 +19,39 @@ describe("MCP connector list", () => {
     await screen.findByRole("dialog", { name: "linear" });
     expect(screen.queryByRole("button", { name: /Tools|Clear credentials|Delete/ })).toBeNull();
   });
+  it("opens Details from the description and keeps the controls separate", async () => {
+    stub([entry({ description: "Find team issues." })]);
+    vi.spyOn(browserApi, "updateAgentMcpServer").mockResolvedValue(entry({ enabled: false }));
+    wrap(<McpPage agentId={AGENT_ID} />);
+    const identity = await screen.findByRole("button", { name: "linear" });
+    expect(identity.getAttribute("aria-describedby")).toBe(`mcp-server-${entry().mcpServerId}-description`);
+    expect(identity.contains(screen.getByText("Find team issues."))).toBe(true);
+    expect(identity.contains(screen.getByRole("switch"))).toBe(false);
+    fireEvent.click(screen.getByText("Find team issues."));
+    await screen.findByRole("dialog", { name: "linear" });
+    fireEvent.click(screen.getByRole("button", { name: "Close linear" }));
+    fireEvent.click(screen.getByRole("switch"));
+    await waitFor(() => expect(browserApi.updateAgentMcpServer).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
   it.each([
     ["expired", null, "Authorization expired"],
     ["error", "MCP_OAUTH_TOKEN_INVALID", "Authorization failed"],
   ] as const)("shows the known reason for %s", async (status, failureCode, label) => {
     stub([entry({ authorization: { ...authorization(), status, failureCode } })]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    expect(await screen.findByText(label)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Reauthorize" })).toBeTruthy();
+    const reason = await screen.findByText(label);
+    expect(reason.closest("button")?.getAttribute("aria-label")).toBe("linear");
+    expect(screen.queryByRole("button", { name: "Reauthorize" })).toBeNull();
+    await openDetails();
+    expect(screen.getByRole("button", { name: "Update" })).toBeTruthy();
   });
   it("does not call a local credential reset a provider revocation", async () => {
     stub([
       entry({ authorization: { ...authorization(), status: "revoked", hasCredential: false, failureCode: null } }),
     ]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    expect(await screen.findByRole("button", { name: "Authorize" })).toBeTruthy();
+    expect(await screen.findByText("Authorization required")).toBeTruthy();
     expect(screen.queryByText(/revoked|Not connected/)).toBeNull();
   });
   it("uses only the switch to show a disabled connector", async () => {
@@ -132,11 +150,14 @@ describe("MCP authorization returns", () => {
       stub([row], { ...metadata, server: { ...metadata.server, url: row.effective.url, defaultAuthKind: kind } });
       const oauth = vi.spyOn(browserApi, "startMcpOAuth");
       wrap(<McpPage agentId={AGENT_ID} />);
-      fireEvent.click(await screen.findByRole("button", { name: "Authorize" }));
+      await openDetails("Linear");
       const dialog = await screen.findByRole("dialog", { name: "Linear" });
       if (kind === "bearer")
         await within(dialog).findByLabelText("API key or token", { selector: "input[type=password]" });
-      else await within(dialog).findByText("No authentication");
+      else {
+        await within(dialog).findByText("No authentication");
+        expect(within(dialog).getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(false);
+      }
       expect(oauth).not.toHaveBeenCalled();
     },
   );

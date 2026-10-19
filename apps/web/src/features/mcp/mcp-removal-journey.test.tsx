@@ -35,7 +35,9 @@ describe("MCP deletion", () => {
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     expect(detach).toHaveBeenCalledWith(AGENT_ID, SERVER_ID);
     expect(browserApi.removeMcpServer).toHaveBeenCalledWith(SERVER_ID);
-    await waitFor(() => expect(document.activeElement?.textContent).toBe(empty ? "Add custom" : "notion"));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: empty ? "Add custom" : "notion" })),
+    );
   });
   it("retains a historical definition used by another Agent", async () => {
     stub([entry()]);

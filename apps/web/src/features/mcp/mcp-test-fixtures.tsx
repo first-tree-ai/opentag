@@ -150,6 +150,17 @@ export async function openDetails(name = "linear") {
   fireEvent.click(await screen.findByRole("button", { name }, { timeout: 10000 }));
   await screen.findByRole("dialog", { name });
 }
+export async function chooseAuthentication(name: string) {
+  fireEvent.click(screen.getByRole("combobox", { name: "Authentication" }));
+  const option = await screen.findByRole("option", { name });
+  fireEvent.pointerMove(option, { pointerType: "mouse" });
+  fireEvent.pointerDown(option, { pointerType: "mouse" });
+  fireEvent.pointerUp(option, { pointerType: "mouse" });
+  fireEvent.click(option);
+  await waitFor(() => {
+    if (screen.queryByRole("listbox")) throw new Error("Authentication options are still open");
+  });
+}
 export async function openRemove() {
   fireEvent.click(await screen.findByRole("button", { name: "More actions for linear" }));
   fireEvent.click(await screen.findByRole("menuitem", { name: "Delete" }));

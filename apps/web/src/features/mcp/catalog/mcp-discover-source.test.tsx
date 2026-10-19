@@ -551,7 +551,7 @@ describe("Discover authorization lifecycle", () => {
       expect(browser.popup.close).not.toHaveBeenCalled();
       const row = within(document.getElementById(`mcp-server-${ALPHA_ID}`) as HTMLElement);
       await row.findByText("Authorizing…");
-      expect(row.getByRole("button", { name: "Cancel" })).toBeTruthy();
+      expect(row.queryByRole("button", { name: "Cancel" })).toBeNull();
       expect(row.queryByRole("button", { name: /^(Reauthorize|Authorize)$/ })).toBeNull();
       await complete(browser, calls.mounts);
       await waitFor(() => expect(calls.probe).toHaveBeenCalledWith(AGENT_ID, ALPHA_ID));
@@ -562,7 +562,7 @@ describe("Discover authorization lifecycle", () => {
       browser.restore();
     }
   });
-  it("can cancel the Discover authorization from the list after closing the directory", async () => {
+  it("can cancel the Discover authorization from Details after closing the directory", async () => {
     const browser = fakeMcpOAuthBrowser();
     try {
       stub([]);
@@ -572,6 +572,7 @@ describe("Discover authorization lifecycle", () => {
       add("Alpha");
       await card("Alpha").findByText("Authorizing…");
       fireEvent.click(screen.getByRole("button", { name: "Close Discover" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Alpha" }));
       fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
       await waitFor(() => expect(calls.detach).toHaveBeenCalledWith(AGENT_ID, ALPHA_ID));
       expect(calls.probe).not.toHaveBeenCalled();
@@ -671,7 +672,7 @@ describe("Discover authorization lifecycle", () => {
     await openDiscover();
     add("Alpha");
     await screen.findByText("Authorization page did not open");
-    expect(screen.getByRole("button", { name: "Open authorization page" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open window" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Cancel: Alpha" }));
     await waitFor(() => expect(calls.detach).toHaveBeenCalledWith(AGENT_ID, ALPHA_ID));
   });

@@ -736,7 +736,7 @@ export function Dialog({
       role={role === "alertdialog" ? "alertdialog" : "dialog"}
     >
       <KumoDialog className={classes("ui-dialog max-h-[min(90vh,42rem)] overflow-y-auto p-6", className)}>
-        <header className="mb-4 flex items-start justify-between gap-4">
+        <div data-ui="dialog-header" className="mb-4 flex items-start justify-between gap-4">
           <div className="grid gap-1 outline-none" data-ui="dialog-heading" ref={headingRef} tabIndex={-1}>
             {eyebrow ? <span className="text-xs font-medium text-kumo-subtle">{eyebrow}</span> : null}
             <div className="flex items-center gap-3">
@@ -778,7 +778,7 @@ export function Dialog({
               ) : null}
             </div>
           ) : null}
-        </header>
+        </div>
         {description ? (
           <KumoDialog.Description className="mb-4 text-sm text-kumo-subtle">{description}</KumoDialog.Description>
         ) : null}

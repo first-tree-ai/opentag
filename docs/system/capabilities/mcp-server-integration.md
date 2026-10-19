@@ -1001,49 +1001,36 @@ provides tools to an Agent; messaging channels let a user communicate with the A
 connectors use MCP. Protocol labels, endpoint instructions, configuration import formats, CLI
 commands, API paths, schema names, and the `/agents/{agentId}/mcp` page URL retain their MCP names.
 
-The page lives at `/agents/{agentId}/mcp`, under the existing shell routes. It shows one Agent's
-mounted Servers, and each row displays **four independent states** rather than one merged status:
+The page shows one Agent's installed connectors. The entire left side of each row opens Details,
+including the icon, name, description, and surrounding space. It uses the same hover and keyboard
+focus feedback as Skills, without an arrow beside the name. The enable switch and more-actions menu
+remain vertically centered on the right and operate independently. The menu contains **Details**
+and **Delete**.
 
-| Column | Values |
-| --- | --- |
-| Mount | Enabled / Disabled |
-| Authorization method | Bearer / OAuth / Anonymous |
-| Authorization status | Authorized / Awaiting authorization / Expired / Reauthorization required / None |
-| Discovery | View tools (N) for a saved snapshot / Discovering… / Discovery failed / Not discovered |
+A normal row shows the connector description. When attention is needed, a short known reason replaces
+the description; recovery actions live in Details. An unauthenticated connector shows **Authorization
+required**. Successful tool snapshots have no aggregate Connected badge, success dot, or tool count.
+A completed snapshot remains quiet while its background replacement is pending; first-time loading,
+explicit Retry, and confirmed failures still show feedback. Disabling a connector preserves its
+configuration and credential. Deleting requires confirmation and removes this Agent's installation
+and credential; an unused definition is also removed, while a definition still used elsewhere is kept.
 
-They are kept separate because "disabled" and "not authorized" are different problems with different
-fixes: a disabled Server keeps its credential and needs no reauthorization, while an unauthorized one
-does. A merged column would send a user to reauthorize a Server that was only switched off.
+Preset Details places **Authentication** above the visible, copyable **Connector address**. A
+single supported authentication method is plain text; multiple configured methods use the shared
+Select. OAuth offers **Authorize** or **Reauthorize**. A saved API key or token is masked and offers
+**Update**; editing exposes local **Save** and **Cancel** actions. A method selection remains a draft
+until submission. There is no tool browser, credential-clearing action, advanced configuration, delete
+action, or global save footer in preset Details. Custom Details retains editable connection settings
+and collapsed Advanced settings.
 
-Each row offers the enable/disable switch, authorize / reauthorize / revoke, view tools, re-probe,
-edit, and remove.
-
-- **Settings** displays the current Agent's connection address, authentication status, and tools.
-  Advanced settings is collapsed by default. Authentication header and token prefix appear only for
-  API-key/token authorization; extra headers are directly editable for all authorization methods.
-  Account-default selectors, restore controls, shared-editor links, and the Account-page MCP manager
-  are omitted. Generic setup guidance is omitted; the short empty-prefix hint is retained.
-  Only changed fields are written through the existing Agent binding API. Unedited inherited fields
-  continue following shared definitions; this UI change does not introduce connection snapshots or
-  alter API, CLI, authorization-header validation, or database behavior.
-- **Remove** disconnects this Agent and drops its credential. The shared definition remains available
-  in the backend registry and can still be managed by the CLI's definition-management commands.
-- **Authorize** chooses the method for this Agent and, for OAuth, navigates the top-level browsing
-  context to the authorization server rather than fetching the URL.
-- **View tools (N)** sits on the right of a dedicated tool footer, separated from the Server's
-  identity by an inset horizontal rule. Tool status and expandable warnings sit on the left; on
-  narrow rows the actions wrap below them. The count is the number of tools in the
-  saved snapshot shown by the dialog; it is not a promise that every tool is currently available.
-  Successful discovery has no duplicate count row.
-  The dialog shows the tools discovered with *this Agent's* credential, with the era and version
-  that produced them. An incomplete snapshot has a lightweight, initially collapsed notice on the
-  left of its Server row. Expanding it explains that some tools may be unavailable without guessing
-  the cause or promising that refreshing will fix it; the dialog also shows that explanation.
-  Discovery progress and failure remain visible; historical snapshots use **View saved tools (N)**.
-- **Refresh tools** is a maintenance action in the Server's more-actions menu and tool browser while
-  the Server is enabled and its authorization is active. It is disabled during discovery. A failed
-  discovery offers **Retry** in the tool footer, with the same pending guard; a partial list alone
-  does not promote that action.
+Authentication feedback sits directly below its controls. **Retry** and **Open window** follow the
+reason and wrap together on narrow screens. Controls keep their positions while authorization,
+key editing, saving, and recovery feedback change. Primary form actions use the shared default
+control size; supporting text actions use the compact size, with the shared mobile touch targets.
+Closing Details or Discover does not cancel an ongoing OAuth attempt. Both views expose the same
+attempt, prevent duplicate authorization for that connector, and provide explicit cancellation.
+A successful recovery clears earlier local failure feedback. OAuth completion refreshes the saved
+Agent data immediately; a failed tool probe keeps the credential and offers **Retry**.
 
 ### Adding a Connector
 

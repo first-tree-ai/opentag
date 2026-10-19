@@ -37,6 +37,7 @@ existing product vocabulary to Kumo primitives:
   are not exposed to callers; operational status text keeps its own semantics.
 - `Dialog` uses a permanently mounted Kumo compound dialog with controlled
   `open` state. Busy dialogs reject outside, Escape, and close-button dismissal.
+  Its non-landmark header exposes `data-ui="dialog-header"` for module layout and browser geometry checks.
 - `Icon` uses the Phosphor registry. Icon-only controls must have an accessible
   name or title.
 - `PageHeader` is the owned Kumo block in `src/components/kumo/page-header`.

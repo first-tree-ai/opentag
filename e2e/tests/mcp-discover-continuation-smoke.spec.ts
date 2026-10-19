@@ -133,6 +133,68 @@ test("successful authorization from Details clears an earlier Discover failure",
   await expect(row.getByRole("switch")).toBeEnabled();
 });
 
+test("Discover reuses an authorization started in Details", async ({ page }) => {
+  const agentId = await createAgent(page, "Details continuation in Discover");
+  const definition = { ...server("firecrawl", "oauth"), url: "https://mcp.firecrawl.dev/v2/mcp-oauth" };
+  const fixture = await mcpFixture(page, [definition]);
+  fixture.mounts.set(agentId, [binding(definition)]);
+  fixture.allowOAuth();
+  await consentFixture(page);
+  await page.goto(`/agents/${agentId}/mcp`);
+  await page.getByRole("button", { name: "Firecrawl", exact: true }).click();
+  const details = page.getByRole("dialog", { name: "Firecrawl", exact: true });
+  const popup = page.waitForEvent("popup");
+  await details.getByRole("button", { name: "Authorize", exact: true }).click();
+  const consent = await popup;
+  await expect(consent.getByRole("link", { name: "Finish authorization" })).toBeVisible();
+  await details.getByRole("button", { name: "Close Firecrawl", exact: true }).click();
+  await page.getByRole("button", { name: "Discover", exact: true }).click();
+  const discover = page.getByRole("dialog", { name: "Discover", exact: true });
+  await discover.getByLabel("Search connectors").fill("Firecrawl");
+  const card = discover.getByRole("listitem").filter({ has: page.getByText("Firecrawl", { exact: true }) });
+  await expect(card.getByRole("status")).toHaveText("Authorizing…");
+  await expect(card.getByRole("button", { name: "Authorize: Firecrawl", exact: true })).toHaveCount(0);
+  expect(fixture.writes.filter((write) => write.path.endsWith("/authorization/oauth"))).toHaveLength(1);
+  await card.getByRole("button", { name: "Cancel: Firecrawl", exact: true }).click();
+  await expect(card.getByRole("button", { name: "Authorize: Firecrawl", exact: true })).toBeVisible();
+  await expect.poll(() => consent.isClosed()).toBe(true);
+  expect(fixture.mounts.get(agentId)).toHaveLength(1);
+  await expectAccessible(page);
+});
+
+test("successful authorization from Discover clears an earlier Details failure", async ({ page }) => {
+  const agentId = await createAgent(page, "Details failure recovery in Discover");
+  const definition = { ...server("firecrawl", "oauth"), url: "https://mcp.firecrawl.dev/v2/mcp-oauth" };
+  const fixture = await mcpFixture(page, [definition]);
+  fixture.mounts.set(agentId, [binding(definition)]);
+  fixture.failOAuth();
+  await page.goto(`/agents/${agentId}/mcp`);
+  await page.getByRole("button", { name: "Firecrawl", exact: true }).click();
+  const details = page.getByRole("dialog", { name: "Firecrawl", exact: true });
+  await details.getByRole("button", { name: "Authorize", exact: true }).click();
+  await expect(details.getByRole("alert")).toHaveText("Authorization failed");
+  await details.getByRole("button", { name: "Close Firecrawl", exact: true }).click();
+  fixture.allowOAuth();
+  await consentFixture(page);
+  await page.getByRole("button", { name: "Discover", exact: true }).click();
+  const discover = page.getByRole("dialog", { name: "Discover", exact: true });
+  await discover.getByLabel("Search connectors").fill("Firecrawl");
+  const card = discover.getByRole("listitem").filter({ has: page.getByText("Firecrawl", { exact: true }) });
+  const popup = page.waitForEvent("popup");
+  await card.getByRole("button", { name: "Authorize: Firecrawl", exact: true }).click();
+  const consent = await popup;
+  await expect(consent.getByRole("link", { name: "Finish authorization" })).toBeVisible();
+  fixture.completeOAuth(agentId);
+  await consent.getByRole("link", { name: "Finish authorization" }).click();
+  await expect(card.getByRole("img", { name: "Added", exact: true })).toBeVisible();
+  await discover.getByRole("button", { name: "Close Discover", exact: true }).click();
+  const row = page.locator('[data-ui="mcp-server-row"]');
+  await expect(row.getByText("Authorization failed", { exact: true })).toHaveCount(0);
+  await row.getByRole("button", { name: "Firecrawl", exact: true }).click();
+  await expect(details.getByRole("button", { name: "Reauthorize", exact: true })).toBeVisible();
+  await expect(details.getByRole("alert")).toHaveCount(0);
+});
+
 for (const source of ["list", "discover"] as const) {
   test(`${source} retries an OAuth tool failure without opening another window`, async ({ page }) => {
     const agentId = await createAgent(page, "OAuth tool recovery");

@@ -162,6 +162,7 @@ function McpManagementPage({ agentId }: { agentId: string }) {
     if (result === "key") setPanel({ kind: "authorize", entry });
   };
   const addedFromCatalog = (entry: MCPAgentServer, _catalog: McpInstallableCatalogEntry, _definition?: MCPServer) => {
+    setDetailFailures((all) => ({ ...all, [entry.mcpServerId]: undefined }));
     if (connection.failure?.binding.mcpServerId === entry.mcpServerId) connection.clearFailure();
     setHighlight(entry.mcpServerId);
   };
@@ -170,6 +171,7 @@ function McpManagementPage({ agentId }: { agentId: string }) {
     agentId,
     agentName,
     mounted: servers,
+    oauthSessions: Object.fromEntries(servers.map((entry) => [entry.mcpServerId, detailOAuth(entry.mcpServerId)])),
     ...restoredDiscoverProps(returnContext, outcome),
     ...discoverPanelProps(panel),
     onClose: close,

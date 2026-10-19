@@ -34,6 +34,8 @@ configured methods uses the shared method Select; a single-method preset shows p
 Selecting an alternative is local until submission. Switching to
 OAuth uses Authorize. Tools, Advanced settings, deletion, credential clearing, and a global save
 footer are absent. Custom Details keeps editable connection settings and Advanced settings.
+Primary authentication actions use the shared 40px desktop control height, with 44px mobile touch
+targets; supporting text actions retain the compact recipe.
 
 In preset Details, feedback occupies a shared row below the authentication controls. Retry and
 Open window follow their reason with a 12px gap; on narrow screens the action wraps and stays
@@ -49,6 +51,8 @@ Submission replaces the saved configuration without candidate validation, backup
 OAuth success followed by a tool failure retains credentials and supports Retry.
 Retry from Details or Discover does not open an authorization window when credentials remain active.
 A retry keeps Details open; closing and reopening Details preserves an ongoing authorization.
+Discover also shows an authorization started in Details and cannot start a duplicate attempt for
+that connector. A successful Discover recovery clears an earlier Details failure from the list.
 OAuth completion immediately refreshes authorization data, including when started from Details.
 Retry reads the latest confirmed authorization. A failed method switch keeps the preset form and
 submitted configuration. Editable fields stay disabled while a credential write is pending;
@@ -62,6 +66,12 @@ Browser journeys use fictional provider responses. Actual provider consent and p
 are not verified by those tests.
 
 Details evidence verified on 2026-10-19; browser checks cover 320px, 390px, 768px, and 1440px:
+
+The complete Browser Smoke suite passed all 84 cases, including English and Chinese, OAuth popup
+and mobile-return flows, cross-dialog continuation, key editing, keyboard interaction, axe checks,
+and layout bounds. The two new cross-dialog regressions failed before their corrections. Shared
+Dialog headers use `data-ui="dialog-header"` without adding a banner landmark; layout selectors and
+browser geometry checks follow that marker.
 
 - [Preset Details with an authorization error, 1440px](./details-current-1440.png)
 - [Preset Details with an authorization error, 320px](./details-current-320.png)

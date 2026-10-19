@@ -19,7 +19,7 @@ async function openAdd(page: Page, agentId: string, locale = "en") {
 async function geometry(dialog: Locator) {
   return Promise.all([
     dialog.boundingBox(),
-    dialog.locator("header").boundingBox(),
+    dialog.locator('[data-ui="dialog-header"]').boundingBox(),
     dialog.getByLabel("Connector address", { exact: true }).boundingBox(),
     dialog.locator("footer").boundingBox(),
   ]);

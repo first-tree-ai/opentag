@@ -582,6 +582,53 @@ describe("Discover authorization lifecycle", () => {
       browser.restore();
     }
   });
+  it("shows a Details authorization in Discover without starting another attempt", async () => {
+    const browser = fakeMcpOAuthBrowser();
+    try {
+      stub([]);
+      const calls = stubCatalogWrites();
+      calls.mounts.push(mountFor(serverFor("alpha"), null));
+      wrap(<McpPage agentId={AGENT_ID} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Alpha" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Authorize" }));
+      await screen.findByRole("button", { name: "Cancel" });
+      fireEvent.click(screen.getByRole("button", { name: "Close Alpha" }));
+      await openDiscover();
+      await card("Alpha").findByText("Authorizing…");
+      expect(card("Alpha").queryByRole("button", { name: "Authorize: Alpha" })).toBeNull();
+      expect(calls.oauth).toHaveBeenCalledTimes(1);
+      fireEvent.click(card("Alpha").getByRole("button", { name: "Cancel: Alpha" }));
+      await card("Alpha").findByRole("button", { name: "Authorize: Alpha" });
+      expect(calls.detach).not.toHaveBeenCalled();
+    } finally {
+      browser.restore();
+    }
+  });
+  it("clears a Details failure when Discover successfully authorizes the connector", async () => {
+    const browser = fakeMcpOAuthBrowser();
+    try {
+      stub([]);
+      const calls = stubCatalogWrites();
+      calls.mounts.push(mountFor(serverFor("alpha"), null));
+      calls.oauth.mockRejectedValueOnce(new ApiError(503, "private detail"));
+      wrap(<McpPage agentId={AGENT_ID} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Alpha" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Authorize" }));
+      await within(screen.getByRole("dialog")).findByRole("alert");
+      fireEvent.click(screen.getByRole("button", { name: "Close Alpha" }));
+      await openDiscover();
+      browser.popup.closed = false;
+      fireEvent.click(card("Alpha").getByRole("button", { name: "Authorize: Alpha" }));
+      await card("Alpha").findByText("Authorizing…");
+      await complete(browser, calls.mounts);
+      await card("Alpha").findByRole("img", { name: "Added" });
+      fireEvent.click(screen.getByRole("button", { name: "Close Discover" }));
+      const row = within(document.getElementById(`mcp-server-${ALPHA_ID}`) as HTMLElement);
+      expect(row.queryByText("Authorization failed")).toBeNull();
+    } finally {
+      browser.restore();
+    }
+  });
   it("retries an authorized OAuth tool load from Discover without opening a window", async () => {
     const installed = mountFor(serverFor("alpha"), {
       ...summary("active"),

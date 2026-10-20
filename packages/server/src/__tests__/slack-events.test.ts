@@ -574,6 +574,39 @@ describe("Slack Events API ingress", () => {
     );
   });
 
+  it.each([
+    { event: { type: "app_uninstalled" }, uninstall: true, reauthorize: false },
+    { event: { type: "tokens_revoked", tokens: { bot: ["U_BOT"] } }, uninstall: false, reauthorize: true },
+    { event: { type: "tokens_revoked", tokens: { bot: ["B_BOT"] } }, uninstall: false, reauthorize: false },
+    { event: { type: "tokens_revoked", tokens: { bot: ["OTHER"] } }, uninstall: false, reauthorize: false },
+  ])("preserves durable control-event behavior for $event", async ({ event, uninstall, reauthorize }) => {
+    const receipts = {
+      claim: vi.fn().mockResolvedValue({ accepted: true, receiptId: "receipt-control", attempt: 1 }),
+      markProcessed: vi.fn().mockResolvedValue(undefined),
+      markFailed: vi.fn(),
+    };
+    const { app, imBindings, inbox, adapter } = createServices({ receipts: receipts as never });
+    expect(
+      (
+        await app.inject(
+          signedRequest({
+            type: "event_callback",
+            api_app_id: "A1",
+            team_id: "T1",
+            event_id: "Ev-control",
+            event,
+          }),
+        )
+      ).statusCode,
+    ).toBe(200);
+    await vi.waitFor(() => expect(receipts.markProcessed).toHaveBeenCalledWith("receipt-control", 1));
+    expect(imBindings.disableSlackInstallationFromProvider).toHaveBeenCalledTimes(uninstall ? 1 : 0);
+    expect(imBindings.requireSlackInstallationReauthorization).toHaveBeenCalledTimes(reauthorize ? 1 : 0);
+    expect(adapter.normalizeInbound).not.toHaveBeenCalled();
+    expect(inbox.ingest).not.toHaveBeenCalled();
+    expect(receipts.markFailed).not.toHaveBeenCalled();
+  });
+
   it.each(["IM_INBOUND_BINDING_STALE", "IM_INBOUND_IDENTITY_MISMATCH"] as const)(
     "preserves permanent Inbox rejection %s and settles without another attempt",
     async (code) => {

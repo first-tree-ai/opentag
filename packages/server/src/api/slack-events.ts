@@ -1,4 +1,4 @@
-import { AGENT_SLACK_EVENTS_TEMPLATE, SLACK_EVENTS_PATH } from "@opentag/shared";
+import { AGENT_SLACK_EVENTS_TEMPLATE, hasRequiredSlackBotScopes, SLACK_EVENTS_PATH } from "@opentag/shared";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { createServiceLoggerPort } from "../observability/service-logger.js";
 import type { RuntimeApprovalOwner } from "../runtime/runtime-approval-owner.js";
@@ -35,9 +35,24 @@ class SlackEventProcessingError extends Error {
   }
 }
 
+class SlackInboundCredentialsError extends Error {
+  readonly code: string;
+  readonly retry: boolean;
+
+  constructor(grantedCapabilities: string[]) {
+    const retry = hasRequiredSlackBotScopes(grantedCapabilities);
+    const code = retry ? "SLACK_INBOUND_CREDENTIALS_UNAVAILABLE" : "SLACK_INBOUND_SCOPES_MISSING";
+    super(code);
+    this.name = "SlackInboundCredentialsError";
+    this.code = code;
+    this.retry = retry;
+  }
+}
+
 function slackRecoveryFailure(error: unknown, validWork: boolean) {
   if (!validWork) return { code: "SLACK_INBOUND_WORK_INVALID", retry: false };
-  if (error instanceof SlackEventProcessingError) return { code: error.code, retry: error.retry };
+  if (error instanceof SlackEventProcessingError || error instanceof SlackInboundCredentialsError)
+    return { code: error.code, retry: error.retry };
   return { code: "SLACK_EVENT_PROCESSING_FAILED", retry: true };
 }
 
@@ -224,9 +239,8 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
         throw new Error("SLACK_INBOUND_WORK_IDENTITY_MISMATCH");
       validWork = true;
       const installation = await options.imBindings.findSlackInstallationIngress(work.appId, work.teamId);
-      if (!installation && (await workStore.hasCurrentSlackInstallation(attempt))) {
-        throw new Error("SLACK_INBOUND_CREDENTIALS_UNAVAILABLE");
-      }
+      const current = installation ? undefined : await workStore.findCurrentSlackInstallation(attempt);
+      if (current) throw new SlackInboundCredentialsError(current.grantedCapabilities);
       if (
         installation &&
         installation.installationId === attempt.scopeId &&
@@ -328,7 +342,7 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
       return reply.code(200).send({ ok: true });
     }
     let stage = "process";
-    const operation = processEnvelope(installation, envelope, backgroundReply, {
+    const operation = processEnvelope(installation, recoveredSlackEnvelope(work), backgroundReply, {
       ...(bindingId === undefined ? {} : { bindingId }),
       receivedAt: claim.receivedAt ?? options.now?.() ?? new Date(),
     })

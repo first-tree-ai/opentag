@@ -24,6 +24,9 @@ Slack adapter, ImBindingService, receipt store and Inbox against migrated Postgr
   error code. Invalid saved work schema or identity also settles without repeated Inbox attempts.
 - Credential revocation and unbind do not restore old authority; unreadable current credentials
   retain work for a capable replica instead of discarding it.
+- Missing required permissions in the current installation grant end work once without another
+  attempt; the existing installation query returns the grant metadata without extra queries or locks.
+- Live processing and recovery pass identical projected input to the real Slack adapter.
 - Original direct and ambient receive timestamps/deadlines survive delayed recovery.
 - Expiry clears work input while the original terminal/legacy receipt retention remains intact.
 
@@ -44,6 +47,8 @@ bounds, credential-field removal and retry scheduling. Five PGlite receipt-work 
 due-time/lease conjunction, scoped claims, stale/unfenced settlement, current installation identity,
 provider validation and cleanup without relying on query-builder stubs. Existing transport, receipts, Inbox,
 retention and connection-lifecycle regressions remain applicable.
+Durable Slack control-event tests retain uninstall and exact Bot-user token-revocation behavior.
+The real Feishu callback tracing regression distinguishes a claim-time stale fence from a database failure.
 
 ## Commands
 
@@ -75,7 +80,7 @@ The final PostgreSQL and Runtime runs used the same production source as the fin
 runs. The only subsequent additions were the five PGlite unit tests and this verification record.
 These are local checks with synthetic external transports, not production or live-provider acceptance.
 
-## Permanent-input follow-up validation
+## Permanent-input follow-up validation at `320e533f`
 
 The live and recovered permanently stale-route cases and the two invalid saved-work cases
 first retained retryable input on the initial revision. They now settle once, preserve a diagnostic
@@ -87,3 +92,19 @@ The final source passed `pnpm check`, `pnpm build`, `pnpm typecheck`, and `pnpm 
 with all four metrics at 100%; full migrated PostgreSQL passed 876 tests in 64 files, including
 26 new receipt recovery cases. Server unit coverage passed; changed lines were 511/566
 (90.28%, above the 80% gate). No query, transaction or schema change was added by this follow-up.
+
+## Review-comment follow-up validation
+
+Negative controls reproduced three differences before the fixes: live and recovered Slack adapter
+input differed, a current grant missing required Bot permissions retained retryable work, and a
+claim-time Feishu stale fence was traced as a database failure. The corrected source passed 106
+focused unit tests and 27 real PostgreSQL receipt-recovery cases. Durable uninstall and token
+revocation retain their existing behavior; complete but unreadable current credentials still
+recover through a capable replica. The existing installation lookup only adds grant metadata to
+its projection; no query, transaction, lock or schema is added.
+
+All required local checks passed on the same production source: `pnpm check`, `pnpm build`,
+`pnpm typecheck`, `pnpm test` (691 script tests and 10,035 package tests, 22 existing skips),
+Runtime coverage (642 tests, all four metrics at 100%) and the full migrated PostgreSQL suite
+(64 files, 877 tests). Server unit line coverage was 90.67%; changed-line coverage was 532/584
+(91.10%, above the 80% gate). These remain synthetic local checks, not live-provider acceptance.

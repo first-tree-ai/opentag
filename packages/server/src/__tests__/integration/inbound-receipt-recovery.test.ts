@@ -6,7 +6,14 @@ import Fastify from "fastify";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { registerSlackEventsRoute } from "../../api/slack-events.js";
 import { createDatabaseClient } from "../../db/client.js";
-import { agents, imBindings, imMessageDeliveries, imMessages, slackWebhookReceipts } from "../../db/schema/index.js";
+import {
+  agents,
+  imBindings,
+  imMessageDeliveries,
+  imMessages,
+  slackInstallations,
+  slackWebhookReceipts,
+} from "../../db/schema/index.js";
 import { resolveImDeliveryJanitorConfig, runImDeliveryRetention } from "../../runtime/im-delivery-janitor.js";
 import { ApplicationCipher } from "../../services/crypto.js";
 import { InboundWorkSchema, slackWorkEvent } from "../../services/im/inbound-work.js";
@@ -147,6 +154,7 @@ async function fixture() {
 
 it("recovers an acknowledged Slack Inbox failure without provider redelivery", async () => {
   const f = await fixture();
+  const normalize = vi.spyOn(f.adapter, "normalizeInbound");
   const receivedAt = new Date(f.clock.now);
   const app = f.app();
   await f.client.sql.unsafe(
@@ -170,6 +178,9 @@ it("recovers an acknowledged Slack Inbox failure without provider redelivery", a
   }
   f.clock.now = new Date(receivedAt.getTime() + 3_000);
   await app.recoverOnce();
+  expect(normalize).toHaveBeenCalledTimes(2);
+  expect(normalize.mock.calls[0]?.[0]).toEqual(normalize.mock.calls[1]?.[0]);
+  expect(normalize.mock.calls[0]?.[0].event).not.toHaveProperty("token");
   expect(await f.receipt()).toMatchObject({
     status: "processed",
     attemptCount: 2,
@@ -422,6 +433,37 @@ it("retains acknowledged input when one replica cannot read current credentials"
   await f.app().recoverOnce();
   expect(await f.receipt()).toMatchObject({ status: "processed", attemptCount: 3, workPayload: null });
   expect(await f.client.database.select().from(imMessages)).toHaveLength(1);
+});
+
+it("settles current-installation work once when required Slack bot permissions are missing", async () => {
+  const f = await fixture();
+  await f.receipts.claim({
+    installationId: f.ingress.installationId,
+    credentialGeneration: 1,
+    eventId: f.event.event_id,
+    work: f.work(),
+  });
+  await f.client.database
+    .update(slackInstallations)
+    .set({ grantedCapabilities: SLACK_REQUIRED_BOT_SCOPES.slice(1) })
+    .where(eq(slackInstallations.id, f.ingress.installationId));
+  await expect(f.service.findSlackInstallationIngress("A_WORK", "T_WORK")).resolves.toBeUndefined();
+  f.clock.now = new Date(f.clock.now.getTime() + 61_000);
+  const app = f.app();
+  await app.recoverOnce();
+  const terminal = await f.receipt();
+  expect(terminal).toMatchObject({
+    status: "failed",
+    attemptCount: 2,
+    lastErrorCode: "SLACK_INBOUND_SCOPES_MISSING",
+    workPayload: null,
+    nextAttemptAt: null,
+    leaseExpiresAt: null,
+  });
+  f.clock.now = new Date(f.clock.now.getTime() + 31_000);
+  await app.recoverOnce();
+  expect(await f.receipt()).toEqual(terminal);
+  expect(await f.client.database.select().from(imMessages)).toHaveLength(0);
 });
 
 it("accepts the existing 1 MiB HTTP body limit with durable identity metadata", async () => {

@@ -124,22 +124,23 @@ it("checks current installation identity without trusting the saved payload", as
   f.clock.now = new Date(f.clock.now.getTime() + 61_000);
   const attempt = await f.store.recovery.claimNext();
   assert(attempt);
-  await expect(f.store.recovery.hasCurrentSlackInstallation(attempt)).resolves.toBe(true);
+  const expected = { id: f.installation.id, grantedCapabilities: f.installation.grantedCapabilities };
+  await expect(f.store.recovery.findCurrentSlackInstallation(attempt)).resolves.toEqual(expected);
   await unit.database
     .update(slackInstallations)
     .set({ credentialGeneration: 2 })
     .where(eq(slackInstallations.id, f.installation.id));
-  await expect(f.store.recovery.hasCurrentSlackInstallation(attempt)).resolves.toBe(false);
-  await expect(f.store.recovery.hasCurrentSlackInstallation({ ...attempt, credentialGeneration: 2 })).resolves.toBe(
-    true,
+  await expect(f.store.recovery.findCurrentSlackInstallation(attempt)).resolves.toBeUndefined();
+  await expect(f.store.recovery.findCurrentSlackInstallation({ ...attempt, credentialGeneration: 2 })).resolves.toEqual(
+    expected,
   );
   await unit.database
     .update(slackInstallations)
     .set({ status: "reauthorization_required" })
     .where(eq(slackInstallations.id, f.installation.id));
-  await expect(f.store.recovery.hasCurrentSlackInstallation({ ...attempt, credentialGeneration: 2 })).resolves.toBe(
-    false,
-  );
+  await expect(
+    f.store.recovery.findCurrentSlackInstallation({ ...attempt, credentialGeneration: 2 }),
+  ).resolves.toBeUndefined();
 });
 
 it("requires a Feishu holder and rejects invalid or cross-provider work", async () => {

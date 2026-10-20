@@ -18,7 +18,7 @@ import { classifyImInboundPersistenceError, type ImMessageInbox } from "../../im
 import type { ImBindingService, VerifiedFeishuBinding } from "../im-binding-service.js";
 import { FeishuAdapter, type FeishuChannel, feishuEnvelopeEventId, feishuSenderOpenId } from "./adapter.js";
 import { FeishuCandidateExpiredError, FeishuOperationError, safeFeishuConnectionErrorCode } from "./errors.js";
-import type { FeishuInboundReceiptStore } from "./inbound-receipt-store.js";
+import { FeishuInboundReceiptError, type FeishuInboundReceiptStore } from "./inbound-receipt-store.js";
 import { classifyFeishuProbeFailure, type FeishuCandidateCheckOutcome, missingRequiredScopes } from "./setup-check.js";
 import type { FeishuBindingActivation } from "./setup-service.js";
 
@@ -963,13 +963,20 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
   ): Promise<InboundReceipt | null | undefined> {
     if (!this.#receipts || !receiptEventId) return undefined;
     setFailureCode("FEISHU_INBOUND_DATABASE_FAILED");
-    const claim = await this.#receipts.claim({
-      bindingId: handoff.imBindingId,
-      credentialGeneration: handoff.generation,
-      eventId: receiptEventId,
-      work: { version: 1, provider: "feishu", event, ...(senderOpenId ? { senderOpenId } : {}) },
-      fence: { holderInstanceId: this.#instanceId, fencingEpoch: handoff.epoch },
-    });
+    const claim = await this.#receipts
+      .claim({
+        bindingId: handoff.imBindingId,
+        credentialGeneration: handoff.generation,
+        eventId: receiptEventId,
+        work: { version: 1, provider: "feishu", event, ...(senderOpenId ? { senderOpenId } : {}) },
+        fence: { holderInstanceId: this.#instanceId, fencingEpoch: handoff.epoch },
+      })
+      .catch((error: unknown) => {
+        if (error instanceof FeishuInboundReceiptError && error.code === "FEISHU_INBOUND_FENCE_STALE") {
+          setFailureCode("FEISHU_INBOUND_FENCE_STALE");
+        }
+        throw error;
+      });
     if (claim.accepted && claim.receiptId)
       return {
         receiptId: claim.receiptId,

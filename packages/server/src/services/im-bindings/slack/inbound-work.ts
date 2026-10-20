@@ -37,8 +37,8 @@ export function createSlackInboundWork(
   installation: SlackIdentity,
   envelope: SlackEventEnvelope,
   bindingId: string | null | undefined,
-) {
-  return InboundWorkSchema.parse({
+): SlackInboundWork {
+  const work = InboundWorkSchema.parse({
     version: 1,
     provider: "slack",
     ...(bindingId === undefined ? {} : { bindingId }),
@@ -56,6 +56,8 @@ export function createSlackInboundWork(
       (envelope.event.tokens?.bot?.includes(installation.botUserId) ?? false),
     event: slackWorkEvent(envelope.event),
   });
+  if (work.provider !== "slack") throw new Error("SLACK_INBOUND_WORK_PROVIDER_MISMATCH");
+  return work;
 }
 
 export function recoveredSlackEnvelope(work: SlackInboundWork): SlackEventEnvelope {

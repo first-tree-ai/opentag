@@ -86,9 +86,9 @@ export class InboundReceiptWorkStore {
     return payload;
   }
 
-  async hasCurrentSlackInstallation(attempt: InboundReceiptAttempt): Promise<boolean> {
+  async findCurrentSlackInstallation(attempt: InboundReceiptAttempt) {
     const [installation] = await this.database
-      .select({ id: slackInstallations.id })
+      .select({ id: slackInstallations.id, grantedCapabilities: slackInstallations.grantedCapabilities })
       .from(slackInstallations)
       .where(
         and(
@@ -98,7 +98,7 @@ export class InboundReceiptWorkStore {
         ),
       )
       .limit(1);
-    return installation !== undefined;
+    return installation;
   }
 }
 

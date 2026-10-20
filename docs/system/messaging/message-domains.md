@@ -51,7 +51,10 @@ verified App/Team/Bot identity, the original installation generation and route
 snapshot, and the original receive time. Credentials, request headers and the
 unrestricted provider envelope are not saved. If the route snapshot is temporarily
 unavailable, recovery resolves it only after checking the same installation and
-generation. If the same installation/generation is still active but this Server cannot read
+generation. Live and recovered Slack processing consume the same projected event
+envelope. If the same installation/generation is still active but its stored grant
+lacks required Bot permissions, recovery ends that receipt with `SLACK_INBOUND_SCOPES_MISSING`.
+If the stored grant includes all required permissions but this Server cannot read
 its credentials, recovery retains the input and backs off rather than treating it as disabled.
 Feishu saves its strict normalized input under the current connection
 fence before Inbox persistence. Its receipt key remains `(binding, event_id)`;

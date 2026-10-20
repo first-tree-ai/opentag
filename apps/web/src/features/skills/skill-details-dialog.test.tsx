@@ -4,6 +4,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../../api.js";
+import { queryKeys } from "../../query/keys.js";
 import { SkillDetailsDialog } from "./skill-details-dialog.js";
 import { SkillReaderMarkdown } from "./skill-reader-markdown.js";
 import { SkillsPage } from "./skills-page.js";
@@ -58,8 +59,12 @@ describe("Skill details reader", () => {
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).getByText(skill.description)).toBeTruthy();
     expect(within(dialog).getByRole("link", { name: "Download" }).getAttribute("download")).toBe("reader.tar.gz");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Source" }));
-    expect(dialog.querySelector("pre")?.textContent).toBe(content);
+    expect(within(dialog).getByText("Description:")).toBeTruthy();
+    expect(within(dialog).queryByRole("button", { name: "Source" })).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "Reading" })).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "Frontmatter" })).toBeNull();
+    expect(within(dialog).queryByText("Skill details")).toBeNull();
+    expect(within(dialog).queryByText("Files")).toBeNull();
   });
 
   it("navigates package references and renders scripts as literal text", async () => {
@@ -73,11 +78,14 @@ describe("Skill details reader", () => {
     wrap(<SkillDetailsDialog skill={skill} onClose={vi.fn()} storageAvailable />);
     fireEvent.click(await screen.findByRole("button", { name: "Guide" }));
     expect(await screen.findByRole("heading", { name: "Guide content" })).toBeTruthy();
+    expect(within(screen.getByRole("dialog")).queryByText(skill.description)).toBeNull();
+    expect(screen.queryByText("Description:")).toBeNull();
     const nav = screen.getByRole("navigation", { name: "Files" });
     fireEvent.click(within(nav).getByRole("button", { name: "draft.ts" }));
     expect(await screen.findByText("<script>doNotRun()</script>")).toBeTruthy();
     expect(screen.getByRole("dialog").querySelector("script")).toBeNull();
     expect(screen.queryByRole("button", { name: "Source" })).toBeNull();
+    expect(within(screen.getByRole("dialog")).queryByText(skill.description)).toBeNull();
   });
 
   it("never loads remote images, injects HTML or activates unsafe links", async () => {
@@ -90,14 +98,15 @@ describe("Skill details reader", () => {
     expect(screen.getByText("Image: remote")).toBeTruthy();
   });
 
-  it("hides file navigation for a single-file Skill and preserves Frontmatter", async () => {
+  it("omits single-file navigation and keeps Frontmatter out of the reading surface", async () => {
     vi.spyOn(browserApi, "agentSkillFile").mockResolvedValue({ ...response(), files: files.slice(0, 1) });
     wrap(<SkillDetailsDialog skill={{ ...skill, fileCount: 1 }} onClose={vi.fn()} storageAvailable />);
     await screen.findByRole("heading", { name: "Complete instructions" });
     expect(screen.queryByRole("navigation", { name: "Files" })).toBeNull();
     expect(screen.queryByRole("combobox", { name: "Skill file" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Frontmatter" }));
-    expect(screen.getByRole("dialog").querySelector("pre")?.textContent).toContain("description: A package to read");
+    expect(screen.queryByRole("button", { name: "Frontmatter" })).toBeNull();
+    expect(screen.getByRole("dialog").textContent).not.toContain("name: reader");
+    expect(screen.getByText("Description:")).toBeTruthy();
   });
 
   it.each([
@@ -108,6 +117,7 @@ describe("Skill details reader", () => {
     wrap(<SkillDetailsDialog skill={skill} onClose={vi.fn()} storageAvailable />);
     expect(await screen.findByText(title)).toBeTruthy();
     expect(screen.getByRole("link", { name: "Download" })).toBeTruthy();
+    expect(screen.queryByText(skill.description)).toBeNull();
   });
 
   it("offers retry for transient failures and reports concurrent replacement clearly", async () => {
@@ -128,6 +138,85 @@ describe("Skill details reader", () => {
     expect(await screen.findByText(/This skill has changed/)).toBeTruthy();
     expect(screen.queryByText("The full ending.")).toBeNull();
   });
+
+  it("only shows the description after SKILL.md has loaded", async () => {
+    let resolve!: (data: ReadSkillFileResponse) => void;
+    vi.spyOn(browserApi, "agentSkillFile").mockReturnValue(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    wrap(<SkillDetailsDialog skill={skill} onClose={vi.fn()} storageAvailable />);
+    expect(screen.queryByText(skill.description)).toBeNull();
+    await act(async () => resolve(response()));
+    expect(await screen.findByText(skill.description)).toBeTruthy();
+  });
+
+  it.each(["", "---\nname: reader\ndescription: A package to read\n---\n"])(
+    "explains an empty Markdown body instead of showing a blank document",
+    async (text) => {
+      vi.spyOn(browserApi, "agentSkillFile").mockResolvedValue(response("SKILL.md", { status: "text", content: text }));
+      wrap(<SkillDetailsDialog skill={skill} onClose={vi.fn()} storageAvailable />);
+      expect(await screen.findByText("This file is empty.")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Frontmatter" })).toBeNull();
+    },
+  );
+
+  it("focuses a cross-file fragment and a repeated link to the selected file", async () => {
+    const scroll = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scroll });
+    vi.spyOn(browserApi, "agentSkillFile").mockImplementation(async (_agent, _skill, path) =>
+      response(path, {
+        status: "text",
+        content:
+          path === "SKILL.md"
+            ? "# Instructions\n\n[Jump](references/guide.md#target-section)"
+            : "# Guide\n\n[Again](guide.md#target-section)\n\n## Target section",
+      }),
+    );
+    wrap(<SkillDetailsDialog skill={skill} onClose={vi.fn()} storageAvailable />);
+    fireEvent.click(await screen.findByRole("button", { name: "Jump" }));
+    const target = await screen.findByRole("heading", { name: "Target section" });
+    await waitFor(() => expect(document.activeElement).toBe(target));
+    expect(scroll).toHaveBeenCalledTimes(1);
+    target.blur();
+    fireEvent.click(screen.getByRole("button", { name: "Again" }));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Target section" })));
+    expect(scroll).toHaveBeenCalledTimes(2);
+  });
+
+  it("revalidates cached Skill availability and removes download after confirmed deletion", async () => {
+    const missing = new ApiError(404, "Missing", SKILL_ERROR_CODES.NOT_FOUND, "deterministic");
+    vi.spyOn(browserApi, "agentSkillFile").mockRejectedValue(missing);
+    const detail = vi.spyOn(browserApi, "agentSkill").mockRejectedValue(missing);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(queryKeys.skills.skill(skill.agentId, skill.id), { ...skill, files, filesTruncated: false });
+    wrap(<SkillDetailsDialog skill={skill} onClose={vi.fn()} storageAvailable />, client);
+    expect(await screen.findByText("This skill or file is no longer available.")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole("link", { name: "Download" })).toBeNull());
+    expect(detail).toHaveBeenCalledWith(skill.agentId, skill.id);
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+  });
+
+  it.each(["present", "unknown"])(
+    "retains download when package availability is %s after a missing member",
+    async (state) => {
+      vi.spyOn(browserApi, "agentSkillFile").mockRejectedValue(
+        new ApiError(404, "Missing", SKILL_ERROR_CODES.NOT_FOUND, "deterministic"),
+      );
+      const detail = vi.spyOn(browserApi, "agentSkill");
+      if (state === "present") detail.mockResolvedValue({ ...skill, files, filesTruncated: false });
+      else detail.mockRejectedValue(new Error("Availability check failed"));
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      wrap(<SkillDetailsDialog skill={skill} onClose={vi.fn()} storageAvailable />, client);
+      await waitFor(() =>
+        expect(client.getQueryState(queryKeys.skills.skill(skill.agentId, skill.id))?.status).toBe(
+          state === "present" ? "success" : "error",
+        ),
+      );
+      expect(screen.getByRole("link", { name: "Download" })).toBeTruthy();
+    },
+  );
 
   it("does not let a delayed previous Agent response enter the next Agent's page", async () => {
     let resolve!: (value: ReadSkillFileResponse) => void;

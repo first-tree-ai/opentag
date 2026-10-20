@@ -6,6 +6,18 @@ Test and acceptance material for [MCP Server integration](../../docs/system/capa
 
 Unit tests (no network, no database):
 
+`mcp-gateway-route.test.ts` pins inbound negotiation to the three supported legacy revisions.
+Discovery excludes the modern revision, an `initialize` requesting modern or an unknown revision
+selects the newest legacy revision, and each supported revision completes initialization, tool
+listing, and a tool call. The Codex gateway runtime tests separately cover per-run rebinding through
+`thread/start` and `thread/resume`; Pi's gateway smoke test pins its explicit legacy adapter setting.
+
+An additional loopback check with `@modelcontextprotocol/client` 2.0.0 reproduced the pre-fix
+`tools/list` failure (`INVALID_RESULT`, missing `resultType`) in auto negotiation mode. After the
+fix, both 2.0.0 and 2.3.1 sent `server/discover`, fell back to `initialize` with `2025-11-25`, and
+successfully listed and called a fixture tool. That check used the real gateway route with stubbed
+execution authorization and tool service; it does not establish live Provider acceptance.
+
 | Area | What is asserted |
 | --- | --- |
 | Transport headers | Every required header; the version in header and `_meta`; the name header only when there is one; the Base64 sentinel boundary in both directions; a legacy call carrying none of the modern envelope |

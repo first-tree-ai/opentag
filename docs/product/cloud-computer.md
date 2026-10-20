@@ -47,8 +47,10 @@ Runner readiness and current execution authority.
 
 Task completion and environment preservation are separate facts. A completed task with a failed
 workspace save remains completed. Do not infer a last-save time from an older object or claim all
-local changes were saved merely because an archive exists. Task/token usage includes **IM tasks
-only**; internal Session token usage is not persisted. Environment counts include both kinds.
+local changes were saved merely because an archive exists. Task counts and outcomes cover IM tasks.
+Cloud model token usage, including internal Session calls, is persisted in the call ledger and
+included in Account and Agent usage totals. The ledger does not establish per-task token coverage;
+see [Cloud billing](cloud-billing.md) for aggregation rules. Environment counts include both kinds.
 
 ## Resource admission
 

@@ -1,4 +1,4 @@
-import type { TurnActivityRequest } from "@opentag/shared";
+import { RUNTIME_DEFAULT_MAX_DURATION_MS, type TurnActivityRequest } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TurnActivityReporter } from "../runtime/turn-activity-reporter.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
@@ -33,6 +33,19 @@ function ack(reporter: TurnActivityReporter, frame: TurnActivityRequest) {
 }
 
 describe("Turn execution liveness", () => {
+  it.each([undefined, 4_000])("bounds seven-day activity by the runtime budget %s", async (budget) => {
+    const { reporter, request, frames } = fixture();
+    request.deadlineAt = new Date(Date.now() + 7 * 86_400_000).toISOString();
+    request.runtime.budget = budget === undefined ? undefined : { maxDurationMs: budget };
+    const duration = budget ?? RUNTIME_DEFAULT_MAX_DURATION_MS;
+    reporter.start(request, "t");
+    await vi.advanceTimersByTimeAsync(duration - 2_000);
+    expect(frames.at(-1)?.phase).toBe("running");
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(frames.at(-1)?.phase).toBe("terminal");
+    reporter.close();
+  });
+
   it("does not publish without explicit negotiation or for observer deliveries", () => {
     const old = fixture(false);
     old.reporter.start(old.request, "t");

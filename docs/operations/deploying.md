@@ -217,6 +217,15 @@ Responses are public and cacheable for five minutes, set `Vary: Origin`, and nev
 Deploy this Server support before the website starts reading the catalogs. If either endpoint is unavailable, the
 website keeps its ordinary catalog rendering.
 
+## Public catalog MCP endpoint
+
+`POST /api/v1/public/mcp` is an anonymous Streamable HTTP MCP endpoint that serves the same MCP marketplace catalog to
+a user's own Agent. It is always registered: no origin gate and no CORS, because its callers are MCP clients rather
+than browsers and everything it returns is repo-shipped public data. Every response is `Cache-Control: no-store`, the
+body bound is 64 KiB, and each client IP gets 120 requests per minute. The counter lives in the process, so a fleet of
+replicas gives a caller one budget per replica; put a shared limiter or a gateway in front if that matters.
+See [Public MCP catalog endpoint](../system/capabilities/public-mcp-catalog.md).
+
 ## Manual deployment and rollback
 
 Run the **Deploy Staging** workflow from the Actions tab on `main`. Leaving the `revision` input empty deploys the

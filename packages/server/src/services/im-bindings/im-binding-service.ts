@@ -1109,6 +1109,7 @@ export class ImBindingService {
   async recordSlackInstallationObservation(installationId: string, generation: number): Promise<boolean> {
     const observedAt = this.#now();
     return this.#database.transaction(async (transaction) => {
+      await this.#lockSlackRoutes(transaction, installationId);
       const [updated] = await transaction
         .update(slackInstallations)
         .set({ observedAt })
@@ -1138,6 +1139,7 @@ export class ImBindingService {
   async recordSlackInstallationIdentityClosure(installationId: string, generation: number): Promise<boolean> {
     const observedAt = this.#now();
     return this.#database.transaction(async (transaction) => {
+      await this.#lockSlackRoutes(transaction, installationId);
       const [updated] = await transaction
         .update(slackInstallations)
         .set({
@@ -1184,6 +1186,7 @@ export class ImBindingService {
     const now = this.#now();
     const lastErrorCode = errorCode.slice(0, 120);
     const result = await this.#database.transaction(async (transaction) => {
+      await this.#lockSlackRoutes(transaction, installationId);
       // active -> reauthorization_required is an authorization mutation: both the installation
       // and its routes advance their authorization epoch in the same transaction, so grants,
       // readiness, and signed expectations captured before the transition can no longer be used.
@@ -1821,12 +1824,28 @@ export class ImBindingService {
     };
   }
 
+  async #lockSlackRoutes(transaction: DatabaseTransaction, installationId: string) {
+    return transaction
+      .select({ id: imBindings.id })
+      .from(imBindings)
+      .where(
+        and(
+          eq(imBindings.slackInstallationId, installationId),
+          eq(imBindings.provider, "slack"),
+          ne(imBindings.status, "disabled"),
+        ),
+      )
+      .orderBy(asc(imBindings.id))
+      .for("no key update");
+  }
+
   async #disableSlackInstallation(
     transaction: DatabaseTransaction,
     installationId: string,
     now: Date,
     expectedGeneration?: number,
   ): Promise<boolean> {
+    const routes = await this.#lockSlackRoutes(transaction, installationId);
     const [disabled] = await transaction
       .update(slackInstallations)
       .set({
@@ -1847,16 +1866,6 @@ export class ImBindingService {
       )
       .returning({ id: slackInstallations.id });
     if (!disabled) return false;
-    const routes = await transaction
-      .select({ id: imBindings.id })
-      .from(imBindings)
-      .where(
-        and(
-          eq(imBindings.slackInstallationId, installationId),
-          eq(imBindings.provider, "slack"),
-          ne(imBindings.status, "disabled"),
-        ),
-      );
     for (const route of routes) {
       await disableImBindingInTransaction(transaction, route.id, now);
     }

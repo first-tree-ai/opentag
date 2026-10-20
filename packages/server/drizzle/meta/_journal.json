@@ -449,6 +449,13 @@
       "when": 1792238886111,
       "tag": "0063_im_delivery_active_work",
       "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1792469450011,
+      "tag": "0064_inbound_receipt_work",
+      "breakpoints": true
     }
   ]
 }

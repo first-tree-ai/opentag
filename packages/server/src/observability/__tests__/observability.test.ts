@@ -25,6 +25,7 @@ import { RuntimeDomainOwner } from "../../runtime/runtime-domain-owner.js";
 import { ImInboundPersistenceError, ImMessageInbox } from "../../services/im/im-message-inbox.js";
 import { FeishuConnectionManager } from "../../services/im-bindings/feishu/connection-manager.js";
 import { safeFeishuSetupErrorCode } from "../../services/im-bindings/feishu/errors.js";
+import { FeishuInboundReceiptError } from "../../services/im-bindings/feishu/inbound-receipt-store.js";
 import { FeishuSetupService } from "../../services/im-bindings/feishu/setup-service.js";
 import { ImBindingServiceError } from "../../services/im-bindings/im-binding-service.js";
 import { OPENTAG_ATTR } from "../attributes.js";
@@ -678,9 +679,15 @@ describe("background and WebSocket tracing", () => {
         set: vi.fn(() => ({ where: vi.fn().mockResolvedValue([]) })),
       })),
     };
+    const receipts = {
+      claim: vi.fn().mockResolvedValue({ accepted: true, receiptId: "receipt-trace" }),
+      markProcessed: vi.fn(),
+      markFailed: vi.fn(),
+    };
     const manager = new FeishuConnectionManager({
       database: database as never,
       inbox,
+      receipts,
       instanceId: randomUUID(),
       imBindings: { notifyProviderCliRequirementChanged: vi.fn().mockResolvedValue(undefined) } as never,
       createAdapter: () =>
@@ -713,6 +720,15 @@ describe("background and WebSocket tracing", () => {
     await expect(messageHandler({} as never)).rejects.toBe(normalizeFailure);
     await expect(messageHandler({} as never)).rejects.toBeInstanceOf(ImInboundPersistenceError);
     await expect(messageHandler({} as never)).rejects.toBe(databaseFailure);
+    const claimFenceFailure = new FeishuInboundReceiptError("FEISHU_INBOUND_FENCE_STALE");
+    receipts.claim.mockRejectedValueOnce(claimFenceFailure);
+    await expect(messageHandler({} as never)).rejects.toBe(claimFenceFailure);
+    expect(exporter.getFinishedSpans().at(-1)?.attributes[OPENTAG_ATTR.ERROR_CODE]).toBe("FEISHU_INBOUND_FENCE_STALE");
+    receipts.claim.mockRejectedValueOnce(databaseFailure);
+    await expect(messageHandler({} as never)).rejects.toBe(databaseFailure);
+    expect(exporter.getFinishedSpans().at(-1)?.attributes[OPENTAG_ATTR.ERROR_CODE]).toBe(
+      "FEISHU_INBOUND_DATABASE_FAILED",
+    );
     await manager.stop();
 
     const spans = exporter.getFinishedSpans();

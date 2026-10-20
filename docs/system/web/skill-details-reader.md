@@ -20,13 +20,22 @@ experience is being designed. The catalog component, translations and server API
 
 ## Reading experience
 
-The large, dismissible dialog keeps the Skill name, download and close actions visible. Multi-file packages have a
-collapsible file navigation on desktop and a Kumo file selector below the header on mobile. Single-file packages omit
-both. Navigation and document scrolling are independent; the dialog stays within the dynamic viewport.
+The large, dismissible dialog keeps the Skill name, download and close actions visible without a redundant details
+eyebrow. Multi-file packages have fixed file navigation on desktop, with collapsible folders and an accessible name
+but no visible section label. On mobile, one Kumo file selector replaces the current-file toolbar content rather than
+adding a second row. Single-file packages omit navigation and keep a centered reading column. Navigation and document
+scrolling are independent; the dialog stays within the dynamic viewport.
+
+The full Skill description appears only above a successful, nonempty `SKILL.md` text preview. A localized inline
+`Description:` prefix, smaller text and subdued color distinguish it from the original document. Supporting files,
+loading, failures and unavailable previews do not repeat that description.
 
 Markdown has document-sized headings, bounded line length, GFM lists/tables, inline code and scrollable code blocks.
-Frontmatter is available through a disclosure; Source preserves the full UTF-8 text, including Frontmatter and a BOM.
-Package links open actual package members. Heading fragments scroll/focus the current document's heading. Scripts,
+It always uses the reading view, with Frontmatter omitted from the rendered body. There is no reading/source switch
+or separate Frontmatter disclosure; downloading the archive retains the complete original files. Empty Markdown
+bodies, including documents containing only Frontmatter, have an explicit empty state.
+Package links open actual package members. Heading fragments scroll/focus the target heading, including after a
+cross-file navigation or a repeated link to the already-selected document. Scripts,
 HTML, SVG and other UTF-8 files appear as escaped, unhighlighted source text. Binary/non-UTF-8 files and files above
 256 KiB show a clear unavailable-preview state, with the complete archive still downloadable. Empty files have an
 explicit empty state. There is no editor, sharing workflow, file execution, or automatic remote image loading.
@@ -34,7 +43,10 @@ explicit empty state. There is no editor, sharing workflow, file execution, or a
 The existing Kumo dialog owns focus trapping and Escape. It remains mounted between openings; focus returns to the
 Skill-details trigger. Package links focus the new reading region after loading. File buttons and folder disclosures use
 normal Tab/Enter/Space behavior; they are a navigation list, not an ARIA tree requiring a separate keyboard model.
-The source, code and table scroll regions are keyboard accessible. Agent changes unmount the reader and cancel reads.
+The file, code and table scroll regions are keyboard accessible. Agent changes unmount the reader and cancel reads.
+If a file read reports a missing resource, the reader revalidates Skill availability before removing the download
+action: a missing member alone does not prove the entire package is gone. A confirmed missing Skill also refreshes
+the management list. Transient availability-check failures leave the original file error and download action intact.
 
 ## Account file-read contract
 

@@ -10,6 +10,9 @@ until you add it again.” Cancel and Delete sit at the bottom right, with initi
 There is no duplicate close button; Escape cancels. It removes this Agent's installation and its
 unused definition; a historical definition still used by another Agent is retained.
 
+The list's more-actions button uses the same compact square button, vertical ellipsis icon,
+and spacing from the switch as Skills.
+
 Feedback describes only known evidence: Authorization expired, Authorization failed, Cannot reach
 service, Request timed out, or Couldn't load tools. More specific rejection or revocation copy requires
 explicit provider evidence; an internal revoked row alone does not establish provider revocation.
@@ -36,6 +39,9 @@ OAuth uses Authorize. Tools, Advanced settings, deletion, credential clearing, a
 footer are absent. Custom Details keeps editable connection settings and Advanced settings.
 Primary authentication actions use the shared 40px desktop control height, with 44px mobile touch
 targets; supporting text actions retain the compact recipe.
+The method selector and key field share the same input column, with a reserved action column on
+the right. Cancel, Save, and Update keep their labels on one line. On narrow screens the fields
+fill the available width and the actions move below, aligned to the right.
 
 In preset Details, feedback occupies a shared row below the authentication controls. Retry and
 Open window follow their reason with a 12px gap; on narrow screens the action wraps and stays
@@ -84,3 +90,12 @@ browser geometry checks follow that marker.
 
 [Discover during authorization, 1440px](./discover-current-1440.png) was verified on 2026-10-15.
 Other screenshots in this directory show the previous design.
+
+Controls verification on 2026-10-20: all 11 existing MCP recovery browser cases passed, including
+key submission at 320px and 1440px and geometry checks at 390px and 768px. Isolated renders of the
+actual authentication component were also measured with both message catalogues at 320px, 390px,
+449px, 480px, 768px, and 1440px in editing, saved-key, and OAuth states: 36 layout checks passed.
+The input edges match, the method width remains stable across states, and action labels fit.
+
+- [Aligned fields and key actions during submission, 1440px](./aligned-key-actions-1440.png)
+- [Full-width fields and right-aligned key actions during submission, 320px](./aligned-key-actions-320.png)

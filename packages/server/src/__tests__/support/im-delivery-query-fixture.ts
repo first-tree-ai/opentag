@@ -67,6 +67,8 @@ export async function seedDeliveryQuery(database: DatabaseClient, history = 0, b
         else date_trunc('seconds',now()-interval '1 hour')+i*interval '1 microsecond' end,
       now()+interval '1 day',case when occupant then 'IM_DELIVERY_CLAIM_test' end from spec
   `);
+  // Cloud head plans read both tables; neither may depend on background auto-analyze timing.
+  await database.execute(sql`analyze im_messages`);
   await database.execute(sql`analyze im_message_deliveries`);
   return {
     deliveryId: deliveryTestId("delivery", history + blocked + 2),

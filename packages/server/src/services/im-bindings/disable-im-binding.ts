@@ -44,10 +44,6 @@ export async function disableImBindingInTransaction(
     )
     .returning({ id: imBindings.id, slackInstallationId: imBindings.slackInstallationId });
   if (disabled.length === 0) return false;
-  await transaction
-    .update(sessions)
-    .set({ endedAt: now, revision: sql`${sessions.revision} + 1` })
-    .where(and(eq(sessions.imBindingId, imBindingId), isNull(sessions.endedAt)));
   const installationId = disabled[0]?.slackInstallationId;
   if (installationId && releaseUnusedSlackInstallation) {
     const [installation] = await transaction
@@ -82,5 +78,9 @@ export async function disableImBindingInTransaction(
       }
     }
   }
+  await transaction
+    .update(sessions)
+    .set({ endedAt: now, revision: sql`${sessions.revision} + 1` })
+    .where(and(eq(sessions.imBindingId, imBindingId), isNull(sessions.endedAt)));
   return true;
 }

@@ -1,8 +1,7 @@
 import { MCP_CATALOG_ENTRIES } from "@opentag/mcp-presets";
 import type { MCPAgentServer } from "@opentag/shared/browser";
-import { DotsThree } from "@phosphor-icons/react";
 import * as m from "../../paraglide/messages.js";
-import { Button, DropdownMenu, Switch } from "../../ui/design-system.js";
+import { Button, DropdownMenu, Icon, Switch } from "../../ui/design-system.js";
 import { findCatalogEntryByUrl, localizedText } from "./catalog/mcp-catalog-model.js";
 import { connectorFeedback, type McpFeedback } from "./mcp-feedback.js";
 import type { McpOAuthSession } from "./mcp-oauth-session.js";
@@ -79,7 +78,7 @@ function McpIdentity(props: CardProps) {
 
 function McpControls({ entry, agentName, connecting, toggling, onToggle, onAction }: CardProps) {
   return (
-    <div className="mcp-server-toggles flex shrink-0 items-center gap-2">
+    <div className="mcp-server-toggles flex shrink-0 items-center gap-3">
       <Switch
         aria-label={m.mcp_toggle_label({ agent: agentName, name: mcpTitle(entry) })}
         checked={entry.enabled}
@@ -93,12 +92,13 @@ function McpControls({ entry, agentName, connecting, toggling, onToggle, onActio
             <Button
               variant="ghost"
               shape="square"
+              size="compact"
               disabled={connecting}
               aria-label={m.mcp_more_actions({ name: mcpTitle(entry) })}
             />
           }
         >
-          <DotsThree aria-hidden className="size-5" />
+          <Icon name="more-vertical" />
         </DropdownMenu.Trigger>
         <DropdownMenu.Content align="end">
           <DropdownMenu.Item onClick={() => onAction("edit")}>{m.mcp_details_action()}</DropdownMenu.Item>

@@ -149,7 +149,7 @@ export class ImMessageInbox {
     credentialGeneration: number,
     rawEvent: NormalizedInboundImEvent,
     admissionFence?: { provider: "feishu"; holderInstanceId: string; fencingEpoch: number },
-    telemetry?: { provider: "feishu" | "slack" },
+    telemetry?: { provider: "feishu" | "slack"; receivedAt?: Date },
   ): Promise<IngestResult> {
     const event = NormalizedInboundImEventSchema.parse(rawEvent);
     const provider = telemetry?.provider ?? admissionFence?.provider;
@@ -178,6 +178,7 @@ export class ImMessageInbox {
               return result;
             };
             const now = this.#now();
+            const receivedAt = telemetry?.receivedAt ?? now;
             const [candidate] = await transaction
               .select({ agentId: imBindings.agentId })
               .from(imBindings)
@@ -354,7 +355,7 @@ export class ImMessageInbox {
                 content,
                 providerContext: event.providerContext,
                 occurredAt: event.message.occurredAt,
-                receivedAt: now,
+                receivedAt,
               })
               .onConflictDoNothing()
               .returning();
@@ -551,7 +552,7 @@ export class ImMessageInbox {
                   attention: delivery.attention,
                   placementGeneration: delivery.generation,
                   nextAttemptAt: now,
-                  expiresAt: new Date(now.getTime() + deliveryRetentionMs(delivery)),
+                  expiresAt: new Date(receivedAt.getTime() + deliveryRetentionMs(delivery)),
                 })
                 .onConflictDoNothing()
                 .returning({ id: imMessageDeliveries.id });
@@ -617,7 +618,7 @@ export class ImMessageInbox {
                 // stay ambient because they do not address the Agent themselves.
                 const [retained] = await transaction
                   .update(imMessageDeliveries)
-                  .set({ expiresAt: new Date(now.getTime() + DIRECT_TTL_MS) })
+                  .set({ expiresAt: new Date(receivedAt.getTime() + DIRECT_TTL_MS) })
                   .where(
                     and(
                       eq(imMessageDeliveries.messageId, pending.id),
@@ -640,7 +641,7 @@ export class ImMessageInbox {
                       attention: "ambient",
                       placementGeneration: thread.generation,
                       nextAttemptAt: now,
-                      expiresAt: new Date(now.getTime() + DIRECT_TTL_MS),
+                      expiresAt: new Date(receivedAt.getTime() + DIRECT_TTL_MS),
                     })
                     .onConflictDoNothing();
                 const candidate = { sessionId: thread.id, attention: "ambient" as const };

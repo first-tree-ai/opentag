@@ -30,6 +30,34 @@ import type { CloudModelCatalog } from "../sandboxes/cloud-model-catalog.js";
 type SessionRow = typeof sessions.$inferSelect;
 type PlacementRow = typeof sessionPlacements.$inferSelect;
 type SessionMessageRow = typeof sessionMessages.$inferSelect;
+type SessionScope = Pick<SessionRow, "imBindingId" | "channelId" | "conversationKind" | "threadKey">;
+type AuthorityComputer = Pick<
+  typeof computers.$inferSelect,
+  "id" | "ownerAccountId" | "currentInstallationId" | "currentInstanceId" | "kind"
+>;
+
+interface SourceAgentAuthority {
+  agentId: string;
+  agentOwnerId: string;
+  session: SessionScope & { id: string };
+}
+
+interface LockedCollaborationAuthority {
+  agentId: string;
+  agentOwnerId: string;
+  sessions: SessionRow[];
+  placements: PlacementRow[];
+  computers: AuthorityComputer[];
+}
+
+function sameSessionScope(left: SessionScope, right: SessionScope): boolean {
+  return (
+    left.imBindingId === right.imBindingId &&
+    left.channelId === right.channelId &&
+    left.conversationKind === right.conversationKind &&
+    left.threadKey === right.threadKey
+  );
+}
 
 interface ActiveSessionAuthority {
   session: SessionRow;
@@ -304,7 +332,16 @@ export class SessionService {
       if (creatorKind === "cloud") catalogSnapshot = await this.#cloudModelCatalog.list();
     }
     return this.#database.transaction(async (transaction) => {
-      const creator = await this.#activeSource(transaction, {
+      const agent = await this.#lockSourceAgent(transaction, input.creatorSessionId);
+      const [targetHint] = await transaction
+        .select({ targetSessionId: sessionMessages.targetSessionId })
+        .from(sessionMessages)
+        .where(
+          and(eq(sessionMessages.id, input.messageId), eq(sessionMessages.sourceSessionId, input.creatorSessionId)),
+        )
+        .limit(1);
+      const authority = await this.#lockCollaborationAuthority(transaction, agent, targetHint?.targetSessionId);
+      const creator = this.#activeSource(authority, {
         sessionId: input.creatorSessionId,
         installationId: input.creatorInstallationId,
         connectionInstanceId: input.creatorConnectionInstanceId,
@@ -320,11 +357,12 @@ export class SessionService {
         .for("update");
       if (existing) {
         this.#assertMessageIdentity(existing, input.creatorSessionId, existing.targetSessionId, input.initialMessage);
-        const target = await this.#activeTarget(transaction, existing.targetSessionId, creator.session);
+        const target = await this.#activeTarget(transaction, authority, existing.targetSessionId, creator.session);
         if (!internalSessionInputMatches(target.session, input)) {
           throw new SessionServiceError("SESSION_MESSAGE_CONFLICT", "The Session message ID has conflicting input");
         }
         const attempt = await this.#beginAttempt(transaction, existing);
+        await this.#recordSessionActivity(transaction, attempt.message, [input.creatorSessionId]);
         return {
           session: toSession(target.session),
           placement: toPlacement(target.placement),
@@ -428,6 +466,7 @@ export class SessionService {
         from session_descendants
         where descendant_session_id = ${input.creatorSessionId}::uuid
       `);
+      await this.#recordSessionActivity(transaction, attempt.message, [input.creatorSessionId]);
       const target = {
         session: created,
         placement,
@@ -448,14 +487,16 @@ export class SessionService {
 
   async authorizeAndRecordMessage(input: AuthorizeAndRecordSessionMessageInput): Promise<SessionMessageAttempt> {
     return this.#database.transaction(async (transaction) => {
-      const source = await this.#activeSource(transaction, {
+      const agent = await this.#lockSourceAgent(transaction, input.sourceSessionId);
+      const authority = await this.#lockCollaborationAuthority(transaction, agent, input.targetSessionId);
+      const source = this.#activeSource(authority, {
         sessionId: input.sourceSessionId,
         installationId: input.sourceInstallationId,
         connectionInstanceId: input.sourceConnectionInstanceId,
         computerId: input.sourceComputerId,
         placementGeneration: input.sourcePlacementGeneration,
       });
-      const target = await this.#activeTarget(transaction, input.targetSessionId, source.session);
+      const target = await this.#activeTarget(transaction, authority, input.targetSessionId, source.session);
       const [existing] = await transaction
         .select()
         .from(sessionMessages)
@@ -1124,8 +1165,115 @@ export class SessionService {
     if (!placement) throw new SessionServiceError("SESSION_PLACEMENT_STALE", "The Session placement is stale");
   }
 
-  async #activeSource(
+  async #lockSourceAgent(transaction: DatabaseTransaction, sourceSessionId: string): Promise<SourceAgentAuthority> {
+    const [source] = await transaction
+      .select({
+        agentId: agents.id,
+        agentOwnerId: agents.createdByUserId,
+        session: {
+          id: sessions.id,
+          imBindingId: sessions.imBindingId,
+          channelId: sessions.channelId,
+          conversationKind: sessions.conversationKind,
+          threadKey: sessions.threadKey,
+        },
+      })
+      .from(sessions)
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .where(
+        and(
+          eq(sessions.id, sourceSessionId),
+          isNull(sessions.endedAt),
+          eq(imBindings.status, "active"),
+          eq(agents.status, "active"),
+        ),
+      )
+      .limit(1)
+      .for("update", { of: agents });
+    if (!source) throw new SessionServiceError("SESSION_SOURCE_UNAVAILABLE", "The source Session is not active");
+    return source;
+  }
+
+  async #lockCollaborationAuthority(
     transaction: DatabaseTransaction,
+    source: SourceAgentAuthority,
+    targetSessionId?: string,
+  ): Promise<LockedCollaborationAuthority> {
+    const [binding] = await transaction
+      .select({ id: imBindings.id })
+      .from(imBindings)
+      .where(
+        and(
+          eq(imBindings.id, source.session.imBindingId),
+          eq(imBindings.agentId, source.agentId),
+          eq(imBindings.status, "active"),
+        ),
+      )
+      .for("update");
+    if (!binding) throw new SessionServiceError("SESSION_SOURCE_UNAVAILABLE", "The source Session is not active");
+    const lockedSessions = await transaction
+      .select()
+      .from(sessions)
+      .where(
+        and(
+          isNull(sessions.endedAt),
+          or(
+            eq(sessions.id, source.session.id),
+            targetSessionId
+              ? and(
+                  eq(sessions.id, targetSessionId),
+                  eq(sessions.imBindingId, source.session.imBindingId),
+                  eq(sessions.channelId, source.session.channelId),
+                  eq(sessions.conversationKind, source.session.conversationKind),
+                  source.session.threadKey === null
+                    ? isNull(sessions.threadKey)
+                    : eq(sessions.threadKey, source.session.threadKey),
+                )
+              : undefined,
+          ),
+        ),
+      )
+      .orderBy(sessions.id)
+      .for("no key update");
+    const lockedSource = lockedSessions.find((session) => session.id === source.session.id);
+    if (!lockedSource || !sameSessionScope(lockedSource, source.session)) {
+      throw new SessionServiceError("SESSION_SOURCE_UNAVAILABLE", "The source Session is not active");
+    }
+    const placements = await transaction
+      .select()
+      .from(sessionPlacements)
+      .where(
+        inArray(
+          sessionPlacements.sessionId,
+          lockedSessions.map((session) => session.id),
+        ),
+      )
+      .orderBy(sessionPlacements.sessionId)
+      .for("update");
+    const lockedComputers = await transaction
+      .select({
+        id: computers.id,
+        ownerAccountId: computers.ownerAccountId,
+        currentInstallationId: computers.currentInstallationId,
+        currentInstanceId: computers.currentInstanceId,
+        kind: computers.kind,
+      })
+      .from(computers)
+      .where(inArray(computers.id, [...new Set(placements.map((placement) => placement.computerId))]))
+      .orderBy(computers.id)
+      .for("update");
+    return {
+      agentId: source.agentId,
+      agentOwnerId: source.agentOwnerId,
+      sessions: lockedSessions,
+      placements,
+      computers: lockedComputers,
+    };
+  }
+
+  #activeSource(
+    authority: LockedCollaborationAuthority,
     input: {
       sessionId: string;
       installationId: string;
@@ -1133,42 +1281,20 @@ export class SessionService {
       computerId: string;
       placementGeneration: number;
     },
-  ): Promise<ActiveSessionAuthority> {
-    const [source] = await transaction
-      .select({
-        session: sessions,
-        placement: sessionPlacements,
-        agentId: agents.id,
-        agentCreatedByUserId: agents.createdByUserId,
-        installationId: computers.currentInstallationId,
-        computerKind: computers.kind,
-        computerOwnerAccountId: computers.ownerAccountId,
-        connectionInstanceId: computers.currentInstanceId,
-        computerId: computers.id,
-      })
-      .from(sessions)
-      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
-      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
-      .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
-      .where(
-        and(
-          eq(sessions.id, input.sessionId),
-          isNull(sessions.endedAt),
-          eq(imBindings.status, "active"),
-          eq(agents.status, "active"),
-        ),
-      )
-      .limit(1)
-      .for("update");
-    if (!source) throw new SessionServiceError("SESSION_SOURCE_UNAVAILABLE", "The source Session is not active");
-    if (source.computerOwnerAccountId !== source.agentCreatedByUserId) {
+  ): ActiveSessionAuthority {
+    const session = authority.sessions.find((row) => row.id === input.sessionId);
+    const placement = authority.placements.find((row) => row.sessionId === input.sessionId);
+    const computer = authority.computers.find((row) => row.id === placement?.computerId);
+    if (!session || !placement || !computer) {
+      throw new SessionServiceError("SESSION_SOURCE_UNAVAILABLE", "The source Session is not active");
+    }
+    if (computer.ownerAccountId !== authority.agentOwnerId) {
       throw new SessionServiceError("SESSION_SOURCE_UNAVAILABLE", "The source Session Computer requires Agent rebind");
     }
     if (
-      source.installationId !== input.installationId ||
-      source.computerId !== input.computerId ||
-      source.placement.generation !== input.placementGeneration
+      computer.currentInstallationId !== input.installationId ||
+      computer.id !== input.computerId ||
+      placement.generation !== input.placementGeneration
     ) {
       throw new SessionServiceError("SESSION_PLACEMENT_STALE", "The source Session placement is stale");
     }
@@ -1176,16 +1302,24 @@ export class SessionService {
     // current connection; a Cloud Computer is a logical always-online identity, so the proof is
     // the exact current execution-eligible Runner connection for the Session's allocation.
     const connectionCurrent = this.#connectionIsCurrent({
-      computerId: source.computerId,
-      computerKind: source.computerKind,
+      computerId: computer.id,
+      computerKind: computer.kind,
       connectionInstanceId: input.connectionInstanceId,
-      localCurrentInstanceId: source.connectionInstanceId,
-      sessionId: source.session.id,
+      localCurrentInstanceId: computer.currentInstanceId,
+      sessionId: session.id,
     });
     if (!connectionCurrent) {
       throw new SessionServiceError("SESSION_PLACEMENT_STALE", "The source Session placement is stale");
     }
-    return { ...source, connectionInstanceId: input.connectionInstanceId };
+    return {
+      session,
+      placement,
+      agentId: authority.agentId,
+      computerId: computer.id,
+      computerKind: computer.kind,
+      installationId: computer.currentInstallationId,
+      connectionInstanceId: input.connectionInstanceId,
+    };
   }
 
   /**
@@ -1214,6 +1348,7 @@ export class SessionService {
 
   async #activeTarget(
     transaction: DatabaseTransaction,
+    authority: LockedCollaborationAuthority,
     targetSessionId: string,
     sourceSession: SessionRow,
   ): Promise<{
@@ -1223,6 +1358,25 @@ export class SessionService {
     computerKind: "local" | "cloud";
     installationId: string;
   }> {
+    const session = authority.sessions.find((row) => row.id === targetSessionId);
+    const placement = authority.placements.find((row) => row.sessionId === targetSessionId);
+    const computer = authority.computers.find((row) => row.id === placement?.computerId);
+    if (session && placement && computer) {
+      if (computer.ownerAccountId !== authority.agentOwnerId) {
+        throw new SessionServiceError(
+          "SESSION_TARGET_UNAVAILABLE",
+          "The target Session Computer requires Agent rebind",
+        );
+      }
+      return {
+        session,
+        placement,
+        computerId: computer.id,
+        computerKind: computer.kind,
+        installationId: computer.currentInstallationId,
+      };
+    }
+    // Foreign-scope targets must retain their error precedence without joining the lock chain.
     const [target] = await transaction
       .select({
         session: sessions,
@@ -1239,21 +1393,15 @@ export class SessionService {
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
       .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
       .where(and(eq(sessions.id, targetSessionId), isNull(sessions.endedAt)))
-      .limit(1)
-      .for("update");
+      .limit(1);
     if (!target) throw new SessionServiceError("SESSION_TARGET_UNAVAILABLE", "The target Session is not active");
     if (target.computerOwnerAccountId !== target.agentCreatedByUserId) {
       throw new SessionServiceError("SESSION_TARGET_UNAVAILABLE", "The target Session Computer requires Agent rebind");
     }
-    if (
-      target.session.imBindingId !== sourceSession.imBindingId ||
-      target.session.channelId !== sourceSession.channelId ||
-      target.session.conversationKind !== sourceSession.conversationKind ||
-      target.session.threadKey !== sourceSession.threadKey
-    ) {
+    if (!sameSessionScope(target.session, sourceSession)) {
       throw new SessionServiceError("SESSION_SCOPE_MISMATCH", "The target Session has a different collaboration scope");
     }
-    return target;
+    throw new SessionServiceError("SESSION_TARGET_UNAVAILABLE", "The target Session is not active");
   }
 
   #assertMessageIdentity(

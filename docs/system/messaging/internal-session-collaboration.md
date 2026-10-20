@@ -30,9 +30,23 @@ existing Session in the same Agent and conversation scope. Both accept an option
 reuse the same ID and identical semantic input after an uncertain result. `accepted` means the target accepted the
 message into its bounded FIFO, not that the task completed.
 
+Within each existing create/send transaction, authorization locks the source Agent, binding,
+Sessions in ID order (`FOR NO KEY UPDATE`), placements in Session ID order, then Computers in ID order.
+The locked rows supply the current authority checks. Only targets in the full binding, channel,
+conversation-kind and thread scope enter this lock chain; foreign-scope targets are classified by
+an unlocked read. Create retries first read the immutable target hint for that message and creator;
+the later message lock and input-conflict checks remain authoritative. There is no automatic database retry.
+
 `session list` returns direct children by default, ordered by recent message activity. Pages default to 20 items and
 are capped at 100; `--cursor` continues a page, `--recursive` includes descendants, `--since` filters recent activity,
 and `--json` returns `{ items, nextCursor }`. There is no unbounded `--all` mode.
+
+Recent activity is the latest message in which the listed Session is the source or target. Creating
+an internal child therefore also updates the creator's activity projection. It does not raise the
+activity of an ancestor that did not participate in that message. Ordering uses the message's
+original creation time and ID, including explicit create retries; a retry or delayed receipt does
+not move an older message ahead of newer activity. The task preview remains the child's initial
+task, and outcome writes update only projections still referring to that message.
 
 Internal Sessions inherit their Agent's available tools and default Runtime configuration. Local Sessions also share the
 Agent workspace. Cloud Sessions have independent Sandbox workspaces and Pi histories; see

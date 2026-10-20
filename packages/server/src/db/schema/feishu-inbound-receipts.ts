@@ -1,5 +1,5 @@
 import { relations, sql } from "drizzle-orm";
-import { bigint, check, index, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigint, check, index, jsonb, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { imBindings } from "./im-bindings.js";
 
 export const feishuInboundReceiptStatus = pgEnum("feishu_inbound_receipt_status", [
@@ -23,6 +23,9 @@ export const feishuInboundReceipts = pgTable(
     attemptCount: bigint("attempt_count", { mode: "number" }).notNull().default(1),
     lastErrorCode: text("last_error_code"),
     lastErrorAt: timestamp("last_error_at", { withTimezone: true }),
+    workPayload: jsonb("work_payload").$type<unknown>(),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
   },
   (table) => [
     uniqueIndex("feishu_inbound_receipts_identity_unique").on(table.imBindingId, table.eventId),
@@ -30,6 +33,21 @@ export const feishuInboundReceipts = pgTable(
     index("feishu_inbound_receipts_retention_idx")
       .on(table.receivedAt, table.id)
       .where(sql`${table.status} in ('processed', 'failed')`),
+    index("feishu_inbound_receipts_work_idx")
+      .on(table.nextAttemptAt, table.id)
+      .where(sql`${table.workPayload} is not null and ${table.status} in ('processing', 'failed')`),
+    check(
+      "feishu_inbound_receipts_work_bounded",
+      sql`${table.workPayload} is null or octet_length(${table.workPayload}::text) <= 2097152`,
+    ),
+    check(
+      "feishu_inbound_receipts_work_shape",
+      sql`
+      (${table.workPayload} is null and ${table.leaseExpiresAt} is null and ${table.nextAttemptAt} is null)
+      or (${table.workPayload} is not null and ${table.status} = 'processing' and ${table.leaseExpiresAt} is not null and ${table.nextAttemptAt} is not null)
+      or (${table.workPayload} is not null and ${table.status} = 'failed' and ${table.leaseExpiresAt} is null and ${table.nextAttemptAt} is not null)
+    `,
+    ),
     check("feishu_inbound_receipts_generation_nonnegative", sql`${table.credentialGeneration} >= 1`),
     check("feishu_inbound_receipts_event_id_bounded", sql`length(${table.eventId}) between 1 and 512`),
     check(

@@ -6,9 +6,9 @@ This acceptance record supports the [GitHub platform integration contract](../..
 
 ## Implemented scope
 
-Account settings shows the personal profile, GitHub, and conditional Cloud billing in that order. The normal GitHub section has two rows: the saved identity with an account-action menu, and Repository access with a Server-owned Manage on GitHub link. There are no persistent connection-health badges, installation inventory, or refresh controls. An accessible click/tap toggle explains App installation/configuration and repository selection, with a conditional organization-administrator note. The bottom account menu still owns Computer management; MCP remains in each Agent's Connectors experience.
+Account settings shows the personal profile, GitHub, and conditional Cloud billing in that order. The normal GitHub section has two rows: the saved identity with an account-action menu, and Repository access with a Server-owned Manage on GitHub link. Without a saved identity, the section offers one standalone authorization button. Initial loading has a small progress indicator; unavailable deployments show setup guidance without a dummy settings row. There are no persistent connection-health badges, installation inventory, or refresh controls. An accessible click/tap toggle explains App installation/configuration and repository selection, with a conditional organization-administrator note. A required reauthorization action stays ahead of optional help. The bottom account menu still owns Computer management; MCP remains in each Agent's Connectors experience.
 
-Change account starts explicit replacement directly. A real Server requirement adds Authorize again. An unfinished initial authorization can be started again without showing an internal pending state. Remove account requires one confirmation naming the identity and explaining the effect on all Agents, ongoing work, and the authorization/App installation retained on GitHub. Cancellation does not mutate authorization; a failed mutation remains in the dialog for retry.
+Change account starts explicit replacement directly. A real Server requirement adds Authorize again. An unfinished initial authorization can be started again without showing an internal pending state. Progress remains visible at the active control, with decorative loading icons and a readable action name. Starting a new action clears the previous callback outcome. Remove account requires one confirmation naming the identity and explaining the effect on all Agents, ongoing work, and the authorization/App installation retained on GitHub. Cancellation does not mutate authorization; a failed mutation remains in the dialog for retry, and dismissing the dialog clears its error. Empty live regions remain available for focus recovery without occupying visual space.
 
 ## Review findings resolved
 
@@ -41,7 +41,21 @@ The built Web application, Server, authentication, and disposable PostgreSQL are
 
 No real GitHub authorization, App installation, repository, or provider token was changed. These fixtures do not establish live provider OAuth, organization approval, private-repository access, or native Git/gh execution. Server/runtime behavior and schemas are unchanged.
 
+### State presentation audit
+
+The isolated browser audit renders the production `GitHubIntegrationSettings` component and production stylesheet with local Browser API fixtures. It covers 18 main presentation cases in English and Chinese at 320, 390, 768, and 1440px, plus account-mismatch, expired-authorization, and rate-limit callback messages at 320 and 1440px: 156 combinations. All passed page/overlay bounds and axe WCAG checks, with no browser runtime errors. This component audit does not include the Server, authentication, or PostgreSQL.
+
+Keyboard checks cover initial Cancel focus, Escape and focus restoration after idle confirmation, disabled cancellation during removal, and clearing a failed removal when its dialog is dismissed. Warning copy uses the existing strong text token; banner actions use the product Button adapter for accessible colors and mobile target sizes. No theme tokens or shared primitive behavior changed. [Audit summary](state-review.json).
+
 ## Screenshots
+
+- [Standalone authorization](github-empty-zh.png)
+- [Initial loading](github-loading-zh.png)
+- [Deployment setup guidance](github-unavailable-zh.png)
+- [Read failure and retry](github-read-error-zh.png)
+- [Reauthorization at 320px](github-reauthorize-zh-320.png)
+- [Repository guidance at 320px](github-help-zh-320.png)
+- [Removal failure at 320px](github-remove-error-zh-320.png)
 
 - [Desktop account settings](account-desktop.png)
 - [Mobile account settings](account-mobile.png)

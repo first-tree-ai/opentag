@@ -3,7 +3,16 @@ import { ArrowUpRight, DotsThree, Question } from "@phosphor-icons/react";
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
-import { Banner, Button, Dialog, DropdownMenu, SettingsList, SettingsRow, Text } from "../../ui/design-system.js";
+import {
+  Banner,
+  Button,
+  Dialog,
+  DropdownMenu,
+  Loader,
+  SettingsList,
+  SettingsRow,
+  Text,
+} from "../../ui/design-system.js";
 import { useGitHubActionFocus } from "../integrations/github-action-focus.js";
 import {
   type GitHubOAuthOutcome,
@@ -17,6 +26,10 @@ type View =
   | { kind: "unavailable" }
   | { kind: "empty" }
   | { kind: "account"; connection: GitHubConnectionStatus };
+
+function githubAccountLabel(connection: GitHubConnectionStatus): string {
+  return connection.githubLogin ? `@${connection.githubLogin}` : m.integrations_github_account_unknown();
+}
 
 function actionErrorMessage(cause: unknown): string {
   if (cause instanceof ApiError) {
@@ -58,7 +71,6 @@ export function GitHubIntegrationSettings({ beforeAuthorize }: { beforeAuthorize
   const busy = action !== null;
   const { resultRef, captureFocus } = useGitHubActionFocus(busy);
   const menuRef = useRef<HTMLButtonElement>(null);
-  const cancelRef = useRef<HTMLButtonElement>(null);
   const [confirming, setConfirming] = useState(false);
   const [message, setMessage] = useState<string>();
   const [error, setError] = useState<string>();
@@ -81,6 +93,7 @@ export function GitHubIntegrationSettings({ beforeAuthorize }: { beforeAuthorize
     inFlight.current = true;
     captureFocus();
     setAction(kind);
+    setOutcome(undefined);
     setMessage(undefined);
     setError(undefined);
     try {
@@ -118,8 +131,14 @@ export function GitHubIntegrationSettings({ beforeAuthorize }: { beforeAuthorize
     });
   }
 
+  function closeRemoval(): void {
+    setConfirming(false);
+    setError(undefined);
+  }
+
   const connection = view.kind === "account" ? view.connection : undefined;
-  const busyLabel = action === "authorize" ? m.integrations_github_working() : undefined;
+  const busyLabel = action === "authorize" ? m.integrations_github_authorizing() : undefined;
+  const feedbackError = confirming ? undefined : error;
   return (
     <section className="grid gap-4" aria-labelledby="account-github-title" data-ui="account-github">
       <div className="grid gap-1">
@@ -133,7 +152,8 @@ export function GitHubIntegrationSettings({ beforeAuthorize }: { beforeAuthorize
       {outcome ? (
         <Banner
           data-ui="account-github-outcome"
-          role="status"
+          className={outcome.kind === "error" ? "text-kumo-strong" : undefined}
+          role={outcome.kind === "success" ? "status" : "alert"}
           title={githubOAuthOutcomeMessage(outcome)}
           variant={outcome.kind === "success" ? "default" : "alert"}
         />
@@ -154,55 +174,109 @@ export function GitHubIntegrationSettings({ beforeAuthorize }: { beforeAuthorize
           setConfirming(true);
         }}
       />
-      <p
-        className="text-sm text-kumo-subtle"
-        data-ui="account-github-message"
-        role="status"
-        aria-live="polite"
-        aria-atomic="true"
-        ref={resultRef}
-        tabIndex={-1}
-      >
-        {message}
-      </p>
-      {error && !confirming ? (
-        <p className="text-sm text-kumo-danger" role="alert">
-          {error}
-        </p>
-      ) : null}
+      <GitHubActionFeedback message={message} error={feedbackError} resultRef={resultRef} />
       {connection ? (
-        <Dialog
+        <GitHubRemovalConfirmation
+          connection={connection}
           open={confirming}
           busy={busy}
-          title={m.integrations_github_remove_title()}
-          onClose={() => setConfirming(false)}
-          initialFocusRef={cancelRef}
-          returnFocusRef={menuRef}
-          description={m.integrations_github_remove_description({
-            account: connection.githubLogin ? `@${connection.githubLogin}` : m.integrations_github_account_unknown(),
-          })}
-        >
-          <div className="grid gap-4">
-            <Text as="p" variant="secondary">
-              {m.integrations_github_remove_scope()}
-            </Text>
-            {error ? (
-              <p className="text-sm text-kumo-danger" role="alert">
-                {error}
-              </p>
-            ) : null}
-            <div className="flex flex-wrap justify-end gap-3">
-              <Button ref={cancelRef} disabled={busy} variant="ghost" onClick={() => setConfirming(false)}>
-                {m.common_cancel()}
-              </Button>
-              <Button disabled={busy} variant="danger" onClick={remove}>
-                {action === "remove" ? m.integrations_github_removing() : m.integrations_github_remove_account()}
-              </Button>
-            </div>
-          </div>
-        </Dialog>
+          error={error}
+          menuRef={menuRef}
+          onClose={closeRemoval}
+          onRemove={remove}
+        />
       ) : null}
     </section>
+  );
+}
+
+function GitHubActionFeedback({
+  message,
+  error,
+  resultRef,
+}: {
+  message: string | undefined;
+  error: string | undefined;
+  resultRef: RefObject<HTMLParagraphElement | null>;
+}) {
+  return (
+    <p
+      className={error ? "text-sm text-kumo-danger" : message ? "text-sm text-kumo-subtle" : "sr-only"}
+      data-ui="account-github-message"
+      role={error ? "alert" : "status"}
+      aria-live={error ? "assertive" : "polite"}
+      aria-atomic="true"
+      ref={resultRef}
+      tabIndex={-1}
+    >
+      {error ?? message}
+    </p>
+  );
+}
+
+function GitHubRemovalConfirmation({
+  connection,
+  open,
+  busy,
+  error,
+  menuRef,
+  onClose,
+  onRemove,
+}: {
+  connection: GitHubConnectionStatus;
+  open: boolean;
+  busy: boolean;
+  error: string | undefined;
+  menuRef: RefObject<HTMLButtonElement | null>;
+  onClose: () => void;
+  onRemove: () => void;
+}) {
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const removeLabel = busy ? m.integrations_github_removing() : m.integrations_github_remove_account();
+  return (
+    <Dialog
+      open={open}
+      busy={busy}
+      title={m.integrations_github_remove_title()}
+      onClose={onClose}
+      initialFocusRef={cancelRef}
+      returnFocusRef={menuRef}
+      description={m.integrations_github_remove_description({
+        account: githubAccountLabel(connection),
+      })}
+    >
+      <div className="grid gap-4">
+        <Text as="p" variant="secondary">
+          {m.integrations_github_remove_scope()}
+        </Text>
+        {error ? (
+          <p className="text-sm text-kumo-danger" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <div className="flex flex-wrap justify-end gap-3">
+          <Button ref={cancelRef} disabled={busy} variant="ghost" onClick={onClose}>
+            {m.common_cancel()}
+          </Button>
+          <Button
+            disabled={busy}
+            aria-busy={busy}
+            aria-label={removeLabel}
+            icon={
+              busy ? (
+                <span className="inline-flex" aria-hidden="true">
+                  <Loader size="sm" />
+                </span>
+              ) : undefined
+            }
+            variant="danger"
+            onClick={onRemove}
+          >
+            {removeLabel}
+          </Button>
+        </div>
+      </div>
+    </Dialog>
   );
 }
 
@@ -224,130 +298,164 @@ function AccountGitHubBody({
   onRemove: () => void;
 }) {
   const [helpOpen, setHelpOpen] = useState(false);
-  const connection = view.kind === "account" ? view.connection : undefined;
-  return (
-    <>
-      {view.kind === "loading" ? (
+  if (view.kind === "loading")
+    return (
+      <div className="flex items-center gap-2" role="status" aria-live="polite">
+        <span className="inline-flex" aria-hidden="true">
+          <Loader size="sm" />
+        </span>
         <Text as="p" variant="secondary">
           {m.integrations_github_loading()}
         </Text>
-      ) : null}
-      {view.kind === "error" ? (
-        <Banner
-          action={
-            <Banner.Action disabled={busy} onClick={onRetry}>
-              {m.common_try_again()}
-            </Banner.Action>
+      </div>
+    );
+  if (view.kind === "error")
+    return (
+      <Banner
+        className="text-kumo-strong"
+        action={
+          <Button disabled={busy} size="compact" variant="secondary" onClick={onRetry}>
+            {m.common_try_again()}
+          </Button>
+        }
+        role="alert"
+        title={view.message}
+        variant="alert"
+      />
+    );
+  if (view.kind === "unavailable")
+    return (
+      <div className="grid gap-1">
+        <Text as="p">{m.integrations_github_unavailable_title()}</Text>
+        <Text as="p" variant="secondary">
+          {m.integrations_github_unavailable_description()}
+        </Text>
+      </div>
+    );
+  if (view.kind === "empty")
+    return (
+      <div>
+        <Button
+          disabled={busy}
+          aria-busy={Boolean(busyLabel)}
+          aria-label={busyLabel ?? m.integrations_github_authorize()}
+          icon={
+            busyLabel ? (
+              <span className="inline-flex" aria-hidden="true">
+                <Loader size="sm" />
+              </span>
+            ) : undefined
           }
-          role="alert"
-          title={view.message}
-          variant="alert"
-        />
-      ) : null}
-      {view.kind === "unavailable" ? (
-        <SettingsList>
-          <SettingsRow
-            label={m.integrations_github_unavailable_title()}
-            description={m.integrations_github_unavailable_description()}
-          >
-            {null}
-          </SettingsRow>
-        </SettingsList>
-      ) : null}
-      {view.kind === "empty" ? (
-        <SettingsList>
-          <SettingsRow label={m.integrations_github_account_label()}>
-            <Button disabled={busy} onClick={() => onAuthorize("create")} type="button">
-              {busyLabel ?? m.integrations_github_authorize()}
-            </Button>
-          </SettingsRow>
-        </SettingsList>
-      ) : null}
-      {connection ? (
-        <>
-          <SettingsList>
-            <SettingsRow label={m.integrations_github_account_label()}>
-              <div className="flex min-w-0 items-center justify-between gap-3">
-                <span className="min-w-0 break-all text-sm text-kumo-strong">
-                  {connection.githubLogin ? `@${connection.githubLogin}` : m.integrations_github_account_unknown()}
-                </span>
-                <DropdownMenu>
-                  <DropdownMenu.Trigger
-                    render={
-                      <Button
-                        ref={menuRef}
-                        aria-label={m.integrations_github_account_actions()}
-                        disabled={busy}
-                        variant="ghost"
-                        shape="square"
-                        size="compact"
-                      />
-                    }
-                  >
-                    <DotsThree aria-hidden className="size-5" />
-                  </DropdownMenu.Trigger>
-                  <DropdownMenu.Content align="end">
-                    <DropdownMenu.Item onClick={() => onAuthorize("replace")}>
-                      {m.integrations_github_change_account()}
-                    </DropdownMenu.Item>
-                    <DropdownMenu.Item onClick={onRemove}>{m.integrations_github_remove_account()}</DropdownMenu.Item>
-                  </DropdownMenu.Content>
-                </DropdownMenu>
-              </div>
-            </SettingsRow>
-            <SettingsRow
-              label={
-                <span className="inline-flex items-center gap-1">
-                  {m.integrations_github_repository_access()}
+          onClick={() => onAuthorize("create")}
+          type="button"
+        >
+          {busyLabel ?? m.integrations_github_authorize()}
+        </Button>
+      </div>
+    );
+  const connection = view.connection;
+  return (
+    <>
+      <SettingsList>
+        <SettingsRow label={m.integrations_github_account_label()}>
+          <div className="flex min-w-0 items-center justify-between gap-3">
+            <span className="min-w-0 break-all text-sm text-kumo-strong">{githubAccountLabel(connection)}</span>
+            <DropdownMenu>
+              <DropdownMenu.Trigger
+                render={
                   <Button
-                    aria-label={m.integrations_github_repository_help_label()}
-                    aria-expanded={helpOpen}
-                    aria-controls="account-github-repository-help"
-                    onClick={() => setHelpOpen(!helpOpen)}
+                    ref={menuRef}
+                    aria-label={busyLabel ?? m.integrations_github_account_actions()}
+                    aria-busy={Boolean(busyLabel)}
+                    disabled={busy}
                     variant="ghost"
                     shape="square"
                     size="compact"
-                    type="button"
-                  >
-                    <Question aria-hidden className="size-4" />
-                  </Button>
-                </span>
-              }
-            >
-              <a
-                className="inline-flex w-fit items-center gap-1 text-sm text-kumo-link hover:underline"
-                href={GITHUB_INTEGRATION_INSTALLATION_PATH}
-                target="_blank"
-                rel="noopener noreferrer"
+                  />
+                }
               >
-                {m.integrations_github_manage_on_github()}
-                <ArrowUpRight aria-hidden className="size-4" />
-              </a>
-            </SettingsRow>
-          </SettingsList>
-          {helpOpen ? (
-            <div id="account-github-repository-help" className="flex flex-col gap-2">
-              <Text as="p" variant="secondary">
-                {m.integrations_github_repository_help()}
-              </Text>
-              <Text as="p" variant="secondary">
-                {m.integrations_github_repository_help_organization()}
-              </Text>
-            </div>
-          ) : null}
-          {connection.status === "reauthorization_required" ? (
-            <Banner
-              role="alert"
-              title={m.integrations_github_reauthorize_description()}
-              variant="alert"
-              action={
-                <Banner.Action disabled={busy} onClick={() => onAuthorize("reauthorize")}>
-                  {busyLabel ?? m.integrations_github_reauthorize()}
-                </Banner.Action>
+                {busyLabel ? (
+                  <span className="inline-flex" aria-hidden="true">
+                    <Loader size="sm" />
+                  </span>
+                ) : (
+                  <DotsThree aria-hidden className="size-5" />
+                )}
+              </DropdownMenu.Trigger>
+              <DropdownMenu.Content align="end">
+                <DropdownMenu.Item onClick={() => onAuthorize("replace")}>
+                  {m.integrations_github_change_account()}
+                </DropdownMenu.Item>
+                <DropdownMenu.Item onClick={onRemove}>{m.integrations_github_remove_account()}</DropdownMenu.Item>
+              </DropdownMenu.Content>
+            </DropdownMenu>
+          </div>
+        </SettingsRow>
+        <SettingsRow
+          label={
+            <span className="inline-flex items-center gap-1">
+              {m.integrations_github_repository_access()}
+              <Button
+                aria-label={m.integrations_github_repository_help_label()}
+                aria-expanded={helpOpen}
+                aria-controls="account-github-repository-help"
+                onClick={() => setHelpOpen(!helpOpen)}
+                variant="ghost"
+                shape="square"
+                size="compact"
+                type="button"
+              >
+                <Question aria-hidden className="size-4" />
+              </Button>
+            </span>
+          }
+        >
+          <a
+            className="inline-flex w-fit items-center gap-1 text-sm text-kumo-link hover:underline"
+            href={GITHUB_INTEGRATION_INSTALLATION_PATH}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {m.integrations_github_manage_on_github()}
+            <ArrowUpRight aria-hidden className="size-4" />
+          </a>
+        </SettingsRow>
+      </SettingsList>
+      {connection.status === "reauthorization_required" ? (
+        <Banner
+          role="alert"
+          className="text-kumo-strong"
+          title={m.integrations_github_reauthorize_description()}
+          variant="alert"
+          action={
+            <Button
+              disabled={busy}
+              size="compact"
+              aria-label={busyLabel ?? m.integrations_github_reauthorize()}
+              aria-busy={Boolean(busyLabel)}
+              icon={
+                busyLabel ? (
+                  <span className="inline-flex" aria-hidden="true">
+                    <Loader size="sm" />
+                  </span>
+                ) : undefined
               }
-            />
-          ) : null}
-        </>
+              onClick={() => onAuthorize("reauthorize")}
+            >
+              {m.integrations_github_reauthorize()}
+            </Button>
+          }
+        />
+      ) : null}
+      {helpOpen ? (
+        <div id="account-github-repository-help" className="flex flex-col gap-2">
+          <Text as="p" variant="secondary">
+            {m.integrations_github_repository_help()}
+          </Text>
+          <Text as="p" variant="secondary">
+            {m.integrations_github_repository_help_organization()}
+          </Text>
+        </div>
       ) : null}
     </>
   );

@@ -6,6 +6,7 @@
   "integrations_github_account_title": "GitHub",
   "integrations_github_account_unknown": "GitHub account",
   "integrations_github_authorize": "Authorize GitHub",
+  "integrations_github_authorizing": "Starting authorization…",
   "integrations_github_change_account": "Change account",
   "integrations_github_connected_success": "GitHub authorization completed.",
   "integrations_github_details_updated": "GitHub account details updated.",
@@ -34,7 +35,6 @@
   "integrations_github_repository_help": "Install or configure the OpenTag App on GitHub and choose which repositories it can access.",
   "integrations_github_repository_help_label": "About GitHub repository access",
   "integrations_github_repository_help_organization": "For organization repositories, contact an organization administrator if you don't have permission to install or configure the App.",
-  "integrations_github_unavailable_description": "This deployment has no GitHub App configured. An administrator must add one before Accounts can connect.",
-  "integrations_github_unavailable_title": "GitHub integration unavailable",
-  "integrations_github_working": "Working…"
+  "integrations_github_unavailable_description": "This deployment has no GitHub App configured. Ask an administrator to configure it before authorizing GitHub.",
+  "integrations_github_unavailable_title": "GitHub integration unavailable"
 }

@@ -83,7 +83,9 @@ describe("GitHub account settings", () => {
       vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(status ? connection({ status }) : null));
       const start = vi.spyOn(browserApi, "startGitHubAuthorization").mockRejectedValue(new Error("Controlled stop"));
       render(<GitHubIntegrationSettings />);
-      fireEvent.click(await screen.findByRole("button", { name: "Authorize GitHub" }));
+      const authorize = await screen.findByRole("button", { name: "Authorize GitHub" });
+      expect(screen.queryByText("Account", { exact: true })).toBeNull();
+      fireEvent.click(authorize);
       await waitFor(() =>
         expect(start).toHaveBeenCalledWith({ intent: "create", returnSurface: "account-integrations", agentId: null }),
       );
@@ -168,6 +170,41 @@ describe("GitHub account settings", () => {
     expect(disconnect).toHaveBeenCalledTimes(2);
   });
 
+  it("clears a failed removal when its confirmation is dismissed", async () => {
+    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection()));
+    const disconnect = vi.spyOn(browserApi, "disconnectGitHub").mockRejectedValue(new Error("Removal failed"));
+    render(<GitHubIntegrationSettings />);
+    fireEvent.click(within(await openAccountMenu()).getByRole("menuitem", { name: "Remove account" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove account" }));
+    expect(await within(dialog).findByText("Removal failed")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.queryByText("Removal failed")).toBeNull();
+    expect(screen.getByText("@octocat")).toBeTruthy();
+    expect(disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("replaces a previous callback outcome with the current authorization action and result", async () => {
+    window.history.replaceState({}, "", "/account?github_oauth=success");
+    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection()));
+    let reject!: (error: Error) => void;
+    vi.spyOn(browserApi, "startGitHubAuthorization").mockReturnValue(
+      new Promise((_, fail) => {
+        reject = fail;
+      }),
+    );
+    render(<GitHubIntegrationSettings />);
+    expect(await screen.findByText("GitHub authorization completed.")).toBeTruthy();
+    fireEvent.click(within(await openAccountMenu()).getByRole("menuitem", { name: "Change account" }));
+    expect(await screen.findByRole("button", { name: "Starting authorization…" })).toHaveProperty("disabled", true);
+    expect(screen.queryByText("GitHub authorization completed.")).toBeNull();
+    reject(new Error("Authorization could not start"));
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Authorization could not start");
+    expect(screen.getByRole("button", { name: "GitHub account actions" })).toBeTruthy();
+    expect(screen.getByText("@octocat")).toBeTruthy();
+  });
+
   it("makes repository access help available by an explicit accessible toggle", async () => {
     vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection()));
     render(<GitHubIntegrationSettings />);
@@ -225,7 +262,7 @@ describe("GitHubIntegrationSettings failure language", () => {
   it.each([
     [
       "GITHUB_INTEGRATION_UNAVAILABLE",
-      "This deployment has no GitHub App configured. An administrator must add one before Accounts can connect.",
+      "This deployment has no GitHub App configured. Ask an administrator to configure it before authorizing GitHub.",
     ],
     ["GITHUB_RATE_LIMITED", "GitHub rate limit reached. Try again shortly."],
     ["GITHUB_UPSTREAM_UNAVAILABLE", "GitHub is temporarily unavailable. Try again."],

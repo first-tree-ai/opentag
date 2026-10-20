@@ -6,6 +6,7 @@
   "integrations_github_account_title": "GitHub",
   "integrations_github_account_unknown": "GitHub 账户",
   "integrations_github_authorize": "授权 GitHub",
+  "integrations_github_authorizing": "正在发起授权…",
   "integrations_github_change_account": "更换账户",
   "integrations_github_connected_success": "GitHub 授权已完成。",
   "integrations_github_details_updated": "GitHub 账户信息已更新。",
@@ -34,7 +35,6 @@
   "integrations_github_repository_help": "在 GitHub 安装或配置 OpenTag App，并选择允许访问的仓库。",
   "integrations_github_repository_help_label": "了解 GitHub 仓库访问权限",
   "integrations_github_repository_help_organization": "使用组织仓库时，如果没有安装或配置 App 的权限，请联系组织管理员协助。",
-  "integrations_github_unavailable_description": "此部署未配置 GitHub App。需要管理员添加后，账户才能连接。",
-  "integrations_github_unavailable_title": "GitHub 集成不可用",
-  "integrations_github_working": "处理中…"
+  "integrations_github_unavailable_description": "此部署尚未配置 GitHub App，请联系管理员配置后再授权。",
+  "integrations_github_unavailable_title": "GitHub 集成不可用"
 }

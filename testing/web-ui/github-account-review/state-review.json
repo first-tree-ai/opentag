@@ -1,0 +1,38 @@
+{
+  "component": "GitHubIntegrationSettings",
+  "scope": "Production component and stylesheet with local Browser API fixtures; no Server, database, or live GitHub flow.",
+  "locales": ["en", "zh"],
+  "viewportWidths": [320, 390, 768, 1440],
+  "primaryCases": [
+    "empty",
+    "loading",
+    "unavailable",
+    "active",
+    "reauth",
+    "reauth-starting",
+    "read-error",
+    "denied",
+    "success",
+    "starting",
+    "authorize-error",
+    "change-starting",
+    "menu",
+    "help",
+    "confirm",
+    "removing",
+    "remove-error",
+    "removed"
+  ],
+  "additionalCallbackCases": ["identity-mismatch", "expired", "rate-limit"],
+  "combinationsChecked": 156,
+  "pageOverflowFailures": 0,
+  "overlayClippingFailures": 0,
+  "axeWcagViolations": 0,
+  "runtimeErrors": [],
+  "interactionChecks": [
+    "Cancel receives initial dialog focus.",
+    "Escape dismisses an idle confirmation and restores the account-menu trigger focus.",
+    "Busy removal disables cancellation and ignores Escape.",
+    "Dismissing a failed removal clears its error and retains the saved account."
+  ]
+}

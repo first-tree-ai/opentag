@@ -13,6 +13,9 @@ The theme, shared controls, responsive shell and representative screens are now
 implemented. [Design QA](design-qa.md) records the tested result and its limits.
 The exploration sections below preserve the earlier proposal.
 
+The [README artwork validation](readme/README.md) records the refreshed logo and
+website walkthrough GIF used by both root README languages.
+
 ## Reference and scope
 
 - Website reference: [opentag-site PR 14](https://github.com/first-tree-ai/opentag-site/pull/14),

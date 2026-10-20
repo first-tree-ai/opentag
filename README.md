@@ -30,7 +30,9 @@ that run on your own machine and use your model provider of choice.
 - **Open-source** and **self-hostable**
 
 <p align="center">
-  <img src="docs/.assets/opentag-walkthrough.gif" alt="OpenTag in four steps: bring your own subscription, an AI worker in your team chat, shared knowledge kept on your own machine, and connecting the rest of your stack." width="100%">
+  <a href="https://opentag.build/#how-it-works">
+    <img src="docs/.assets/opentag-walkthrough.gif" alt="How OpenTag works: create an agent and connect your computer and messaging app, delegate work in chat, share team knowledge, and connect your tools." width="100%">
+  </a>
 </p>
 
 ## Quick Start

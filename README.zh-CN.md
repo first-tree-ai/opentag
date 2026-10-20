@@ -29,10 +29,12 @@ OpenTag 是一个开源、多模型的 AI 同事。在 Slack 和飞书里，和�
 - **自带** Codex、Claude Code 或 Pi agent
 - **开源**、**可自托管**
 
-> 权威来源：[README.md](./README.md)　·　同步日期：2026-10-01
+> 权威来源：[README.md](./README.md)　·　同步日期：2026-10-20
 
 <p align="center">
-  <img src="docs/.assets/opentag-walkthrough.gif" alt="OpenTag 的四个步骤：自带订阅、团队群里的 AI worker、留在你自己机器上的共享知识，以及连接你的其余工具。" width="100%">
+  <a href="https://opentag.build/zh#how-it-works">
+    <img src="docs/.assets/opentag-walkthrough.gif" alt="OpenTag 如何工作：创建 Agent 并连接电脑和聊天应用，在聊天中委派任务，共享团队知识，以及连接你的工具。" width="100%">
+  </a>
 </p>
 
 ## 快速开始

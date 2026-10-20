@@ -628,7 +628,9 @@ export function createApp(options: CreateAppOptions = {}) {
 
   const slackEvents = options.slackEvents;
   if (slackEvents) {
-    app.register(async (slackApp) => registerSlackEventsRoute(slackApp, slackEvents));
+    app.register(async (slackApp) => {
+      registerSlackEventsRoute(slackApp, slackEvents);
+    });
   }
 
   if (options.betterAuth) {

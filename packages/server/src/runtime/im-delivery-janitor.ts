@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
 import type { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
+import { expireInboundReceiptWork } from "../services/im/inbound-receipt-work-store.js";
 import { SessionService } from "../services/sessions/session-service.js";
 import { requeueSteeredDeliveries } from "./im-delivery-recovery.js";
 
@@ -262,6 +263,7 @@ export async function runImDeliveryRetention(
   const imMessagesCutoff = new Date(now - options.imMessagesRetentionMs).toISOString();
   const slackWebhookReceiptsCutoff = new Date(now - options.slackWebhookReceiptsRetentionMs).toISOString();
   const feishuInboundReceiptsCutoff = new Date(now - options.feishuInboundReceiptsRetentionMs).toISOString();
+  await expireInboundReceiptWork(database, new Date(now), options.retentionBatchSize);
   await database.transaction(async (transaction) => {
     await transaction.execute(sql`
       with candidates as (
@@ -334,6 +336,7 @@ export async function runImDeliveryRetention(
         from slack_webhook_receipts as receipt
         where receipt.received_at < ${slackWebhookReceiptsCutoff}::timestamptz
           and receipt.status in ('processed', 'failed')
+          and receipt.work_payload is null
         order by receipt.received_at asc, receipt.id asc
         limit ${options.retentionBatchSize}
       )
@@ -347,6 +350,7 @@ export async function runImDeliveryRetention(
         from feishu_inbound_receipts as receipt
         where receipt.received_at < ${feishuInboundReceiptsCutoff}::timestamptz
           and receipt.status in ('processed', 'failed')
+          and receipt.work_payload is null
         order by receipt.received_at asc, receipt.id asc
         limit ${options.retentionBatchSize}
       )

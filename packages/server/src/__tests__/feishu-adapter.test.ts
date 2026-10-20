@@ -981,11 +981,18 @@ describe("FeishuConnectionManager", () => {
       expect.any(Number),
       expect.objectContaining({ providerEventId: "ev_conn" }),
       expect.objectContaining({ provider: "feishu" }),
+      undefined,
     );
     expect(receipts.claim).toHaveBeenCalledWith({
       bindingId: expect.any(String),
       credentialGeneration: expect.any(Number),
       eventId: "ev_conn",
+      work: expect.objectContaining({
+        version: 1,
+        provider: "feishu",
+        event: expect.objectContaining({ providerEventId: "ev_conn" }),
+      }),
+      fence: { holderInstanceId: owner, fencingEpoch: expect.any(Number) },
     });
     expect(receipts.markProcessed).toHaveBeenCalledWith("receipt-1");
     expect(fake.resolveSenderName).toHaveBeenCalledWith({ chatId: "oc_conn", senderOpenId: "ou_human" });

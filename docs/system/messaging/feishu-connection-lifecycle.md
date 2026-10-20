@@ -124,6 +124,12 @@ cost because this change intentionally adds no scheduling index.
 
 ## Release and rollback boundary
 
+Inbound event recovery is separate from setup recovery. Receipts persist bounded
+normalized input before Inbox processing and recover it only through the current
+connection holder and epoch, while retaining the original credential generation.
+See [durable inbound receipt work](message-domains.md#durable-inbound-receipt-work)
+for deduplication, input cleanup, deadlines, and the receipt-writer cutover boundary.
+
 The migration alone does not make old Server binaries compatible with the new state or
 payload. Use a coordinated, non-overlapping Server cutover: stop every old setup writer,
 apply the migration, then start the new Server and matching Web build. This is a hard cutover,

@@ -320,6 +320,11 @@
       "idx": 63,
       "tag": "0063_im_delivery_active_work",
       "sha256": "039214dc3e9b24ec2d81c8bd120c00737010aaf88cec315f7095dc2444f09e1e"
+    },
+    {
+      "idx": 64,
+      "tag": "0064_inbound_receipt_work",
+      "sha256": "93142f64a7ea0df988581b2fb3a8a48370c05044ea9f69adad212d2895fb6df5"
     }
   ]
 }

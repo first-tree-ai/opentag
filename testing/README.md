@@ -31,6 +31,7 @@ contents, and machine-specific operational logs outside the repository.
 - [IM Turn budget and recovery](im-turn-budget-recovery/README.md)
 - [Steered IM custody without terminal reports](verification/im-steer-custody.md)
 - [IM content and attachment delivery](verification/im-content-delivery.md)
+- [Inbound receipt recovery](verification/inbound-receipt-recovery.md)
 - [MCP Server integration](verification/mcp-server-integration.md)
 - [Release guide](verification/releasing.md)
 - [Session collaboration writes](verification/session-collaboration-writes.md)

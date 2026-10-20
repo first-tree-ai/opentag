@@ -561,6 +561,12 @@ describe("Slack Events API ingress", () => {
       installationId: installation().installationId,
       credentialGeneration: installation().generation,
       eventId: "Ev-async-failure",
+      work: expect.objectContaining({
+        version: 1,
+        provider: "slack",
+        bindingId: defaultRoute().imBindingId,
+        eventId: "Ev-async-failure",
+      }),
     });
     await vi.waitFor(() =>
       expect(receipts.markFailed).toHaveBeenCalledWith("receipt-1", "SLACK_EVENT_PROCESSING_FAILED"),

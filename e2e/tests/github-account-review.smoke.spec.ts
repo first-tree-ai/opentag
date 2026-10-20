@@ -219,9 +219,8 @@ test("GitHub help and cancelled removal preserve the unsaved display-name draft"
   const draft = `${await displayName.inputValue()} unsaved refresh draft`;
   await displayName.fill(draft);
   await page.getByRole("button", { name: "About GitHub repository access" }).click();
-  await expect(
-    page.getByText(/An existing organization installation does not require another installation/),
-  ).toBeVisible();
+  await expect(page.getByText(/Install or configure the OpenTag App on GitHub/)).toBeVisible();
+  await expect(page.getByText(/contact an organization administrator if you don't have permission/)).toBeVisible();
   await page.getByRole("button", { name: "GitHub account actions" }).click();
   await page.getByRole("menuitem", { name: "Remove account", exact: true }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Cancel", exact: true }).click();

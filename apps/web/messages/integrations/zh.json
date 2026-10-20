@@ -31,8 +31,9 @@
   "integrations_github_removed": "GitHub 账户已移除。",
   "integrations_github_removing": "正在移除…",
   "integrations_github_repository_access": "仓库访问权限",
-  "integrations_github_repository_help": "公司仓库需要在所属组织中安装 GitHub App，并且你的 GitHub 账户本身有权访问该仓库。如需为 App 开放仓库，请联系组织管理员。组织已有安装时，无需再安装到你的个人账户。",
+  "integrations_github_repository_help": "在 GitHub 安装或配置 OpenTag App，并选择允许访问的仓库。",
   "integrations_github_repository_help_label": "了解 GitHub 仓库访问权限",
+  "integrations_github_repository_help_organization": "使用组织仓库时，如果没有安装或配置 App 的权限，请联系组织管理员协助。",
   "integrations_github_unavailable_description": "此部署未配置 GitHub App。需要管理员添加后，账户才能连接。",
   "integrations_github_unavailable_title": "GitHub 集成不可用",
   "integrations_github_working": "处理中…"

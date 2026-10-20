@@ -326,9 +326,14 @@ function AccountGitHubBody({
             </SettingsRow>
           </SettingsList>
           {helpOpen ? (
-            <Text as="p" id="account-github-repository-help" variant="secondary">
-              {m.integrations_github_repository_help()}
-            </Text>
+            <div id="account-github-repository-help" className="flex flex-col gap-2">
+              <Text as="p" variant="secondary">
+                {m.integrations_github_repository_help()}
+              </Text>
+              <Text as="p" variant="secondary">
+                {m.integrations_github_repository_help_organization()}
+              </Text>
+            </div>
           ) : null}
           {connection.status === "reauthorization_required" ? (
             <Banner

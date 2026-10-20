@@ -6,7 +6,7 @@ This acceptance record supports the [GitHub platform integration contract](../..
 
 ## Implemented scope
 
-Account settings shows the personal profile, GitHub, and conditional Cloud billing in that order. The normal GitHub section has two rows: the saved identity with an account-action menu, and Repository access with a Server-owned Manage on GitHub link. There are no persistent connection-health badges, installation inventory, or refresh controls. An accessible click/tap toggle explains organization repository access. The bottom account menu still owns Computer management; MCP remains in each Agent's Connectors experience.
+Account settings shows the personal profile, GitHub, and conditional Cloud billing in that order. The normal GitHub section has two rows: the saved identity with an account-action menu, and Repository access with a Server-owned Manage on GitHub link. There are no persistent connection-health badges, installation inventory, or refresh controls. An accessible click/tap toggle explains App installation/configuration and repository selection, with a conditional organization-administrator note. The bottom account menu still owns Computer management; MCP remains in each Agent's Connectors experience.
 
 Change account starts explicit replacement directly. A real Server requirement adds Authorize again. An unfinished initial authorization can be started again without showing an internal pending state. Remove account requires one confirmation naming the identity and explaining the effect on all Agents, ongoing work, and the authorization/App installation retained on GitHub. Cancellation does not mutate authorization; a failed mutation remains in the dialog for retry.
 

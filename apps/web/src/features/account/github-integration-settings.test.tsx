@@ -168,18 +168,17 @@ describe("GitHub account settings", () => {
     expect(disconnect).toHaveBeenCalledTimes(2);
   });
 
-  it("makes organization help available by an explicit accessible toggle", async () => {
+  it("makes repository access help available by an explicit accessible toggle", async () => {
     vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection()));
     render(<GitHubIntegrationSettings />);
     const help = await screen.findByRole("button", { name: "About GitHub repository access" });
     expect(help.getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(help);
     expect(help.getAttribute("aria-expanded")).toBe("true");
-    expect(
-      screen.getByText(/An existing organization installation does not require another installation/),
-    ).toBeTruthy();
+    expect(screen.getByText(/Install or configure the OpenTag App on GitHub/)).toBeTruthy();
+    expect(screen.getByText(/contact an organization administrator if you don't have permission/)).toBeTruthy();
     fireEvent.click(help);
-    expect(screen.queryByText(/An existing organization installation/)).toBeNull();
+    expect(screen.queryByText(/Install or configure the OpenTag App on GitHub/)).toBeNull();
   });
 
   it("uses a neutral fallback when the recorded login is unavailable", async () => {

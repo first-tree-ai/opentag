@@ -31,8 +31,9 @@
   "integrations_github_removed": "GitHub account removed.",
   "integrations_github_removing": "Removing…",
   "integrations_github_repository_access": "Repository access",
-  "integrations_github_repository_help": "For a company repository, the GitHub App must be installed in the organization that owns it, and your GitHub account must have access to the repository. Ask an organization administrator to grant the App access if needed. An existing organization installation does not require another installation in your personal account.",
+  "integrations_github_repository_help": "Install or configure the OpenTag App on GitHub and choose which repositories it can access.",
   "integrations_github_repository_help_label": "About GitHub repository access",
+  "integrations_github_repository_help_organization": "For organization repositories, contact an organization administrator if you don't have permission to install or configure the App.",
   "integrations_github_unavailable_description": "This deployment has no GitHub App configured. An administrator must add one before Accounts can connect.",
   "integrations_github_unavailable_title": "GitHub integration unavailable",
   "integrations_github_working": "Working…"

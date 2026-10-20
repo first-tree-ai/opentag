@@ -129,7 +129,7 @@ test("real unavailable deployment does not offer unusable GitHub authorization",
   await page.goto("/account", { waitUntil: "networkidle" });
   const github = page.locator('[data-ui="account-github"]');
   await expect(github.getByText("GitHub integration unavailable", { exact: true })).toBeVisible();
-  await expect(github.getByRole("button", { name: "Authorize GitHub", exact: true })).toHaveCount(0);
+  await expect(github.getByRole("button", { name: "Add GitHub account", exact: true })).toHaveCount(0);
   await expectNoPageOverflow(page);
   await expectAccessible(page);
 });
@@ -141,7 +141,7 @@ test("active GitHub management exposes the exact account and server-owned instal
   await page.goto("/account", { waitUntil: "networkidle" });
   const github = page.locator('[data-ui="account-github"]');
   await expect(github.getByText(/@octocat/)).toBeVisible();
-  const install = github.getByRole("link", { name: "Manage on GitHub", exact: true });
+  const install = github.getByRole("link", { name: "Configure on GitHub", exact: true });
   await expect(install).toHaveAttribute("href", GITHUB_INTEGRATION_INSTALLATION_PATH);
   await expect(install).toHaveAttribute("target", "_blank");
   await expect(install).toHaveAttribute("rel", /noopener/);
@@ -154,9 +154,8 @@ test("repository discovery failure preserves identity and account management", a
   await page.goto("/account", { waitUntil: "networkidle" });
   const github = page.locator('[data-ui="account-github"]');
   await expect(github.getByText("@octocat", { exact: true })).toBeVisible();
-  await github.getByRole("button", { name: "GitHub account actions" }).click();
-  await expect(page.getByRole("menuitem", { name: "Change account", exact: true })).toBeVisible();
-  await expect(page.getByRole("menuitem", { name: "Remove account", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Change account", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Remove account", exact: true })).toBeVisible();
   expect(fixture.discoveryCalls).toBe(0);
   await page.screenshot({ path: test.info().outputPath("discovery-independent.png"), fullPage: true });
 });
@@ -165,9 +164,8 @@ test("removing a shared GitHub account requires confirmation before the mutation
   const fixture = await githubFixture(page);
   await page.goto("/account", { waitUntil: "networkidle" });
   const github = page.locator('[data-ui="account-github"]');
-  const menu = github.getByRole("button", { name: "GitHub account actions" });
-  await menu.click();
-  await page.getByRole("menuitem", { name: "Remove account", exact: true }).click();
+  const removeButton = github.getByRole("button", { name: "Remove account", exact: true });
+  await removeButton.click();
   const dialog = page.getByRole("dialog", { name: "Remove GitHub account?" });
   await expect(dialog).toBeVisible();
   await expect(dialog).toContainText("All your Agents will lose GitHub access through @octocat");
@@ -178,12 +176,11 @@ test("removing a shared GitHub account requires confirmation before the mutation
   await page.screenshot({ path: test.info().outputPath("remove-confirmation.png"), fullPage: true });
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(dialog).toHaveCount(0);
-  await expect(menu).toBeFocused();
+  await expect(removeButton).toBeFocused();
   expect(fixture.disconnectCalls).toBe(0);
-  await menu.click();
-  await page.getByRole("menuitem", { name: "Remove account", exact: true }).click();
+  await removeButton.click();
   await dialog.getByRole("button", { name: "Remove account", exact: true }).click();
-  await expect(github.getByRole("button", { name: "Authorize GitHub" })).toBeVisible();
+  await expect(github.getByRole("button", { name: "Add GitHub account" })).toBeVisible();
   await expect(page.locator('[data-ui="account-github-message"]')).toBeFocused();
   expect(fixture.disconnectCalls).toBe(1);
 });
@@ -198,8 +195,7 @@ test("GitHub authorization round trip preserves an unsaved display-name draft", 
   });
   const draft = `${await displayName.inputValue()} unsaved GitHub draft`;
   await displayName.fill(draft);
-  await page.getByRole("button", { name: "GitHub account actions" }).click();
-  await page.getByRole("menuitem", { name: "Change account", exact: true }).click();
+  await page.getByRole("button", { name: "Change account", exact: true }).click();
   await expect(page.locator('[data-ui="account-github-outcome"]')).toHaveText("GitHub authorization was denied.");
   expect(fixture.authorizationIntents).toEqual(["replace"]);
   await expect(displayName).toBeVisible();
@@ -221,8 +217,7 @@ test("GitHub help and cancelled removal preserve the unsaved display-name draft"
   await page.getByRole("button", { name: "About GitHub repository access" }).click();
   await expect(page.getByText(/Install or configure the OpenTag App on GitHub/)).toBeVisible();
   await expect(page.getByText(/contact an organization administrator if you don't have permission/)).toBeVisible();
-  await page.getByRole("button", { name: "GitHub account actions" }).click();
-  await page.getByRole("menuitem", { name: "Remove account", exact: true }).click();
+  await page.getByRole("button", { name: "Remove account", exact: true }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(displayName).toHaveValue(draft);
 });
@@ -249,8 +244,7 @@ test("blocked draft storage keeps edits on the page and prevents authorization",
       throw new DOMException("Controlled storage failure", "QuotaExceededError");
     };
   });
-  await page.getByRole("button", { name: "GitHub account actions" }).click();
-  await page.getByRole("menuitem", { name: "Change account", exact: true }).click();
+  await page.getByRole("button", { name: "Change account", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("Save or discard the edit before authorizing GitHub.");
   await expect(displayName).toHaveValue("Keep this unsaved name");
   expect(fixture.authorizationIntents).toEqual([]);
@@ -265,15 +259,14 @@ test("Chinese GitHub management keeps identity, help and confirmation usable at 
   for (const width of [1440, 320]) {
     await page.setViewportSize({ width, height: 900 });
     await expect(github.getByText("@octocat", { exact: true })).toBeVisible();
-    await expect(github.getByRole("link", { name: "在 GitHub 管理", exact: true })).toBeVisible();
+    await expect(github.getByRole("link", { name: "在 GitHub 配置", exact: true })).toBeVisible();
     await expectNoPageOverflow(page);
     await page.screenshot({ path: test.info().outputPath(`github-zh-${width}.png`), fullPage: true });
   }
-  await github.getByRole("button", { name: "了解 GitHub 仓库访问权限" }).click();
-  await expect(github.getByText(/组织已有安装时，无需再安装到你的个人账户/)).toBeVisible();
-  await github.getByRole("button", { name: "GitHub 账户操作" }).click();
-  await expect(page.getByRole("menuitem", { name: "更换账户", exact: true })).toBeVisible();
-  await page.getByRole("menuitem", { name: "移除账户", exact: true }).click();
+  await github.getByRole("button", { name: "了解 GitHub 仓库访问" }).click();
+  await expect(github.getByText(/如果没有安装或配置 App 的权限，请联系组织管理员协助/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "更换账户", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "移除账户", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "移除 GitHub 账户？" });
   await expect(dialog).toBeVisible();
   await expect(dialog).toContainText("GitHub 上的授权与 App 安装会保留");

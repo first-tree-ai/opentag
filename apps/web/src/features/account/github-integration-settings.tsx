@@ -1,24 +1,18 @@
 import { GITHUB_INTEGRATION_INSTALLATION_PATH, type GitHubConnectionStatus } from "@opentag/shared/browser";
-import { ArrowUpRight, DotsThree, Question } from "@phosphor-icons/react";
+import { ArrowUpRight, Question } from "@phosphor-icons/react";
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
-import {
-  Banner,
-  Button,
-  Dialog,
-  DropdownMenu,
-  Loader,
-  SettingsList,
-  SettingsRow,
-  Text,
-} from "../../ui/design-system.js";
+import { Banner, Button, Dialog, Loader, SettingsList, SettingsRow, Text } from "../../ui/design-system.js";
 import { useGitHubActionFocus } from "../integrations/github-action-focus.js";
 import {
   type GitHubOAuthOutcome,
   githubOAuthOutcomeMessage,
   readGitHubOAuthOutcome,
 } from "../integrations/github-oauth-outcome.js";
+
+type GitHubAuthorizationIntent = "create" | "reauthorize" | "replace";
+type GitHubAction = GitHubAuthorizationIntent | "remove" | "retry";
 
 type View =
   | { kind: "loading" }
@@ -66,11 +60,11 @@ async function resolveAccountGitHubView(): Promise<View> {
 export function GitHubIntegrationSettings({ beforeAuthorize }: { beforeAuthorize?: () => void }) {
   const [view, setView] = useState<View>({ kind: "loading" });
   const [outcome, setOutcome] = useState<GitHubOAuthOutcome | undefined>(() => readGitHubOAuthOutcome());
-  const [action, setAction] = useState<"authorize" | "remove" | "retry" | null>(null);
+  const [action, setAction] = useState<GitHubAction | null>(null);
   const inFlight = useRef(false);
   const busy = action !== null;
   const { resultRef, captureFocus } = useGitHubActionFocus(busy);
-  const menuRef = useRef<HTMLButtonElement>(null);
+  const removeRef = useRef<HTMLButtonElement>(null);
   const [confirming, setConfirming] = useState(false);
   const [message, setMessage] = useState<string>();
   const [error, setError] = useState<string>();
@@ -106,8 +100,8 @@ export function GitHubIntegrationSettings({ beforeAuthorize }: { beforeAuthorize
     }
   }
 
-  function authorize(intent: "create" | "reauthorize" | "replace"): void {
-    void run("authorize", async () => {
+  function authorize(intent: GitHubAuthorizationIntent): void {
+    void run(intent, async () => {
       beforeAuthorize?.();
       const started = await browserApi.startGitHubAuthorization({
         intent,
@@ -137,7 +131,8 @@ export function GitHubIntegrationSettings({ beforeAuthorize }: { beforeAuthorize
   }
 
   const connection = view.kind === "account" ? view.connection : undefined;
-  const busyLabel = action === "authorize" ? m.integrations_github_authorizing() : undefined;
+  const busyLabel =
+    action && ["create", "reauthorize", "replace"].includes(action) ? m.integrations_github_authorizing() : undefined;
   const feedbackError = confirming ? undefined : error;
   return (
     <section className="grid gap-4" aria-labelledby="account-github-title" data-ui="account-github">
@@ -160,9 +155,10 @@ export function GitHubIntegrationSettings({ beforeAuthorize }: { beforeAuthorize
       ) : null}
       <AccountGitHubBody
         view={view}
+        action={action}
         busy={busy}
         busyLabel={busyLabel}
-        menuRef={menuRef}
+        removeRef={removeRef}
         onAuthorize={authorize}
         onRetry={() =>
           void run("retry", async () => {
@@ -181,7 +177,7 @@ export function GitHubIntegrationSettings({ beforeAuthorize }: { beforeAuthorize
           open={confirming}
           busy={busy}
           error={error}
-          menuRef={menuRef}
+          removeRef={removeRef}
           onClose={closeRemoval}
           onRemove={remove}
         />
@@ -219,7 +215,7 @@ function GitHubRemovalConfirmation({
   open,
   busy,
   error,
-  menuRef,
+  removeRef,
   onClose,
   onRemove,
 }: {
@@ -227,7 +223,7 @@ function GitHubRemovalConfirmation({
   open: boolean;
   busy: boolean;
   error: string | undefined;
-  menuRef: RefObject<HTMLButtonElement | null>;
+  removeRef: RefObject<HTMLButtonElement | null>;
   onClose: () => void;
   onRemove: () => void;
 }) {
@@ -240,7 +236,7 @@ function GitHubRemovalConfirmation({
       title={m.integrations_github_remove_title()}
       onClose={onClose}
       initialFocusRef={cancelRef}
-      returnFocusRef={menuRef}
+      returnFocusRef={removeRef}
       description={m.integrations_github_remove_description({
         account: githubAccountLabel(connection),
       })}
@@ -280,20 +276,120 @@ function GitHubRemovalConfirmation({
   );
 }
 
+function GitHubAuthorizationButton({
+  intent,
+  action,
+  busyLabel,
+  onAuthorize,
+}: {
+  intent: GitHubAuthorizationIntent;
+  action: GitHubAction | null;
+  busyLabel: string | undefined;
+  onAuthorize: (intent: GitHubAuthorizationIntent) => void;
+}) {
+  const active = action === intent;
+  const label =
+    intent === "create"
+      ? m.integrations_github_add_account()
+      : intent === "replace"
+        ? m.integrations_github_change()
+        : m.integrations_github_reauthorize();
+  const accessibleLabel = intent === "replace" ? m.integrations_github_change_account() : label;
+  return (
+    <Button
+      disabled={action !== null}
+      size={intent === "create" ? undefined : "compact"}
+      variant={intent === "replace" ? "ghost" : "primary"}
+      aria-label={active ? busyLabel : accessibleLabel}
+      aria-busy={active}
+      aria-describedby={intent === "reauthorize" ? "account-github-reauthorize-description" : undefined}
+      icon={
+        active ? (
+          <span className="inline-flex" aria-hidden="true">
+            <Loader size="sm" />
+          </span>
+        ) : undefined
+      }
+      onClick={() => onAuthorize(intent)}
+      type="button"
+    >
+      {active && intent === "create" ? busyLabel : label}
+    </Button>
+  );
+}
+
+function GitHubAccountIdentity({
+  connection,
+  action,
+  busyLabel,
+  removeRef,
+  onAuthorize,
+  onRemove,
+}: {
+  connection: GitHubConnectionStatus;
+  action: GitHubAction | null;
+  busyLabel: string | undefined;
+  removeRef: RefObject<HTMLButtonElement | null>;
+  onAuthorize: (intent: GitHubAuthorizationIntent) => void;
+  onRemove: () => void;
+}) {
+  const reauthorizationRequired = connection.status === "reauthorization_required";
+  return (
+    <div className="grid gap-2 p-4" data-ui="github-account-identity">
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
+          <span className="min-w-0 break-all text-sm font-medium text-kumo-strong">
+            {githubAccountLabel(connection)}
+          </span>
+          {reauthorizationRequired ? (
+            <GitHubAuthorizationButton
+              intent="reauthorize"
+              action={action}
+              busyLabel={busyLabel}
+              onAuthorize={onAuthorize}
+            />
+          ) : null}
+        </div>
+        <div className="flex items-center gap-2">
+          <GitHubAuthorizationButton intent="replace" action={action} busyLabel={busyLabel} onAuthorize={onAuthorize} />
+          <Button
+            ref={removeRef}
+            disabled={action !== null}
+            variant="ghost"
+            size="compact"
+            aria-label={m.integrations_github_remove_account()}
+            onClick={onRemove}
+            type="button"
+          >
+            {m.integrations_github_remove()}
+          </Button>
+        </div>
+      </div>
+      {reauthorizationRequired ? (
+        <p id="account-github-reauthorize-description" className="text-sm text-kumo-subtle" role="alert">
+          {m.integrations_github_reauthorize_description()}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function AccountGitHubBody({
   view,
+  action,
   busy,
   busyLabel,
-  menuRef,
+  removeRef,
   onAuthorize,
   onRetry,
   onRemove,
 }: {
   view: View;
+  action: GitHubAction | null;
   busy: boolean;
   busyLabel: string | undefined;
-  menuRef: RefObject<HTMLButtonElement | null>;
-  onAuthorize: (intent: "create" | "reauthorize" | "replace") => void;
+  removeRef: RefObject<HTMLButtonElement | null>;
+  onAuthorize: (intent: GitHubAuthorizationIntent) => void;
   onRetry: () => void;
   onRemove: () => void;
 }) {
@@ -334,63 +430,25 @@ function AccountGitHubBody({
     );
   if (view.kind === "empty")
     return (
-      <div>
-        <Button
-          disabled={busy}
-          aria-busy={Boolean(busyLabel)}
-          aria-label={busyLabel ?? m.integrations_github_authorize()}
-          icon={
-            busyLabel ? (
-              <span className="inline-flex" aria-hidden="true">
-                <Loader size="sm" />
-              </span>
-            ) : undefined
-          }
-          onClick={() => onAuthorize("create")}
-          type="button"
-        >
-          {busyLabel ?? m.integrations_github_authorize()}
-        </Button>
+      <div className="grid justify-items-start gap-2">
+        <GitHubAuthorizationButton intent="create" action={action} busyLabel={busyLabel} onAuthorize={onAuthorize} />
+        <Text as="p" variant="secondary">
+          {m.integrations_github_add_account_description()}
+        </Text>
       </div>
     );
   const connection = view.connection;
   return (
     <>
       <SettingsList>
-        <SettingsRow label={m.integrations_github_account_label()}>
-          <div className="flex min-w-0 items-center justify-between gap-3">
-            <span className="min-w-0 break-all text-sm text-kumo-strong">{githubAccountLabel(connection)}</span>
-            <DropdownMenu>
-              <DropdownMenu.Trigger
-                render={
-                  <Button
-                    ref={menuRef}
-                    aria-label={busyLabel ?? m.integrations_github_account_actions()}
-                    aria-busy={Boolean(busyLabel)}
-                    disabled={busy}
-                    variant="ghost"
-                    shape="square"
-                    size="compact"
-                  />
-                }
-              >
-                {busyLabel ? (
-                  <span className="inline-flex" aria-hidden="true">
-                    <Loader size="sm" />
-                  </span>
-                ) : (
-                  <DotsThree aria-hidden className="size-5" />
-                )}
-              </DropdownMenu.Trigger>
-              <DropdownMenu.Content align="end">
-                <DropdownMenu.Item onClick={() => onAuthorize("replace")}>
-                  {m.integrations_github_change_account()}
-                </DropdownMenu.Item>
-                <DropdownMenu.Item onClick={onRemove}>{m.integrations_github_remove_account()}</DropdownMenu.Item>
-              </DropdownMenu.Content>
-            </DropdownMenu>
-          </div>
-        </SettingsRow>
+        <GitHubAccountIdentity
+          connection={connection}
+          action={action}
+          busyLabel={busyLabel}
+          removeRef={removeRef}
+          onAuthorize={onAuthorize}
+          onRemove={onRemove}
+        />
         <SettingsRow
           label={
             <span className="inline-flex items-center gap-1">
@@ -409,9 +467,10 @@ function AccountGitHubBody({
               </Button>
             </span>
           }
+          description={m.integrations_github_repository_access_description()}
         >
           <a
-            className="inline-flex w-fit items-center gap-1 text-sm text-kumo-link hover:underline"
+            className="inline-flex min-h-11 w-fit items-center gap-1 text-sm text-kumo-link hover:underline"
             href={GITHUB_INTEGRATION_INSTALLATION_PATH}
             target="_blank"
             rel="noopener noreferrer"
@@ -421,32 +480,6 @@ function AccountGitHubBody({
           </a>
         </SettingsRow>
       </SettingsList>
-      {connection.status === "reauthorization_required" ? (
-        <Banner
-          role="alert"
-          className="text-kumo-strong"
-          title={m.integrations_github_reauthorize_description()}
-          variant="alert"
-          action={
-            <Button
-              disabled={busy}
-              size="compact"
-              aria-label={busyLabel ?? m.integrations_github_reauthorize()}
-              aria-busy={Boolean(busyLabel)}
-              icon={
-                busyLabel ? (
-                  <span className="inline-flex" aria-hidden="true">
-                    <Loader size="sm" />
-                  </span>
-                ) : undefined
-              }
-              onClick={() => onAuthorize("reauthorize")}
-            >
-              {m.integrations_github_reauthorize()}
-            </Button>
-          }
-        />
-      ) : null}
       {helpOpen ? (
         <div id="account-github-repository-help" className="flex flex-col gap-2">
           <Text as="p" variant="secondary">

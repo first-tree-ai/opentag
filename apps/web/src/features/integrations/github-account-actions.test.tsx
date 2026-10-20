@@ -19,7 +19,7 @@ describe("Account GitHub action lifecycle", () => {
     const retry = await screen.findByRole("button", { name: "Try again" });
     retry.focus();
     fireEvent.click(retry);
-    await screen.findByRole("button", { name: "Authorize GitHub" });
+    await screen.findByRole("button", { name: "Add GitHub account" });
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("status")));
   });
 
@@ -66,7 +66,7 @@ describe("Account GitHub action lifecycle", () => {
         throw new Error("New edit cannot be retained");
       });
     render(<GitHubIntegrationSettings beforeAuthorize={guard} />);
-    const authorize = await screen.findByRole("button", { name: "Authorize GitHub" });
+    const authorize = await screen.findByRole("button", { name: "Add GitHub account" });
     fireEvent.click(authorize);
     fireEvent.click(authorize);
     expect(start).toHaveBeenCalledTimes(1);

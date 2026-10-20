@@ -2,7 +2,7 @@ import {
   MCP_GATEWAY_PATH,
   MCP_GATEWAY_REQUEST_MAX_BYTES,
   MCP_GATEWAY_SERVER_NAME,
-  MCP_SUPPORTED_PROTOCOL_VERSIONS,
+  MCP_LEGACY_PROTOCOL_VERSIONS,
   type McpGatewayErrorCode,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -148,7 +148,7 @@ function buildHandlers(
 ): McpInboundHandlers {
   return {
     serverInfo: GATEWAY_SERVER_INFO,
-    supportedVersions: MCP_SUPPORTED_PROTOCOL_VERSIONS,
+    supportedVersions: MCP_LEGACY_PROTOCOL_VERSIONS,
     listTools: () => options.service.catalog(accountId, agentId),
     callTool: async (name, args) => {
       try {

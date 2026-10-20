@@ -1,5 +1,5 @@
 import type { AddressInfo } from "node:net";
-import { MCP_GATEWAY_PATH } from "@opentag/shared";
+import { MCP_GATEWAY_PATH, MCP_LEGACY_PROTOCOL_VERSIONS, MCP_MODERN_PROTOCOL_VERSION } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { registerMcpGatewayRoutes } from "../api/mcp-gateway.js";
 import { createApp } from "../app.js";
@@ -60,6 +60,83 @@ async function post(
   });
   return { status: response.statusCode, body: (response.body ? response.json() : {}) as Record<string, unknown> };
 }
+
+describe("protocol negotiation", () => {
+  it("advertises only the legacy revisions the gateway implements", async () => {
+    const { app, token } = harness();
+    try {
+      const response = await post(app, token, { jsonrpc: "2.0", id: 1, method: "server/discover" });
+      expect(response.status).toBe(200);
+      expect(response.body.result).toMatchObject({
+        supportedVersions: [...MCP_LEGACY_PROTOCOL_VERSIONS],
+        protocolVersion: MCP_LEGACY_PROTOCOL_VERSIONS[0],
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it.each([MCP_MODERN_PROTOCOL_VERSION, "2099-01-01"])(
+    "negotiates a supported legacy revision when initialize requests %s",
+    async (protocolVersion) => {
+      const { app, token } = harness();
+      try {
+        const response = await post(app, token, {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: { protocolVersion },
+        });
+        expect(response.status).toBe(200);
+        expect(response.body.result).toMatchObject({ protocolVersion: MCP_LEGACY_PROTOCOL_VERSIONS[0] });
+      } finally {
+        await app.close();
+      }
+    },
+  );
+
+  it.each(MCP_LEGACY_PROTOCOL_VERSIONS)(
+    "serves a complete tool flow after initializing %s",
+    async (protocolVersion) => {
+      const tool = { name: "fixture__echo", description: "Echo", inputSchema: { type: "object" } };
+      const result = { content: [{ type: "text", text: "echo succeeded" }] };
+      const callTool = vi.fn(async () => ({ result }));
+      const { app, token } = harness({ catalog: async () => ({ tools: [tool], notes: [] }), callTool });
+      try {
+        const initialized = await post(app, token, {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: { protocolVersion },
+        });
+        expect(initialized.status).toBe(200);
+        expect(initialized.body.result).toMatchObject({ protocolVersion, capabilities: { tools: {} } });
+        expect((await post(app, token, { jsonrpc: "2.0", method: "notifications/initialized" })).status).toBe(202);
+        const listed = await post(app, token, { jsonrpc: "2.0", id: 2, method: "tools/list" });
+        expect(listed.status).toBe(200);
+        expect(listed.body.result).toEqual({ tools: [tool] });
+        const called = await post(app, token, {
+          jsonrpc: "2.0",
+          id: 3,
+          method: "tools/call",
+          params: { name: tool.name, arguments: { message: "hello" } },
+        });
+        expect(called.status).toBe(200);
+        expect(called.body.result).toEqual(result);
+        expect(callTool).toHaveBeenCalledWith(
+          expect.objectContaining({
+            accountId: ACCOUNT,
+            agentId: AGENT,
+            name: tool.name,
+            arguments: { message: "hello" },
+          }),
+        );
+      } finally {
+        await app.close();
+      }
+    },
+  );
+});
 
 describe("authentication", () => {
   it("refuses a missing, malformed, empty, and unknown bearer alike", async () => {

@@ -833,14 +833,20 @@ Codex always defers MCP tools behind its built-in `tool_search`, so the model se
 
 ### What the gateway speaks
 
-Both protocol eras, not one. This deployment speaks `2026-07-28` upstream, but the clients that mount
-this endpoint are the provider CLIs, and Claude Code's own in-process bridge still speaks
-`2025-03-26`. A modern-only gateway would be unusable by the client it exists for.
+The inbound gateway supports `2025-11-25`, `2025-06-18`, and `2025-03-26`. Its upstream client
+separately supports the modern `2026-07-28` revision. Claude Code's in-process bridge still speaks
+`2025-03-26`, and Pi explicitly uses the legacy handshake. Codex receives the gateway URL and bearer
+when rebinding its thread; OpenTag does not pin a modern protocol revision in that configuration.
+
+The gateway does not implement modern per-request version metadata, mirrored HTTP header validation,
+or `resultType` responses, so it must not advertise that revision. Discovery lists only the three
+legacy revisions, allowing an automatically negotiating client to fall back to `initialize` before
+listing or calling tools.
 
 | Method | Answer |
 | --- | --- |
-| `initialize` + `notifications/initialized` | The legacy handshake. An unsupported requested version is answered with one this deployment does speak, never echoed — echoing would strand the session |
-| `server/discover` | The modern path: the whole supported set, so the client chooses |
+| `initialize` + `notifications/initialized` | The legacy handshake. A supported requested revision is echoed; an unsupported or modern revision selects the newest supported legacy revision |
+| `server/discover` | Only the three supported legacy revisions; modern support is not advertised |
 | `ping` | `{}` |
 | `tools/list` | The aggregated catalogue, served whole; no cursor, because there is never a further page |
 | `tools/call` | Routed upstream |

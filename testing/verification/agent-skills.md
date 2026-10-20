@@ -33,10 +33,6 @@ The Server and Web lanes add the coverage those layers owe:
 | `packages/server/src/__tests__/integration/skill-object-write-concurrency.test.ts` | Actual PostgreSQL writes with a local object-store fixture: a GC DELETE already past its final reference check, a losing writer's cleanup DELETE finishing after another successful same-content replacement, concurrent identical replacements, and legacy hash-key reads and collection. Each race verifies the current bundle's actual bytes and hash after deletion completes |
 | `apps/web/src/features/skills/*.test.ts(x)` | The error-code map is exhaustive over the contract, an upload/toggle revision conflict reports the new sentence without opening the Replace dialog, and every other page rule |
 
-The remaining end-to-end path is owned by the Client lane: upload a Skill through each of the three
-surfaces and observe a Local Computer materialize it into the provider's skill directory at runtime
-start.
-
 ## Physical object identity regressions
 
 The object-write concurrency suite pauses only external DELETE completion or a real conditional SQL
@@ -51,3 +47,7 @@ replacement. The unit lifecycle, exact-prefix, remote/preset install, and local 
 cover rollback cleanup, uncertain commits, HEAD restoration, source routing, hash signing and namespace
 isolation. No live S3/GCS or production state is needed. Older writers in a mixed deployment remain
 outside the independent-key guarantee; no historical missing object is repaired by these tests.
+
+The remaining end-to-end path is owned by the Client lane: upload a Skill through each of the three
+surfaces and observe a Local Computer materialize it into the provider's skill directory at runtime
+start.

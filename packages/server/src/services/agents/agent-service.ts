@@ -1681,7 +1681,7 @@ export class AgentService {
       .from(computers)
       .where(and(eq(computers.id, computerId), eq(computers.ownerAccountId, accountId), isNull(computers.deletedAt)))
       .limit(1)
-      .for("update");
+      .for("no key update");
     if (!computer) {
       throw new AgentServiceError("COMPUTER_NOT_FOUND", "deterministic", "The requested Computer was not found", 404);
     }

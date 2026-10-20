@@ -75,6 +75,13 @@ retain their Account guard with
 updates/deletion while allowing the KEY SHARE required by existing ownership
 foreign keys. Agent creation and rebind add no Account lock or query.
 
+Agent creation and rebind lock their owned target Computer with `FOR NO KEY UPDATE`.
+The existing owner, kind and deletion checks stay under that lock, which still excludes
+concurrent Computer mutation. It permits the `KEY SHARE` required when a Session CLI
+proof is first inserted. Rebind keeps Agent → target Computer → Session placements order;
+proof minting keeps its placement lock and existing connection/generation checks. A rebind
+to the current Computer retains its no-op semantics and does not rotate an existing proof.
+
 The staging/development reset uses the same weaker guard during Computer access
 revocation. Its separate final cleanup verification keeps its existing lock.
 Agent creation, placement changes, and credential exchange retain their small

@@ -15,6 +15,9 @@ and the [Server/Client boundary](../../docs/system/server-client-boundary.md).
 - Creation/rebind add no Account lock, transaction, or successful-path query. There are no migrations,
   new FKs, new JOINs, retries, list rewrites, or changes to unbound creation/operator transfer.
 - Owner predicates precede Agent row locking; lifecycle/revision checks remain inside the transaction.
+- Agent creation/rebind's target Computer lock is `FOR NO KEY UPDATE`: first proof insertion can
+  complete its existing Computer FK check while that lock is held, and concurrent Computer mutation
+  remains excluded. The Agent → Computer → placement order and proof reuse/generation rules stay intact.
 - Code consumption, installation replacement, and credential rotation commit together. Socket cleanup
   happens afterward, with a 1-second wait limit and independent diagnostics. Only revoked credential
   IDs are eligible for cleanup; a delayed callback cannot close a successor using another credential.
@@ -26,7 +29,8 @@ Run:
 ```sh
 pnpm --filter @opentag/server exec vitest run \
   src/__tests__/integration/account-agent-computer-locks.test.ts \
-  src/__tests__/integration/account-agent-admission-locks.test.ts --maxWorkers=1
+  src/__tests__/integration/account-agent-admission-locks.test.ts \
+  src/__tests__/integration/agent-rebind-proof-locks.test.ts --maxWorkers=1
 ```
 
 The suite uses the checked-in full migration chain and independent PostgreSQL connections, not
@@ -50,6 +54,18 @@ before its existing FK check; they are removed afterward and are never installed
 | Agent is suspended while a legitimate caller waits | Mutation returns the expected lifecycle 409 with no partial write |
 | Scheduled dispatch admission vs same-Computer rebind, targeted issuance, or targeted exchange | Both commit; dispatch is admitted |
 | IM inbound persistence vs same-Computer rebind, targeted issuance, or targeted exchange | Both commit; inbound creates a Delivery |
+| First Session proof mint vs same-Computer rebind after both have acquired their respective Computer/placement locks | Both actual Services commit; Agent revision and placement generation remain unchanged |
+| Existing proof reuse vs same-Computer rebind under the same schedule | Same proof/token reused; no partial lifecycle change |
+| First mint while rebind is paused holding its target Computer lock | Mint completes before rebind resumes; another Computer mutation gets `55P03` with NOWAIT |
+| Actual cross-Computer rebind after mint | Agent and placement move with their original revisions/generation; old proof/input is rejected and a new proof authenticates |
+
+`integration/agent-rebind-proof-locks.test.ts` uses independent PostgreSQL connections and pauses only
+after actual locking SELECTs return. It never rewrites SQL or substitutes lock modes. The same tests
+also cover both serial orders. Running the concurrent first-mint case against the original helper
+must expose the Computer-FK/placement lock cycle; the existing-proof case is a control. These tests
+exercise local Services and PostgreSQL with a connection-registry fixture, without a live Daemon or
+external provider. The broader management/admission, repair, proof and scheduling suites cover the
+shared creation helper, Computer deletion/disconnect, connection-code exchange and permission hiding.
 
 Before the lock-order/strength fix, the first five cases each reproduced a PostgreSQL `40P01` through
 real Service entry points against main `9f80f340`; the other six then-present cases passed. The final

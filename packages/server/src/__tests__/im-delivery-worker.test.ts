@@ -1445,10 +1445,10 @@ describe("ImDeliveryWorker database workflow", () => {
   it("routes expiry and retention timers to their configured cadences", async () => {
     vi.useFakeTimers();
     try {
-      const expiryExecute = vi.fn().mockResolvedValue([]);
+      const maintenanceExecute = vi.fn().mockResolvedValue([]);
       const retentionTransaction = { execute: vi.fn().mockResolvedValue([]) };
       const database = {
-        execute: expiryExecute,
+        execute: maintenanceExecute,
         transaction: vi.fn(async (callback: (transaction: typeof retentionTransaction) => Promise<unknown>) =>
           callback(retentionTransaction),
         ),
@@ -1466,12 +1466,12 @@ describe("ImDeliveryWorker database workflow", () => {
 
       worker.start();
       await vi.advanceTimersByTimeAsync(10);
-      expect(expiryExecute).toHaveBeenCalledTimes(1);
-      expect(database.transaction).toHaveBeenCalledTimes(1);
+      expect(maintenanceExecute).toHaveBeenCalledTimes(2);
+      expect(database.transaction).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(10);
-      expect(database.transaction).toHaveBeenCalledTimes(3);
-      expect(retentionTransaction.execute).toHaveBeenCalledTimes(7);
+      expect(database.transaction).toHaveBeenCalledTimes(1);
+      expect(retentionTransaction.execute).toHaveBeenCalledTimes(5);
       worker.stop();
     } finally {
       vi.useRealTimers();

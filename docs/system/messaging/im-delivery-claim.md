@@ -72,11 +72,15 @@ does not synthesize a terminal report.
 Non-completed report recovery locks the target and steered children's Sessions in ID order with
 `FOR NO KEY UPDATE` before acquiring placement and delivery locks. It rechecks report identity,
 placement generation, ownership, and child state under the existing locks. Completed reports keep
-their existing path. The janitor first selects a bounded, unlocked set of eligible target IDs,
-takes the same Session locks with `SKIP LOCKED`, and then rechecks target eligibility while locking
-the targets. Busy Sessions or targets wait for another sweep. Session locks remain compatible with
-foreign-key `KEY SHARE`; recovery does not upgrade them to `FOR UPDATE`. Report persistence and child
-recovery still commit or roll back together, without automatically retrying deadlocked transactions.
+their existing path. The janitor first selects a bounded, unlocked set of eligible target IDs.
+It processes each target in its own short transaction: take that target's Session locks with
+`SKIP LOCKED`, lock and recheck the target, recover its children, then commit before taking the next
+target's locks. This releases unrelated Session locks before recovery can rebuild an ended Session
+and acquire the existing binding foreign-key lock. Busy Sessions or targets wait for another sweep.
+Earlier targets remain committed if a later target fails; subsequent sweeps use the same state
+predicates to resume idempotently. Session locks remain compatible with foreign-key `KEY SHARE`;
+recovery does not upgrade them to `FOR UPDATE`. Report persistence and its child recovery still
+commit or roll back together, without automatically retrying deadlocked transactions.
 
 `busy / active_turn` can include report custody. An empty retained-report manifest does not prove
 that the Client has no report on disk: live activity can prevent recovery from enumerating it.

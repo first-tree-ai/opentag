@@ -39,7 +39,10 @@ type Fixture = {
   runtime: DirectImMessageDeliveryRequest["runtime"];
 };
 
-async function createFixture(database: ReturnType<typeof createDatabaseClient>["database"]): Promise<Fixture> {
+async function createFixture(
+  database: ReturnType<typeof createDatabaseClient>["database"],
+  rootDeliveryId = randomUUID(),
+): Promise<Fixture> {
   const now = new Date("2026-01-01T00:00:00.000Z");
   const userId = randomUUID();
   const computerId = randomUUID();
@@ -47,7 +50,6 @@ async function createFixture(database: ReturnType<typeof createDatabaseClient>["
   const bindingId = randomUUID();
   const sessionId = randomUUID();
   const rootMessageId = randomUUID();
-  const rootDeliveryId = randomUUID();
   const instanceId = randomUUID();
   const rootTurnId = randomUUID();
 

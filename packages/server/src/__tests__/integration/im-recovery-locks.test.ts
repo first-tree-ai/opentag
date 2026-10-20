@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
-import { computers, imMessageDeliveries } from "../../db/schema/index.js";
+import { computers, imMessageDeliveries, imMessages, sessionPlacements, sessions } from "../../db/schema/index.js";
 import { runImDeliverySteerRecovery } from "../../runtime/im-delivery-janitor.js";
 import { PostgresRuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
 import { SessionService } from "../../services/sessions/session-service.js";
@@ -263,3 +263,257 @@ it("keeps completed reports independent of the recovery Session lock", async () 
     await c.close();
   }
 }, 20_000);
+
+function pauseAfterFirstSessionLock(
+  database: ReturnType<typeof createDatabaseClient>["database"],
+  reached: ReturnType<typeof deferred<void>>,
+  release: ReturnType<typeof deferred<void>>,
+) {
+  let paused = false;
+  const wrap = (query: object): object =>
+    new Proxy(query, {
+      get(target, key) {
+        const value = Reflect.get(target, key);
+        if (key === "then" && typeof value === "function") {
+          return (fulfilled: (rows: unknown) => unknown, rejected: (error: unknown) => unknown) => {
+            const toSQL = Reflect.get(target, "toSQL");
+            const statement =
+              typeof toSQL === "function" ? (Reflect.apply(toSQL, target, []) as { sql: string }) : undefined;
+            return Promise.resolve(Reflect.apply(value, target, []))
+              .then(async (rows) => {
+                if (
+                  !paused &&
+                  statement?.sql.includes('from "sessions"') &&
+                  statement.sql.includes("for no key update")
+                ) {
+                  paused = true;
+                  reached.resolve();
+                  await release.promise;
+                }
+                return rows;
+              })
+              .then(fulfilled, rejected);
+          };
+        }
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          const result: unknown = Reflect.apply(value, target, args);
+          return result && typeof result === "object" ? wrap(result) : result;
+        };
+      },
+    });
+  return new Proxy(database, {
+    get(target, key) {
+      if (key === "transaction")
+        return (operation: (transaction: unknown) => Promise<unknown>) =>
+          target.transaction((transaction) =>
+            operation(
+              new Proxy(transaction, {
+                get(value, property) {
+                  if (property === "select")
+                    return (...args: unknown[]) => wrap(Reflect.apply(value.select, value, args));
+                  const method = Reflect.get(value, property);
+                  return typeof method === "function" ? method.bind(value) : method;
+                },
+              }),
+            ),
+          );
+      const value = Reflect.get(target, key);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+async function sameBindingTargets(
+  database: ReturnType<typeof createDatabaseClient>["database"],
+  order: "ended-first" | "active-first",
+) {
+  const firstId = "00000000-0000-4000-8000-000000000001";
+  const lastId = "ffffffff-ffff-4fff-bfff-fffffffffff1";
+  const f = await createFixture(database, order === "ended-first" ? firstId : lastId);
+  await acceptAndSteer(f, new PostgresRuntimeCustodyStore(database));
+  const [source] = await database.select().from(sessions).where(eq(sessions.id, f.sessionId));
+  assert(source);
+  const activeId = randomUUID();
+  await database.insert(sessions).values({ ...source, id: activeId, channelId: "other-channel" });
+  await database
+    .insert(sessionPlacements)
+    .values({ sessionId: activeId, computerId: f.context.computerId, generation: 1 });
+  const rows = await deliveryRows(database, f);
+  const activeRootId = order === "ended-first" ? lastId : firstId;
+  const activeTurnId = randomUUID();
+  const activeReport = turnReport(
+    { ...f, rootDeliveryId: activeRootId, sessionId: activeId, rootTurnId: activeTurnId },
+    "cancelled",
+    "client_shutdown",
+  );
+  for (const row of [rows.root, ...rows.children]) {
+    const [message] = await database.select().from(imMessages).where(eq(imMessages.id, row.messageId));
+    assert(message);
+    const messageId = randomUUID();
+    await database.insert(imMessages).values({
+      ...message,
+      id: messageId,
+      channelId: "other-channel",
+      externalMessageId: `${message.externalMessageId}-other`,
+    });
+    await database.insert(imMessageDeliveries).values({
+      ...row,
+      dispatchRequestId: randomUUID(),
+      turnId: row.id === f.rootDeliveryId ? activeTurnId : row.turnId,
+      id: row.id === f.rootDeliveryId ? activeRootId : randomUUID(),
+      messageId,
+      sessionId: activeId,
+      steerTargetDeliveryId: row.id === f.rootDeliveryId ? null : activeRootId,
+      ...(row.id === f.rootDeliveryId
+        ? {
+            dispatchPayload: null,
+            turnReport: activeReport,
+            resultHash: activeReport.resultHash,
+            reportedAt: f.now,
+          }
+        : {}),
+    });
+  }
+  const report = turnReport(f, "cancelled", "client_shutdown");
+  await database
+    .update(imMessageDeliveries)
+    .set({ dispatchPayload: null, turnReport: report, resultHash: report.resultHash, reportedAt: f.now })
+    .where(eq(imMessageDeliveries.id, f.rootDeliveryId));
+  await database.update(sessions).set({ endedAt: f.now }).where(eq(sessions.id, f.sessionId));
+  return { f, activeId, activeRootId };
+}
+
+it.each(["ended-first", "active-first"] as const)(
+  "releases each janitor target before another same-binding target can rebuild (%s)",
+  async (order) => {
+    const c = await connections();
+    const reached = deferred();
+    const release = deferred();
+    const running: Promise<unknown>[] = [];
+    try {
+      const { f, activeId } = await sameBindingTargets(c.observer.database, order);
+      const [computer] = await c.observer.database
+        .select()
+        .from(computers)
+        .where(eq(computers.id, f.context.computerId));
+      assert(computer);
+      const child = await new SessionService(c.observer.database).createInternalSessionWithMessage({
+        creatorSessionId: activeId,
+        creatorInstallationId: computer.currentInstallationId,
+        creatorConnectionInstanceId: f.context.instanceId,
+        creatorComputerId: computer.id,
+        creatorPlacementGeneration: 1,
+        messageId: randomUUID(),
+        initialMessage: "Concurrent child",
+      });
+      const [janitorPid, collaboratorPid] = await Promise.all([backend(c.first), backend(c.second)]);
+      const janitor = settled(
+        runImDeliverySteerRecovery(pauseAfterFirstSessionLock(c.first.database, reached, release), {
+          clock: () => f.now,
+          expiryBatchSize: 100,
+        }),
+      );
+      running.push(janitor);
+      await reached.promise;
+      let collaboratorFinished = false;
+      const collaboration = settled(
+        new SessionService(c.second.database).authorizeAndRecordMessage({
+          sourceSessionId: child.session.id,
+          sourceInstallationId: computer.currentInstallationId,
+          sourceConnectionInstanceId: f.context.instanceId,
+          sourceComputerId: computer.id,
+          sourcePlacementGeneration: 1,
+          targetSessionId: activeId,
+          messageId: randomUUID(),
+          content: "Concurrent result",
+        }),
+      ).finally(() => {
+        collaboratorFinished = true;
+      });
+      running.push(collaboration);
+      await expect
+        .poll(
+          async () => {
+            if (collaboratorFinished) return true;
+            const [row] = await c.observer.sql<
+              { blockers: number[] }[]
+            >`select pg_blocking_pids(${collaboratorPid}) as blockers`;
+            return row?.blockers.includes(janitorPid);
+          },
+          { timeout: 5_000 },
+        )
+        .toBe(true);
+      release.resolve();
+      expect(await Promise.all([janitor, collaboration])).toEqual([
+        { status: "fulfilled", value: undefined },
+        expect.objectContaining({ status: "fulfilled" }),
+      ]);
+      const recovered = await deliveryRows(c.observer.database, f);
+      expect(
+        recovered.children.every(
+          (row) => row.state === "pending" && row.sessionId !== f.sessionId && row.attemptCount === 1,
+        ),
+      ).toBe(true);
+    } finally {
+      release.resolve();
+      await Promise.allSettled(running);
+      await c.close();
+    }
+  },
+  20_000,
+);
+
+it("keeps earlier janitor targets committed when a later target rolls back", async () => {
+  const c = await connections();
+  try {
+    const { f, activeRootId } = await sameBindingTargets(c.observer.database, "ended-first");
+    const activeChildren = await c.observer.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.steerTargetDeliveryId, activeRootId));
+    await c.observer.sql.unsafe(`create function fail_later_target() returns trigger language plpgsql as $$
+      begin
+        if old.state = 'steered' and new.state = 'pending' and old.steer_target_delivery_id = '${activeRootId}'::uuid then
+          raise exception 'synthetic later target failure' using errcode = '40001';
+        end if;
+        return new;
+      end $$`);
+    await c.observer.sql.unsafe(
+      "create trigger fail_later_target before update on im_message_deliveries for each row execute function fail_later_target()",
+    );
+    try {
+      await expect(
+        runImDeliverySteerRecovery(c.first.database, { clock: () => f.now, expiryBatchSize: 100 }),
+      ).rejects.toMatchObject({ cause: { code: "40001" } });
+      const first = await deliveryRows(c.observer.database, f);
+      expect(
+        first.children.every(
+          (row) => row.state === "pending" && row.attemptCount === 1 && row.sessionId !== f.sessionId,
+        ),
+      ).toBe(true);
+      for (const child of activeChildren) {
+        const [row] = await c.observer.database
+          .select()
+          .from(imMessageDeliveries)
+          .where(eq(imMessageDeliveries.id, child.id));
+        expect(row).toEqual(child);
+      }
+    } finally {
+      await c.observer.sql.unsafe("drop trigger fail_later_target on im_message_deliveries");
+      await c.observer.sql.unsafe("drop function fail_later_target()");
+    }
+    const first = await deliveryRows(c.observer.database, f);
+    await runImDeliverySteerRecovery(c.first.database, { clock: () => f.now, expiryBatchSize: 100 });
+    expect(await deliveryRows(c.observer.database, f)).toEqual(first);
+    for (const child of activeChildren) {
+      const [row] = await c.observer.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, child.id));
+      expect(row).toMatchObject({ state: "pending", attemptCount: 1, steerTargetDeliveryId: null });
+    }
+  } finally {
+    await c.close();
+  }
+});

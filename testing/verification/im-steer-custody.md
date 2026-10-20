@@ -56,18 +56,30 @@ At base `f41acc1ade0a540c4a9b6b510dd6eedf8e892d4a`, three real custody-store rep
 (`failed`, `cancelled`, and `unknown`) deadlocked with `SessionService.authorizeAndRecordMessage`.
 The new `im-recovery-locks.test.ts` holds the root delivery from an independent connection,
 observes each Service's actual PostgreSQL blocker, and releases the gate. No production query
-is mocked, intercepted, or paused by a test hook. All three initially failed with `40P01`.
+is intercepted in those three report schedules. All three initially failed with `40P01`.
 
-The recovery paths now take Session locks before placement/delivery locks. Janitor Session
-selection also uses `SKIP LOCKED`, so an occupied Session does not stall an entire background batch.
-The focused PostgreSQL suites pass 46 cases, including the six new tests for the three report
-interleavings, skipping busy Sessions before target locking, atomic report/recovery rollback,
-and the completed-report path. The original fixture is shared with the existing recovery suite.
+The recovery paths take Session locks before placement/delivery locks. Janitor Session selection
+also uses `SKIP LOCKED`. A subsequent multi-target regression found that holding a whole batch's
+Sessions can form a new cycle through the binding FK lock when an ended Session is rebuilt.
+The same-binding schedules cover both ended-first and active-first target order, using the actual
+Janitor and `SessionService.authorizeAndRecordMessage` on independent PostgreSQL connections. An
+external query proxy pauses only after the actual Session lock query; it does not change SQL or
+lock modes. Both schedules fail with `40P01` on the batch-lock revision.
 
-The change adds one SELECT to non-completed reporting and two SELECTs per nonempty janitor
-batch. It adds no transaction, Agent/Account lock, schema, recovery policy, or automatic SQL retry.
-Missing reports still preserve custody. The separate historical retention policy is unchanged.
+Janitor now releases each target's transaction before locking the next target. Its candidate read
+stays outside row-locking transactions. A later target's injected `40001` leaves earlier targets
+committed, rolls back the failing target, and a later sweep recovers it once. The original report
+rollback/replay and completed-report behavior remain covered.
 
-Recovery lock validation: `pnpm check`, `pnpm build`, `pnpm typecheck`, and `pnpm test` passed
-(691 script tests, 10,017 package tests, 22 existing skips). Runtime coverage passed 642 tests
-with all four metrics at 100%; the full PostgreSQL suite passed 856 tests in 63 files.
+For N candidates, discovery/locking uses one unlocked candidate SELECT plus at most two SELECTs
+per target, and up to N short transactions (zero for an empty scan). A busy Session skips the target
+recheck. Non-completed reporting still adds one Session SELECT in its original transaction.
+There is no new Agent/Account lock, locked entity, schema, recovery policy or automatic SQL retry.
+The historical delivery-retention change remains separate.
+
+Final per-target validation: the focused concurrency/recovery/Janitor run passed 34 tests, and
+the worker regression passed 49 tests, including the empty-scan transaction/cadence assertions.
+`pnpm check`, `pnpm build`, `pnpm typecheck`, and `pnpm test` passed (691 script tests,
+10,017 package tests, 22 existing skips). Runtime coverage passed 642 tests with all four
+metrics at 100%; full migrated PostgreSQL passed 859 tests in 63 files. Server unit coverage
+passed, and all 45 changed executable lines were covered (100%, above the 80% gate).

@@ -56,12 +56,18 @@ while the delivery is still accepted, unreported, and at that attempt; a late re
 attempt wins. The response never fabricates a report, expires accepted custody, or dispatches
 the input again. Only the actual report settles custody.
 
-Deferred response codes do not mark a target Turn ended for its steered children, including
-`rejected`, `recovery_required`, and awaiting-report responses. After retry backoff expires, the
-janitor preserves those children and their target identity. Its stale-failure recovery uses only
-`IM_DELIVERY_RECOVERY_FAILED`, `IM_DELIVERY_RUNTIME_UNAVAILABLE`, `IM_DELIVERY_PLACEMENT_STALE`,
-`IM_DELIVERY_RECOVERY_PAYLOAD_INVALID`, and `IM_DELIVERY_AGENT_CUSTODY_FENCED`. An unknown code is
-not proof that the target ended. Existing terminal-report and ended-Session recovery still apply.
+An accepted target without a recorded terminal report retains its steered children and their
+target identity. Error codes, expired retry backoff, an offline Computer, and an ended Session
+do not prove that execution ended and cannot requeue those children. Existing error diagnostics
+remain available for investigation. Reconnecting the same report owner can settle the original
+Turn through the existing report identity and ownership checks.
+
+A recorded `completed` report keeps the children steered. Recording a valid `failed`, `cancelled`,
+or `unknown` report requeues them once in the same transaction; replaying the report cannot requeue
+them again. The janitor can recover children of an already recorded non-completed report or an
+explicitly disposed target. A missing report can therefore retain custody indefinitely, including
+after Session closure. Abandonment and ownership fencing require a separate policy; maintenance
+does not synthesize a terminal report.
 
 `busy / active_turn` can include report custody. An empty retained-report manifest does not prove
 that the Client has no report on disk: live activity can prevent recovery from enumerating it.

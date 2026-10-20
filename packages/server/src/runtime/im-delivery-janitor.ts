@@ -45,7 +45,6 @@ export interface ImDeliveryJanitorInput {
   feishuInboundReceiptsRetentionMs?: number;
 }
 
-/** Recover children after a non-completed terminal outcome or an explicitly recognized stale failure. */
 export async function runImDeliverySteerRecovery(
   database: DatabaseClient,
   options: Pick<ImDeliveryJanitorOptions, "clock" | "expiryBatchSize">,
@@ -56,7 +55,6 @@ export async function runImDeliverySteerRecovery(
     const targets = (await transaction.execute(sql`
       select target.id as target_id
       from im_message_deliveries as target
-      inner join sessions as target_session on target_session.id = target.session_id
       where exists (
         select 1
         from im_message_deliveries as child
@@ -64,28 +62,10 @@ export async function runImDeliverySteerRecovery(
           and child.steer_target_delivery_id = target.id
       )
         and (
-          (
-            target.state <> 'accepted'
-            or (
-              target.reported_at is not null
-              and coalesce(target.turn_report ->> 'outcome', 'unknown') <> 'completed'
-            )
-            or (
-              target.reported_at is null
-              and target_session.ended_at is not null
-            )
-            or (
-              target.state = 'accepted'
-              and target.reported_at is null
-              and target.next_attempt_at <= ${now.toISOString()}::timestamptz
-              and target.last_error_code in (
-                'IM_DELIVERY_RECOVERY_FAILED',
-                'IM_DELIVERY_RUNTIME_UNAVAILABLE',
-                'IM_DELIVERY_PLACEMENT_STALE',
-                'IM_DELIVERY_RECOVERY_PAYLOAD_INVALID',
-                'IM_DELIVERY_AGENT_CUSTODY_FENCED'
-              )
-            )
+          target.state <> 'accepted'
+          or (
+            target.reported_at is not null
+            and coalesce(target.turn_report ->> 'outcome', 'unknown') <> 'completed'
           )
         )
       order by target.id asc

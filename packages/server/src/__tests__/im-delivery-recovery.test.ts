@@ -256,19 +256,6 @@ describe("steered delivery recovery", () => {
     "IM_DELIVERY_PLACEMENT_STALE",
     "IM_DELIVERY_RECOVERY_PAYLOAD_INVALID",
     "IM_DELIVERY_AGENT_CUSTODY_FENCED",
-  ])("runs the recovery from the janitor sweep for %s", async (lastErrorCode) => {
-    const fixture = await seedFixture(unit);
-    await unit.database
-      .update(imMessageDeliveries)
-      .set({ lastErrorCode, nextAttemptAt: NOW })
-      .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
-
-    await runImDeliverySteerRecovery(unit.database, { clock: () => NOW, expiryBatchSize: 10 });
-
-    expect([...(await deliveryRows(unit, fixture)).values()].every((row) => row.state === "pending")).toBe(true);
-  });
-
-  it.each([
     "IM_DELIVERY_RECOVERY_BUSY",
     "IM_DELIVERY_RECOVERY_RUNNING",
     "IM_DELIVERY_RECOVERY_REPORTING",
@@ -287,6 +274,32 @@ describe("steered delivery recovery", () => {
     await runImDeliverySteerRecovery(unit.database, { clock: () => NOW, expiryBatchSize: 10 });
 
     expect(await deliveryRows(unit, fixture)).toEqual(before);
+  });
+
+  it("keeps unreported custody after the target Session ends", async () => {
+    const fixture = await seedFixture(unit, { withReplacement: true });
+    await unit.database.update(sessions).set({ endedAt: NOW }).where(eq(sessions.id, fixture.sourceSessionId));
+    const before = await deliveryRows(unit, fixture);
+
+    await runImDeliverySteerRecovery(unit.database, { clock: () => NOW, expiryBatchSize: 10 });
+
+    expect(await deliveryRows(unit, fixture)).toEqual(before);
+  });
+
+  it("recovers once from an already recorded non-completed report", async () => {
+    const fixture = await seedFixture(unit);
+    const report = turnReport(fixture);
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ reportedAt: NOW, turnReport: report, resultHash: report.resultHash })
+      .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+
+    await runImDeliverySteerRecovery(unit.database, { clock: () => NOW, expiryBatchSize: 10 });
+    const recovered = await deliveryRows(unit, fixture);
+    expect([...recovered.values()].every((row) => row.state === "pending" && row.attemptCount === 3)).toBe(true);
+
+    await runImDeliverySteerRecovery(unit.database, { clock: () => NOW, expiryBatchSize: 10 });
+    expect(await deliveryRows(unit, fixture)).toEqual(recovered);
   });
 
   it("runs the recovery from a non-completed terminal report", async () => {

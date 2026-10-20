@@ -4,6 +4,9 @@ Date: 2026-10-19. Base: `9f80f340db562274069731887f27092b4f50b7f1`.
 All inputs are synthetic; no model, external message, production operation, or user Computer is used.
 Contract: [IM delivery claim queries](../../docs/system/messaging/im-delivery-claim.md).
 
+This is a historical acceptance run. The five-code and ended-Session recovery policy below is
+superseded by [steered custody without terminal reports](../verification/im-steer-custody.md).
+
 ## Regression cases
 
 - A seven-day message deadline with no explicit budget still times out at the existing 30-minute

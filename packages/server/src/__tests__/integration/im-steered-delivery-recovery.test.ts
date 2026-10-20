@@ -6,6 +6,7 @@ import {
   computeTurnResultHash,
   type DirectImMessageDeliveryRequest,
   type RuntimeImSteerRequest,
+  type SessionReconcileRequest,
   type TurnReportRequest,
 } from "@opentag/shared";
 import { eq, inArray } from "drizzle-orm";
@@ -21,6 +22,7 @@ import {
   sessions,
   users,
 } from "../../db/schema/index.js";
+import { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { runImDeliveryExpiry } from "../../runtime/im-delivery-janitor.js";
 import { STEER_TARGET_ENDED_ERROR_CODE } from "../../runtime/im-delivery-recovery.js";
 import { ImDeliveryWorker } from "../../runtime/im-delivery-worker.js";
@@ -46,13 +48,16 @@ describe("steered IM delivery recovery", () => {
     await testDatabase.reset();
   });
 
-  it("requeues cancelled target children once and preserves ingress order", async () => {
+  it.each([
+    ["failed", "turn_timeout"],
+    ["cancelled", "client_shutdown"],
+    ["unknown", "turn_state_unknown"],
+  ] as const)("requeues %s target children once and preserves ingress order", async (outcome, reason) => {
     const fixture = await createFixture(client.database);
     const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });
     await acceptAndSteer(fixture, custody);
-    await expect(
-      custody.recordTurn(turnReport(fixture, "cancelled", "client_shutdown"), fixture.context),
-    ).resolves.toBe("recorded");
+    const report = turnReport(fixture, outcome, reason);
+    await expect(custody.recordTurn(report, fixture.context)).resolves.toBe("recorded");
 
     const recovered = await deliveryRows(client.database, fixture);
     expect(recovered.children.map((row) => row.id)).toEqual(fixture.steerRequests.map((request) => request.deliveryId));
@@ -73,25 +78,141 @@ describe("steered IM delivery recovery", () => {
     await runImDeliveryExpiry(client.database, janitorOptions(fixture.now));
     const afterJanitor = await deliveryRows(client.database, fixture);
     expect(afterJanitor.children).toEqual(recovered.children);
-  });
-
-  it("requeues a failed target through the janitor after a crashed Turn", async () => {
-    const fixture = await createFixture(client.database);
-    const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });
-    await acceptAndSteer(fixture, custody);
-    await client.database
-      .update(imMessageDeliveries)
-      .set({ lastErrorCode: "IM_DELIVERY_RECOVERY_FAILED", nextAttemptAt: fixture.now })
-      .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
-
-    await runImDeliveryExpiry(client.database, janitorOptions(fixture.now));
-    const recovered = await deliveryRows(client.database, fixture);
-    expect(recovered.children).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ state: "pending", steerTargetDeliveryId: null, attemptCount: 1 }),
-      ]),
+    await expect(custody.recordTurn({ ...report, requestId: randomUUID() }, fixture.context)).resolves.toBe(
+      "already_recorded",
     );
+    await expect(custody.recordTurn(turnReport(fixture, "completed"), fixture.context)).resolves.toBe("conflict");
+    expect(await deliveryRows(client.database, fixture)).toEqual(afterJanitor);
   });
+
+  it.each(["transport-failure", "offline", "session-ended"] as const)(
+    "preserves custody through %s and settles the original report after reconnect",
+    async (failure) => {
+      const fixture = await createFixture(client.database);
+      let clock = fixture.now.getTime();
+      const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => new Date(clock) });
+      await acceptAndSteer(fixture, custody);
+      const registry = new ConnectionRegistry();
+      const connect = async () => {
+        const socket = { close: vi.fn(), terminate: vi.fn() };
+        await registry.register(
+          {
+            computerId: fixture.context.computerId,
+            installationId: fixture.context.installationId,
+            instanceId: fixture.context.instanceId,
+            clientVersion: "0.1.2",
+            lastHeartbeatAt: clock,
+            socket: socket as never,
+          },
+          async () => {
+            await client.database
+              .update(computers)
+              .set({ currentInstanceId: fixture.context.instanceId })
+              .where(eq(computers.id, fixture.context.computerId));
+          },
+        );
+        return socket;
+      };
+      const socket = await connect();
+      let disconnected = true;
+      const requestReconcile = vi.fn(async (_computer: string, _instance: string, request: SessionReconcileRequest) => {
+        if (disconnected) throw new Error("synthetic transport failure");
+        return {
+          type: "session:reconcile:result" as const,
+          requestId: request.requestId,
+          sessionId: request.sessionId,
+          placementGeneration: request.placementGeneration,
+          status: "busy" as const,
+          reason: "active_turn",
+        };
+      });
+      const requestDelivery = vi.fn();
+      const requestSteer = vi.fn();
+      const diagnostic = vi.fn();
+      const worker = new ImDeliveryWorker({
+        database: client.database,
+        domain: { requestReconcile, requestDelivery, requestSteer } as never,
+        registry,
+        assembler: { assembleForSession: vi.fn(async () => fixture.runtime) },
+        now: () => new Date(clock),
+        onDiagnostic: diagnostic,
+      });
+      try {
+        if (failure === "offline") {
+          expect(registry.remove(fixture.context.computerId, fixture.context.instanceId, socket as never)).toBe(true);
+          await client.database
+            .update(computers)
+            .set({ currentInstanceId: null })
+            .where(eq(computers.id, fixture.context.computerId));
+        }
+        if (failure === "session-ended") {
+          await client.database
+            .update(sessions)
+            .set({ endedAt: new Date(clock) })
+            .where(eq(sessions.id, fixture.sessionId));
+        }
+        await client.database
+          .update(imMessageDeliveries)
+          .set({ nextAttemptAt: new Date(clock - 1) })
+          .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+        const original = await deliveryRows(client.database, fixture);
+        await worker.runOnce();
+        if (failure !== "session-ended") {
+          expect(diagnostic).toHaveBeenCalledWith(
+            failure === "offline" ? "IM_DELIVERY_RUNTIME_UNAVAILABLE" : "IM_DELIVERY_RECOVERY_FAILED",
+          );
+        }
+        const unreported = await deliveryRows(client.database, fixture);
+        for (const elapsed of [5_000, 60_000, 86_400_000]) {
+          clock += elapsed;
+          await runImDeliveryExpiry(client.database, janitorOptions(new Date(clock)));
+          expect(await deliveryRows(client.database, fixture)).toEqual(unreported);
+        }
+        await worker.runOnce();
+        disconnected = false;
+        await connect();
+        clock += 30_000;
+        await worker.runOnce();
+        expect((await deliveryRows(client.database, fixture)).children).toEqual(original.children);
+        if (failure !== "session-ended")
+          expect(await requestReconcile.mock.results.at(-1)?.value).toMatchObject({ status: "busy" });
+        const failed = turnReport(fixture, "failed", "turn_timeout");
+        await expect(
+          custody.recordTurn(failed, { ...fixture.context, instanceId: randomUUID() }),
+        ).resolves.toBeUndefined();
+        await expect(
+          custody.recordTurn(
+            turnReport({ ...fixture, rootTurnId: randomUUID() }, "failed", "turn_timeout"),
+            fixture.context,
+          ),
+        ).resolves.toBe("conflict");
+        expect((await deliveryRows(client.database, fixture)).children).toEqual(original.children);
+
+        const report = turnReport(fixture, "completed");
+        await expect(custody.recordTurn(report, fixture.context)).resolves.toBe("recorded");
+        await expect(custody.recordTurn({ ...report, requestId: randomUUID() }, fixture.context)).resolves.toBe(
+          "already_recorded",
+        );
+        await runImDeliveryExpiry(client.database, janitorOptions(new Date(clock)));
+        const settled = await deliveryRows(client.database, fixture);
+        expect(settled.root).toMatchObject({
+          state: "accepted",
+          turnId: fixture.rootTurnId,
+          inputHash: computeDirectInputHash(fixture.rootRequest),
+          reportOwnerInstanceId: fixture.context.instanceId,
+          reportedAt: new Date(clock),
+          resultHash: report.resultHash,
+          turnReport: report,
+        });
+        expect(settled.children).toEqual(original.children);
+        await worker.runOnce();
+        expect(requestDelivery).not.toHaveBeenCalled();
+        expect(requestSteer).not.toHaveBeenCalled();
+      } finally {
+        worker.stop();
+      }
+    },
+  );
 
   it("requeues a timed-out target", async () => {
     const timedOut = await createFixture(client.database);
@@ -425,17 +546,7 @@ async function runRecoveryWorker(
 
 async function deliveryRows(database: ReturnType<typeof createDatabaseClient>["database"], fixture: Fixture) {
   const rows = await database
-    .select({
-      id: imMessageDeliveries.id,
-      sessionId: imMessageDeliveries.sessionId,
-      placementGeneration: imMessageDeliveries.placementGeneration,
-      state: imMessageDeliveries.state,
-      steerTargetDeliveryId: imMessageDeliveries.steerTargetDeliveryId,
-      reportedAt: imMessageDeliveries.reportedAt,
-      attemptCount: imMessageDeliveries.attemptCount,
-      nextAttemptAt: imMessageDeliveries.nextAttemptAt,
-      lastErrorCode: imMessageDeliveries.lastErrorCode,
-    })
+    .select()
     .from(imMessageDeliveries)
     .where(
       inArray(imMessageDeliveries.messageId, [

@@ -20,6 +20,7 @@ import {
   mcpCatalogSearch,
   searchMcpCatalog,
 } from "@opentag/mcp-presets";
+import { MCP_LEGACY_PROTOCOL_VERSIONS } from "@opentag/shared";
 import { z } from "zod";
 import { type McpInboundHandlers, toolErrorResult } from "../mcp/mcp-inbound-protocol.js";
 
@@ -29,6 +30,16 @@ export const PUBLIC_CATALOG_SERVER_INFO = {
   title: "OpenTag MCP Catalog",
   version: "1",
 } as const;
+
+/**
+ * The revisions this endpoint answers: the legacy handshake only.
+ *
+ * The modern revision requires per-request version metadata, mirrored `MCP-Protocol-Version` /
+ * `Mcp-Method` / `Mcp-Name` headers, and a `resultType` on every result. None of that is implemented
+ * here, so advertising it would strand a conforming client mid-flow. Listing only the legacy
+ * revisions makes a negotiating client fall back to `initialize`, which this endpoint does implement.
+ */
+export const PUBLIC_CATALOG_SUPPORTED_VERSIONS = MCP_LEGACY_PROTOCOL_VERSIONS;
 
 const LOCALES = ["en", "zh"] as const;
 const DEFAULT_LOCALE: McpCatalogLocale = "en";
@@ -94,6 +105,18 @@ const TOOLS = [
   },
 ] as const;
 
+const SHELL_SAFE = /^[\w@%+=:,./-]+$/;
+
+/**
+ * Quote one argument for a POSIX shell.
+ *
+ * A catalog URL may carry a query string — `https://mcp.atlassian.com/v2/mcp?tools=all` — and an
+ * unquoted `?` is a glob in zsh, so the pasted command fails before `claude` ever runs.
+ */
+function shellQuote(value: string): string {
+  return SHELL_SAFE.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
+}
+
 /** An empty `authScheme` is a fact — "send the key with no prefix" — so presence is tested, not truthiness. */
 function stringField(value: string | undefined, key: string): Record<string, string> {
   return value === undefined ? {} : { [key]: value };
@@ -155,7 +178,8 @@ export function projectCatalogEntry(entry: McpCatalogEntry, locale: McpCatalogLo
         }
       : {}),
     config: url === undefined ? null : { mcpServers: { [entry.name]: { type: "http", url, ...headers } } },
-    installCommand: url === undefined ? null : `claude mcp add --transport http ${entry.name} ${url}`,
+    installCommand:
+      url === undefined ? null : `claude mcp add --transport http ${shellQuote(entry.name)} ${shellQuote(url)}`,
   };
 }
 
@@ -163,10 +187,24 @@ function jsonResult(payload: unknown): unknown {
   return { content: [{ type: "text", text: JSON.stringify(payload) }] };
 }
 
-/** One argument failure, described to the model rather than thrown: it can retry with better arguments. */
+/**
+ * A failure the model can act on, as a tool result rather than a transport error.
+ *
+ * The text is JSON like every successful result, so one consumer contract covers both: the shape is
+ * `{ error: { code, message, … } }` and `isError` is true.
+ */
+function toolErrorJson(code: string, message: string, extra: Record<string, unknown> = {}): unknown {
+  return toolErrorResult(JSON.stringify({ error: { code, message, ...extra } }));
+}
+
+/** One argument failure: the model can read which argument was wrong and retry. */
 function invalidArguments(error: z.ZodError): unknown {
-  const detail = error.issues.map((issue) => `${issue.path.join(".") || "arguments"}: ${issue.message}`).join("; ");
-  return toolErrorResult(`Invalid arguments: ${detail}`);
+  return toolErrorJson("invalid_arguments", "The tool arguments did not match its input schema", {
+    issues: error.issues.map((issue) => ({
+      path: issue.path.join(".") || "arguments",
+      message: issue.message,
+    })),
+  });
 }
 
 function searchServers(rawArguments: unknown): unknown {
@@ -182,7 +220,11 @@ function getServer(rawArguments: unknown): unknown {
   const parsed = GetServerArgumentsSchema.safeParse(rawArguments ?? {});
   if (!parsed.success) return invalidArguments(parsed.error);
   const entry = findMcpCatalogEntry(parsed.data.id);
-  if (!entry) return toolErrorResult(`No MCP Server "${parsed.data.id}" in the OpenTag catalog`);
+  if (!entry) {
+    return toolErrorJson("unknown_server", `No MCP Server "${parsed.data.id}" in the OpenTag catalog`, {
+      id: parsed.data.id,
+    });
+  }
   const locale = parsed.data.locale ?? DEFAULT_LOCALE;
   return jsonResult({
     ...projectCatalogEntry(entry, locale),
@@ -223,6 +265,7 @@ const HANDLERS: Record<string, (argumentsValue: unknown) => unknown> = {
 export function createPublicCatalogHandlers(): McpInboundHandlers {
   return {
     serverInfo: PUBLIC_CATALOG_SERVER_INFO,
+    supportedVersions: PUBLIC_CATALOG_SUPPORTED_VERSIONS,
     listTools: async () => ({
       tools: TOOLS.map((tool) => ({
         name: tool.name,
@@ -235,7 +278,7 @@ export function createPublicCatalogHandlers(): McpInboundHandlers {
       const handler = HANDLERS[name];
       /* An unknown tool is the model's mistake to read and correct: a tool result, not a transport failure. */
       if (!handler) {
-        return toolErrorResult(`Unknown tool "${name}". Available tools: ${Object.keys(HANDLERS).join(", ")}`);
+        return toolErrorJson("unknown_tool", `Unknown tool "${name}"`, { availableTools: Object.keys(HANDLERS) });
       }
       return handler(args);
     },

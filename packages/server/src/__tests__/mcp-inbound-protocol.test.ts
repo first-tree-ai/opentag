@@ -1,4 +1,8 @@
-import { MCP_LEGACY_PROTOCOL_VERSIONS, MCP_MODERN_PROTOCOL_VERSION } from "@opentag/shared";
+import {
+  MCP_LEGACY_PROTOCOL_VERSIONS,
+  MCP_MODERN_PROTOCOL_VERSION,
+  MCP_SUPPORTED_PROTOCOL_VERSIONS,
+} from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import {
   dispatchInboundRequest,
@@ -13,6 +17,7 @@ const SERVER_INFO = { name: "opentag-mcp", title: "OpenTag MCP", version: "1" };
 function handlers(overrides: Partial<McpInboundHandlers> = {}): McpInboundHandlers {
   return {
     serverInfo: SERVER_INFO,
+    supportedVersions: MCP_SUPPORTED_PROTOCOL_VERSIONS,
     listTools: async () => ({ tools: [], notes: [] }),
     callTool: async () => ({ content: [] }),
     ...overrides,
@@ -174,6 +179,28 @@ describe("tools/list", () => {
       }),
     );
     expect(resultOf(reply).tools).toEqual([{ name: "a__b", inputSchema: { type: "object" } }]);
+  });
+
+  /*
+   * An endpoint that does not implement the modern revision must not list it, or a negotiating client
+   * picks a revision whose transport contract the endpoint does not honour.
+   */
+  it("advertises only the revisions the endpoint implements", async () => {
+    const reply = await dispatchInboundRequest(
+      { jsonrpc: "2.0", id: 1, method: "server/discover" },
+      handlers({ supportedVersions: MCP_LEGACY_PROTOCOL_VERSIONS }),
+    );
+    const result = resultOf(reply);
+    expect(result.supportedVersions).toEqual([...MCP_LEGACY_PROTOCOL_VERSIONS]);
+    expect(result.protocolVersion).toBe(MCP_LEGACY_PROTOCOL_VERSIONS[0]);
+  });
+
+  it("never negotiates to the modern revision through the legacy handshake", async () => {
+    const reply = await dispatchInboundRequest(
+      { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: MCP_MODERN_PROTOCOL_VERSION } },
+      handlers({ supportedVersions: MCP_LEGACY_PROTOCOL_VERSIONS }),
+    );
+    expect(resultOf(reply).protocolVersion).toBe(MCP_LEGACY_PROTOCOL_VERSIONS[0]);
   });
 
   /* The catalogue is bounded and served whole, so a cursor would describe state that is not kept. */

@@ -31,32 +31,44 @@ endpoint serves the configuration view of the same public data, which is already
 | Caching | `Cache-Control: no-store` on every response. |
 | Rate limit | 120 requests per 60 seconds per client IP, answered with `429` and a JSON-RPC error body. |
 | Methods | `initialize`, `server/discover`, `ping`, `tools/list`, `tools/call`. Any other method is `404` with `-32601`. |
+| Protocol revisions | The three legacy revisions. `initialize` echoes a requested one it speaks and otherwise answers `2025-11-25`; `server/discover` lists the same set. |
 | Notifications | A request with no `id` is answered `202` with an empty body. |
 | `GET`, `DELETE` | `405` with `Allow: POST`. No server-initiated stream and no session exist to open or end. |
 | Server identity | `name: "opentag-catalog"`, `title: "OpenTag MCP Catalog"`, `version: "1"`. |
 
 The protocol layer in `packages/server/src/services/mcp/mcp-inbound-protocol.ts` is shared with the
 per-Agent [MCP gateway](mcp-server-integration.md#the-mcp-gateway). What differs between the two
-endpoints is only the handlers: their tools, their instructions, and the identity they report. Every
-reply is one JSON object; neither endpoint streams.
+endpoints is only the handlers: their tools, their instructions, the identity they report, and the
+revisions they declare. Every reply is one JSON object; neither endpoint streams.
+
+The modern revision is deliberately absent from that set. It requires per-request version metadata, mirrored
+`MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name` headers, and a `resultType` on every result.
+Advertising a revision without implementing its transport contract strands a conforming client
+mid-flow, which is worse than not offering it: with only the legacy revisions listed, a negotiating
+client falls back to `initialize`, which this endpoint does implement. An endpoint declares its set
+through its handlers, so the gateway's behaviour is its own decision, not a property of the protocol
+module.
 
 The request budget is enforced in an `onRequest` hook, before the body is parsed, so a caller over
 budget costs no parse.
 
 ## Tools
 
-Every tool answers with a single `text` content block containing JSON, so a client parses one
-document. There is no separate `outputSchema`.
+Every tool answers with one `text` content block containing a JSON document, so a client parses one
+thing on every path. There is no separate `outputSchema`.
+
+A successful call returns its result object. A failure the model can act on returns `isError: true`
+and `{ "error": { "code", "message", … } }`, where `code` is one of `invalid_arguments` (with the
+rejected `issues`), `unknown_server` (with the `id`), or `unknown_tool` (with the `availableTools`).
+That distinction is the point: a transport error ends the model's turn, while a result it can read
+lets it retry with better arguments. A transport failure is the only failure that is not a text
+block, and it is a JSON-RPC error.
 
 | Tool | Arguments | Result |
 | --- | --- | --- |
 | `search_mcp_servers` | `query?`, `category?`, `locale?` (`en` or `zh`, default `en`), `limit?` (1–50, default 10, clamped rather than refused) | `{ total, results: Entry[] }`; an empty `query` lists every active Server in catalog order, and `total` is the match count before `limit` |
 | `get_mcp_server` | `id` (required; `notion` and `mcp/notion` both resolve), `locale?` | one entry plus `prerequisites`, `platforms`, `remotes`, and `tools` |
 | `list_mcp_categories` | none | `{ categories: [{ id, label, order, activeCount, installableCount }] }` |
-
-A failure a model can act on — an unknown `id`, an unknown tool, arguments a schema rejects — is a
-tool result with `isError: true`, not a JSON-RPC error. A transport failure ends the model's turn; a
-result it can read lets it retry with better arguments.
 
 ## Entry shape
 
@@ -69,8 +81,9 @@ result it can read lets it retry with better arguments.
   and `installCommand` are `null` when it is not, and `installable` says which case applies.
 - `config` is `{ "mcpServers": { "<name>": { "type": "http", "url": "<url>" } } }`, plus `headers`
   when the entry declares static `role: extra` headers, and `installCommand` is
-  `claude mcp add --transport http <name> <url>`. A pasted config must work, so a connection field an
-  entry carries is never dropped here.
+  `claude mcp add --transport http <name> <url>`, POSIX-shell quoted so a URL that carries a query
+  string is safe to paste. A pasted config must work, so a connection field an entry carries is never
+  dropped here.
 - `authHeader` and `authScheme` name where a key goes and what prefix it takes. An empty `authScheme`
   is a fact — "send the key with no prefix" — not an absent field.
 - `packages` carries identity only: registry type, identifier, version, runtime hint, transport, and

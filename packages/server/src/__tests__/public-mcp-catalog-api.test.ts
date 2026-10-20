@@ -2,7 +2,6 @@ import { MCP_CATALOG_ENTRIES, type McpCatalogEntry } from "@opentag/mcp-presets"
 import {
   MCP_LEGACY_PROTOCOL_VERSIONS,
   MCP_MODERN_PROTOCOL_VERSION,
-  MCP_SUPPORTED_PROTOCOL_VERSIONS,
   PUBLIC_MCP_CATALOG_PATH,
   PUBLIC_MCP_CATALOG_REQUEST_MAX_BYTES,
 } from "@opentag/shared";
@@ -71,7 +70,17 @@ describe("public catalog MCP endpoint: handshake", () => {
     expect(instructions).toContain("search_mcp_servers");
   });
 
-  it("falls back to the newest legacy version for a version it does not speak", async () => {
+  it("never answers the modern revision through the legacy handshake", async () => {
+    const response = await rpc(newApp(), {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: MCP_MODERN_PROTOCOL_VERSION },
+    });
+    expect(response.json().result.protocolVersion).toBe(MCP_LEGACY_PROTOCOL_VERSIONS[0]);
+  });
+
+  it("falls back to the newest supported legacy version for a version it does not speak", async () => {
     const response = await rpc(newApp(), {
       jsonrpc: "2.0",
       id: 1,
@@ -81,11 +90,17 @@ describe("public catalog MCP endpoint: handshake", () => {
     expect(response.json().result.protocolVersion).toBe(MCP_LEGACY_PROTOCOL_VERSIONS[0]);
   });
 
-  it("reports every supported version on modern discovery", async () => {
+  /*
+   * The modern revision needs `resultType`, per-request version metadata, and mirrored HTTP headers.
+   * This endpoint implements none of them, so it must not list the revision: a negotiating client
+   * then falls back to `initialize`, which it does implement.
+   */
+  it("advertises only the revisions it implements", async () => {
     const response = await rpc(newApp(), { jsonrpc: "2.0", id: 1, method: "server/discover" });
     const result = response.json().result as Record<string, unknown>;
-    expect(result.supportedVersions).toEqual([...MCP_SUPPORTED_PROTOCOL_VERSIONS]);
-    expect(result.protocolVersion).toBe(MCP_MODERN_PROTOCOL_VERSION);
+    expect(result.supportedVersions).toEqual([...MCP_LEGACY_PROTOCOL_VERSIONS]);
+    expect(result.supportedVersions).not.toContain(MCP_MODERN_PROTOCOL_VERSION);
+    expect(result.protocolVersion).toBe(MCP_LEGACY_PROTOCOL_VERSIONS[0]);
     expect((result._meta as Record<string, unknown>)[MCP_META_SERVER_INFO]).toEqual({
       name: "opentag-catalog",
       title: "OpenTag MCP Catalog",
@@ -190,6 +205,19 @@ describe("public catalog MCP endpoint: tools", () => {
     expect(results.length).toBe(Math.min(50, Number(payload.total)));
   });
 
+  /*
+   * Pasting the command must work. A catalog URL may carry a query string, and an unquoted `?` is a
+   * glob in zsh, so the URL is quoted whenever it is not a bare path.
+   */
+  it("quotes a generated command whose URL carries a query", async () => {
+    for (const id of ["atlassian", "exa"]) {
+      const payload = payloadOf(await call(newApp(), "get_mcp_server", { id }));
+      const url = payload.url as string;
+      expect(url).toContain("?");
+      expect(payload.installCommand).toBe(`claude mcp add --transport http ${payload.name} '${url}'`);
+    }
+  });
+
   /* An empty `authScheme` means "send the key with no prefix"; dropping it would hide that. */
   it("keeps a key-auth scheme that is deliberately empty", async () => {
     const payload = payloadOf(await call(newApp(), "get_mcp_server", { id: "exa" }));
@@ -205,7 +233,7 @@ describe("public catalog MCP endpoint: tools", () => {
     }
   });
 
-  it("answers an unknown Server as a tool error, not a transport error", async () => {
+  it("answers an unknown Server as a JSON tool error, not a transport error", async () => {
     const response = await rpc(newApp(), {
       jsonrpc: "2.0",
       id: 1,
@@ -215,18 +243,29 @@ describe("public catalog MCP endpoint: tools", () => {
     expect(response.statusCode).toBe(200);
     const result = response.json().result as { isError?: boolean; content: { text: string }[] };
     expect(result.isError).toBe(true);
-    expect(result.content[0]?.text).toContain("not-a-server");
+    const error = JSON.parse(result.content[0]?.text ?? "null") as { error: { code: string; id: string } };
+    expect(error.error.code).toBe("unknown_server");
+    expect(error.error.id).toBe("not-a-server");
   });
 
-  it("answers a missing required argument as a tool error", async () => {
+  it("answers a missing required argument as a JSON tool error", async () => {
     const body = await call(newApp(), "get_mcp_server", {});
     expect(body.result?.isError).toBe(true);
-    expect(body.result?.content[0]?.text).toContain("id");
+    const error = JSON.parse(body.result?.content[0]?.text ?? "null") as {
+      error: { code: string; issues: { path: string }[] };
+    };
+    expect(error.error.code).toBe("invalid_arguments");
+    expect(error.error.issues.map((issue) => issue.path)).toContain("id");
   });
 
-  it("answers an unknown tool as a tool error", async () => {
+  it("answers an unknown tool as a JSON tool error", async () => {
     const body = await call(newApp(), "delete_everything");
     expect(body.result?.isError).toBe(true);
+    const error = JSON.parse(body.result?.content[0]?.text ?? "null") as {
+      error: { code: string; availableTools: string[] };
+    };
+    expect(error.error.code).toBe("unknown_tool");
+    expect(error.error.availableTools).toContain("search_mcp_servers");
   });
 
   it("rejects a tools/call without a tool name", async () => {
@@ -251,6 +290,11 @@ describe("public catalog MCP endpoint: tools", () => {
  * one entry happens to have: the day an entry gains a static header or a flat auth header, this fails
  * instead of serving a config that silently omits it.
  */
+/** The shell-safe form a generated command must use: a URL with a query cannot be left bare. */
+function shellSafe(value: string): string {
+  return /^[A-Za-z0-9._:/@%+=-]+$/.test(value) ? value : `'${value}'`;
+}
+
 /** One installable entry's connection fields, as a client pasting its config would receive them. */
 function expectProjectedConnectionFields(entry: McpCatalogEntry): void {
   const projected = projectCatalogEntry(entry, "en");
@@ -258,7 +302,7 @@ function expectProjectedConnectionFields(entry: McpCatalogEntry): void {
   const server = config?.mcpServers[entry.name] as Record<string, unknown>;
   expect(projected.installable).toBe(true);
   expect(projected.url).toBe(entry.url);
-  expect(projected.installCommand).toBe(`claude mcp add --transport http ${entry.name} ${entry.url}`);
+  expect(projected.installCommand).toBe(`claude mcp add --transport http ${entry.name} ${shellSafe(entry.url ?? "")}`);
   expect(server.type).toBe("http");
   expect(server.url).toBe(entry.url);
   expect(server.headers).toEqual(entry.extraHeaders);

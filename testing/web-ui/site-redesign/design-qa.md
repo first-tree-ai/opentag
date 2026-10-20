@@ -59,6 +59,11 @@ control borders and status indicators readable.
 - **P2, fixed: primary pressed-state contrast.** The first pressed fill failed
   normal-text contrast. The pressed state now uses the reviewed hover teal and
   retains charcoal labels. Palette tests pass.
+- **P2, fixed: icon-button padding.** Final review found that the shared 16px
+  horizontal padding also applied to square icon buttons. Icon-only buttons now
+  use zero horizontal padding. The [connector dialog](implementation/connector-dialog.png)
+  was checked after merging main: its compact close button measures 32px, with a
+  16px icon and zero horizontal padding; closing returns focus to Add custom.
 
 ## Fidelity review
 

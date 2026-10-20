@@ -48,6 +48,7 @@
 }
 .ui-button--icon {
   width: var(--ui-control-height);
+  padding-inline: 0;
 }
 .ui-button--compact.ui-button--icon {
   width: var(--ui-control-height-compact);
@@ -113,6 +114,8 @@
 }
 .ui-button {
   font-weight: 600;
+}
+.ui-button:not(.ui-button--icon) {
   padding-inline: 16px;
 }
 .ui-control {

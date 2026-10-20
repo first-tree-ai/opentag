@@ -8,17 +8,16 @@ OpenTag uses Kumo `2.13.1` with Tailwind CSS v4. `src/app.css` is the only
 application stylesheet entry: it registers Kumo's distribution as a Tailwind
 source, imports Kumo's Tailwind styles before Tailwind itself, then loads the
 generated OpenTag theme and shared primitive recipes. The small shell/browser boundary follows in app.css.
-The authenticated application shell keeps its navigation and scroll viewport
-fluid. Its route outlet sits inside a centered `max-w-5xl` content frame, so
-Application pages share one 1024px maximum width while still filling the available
-space on smaller screens. The frame is also the named `content` container;
-page grids respond to its available width instead of the viewport width that
-still includes the Sidebar. Login and onboarding live outside that shell and
-keep their task-specific layouts. Horizontal overflow belongs to the nearest
-table, code, or log surface rather than the application scroll viewport.
+The authenticated shell keeps one mounted route outlet and scroll viewport. The named `content` container sits inside
+an outer frame capped at 1400px for Agent pages (40px vertical padding, horizontal padding clamped between 24px and
+100px at 5vw) and 1280px for workspace pages (40px/32px padding). At 950px and below Agent content uses 28px/24px;
+at 640px and below both frames use 24px/16px. Login and onboarding retain their task-specific layouts. Horizontal
+overflow belongs to the nearest table, code, log, or navigation region.
 
-The workspace has a full-height 72px rail, expanding to 240px for an Agent. Mobile uses the existing compact header
-and drawer without remounting route content.
+The workspace rail is 72px, or 56px at 640px and below. Agent navigation is 240px, becomes 200px between 641px and
+950px, and moves above the page with horizontally scrolling links at 640px and below. Agent switching and the account
+menu remain reachable in the compact top row. CSS changes layout without remounting the route or its unsaved drafts.
+`SidebarProvider` uses `collapsible="none"`; there is no mobile drawer or modal focus trap on the inline navigation.
 
 ## Component boundary
 
@@ -30,8 +29,8 @@ existing product vocabulary to Kumo primitives:
   to `ghost`.
 - `Field` delegates label, description, and error rendering to Kumo Field.
 - `StatusIndicator` uses Kumo Badge dot appearance. Informational status uses
-  the neutral semantic token; brand violet is not used for operational state.
-- `Switch` and `Switch.Item` use brand violet when checked and warm-neutral colors when
+  the neutral semantic token; brand teal is not used for operational state.
+- `Switch` and `Switch.Item` use brand teal when checked and neutral colors when
   unchecked. The adapter replaces Kumo's fixed track colors with semantic tokens while
   preserving Kumo sizing, shape, motion, focus, disabled, and busy behavior. Color variants
   are not exposed to callers; operational status text keeps its own semantics.
@@ -63,7 +62,8 @@ expose Kumo-specific types or composition to callers.
 [design.md](../../../../design.md) is the visual specification. `design.tokens.ts` is the canonical palette and measurement
 source; `pnpm theme:generate` produces `theme.css`. The repository check rejects stale output. `primitives.css`
 applies the shared Manrope hierarchy, control sizing, flat button fills, and surface radii through adapter classes.
-Violet is reserved for actions and selection. Kumo success, warning, danger, and info semantics remain independent.
+Primary actions use teal with charcoal labels; links use blue; selected rows use neutral grey with charcoal text.
+Focus uses slate. Success, warning, danger, and info retain independent semantic roles.
 Generic recessed, tint, table-row, disabled, and hover surfaces stay neutral; `--brand-soft` is reserved for explicit
 selected/current states. The button adapter assigns the same reviewed fill to Kumo's gradient endpoints and ring,
 removing the decorative treatment. Tests verify normal text, action fills, and meaningful control boundaries.
@@ -88,52 +88,35 @@ it does not attempt to detect arbitrary injected styles or other DOM modificatio
 Kumo status tokens are not part of the notice's local theme scope, so the wrapper additionally
 pins the banner's warning text and tint through component-local Tailwind arbitrary properties
 (with `color-scheme: light`) on existing Kumo/Tailwind light palette primitives — otherwise a
-generic dark mode written onto the root re-themes the banner into poor contrast over the warm
-light page.
+generic dark mode written onto the root re-themes the banner into poor contrast over the light page.
 
 ## Router links and overlays
 
 `app.tsx` installs a Kumo `LinkProvider`. It maps internal `href` values to
-React Router and leaves external URLs on native navigation. Product code can
-still use React Router `Link` when route state is required. Keep dialogs mounted
+TanStack Router and leaves external URLs on native navigation. Product code can
+still use TanStack Router `Link` when route state is required. Keep dialogs mounted
 and drive visibility with `open`/`onOpenChange`; this preserves Base UI focus
 management and Escape behaviour.
 
-## Local dependency patch
+## Select and dependency compatibility
 
-[`patches/@cloudflare__kumo@2.13.1.patch`](../../../../patches/@cloudflare__kumo@2.13.1.patch)
-adds `collapsible` to `SidebarProvider`'s context memo dependencies. When the viewport
-switches from desktop to mobile, Kumo's media subscription can run before AppShell's
-subscription changes `collapsible` from `"none"` to `"icon"`. Without the dependency,
-the context retains `"none"` and the mobile navigation can ignore close actions.
-Updating the memo preserves the mounted page and its unsaved input.
+Select remains Kumo/Base UI behind the semantic adapter. Its trigger uses the website chevron and control recipe;
+options use neutral selection and slate keyboard focus. The adapter preserves numeric and empty-string values,
+multiple selection, field validation, labels, and caller-provided trigger rendering. No shadcn dependency is required
+for these recipes. Shared Tailwind type sizes override Kumo's smaller defaults (14px small, 16px reading text).
 
-This is a local patch; no upstream issue or pull request has been submitted as part
-of this change. [`sidebar.test.tsx`](./sidebar.test.tsx) reproduces the subscription
-ordering and checks that closing mobile navigation preserves the page's draft.
-When upgrading Kumo, verify that this regression passes without the patch before
-removing the patch file and its `pnpm.patchedDependencies` entry and regenerating
-the lockfile. Also verify desktop-to-mobile-to-desktop navigation with unsaved input.
+The existing Kumo dependency patch retains its `collapsible` context memo correction for other callers. The current
+shell keeps navigation inline at every breakpoint and does not switch that property in response to media queries.
 
-The patch is tied to the exact Kumo version and must be reviewed on upgrades.
-Every container install context must include `patches/`, even for filtered installs
-that exclude Kumo: pnpm hashes the declared patch files before dependency selection.
+## Website reference and accessibility
 
-## Verification
+The imported root `design.md` describes the website. Its framework instructions and relative links belong to the site
+repository; this document and the Web UI contract define application ownership and behavior. Production data, recovery,
+presets, save/discard, and unsaved-navigation protection remain functional. Cat assets and custom-avatar behavior are
+unchanged. Official website artwork is documented in `src/assets/opentag/README.md`.
 
-Run from the repository root:
-
-```bash
-pnpm install --frozen-lockfile
-pnpm check
-pnpm build
-pnpm typecheck
-pnpm test
-pnpm test:e2e:smoke
-```
-
-Static contract tests reject legacy stylesheet imports, legacy token and class
-names, tracking utility classes, `font-bold`, application-level interactive
-HTML controls, feature-level Kumo imports, and unreviewed stylesheet seams.
-Browser visual and accessibility checks must use local fixtures and must not call
-public services.
+The reference's pale input boundary is strengthened to `#8a8e95` for a 3:1 control boundary. Supporting body text uses
+`#6b6e75`; the lighter decorative muted token is not used for normal text. Selected rows use foreground text.
+Orange-red `#e5502e` is used for status dots; destructive text/buttons retain the accessible darker red `#b42318`.
+Primary-button foreground has its own token; inverse text elsewhere remains white. These are accessibility treatments,
+not a second visual direction. The light palette contrast tests cover text, buttons, boundaries, and focus.

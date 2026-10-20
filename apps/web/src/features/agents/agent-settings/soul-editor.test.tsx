@@ -70,7 +70,7 @@ describe("Soul editor height", () => {
     if (originalHeight) Object.defineProperty(window, "innerHeight", originalHeight);
   });
 
-  it("caps automatic growth at 24 rows and reserves actions when the window shrinks", () => {
+  it("reserves actions and keeps the preview minimum height when the window shrinks", () => {
     render(<EditorWithActions value="Long working principles" />);
     for (const observer of observers) observer.flush();
     const editor = screen.getByRole("textbox", { name: "Soul" }) as HTMLTextAreaElement;
@@ -80,7 +80,7 @@ describe("Soul editor height", () => {
     expect(editor.style.height).toBe("496px");
     Object.defineProperty(window, "innerHeight", { configurable: true, value: 640 });
     fireEvent(window, new Event("resize"));
-    expect(editor.style.height).toBe("368px");
+    expect(editor.style.height).toBe("420px");
     expect(editor.style.overflowY).toBe("auto");
   });
 

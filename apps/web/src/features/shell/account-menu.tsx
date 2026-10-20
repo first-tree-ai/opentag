@@ -51,8 +51,8 @@ export function AccountMenu({
         className="app-account-trigger justify-start [&>div]:translate-none"
         data-compact={placement === "dock" ? "true" : undefined}
         icon={
-          <span className="app-account-icon grid size-6 shrink-0 place-items-center" aria-hidden="true">
-            <span className="app-account-avatar grid size-6 place-items-center rounded-full bg-kumo-tint text-xs font-medium">
+          <span className="app-account-icon grid size-8 shrink-0 place-items-center" aria-hidden="true">
+            <span className="app-account-avatar grid size-8 place-items-center rounded-full bg-kumo-tint text-xs font-medium">
               {initials(me.user.displayName)}
             </span>
           </span>

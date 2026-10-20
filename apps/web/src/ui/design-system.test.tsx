@@ -90,7 +90,7 @@ describe("Kumo semantic adapter", () => {
     );
     const primary = screen.getByRole("button", { name: "Create" });
     const danger = screen.getByRole("button", { name: "Delete" });
-    expect(primary.className).toContain("[--kumo-button-emphasis-bg:var(--opentag-button-primary-bg,#5638d8)]");
+    expect(primary.className).toContain("[--kumo-button-emphasis-bg:var(--opentag-button-primary-bg,#00cbb4)]");
     expect(danger.className).toContain("[--kumo-button-emphasis-bg:var(--opentag-button-danger-bg,#b42318)]");
     expect(primary.style.getPropertyValue("--kumo-button-emphasis-bg")).toBe(
       `var(--opentag-button-primary-bg, ${designTokens.light.action})`,

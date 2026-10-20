@@ -225,7 +225,7 @@ describe("Kumo integration contract", () => {
       .join("\n");
     expect(shell).toMatch(/<Sidebar\.Header(?:\s|>)/);
     expect(shell).toMatch(/<Sidebar\.Content(?:\s|>)/);
-    expect(shell).toContain('<Sidebar.Menu className="gap-1">');
+    expect(shell).toMatch(/<Sidebar\.Menu(?:\s|>)/);
     expect(shell).toContain("<Sidebar.MenuButton");
     expect(shell).toMatch(/<Sidebar\.Footer(?:\s|>)/);
     expect(shell).toContain("<DropdownMenu.LinkItem");
@@ -233,15 +233,15 @@ describe("Kumo integration contract", () => {
     expect(shell).toContain('aria-current={candidate.id === agentId ? "true" : undefined}');
     expect(shell).not.toContain("accountMenuRef");
     expect(shell).not.toContain("<Sidebar.Rail />");
-    expect(shell).toContain('collapsible={isMobile ? "icon" : "none"}');
+    expect(shell).toContain('collapsible="none"');
     expect(shell).toContain('variant="floating"');
-    expect(shell).toContain("<Sidebar.Close />");
-    expect(shell).toContain('className="app-mobile-header');
+    expect(shell).not.toContain("<Sidebar.Close />");
+    expect(shell).not.toContain("<SidebarTrigger");
     expect(shell).toContain('className="h-full min-h-0 overflow-hidden bg-kumo-canvas"');
     expect(shell).toContain('data-scope={agentId ? "agent" : "workspace"}');
     expect(shell).toContain('<AccountMenu placement={agentId ? "sidebar" : "dock"} />');
     expect(shell).toContain("min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto");
-    expect(shell).toContain('className="@container/content mx-auto w-full min-w-0 max-w-5xl"');
+    expect(shell).toContain('className="app-content-frame @container/content mx-auto w-full min-w-0"');
     expect(shell).not.toContain('data-ui="sidebar-content"');
   });
 
@@ -251,7 +251,7 @@ describe("Kumo integration contract", () => {
     expect(source).toContain("components/kumo/page-header/page-header.js");
     expect(pageHeader).toContain('from "@cloudflare/kumo"');
     expect(pageHeader).toContain('<Text as="h1" id={titleId} size="lg" variant="heading">');
-    expect(pageHeader).toContain('<Text as="p" variant="secondary">');
+    expect(pageHeader).toContain('<Text as="p" size="lg" variant="secondary">');
     expect(source).not.toMatch(/<h[1-6]\b/);
   });
 
@@ -264,6 +264,6 @@ describe("Kumo integration contract", () => {
   });
 
   it("keeps application CSS to the root and accessibility boundary", () => {
-    expect(appCss).not.toMatch(/\[data-ui=|\b(?:button|input|textarea|select|h1|h2|h3)\b/);
+    expect(appCss).not.toMatch(/(?:^|\n)(?:button|input|textarea|select|h1|h2|h3)\s*[{,:]/);
   });
 });

@@ -1,5 +1,5 @@
 import type { MeResponse } from "@opentag/shared/browser";
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../../__tests__/support/router.js";
 import { browserApi } from "../../api.js";
@@ -46,15 +46,6 @@ function mobileViewport(): void {
       removeListener: () => undefined,
       dispatchEvent: () => false,
     }),
-  });
-}
-
-/** The mobile drawer, which is the sidebar element the focus trap is attached to. */
-async function findDrawer(): Promise<HTMLElement> {
-  return waitFor(() => {
-    const drawer = document.querySelector<HTMLElement>(".app-navigation");
-    if (!drawer) throw new Error("the drawer is not mounted");
-    return drawer;
   });
 }
 
@@ -172,99 +163,40 @@ describe("agent scope from the pathname", () => {
   });
 });
 
-/**
- * The narrow layout. It changes what exists rather than only what is visible: the drawer, the mobile
- * header, and the focus trap that keeps Tab inside the open drawer.
- */
+/** Mobile uses the same mounted navigation, so drafts and focus survive viewport changes. */
 describe("app shell on a narrow viewport", () => {
-  afterEach(() => {
+  afterEach(desktopViewport);
+
+  it("offers inline navigation and account access without a drawer", async () => {
+    mobileViewport();
+    vi.spyOn(browserApi, "internalToolsOffered").mockResolvedValue(false);
+    await renderShell(`/agents/${AGENT_ID}`);
+    expect(await screen.findByRole("link", { name: "Soul" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Switch Agent" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Open Agent navigation" })).toBeNull();
+    await openAccountMenu();
+    expect(screen.getByRole("menuitem", { name: "Computer" })).toBeTruthy();
+  });
+
+  it("retains the mounted navigation and content when the viewport changes", async () => {
+    mobileViewport();
+    vi.spyOn(browserApi, "internalToolsOffered").mockResolvedValue(false);
+    await renderShell(`/agents/${AGENT_ID}`);
+    const soul = await screen.findByRole("link", { name: "Soul" });
+    const content = document.querySelector("main");
     desktopViewport();
+    fireEvent(window, new Event("resize"));
+    expect(screen.getByRole("link", { name: "Soul" })).toBe(soul);
+    expect(document.querySelector("main")).toBe(content);
   });
 
-  it("collapses the sidebar to icons and offers the drawer trigger on an Agent page", async () => {
+  it("returns to the workspace rail when leaving the Agent", async () => {
     mobileViewport();
     vi.spyOn(browserApi, "internalToolsOffered").mockResolvedValue(false);
     await renderShell(`/agents/${AGENT_ID}`);
-
-    expect(await screen.findByRole("link", { name: "All Agents" })).toBeTruthy();
-    expect(document.querySelector(".app-mobile-header")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Open Agent navigation" })).toBeTruthy();
-    // The sidebar collapses to icons on a narrow viewport, which is what the trigger opens.
-    expect(document.querySelector('[data-sidebar="collapsible"]')?.getAttribute("data-collapsible")).not.toBeNull();
-  });
-
-  it("keeps the drawer closed to Tab by wrapping from the last control back to the first", async () => {
-    mobileViewport();
-    vi.spyOn(browserApi, "internalToolsOffered").mockResolvedValue(false);
-    await renderShell(`/agents/${AGENT_ID}`);
-
-    // The drawer is the sidebar itself, which carries the focus trap while the layout is narrow.
-    const drawer = await findDrawer();
-    const controls = [...drawer.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), [tabindex="0"]')];
-    expect(controls.length).toBeGreaterThan(1);
-    const first = controls[0] as HTMLElement;
-    const last = controls.at(-1) as HTMLElement;
-    // jsdom reports no client rects, so the guard would drop every control; give them one.
-    for (const node of controls) vi.spyOn(node, "getClientRects").mockReturnValue([{}] as unknown as DOMRectList);
-
-    last.focus();
-    fireEvent.keyDown(drawer, { key: "Tab" });
-    expect(document.activeElement).toBe(first);
-
-    first.focus();
-    fireEvent.keyDown(drawer, { key: "Tab", shiftKey: true });
-    expect(document.activeElement).toBe(last);
-  });
-
-  it("leaves Tab alone while focus is not on the drawer's boundary", async () => {
-    mobileViewport();
-    vi.spyOn(browserApi, "internalToolsOffered").mockResolvedValue(false);
-    await renderShell(`/agents/${AGENT_ID}`);
-
-    const drawer = await findDrawer();
-    const controls = [...drawer.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), [tabindex="0"]')];
-    for (const node of controls) vi.spyOn(node, "getClientRects").mockReturnValue([{}] as unknown as DOMRectList);
-
-    (controls[0] as HTMLElement).focus();
-    // A forward Tab from the first control is the browser's own business, not the trap's.
-    fireEvent.keyDown(drawer, { key: "Tab" });
-    expect(document.activeElement).toBe(controls[0]);
-  });
-
-  it("ignores a key the focus trap does not own", async () => {
-    mobileViewport();
-    vi.spyOn(browserApi, "internalToolsOffered").mockResolvedValue(false);
-    await renderShell(`/agents/${AGENT_ID}`);
-
-    const drawer = await findDrawer();
-    (
-      drawer.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), [tabindex="0"]')[0] as HTMLElement
-    )?.focus();
-
-    expect(() => fireEvent.keyDown(drawer, { key: "Escape" })).not.toThrow();
-  });
-
-  it("dismisses the drawer and retires the outgoing Agent once the reader navigates to the Account scope", async () => {
-    mobileViewport();
-    vi.spyOn(browserApi, "internalToolsOffered").mockResolvedValue(false);
-    await renderShell(`/agents/${AGENT_ID}`);
-
-    // The Agent navigation resolves lazily, so it is what proves the Agent scope was mounted.
-    expect(await screen.findByRole("button", { name: "Open Agent navigation" })).toBeTruthy();
-
+    await screen.findByRole("link", { name: "Soul" });
     fireEvent.click(screen.getByRole("link", { name: "All Agents" }));
-
-    // Leaving an Agent keeps its labels briefly, then releases them; leaving the drawer behind
-    // would strand an open drawer on a page that has no Agent to navigate.
-    await waitFor(() => {
-      expect(document.querySelector('[data-ui="account-shell"]')).toBeTruthy();
-    });
-    expect(document.querySelector('[data-ui="account-shell"]')?.getAttribute("data-scope")).toBe("workspace");
-
-    // Leaving the Agent releases its labels after a brief fade, which is what the timer is for.
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 120));
-    });
-    expect(document.querySelector('[data-ui="account-shell"]')?.getAttribute("data-scope")).toBe("workspace");
+    await waitFor(() => expect(document.querySelector('[data-ui="account-shell"]')).toBeTruthy());
+    expect(document.querySelector(".app-agent-navigation")?.hasAttribute("inert")).toBe(true);
   });
 });

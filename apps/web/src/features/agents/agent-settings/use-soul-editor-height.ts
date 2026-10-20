@@ -50,7 +50,7 @@ export function useSoulEditorHeight(
       editor.style.minHeight = `${minimum}px`;
       editor.style.height = "auto";
       const contentHeight = editor.scrollHeight + borders;
-      const height = state.manualHeight ?? Math.min(maximum, contentHeight);
+      const height = state.manualHeight ?? Math.min(maximum, Math.max(state.viewportHeight * 0.56, contentHeight));
       editor.style.height = `${Math.max(minimum, height)}px`;
       editor.style.overflowY = contentHeight > editor.getBoundingClientRect().height ? "auto" : "hidden";
       state.height = editor.getBoundingClientRect().height;
@@ -110,8 +110,8 @@ function editorHeights(editor: HTMLTextAreaElement, exampleHeight: number) {
   const borders = pixels(style.borderTopWidth) + pixels(style.borderBottomWidth);
   const padding = pixels(style.paddingTop) + pixels(style.paddingBottom);
   return {
-    minimum: Math.max(12 * lineHeight + padding + borders, exampleHeight),
-    rowMaximum: 24 * lineHeight + padding + borders,
+    minimum: Math.max(window.matchMedia("(max-width: 640px)").matches ? 440 : 420, exampleHeight),
+    rowMaximum: Math.min(800, 24 * lineHeight + padding + borders),
     borders,
   };
 }

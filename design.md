@@ -1,151 +1,195 @@
-# OpenTag application design
+# openTag design guide
 
-<!-- doc-mirror: allow-divergence -->
+This is the single design guide for this repository's marketing website and local product previews. It records the approved brand and UX redesign. Update it alongside implemented design changes; use the code and tokens below for exact values.
 
-Canonical style guide for OpenTag Web.
-The app is a working tool: minimal, clean, and restrained. Every visible detail must help someone
-choose an Agent, understand its state, follow its work, or configure it.
-
-The visual foundation follows [opentag-site/design.md](https://github.com/first-tree-ai/opentag-site/blob/36596de/design.md):
-warm cream, white surfaces, dark text, violet actions, Manrope, and the existing OpenTag mark.
-The website's marketing composition does not carry into the app.
-
-## Implementation and ownership
-
-**Keep Kumo.** Its accessible primitives and existing behavior are retained behind the product adapter.
-A shadcn migration would replace working controls without making their composition consistent by itself.
-Consistency comes from these sources and the rules below:
+## Scope and source of truth
 
 | Source | Responsibility |
 | --- | --- |
-| [design.tokens.ts](apps/web/src/ui/design.tokens.ts) | Canonical palette and measurements |
-| [theme.css](apps/web/src/ui/theme.css) | Generated palette, Kumo aliases, theme scope |
-| [primitives.css](apps/web/src/ui/primitives.css) | Shared text, button, control, surface, and dialog recipes |
-| [design-system.tsx](apps/web/src/ui/design-system.tsx) | Product intents, refs, labels, states, and Kumo compatibility |
-| [app.css](apps/web/src/app.css) | Stylesheet entry, font loading, browser defaults, shell layout |
-| [web-ui-contract.md](docs/system/web/web-ui-contract.md) | Composition, behavior, accessibility, and verification |
-| [KUMO.md](apps/web/src/ui/KUMO.md) | Library-specific implementation details |
+| [public/tokens.css](public/tokens.css) | Semantic colours, typography, spacing, geometry, and motion values |
+| [public/ui-kit.css](public/ui-kit.css) | Shared preview controls and their interaction states |
+| [src/styles.css](src/styles.css) | Marketing composition, illustrations, and responsive layouts |
+| [src/walkthrough.css](src/walkthrough.css) | Styles scoped to the animated product walkthrough |
+| [src/components/ui/select.tsx](src/components/ui/select.tsx) | Real shadcn/ui and Radix Select component |
+| [src/preview-ui.tsx](src/preview-ui.tsx) | Shared controls mounted into the preview pages |
 
-Edit tokens, then run `pnpm theme:generate`. Commit the generated stylesheet with the source.
-`pnpm check` rejects drift. Import controls through the adapter; feature modules do not import Kumo
-directly. Shared styling belongs at that seam, never in repeated page overrides.
+The marketing stylesheet contains some legacy hard-coded values; unused palette/outline experiments, removed developer-menu styles, and selectors with no source consumers have been pruned. The active layout is the standard, semantic-palette, split-channel design. Tokens are the contract for new work; this is not a claim that every existing marketing rule has been migrated. Change relevant rules in place rather than adding duplicate override chains or doing an unrelated global cleanup.
 
-Reconsider the component library only for a demonstrated requirement the adapter cannot satisfy.
-Do not run two competing primitive systems through an incremental cosmetic migration.
+The live openTag app is maintained separately. The local app previews demonstrate proposed controls and illustrative data; they do not establish or modify the production app's theme, accounts, or functionality.
 
-## Color
+## Character and identity
 
-| Role | Light value | Usage |
+openTag feels capable, friendly, and direct. Confident headings, short explanations, and recognisable workflow examples lead the page. A white canvas, quiet neutral cards, teal actions, lavender accents, and occasional cats make technical content approachable.
+
+Use the local openTag lockup in the header and footer. Preserve the mascot's M-shaped head, @ left eye, and < right eye. Prefer complete exported artwork, keep its proportions, and do not reconstruct or recolour official SVGs without an explicit visual requirement. Grain belongs inside illustration surfaces, never over text or brand marks.
+
+Partner and integration logos retain their identity and proportions. Vendor demonstrations keep their own colour systems. Decorative mascots have empty alt text and are hidden from assistive technology; meaningful standalone logos have useful names.
+
+## Colour and interaction roles
+
+| Role | Token | Value / use |
 | --- | --- | --- |
-| Canvas | `#fffcf7` | Application background |
-| Surface | `#ffffff` | Lists, controls, distinct panels, dialogs |
-| Primary text | `#171719` | Body, titles, meaningful icons |
-| Secondary text | `#4c4d5c` | Descriptions and supporting labels |
-| Muted text | `#6b6674` | Placeholders and less prominent metadata |
-| Action | `#5638d8` | Primary action, link, checked control, focus |
-| Action hover / pressed | `#452bb5` / `#38218f` | Flat interaction fills |
-| Selection | `#f1ebff` | Current navigation or selected option |
-| Structural line | `#e5e0db` | Dividers and surface boundaries |
-| Control boundary | `#8c8795` | Meaningful control outlines |
-| Recessed | `#f4f0e9` | Code, disabled, and inset surfaces |
-| Neutral hover | `#f5f1eb` | Transient row and menu feedback |
+| Marketing canvas | `--surface-page` / `--background` | White, `#ffffff` |
+| Product-preview canvas | `--surface-page` on the product surface | `#fafafa` |
+| Main text | `--text-primary` / `--foreground` | `#25282d` |
+| Supporting text | `--text-secondary` | `#6b6e75` |
+| Primary action | `--primary` / `--primary-foreground` | `#00cbb4` with cool black `#25282d` text |
+| Primary hover | `--primary-hover` | `#00b69f` |
+| Small links | `--text-link` | Supporting blue, `#2563e0` |
+| Static secondary surface | `--surface-subtle` / `--muted` | Cool neutral `#f4f5f7` |
+| Neutral hover | `--surface-hover` | `#f4f5f7` |
+| Neutral selection | `--surface-selected` / `--text-selected` | `#eef0f3` with dark text |
+| Borders | `--border` | `#e9ebef` |
+| Supporting accents | `--supporting` / `--supporting-subtle` / `--supporting-text` / `--supporting-border` | Blue `#2563e0`, pale blue `#edf5ff`, blue text `#2563e0`, border `#c9dffc` |
+| Warning and error | `--warning` / `--destructive` | Orange-red `#e5502e`; retain separate semantic roles and descriptive labels/icons |
+| Footer surface | `--surface-footer` | Cool gray `#eef0f3` |
+| Table / FAQ borders | `--border-table` / `--border-subtle` | `#dce0e6` / `#e5e8ed` |
+| Keyboard focus | `--ring` | `#697586`; shared controls use a 2px outline with 3px offset |
+| Comparison header | `--comparison-header` | Slack sidebar purple, `#894b94` |
+| Featured comparison cell | `--comparison-header-featured` | Slack topbar purple, `#6f3a82` |
+| Comparison header text | `--comparison-header-text` | White, `#ffffff` |
+| Blog editorial surface | `--blog-surface` | Lavender, `#f1ebff`; independent of the darker table header |
+| Company wordmarks | `--trust-ink` | Charcoal `#414147` |
 
-Use semantic Kumo utilities and shared variables. Hairlines do not serve as the sole affordance for a
-control. Brand violet does not mean successful, warning, or failed: retain the domain's status labels
-and Kumo status semantics. A Ready Agent can also have supporting Working activity; do not merge those
-two dimensions. Ready is success; Working task state is informational.
+The comparison header repeats the purple family of the hero's Slack demonstration. Primary actions remain green. Supporting blue is used for text links, tags, and feature hints; it does not replace neutral hover, selection, or focus roles. Marketing sections use the white canvas and restrained surfaces rather than the old large coral, yellow, or blue section blocks.
 
-The lime cat is identity artwork, preserved as supplied. Do not recolor it or turn its lime into a
-general UI accent. Provider artwork keeps its own identity. User avatars remain user data.
+Use complete CSS colours as `var(--primary)`, never `hsl(var(--primary))`. Do not use bright brand green for small text on white. Warning, error, success, and disabled states have separate semantic roles.
 
-Light mode is the supported product theme. The scoped dark compatibility palette is not a new
-dark-mode feature. Namespaced `data-opentag-theme` / `data-opentag-mode` attributes own the theme,
-including portals.
+Header language and login controls use neutral hover feedback; the brand logo keeps a transparent background. Product navigation and tabs use neutral selected backgrounds and retain them on hover. Do not use green-tinted hover or selection for neutral controls. Slack and Lark demonstrations are deliberate vendor exceptions.
 
-## Typography and density
+Letter avatars use `--avatar-background` (`#dce1e8`), `--avatar-foreground` (`#344155`), and `--avatar-border` (`#cdd4de`), with enough contrast against white cards.
 
-Self-host Manrope 400, 500, 600, and 700. Use the same family for body and headings, with the shared
-Chinese/system fallback stack. Commands and logs retain monospace.
-Fonts are emitted as same-origin files; Vite must not inline them as data URLs because the server
-content policy disallows those font sources.
+### Vendor demonstrations
 
-| Element | Size / weight |
+| Surface | Treatment |
 | --- | --- |
-| Page title | 28px desktop, 24px below 768px / 600 |
-| Section title | 18px / 600 |
-| Subsection title | 16px / 600 |
-| Body and control text | 14px / 400–500 |
-| Metadata | 12px / 400 |
-| Brand lockup | 19px / 700 |
+| Slack | Purple top bar `#6f3a82`, search `#8d619c`, sidebar `#894b94`, lilac selection `#caa3d2`, selected text `#44005c`; fine monochrome grain inside the frame |
+| Lark | Sidebar `#f7f7fa`, selection `#e2edfe`, avatar `#d4d9e2`, selected avatar `#c9daf2` |
 
-Always pair OpenTag brand lettering with the logo image using `OpenTagLogo`'s combined lockup.
-Never use a standalone text-only wordmark. Compact icon-only surfaces use the mark variant.
+Do not recolour vendor logos or demonstrations with the primary brand palette.
 
-Use semantic `Text as="h1"` and a single page title. Use `PageHeader` for the title and actions.
-Keep explanations near the decision they support; avoid repeating the title in an eyebrow.
-Do not add slogans, welcome heroes, feature summaries, or decorative text to routine screens.
+## Typography, spacing, and geometry
 
-Use a 4px spacing grid. Default page/section gap: 24px; panel padding: 16–24px; row padding:
-16px vertically, 16–20px horizontally; inline gaps: 8–12px. Authenticated content is bounded at
-1024px with 32px desktop and 16px mobile gutters.
+Use self-hosted Manrope for Latin text, system Chinese fallbacks, and monospace for code. Shared body sizes are 14/16px, labels 12/14px, and section headings 32/42px. Body line-height is 1.5; the heading role is 1.2. The marketing hero uses its responsive `clamp(38px, 4vw, 58px)` composition. Some existing section headings retain artwork-specific sizing.
 
-Default controls are 40px tall, compact desktop controls 32px, and mobile targets at least 44px.
-Corners: controls 8px, grouped surfaces 12px, dialogs 16px. Keep content surfaces flat.
-A small shadow is appropriate for a transient menu or dialog; do not lift routine panels on hover.
-Buttons use solid fills, never glossy gradients.
+Use short, concrete headings and explanatory copy. Kicker labels remain hidden in the current marketing direction. Keep English and Chinese information and hierarchy equivalent; allow translated text to wrap without clipping. Chinese headings omit terminal full stops. Homepage copy and metadata live in the single typed `src/i18n.ts` module. The retired original/optimized variants have been consolidated without changing approved visible copy.
 
-## Navigation and screen composition
+The base spacing scale is 4, 8, 12, 16, 20, 24, 32, 40, 48, and 64px. Marketing has these additional composition roles:
 
-The workspace uses a full-height 72px rail with a small mark above Home and Account at the bottom.
-Opening an Agent expands navigation to 240px, adding its switcher and sections. Instructions has its own sidebar page; Settings is opened from the Agent overview.
-On mobile, use the compact header and Agent drawer. Preserve the mounted route and unsaved input
-during viewport and scope changes.
+| Role | Above 800px | At or below 800px |
+| --- | --- | --- |
+| Major section spacing, `--space-section` | 96px | 64px |
+| Heading-to-content spacing, `--space-section-heading` | 32px | 24px |
+| Hero top spacing, `--space-hero-top` | 48px | 24px |
+| Closing mascot width | 500px | 300px |
+| Closing mascot stage height | 280px | 184px |
 
-| Screen family | Composition and essential information |
+The 96/64px section rhythm also governs testimonials; the former 160/112px exception is obsolete. Individual compositions can reserve extra space for a mascot, as the FAQ does.
+
+The marketing container is centred and capped at 1280px; comparison, testimonials, and FAQ use narrower content measures. Feature frames follow their content rather than preserving empty design-canvas space.
+
+Shared controls use a 40px default height, with 32px and 48px variants. Radius roles are 6, 10, 12, and 16px, with full rounding for circles. Standard controls use 10px corners; outer product cards use 16px. Keep existing illustration geometry and documented marketing exceptions intact rather than rounding SVG coordinates to the UI scale.
+
+## Page composition and artwork
+
+| Section | Approved treatment |
 | --- | --- |
-| All Agents | Compact title and New Agent action; count; one white roster divided into rows. Avatar, name, messaging provider, readiness/activity, and setup continuation when needed. Usage totals belong in Agent overview and Usage. |
-| Agent overview | Identity and status first; concise dependency/readiness information, existing usage summary, recent tasks, and relevant capabilities. Distinct sections use the shared surface treatment. |
-| Tasks | Compact header, search and status controls, aligned rows on wide layouts and stacked summaries on narrow layouts. Preserve source, title, state, activity, cancellation, pagination, and retry behavior. |
-| Task detail | Title and state followed by the conversation/activity timeline. Keep speakers, replies, attachments, and logs readable; group dense metadata without introducing an app chat composer. |
-| Usage | Compact title, window controls, totals, and existing charts/tables. Quiet borders and tabular numbers; no promotional statistics or duplicate summaries. |
-| Memory | Connection identity and state, then the relevant connect/configure/operation controls. Commands use the neutral inset recipe. |
-| MCP / Skills / integrations | Group related items with dividers, concise identity and state, then relevant actions. Forms and dialogs reuse controls and labels from the adapter. |
-| Instructions | Dedicated sidebar page with one editor, necessary guidance, save/discard actions when changed, and unsaved-change protection. |
-| Agent settings | Grouped settings, short labels, necessary hints, field-local errors. Keep model, messaging, computer, identity, and destructive management distinct. |
-| Account / Computers | Simple grouped configuration and connected-computer information. Account menus retain every current destination. |
-| Login | Small centered form, identity, providers, language, and essential feedback. No splash artwork or large headings. Preserve provider-specific sign-in requirements. |
-| Setup / onboarding | Task-focused steps and compact choices. Preserve readiness/repair, reserved-height stability, QR/copy controls, expiry, validation, and progress. No decorative gradients or hover lift. |
-| Internal tools / previews | Same palette, type, and controls. Simulation controls remain clearly separated from the screen being previewed. |
-| Empty / loading / error / not found | Short explanation and the relevant next action. Maintain skeletons, retries, field input, and focus behavior. |
+| Header and hero | Logo and quiet navigation above a split layout: headline and actions on the left, interactive Slack/Lark channel demonstration on the right. The former cats-working hero scene is not the current hero. |
+| Customer proof | “Used by engineers at” with legible charcoal company wordmarks. The caption is centred when stacked above the logos. |
+| Value cards | “Your subscription”, “Your machine”, and “Your coworker” cards have centred illustrations and text at every breakpoint. |
+| How it works | A centred heading and description introduce four steps: subscription/setup, chat, shared knowledge, and integrations. The active step has a vertical progress track. Preserve the real scene sequence and controls. |
+| Supported agents | Three touching, non-overlapping circles form a triangle: Codex above Claude Code and Pi. The wrapped calico rests around the Codex arc. No visible agent-name labels. Five smaller grayscale circles appear below, with a shared “Coming soon” caption. |
+| Connect your stack | Recognisable tool marks inside rotating gear silhouettes; marks and labels stay upright. The smaller lounging cat sits in the lower space beside Jira and beneath Figma. |
+| Memory | File-based, git-backed team memory copy beside a file window and box cat. Keep all text readable and reserve separate room for the cat on phones. |
+| Comparison | Centred heading, dark Slack-purple table header with white labels, and a darker openTag header cell. The blue crouching cat rests on the left table edge without covering the heading. |
+| Testimonials | Quiet neutral cards with quote and attribution, three columns on wide screens, two on tablets, one on phones. The existing corner mascot is hidden at narrow widths. |
+| FAQ | The heading sits alongside the original donut cat above the list’s top rule, using the comparison section’s heading-to-table rhythm. It is centred on desktop; on phones the heading reserves space to its left for the cat. The list container is centred and question text remains left-aligned. Native details/summary controls expand the answers. |
+| Closing CTA | Centred “Just tag it” message and action, followed by the smaller outline cat with 32px clearance below the CTA. |
 
-Do not remove useful state or actions to make a screenshot look empty. Omit unavailable optional
-metadata. Before adding a field or summary, identify the decision it helps with and check whether the
-same information is already visible.
+### Agent and mascot geometry
 
-## Controls and states
+Use `--agent-circle-size`: 144px above 1000px and 128px at or below 1000px. The lower main circles sit `sqrt(3)/2` diameters below Codex. Upcoming-agent circles are 0.4 times the main diameter; preserve their derived tangent placement so circles touch without overlapping. Logos retain accessible names even though visible labels are removed.
 
-Default to one clear primary action per task context. Supporting actions are secondary or ghost.
-Destructive actions use danger semantics and existing confirmation/busy safeguards.
+The Codex mascot is [lounge-cat-arc-v1.webp](public/assets/agent-scene/lounge-cat-arc-v1.webp), the 640 × 427px wrapped calico. Its width and reserved clearance use `--agent-lounge-width` (1.35 times the circle diameter) and `--agent-cat-clearance` (0.6 times the diameter). Preserve its optical offset and 0.37-diameter overlap so the artwork follows the circle.
 
-Keep visible labels, field association, disabled and busy states, meaningful hover, keyboard focus,
-Escape and focus return, and localized copy. Native file/hidden inputs are the existing browser
-exception. Avoid page-level control styling and hand-built substitutes for accessible primitives.
+The FAQ uses [cat-complete-v3.svg](public/assets/faq-scene/cat-complete-v3.svg), at 128px desktop and 96px at or below 800px. Its offset compensates for transparent padding so visible artwork rests on the rule. The comparison uses the blue [lounge-cat-v8.svg](public/assets/agent-scene/lounge-cat-v8.svg), at 176px wide; it is hidden at or below 1000px to preserve heading clearance.
 
-MCP-specific CSS may own bounded dialog geometry and tool-list scrolling. Palette, typography,
-control sizes, and focus states still come from the shared theme and adapter.
+Retain all four new SVG variants from the October 19 design snapshot, including alternatives not currently displayed: `agent-scene/lounge-cat-v7.svg`, `agent-scene/lounge-cat-v8.svg`, `comparison-scene/lounge-cat-v5.svg`, and `comparison-scene/lounge-cat-v6.svg`. Also retain the wrapped WebP and previous `comparison-scene/arched-cat-v4.svg`. These are intentional artwork-library assets, not unused files to remove during cleanup.
 
-Use semantic selected state, not a general lilac background. Motion should explain a state change.
-Reduced motion removes nonessential transitions.
+## Responsive behaviour
 
-## Change checklist
+- The hero stacks at or below 1050px. Its channel sidebar becomes a horizontally scrollable tab row at or below 700px. The mobile grid uses `minmax(0, 1fr)` so tabs cannot widen and clip the conversation; narrow metric cards must also shrink.
+- Agent compatibility and feature sections become single-column at or below 800px. Keep the agent circles centred with clear space for the cat. Value-card artwork and copy remain centred when cards stack.
+- Testimonials use two columns from 601–1000px and one below 601px. Phone cards follow their content instead of imposing excess empty height.
+- Below 601px, the memory window uses the available width, its toolbar and code can wrap, and the box cat has reserved space below it.
+- The comparison table may scroll horizontally inside its own container. Preserve its sticky capability column and keep the page itself free of horizontal overflow.
+- Header brand, login, and menu must fit at 320px. Preserve readable wrapping, usable controls, artwork proportions, and clear separation between cats and copy.
 
-1. Reuse a page composition and shared control before adding one.
-2. Put a reusable styling decision in tokens or recipes; update this guide for durable exceptions.
-3. Preserve routing, ownership, localized copy, domain states, and keyboard behavior.
-4. Check 320, 390, 768, and 1440px; contain wide logs/tables locally.
-5. Run affected feature tests, adapter/theme contracts, and browser accessibility/interaction checks.
-6. Run `pnpm check` before committing. Follow repository validation requirements for a pull request.
+Review desktop, tablet, and phone sizes, including 320, 390, 768, 1024, and 1440px where relevant. Check both languages when copy or layout changes affect them.
 
-Text requires at least 4.5:1 contrast; meaningful controls and focus require 3:1.
-The theme tests check text, action fills, and control boundaries. Static contracts enforce palette,
-stylesheet, and import seams. Browser review remains necessary for layout and interaction.
+## Interaction, navigation, and accessibility
+
+Use semantic headings, native links and buttons, and explicit button types. Every control needs an accessible name. Associate labels with actual inputs or rendered Select triggers; illustration captions are not form labels. Expose selection using appropriate ARIA state and provide visible keyboard focus. Do not rely on colour alone for status.
+
+The header logo returns to `#top`. Login goes to `https://app.opentag.build/login`; primary signup actions go to `https://app.opentag.build/`. The existing production-only session script may update login to “Open app” for an authenticated visitor. Local previews must not query production account state.
+
+The marketing site does not link into the dummy app or design-system pages. Keep `/agents-preview.html`, `/product-preview.html`, and `/design-system.html` available at direct URLs for review, with `noindex, follow` metadata so they do not appear as public product pages in search. Their local actions and zero-value statistics are illustrative, not backend operations.
+
+The hero cycles channels every eight seconds; manual selection resets the cycle and the selected scene. Preserve its keyboard tab controls. The walkthrough's progress drives automatic advancement, selecting a step restarts its scene, and offscreen playback is paused. Respect `prefers-reduced-motion` in animated demos and artwork; show useful completed states where appropriate.
+
+## Blog
+
+The header links to `/blog` in English and `/zh/blog` in Chinese. Both the index and introductory post have English and Simplified Chinese versions. Language switches stay on the equivalent page. The index and `/blog/introducing-opentag` are pre-rendered as static HTML with directory aliases for saved trailing-slash URLs, with their own canonical URLs, social metadata, structured data, and sitemap entries. Canonical and internal URLs omit trailing slashes to match the hosting configuration. They reuse the marketing header and footer; header section links return to the homepage.
+
+Use the white canvas, Manrope, and a restrained lavender index card with existing mascot artwork. Article pages use the `--blog-reading-width` (720px) measure, `--blog-leading` (1.8) for long-form body copy, and existing type/spacing tokens. `--blog-art-width` (280px) caps index artwork and halves on mobile. Post titles use plain text without an inline logo. The index opens with “Blog” and no introductory tagline. Use one clear title, descriptive subheadings, selective bold text, inline code for worker names, and a lavender callout for an example prompt. Do not invent publication dates or authors. Keep article prose left-aligned inside the centred reading column.
+
+## Shared Select component
+
+Use the real [shadcn/ui New York Select](src/components/ui/select.tsx), built on Radix, in the product preview and component gallery. Keep React/TypeScript and plain CSS; Tailwind is not installed. Reuse this component rather than introducing a native select or visual imitation.
+
+The [vendored registry source](docs/vendor/shadcn-select.registry.json) and [MIT licence](docs/vendor/shadcn-LICENSE.txt) record its provenance. Preserve the forwarded refs, Radix Portal, keyboard/typeahead behaviour, focus return, disabled-option skipping, scrolling, and collision handling. Installed versions are specified in [package.json](package.json) and pinned in [pnpm-lock.yaml](pnpm-lock.yaml).
+
+| Select role | Mapping |
+| --- | --- |
+| Trigger and popup | `--card`, `--popover`, `--foreground`, `--input`, `--border` |
+| Highlight and selection | `--surface-selected`, `--text-selected`; dark text and checkmark |
+| Focus | `--ring` |
+| Disabled and error | `--disabled-opacity`, `--muted`, `--destructive` |
+| Shape and density | Control-height, radius, and spacing tokens |
+| Elevation | `--shadow-panel` |
+
+Set `aria-invalid` and connect explanatory help with `aria-describedby` for errors. Root `disabled` disables the whole control. Empty lists explain that no options are available rather than offering a fake selectable item. Keep an accessible label and preserve selected styling on hover. `--accent` is a status/badge role, not a green navigation or Select highlight.
+
+[src/preview-ui.tsx](src/preview-ui.tsx) demonstrates default, unselected, disabled, error, empty, and 40-option scrolling states. The publisher bundles this entry as `/js/preview-ui.js`; production preview HTML must not load raw TSX.
+
+## Icons and licensing
+
+Shared product controls use Lucide. Reuse `ChevronDown` for Select and agent switchers, normally at 16px with `--space-4`; the general `--icon-size` role is 18px. Use `currentColor`, consistent stroke weight, and semantic text colours. Decorative icons use `aria-hidden`; icon-only actions still need accessible names.
+
+Lucide is available under ISC, with some inherited Feather portions under MIT. Preserve both applicable notices. A visible attribution is not required. Brand marks, mascot artwork, vendor logos, and existing marketing/sidebar assets are separate; do not silently replace them with generic control icons. Keep the shadcn MIT notice as well.
+
+## Development and validation
+
+Use Node 24 and the pnpm version pinned by `package.json`. Source is tracked at the repository root.
+
+```sh
+pnpm install --frozen-lockfile
+pnpm dev --host 127.0.0.1
+pnpm check
+pnpm build
+pnpm preview --host 127.0.0.1
+```
+
+Use the Vite workflow for previews; the obsolete machine-specific preview helper has been removed.
+
+For a design change, check affected components at 390px and 1440px, extend to intermediate widths when relevant, and verify keyboard focus, hover/selection, disabled behaviour, readable labels, logo proportions, reduced motion, and no unintended overflow. Inspect rendered screenshots, not only source values. Preserve approved composition and product terminology.
+
+[tools/verify-select.cjs](tools/verify-select.cjs) provides focused checks for the built product and component previews, including pointer and keyboard selection, focus return, disabled options/root, empty/error states, long-list scrolling, and page errors. With a local preview and Playwright available:
+
+```sh
+PREVIEW_URL=http://127.0.0.1:4173 node tools/verify-select.cjs
+```
+
+`PLAYWRIGHT_MODULE` and `CHROME_PATH` can select an installed runtime. Screenshots go into ignored `.shots/`.
+
+The initial JavaScript budget is 300,000 bytes, including eagerly preloaded modules. The walkthrough logo sprite lives in `public/assets/walkthrough-symbols.svg` and is fetched by the deferred scenes that use it; do not embed the full sprite in the initial JavaScript. Reuse the active copy module rather than bundling an unused context default. The hero performance checks describe the current channel demonstration. Run the full test suite before pushing; passing lint and a build alone does not confirm CI passes. The preview Select bundle is separate from the homepage.

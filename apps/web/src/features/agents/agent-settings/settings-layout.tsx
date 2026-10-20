@@ -13,11 +13,11 @@ export function AgentSettingsPageHeader({
   title: ReactNode;
 }) {
   return (
-    <header className="grid gap-2">
+    <header className="grid gap-3">
       <Text as="h1" id={id} size="lg" variant="heading">
         {title}
       </Text>
-      {description ? <p className="text-sm text-kumo-subtle">{description}</p> : null}
+      {description ? <p className="text-base text-kumo-subtle">{description}</p> : null}
     </header>
   );
 }

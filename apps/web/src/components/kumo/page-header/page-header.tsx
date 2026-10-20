@@ -71,8 +71,8 @@ export function PageHeader({
       {breadcrumbs ? <div className="border-b border-kumo-line">{breadcrumbs}</div> : null}
 
       {(title || description || (!tabs && children)) && (
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="flex min-w-0 flex-col gap-1">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex min-w-0 flex-col gap-3">
             {eyebrow ? (
               <Text as="span" size="xs" variant="secondary">
                 {eyebrow}
@@ -85,7 +85,7 @@ export function PageHeader({
             )}
             {description && (
               <div className="max-w-prose">
-                <Text as="p" variant="secondary">
+                <Text as="p" size="lg" variant="secondary">
                   {description}
                 </Text>
               </div>

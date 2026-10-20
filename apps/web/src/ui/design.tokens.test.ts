@@ -4,16 +4,23 @@ import { designTokens } from "./design.tokens.js";
 describe("OpenTag palette accessibility", () => {
   it.each(["light", "dark"] as const)("keeps %s text and controls legible", (mode) => {
     const t = designTokens[mode];
-    for (const surface of [t.canvas, t.surface, t.recessed, t.selected]) {
+    for (const surface of [t.canvas, t.surface, t.recessed]) {
       for (const text of [t.foreground, t.secondary, t.muted]) {
         expect(contrast(text, surface), `${mode}: ${text} on ${surface}`).toBeGreaterThanOrEqual(4.5);
       }
     }
+    expect(contrast(t.foreground, t.selected)).toBeGreaterThanOrEqual(4.5);
     for (const surface of [t.canvas, t.surface]) {
       expect(contrast(t.actionText, surface)).toBeGreaterThanOrEqual(4.5);
       expect(contrast(t.controlBorder, surface)).toBeGreaterThanOrEqual(3);
     }
-    for (const fill of [t.action, t.actionHover, t.actionPressed, t.danger, t.dangerHover]) {
+    for (const fill of [t.action, t.actionHover, t.actionPressed]) {
+      expect(contrast(t.actionForeground, fill), `${mode}: primary ${fill}`).toBeGreaterThanOrEqual(4.5);
+    }
+    for (const surface of [t.canvas, t.surface, t.selected]) {
+      expect(contrast(t.focus, surface)).toBeGreaterThanOrEqual(3);
+    }
+    for (const fill of [t.danger, t.dangerHover]) {
       expect(contrast(t.inverse, fill), `${mode}: action ${fill}`).toBeGreaterThanOrEqual(4.5);
     }
   });

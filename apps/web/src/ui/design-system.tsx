@@ -44,7 +44,6 @@ import {
 import {
   ArrowLeft,
   ArrowRight,
-  Brain,
   CaretDown,
   CaretRight,
   CaretUp,
@@ -64,7 +63,6 @@ import {
   Info,
   Laptop,
   List,
-  ListChecks,
   MagnifyingGlass,
   type Icon as PhosphorIcon,
   PlugsConnected,
@@ -101,7 +99,6 @@ import {
 } from "react";
 import * as m from "../paraglide/messages.js";
 import { designTokens } from "./design.tokens.js";
-import { ConnectorIcon, SkillsIcon } from "./navigation-icons.js";
 
 export {
   Banner,
@@ -173,13 +170,31 @@ function ProductSelect<T, Multiple extends boolean | undefined = false>(
   return (
     <KumoSelect
       {...props}
+      render={props.render ?? <ProductSelectTrigger />}
       data-control-size={props.size ?? "base"}
-      className={classes("ui-control ring-kumo-interact", props.className)}
+      className={classes(
+        "ui-control ring-kumo-interact",
+        (props.size === "sm" || props.size === "xs") && "ui-control--compact",
+        props.className,
+      )}
     />
   );
 }
+const ProductSelectTrigger = forwardRef<HTMLButtonElement, ComponentPropsWithoutRef<"button">>(
+  function ProductSelectTrigger({ children, ...props }, ref) {
+    return (
+      <KumoButton {...props} ref={ref} variant="secondary">
+        {Children.toArray(children).slice(0, -1)}
+        <Icon name="chevron-down" className="size-4 text-kumo-subtle" />
+      </KumoButton>
+    );
+  },
+);
+const ProductSelectOption: typeof KumoSelect.Option = ({ className, ...props }) => (
+  <KumoSelect.Option {...props} className={classes("ui-select-option", className)} />
+);
 export const Select: typeof KumoSelect = Object.assign(ProductSelect, {
-  Option: KumoSelect.Option,
+  Option: ProductSelectOption,
   Group: KumoSelect.Group,
   GroupLabel: KumoSelect.GroupLabel,
   Separator: KumoSelect.Separator,
@@ -282,9 +297,11 @@ export function buttonClassName({
   return classes(
     buttonVariants({ variant: kumoButtonVariant(variant), size: size === "compact" ? "sm" : "base" }),
     "ui-button justify-center shadow-none",
+    variant === "primary" && "ui-button--primary !text-(--on-primary)",
+    (variant === "secondary" || variant === "outline") && "ui-button--secondary",
     size === "compact" && "ui-button--compact",
     variant === "primary" &&
-      "[--kumo-button-emphasis-bg:var(--opentag-button-primary-bg,#5638d8)] [--kumo-button-emphasis-gradient-end:var(--opentag-button-primary-bg,#5638d8)] [--kumo-button-emphasis-gradient-start:var(--opentag-button-primary-bg,#5638d8)] [--kumo-button-emphasis-ring:var(--opentag-button-primary-bg,#5638d8)]",
+      "[--kumo-button-emphasis-bg:var(--opentag-button-primary-bg,#00cbb4)] [--kumo-button-emphasis-gradient-end:var(--opentag-button-primary-bg,#00cbb4)] [--kumo-button-emphasis-gradient-start:var(--opentag-button-primary-bg,#00cbb4)] [--kumo-button-emphasis-ring:var(--opentag-button-primary-bg,#00cbb4)]",
     variant === "danger" &&
       "[--kumo-button-emphasis-bg:var(--opentag-button-danger-bg,#b42318)] [--kumo-button-emphasis-gradient-end:var(--opentag-button-danger-bg,#b42318)] [--kumo-button-emphasis-gradient-start:var(--opentag-button-danger-bg,#b42318)] [--kumo-button-emphasis-ring:var(--opentag-button-danger-bg,#b42318)]",
     className,
@@ -498,7 +515,7 @@ export function StatusIndicator({
   const variant =
     tone === "success" ? "success" : tone === "warning" ? "warning" : tone === "danger" ? "error" : "neutral";
   return (
-    <span className={classes("inline-flex items-center gap-2", className)} data-state={tone} {...props}>
+    <span className={classes("ui-status inline-flex items-center gap-2", className)} data-state={tone} {...props}>
       <KumoBadge appearance="dot" variant={variant}>
         {label}
       </KumoBadge>
@@ -549,7 +566,7 @@ const icons: Record<IconName, PhosphorIcon> = {
   "chevron-right": CaretRight,
   "chevron-up": CaretUp,
   close: X,
-  connector: ConnectorIcon,
+  connector: PlugsConnected,
   copy: Copy,
   eye: Eye,
   "eye-slash": EyeSlash,
@@ -560,17 +577,17 @@ const icons: Record<IconName, PhosphorIcon> = {
   integrations: PlugsConnected,
   laptop: Laptop,
   message: ChatCircle,
-  memory: Brain,
+  memory: TreeStructure,
   model: Cpu,
   "more-vertical": DotsThreeVertical,
   plus: Plus,
   settings: Gear,
   shield: Shield,
-  skills: SkillsIcon,
+  skills: Shield,
   soul: Fingerprint,
   "sign-out": ArrowRight,
   tree: TreeStructure,
-  tasks: ListChecks,
+  tasks: List,
   upload: UploadSimple,
   user: User,
   usage: ChartLine,

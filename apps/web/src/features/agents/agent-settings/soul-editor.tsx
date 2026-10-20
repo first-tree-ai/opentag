@@ -39,11 +39,10 @@ export function SoulEditor({
 
   return (
     <div className="relative">
-      {/* Match example and input text: 16px in compact layouts, 14px on desktop. */}
       <InputArea
         aria-describedby={showExample ? `${id}-help ${id}-example` : `${id}-help`}
         aria-label={m.agent_settings_instructions_title()}
-        className="block w-full resize-y p-5 text-[1rem]! leading-relaxed md:text-[0.875rem]!"
+        className="block w-full resize-y p-6 text-[1rem]! leading-[2]! max-[640px]:px-4 max-[640px]:text-sm!"
         disabled={disabled}
         id={id}
         name="instructions"
@@ -55,18 +54,18 @@ export function SoulEditor({
       {showExample ? (
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-x-0 top-0 p-5 text-[1rem] leading-relaxed text-kumo-inactive md:text-[0.875rem]"
+          className="pointer-events-none absolute inset-x-0 top-0 p-6 text-base leading-[2] text-kumo-inactive max-[640px]:px-4 max-[640px]:text-sm"
           ref={exampleRef}
         >
-          <span className="inline-block rounded bg-kumo-recessed px-2 py-0.5 text-xs font-medium text-kumo-subtle">
+          <span className="inline-block rounded-md bg-kumo-recessed px-2 py-1 text-sm font-semibold text-kumo-subtle">
             {m.agent_settings_soul_example_label()}
           </span>
-          <p className="mt-2.5">
+          <p className="mt-6">
             {m.agent_settings_soul_example_role()}
             <br />
             {m.agent_settings_soul_example_personality()}
           </p>
-          <ul className="mt-4 list-disc space-y-2 pl-4">
+          <ul className="mt-8 list-disc space-y-0 pl-4 max-[640px]:mt-7">
             {principles.map((principle) => (
               <li key={principle}>{principle}</li>
             ))}

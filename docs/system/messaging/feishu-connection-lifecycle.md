@@ -15,7 +15,11 @@ or Server restart must not discard that saved authorization.
 Registration offers six cat presets in Feishu's native picker: developer, engineer, architect,
 artist, businessman, and sales. Their versioned square PNGs are served under
 `/bot-avatars/v1/` on `OPENTAG_PUBLIC_URL`; this deployment URL must be publicly reachable
-for Feishu to load them. SVG originals are kept beside the PNG exports in `apps/web/public`.
+for Feishu to load them. Filenames are stable compatibility identifiers, so avatar responses
+require cache revalidation rather than declaring the artwork immutable. PNGs remain 512 × 512.
+Matching SVG files remain available: the four website cats are vectors, while architect and
+businessman embed their approved raster artwork. Existing provider-uploaded Bot avatars are
+separate copies and are not automatically replaced when these preset files change.
 
 On connection or reauthorization, OpenTag reads the actual Bot profile and caches its name and
 avatar in the binding. Optional profile failures do not block activation. Previously cached

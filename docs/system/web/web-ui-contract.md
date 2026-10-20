@@ -7,7 +7,7 @@ description: "Product UI composition rules over Kumo: ownership seams, layout, r
 
 This document defines the interface that OpenTag Web feature code uses to build consistent, accessible product UI. It
 complements the implementation notes in [`apps/web/src/ui/KUMO.md`](https://github.com/first-tree-ai/opentag/blob/main/apps/web/src/ui/KUMO.md). Kumo supplies accessible
-primitives; [design.md](https://github.com/first-tree-ai/opentag/blob/main/design.md) owns the visual rules and shared recipes; this contract owns OpenTag's product semantics, composition rules, and acceptance criteria.
+primitives; [design.md](https://github.com/first-tree-ai/opentag/blob/main/design.md) owns the visual rules and shared recipes (its website-specific build instructions do not replace the app adapter); this contract owns OpenTag's product semantics, composition rules, and acceptance criteria.
 
 ## Ownership and dependency seam
 
@@ -76,7 +76,9 @@ keyboard-accessible Undo path for long enough to recover.
 
 Authenticated pages use the named `content` container and the shared content frame documented in `KUMO.md`. Prefer
 container queries for page composition because the Sidebar changes the space available to the route without changing
-the viewport. Add a breakpoint because content stops working at that width, not to reproduce a device catalogue.
+the viewport. The shell follows the website app preview breakpoints: 240px Agent sidebar above 950px, 200px from 641px to 950px,
+and inline scrolling navigation at 640px and below. Compact controls retain account access and Agent switching.
+The same route outlet remains mounted across those changes.
 
 UI changes must be checked at these representative widths when the surface can render there:
 
@@ -117,10 +119,10 @@ or future work, but their presence does not make dark mode a supported acceptanc
 define complete surface, text, status, illustration, chart, and browser-level behavior before changing this policy.
 
 Feature code must use Kumo semantic utilities or the OpenTag variables defined at the theme seam. Raw color literals are
-limited to theme sources and explicitly reviewed module-owned styles. Brand violet communicates brand or selection; it
+limited to theme sources and explicitly reviewed module-owned styles. Teal communicates primary actions, blue identifies links, and neutral grey identifies selection. These roles
 must not replace success, warning, danger, or informational status colors.
 
-Switches use brand violet for the checked state and warm-neutral colors for the unchecked state. The semantic adapter
+Switches use brand teal for the checked state and neutral colors for the unchecked state. The semantic adapter
 owns this rule for both standalone and grouped switches; feature pages do not choose a color variant. Kumo continues
 to own their size, shape, motion, and interaction behavior.
 

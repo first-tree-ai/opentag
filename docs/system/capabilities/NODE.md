@@ -17,6 +17,8 @@ to the Provider.
   accepted sources, discovery, and fetch safety.
 - **[MCP Server integration](mcp-server-integration.md)** — per-Agent MCP
   bindings, authorization, the gateway, and the catalog.
+- **[Public MCP catalog endpoint](public-mcp-catalog.md)** — the anonymous
+  MCP endpoint that serves the catalog to third-party clients.
 - **[Context Tree integration](context-tree-integration.md)** — durable memory
   through named Context Tree connections.
 - **[GitHub platform integration](github-platform-integration.md)** —

@@ -1154,7 +1154,8 @@ create → attach → authorize sequence used by the connection flow.
 
 An Agent with no Server mounted has an empty tool surface and no way in unless its user already knows
 an endpoint. The marketplace catalog closes that gap: a curated set of remote Streamable HTTP Servers
-that an Agent can add from the independent **Discover** directory.
+that an Agent can add from the independent **Discover** directory. The same catalog is served to
+third-party MCP clients by the [public MCP catalog endpoint](public-mcp-catalog.md).
 The page keeps one **Add custom** action in its header alongside the independent directory action.
 Add custom opens the URL-and-configured-connectors dialog for empty and populated Agents alike; it has no
 Discover, manual-configuration, or import source switch. The standalone directory owns its add state.

@@ -18,7 +18,9 @@ of every populated screen, integration or server-backed workflow.
 Source truth is `opentag-site` branch `codex/design-token-refresh`, commit
 `4f63d20383045861ca5cd93be8196829f0974e5f`: `agents-preview.html`,
 `product-preview.html`, its Soul state, `tokens.css` and `ui-kit.css`.
-The root `design.md` is copied verbatim from that source. Generated concepts
+The guide was initially copied verbatim from that source; it now lives in
+[the docs tree](../../../docs/system/web/design.md) with metadata, explicit website
+links, and application ownership context. Generated concepts
 are superseded and were not used as acceptance baselines.
 
 Implementation: the production web build served by `preview-server.mjs` at

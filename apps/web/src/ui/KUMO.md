@@ -59,7 +59,7 @@ expose Kumo-specific types or composition to callers.
 
 ## Theme
 
-[design.md](../../../../design.md) is the visual specification. `design.tokens.ts` is the canonical palette and measurement
+[design guide](../../../../docs/system/web/design.md) is the visual specification. `design.tokens.ts` is the canonical palette and measurement
 source; `pnpm theme:generate` produces `theme.css`. The repository check rejects stale output. `primitives.css`
 applies the shared Manrope hierarchy, control sizing, flat button fills, and surface radii through adapter classes.
 Primary actions use teal with charcoal labels; links use blue; selected rows use neutral grey with charcoal text.
@@ -110,7 +110,7 @@ shell keeps navigation inline at every breakpoint and does not switch that prope
 
 ## Website reference and accessibility
 
-The imported root `design.md` describes the website. Its framework instructions and relative links belong to the site
+The design guide includes website references. Its website framework instructions apply to the site
 repository; this document and the Web UI contract define application ownership and behavior. Production data, recovery,
 presets, save/discard, and unsaved-navigation protection remain functional. Cat assets and custom-avatar behavior are
 unchanged. Official website artwork is documented in `src/assets/opentag/README.md`.

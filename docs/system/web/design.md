@@ -1,21 +1,42 @@
+---
+title: "OpenTag design guide"
+description: "Shared brand and visual rules, website product-preview references, and the boundary between website tooling and the OpenTag app implementation."
+soft_links:
+  - /product/trademarks.md
+---
+
 # openTag design guide
 
-This is the single design guide for this repository's marketing website and local product previews. It records the approved brand and UX redesign. Update it alongside implemented design changes; use the code and tokens below for exact values.
+This guide records OpenTag's shared visual direction and the marketing website's
+product-preview reference. Website-specific sections describe the separate
+`first-tree-ai/opentag-site` repository; source links below point there.
 
-## Scope and source of truth
+The OpenTag app implements this visual direction through its existing Kumo/Base UI
+adapter. The [Web UI contract](web-ui-contract.md) owns application semantics,
+composition, accessibility, and acceptance criteria;
+[`apps/web/src/ui/KUMO.md`](https://github.com/first-tree-ai/opentag/blob/main/apps/web/src/ui/KUMO.md) documents the
+implementation seams. App values live in
+[`design.tokens.ts`](https://github.com/first-tree-ai/opentag/blob/main/apps/web/src/ui/design.tokens.ts), with generated
+`theme.css` and shared recipes. Website shadcn, routing, localization, and build
+choices do not replace those app contracts. Update this guide alongside visual
+changes, and use the appropriate repository's code and tokens for exact values.
+
+## Website reference sources
 
 | Source | Responsibility |
 | --- | --- |
-| [public/tokens.css](public/tokens.css) | Semantic colours, typography, spacing, geometry, and motion values |
-| [public/ui-kit.css](public/ui-kit.css) | Shared preview controls and their interaction states |
-| [src/styles.css](src/styles.css) | Marketing composition, illustrations, and responsive layouts |
-| [src/walkthrough.css](src/walkthrough.css) | Styles scoped to the animated product walkthrough |
-| [src/components/ui/select.tsx](src/components/ui/select.tsx) | Real shadcn/ui and Radix Select component |
-| [src/preview-ui.tsx](src/preview-ui.tsx) | Shared controls mounted into the preview pages |
+| [public/tokens.css](https://github.com/first-tree-ai/opentag-site/blob/4f63d20383045861ca5cd93be8196829f0974e5f/public/tokens.css) | Semantic colours, typography, spacing, geometry, and motion values |
+| [public/ui-kit.css](https://github.com/first-tree-ai/opentag-site/blob/4f63d20383045861ca5cd93be8196829f0974e5f/public/ui-kit.css) | Shared preview controls and their interaction states |
+| [src/styles.css](https://github.com/first-tree-ai/opentag-site/blob/4f63d20383045861ca5cd93be8196829f0974e5f/src/styles.css) | Marketing composition, illustrations, and responsive layouts |
+| [src/walkthrough.css](https://github.com/first-tree-ai/opentag-site/blob/4f63d20383045861ca5cd93be8196829f0974e5f/src/walkthrough.css) | Styles scoped to the animated product walkthrough |
+| [src/components/ui/select.tsx](https://github.com/first-tree-ai/opentag-site/blob/4f63d20383045861ca5cd93be8196829f0974e5f/src/components/ui/select.tsx) | Real shadcn/ui and Radix Select component |
+| [src/preview-ui.tsx](https://github.com/first-tree-ai/opentag-site/blob/4f63d20383045861ca5cd93be8196829f0974e5f/src/preview-ui.tsx) | Shared controls mounted into the preview pages |
 
 The marketing stylesheet contains some legacy hard-coded values; unused palette/outline experiments, removed developer-menu styles, and selectors with no source consumers have been pruned. The active layout is the standard, semantic-palette, split-channel design. Tokens are the contract for new work; this is not a claim that every existing marketing rule has been migrated. Change relevant rules in place rather than adding duplicate override chains or doing an unrelated global cleanup.
 
-The live openTag app is maintained separately. The local app previews demonstrate proposed controls and illustrative data; they do not establish or modify the production app's theme, accounts, or functionality.
+The website's local app previews demonstrate visual composition and illustrative
+data. The app follows their visual direction while preserving real accounts,
+working controls, and the product behavior defined by the Web UI contract.
 
 ## Character and identity
 
@@ -110,11 +131,11 @@ Shared controls use a 40px default height, with 32px and 48px variants. Radius r
 
 Use `--agent-circle-size`: 144px above 1000px and 128px at or below 1000px. The lower main circles sit `sqrt(3)/2` diameters below Codex. Upcoming-agent circles are 0.4 times the main diameter; preserve their derived tangent placement so circles touch without overlapping. Logos retain accessible names even though visible labels are removed.
 
-The Codex mascot is [lounge-cat-arc-v1.webp](public/assets/agent-scene/lounge-cat-arc-v1.webp), the 640 × 427px wrapped calico. Its width and reserved clearance use `--agent-lounge-width` (1.35 times the circle diameter) and `--agent-cat-clearance` (0.6 times the diameter). Preserve its optical offset and 0.37-diameter overlap so the artwork follows the circle.
+The Codex mascot is [lounge-cat-arc-v1.webp](https://github.com/first-tree-ai/opentag-site/blob/4f63d20383045861ca5cd93be8196829f0974e5f/public/assets/agent-scene/lounge-cat-arc-v1.webp), the 640 × 427px wrapped calico. Its width and reserved clearance use `--agent-lounge-width` (1.35 times the circle diameter) and `--agent-cat-clearance` (0.6 times the diameter). Preserve its optical offset and 0.37-diameter overlap so the artwork follows the circle.
 
-The FAQ uses [cat-complete-v3.svg](public/assets/faq-scene/cat-complete-v3.svg), at 128px desktop and 96px at or below 800px. Its offset compensates for transparent padding so visible artwork rests on the rule. The comparison uses the blue [lounge-cat-v8.svg](public/assets/agent-scene/lounge-cat-v8.svg), at 176px wide; it is hidden at or below 1000px to preserve heading clearance.
+The FAQ uses [cat-complete-v3.svg](https://github.com/first-tree-ai/opentag-site/blob/4f63d20383045861ca5cd93be8196829f0974e5f/public/assets/faq-scene/cat-complete-v3.svg), at 128px desktop and 96px at or below 800px. Its offset compensates for transparent padding so visible artwork rests on the rule. The comparison uses the blue [lounge-cat-v8.svg](https://github.com/first-tree-ai/opentag-site/blob/4f63d20383045861ca5cd93be8196829f0974e5f/public/assets/agent-scene/lounge-cat-v8.svg), at 176px wide; it is hidden at or below 1000px to preserve heading clearance.
 
-Retain all four new SVG variants from the October 19 design snapshot, including alternatives not currently displayed: `agent-scene/lounge-cat-v7.svg`, `agent-scene/lounge-cat-v8.svg`, `comparison-scene/lounge-cat-v5.svg`, and `comparison-scene/lounge-cat-v6.svg`. Also retain the wrapped WebP and previous `comparison-scene/arched-cat-v4.svg`. These are intentional artwork-library assets, not unused files to remove during cleanup.
+Retain all four SVG artwork variants, including alternatives not currently displayed: `agent-scene/lounge-cat-v7.svg`, `agent-scene/lounge-cat-v8.svg`, `comparison-scene/lounge-cat-v5.svg`, and `comparison-scene/lounge-cat-v6.svg`. Also retain the wrapped WebP and previous `comparison-scene/arched-cat-v4.svg`. These are intentional artwork-library assets, not unused files to remove during cleanup.
 
 ## Responsive behaviour
 
@@ -143,11 +164,11 @@ The header links to `/blog` in English and `/zh/blog` in Chinese. Both the index
 
 Use the white canvas, Manrope, and a restrained lavender index card with existing mascot artwork. Article pages use the `--blog-reading-width` (720px) measure, `--blog-leading` (1.8) for long-form body copy, and existing type/spacing tokens. `--blog-art-width` (280px) caps index artwork and halves on mobile. Post titles use plain text without an inline logo. The index opens with “Blog” and no introductory tagline. Use one clear title, descriptive subheadings, selective bold text, inline code for worker names, and a lavender callout for an example prompt. Do not invent publication dates or authors. Keep article prose left-aligned inside the centred reading column.
 
-## Shared Select component
+## Website preview Select component
 
-Use the real [shadcn/ui New York Select](src/components/ui/select.tsx), built on Radix, in the product preview and component gallery. Keep React/TypeScript and plain CSS; Tailwind is not installed. Reuse this component rather than introducing a native select or visual imitation.
+Use the real [shadcn/ui New York Select](https://github.com/first-tree-ai/opentag-site/blob/4f63d20383045861ca5cd93be8196829f0974e5f/src/components/ui/select.tsx), built on Radix, in the product preview and component gallery. Keep React/TypeScript and plain CSS; Tailwind is not installed. Reuse this component rather than introducing a native select or visual imitation.
 
-The [vendored registry source](docs/vendor/shadcn-select.registry.json) and [MIT licence](docs/vendor/shadcn-LICENSE.txt) record its provenance. Preserve the forwarded refs, Radix Portal, keyboard/typeahead behaviour, focus return, disabled-option skipping, scrolling, and collision handling. Installed versions are specified in [package.json](package.json) and pinned in [pnpm-lock.yaml](pnpm-lock.yaml).
+The [vendored registry source](https://github.com/first-tree-ai/opentag-site/blob/4f63d20383045861ca5cd93be8196829f0974e5f/docs/vendor/shadcn-select.registry.json) and [MIT licence](https://github.com/first-tree-ai/opentag-site/blob/4f63d20383045861ca5cd93be8196829f0974e5f/docs/vendor/shadcn-LICENSE.txt) record its provenance. Preserve the forwarded refs, Radix Portal, keyboard/typeahead behaviour, focus return, disabled-option skipping, scrolling, and collision handling. Installed versions are specified in [package.json](https://github.com/first-tree-ai/opentag-site/blob/4f63d20383045861ca5cd93be8196829f0974e5f/package.json) and pinned in [pnpm-lock.yaml](https://github.com/first-tree-ai/opentag-site/blob/4f63d20383045861ca5cd93be8196829f0974e5f/pnpm-lock.yaml).
 
 | Select role | Mapping |
 | --- | --- |
@@ -160,7 +181,7 @@ The [vendored registry source](docs/vendor/shadcn-select.registry.json) and [MIT
 
 Set `aria-invalid` and connect explanatory help with `aria-describedby` for errors. Root `disabled` disables the whole control. Empty lists explain that no options are available rather than offering a fake selectable item. Keep an accessible label and preserve selected styling on hover. `--accent` is a status/badge role, not a green navigation or Select highlight.
 
-[src/preview-ui.tsx](src/preview-ui.tsx) demonstrates default, unselected, disabled, error, empty, and 40-option scrolling states. The publisher bundles this entry as `/js/preview-ui.js`; production preview HTML must not load raw TSX.
+[src/preview-ui.tsx](https://github.com/first-tree-ai/opentag-site/blob/4f63d20383045861ca5cd93be8196829f0974e5f/src/preview-ui.tsx) demonstrates default, unselected, disabled, error, empty, and 40-option scrolling states. The publisher bundles this entry as `/js/preview-ui.js`; production preview HTML must not load raw TSX.
 
 ## Icons and licensing
 
@@ -168,9 +189,11 @@ Shared product controls use Lucide. Reuse `ChevronDown` for Select and agent swi
 
 Lucide is available under ISC, with some inherited Feather portions under MIT. Preserve both applicable notices. A visible attribution is not required. Brand marks, mascot artwork, vendor logos, and existing marketing/sidebar assets are separate; do not silently replace them with generic control icons. Keep the shadcn MIT notice as well.
 
-## Development and validation
+## Website development and validation
 
-Use Node 24 and the pnpm version pinned by `package.json`. Source is tracked at the repository root.
+These commands apply to the website repository. Use Node 24 and the pnpm version
+pinned by its `package.json`; run them from that repository root. For app commands,
+see the [OpenTag development guide](https://github.com/first-tree-ai/opentag/blob/main/DEVELOPMENT.md).
 
 ```sh
 pnpm install --frozen-lockfile
@@ -184,7 +207,7 @@ Use the Vite workflow for previews; the obsolete machine-specific preview helper
 
 For a design change, check affected components at 390px and 1440px, extend to intermediate widths when relevant, and verify keyboard focus, hover/selection, disabled behaviour, readable labels, logo proportions, reduced motion, and no unintended overflow. Inspect rendered screenshots, not only source values. Preserve approved composition and product terminology.
 
-[tools/verify-select.cjs](tools/verify-select.cjs) provides focused checks for the built product and component previews, including pointer and keyboard selection, focus return, disabled options/root, empty/error states, long-list scrolling, and page errors. With a local preview and Playwright available:
+[tools/verify-select.cjs](https://github.com/first-tree-ai/opentag-site/blob/4f63d20383045861ca5cd93be8196829f0974e5f/tools/verify-select.cjs) provides focused checks for the built product and component previews, including pointer and keyboard selection, focus return, disabled options/root, empty/error states, long-list scrolling, and page errors. With a local preview and Playwright available:
 
 ```sh
 PREVIEW_URL=http://127.0.0.1:4173 node tools/verify-select.cjs

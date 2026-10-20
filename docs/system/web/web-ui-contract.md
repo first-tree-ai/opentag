@@ -7,7 +7,7 @@ description: "Product UI composition rules over Kumo: ownership seams, layout, r
 
 This document defines the interface that OpenTag Web feature code uses to build consistent, accessible product UI. It
 complements the implementation notes in [`apps/web/src/ui/KUMO.md`](https://github.com/first-tree-ai/opentag/blob/main/apps/web/src/ui/KUMO.md). Kumo supplies accessible
-primitives; [design.md](https://github.com/first-tree-ai/opentag/blob/main/design.md) owns the visual rules and shared recipes (its website-specific build instructions do not replace the app adapter); this contract owns OpenTag's product semantics, composition rules, and acceptance criteria.
+primitives; [design guide](design.md) owns the visual rules and shared recipes (its website-specific build instructions do not replace the app adapter); this contract owns OpenTag's product semantics, composition rules, and acceptance criteria.
 
 ## Ownership and dependency seam
 

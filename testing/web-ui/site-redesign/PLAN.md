@@ -27,8 +27,8 @@ Source: `codex/design-token-refresh`, pinned to
 | `public/product-sidebar-icons.json` | Exact sidebar icon shapes and assignments |
 | `src/preview-ui.tsx` | Real preview controls and Select behavior |
 
-The root [design.md](../../../design.md) already matches this branch. Its relative
-links refer to the site repository. Site-specific shadcn/build instructions do not
+The [design guide](../../../docs/system/web/design.md) carries the visual guidance
+from this branch. Its website source links target the site repository. Site-specific shadcn/build instructions do not
 replace OpenTag's Kumo architecture or repository instructions.
 
 Production data and working controls must remain real. Dummy zero statistics,

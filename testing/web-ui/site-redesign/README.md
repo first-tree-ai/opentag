@@ -23,8 +23,8 @@ website walkthrough GIF used by both root README languages.
 - The current design authority is the website's `codex/design-token-refresh`
   branch at `4f63d20383045861ca5cd93be8196829f0974e5f`, inspected in its clean local
   worktree. It supersedes the PR's original token palette.
-- The root [design.md](../../../design.md) is an exact copy of the refreshed branch's website guide.
-  Its relative source links refer to the website repository, not app files.
+- The [design guide](../../../docs/system/web/design.md) carries the refreshed branch's visual guidance
+  in Context Tree format. Its website source links explicitly target the website repository.
   Website-specific development and component instructions are reference material;
   they do not replace OpenTag's repository instructions or require adopting shadcn.
 - The previous app guide is preserved as

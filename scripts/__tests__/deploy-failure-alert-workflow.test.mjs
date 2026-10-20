@@ -41,6 +41,9 @@ test("every phase step name still exists in its workflow", async () => {
         assert.ok(steps.has(step), `${profile.path} no longer has a step named "${step}"`);
       }
     }
+    for (const step of profile.staleRevisionSteps ?? []) {
+      assert.ok(steps.has(step), `${profile.path} no longer has a step named "${step}"`);
+    }
   }
   const staging = await readWorkflow(".github/workflows/deploy-staging.yml");
   assert.ok(stepNames(staging).has("Wait for the commit image"));

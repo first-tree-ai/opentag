@@ -62,7 +62,9 @@ Environment instead also works and scopes them to Staging.
 
 The `Deploy Failure Alert` workflow sends one Feishu card when a run of `npm Publish`, `Deploy Staging`, or
 `Deploy Runner` ends as `failure`, `timed_out`, or `startup_failure`. Cancelled runs, skipped runs, and pull request runs
-do not send an alert. The card shows the environment (Production or Staging) in its title and color, the deploy phase,
+do not send an alert. An `npm Publish` run that stops at a stale-revision check, because a newer commit already reached
+`main`, does not send an alert either: the newer commit deploys by its own run. If the alert cannot read the current
+`main` head, it sends the card. The card shows the environment (Production or Staging) in its title and color, the deploy phase,
 the failed job and step, the commit, and a link to the run.
 
 The alert does not watch `Docker`. When the Server image build fails, `Deploy Staging` fails while it waits for that

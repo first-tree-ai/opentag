@@ -3,7 +3,7 @@ import { appendFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import { ALERT_CONCLUSIONS, buildAlert, shouldAlert } from "./deploy-alert/classify.mjs";
+import { ALERT_CONCLUSIONS, buildAlert, isSupersededRun, shouldAlert } from "./deploy-alert/classify.mjs";
 import { buildCard, sendFeishu, validateWebhookUrl } from "./deploy-alert/feishu.mjs";
 import { DOCKER_WORKFLOW_PATH, findProfile } from "./deploy-alert/profiles.mjs";
 import { createGitHubClient, sleep } from "./github/client.mjs";
@@ -46,6 +46,17 @@ async function findServerImageCause({ client, repository, sha, logger }) {
     return null;
   } catch (error) {
     logger.warn("Could not look up the Docker run for the deploy revision", { message: error?.message });
+    return null;
+  }
+}
+
+/** Returns null when the lookup fails, so an unverifiable run still alerts. */
+async function findMainHead({ client, repository, logger }) {
+  try {
+    const commit = await client.rest("GET", `/repos/${repository}/commits/main`);
+    return typeof commit?.sha === "string" ? commit.sha : null;
+  } catch (error) {
+    logger.warn("Could not look up the current main head", { message: error?.message });
     return null;
   }
 }
@@ -106,6 +117,13 @@ export async function run({ argv, env, logger, fetchImpl = fetch, sleepImpl = sl
 
   const jobs = await client.rest("GET", `/repos/${repository}/actions/runs/${runId}/jobs?filter=latest&per_page=100`);
   const alert = buildAlert({ run: workflowRun, jobs: jobs?.jobs, profile, rehearsal });
+  if (!rehearsal && alert.stepName && profile.staleRevisionSteps?.includes(alert.stepName)) {
+    const mainSha = await findMainHead({ client, repository, logger });
+    if (isSupersededRun({ profile, stepName: alert.stepName, runSha: workflowRun.head_sha, mainSha })) {
+      logger.info("No alert needed", { runId, reason: "revision superseded by a newer main commit", mainSha });
+      return 0;
+    }
+  }
   if (alert.phase.awaitsServerImage) {
     alert.rootCause = await findServerImageCause({ client, repository, sha: workflowRun.head_sha, logger });
   }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildAlert, findFailure, shouldAlert } from "../deploy-alert/classify.mjs";
+import { buildAlert, findFailure, isSupersededRun, shouldAlert } from "../deploy-alert/classify.mjs";
 import {
   ALERT_KEYWORD,
   buildCard,
@@ -407,4 +407,45 @@ test("run rejects workflows it does not watch and skips when the webhook is abse
   assert.equal(code, 0);
   assert.equal(unconfigured.calls.length, 0);
   assert.ok(logger.entries.some((entry) => entry.level === "warn"));
+});
+
+test("run stays silent for a stale staging revision but alerts when main cannot be compared", async () => {
+  const publishRun = makeRun({ path: ".github/workflows/publish-npm-package.yml", display_title: "npm Publish" });
+  const jobs = {
+    jobs: [failedJob("Publish CLI Staging", "Verify staging revision is current main")],
+  };
+  const cases = [
+    { main: () => jsonResponse({ sha: "f".repeat(40) }), alerted: false },
+    { main: () => jsonResponse({ sha: SHA }), alerted: true },
+    { main: () => jsonResponse({ message: "nope" }, 500), alerted: true },
+  ];
+  for (const { main, alerted } of cases) {
+    const { calls, fetchImpl } = routedFetch([
+      [/\/actions\/runs\/42$/, () => jsonResponse(publishRun)],
+      [/\/actions\/runs\/42\/jobs/, () => jsonResponse(jobs)],
+      [/\/commits\/main$/, main],
+      [/open\.feishu\.cn/, () => jsonResponse({ code: 0 })],
+    ]);
+    const code = await run({
+      argv: ["--run-id", "42"],
+      env: ENV,
+      logger: silentLogger(),
+      fetchImpl,
+      sleepImpl: async () => {},
+    });
+    assert.equal(code, 0);
+    assert.equal(
+      calls.some((call) => call.url === WEBHOOK),
+      alerted,
+    );
+  }
+});
+
+test("isSupersededRun ignores other steps and unknown main heads", () => {
+  const profile = findProfile(".github/workflows/publish-npm-package.yml");
+  const base = { profile, stepName: "Recheck staging revision is current main", runSha: "a", mainSha: "b" };
+  assert.equal(isSupersededRun(base), true);
+  assert.equal(isSupersededRun({ ...base, stepName: "Build source workspaces" }), false);
+  assert.equal(isSupersededRun({ ...base, mainSha: null }), false);
+  assert.equal(isSupersededRun({ ...base, mainSha: "a" }), false);
 });

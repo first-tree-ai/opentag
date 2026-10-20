@@ -49,3 +49,25 @@ A missing terminal report can retain accepted custody indefinitely, including af
 closure. Existing diagnostics remain; abandonment and ownership fencing need a separate policy.
 This change adds no schema, queue, protocol, or automatic re-execution path. Local verification
 does not establish deployment or production acceptance.
+
+## Recovery and collaboration lock ordering
+
+At base `f41acc1ade0a540c4a9b6b510dd6eedf8e892d4a`, three real custody-store report paths
+(`failed`, `cancelled`, and `unknown`) deadlocked with `SessionService.authorizeAndRecordMessage`.
+The new `im-recovery-locks.test.ts` holds the root delivery from an independent connection,
+observes each Service's actual PostgreSQL blocker, and releases the gate. No production query
+is mocked, intercepted, or paused by a test hook. All three initially failed with `40P01`.
+
+The recovery paths now take Session locks before placement/delivery locks. Janitor Session
+selection also uses `SKIP LOCKED`, so an occupied Session does not stall an entire background batch.
+The focused PostgreSQL suites pass 46 cases, including the six new tests for the three report
+interleavings, skipping busy Sessions before target locking, atomic report/recovery rollback,
+and the completed-report path. The original fixture is shared with the existing recovery suite.
+
+The change adds one SELECT to non-completed reporting and two SELECTs per nonempty janitor
+batch. It adds no transaction, Agent/Account lock, schema, recovery policy, or automatic SQL retry.
+Missing reports still preserve custody. The separate historical retention policy is unchanged.
+
+Recovery lock validation: `pnpm check`, `pnpm build`, `pnpm typecheck`, and `pnpm test` passed
+(691 script tests, 10,017 package tests, 22 existing skips). Runtime coverage passed 642 tests
+with all four metrics at 100%; the full PostgreSQL suite passed 856 tests in 63 files.

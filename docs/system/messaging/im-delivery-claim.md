@@ -69,6 +69,15 @@ explicitly disposed target. A missing report can therefore retain custody indefi
 after Session closure. Abandonment and ownership fencing require a separate policy; maintenance
 does not synthesize a terminal report.
 
+Non-completed report recovery locks the target and steered children's Sessions in ID order with
+`FOR NO KEY UPDATE` before acquiring placement and delivery locks. It rechecks report identity,
+placement generation, ownership, and child state under the existing locks. Completed reports keep
+their existing path. The janitor first selects a bounded, unlocked set of eligible target IDs,
+takes the same Session locks with `SKIP LOCKED`, and then rechecks target eligibility while locking
+the targets. Busy Sessions or targets wait for another sweep. Session locks remain compatible with
+foreign-key `KEY SHARE`; recovery does not upgrade them to `FOR UPDATE`. Report persistence and child
+recovery still commit or roll back together, without automatically retrying deadlocked transactions.
+
 `busy / active_turn` can include report custody. An empty retained-report manifest does not prove
 that the Client has no report on disk: live activity can prevent recovery from enumerating it.
 Offline Computer retry and final-abandonment policy are separate from this response backoff.

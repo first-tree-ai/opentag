@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { isSkillObjectKeyUnder, normalizeSkillObjectPrefix, SkillObjectPrefixError } from "../services/skills/index.js";
+import {
+  isSkillObjectKeyUnder,
+  normalizeSkillObjectPrefix,
+  SkillObjectPrefixError,
+  skillObjectKey,
+} from "../services/skills/index.js";
 
 /**
  * The prefix binding is what keeps two deployments that share a bucket from collecting each other's
@@ -10,11 +15,19 @@ import { isSkillObjectKeyUnder, normalizeSkillObjectPrefix, SkillObjectPrefixErr
 const ACCOUNT = "11111111-1111-4111-8111-111111111111";
 const AGENT = "22222222-2222-4222-8222-222222222222";
 const SKILL = "33333333-3333-4333-8333-333333333333";
-const SHA = "a".repeat(64);
+const OBJECT_ID = "a".repeat(64);
 
 function keyUnder(prefix: string): string {
-  return `${prefix}/accounts/${ACCOUNT}/agents/${AGENT}/skills/${SKILL}/${SHA}.tar.gz`;
+  return `${prefix}/accounts/${ACCOUNT}/agents/${AGENT}/skills/${SKILL}/${OBJECT_ID}.tar.gz`;
 }
+
+it("keeps object ids inside the existing owner path and rejects malformed identifiers", () => {
+  const input = { prefix: "//skills//", accountId: ACCOUNT, agentId: AGENT, skillId: SKILL, objectId: OBJECT_ID };
+  expect(skillObjectKey(input)).toBe(keyUnder("skills"));
+  for (const objectId of ["../archive", "A".repeat(64), "a".repeat(63), "g".repeat(64)]) {
+    expect(() => skillObjectKey({ ...input, objectId })).toThrow("objectId");
+  }
+});
 
 describe("isSkillObjectKeyUnder", () => {
   it("accepts exactly the prefix's own key, nested prefixes included", () => {
@@ -43,7 +56,7 @@ describe("isSkillObjectKeyUnder", () => {
       isSkillObjectKeyUnder("skills", `skills/accounts/${ACCOUNT}/agents/${AGENT}/skills/${SKILL}/not-a-digest`),
     ).toBe(false);
     expect(
-      isSkillObjectKeyUnder("skills", `skills/accounts/${ACCOUNT}/agents/nope/skills/${SKILL}/${SHA}.tar.gz`),
+      isSkillObjectKeyUnder("skills", `skills/accounts/${ACCOUNT}/agents/nope/skills/${SKILL}/${OBJECT_ID}.tar.gz`),
     ).toBe(false);
   });
 });

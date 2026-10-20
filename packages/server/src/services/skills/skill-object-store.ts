@@ -71,12 +71,12 @@ export interface SkillObjectKeyInput {
   accountId: string;
   agentId: string;
   skillId: string;
-  /** Lowercase hex SHA-256 of the stored archive. */
-  sha256: string;
+  /** Independent random 256-bit identifier for this archive write, encoded as lowercase hex. */
+  objectId: string;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const SHA256 = /^[0-9a-f]{64}$/;
+const OBJECT_ID = /^[0-9a-f]{64}$/;
 
 function requireUuid(label: string, value: string): string {
   if (typeof value !== "string" || !UUID.test(value)) {
@@ -96,7 +96,7 @@ function requireNormalizedPrefix(prefix: string): string {
 }
 
 /**
- * `<prefix>/accounts/<accountId>/agents/<agentId>/skills/<skillId>/<sha256>.tar.gz`.
+ * `<prefix>/accounts/<accountId>/agents/<agentId>/skills/<skillId>/<objectId>.tar.gz`.
  *
  * Every component is validated before it is joined, so a stored path can never carry a traversal
  * segment or an unexpected shape even if a caller of this helper misbehaves.
@@ -106,16 +106,16 @@ export function skillObjectKey(input: SkillObjectKeyInput): string {
   const accountId = requireUuid("accountId", input.accountId);
   const agentId = requireUuid("agentId", input.agentId);
   const skillId = requireUuid("skillId", input.skillId);
-  if (typeof input.sha256 !== "string" || !SHA256.test(input.sha256)) {
-    throw new SkillObjectStoreError("rejected", "Skill object key sha256 is not a hex digest");
+  if (typeof input.objectId !== "string" || !OBJECT_ID.test(input.objectId)) {
+    throw new SkillObjectStoreError("rejected", "Skill object key objectId is not a 256-bit hex identifier");
   }
-  return `${prefix}/accounts/${accountId}/agents/${agentId}/skills/${skillId}/${input.sha256}.tar.gz`;
+  return `${prefix}/accounts/${accountId}/agents/${agentId}/skills/${skillId}/${input.objectId}.tar.gz`;
 }
 
 const ARCHIVE_FILENAME = /^[0-9a-f]{64}\.tar\.gz$/;
 
 /**
- * Whether `key` is exactly `<normalizedPrefix>/accounts/<uuid>/agents/<uuid>/skills/<uuid>/<sha256>.tar.gz`.
+ * Whether `key` is exactly `<normalizedPrefix>/accounts/<uuid>/agents/<uuid>/skills/<uuid>/<64hex>.tar.gz`.
  *
  * The binding is exact on purpose. Another deployment may share the bucket under a nested prefix
  * (`skills/staging`) or an adjacent one (`skills-staging`), and its rows live in a different

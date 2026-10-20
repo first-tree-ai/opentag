@@ -39,7 +39,7 @@ export interface SkillHarness {
   capturingLogger(): { logger: ServiceLogger; warns: Array<Record<string, unknown>> };
 }
 
-export function createSkillHarness(unit: UnitDatabase): SkillHarness {
+export function createSkillHarness(unit: Pick<UnitDatabase, "database">): SkillHarness {
   const database = unit.database;
 
   const sha256 = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");

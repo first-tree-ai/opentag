@@ -109,7 +109,7 @@ adapter supports path-style addressing for services that require it.
 **Object keys are derived server-side and never supplied by a caller:**
 
 ```
-<prefix>/accounts/<accountId>/agents/<agentId>/skills/<skillId>/<sha256>.tar.gz
+<prefix>/accounts/<accountId>/agents/<agentId>/skills/<skillId>/<objectId>.tar.gz
 ```
 
 The configured prefix is **normalized once**: empty slash segments are dropped and every remaining
@@ -117,22 +117,29 @@ segment must be `[A-Za-z0-9._-]+` and must not be `.` or `..`. So `skills/`, `/s
 `//skills//` are the same namespace, and an empty or traversal prefix is rejected at startup. Writes
 and collection both use that one normalized form.
 
-Keying by content hash makes a replace safe without a lock: write the new key, update the row, and
-leave the previous object in place. A reader either sees the old row with the old key or the new row
-with the new key; it never sees a torn object.
+Every upload or replacement allocates an independent random 256-bit `objectId`, encoded as 64 lowercase
+hex characters. Re-uploading identical content therefore writes a different physical key. The real
+content hash stays in `archive_sha256`, the PUT's payload-hash header, bundle headers, and runtime
+manifests; it is never inferred from the filename. All upload sources use this rule.
+
+A replace writes its own object before the conditional row update, without holding database locks
+across object I/O. Only one logical current archive is exposed. Identical-content replacements still
+advance the existing revision and provenance rules, and can leave duplicate objects until GC.
+Existing hash-named objects remain readable through their stored `object_key`; no migration or
+rewrite is required. The owner path, filename shape and length, and exact-prefix GC matcher stay the same.
 
 ## Orphan-object collection
 
-**A replace never deletes the object it replaced.** Deleting it inline would be check-then-act: the
-"is the old key still the row's key?" read and the delete are two steps, and a later replace can make
-that old key current again in between, after which the delete would strand the row on a missing
-object. So the previous object is left as an orphan and `SkillObjectGc` sweeps it later.
+**A replace leaves its previous object for `SkillObjectGc`.** Collection keeps the existing grace
+period and reference checks. Since every new write has its own key, a later same-content replacement
+cannot make an object whose DELETE is already in flight current again. The same rule isolates a
+failed writer's cleanup from another successful writer's object.
 
 `SkillObjectGc` is a timer-driven worker — no overlapping runs, `unref`'d, errors logged and never
 thrown — that pages through `list(<normalized prefix>/)` and deletes an object only when **all three**
 hold:
 
-- its key is **exactly** `<normalized prefix>/accounts/<uuid>/agents/<uuid>/skills/<uuid>/<sha256>.tar.gz`.
+- its key is **exactly** `<normalized prefix>/accounts/<uuid>/agents/<uuid>/skills/<uuid>/<64hex>.tar.gz`.
   The binding is exact, with no intervening namespace, so a deployment may share a bucket with another
   deployment under a nested prefix (`skills/staging`) or an adjacent one (`skills-staging`) without
   collecting the other's objects — that deployment's rows live in a different database this one cannot
@@ -147,11 +154,16 @@ Deletes are capped per run (`maxDeletesPerRun`, default 500); a failed delete is
 the next pass. Logging is one `info` summary per run (scanned, deleted, skipped-young,
 skipped-referenced, duration), `debug` per delete, and `warn` on a failed delete.
 
-**The residual window is now only between the PUT and the row commit.** `ensureObjectPresent` re-checks
-the row's object after the row write and restores it from the in-memory archive if it vanished, but
-with collection deferred to a grace period a freshly written object is never a GC candidate, so the
-window is narrow in practice. `remove()` still deletes its object inline: a user who deletes a Skill
-expects its bytes gone immediately, and no row can reference a key under that Skill's id afterwards.
+Failed writes still check the current row before deleting their own object: a lost commit acknowledgement
+must not delete a committed archive, and an unreadable reference is treated as do-not-delete.
+`ensureObjectPresent` retains the replacement's post-commit HEAD and restore behavior. `remove()` still
+deletes the removed row's current object inline; the existing grace period, batch limits and failure
+handling do not change.
+
+During a mixed deployment, older writers can still reuse their content-hash keys and remain exposed
+to the original check-then-delete race. The independent-key guarantee requires all writers to use the
+new allocation rule. Reading legacy keys is compatible, but does not repair an archive already missing
+from storage.
 
 ## Upload transport
 

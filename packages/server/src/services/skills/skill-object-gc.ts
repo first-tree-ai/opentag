@@ -13,10 +13,9 @@ import {
 /**
  * Deferred collection of orphaned Skill objects.
  *
- * A replace writes a new content-addressed key and updates the row; it no longer deletes the old key
- * inline, because that check-then-act could still delete an object another writer had just made the
- * row's current key. The old object is left as an orphan instead, and this worker sweeps it after a
- * grace period — long enough that a concurrent request can no longer be holding a reference to it.
+ * A replace writes an independently identified object and updates the row. The previous object is
+ * left for this worker's grace period and reference checks, including legacy keys that older
+ * writers can still reuse during a rolling deployment.
  *
  * The safety rules are what matter, so they are stated once here:
  *

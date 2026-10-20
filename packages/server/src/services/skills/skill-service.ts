@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   type ListAgentSkillsResponse,
   type ReadSkillFileQuery,
@@ -44,7 +44,7 @@ import { type SkillObjectStore, skillObjectKey } from "./skill-object-store.js";
  *    by joining `agents.created_by_user_id` and excluding soft-deleted Agents, so a caller from
  *    another Account and a missing Agent are deliberately indistinguishable (`SKILL_NOT_FOUND`).
  * 2. **Object keys are derived, never supplied.** The key is built from the Agent's owner, the Agent,
- *    the Skill id, and the Server's own sha256, which is what makes a replace safe without a lock:
+ *    the Skill id, and a fresh random object id for every write, which makes a replace safe without a lock:
  *    write the new key, update the row, and leave the old object for `SkillObjectGc` to collect.
  */
 
@@ -312,7 +312,7 @@ export class SkillService {
       accountId,
       agentId,
       skillId,
-      sha256: normalized.sha256,
+      objectId: randomBytes(32).toString("hex"),
     });
     await this.#putObject(store, objectKey, normalized.archive, normalized.sha256);
     const now = this.#now();
@@ -368,7 +368,7 @@ export class SkillService {
       accountId,
       agentId: existing.agentId,
       skillId: existing.id,
-      sha256: normalized.sha256,
+      objectId: randomBytes(32).toString("hex"),
     });
     await this.#putObject(store, objectKey, normalized.archive, normalized.sha256);
     let row: SkillRow | undefined;
@@ -392,8 +392,7 @@ export class SkillService {
         .where(and(eq(agentSkills.id, existing.id), eq(agentSkills.revision, existing.revision)))
         .returning();
     } catch (error) {
-      // A same-content replace reuses the row's existing key, so this must never delete it: route
-      // the cleanup through the unreferenced-object guard instead of deleting blindly.
+      // A failed acknowledgement can follow a committed write; retain its referenced object.
       await discardUnreferencedObject(this.#database, store, objectKey, existing.id, this.#logger);
       throw error;
     }
@@ -401,10 +400,8 @@ export class SkillService {
       await discardUnreferencedObject(this.#database, store, objectKey, existing.id, this.#logger);
       throw skillRevisionConflict("The Skill changed concurrently; retry the upload");
     }
-    // The previous object is deliberately NOT deleted here. An inline delete is check-then-act: a
-    // later replace may already have made the old key current again, so deleting it could strand
-    // that row on a missing object. It is left as an orphan and collected by `SkillObjectGc` once it
-    // is past the grace period and no row references it.
+    // Leave previous objects to GC's grace period and reference checks, including legacy keys that
+    // an older writer can reuse during a rolling deployment.
     // Deliberately outside the update's try/catch: the row is already committed, so a failure here
     // surfaces as SKILL_STORAGE_UNAVAILABLE and must never trigger cleanup of `objectKey`.
     await ensureObjectPresent(this.#database, store, objectKey, row.id, normalized, this.#logger);

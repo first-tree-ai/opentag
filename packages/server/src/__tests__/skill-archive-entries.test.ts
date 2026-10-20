@@ -10,9 +10,9 @@ import { stubFetcher } from "./support/skill-source-fixtures.js";
  * One logical Skill, three ways in.
  *
  * An uploaded archive, a downloaded artifact, and a repository file listing all have to produce the
- * same canonical bytes: the sha256 is what the row and the object key are built from, and two
- * transports that disagreed would make the same Skill two different objects. The equality is
- * asserted rather than assumed, because the three paths reach the packer through different readers.
+ * same canonical bytes and content hash, independently of the physical object id allocated per
+ * write. The equality is asserted rather than assumed, because the three paths reach the packer
+ * through different readers.
  */
 
 const LOGICAL_FILES: readonly { name: string; body: string }[] = [

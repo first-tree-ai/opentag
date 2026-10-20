@@ -258,6 +258,30 @@ describe("public catalog MCP endpoint: tools", () => {
     expect(error.error.issues.map((issue) => issue.path)).toContain("id");
   });
 
+  /*
+   * A tool name that collides with `Object.prototype` must be refused like any other unknown tool:
+   * an object-keyed table would have invoked `constructor` or `toString` and answered 200.
+   */
+  it("refuses a tool name inherited from Object.prototype", async () => {
+    for (const name of ["constructor", "toString", "__defineGetter__", "hasOwnProperty"]) {
+      const response = await rpc(newApp(), { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name } });
+      expect(response.statusCode, name).toBe(200);
+      const result = response.json().result as { isError?: boolean; content: { text: string }[] };
+      expect(result.isError, name).toBe(true);
+      const error = JSON.parse(result.content[0]?.text ?? "null") as { error: { code: string } };
+      expect(error.error.code, name).toBe("unknown_tool");
+    }
+  });
+
+  /* The same collision on the method table: an inherited name is a transport-level unknown method. */
+  it("refuses a JSON-RPC method inherited from Object.prototype", async () => {
+    for (const method of ["constructor", "toString", "__defineGetter__", "hasOwnProperty"]) {
+      const response = await rpc(newApp(), { jsonrpc: "2.0", id: 1, method });
+      expect(response.statusCode, method).toBe(404);
+      expect(response.json().error.code, method).toBe(-32601);
+    }
+  });
+
   it("answers an unknown tool as a JSON tool error", async () => {
     const body = await call(newApp(), "delete_everything");
     expect(body.result?.isError).toBe(true);

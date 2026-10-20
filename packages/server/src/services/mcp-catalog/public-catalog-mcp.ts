@@ -255,11 +255,19 @@ function listCategories(): unknown {
   });
 }
 
-const HANDLERS: Record<string, (argumentsValue: unknown) => unknown> = {
-  search_mcp_servers: searchServers,
-  get_mcp_server: getServer,
-  list_mcp_categories: listCategories,
-};
+/**
+ * The tools this endpoint answers.
+ *
+ * A `Map` rather than an object: with an object, `constructor`, `toString`, and the rest of
+ * `Object.prototype` would resolve to inherited members and be invoked as tools instead of being
+ * refused as unknown. A model naming a tool after a JavaScript built-in is a real prompt-injected
+ * input, not a theoretical one.
+ */
+const HANDLERS = new Map<string, (argumentsValue: unknown) => unknown>([
+  ["search_mcp_servers", searchServers],
+  ["get_mcp_server", getServer],
+  ["list_mcp_categories", listCategories],
+]);
 
 /** The catalog endpoint's handlers: pure reads over compile-time data. */
 export function createPublicCatalogHandlers(): McpInboundHandlers {
@@ -275,10 +283,10 @@ export function createPublicCatalogHandlers(): McpInboundHandlers {
       notes: [INSTRUCTIONS],
     }),
     callTool: async (name, args) => {
-      const handler = HANDLERS[name];
+      const handler = HANDLERS.get(name);
       /* An unknown tool is the model's mistake to read and correct: a tool result, not a transport failure. */
       if (!handler) {
-        return toolErrorJson("unknown_tool", `Unknown tool "${name}"`, { availableTools: Object.keys(HANDLERS) });
+        return toolErrorJson("unknown_tool", `Unknown tool "${name}"`, { availableTools: [...HANDLERS.keys()] });
       }
       return handler(args);
     },

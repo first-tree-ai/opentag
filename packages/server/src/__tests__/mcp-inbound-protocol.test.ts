@@ -78,6 +78,20 @@ describe("dispatch", () => {
     expect(errorOf(reply).code).toBe(-32601);
   });
 
+  /*
+   * An object-keyed method table would resolve `constructor`, `toString`, and the rest of
+   * `Object.prototype` and dispatch them as methods. Every unknown name — inherited or invented —
+   * must get the one method-not-found answer.
+   */
+  it("refuses an inherited name as an unknown method", async () => {
+    for (const method of ["constructor", "toString", "__defineGetter__", "hasOwnProperty", "valueOf"]) {
+      const reply = await dispatchInboundRequest({ jsonrpc: "2.0", id: 1, method }, handlers());
+      if (reply.kind !== "json") throw new Error("Expected a JSON reply");
+      expect(reply.status, method).toBe(404);
+      expect(errorOf(reply).code, method).toBe(-32601);
+    }
+  });
+
   /* An id that is neither a string nor a number is answered against null, per JSON-RPC. */
   it("normalizes a malformed id to null", async () => {
     const reply = await dispatchInboundRequest({ jsonrpc: "2.0", id: { bad: true }, method: "ping" }, handlers());

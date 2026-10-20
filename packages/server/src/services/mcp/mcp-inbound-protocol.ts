@@ -121,7 +121,7 @@ export async function dispatchInboundRequest(
   // acknowledge rather than answer, and a reply to a notification is itself a protocol violation.
   if (request.id === undefined) return { kind: "accepted" };
   const id = replyId(request);
-  const method = METHODS[request.method];
+  const method = METHODS.get(request.method);
   if (!method) {
     return {
       kind: "json",
@@ -141,32 +141,41 @@ type MethodHandler = (
 /**
  * The methods this endpoint answers.
  *
- * A table rather than a chain of comparisons, so the supported set is one readable list and an
- * unknown method has exactly one answer. Everything absent here — `resources/*`, `prompts/*`,
- * elicitation, sampling — is deliberately not implemented, and the capabilities this endpoint
- * advertises say so.
+ * A `Map` rather than an object: an object would answer `constructor`, `toString`, and the rest of
+ * `Object.prototype` with inherited members, so `"constructor"` would be dispatched as a method
+ * instead of being refused. The supported set is one readable list, and an unknown method — inherited
+ * name or not — has exactly one answer.
+ *
+ * Everything absent here — `resources/*`, `prompts/*`, elicitation, sampling — is deliberately not
+ * implemented, and the capabilities this endpoint advertises say so.
  */
-const METHODS: Record<string, MethodHandler> = {
-  initialize: async (request, handlers, id) => ok(id, await initializeResult(handlers, request)),
-  "server/discover": async (_request, handlers, id) => ok(id, await discoverResult(handlers)),
-  ping: async (_request, _handlers, id) => ok(id, {}),
-  "tools/list": async (_request, handlers, id) => {
-    const catalog = await handlers.listTools();
-    // No `nextCursor`: the catalogue is already bounded and served whole, so there is never a further
-    // page. Emitting a cursor we would then have to honour would describe state the endpoint does not
-    // keep.
-    return ok(id, { tools: catalog.tools.map(toWireTool) });
-  },
-  "tools/call": async (request, handlers, id) => {
-    const params = isRecord(request.params) ? request.params : undefined;
-    const name = params && typeof params.name === "string" ? params.name : undefined;
-    if (!name) {
-      return { kind: "json", status: 200, body: jsonRpcError(id, MCP_RPC_INVALID_PARAMS, "A tool name is required") };
-    }
-    const args = params && isRecord(params.arguments) ? params.arguments : undefined;
-    return ok(id, await handlers.callTool(name, args));
-  },
-};
+const METHODS = new Map<string, MethodHandler>([
+  ["initialize", async (request, handlers, id) => ok(id, await initializeResult(handlers, request))],
+  ["server/discover", async (_request, handlers, id) => ok(id, await discoverResult(handlers))],
+  ["ping", async (_request, _handlers, id) => ok(id, {})],
+  [
+    "tools/list",
+    async (_request, handlers, id) => {
+      const catalog = await handlers.listTools();
+      // No `nextCursor`: the catalogue is already bounded and served whole, so there is never a further
+      // page. Emitting a cursor we would then have to honour would describe state the endpoint does not
+      // keep.
+      return ok(id, { tools: catalog.tools.map(toWireTool) });
+    },
+  ],
+  [
+    "tools/call",
+    async (request, handlers, id) => {
+      const params = isRecord(request.params) ? request.params : undefined;
+      const name = params && typeof params.name === "string" ? params.name : undefined;
+      if (!name) {
+        return { kind: "json", status: 200, body: jsonRpcError(id, MCP_RPC_INVALID_PARAMS, "A tool name is required") };
+      }
+      const args = params && isRecord(params.arguments) ? params.arguments : undefined;
+      return ok(id, await handlers.callTool(name, args));
+    },
+  ],
+]);
 
 function ok(id: string | number | null, result: unknown): McpInboundReply {
   return { kind: "json", status: 200, body: jsonRpcResult(id, result) };

@@ -102,6 +102,8 @@ import {
   MCP_SERVERS_PATH,
   mcpServerPath,
   mcpServersPath,
+  PUBLIC_MCP_CATALOG_PATH,
+  PUBLIC_MCP_CATALOG_REQUEST_MAX_BYTES,
   PUBLIC_MCP_SERVERS_PATH,
   PUBLIC_SKILLS_PATH,
   RUNTIME_DURABLE_WORK_PATH,
@@ -382,6 +384,15 @@ describe("http paths", () => {
       expect(PUBLIC_SKILLS_PATH).toBe("/api/v1/public/skills");
       expect(PUBLIC_MCP_SERVERS_PATH).toBe("/api/v1/public/mcp-servers");
     });
+
+    /*
+     * A separate path, not a method on the read above: that one is a display projection served only
+     * on website origins, while this one is a protocol endpoint an MCP client posts JSON-RPC to.
+     */
+    it("gives the catalog's own MCP endpoint its own documented path", () => {
+      expect(PUBLIC_MCP_CATALOG_PATH).toBe("/api/v1/public/mcp");
+      expect(PUBLIC_MCP_CATALOG_REQUEST_MAX_BYTES).toBe(64 * 1024);
+    });
   });
 
   describe("templates and constants stay consistent with the builders", () => {
@@ -477,6 +488,7 @@ describe("http paths", () => {
       expect(HTTP_PATHS.runtimeDurableWork).toBe(RUNTIME_DURABLE_WORK_PATH);
       expect(HTTP_PATHS.publicSkills).toBe(PUBLIC_SKILLS_PATH);
       expect(HTTP_PATHS.publicMcpServers).toBe(PUBLIC_MCP_SERVERS_PATH);
+      expect(HTTP_PATHS.publicMcpCatalog).toBe(PUBLIC_MCP_CATALOG_PATH);
     });
   });
 });

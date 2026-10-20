@@ -28,4 +28,16 @@ export {
   type McpCatalogTool,
   type McpInstallableCatalogEntry,
 } from "./mcp-catalog.gen.js";
+export {
+  createMcpCatalogSearch,
+  findMcpCatalogEntry,
+  MCP_CATALOG_SEARCH_DEFAULT_LIMIT,
+  MCP_CATALOG_SEARCH_MAX_LIMIT,
+  type McpCatalogCategoryCount,
+  type McpCatalogSearch,
+  type McpCatalogSearchOptions,
+  type McpCatalogSearchResult,
+  mcpCatalogSearch,
+  searchMcpCatalog,
+} from "./search.js";
 export { type McpCatalogViolation, validateMcpCatalog, validateMcpCatalogEntry } from "./validate.js";

@@ -46,6 +46,7 @@
 
 - [应用设计指南（英文）](../../design.md)
 - [MCP Server integration](../design/mcp-server-integration.md)
+- [公开 MCP 目录端点](../design/public-mcp-catalog.md)
 - [Web UI contract](../design/web-ui-contract.md)
 - [Doctor product specification](../design/doctor-product-spec.md)
 - [Agent Runtime contract](../design/agent-runtime-contract.md)

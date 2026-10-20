@@ -1,18 +1,23 @@
-import { MCP_GATEWAY_PATH, MCP_GATEWAY_REQUEST_MAX_BYTES, type McpGatewayErrorCode } from "@opentag/shared";
+import {
+  MCP_GATEWAY_PATH,
+  MCP_GATEWAY_REQUEST_MAX_BYTES,
+  MCP_GATEWAY_SERVER_NAME,
+  type McpGatewayErrorCode,
+} from "@opentag/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { createServiceLoggerPort } from "../observability/index.js";
 import { createMcpGatewayAuthPreHandler } from "../plugins/mcp-gateway-auth.js";
 import { McpGatewayError, type McpGatewayExecutionAuthorizer } from "../runtime-credentials/mcp-gateway-execution.js";
 import type { RuntimeMcpGatewayTokenStore } from "../runtime-credentials/mcp-gateway-token-store.js";
 import { McpServiceError } from "../services/mcp/errors.js";
-import {
-  dispatchGatewayRequest,
-  jsonRpcError,
-  type McpGatewayHandlers,
-  parseGatewayRequest,
-  toolErrorResult,
-} from "../services/mcp/mcp-gateway-protocol.js";
 import type { McpGatewayService } from "../services/mcp/mcp-gateway-service.js";
+import {
+  dispatchInboundRequest,
+  jsonRpcError,
+  type McpInboundHandlers,
+  parseInboundRequest,
+  toolErrorResult,
+} from "../services/mcp/mcp-inbound-protocol.js";
 
 export interface McpGatewayRoutesOptions {
   tokens: RuntimeMcpGatewayTokenStore;
@@ -29,6 +34,12 @@ const ERROR_STATUS: Record<McpGatewayErrorCode, number> = {
   scope_denied: 403,
   timeout: 504,
 };
+
+/**
+ * The identity this endpoint reports. Kept here rather than in the protocol module: what an endpoint
+ * calls itself is the endpoint's fact, not the protocol's.
+ */
+const GATEWAY_SERVER_INFO = { name: MCP_GATEWAY_SERVER_NAME, title: "OpenTag MCP", version: "1" };
 
 /** JSON-RPC parse/invalid-request codes, used before a method is even known. */
 const RPC_PARSE_ERROR = -32700;
@@ -97,7 +108,7 @@ async function handleGatewayRequest(
   const context = request.mcpGatewayContext;
   /* v8 ignore next -- the preHandler always sets the context or answers. */
   if (!context) throw new McpGatewayError("unauthenticated", "MCP gateway authentication is required");
-  const rpc = parseGatewayRequest(request.body);
+  const rpc = parseInboundRequest(request.body);
   if (!rpc) {
     return reply.status(400).send(jsonRpcError(null, RPC_INVALID_REQUEST, "Invalid JSON-RPC request"));
   }
@@ -112,7 +123,7 @@ async function handleGatewayRequest(
 
   const handlers = buildHandlers(options, execution.accountId, execution.agentId, aborted.signal);
   try {
-    const outcome = await dispatchGatewayRequest(rpc, handlers);
+    const outcome = await dispatchInboundRequest(rpc, handlers);
     if (outcome.kind === "accepted") return reply.status(202).send();
     return reply.status(outcome.status).send(outcome.body);
   } catch (error) {
@@ -133,8 +144,9 @@ function buildHandlers(
   accountId: string,
   agentId: string,
   signal: AbortSignal,
-): McpGatewayHandlers {
+): McpInboundHandlers {
   return {
+    serverInfo: GATEWAY_SERVER_INFO,
     listTools: () => options.service.catalog(accountId, agentId),
     callTool: async (name, args) => {
       try {

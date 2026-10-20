@@ -46,6 +46,7 @@ Start with the [Quick Start](../README.md#quick-start) or the [development guide
 
 - [App design guide](../design.md)
 - [MCP Server integration](./design/mcp-server-integration.md)
+- [Public MCP catalog endpoint](./design/public-mcp-catalog.md)
 - [Web UI contract](./design/web-ui-contract.md)
 - [Doctor product specification](./design/doctor-product-spec.md)
 - [Agent Runtime contract](./design/agent-runtime-contract.md)

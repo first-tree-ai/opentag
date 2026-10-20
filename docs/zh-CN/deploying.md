@@ -194,6 +194,14 @@ bundle 始终以调用方自己的凭据（Account session、Computer machine to
 
 应先部署 Server 的支持，再让官网读取目录。任一接口不可用时，官网保留原有的目录渲染方式。
 
+## 公开 MCP 目录端点
+
+`POST /api/v1/public/mcp` 是一个匿名的 Streamable HTTP MCP 端点，把同一份 MCP 市场目录提供给用户自己的 Agent。
+它始终注册：不校验来源，也不返回 CORS 头，因为调用方是 MCP 客户端而不是浏览器，且它返回的内容都是仓库内的
+公开数据。每个响应都是 `Cache-Control: no-store`，请求体上限 64 KiB，每个客户端 IP 每分钟 120 次请求。
+计数器保存在进程内，因此多副本部署下每个副本各给调用方一份额度；如果需要全局额度，请在前面放共享限流器或网关。
+见[公开 MCP 目录端点](../design/public-mcp-catalog.md)。
+
 ## 手动部署与回滚
 
 现在必须已有匹配的 CLI/Runner 发布产物。只回滚 Runner 时，使用 **Deploy Runner** 并指定当前兼容 Server 的 SHA，

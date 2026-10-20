@@ -40,6 +40,7 @@ import { registerMcpOAuthRoutes } from "./api/mcp-oauth.js";
 import { registerMcpServerRoutes } from "./api/mcp-servers.js";
 import { registerMeRoutes } from "./api/me.js";
 import { registerPublicCatalogRoutes } from "./api/public-catalog.js";
+import { type PublicMcpCatalogRoutesOptions, registerPublicMcpCatalogRoutes } from "./api/public-mcp-catalog.js";
 import { RequestValidationError } from "./api/request-validation.js";
 import { registerRunnerWorkspaceRoutes } from "./api/runner-workspace.js";
 import type { RuntimeRoutesOptions } from "./api/runtime.js";
@@ -160,6 +161,11 @@ export interface CreateAppOptions {
    * The official origins apply by themselves on the official deployment; this list extends them.
    */
   publicCatalog?: { origins: readonly string[] };
+  /**
+   * The anonymous catalog MCP endpoint. Always registered; the option only supplies a request budget
+   * shared across replicas, which is what a test injects.
+   */
+  publicMcpCatalog?: PublicMcpCatalogRoutesOptions;
   /** Relay for Web App and CLI failures. Always registered; without a reporter the relay only logs. */
   errorReporting?: ErrorReportRoutesOptions;
   imBindingService?: ImBindingService;
@@ -539,6 +545,14 @@ function registerPublicCatalog(app: FastifyInstance, options: CreateAppOptions):
   });
 }
 
+/**
+ * The catalog's own MCP endpoint: anonymous, always on, and independent of the two reads above.
+ * Nothing about it is origin-gated — the callers are MCP clients, not browsers.
+ */
+function registerPublicMcpCatalog(app: FastifyInstance, options: CreateAppOptions): void {
+  registerPublicMcpCatalogRoutes(app, options.publicMcpCatalog ?? {});
+}
+
 export function createApp(options: CreateAppOptions = {}) {
   const app = Fastify({
     /*
@@ -561,6 +575,7 @@ export function createApp(options: CreateAppOptions = {}) {
 
   registerSessionProofRoutes(app, options);
   registerPublicCatalog(app, options);
+  registerPublicMcpCatalog(app, options);
   if (options.runtimeDurableWork) registerRuntimeDurableWorkRoutes(app, options.runtimeDurableWork);
   if (options.runtimeWeb) registerRuntimeWebRoutes(app, options.runtimeWeb);
   if (options.mcpGateway) registerMcpGatewayRoutes(app, options.mcpGateway);

@@ -1,6 +1,6 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { RuntimeMcpGatewayTokenStore } from "../runtime-credentials/mcp-gateway-token-store.js";
-import { jsonRpcError } from "../services/mcp/mcp-gateway-protocol.js";
+import { jsonRpcError } from "../services/mcp/mcp-inbound-protocol.js";
 
 export interface McpGatewayAuthContext {
   executionId: string;

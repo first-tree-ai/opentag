@@ -144,6 +144,17 @@ export const RUNTIME_SKILL_PRESET_INSTALL_TEMPLATE = `${RUNTIME_SKILL_PRESETS_PA
  */
 export const PUBLIC_SKILLS_PATH = `${API_V1_PREFIX}/public/skills`;
 export const PUBLIC_MCP_SERVERS_PATH = `${API_V1_PREFIX}/public/mcp-servers`;
+/**
+ * The anonymous Streamable HTTP MCP endpoint that serves the catalog itself, so a user's own Agent
+ * can search it. Anonymous like the two reads above, but never browser-gated: an MCP client is not a
+ * browser and the catalog it reads is repo-shipped public data.
+ */
+export const PUBLIC_MCP_CATALOG_PATH = `${API_V1_PREFIX}/public/mcp`;
+/**
+ * Body bound for that endpoint. Sixteen times smaller than the runtime gateway's, because the only
+ * requests here are a tool name and a short query — nothing a legitimate client needs to grow.
+ */
+export const PUBLIC_MCP_CATALOG_REQUEST_MAX_BYTES = 64 * 1024;
 /*
  * Agent self-configuration. Session-proof authenticated and never addressed by Agent id: the Agent
  * is always the one the proof resolves to, so a request cannot reach a different Agent.
@@ -193,6 +204,7 @@ export const HTTP_PATHS = {
   mcpCatalogEndpoints: MCP_CATALOG_ENDPOINTS_PATH,
   publicSkills: PUBLIC_SKILLS_PATH,
   publicMcpServers: PUBLIC_MCP_SERVERS_PATH,
+  publicMcpCatalog: PUBLIC_MCP_CATALOG_PATH,
   slackOAuthCallback: SLACK_OAUTH_CALLBACK_PATH,
   authConnectExchange: `${API_V1_PREFIX}/auth/connect/exchange`,
   computerConnectExchange: `${API_V1_PREFIX}/computer/connect/exchange`,

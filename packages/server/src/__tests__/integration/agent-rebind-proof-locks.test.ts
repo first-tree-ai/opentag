@@ -86,7 +86,7 @@ async function fixture() {
     .insert(users)
     .values({ id: accountId, email: `${accountId}@example.test`, displayName: "Proof owner" });
   const { computerId, instanceId } = await createComputer(observer.database, accountId);
-  const connections = new Map([[computerId, instanceId]]);
+  const connections = new Map<string, string>([[computerId, instanceId]]);
   const agents = new AgentService(observer.database);
   const agent = await agents.createForAccount(accountId, {
     name: "proof-rebind",

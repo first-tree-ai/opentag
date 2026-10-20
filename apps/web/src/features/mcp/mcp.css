@@ -200,7 +200,8 @@
 }
 .mcp-preset-key-actions {
   display: grid;
-  grid-template-columns: 4rem 5rem;
+  /* Reserve both actions with room for their labels and the shared button padding. */
+  grid-template-columns: repeat(2, minmax(6rem, max-content));
   gap: 0.25rem;
 }
 .mcp-preset-key-actions > :last-child {
@@ -208,6 +209,7 @@
 }
 .mcp-preset-key-actions > .ui-button {
   width: 100%;
+  white-space: nowrap;
 }
 .mcp-preset-feedback {
   display: flex;

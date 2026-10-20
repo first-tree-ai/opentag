@@ -64,3 +64,41 @@ test connections, rather than third-party account data.
 
 
 Current connector component evidence is recorded in [Connector UI polish](../web-ui/connector-polish/README.md).
+
+
+## Credential-save and detach concurrency
+
+`integration/mcp-management-concurrency.test.ts` drives actual services over independent migrated
+PostgreSQL connections. A query observer pauses only after the real binding read; it changes neither
+SQL nor lock modes. PostgreSQL lock waits prove save-before-detach and detach-before-save ordering.
+The cases cover Bearer and anonymous saves, same-key detach/reattach (including identical binding
+creation timestamps), Agent deletion, shared definition edit/delete and onboarding reset. A live
+mount still refuses definition deletion; an edit preserves the existing Bearer endpoint policy.
+
+Credential saves on other mounts sharing the Agent or definition still finish while the first save
+is paused. Those mounts also acquire their existing FK key shares without waiting for it. Normal saves, anonymous connections and disable/enable preserve their existing
+contract. Delayed probe success, failed results and thrown transport errors cannot update a newly
+created authorization even when its revision equals the old row's. Matching unit regressions cover
+both row identity and revision. Callback settlement already fences on authorization ID plus flow
+state, and refresh settlement on authorization ID plus claim ID; their state machines are unchanged.
+
+The earlier source allows both uploads past the final Skill slot and permits a late credential save
+after detach; the new assertions reject those behaviors. The probe replacement cases also fail
+before the row-ID fence is added. All upstream responses and object storage are local fixtures;
+these are not production observations, historical cleanup or live-provider acceptance.
+
+
+### Module 07 local validation — 2026-10-20
+
+The final Server source passed `pnpm check`, `pnpm build`, `pnpm typecheck` and `pnpm test`
+on Node 24.20.0: 691 script tests and 10,098 package tests passed, with 22 existing skips.
+Client Runtime coverage passed 650 tests in 30 files with all four metrics at 100%; its tracked
+Client/shared/config inputs were unchanged by the Server lock refinement and verified identical.
+The full migrated PostgreSQL suite passed 901 tests in 64 files, including 24 new capability-write
+regressions. Server unit line coverage was 90.70%; changed-line coverage was 101/101 (100%).
+
+The first full PostgreSQL run, overlapping repository unit tests, timed out in the Cloud identity
+concurrency case and an existing receipt suite's database-reset hook. Without source or timeout
+changes, the affected suites passed 32 tests and the final standalone full run passed all 901.
+The failed attempt is not counted as a pass. No production prevalence, live-provider acceptance,
+historical repair, merge or deployment was performed.

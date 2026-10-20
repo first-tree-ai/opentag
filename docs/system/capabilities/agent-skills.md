@@ -382,6 +382,15 @@ no machine token the Computer surface accepts today) and `--skill` argument asse
 | `SKILL_MANIFEST_FILE` | `SKILL.md` | The required manifest filename |
 | `SKILL_MARKER_FILE` | `.opentag-skill.json` | The marker that identifies a platform-managed directory |
 
+Skill creation counts enabled and disabled rows toward the same 64-Skill limit. Archive validation,
+packing and object PUT happen before the database transaction. Final admission locks the current
+Agent with `FOR NO KEY UPDATE`, rechecks its owner and undeleted status, and checks the current
+name/count before inserting. Concurrent creation on one Agent therefore shares one final decision;
+a conflicting name retains `SKILL_NAME_CONFLICT`, while a new name without a slot gets
+`SKILL_LIMIT_REACHED`. Replacements keep their existing row/revision CAS and do not consume a slot.
+A failed admission uses the existing reference-aware object cleanup; an uncertain commit never
+justifies deleting a possibly referenced object.
+
 Names are 1–64 characters of lowercase letters, numbers, and single hyphens; they may not start or
 end with a hyphen and may not contain consecutive hyphens (`SkillNameSchema`). Ten names are reserved
 because OpenTag already ships them and an upload must not shadow them: the six `context-tree-*`

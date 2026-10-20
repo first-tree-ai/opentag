@@ -5,6 +5,7 @@ import { type agentMcpServers, agents, mcpServerAuthorizations } from "../../db/
 import { hashSecret } from "../auth/security.js";
 import { boundedMcpSummary, MCP_ERROR_CODES, McpServiceError } from "./errors.js";
 import { buildMcpAuthHeaders } from "./mcp-auth-headers.js";
+import { lockMcpCredentialBinding } from "./mcp-binding-locks.js";
 import type { McpAuthorizationCredential, McpCredentialCipher } from "./mcp-credential-cipher.js";
 import type { McpProbe, McpProbeResult } from "./mcp-probe.js";
 import { McpServerService } from "./mcp-server-service.js";
@@ -43,6 +44,8 @@ export interface McpProbeOutcome {
   protocolVersion: string | null;
 }
 
+type ProbeAuthorizationVersion = Pick<typeof mcpServerAuthorizations.$inferSelect, "id" | "revision">;
+
 export interface ResolvedMcpCredential {
   binding: typeof agentMcpServers.$inferSelect;
   server: Parameters<typeof McpServerService.resolveEffectiveConfig>[0];
@@ -78,78 +81,80 @@ export class McpAuthorizationService {
     mcpServerId: string,
     input: { kind: "none" | "bearer"; bearerKey?: string },
   ): Promise<void> {
-    await this.#servers.readProbeContext(accountId, agentId, mcpServerId);
-    const now = this.#now();
-    if (input.kind === "bearer" && (!input.bearerKey || input.bearerKey.length === 0)) {
-      throw new McpServiceError(MCP_ERROR_CODES.CREDENTIAL_INPUT_INVALID, "A bearer authorization requires its key");
-    }
-    /*
-     * The sealed value is stored in `access_token` position of the envelope: a Bearer key is this
-     * Agent's single credential for the Server, and the envelope shape is shared with OAuth so a
-     * kind change is one write rather than a migration.
-     *
-     * Sealed under the authorization server the row will *end up* with, which is `null`: a bearer
-     * credential is not issued by an authorization server, and the write below clears the column for
-     * `bearer` and `none` alike. Sealing under the previous row's value instead — as this did — left
-     * an envelope the current AAD could not open whenever a row arrived with one set, which is every
-     * row after an abandoned OAuth start or an OAuth revoke. The PUT returned 200 and every probe
-     * then failed to decrypt.
-     */
-    const sealed =
-      input.kind === "bearer"
-        ? this.#cipher.encryptAuthorizationCredential(
-            { mcpServerId, agentId, authorizationServer: null },
-            { accessToken: input.bearerKey as string },
-          )
-        : undefined;
-    await this.#database
-      .insert(mcpServerAuthorizations)
-      .values({
-        agentId,
-        mcpServerId,
-        kind: input.kind,
-        status: "active",
-        ciphertext: sealed?.ciphertext ?? null,
-        keyId: sealed?.keyId ?? null,
-        probeState: "pending",
-        createdAt: now,
-        updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: [mcpServerAuthorizations.mcpServerId, mcpServerAuthorizations.agentId],
-        set: {
+    await this.#database.transaction(async (transaction) => {
+      await lockMcpCredentialBinding(transaction, accountId, agentId, mcpServerId);
+      const now = this.#now();
+      if (input.kind === "bearer" && (!input.bearerKey || input.bearerKey.length === 0)) {
+        throw new McpServiceError(MCP_ERROR_CODES.CREDENTIAL_INPUT_INVALID, "A bearer authorization requires its key");
+      }
+      /*
+       * The sealed value is stored in `access_token` position of the envelope: a Bearer key is this
+       * Agent's single credential for the Server, and the envelope shape is shared with OAuth so a
+       * kind change is one write rather than a migration.
+       *
+       * Sealed under the authorization server the row will *end up* with, which is `null`: a bearer
+       * credential is not issued by an authorization server, and the write below clears the column for
+       * `bearer` and `none` alike. Sealing under the previous row's value instead — as this did — left
+       * an envelope the current AAD could not open whenever a row arrived with one set, which is every
+       * row after an abandoned OAuth start or an OAuth revoke. The PUT returned 200 and every probe
+       * then failed to decrypt.
+       */
+      const sealed =
+        input.kind === "bearer"
+          ? this.#cipher.encryptAuthorizationCredential(
+              { mcpServerId, agentId, authorizationServer: null },
+              { accessToken: input.bearerKey as string },
+            )
+          : undefined;
+      await transaction
+        .insert(mcpServerAuthorizations)
+        .values({
+          agentId,
+          mcpServerId,
           kind: input.kind,
           status: "active",
-          // The new envelope replaces the old in this same statement, so a kind change can never
-          // leave behind a ciphertext the current AAD cannot open.
           ciphertext: sealed?.ciphertext ?? null,
           keyId: sealed?.keyId ?? null,
-          scopes: null,
-          accessTokenExpiresAt: null,
-          authorizationServer: null,
-          // Replacing or switching the credential replaces its audience; the flow's resource follows
-          // `state`, cleared below.
-          oauthResource: null,
-          clientRegistrationId: null,
-          state: null,
-          stateExpiresAt: null,
-          pkceCiphertext: null,
-          /*
-           * Cleared with the flow it belongs to. The datastore pairs the two
-           * (`mcp_server_authorizations_flow_binding_shape`), and a write that nulled only `state`
-           * was rejected outright — switching a row that was mid-flow to a Bearer key failed before
-           * it could store anything.
-           */
-          loginSessionHash: null,
-          flowOauthResource: null,
-          refreshClaimId: null,
-          refreshClaimedAt: null,
           probeState: "pending",
-          failureCode: null,
-          revision: sql`${mcpServerAuthorizations.revision} + 1`,
+          createdAt: now,
           updatedAt: now,
-        },
-      });
+        })
+        .onConflictDoUpdate({
+          target: [mcpServerAuthorizations.mcpServerId, mcpServerAuthorizations.agentId],
+          set: {
+            kind: input.kind,
+            status: "active",
+            // The new envelope replaces the old in this same statement, so a kind change can never
+            // leave behind a ciphertext the current AAD cannot open.
+            ciphertext: sealed?.ciphertext ?? null,
+            keyId: sealed?.keyId ?? null,
+            scopes: null,
+            accessTokenExpiresAt: null,
+            authorizationServer: null,
+            // Replacing or switching the credential replaces its audience; the flow's resource follows
+            // `state`, cleared below.
+            oauthResource: null,
+            clientRegistrationId: null,
+            state: null,
+            stateExpiresAt: null,
+            pkceCiphertext: null,
+            /*
+             * Cleared with the flow it belongs to. The datastore pairs the two
+             * (`mcp_server_authorizations_flow_binding_shape`), and a write that nulled only `state`
+             * was rejected outright — switching a row that was mid-flow to a Bearer key failed before
+             * it could store anything.
+             */
+            loginSessionHash: null,
+            flowOauthResource: null,
+            refreshClaimId: null,
+            refreshClaimedAt: null,
+            probeState: "pending",
+            failureCode: null,
+            revision: sql`${mcpServerAuthorizations.revision} + 1`,
+            updatedAt: now,
+          },
+        });
+    });
   }
 
   /** A guarded cancellation ends only that flow; an explicit revoke also drops the credential. */
@@ -284,13 +289,14 @@ export class McpAuthorizationService {
     }
     const effective = McpServerService.resolveEffectiveConfig(context.server, context.binding);
     /*
-     * The revision this probe was built from. Every write below is fenced on it, because the probe
+     * The row and revision this probe was built from. Every write below is fenced on both: a detached
+     * and recreated authorization can reuse a revision, but has a different row id. The probe
      * takes an upstream round trip and the row can be re-authorized or revoked while it is in flight:
      * without the fence a slow result landed on a row that had since been changed — revoking a
      * credential and immediately re-probing brought back `succeeded` and a tool snapshot on the
      * revoked row, and replacing key A with key B let A's slower answer overwrite B's.
      */
-    const revision = authorization.revision;
+    const expected = { id: authorization.id, revision: authorization.revision };
     let result: McpProbeResult;
     try {
       const headers = await this.buildHeaders(accountId, agentId, mcpServerId);
@@ -302,14 +308,14 @@ export class McpAuthorizationService {
         cachedVersion: authorization.protocolVersion,
       });
     } catch (error) {
-      return await this.#persistProbeFailure(mcpServerId, agentId, error, false, revision);
+      return await this.#persistProbeFailure(mcpServerId, agentId, error, false, expected);
     }
     if (result.probeState === "failed") {
-      return await this.#persistProbeFailure(mcpServerId, agentId, result, result.eraInvalidated, revision);
+      return await this.#persistProbeFailure(mcpServerId, agentId, result, result.eraInvalidated, expected);
     }
     // The write can still be refused for exceeding the Account's snapshot budget, in which case the
     // reported outcome must match what was stored rather than what the Server answered.
-    const refusal = await this.#persistProbeSuccess(mcpServerId, agentId, result, revision);
+    const refusal = await this.#persistProbeSuccess(mcpServerId, agentId, result, expected);
     if (refusal) return refusal;
     return {
       probeState: "succeeded",
@@ -354,7 +360,7 @@ export class McpAuthorizationService {
     agentId: string,
     failure: unknown,
     eraInvalidated: boolean,
-    revision: number,
+    expected: ProbeAuthorizationVersion,
   ): Promise<McpProbeOutcome> {
     const probeError = probeErrorOf(failure);
     const now = this.#now();
@@ -376,7 +382,8 @@ export class McpAuthorizationService {
           eq(mcpServerAuthorizations.agentId, agentId),
           eq(mcpServerAuthorizations.mcpServerId, mcpServerId),
           // Fenced: a row changed while this probe ran keeps the newer decision.
-          eq(mcpServerAuthorizations.revision, revision),
+          eq(mcpServerAuthorizations.id, expected.id),
+          eq(mcpServerAuthorizations.revision, expected.revision),
         ),
       );
     return {
@@ -403,7 +410,7 @@ export class McpAuthorizationService {
     mcpServerId: string,
     agentId: string,
     result: McpProbeResult,
-    revision: number,
+    expected: ProbeAuthorizationVersion,
   ): Promise<McpProbeOutcome | undefined> {
     const now = this.#now();
     if (await this.#exceedsAccountSnapshotBudget(mcpServerId, agentId, result.tools)) {
@@ -415,7 +422,7 @@ export class McpAuthorizationService {
           "The Account's stored MCP tool snapshots would exceed 64 MiB; remove unused Servers",
         ),
         false,
-        revision,
+        expected,
       );
     }
     await this.#database
@@ -438,13 +445,8 @@ export class McpAuthorizationService {
         and(
           eq(mcpServerAuthorizations.agentId, agentId),
           eq(mcpServerAuthorizations.mcpServerId, mcpServerId),
-          /*
-           * Fenced on the revision this probe read, so a result that lost the race is dropped rather
-           * than written over the newer state. A dropped result is correct and silent: the row it
-           * would have described no longer exists in that form, and whatever replaced it has its own
-           * probe pending.
-           */
-          eq(mcpServerAuthorizations.revision, revision),
+          eq(mcpServerAuthorizations.id, expected.id),
+          eq(mcpServerAuthorizations.revision, expected.revision),
         ),
       );
     return undefined;

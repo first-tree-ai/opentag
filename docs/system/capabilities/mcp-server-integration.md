@@ -219,6 +219,20 @@ Two consequences follow, and both are handled:
 Detaching is also what drops a credential: a Server an Agent no longer mounts keeps no usable secret
 for it.
 
+Bearer and anonymous saves validate and write in one short transaction, taking Agent → Server
+definition → binding → authorization locks. Agent ownership/status and definition ownership are
+rechecked before the locked mount authorizes the write. The Agent and definition use
+`FOR SHARE` so saves on independent mounts and existing child-row FK key shares remain compatible; the mount uses
+the same binding lock as cleanup. If detach wins, save finds no mount and returns
+`MCP_BINDING_NOT_FOUND`; if save wins, detach removes that authorization afterward. A mount cannot
+be deleted and recreated between the save's binding read and its commit. Disabling retains the
+credential. No provider request or browser authorization wait runs inside this save transaction.
+
+Probe settlement matches both the existing authorization row ID and its revision. A recreated
+authorization can start at the same revision, so revision alone does not identify the row probed.
+Late probe success, failure or transport errors leave a replacement authorization unchanged.
+OAuth callback state/row fences and refresh claim fences retain their existing behavior.
+
 ## Authorization resolution
 
 For one Agent and one Server, the chain has exactly one step:

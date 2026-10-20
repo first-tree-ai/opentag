@@ -11,7 +11,7 @@ import {
   type SkillSource,
 } from "@opentag/shared";
 import { and, asc, eq, ne, sql } from "drizzle-orm";
-import type { DatabaseClient } from "../../db/client.js";
+import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { agentSkills, agents } from "../../db/schema/index.js";
 import { isUniqueViolation } from "../../db/unique-violation.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
@@ -318,29 +318,32 @@ export class SkillService {
     const now = this.#now();
     let row: SkillRow | undefined;
     try {
-      // The try covers ONLY the insert. Nothing after a committed insert may ever delete its object:
+      // The try covers only final admission. Nothing after a committed insert may ever delete its object:
       // the row would be left pointing at a missing object, which no retry could repair. The catch's
       // cleanup is therefore conditional — it deletes only when the row is absent.
-      [row] = await this.#database
-        .insert(agentSkills)
-        .values({
-          id: skillId,
-          agentId,
-          name: normalized.manifest.name,
-          description: normalized.manifest.description,
-          enabled: true,
-          source: input.source,
-          objectKey,
-          archiveSha256: normalized.sha256,
-          archiveBytes: normalized.archive.byteLength,
-          fileCount: normalized.fileCount,
-          files: normalized.files,
-          filesTruncated: normalized.filesTruncated,
-          revision: 1,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .returning();
+      [row] = await this.#database.transaction(async (transaction) => {
+        await this.#lockSkillAdmission(transaction, accountId, agentId, normalized.manifest.name);
+        return transaction
+          .insert(agentSkills)
+          .values({
+            id: skillId,
+            agentId,
+            name: normalized.manifest.name,
+            description: normalized.manifest.description,
+            enabled: true,
+            source: input.source,
+            objectKey,
+            archiveSha256: normalized.sha256,
+            archiveBytes: normalized.archive.byteLength,
+            fileCount: normalized.fileCount,
+            files: normalized.files,
+            filesTruncated: normalized.filesTruncated,
+            revision: 1,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning();
+      });
       if (!row) throw new Error("The Skill insert returned no row");
     } catch (error) {
       // The insert may have committed before the failure surfaced — a dropped connection returns no
@@ -481,6 +484,24 @@ export class SkillService {
       .from(agentSkills)
       .where(eq(agentSkills.agentId, agentId));
     return row?.count ?? 0;
+  }
+
+  async #lockSkillAdmission(transaction: DatabaseTransaction, accountId: string, agentId: string, name: string) {
+    const [agent] = await transaction
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, accountId), ne(agents.status, "deleted")))
+      .for("no key update");
+    if (!agent) throw skillNotFound("The Agent was not found");
+    const [current] = await transaction
+      .select({
+        count: sql<number>`count(*)::int`,
+        nameExists: sql<boolean>`coalesce(bool_or(lower(${agentSkills.name}) = ${name.toLowerCase()}), false)`,
+      })
+      .from(agentSkills)
+      .where(eq(agentSkills.agentId, agentId));
+    if (current?.nameExists) throw skillNameConflict();
+    if ((current?.count ?? 0) >= SKILL_MAX_PER_AGENT) throw skillLimitReached();
   }
 
   /** An Agent is owned by the Account that created it, and a deleted Agent is not addressable. */

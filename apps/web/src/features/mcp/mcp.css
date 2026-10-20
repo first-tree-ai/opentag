@@ -163,20 +163,24 @@
 }
 .mcp-preset-authentication {
   display: grid;
+  /* Share input edges and reserve both key actions across authentication methods. */
+  grid-template-columns: minmax(0, 1fr) minmax(12.25rem, max-content);
+  column-gap: 0.75rem;
   min-width: 0;
 }
 .mcp-preset-auth-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: subgrid;
+  grid-column: 1 / -1;
   align-items: end;
   gap: 0.75rem;
 }
 .mcp-preset-auth-row > :first-child {
   width: 100%;
-  max-width: 17.5rem;
 }
 .mcp-preset-account-action {
   min-width: 7.5rem;
+  justify-self: end;
 }
 .mcp-preset-single-method,
 .mcp-preset-key-mask {
@@ -193,7 +197,8 @@
 }
 .mcp-preset-key-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: subgrid;
+  grid-column: 1 / -1;
   align-items: center;
   gap: 0.75rem;
   margin-top: 0.75rem;
@@ -213,6 +218,7 @@
 }
 .mcp-preset-feedback {
   display: flex;
+  grid-column: 1 / -1;
   flex-wrap: wrap;
   align-items: baseline;
   align-content: start;
@@ -232,8 +238,7 @@
   gap: 0.25rem;
 }
 @media (max-width: 28rem) {
-  .mcp-preset-auth-row,
-  .mcp-preset-key-row {
+  .mcp-preset-authentication {
     grid-template-columns: minmax(0, 1fr);
   }
   .mcp-preset-account-action,

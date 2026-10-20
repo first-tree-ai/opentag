@@ -1027,6 +1027,8 @@ Authentication feedback sits directly below its controls. **Retry** and **Open w
 reason and wrap together on narrow screens. Controls keep their positions while authorization,
 key editing, saving, and recovery feedback change. Primary form actions use the shared default
 control size; supporting text actions use the compact size, with the shared mobile touch targets.
+The method selector and key field share an input column, with actions aligned to the right in a
+reserved column. On narrow screens both fields fill the dialog and actions move below them.
 Closing Details or Discover does not cancel an ongoing OAuth attempt. Both views expose the same
 attempt, prevent duplicate authorization for that connector, and provide explicit cancellation.
 A successful recovery clears earlier local failure feedback. OAuth completion refreshes the saved

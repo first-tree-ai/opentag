@@ -246,8 +246,8 @@
     justify-self: end;
   }
   .mcp-preset-feedback {
-    /* Reserve the longest reason and a wrapped mobile touch target in every state. */
-    min-height: 4rem;
+    /* Reserve one 14px/1.5 line plus a wrapped 44px touch target in every state. */
+    min-height: calc(0.875rem * 1.5 + 2.75rem);
   }
 }
 @media (max-width: 47.999rem) {

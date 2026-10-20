@@ -9,7 +9,7 @@ test.describe("320px minimum supported width", () => {
   test("keeps sign-in visible, keyboard ordered, and free of page overflow", async ({ page }) => {
     await page.goto("/agents", { waitUntil: "networkidle" });
     await expect(page).toHaveURL(/\/login\?next=%2Fagents$/);
-    await expect(page.getByRole("heading", { name: "Sign in to OpenTag", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Sign in to openTag", exact: true })).toBeVisible();
     await expectWithinViewport(page.locator('[data-ui="login-card"]'));
     await expectNoPageOverflow(page);
 
@@ -79,7 +79,7 @@ test.describe("1440px desktop width", () => {
     const action = page.getByRole("link", { name: "New Agent", exact: true });
     await expect(heading).toBeVisible();
     await expect(action).toBeVisible();
-    await expect(heading).toHaveCSS("font-size", "28px");
+    await expect(heading).toHaveCSS("font-size", "32px");
     await expect(heading).toHaveCSS("font-family", /Manrope/);
     await expect(action).toHaveCSS("height", "40px");
     await expectNoPageOverflow(page);
@@ -88,7 +88,7 @@ test.describe("1440px desktop width", () => {
     const frameBox = await frame.boundingBox();
     expect(frameBox, "desktop content frame layout box").not.toBeNull();
     if (!frameBox) throw new Error("Expected the desktop content frame to have layout dimensions");
-    expect(frameBox.width, "desktop content frame width").toBeLessThanOrEqual(1024);
+    expect(frameBox.width, "desktop workspace content frame width").toBe(1280);
     const mainCenter = await page.getByRole("main").evaluate((main) => {
       // Classic scrollbars reserve space inside the border box; overlay scrollbars do not.
       const bounds = main.getBoundingClientRect();

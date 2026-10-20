@@ -94,6 +94,17 @@
     font-size: var(--ui-page-title-compact);
   }
 }
+@media (max-width: 47.999rem) {
+  /* Compact desktop recipes still need finger-sized targets on narrow screens. */
+  .ui-button--icon {
+    min-width: 2.75rem;
+  }
+  .ui-button,
+  .ui-control[data-control-size]:not(textarea),
+  .ui-control:not(textarea) {
+    min-height: 2.75rem;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .ui-button {
     transition: none;

@@ -70,6 +70,8 @@
 }
 
 .otv2-choice[aria-pressed="true"] {
+  /* Supporting copy must retain normal-text contrast on the selected grey surface. */
+  --text-color-kumo-subtle: var(--fg);
   border-color: var(--color-kumo-brand);
   background: var(--brand-soft);
 }

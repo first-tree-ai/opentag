@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { Writable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
+import { ImInboundPersistenceError } from "../services/im/index.js";
 import { SlackAdapter } from "../services/im-bindings/slack/adapter.js";
 
 const now = new Date("2026-08-20T00:00:00.000Z");
@@ -572,6 +573,42 @@ describe("Slack Events API ingress", () => {
       expect(receipts.markFailed).toHaveBeenCalledWith("receipt-1", "SLACK_EVENT_PROCESSING_FAILED"),
     );
   });
+
+  it.each(["IM_INBOUND_BINDING_STALE", "IM_INBOUND_IDENTITY_MISMATCH"] as const)(
+    "preserves permanent Inbox rejection %s and settles without another attempt",
+    async (code) => {
+      const receipts = {
+        claim: vi.fn().mockResolvedValue({
+          accepted: true,
+          duplicate: false,
+          receiptId: "receipt-terminal",
+          attempt: 1,
+          receivedAt: now,
+        }),
+        markProcessed: vi.fn(),
+        markFailed: vi.fn().mockResolvedValue(undefined),
+      };
+      const { app, inbox, adapter } = createServices({ receipts: receipts as never });
+      inbox.ingest.mockRejectedValue(new ImInboundPersistenceError(code, "rejected"));
+      adapter.normalizeInbound.mockReturnValue([{ providerEventId: "Ev-terminal" }]);
+      expect(
+        (
+          await app.inject(
+            signedRequest({
+              type: "event_callback",
+              api_app_id: "A1",
+              team_id: "T1",
+              authorizations: matchingBotAuthorization(),
+              event_id: "Ev-terminal",
+              event: { type: "app_mention", channel: "C1", text: "hello" },
+            }),
+          )
+        ).statusCode,
+      ).toBe(200);
+      await vi.waitFor(() => expect(receipts.markFailed).toHaveBeenCalledWith("receipt-terminal", code, 1, false));
+      expect(receipts.markProcessed).not.toHaveBeenCalled();
+    },
+  );
 
   it("records a fallback failure code when routing fails before processing", async () => {
     const receipts = {

@@ -3,7 +3,7 @@ import { createHmac } from "node:crypto";
 import { SLACK_REQUIRED_BOT_SCOPES } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import Fastify from "fastify";
-import { afterAll, afterEach, beforeAll, beforeEach, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { registerSlackEventsRoute } from "../../api/slack-events.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { agents, imBindings, imMessageDeliveries, imMessages, slackWebhookReceipts } from "../../db/schema/index.js";
@@ -438,4 +438,78 @@ it("accepts the existing 1 MiB HTTP body limit with durable identity metadata", 
   const [message] = await f.client.database.select().from(imMessages);
   expect(message?.content.truncated).toBe(true);
   expect(await f.receipt()).toMatchObject({ workPayload: null, attemptCount: 1 });
+});
+
+it.each(["live", "recovered"] as const)(
+  "stops retrying permanently stale Slack routes in the %s path",
+  async (path) => {
+    const f = await fixture();
+    const disableRoute = () =>
+      f.client.database
+        .update(imBindings)
+        .set({ status: "disabled", disabledAt: f.clock.now })
+        .where(eq(imBindings.id, f.binding.imBindingId));
+    if (path === "live") {
+      const observe = f.service.recordSlackInstallationIdentityClosure.bind(f.service);
+      vi.spyOn(f.service, "recordSlackInstallationIdentityClosure").mockImplementationOnce(async (...args) => {
+        const observed = await observe(...args);
+        await disableRoute();
+        return observed;
+      });
+      expect((await f.send(f.app().server)).statusCode).toBe(200);
+      await expect.poll(async () => (await f.receipt()).status).toBe("failed");
+    } else {
+      await f.receipts.claim({
+        installationId: f.ingress.installationId,
+        credentialGeneration: 1,
+        eventId: f.event.event_id,
+        work: f.work(),
+      });
+      await disableRoute();
+      f.clock.now = new Date(f.clock.now.getTime() + 61_000);
+      await f.app().recoverOnce();
+    }
+    const terminal = await f.receipt();
+    expect(terminal).toMatchObject({
+      status: "failed",
+      lastErrorCode: "IM_INBOUND_BINDING_STALE",
+      workPayload: null,
+      nextAttemptAt: null,
+      leaseExpiresAt: null,
+    });
+    f.clock.now = new Date(f.clock.now.getTime() + 31_000);
+    await f.app().recoverOnce();
+    expect(await f.receipt()).toEqual(terminal);
+    expect(await f.client.database.select().from(imMessages)).toHaveLength(0);
+  },
+);
+
+it.each(["schema", "identity"] as const)("settles invalid persisted Slack work once (%s)", async (kind) => {
+  const f = await fixture();
+  const claim = await f.receipts.claim({
+    installationId: f.ingress.installationId,
+    credentialGeneration: 1,
+    eventId: f.event.event_id,
+    work: f.work(),
+  });
+  assert(claim.receiptId);
+  const payload = kind === "schema" ? { version: 2 } : { ...f.work(), eventId: "Ev_OTHER" };
+  await f.client.database
+    .update(slackWebhookReceipts)
+    .set({ workPayload: payload })
+    .where(eq(slackWebhookReceipts.id, claim.receiptId));
+  f.clock.now = new Date(f.clock.now.getTime() + 61_000);
+  await f.app().recoverOnce();
+  const terminal = await f.receipt();
+  expect(terminal).toMatchObject({
+    status: "failed",
+    lastErrorCode: "SLACK_INBOUND_WORK_INVALID",
+    attemptCount: 2,
+    workPayload: null,
+    nextAttemptAt: null,
+  });
+  f.clock.now = new Date(f.clock.now.getTime() + 31_000);
+  await f.app().recoverOnce();
+  expect(await f.receipt()).toEqual(terminal);
+  expect(await f.client.database.select().from(imMessages)).toHaveLength(0);
 });

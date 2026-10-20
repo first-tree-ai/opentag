@@ -20,6 +20,8 @@ Slack adapter, ImBindingService, receipt store and Inbox against migrated Postgr
 - Concurrent replicas claim one attempt, and old or unfenced settlement cannot overwrite it.
 - Inbox commit followed by interrupted receipt settlement remains message/delivery-idempotent.
 - Unsupported events, mismatched Bot identity and absent routes retain ignored behavior.
+- Live and recovered permanently stale routes settle once, clear work input and keep their diagnostic
+  error code. Invalid saved work schema or identity also settles without repeated Inbox attempts.
 - Credential revocation and unbind do not restore old authority; unreadable current credentials
   retain work for a capable replica instead of discarding it.
 - Original direct and ambient receive timestamps/deadlines survive delayed recovery.
@@ -56,9 +58,10 @@ migration adds three nullable columns and a partial work index to each existing 
 with bounded-work/lease shape checks, and preserves existing receipt identity keys and FKs.
 Deployment must coordinate old receipt-writer shutdown; local checks are not live acceptance.
 
-## Validation results
+## Initial validation results
 
-Validated against base `f41acc1ade0a540c4a9b6b510dd6eedf8e892d4a` on Node 24.20.0:
+Initial receipt revision `f55535a4f392931e58d44f3cbfb18debf6c948d2`, based on
+`f41acc1ade0a540c4a9b6b510dd6eedf8e892d4a`, was validated on Node 24.20.0:
 
 | Check | Result |
 | --- | --- |
@@ -71,3 +74,16 @@ Validated against base `f41acc1ade0a540c4a9b6b510dd6eedf8e892d4a` on Node 24.20.
 The final PostgreSQL and Runtime runs used the same production source as the final unit/coverage
 runs. The only subsequent additions were the five PGlite unit tests and this verification record.
 These are local checks with synthetic external transports, not production or live-provider acceptance.
+
+## Permanent-input follow-up validation
+
+The live and recovered permanently stale-route cases and the two invalid saved-work cases
+first retained retryable input on the initial revision. They now settle once, preserve a diagnostic
+error code, and remain unchanged after another recovery sweep. Transient Inbox failure,
+Inbox-committed/receipt-unsettled replay and unreadable-current-credential recovery still pass.
+
+The final source passed `pnpm check`, `pnpm build`, `pnpm typecheck`, and `pnpm test`
+(691 script tests, 10,031 package tests, 22 existing skips). Runtime coverage passed 642 tests
+with all four metrics at 100%; full migrated PostgreSQL passed 876 tests in 64 files, including
+26 new receipt recovery cases. Server unit coverage passed; changed lines were 511/566
+(90.28%, above the 80% gate). No query, transaction or schema change was added by this follow-up.

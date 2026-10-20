@@ -65,8 +65,9 @@ ignored events and does not prove a Turn ran or a reply was sent. A 60-second
 processing lease and the existing monotonic attempt count allow another worker
 to recover failed or abandoned work. Claiming is one atomic PostgreSQL statement
 with `SKIP LOCKED`; settlement must match the processing attempt. No receipt row
-lock is held while normalization, routing or Inbox processing runs. Failures use
-2, 4, 8, 16, then 30 seconds of backoff.
+lock is held while normalization, routing or Inbox processing runs. Permanent Inbox scope or
+identity rejection and invalid saved input end the work without another attempt. Retryable failures
+use 2, 4, 8, 16, then 30 seconds of backoff.
 
 Slack recovery handles at most eight receipts per five-second sweep. Feishu
 recovery handles at most eight per existing connection-maintenance sweep, after

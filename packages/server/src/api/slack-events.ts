@@ -4,7 +4,7 @@ import { createServiceLoggerPort } from "../observability/service-logger.js";
 import type { RuntimeApprovalOwner } from "../runtime/runtime-approval-owner.js";
 import type { InboundReceiptAttempt } from "../services/im/inbound-receipt-work-store.js";
 
-import type { ImMessageInbox } from "../services/im/index.js";
+import { classifyImInboundPersistenceError, type ImMessageInbox } from "../services/im/index.js";
 import type { ImBindingService, SlackInstallationIngress } from "../services/im-bindings/index.js";
 import type { SlackAdapter } from "../services/im-bindings/slack/adapter.js";
 import {
@@ -19,12 +19,26 @@ import type { SlackWebhookReceiptStore } from "../services/im-bindings/slack/web
 import { registerSlackInteractionsRoute } from "./slack-interactions.js";
 
 class SlackEventProcessingError extends Error {
-  readonly code = "SLACK_EVENT_PROCESSING_FAILED";
+  readonly code: string;
+  readonly retry: boolean;
 
-  constructor(readonly stage: "normalize" | "inbox") {
-    super("SLACK_EVENT_PROCESSING_FAILED");
+  constructor(
+    readonly stage: "normalize" | "inbox",
+    error: unknown,
+  ) {
+    const code = classifyImInboundPersistenceError(error);
+    const errorCode = code === "IM_INBOUND_DATABASE_FAILED" ? "SLACK_EVENT_PROCESSING_FAILED" : code;
+    super(errorCode);
     this.name = "SlackEventProcessingError";
+    this.code = errorCode;
+    this.retry = code !== "IM_INBOUND_BINDING_STALE" && code !== "IM_INBOUND_IDENTITY_MISMATCH";
   }
+}
+
+function slackRecoveryFailure(error: unknown, validWork: boolean) {
+  if (!validWork) return { code: "SLACK_INBOUND_WORK_INVALID", retry: false };
+  if (error instanceof SlackEventProcessingError) return { code: error.code, retry: error.retry };
+  return { code: "SLACK_EVENT_PROCESSING_FAILED", retry: true };
 }
 
 function isIdentityLessUrlVerification(rawBody: Buffer): boolean {
@@ -189,8 +203,8 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
           "Slack inbound inbox result",
         );
       }
-    } catch {
-      throw new SlackEventProcessingError(stage);
+    } catch (error) {
+      throw new SlackEventProcessingError(stage, error);
     }
     return reply.code(200).send({ ok: true });
   };
@@ -203,10 +217,12 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
     const receipts = options.receipts;
     const workStore = receipts?.recovery;
     if (!receipts || !workStore) return;
+    let validWork = false;
     try {
       const work = workStore.parse(attempt);
       if (work.provider !== "slack" || work.eventId !== attempt.eventId)
         throw new Error("SLACK_INBOUND_WORK_IDENTITY_MISMATCH");
+      validWork = true;
       const installation = await options.imBindings.findSlackInstallationIngress(work.appId, work.teamId);
       if (!installation && (await workStore.hasCurrentSlackInstallation(attempt))) {
         throw new Error("SLACK_INBOUND_CREDENTIALS_UNAVAILABLE");
@@ -224,8 +240,9 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
         });
       }
       await receipts.markProcessed(attempt.receiptId, attempt.attempt);
-    } catch {
-      await receipts.markFailed(attempt.receiptId, "SLACK_EVENT_PROCESSING_FAILED", attempt.attempt);
+    } catch (error) {
+      const { code, retry } = slackRecoveryFailure(error, validWork);
+      await receipts.markFailed(attempt.receiptId, code, attempt.attempt, retry);
       logger.error(
         { provider: "slack", receiptId: attempt.receiptId, stage: "recovery", outcome: "failed" },
         "Slack inbound processing failed",
@@ -337,7 +354,12 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
         );
         await (claim.attempt === undefined
           ? options.receipts?.markFailed(claim.receiptId as string, code)
-          : options.receipts?.markFailed(claim.receiptId as string, code, claim.attempt)
+          : options.receipts?.markFailed(
+              claim.receiptId as string,
+              code,
+              claim.attempt,
+              !(error instanceof SlackEventProcessingError) || error.retry,
+            )
         )?.catch(() => {
           logger.error(
             { ...logContext, stage: "receipt", outcome: "failed", reason: "receipt_persist_failed" },

@@ -94,15 +94,25 @@ const TOOLS = [
   },
 ] as const;
 
+/** An empty `authScheme` is a fact — "send the key with no prefix" — so presence is tested, not truthiness. */
+function stringField(value: string | undefined, key: string): Record<string, string> {
+  return value === undefined ? {} : { [key]: value };
+}
+
 /**
  * One catalog entry, as a caller configuring a client needs it.
  *
  * `url` and `config` are deliberately included: they are the same public facts the repo-shipped
- * `mcp-catalog.yaml` states, and a caller cannot act on a Server it cannot address.
+ * `mcp-catalog.yaml` states, and a caller cannot act on a Server it cannot address. Every connection
+ * field the entry carries is projected, because a `config` that omits a static header is a config
+ * that does not work once pasted — `projectCatalogEntry` has a test that walks the whole catalog and
+ * fails when a new field is dropped here.
  */
-function projectEntry(entry: McpCatalogEntry, locale: McpCatalogLocale): Record<string, unknown> {
+export function projectCatalogEntry(entry: McpCatalogEntry, locale: McpCatalogLocale): Record<string, unknown> {
   const installable = entry.installable && typeof entry.url === "string";
   const url = installable ? entry.url : undefined;
+  /* A static `role: extra` header belongs in the client's own configuration; the credential does not. */
+  const headers = entry.extraHeaders ? { headers: { ...entry.extraHeaders } } : {};
   return {
     id: entry.id,
     name: entry.name,
@@ -117,12 +127,14 @@ function projectEntry(entry: McpCatalogEntry, locale: McpCatalogLocale): Record<
     installable,
     ...(url === undefined ? {} : { url }),
     auth: { methods: [...entry.auth.methods], defaultKind: entry.auth.defaultKind },
+    ...stringField(entry.authHeader, "authHeader"),
+    ...stringField(entry.authScheme, "authScheme"),
     ...(entry.keyAuth
       ? {
           keyAuth: {
             url: entry.keyAuth.url,
-            ...(entry.keyAuth.authHeader ? { authHeader: entry.keyAuth.authHeader } : {}),
-            ...(entry.keyAuth.authScheme ? { authScheme: entry.keyAuth.authScheme } : {}),
+            ...stringField(entry.keyAuth.authHeader, "authHeader"),
+            ...stringField(entry.keyAuth.authScheme, "authScheme"),
           },
         }
       : {}),
@@ -142,7 +154,7 @@ function projectEntry(entry: McpCatalogEntry, locale: McpCatalogLocale): Record<
           })),
         }
       : {}),
-    config: url === undefined ? null : { mcpServers: { [entry.name]: { type: "http", url } } },
+    config: url === undefined ? null : { mcpServers: { [entry.name]: { type: "http", url, ...headers } } },
     installCommand: url === undefined ? null : `claude mcp add --transport http ${entry.name} ${url}`,
   };
 }
@@ -163,7 +175,7 @@ function searchServers(rawArguments: unknown): unknown {
   const locale = parsed.data.locale ?? DEFAULT_LOCALE;
   /* The search clamps `limit` itself, so an oversized one narrows to the documented maximum. */
   const { total, entries } = searchMcpCatalog(parsed.data);
-  return jsonResult({ total, results: entries.map((entry) => projectEntry(entry, locale)) });
+  return jsonResult({ total, results: entries.map((entry) => projectCatalogEntry(entry, locale)) });
 }
 
 function getServer(rawArguments: unknown): unknown {
@@ -173,7 +185,7 @@ function getServer(rawArguments: unknown): unknown {
   if (!entry) return toolErrorResult(`No MCP Server "${parsed.data.id}" in the OpenTag catalog`);
   const locale = parsed.data.locale ?? DEFAULT_LOCALE;
   return jsonResult({
-    ...projectEntry(entry, locale),
+    ...projectCatalogEntry(entry, locale),
     ...(entry.prerequisites ? { prerequisites: [...entry.prerequisites] } : {}),
     ...(entry.platforms ? { platforms: [...entry.platforms] } : {}),
     ...(entry.remotes ? { remotes: entry.remotes.map((remote) => ({ ...remote })) } : {}),

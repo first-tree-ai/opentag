@@ -79,7 +79,19 @@ interface CatalogIndex {
 
 /* A prefix shorter than this matches too much to be a useful signal ("a", "go", "mc"). */
 const MIN_PREFIX_LENGTH = 2;
-const CJK = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]/;
+/*
+ * One source for the script ranges, because querying and indexing must agree on where CJK starts.
+ * Hiragana, Katakana, CJK Unified Ideographs (and its extension A), and Hangul.
+ */
+const CJK_RANGES = "\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff\\uac00-\\ud7af";
+const CJK = new RegExp(`[${CJK_RANGES}]`);
+/**
+ * A word split at script boundaries, so `notion笔记` yields `notion` *and* `笔记`.
+ *
+ * Without this split an entire mixed word takes the CJK path, and the Latin half — the part a user
+ * actually names the product with — never becomes a token.
+ */
+const SCRIPT_RUNS = new RegExp(`[${CJK_RANGES}]+|[^${CJK_RANGES}]+`, "gu");
 const WORDS = /[^\p{L}\p{N}-]+/u;
 
 /** CJK has no spaces, so a run contributes its characters and character bigrams. */
@@ -109,9 +121,24 @@ export function tokenize(text: string): string[] {
   const terms = new Set<string>();
   for (const word of text.toLowerCase().split(WORDS)) {
     if (!word) continue;
-    for (const term of CJK.test(word) ? cjkTerms(word) : latinTerms(word)) terms.add(term);
+    for (const run of word.match(SCRIPT_RUNS) ?? []) {
+      for (const term of CJK.test(run) ? cjkTerms(run) : latinTerms(run)) terms.add(term);
+    }
   }
   return [...terms];
+}
+
+/**
+ * The form a name is indexed and looked up under.
+ *
+ * `id` is already the slug, so only a caller quoting the registry identity (`mcp/notion`) needs the
+ * prefix removed.
+ */
+function normalizeName(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/^mcp\//, "");
 }
 
 function tokensOf(entry: McpCatalogEntry): string[] {
@@ -161,7 +188,7 @@ function buildIndex(entries: readonly McpCatalogEntry[], categories: readonly Mc
   const byToken = new Map<string, number[]>();
 
   for (const [position, indexed] of active.entries()) {
-    for (const name of [indexed.entry.id.replace(/^mcp\//, "").toLowerCase(), ...indexed.names]) {
+    for (const name of [normalizeName(indexed.entry.id), ...indexed.names]) {
       if (!byName.has(name)) byName.set(name, position);
       for (let length = MIN_PREFIX_LENGTH; length <= name.length; length += 1) {
         pushTo(byPrefix, name.slice(0, length), position);
@@ -185,6 +212,9 @@ function raise(ranked: Map<number, Ranked>, position: number, tier: number, hits
  *
  * Three tiers rather than one weighted score: a name the caller already knows must never lose to an
  * entry that merely shares its tokens, and no numeric score can guarantee that as the catalog grows.
+ *
+ * `needle` is the normalized whole query, so a caller who quotes the registry identity (`mcp/notion`)
+ * gets the same exact hit as one who names the Server (`notion`).
  */
 function rankQuery(index: CatalogIndex, queryTokens: readonly string[], needle: string): Map<number, Ranked> {
   const ranked = new Map<number, Ranked>();
@@ -220,7 +250,7 @@ function matchesOf(index: CatalogIndex, options: McpCatalogSearchOptions): Index
     options.category === undefined || indexed.entry.category === options.category;
   if (!query) return index.active.filter(inCategory);
 
-  return [...rankQuery(index, tokenize(query), query.toLowerCase()).entries()]
+  return [...rankQuery(index, tokenize(query), normalizeName(query)).entries()]
     .filter(([position]) => inCategory(index.active[position] as IndexedEntry))
     .sort(compareRanked(index.active))
     .map(([position]) => index.active[position] as IndexedEntry);
@@ -239,8 +269,7 @@ export function createMcpCatalogSearch(
     },
 
     find(id) {
-      const needle = id.trim().toLowerCase();
-      const position = index.byName.get(needle) ?? index.byName.get(needle.replace(/^mcp\//, ""));
+      const position = index.byName.get(normalizeName(id));
       return position === undefined ? undefined : index.active[position]?.entry;
     },
 

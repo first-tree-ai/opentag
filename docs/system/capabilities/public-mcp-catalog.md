@@ -61,14 +61,18 @@ result it can read lets it retry with better arguments.
 ## Entry shape
 
 `id`, `name`, `title`, `description`, `whenToUse`, `category`, `capabilities`, `risk`, `status`,
-`website`, `installable`, `url`, `auth`, `keyAuth`, `oauthScopes`, `packages`, `config`,
-`installCommand`.
+`website`, `installable`, `url`, `auth`, `authHeader`, `authScheme`, `keyAuth`, `oauthScopes`,
+`packages`, `config`, `installCommand`.
 
 - Localized fields are resolved to the requested locale.
 - `url` is present only for an installable Server, which is one with a streamable-http remote. `config`
   and `installCommand` are `null` when it is not, and `installable` says which case applies.
-- `config` is `{ "mcpServers": { "<name>": { "type": "http", "url": "<url>" } } }`, and
-  `installCommand` is `claude mcp add --transport http <name> <url>`.
+- `config` is `{ "mcpServers": { "<name>": { "type": "http", "url": "<url>" } } }`, plus `headers`
+  when the entry declares static `role: extra` headers, and `installCommand` is
+  `claude mcp add --transport http <name> <url>`. A pasted config must work, so a connection field an
+  entry carries is never dropped here.
+- `authHeader` and `authScheme` name where a key goes and what prefix it takes. An empty `authScheme`
+  is a fact — "send the key with no prefix" — not an absent field.
 - `packages` carries identity only: registry type, identifier, version, runtime hint, transport, and
   environment variable **names**. An entry holds no credential, and no value is projected.
 
@@ -90,7 +94,9 @@ Sorting never depends on map iteration order, so the same query returns the same
 
 Indexing covers English and Chinese copy, so one query matches either language. Latin runs are indexed
 whole and split at hyphens, so `search-docs` is reachable as `search` or `docs`. CJK has no spaces, so
-a run contributes its characters and character bigrams.
+a run contributes its characters and character bigrams. Every word is split at script boundaries
+first, because `notion笔记` is how a Chinese user names a product and a task at once: the query yields
+both the token `notion` and the bigram `笔记`, and so does any copy that mixes the two scripts.
 
 Only `status: active` entries are returned or resolved by name. A `deprecated`, `archived`, or
 `removed` entry is invisible here, exactly as it is in Discover.

@@ -19,6 +19,21 @@ describe("searchMcpCatalog against the shipped catalog", () => {
     expect(ids(searchMcpCatalog({ query: "文档" }).entries)).toContain("notion");
   });
 
+  /*
+   * Chinese users name a product in Latin and describe the task in Chinese in one string. A word that
+   * takes the CJK path as a whole never yields the Latin token, so the product name goes missing.
+   */
+  it("finds an entry by a query that mixes Latin and Chinese", () => {
+    expect(ids(searchMcpCatalog({ query: "notion笔记", limit: 50 }).entries)).toContain("notion");
+    expect(ids(searchMcpCatalog({ query: "notion笔记", limit: 50 }).entries)[0]).toBe("notion");
+  });
+
+  /* The registry identity is the exact name, so `mcp/linear` must not fall back to the token tier. */
+  it("ranks a registry id above a mere token match", () => {
+    expect(searchMcpCatalog({ query: "mcp/linear" }).entries[0]?.id).toBe("linear");
+    expect(searchMcpCatalog({ query: "mcp/notion" }).entries[0]?.id).toBe("notion");
+  });
+
   it("finds an entry by a hyphenated capability's segment", () => {
     /* `search-docs` is a capability of Notion; the segment alone must reach it. */
     expect(ids(searchMcpCatalog({ query: "search", limit: 50 }).entries).length).toBeGreaterThan(1);
@@ -132,6 +147,8 @@ const FIXTURE = createMcpCatalogSearch(
     fixtureEntry({ id: "gamma", order: 30, category: "data", installable: false, url: undefined }),
     /* A token match on alpha's alias without being alpha itself. */
     fixtureEntry({ id: "delta", order: 40, keywords: ["first"] }),
+    /* Indexed copy that mixes scripts reaches the Latin half of the term. */
+    fixtureEntry({ id: "epsilon", order: 50, keywords: ["notion笔记"] }),
   ],
   FIXTURE_CATEGORIES,
 );
@@ -142,13 +159,17 @@ describe("search index invariants", () => {
     expect(FIXTURE.find("first")?.id).toBe("alpha");
   });
 
+  it("indexes mixed-script copy into its Latin half", () => {
+    expect(ids(FIXTURE.search({ query: "notion" }).entries)).toEqual(["epsilon"]);
+  });
+
   it("ranks an exact alias above a mere token hit", () => {
     const result = FIXTURE.search({ query: "first" });
     expect(result.entries[0]?.id).toBe("alpha");
   });
 
   it("excludes a non-active entry from search, by-name lookup, and the listing", () => {
-    expect(ids(FIXTURE.search({ limit: 50 }).entries)).toEqual(["alpha", "delta", "gamma"]);
+    expect(ids(FIXTURE.search({ limit: 50 }).entries)).toEqual(["alpha", "delta", "epsilon", "gamma"]);
     expect(FIXTURE.find("beta")).toBeUndefined();
     expect(ids(FIXTURE.search({ query: "beta" }).entries)).not.toContain("beta");
   });
@@ -160,7 +181,7 @@ describe("search index invariants", () => {
 
   it("reports per-category counts over active entries only", () => {
     expect(FIXTURE.categories.map((count) => [count.id, count.activeCount, count.installableCount])).toEqual([
-      ["docs", 2, 2],
+      ["docs", 3, 3],
       ["data", 1, 0],
     ]);
   });

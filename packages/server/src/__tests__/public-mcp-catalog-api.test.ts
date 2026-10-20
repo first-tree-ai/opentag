@@ -1,4 +1,4 @@
-import { MCP_CATALOG_ENTRIES } from "@opentag/mcp-presets";
+import { MCP_CATALOG_ENTRIES, type McpCatalogEntry } from "@opentag/mcp-presets";
 import {
   MCP_LEGACY_PROTOCOL_VERSIONS,
   MCP_MODERN_PROTOCOL_VERSION,
@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { RouteRateLimiter } from "../api/browser-auth.js";
 import { createApp } from "../app.js";
 import { MCP_META_SERVER_INFO } from "../services/mcp/mcp-transport.js";
+import { projectCatalogEntry } from "../services/mcp-catalog/public-catalog-mcp.js";
 
 const apps: ReturnType<typeof createApp>[] = [];
 
@@ -143,6 +144,12 @@ describe("public catalog MCP endpoint: tools", () => {
     }
   });
 
+  it("searches by a query that mixes Latin and Chinese", async () => {
+    const payload = payloadOf(await call(newApp(), "search_mcp_servers", { query: "notion笔记", limit: 50 }));
+    const results = payload.results as Record<string, unknown>[];
+    expect(results[0]?.id).toBe("notion");
+  });
+
   it("searches by name and returns a pasteable configuration", async () => {
     const body = await call(newApp(), "search_mcp_servers", { query: "notion" });
     const payload = payloadOf(body);
@@ -181,6 +188,12 @@ describe("public catalog MCP endpoint: tools", () => {
     const payload = payloadOf(await call(newApp(), "search_mcp_servers", { limit: 999 }));
     const results = payload.results as Record<string, unknown>[];
     expect(results.length).toBe(Math.min(50, Number(payload.total)));
+  });
+
+  /* An empty `authScheme` means "send the key with no prefix"; dropping it would hide that. */
+  it("keeps a key-auth scheme that is deliberately empty", async () => {
+    const payload = payloadOf(await call(newApp(), "get_mcp_server", { id: "exa" }));
+    expect(payload.keyAuth).toEqual({ url: "https://mcp.exa.ai/mcp", authHeader: "x-api-key", authScheme: "" });
   });
 
   it("reads one Server by either identifier form, with its detail fields", async () => {
@@ -230,6 +243,85 @@ describe("public catalog MCP endpoint: tools", () => {
         MCP_CATALOG_ENTRIES.filter((entry) => entry.category === category.id && entry.status === "active").length,
       );
     }
+  });
+});
+
+/*
+ * The config a caller pastes must work. This walks the whole shipped catalog rather than the fields
+ * one entry happens to have: the day an entry gains a static header or a flat auth header, this fails
+ * instead of serving a config that silently omits it.
+ */
+/** One installable entry's connection fields, as a client pasting its config would receive them. */
+function expectProjectedConnectionFields(entry: McpCatalogEntry): void {
+  const projected = projectCatalogEntry(entry, "en");
+  const config = projected.config as { mcpServers: Record<string, Record<string, unknown>> } | null;
+  const server = config?.mcpServers[entry.name] as Record<string, unknown>;
+  expect(projected.installable).toBe(true);
+  expect(projected.url).toBe(entry.url);
+  expect(projected.installCommand).toBe(`claude mcp add --transport http ${entry.name} ${entry.url}`);
+  expect(server.type).toBe("http");
+  expect(server.url).toBe(entry.url);
+  expect(server.headers).toEqual(entry.extraHeaders);
+  expect(projected.authHeader).toEqual(entry.authHeader);
+  expect(projected.authScheme).toEqual(entry.authScheme);
+  expect(projected.keyAuth).toEqual(
+    entry.keyAuth === undefined
+      ? undefined
+      : {
+          url: entry.keyAuth.url,
+          ...(entry.keyAuth.authHeader === undefined ? {} : { authHeader: entry.keyAuth.authHeader }),
+          ...(entry.keyAuth.authScheme === undefined ? {} : { authScheme: entry.keyAuth.authScheme }),
+        },
+  );
+}
+
+/*
+ * The config a caller pastes must work. This walks the whole shipped catalog rather than the fields
+ * one entry happens to have: the day an entry gains a static header or a flat auth header, this fails
+ * instead of serving a config that silently omits it.
+ */
+describe("public catalog MCP endpoint: connection fields", () => {
+  it("projects every connection field the catalog carries", () => {
+    for (const entry of MCP_CATALOG_ENTRIES.filter((candidate) => candidate.status === "active")) {
+      if (entry.installable && typeof entry.url === "string") {
+        expectProjectedConnectionFields(entry);
+        continue;
+      }
+      const projected = projectCatalogEntry(entry, "en");
+      expect(projected.installable).toBe(false);
+      expect(projected.config).toBeNull();
+      expect(projected.installCommand).toBeNull();
+    }
+  });
+
+  /* No shipped entry carries a static header today, so the branch is exercised with a fixture. */
+  it("carries a static header into the pasteable config", () => {
+    const entry: McpCatalogEntry = {
+      id: "static",
+      registryId: "mcp/static",
+      name: "static",
+      title: { en: "Static", zh: "Static" },
+      description: { en: "", zh: "" },
+      whenToUse: { en: "", zh: "" },
+      installable: true,
+      url: "https://static.example/mcp",
+      defaultAuthKind: "bearer",
+      authHeader: "x-api-key",
+      authScheme: "",
+      extraHeaders: { "x-tenant": "public" },
+      category: "development",
+      website: "https://static.example",
+      iconUrl: "",
+      order: 1,
+      status: "active",
+      capabilities: ["read-things"],
+      auth: { methods: ["bearer"], defaultKind: "bearer" },
+      risk: { sideEffects: "none", dataAccess: "public" },
+    };
+    expectProjectedConnectionFields(entry);
+    expect(projectCatalogEntry(entry, "en").config).toEqual({
+      mcpServers: { static: { type: "http", url: "https://static.example/mcp", headers: { "x-tenant": "public" } } },
+    });
   });
 });
 

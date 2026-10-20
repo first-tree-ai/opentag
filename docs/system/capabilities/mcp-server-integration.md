@@ -1004,7 +1004,8 @@ commands, API paths, schema names, and the `/agents/{agentId}/mcp` page URL reta
 The page shows one Agent's installed connectors. The entire left side of each row opens Details,
 including the icon, name, description, and surrounding space. It uses the same hover and keyboard
 focus feedback as Skills, without an arrow beside the name. The enable switch and more-actions menu
-remain vertically centered on the right and operate independently. The menu contains **Details**
+remain vertically centered on the right and operate independently. The more-actions button uses
+the same compact vertical-ellipsis control as Skills. The menu contains **Details**
 and **Delete**.
 
 A normal row shows the connector description. When attention is needed, a short known reason replaces

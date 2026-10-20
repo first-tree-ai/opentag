@@ -40,7 +40,7 @@ export async function resolveSessionProofContext(
   const proofPath = environment.OPENTAG_SESSION_PROOF_FILE;
   if (!proofPath) {
     throw new Error(
-      "Session commands are available only inside an OpenTag-managed Agent Session (runtime context missing)",
+      "Session commands are available only inside an openTag-managed Agent Session (runtime context missing)",
     );
   }
   const executionId = await currentSessionExecutionId(environment);
@@ -59,7 +59,7 @@ export async function resolveSessionProofContext(
   const identity = await readComputerIdentity(home);
   if (!identity) {
     throw new Error(
-      "Session commands are available only inside an OpenTag-managed Agent Session (Computer binding missing)",
+      "Session commands are available only inside an openTag-managed Agent Session (Computer binding missing)",
     );
   }
   const proof = await readSessionCliProofFile(proofPath);

@@ -39,7 +39,7 @@ export function LegacyAgentCapabilityPage({
                 Agent {label} are not available here
               </Text>
               <Text as="p" variant="secondary">
-                OpenTag does not currently show {label} assigned to {agent.displayName}. The shared catalog is separate
+                openTag does not currently show {label} assigned to {agent.displayName}. The shared catalog is separate
                 from this Agent.
               </Text>
             </header>

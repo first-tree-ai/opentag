@@ -18,7 +18,7 @@ export function registerAgentCreateCommand(agent: Command): void {
     )
     .option(
       "--max-duration-ms <integer>",
-      "maximum duration of one Turn in milliseconds; omit to use the OpenTag default",
+      "maximum duration of one Turn in milliseconds; omit to use the openTag default",
     )
     .option("--json", "print JSON")
     .action(async (options) => {

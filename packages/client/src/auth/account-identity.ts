@@ -113,7 +113,7 @@ function validateAccountIdentity(value: unknown): StoredAccountIdentity {
   try {
     return normalizeAccountIdentity(StoredAccountIdentitySchema.parse(value));
   } catch (error) {
-    throw new Error("The OpenTag account identity file is invalid", { cause: error });
+    throw new Error("The openTag account identity file is invalid", { cause: error });
   }
 }
 

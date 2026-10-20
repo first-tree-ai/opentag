@@ -537,7 +537,7 @@ export class ImBindingService {
         throw new ImBindingServiceError(
           "SLACK_APP_TEAM_ALREADY_BOUND",
           409,
-          "This Slack App installation is already bound to another OpenTag Agent",
+          "This Slack App installation is already bound to another openTag Agent",
         );
       }
       throw error;
@@ -1466,7 +1466,7 @@ export class ImBindingService {
         throw new ImBindingServiceError(
           "SLACK_APP_TEAM_ALREADY_BOUND",
           409,
-          "This Slack App installation is already bound to another OpenTag Agent",
+          "This Slack App installation is already bound to another openTag Agent",
         );
       }
       const [sameAgentInstallation] = await transaction

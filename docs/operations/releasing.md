@@ -3,9 +3,9 @@ title: "Release guide"
 description: "Staging and production npm package identities, triggers, and the release workflow."
 ---
 
-# OpenTag release guide
+# openTag release guide
 
-OpenTag publishes one self-contained CLI artifact in two isolated npm package identities:
+openTag publishes one self-contained CLI artifact in two isolated npm package identities:
 
 | Channel | Package | Binary | Source trigger |
 | --- | --- | --- | --- |
@@ -84,5 +84,5 @@ Production publishing is intentionally stricter:
 The same tag publishes the npm CLI and the GHCR server image. The image carries full-commit and SemVer tags, and takes
 over `latest` unless a higher release is already published. It is the image the `main` build already published for that
 commit rather than a rebuild, so the release waits for that build and fails if it never published one. The image
-includes the OpenTag Apache-2.0 license at `/app/LICENSE`. Creating a production tag is an irreversible
+includes the openTag Apache-2.0 license at `/app/LICENSE`. Creating a production tag is an irreversible
 release action and requires an explicit release decision; testing the workflow is not authorization to create one.

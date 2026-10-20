@@ -61,7 +61,7 @@ export async function runLogs(options: LogsOptions = {}): Promise<LogsResult> {
 
 export function formatLogs(result: LogsResult): string {
   const safeEnvironment = redactForLog(result.environment);
-  const lines = ["OpenTag logs", "Environment:", JSON.stringify(safeEnvironment) ?? "{}", "", "Client log files:"];
+  const lines = ["openTag logs", "Environment:", JSON.stringify(safeEnvironment) ?? "{}", "", "Client log files:"];
   if (result.files.length === 0) {
     lines.push("(no client log files found)");
     return lines.join("\n");

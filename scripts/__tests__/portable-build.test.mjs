@@ -167,7 +167,7 @@ test("the portable app carries every ESM chunk with its source map and nothing e
 
 test("the portable app manifest exposes exactly one channel binary and only supported runtime dependencies", () => {
   const sourcePackage = {
-    description: "OpenTag command-line interface",
+    description: "openTag command-line interface",
     engines: { node: "^24.0.0" },
     license: "Apache-2.0",
     repository: { type: "git", url: "git+https://github.com/first-tree-ai/opentag.git" },

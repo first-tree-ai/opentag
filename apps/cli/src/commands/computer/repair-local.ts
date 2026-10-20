@@ -12,7 +12,7 @@ export function registerComputerRepairLocalCommand(computer: Command): void {
     .command("repair-local")
     .description("Recover saved Computer credentials and identity without reusing a connect code")
     .requiredOption("--installation-id <id>", "installation ID reported by the failed connect")
-    .option("--home <path>", "OpenTag home directory")
+    .option("--home <path>", "openTag home directory")
     .option("--json", "print JSON")
     .action(async (options: { installationId: string; home?: string; json?: boolean }) => {
       try {

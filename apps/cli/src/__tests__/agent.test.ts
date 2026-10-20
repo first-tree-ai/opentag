@@ -137,7 +137,7 @@ describe("Agent CLI core", () => {
   it("requires Account login when resolving the default Agent context", async () => {
     const home = await mkdtemp(join(tmpdir(), "opentag-agent-context-"));
     try {
-      await expect(resolveAgentCommandContext({ home })).rejects.toThrow("OpenTag is not logged in; run login first");
+      await expect(resolveAgentCommandContext({ home })).rejects.toThrow("openTag is not logged in; run login first");
     } finally {
       await rm(home, { recursive: true, force: true });
     }
@@ -601,7 +601,7 @@ describe("Agent CLI core", () => {
       "runtime manage model",
     );
     expect(update?.options.find((option) => option.long === "--clear-max-duration")?.description).toContain(
-      "OpenTag default",
+      "openTag default",
     );
   });
 
@@ -726,14 +726,14 @@ describe("Agent CLI core", () => {
   it("presents unauthenticated Agent bind failures without a rejected Commander action", async () => {
     const bindSpy = vi
       .spyOn(agentMutations, "runAgentBind")
-      .mockRejectedValue(new Error("OpenTag is not logged in; run login first"));
+      .mockRejectedValue(new Error("openTag is not logged in; run login first"));
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     const previousExitCode = process.exitCode;
     process.exitCode = undefined;
     try {
       await createProgram().parseAsync(["node", "opentag", "agent", "bind", agentId]);
       expect(process.exitCode).toBe(1);
-      expect(stderr).toHaveBeenCalledWith(expect.stringContaining("OpenTag is not logged in; run login first"));
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining("openTag is not logged in; run login first"));
     } finally {
       process.exitCode = previousExitCode;
       stderr.mockRestore();

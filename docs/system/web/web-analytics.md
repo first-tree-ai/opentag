@@ -17,14 +17,14 @@ Measurement is decided entirely in the browser, by `apps/web/src/analytics/confi
 
 When either test fails nothing happens at all — no tag is fetched and no event is queued.
 
-The host rule is an **allowlist, not a loopback exclusion**, and that matters more than it looks. OpenTag is open
+The host rule is an **allowlist, not a loopback exclusion**, and that matters more than it looks. openTag is open
 source and meant to be self-hosted. Excluding only loopback would mean **every self-hosted deployment quietly
 reported its operators and their readers into this property** — data nobody asked to send and nobody here wants to
 hold. The allowlist also fails in the safe direction: an unlisted host is simply not measured, which is a silent gap
 rather than a silent leak. It excludes the end-to-end stack and local previews for free, since neither runs on this
 domain.
 
-**A self-hosted OpenTag deployment loads no tag and reports nothing.** If you fork this and want your own
+**A self-hosted openTag deployment loads no tag and reports nothing.** If you fork this and want your own
 measurement, change `ANALYTICS_MEASUREMENT_ID` and `MEASURED_HOST_SUFFIX` together.
 
 There is no environment variable. A single image is built per commit and promoted unchanged to every environment, so a
@@ -164,5 +164,5 @@ sources are permitted but never used.
 
 ## Consent
 
-There is none, and no cookie banner. Whoever deploys OpenTag owns that decision; the switch above is the control they
+There is none, and no cookie banner. Whoever deploys openTag owns that decision; the switch above is the control they
 have. If consent becomes a requirement, GA Consent Mode v2 belongs in `installAnalytics`.

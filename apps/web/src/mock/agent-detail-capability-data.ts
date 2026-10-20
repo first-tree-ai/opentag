@@ -18,7 +18,7 @@ export const agentIntegrationPreviews: readonly AgentIntegrationPreview[] = [
   },
   {
     name: "Linear",
-    identity: "OpenTag preview",
+    identity: "openTag preview",
     purpose: "Read issue context while planning and reviewing work.",
     scope: "Shared catalog · read only",
     connection: "Connection error",
@@ -29,7 +29,7 @@ export const agentIntegrationPreviews: readonly AgentIntegrationPreview[] = [
 export type AgentSkillPreview = {
   readonly name: string;
   readonly description: string;
-  readonly source: "OpenTag" | "Shared";
+  readonly source: "openTag" | "Shared";
   readonly assignment: "Assigned" | "Assignment unavailable";
 };
 
@@ -43,7 +43,7 @@ export const agentSkillPreviews: readonly AgentSkillPreview[] = [
   {
     name: "Browser validation",
     description: "Checks key product flows and reports reproducible regressions.",
-    source: "OpenTag",
+    source: "openTag",
     assignment: "Assigned",
   },
   {

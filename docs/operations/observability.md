@@ -5,7 +5,7 @@ description: "Optional OpenTelemetry tracing, the logging vocabulary, and what i
 
 # Server observability
 
-OpenTag Server can export optional OpenTelemetry traces through OTLP/HTTP. The implementation is disabled by default and covers provider connections, IM ingress, durable delivery, and Runtime lifecycle boundaries.
+openTag Server can export optional OpenTelemetry traces through OTLP/HTTP. The implementation is disabled by default and covers provider connections, IM ingress, durable delivery, and Runtime lifecycle boundaries.
 
 Tracing is not log shipping. Pino continues to write server logs to stdout, and this feature does not upload all stdout logs to Logfire. Logfire receives spans, span attributes, and bounded exception events only.
 
@@ -78,7 +78,7 @@ For CapRover, add the four values as app environment variables and mark the head
 
 The endpoint and attribute vocabulary remain OTLP-oriented. Logfire is the currently documented backend, but collectors using an API key, tenant headers, non-Bearer authorization, or a custom trace path are also supported. Malformed or duplicate header entries fail server startup without echoing their values.
 
-The server owns an explicit OpenTelemetry trace provider and OTLP exporter. Only the canonical Fastify instrumentation and OpenTag's explicit business spans are accepted. Logfire's automatic process exception reporting and Node auto-instrumentations are not installed, so Pino records, PostgreSQL queries, outbound transports, and arbitrary process errors cannot bypass the telemetry scrubber.
+The server owns an explicit OpenTelemetry trace provider and OTLP exporter. Only the canonical Fastify instrumentation and openTag's explicit business spans are accepted. Logfire's automatic process exception reporting and Node auto-instrumentations are not installed, so Pino records, PostgreSQL queries, outbound transports, and arbitrary process errors cannot bypass the telemetry scrubber.
 
 ## What is traced
 
@@ -164,11 +164,11 @@ opentag agent im diagnose <agent-id>
 Then query traces for the incident time window:
 
 1. Filter `feishu.connection.connect`, `feishu.connection.transition`, and `feishu.connection.error` by `opentag.im.binding.id`. Confirm that a current replica connected and did not enter a reconnect or credential failure loop.
-2. Search for `im.inbound.process` with the same binding. Its presence proves the OpenTag SDK callback ran; its error code separates admission, normalization, fencing, and persistence failures.
+2. Search for `im.inbound.process` with the same binding. Its presence proves the openTag SDK callback ran; its error code separates admission, normalization, fencing, and persistence failures.
 3. When persistence succeeded, follow `opentag.im.message.id` and `opentag.im.delivery.id` into `im.delivery.dispatch`, `runtime.reconcile`, `runtime.delivery`, and `runtime.report`.
-4. If the Agent ran but no reply appeared, inspect the Agent trace, the provider CLI result, and the Turn report's captured Lark outgoing-reply snapshot when present. OpenTag does not trace provider outbound writes; Task history may include bounded send receipts, which are not read receipts.
+4. If the Agent ran but no reply appeared, inspect the Agent trace, the provider CLI result, and the Turn report's captured Lark outgoing-reply snapshot when present. openTag does not trace provider outbound writes; Task history may include bounded send receipts, which are not read receipts.
 
-No `im.inbound.process` span means OpenTag did not observe the provider callback during the sampled window. It does not prove that Feishu delivered the event. Combine that negative evidence with `connection`, `lastInboundAt`, `providerCliReadiness`, granted scopes, and Feishu event-subscription state.
+No `im.inbound.process` span means openTag did not observe the provider callback during the sampled window. It does not prove that Feishu delivered the event. Combine that negative evidence with `connection`, `lastInboundAt`, `providerCliReadiness`, granted scopes, and Feishu event-subscription state.
 
 ## Sampling and limits
 

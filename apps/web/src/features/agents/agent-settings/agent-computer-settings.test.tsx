@@ -129,7 +129,7 @@ describe("A Cloud Computer's settings", () => {
     const base = agent(COMPUTER_ID, "unconfirmed");
     const cloudAgent: AgentDetailView = {
       ...base,
-      computer: { computerId: COMPUTER_ID, displayName: "OpenTag Cloud", platform: "linux" },
+      computer: { computerId: COMPUTER_ID, displayName: "openTag Cloud", platform: "linux" },
       computerKind: "cloud",
     };
     const overview = vi.spyOn(browserApi, "agentCloudOverview");
@@ -139,9 +139,9 @@ describe("A Cloud Computer's settings", () => {
 
     // The normal heading, and the one managed-platform sentence. Nothing else.
     expect(screen.getByRole("heading", { name: "Computer" })).toBeTruthy();
-    expect(screen.getByText("Runs on OpenTag Cloud, managed by the platform")).toBeTruthy();
+    expect(screen.getByText("Runs on openTag Cloud, managed by the platform")).toBeTruthy();
     expect(screen.queryByText("Online")).toBeNull();
-    expect(screen.queryByText("Hosted by OpenTag")).toBeNull();
+    expect(screen.queryByText("Hosted by openTag")).toBeNull();
     expect(screen.queryByRole("region", { name: "Cloud environments" })).toBeNull();
     expect(screen.queryByRole("button")).toBeNull();
     expect(overview).not.toHaveBeenCalled();

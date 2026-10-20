@@ -91,7 +91,7 @@ function summaryAt(index: number, agentId: string): TaskSummary {
     agent: {
       id: agentId,
       name: "preview-agent",
-      displayName: "OpenTag Agent",
+      displayName: "openTag Agent",
       runtimeProvider: "codex",
     },
     source: {

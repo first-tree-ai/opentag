@@ -1,13 +1,13 @@
-# OpenTag Kumo UI
+# openTag Kumo UI
 
 The canonical product composition and acceptance rules live in
 [`docs/system/web/web-ui-contract.md`](../../../../docs/system/web/web-ui-contract.md). This document records the Kumo-specific
 implementation choices behind that interface.
 
-OpenTag uses Kumo `2.13.1` with Tailwind CSS v4. `src/app.css` is the only
+openTag uses Kumo `2.13.1` with Tailwind CSS v4. `src/app.css` is the only
 application stylesheet entry: it registers Kumo's distribution as a Tailwind
 source, imports Kumo's Tailwind styles before Tailwind itself, then loads the
-generated OpenTag theme and shared primitive recipes. The small shell/browser boundary follows in app.css.
+generated openTag theme and shared primitive recipes. The small shell/browser boundary follows in app.css.
 The authenticated shell keeps one mounted route outlet and scroll viewport. The named `content` container sits inside
 an outer frame capped at 1400px for Agent pages (40px vertical padding, horizontal padding clamped between 24px and
 100px at 5vw) and 1280px for workspace pages (40px/32px padding). At 950px and below Agent content uses 28px/24px;
@@ -54,7 +54,7 @@ Feature modules do not import `@cloudflare/kumo` directly. Direct imports belong
 to application provider wiring, `design-system.tsx`, and owned blocks under
 `src/components/kumo`; tests may provide their own provider wiring. Add an owned
 block only when it hides meaningful shared behavior, not merely to forward Kumo
-props or utility classes. Owned-block interfaces use OpenTag types and do not
+props or utility classes. Owned-block interfaces use openTag types and do not
 expose Kumo-specific types or composition to callers.
 
 ## Theme
@@ -70,12 +70,12 @@ removing the decorative treatment. Tests verify normal text, action fills, and m
 
 The theme uses explicit `data-opentag-theme="opentag"` and `data-opentag-mode="light|dark"`
 attributes, set statically on `<html>` in `index.html`. The namespacing keeps third-party code
-that rewrites the generic `data-theme` or `data-mode` attributes from detaching OpenTag's
+that rewrites the generic `data-theme` or `data-mode` attributes from detaching openTag's
 selectors from the document, and tokens stay on the root element so body-mounted Dialog, Select,
 and Tooltip portals inherit them. Emphasis buttons additionally carry literal light-palette
 fallbacks inside their `var(--opentag-button-…, …)` overrides — in `buttonClassName` they must be
 static strings for Tailwind scanning — so an emphasis surface stays accessible even when no
-ancestor resolves the OpenTag tokens. The product currently ships light mode; dark values remain
+ancestor resolves the openTag tokens. The product currently ships light mode; dark values remain
 available for compatibility and future completion, not as a supported product theme.
 Brand values were chosen for readable text and button contrast in both modes;
 do not add raw colour literals to page components.

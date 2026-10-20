@@ -21,11 +21,11 @@ Matching SVG files remain available: the four website cats are vectors, while ar
 businessman embed their approved raster artwork. Existing provider-uploaded Bot avatars are
 separate copies and are not automatically replaced when these preset files change.
 
-On connection or reauthorization, OpenTag reads the actual Bot profile and caches its name and
+On connection or reauthorization, openTag reads the actual Bot profile and caches its name and
 avatar in the binding. Optional profile failures do not block activation. Previously cached
 metadata survives a failed lookup only for the same App, workspace, and Bot identity.
 Existing connections acquire avatars on their next connection or reauthorization; provider-side
-changes remain cached until then. OpenTag displays initials when the image is absent or fails to load.
+changes remain cached until then. openTag displays initials when the image is absent or fails to load.
 
 ## User experience
 
@@ -36,7 +36,7 @@ a prerequisite to starting registration.
 After credentials are saved, the setup page shows the remaining condition: permissions,
 App availability, Runtime readiness, or a temporary upstream failure. It explains that the
 user may close the page. An administrator handles any enterprise approval through Feishu;
-OpenTag does not submit approvals or require the connecting user to be an administrator.
+openTag does not submit approvals or require the connecting user to be an administrator.
 
 The Server checks automatically. “Check latest status” uses the same due-time and concurrency
 limits; it does not create another App, bypass approval, or force repeated provider calls.

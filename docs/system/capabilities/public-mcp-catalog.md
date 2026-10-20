@@ -34,7 +34,7 @@ endpoint serves the configuration view of the same public data, which is already
 | Protocol revisions | The three legacy revisions. `initialize` echoes a requested one it speaks and otherwise answers `2025-11-25`; `server/discover` lists the same set. |
 | Notifications | A request with no `id` is answered `202` with an empty body. |
 | `GET`, `DELETE` | `405` with `Allow: POST`. No server-initiated stream and no session exist to open or end. |
-| Server identity | `name: "opentag-catalog"`, `title: "OpenTag MCP Catalog"`, `version: "1"`. |
+| Server identity | `name: "opentag-catalog"`, `title: "openTag MCP Catalog"`, `version: "1"`. |
 
 The protocol layer in `packages/server/src/services/mcp/mcp-inbound-protocol.ts` is shared with the
 per-Agent [MCP gateway](mcp-server-integration.md#the-mcp-gateway). What differs between the two

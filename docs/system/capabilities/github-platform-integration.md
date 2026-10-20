@@ -5,7 +5,7 @@ description: "Account-owned GitHub connections, Server-held credentials, runtime
 
 # GitHub platform integration
 
-OpenTag owns its GitHub App, Slack, and Feishu credentials. The Server composes integration management, execution authorization, short-lived credential capabilities, and provider proxies. A trusted Runner gives native CLI processes execution-local handles. [简体中文](github-platform-integration.md)
+openTag owns its GitHub App, Slack, and Feishu credentials. The Server composes integration management, execution authorization, short-lived credential capabilities, and provider proxies. A trusted Runner gives native CLI processes execution-local handles. [简体中文](github-platform-integration.md)
 
 ## Identity and storage
 
@@ -17,7 +17,7 @@ GitHub API calls consume the connected user’s shared API budget. Runtime reque
 
 The owning Account's current connection determines the GitHub actor for admitted IM tasks, configured schedules and traceable Agent collaboration. An IM sender is not automatically a separate GitHub identity. This change adds no operation audit trail, sender-account mapping, database migration or identity setting. The existing task-source records remain authorization facts.
 
-The Agent chooses repositories, refs, PR heads/bases, merge/review operations and work across Sessions. Runtime forwarding does not parse GraphQL selections, keep node identities, plan per-operation permissions, or enforce code/Tree roles. Existing GitHub permissions and repository rules still apply. OpenTag maintains no extra repository whitelist.
+The Agent chooses repositories, refs, PR heads/bases, merge/review operations and work across Sessions. Runtime forwarding does not parse GraphQL selections, keep node identities, plan per-operation permissions, or enforce code/Tree roles. Existing GitHub permissions and repository rules still apply. openTag maintains no extra repository whitelist.
 
 ## Invalidating access
 
@@ -43,7 +43,7 @@ Configure the coherent GitHub App environment block in `.env.example`, including
 
 Account refresh preserves focus, announces installation/repository counts and errors, and supports retry. It performs no configuration writes. Installation and refresh actions stay available when installations already exist.
 
-The Account page connects, reauthorizes, replaces, or disconnects GitHub. Repository selection belongs to the GitHub App installation flow; OpenTag has no Agent assignments, repository delegation, or extra Account allowlist. The retired bindings route returns HTTP 410 and cannot change retained JSON. Discovery remains a bounded Account installation/refresh display, not an execution authorization source.
+The Account page connects, reauthorizes, replaces, or disconnects GitHub. Repository selection belongs to the GitHub App installation flow; openTag has no Agent assignments, repository delegation, or extra Account allowlist. The retired bindings route returns HTTP 410 and cannot change retained JSON. Discovery remains a bounded Account installation/refresh display, not an execution authorization source.
 
 Every human sender accepted by an Agent's existing IM channel admission may request GitHub work using the Agent owner's Account connection, within that GitHub user's and App's permissions. This is intentionally broader than Account-owner-only IM access; the IM sender is not mapped to a separate GitHub identity, and no GitHub-specific sender or repository allowlist is maintained.
 
@@ -97,7 +97,7 @@ Checks, Actions, Commit statuses, PR operations and other GitHub business APIs u
 
 `GitHub Native Proxy` CI downloads the official Runner-pinned gh and exercises real Git clone/fetch/push with preserved commit objects in macOS Local Codex IPC and Linux Cloud publication/CONNECT, plus native gh workflow discovery/commit filters, PR command lifecycle and cold-command authorization controls. These offline fixtures have no real provider credentials or GitHub side effects; they do not establish deployed user identity or commit-author acceptance.
 
-Execution loopback certificates include explicit key usage and the TLS server-authentication EKU required by Apple's trust evaluation. Native macOS regressions retain the runner's default Git/TLS backend and additionally exercise SecureTransport for CONNECT and caller CA routing, including a missing-anchor negative control. Before HTTPS-dependent macOS tests, an independent plain `curl --cacert` probe checks a valid private anchor without OpenTag code or configuration; only a TLS verification failure (exit 60) produces an explicitly reported capability skip. Other probe errors and product failures still fail. Modern IPC tests never use this skip. Legacy CONNECT retains the existing platform TLS constraints: it is no worse than main, but success with private file anchors is not demonstrated on macOS 15 system libcurl. Linux/OpenSSL and capable macOS hosts exercise the full CONNECT and CA-routing cases. These tests do not change product backend selection or system trust. See Apple's [TLS certificate requirements](https://support.apple.com/en-gb/103769).
+Execution loopback certificates include explicit key usage and the TLS server-authentication EKU required by Apple's trust evaluation. Native macOS regressions retain the runner's default Git/TLS backend and additionally exercise SecureTransport for CONNECT and caller CA routing, including a missing-anchor negative control. Before HTTPS-dependent macOS tests, an independent plain `curl --cacert` probe checks a valid private anchor without openTag code or configuration; only a TLS verification failure (exit 60) produces an explicitly reported capability skip. Other probe errors and product failures still fail. Modern IPC tests never use this skip. Legacy CONNECT retains the existing platform TLS constraints: it is no worse than main, but success with private file anchors is not demonstrated on macOS 15 system libcurl. Linux/OpenSSL and capable macOS hosts exercise the full CONNECT and CA-routing cases. These tests do not change product backend selection or system trust. See Apple's [TLS certificate requirements](https://support.apple.com/en-gb/103769).
 
 ## Deployment and persistent state
 

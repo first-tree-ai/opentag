@@ -1,4 +1,4 @@
-# OpenTag 行为准则
+# openTag 行为准则
 
 > Canonical source: [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)
 > Last synced with: 2026-08-17
@@ -16,7 +16,7 @@
 
 ## 报告与执行
 
-请将行为事件以 `OpenTag conduct report` 为主题私密发送至 `security@first-tree.ai`。报告由项目维护者处理，
+请将行为事件以 `openTag conduct report` 为主题私密发送至 `security@first-tree.ai`。报告由项目维护者处理，
 并在实际可行范围内保密。为保护社区，维护者可以编辑或删除内容、发出警告、限制参与或封禁参与者。
 
-本政策适用于仓库空间，以及任何代表 OpenTag 的公开空间。
+本政策适用于仓库空间，以及任何代表 openTag 的公开空间。

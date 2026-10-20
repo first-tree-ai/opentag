@@ -59,7 +59,7 @@ describe("error report identity", () => {
 
     const { menu } = await openAccountMenu();
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Sign out" }));
-    expect(await screen.findByRole("heading", { name: "Sign in to OpenTag" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign in to openTag" })).toBeTruthy();
 
     // The login page that follows, and every page after it, is no longer the Account that left.
     expect((await probe()).userId).toBeUndefined();
@@ -77,7 +77,7 @@ describe("error report identity", () => {
     // is refused, and that refusal is the exit the gate releases the identity on.
     expired = true;
     await navigateTo("/login");
-    expect(await screen.findByRole("heading", { name: "Sign in to OpenTag" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign in to openTag" })).toBeTruthy();
     await navigateTo("/agents");
     await waitFor(() => expect(window.location.search).toContain("next="));
     expect(window.location.pathname).toBe("/login");

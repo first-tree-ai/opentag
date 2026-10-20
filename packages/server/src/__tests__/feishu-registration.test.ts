@@ -42,7 +42,7 @@ describe("Feishu registration", () => {
       return { client_id: "cli_new", client_secret: "secret", user_info: { tenant_brand: "feishu" } };
     });
     const registration = new DefaultFeishuRegistrationGateway(register as typeof registerApp).start({
-      profile: { name: "Assistant", description: "OpenTag Agent: Assistant" },
+      profile: { name: "Assistant", description: "openTag Agent: Assistant" },
       intent,
       receiveMode: "all_message",
     });
@@ -55,7 +55,7 @@ describe("Feishu registration", () => {
     const options = register.mock.calls[0]?.[0] as RegistrationOptions;
     expect(options).toMatchObject({
       createOnly: false,
-      appPreset: { name: "Assistant", desc: "OpenTag Agent: Assistant" },
+      appPreset: { name: "Assistant", desc: "openTag Agent: Assistant" },
       addons: {
         preset: true,
         scopes: { tenant: FEISHU_REQUIRED_TENANT_SCOPES },
@@ -84,7 +84,7 @@ describe("Feishu registration", () => {
           }),
       );
       const registration = new DefaultFeishuRegistrationGateway(register as typeof registerApp).start({
-        profile: { name: "Assistant", description: "OpenTag Agent: Assistant" },
+        profile: { name: "Assistant", description: "openTag Agent: Assistant" },
         intent: "create",
         receiveMode: "all_message",
       });
@@ -126,7 +126,7 @@ describe("Feishu registration", () => {
         }),
     );
     const registration = new DefaultFeishuRegistrationGateway(register as typeof registerApp).start({
-      profile: { name: "Assistant", description: "OpenTag Agent: Assistant" },
+      profile: { name: "Assistant", description: "openTag Agent: Assistant" },
       intent: "reauthorize",
       existingAppId: "cli_existing",
       receiveMode: "mention_only",

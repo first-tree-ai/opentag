@@ -337,7 +337,7 @@ async function readDaemonIdentity(home: string, currentPlatform: NodeJS.Platform
   try {
     credentials = await readMachineCredentials(home);
   } catch (error) {
-    throw new DaemonRuntimeConfigurationError("OpenTag Computer credentials are invalid; run opentag connect again", {
+    throw new DaemonRuntimeConfigurationError("openTag Computer credentials are invalid; run opentag connect again", {
       cause: error,
     });
   }

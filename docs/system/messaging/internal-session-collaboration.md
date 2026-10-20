@@ -5,7 +5,7 @@ description: "Session CLI delegation between an Agent's Sessions: proofs, scope,
 
 # Internal Session collaboration
 
-OpenTag Agents delegate work through the CLI available inside every managed Session:
+openTag Agents delegate work through the CLI available inside every managed Session:
 
 ```text
 opentag session create --message <task>
@@ -21,7 +21,7 @@ changes invalidate the old proof.
 
 For Local Computers, all Provider processes launched by one daemon OS user currently form one trust domain. File permissions protect proof
 files from other OS users and accidental exposure, but do not isolate sibling Sessions running as that same user. Until
-OpenTag introduces per-Session OS or container isolation, the proof lets the Server validate a live Runtime binding and
+openTag introduces per-Session OS or container isolation, the proof lets the Server validate a live Runtime binding and
 removes caller-selected source flags; it is not a security boundary against a compromised sibling Session that can read
 the daemon user's files.
 
@@ -62,15 +62,15 @@ a lengthy user task (for example, Feishu OnIt or the provider's equivalent). App
 thumbs-up or check marks must not be used. The reaction is skipped only for duplicate acknowledgments and observer
 deliveries. Internal Sessions report to their coordinator and do not publish to IM.
 
-OpenTag internal Sessions are distinct from Provider-native subagents. When a person explicitly requests an OpenTag
+openTag internal Sessions are distinct from Provider-native subagents. When a person explicitly requests an openTag
 internal Session, the visible Session uses `opentag session create` rather than substituting a Provider-native subagent.
-OpenTag does not otherwise impose one automatic routing policy between direct work, Provider-native subagents, and
+openTag does not otherwise impose one automatic routing policy between direct work, Provider-native subagents, and
 internal Sessions.
 
 When a SessionMessage returns to a visible channel or thread Session, that callback Run retains the visible Session's IM
 authority. Credential grant v2 atomically supplies a temporary provider credential environment and a non-secret default
 outbox context derived by the Server from the Session's existing conversation scope. The visible Session synthesizes and
-publishes any user-facing result through the official provider CLI during that callback Run; OpenTag does not forward the
+publishes any user-facing result through the official provider CLI during that callback Run; openTag does not forward the
 child's text automatically. Channel callbacks target the existing chat or channel, while thread callbacks retain the
 existing thread scope. Internal targets never receive provider credentials or outbox context.
 
@@ -85,7 +85,7 @@ The Local CLI transport requires `runtime.sessionCollaboration` capability versi
 older; a new Client connected to an older Server rejects the delivery before acknowledging it so the same logical message
 remains retryable. Both upgrade directions fail closed before the callback Run instead of silently removing its IM outbox.
 
-OpenTag currently supports this path only with a single Server replica. Proof-authenticated Session CLI HTTP and
+openTag currently supports this path only with a single Server replica. Proof-authenticated Session CLI HTTP and
 source/target SessionMessage Runtime delivery use that replica's transport owner (Local Computer or Cloud Runner). Ordinary multi-replica
 load balancing, sticky routing, and cross-replica owner discovery, forwarding, or delivery relay are not supported;
 horizontal replicas require an explicit cross-instance owner-routing design before they can be enabled.

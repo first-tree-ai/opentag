@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-# OpenTag portable installer.
+# openTag portable installer.
 #
 # Downloads a self-contained release (bundled CLI plus its own Node.js runtime), verifies it against
 # the published checksum, and activates it behind a stable shim in BIN_DIR. Releases published to the
@@ -96,7 +96,7 @@ print_banner() {
   '-.______.-~
 EOF
   printf '%s' "$C_RESET"
-  subtitle="  OpenTag portable installer  -  channel: ${PORTABLE_CHANNEL}"
+  subtitle="  openTag portable installer  -  channel: ${PORTABLE_CHANNEL}"
   [ -z "$REQUESTED_VERSION" ] || subtitle="$subtitle  -  version: $REQUESTED_VERSION"
   printf '%s%s%s\n\n' "$C_DIM" "$subtitle" "$C_RESET"
 }
@@ -527,7 +527,7 @@ cleanup() {
   [ "$STEP_OPEN" -eq 0 ] || printf '\n' || :
   if [ "$status" -ne 0 ]; then
     if [ "$ACTIVATED" -eq 1 ]; then
-      summary="Installation failed at step ${CURRENT_STEP}/${STEP_COUNT}, after OpenTag ${VERSION} was activated."
+      summary="Installation failed at step ${CURRENT_STEP}/${STEP_COUNT}, after openTag ${VERSION} was activated."
     elif [ "$SHIM_WRITTEN" -eq 1 ]; then
       summary="Installation failed at step ${CURRENT_STEP}/${STEP_COUNT}. The launcher shim was rewritten but the current version link was not switched."
     else
@@ -562,7 +562,7 @@ BIN_NAME="$(json_string "$MANIFEST_FILE" binName)"
 [ -n "$PACKAGE_NAME" ] || die "metadata missing packageName"
 [ -n "$BIN_NAME" ] || die "metadata missing binName"
 # The resolved version closes step 2; the up-to-date check decides how that line ends.
-[ "$QUIET" -eq 1 ] || { printf '      Resolved OpenTag %s' "$VERSION"; STEP_OPEN=1; }
+[ "$QUIET" -eq 1 ] || { printf '      Resolved openTag %s' "$VERSION"; STEP_OPEN=1; }
 
 # Resolve the install paths the same way a previous run did before comparing against it: `pwd -L`
 # drops trailing slashes and dot segments without resolving a caller-selected symlink prefix, which
@@ -576,10 +576,10 @@ fi
 
 if [ "$FORCE" -eq 0 ] && portable_install_is_current "$VERSION" "$BIN_NAME"; then
   ok "already current"
-  log "OpenTag ${VERSION} is already installed and up to date; skipping download."
+  log "openTag ${VERSION} is already installed and up to date; skipping download."
   log "Run this installer with --force to reinstall the same version."
   maybe_edit_path "$BIN_NAME"
-  print_footer "OpenTag is already up to date."
+  print_footer "openTag is already up to date."
   exit 0
 fi
 end_step
@@ -599,7 +599,7 @@ mkdir -p "$PREFIX/versions" "$PREFIX/.tmp" "$BIN_DIR"
 PREFIX="$(CDPATH="" cd -L "$PREFIX" && pwd -L)"
 BIN_DIR="$(CDPATH="" cd -L "$BIN_DIR" && pwd -L)"
 TARBALL="$WORK_DIR/payload.tar.gz"
-step "Downloading OpenTag ${VERSION} for ${PLATFORM} ($(human_size "$ASSET_SIZE"))"
+step "Downloading openTag ${VERSION} for ${PLATFORM} ($(human_size "$ASSET_SIZE"))"
 end_step
 download_to "$ASSET_URL" "$TARBALL"
 step "Verifying checksum ..."
@@ -694,4 +694,4 @@ PATH="$BIN_DIR:${PATH:-}"
 export PATH
 maybe_edit_path "$BIN_NAME"
 
-print_footer "OpenTag is ready." "OpenTag ${VERSION} installed at $FINAL_VERSION_DIR"
+print_footer "openTag is ready." "openTag ${VERSION} installed at $FINAL_VERSION_DIR"

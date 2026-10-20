@@ -15,7 +15,7 @@ beforeAll(async () => {
     join(root, "bot-avatars"),
     { recursive: true },
   );
-  await writeFile(join(root, "index.html"), "<!doctype html><title>OpenTag</title>");
+  await writeFile(join(root, "index.html"), "<!doctype html><title>openTag</title>");
   await writeFile(join(root, "assets", "app.js"), "globalThis.OPENTAG_APP = true;");
 });
 
@@ -56,10 +56,10 @@ describe("Web App static serving", () => {
   it("serves SPA routes with security headers without swallowing API or health paths", async () => {
     const app = createApp({ webAppRoot: root });
     try {
-      expect((await app.inject({ method: "GET", url: "/" })).body).toContain("OpenTag");
+      expect((await app.inject({ method: "GET", url: "/" })).body).toContain("openTag");
       const spa = await app.inject({ method: "GET", url: "/agents/example/runtime" });
       expect(spa.statusCode).toBe(200);
-      expect(spa.body).toContain("OpenTag");
+      expect(spa.body).toContain("openTag");
       const policy = String(spa.headers["content-security-policy"]);
       expect(policy).toContain("frame-ancestors 'none'");
       expect(policy).toContain("style-src 'self' 'unsafe-inline'");

@@ -27,7 +27,7 @@
   "integrations_github_install": "安装 GitHub App",
   "integrations_github_install_description": "安装 GitHub App 时在 GitHub 选择仓库，完成后在这里刷新安装列表。",
   "integrations_github_installation_suspended": "{account}（已暂停）",
-  "integrations_github_installations_description": "此账户可使用的 OpenTag GitHub App 安装。",
+  "integrations_github_installations_description": "此账户可使用的 openTag GitHub App 安装。",
   "integrations_github_installations_title": "GitHub App 安装",
   "integrations_github_loading": "正在加载 GitHub 连接…",
   "integrations_github_no_installations": "未找到安装。",

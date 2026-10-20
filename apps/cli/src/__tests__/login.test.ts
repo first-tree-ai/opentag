@@ -150,7 +150,7 @@ describe("runLogin", () => {
     });
 
     expect(exchangeConnectCode).toHaveBeenCalledWith("one-time-secret");
-    expect(result.message).toBe("Logged in to OpenTag at https://opentag.example");
+    expect(result.message).toBe("Logged in to openTag at https://opentag.example");
     expect(result.credentialsPath).toBe(credentialsPath(home));
     expect(JSON.stringify(result)).not.toContain("secret");
     expect(await readCredentials(home)).toMatchObject({

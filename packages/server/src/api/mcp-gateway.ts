@@ -40,7 +40,7 @@ const ERROR_STATUS: Record<McpGatewayErrorCode, number> = {
  * The identity this endpoint reports. Kept here rather than in the protocol module: what an endpoint
  * calls itself is the endpoint's fact, not the protocol's.
  */
-const GATEWAY_SERVER_INFO = { name: MCP_GATEWAY_SERVER_NAME, title: "OpenTag MCP", version: "1" };
+const GATEWAY_SERVER_INFO = { name: MCP_GATEWAY_SERVER_NAME, title: "openTag MCP", version: "1" };
 
 /** JSON-RPC parse/invalid-request codes, used before a method is even known. */
 const RPC_PARSE_ERROR = -32700;

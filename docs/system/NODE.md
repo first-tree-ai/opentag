@@ -1,11 +1,11 @@
 ---
 title: "System"
-description: "OpenTag architecture: identity model, Server/Client authority, runtimes, messaging, Agent capabilities, Cloud execution, and the Web App."
+description: "openTag architecture: identity model, Server/Client authority, runtimes, messaging, Agent capabilities, Cloud execution, and the Web App."
 ---
 
 # System
 
-OpenTag separates durable Server-owned identities and message facts from
+openTag separates durable Server-owned identities and message facts from
 Client-owned execution. The pages here define the boundaries that Session
 lifecycle, placement, Provider runtimes, and message delivery must preserve,
 and the contracts each subsystem implements.

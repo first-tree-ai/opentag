@@ -1,6 +1,6 @@
-# OpenTag CLI
+# openTag CLI
 
-The OpenTag CLI connects local OpenTag clients to the OpenTag server. The project is pre-alpha and currently exposes
+The openTag CLI connects local openTag clients to the openTag server. The project is pre-alpha and currently exposes
 health diagnostics, connect-code login, Linux/macOS user-service management, and Computer presence listing.
 
 Source builds use `opentag-dev` and `~/.opentag-dev`. The production npm package is `open-tag` with the `opentag`
@@ -20,7 +20,7 @@ For unattended Claude subscription access, use the token created by `claude setu
 `CLAUDE_CODE_OAUTH_TOKEN`, rather than copying a short-lived access token from native login storage.
 
 Service installation and upgrade refresh preserve existing custom environment values in launchd plists and
-environment directives in the systemd unit. Installation and refresh enforce mode `0600` even when the definition content is unchanged, because it may contain secrets. OpenTag still regenerates its executable and managed `PATH`,
+environment directives in the systemd unit. Installation and refresh enforce mode `0600` even when the definition content is unchanged, because it may contain secrets. openTag still regenerates its executable and managed `PATH`,
 `OPENTAG_HOME`, and `OPENTAG_SERVICE_MODE`. On Linux, the service entrypoint sets these three values after systemd
 applies environment files and removals, so custom directives cannot change the daemon's Home or service mode.
 Systemd drop-ins are separate files and remain untouched.
@@ -31,14 +31,14 @@ Explicit credentials targeting the default Anthropic endpoint are additionally c
 Models API request per readiness check. Equivalent official URLs (including the default port and host case) receive the same check. When both `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` are set, the check sends both authentication headers. A rejected credential requires sign-in or replacement; connectivity, permission, rate-limit,
 and service failures remain retryable unavailability. This check makes no model generation request and does not
 prove access to a particular model or available quota. Native login storage, custom gateways, Bedrock, Vertex,
-and Foundry remain under the Claude CLI's credential handling; OpenTag does not read or renew their tokens.
+and Foundry remain under the Claude CLI's credential handling; openTag does not read or renew their tokens.
 
 ## Targeted Computer preparation
 
 `opentag connect <code>` (also `opentag computer connect <code>`) binds the Computer named by the one-time setup flow.
 When the Server returns a target Agent, the foreground command checks only that Agent's selected Runtime CLI, including
 its required capabilities and credentials, and prepares both Lark and Slack through Provider CLI ensure. The operator
-must install and authenticate the selected Codex, Claude Code, or Pi CLI; OpenTag never installs a Runtime.
+must install and authenticate the selected Codex, Claude Code, or Pi CLI; openTag never installs a Runtime.
 Pi requires version 0.80.6 or newer and a configured model provider with usable credentials. A Runtime or daemon failure does not skip
 Provider preparation. An untargeted code remains an ordinary Computer connection without an inferred Runtime.
 
@@ -78,7 +78,7 @@ A new CLI accepts an older Server's missing Runtime evidence but reports `runtim
 and requests an upgrade/recheck instead of guessing a provider or claiming local readiness.
 
 Pi runs with unrestricted filesystem access, enabled network access, and no approval prompts in Local mode.
-OpenTag rejects unsupported stricter Pi execution settings. Selecting Pi does not create an OS sandbox.
+openTag rejects unsupported stricter Pi execution settings. Selecting Pi does not create an OS sandbox.
 Automatic extensions and ambient skills/context discovery are disabled; packaged Context Tree skills are explicit.
 See the [Agent Runtime contract](../../docs/system/runtime/agent-runtime-contract.md) for Session persistence and recovery.
 
@@ -104,5 +104,5 @@ The structured error fields are intentionally transport-neutral: `code` identifi
 `retryability` describes a safe retry posture, `phase` identifies the lifecycle boundary, and `requestId` correlates a
 server request when one is available. Use `--json` for scripts and agents; do not parse human-readable text.
 
-See the [OpenTag repository](https://github.com/first-tree-ai/opentag) for setup, contribution, security, and release
+See the [openTag repository](https://github.com/first-tree-ai/opentag) for setup, contribution, security, and release
 documentation.

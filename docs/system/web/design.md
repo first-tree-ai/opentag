@@ -1,17 +1,17 @@
 ---
-title: "OpenTag design guide"
-description: "Shared brand and visual rules, website product-preview references, and the boundary between website tooling and the OpenTag app implementation."
+title: "openTag design guide"
+description: "Shared brand and visual rules, website product-preview references, and the boundary between website tooling and the openTag app implementation."
 soft_links:
   - /product/trademarks.md
 ---
 
 # openTag design guide
 
-This guide records OpenTag's shared visual direction and the marketing website's
+This guide records openTag's shared visual direction and the marketing website's
 product-preview reference. Website-specific sections describe the separate
 `first-tree-ai/opentag-site` repository; source links below point there.
 
-The OpenTag app implements this visual direction through its existing Kumo/Base UI
+The openTag app implements this visual direction through its existing Kumo/Base UI
 adapter. The [Web UI contract](web-ui-contract.md) owns application semantics,
 composition, accessibility, and acceptance criteria;
 [`apps/web/src/ui/KUMO.md`](https://github.com/first-tree-ai/opentag/blob/main/apps/web/src/ui/KUMO.md) documents the
@@ -39,6 +39,12 @@ data. The app follows their visual direction while preserving real accounts,
 working controls, and the product behavior defined by the Web UI contract.
 
 ## Character and identity
+
+Write the product name as **openTag** in headings, prose, UI copy, accessible
+names, CLI help, and integration display names, in every language and at the
+start of a sentence. Package names, commands, URLs, environment variables, HTTP
+headers, stored paths, and public code identifiers retain their established
+spelling for compatibility. Existing user-chosen Agent names are not renamed.
 
 openTag feels capable, friendly, and direct. Confident headings, short explanations, and recognisable workflow examples lead the page. A white canvas, quiet neutral cards, teal actions, lavender accents, and occasional cats make technical content approachable.
 
@@ -193,7 +199,7 @@ Lucide is available under ISC, with some inherited Feather portions under MIT. P
 
 These commands apply to the website repository. Use Node 24 and the pnpm version
 pinned by its `package.json`; run them from that repository root. For app commands,
-see the [OpenTag development guide](https://github.com/first-tree-ai/opentag/blob/main/DEVELOPMENT.md).
+see the [openTag development guide](https://github.com/first-tree-ai/opentag/blob/main/DEVELOPMENT.md).
 
 ```sh
 pnpm install --frozen-lockfile

@@ -194,7 +194,7 @@ test("buildCard titles the card by environment and keeps untrusted text out of l
   const card = buildCard(alert);
   assert.equal(card.msg_type, "interactive");
   assert.equal(card.card.header.template, "orange");
-  assert.equal(card.card.header.title.content, `【预发】OpenTag ${ALERT_KEYWORD}`);
+  assert.equal(card.card.header.title.content, `【预发】openTag ${ALERT_KEYWORD}`);
 
   const larkMarkdown = JSON.stringify(card.card.elements.filter((element) => element.tag === "div" && element.fields));
   assert.doesNotMatch(larkMarkdown, /<at/);

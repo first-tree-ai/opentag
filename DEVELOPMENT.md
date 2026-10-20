@@ -1,4 +1,4 @@
-# OpenTag development
+# openTag development
 
 [简体中文](./DEVELOPMENT.zh-CN.md)
 
@@ -8,7 +8,7 @@ You'll need macOS or Linux, Node.js (use the version in [.node-version](./.node-
 Docker with Compose, and a signed-in Codex or Claude Code CLI. Keep Docker running and run the commands below
 from the root of your cloned repository.
 
-### 1. Install OpenTag
+### 1. Install openTag
 
 ```bash
 ./scripts/dev-install.sh

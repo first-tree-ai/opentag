@@ -1,4 +1,4 @@
-# OpenTag Code of Conduct
+# openTag Code of Conduct
 
 [简体中文](./CODE_OF_CONDUCT.zh-CN.md)
 
@@ -16,8 +16,8 @@ acceptable.
 
 ## Reporting and enforcement
 
-Report conduct incidents privately to `security@first-tree.ai` with the subject `OpenTag conduct report`. Reports are
+Report conduct incidents privately to `security@first-tree.ai` with the subject `openTag conduct report`. Reports are
 handled by the project maintainers and kept confidential to the extent practical. Maintainers may edit or remove content,
 issue warnings, restrict participation, or ban participants when needed to protect the community.
 
-This policy applies in repository spaces and in public spaces when someone is representing OpenTag.
+This policy applies in repository spaces and in public spaces when someone is representing openTag.

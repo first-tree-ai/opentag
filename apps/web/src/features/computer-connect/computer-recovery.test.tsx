@@ -203,7 +203,7 @@ describe("shared Computer recovery", () => {
     });
     render(<ComputerRecovery computer={computer} adapter={adapter} onConnected={onConnected} />);
     await settle();
-    expect(screen.getByText("Authorization accepted. Waiting for OpenTag to come online…")).toBeTruthy();
+    expect(screen.getByText("Authorization accepted. Waiting for openTag to come online…")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Copy for AI assistant" })).toBeNull();
     expect(onConnected).not.toHaveBeenCalled();
     adapter.computers.mockResolvedValue({

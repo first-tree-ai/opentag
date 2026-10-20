@@ -10,7 +10,7 @@ import { registerDaemonStopCommand } from "./stop.js";
 import { registerDaemonUninstallCommand } from "./uninstall.js";
 
 export function registerDaemonCommand(program: Command): void {
-  const daemon = program.command("daemon").description("Manage the OpenTag daemon service");
+  const daemon = program.command("daemon").description("Manage the openTag daemon service");
   registerDaemonEnsureServiceCommand(daemon);
   registerDaemonInstallCommand(daemon);
   registerDaemonRefreshServiceCommand(daemon);

@@ -122,7 +122,7 @@ exists: Pi defers the first JSONL write until an assistant message is persisted.
 If the first Run is interrupted before materialization, a later Turn reopens the
 same Pi UUID with `--session-id`. Pi loads existing history if present, or starts
 an empty file for that UUID if the first file was never created. This also preserves
-history saved just before a crash that prevented OpenTag's binding update. An
+history saved just before a crash that prevented openTag's binding update. An
 unmaterialized binding is not replaced merely because its file hash is absent.
 This does not automatically replay the interrupted Turn or claim its success.
 Once materialized, recovery must preserve both the Pi UUID and file-path fingerprint,

@@ -3,7 +3,7 @@
 > Canonical source: [SECURITY.md](./SECURITY.md)
 > Last synced with: 2026-08-17
 
-OpenTag 处于 pre-alpha 阶段，目前没有已发布且受支持的生产版本。我们仍欢迎安全报告，因为早期披露有助于在不安全的工程基础成为稳定接口前修复问题。
+openTag 处于 pre-alpha 阶段，目前没有已发布且受支持的生产版本。我们仍欢迎安全报告，因为早期披露有助于在不安全的工程基础成为稳定接口前修复问题。
 
 ## 报告漏洞
 

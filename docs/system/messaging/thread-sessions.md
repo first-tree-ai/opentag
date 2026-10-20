@@ -5,7 +5,7 @@ description: "Channel Session versus lazily materialized Thread Sessions, direct
 
 # IM Channel and Thread Sessions
 
-OpenTag keeps one long-lived Channel Session per Agent, Integration, and IM channel. A top-level message addressed to the Agent is delivered to that Channel Session; OpenTag does not pre-create a Thread Session or require the Agent to reply in a native thread.
+openTag keeps one long-lived Channel Session per Agent, Integration, and IM channel. A top-level message addressed to the Agent is delivered to that Channel Session; openTag does not pre-create a Thread Session or require the Agent to reply in a native thread.
 
 The Agent receives the provider-native message reference and per-target `direct` or `ambient` attention in managed context. Attention states only whether the message itself addresses the Agent: `direct` is a DM or an @-mention, `ambient` is everything else. It is independent of receive mode, Session creation, direct continuity, and credential availability. The reply rule for each attention is described in the [Agent collaboration model](../../product/agent-collaboration.md).
 
@@ -28,4 +28,4 @@ Slack uses `thread_ts` as both the stable thread key and root message identifier
 
 Every delivery to a Thread Session carries the bounded, verifiable same-thread history that Session has not yet accepted: the visible root message when a reliable root identifier exists, followed by prior messages from the same thread. The current message is excluded from history, and sibling threads are not included. An ambient follow-up that first materializes a Thread Session therefore still sees the root and earlier replies; ambient materialization does not by itself establish direct continuity.
 
-Channel and Thread Sessions remain distinct Runtime scopes. OpenTag does not copy the Channel Runtime transcript or depend on provider CLI send results to create Session continuity. Bounded Lark send receipts may appear on the originating Task; they do not create cross-Session continuity. The Agent can query additional native history with the official provider CLI when needed.
+Channel and Thread Sessions remain distinct Runtime scopes. openTag does not copy the Channel Runtime transcript or depend on provider CLI send results to create Session continuity. Bounded Lark send receipts may appear on the originating Task; they do not create cross-Session continuity. The Agent can query additional native history with the official provider CLI when needed.

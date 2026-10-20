@@ -45,7 +45,7 @@ export async function repairLocalComputerConnection(options: { home: string; ins
 function unavailableCredential(cause?: unknown): CommandError {
   return new CommandError(
     { code: "COMPUTER_CREDENTIAL_UNAVAILABLE", category: "dependency", retryability: "never", phase: "validation" },
-    "The credential for this exchange is missing, unreadable, or belongs to another installation. Fix local storage and retry repair-local; if unavailable, request a NEW connect/repair code in OpenTag Web. Do not reuse the consumed code or assume previous credentials still work.",
+    "The credential for this exchange is missing, unreadable, or belongs to another installation. Fix local storage and retry repair-local; if unavailable, request a NEW connect/repair code in openTag Web. Do not reuse the consumed code or assume previous credentials still work.",
     { cause },
   );
 }

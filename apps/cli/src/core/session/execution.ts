@@ -12,7 +12,7 @@ export async function currentSessionExecutionId(environment: NodeJS.ProcessEnv):
     file = await open(path, "r");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw new Error("The OpenTag execution context is unavailable", { cause: error });
+    throw new Error("The openTag execution context is unavailable", { cause: error });
   }
   try {
     const buffer = Buffer.alloc(128);

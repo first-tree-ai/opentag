@@ -565,13 +565,13 @@ jobs:
 
       - name: Smoke production Web App entrypoints and Computer runtime
         run: |
-          curl --fail --silent http://127.0.0.1:18000/ | grep -q "<title>OpenTag</title>"
+          curl --fail --silent http://127.0.0.1:18000/ | grep -q "<title>openTag</title>"
           # The JavaScript source must stay single-quoted so the shell does not rewrite its strings.
           # shellcheck disable=SC2016
           node -e '
             const response = await fetch("http://127.0.0.1:18000/api/v1/not-a-route");
             const body = await response.text();
-            if (response.status !== 404 || body.includes("<title>OpenTag</title>")) {
+            if (response.status !== 404 || body.includes("<title>openTag</title>")) {
               throw new Error("Web App SPA fallback captured an API route");
             }
           '

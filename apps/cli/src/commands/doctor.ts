@@ -5,7 +5,7 @@ import { type DoctorResult, runDoctor } from "../core/diagnostics/doctor.js";
 export function registerDoctorCommand(program: Command): void {
   program
     .command("doctor")
-    .description("Run read-only baseline diagnostics for the selected OpenTag Home")
+    .description("Run read-only baseline diagnostics for the selected openTag Home")
     .option("--json", "print JSON with machine-readable checks and next actions")
     .action(async (options: { json?: boolean }) => {
       try {
@@ -46,7 +46,7 @@ function doctorFailure(result: DoctorResult): commandPolicy.CommandResult<Doctor
       retryability: "never",
       phase: "unknown",
     },
-    `${blocking} blocking baseline check(s) failed for this OpenTag Home.`,
+    `${blocking} blocking baseline check(s) failed for this openTag Home.`,
   );
   return { ok: false, error, exitCode: commandPolicy.commandExitCode(error), value: result };
 }

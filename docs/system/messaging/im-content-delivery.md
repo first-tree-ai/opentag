@@ -5,7 +5,7 @@ description: "How Slack and Feishu message structure and native resources are pr
 
 # IM content and attachment delivery
 
-OpenTag preserves the visible structure and native resource identifiers of Slack and Feishu messages. An attachment-only
+openTag preserves the visible structure and native resource identifiers of Slack and Feishu messages. An attachment-only
 message is valid input even when the platform omits its plain-text body. Current delivery, steer, and bounded history
 share one deterministic text projection; the existing non-empty Runtime text contract and older Client compatibility
 remain intact.
@@ -24,7 +24,7 @@ The Agent receives source-message identifiers, resource identifiers, media kind,
 attachment bytes, temporary download URL, OCR, document extraction, transcription or sampled frames are generated before
 the Turn. Local and Cloud use the same text input and existing native CLI credentials/proxy.
 The Client also renders bounded resource metadata from the existing wire field, so older Server requests and frozen
-requests still expose their attachments without downloading them or changing their persisted payload/hash. OpenTag
+requests still expose their attachments without downloading them or changing their persisted payload/hash. openTag
 ordinals are labeled separately from provider-native resource IDs and direct the Agent to source-message readback.
 
 - Slack: `slack api files.info --json '{"file":"F..."}'` returns metadata. Download the returned private URL through the

@@ -5,9 +5,9 @@ description: "Product UI composition rules over Kumo: ownership seams, layout, r
 
 # Web UI contract
 
-This document defines the interface that OpenTag Web feature code uses to build consistent, accessible product UI. It
+This document defines the interface that openTag Web feature code uses to build consistent, accessible product UI. It
 complements the implementation notes in [`apps/web/src/ui/KUMO.md`](https://github.com/first-tree-ai/opentag/blob/main/apps/web/src/ui/KUMO.md). Kumo supplies accessible
-primitives; [design guide](design.md) owns the visual rules and shared recipes (its website-specific build instructions do not replace the app adapter); this contract owns OpenTag's product semantics, composition rules, and acceptance criteria.
+primitives; [design guide](design.md) owns the visual rules and shared recipes (its website-specific build instructions do not replace the app adapter); this contract owns openTag's product semantics, composition rules, and acceptance criteria.
 
 ## Ownership and dependency seam
 
@@ -21,13 +21,13 @@ The Web UI has one third-party implementation and two product-facing seams:
                                   └─ may reuse the semantic adapter
 ```
 
-- Kumo owns primitive semantics and baseline interaction behavior. OpenTag tokens and shared recipes own appearance,
+- Kumo owns primitive semantics and baseline interaction behavior. openTag tokens and shared recipes own appearance,
   type, spacing, radii, and elevation.
-- `src/ui/design-system.tsx` is the semantic adapter and the normal interface for product code. It owns OpenTag intent
+- `src/ui/design-system.tsx` is the semantic adapter and the normal interface for product code. It owns openTag intent
   names, accessibility corrections, compatibility behavior, icon registration, and other rules that must remain
   consistent across callers.
 - `src/components/kumo` contains reusable blocks whose behavior is deeper than a primitive, such as `PageHeader`. Their
-  interfaces use OpenTag-owned types and must not expose Kumo-specific types or composition to callers.
+  interfaces use openTag-owned types and must not expose Kumo-specific types or composition to callers.
 - Feature modules compose either approved seam. They own domain state and copy, not new primitive conventions.
 
 Feature modules must not import `@cloudflare/kumo` directly. Direct imports are limited to the application provider
@@ -36,7 +36,7 @@ wiring, the semantic adapter, and owned Kumo blocks. Tests may install their own
 ## Choosing where behavior belongs
 
 Use an existing Kumo primitive through the semantic adapter when it already expresses the required behavior. Add or
-deepen an adapter when OpenTag must consistently translate a product intent, repair accessibility, or hide Kumo-specific
+deepen an adapter when openTag must consistently translate a product intent, repair accessibility, or hide Kumo-specific
 composition from every caller.
 
 Create an owned reusable block when either condition is true:
@@ -97,7 +97,7 @@ layout constraint and should carry a short explanation when the reason is not ev
 
 ## Accessibility acceptance
 
-OpenTag Web targets WCAG 2.2 AA for product UI:
+openTag Web targets WCAG 2.2 AA for product UI:
 
 - normal text contrast is at least 4.5:1;
 - large text and meaningful non-text UI contrast are at least 3:1;
@@ -114,11 +114,11 @@ of contrast, focus order, accessible names, and task completion.
 
 ## Theme, color, and motion
 
-OpenTag currently ships light mode as the supported product theme. Dark theme values may remain for Kumo compatibility
+openTag currently ships light mode as the supported product theme. Dark theme values may remain for Kumo compatibility
 or future work, but their presence does not make dark mode a supported acceptance target. A future dark-mode change must
 define complete surface, text, status, illustration, chart, and browser-level behavior before changing this policy.
 
-Feature code must use Kumo semantic utilities or the OpenTag variables defined at the theme seam. Raw color literals are
+Feature code must use Kumo semantic utilities or the openTag variables defined at the theme seam. Raw color literals are
 limited to theme sources and explicitly reviewed module-owned styles. Teal communicates primary actions, blue identifies links, and neutral grey identifies selection. These roles
 must not replace success, warning, danger, or informational status colors.
 

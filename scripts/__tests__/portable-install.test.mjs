@@ -237,7 +237,7 @@ function assertNoEscapeCodes(text) {
   assert.ok(!text.includes("\u001b["), `output must not contain ANSI escape codes:\n${text}`);
 }
 // The banner subtitle is the only banner line that is plain prose; the art itself is not grep-friendly.
-const BANNER = /OpenTag portable installer {2}- {2}channel:/;
+const BANNER = /openTag portable installer {2}- {2}channel:/;
 
 test("portable installer activates a release and short-circuits when it is already current", {
   skip: platform === null,
@@ -247,7 +247,7 @@ test("portable installer activates a release and short-circuits when it is alrea
 
     const first = await runInstaller({ baseUrl, root });
     assert.equal(first.status, 0, `${first.stdout}\n${first.stderr}`);
-    assert.match(first.stdout, /OpenTag 0\.0\.2-staging\.1\.1 installed at/);
+    assert.match(first.stdout, /openTag 0\.0\.2-staging\.1\.1 installed at/);
     assert.doesNotMatch(first.stdout, /daemon service/i);
     assert.doesNotMatch(first.stdout, /provider-cli inspect invoked/);
     assert.doesNotMatch(first.stdout, /provider-cli ensure invoked/);
@@ -264,9 +264,9 @@ test("portable installer activates a release and short-circuits when it is alrea
     assert.match(second.stdout, /already installed and up to date; skipping download/);
     assert.match(second.stdout, /--force to reinstall/);
     // The short-circuit closes step 2 and gets its own footer headline; it must not claim a fresh install.
-    assert.match(second.stdout, /Resolved OpenTag 0\.0\.2-staging\.1\.1 already current\n/);
-    assert.match(second.stdout, /OK\s+OpenTag is already up to date\./);
-    assert.doesNotMatch(second.stdout, /OK\s+OpenTag is ready\./);
+    assert.match(second.stdout, /Resolved openTag 0\.0\.2-staging\.1\.1 already current\n/);
+    assert.match(second.stdout, /OK\s+openTag is already up to date\./);
+    assert.doesNotMatch(second.stdout, /OK\s+openTag is ready\./);
     assert.doesNotMatch(second.stdout, /installed at/);
     assert.match(second.stdout, /Command: /);
     assert.doesNotMatch(second.stdout, /\[[3-6]\/6\]/, "an up-to-date install must not report the skipped steps");
@@ -282,7 +282,7 @@ test("portable installer activates a release and short-circuits when it is alrea
 
     const forced = await runInstaller({ args: ["--force"], baseUrl, root });
     assert.equal(forced.status, 0, `${forced.stdout}\n${forced.stderr}`);
-    assert.match(forced.stdout, /OpenTag 0\.0\.2-staging\.1\.1 installed at/);
+    assert.match(forced.stdout, /openTag 0\.0\.2-staging\.1\.1 installed at/);
     assert.doesNotMatch(forced.stdout, /provider-cli inspect invoked/);
     assert.doesNotMatch(forced.stdout, /provider-cli ensure invoked/);
     assert.equal(tarballRequests(requests, "0.0.2-staging.1.1"), 2, "--force must reinstall the same version");
@@ -332,7 +332,7 @@ test("portable installer can install an immutable version without a channel poin
 
     const result = await runInstaller({ args: ["--version", "0.0.2-staging.1.1"], baseUrl, root });
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-    assert.match(result.stdout, /OpenTag 0\.0\.2-staging\.1\.1 installed at/);
+    assert.match(result.stdout, /openTag 0\.0\.2-staging\.1\.1 installed at/);
     assert.ok(
       !requests.some((url) => url.endsWith("latest.json")),
       "a version-pinned install must never read the channel pointer",
@@ -385,7 +385,7 @@ test("portable installer installs a newer release over a current one", { skip: p
     buildRelease({ baseUrl, releaseRoot, version: "0.0.2-staging.2.1" });
     const upgrade = await runInstaller({ baseUrl, root });
     assert.equal(upgrade.status, 0, `${upgrade.stdout}\n${upgrade.stderr}`);
-    assert.match(upgrade.stdout, /OpenTag 0\.0\.2-staging\.2\.1 installed at/);
+    assert.match(upgrade.stdout, /openTag 0\.0\.2-staging\.2\.1 installed at/);
     assert.equal(tarballRequests(requests, "0.0.2-staging.2.1"), 1);
 
     const installed = spawnSync(join(root, "bin", binName), ["--version"], { encoding: "utf8" });
@@ -401,7 +401,7 @@ test("portable installer repairs an install whose stable shim is missing", { ski
     await rm(join(root, "bin", binName), { force: true });
     const repair = await runInstaller({ baseUrl, root });
     assert.equal(repair.status, 0, `${repair.stdout}\n${repair.stderr}`);
-    assert.match(repair.stdout, /OpenTag 0\.0\.2-staging\.1\.1 installed at/);
+    assert.match(repair.stdout, /openTag 0\.0\.2-staging\.1\.1 installed at/);
     assert.equal(
       tarballRequests(requests, "0.0.2-staging.1.1"),
       2,
@@ -452,8 +452,8 @@ test("portable installer reports every step and a plain-text footer when its out
     assert.match(result.stdout, /\[1\/6\] Detecting platform \.\.\. [a-z]+-(x64|arm64)\n/);
     assert.match(result.stdout, /\[4\/6\] Verifying checksum \.\.\. ok\n/);
     assert.match(result.stdout, /\[6\/6\] Activating 0\.0\.2-staging\.1\.1 .* ok\n/);
-    assert.match(result.stdout, /OK\s+OpenTag is ready\./);
-    assert.match(result.stdout, /OpenTag 0\.0\.2-staging\.1\.1 installed at/);
+    assert.match(result.stdout, /OK\s+openTag is ready\./);
+    assert.match(result.stdout, /openTag 0\.0\.2-staging\.1\.1 installed at/);
     assert.match(result.stdout, /Command: /);
 
     assertNoEscapeCodes(result.stdout);
@@ -471,9 +471,9 @@ test("portable installer --quiet only prints the result lines", { skip: platform
     assert.equal(quiet.status, 0, `${quiet.stdout}\n${quiet.stderr}`);
     assert.doesNotMatch(quiet.stdout, STEP_LINE);
     assert.doesNotMatch(quiet.stdout, BANNER);
-    assert.doesNotMatch(quiet.stdout, /OK\s+OpenTag/);
-    assert.doesNotMatch(quiet.stdout, /Resolved OpenTag/);
-    assert.match(quiet.stdout, /OpenTag 0\.0\.2-staging\.1\.1 installed at/);
+    assert.doesNotMatch(quiet.stdout, /OK\s+openTag/);
+    assert.doesNotMatch(quiet.stdout, /Resolved openTag/);
+    assert.match(quiet.stdout, /openTag 0\.0\.2-staging\.1\.1 installed at/);
     assert.match(quiet.stdout, /Command: /);
     assert.equal(quiet.stderr, "");
 
@@ -481,15 +481,15 @@ test("portable installer --quiet only prints the result lines", { skip: platform
     const viaEnv = await runInstaller({ args: ["--force"], baseUrl, env: { OPENTAG_QUIET: "yes" }, root });
     assert.equal(viaEnv.status, 0, `${viaEnv.stdout}\n${viaEnv.stderr}`);
     assert.doesNotMatch(viaEnv.stdout, STEP_LINE);
-    assert.doesNotMatch(viaEnv.stdout, /OK\s+OpenTag/);
-    assert.match(viaEnv.stdout, /OpenTag 0\.0\.2-staging\.1\.1 installed at/);
+    assert.doesNotMatch(viaEnv.stdout, /OK\s+openTag/);
+    assert.match(viaEnv.stdout, /openTag 0\.0\.2-staging\.1\.1 installed at/);
     assert.match(viaEnv.stdout, /Command: /);
 
     // The quiet short-circuit keeps its verbatim result lines and nothing else from the progress output.
     const upToDate = await runInstaller({ args: ["-q"], baseUrl, root });
     assert.equal(upToDate.status, 0, `${upToDate.stdout}\n${upToDate.stderr}`);
     assert.doesNotMatch(upToDate.stdout, STEP_LINE);
-    assert.doesNotMatch(upToDate.stdout, /already current|OK\s+OpenTag/);
+    assert.doesNotMatch(upToDate.stdout, /already current|OK\s+openTag/);
     assert.match(upToDate.stdout, /already installed and up to date; skipping download\./);
     assert.match(upToDate.stdout, /Run this installer with --force to reinstall the same version\./);
     assert.match(upToDate.stdout, /Command: /);

@@ -116,7 +116,7 @@ export async function createDaemonServiceManager(
       } catch (error) {
         throw new DaemonServiceError(
           "CONFIGURATION",
-          "OpenTag Computer credentials are invalid; run opentag connect again",
+          "openTag Computer credentials are invalid; run opentag connect again",
           { cause: error },
         );
       }
@@ -156,7 +156,7 @@ async function assertConfiguredHome(info: DaemonServiceInfo, requestedHome: stri
   if (configuredHome !== requestedHome) {
     throw new DaemonServiceError(
       "CONFIGURATION",
-      `The installed ${info.platform} service belongs to a different OpenTag home (${configuredHome}); use that OPENTAG_HOME`,
+      `The installed ${info.platform} service belongs to a different openTag home (${configuredHome}); use that OPENTAG_HOME`,
     );
   }
 }
@@ -218,7 +218,7 @@ function unsupportedBackend(platform: NodeJS.Platform, home: string, serviceId: 
   const unsupported = async (): Promise<never> => {
     throw new DaemonServiceError(
       "UNSUPPORTED_PLATFORM",
-      `OpenTag v0.1 daemon service supports Linux and macOS only (current platform: ${platform})`,
+      `openTag v0.1 daemon service supports Linux and macOS only (current platform: ${platform})`,
     );
   };
   return {

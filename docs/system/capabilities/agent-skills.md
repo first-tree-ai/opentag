@@ -384,7 +384,7 @@ no machine token the Computer surface accepts today) and `--skill` argument asse
 
 Names are 1–64 characters of lowercase letters, numbers, and single hyphens; they may not start or
 end with a hyphen and may not contain consecutive hyphens (`SkillNameSchema`). Ten names are reserved
-because OpenTag already ships them and an upload must not shadow them: the six `context-tree-*`
+because openTag already ships them and an upload must not shadow them: the six `context-tree-*`
 skills plus `git`, `gh`, `lark-cli`, and `slack`. The reserved list is copied from the Client's runner
 skill directories and the Client lane adds a parity test, because `@opentag/shared` may not depend on
 the Client package.

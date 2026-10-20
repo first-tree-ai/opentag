@@ -3,9 +3,9 @@ title: "Deployment guide"
 description: "How Staging is deployed from published images on CapRover, required secrets, rollback, and verification."
 ---
 
-# OpenTag deployment guide
+# openTag deployment guide
 
-OpenTag runs its Staging environment on [CapRover](https://caprover.com/). Every revision that lands on `main` and
+openTag runs its Staging environment on [CapRover](https://caprover.com/). Every revision that lands on `main` and
 passes CI and completes CLI/Runner publication is deployed automatically from the container image the `Docker` workflow already published to GHCR. Nothing is
 built on the CapRover host and no source tarball is uploaded; the deployment is a pointer change to an immutable image.
 

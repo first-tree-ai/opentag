@@ -333,7 +333,7 @@ describe("MCP client metadata document validation", () => {
     expect(() =>
       client.validateClientMetadataDocument(url, {
         client_id: url,
-        client_name: "OpenTag",
+        client_name: "openTag",
         redirect_uris: [`${PUBLIC_URL}/api/v1/mcp-servers/oauth/callback`],
       }),
     ).not.toThrow();
@@ -343,7 +343,7 @@ describe("MCP client metadata document validation", () => {
     expect(() =>
       client.validateClientMetadataDocument(url, {
         client_id: "https://elsewhere.example.com/oauth/client-metadata.json",
-        client_name: "OpenTag",
+        client_name: "openTag",
         redirect_uris: [`${PUBLIC_URL}/api/v1/mcp-servers/oauth/callback`],
       }),
     ).toThrow();
@@ -353,7 +353,7 @@ describe("MCP client metadata document validation", () => {
     expect(() =>
       client.validateClientMetadataDocument(url, {
         client_id: url,
-        client_name: "OpenTag",
+        client_name: "openTag",
         redirect_uris: ["https://attacker.example.com/callback"],
       }),
     ).toThrow();
@@ -984,7 +984,7 @@ describe("MCP client metadata document rejection cases", () => {
   it("refuses a document with no redirect URIs at all", () => {
     for (const redirect_uris of [undefined, [], ["", 7]]) {
       expect(() =>
-        client.validateClientMetadataDocument(url, { client_id: url, client_name: "OpenTag", redirect_uris }),
+        client.validateClientMetadataDocument(url, { client_id: url, client_name: "openTag", redirect_uris }),
       ).toThrow();
     }
   });
@@ -993,7 +993,7 @@ describe("MCP client metadata document rejection cases", () => {
     expect(() =>
       client.validateClientMetadataDocument(url, {
         client_id: url,
-        client_name: "OpenTag",
+        client_name: "openTag",
         redirect_uris: ["not a url"],
       }),
     ).toThrow();
@@ -1003,7 +1003,7 @@ describe("MCP client metadata document rejection cases", () => {
     expect(() =>
       client.validateClientMetadataDocument(url, {
         client_id: url,
-        client_name: "OpenTag",
+        client_name: "openTag",
         redirect_uris: [`${PUBLIC_URL}/some/other/callback`],
       }),
     ).not.toThrow();

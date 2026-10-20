@@ -119,7 +119,7 @@ describe("Account Computer management", () => {
     });
     openComputer();
     fireEvent.click(await screen.findByRole("button", { name: "Connect another computer" }));
-    expect(await screen.findByText("Command accepted. Waiting for OpenTag to come online…")).toBeTruthy();
+    expect(await screen.findByText("Command accepted. Waiting for openTag to come online…")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Ada's Mac" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Zulu Tower" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Connect another computer" })).toBeNull();
@@ -180,7 +180,7 @@ describe("Account Computer management", () => {
     });
     openComputer();
     fireEvent.click(await screen.findByRole("button", { name: "Connect computer" }));
-    expect(await screen.findByText("Command accepted. Waiting for OpenTag to come online…")).toBeTruthy();
+    expect(await screen.findByText("Command accepted. Waiting for openTag to come online…")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Copy for AI assistant" })).toBeNull();
     online = true;
     fireEvent(window, new Event("focus"));
@@ -221,7 +221,7 @@ describe("Account Computer management", () => {
       else
         expect(
           await screen.findByText(
-            "Authorization accepted. Waiting for OpenTag to come online…",
+            "Authorization accepted. Waiting for openTag to come online…",
             {},
             { timeout: 3_000 },
           ),

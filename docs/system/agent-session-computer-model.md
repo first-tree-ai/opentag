@@ -17,7 +17,7 @@ settings, and its Computer once one is bound. Runtime collaboration creates
 Sessions under an existing Agent; it does not create another Agent.
 
 A Session is a stable logical identity, not a Provider process or an activity
-status. OpenTag has channel, thread, and internal Sessions. For Sessions that
+status. openTag has channel, thread, and internal Sessions. For Sessions that
 have not ended, an Agent has at most one channel Session per Integration and
 channel, and at most one thread Session per Integration, channel, and thread.
 Multiple internal Sessions may coexist within the same conversation scope.

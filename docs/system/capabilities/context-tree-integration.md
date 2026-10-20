@@ -7,13 +7,13 @@ description: "How Agents connect named Context Trees for durable memory, locally
 
 ## Decision
 
-Context Tree is OpenTag's durable memory, but its portable core stays a minimal
+Context Tree is openTag's durable memory, but its portable core stays a minimal
 standalone component: the upstream `@first-tree-ai/context-tree` CLI and its
-skills. People and agents can read and write a tree without OpenTag accounts,
-Sessions, runtimes, or IM integrations. OpenTag layers Agent configuration,
+skills. People and agents can read and write a tree without openTag accounts,
+Sessions, runtimes, or IM integrations. openTag layers Agent configuration,
 preparation, and prompts on that contract instead of extending it.
 
-Memory is chosen explicitly and is optional. OpenTag never creates a tree
+Memory is chosen explicitly and is optional. openTag never creates a tree
 implicitly; an Agent with no connected tree is a normal state, and every
 preparation failure is reported to the Session without preventing it from
 starting.
@@ -21,11 +21,11 @@ starting.
 ## Rationale
 
 A small independent contract keeps trees portable, inspectable, and versioned
-through ordinary Git workflows, so durable context is not captive to OpenTag.
+through ordinary Git workflows, so durable context is not captive to openTag.
 Depending on the published package, rather than carrying a copy of it, lets the
 contract locate its own assets and avoids duplicating its release.
 
-Choosing which memory an Agent writes to is not a detail OpenTag can infer:
+Choosing which memory an Agent writes to is not a detail openTag can infer:
 a guessed tree would silently decide which Agents and machines share memory.
 An Agent that cannot reach a tree should know that and proceed; one that mistakes
 a broken connection for an empty tree will re-derive decisions already made.
@@ -54,7 +54,7 @@ with individual Disconnect buttons.
 Connect/create requires an alias and `OWNER/REPO`. An identical attachment is idempotent. An
 occupied alias cannot silently change repositories; rename or replacement uses disconnect followed
 by connect. Local Computers support creating and publishing a private repository; Cloud Computers
-connect existing authorized repositories only. OpenTag never creates memory implicitly.
+connect existing authorized repositories only. openTag never creates memory implicitly.
 
 ## Settings operations and concurrency
 
@@ -96,7 +96,7 @@ recheck current repository grants before using cached results.
 Provider skills install once per preparation, not per tree. Claude Code discovers workspace skills
 under `--setting-sources project`; Codex uses the account HOME's `.agents/skills`, independently of
 custom `CODEX_HOME`; Pi receives explicit packaged `--skill` paths. Codex gets every ready tree path
-as a writable root. A generated shim pins the packaged CLI and OpenTag's Node runtime.
+as a writable root. A generated shim pins the packaged CLI and openTag's Node runtime.
 
 Claude's project settings and instructions remain within the existing trusted Agent workspace
 boundary. Local Pi and Claude are not isolated from other host files by this feature. Member paths

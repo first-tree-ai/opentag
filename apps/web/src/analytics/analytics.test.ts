@@ -24,7 +24,7 @@ describe("analytics reporter", () => {
     expect(() => {
       reporter.track("agent_created", {});
       reporter.identify("6f1b3c2e-9d4a-4f8b-8a11-2c3d4e5f6a7b");
-      reporter.page({ location: "https://app.opentag.build/agents", path: "/agents", title: "OpenTag" });
+      reporter.page({ location: "https://app.opentag.build/agents", path: "/agents", title: "openTag" });
     }).not.toThrow();
   });
 
@@ -51,7 +51,7 @@ describe("analytics reporter", () => {
     reporter.page({
       location: "https://app.opentag.build/internal/agent-setup",
       path: "/internal/agent-setup",
-      title: "OpenTag",
+      title: "openTag",
     });
 
     expect(sent).toEqual([]);
@@ -64,14 +64,14 @@ describe("analytics reporter", () => {
       location: "https://app.opentag.build/agents/:agentId",
       path: "/agents/:agentId",
       referrer: "https://app.opentag.build/agents",
-      title: "OpenTag",
+      title: "openTag",
     });
 
     const expected = {
       page_location: "https://app.opentag.build/agents/:agentId",
       page_path: "/agents/:agentId",
       page_referrer: "https://app.opentag.build/agents",
-      page_title: "OpenTag",
+      page_title: "openTag",
     };
     // Set as well as sent: a hit the tag raises on its own must not read the raw URL back off the
     // document.

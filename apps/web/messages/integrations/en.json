@@ -27,7 +27,7 @@
   "integrations_github_install": "Install GitHub App",
   "integrations_github_install_description": "Choose repositories in GitHub when installing the App, then refresh here to update the installation list.",
   "integrations_github_installation_suspended": "{account} (suspended)",
-  "integrations_github_installations_description": "Installations of the OpenTag GitHub App this account can use.",
+  "integrations_github_installations_description": "Installations of the openTag GitHub App this account can use.",
   "integrations_github_installations_title": "GitHub App installations",
   "integrations_github_loading": "Loading GitHub connection…",
   "integrations_github_no_installations": "No installations found.",

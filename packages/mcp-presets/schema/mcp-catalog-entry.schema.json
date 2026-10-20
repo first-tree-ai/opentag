@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "packages/mcp-presets/schema/mcp-catalog-entry.schema.json",
-  "title": "OpenTag MCP catalog entry",
-  "description": "One MCP Server in the OpenTag marketplace catalog. The generator injects the supported locales into `$defs.localizedText` from apps/web/project.inlang/settings.json and runs the cross-field checks this schema cannot express. An entry lists `packages` (self-hosted, run in a sandbox), `remotes` (hosted endpoints), or both. Only an entry with a streamable-http remote is installable today; packages are data. When `oauth` is an auth method the generator requires an `auth.oauth` block; its `scopes` are optional.",
+  "title": "openTag MCP catalog entry",
+  "description": "One MCP Server in the openTag marketplace catalog. The generator injects the supported locales into `$defs.localizedText` from apps/web/project.inlang/settings.json and runs the cross-field checks this schema cannot express. An entry lists `packages` (self-hosted, run in a sandbox), `remotes` (hosted endpoints), or both. Only an entry with a streamable-http remote is installable today; packages are data. When `oauth` is an auth method the generator requires an `auth.oauth` block; its `scopes` are optional.",
   "type": "object",
   "additionalProperties": false,
   "required": [

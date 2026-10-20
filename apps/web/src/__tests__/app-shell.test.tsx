@@ -95,7 +95,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByText("Mentions only")).toBeNull();
     fireEvent.click(agentLink);
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
-    expect(screen.queryByRole("link", { name: "OpenTag" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "openTag" })).toBeNull();
     const accountAgentsNavigation = screen.getByRole("navigation", { name: "Account Agents" });
     const backToAgents = within(accountAgentsNavigation).getByRole("link", { name: "All Agents" });
     expect(backToAgents.getAttribute("href")).toBe("/agents");

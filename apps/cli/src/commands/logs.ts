@@ -6,7 +6,7 @@ export function registerLogsCommand(program: Command): void {
   program
     .command("logs")
     .description("Bundle local Client logs and a safe environment summary")
-    .option("--home <path>", "OpenTag home directory")
+    .option("--home <path>", "openTag home directory")
     .option("--json", "print JSON")
     .action(async (options: { home?: string; json?: boolean }) => {
       process.exitCode = await executeCommand(() => runLogs({ home: options.home }), {

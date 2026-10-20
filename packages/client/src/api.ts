@@ -1406,7 +1406,7 @@ export class OpenTagApi {
       throw new OpenTagApiError(
         "SERVICE_UNAVAILABLE",
         "transient",
-        "The OpenTag server returned an invalid response",
+        "The openTag server returned an invalid response",
         response.status,
         undefined,
         {
@@ -1428,7 +1428,7 @@ export class OpenTagApi {
       throw new OpenTagApiError(
         "SERVICE_UNAVAILABLE",
         "transient",
-        "The OpenTag server returned an invalid response",
+        "The openTag server returned an invalid response",
         response.status,
         undefined,
         {
@@ -1454,7 +1454,7 @@ export class OpenTagApi {
       throw new OpenTagApiError(
         "SERVICE_UNAVAILABLE",
         "transient",
-        "The OpenTag server returned an invalid response",
+        "The openTag server returned an invalid response",
         response.status,
         undefined,
         {
@@ -1488,7 +1488,7 @@ export class OpenTagApi {
         throw new OpenTagApiError(
           "REQUEST_TIMEOUT",
           "transient",
-          "The OpenTag server request timed out",
+          "The openTag server request timed out",
           undefined,
           undefined,
           { cause, safeCause: cause, phase: "transport", requestId: prepared.requestId },
@@ -1498,7 +1498,7 @@ export class OpenTagApi {
       throw new OpenTagApiError(
         "SERVICE_UNAVAILABLE",
         "transient",
-        "The OpenTag server is unavailable",
+        "The openTag server is unavailable",
         undefined,
         undefined,
         { cause, safeCause: cause, phase: "transport", requestId: prepared.requestId },
@@ -1513,7 +1513,7 @@ export class OpenTagApi {
       response.headers.get(REQUEST_ID_HEADER) ??
       response.headers.get("x-request-id") ??
       this.#responseRequestIds.get(response);
-    if (!requestId) throw new Error("OpenTag response is missing a request ID");
+    if (!requestId) throw new Error("openTag response is missing a request ID");
     return requestId;
   }
 
@@ -1548,14 +1548,14 @@ function skillUploadHeaders(bytes: number): Record<string, string> {
 export function normalizeServerUrl(serverUrl: string): string {
   const url = new URL(serverUrl);
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
-    throw new Error("The OpenTag server URL must use HTTP(S) without embedded credentials");
+    throw new Error("The openTag server URL must use HTTP(S) without embedded credentials");
   }
   if ((url.pathname !== "/" && url.pathname !== "") || url.search || url.hash) {
-    throw new Error("The OpenTag server URL must be an origin without a path, query, or fragment");
+    throw new Error("The openTag server URL must be an origin without a path, query, or fragment");
   }
   const isLoopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
   if (url.protocol === "http:" && !isLoopback) {
-    throw new Error("Plain HTTP is allowed only for loopback OpenTag servers");
+    throw new Error("Plain HTTP is allowed only for loopback openTag servers");
   }
   return url.origin;
 }

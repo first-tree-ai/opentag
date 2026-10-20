@@ -1,6 +1,6 @@
 ---
 title: "Operations"
-description: "How OpenTag is released, deployed, observed, and diagnosed."
+description: "How openTag is released, deployed, observed, and diagnosed."
 ---
 
 # Operations

@@ -259,7 +259,7 @@ export class OnboardingResetService {
       throw new OnboardingResetError(
         "ONBOARDING_RESET_UNVERIFIED",
         409,
-        "The Account still has active OpenTag resources after cleanup; retry the reset",
+        "The Account still has active openTag resources after cleanup; retry the reset",
       );
     }
   }

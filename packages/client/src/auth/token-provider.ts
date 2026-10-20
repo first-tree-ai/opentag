@@ -67,7 +67,7 @@ export class AccessTokenProvider {
   async getAccessTokenLease(forceRefresh = false): Promise<AccessTokenLease> {
     const credentials = await readCredentials(this.#home);
     if (!credentials) {
-      throw new Error("OpenTag is not logged in");
+      throw new Error("openTag is not logged in");
     }
     if (
       !forceRefresh &&
@@ -84,7 +84,7 @@ export class AccessTokenProvider {
   async #refreshWithLock(credentials: StoredCredentials, forceRefresh: boolean): Promise<AccessTokenLease> {
     return withCredentialLock(this.#home, this.#lockRetryMs, this.#lockTimeoutMs, async () => {
       const latest = await readCredentials(this.#home);
-      if (!latest) throw new Error("OpenTag credentials disappeared while refreshing");
+      if (!latest) throw new Error("openTag credentials disappeared while refreshing");
       const latestIsFresh =
         Date.parse(latest.accessTokenExpiresAt) - this.#now().getTime() > this.#refreshSkewMilliseconds;
       // A different provider may have completed the rotation while this provider waited for the lock.
@@ -94,7 +94,7 @@ export class AccessTokenProvider {
 
       const response = await (this.#api ?? new OpenTagApi(latest.serverUrl)).refresh(latest.refreshToken);
       if (response.expiresIn < MIN_REFRESH_EXPIRY_SECONDS) {
-        throw new Error("The OpenTag server returned an unsafe token expiry");
+        throw new Error("The openTag server returned an unsafe token expiry");
       }
       const expiresAt = new Date(this.#now().getTime() + response.expiresIn * 1000).toISOString();
       await writeCredentialsAtomically(
@@ -167,7 +167,7 @@ async function acquireCredentialLock(
     }
     await removeStaleCredentialLock(lockPath);
     if (Date.now() - startedAt >= timeoutMs) {
-      throw new Error("Timed out waiting for the OpenTag credential refresh lock");
+      throw new Error("Timed out waiting for the openTag credential refresh lock");
     }
     await new Promise<void>((resolve) => setTimeout(resolve, retryMs));
   }

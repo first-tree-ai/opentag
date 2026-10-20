@@ -5,7 +5,7 @@ description: "Contents, build, and boundaries of the digest-addressed Cloud Runn
 
 # Cloud Runner toolchain
 
-This is the OpenTag **Cloud Runner image**: a linux/amd64 Linux environment consumed by
+This is the openTag **Cloud Runner image**: a linux/amd64 Linux environment consumed by
 [E3 execution](cloud-runner-execution.md) as a fixed, digest-addressed image. This document
 covers image construction and local toolchain acceptance; E3 documents the native Cloud path.
 

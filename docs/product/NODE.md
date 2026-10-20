@@ -1,6 +1,6 @@
 ---
 title: "Product"
-description: "Human-facing OpenTag decisions: Agent collaboration, Tasks, Cloud Computer and billing, Doctor, and trademarks."
+description: "Human-facing openTag decisions: Agent collaboration, Tasks, Cloud Computer and billing, Doctor, and trademarks."
 ---
 
 # Product
@@ -20,4 +20,4 @@ provides.
 - **[Cloud billing](cloud-billing.md)** — attribution, pricing, credits, and
   settlement of Cloud model calls.
 - **[Doctor](doctor.md)** — the `opentag doctor` product specification.
-- **[Trademarks](trademarks.md)** — third-party marks and OpenTag's own mark.
+- **[Trademarks](trademarks.md)** — third-party marks and openTag's own mark.

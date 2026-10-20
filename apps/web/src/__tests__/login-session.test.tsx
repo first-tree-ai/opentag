@@ -43,7 +43,7 @@ describe("Login session entry", () => {
     render(<App />);
 
     expect((await screen.findByRole("status")).textContent).toContain("Checking your sign-in status…");
-    expect(screen.queryByRole("heading", { name: "Sign in to OpenTag" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Sign in to openTag" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Sign in with Google" })).toBeNull();
     expect(providers).not.toHaveBeenCalled();
 
@@ -62,7 +62,7 @@ describe("Login session entry", () => {
     expect(await screen.findByRole("heading", { name: "Prepare this computer" })).toBeTruthy();
     await waitFor(() => expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(false));
     expect(window.location.pathname).toBe("/agents/setup");
-    expect(screen.queryByRole("heading", { name: "Sign in to OpenTag" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Sign in to openTag" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "All Agents" })).toBeNull();
   });
 
@@ -100,7 +100,7 @@ describe("Login session entry", () => {
     window.history.replaceState({}, "", next);
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Sign in to OpenTag" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign in to openTag" })).toBeTruthy();
     expect(window.location.pathname).toBe("/login");
     expect(new URLSearchParams(window.location.search).get("next")).toBe(next);
     expect(screen.queryByRole("button", { name: "Generate and copy code" })).toBeNull();
@@ -141,7 +141,7 @@ describe("Login session entry", () => {
     render(<App />);
 
     expect(await screen.findByRole("link", { name: "Sign in with Google" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Sign in to OpenTag" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Sign in to openTag" })).toBeTruthy();
     expect(window.location.pathname).toBe("/login");
     expect(screen.queryByText("Checking your sign-in status…")).toBeNull();
   });

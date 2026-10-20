@@ -27,7 +27,7 @@ import { type McpInboundHandlers, toolErrorResult } from "../mcp/mcp-inbound-pro
 /** What this endpoint calls itself in `initialize` and `server/discover`. */
 export const PUBLIC_CATALOG_SERVER_INFO = {
   name: "opentag-catalog",
-  title: "OpenTag MCP Catalog",
+  title: "openTag MCP Catalog",
   version: "1",
 } as const;
 
@@ -74,7 +74,7 @@ function inputSchemaOf(schema: z.ZodType): Record<string, unknown> {
  * lists everything, and that what comes back is configuration rather than a live connection.
  */
 const INSTRUCTIONS = [
-  `OpenTag MCP catalog: ${mcpCatalogSearch.categories.reduce((sum, category) => sum + category.activeCount, 0)} ` +
+  `openTag MCP catalog: ${mcpCatalogSearch.categories.reduce((sum, category) => sum + category.activeCount, 0)} ` +
     "MCP Servers, grouped into categories.",
   "Call search_mcp_servers with an empty query to list every Server, or with a query to search names, " +
     "capabilities, and both English and Chinese copy.",
@@ -87,20 +87,20 @@ const TOOLS = [
   {
     name: "search_mcp_servers",
     description:
-      "Search the OpenTag MCP catalog. An empty query lists every Server in catalog order. Returns each " +
+      "Search the openTag MCP catalog. An empty query lists every Server in catalog order. Returns each " +
       "match with its endpoint, auth method, and a ready-to-paste configuration.",
     schema: SearchArgumentsSchema,
   },
   {
     name: "get_mcp_server",
     description:
-      "Read one MCP Server from the OpenTag catalog by id (for example `notion` or `mcp/notion`), " +
+      "Read one MCP Server from the openTag catalog by id (for example `notion` or `mcp/notion`), " +
       "including its tools, prerequisites, and platforms.",
     schema: GetServerArgumentsSchema,
   },
   {
     name: "list_mcp_categories",
-    description: "List the OpenTag MCP catalog categories with their active and installable Server counts.",
+    description: "List the openTag MCP catalog categories with their active and installable Server counts.",
     schema: z.object({}).strict(),
   },
 ] as const;
@@ -221,7 +221,7 @@ function getServer(rawArguments: unknown): unknown {
   if (!parsed.success) return invalidArguments(parsed.error);
   const entry = findMcpCatalogEntry(parsed.data.id);
   if (!entry) {
-    return toolErrorJson("unknown_server", `No MCP Server "${parsed.data.id}" in the OpenTag catalog`, {
+    return toolErrorJson("unknown_server", `No MCP Server "${parsed.data.id}" in the openTag catalog`, {
       id: parsed.data.id,
     });
   }

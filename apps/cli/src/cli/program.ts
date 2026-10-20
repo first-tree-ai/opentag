@@ -19,7 +19,7 @@ export function createProgram(options: { json?: boolean } = {}): Command {
   const program = new Command();
   program
     .name(channelConfig.binName)
-    .description("OpenTag command-line interface")
+    .description("openTag command-line interface")
     .version(CLI_VERSION)
     .showHelpAfterError()
     // Throw rather than exit inside Commander so the process entrypoint owns the failure

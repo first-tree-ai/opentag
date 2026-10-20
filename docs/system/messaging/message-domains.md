@@ -11,7 +11,7 @@ soft_links:
 
 ## Decision
 
-OpenTag has two message domains with different audiences and reliability:
+openTag has two message domains with different audiences and reliability:
 
 - An IM message is the Server-authoritative record of a human-visible Feishu or
   Slack message. Create, edit, and delete are immutable revisions whose current
@@ -101,10 +101,10 @@ that a previous Server already lost.
 Agent runtimes send human-visible messages by calling the official Feishu or
 Slack CLI directly (see [Direct provider CLI messaging](direct-provider-cli.md)).
 Provider-native text, cards, Blocks, files, threads, and reactions remain
-provider concerns; OpenTag exposes no hosted send, reply, or reaction API.
+provider concerns; openTag exposes no hosted send, reply, or reaction API.
 
 Provider CLI calls pass through the Server's provider proxy. When a registered
-send or reply operation succeeds there, OpenTag captures the platform-confirmed
+send or reply operation succeeds there, openTag captures the platform-confirmed
 message identity and a bounded, display-oriented copy of its body as an
 outbound IM message. Capture is best-effort: it uses only the verified provider
 response, never request text or runtime summaries, triggers no delivery,
@@ -125,7 +125,7 @@ collaboration or weakening human-visible message correctness to best-effort
 delivery.
 
 Provider CLIs preserve each platform's native message surface without making
-OpenTag duplicate or translate it. Recording only what the platform confirmed,
+openTag duplicate or translate it. Recording only what the platform confirmed,
 without a hosted send path, gives the owner visibility into replies while
 avoiding a second write path and false delivery guarantees.
 

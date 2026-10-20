@@ -1,11 +1,11 @@
 name: Bug report
-description: Report reproducible incorrect behavior in OpenTag
+description: Report reproducible incorrect behavior in openTag
 title: "[Bug]: "
 labels: [bug]
 body:
   - type: markdown
     attributes:
-      value: Thanks for helping improve OpenTag. Do not include credentials or security vulnerability details.
+      value: Thanks for helping improve openTag. Do not include credentials or security vulnerability details.
   - type: textarea
     id: reproduction
     attributes:
@@ -33,7 +33,7 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: Include OS, Node.js version, pnpm version, OpenTag commit or version, and relevant configuration.
+      description: Include OS, Node.js version, pnpm version, openTag commit or version, and relevant configuration.
     validations:
       required: true
   - type: textarea

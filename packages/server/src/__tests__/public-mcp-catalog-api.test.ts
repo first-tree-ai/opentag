@@ -63,7 +63,7 @@ describe("public catalog MCP endpoint: handshake", () => {
     expect(response.headers["cache-control"]).toBe("no-store");
     const result = response.json().result as Record<string, unknown>;
     expect(result.protocolVersion).toBe("2025-06-18");
-    expect(result.serverInfo).toEqual({ name: "opentag-catalog", title: "OpenTag MCP Catalog", version: "1" });
+    expect(result.serverInfo).toEqual({ name: "opentag-catalog", title: "openTag MCP Catalog", version: "1" });
     const instructions = result.instructions as string;
     expect(instructions.length).toBeGreaterThan(0);
     expect(Buffer.byteLength(instructions, "utf8")).toBeLessThanOrEqual(8 * 1024);
@@ -103,7 +103,7 @@ describe("public catalog MCP endpoint: handshake", () => {
     expect(result.protocolVersion).toBe(MCP_LEGACY_PROTOCOL_VERSIONS[0]);
     expect((result._meta as Record<string, unknown>)[MCP_META_SERVER_INFO]).toEqual({
       name: "opentag-catalog",
-      title: "OpenTag MCP Catalog",
+      title: "openTag MCP Catalog",
       version: "1",
     });
   });

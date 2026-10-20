@@ -171,7 +171,7 @@ async function noInstallResult(
       exitCode: 0,
       status: "up-to-date",
       targetVersion: target.version,
-      message: `OpenTag ${context.currentVersion} is already the exact ${context.channel} channel target`,
+      message: `openTag ${context.currentVersion} is already the exact ${context.channel} channel target`,
     });
   }
   if (comparison < 0) {
@@ -179,7 +179,7 @@ async function noInstallResult(
       exitCode: 0,
       status: "ahead",
       targetVersion: target.version,
-      message: `OpenTag ${context.currentVersion} is ahead of the ${context.channel} channel target ${target.version}; nothing to do`,
+      message: `openTag ${context.currentVersion} is ahead of the ${context.channel} channel target ${target.version}; nothing to do`,
     });
   }
   if (comparison >= 0 && check) {
@@ -187,7 +187,7 @@ async function noInstallResult(
       exitCode: 0,
       status: "available",
       targetVersion: target.version,
-      message: `OpenTag ${target.version} is available on the ${context.channel} channel (running ${context.currentVersion})`,
+      message: `openTag ${target.version} is available on the ${context.channel} channel (running ${context.currentVersion})`,
     });
   }
   return undefined;
@@ -364,6 +364,6 @@ export async function runUpgrade(options: UpgradeOptions = {}): Promise<UpgradeR
     status: "installed",
     targetVersion: target.version,
     serviceRefresh,
-    message: `OpenTag ${target.version} installed (${context.installMode.mode})${serviceMessage}${persistenceFailure ? `; recording the installed updater state failed: ${persistenceFailure}` : ""}${installWarning ? `; warning: ${installWarning}` : ""}`,
+    message: `openTag ${target.version} installed (${context.installMode.mode})${serviceMessage}${persistenceFailure ? `; recording the installed updater state failed: ${persistenceFailure}` : ""}${installWarning ? `; warning: ${installWarning}` : ""}`,
   });
 }

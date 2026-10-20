@@ -1,4 +1,4 @@
-# OpenTag artwork
+# openTag artwork
 
 The application uses the website's supplied artwork:
 

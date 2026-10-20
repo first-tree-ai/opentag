@@ -60,7 +60,7 @@ async function resolveAgentSelfContext(dependencies: AgentSelfDependencies): Pro
   if (!environment.OPENTAG_SESSION_PROOF_FILE) {
     throw new CommandError(
       { code: "AGENT_SELF_SESSION_REQUIRED", category: "validation", retryability: "never", phase: "validation" },
-      "agent self commands run only inside an OpenTag-managed Agent Session; use `agent update` or `agent mcp` with an Account login instead",
+      "agent self commands run only inside an openTag-managed Agent Session; use `agent update` or `agent mcp` with an Account login instead",
     );
   }
   const { api, proof } = await resolveSessionProofContext(environment);

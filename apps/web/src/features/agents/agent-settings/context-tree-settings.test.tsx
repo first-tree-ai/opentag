@@ -188,7 +188,7 @@ it("keeps the Local capability guidance unchanged", async () => {
   enter(view.container, "acme/memory");
   click(view.container, "Create and connect");
   expect((await screen.findByRole("alert")).textContent).toBe(
-    "Update OpenTag on the bound computer to use Context Tree settings.",
+    "Update openTag on the bound computer to use Context Tree settings.",
   );
 });
 it("replays uncertainty with the same identity, but uses a new identity for changed revisions or repositories", async () => {

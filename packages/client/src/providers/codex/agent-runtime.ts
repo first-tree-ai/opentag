@@ -1262,7 +1262,7 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
         sandbox: codexSandboxMode(request.policy.fileSystem),
         ...(request.configuration?.model ? { model: request.configuration.model } : {}),
         ...(providerConfiguration.personality ? { personality: providerConfiguration.personality } : {}),
-        serviceName: providerConfiguration.serviceName ?? "OpenTag",
+        serviceName: providerConfiguration.serviceName ?? "openTag",
       };
       const threadStartParams = {
         ...threadParams,

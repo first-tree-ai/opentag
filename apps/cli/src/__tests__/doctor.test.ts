@@ -63,7 +63,7 @@ describe("doctor command target", () => {
     registerDoctorCommand(program);
     const report = {
       exitCode: 1,
-      message: "OpenTag Doctor\n\nSummary\n  1 blocking baseline check(s) failed for this OpenTag Home.",
+      message: "openTag Doctor\n\nSummary\n  1 blocking baseline check(s) failed for this openTag Home.",
       target: { home: "/tmp/opentag-doctor" },
       checks: [
         {
@@ -103,7 +103,7 @@ describe("doctor command target", () => {
         category: "configuration",
         retryability: "never",
         phase: "unknown",
-        message: "1 blocking baseline check(s) failed for this OpenTag Home.",
+        message: "1 blocking baseline check(s) failed for this openTag Home.",
       });
       // The full report stays attached as the bounded partial result, checks included.
       expect(document.result.exitCode).toBe(1);
@@ -156,7 +156,7 @@ describe("doctor command target", () => {
     });
 
     expect(result.target).toMatchObject({ home: resolve(home), homeSource: "environment" });
-    expect(result.message).toContain(`OpenTag Home: ${resolve(home)} (environment)`);
+    expect(result.message).toContain(`openTag Home: ${resolve(home)} (environment)`);
     expect(result.message).not.toContain("ignored.example");
     expect(healthChecker).toHaveBeenCalledTimes(1);
     expect(healthChecker).toHaveBeenCalledWith(serverUrl);
@@ -663,7 +663,7 @@ describe("doctor report and exit contract", () => {
     expect(headingOffsets.every((offset) => offset >= 0)).toBe(true);
     expect(headingOffsets).toEqual([...headingOffsets].sort((left, right) => left - right));
     expect(rendered).toContain("/usr/local/bin/codex (caller-path)");
-    expect(rendered).toContain("Baseline checks passed for this OpenTag Home.");
+    expect(rendered).toContain("Baseline checks passed for this openTag Home.");
     expect(rendered).not.toContain("All required checks passed");
     expect(rendered).not.toMatch(/OpenTag is ready|handoff is ready/iu);
     expect(result.notEvaluated).toEqual([
@@ -710,8 +710,8 @@ describe("doctor report and exit contract", () => {
     });
 
     expect(result.exitCode).toBe(1);
-    expect(result.message).toContain("2 blocking baseline check(s) failed for this OpenTag Home.");
-    expect(result.message).not.toContain("Baseline checks passed for this OpenTag Home.");
+    expect(result.message).toContain("2 blocking baseline check(s) failed for this openTag Home.");
+    expect(result.message).not.toContain("Baseline checks passed for this openTag Home.");
   });
 });
 

@@ -3,10 +3,10 @@ title: "Portable release guide"
 description: "Self-contained per-platform tarballs with their own Node.js runtime: channels, build, and install."
 ---
 
-# OpenTag portable release guide
+# openTag portable release guide
 
-A portable release is a self-contained OpenTag install: one tarball per platform that carries the bundled CLI **and its
-own Node.js runtime**, so a machine with no Node.js, no npm, and no package manager can install and run OpenTag. It is
+A portable release is a self-contained openTag install: one tarball per platform that carries the bundled CLI **and its
+own Node.js runtime**, so a machine with no Node.js, no npm, and no package manager can install and run openTag. It is
 published to Google Cloud Storage and installed with a single `curl … | sh` command.
 
 The portable channels mirror the npm channels exactly. Every portable release is built from the same commit, the same
@@ -41,7 +41,7 @@ published SHA-256, extracts it, runs the new runtime once, and only then activat
 **Reinstalling is cheap.** After reading `latest.json`, the installer checks whether the requested version is already
 the live install: the `current` symlink must resolve to a payload whose `INSTALL.json` matches the target version,
 platform, and binary name, the embedded runtime and app entry must both be present, and the stable shim in `--bin-dir`
-must already resolve through `current`. When all of that holds it reports that OpenTag is already up to date and exits
+must already resolve through `current`. When all of that holds it reports that openTag is already up to date and exits
 without downloading the payload. A partial install, a hand-edited shim, or a deleted `--bin-dir` entry fails that check
 and is repaired by a full reinstall. `--force` reinstalls unconditionally.
 
@@ -118,7 +118,7 @@ The daemon's updater follows a strict contract:
   anything itself. It then exits with the reserved supervisor-restart exit code `75`: systemd maps it to a clean
   forced restart (`SuccessExitStatus=0 75` + `RestartForceExitStatus=75`), and launchd restarts it through
   `KeepAlive.SuccessfulExit=false`. The stable shim means the restarted service runs the new version with the
-  OpenTag home, Account credentials, Computer connection, Agents, and placement untouched.
+  openTag home, Account credentials, Computer connection, Agents, and placement untouched.
 
 Current version, target, updater state, recovery diagnosis, and the last attempt with its failure reason are visible in
 `opentag daemon status`. `awaiting_protected_work` and `installing` identify an upgrade in progress, `blocked` identifies
@@ -171,8 +171,8 @@ node scripts/portable/verify-portable-artifact.mjs \
 
 The verifier checks the published checksum, the extracted layout, the metadata, and the embedded dependency graph
 (exact direct pins, the closure record, packaged assets, and the no-symlink/no-native layout). When the artifact
-targets the host platform it additionally executes it: the OpenTag CLI through its shim, and the embedded Context
-Tree CLI (`--version`, `--help`, `list`) against an isolated home. It also runs OpenTag's
+targets the host platform it additionally executes it: the openTag CLI through its shim, and the embedded Context
+Tree CLI (`--version`, `--help`, `list`) against an isolated home. It also runs openTag's
 `context-tree connect` against a nonexistent managed name, verifying real runtime resolution without connecting a
 tree or persisting configuration.
 
@@ -180,7 +180,7 @@ The portable builder ships `@first-tree-ai/context-tree` and every production de
 for it as a deterministic flat `app/node_modules` tree: one real directory per package, no symlinks, no nested
 `node_modules`, and no native addons. Packages are copied from the installed store only — nothing is fetched and no
 lifecycle script runs; Context Tree's own `postinstall` ships inside its published files but stays inert because
-OpenTag invokes the packaged CLI directly. The app manifest keeps only the truthful direct pins, and both the builder
+openTag invokes the packaged CLI directly. The app manifest keeps only the truthful direct pins, and both the builder
 (before its identity smoke) and the artifact verifier (for every platform) run the same graph checks.
 
 **Fail-closed dependency shapes.** `apps/cli` may declare only `@first-tree-ai/context-tree`, pinned to an exact
@@ -190,7 +190,7 @@ native addons, and same-name packages resolving to different installed roots all
 shapes need explicit packaging support before they can ship.
 
 **CI gate.** Every `CLI Pack Smoke` run for staging and production assembles the real portable app from the freshly
-built release-channel CLI, verifies its embedded graph, and runs both the relocated Context Tree CLI and OpenTag's
+built release-channel CLI, verifies its embedded graph, and runs both the relocated Context Tree CLI and openTag's
 runtime resolution probe with a temporary `HOME` and a minimal environment (no `NODE_PATH`, `NODE_OPTIONS`, or host
 credentials; `scripts/portable/smoke-portable-app.mjs`). The gate needs no downloaded Node.js runtime,
 so a dependency regression fails ordinary CI rather than the release.
@@ -293,7 +293,7 @@ channel pointers are deliberately left untouched.
 
 - The installer needs `curl` or `wget`, `tar`, and `sha256sum` or `shasum`. Linux and macOS on x64 and arm64 are
   supported; Windows is not.
-- The installer only installs or upgrades OpenTag. The onboarding command runs `opentag connect`, which exchanges the
+- The installer only installs or upgrades openTag. The onboarding command runs `opentag connect`, which exchanges the
   one-time Computer code, binds its explicit Agent/Computer target, and then installs or restarts the daemon service.
   Provider CLI detection and installation belongs to that active daemon, never to `install.sh`.
 - Any released version can be installed directly with `sh install.sh --version <version>`, which reads that version's

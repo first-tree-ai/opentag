@@ -1,6 +1,6 @@
 ---
 title: "Web App"
-description: "Design guide, Web UI contract, Computer and Skill surfaces, internationalization, and analytics of the OpenTag Web App."
+description: "Design guide, Web UI contract, Computer and Skill surfaces, internationalization, and analytics of the openTag Web App."
 ---
 
 # Web App
@@ -11,7 +11,7 @@ application behavior together.
 
 ## Pages
 
-- **[OpenTag design guide](design.md)** — shared visual rules and website
+- **[openTag design guide](design.md)** — shared visual rules and website
   references, with application implementation ownership made explicit.
 
 - **[Web UI contract](web-ui-contract.md)** — composition rules and

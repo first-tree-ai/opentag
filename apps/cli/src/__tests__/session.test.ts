@@ -159,7 +159,7 @@ describe("session CLI", () => {
       status: "unknown",
       messageId,
       code: "SERVICE_UNAVAILABLE",
-      message: "The OpenTag server is unavailable",
+      message: "The openTag server is unavailable",
     });
   });
 

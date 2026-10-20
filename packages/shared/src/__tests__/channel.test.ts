@@ -26,7 +26,7 @@ describe("channel configuration", () => {
   it("accepts only canonical service identifiers", () => {
     expect(ServiceIdSchema.parse("opentag")).toBe("opentag");
     expect(ServiceIdSchema.parse("opentag-staging")).toBe("opentag-staging");
-    for (const value of ["OpenTag", "opentag_qa", "opentag.service", "-opentag", "opentag-"]) {
+    for (const value of ["openTag", "opentag_qa", "opentag.service", "-opentag", "opentag-"]) {
       expect(ServiceIdSchema.safeParse(value).success).toBe(false);
     }
   });

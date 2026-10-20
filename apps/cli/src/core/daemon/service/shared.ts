@@ -143,7 +143,7 @@ export async function resolveCliInvocation(options: {
   const argv = options.argv ?? process.argv;
   const script = argv[1];
   if (!script) {
-    throw new DaemonServiceError("CONFIGURATION", "Cannot resolve the OpenTag CLI entry script");
+    throw new DaemonServiceError("CONFIGURATION", "Cannot resolve the openTag CLI entry script");
   }
   const program = options.execPath ?? process.execPath;
   if (!isAbsolute(program)) {
@@ -350,7 +350,7 @@ export async function pathExists(path: string): Promise<boolean> {
 
 export async function preflightHomeDirectory(home: string): Promise<void> {
   if (!isAbsolute(home)) {
-    throw new DaemonServiceError("CONFIGURATION", "The OpenTag home path must be absolute");
+    throw new DaemonServiceError("CONFIGURATION", "The openTag home path must be absolute");
   }
   let current = home;
   for (;;) {
@@ -359,7 +359,7 @@ export async function preflightHomeDirectory(home: string): Promise<void> {
       if (!status.isDirectory() || status.isSymbolicLink()) {
         throw new DaemonServiceError(
           "CONFIGURATION",
-          `The OpenTag home must resolve beneath a real directory: ${current}`,
+          `The openTag home must resolve beneath a real directory: ${current}`,
         );
       }
       await access(current, constants.W_OK | constants.X_OK);
@@ -367,11 +367,11 @@ export async function preflightHomeDirectory(home: string): Promise<void> {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         if (error instanceof DaemonServiceError) throw error;
-        throw new DaemonServiceError("CONFIGURATION", `The OpenTag home is not writable: ${home}`, { cause: error });
+        throw new DaemonServiceError("CONFIGURATION", `The openTag home is not writable: ${home}`, { cause: error });
       }
       const parent = dirname(current);
       if (parent === current) {
-        throw new DaemonServiceError("CONFIGURATION", `Cannot find a writable parent for the OpenTag home: ${home}`);
+        throw new DaemonServiceError("CONFIGURATION", `Cannot find a writable parent for the openTag home: ${home}`);
       }
       current = parent;
     }
@@ -380,7 +380,7 @@ export async function preflightHomeDirectory(home: string): Promise<void> {
 
 export async function canonicalizeServiceHome(path: string): Promise<string> {
   if (!isAbsolute(path)) {
-    throw new DaemonServiceError("CONFIGURATION", "The OpenTag home path must be absolute");
+    throw new DaemonServiceError("CONFIGURATION", "The openTag home path must be absolute");
   }
   const missingSegments: string[] = [];
   let current = resolve(path);
@@ -390,13 +390,13 @@ export async function canonicalizeServiceHome(path: string): Promise<string> {
       return resolve(canonicalParent, ...missingSegments);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw new DaemonServiceError("CONFIGURATION", `Cannot canonicalize the OpenTag home path: ${path}`, {
+        throw new DaemonServiceError("CONFIGURATION", `Cannot canonicalize the openTag home path: ${path}`, {
           cause: error,
         });
       }
       const parent = dirname(current);
       if (parent === current) {
-        throw new DaemonServiceError("CONFIGURATION", `Cannot canonicalize the OpenTag home path: ${path}`);
+        throw new DaemonServiceError("CONFIGURATION", `Cannot canonicalize the openTag home path: ${path}`);
       }
       missingSegments.unshift(basename(current));
       current = parent;

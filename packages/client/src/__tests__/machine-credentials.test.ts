@@ -82,7 +82,7 @@ describe("machine credentials", () => {
         { version: 3, computer: { ...credential(), installationId: "not-a-uuid" } },
         home,
       ),
-    ).rejects.toThrow("unusable OpenTag Computer credential");
+    ).rejects.toThrow("unusable openTag Computer credential");
   });
 
   it("reports a completely unconfigured Home without touching the filesystem", async () => {

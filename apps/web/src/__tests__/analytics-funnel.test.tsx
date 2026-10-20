@@ -151,7 +151,7 @@ describe("activation funnel reporting", () => {
     await screen.findByRole("heading", { name: "All Agents" });
     const { menu } = await openAccountMenu();
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Sign out" }));
-    await screen.findByRole("heading", { name: "Sign in to OpenTag" });
+    await screen.findByRole("heading", { name: "Sign in to openTag" });
 
     // Signing out is a client-side navigation, so without an explicit clear the login page — and
     // every page after it — would still be reported as the Account that just left.
@@ -184,7 +184,7 @@ describe("activation funnel reporting", () => {
     sessionValid = false;
     onlineManager.setOnline(false);
     onlineManager.setOnline(true);
-    await screen.findByRole("heading", { name: "Sign in to OpenTag" });
+    await screen.findByRole("heading", { name: "Sign in to openTag" });
 
     expect(identities()).toEqual([userId, null]);
     // And the identity is released before the page it redirects to is reported, so the login page

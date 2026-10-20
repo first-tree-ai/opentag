@@ -12,7 +12,7 @@ import {
 } from "../services/mcp/mcp-inbound-protocol.js";
 import { MCP_META_SERVER_INFO } from "../services/mcp/mcp-transport.js";
 
-const SERVER_INFO = { name: "opentag-mcp", title: "OpenTag MCP", version: "1" };
+const SERVER_INFO = { name: "opentag-mcp", title: "openTag MCP", version: "1" };
 
 function handlers(overrides: Partial<McpInboundHandlers> = {}): McpInboundHandlers {
   return {

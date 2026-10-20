@@ -1,7 +1,7 @@
 # Docker doctor fault suite
 
 This local-only black-box suite runs the built `opentag doctor` CLI across real
-container process, filesystem, TCP, HTTP, PostgreSQL, OpenTag Server, and Linux
+container process, filesystem, TCP, HTTP, PostgreSQL, openTag Server, and Linux
 systemd boundaries.
 
 Run it from the repository root:
@@ -10,13 +10,13 @@ Run it from the repository root:
 pnpm test:e2e:doctor-docker
 ```
 
-The suite builds two CLI runners and the production OpenTag Server image. It
+The suite builds two CLI runners and the production openTag Server image. It
 then creates an isolated Docker network containing:
 
 - an Alpine runner with no supported service manager;
 - a privileged Debian runner booted with systemd as PID 1 and a real user
   manager for the unprivileged `node` account;
-- a real PostgreSQL-backed OpenTag Server;
+- a real PostgreSQL-backed openTag Server;
 - independent fault-server containers for healthy, HTTP 503, invalid schema,
   hanging response, zero-request sentinel, and daemon connection scenarios.
 

@@ -13,7 +13,7 @@ description: "Per-Agent MCP Server bindings and authorization, the MCP gateway, 
 > and background token maintenance, in the Server API, the Web UI, and the CLI.
 >
 > Runtime delivery is [the MCP gateway](#the-mcp-gateway): one inbound Streamable HTTP endpoint on
-> the OpenTag Server that an Agent's provider CLI mounts like any other remote MCP Server. **No
+> the openTag Server that an Agent's provider CLI mounts like any other remote MCP Server. **No
 > upstream credential is ever delivered to a Provider** — the gateway resolves the Agent's own
 > authorization row and calls upstream itself.
 >
@@ -30,7 +30,7 @@ description: "Per-Agent MCP Server bindings and authorization, the MCP gateway, 
 ## What this feature is for
 
 An Agent's usefulness is bounded by the tools it can reach. MCP is the emerging standard for
-exposing those tools, so OpenTag needs to be able to register an MCP Server once per Account,
+exposing those tools, so openTag needs to be able to register an MCP Server once per Account,
 mount it selectively per Agent, and hold a distinct credential for each of those mounts.
 
 The design goal that shapes everything below: **authorization is strictly per Agent.** One Server
@@ -51,8 +51,8 @@ only to the sandbox" expressible.
 
 ### Pi and Cloud runtime delivery
 
-Pi has no native MCP configuration surface. OpenTag pins `pi-mcp-adapter` 2.36.0 and explicitly
-loads one OpenTag wrapper extension while Pi's implicit extension discovery remains disabled. The
+Pi has no native MCP configuration surface. openTag pins `pi-mcp-adapter` 2.36.0 and explicitly
+loads one openTag wrapper extension while Pi's implicit extension discovery remains disabled. The
 wrapper supplies an isolated programmatic configuration containing only `opentag-mcp`; Pi's global
 and project MCP files are never merged. The gateway bearer travels in the Pi process environment,
 not its arguments or persisted Session binding. The adapter uses the gateway's supported legacy
@@ -836,7 +836,7 @@ Codex always defers MCP tools behind its built-in `tool_search`, so the model se
 The inbound gateway supports `2025-11-25`, `2025-06-18`, and `2025-03-26`. Its upstream client
 separately supports the modern `2026-07-28` revision. Claude Code's in-process bridge still speaks
 `2025-03-26`, and Pi explicitly uses the legacy handshake. Codex receives the gateway URL and bearer
-when rebinding its thread; OpenTag does not pin a modern protocol revision in that configuration.
+when rebinding its thread; openTag does not pin a modern protocol revision in that configuration.
 
 The gateway does not implement modern per-request version metadata, mirrored HTTP header validation,
 or `resultType` responses, so it must not advertise that revision. Discovery lists only the three
@@ -1116,7 +1116,7 @@ text itself is not sent anywhere. Only the values the user confirms travel, thro
 create → attach → authorize sequence used by the connection flow.
 
 - **Only remote Servers are importable.** `stdio`, `local`, `command`, and `npx` entries are listed
-  by name and reported as a category OpenTag does not support. An entry that declares a `command` is
+  by name and reported as a category openTag does not support. An entry that declares a `command` is
   local even when its arguments contain an HTTPS URL (`npx -y mcp-remote https://…`): reading that as
   remote would create a definition the gateway could never reach.
 - **A paste that holds several Servers lists all of them** and imports exactly one per confirmation.
@@ -1335,7 +1335,7 @@ than 45 characters in English and 20 in Chinese, including punctuation; these ar
 budgets, not rendering limits. Allow natural wrapping on narrow screens without truncating the
 meaning. Review both locales in Discover. Descriptions summarize documented MCP
 capabilities within the preset's configured scopes; they do not promise every feature of the
-provider's product or establish successful OpenTag authorization.
+provider's product or establish successful openTag authorization.
 
 The description review on 2026-10-10 used the following provider documentation. These references
 record provenance for maintainers without adding links or explanatory copy to the cards.

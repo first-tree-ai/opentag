@@ -31,8 +31,8 @@ export function registerComputerConnectCommand(computer: Command): void {
     .command("connect")
     .description("Connect this Computer, check the selected Runtime, and prepare Lark and Slack CLIs")
     .argument("<code>", "one-time Computer connect code")
-    .option("--server <url>", "OpenTag server URL")
-    .option("--home <path>", "OpenTag home directory")
+    .option("--server <url>", "openTag server URL")
+    .option("--home <path>", "openTag home directory")
     .option("--no-start", "skip only daemon service installation/start")
     .option("--no-prepare-provider-clis", "skip Lark and Slack CLI preparation")
     .option("--json", "print JSON")
@@ -125,7 +125,7 @@ function presentPersistenceFailure(connection: ComputerConnectResult, home: stri
     "Local credentials/identity may be incomplete; previous credentials may no longer work. No daemon was started or restarted.",
     "Fix local storage permissions/free space, then run the local repair below. It accepts only a saved credential for this exact installation.",
     `Repair: "$HOME/.local/bin/${channelConfig.binName}" computer repair-local --installation-id ${failure.installationId} --home ${quotePosix(home)}`,
-    "If repair reports COMPUTER_CREDENTIAL_UNAVAILABLE, request a NEW connect/repair code in OpenTag Web after fixing storage. The consumed code cannot be recovered.",
+    "If repair reports COMPUTER_CREDENTIAL_UNAVAILABLE, request a NEW connect/repair code in openTag Web after fixing storage. The consumed code cannot be recovered.",
   ];
   const error = preparationError(
     "COMPUTER_LOCAL_PERSISTENCE_FAILED",

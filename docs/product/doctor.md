@@ -14,16 +14,16 @@ description: "Responsibilities, P0 checks, output, and repair guidance of the `o
 本文档定义：
 
 1. 通用 CLI `doctor` 命令应承担的基础职责；
-2. OpenTag 应当参考或避免照搬 First Tree `doctor` 的哪些设计；
+2. openTag 应当参考或避免照搬 First Tree `doctor` 的哪些设计；
 3. `opentag doctor` 的最小 P0 产品与技术契约。
 
 P0 的核心决策是：
 
-> `opentag doctor` 诊断当前 CLI 调用所选 OpenTag Home 的基础状态。它不证明
+> `opentag doctor` 诊断当前 CLI 调用所选 openTag Home 的基础状态。它不证明
 > Daemon、Provider、Integration 或端到端 handoff 已经就绪。
 
 这一区分是规范性要求。P0 成功只表示本文定义的所有 blocking 检查均已通过。
-输出不得将其表述为“OpenTag 已就绪”“handoff 已就绪”或“所有必要检查均已通过”。
+输出不得将其表述为“openTag 已就绪”“handoff 已就绪”或“所有必要检查均已通过”。
 
 Context Tree diagnostics are outside the doctor contract. Per-Agent repository selection is
 shown in Agent settings, and preparation status is reported in Session prompts. Doctor emits
@@ -118,7 +118,7 @@ interface DoctorReport {
 
 本分析基于 First Tree `main`：
 [`2851a9e021bbb3cc9579d165f04825f767ebb8fc`](https://github.com/first-tree-ai/first-tree/tree/2851a9e021bbb3cc9579d165f04825f767ebb8fc)，
-以及 OpenTag `main`：
+以及 openTag `main`：
 [`0e8410e68f53fe1e369e12c17617e1e6a370ee05`](https://github.com/first-tree-ai/opentag/tree/0e8410e68f53fe1e369e12c17617e1e6a370ee05)。
 
 First Tree 顶层 `doctor` 与 `daemon doctor` 当前共用同一个检查编排器，已实现的检查包括：
@@ -141,7 +141,7 @@ First Tree 顶层 `doctor` 与 `daemon doctor` 当前共用同一个检查编排
 - [`packages/client/src/runtime/install-locations.ts`](https://github.com/first-tree-ai/first-tree/blob/2851a9e021bbb3cc9579d165f04825f767ebb8fc/packages/client/src/runtime/install-locations.ts)
 - [`packages/client/src/runtime/protected-paths.ts`](https://github.com/first-tree-ai/first-tree/blob/2851a9e021bbb3cc9579d165f04825f767ebb8fc/packages/client/src/runtime/protected-paths.ts)
 
-### 3.2 OpenTag 应当参考的设计
+### 3.2 openTag 应当参考的设计
 
 1. **复用生产检测逻辑。** Runtime 安装检查应使用 Runtime 自己的 Provider
    capability probe，不能重新实现另一套“已安装”定义。
@@ -157,9 +157,9 @@ First Tree 顶层 `doctor` 与 `daemon doctor` 当前共用同一个检查编排
 7. **只诊断，不修复。** Doctor 只输出修复建议；安装、登录、清理和服务修改必须由
    显式命令完成。
 
-### 3.3 OpenTag 不应照搬的设计
+### 3.3 openTag 不应照搬的设计
 
-First Tree 是有价值的实现参考，但不是 OpenTag 的产品契约。以下行为不应原样复制：
+First Tree 是有价值的实现参考，但不是 openTag 的产品契约。以下行为不应原样复制：
 
 1. **只有布尔结果不够。** First Tree 的 `CheckResult` 只有 `ok: boolean`，无法区分
    blocking 失败、可选 Provider 缺失、无法判断的探测以及因依赖而跳过的检查。
@@ -175,11 +175,11 @@ First Tree 是有价值的实现参考，但不是 OpenTag 的产品契约。以
 6. **所有 Provider 缺失被当成同一种问题。** 产品必须明确一个 Runtime 是否足够，
    并把缺少的可选 Provider 单独展示。
 
-## 4. OpenTag P0 产品规格
+## 4. openTag P0 产品规格
 
 ### 4.1 用户与使用场景
 
-P0 面向已经安装 OpenTag CLI、需要判断当前 OpenTag Home 为什么无法完成基础本地职责
+P0 面向已经安装 openTag CLI、需要判断当前 openTag Home 为什么无法完成基础本地职责
 的操作员。
 
 命令为：
@@ -191,14 +191,14 @@ opentag doctor
 P0 不接受 doctor 专属的目标参数。它没有 `--server-url` 或 `--server`，并忽略
 `OPENTAG_SERVER_URL`。Server 是 Computer credential 的属性，不是诊断命令的调用方输入。
 
-`OPENTAG_HOME` 仍然有效，因为它是选择一套完整本地 OpenTag 安装的既有全局入口。
+`OPENTAG_HOME` 仍然有效，因为它是选择一套完整本地 openTag 安装的既有全局入口。
 没有设置时，使用当前 channel 的默认 Home。报告始终打印解析后的绝对 Home 路径及其来源。
 
 ### 4.2 P0 产品承诺
 
 P0 只回答以下问题：
 
-1. 当前 OpenTag Home 的本地 Computer identity 与 Computer credential 是否结构有效、内部一致？
+1. 当前 openTag Home 的本地 Computer identity 与 Computer credential 是否结构有效、内部一致？
 2. 同一 Home 的 Daemon service 是否 active，并且在既有 service-status 边界内保持一致？
 3. 该 Home 记录的唯一 Server 是否通过公开 health endpoint 正常响应？
 4. 当前 CLI 诊断上下文能否找到至少一个受支持的本地 Agent Runtime CLI artifact，
@@ -213,7 +213,7 @@ P0 决策如下：
 
 | 决策 | P0 契约 | 理由 |
 | --- | --- | --- |
-| 诊断目标 | 当前 OpenTag Home | Home 是 OpenTag 完整本地安装的边界。 |
+| 诊断目标 | 当前 openTag Home | Home 是 openTag 完整本地安装的边界。 |
 | Server 来源 | 仅使用 Home 内经过验证的 Computer credential | 调用方指定 URL 会诊断一个 Computer 可能永远不会使用的 Server。 |
 | Daemon service | 检查状态及 Home 一致性 | 停止或绑定错误的服务属于基础本地故障，即使 P0 不承诺端到端就绪。 |
 | Runtime 安装 | Codex 与 Claude Code，只做 install-only 检查 | Artifact 缺失可以在不调用 Provider、不读取凭据的前提下安全诊断。 |
@@ -229,7 +229,7 @@ P0 决策如下：
 
 报告必须展示：
 
-- OpenTag Home 的规范化绝对路径；
+- openTag Home 的规范化绝对路径；
 - 路径来自 `OPENTAG_HOME` 还是 channel 默认值；
 - CLI 版本、channel、platform、architecture 和 Node.js 版本，作为信息性诊断上下文。
 
@@ -264,7 +264,7 @@ manager/status 实现。
 
 - 当前 platform 受支持；
 - service 已安装且为 active；
-- service 的 configured Home 可验证为当前 OpenTag Home；
+- service 的 configured Home 可验证为当前 openTag Home；
 - service definition 不存在 drift；
 - 既有 runtime-owner consistency 结果与 active service 一致。
 
@@ -283,9 +283,9 @@ service manager 必须从同一次操作系统 account record 快照取得 uid�
 home；launchd plist 与 systemd user unit 均从该 account home 下的产品约定位置查找。调用
 CLI 的 shell 所提供的 `HOME` 或 `XDG_CONFIG_HOME` 不得改变 service definition 的位置。
 这与 First Tree 中“连接流程安装 daemon、doctor/status 复用同一 supervisor backend”的
-产品行为一致，但 OpenTag 不复用其受 shell home/XDG 影响的路径解析实现。
+产品行为一致，但 openTag 不复用其受 shell home/XDG 影响的路径解析实现。
 
-OpenTag 当前不支持把 service definition 安装到自定义 XDG 路径。如果操作系统的用户级
+openTag 当前不支持把 service definition 安装到自定义 XDG 路径。如果操作系统的用户级
 service manager 被配置为只从其他位置加载 unit，安装/状态后置条件必须失败，不得猜测
 另一份 definition 或转成 pass。
 
@@ -317,7 +317,7 @@ P0 中“已安装”的定义是：
 
 Resolver 必须由生产 Client Runtime 与 doctor 共用，避免两套解析逻辑漂移。它必须：
 
-- 只有在 OpenTag 真正提供显式路径配置时才接受该配置；P0 不得发明 doctor 专属的
+- 只有在 openTag 真正提供显式路径配置时才接受该配置；P0 不得发明 doctor 专属的
   Provider override；
 - 搜索诊断进程的 `PATH`；
 - 搜索经过评审的 well-known 安装目录；
@@ -348,7 +348,7 @@ Slack CLI。检查复用当前 Agent Runtime 第三方 CLI 的 install-only disc
 “已安装”的定义与 Runtime 第三方 CLI 相同：共享 resolver 在不启动该 CLI 的前提下，
 选中了一个普通、可执行的文件，并返回规范路径及来源。Doctor 必须：
 
-- 搜索诊断进程的 `PATH`、OpenTag account-global launcher 目录与经过评审的 well-known
+- 搜索诊断进程的 `PATH`、openTag account-global launcher 目录与经过评审的 well-known
   安装目录；
 - 报告选中的规范路径及来源；
 - 每个 CLI 独立失败，单个 detector 错误不能隐藏另一个 CLI 的结果；
@@ -373,15 +373,15 @@ Lark CLI 与 Slack CLI 的运行时凭据由 WinTAC 管理并注入；该生命�
 示例结构如下。实际 CLI 文案保持英语：
 
 ```text
-OpenTag Doctor
+openTag Doctor
 
 Target
-  - OpenTag Home: /Users/alice/.opentag (channel default)
+  - openTag Home: /Users/alice/.opentag (channel default)
   - CLI: 0.x.y, stable, darwin arm64, Node.js v24.x
 
 Checks
   ✓ Local Computer configuration: 1 credential, one Computer, one Server
-  ✓ Daemon service: active for this OpenTag Home
+  ✓ Daemon service: active for this openTag Home
   ✓ Server health endpoint: reachable at https://example.opentag.dev
   ✓ Agent Runtime CLI: at least one supported Runtime is installed
   ✓ Codex CLI: installed at /Applications/ChatGPT.app/.../codex (desktop-app)
@@ -391,7 +391,7 @@ IM Provider CLIs
   ✓ Lark CLI: installed at /usr/local/bin/lark-cli (caller-path)
   - Slack CLI: not installed
 
-Baseline checks passed for this OpenTag Home.
+Baseline checks passed for this openTag Home.
 
 Not evaluated
   - Agent Runtime authentication
@@ -405,8 +405,8 @@ Not evaluated
 
 Summary 只能是以下两种之一：
 
-- `Baseline checks passed for this OpenTag Home.`
-- `N blocking baseline check(s) failed for this OpenTag Home.`
+- `Baseline checks passed for this openTag Home.`
+- `N blocking baseline check(s) failed for this openTag Home.`
 
 报告必须始终包含上述 `Not evaluated` section。只有在对应能力拥有经过评审的契约，并且
 确实执行了该检查之后，未来版本才能移除某一项。
@@ -469,7 +469,7 @@ P0 check code 属于内部契约，也是未来 JSON 接口的基础：
 
 | Code | Blocking | 含义 |
 | --- | --- | --- |
-| `target.home` | 否 | 选中的规范 OpenTag Home 及来源 |
+| `target.home` | 否 | 选中的规范 openTag Home 及来源 |
 | `local.identity` | 是 | `computer.json` 存在、安全且有效 |
 | `local.credentials` | 是 | credential envelope 及唯一的 Computer credential 均有效 |
 | `local.binding` | 是 | Computer identity、Computer credential 和唯一 Server origin 一致 |
@@ -543,7 +543,7 @@ P0 至少需要使用确定性测试覆盖以下场景：
 
 ## 8. 当前实现边界
 
-OpenTag `main` 已实现本文 P0 基线。Issue [#248](https://github.com/first-tree-ai/opentag/issues/248)
+openTag `main` 已实现本文 P0 基线。Issue [#248](https://github.com/first-tree-ai/opentag/issues/248)
 进一步增加本规格 F 节定义的 non-blocking、install-only Integration CLI artifact 观察；
 它不改变 baseline 退出码，也不读取 selection/configuration，不执行 CLI，且不把
 credential 或 active-binding readiness 纳入 Doctor。

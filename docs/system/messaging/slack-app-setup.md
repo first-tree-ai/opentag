@@ -240,11 +240,17 @@ remain silent; existing self-message filtering and event deduplication are uncha
 
 ### Distributed OpenTag App
 
-The existing first-party OAuth entry remains available when configured. Its authenticated start and callback retain
-session/Account authority, nonce, generation and installation checks. Explicit OAuth recovery may replace a custom App
-and end its active conversations; the UI labels that impact. A derived recovery preference compares the saved Signing
-Secret with the current official configuration and stores no provenance. Manual recovery remains available if official
-configuration rotates. Older servers retain the existing OAuth recovery entry.
+The current Web offers the first-party OAuth recovery entry when the Server has OAuth configured and the existing
+binding's derived recovery preference selects OAuth. That preference compares the saved Signing Secret with the current
+official configuration and stores no provenance. Manual credential recovery preserves App, Team, Bot User and Bot ID;
+it remains available if official configuration rotates.
+
+The existing OAuth start/callback API also retains compatibility with older clients. Its `create` and `reauthorize`
+intents preserve session/Account authority, nonce, expected binding/generation and installation checks; there is no
+`replace` intent. A compatible OAuth `reauthorize` callback with a different App/Team/Bot identity atomically disables the
+old installation and route, ends their active Sessions, creates the replacement installation and route at generation 1,
+and links the disabled records to their replacements. Same-identity reauthorization keeps the route and advances its
+installation generation. This compatibility behavior does not add a replace-App action to the current Web.
 
 Slack does not guarantee `app_id` in `auth.test` for a Bot Token. The App ID stored from OAuth is therefore projected as
 **configured evidence**, not as Slack API-attested identity. Every request still has an independent proof boundary.
@@ -262,6 +268,18 @@ authorization context, so they are handled after HMAC plus exact App/Team verifi
 Slack's official URL-verification payload contains no App, Team, or bot authorization fields, so the Agent-specific URL
 can verify only the bound Signing Secret for that challenge; it records no identity closure.
 
+### Atomic provider lifecycle updates
+
+URL observations, identity closure, token revocation and provider uninstall acquire the current Slack route before
+updating its installation. The route guard uses `FOR NO KEY UPDATE`, which remains compatible with Session foreign-key
+checks. Shared teardown orders its writes as binding, installation, then Session termination. Installation/route
+status, generation and observation changes still commit atomically, and stale generations retain their original
+no-change result. Provider revocation and uninstall continue to work for suspended Agents.
+
+These transactions cover database work only. OAuth redirects, external credential inspection, ticket/challenge user
+actions and pending workspace approval do not retain their database locks. A later continuation revalidates current
+authority and binding/generation before committing configuration.
+
 ## Data and state inventory
 
 | Item | Disposition | Source of truth and meaning |
@@ -271,7 +289,7 @@ can verify only the bound Signing Secret for that challenge; it records no ident
 | App, Team, Enterprise, Bot User/Bot identity | Keep | App ID is explicit configured evidence; Team and bot identity come from token inspection; Enterprise is optional. |
 | Team and Bot display metadata | Keep as optional presentation data | Team name, Bot display name, and avatar may be shown in management views, but never authorize configuration, ingress, or runtime access. |
 | Bot Token and Signing Secret | Keep encrypted on the installation | Stored together in the installation credential envelope; never copied onto Agent routes and never returned by management, diagnostics, or runtime-config APIs. The Signing Secret is never projected to runtime. |
-| `credentialGeneration` and credential schema version | Keep on the installation | Installation-authoritative monotonic credential revision. Routes sync a sanitized snapshot for Session fencing and diagnostics. Same-identity reauthorization increments the installation generation. Slack has no replace-App cutover. |
+| `credentialGeneration` and credential schema version | Keep on the installation | Installation-authoritative monotonic credential revision. Routes sync a sanitized snapshot for Session fencing and diagnostics. Same-identity reauthorization increments the installation generation. Compatible OAuth reauthorization with a different identity retains disabled history and creates replacement records at generation 1. |
 | `grantedCapabilities` | Keep on the installation | Actual token scopes reported by Slack. Routes sync a sanitized snapshot. Active/readiness projections require all eighteen fixed scopes. |
 | `activatedAt`, `disabledAt`, `createdAt`, `updatedAt` | Keep | Durable installation lifecycle timestamps, with sanitized copies on Slack routes. Configuration submission sets activation; inbound events do not. Public APIs project `activatedAt` as `lastValidatedAt`. |
 | `observedAt` | Keep as runtime observation | Installation-authoritative. Updated after a correctly signed Agent-specific URL challenge, or after a correctly signed real event whose App, Team, and bot authorization match. Routes sync the sanitized timestamp. Public APIs project it as `lastRuntimeObservationAt`. It is not configuration evidence and does not change generation. |
@@ -280,7 +298,8 @@ can verify only the bound Signing Secret for that challenge; it records no ident
 | `lastConfirmedAt` | Delete from public APIs | It mixed configuration time with runtime observation. Use `lastValidatedAt` and `lastRuntimeObservationAt`. |
 | `lastErrorCode` | Keep | Durable recovery cause such as `SLACK_SCOPE_REAUTH_REQUIRED` or `SLACK_TOKEN_REVOKED`; observations do not clear configuration errors. |
 | `receiveMode` on the Agent | Keep | Local `mention_only`/`all_message` policy, independent of Slack authorization and credential generation. |
-| `replacementImBindingId` | Keep as cutover provenance | Links a disabled binding to the replacement created during a Feishu Bot identity change. It is not setup progress. Slack no longer has a replace-App cutover. |
+| `replacementImBindingId` | Keep as cutover provenance | Links a disabled route to its replacement, including a Feishu Bot identity change and compatible Slack OAuth identity replacement. It is not setup progress. |
+| `replacementSlackInstallationId` | Keep as installation provenance | Links a disabled Slack installation to its successor when activation releases an unused same-Agent installation or compatible OAuth reauthorization replaces its identity. It is not a configuration phase or a public replace intent. |
 | Connection owner, lease, and fencing fields | Keep generically | Feishu connection ownership only. Slack has no managed connection lease and these fields stay empty. |
 | Generic setup attempt/context fields | Keep for Feishu | `setupAttemptId`, setup intent/state/owner/heartbeat/expiry, and encrypted setup context remain for Feishu. Slack rows are database-checked so those setup fields stay null. |
 | Slack setup attempt, encrypted temporary context, challenge proof, verification error/time, polling/expiry/cancel state | Delete | No Slack configuration phase exists between token validation and activation. |

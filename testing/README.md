@@ -35,6 +35,7 @@ contents, and machine-specific operational logs outside the repository.
 - [Session collaboration writes](verification/session-collaboration-writes.md)
 - [Skill details reader](verification/skill-details-reader.md)
 - [Installing Skills from a remote source](verification/skill-remote-install.md)
+- [Slack installation lifecycle writes](verification/slack-installation-writes.md)
 - [Staging onboarding reset](verification/staging-onboarding-reset.md)
 - [Web App analytics](verification/web-analytics.md)
 - [Web tools](verification/web-tools.md)

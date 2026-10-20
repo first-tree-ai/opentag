@@ -570,6 +570,55 @@ describe("AgentTurnRunner", () => {
     );
   });
 
+  it("aborts a default-budget Turn despite seven-day retention and persists one timeout report", async () => {
+    vi.useFakeTimers();
+    const h = outgoingHarness();
+    try {
+      h.request.runtime.budget = undefined;
+      h.request.deadlineAt = new Date(Date.now() + 7 * 86_400_000).toISOString();
+      h.prompt.mockImplementation(async (...args: unknown[]) => {
+        const { signal } = args[0] as { signal: AbortSignal };
+        return new Promise<AgentRunResult>((resolve) => {
+          signal.addEventListener("abort", () => resolve({ runId: "turn-1", status: "aborted", output: [] }));
+        });
+      });
+      h.runner.start(liveOwner(h.request));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.prompt).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(RUNTIME_DEFAULT_MAX_DURATION_MS - 1);
+      expect(h.create).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await h.runner.settled();
+      expect(h.create).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          outcome: "failed",
+          executionEffects: "may_have_occurred",
+          errorReason: "turn_timeout",
+        }),
+      );
+      expect(h.markReporting).toHaveBeenCalledOnce();
+      expect(h.submit).toHaveBeenCalledOnce();
+      expect(h.runner.activeCount).toBe(0);
+    } finally {
+      h.runner.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports an expired deadline without starting Provider execution", async () => {
+    const h = outgoingHarness();
+    h.request.deadlineAt = new Date(Date.now() - 1).toISOString();
+    h.runner.start(liveOwner(h.request));
+    await h.runner.settled();
+    expect(h.prompt).not.toHaveBeenCalled();
+    expect(h.prepare).not.toHaveBeenCalled();
+    expect(h.create).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ outcome: "failed", executionEffects: "not_started", errorReason: "turn_timeout" }),
+    );
+    expect(h.markReporting).toHaveBeenCalledOnce();
+    expect(h.submit).toHaveBeenCalledOnce();
+  });
+
   it("applies budget/deadline limits and durably reports pre-provider failures", async () => {
     const request = delivery();
     request.runtime.budget = { maxDurationMs: 5_000 };
@@ -592,6 +641,7 @@ describe("AgentTurnRunner", () => {
     const markReporting = vi.fn(async () => undefined);
     const agentErrorReporter = vi.fn();
     const runner = new AgentTurnRunner({
+      now: () => Date.parse("2026-08-20T00:00:00.000Z"),
       bindingStore: {
         updateUnresolved: vi.fn(async () => {
           throw new Error("disk failed");

@@ -19,8 +19,15 @@ const migrationUrl = new URL("../../../drizzle/0063_im_delivery_active_work.sql"
 beforeAll(async () => {
   testDatabase = await startMigratedTestDatabase("postgres:16-alpine");
   client = createDatabaseClient(testDatabase.databaseUrl);
+  // Plan assertions must depend on fixture statistics, never background auto-analyze timing.
+  await client.sql.unsafe("alter table im_messages set (autovacuum_enabled = false)");
+  await client.sql.unsafe("alter table im_message_deliveries set (autovacuum_enabled = false)");
 }, 120_000);
-beforeEach(async () => testDatabase.reset());
+beforeEach(async () => {
+  await testDatabase.reset();
+  // Deliberately leave stale empty-table statistics before loading the next large fixture.
+  await client.sql.unsafe("analyze im_messages");
+});
 afterAll(async () => {
   await client?.sql.end();
   await testDatabase?.stop();
@@ -113,6 +120,13 @@ describe("delivery query plans on PostgreSQL 16", { timeout: 60_000 }, () => {
 
   it("does not revisit cancelled history when checking custody or a long Cloud queue", async () => {
     await seedDeliveryQuery(client.database, 80_000, 4240);
+    const [messageStats] = await client.sql<{ reltuples: number }[]>`
+      select reltuples from pg_class where oid = 'im_messages'::regclass
+    `;
+    expect(
+      messageStats?.reltuples,
+      "the fixture must refresh message statistics after loading history",
+    ).toBeGreaterThan(80_000);
     // Keep dead index entries in place: no VACUUM between cancellation and the plan checks.
     await client.database.execute(sql`update im_message_deliveries set state='expired', reason='cancelled',
       input_hash=null, turn_id=null, report_owner_instance_id=null, accepted_at=null, reported_at=null,
@@ -125,7 +139,10 @@ describe("delivery query plans on PostgreSQL 16", { timeout: 60_000 }, () => {
       const head = await explain(dialect.sqlToQuery(cloudPendingHeadQuery(deliveryTestId("session", 1))), generic);
       expectActiveIndex(custody);
       const headNodes = flatten(head.Plan);
-      expect(headNodes.map((node) => node["Index Name"])).toContain("im_messages_pkey");
+      expect(
+        headNodes.map((node) => node["Index Name"]),
+        JSON.stringify(head.Plan),
+      ).toContain("im_messages_pkey");
       expect(headNodes.find((node) => node["Relation Name"] === "im_messages")?.["Actual Loops"]).toBe(4241);
       expect(
         headNodes.some((node) => node["Node Type"] === "Seq Scan" && node["Relation Name"] === "im_messages"),

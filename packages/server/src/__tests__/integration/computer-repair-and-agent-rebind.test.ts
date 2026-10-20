@@ -269,6 +269,32 @@ describe("Computer repair and Agent rebind boundaries", () => {
     }
   });
 
+  it.each([
+    { computer: "missing", expectedCode: "COMPUTER_NOT_FOUND" },
+    { computer: "foreign", expectedCode: "COMPUTER_NOT_FOUND" },
+    { computer: "owned", expectedCode: "RESOURCE_NOT_FOUND" },
+  ] as const)("preserves repair validation precedence for a $computer Computer and missing Agent", async (input) => {
+    const value = await fixture();
+    try {
+      const first = await connect(value);
+      const [other] = await value.database
+        .insert(users)
+        .values({ displayName: "Other", email: "repair-precedence@example.com" })
+        .returning();
+      if (!other) throw new Error("Other Account fixture was not created");
+      await expect(
+        value.machineAuth.issueForAccount(input.computer === "foreign" ? other.id : value.bootstrap.userId, {
+          mode: "repair",
+          targetComputerId: input.computer === "missing" ? crypto.randomUUID() : first.computerId,
+          targetAgentId: crypto.randomUUID(),
+        }),
+      ).rejects.toMatchObject({ code: input.expectedCode, statusCode: 404 });
+      expect(await value.database.select().from(computerConnectCodes)).toHaveLength(1);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("moves non-ended Sessions atomically and leaves ended Sessions in place", async () => {
     const value = await fixture();
     try {

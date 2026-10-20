@@ -1,67 +1,19 @@
 /* MCP-specific geometry; controls, colors and typography retain the shared theme. */
-/* Reserve both action tracks in every state. */
+/* Recovery belongs in Details; the right-hand controls stay centered in every state. */
 .mcp-server-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) fit-content(50%);
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 1.5rem;
   min-height: 6.75rem;
 }
 .mcp-server-controls {
-  min-width: 0;
-  display: grid;
-  grid-template-rows: minmax(2rem, auto) minmax(2rem, auto);
-  justify-items: end;
-  gap: 0.5rem;
-}
-.mcp-server-identity h2 {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.mcp-server-actions {
-  max-width: 100%;
-}
-.mcp-server-actions > * {
-  flex-shrink: 0;
-}
-.mcp-server-status {
-  min-width: 0;
-  flex-shrink: 1;
-}
-.mcp-server-status-short {
-  display: none;
+  display: flex;
+  align-items: center;
 }
 @container content (max-width: 40rem) {
   .mcp-server-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-rows: minmax(3rem, auto) minmax(2.75rem, auto);
-    gap: 0.5rem 0.75rem;
-    min-height: 8.5rem;
-  }
-  .mcp-server-controls {
-    display: contents;
-  }
-  .mcp-server-identity {
-    grid-area: 1 / 1;
-  }
-  .mcp-server-toggles {
-    grid-area: 1 / 2;
-  }
-  .mcp-server-actions {
-    grid-area: 2 / 1 / 3 / -1;
-    justify-self: end;
-    max-width: 100%;
-    gap: 0.5rem;
-  }
-}
-/* Match the shared 44px touch targets even just above the container layout breakpoint. */
-@media (max-width: 47.999rem) {
-  .mcp-server-row {
-    min-height: 8.5rem;
-  }
-  .mcp-server-controls {
-    grid-template-rows: minmax(2.75rem, auto) minmax(2.75rem, auto);
+    gap: 0.75rem;
   }
 }
 .mcp-form-dialog,
@@ -86,7 +38,7 @@
   width: calc(100vw - 2rem);
   max-width: 26rem;
 }
-.mcp-confirm-dialog > header {
+.mcp-confirm-dialog > [data-ui="dialog-header"] {
   margin-bottom: 0.5rem;
 }
 .mcp-confirm-dialog > p {
@@ -147,7 +99,7 @@
   outline: 2px solid var(--color-kumo-focus);
   outline-offset: 2px;
 }
-.mcp-settings-dialog > header {
+.mcp-settings-dialog > [data-ui="dialog-header"] {
   align-items: center;
   margin-bottom: 1.25rem;
 }
@@ -197,6 +149,106 @@
   margin: 0;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+/* Keep the dialog's heading anchored while an intentional method change expands its form. */
+.mcp-preset-dialog {
+  --mcp-details-top: clamp(1rem, calc(50dvh - 12rem), 12rem);
+  top: var(--mcp-details-top);
+  translate: -50% 0;
+  max-width: 32.5rem;
+  max-height: calc(100dvh - var(--mcp-details-top) - 1rem);
+}
+.mcp-preset-dialog > [data-ui="dialog-header"] {
+  margin-bottom: 1.75rem;
+}
+.mcp-preset-authentication {
+  display: grid;
+  min-width: 0;
+}
+.mcp-preset-auth-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0.75rem;
+}
+.mcp-preset-auth-row > :first-child {
+  width: 100%;
+  max-width: 17.5rem;
+}
+.mcp-preset-account-action {
+  min-width: 7.5rem;
+}
+.mcp-preset-single-method,
+.mcp-preset-key-mask {
+  display: flex;
+  align-items: center;
+  min-height: var(--ui-control-height);
+}
+.mcp-preset-key-mask {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--color-kumo-line);
+  border-radius: 0.5rem;
+  background: var(--color-kumo-tint);
+  letter-spacing: 0.2em;
+}
+.mcp-preset-key-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+.mcp-preset-key-actions {
+  display: grid;
+  grid-template-columns: 4rem 5rem;
+  gap: 0.25rem;
+}
+.mcp-preset-key-actions > :last-child {
+  grid-column: 2;
+}
+.mcp-preset-key-actions > .ui-button {
+  width: 100%;
+}
+.mcp-preset-feedback {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  align-content: start;
+  gap: 0 0.75rem;
+  /* A shared slot keeps the address fixed when feedback or a recovery link appears. */
+  min-height: 2rem;
+  margin-top: 0.25rem;
+}
+.mcp-preset-feedback > span:empty {
+  display: none;
+}
+.mcp-preset-feedback > .ui-button {
+  flex-shrink: 0;
+}
+.mcp-preset-address {
+  display: grid;
+  gap: 0.25rem;
+}
+@media (max-width: 28rem) {
+  .mcp-preset-auth-row,
+  .mcp-preset-key-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .mcp-preset-account-action,
+  .mcp-preset-key-actions {
+    justify-self: end;
+  }
+  .mcp-preset-feedback {
+    /* Reserve the longest reason and a wrapped mobile touch target in every state. */
+    min-height: 4rem;
+  }
+}
+@media (max-width: 47.999rem) {
+  .mcp-preset-single-method,
+  .mcp-preset-key-mask {
+    /* Match the shared mobile control recipe when a mask becomes an editable input. */
+    min-height: 2.75rem;
+  }
 }
 @media (max-width: 30rem) {
   .mcp-auth-action-row > .mcp-auth-feedback {
@@ -395,31 +447,36 @@
   display: grid;
   grid-template-columns: 2rem minmax(0, 1fr);
   align-items: center;
+  align-self: stretch;
   gap: 0.75rem;
+  width: 100%;
   min-width: 0;
+  height: auto;
+  padding: 0.5rem;
+  cursor: pointer;
+  text-align: left;
+}
+.mcp-server-identity:focus-visible {
+  box-shadow: none;
 }
 .mcp-server-logo {
-  padding: 0;
-  width: 2rem;
-  height: 2.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .mcp-server-name {
-  max-width: 100%;
-  height: auto;
-  min-height: 2rem;
-  padding: 0;
-  gap: 0.375rem;
-  justify-content: flex-start;
+  display: block;
+  min-width: 0;
   font-size: 1rem;
+  line-height: 2rem;
   font-weight: 600;
+}
+.mcp-server-description {
+  overflow-wrap: anywhere;
 }
 @media (max-width: 47.999rem) {
   .mcp-server-identity {
-    grid-template-columns: 2.75rem minmax(0, 1fr);
     gap: 0.5rem;
-  }
-  .mcp-server-logo {
-    width: 2.75rem;
   }
 }
 

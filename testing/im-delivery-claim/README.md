@@ -41,6 +41,12 @@ BUFFERS, FORMAT JSON)` under forced custom and generic prepared plans. It also r
 selector and transaction recheck through each blocked backlog. Timing output is diagnostic; CI
 asserts plan shape and behavior rather than hardware-dependent latency thresholds.
 
+The fixture explicitly analyzes both deliveries and messages after loading them. The plan suite
+disables table autovacuum and starts from stale empty-message statistics, then checks that the
+fixture refreshes the message row estimate before explaining the Cloud head. Plan assertions
+therefore do not depend on a background auto-analyze racing the test. The strict message-primary-key
+and no-sequential-scan assertions remain; a failure also includes the full Cloud head plan.
+
 ## Validation results
 
 Repository checks, build, typecheck, and schema drift passed. PostgreSQL integration passed all
@@ -86,4 +92,4 @@ Many distinct Cloud Sessions can also cause one serial head lookup per Session; 
 fixtures cover the incident's concentrated backlog, not every possible distribution.
 The five-second hint TTL may delay work after metadata changes; final checks always bypass it.
 Existing timeout/backoff/terminal-state behavior is outside this change. A live rollout must use
-the [index prebuild and health checks](../../docs/im-delivery-claim.md#deployment-and-rollback).
+the [index prebuild and health checks](../../docs/system/messaging/im-delivery-claim.md#deployment-and-rollback).

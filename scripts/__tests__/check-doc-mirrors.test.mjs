@@ -155,3 +155,10 @@ test("a >1 MiB non-Markdown change does not mask a missing mirror", () => {
     rmSync(fixtureData.root, { recursive: true, force: true });
   }
 });
+
+test("knowledge-base pages under docs/ need no Chinese mirror", async () => {
+  const { expectedMirrorPath } = await import("../check-doc-mirrors.mjs");
+  assert.equal(expectedMirrorPath("docs/system/messaging/thread-sessions.md"), null);
+  assert.equal(expectedMirrorPath("docs/NODE.md"), null);
+  assert.equal(expectedMirrorPath("README.md"), "README.zh-CN.md");
+});

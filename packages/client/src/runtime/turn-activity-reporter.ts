@@ -1,10 +1,6 @@
 import { randomUUID } from "node:crypto";
-import {
-  type DirectImMessageDeliveryRequest,
-  RUNTIME_DEFAULT_MAX_DURATION_MS,
-  type TurnActivityRequest,
-  type TurnActivityResult,
-} from "@opentag/shared";
+import type { DirectImMessageDeliveryRequest, TurnActivityRequest, TurnActivityResult } from "@opentag/shared";
+import { turnTimeoutMs } from "./turn-timeout.js";
 
 interface Entry {
   frame: TurnActivityRequest;
@@ -50,9 +46,7 @@ export class TurnActivityReporter {
       },
       acknowledged: false,
       heartbeatAt: now + 30_000,
-      expiresAt: request.deadlineAt
-        ? Date.parse(request.deadlineAt)
-        : now + (request.runtime.budget?.maxDurationMs ?? RUNTIME_DEFAULT_MAX_DURATION_MS),
+      expiresAt: now + turnTimeoutMs(request, now),
     };
     this.#entries.set(turnId, entry);
     this.#publish(entry);

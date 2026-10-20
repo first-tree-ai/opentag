@@ -1,4 +1,4 @@
-import { type MCPAuthKind, MCPServerUrlSchema } from "@opentag/shared/browser";
+import { MCPServerUrlSchema } from "@opentag/shared/browser";
 import { useState } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Button, Dialog, Field, Icon, KumoInputControl, Loader } from "../../ui/design-system.js";
@@ -7,6 +7,7 @@ import { McpConfigurationFields } from "./mcp-configuration-fields.js";
 import { McpDialogTitle } from "./mcp-dialog-title.js";
 import { McpAuthFields } from "./mcp-form.js";
 import { McpOAuthControls } from "./mcp-oauth-controls.js";
+import { McpPresetAuthentication } from "./mcp-preset-authentication.js";
 import { useMcpSettings } from "./mcp-settings-state.js";
 import { mcpTitle } from "./mcp-title.js";
 
@@ -19,7 +20,7 @@ export function McpSettingsDialog(props: Parameters<typeof useMcpSettings>[0]) {
   const addressInvalid = addressTouched && !MCPServerUrlSchema.safeParse(config.url).success;
   return (
     <Dialog
-      className="mcp-form-dialog mcp-settings-dialog"
+      className={`mcp-form-dialog mcp-settings-dialog ${preset ? "mcp-preset-dialog" : ""}`}
       title={<McpDialogTitle entry={entry} title={mcpTitle(entry)} />}
       closeLabel={m.common_close_title({ title: mcpTitle(entry) })}
       busy={busy && !state.authorization.oauth.phase}
@@ -32,10 +33,8 @@ export function McpSettingsDialog(props: Parameters<typeof useMcpSettings>[0]) {
         }}
       >
         <div className="mcp-settings-body mcp-fields">
-          <div className="grid gap-2">
-            {preset ? (
-              <PresetAddress url={authEdited ? config.url : entry.effective.url} />
-            ) : (
+          {!preset ? (
+            <div className="grid gap-2">
               <Field htmlFor="mcp-settings-url" label={m.mcp_settings_address()}>
                 <KumoInputControl
                   id="mcp-settings-url"
@@ -48,14 +47,15 @@ export function McpSettingsDialog(props: Parameters<typeof useMcpSettings>[0]) {
                   onChange={(event) => setConfig({ ...config, url: event.target.value })}
                 />
               </Field>
-            )}
-            {addressInvalid ? (
-              <p id="mcp-settings-url-error" role="alert" className="text-sm text-kumo-danger">
-                {m.mcp_add_url_error()}
-              </p>
-            ) : null}
-          </div>
+              {addressInvalid ? (
+                <p id="mcp-settings-url-error" role="alert" className="text-sm text-kumo-danger">
+                  {m.mcp_add_url_error()}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
           <AuthenticationSection state={state} />
+          {preset ? <PresetAddress url={authEdited ? config.url : entry.effective.url} /> : null}
           {!preset ? (
             <fieldset disabled={busy} className="min-w-0 m-0 border-0 p-0">
               <McpConfigurationFields draft={config} kind={draft.kind} onChange={setConfig} address={false} />
@@ -100,15 +100,10 @@ function PresetAddress({ url }: { url: string }) {
   const [copiedUrl, setCopiedUrl] = useState<string>();
   const copied = copiedUrl === url;
   return (
-    <Field htmlFor="mcp-connector-address" label={m.mcp_settings_address()}>
+    <section className="mcp-preset-address" aria-label={m.mcp_settings_address()}>
+      <span className="text-xs text-kumo-subtle">{m.mcp_settings_address()}</span>
       <div className="flex min-w-0 items-center gap-2">
-        <KumoInputControl
-          id="mcp-connector-address"
-          aria-label={m.mcp_settings_address()}
-          className="min-w-0 flex-1"
-          readOnly
-          value={url}
-        />
+        <span className="min-w-0 select-text text-sm text-kumo-subtle">{url}</span>
         <Button
           variant="ghost"
           shape="square"
@@ -123,42 +118,29 @@ function PresetAddress({ url }: { url: string }) {
           <Icon name={copied ? "check" : "copy"} />
         </Button>
       </div>
-    </Field>
-  );
-}
-
-function methodLabel(kind: MCPAuthKind): string {
-  if (kind === "oauth") return m.mcp_auth_oauth();
-  return kind === "bearer" ? m.mcp_auth_token() : m.mcp_auth_none();
-}
-
-function AuthenticationSection({ state }: { state: SettingsState }) {
-  if (!state.authenticationReady) return <AuthenticationLoading state={state} />;
-  const { preset, authEdited, draft, authorization } = state;
-  return (
-    <section className="grid gap-3" aria-label={m.mcp_auth_label()}>
-      <div className="flex items-center justify-between gap-3">
-        {preset ? <span className="text-sm font-medium">{m.mcp_auth_label()}</span> : null}
-        {preset && (!authEdited || draft.kind !== "bearer") ? (
-          <span className="text-sm text-kumo-subtle">{methodLabel(draft.kind)}</span>
-        ) : null}
-      </div>
-      {!preset ? <CustomAuthentication state={state} /> : null}
-      {preset && authEdited && draft.kind === "bearer" ? (
-        <McpAuthFields draft={draft} onChange={state.setDraft} disabled={state.busy} fixedMethod />
-      ) : null}
-      {authEdited ? <AuthenticationFeedback state={state} /> : null}
-      <McpOAuthControls session={authorization.oauth} />
-      {!authEdited && !authorization.oauth.phase ? <CurrentAuthentication state={state} /> : null}
-      {preset && authEdited && !authorization.oauth.phase ? <AuthenticationSubmit state={state} /> : null}
     </section>
   );
 }
 
-function AuthenticationFeedback({ state }: { state: SettingsState }) {
+function AuthenticationSection({ state }: { state: SettingsState }) {
+  if (!state.authenticationReady) return <AuthenticationLoading state={state} />;
+  if (state.preset) return <McpPresetAuthentication state={state} />;
+  const { authEdited, authorization } = state;
+  return (
+    <section className="grid gap-3" aria-label={m.mcp_auth_label()}>
+      <CustomAuthentication state={state} />
+      {authEdited ? <AuthenticationFeedback state={state} /> : null}
+      <McpOAuthControls session={authorization.oauth} />
+      {!authEdited && !authorization.oauth.phase ? <CurrentAuthentication state={state} /> : null}
+    </section>
+  );
+}
+
+function AuthenticationFeedback({ state, recovery = false }: { state: SettingsState; recovery?: boolean }) {
   const { authEdited, error, authenticationError, authorization, feedback } = state;
   const label = authenticationError ?? (authEdited ? undefined : feedback.label);
   if (error || authorization.oauth.phase || !label) return null;
+  if (!authenticationError && feedback.action === "retry" && state.onRetry && !recovery) return null;
   return (
     <p
       role={authenticationError ? "alert" : undefined}
@@ -204,14 +186,14 @@ function CustomAuthentication({ state }: { state: SettingsState }) {
 }
 
 function CurrentAuthentication({ state }: { state: SettingsState }) {
-  const { entry, kind, busy, preset, methods, begin, submit } = state;
+  const { entry, kind, busy, begin, submit } = state;
   return (
     <>
       {kind === "bearer" && entry.authorization?.hasCredential ? (
         <div className="grid gap-2">
           <div className="flex items-center justify-between gap-3">
             <span className="text-kumo-subtle">••••••••</span>
-            <Button variant="ghost" size="compact" disabled={busy} onClick={() => begin("bearer")}>
+            <Button variant="ghost" disabled={busy} onClick={() => begin("bearer")}>
               {m.mcp_auth_update()}
             </Button>
           </div>
@@ -222,7 +204,6 @@ function CurrentAuthentication({ state }: { state: SettingsState }) {
         <div className="mcp-auth-action-row">
           <Button
             variant="secondary"
-            size="compact"
             disabled={busy}
             onClick={() => (kind === "oauth" ? void submit(true) : begin("bearer"))}
           >
@@ -232,38 +213,19 @@ function CurrentAuthentication({ state }: { state: SettingsState }) {
         </div>
       ) : null}
       {kind === "none" ? <AuthenticationFeedback state={state} /> : null}
-      {preset
-        ? methods
-            .filter((method) => method !== kind)
-            .map((method) => (
-              <div key={method}>
-                <Button
-                  variant="ghost"
-                  size="compact"
-                  className="px-0 text-kumo-link"
-                  disabled={busy}
-                  onClick={() => begin(method)}
-                >
-                  {method === "bearer" ? m.mcp_use_key() : m.mcp_use_account()}
-                </Button>
-              </div>
-            ))
-        : null}
+      <ProbeRecovery state={state} />
     </>
   );
 }
 
-function AuthenticationSubmit({ state }: { state: SettingsState }) {
-  const { draft, busy, config, configValid } = state;
-  const valid = configValid && validAuth({ ...draft, authHeader: config.authHeader, authScheme: config.authScheme });
+function ProbeRecovery({ state }: { state: SettingsState }) {
+  if (state.feedback.action !== "retry" || !state.onRetry) return null;
   return (
-    <div className="mcp-auth-action-row justify-end">
-      <Button variant="ghost" disabled={busy} onClick={state.cancel}>
-        {m.common_cancel()}
+    <div className="mcp-auth-action-row">
+      <Button variant="secondary" size="compact" disabled={state.busy} loading={state.retrying} onClick={state.onRetry}>
+        {m.mcp_retry()}
       </Button>
-      <Button type="submit" disabled={busy || !valid} loading={busy}>
-        {busy ? m.mcp_saving() : draft.kind === "oauth" ? m.mcp_authorize_action() : m.mcp_auth_save()}
-      </Button>
+      <AuthenticationFeedback state={state} recovery />
     </div>
   );
 }

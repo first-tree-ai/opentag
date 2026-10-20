@@ -11,7 +11,7 @@
   overflow: hidden;
   padding: 0;
 }
-.skill-reader-dialog > header {
+.skill-reader-dialog > [data-ui="dialog-header"] {
   flex-shrink: 0;
   align-items: center;
   margin: 0;
@@ -245,7 +245,7 @@
     width: calc(100vw - 1rem);
     height: calc(100dvh - 1rem);
   }
-  .skill-reader-dialog > header {
+  .skill-reader-dialog > [data-ui="dialog-header"] {
     padding: 1rem;
     gap: 0.5rem;
   }

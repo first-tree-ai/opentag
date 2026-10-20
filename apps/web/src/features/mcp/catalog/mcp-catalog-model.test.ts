@@ -159,6 +159,26 @@ describe("per-Agent catalog state", () => {
   it("is added when mounted with an active authorization", () => {
     expect(catalogEntryState(catalogEntry(), [accountServer()], [mount()])).toBe("added");
   });
+  it.each(["pending", "failed"] as const)(
+    "keeps saved tools added only during a healthy refresh (%s)",
+    (probeState) => {
+      const authorization = mount().authorization;
+      const mounted = mount({
+        authorization: authorization && { ...authorization, probeState, probedAt: "2026-09-16T00:00:00.000Z" },
+        snapshot: {
+          protocolEra: null,
+          protocolVersion: null,
+          serverInfo: null,
+          capabilities: null,
+          instructions: null,
+          tools: [],
+        },
+      });
+      expect(catalogEntryState(catalogEntry(), [accountServer()], [mounted])).toBe(
+        probeState === "pending" ? "added" : "unconnected",
+      );
+    },
+  );
 
   it("finds an overridden installation even when another Agent's definition comes first", () => {
     const own = accountServer();

@@ -12,6 +12,7 @@ import {
   users,
 } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
+import { lockActiveAccount as lockAccountForComputerAccess } from "../computers/account-lock.js";
 import { lockMcpBindings } from "../mcp/index.js";
 
 export type OnboardingResetErrorCode = "ONBOARDING_RESET_OWNERSHIP_INCONSISTENT" | "ONBOARDING_RESET_UNVERIFIED";
@@ -161,7 +162,7 @@ export class OnboardingResetService {
   async #revokeComputerAccess(accountId: string): Promise<readonly string[]> {
     const now = this.#now();
     return this.#database.transaction(async (transaction) => {
-      await lockActiveAccount(transaction, accountId);
+      await lockAccountForComputerAccess(transaction, accountId);
       await transaction
         .update(computerConnectCodes)
         .set({ revokedByUserId: accountId, revokedAt: now })

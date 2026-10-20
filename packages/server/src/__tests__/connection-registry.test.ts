@@ -16,6 +16,7 @@ import {
   canReceiveRuntimeSnapshot,
 } from "../runtime/connection-registry.js";
 import { projectComputerProviderReadiness } from "../services/computers/provider-readiness.js";
+import { deferred } from "./support/deferred.js";
 
 describe("ConnectionRegistry", () => {
   it.each([
@@ -182,6 +183,105 @@ describe("ConnectionRegistry", () => {
     expect(runtimeSocket.close).toHaveBeenCalledWith(4002, "Machine credential rotated or revoked");
     expect(registry.currentInstanceId(computerId)).toBeUndefined();
   });
+
+  it.each([
+    { throws: false, revoked: false },
+    { throws: true, revoked: false },
+    { throws: true, revoked: true },
+  ])("revokes routing before waiting for registration ($throws, $revoked)", async ({ throws, revoked }) => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID();
+    const credentialId = randomUUID();
+    const installationId = randomUUID();
+    const oldSocket = socket();
+    const oldInstance = randomUUID();
+    await registry.register(
+      {
+        computerId,
+        installationId,
+        instanceId: oldInstance,
+        lastHeartbeatAt: 1,
+        socket: oldSocket,
+        control: { computerId, credentialId, installationId, kind: "local" },
+      },
+      async () => undefined,
+    );
+    const started = deferred();
+    const release = deferred();
+    const nextSocket = socket();
+    const nextInstance = randomUUID();
+    const registration = registry.register(
+      {
+        computerId,
+        installationId,
+        instanceId: nextInstance,
+        lastHeartbeatAt: 1,
+        socket: nextSocket,
+        control: { computerId, credentialId: revoked ? credentialId : randomUUID(), installationId, kind: "local" },
+      },
+      async () => {
+        started.resolve();
+        await release.promise;
+      },
+    );
+    await started.promise;
+    if (throws)
+      oldSocket.close = vi.fn(() => {
+        throw new Error("socket close failure");
+      });
+    const closing = registry.closeComputer(computerId, undefined, [credentialId]);
+    const settled = Promise.allSettled([closing]);
+    try {
+      expect(registry.currentInstanceId(computerId)).toBeUndefined();
+      expect(registry.isCurrent(computerId, oldInstance, oldSocket)).toBe(false);
+      await expect(registry.send(computerId, oldInstance, { type: "test" })).rejects.toMatchObject({
+        code: "instance_replaced",
+      });
+    } finally {
+      release.resolve();
+      await registration;
+    }
+    expect((await settled)[0]).toMatchObject(throws ? { status: "rejected" } : { status: "fulfilled", value: true });
+    expect(registry.currentInstanceId(computerId)).toBe(revoked ? undefined : nextInstance);
+    expect(nextSocket.close).toHaveBeenCalledTimes(revoked ? 1 : 0);
+  });
+
+  it.each([false, true])(
+    "closes only a revoked credential after pending registration (revoked: %s)",
+    async (revoked) => {
+      const registry = new ConnectionRegistry();
+      const computerId = randomUUID();
+      const oldCredential = randomUUID();
+      const newCredential = randomUUID();
+      const runtimeSocket = socket();
+      const started = deferred();
+      const release = deferred();
+      const instanceId = randomUUID();
+      const installationId = randomUUID();
+      const registration = registry.register(
+        {
+          clientVersion: "0.1.2",
+          installationId,
+          computerId,
+          instanceId,
+          lastHeartbeatAt: 1,
+          socket: runtimeSocket,
+          control: { credentialId: revoked ? oldCredential : newCredential, kind: "local", computerId, installationId },
+        },
+        async () => {
+          started.resolve();
+          await release.promise;
+        },
+      );
+      await started.promise;
+      const closing = registry.closeComputer(computerId, undefined, [oldCredential]);
+      release.resolve();
+      await registration;
+      expect(await closing).toBe(revoked);
+      expect(registry.currentInstanceId(computerId)).toBe(revoked ? undefined : instanceId);
+      expect(runtimeSocket.close).toHaveBeenCalledTimes(revoked ? 1 : 0);
+    },
+  );
 
   it("closes a deleted Computer with the fatal close frame it is given, and reports an absent one", async () => {
     const registry = new ConnectionRegistry();

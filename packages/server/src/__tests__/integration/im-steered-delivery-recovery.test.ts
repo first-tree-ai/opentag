@@ -105,6 +105,28 @@ describe("steered IM delivery recovery", () => {
     );
   });
 
+  it.each([
+    "IM_DELIVERY_RECOVERY_BUSY",
+    "IM_DELIVERY_RECOVERY_RUNNING",
+    "IM_DELIVERY_RECOVERY_REPORTING",
+    "IM_DELIVERY_RECOVERY_REQUIRED",
+    "IM_DELIVERY_RECOVERY_REJECTED",
+    "IM_DELIVERY_RECOVERY_AWAITING_REPORT",
+  ])("keeps already absorbed children while recovery defers with %s", async (lastErrorCode) => {
+    const fixture = await createFixture(client.database);
+    const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });
+    await acceptAndSteer(fixture, custody);
+    await client.database
+      .update(imMessageDeliveries)
+      .set({ lastErrorCode, nextAttemptAt: fixture.now })
+      .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+    const before = await deliveryRows(client.database, fixture);
+
+    await runImDeliveryExpiry(client.database, janitorOptions(new Date(fixture.now.getTime() + 500)));
+
+    expect(await deliveryRows(client.database, fixture)).toEqual(before);
+  });
+
   it("re-places children from an ended target Session before the worker claims them", async () => {
     const fixture = await createFixture(client.database);
     const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });

@@ -4,7 +4,6 @@ import {
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
   RUNTIME_CAPABILITY,
-  RUNTIME_DEFAULT_MAX_DURATION_MS,
   RUNTIME_DIRECT_TEXT_MAX_BYTES,
   RUNTIME_FINAL_TEXT_MAX_BYTES,
   type RuntimeApprovalDecision,
@@ -60,6 +59,9 @@ import { TurnTraceBuffer } from "./trace-buffer.js";
 import { TurnActivityReporter } from "./turn-activity-reporter.js";
 import type { LiveTurnOwner, TurnCustodyOwner } from "./turn-custody-owner.js";
 import type { TurnReportOwner } from "./turn-report-owner.js";
+import { abortExpiredTurn, turnTimeoutMs } from "./turn-timeout.js";
+
+export { turnTimeoutMs } from "./turn-timeout.js";
 
 export interface AgentTurnOutgoingReplyCollector {
   collect(input: {
@@ -378,10 +380,12 @@ export class AgentTurnRunner {
     };
     this.#logger.info(fields, "Turn started");
     const timeout = new AbortController();
-    turn.expiresAt = new Date(startedAt + turnTimeoutMs(owner.request, startedAt)).toISOString();
-    /* v8 ignore next -- the turn-timeout callback only fires for wall-clock overruns tests cannot wait out. */
-    const timer = setTimeout(() => timeout.abort("turn_timeout"), turnTimeoutMs(owner.request, this.#now()));
+    const timeoutMs = turnTimeoutMs(owner.request, startedAt);
+    turn.expiresAt = new Date(startedAt + timeoutMs).toISOString();
+    const timer = setTimeout(() => timeout.abort("turn_timeout"), timeoutMs);
     timer.unref();
+    abortExpiredTurn(owner.request, startedAt, timeout);
+    const expiredBeforeStart = timeout.signal.aborted;
     const signal = AbortSignal.any([shutdownSignal, timeout.signal]);
     const trace = new TurnTraceBuffer({
       sender: this.#connection,
@@ -396,6 +400,7 @@ export class AgentTurnRunner {
     let turnPlanInput: ProviderCliTurnPlanPrepareInput | undefined;
     let preparedExecutionId: string | undefined;
     try {
+      signal.throwIfAborted();
       const started = await this.#startTurn(owner, turn, signal);
       preparedExecutionId = started.preparedExecutionId;
       turnPlanInput = started.turnPlanInput;
@@ -429,7 +434,7 @@ export class AgentTurnRunner {
         this.#reportFailure(owner, completion, returnedFailure(result, completion));
     } catch (error) {
       turn.phase = "reporting";
-      completion = completionForError(error, signal.reason);
+      completion = completionForError(error, signal.reason, expiredBeforeStart);
       this.#logger.warn(
         {
           ...fields,
@@ -781,13 +786,6 @@ function runtimeResourceContext(request: DirectImMessageDeliveryRequest | Runtim
   return text;
 }
 
-export function turnTimeoutMs(request: DirectImMessageDeliveryRequest, now: number): number {
-  const limits: number[] = [];
-  if (request.runtime.budget?.maxDurationMs) limits.push(request.runtime.budget.maxDurationMs);
-  if (request.deadlineAt) limits.push(Math.max(1, Date.parse(request.deadlineAt) - now));
-  return Math.max(1, Math.min(...(limits.length > 0 ? limits : [RUNTIME_DEFAULT_MAX_DURATION_MS])));
-}
-
 export function completionForResult(result: AgentRunResult, abortReason: unknown): TurnCompletion {
   if (abortReason === "client_shutdown") {
     return { outcome: "cancelled", executionEffects: "may_have_occurred", errorReason: "client_shutdown" };
@@ -853,12 +851,16 @@ function errorFieldsForLog(error: unknown): { errorCode?: string } {
   return {};
 }
 
-export function completionForError(error: unknown, abortReason: unknown): TurnCompletion {
+export function completionForError(error: unknown, abortReason: unknown, expiredBeforeStart = false): TurnCompletion {
   if (abortReason === "client_shutdown") {
     return { outcome: "cancelled", executionEffects: "may_have_occurred", errorReason: "client_shutdown" };
   }
   if (abortReason === "turn_timeout") {
-    return { outcome: "failed", executionEffects: "may_have_occurred", errorReason: "turn_timeout" };
+    return {
+      outcome: "failed",
+      executionEffects: expiredBeforeStart ? "not_started" : "may_have_occurred",
+      errorReason: "turn_timeout",
+    };
   }
   if (error instanceof ImCredentialEnvironmentError || error instanceof ProviderCliTurnPlanError) {
     return { outcome: "failed", executionEffects: "not_started", errorReason: "credential_unavailable" };

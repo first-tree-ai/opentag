@@ -220,6 +220,7 @@ describe("Kumo semantic adapter", () => {
     const trigger = screen.getByRole("button", { name: "Open" });
     fireEvent.click(trigger);
     expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.queryByRole("banner")).toBeNull();
     expect(screen.getByRole("button", { name: "Close Example" })).toBeTruthy();
     const heading = screen.getByRole("heading", { name: "Example" }).closest('[data-ui="dialog-heading"]');
     await waitFor(() => expect(document.activeElement).toBe(heading));

@@ -92,7 +92,7 @@
   max-height: calc(100dvh - 8rem);
   overflow: hidden;
 }
-.skill-preset-dialog > header,
+.skill-preset-dialog > [data-ui="dialog-header"],
 .skill-preset-dialog > p {
   flex-shrink: 0;
 }
@@ -133,7 +133,7 @@
   max-height: calc(100dvh - 8rem);
   overflow: hidden;
 }
-.skill-install-dialog > header {
+.skill-install-dialog > [data-ui="dialog-header"] {
   flex-shrink: 0;
 }
 .skill-install-body {
@@ -217,7 +217,7 @@
   .skill-preset-dialog {
     padding: 0.75rem;
   }
-  .skill-preset-dialog > header,
+  .skill-preset-dialog > [data-ui="dialog-header"],
   .skill-preset-dialog > p {
     margin-bottom: 0.5rem;
   }
@@ -227,7 +227,7 @@
   .skill-install-dialog {
     padding: 0.75rem;
   }
-  .skill-install-dialog > header {
+  .skill-install-dialog > [data-ui="dialog-header"] {
     margin-bottom: 0.5rem;
   }
   .skill-install-body {

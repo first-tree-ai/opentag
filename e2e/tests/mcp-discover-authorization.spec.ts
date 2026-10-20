@@ -85,11 +85,13 @@ for (const width of [1440, 736]) {
     await dialog.getByRole("button", { name: "Close Discover", exact: true }).click();
     await page.getByRole("button", { name: "Airtable", exact: true }).click();
     const details = page.getByRole("dialog", { name: "Airtable", exact: true });
-    await expect(details.getByLabel("Connector address")).toHaveAttribute("readonly", "");
+    await expect(details.getByRole("region", { name: "Connector address" })).toContainText("https://");
+    await expect(details.getByRole("textbox", { name: "Connector address" })).toHaveCount(0);
     await expect(details.getByRole("button", { name: "Tools", exact: true })).toHaveCount(0);
     await expect(details.getByRole("button", { name: "Advanced settings", exact: true })).toHaveCount(0);
     const writeCount = fixture.writes.length;
-    await details.getByRole("button", { name: "Use API key or token", exact: true }).click();
+    await details.getByRole("combobox", { name: "Authentication", exact: true }).click();
+    await page.getByRole("option", { name: "API key or token", exact: true }).click();
     await expect(details.getByLabel("API key or token")).toBeVisible();
     await details.getByRole("button", { name: "Cancel", exact: true }).click();
     expect(fixture.writes).toHaveLength(writeCount);
@@ -184,7 +186,7 @@ test("blocked authorization opens a normal tab from its card and preserves Disco
   await card.getByRole("button", { name: "Add: Airtable", exact: true }).click();
   await expect(card.getByRole("status")).toHaveText("Authorization page did not open");
   const tabPromise = page.waitForEvent("popup");
-  await card.getByRole("button", { name: "Open authorization page", exact: true }).click();
+  await card.getByRole("button", { name: "Open window", exact: true }).click();
   const tab = await tabPromise;
   await expect(tab.getByRole("link", { name: "Finish authorization" })).toBeVisible();
   await expect(dialog).toBeVisible();

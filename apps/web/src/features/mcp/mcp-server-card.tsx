@@ -2,9 +2,9 @@ import { MCP_CATALOG_ENTRIES } from "@opentag/mcp-presets";
 import type { MCPAgentServer } from "@opentag/shared/browser";
 import { DotsThree } from "@phosphor-icons/react";
 import * as m from "../../paraglide/messages.js";
-import { Button, DropdownMenu, Icon, Loader, Switch, Text, Tooltip } from "../../ui/design-system.js";
+import { Button, DropdownMenu, Switch } from "../../ui/design-system.js";
 import { findCatalogEntryByUrl, localizedText } from "./catalog/mcp-catalog-model.js";
-import { authorizationAction, connectorFeedback } from "./mcp-feedback.js";
+import { connectorFeedback, type McpFeedback } from "./mcp-feedback.js";
 import type { McpOAuthSession } from "./mcp-oauth-session.js";
 import { McpServiceIcon } from "./mcp-service-icon.js";
 import { mcpTitle } from "./mcp-title.js";
@@ -15,9 +15,7 @@ type CardProps = {
   entry: MCPAgentServer;
   agentName: string;
   onAction: (action: ServerAction) => void;
-  onProbe: () => void;
   onToggle: () => void;
-  probing: boolean;
   toggling: boolean;
   error?: string;
   connectionError?: string;
@@ -35,59 +33,47 @@ export function McpServerCard(props: CardProps) {
       className={`mcp-server-row min-w-0 p-4 outline-none focus-visible:outline-2 focus-visible:outline-kumo-focus outline-offset-[-2px] ${highlighted ? "bg-kumo-tint" : ""}`}
       data-ui="mcp-server-row"
     >
-      <McpIdentity entry={entry} connecting={props.connecting} onDetails={() => props.onAction("edit")} />
+      <McpIdentity {...props} />
       <div className="mcp-server-controls">
         <McpControls {...props} />
-        <McpRowFeedback {...props} />
       </div>
     </li>
   );
 }
 
-function McpIdentity({
-  entry,
-  connecting,
-  onDetails,
-}: {
-  entry: MCPAgentServer;
-  connecting?: boolean;
-  onDetails: () => void;
-}) {
+function McpIdentity(props: CardProps) {
+  const { entry, onAction } = props;
   const catalogEntry = findCatalogEntryByUrl(entry.effective.url, MCP_CATALOG_ENTRIES);
   const subtitle = catalogEntry
     ? localizedText(catalogEntry.description)
     : entry.description?.trim() || entry.effective.url;
+  const feedback = rowFeedback(props);
+  const descriptionId = `mcp-server-${entry.mcpServerId}-description`;
   return (
-    <div className="mcp-server-identity">
-      <Button
-        className="mcp-server-logo"
-        tabIndex={-1}
-        variant="ghost"
-        disabled={connecting}
-        aria-label={m.mcp_open_details({ server: mcpTitle(entry) })}
-        onClick={() => onDetails()}
-      >
+    <Button
+      id={`mcp-server-${entry.mcpServerId}-details`}
+      className="mcp-server-identity rounded-md hover:bg-kumo-tint"
+      variant="ghost"
+      aria-label={mcpTitle(entry)}
+      aria-haspopup="dialog"
+      aria-describedby={descriptionId}
+      onClick={() => onAction("edit")}
+    >
+      <span className="mcp-server-logo">
         <McpServiceIcon src={catalogEntry?.iconIsOfficial ? catalogEntry.iconUrl : undefined} />
-      </Button>
-      <div className="grid min-w-0 gap-1">
-        <Text as="h2" variant="heading" DANGEROUS_className="min-w-0">
-          <Button
-            id={`mcp-server-${entry.mcpServerId}-details`}
-            className="mcp-server-name"
-            variant="ghost"
-            disabled={connecting}
-            title={mcpTitle(entry)}
-            onClick={() => onDetails()}
-          >
-            <span className="truncate">{mcpTitle(entry)}</span>
-            <Icon name="chevron-right" className="size-3.5 shrink-0 text-kumo-subtle" />
-          </Button>
-        </Text>
-        <Tooltip content={subtitle} render={<p className="truncate text-sm text-kumo-subtle" />}>
-          {subtitle}
-        </Tooltip>
-      </div>
-    </div>
+      </span>
+      <span className="grid min-w-0 gap-1">
+        <span className="mcp-server-name truncate">{mcpTitle(entry)}</span>
+        <span
+          id={descriptionId}
+          className={`mcp-server-description line-clamp-2 whitespace-normal text-sm font-normal ${feedback.label && !feedback.neutral ? "text-kumo-danger" : "text-kumo-subtle"}`}
+          role={props.error ? "alert" : undefined}
+          aria-live="polite"
+        >
+          {feedback.label ?? subtitle}
+        </span>
+      </span>
+    </Button>
   );
 }
 
@@ -123,58 +109,15 @@ function McpControls({ entry, agentName, connecting, toggling, onToggle, onActio
   );
 }
 
-function McpRowFeedback(props: CardProps) {
-  const { entry, error, connecting, probing, oauthSession, connectionError, onAction, onProbe } = props;
-  if (error)
-    return (
-      <div className="mcp-server-actions text-sm text-kumo-danger" role="alert">
-        {error}
-      </div>
-    );
-  if (!entry.enabled) return <div className="mcp-server-actions" />;
-  if (connecting || probing) return <McpBusyFeedback session={oauthSession} />;
+function rowFeedback({ entry, error, connecting, oauthSession, connectionError }: CardProps): McpFeedback {
+  if (error) return { label: error };
+  if (!entry.enabled) return {};
+  if (connecting) {
+    const authorizing = Boolean(oauthSession?.phase && oauthSession.phase !== "checking");
+    return { label: authorizing ? m.mcp_oauth_preparing() : m.mcp_add_loading_tools(), neutral: true };
+  }
   const feedback = connectorFeedback(entry, connectionError);
-  return (
-    <div className="mcp-server-actions flex min-w-0 items-center justify-end gap-3" aria-live="polite">
-      {feedback.label ? (
-        <span className={`mcp-server-status text-sm ${feedback.neutral ? "text-kumo-subtle" : "text-kumo-danger"}`}>
-          {feedback.label}
-        </span>
-      ) : null}
-      {feedback.action ? (
-        <Button
-          size="compact"
-          variant="ghost"
-          className="px-1 text-kumo-link"
-          onClick={feedback.action === "authorize" ? () => onAction("authorize") : onProbe}
-        >
-          {feedback.action === "authorize" ? authorizationAction(entry) : m.mcp_retry()}
-        </Button>
-      ) : null}
-    </div>
-  );
-}
-
-function McpBusyFeedback({ session }: { session?: McpOAuthSession }) {
-  const authorizing = Boolean(session?.phase && session.phase !== "checking");
-  return (
-    <div className="mcp-server-actions flex min-w-0 items-center justify-end gap-3" aria-live="polite">
-      <span className="flex items-center gap-2 text-sm text-kumo-subtle">
-        <Loader size="sm" />
-        {authorizing ? m.mcp_oauth_preparing() : m.mcp_add_loading_tools()}
-      </span>
-      {authorizing && session ? (
-        <>
-          {session.blocked ? (
-            <Button size="compact" variant="ghost" onClick={() => void session.openFallback()}>
-              {m.mcp_catalog_open_page()}
-            </Button>
-          ) : null}
-          <Button size="compact" variant="ghost" onClick={() => void session.cancel()}>
-            {m.common_cancel()}
-          </Button>
-        </>
-      ) : null}
-    </div>
-  );
+  if (!feedback.label && feedback.action === "authorize")
+    return { label: m.mcp_authorization_required(), neutral: true };
+  return feedback;
 }

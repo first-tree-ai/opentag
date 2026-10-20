@@ -574,8 +574,9 @@ export async function startServer(): Promise<void> {
       },
     });
     const machineAuthService = new MachineAuthService(database, {
-      onCredentialRotated: async (computerId) => {
-        await registry.closeComputer(computerId);
+      logger: serviceLogger("machine-auth"),
+      onCredentialRotated: async (computerId, revokedCredentialIds) => {
+        await registry.closeComputer(computerId, undefined, revokedCredentialIds);
       },
     });
     const cloudIdentities = config.cloudIdentities;

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { EventEmitter, once } from "node:events";
 import { readFileSync } from "node:fs";
 import { mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -325,8 +326,7 @@ describe("Agent Runtime Client Turn vertical", () => {
       const decision = await fixture.custody.accept(delivery(fixture.runtime, "delivery-3", "after recovery"));
       expect(decision.result).toMatchObject({ status: "accepted" });
       await decision.onAcceptedSent?.();
-      await vi.waitFor(() => expect(fixture.connection.reports().length).toBeGreaterThan(1));
-      const report = fixture.connection.reports()[1];
+      const report = await fixture.connection.waitForReport(1);
       expect(report).toMatchObject({
         deliveryId: "delivery-3",
         outcome: "completed",
@@ -743,6 +743,7 @@ async function providerRegistry(factory: AgentRuntimeFactory): Promise<AgentRunt
 
 class FakeConnection {
   readonly sent: unknown[] = [];
+  readonly #frameEvents = new EventEmitter();
   readonly #listeners = new Set<(state: RuntimeConnectionState) => void>();
   readonly #businessListeners = new Set<(frame: RuntimeBusinessFrame) => void | Promise<void>>();
   state: RuntimeConnectionState = "registered";
@@ -761,6 +762,7 @@ class FakeConnection {
   async send(frame: unknown): Promise<void> {
     if (this.state !== "registered") throw new Error("socket unavailable");
     this.sent.push(frame);
+    this.#frameEvents.emit("frame");
   }
 
   setState(state: RuntimeConnectionState): void {
@@ -772,6 +774,15 @@ class FakeConnection {
     return this.sent.filter(
       (frame): frame is TurnReportRequest => (frame as { type?: unknown }).type === "turn:report",
     );
+  }
+
+  async waitForReport(index: number): Promise<TurnReportRequest> {
+    let report = this.reports()[index];
+    while (report === undefined) {
+      await once(this.#frameEvents, "frame");
+      report = this.reports()[index];
+    }
+    return report;
   }
 }
 

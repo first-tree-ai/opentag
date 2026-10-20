@@ -10,7 +10,7 @@ export * from "./skill-manifest.js";
  * platform, stored as one archive object, owned by exactly one Agent, and materialized into that
  * Agent's workspace at runtime. This module is the shared contract only: the Server, Client/CLI and
  * Web lanes build on these schemas, constants, and parsing rules. See
- * `docs/design/agent-skills.md`. Manifest parsing lives in `./skill-manifest.ts`, which this module
+ * `docs/system/capabilities/agent-skills.md`. Manifest parsing lives in `./skill-manifest.ts`, which this module
  * re-exports.
  *
  * Like every module under `src/` that the browser entrypoint re-exports, this one is

@@ -7,6 +7,57 @@ describe("Connector feedback evidence", () => {
   it("does not claim ongoing availability from a successful tool snapshot", () => {
     expect(connectorFeedback(entry())).toEqual({});
   });
+  it("keeps a previous tool result quiet during background refresh", () => {
+    expect(connectorFeedback(entry({ authorization: { ...authorization(), probeState: "pending" } }))).toEqual({});
+  });
+  it.each(["missing timestamp", "missing snapshot"])("shows initial loading with %s", (missing) => {
+    const row = entry({
+      authorization: {
+        ...authorization(),
+        probeState: "pending",
+        probedAt: missing === "missing timestamp" ? null : authorization().probedAt,
+      },
+      ...(missing === "missing snapshot" ? { snapshot: null } : {}),
+    });
+    expect(connectorFeedback(row)).toEqual({ label: "Loading tools…", neutral: true });
+  });
+  it("retains an empty result during background refresh", () => {
+    const snapshot = entry().snapshot;
+    expect(
+      connectorFeedback(
+        entry({
+          authorization: { ...authorization(), probeState: "pending", toolsCount: 0 },
+          snapshot: snapshot && { ...snapshot, tools: [] },
+        }),
+      ),
+    ).toEqual({ label: "No tools available", neutral: true });
+  });
+  it("keeps a confirmed tool failure visible even with a saved snapshot", () => {
+    expect(
+      connectorFeedback(
+        entry({
+          authorization: {
+            ...authorization(),
+            probeState: "failed",
+            probeError: "MCP_UPSTREAM_UNAVAILABLE: timed out",
+          },
+        }),
+      ),
+    ).toEqual({ label: "Request timed out", action: "retry" });
+  });
+  it("does not treat an old probe error as the result of a pending refresh", () => {
+    expect(
+      connectorFeedback(
+        entry({
+          authorization: {
+            ...authorization(),
+            probeState: "pending",
+            probeError: "MCP_UPSTREAM_UNAVAILABLE: timed out",
+          },
+        }),
+      ),
+    ).toEqual({});
+  });
   it("does not infer provider revocation from a local reset", () => {
     expect(
       connectorFeedback(

@@ -460,6 +460,31 @@ describe("Discover installation and recovery", () => {
     expect(target.getByRole("img", { name: "Added" })).toBeTruthy();
     expect(target.queryByRole("button")).toBeNull();
   });
+  it.each([0, 3])("keeps a saved result with %i tools quiet during background refresh", async (toolsCount) => {
+    const binding = mountFor(serverFor("beta"), {
+      ...summary("active"),
+      kind: "none",
+      hasCredential: false,
+      probeState: "pending",
+      probedAt: "2026-09-16T00:00:00.000Z",
+      toolsCount,
+    });
+    if (toolsCount === 0 && binding.snapshot) binding.snapshot.tools = [];
+    await discover({ mounted: [binding] });
+    const target = within(catalogText("Beta").closest("li") as HTMLElement);
+    expect(target.getByRole("img", { name: "Added" })).toBeTruthy();
+    expect(target.queryByText("Loading tools…")).toBeNull();
+    expect(target.queryByRole("button")).toBeNull();
+    if (toolsCount === 0) expect(target.getByText("No tools available")).toBeTruthy();
+  });
+  it("keeps initial tool loading visible when there is no completed snapshot", async () => {
+    const binding = mountFor(serverFor("beta"), { ...summary("active"), probeState: "pending", toolsCount: null });
+    binding.snapshot = null;
+    await discover({ mounted: [binding] });
+    const target = within(catalogText("Beta").closest("li") as HTMLElement);
+    expect(target.getByText("Loading tools…")).toBeTruthy();
+    expect(target.queryByRole("img", { name: "Added" })).toBeNull();
+  });
   it("uses the same network reason and Retry as the list", async () => {
     const binding = mountFor(serverFor("beta"), {
       ...summary("active"),
@@ -476,6 +501,40 @@ describe("Discover installation and recovery", () => {
 });
 
 describe("Discover authorization lifecycle", () => {
+  it("keeps a blocked OAuth retry visible and cancellable after reopening Details", async () => {
+    const browser = fakeMcpOAuthBrowser();
+    try {
+      stub([]);
+      const calls = stubCatalogWrites();
+      calls.mounts.push(mountFor(serverFor("alpha"), null));
+      calls.oauth.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+      wrap(<McpPage agentId={AGENT_ID} />);
+      await openDiscover();
+      fireEvent.click(card("Alpha").getByRole("button", { name: "Authorize: Alpha" }));
+      await card("Alpha").findByText("Cannot reach service");
+      fireEvent.click(screen.getByRole("button", { name: "Close Discover" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Alpha" }));
+      browser.open.mockReturnValue(null);
+      fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+      const dialog = within(screen.getByRole("dialog"));
+      await dialog.findByRole("button", { name: "Open window" });
+      expect(dialog.getByRole("button", { name: "Cancel" }).hasAttribute("disabled")).toBe(false);
+      expect(dialog.getByRole("button", { name: "Close Alpha" }).hasAttribute("disabled")).toBe(false);
+      fireEvent.click(dialog.getByRole("button", { name: "Close Alpha" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Alpha" }));
+      await within(screen.getByRole("dialog")).findByRole("button", { name: "Open window" });
+      expect(calls.oauth).toHaveBeenCalledTimes(2);
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      await screen.findByRole("button", { name: "Authorize" });
+      fireEvent.click(screen.getByRole("button", { name: "Close Alpha" }));
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Discover" }).hasAttribute("disabled")).toBe(false),
+      );
+      expect(calls.probe).not.toHaveBeenCalled();
+    } finally {
+      browser.restore();
+    }
+  });
   it("retains search and category after success and shows only a check mark", async () => {
     const browser = fakeMcpOAuthBrowser();
     try {
@@ -526,7 +585,7 @@ describe("Discover authorization lifecycle", () => {
       expect(browser.popup.close).not.toHaveBeenCalled();
       const row = within(document.getElementById(`mcp-server-${ALPHA_ID}`) as HTMLElement);
       await row.findByText("Authorizing…");
-      expect(row.getByRole("button", { name: "Cancel" })).toBeTruthy();
+      expect(row.queryByRole("button", { name: "Cancel" })).toBeNull();
       expect(row.queryByRole("button", { name: /^(Reauthorize|Authorize)$/ })).toBeNull();
       await complete(browser, calls.mounts);
       await waitFor(() => expect(calls.probe).toHaveBeenCalledWith(AGENT_ID, ALPHA_ID));
@@ -537,7 +596,7 @@ describe("Discover authorization lifecycle", () => {
       browser.restore();
     }
   });
-  it("can cancel the Discover authorization from the list after closing the directory", async () => {
+  it("can cancel the Discover authorization from Details after closing the directory", async () => {
     const browser = fakeMcpOAuthBrowser();
     try {
       stub([]);
@@ -547,11 +606,59 @@ describe("Discover authorization lifecycle", () => {
       add("Alpha");
       await card("Alpha").findByText("Authorizing…");
       fireEvent.click(screen.getByRole("button", { name: "Close Discover" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Alpha" }));
       fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
       await waitFor(() => expect(calls.detach).toHaveBeenCalledWith(AGENT_ID, ALPHA_ID));
       expect(calls.probe).not.toHaveBeenCalled();
       await openDiscover();
       expect(await card("Alpha").findByRole("button", { name: "Add: Alpha" })).toBeTruthy();
+    } finally {
+      browser.restore();
+    }
+  });
+  it("shows a Details authorization in Discover without starting another attempt", async () => {
+    const browser = fakeMcpOAuthBrowser();
+    try {
+      stub([]);
+      const calls = stubCatalogWrites();
+      calls.mounts.push(mountFor(serverFor("alpha"), null));
+      wrap(<McpPage agentId={AGENT_ID} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Alpha" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Authorize" }));
+      await screen.findByRole("button", { name: "Cancel" });
+      fireEvent.click(screen.getByRole("button", { name: "Close Alpha" }));
+      await openDiscover();
+      await card("Alpha").findByText("Authorizing…");
+      expect(card("Alpha").queryByRole("button", { name: "Authorize: Alpha" })).toBeNull();
+      expect(calls.oauth).toHaveBeenCalledTimes(1);
+      fireEvent.click(card("Alpha").getByRole("button", { name: "Cancel: Alpha" }));
+      await card("Alpha").findByRole("button", { name: "Authorize: Alpha" });
+      expect(calls.detach).not.toHaveBeenCalled();
+    } finally {
+      browser.restore();
+    }
+  });
+  it("clears a Details failure when Discover successfully authorizes the connector", async () => {
+    const browser = fakeMcpOAuthBrowser();
+    try {
+      stub([]);
+      const calls = stubCatalogWrites();
+      calls.mounts.push(mountFor(serverFor("alpha"), null));
+      calls.oauth.mockRejectedValueOnce(new ApiError(503, "private detail"));
+      wrap(<McpPage agentId={AGENT_ID} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Alpha" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Authorize" }));
+      await within(screen.getByRole("dialog")).findByRole("alert");
+      fireEvent.click(screen.getByRole("button", { name: "Close Alpha" }));
+      await openDiscover();
+      browser.popup.closed = false;
+      fireEvent.click(card("Alpha").getByRole("button", { name: "Authorize: Alpha" }));
+      await card("Alpha").findByText("Authorizing…");
+      await complete(browser, calls.mounts);
+      await card("Alpha").findByRole("img", { name: "Added" });
+      fireEvent.click(screen.getByRole("button", { name: "Close Discover" }));
+      const row = within(document.getElementById(`mcp-server-${ALPHA_ID}`) as HTMLElement);
+      expect(row.queryByText("Authorization failed")).toBeNull();
     } finally {
       browser.restore();
     }
@@ -646,7 +753,7 @@ describe("Discover authorization lifecycle", () => {
     await openDiscover();
     add("Alpha");
     await screen.findByText("Authorization page did not open");
-    expect(screen.getByRole("button", { name: "Open authorization page" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open window" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Cancel: Alpha" }));
     await waitFor(() => expect(calls.detach).toHaveBeenCalledWith(AGENT_ID, ALPHA_ID));
   });

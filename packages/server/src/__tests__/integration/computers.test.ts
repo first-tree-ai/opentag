@@ -23,6 +23,7 @@ import { agents, computerConnectCodes, computerCredentials, computers, users } f
 import { COMPUTER_DELETED_CLOSE, ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { AuthService, ConnectCodeService, hashSecret } from "../../services/auth/index.js";
 import { ComputerService, MachineAuthService } from "../../services/computers/index.js";
+import { deferred } from "../support/deferred.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 const betterAuthSecret = "computer-test-secret-at-least-32-characters";
@@ -288,6 +289,132 @@ describe("Computer connection persistence", () => {
     }
   });
 
+  it.each(["throw", "reject", "hang"] as const)(
+    "returns committed repair credentials when connection close callbacks %s",
+    async (mode) => {
+      const value = await fixture();
+      const initial = await connect(value);
+      const pending = deferred();
+      const warn = vi.fn();
+      const callback = vi.fn(() => {
+        if (mode === "throw") throw new Error("close failure");
+        if (mode === "reject") return Promise.reject(new Error("close failure"));
+        return pending.promise;
+      });
+      const machineAuth = new MachineAuthService(value.database, {
+        onCredentialRotated: callback,
+        logger: { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() },
+      });
+      const handle = vi.fn(() => ({ type: "work:result" }));
+      const app = createApp({
+        authService: value.auth,
+        computerService: value.service,
+        machineAuthService: machineAuth,
+        runtime: {
+          registry: value.registry,
+          business: {
+            parse: (frame) => frame as { type: string },
+            laneKey: () => "work",
+            handle,
+            failureResult: () => undefined,
+            overloadResult: () => undefined,
+          },
+        },
+      });
+      const sockets: WebSocket[] = [];
+      try {
+        const address = await app.listen({ host: "127.0.0.1", port: 0 });
+        const socket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
+        sockets.push(socket);
+        const frames = frameQueue(socket);
+        await opened(socket);
+        socket.send(
+          JSON.stringify({
+            type: "auth",
+            requestId: crypto.randomUUID(),
+            protocolVersion: 2,
+            supportedProtocolVersions: RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
+            machineToken: initial.machineToken,
+          }),
+        );
+        expect(await frames.next()).toMatchObject({ type: "auth:result", ok: true });
+        await frames.next();
+        const instanceId = crypto.randomUUID();
+        socket.send(JSON.stringify(registerFrame(initial.installationId, instanceId)));
+        const registration = await frames.next();
+        expect(registration).toMatchObject({ type: "computer:register:result", ok: true });
+        const issued = await machineAuth.issueForAccount(value.bootstrap.userId, {
+          mode: "repair",
+          targetComputerId: initial.computerId,
+        });
+        const input = exchangeInput(issued.code, mode === "hang" ? initial.installationId : crypto.randomUUID());
+        const started = performance.now();
+        const response = await app.inject({ method: "POST", url: HTTP_PATHS.computerConnectExchange, payload: input });
+        expect(performance.now() - started).toBeLessThan(2_000);
+        expect(response.statusCode).toBe(200);
+        const result = response.json<{ computerId: string; machineToken: string; installationId: string }>();
+        expect(result).toMatchObject({ computerId: initial.computerId, installationId: input.installationId });
+        const current = await machineAuth.verifyMachineToken(result.machineToken);
+        await expect(machineAuth.verifyMachineToken(initial.machineToken)).rejects.toMatchObject({
+          code: "AUTH_INVALID_TOKEN",
+        });
+        await expect(value.service.assertActiveCredential(initial)).rejects.toMatchObject({
+          code: "COMPUTER_NOT_REGISTERED",
+        });
+        await expect(
+          value.service.heartbeat(initial, instanceId, String(registration.connectionId)),
+        ).rejects.toMatchObject({ code: "COMPUTER_NOT_REGISTERED" });
+        const [computer] = await value.database.select().from(computers).where(eq(computers.id, initial.computerId));
+        expect(computer?.currentInstanceId).toBeNull();
+        const replay = await app.inject({ method: "POST", url: HTTP_PATHS.computerConnectExchange, payload: input });
+        expect(replay.statusCode).toBe(401);
+        expect(replay.json()).toMatchObject({ error: { code: "AUTH_CODE_CONSUMED" } });
+        const credentials = await value.database
+          .select()
+          .from(computerCredentials)
+          .where(eq(computerCredentials.computerId, initial.computerId));
+        expect(credentials).toHaveLength(2);
+        expect(credentials.filter((credential) => credential.revokedAt === null)).toEqual([
+          expect.objectContaining({ id: current.credentialId }),
+        ]);
+        expect(callback).toHaveBeenCalledTimes(1);
+        expect(callback).toHaveBeenCalledWith(initial.computerId, [initial.credentialId]);
+        expect(response.json()).not.toHaveProperty("revokedCredentialIds");
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith(
+          expect.objectContaining({ computerId: initial.computerId }),
+          expect.any(String),
+        );
+        // The socket deliberately remains registered: business entry must reject its revoked credential.
+        expect(value.registry.currentInstanceId(initial.computerId)).toBe(instanceId);
+        const closed = closeCode(socket);
+        socket.send(
+          JSON.stringify({ type: "work", requestId: crypto.randomUUID(), connectionId: registration.connectionId }),
+        );
+        expect(await frames.next()).toMatchObject({ type: "error", code: "AUTH_INVALID_TOKEN" });
+        await expect(closed).resolves.toBe(4401);
+        expect(handle).not.toHaveBeenCalled();
+        const newInstance = crypto.randomUUID();
+        const newConnection = crypto.randomUUID();
+        await value.service.register(current, registerFrame(input.installationId, newInstance), newConnection);
+        expect(await value.service.heartbeat(current, newInstance, newConnection)).toBe(true);
+        expect(await value.service.disconnect(initial.computerId, instanceId, String(registration.connectionId))).toBe(
+          false,
+        );
+        if (mode === "hang") {
+          pending.reject(new Error("late close failure"));
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          expect(warn).toHaveBeenCalledTimes(1);
+        }
+      } finally {
+        pending.resolve();
+        for (const socket of sockets) socket.terminate();
+        await app.close();
+        await value.sql.end();
+      }
+    },
+  );
+
   it("rolls back Computer repair when the account-owned identity diverges", async () => {
     const value = await fixture();
     try {
@@ -533,7 +660,7 @@ describe("Computer connection persistence", () => {
         from pg_stat_activity
         where datname = current_database()
           and wait_event_type = 'Lock'
-          and query ilike '%from "users"%for update%'
+          and query ilike '%from "users"%for no key update%'
       `;
       return row?.count ?? 0;
     };
@@ -597,7 +724,7 @@ describe("Computer connection persistence", () => {
         from pg_stat_activity
         where datname = current_database()
           and wait_event_type = 'Lock'
-          and query ilike '%from "users"%for update%'
+          and query ilike '%from "users"%for no key update%'
       `;
         return row?.count ?? 0;
       };

@@ -12,7 +12,7 @@ import type { AgentInput } from "../agent-runtime/types.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import type { AdmissionController } from "./admission-controller.js";
 import type { ProviderCliTurnPlanPrepareInput } from "./provider-cli/turn-plan-manager.js";
-import { buildProviderOutboxInstructions, GITHUB_NATIVE_CLI_INSTRUCTIONS } from "./provider-outbox-instructions.js";
+import { buildProviderOutboxInstructions } from "./provider-outbox-instructions.js";
 import type {
   PreparedRuntimeCredentialEnvironment,
   RuntimeCredentialEnvironmentManager,
@@ -735,7 +735,6 @@ function buildVisibleSessionMessageContext(
       : [];
   return [
     '<opentag-session-message-context source="managed">',
-    GITHUB_NATIVE_CLI_INSTRUCTIONS,
     request.scheduledOrigin
       ? "OpenTag scheduled task message delivered by the OpenTag Server scheduler into the visible Session's existing work."
       : "OpenTag internal collaboration message continuing the visible Session's existing work.",
@@ -765,7 +764,6 @@ function buildInternalSessionMessageContext(
 ): string[] {
   return [
     '<opentag-session-message-context source="managed">',
-    GITHUB_NATIVE_CLI_INSTRUCTIONS,
     request.scheduledOrigin
       ? "OpenTag scheduled task message delivered by the OpenTag Server scheduler."
       : "OpenTag internal collaboration message.",

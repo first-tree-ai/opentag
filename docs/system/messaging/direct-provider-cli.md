@@ -17,6 +17,27 @@ See the [Slack release](https://github.com/slackapi/slack-cli/releases/tag/v4.10
 
 OpenTag owns inbound IM routing, Integration credentials, temporary Client credential projection, and provider-native inbound references. It does not expose a message send, reply, Reaction, or upload API.
 
+## Runtime instruction placement
+
+The Client renders fixed Slack/Feishu CLI, attachment, body-formatting, and console/outbox guidance
+in the visible Session's managed system prompt. Both provider manuals are available there; the
+current Turn's provider reference selects which one applies. Git/GitHub guidance and the Agent ID
+also live in the managed system prompt. Internal Sessions receive Git/GitHub guidance without IM
+outbox manuals.
+
+Each IM or visible collaboration input retains a short adjacent reminder that ordinary output is the
+OpenTag runtime console and only the provider CLI delivers human-visible messages. Per-Turn facts,
+provider targets, attention and reply-role restrictions remain beside the message. Empty Session
+instruction placeholders are omitted; an explicitly supplied Session instruction remains available.
+
+These fixed Client templates do not participate in the effective runtime snapshot hash. Local and
+Cloud Provider creation/resume paths supply the rendered system prompt while retaining a matching
+persisted Provider binding. Client template updates therefore preserve the existing conversation;
+changes to the Server-supplied Agent/Session configuration still follow the existing snapshot-based
+restart rules. Previously recorded Turn text is left in the conversation history.
+
+## Provider CLI lifecycle
+
 The targeted first-setup `opentag connect` command is the only installer for both official Provider CLIs during
 onboarding. It is non-interactive, returns bounded next actions, and can be run by a person or an Agent. The daemon
 independently inspects and reports both CLIs while setup is incomplete; it does not race the foreground installer.
@@ -78,7 +99,7 @@ target Session's existing channel or thread scope in the same authorization oper
 Client and Agent cannot nominate an OpenTag outbox target. A callback to a thread Session keeps its provider-native thread
 scope. This context is a default delivery target, not a restriction on the broader Bot-token authority described below.
 
-For Feishu Turns, the managed Turn context instructs the Agent to pass multiline `lark-cli` bodies as
+For Feishu Turns, the managed system prompt instructs the Agent to pass multiline `lark-cli` bodies as
 single shell-quoted literal `--text` or `--markdown` arguments with real newlines, or provider-native JSON via `--content`.
 Avoid shell variables, substitutions, redirects, and heredocs for ordinary messaging. It also requires a pre-send check that rejects an
 intended multiline body when shell quoting left multiple literal `\n` tokens but no real newline. The check deliberately

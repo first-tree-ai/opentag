@@ -41,7 +41,7 @@ import {
 import type { ProviderCliOutgoingReplyCollectResult } from "./provider-cli/outgoing-reply-store.js";
 import { ProviderCliTurnPlanError } from "./provider-cli/turn-plan.js";
 import type { ProviderCliTurnPlanPrepareInput } from "./provider-cli/turn-plan-manager.js";
-import { buildProviderOutboxInstructions, GITHUB_NATIVE_CLI_INSTRUCTIONS } from "./provider-outbox-instructions.js";
+import { buildProviderOutboxInstructions } from "./provider-outbox-instructions.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
 import type {
   PreparedMcpGatewayLaunch,
@@ -686,7 +686,7 @@ export function buildAgentInput(
 ): AgentInput {
   const runtime = request.type === "im:deliver" ? request.runtime : rootRuntime;
   if (!runtime) throw new Error("A steer input requires the root runtime snapshot");
-  const sessionInstructions = runtime.instructions.session?.trim() || "No additional Session instructions.";
+  const sessionInstructions = runtime.instructions.session?.trim();
   const provider = request.content.providerRef.provider;
   const observer = request.replyRole === "observer";
   /*
@@ -723,8 +723,6 @@ export function buildAgentInput(
   const context = [
     '<opentag-im-context source="managed">',
     "OpenTag managed runtime context (not user-authored).",
-    GITHUB_NATIVE_CLI_INSTRUCTIONS,
-    `Agent: ${request.agentId}`,
     `Session: ${request.sessionId}`,
     `Agent revision: ${runtime.revision.agent.sequence}/${runtime.revision.agent.id}`,
     `Session revision: ${runtime.revision.session.sequence}/${runtime.revision.session.id}`,
@@ -745,8 +743,7 @@ export function buildAgentInput(
     `Reply role: ${observer ? "observer" : "owner"}`,
     `Reply role meaning: ${replyRoleMeaning}`,
     "Reply role constrains task execution and provider actions for this delivery; it does not change this Session's authority or credential availability.",
-    "Session instructions:",
-    sessionInstructions,
+    ...(sessionInstructions ? ["Session instructions:", sessionInstructions] : []),
     "</opentag-im-context>",
   ].join("\n");
   const resourceContext = runtimeResourceContext(request);

@@ -28,6 +28,7 @@ import type { ImResourceFetcher } from "../runtime/im-resource-fetcher.js";
 import type { ProviderCliOutgoingReplyCollectResult } from "../runtime/provider-cli/outgoing-reply-store.js";
 import { ProviderCliTurnPlanError } from "../runtime/provider-cli/turn-plan.js";
 import type { ProviderCliTurnPlanPrepareInput } from "../runtime/provider-cli/turn-plan-manager.js";
+import { renderProviderOutboxGuidance } from "../runtime/provider-outbox-instructions.js";
 import type { RecordedSteerInput, SessionBindingStore } from "../runtime/session-binding-store.js";
 import {
   ClientRuntimeProviderStartError,
@@ -39,6 +40,32 @@ import type { TurnReportOwner } from "../runtime/turn-report-owner.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 
 describe("AgentTurnRunner", () => {
+  it.each(["slack", "feishu"] as const)("keeps %s per-Turn context below 3 KiB without static manuals", (provider) => {
+    const request = delivery();
+    if (provider === "feishu") {
+      request.content.providerRef = {
+        provider: "feishu",
+        teamBrand: "feishu",
+        appId: "cli_fixture",
+        botOpenId: "ou_fixture",
+        chatId: "oc_fixture",
+        messageId: "om_fixture",
+      };
+    }
+    const context = buildAgentInput(request).items[0]?.text ?? "";
+    expect(Buffer.byteLength(context)).toBeLessThan(3 * 1024);
+    expect(context).toContain(JSON.stringify(request.content.providerRef));
+    expect(context).toContain("Attention: direct");
+    expect(context).toContain("Reply role: owner");
+    expect(context).toContain("runtime console");
+    expect(context).not.toContain("Session instructions:");
+    expect(context).not.toContain("Agent: agent-1");
+    expect(context).not.toContain("files.getUploadURLExternal");
+    expect(context).not.toContain("messages-resources-download");
+    expect(context).not.toContain("GitHub integration, when enabled");
+    expect(buildAgentInput(request).items[1]?.text).toBe("hello");
+  });
+
   it.each(["direct", "steer"])("keeps legacy attachment metadata in %s input without downloading", (kind) => {
     const root = delivery();
     const request = kind === "direct" ? root : steerRequest();
@@ -251,6 +278,7 @@ describe("AgentTurnRunner", () => {
     ];
     request.content.historyTruncated = true;
     const input = buildAgentInput(request, "resource context");
+    const guidance = renderProviderOutboxGuidance().join("\n");
     expect(input.items.map((item) => item.text)).toEqual([
       expect.stringContaining("Session instructions:\nsession instructions"),
       "hello",
@@ -260,15 +288,15 @@ describe("AgentTurnRunner", () => {
     expect(JSON.stringify(input)).not.toContain(request.runtime.instructions.platform);
     expect(JSON.stringify(input)).not.toContain(request.runtime.instructions.agent);
     expect(input.items[0]?.text).toContain("slack api");
-    expect(input.items[0]?.text).toContain('the "user" your underlying agent addresses');
-    expect(input.items[0]?.text).toContain("is the OpenTag runtime");
-    expect(input.items[0]?.text).toContain("including the text that closes this Turn");
-    expect(input.items[0]?.text).toContain("This is your runtime console");
-    expect(input.items[0]?.text).toContain("ordinary output is not delivered to the IM participant");
-    expect(input.items[0]?.text).not.toContain("as the Turn report");
-    expect(input.items[0]?.text).toContain("The IM participant is a separate audience");
-    expect(input.items[0]?.text).toContain("The official slack api CLI is your outbox and the only path");
-    expect(input.items[0]?.text).toContain("only records it in OpenTag; it does not deliver it");
+    expect(guidance).toContain('the "user" your underlying agent addresses');
+    expect(guidance).toContain("is the OpenTag runtime");
+    expect(guidance).toContain("including the text that closes this Turn");
+    expect(guidance).toContain("This is your runtime console");
+    expect(guidance).toContain("ordinary output is not delivered to the IM participant");
+    expect(guidance).not.toContain("as the Turn report");
+    expect(guidance).toContain("The IM participant is a separate audience");
+    expect(guidance).toContain("The official slack api CLI is your outbox and the only path");
+    expect(guidance).toContain("only records it in OpenTag; it does not deliver it");
     expect(input.items[0]?.text).toContain("This message addresses you (a DM or an @-mention)");
     expect(input.items[0]?.text).toContain('Reply by default; the narrow exceptions are in "When to speak"');
     expect(input.items[0]?.text).toContain("the result after an approval decision or a failure or blocker update");
@@ -276,14 +304,14 @@ describe("AgentTurnRunner", () => {
     // Addressed messages are no longer an unconditional reply mandate.
     expect(input.items[0]?.text).not.toContain("Before ending this Turn, send");
     expect(input.items[0]?.text).not.toContain("Your final text is not sent to the IM provider automatically");
-    expect(input.items[0]?.text).toContain("OpenTag has no hosted message send, reply, or reaction tool");
-    expect(input.items[0]?.text).toContain("query the provider before deciding whether to retry");
+    expect(guidance).toContain("OpenTag has no hosted message send, reply, or reaction tool");
+    expect(guidance).toContain("query the provider before deciding whether to retry");
     expect(input.items[0]?.text).toContain("Attention: direct");
     expect(input.items[0]?.text).toContain(JSON.stringify(request.content.providerRef));
     expect(
       buildAgentInput({ ...request, runtime: { ...request.runtime, instructions: { platform: "p", agent: "a" } } })
         .items[0]?.text,
-    ).toContain("No additional Session instructions.");
+    ).not.toContain("Session instructions:");
     expect(
       buildAgentInput({ ...request, content: { ...request.content, historyTruncated: false } }).items[2]?.text,
     ).toContain("Bounded prior IM history:\n");
@@ -301,42 +329,40 @@ describe("AgentTurnRunner", () => {
         },
       },
     });
-    expect(feishuInput.items[0]?.text).toContain("The official lark-cli CLI is your outbox and the only path");
+    expect(guidance).toContain("The official lark-cli CLI is your outbox and the only path");
     expect(feishuInput.items[0]?.text).toContain("official lark-cli CLI");
-    expect(feishuInput.items[0]?.text).toContain("lark-cli im --help");
-    expect(feishuInput.items[0]?.text).toContain("never write literal `\\n` sequences for layout");
-    expect(feishuInput.items[0]?.text).toContain("two or more literal `\\n` sequences");
-    expect(feishuInput.items[0]?.text).toContain("lark-cli im +messages-reply --message-id om_xxx --markdown");
+    expect(guidance).toContain("lark-cli im --help");
+    expect(guidance).toContain("never write literal `\\n` sequences for layout");
+    expect(guidance).toContain("two or more literal `\\n` sequences");
+    expect(guidance).toContain("lark-cli im +messages-reply --message-id om_xxx --markdown");
     expect(input.items[0]?.text).not.toContain("lark-cli im +messages-reply");
-    expect(input.items[0]?.text).toContain("slack api chat.postMessage --json");
-    expect(input.items[0]?.text).toContain("never key=value pairs");
-    expect(input.items[0]?.text).toContain(
-      "Do not pass --token, --app, --team, -w, --workspace, --config-dir, --skip-update",
-    );
-    expect(input.items[0]?.text).toContain("Thread placement is a Session policy decision");
-    expect(input.items[0]?.text).toContain("`text` (at most 4,000 characters)");
-    expect(input.items[0]?.text).toContain("`markdown_text` (at most 12,000 characters)");
-    expect(input.items[0]?.text).toContain("at most 1 message per second per channel");
-    expect(input.items[0]?.text).toContain("<@U...>");
-    expect(input.items[0]?.text).toContain("conversations.history and similar reads are rate-limited");
-    expect(input.items[0]?.text).toContain("team.info, users.info, users.list");
-    expect(input.items[0]?.text).toContain("conversations.replies");
-    expect(input.items[0]?.text).toContain("chat.update");
-    expect(input.items[0]?.text).toContain("conversations.open");
-    expect(input.items[0]?.text).toContain("conversations.join");
-    expect(input.items[0]?.text).toContain("exactly one user ID");
-    expect(input.items[0]?.text).toContain("Do not use it to create an MPIM");
-    expect(input.items[0]?.text).toContain("even if the user did not name it");
-    expect(input.items[0]?.text).toContain("Do not roam through, bulk-join, or inspect task-unrelated conversations");
-    expect(input.items[0]?.text).toContain("conversations.join `{channel}` once and retry the original action once");
-    expect(input.items[0]?.text).toContain("reactions.add");
-    expect(input.items[0]?.text).toContain("files.getUploadURLExternal");
-    expect(input.items[0]?.text).toContain("files.completeUploadExternal");
-    expect(input.items[0]?.text).toContain("response_metadata.next_cursor");
-    expect(input.items[0]?.text).toContain("Retry-After");
-    expect(input.items[0]?.text).toContain("Never print credentials, tokens, or the environment file");
+    expect(guidance).toContain("slack api chat.postMessage --json");
+    expect(guidance).toContain("never key=value pairs");
+    expect(guidance).toContain("Do not pass --token, --app, --team, -w, --workspace, --config-dir, --skip-update");
+    expect(guidance).toContain("Thread placement is a Session policy decision");
+    expect(guidance).toContain("`text` (at most 4,000 characters)");
+    expect(guidance).toContain("`markdown_text` (at most 12,000 characters)");
+    expect(guidance).toContain("at most 1 message per second per channel");
+    expect(guidance).toContain("<@U...>");
+    expect(guidance).toContain("conversations.history and similar reads are rate-limited");
+    expect(guidance).toContain("team.info, users.info, users.list");
+    expect(guidance).toContain("conversations.replies");
+    expect(guidance).toContain("chat.update");
+    expect(guidance).toContain("conversations.open");
+    expect(guidance).toContain("conversations.join");
+    expect(guidance).toContain("exactly one user ID");
+    expect(guidance).toContain("Do not use it to create an MPIM");
+    expect(guidance).toContain("even if the user did not name it");
+    expect(guidance).toContain("Do not roam through, bulk-join, or inspect task-unrelated conversations");
+    expect(guidance).toContain("conversations.join `{channel}` once and retry the original action once");
+    expect(guidance).toContain("reactions.add");
+    expect(guidance).toContain("files.getUploadURLExternal");
+    expect(guidance).toContain("files.completeUploadExternal");
+    expect(guidance).toContain("response_metadata.next_cursor");
+    expect(guidance).toContain("Retry-After");
+    expect(guidance).toContain("Never print credentials, tokens, or the environment file");
     expect(input.items[0]?.text).not.toMatch(/xox[bpa]-/);
-    expect(Buffer.byteLength(input.items[0]?.text ?? "", "utf8")).toBeLessThan(16 * 1024);
+    expect(Buffer.byteLength(input.items[0]?.text ?? "", "utf8")).toBeLessThan(3 * 1024);
     expect(feishuInput.items[0]?.text).not.toContain("slack api chat.postMessage --json");
     expect(feishuInput.items[0]?.text).not.toContain("Never print credentials, tokens, or the environment file");
     expect(() => buildAgentInput(steerRequest())).toThrow("A steer input requires the root runtime snapshot");

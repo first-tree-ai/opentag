@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 import { executeProviderCliTurnPlan } from "../index.js";
 import { AdmissionController } from "../runtime/admission-controller.js";
 import { collectOutgoingReplyReceipts } from "../runtime/provider-cli/outgoing-reply-store.js";
+import { renderProviderOutboxGuidance } from "../runtime/provider-outbox-instructions.js";
 import {
   type DurableFailure,
   type DurableWorkRecord,
@@ -832,7 +833,7 @@ describe("SessionMessageInbox", () => {
     expect(input.items[2]?.text).toBe(prompt);
   });
 
-  it("adds Slack native CLI guidance on the visible collaboration callback path", () => {
+  it("keeps visible callback context compact with shared CLI manuals in the system prompt", () => {
     const slackInput = buildSessionMessageInput(delivery({ text: "Report the result" }), "opentag", {
       sessionKind: "visible",
       outboxContext: {
@@ -842,35 +843,41 @@ describe("SessionMessageInbox", () => {
       },
     });
     const slackText = slackInput.items[0]?.text ?? "";
-    expect(slackText).toContain("OPENTAG_PROVIDER_ENV_FILE");
-    expect(slackText).toContain("slack api chat.postMessage --json");
-    expect(slackText).toContain("never key=value pairs");
-    expect(slackText).toContain("Do not pass --token, --app, --team, -w, --workspace, --config-dir, --skip-update");
-    expect(slackText).toContain("`text` (at most 4,000 characters)");
-    expect(slackText).toContain("`markdown_text` (at most 12,000 characters)");
-    expect(slackText).toContain("Thread placement is a Session policy decision");
-    expect(slackText).toContain("at most 1 message per second per channel");
-    expect(slackText).toContain("<@U...>");
-    expect(slackText).toContain("conversations.history and similar reads are rate-limited");
-    expect(slackText).toContain("team.info, users.info, users.list");
-    expect(slackText).toContain("conversations.replies");
-    expect(slackText).toContain("chat.update");
-    expect(slackText).toContain("conversations.open");
-    expect(slackText).toContain("conversations.join");
-    expect(slackText).toContain("exactly one user ID");
-    expect(slackText).toContain("Do not use it to create an MPIM");
-    expect(slackText).toContain("even if the user did not name it");
-    expect(slackText).toContain("Do not roam through, bulk-join, or inspect task-unrelated conversations");
-    expect(slackText).toContain("conversations.join `{channel}` once and retry the original action once");
-    expect(slackText).toContain("reactions.add");
-    expect(slackText).toContain("files.getUploadURLExternal");
-    expect(slackText).toContain("files.completeUploadExternal");
-    expect(slackText).toContain("response_metadata.next_cursor");
-    expect(slackText).toContain("Retry-After");
-    expect(slackText).toContain("Never print credentials, tokens, or the environment file");
-    expect(slackText).not.toContain("OPENTAG_LARK_BODY");
-    expect(slackText).not.toMatch(/xox[bpa]-/);
-    expect(Buffer.byteLength(slackText, "utf8")).toBeLessThan(16 * 1024);
+    const guidance = renderProviderOutboxGuidance().join("\n");
+    expect(slackText).toContain("official slack api CLI");
+    expect(slackText).toContain("C-visible");
+    expect(slackText).toContain("deliver it through the provider CLI in this Turn");
+    expect(slackText).not.toContain("slack api chat.postMessage --json");
+    expect(slackText).not.toContain("GitHub integration, when enabled");
+    expect(guidance).toContain("OPENTAG_PROVIDER_ENV_FILE");
+    expect(guidance).toContain("slack api chat.postMessage --json");
+    expect(guidance).toContain("never key=value pairs");
+    expect(guidance).toContain("Do not pass --token, --app, --team, -w, --workspace, --config-dir, --skip-update");
+    expect(guidance).toContain("`text` (at most 4,000 characters)");
+    expect(guidance).toContain("`markdown_text` (at most 12,000 characters)");
+    expect(guidance).toContain("Thread placement is a Session policy decision");
+    expect(guidance).toContain("at most 1 message per second per channel");
+    expect(guidance).toContain("<@U...>");
+    expect(guidance).toContain("conversations.history and similar reads are rate-limited");
+    expect(guidance).toContain("team.info, users.info, users.list");
+    expect(guidance).toContain("conversations.replies");
+    expect(guidance).toContain("chat.update");
+    expect(guidance).toContain("conversations.open");
+    expect(guidance).toContain("conversations.join");
+    expect(guidance).toContain("exactly one user ID");
+    expect(guidance).toContain("Do not use it to create an MPIM");
+    expect(guidance).toContain("even if the user did not name it");
+    expect(guidance).toContain("Do not roam through, bulk-join, or inspect task-unrelated conversations");
+    expect(guidance).toContain("conversations.join `{channel}` once and retry the original action once");
+    expect(guidance).toContain("reactions.add");
+    expect(guidance).toContain("files.getUploadURLExternal");
+    expect(guidance).toContain("files.completeUploadExternal");
+    expect(guidance).toContain("response_metadata.next_cursor");
+    expect(guidance).toContain("Retry-After");
+    expect(guidance).toContain("Never print credentials, tokens, or the environment file");
+    expect(guidance).not.toContain("OPENTAG_LARK_BODY");
+    expect(guidance).not.toMatch(/xox[bpa]-/);
+    expect(Buffer.byteLength(slackText, "utf8")).toBeLessThan(3 * 1024);
 
     const feishuInput = buildSessionMessageInput(delivery({ text: "Report the result" }), "opentag", {
       sessionKind: "visible",
@@ -880,8 +887,9 @@ describe("SessionMessageInbox", () => {
         chatId: "oc_visible",
       },
     });
-    expect(feishuInput.items[0]?.text).toContain("lark-cli im +messages-reply --message-id om_xxx --markdown");
+    expect(guidance).toContain("lark-cli im +messages-reply --message-id om_xxx --markdown");
     expect(feishuInput.items[0]?.text).not.toContain("slack api chat.postMessage --json");
+    expect(feishuInput.items[0]?.text).toContain("official lark-cli CLI");
   });
 
   it("prepares visible Session outbox resources before Provider start and cleans them after the Run", async () => {

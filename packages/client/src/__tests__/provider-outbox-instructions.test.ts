@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildProviderOutboxInstructions,
+  renderProviderOutboxGuidance,
   SLACK_NATIVE_CLI_GUIDANCE,
   SLACK_NATIVE_CLI_GUIDANCE_MAX_BYTES,
 } from "../runtime/provider-outbox-instructions.js";
@@ -47,12 +48,7 @@ describe("provider outbox instructions", () => {
   });
 
   it("uses native form reads and separate Local/proxy private download paths", () => {
-    const instructions = buildProviderOutboxInstructions({
-      actionInstruction: "If you choose to reply, run the provider CLI command before ending this Turn.",
-      provider: "slack",
-      target: { provider: "slack", channelId: "C1" },
-      targetLabel: "Current provider reference",
-    });
+    const instructions = renderProviderOutboxGuidance();
     const text = instructions.join("\n");
     expect(text).toContain("slack api chat.postMessage --json");
     expect(text).toContain("Pass exactly one JSON object");
@@ -76,15 +72,27 @@ describe("provider outbox instructions", () => {
   });
 
   it("uses literal native CLI arguments for multiline Feishu replies", () => {
-    const text = buildProviderOutboxInstructions({
-      actionInstruction: "Reply to the message.",
-      provider: "feishu",
-      target: { provider: "feishu", messageId: "om_xxx" },
-      targetLabel: "Current provider reference",
-    }).join("\n");
+    const text = renderProviderOutboxGuidance().join("\n");
     expect(text).toContain("lark-cli im +messages-reply --message-id om_xxx --markdown");
     expect(text).toContain("First line\n\nSecond line");
     expect(text).toContain("--msg-type text --content");
     expect(text).not.toContain("OPENTAG_LARK_BODY");
+  });
+
+  it.each(["slack", "feishu"] as const)("keeps only the %s outbox reminder, action and target per Turn", (provider) => {
+    const target = { provider, messageId: "source-message" };
+    const text = buildProviderOutboxInstructions({
+      actionInstruction: "Reply when appropriate.",
+      provider,
+      target,
+      targetLabel: "Current provider reference",
+    }).join("\n");
+    expect(text).toContain("runtime console");
+    expect(text).toContain(provider === "slack" ? "official slack api CLI" : "official lark-cli CLI");
+    expect(text).toContain("Reply when appropriate.");
+    expect(text).toContain(JSON.stringify(target));
+    expect(Buffer.byteLength(text)).toBeLessThan(512);
+    expect(text).not.toContain("files.getUploadURLExternal");
+    expect(text).not.toContain("messages-resources-download");
   });
 });

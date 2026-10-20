@@ -1,4 +1,5 @@
 import type { ContextTreeConnection, EffectiveRuntimeSnapshot } from "@opentag/shared";
+import { GITHUB_NATIVE_CLI_INSTRUCTIONS, renderProviderOutboxGuidance } from "./provider-outbox-instructions.js";
 
 export type ManagedEnvironment = "local" | "cloud";
 
@@ -369,6 +370,13 @@ export function renderManagedSystemPrompt(snapshot: EffectiveRuntimeSnapshot, co
     "",
     snapshot.instructions.agent,
     "",
+    `Agent ID: ${snapshot.agentId}`,
+    "",
+    "## Git and GitHub",
+    "",
+    GITHUB_NATIVE_CLI_INSTRUCTIONS,
+    "",
+    ...(context?.sessionKind === "visible" ? ["## IM outbox", "", ...renderProviderOutboxGuidance(), ""] : []),
     ...(context ? renderSession(context) : []),
     ...(context?.contextTree ? renderContextTree(context.environment, snapshot, context.contextTree) : []),
     ...(snapshot.instructions.session ? ["## Session instructions", "", snapshot.instructions.session, ""] : []),

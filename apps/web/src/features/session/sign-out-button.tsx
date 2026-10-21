@@ -1,3 +1,4 @@
+import { hasBrowserSession } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
 import { Button } from "../../ui/design-system.js";
 import { useAccount } from "./session-context.js";
@@ -31,7 +32,12 @@ export function AccountSignOut() {
   );
 }
 
-/** Sign-out that needs no Router or Account context, for error and not-found pages. */
+/**
+ * Sign-out that needs no Router or Account context, for error and not-found pages.
+ * These pages also serve signed-out visitors, for whom the Server would refuse the logout (no CSRF cookie),
+ * so the control is offered only when a session is evident.
+ */
 export function ContextFreeSignOut() {
-  return <SignOutControl {...useContextFreeSignOut()} />;
+  const state = useContextFreeSignOut();
+  return hasBrowserSession() ? <SignOutControl {...state} /> : null;
 }

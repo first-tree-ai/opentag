@@ -1163,13 +1163,7 @@ export class BrowserApi {
   }
 
   private csrfToken(): string | undefined {
-    const row = document.cookie.split(";").find((part) => part.trim().startsWith("opentag_csrf="));
-    if (!row) return undefined;
-    try {
-      return decodeURIComponent(row.slice(row.indexOf("=") + 1));
-    } catch {
-      return undefined;
-    }
+    return readCsrfCookie();
   }
 }
 
@@ -1187,3 +1181,22 @@ function hasCsrfHeader(headers: HeadersInit | undefined): boolean {
 }
 
 export const browserApi = new BrowserApi();
+
+function readCsrfCookie(): string | undefined {
+  try {
+    const row = document.cookie.split(";").find((part) => part.trim().startsWith("opentag_csrf="));
+    if (!row) return undefined;
+    return decodeURIComponent(row.slice(row.indexOf("=") + 1));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Whether the browser holds evidence of a signed-in session. The CSRF cookie is minted with the session and is
+ * script-readable, and the Server rejects a logout without it, so its absence means a sign-out could only fail.
+ * Never throws: pages that must always render use it.
+ */
+export function hasBrowserSession(): boolean {
+  return readCsrfCookie() !== undefined;
+}

@@ -78,7 +78,9 @@ states (creation header, exact setup header, unavailable, read-failed, adoption-
 when `/api/v1/me` fails (which also offers Retry), and the error and not-found pages. Sign-out always follows one
 contract (`features/session/use-sign-out.ts`): the Server confirms the logout first, then the Account session ends and
 the browser goes to sign-in; a refused logout is shown inline and leaves the session untouched. Surfaces that may render
-outside the Router, Query, or Account contexts use the context-free variant, which reloads onto sign-in instead.
+outside the Router, Query, or Account contexts use the context-free variant, which reloads onto sign-in instead. Because
+the error and not-found pages also serve signed-out visitors, the context-free control appears only while the
+script-readable CSRF cookie is present; without it the Server would refuse the logout.
 
 ## Layout and responsive acceptance
 

@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../__tests__/support/router.js";
 import { AppErrorBoundary, RouteErrorPage } from "./error-boundary.js";
 import { StandaloneNotFoundPage } from "./not-found.js";
@@ -16,7 +16,14 @@ describe("sign-out on error and not-found pages", () => {
   const originalLocation = window.location;
   const assign = vi.fn();
 
+  function setSession(present: boolean) {
+    document.cookie = present ? "opentag_csrf=token; path=/" : "opentag_csrf=; path=/; max-age=0";
+  }
+
+  beforeEach(() => setSession(true));
+
   afterEach(() => {
+    setSession(false);
     vi.restoreAllMocks();
     Object.defineProperty(window, "location", { configurable: true, value: originalLocation });
     assign.mockReset();
@@ -79,5 +86,31 @@ describe("sign-out on error and not-found pages", () => {
     fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
 
     await vi.waitFor(() => expect(assign).toHaveBeenCalledWith("/login"));
+  });
+
+  describe("without a session cookie", () => {
+    beforeEach(() => setSession(false));
+
+    it("hides it on the application boundary page", () => {
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+      render(
+        <AppErrorBoundary>
+          <ExplodingChild />
+        </AppErrorBoundary>,
+      );
+
+      expect(screen.getByRole("heading", { name: "Something went wrong" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Sign out" })).toBeNull();
+    });
+
+    it("hides it on the not-found page", async () => {
+      await renderInRouter(<StandaloneNotFoundPage />);
+      expect(screen.queryByRole("button", { name: "Sign out" })).toBeNull();
+    });
+
+    it("hides it on the route error page", async () => {
+      await renderInRouter(<RouteErrorPage error={new Error("boom")} reset={vi.fn()} />);
+      expect(screen.queryByRole("button", { name: "Sign out" })).toBeNull();
+    });
   });
 });

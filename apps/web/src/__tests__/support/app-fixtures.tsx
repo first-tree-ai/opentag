@@ -483,6 +483,10 @@ export function installApi(
     profileUpdateFails?: boolean;
     setupFailureCode?: string;
     setupCompletedAt?: string | null;
+    /** Makes the Server refuse the logout, so a sign-out that cannot be confirmed is reachable. */
+    logoutFails?: boolean;
+    /** Answers `/api/v1/me` with this status instead of the Account, for a gate that cannot read it. */
+    meStatus?: () => number | undefined;
     unauthenticated?: boolean;
     /** Answers `/me` with 401 from the moment it returns true, so a signed-in session can lapse mid-test. */
     sessionExpired?: () => boolean;
@@ -939,6 +943,21 @@ export function installApi(
       provider: options.provider ?? "feishu",
       runtimeProvider: options.runtimeProvider ?? "codex",
     });
+  });
+  scriptRefusals(options);
+}
+
+/** Layers scripted refusals over the installed fixture, kept apart so the fixture itself stays simple. */
+function scriptRefusals(options: { logoutFails?: boolean; meStatus?: () => number | undefined }): void {
+  const installed = vi.mocked(fetch).getMockImplementation();
+  if (!installed) throw new Error("installApi did not install fetch");
+  const refusal = (message: string, status: number) =>
+    json({ error: { code: "SERVICE_UNAVAILABLE", category: "transient", message } }, status);
+  vi.mocked(fetch).mockImplementation(async (input, init) => {
+    const meStatus = input === "/api/v1/me" && !init?.method ? options.meStatus?.() : undefined;
+    if (meStatus !== undefined) return refusal("Account unavailable", meStatus);
+    if (options.logoutFails && input === "/api/v1/auth/browser/logout") return refusal("Logout unavailable", 503);
+    return installed(input, init);
   });
 }
 

@@ -72,6 +72,14 @@ description of impact, a non-destructive default focus target, and an execution 
 outcome is uncertain. A low-impact action may execute immediately only when it is reliably reversible and offers a clear,
 keyboard-accessible Undo path for long enough to recover.
 
+Every full-screen state that replaces the application shell must keep a way to sign out, because the Account menu lives
+only inside the shell and an Account that has not finished setup is shown nothing else. This covers the Agent Setup
+states (creation header, exact setup header, unavailable, read-failed, adoption-failed, and choice), the Account gate
+when `/api/v1/me` fails (which also offers Retry), and the error and not-found pages. Sign-out always follows one
+contract (`features/session/use-sign-out.ts`): the Server confirms the logout first, then the Account session ends and
+the browser goes to sign-in; a refused logout is shown inline and leaves the session untouched. Surfaces that may render
+outside the Router, Query, or Account contexts use the context-free variant, which reloads onto sign-in instead.
+
 ## Layout and responsive acceptance
 
 Authenticated pages use the named `content` container and the shared content frame documented in `KUMO.md`. Prefer

@@ -8,7 +8,7 @@ import {
   type UpdateAgentRuntimeConfig,
 } from "@opentag/shared/browser";
 import { useQuery } from "@tanstack/react-query";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { ApiError, browserApi } from "../../../api.js";
 import * as m from "../../../paraglide/messages.js";
 import { queryKeys } from "../../../query/keys.js";
@@ -21,6 +21,7 @@ import { type CloudModelState, RuntimeModelField, runtimeModelField } from "./ru
 import { RuntimeTestAction } from "./runtime-test-action.js";
 import { AgentSettingsPageHeader, SettingsSaveActions, UnsavedChangesGuard } from "./settings-layout.js";
 import { SoulConfigurationSection } from "./soul-configuration-section.js";
+import { normalizeSoulValue } from "./soul-markdown.js";
 
 const CUSTOM_MODEL_OPTION = "__custom_model__";
 const PROVIDER_DEFAULT_OPTION = "__provider_default__";
@@ -124,7 +125,18 @@ function RuntimeConfigurationEditor({
     permissionsAvailable,
   );
   const reasoningInvalid = invalidNewReasoning(discovered, hasHistoricalReasoningDraft, modelSettingsDirty, cloud);
-  const instructionsDirty = instructionsDraft !== config.runtimeConfig.instructions;
+  const instructionsValue = useMemo(() => normalizeSoulValue(instructionsDraft), [instructionsDraft]);
+  const savedInstructionsValue = useMemo(
+    () => normalizeSoulValue(config.runtimeConfig.instructions),
+    [config.runtimeConfig.instructions],
+  );
+  const instructionsDirty = instructionsValue !== savedInstructionsValue;
+
+  useEffect(() => {
+    if (message?.kind !== "success" || message.section !== "instructions") return;
+    const timeout = setTimeout(() => setMessage((current) => (current === message ? undefined : current)), 3000);
+    return () => clearTimeout(timeout);
+  }, [message]);
 
   async function saveRuntime(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -154,13 +166,13 @@ function RuntimeConfigurationEditor({
 
   async function saveInstructions(event: FormEvent<HTMLFormElement>): Promise<boolean> {
     event.preventDefault();
-    if (saving) return false;
+    if (saving || !instructionsDirty) return false;
     setSaving("instructions");
     setMessage(undefined);
     try {
       const updated = await save({
         expectedRevision: config.revision,
-        runtimeConfig: { instructions: instructionsDraft },
+        runtimeConfig: { instructions: instructionsValue },
       });
       setConfig(updated);
       setInstructionsDraft(updated.runtimeConfig.instructions);
@@ -301,6 +313,11 @@ function RuntimeConfigurationEditor({
           id={fieldId("instructions")}
           standalone={section === "instructions"}
           value={instructionsDraft}
+          onEdit={() => {
+            setMessage((current) =>
+              current?.section === "instructions" && current.kind === "success" ? undefined : current,
+            );
+          }}
           onSubmit={saveInstructions}
           onValueChange={(value) => {
             setInstructionsDraft(value);

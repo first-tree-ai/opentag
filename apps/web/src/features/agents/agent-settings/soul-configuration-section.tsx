@@ -13,6 +13,7 @@ export function SoulConfigurationSection({
   feedback,
   id,
   onDiscard,
+  onEdit,
   onSubmit,
   onValueChange,
   standalone,
@@ -23,26 +24,37 @@ export function SoulConfigurationSection({
   feedback: { kind: "error" | "success"; text: string } | undefined;
   id: string;
   onDiscard: () => void;
+  onEdit: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<boolean>;
   onValueChange: (value: string) => void;
   standalone: boolean;
   value: string;
 }) {
   const [browsing, setBrowsing] = useState(false);
-  const [writing, setWriting] = useState(false);
+  const [editing, setEditing] = useState(dirty);
   const focusEditorRef = useRef(false);
   const returnFocusRef = useRef<HTMLElement>(null);
   const editorRef = useRef<HTMLElement>(null);
   const writeRef = useRef<HTMLButtonElement>(null);
+  const editRef = useRef<HTMLButtonElement>(null);
   const footerRef = useRef<HTMLDivElement>(null);
-  const showEditor = writing || dirty || value.length > 0;
+  const hasContent = value.trim().length > 0;
+  const showEditor = editing || dirty || hasContent;
   useLayoutEffect(() => {
-    if (showEditor && focusEditorRef.current) {
+    if (editing && showEditor && focusEditorRef.current) {
       returnFocusRef.current = editorRef.current;
-      editorRef.current?.focus();
+      editorRef.current?.focus({ preventScroll: true });
       focusEditorRef.current = false;
     }
-  }, [showEditor]);
+  });
+  function startEditing() {
+    focusEditorRef.current = true;
+    setEditing(true);
+    onEdit();
+  }
+  function focusReadingAction() {
+    requestAnimationFrame(() => (editRef.current ?? writeRef.current)?.focus({ preventScroll: true }));
+  }
   function browse(trigger: HTMLButtonElement) {
     returnFocusRef.current = trigger;
     setBrowsing(true);
@@ -71,7 +83,10 @@ export function SoulConfigurationSection({
       <form
         className="grid gap-4"
         onSubmit={async (event) => {
-          if (await onSubmit(event)) setWriting(false);
+          if (await onSubmit(event)) {
+            setEditing(false);
+            focusReadingAction();
+          }
         }}
       >
         {showEditor ? (
@@ -80,56 +95,35 @@ export function SoulConfigurationSection({
             footerRef={footerRef}
             inputRef={editorRef}
             id={id}
+            readOnly={!editing}
             value={value}
             onValueChange={onValueChange}
           />
         ) : (
-          <SoulEmptyState
-            disabled={busy}
-            onBrowse={browse}
-            writeRef={writeRef}
-            onWrite={() => {
-              focusEditorRef.current = true;
-              setWriting(true);
-              onValueChange(value);
-            }}
-          />
+          <SoulEmptyState disabled={busy} onBrowse={browse} writeRef={writeRef} onWrite={startEditing} />
         )}
         <div ref={footerRef}>
           <SoulFooter
             busy={busy}
             dirty={dirty}
-            empty={value === ""}
+            editing={editing}
+            empty={!hasContent}
+            editRef={editRef}
             feedback={feedback}
+            onEdit={startEditing}
             onDiscard={() => {
-              setWriting(false);
+              setEditing(false);
               onDiscard();
-              requestAnimationFrame(() => (editorRef.current ?? writeRef.current)?.focus());
+              focusReadingAction();
             }}
           />
-          {writing && !dirty && value === "" ? (
-            <div className="flex justify-end">
-              <Button
-                disabled={busy}
-                type="button"
-                variant="ghost"
-                onClick={() => {
-                  setWriting(false);
-                  requestAnimationFrame(() => writeRef.current?.focus());
-                }}
-              >
-                {m.common_cancel()}
-              </Button>
-            </div>
-          ) : null}
         </div>
       </form>
       <SoulTemplateBrowser
         open={browsing}
         onClose={() => setBrowsing(false)}
         onUse={(body) => {
-          focusEditorRef.current = !showEditor;
-          setWriting(true);
+          startEditing();
           onValueChange(body);
           returnFocusRef.current = editorRef.current;
           setBrowsing(false);

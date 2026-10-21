@@ -345,12 +345,12 @@ describe("OpenTag Web App Shell", () => {
     });
     window.history.replaceState({}, "", `/agents/${agentId}`);
     render(<App />);
-    expect((await screen.findAllByText("Ready")).length).toBeGreaterThan(0);
+    expect(await screen.findByRole("heading", { level: 1, name: "Reviewer" })).toBeTruthy();
 
     gone = true;
     fireEvent(window, new Event("focus"));
     expect((await screen.findByRole("alert")).textContent).toContain("Agent unavailable");
-    expect(within(screen.getByRole("main")).queryByText("Ready")).toBeNull();
+    expect(screen.queryByRole("heading", { level: 1, name: "Reviewer" })).toBeNull();
   });
 
   it("marks retained Agent rows unconfirmed after a transient primary refresh failure", async () => {

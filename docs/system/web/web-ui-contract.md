@@ -135,10 +135,15 @@ The heading identifies the empty state. One natural sentence offers **Start with
 text and punctuation are not interactive, and underlines appear only on hover. Both template entries open the same
 chooser. Keyboard focus remains visible. There is no separate action row or decorative container. Writing opens and focuses the free-text editor; Cancel returns an unchanged empty
 editor to the empty state. Guidance is never saved.
-The editor displays formatted Markdown directly, with no separate preview or edit mode. Tiptap owns editing,
-selection, history, and Markdown conversion; its BubbleMenu hosts the shared Kumo Toolbar and Toolbar.Button
-controls for heading, bold, and bullet list. Selecting text reveals the toolbar; Alt+F10 focuses it, and Escape
-returns to the document. Standard keyboard shortcuts remain available. Existing task lists, tables, links, and
+Saved Soul content opens as a read-only formatted document. A quiet **Edit** action remains below it on the right;
+there is no extra edit action in the page header or click-to-edit hint. Edit focuses the same document and replaces
+the action with **Cancel** and **Save changes**. Save changes stays disabled until the draft differs meaningfully
+from the last saved content. Cancel restores the saved source and returns to reading; confirmed saves also return
+to reading. No document remount is required for these transitions.
+Tiptap owns selection, history, and Markdown conversion. In editing mode, its BubbleMenu hosts the shared Kumo
+Toolbar and Toolbar.Button controls for heading, bold, and bullet list. Selecting text reveals the toolbar;
+Alt+F10 focuses it, and Escape returns to the document. Standard editing shortcuts remain available. Reading
+mode permits text selection and scrolling without exposing editing controls. Existing task lists, tables, links, and
 code remain supported without adding more toolbar actions. Prompt markup, comments, and image references remain
 inert editable source text. Opening, focusing, or changing the interface locale must preserve the exact saved
 Markdown; an unrelated edit must not silently remove existing content. The API still accepts the same string.
@@ -159,9 +164,17 @@ Only the enclosing surfaces differ: template bodies are lightly tinted; the edit
 Automatic height measurement preserves the editor's scroll position so typing in a long document keeps the caret
 and surrounding text visible instead of jumping back to the beginning.
 There is no additional visible Instructions field heading. Clearing text during editing keeps the editor mounted;
-only applying the clear or discarding back to empty content restores the empty state. A failed save preserves explicit
-writing mode, including when the user clears a first draft to rewrite it. Submission resets writing mode only after a
-confirmed save; explicit Cancel and Discard remain available.
+only saving the clear or cancelling back to empty content restores the empty state. A failed save preserves explicit
+editing mode, including when the user clears a first draft to rewrite it. Cancel and Save changes remain available.
+
+Dirty comparison, the saved payload, and navigation protection share one Markdown normalization rule. Root-level
+empty paragraphs at the beginning and end and CRLF/CR line endings do not create a change. Internal blank paragraphs,
+line breaks, code indentation, prompt-source whitespace, and formatting remain meaningful. Clicking, selecting, or
+moving the caret never creates a change. Merely entering editing mode does not trigger a leave warning.
+
+Successful saves show “Saved. Changes take effect with the next response.” for three seconds; starting another edit
+clears it immediately. Its reserved space remains after dismissal so editor height and scroll position stay stable.
+Failed saves retain the error, draft, and enabled retry action without an automatic dismissal timer.
 
 The chooser offers eight task-oriented templates: Engineering, Design, Product, Research, Writing, Data Analysis,
 Growth, and Operations. Each has a Phosphor icon, name, concise list summary, applicability overview, and complete
@@ -183,18 +196,18 @@ the selected template. Both layouts retain the complete document without an inne
 
 Selecting an item only previews it. **Use template** copies exactly the current locale's body into the draft and closes
 the chooser, returning focus to the editor. It does not save. Closing, Cancel, or Escape preserves the draft and returns
-focus to the opening control. With an existing draft, footer copy explains replacement and the separate apply step.
+focus to the opening control. With an existing draft, footer copy explains replacement and the separate save step.
 Templates are editable starting points, not active bindings; catalog locale changes do not translate editor content.
 They do not grant capabilities, integrations, or background schedules.
 
-Only changed drafts expose **Discard changes** and **Apply changes**. Discard restores the latest confirmed saved text;
-Apply persists the draft with its expected revision and takes effect with the next response. There is no separate
+Editing exposes **Cancel** and **Save changes** even before the draft changes. Cancel restores the latest confirmed saved text;
+Save changes persists a changed draft with its expected revision and takes effect with the next response. There is no separate
 template Undo or blank template. Clearing saved text remains a change with an explicit clear notice. Saving disables
 editing and browsing, errors preserve the draft, and success stays near the actions. The existing unsaved-navigation
 guard offers continuing to edit or discarding and leaving.
-The editor footer uses one shared action row. Pending copy explains that applying affects the next response;
-after a confirmed save, one muted sentence combines confirmation and timing in the same location while actions
-disappear. No separate success banner or second explanation line is added. Narrow layouts may wrap the actions
+The editor footer uses one action row. Pending copy explains that saving affects the next response;
+after a confirmed save, one muted sentence briefly combines confirmation and timing in the same location while Edit
+returns. No separate success banner or second explanation line is added. Narrow layouts may wrap the actions
 below the sentence.
 
 ## Theme, color, and motion

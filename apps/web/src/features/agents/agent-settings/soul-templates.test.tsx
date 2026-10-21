@@ -54,6 +54,7 @@ describe("Soul template catalog", () => {
           standalone
           value={value}
           onDiscard={() => setValue("")}
+          onEdit={() => undefined}
           onSubmit={async () => false}
           onValueChange={setValue}
         />
@@ -99,6 +100,7 @@ describe("Soul template catalog", () => {
       feedback: undefined,
       id: "soul",
       onDiscard: vi.fn(),
+      onEdit: vi.fn(),
       onSubmit: vi.fn(async () => false),
       onValueChange,
       standalone: true,
@@ -108,8 +110,8 @@ describe("Soul template catalog", () => {
     overwriteGetLocale(() => "zh");
     view.rerender(<SoulConfigurationSection {...props} />);
     expect(readSoul(screen.getByRole("textbox", { name: "Soul" }))).toBe(props.value);
-    expect(screen.getByRole("button", { name: "放弃修改" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "应用修改" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "取消" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "保存更改" })).toBeTruthy();
     expect(onValueChange).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "浏览模板" }));
     const dialog = await screen.findByRole("dialog", { name: "选择模板" });

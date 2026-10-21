@@ -249,3 +249,25 @@ explicitly describes whole-document Markdown normalization after editing. See th
 
 The PR keeps this acceptance evidence and the approved bilingual catalog with its pinned source map. Superseded
 design iterations and exploratory research are archived locally rather than included in the final change.
+
+
+## Reading and editing refinement
+
+Verified on 2026-10-21. Saved documents now open in reading mode with a quiet Edit action below the document on the
+right. Edit focuses the same document and exposes Cancel and Save changes. Unchanged drafts cannot save; Cancel
+restores the latest confirmed source. Templates and the existing empty-state entries still create an editable draft
+without saving automatically. The page subtitle is unchanged.
+
+Dirty comparison, saved payloads, and leave protection share Markdown normalization: root boundary empty paragraphs
+and CRLF/CR differences are ignored, while internal blank paragraphs, code/source indentation, line breaks, and
+formatting remain changes. Saved feedback disappears after three seconds or immediately when Edit starts again.
+Its hidden layout slot prevents changes to editor/footer heights or reading position. Errors retain the editable
+draft and a retry action without expiring. Formatting requests reset when editing ends.
+
+A production-built fixture mounts the real RuntimeConfigurationForm, Tiptap editor, theme, localization, query cache,
+and Router with controlled save responses. Both locales at 320, 390, 768, and 1440px pass reading/editing, focus,
+disabled unchanged Save, source preservation, Cancel, page bounds, and eight axe scans. Additional journeys pass
+long-document boundary changes, one in-flight save, busy controls, timed success with unchanged editor/footer heights
+and both scroll offsets, retained failure/retry, immediate feedback clearing, dirty/pristine navigation, and bilingual
+empty/template entry. These checks do not exercise live Server persistence, a provider, OS IME, or a screen reader.
+The retained earlier journeys and screenshots above describe their original direct-editing acceptance runs.

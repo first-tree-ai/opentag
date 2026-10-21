@@ -3,7 +3,7 @@ import CodeBlock from "@tiptap/extension-code-block";
 import { TaskItem, TaskList } from "@tiptap/extension-list";
 import Paragraph from "@tiptap/extension-paragraph";
 import { TableKit } from "@tiptap/extension-table";
-import { Markdown } from "@tiptap/markdown";
+import { Markdown, MarkdownManager } from "@tiptap/markdown";
 import StarterKit from "@tiptap/starter-kit";
 import { Lexer, Marked, type marked } from "marked";
 
@@ -160,7 +160,38 @@ const LiteralPrompt = Mark.create({
 export function serializeSoul(editor: Editor): string {
   const markdown = editor.markdown;
   if (!markdown) throw new Error("Soul editing requires Markdown support.");
-  return markdown.serialize(literalPromptText(editor.getJSON()));
+  return markdown.serialize(literalPromptText(soulDocumentValue(editor.getJSON())));
+}
+
+/** Ignore only empty root paragraphs; whitespace inside a block remains part of the document. */
+export function soulDocumentValue(document: JSONContent): JSONContent {
+  const content = document.content ?? [];
+  let start = 0;
+  let end = content.length;
+  while (start < end && emptyBoundaryParagraph(content[start])) start++;
+  while (end > start && emptyBoundaryParagraph(content[end - 1])) end--;
+  return { ...document, content: content.slice(start, end) };
+}
+
+function emptyBoundaryParagraph(node: JSONContent | undefined): boolean {
+  return (
+    node?.type === "paragraph" &&
+    (node.content ?? []).every(
+      (child) => child.type === "text" && !child.marks?.length && /^[ \t\r\n]*$/.test(child.text ?? ""),
+    )
+  );
+}
+
+let valueMarkdown: MarkdownManager | undefined;
+
+/** The same canonical value drives comparison, the saved payload, and unsaved-navigation protection. */
+export function normalizeSoulValue(source: string): string {
+  valueMarkdown ??= new MarkdownManager({
+    extensions: soulEditorExtensions(),
+    marked: soulMarked() as unknown as typeof marked,
+  });
+  const document = valueMarkdown.parse(source.replace(/\r\n?/g, "\n"));
+  return valueMarkdown.serialize(literalPromptText(soulDocumentValue(document)));
 }
 
 function literalPromptText(node: JSONContent): JSONContent {

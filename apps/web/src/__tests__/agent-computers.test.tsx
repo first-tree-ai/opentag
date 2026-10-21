@@ -60,7 +60,7 @@ describe("OpenTag Web App Shell", () => {
     installApi({ bound: true, computerStatus: () => computerStatus });
     window.history.replaceState({}, "", `/agents/${agentId}`);
     render(<App />);
-    expect((await screen.findAllByText("Ready")).length).toBeGreaterThan(0);
+    expect(within(await screen.findByRole("region", { name: "Agent status" })).getByText("Online")).toBeTruthy();
 
     computerStatus = "offline";
     fireEvent(window, new Event("focus"));

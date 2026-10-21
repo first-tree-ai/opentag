@@ -35,11 +35,56 @@ function EditorWithActions({ value }: { value: string }) {
     <main>
       <SoulEditor disabled={false} footerRef={footer} id="soul" value={value} onValueChange={() => undefined} />
       <div data-testid="soul-footer" ref={footer}>
-        Apply changes
+        Save changes
       </div>
     </main>
   );
 }
+
+it("allows selection and scrolling in reading mode without changing content or opening formatting", () => {
+  const onValueChange = vi.fn();
+  render(
+    <SoulEditor
+      disabled={false}
+      readOnly
+      footerRef={{ current: null }}
+      id="soul"
+      value="Read **carefully**."
+      onValueChange={onValueChange}
+    />,
+  );
+  const editor = screen.getByRole("textbox", { name: "Soul" });
+  editor.focus();
+  fireEvent.keyDown(editor, { key: "F10", altKey: true });
+  fireEvent.paste(editor, { clipboardData: { getData: () => "Overwrite" } });
+  fireEvent.keyDown(editor, { key: "b", ctrlKey: true });
+  expect(editor.getAttribute("tabindex")).toBe("0");
+  expect(editor.getAttribute("contenteditable")).toBe("false");
+  expect(editor.textContent).toBe("Read carefully.");
+  expect(onValueChange).not.toHaveBeenCalled();
+  expect(screen.queryByRole("toolbar")).toBeNull();
+});
+
+it("does not reopen a previously requested formatting menu when editing starts again", async () => {
+  const props = {
+    disabled: false,
+    footerRef: { current: null },
+    id: "soul",
+    value: "Keep this rule.",
+    onValueChange: vi.fn(),
+  };
+  const view = render(<SoulEditor {...props} />);
+  const editor = screen.getByRole("textbox", { name: "Soul" });
+  editor.focus();
+  fireEvent.keyDown(editor, { key: "F10", altKey: true });
+  await screen.findByRole("toolbar");
+  view.rerender(<SoulEditor {...props} readOnly />);
+  await waitFor(() => expect(screen.queryByRole("toolbar")).toBeNull());
+  view.rerender(<SoulEditor {...props} readOnly={false} />);
+  editor.focus();
+  await waitFor(() => expect(screen.queryByRole("toolbar")).toBeNull());
+  expect(props.onValueChange).not.toHaveBeenCalled();
+});
 
 describe("Soul editor height", () => {
   let styles: HTMLStyleElement;

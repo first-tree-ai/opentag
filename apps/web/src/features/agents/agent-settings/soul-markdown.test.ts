@@ -1,7 +1,7 @@
 import { Editor } from "@tiptap/core";
 import { afterEach, describe, expect, it } from "vitest";
 import { overwriteGetLocale } from "../../../paraglide/runtime.js";
-import { serializeSoul, soulEditorExtensions } from "./soul-markdown.js";
+import { normalizeSoulValue, serializeSoul, soulDocumentValue, soulEditorExtensions } from "./soul-markdown.js";
 import { soulTemplates } from "./soul-templates.js";
 
 const editors: Editor[] = [];
@@ -16,6 +16,60 @@ afterEach(() => {
 });
 
 describe("Soul Markdown compatibility", () => {
+  it.each([
+    ...soulTemplates().map((template) => template.body),
+    '---\nmode: careful\n---\n\nUse <rule when="a > b">read_file</rule> & {{user_name}}.',
+    "<!-- keep this\n  exact indentation\n-->\n\n![diagram][source]\n\n[source]: https://example.com/image.png",
+    "````md\n```text\n  keep this\n```\n````\n\n| Tool | Rule |\n| --- | --- |\n| read_file | a < b & c > d |",
+  ])("normalizes existing template and prompt documents without changing their parsed content: %#", (source) => {
+    const normalized = normalizeSoulValue(source);
+    expect(normalizeSoulValue(normalized)).toBe(normalized);
+    expect(soulDocumentValue(editor(normalized).getJSON())).toEqual(soulDocumentValue(editor(source).getJSON()));
+  });
+
+  it("ignores only empty boundary paragraphs and line-ending differences", () => {
+    const source = "## Principles\n\nKeep this rule.\n\n```text\n  keep indentation\n\n```";
+    const expected = normalizeSoulValue(source);
+    expect(normalizeSoulValue(`\n\n \t\n${source}\n\n \t\n`)).toBe(expected);
+    expect(normalizeSoulValue(source.replaceAll("\n", "\r\n"))).toBe(expected);
+    expect(normalizeSoulValue(source.replaceAll("\n", "\r"))).toBe(expected);
+    expect(normalizeSoulValue("\n \t\n\n")).toBe("");
+    expect(expected).toContain("  keep indentation\n\n```");
+  });
+
+  it.each([
+    ["First.\n\nSecond.", "First.\n\n\n\nSecond."],
+    ["First.\nSecond.", "First.\n\nSecond."],
+    ["Keep this rule.", "**Keep this rule.**"],
+    ["Keep this rule.", "## Keep this rule."],
+    ["```text\n  first\n    second\n```", "```text\n  first\n  second\n```"],
+    ["```text\nfirst\nsecond\n```", "```text\nfirst\n\nsecond\n```"],
+    ["<rules>\n  keep this\n</rules>", "<rules>\n    keep this\n</rules>"],
+  ])("retains meaningful internal layout and formatting changes: %s", (saved, draft) => {
+    const value = normalizeSoulValue(draft);
+    expect(value).not.toBe(normalizeSoulValue(saved));
+    expect(normalizeSoulValue(value)).toBe(value);
+    expect(soulDocumentValue(editor(value).getJSON())).toEqual(soulDocumentValue(editor(draft).getJSON()));
+  });
+
+  it("drops empty boundary paragraphs without changing internal paragraphs or marked whitespace", () => {
+    const source = editor("First.\n\nSecond.");
+    const document = source.getJSON();
+    const paragraph = { type: "paragraph" };
+    const first = document.content?.[0];
+    const second = document.content?.[1];
+    if (!first || !second) throw new Error("Expected two paragraphs");
+    expect(
+      soulDocumentValue({ ...document, content: [paragraph, first, paragraph, second, paragraph] }).content,
+    ).toEqual([first, paragraph, second]);
+    const marked = { type: "paragraph", content: [{ type: "text", text: " ", marks: [{ type: "bold" }] }] };
+    expect(soulDocumentValue({ ...document, content: [marked, first, marked] }).content).toEqual([
+      marked,
+      first,
+      marked,
+    ]);
+  });
+
   it.each([
     "If score > 0.8 then stop.",
     "Map a -> b and x => y.",

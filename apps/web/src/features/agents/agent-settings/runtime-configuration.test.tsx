@@ -10,6 +10,7 @@ import { queryKeys } from "../../../query/keys.js";
 import { LIVE_REFETCH_INTERVAL_MS } from "../../../query/live.js";
 import { TooltipProvider } from "../../../ui/design-system.js";
 import { RuntimeConfigurationForm, runtimeConfigurationFromForm } from "./runtime-configuration.js";
+import { normalizeSoulValue } from "./soul-markdown.js";
 import { soulTemplates } from "./soul-templates.js";
 
 const queryClients: QueryClient[] = [];
@@ -782,13 +783,113 @@ describe("RuntimeConfigurationForm", () => {
     render(<RuntimeConfigurationForm initialConfig={config} save={save} />);
 
     replaceSoul(screen.getByRole("textbox", { name: "Soul" }), "Updated instructions.");
-    fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
 
     await waitFor(() => expect(save).toHaveBeenCalledOnce());
     expect(save).toHaveBeenCalledWith({
       expectedRevision: 4,
       runtimeConfig: { instructions: "Updated instructions." },
     });
+  });
+
+  it("starts in reading mode and cancels back to the saved source without saving", () => {
+    const save = vi.fn();
+    render(<RuntimeConfigurationForm initialConfig={config} save={save} section="instructions" />);
+    const editor = screen.getByRole("textbox", { name: "Soul" });
+    expect(editor.getAttribute("aria-readonly")).toBe("true");
+    expect(editor.getAttribute("contenteditable")).toBe("false");
+    expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect(editor.getAttribute("aria-readonly")).toBe("false");
+    expect(document.activeElement).toBe(editor);
+    expect(screen.getByRole("button", { name: "Save changes" })).toHaveProperty("disabled", true);
+    editor.focus();
+    fireEvent.keyDown(editor, { key: "ArrowRight" });
+    expect(screen.getByRole("button", { name: "Save changes" })).toHaveProperty("disabled", true);
+    replaceSoul(editor, "Changed instructions.");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("textbox", { name: "Soul" })).toBe(editor);
+    expect(readSoul(editor)).toBe(config.runtimeConfig.instructions);
+    expect(editor.getAttribute("contenteditable")).toBe("false");
+    expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy();
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("ignores boundary-only blank changes but saves internal blank paragraphs and normalized line endings", async () => {
+    const instructions = "First.\r\n\r\nSecond.";
+    const save = vi.fn(async (input) => ({
+      ...config,
+      revision: 5,
+      runtimeConfig: { ...config.runtimeConfig, instructions: input.runtimeConfig.instructions },
+    }));
+    render(
+      <RuntimeConfigurationForm
+        initialConfig={{ ...config, runtimeConfig: { ...config.runtimeConfig, instructions } }}
+        save={save}
+        section="instructions"
+      />,
+    );
+    const editor = screen.getByRole("textbox", { name: "Soul" });
+    replaceSoul(editor, "\n\nFirst.\n\nSecond.\n\n");
+    expect(screen.getByRole("button", { name: "Save changes" })).toHaveProperty("disabled", true);
+    replaceSoul(editor, "\n\nFirst.\n\n\n\nSecond.\n\n");
+    expect(screen.getByRole("button", { name: "Save changes" })).toHaveProperty("disabled", false);
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await screen.findByRole("status");
+    expect(save).toHaveBeenCalledExactlyOnceWith({
+      expectedRevision: 4,
+      runtimeConfig: { instructions: normalizeSoulValue("First.\n\n\n\nSecond.") },
+    });
+    expect(editor.getAttribute("contenteditable")).toBe("false");
+  });
+
+  it.each(["timeout", "edit"])("clears success feedback on %s while retaining its layout slot", async (clear) => {
+    vi.useFakeTimers();
+    const save = vi.fn().mockResolvedValue({
+      ...config,
+      revision: 5,
+      runtimeConfig: { ...config.runtimeConfig, instructions: "Updated instructions." },
+    });
+    render(<RuntimeConfigurationForm initialConfig={config} save={save} section="instructions" />);
+    replaceSoul(screen.getByRole("textbox", { name: "Soul" }), "Updated instructions.");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save changes" })));
+    const feedback = screen.getByRole("status");
+    expect(feedback.textContent).toBe("Saved. Changes take effect with the next response.");
+    if (clear === "timeout") {
+      await advance(2999);
+      expect(screen.getByRole("status")).toBe(feedback);
+      await advance(1);
+    } else {
+      fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    }
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(feedback.style.visibility).toBe("hidden");
+    expect(feedback.getAttribute("aria-hidden")).toBe("true");
+    expect(feedback.textContent).toBe("Saved. Changes take effect with the next response.");
+  });
+
+  it("retains failed-save feedback and the editable draft until retry succeeds", async () => {
+    vi.useFakeTimers();
+    const save = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Unavailable"))
+      .mockResolvedValueOnce({
+        ...config,
+        revision: 5,
+        runtimeConfig: { ...config.runtimeConfig, instructions: "Keep this draft." },
+      });
+    render(<RuntimeConfigurationForm initialConfig={config} save={save} section="instructions" />);
+    const editor = screen.getByRole("textbox", { name: "Soul" });
+    replaceSoul(editor, "Keep this draft.");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save changes" })));
+    await advance(10_000);
+    expect(screen.getByRole("alert").textContent).toBe("Couldn’t confirm the update. Try again.");
+    expect(readSoul(editor)).toBe("Keep this draft.");
+    expect(editor.getAttribute("contenteditable")).toBe("true");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save changes" })));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy();
+    expect(save).toHaveBeenCalledTimes(2);
   });
 
   it.each(soulTemplates())("previews $name before filling an editable draft without saving", async (template) => {
@@ -811,7 +912,7 @@ describe("RuntimeConfigurationForm", () => {
     expect(save).not.toHaveBeenCalled();
     replaceSoul(editor, `${readSoul(editor)}\nMy own principle.`);
     expect(screen.queryByRole("button", { name: /Undo/ })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(readSoul(editor)).toBe(config.runtimeConfig.instructions);
     expect(save).not.toHaveBeenCalled();
   });
@@ -823,13 +924,11 @@ describe("RuntimeConfigurationForm", () => {
     fireEvent.click(screen.getByRole("button", { name: "Browse templates" }));
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: "Research" }));
-    expect(
-      within(dialog).getAllByText("This replaces your draft. Review and apply changes to save.").length,
-    ).toBeGreaterThan(0);
+    expect(within(dialog).getAllByText("This replaces your draft. Review and save changes.").length).toBeGreaterThan(0);
     fireEvent.click(within(dialog).getByRole("button", { name: action }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(readSoul(editor)).toBe("Keep this unsaved custom workflow.");
-    expect(screen.getByRole("button", { name: "Apply changes" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeTruthy();
   });
 
   it("applies the chosen body explicitly and disables browsing while saving", async () => {
@@ -847,23 +946,23 @@ describe("RuntimeConfigurationForm", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Operations" }));
     fireEvent.click(within(dialog).getByRole("button", { name: "Use template" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    const instructions = readSoul(editor);
-    fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
+    const instructions = normalizeSoulValue(readSoul(editor));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     expect(screen.getByRole("button", { name: "Browse templates" })).toHaveProperty("disabled", true);
     expect(save).toHaveBeenCalledWith({ expectedRevision: 4, runtimeConfig: { instructions } });
     resolveSave({ ...config, revision: 5, runtimeConfig: { ...config.runtimeConfig, revision: 8, instructions } });
     expect(await screen.findByRole("status")).toHaveProperty(
       "textContent",
-      "Saved. Takes effect with the next response.",
+      "Saved. Changes take effect with the next response.",
     );
-    expect(screen.queryByRole("button", { name: "Apply changes" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
     replaceSoul(editor, "Another edit.");
-    fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(readSoul(editor)).toBe(instructions);
     expect(save).toHaveBeenCalledOnce();
   });
 
-  it("disables Soul controls while applying and clears feedback on the next edit", async () => {
+  it("disables Soul controls while saving and returns to reading after success", async () => {
     let resolveSave!: (updated: AgentAdminConfig) => void;
     const save = vi.fn(
       () =>
@@ -874,22 +973,23 @@ describe("RuntimeConfigurationForm", () => {
     render(<RuntimeConfigurationForm initialConfig={config} save={save} section="instructions" />);
     const editor = screen.getByRole("textbox", { name: "Soul" }) as HTMLElement;
     expect(screen.queryByRole("status")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Apply changes" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
     replaceSoul(editor, "Be direct.");
-    fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     expect(editor.getAttribute("contenteditable")).toBe("false");
-    expect(screen.getByRole("button", { name: "Applying…" })).toHaveProperty("disabled", true);
-    expect(screen.getByRole("button", { name: "Discard changes" })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: "Saving…" })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: "Cancel" })).toHaveProperty("disabled", true);
     resolveSave({ ...config, revision: 5, runtimeConfig: { ...config.runtimeConfig, instructions: "Be direct." } });
     expect(await screen.findByRole("status")).toHaveProperty(
       "textContent",
-      "Saved. Takes effect with the next response.",
+      "Saved. Changes take effect with the next response.",
     );
-    expect(editor.getAttribute("contenteditable")).toBe("true");
-    expect(screen.queryByRole("button", { name: "Apply changes" })).toBeNull();
+    expect(editor.getAttribute("contenteditable")).toBe("false");
+    expect(editor.getAttribute("aria-readonly")).toBe("true");
+    expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
     replaceSoul(editor, "Be direct and concise.");
     expect(screen.queryByRole("status")).toBeNull();
-    expect(screen.getByRole("button", { name: "Apply changes" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeTruthy();
   });
 
   it("uses one-sentence empty guidance and opens editing explicitly", () => {
@@ -904,7 +1004,7 @@ describe("RuntimeConfigurationForm", () => {
     expect(document.activeElement).toBe(editor);
     expect(readSoul(editor)).toBe("");
     expect(screen.queryByRole("heading", { name: "No Soul yet" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Apply changes" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Save changes" })).toHaveProperty("disabled", true);
     replaceSoul(editor, "My workflow.");
     replaceSoul(editor, "");
     expect(screen.getByRole("textbox", { name: "Soul" })).toBe(editor);
@@ -912,9 +1012,25 @@ describe("RuntimeConfigurationForm", () => {
     expect(screen.getByRole("heading", { name: "No Soul yet" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "write your own" }));
     replaceSoul(screen.getByRole("textbox", { name: "Soul" }), "Another draft.");
-    fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.getByRole("heading", { name: "No Soul yet" })).toBeTruthy();
     expect(screen.queryByRole("textbox", { name: "Soul" })).toBeNull();
+  });
+
+  it("treats a saved whitespace-only source as empty without offering an orphaned Edit action", () => {
+    render(
+      <RuntimeConfigurationForm
+        initialConfig={{ ...config, runtimeConfig: { ...config.runtimeConfig, instructions: "\n \t\n\n" } }}
+        save={vi.fn()}
+        section="instructions"
+      />,
+    );
+    expect(screen.getByRole("heading", { name: "No Soul yet" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "write your own" }));
+    expect(screen.getByRole("button", { name: "Save changes" })).toHaveProperty("disabled", true);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("heading", { name: "No Soul yet" })).toBeTruthy();
   });
 
   it.each(["manual", "template"])("keeps first-time %s editing after a failed save and clearing", async (entry) => {
@@ -948,7 +1064,7 @@ describe("RuntimeConfigurationForm", () => {
     }
     const editor = screen.getByRole("textbox", { name: "Soul" }) as HTMLElement;
     replaceSoul(editor, "First draft.");
-    fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Couldn’t confirm the update. Try again.");
 
     editor.focus();
@@ -957,17 +1073,17 @@ describe("RuntimeConfigurationForm", () => {
     expect(document.activeElement).toBe(editor);
     expect(screen.queryByRole("heading", { name: "No Soul yet" })).toBeNull();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Apply changes" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Save changes" })).toHaveProperty("disabled", true);
 
     replaceSoul(editor, rewritten);
-    fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     expect(await screen.findByRole("status")).toHaveProperty(
       "textContent",
-      "Saved. Takes effect with the next response.",
+      "Saved. Changes take effect with the next response.",
     );
     expect(readSoul(editor)).toBe(rewritten);
     replaceSoul(editor, "");
-    fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     expect(await screen.findByRole("heading", { name: "No Soul yet" })).toBeTruthy();
     expect(screen.queryByRole("textbox", { name: "Soul" })).toBeNull();
     expect(save).toHaveBeenLastCalledWith({ expectedRevision: 5, runtimeConfig: { instructions: "" } });
@@ -1016,19 +1132,19 @@ describe("RuntimeConfigurationForm", () => {
 
     replaceSoul(editor, "");
     expect(screen.queryByRole("heading", { name: "No Soul yet" })).toBeNull();
-    expect(screen.getByText("Apply to clear Soul.")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
+    expect(screen.getByText("Save changes to clear Soul.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Couldn’t confirm the update. Try again.");
     expect(readSoul(editor)).toBe("");
     expect(screen.queryByRole("heading", { name: "No Soul yet" })).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
-    expect(await screen.findByText("Saved. Takes effect with the next response.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    expect(await screen.findByText("Saved. Changes take effect with the next response.")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "No Soul yet" })).toBeTruthy();
     expect(screen.queryByRole("textbox", { name: "Soul" })).toBeNull();
-    expect(screen.queryByText("Apply to clear Soul.")).toBeNull();
+    expect(screen.queryByText("Save changes to clear Soul.")).toBeNull();
     expect(save).toHaveBeenLastCalledWith({ expectedRevision: 4, runtimeConfig: { instructions: "" } });
-    expect(screen.queryByRole("button", { name: "Apply changes" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
   });
 
   it("normalizes blank form values to provider defaults", () => {

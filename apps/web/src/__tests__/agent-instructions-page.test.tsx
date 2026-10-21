@@ -42,8 +42,8 @@ describe("Agent Soul page", () => {
     expect(within(dialog).getByText("Your edits will be lost if you leave.")).toBeTruthy();
     expect(within(dialog).getByRole("button", { name: "Discard and leave" })).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "Keep editing" }));
-    fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
-    expect(await screen.findByText("Saved. Takes effect with the next response.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    expect(await screen.findByText("Saved. Changes take effect with the next response.")).toBeTruthy();
     expect(save).toHaveBeenCalledWith(agentId, {
       expectedRevision: config.revision,
       runtimeConfig: { instructions: "Be concise." },
@@ -59,5 +59,24 @@ describe("Agent Soul page", () => {
     expect(await screen.findByRole("heading", { level: 1, name: "Soul" })).toBeTruthy();
     await waitFor(() => expect(window.location.pathname).toBe(`/agents/${agentId}/instructions`));
     expect(screen.queryByRole("link", { name: "Back to Agent settings" })).toBeNull();
+  });
+
+  it.each(["pristine", "boundary-only"])("does not block leaving a %s editing session", async (kind) => {
+    installApi({ bound: true });
+    const config = await browserApi.agentConfig(agentId);
+    vi.spyOn(browserApi, "agentConfig").mockResolvedValue({
+      ...config,
+      runtimeConfig: { ...config.runtimeConfig, instructions: "Keep this rule.\r\n\r\nAnother rule." },
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}/instructions`);
+    render(<App />);
+    const editor = await screen.findByRole("textbox", { name: "Soul" });
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    if (kind === "boundary-only") replaceSoul(editor, "\n\nKeep this rule.\n\nAnother rule.\n\n");
+    expect(screen.getByRole("button", { name: "Save changes" })).toHaveProperty("disabled", true);
+    const navigation = screen.getByRole("navigation", { name: "Agent" });
+    fireEvent.click(within(navigation).getByRole("link", { name: "Overview" }));
+    expect(await screen.findByRole("heading", { level: 1, name: "Reviewer" })).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: "Discard your changes?" })).toBeNull();
   });
 });

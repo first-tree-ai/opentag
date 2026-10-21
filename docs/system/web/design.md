@@ -50,6 +50,11 @@ Schedules retain their card layout. Tasks preserve server paging and Load more; 
 remains available through View all. Long Agent names, handles, and Computer identities wrap within
 their available space rather than widening the page.
 
+Soul keeps the page subtitle and Browse templates action. Saved content uses the same white document frame
+and typography as editing, with a quiet Edit action below the document on the right. Editing exposes Cancel and
+Save changes in that position; no persistent edit hint or prominent header action is added. Success feedback
+briefly appears beside these actions, with its layout space retained when it disappears.
+
 ## Website reference sources
 
 | Source | Responsibility |

@@ -1,5 +1,4 @@
 import type { MCPAgentServer } from "@opentag/shared/browser";
-import { useRef } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Button, Dialog, Field, KumoInputControl } from "../../ui/design-system.js";
 import { useMcpAddConnection } from "./mcp-add-connection.js";
@@ -21,7 +20,6 @@ export type McpAddProps = {
 
 export function McpAddDialog(props: McpAddProps) {
   const state = useMcpAddConnection(props);
-  const urlRef = useRef<HTMLInputElement>(null);
   const keyError = state.authentication.kind === "bearer" && state.needsKey ? state.error : undefined;
   const connectionError = !keyError && !state.urlInvalid ? state.error : undefined;
   return (
@@ -29,7 +27,6 @@ export function McpAddDialog(props: McpAddProps) {
       title={m.mcp_create_title()}
       className="mcp-form-dialog mcp-add-dialog"
       busy={state.busy && !state.oauth.phase}
-      initialFocusRef={urlRef}
       onClose={() => void state.close()}
     >
       <form
@@ -42,7 +39,6 @@ export function McpAddDialog(props: McpAddProps) {
         <fieldset disabled={state.busy} className="mcp-fields border-0 p-0">
           <Field htmlFor="mcp-add-url" label={m.mcp_settings_address()}>
             <KumoInputControl
-              ref={urlRef}
               id="mcp-add-url"
               aria-label={m.mcp_settings_address()}
               value={state.url}

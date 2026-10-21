@@ -1,8 +1,8 @@
-import { fireEvent, screen, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../../api.js";
 import { McpPage } from "./mcp-page.js";
-import { AGENT_ID, newAddress, stub, wrap } from "./mcp-test-fixtures.js";
+import { AGENT_ID, newAddress, openAdd, stub, wrap } from "./mcp-test-fixtures.js";
 
 afterEach(() => vi.restoreAllMocks());
 describe("MCP custom first screen", () => {
@@ -10,7 +10,12 @@ describe("MCP custom first screen", () => {
     stub([]);
     const create = vi.spyOn(browserApi, "createMcpServer");
     wrap(<McpPage agentId={AGENT_ID} />);
-    await newAddress();
+    const trigger = await screen.findByRole("button", { name: "Add custom" });
+    await waitFor(() => expect(trigger.hasAttribute("disabled")).toBe(false));
+    trigger.focus();
+    await openAdd();
+    const dialogElement = screen.getByRole("dialog", { name: "Add custom connector" });
+    await waitFor(() => expect(document.activeElement).toBe(dialogElement.querySelector('[data-ui="dialog-heading"]')));
     expect(screen.getByRole("radio", { name: "Account sign-in" }).getAttribute("aria-checked")).toBe("true");
     expect(screen.getAllByRole("radio")).toHaveLength(3);
     const dialog = within(screen.getByRole("dialog"));
@@ -18,6 +23,9 @@ describe("MCP custom first screen", () => {
     expect(dialog.queryByRole("button", { name: "Cancel" })).toBeNull();
     expect(dialog.getByRole("button", { name: "Advanced settings" }).getAttribute("aria-expanded")).toBe("false");
     expect(create).not.toHaveBeenCalled();
+    fireEvent.keyDown(dialogElement, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
   });
   it("shows one key field and bearer header defaults only when that method is selected", async () => {
     stub([]);

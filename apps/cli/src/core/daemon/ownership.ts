@@ -59,7 +59,7 @@ export async function acquireDaemonOwner(home: string, instanceId: string): Prom
     if (error instanceof ProcessLeaseBusyError) {
       throw new DaemonOwnerStartupError(
         "BUSY",
-        `An OpenTag daemon is already running for this home (pid ${error.pid})`,
+        `An openTag daemon is already running for this home (pid ${error.pid})`,
         {
           cause: error,
         },

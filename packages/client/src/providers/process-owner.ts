@@ -26,19 +26,21 @@ const stop = (signal = "SIGTERM") => {
   } else {
     try { process.kill(-process.pid, signal); } catch { child.kill(signal); }
   }
-  const timer = setTimeout(() => {
+  setTimeout(() => {
     if (process.platform !== "win32") {
       try { process.kill(-process.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
     }
     process.exit(1);
   }, 500);
-  timer.unref();
 };
-process.once("SIGINT", () => stop("SIGINT"));
-process.once("SIGTERM", () => stop("SIGTERM"));
+process.on("SIGINT", () => stop("SIGINT"));
+process.on("SIGTERM", () => stop("SIGTERM"));
 process.stdin.pipe(child.stdin);
 process.stdin.once("end", () => stop());
-process.stdin.once("error", () => stop());
+process.stdin.on("error", () => stop());
+child.stdin.on("error", () => stop());
+process.stdout.on("error", () => stop());
+process.stderr.on("error", () => stop());
 child.stdout.pipe(process.stdout);
 child.stderr.pipe(process.stderr);
 child.once("error", () => stop());

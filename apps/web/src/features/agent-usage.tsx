@@ -90,7 +90,7 @@ export function AgentUsageOverview({ accountId, agentId }: { accountId?: string;
   return (
     <LayerCard
       render={<section />}
-      className="grid gap-4 p-4"
+      className="grid content-start gap-6 p-6 max-[640px]:p-5"
       aria-labelledby="agent-usage-overview-heading"
       data-ui="usage-overview"
     >
@@ -391,11 +391,11 @@ function UsageCoverage({ usage }: { usage: AgentUsageDetail }) {
 
 export function Metric({ compact = false, label, value }: { compact?: boolean; label: string; value: string }) {
   return (
-    <div className={compact ? "grid min-w-0 gap-1 px-4 first:pl-0 last:pr-0" : "grid gap-1 p-5"}>
+    <div className={compact ? "grid min-w-0 gap-1.5 px-6 first:pl-0 last:pr-0" : "grid gap-1 p-5"}>
       <Text as="dt" size="sm" variant="secondary">
         {label}
       </Text>
-      <Text as="dd" DANGEROUS_className="tabular-nums" size="lg" variant="heading">
+      <Text as="dd" DANGEROUS_className="tabular-nums text-xl! font-semibold" size="lg" variant="heading">
         {value}
       </Text>
     </div>
@@ -592,10 +592,10 @@ function BreakdownRow({ label, share, value }: { label: string; share: string; v
       </Table.Cell>
       <Table.Cell className="align-middle">
         <span className="grid justify-items-end gap-0.5 text-right">
-          <Text as="span" DANGEROUS_className="tabular-nums" size="sm">
+          <Text as="span" DANGEROUS_className="tabular-nums text-xl! font-semibold" size="sm">
             {m.usage_chart_tooltip({ tokens: formatCompactNumber(value) })}
           </Text>
-          <Text as="span" DANGEROUS_className="tabular-nums" size="xs" variant="secondary">
+          <Text as="span" DANGEROUS_className="tabular-nums text-xl! font-semibold" size="xs" variant="secondary">
             {share}
           </Text>
         </span>

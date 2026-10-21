@@ -1,9 +1,9 @@
-# 为 OpenTag 贡献
+# 为 openTag 贡献
 
 > Canonical source: [CONTRIBUTING.md](./CONTRIBUTING.md)
 > Last synced with: 2026-09-02
 
-OpenTag 处于 pre-alpha 阶段。请保持改动聚焦，说明其解决的用户或贡献者问题，并避免在没有既定设计时增加产品能力。
+openTag 处于 pre-alpha 阶段。请保持改动聚焦，说明其解决的用户或贡献者问题，并避免在没有既定设计时增加产品能力。
 
 ## 工作流
 

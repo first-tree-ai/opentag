@@ -70,7 +70,7 @@ function runDoctor(home, options = {}) {
   const result = runCli(home, ["doctor"], options);
   expect(result.signal === null, "doctor was terminated by a signal", result);
   expect(result.stderr === "", "doctor diagnostics were not stdout-only", result);
-  expectIncludes(result.stdout, "OpenTag Doctor", "doctor report", result);
+  expectIncludes(result.stdout, "openTag Doctor", "doctor report", result);
   expectIncludes(result.stdout, "Not evaluated", "doctor report", result);
   expectExcludes(result.stdout, credentialSecret, "doctor report", result);
   expectExcludes(result.stdout, "caller-controlled.invalid", "doctor report", result);
@@ -228,7 +228,7 @@ async function runCoreSuite() {
       machineToken: responseSecret,
     });
     const result = runDoctor(home);
-    expectIncludes(result.stdout, "unusable OpenTag Computer credential", "credential result", result);
+    expectIncludes(result.stdout, "unusable openTag Computer credential", "credential result", result);
     expectExcludes(result.stdout, responseSecret, "credential result", result);
     expect((await requestCount(18080)) === before, "doctor contacted Server for malformed credentials");
   });
@@ -394,14 +394,14 @@ async function runCoreSuite() {
     const install = runCli(baselineHome, ["daemon", "install"]);
     expect(install.status === 0, "daemon install failed in the systemd container", install);
     const result = await waitForDoctor(baselineHome, (candidate) => candidate.status === 0, 30_000);
-    expectIncludes(result.stdout, "Daemon service: active for this OpenTag Home", "daemon result", result);
-    expectIncludes(result.stdout, "Baseline checks passed for this OpenTag Home.", "summary", result);
+    expectIncludes(result.stdout, "Daemon service: active for this openTag Home", "daemon result", result);
+    expectIncludes(result.stdout, "Baseline checks passed for this openTag Home.", "summary", result);
   });
 
   await record("active service bound to another Home fails closed", async () => {
     const otherHome = await writeValidHome("systemd-other-home", "http://127.0.0.1:18086");
     const result = runDoctor(otherHome);
-    expectIncludes(result.stdout, "active for a different or unverifiable OpenTag Home", "daemon result", result);
+    expectIncludes(result.stdout, "active for a different or unverifiable openTag Home", "daemon result", result);
   });
 
   const unitPath = join(process.env.HOME ?? "/home/node", ".config/systemd/user/opentag-dev.service");
@@ -456,14 +456,14 @@ async function runIssue239Suite() {
     expect(connect.status === 0, "computer connect failed in the issue #239 suite", connect);
     expectIncludes(connect.stdout, "Daemon service opentag-dev is active", "computer connect result", connect);
     const result = await waitForDoctor(home, (candidate) => candidate.status === 0, 30_000);
-    expectIncludes(result.stdout, "Baseline checks passed for this OpenTag Home.", "doctor result", result);
+    expectIncludes(result.stdout, "Baseline checks passed for this openTag Home.", "doctor result", result);
     await waitForComputerOnline(serverUrl, credentials.accessToken, 30_000);
   });
 
   await record("shell XDG_CONFIG_HOME cannot redirect doctor service lookup", async () => {
     const result = runDoctor(home, { env: { XDG_CONFIG_HOME: shellXdgConfigHome } });
     expect(result.status === 0, "doctor failed after only XDG_CONFIG_HOME changed", result);
-    expectIncludes(result.stdout, "Daemon service: active for this OpenTag Home", "daemon result", result);
+    expectIncludes(result.stdout, "Daemon service: active for this openTag Home", "daemon result", result);
     await expectMissing(
       join(shellXdgConfigHome, "systemd", "user", "opentag-dev.service"),
       "doctor created or selected a shell-XDG service definition",
@@ -473,7 +473,7 @@ async function runIssue239Suite() {
   await record("shell HOME cannot redirect doctor service lookup", async () => {
     const result = runDoctor(home, { env: { HOME: shellHome } });
     expect(result.status === 0, "doctor failed after only HOME changed", result);
-    expectIncludes(result.stdout, "Daemon service: active for this OpenTag Home", "daemon result", result);
+    expectIncludes(result.stdout, "Daemon service: active for this openTag Home", "daemon result", result);
     await expectMissing(
       join(shellHome, ".config", "systemd", "user", "opentag-dev.service"),
       "doctor created or selected a shell-HOME service definition",
@@ -488,7 +488,7 @@ async function runIssue239Suite() {
     });
     expect(connect.status === 0, "computer reconnect failed under custom XDG_CONFIG_HOME", connect);
     const result = await waitForDoctor(home, (candidate) => candidate.status === 0, 30_000, { env: environment });
-    expectIncludes(result.stdout, "Daemon service: active for this OpenTag Home", "daemon result", result);
+    expectIncludes(result.stdout, "Daemon service: active for this openTag Home", "daemon result", result);
     const fragment = runSystemctl(["show", "opentag-dev.service", "--property", "FragmentPath", "--value"]);
     expect(fragment.status === 0, "systemd FragmentPath query failed", fragment);
     expect(

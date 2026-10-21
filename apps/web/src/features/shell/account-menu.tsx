@@ -1,13 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import { browserApi } from "../../api.js";
 import { initials } from "../../i18n/format.js";
 import * as m from "../../paraglide/messages.js";
 import { queryKeys } from "../../query/keys.js";
 import { Button, DropdownMenu, Icon, Loader, Sidebar, Tooltip } from "../../ui/design-system.js";
-import { clearProfileNavigationDraft } from "../account/profile-navigation-draft.js";
 import { useAccount } from "../session/session-context.js";
+import { useSignOut } from "../session/use-sign-out.js";
 import { MenuItemIcon } from "./menu-item-icon.js";
 
 export function AccountMenu({
@@ -17,11 +17,9 @@ export function AccountMenu({
   onNavigate?: () => void;
   placement: "page" | "sidebar" | "dock";
 }) {
-  const { endSession, me } = useAccount();
-  const navigate = useNavigate();
+  const { me } = useAccount();
+  const { error: accountError, signOut, signingOut: loggingOut } = useSignOut();
   const [open, setOpen] = useState(false);
-  const [loggingOut, setLoggingOut] = useState(false);
-  const [accountError, setAccountError] = useState<string>();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const internalToolsOffered =
     useQuery({
@@ -29,21 +27,6 @@ export function AccountMenu({
       queryFn: () => browserApi.internalToolsOffered(),
       staleTime: Number.POSITIVE_INFINITY,
     }).data === true;
-
-  async function logout() {
-    setLoggingOut(true);
-    setAccountError(undefined);
-    try {
-      await browserApi.logout();
-      // End the Account-owned cache before login navigation so a later Account cannot see it.
-      clearProfileNavigationDraft();
-      endSession();
-      void navigate({ replace: true, to: "/login" });
-    } catch (cause) {
-      setAccountError(cause instanceof Error ? cause.message : m.shell_unable_to_sign_out());
-      setLoggingOut(false);
-    }
-  }
 
   const trigger =
     placement !== "page" ? (
@@ -53,8 +36,8 @@ export function AccountMenu({
         className="app-account-trigger justify-start [&>div]:translate-none"
         data-compact={placement === "dock" ? "true" : undefined}
         icon={
-          <span className="app-account-icon grid size-6 shrink-0 place-items-center" aria-hidden="true">
-            <span className="app-account-avatar grid size-6 place-items-center rounded-full bg-kumo-tint text-xs font-medium">
+          <span className="app-account-icon grid size-8 shrink-0 place-items-center" aria-hidden="true">
+            <span className="app-account-avatar grid size-8 place-items-center rounded-full bg-kumo-tint text-xs font-medium">
               {initials(me.user.displayName)}
             </span>
           </span>
@@ -128,7 +111,7 @@ export function AccountMenu({
           closeOnClick={false}
           disabled={loggingOut}
           icon={<MenuItemIcon name="sign-out" />}
-          onClick={() => void logout()}
+          onClick={() => void signOut()}
         >
           {loggingOut ? (
             <span className="flex items-center gap-2">

@@ -26,7 +26,7 @@ const agent: AgentDetail = {
   name: "reviewer",
   displayName: "Reviewer",
   createdBy: { userId: ACCOUNT_ID, displayName: "Ada" },
-  computer: { computerId: COMPUTER_ID, displayName: "OpenTag Cloud", platform: "linux" },
+  computer: { computerId: COMPUTER_ID, displayName: "openTag Cloud", platform: "linux" },
   runtimeProvider: "pi",
   receiveMode: "mention_only",
   status: "active",
@@ -38,7 +38,7 @@ const agent: AgentDetail = {
 const cloudComputer: AccountComputerSummary = {
   computerId: COMPUTER_ID,
   kind: "cloud",
-  displayName: "OpenTag Cloud",
+  displayName: "openTag Cloud",
   platform: "linux",
   connectionStatus: "online",
   providerReadiness: [{ provider: "pi", status: "ready", observedAt: TIME }],

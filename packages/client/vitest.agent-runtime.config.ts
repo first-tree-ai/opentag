@@ -30,6 +30,7 @@ export default defineConfig({
       "src/__tests__/claude-code-hosted-tool-bridge.test.ts",
       "src/__tests__/claude-code-skill-plugin.test.ts",
       "src/__tests__/claude-code-process.test.ts",
+      "src/__tests__/process-owner.test.ts",
       "src/__tests__/codex-agent-runtime.test.ts",
       "src/__tests__/codex-agent-runtime-exhaustive.test.ts",
       "src/__tests__/codex-app-server.test.ts",

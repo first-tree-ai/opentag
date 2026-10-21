@@ -303,7 +303,7 @@ export class FeishuSetupService {
     const existing = current;
     const profile: FeishuAppProfile = {
       name: agent.displayName,
-      description: `OpenTag Agent: ${agent.displayName}`,
+      description: `openTag Agent: ${agent.displayName}`,
     };
     let registration: FeishuRegistration;
     try {

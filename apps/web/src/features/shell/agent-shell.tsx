@@ -41,23 +41,23 @@ export default function AgentNavigation({ agentId, pathname }: { agentId: string
      * Visible by default, with no internal-tools gate: Connectors and Agent Skills are ordinary
      * per-Agent management surfaces, not previews.
      */
-    { section: "skills", icon: "skills", label: m.shell_skills(), link: agentSkillsLink(agentId) },
     { section: "mcp", icon: "connector", label: m.shell_mcp(), link: agentMcpLink(agentId) },
+    { section: "skills", icon: "skills", label: m.shell_skills(), link: agentSkillsLink(agentId) },
     { section: "usage", icon: "usage", label: m.shell_usage(), link: agentUsageLink(agentId) },
   ] as const;
   return (
     <>
-      <Sidebar.Header className="h-auto border-b-0 px-1.5 pb-4">
+      <Sidebar.Header className="app-agent-switcher h-auto border-b-0">
         <Sidebar.Menu className="min-w-0 flex-1">
           <Sidebar.MenuItem>
             <AgentSwitcher agent={agent} agents={agents} pathname={pathname} agentId={agentId} />
           </Sidebar.MenuItem>
         </Sidebar.Menu>
       </Sidebar.Header>
-      <Sidebar.Content className="[&_[data-sidebar=viewport]]:px-1.5 [&_[data-sidebar=viewport]]:pt-0">
+      <Sidebar.Content className="app-agent-links [&_[data-sidebar=viewport]]:p-0">
         <nav aria-label={m.shell_agent()}>
           <Sidebar.Group>
-            <Sidebar.Menu className="gap-1">
+            <Sidebar.Menu className="gap-1.5">
               {items.map((item) => {
                 const active = isAgentSectionActive(pathname, agentId, item.section);
                 return (
@@ -65,11 +65,11 @@ export default function AgentNavigation({ agentId, pathname }: { agentId: string
                     key={item.section}
                     active={active}
                     aria-current={active ? "page" : undefined}
-                    className="h-11 rounded-lg px-3 font-normal data-[active]:bg-(--brand-soft) data-[active]:font-medium data-[active]:text-kumo-brand focus-visible:ring-2 focus-visible:ring-kumo-focus [&>div]:translate-none"
+                    className="app-agent-link h-auto rounded-[10px] px-4 py-3 font-normal data-[active]:bg-(--brand-soft) data-[active]:font-semibold data-[active]:text-kumo-default focus-visible:ring-2 focus-visible:ring-kumo-focus [&>div]:translate-none"
                     href={router.buildLocation(item.link).href}
                     icon={
                       <span
-                        className="grid size-6 shrink-0 place-items-center text-kumo-subtle group-data-[active]/menu-button:text-kumo-brand"
+                        className="grid size-4.5 shrink-0 place-items-center text-kumo-subtle group-data-[active]/menu-button:text-kumo-default"
                         aria-hidden="true"
                       >
                         <Icon className="size-4.5" name={item.icon} weight="regular" />
@@ -121,12 +121,12 @@ function AgentSwitcher({
             aria-label={
               agent ? m.shell_switch_agent_current({ currentAgent: agent.displayName }) : m.shell_switch_agent()
             }
-            className="min-h-11 rounded-lg px-3 hover:bg-kumo-fill-hover focus-visible:ring-2 focus-visible:ring-kumo-focus [&>div]:translate-none"
+            className="min-h-8 rounded-lg px-0 hover:bg-kumo-fill-hover focus-visible:ring-2 focus-visible:ring-kumo-focus [&>div]:translate-none"
             icon={
               <AgentAvatar
                 displayName={agent?.displayName ?? "A"}
                 avatarPath={agent?.avatarPath}
-                className="size-6 text-xs"
+                className="size-8 text-xs"
               />
             }
             tooltip={agent?.displayName ?? m.shell_agent()}
@@ -134,7 +134,7 @@ function AgentSwitcher({
             <span className="min-w-0 flex-1 text-left">
               <strong className="block truncate text-sm font-semibold">{agent?.displayName ?? m.shell_agent()}</strong>
             </span>
-            <Icon className="size-3.5 text-kumo-subtle" name="chevron-down" />
+            <Icon className="size-4 text-kumo-subtle" name="chevron-down" />
           </Sidebar.MenuButton>
         }
       />

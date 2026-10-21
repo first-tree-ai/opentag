@@ -1,4 +1,4 @@
-import { and, asc, eq, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import type { DatabaseTransaction } from "../db/client.js";
 import { agents, computers, imBindings, imMessageDeliveries, imMessages, sessions } from "../db/schema/index.js";
 import { type SessionService, SessionServiceError } from "../services/sessions/session-service.js";
@@ -25,12 +25,43 @@ const REPLACEABLE_SESSION_ERRORS = new Set([
   "SESSION_SCOPE_INVALID",
 ]);
 
+export async function lockSteeredRecoverySessions(
+  transaction: DatabaseTransaction,
+  targetDeliveryIds: string[],
+  options: { skipLocked?: boolean } = {},
+) {
+  if (targetDeliveryIds.length === 0) return [];
+  return transaction
+    .select({ id: sessions.id })
+    .from(sessions)
+    .where(
+      inArray(
+        sessions.id,
+        transaction
+          .select({ sessionId: imMessageDeliveries.sessionId })
+          .from(imMessageDeliveries)
+          .where(
+            or(
+              inArray(imMessageDeliveries.id, targetDeliveryIds),
+              and(
+                eq(imMessageDeliveries.state, "steered"),
+                inArray(imMessageDeliveries.steerTargetDeliveryId, targetDeliveryIds),
+              ),
+            ),
+          ),
+      ),
+    )
+    .orderBy(asc(sessions.id))
+    .for("no key update", options.skipLocked ? { skipLocked: true } : undefined);
+}
+
 /**
  * Return steered children to the normal queue in message order.
  *
  * Recovery uses the same active-Session and placement code as normal IM ingress. A child left on
  * an ended target Session is not claimable because the worker deliberately filters ended Sessions.
  * The state predicate makes this operation idempotent when terminal reporting and the janitor race.
+ * Callers lock recovery Sessions before taking placement or delivery locks.
  */
 export async function requeueSteeredDeliveries(
   transaction: DatabaseTransaction,
@@ -215,11 +246,10 @@ async function resolveRecoveryRoute(
     .leftJoin(computers, eq(computers.id, agents.computerId))
     .where(eq(sessions.id, sourceSessionId))
     .limit(1)
-    .for("update", { of: sessions });
+    .for("no key update", { of: sessions });
 
   if (
-    !source ||
-    source.binding.status !== "active" ||
+    source?.binding.status !== "active" ||
     source.agent.status !== "active" ||
     source.agent.computerId === null ||
     source.computer === null ||

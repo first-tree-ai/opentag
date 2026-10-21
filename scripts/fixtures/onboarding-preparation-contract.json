@@ -30,7 +30,7 @@
     },
     {
       "id": "no-implicit-runtime-install",
-      "description": "OpenTag never installs a Runtime CLI. A missing/login/config-failed Runtime always surfaces as an explicit human instruction plus an idempotent read-only runtime-inspect verify command, never as an install/repair command of its own.",
+      "description": "openTag never installs a Runtime CLI. A missing/login/config-failed Runtime always surfaces as an explicit human instruction plus an idempotent read-only runtime-inspect verify command, never as an install/repair command of its own.",
       "assertion": "instruction, never a Runtime repair command"
     },
     {
@@ -453,7 +453,7 @@
           ],
           "nextAction": {
             "kind": "manual-runtime-install",
-            "instruction": "Install and sign in to the Codex CLI yourself (OpenTag never installs Runtime CLIs), then run the verify command.",
+            "instruction": "Install and sign in to the Codex CLI yourself (openTag never installs Runtime CLIs), then run the verify command.",
             "verifyCommandTail": "computer runtime-inspect --provider codex",
             "repairCommandAbsent": true
           }
@@ -1388,7 +1388,7 @@
             "kind": "repair-command",
             "commandTail": "provider-cli ensure --provider lark",
             "verifyCommandTail": "provider-cli inspect --provider lark",
-            "ownershipDetail": "owned by another OpenTag process"
+            "ownershipDetail": "owned by another openTag process"
           }
         }
       },

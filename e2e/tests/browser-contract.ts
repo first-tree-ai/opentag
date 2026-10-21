@@ -5,7 +5,8 @@ import { expect } from "./fixtures.js";
 export async function expectAccessible(page: Page): Promise<void> {
   const results = await new AxeBuilder({ page }).analyze();
   const violations = results.violations.map(
-    (violation) => `${violation.id}: ${violation.nodes.map((node) => node.target.join(", ")).join(" | ")}`,
+    (violation) =>
+      `${violation.id}: ${violation.nodes.map((node) => `${node.target.join(", ")}: ${node.failureSummary}`).join(" | ")}`,
   );
   expect(violations, "axe accessibility violations").toEqual([]);
 }

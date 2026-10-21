@@ -576,10 +576,10 @@ describe("RuntimeConfigurationForm", () => {
     expect(screen.getByText("Tell Reviewer how you’d like it to respond and work.")).toBeTruthy();
     expect(screen.queryByText("Choose a common model or enter a custom model ID.")).toBeNull();
     expect(screen.queryByText("Provider default lets the runtime choose.")).toBeNull();
-    expect(screen.queryByText(/^OpenTag omits model and effort overrides/)).toBeNull();
+    expect(screen.queryByText(/^openTag omits model and effort overrides/)).toBeNull();
     expect(
       screen.queryByText(
-        "Be concise and specific. These instructions apply in addition to OpenTag's platform guidance.",
+        "Be concise and specific. These instructions apply in addition to openTag's platform guidance.",
       ),
     ).toBeNull();
     expect(screen.queryByText(/timeout/i)).toBeNull();

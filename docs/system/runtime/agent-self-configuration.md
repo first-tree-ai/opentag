@@ -5,7 +5,7 @@ description: "Which parts of its own configuration an Agent may read and change 
 
 # Agent self-configuration
 
-An Agent running inside an OpenTag-managed Session can inspect and change part of its own configuration through the
+An Agent running inside an openTag-managed Session can inspect and change part of its own configuration through the
 CLI, without an Account login, only after its owner enables self-configuration:
 
 ```text

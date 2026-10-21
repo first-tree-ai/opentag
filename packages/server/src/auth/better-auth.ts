@@ -64,7 +64,7 @@ export type OpenTagBetterAuth = ReturnType<typeof createBetterAuth>;
  */
 export function createBetterAuth(database: DatabaseClient, config: BetterAuthConfig) {
   return betterAuth({
-    appName: "OpenTag",
+    appName: "openTag",
     baseURL: config.publicUrl,
     basePath: BETTER_AUTH_BASE_PATH,
     secret: config.secret,

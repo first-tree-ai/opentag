@@ -16,7 +16,7 @@ export class ServerHealthHttpError extends Error {
   override readonly name = "ServerHealthHttpError";
 
   constructor(readonly status: number) {
-    super(`OpenTag server health check returned HTTP ${status}`);
+    super(`openTag server health check returned HTTP ${status}`);
   }
 }
 
@@ -35,7 +35,7 @@ export async function checkServerHealth(
   try {
     healthUrl = new URL("/healthz", serverUrl);
   } catch (error) {
-    throw new ServerHealthConfigurationError(`Invalid OpenTag server URL: ${serverUrl}`, { cause: error });
+    throw new ServerHealthConfigurationError(`Invalid openTag server URL: ${serverUrl}`, { cause: error });
   }
 
   const controller = new AbortController();
@@ -49,21 +49,21 @@ export async function checkServerHealth(
       return ServerHealthSchema.parse(await response.json());
     } catch (error) {
       if (controller.signal.aborted) {
-        throw new ServerHealthTimeoutError(`OpenTag server health check timed out after ${timeoutMs}ms`, {
+        throw new ServerHealthTimeoutError(`openTag server health check timed out after ${timeoutMs}ms`, {
           cause: error,
         });
       }
-      throw new ServerHealthResponseError("OpenTag server returned an invalid health response", { cause: error });
+      throw new ServerHealthResponseError("openTag server returned an invalid health response", { cause: error });
     }
   } catch (error) {
     if (error instanceof ServerHealthHttpError || error instanceof ServerHealthResponseError) throw error;
     if (error instanceof ServerHealthTimeoutError) throw error;
     if (controller.signal.aborted) {
-      throw new ServerHealthTimeoutError(`OpenTag server health check timed out after ${timeoutMs}ms`, {
+      throw new ServerHealthTimeoutError(`openTag server health check timed out after ${timeoutMs}ms`, {
         cause: error,
       });
     }
-    throw new ServerHealthNetworkError("Could not reach the OpenTag server", { cause: error });
+    throw new ServerHealthNetworkError("Could not reach the openTag server", { cause: error });
   } finally {
     clearTimeout(timeout);
   }

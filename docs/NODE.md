@@ -1,14 +1,14 @@
 ---
 schemaVersion: 1
-title: "OpenTag knowledge base"
-description: "OpenTag product decisions, system architecture and contracts, and operating procedures, maintained as a Context Tree next to the code."
+title: "openTag knowledge base"
+description: "openTag product decisions, system architecture and contracts, and operating procedures, maintained as a Context Tree next to the code."
 ---
 
-# OpenTag knowledge base
+# openTag knowledge base
 
-OpenTag lets people collaborate with long-lived Agent identities from Feishu
+openTag lets people collaborate with long-lived Agent identities from Feishu
 and Slack while the Agents coordinate work across isolated Sessions on Local
-or Cloud Computers. This directory is OpenTag's Context Tree: the canonical
+or Cloud Computers. This directory is openTag's Context Tree: the canonical
 home for its durable decisions, contracts, and procedures. New readers start
 with the [Quick Start](https://github.com/first-tree-ai/opentag/blob/main/README.md#quick-start)
 and the [development guide](https://github.com/first-tree-ai/opentag/blob/main/DEVELOPMENT.md).
@@ -17,10 +17,10 @@ and the [development guide](https://github.com/first-tree-ai/opentag/blob/main/D
 
 - **[product/](product/NODE.md)** — What people experience: Agent
   collaboration, Tasks, Cloud Computer and billing, Doctor, and trademarks.
-- **[system/](system/NODE.md)** — How OpenTag is built: the core identity
+- **[system/](system/NODE.md)** — How openTag is built: the core identity
   model, Server/Client authority, Agent runtimes, messaging, Agent
   capabilities, Cloud execution, and the Web App.
-- **[operations/](operations/NODE.md)** — How OpenTag is released, deployed,
+- **[operations/](operations/NODE.md)** — How openTag is released, deployed,
   observed, and diagnosed.
 
 ## Decision

@@ -1,5 +1,5 @@
 import type { SkillFileEntry } from "@opentag/shared/browser";
-import { Children, isValidElement, type ReactNode, useId, useRef, useState } from "react";
+import { Children, isValidElement, type ReactNode, useId, useRef } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import * as m from "../../paraglide/messages.js";
@@ -18,6 +18,25 @@ function plainText(children: ReactNode): string {
     .join("");
 }
 
+/** Resolve fragments by comparing data attributes, never by interpolating an untrusted selector. */
+export function focusSkillHeading(root: HTMLElement | null, fragment: string): void {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(fragment);
+  } catch {
+    return;
+  }
+  const headings = Array.from(root?.querySelectorAll<HTMLElement>("[data-skill-heading]") ?? []);
+  const duplicate = /^(.*)-(\d+)$/.exec(decoded);
+  const target =
+    headings.find((element) => element.dataset.skillHeading === decoded) ??
+    (duplicate
+      ? headings.filter((element) => element.dataset.skillHeading === duplicate[1])[Number(duplicate[2])]
+      : undefined);
+  target?.scrollIntoView({ block: "start" });
+  target?.focus({ preventScroll: true });
+}
+
 /** Package Markdown is untrusted: no HTML, remote images, embeds or executable code. */
 export function SkillReaderMarkdown({
   content,
@@ -28,12 +47,11 @@ export function SkillReaderMarkdown({
   content: string;
   path: string;
   files: SkillFileEntry[];
-  onSelect: (path: string) => void;
+  onSelect: (path: string, fragment?: string) => void;
 }) {
   const id = useId();
-  const [showFrontmatter, setShowFrontmatter] = useState(false);
   const root = useRef<HTMLDivElement>(null);
-  const { frontmatter, body } = splitSkillFrontmatter(content);
+  const { body } = splitSkillFrontmatter(content);
   function heading(level: 1 | 2 | 3 | 4 | 5 | 6, children: ReactNode, offset: number | undefined) {
     const slug = skillHeadingSlug(plainText(children));
     const Tag = `h${level}` as const;
@@ -43,45 +61,8 @@ export function SkillReaderMarkdown({
       </Tag>
     );
   }
-  const scrollToHeading = (href: string) => {
-    let fragment: string;
-    try {
-      fragment = decodeURIComponent(href.slice(1));
-    } catch {
-      return;
-    }
-    const headings = Array.from(root.current?.querySelectorAll<HTMLElement>("[data-skill-heading]") ?? []);
-    const duplicate = /^(.*)-(\d+)$/.exec(fragment);
-    const target =
-      headings.find((element) => element.dataset.skillHeading === fragment) ??
-      (duplicate
-        ? headings.filter((element) => element.dataset.skillHeading === duplicate[1])[Number(duplicate[2])]
-        : undefined);
-    target?.scrollIntoView({ block: "start" });
-    target?.focus({ preventScroll: true });
-  };
   return (
     <div className="skill-reader-markdown" ref={root}>
-      {frontmatter ? (
-        <div className="skill-reader-frontmatter">
-          <Button
-            size="compact"
-            variant="ghost"
-            aria-expanded={showFrontmatter}
-            onClick={() => setShowFrontmatter(!showFrontmatter)}
-          >
-            {m.skills_details_frontmatter()}
-          </Button>
-          {showFrontmatter ? (
-            // biome-ignore lint/a11y/noNoninteractiveTabindex: Frontmatter can need keyboard horizontal scrolling.
-            <section className="skill-reader-code" aria-label={m.skills_details_frontmatter()} tabIndex={0}>
-              <pre>
-                <code>{frontmatter}</code>
-              </pre>
-            </section>
-          ) : null}
-        </div>
-      ) : null}
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         skipHtml
@@ -102,7 +83,7 @@ export function SkillReaderMarkdown({
                   className="skill-reader-package-link"
                   size="compact"
                   variant="inline"
-                  onClick={() => onSelect(file)}
+                  onClick={() => onSelect(file, href.includes("#") ? href.slice(href.indexOf("#") + 1) : undefined)}
                 >
                   {children}
                 </Button>
@@ -113,7 +94,7 @@ export function SkillReaderMarkdown({
                   href={href}
                   onClick={(event) => {
                     event.preventDefault();
-                    scrollToHeading(href);
+                    focusSkillHeading(root.current, href.slice(1));
                   }}
                 >
                   {children}

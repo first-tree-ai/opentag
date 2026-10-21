@@ -74,6 +74,15 @@ Run, and Provider-protocol identities.
   probe runner ignores the signal.
 - Probe cancellation is not reported as artifact absence.
 
+On POSIX hosts, the Provider watchdog owns the process group through shutdown. It keeps its
+signal handlers installed and the existing 500 ms escalation timer alive until the group receives
+`SIGKILL`, including when the Provider exits before a tool with closed stdio. Interrupt, close,
+and terminal-result cleanup retain this escalation even after the Provider exits. The wrapper
+and its descendants can become observable as stopped at different times after group termination.
+Broken forwarding pipes enter the same bounded shutdown instead of crashing the watchdog before
+escalation. This boundary covers the owned process group; a process that creates a separate
+session or process group is outside that ownership boundary.
+
 ## Provider and Product Support
 
 Provider implementation and production product support are separate claims:
@@ -113,7 +122,7 @@ exists: Pi defers the first JSONL write until an assistant message is persisted.
 If the first Run is interrupted before materialization, a later Turn reopens the
 same Pi UUID with `--session-id`. Pi loads existing history if present, or starts
 an empty file for that UUID if the first file was never created. This also preserves
-history saved just before a crash that prevented OpenTag's binding update. An
+history saved just before a crash that prevented openTag's binding update. An
 unmaterialized binding is not replaced merely because its file hash is absent.
 This does not automatically replay the interrupted Turn or claim its success.
 Once materialized, recovery must preserve both the Pi UUID and file-path fingerprint,

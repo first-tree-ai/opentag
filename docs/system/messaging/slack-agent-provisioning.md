@@ -22,18 +22,18 @@ continues to use the current Bot's messaging proxy.
    identity or repeat an uncertain create.
 2. `opentag slack home` prints the private management directory. Cloud uses
    `/tmp/opentag/slack-management`, outside per-Turn HOME and the archived workspace. Local uses
-   `<OpenTag home>/slack-management`. It contains native CLI configuration under `config/` and
+   `<openTag home>/slack-management`. It contains native CLI configuration under `config/` and
    each operation under `project-<creationIntentId>/`. Pass that same `--project-dir` to every management command and keep its temporary files there. Never reuse a linked project for another App in the same Team. Run management commands sequentially.
    Local resolves the existing account-level native Provider CLI launcher, bypassing the Turn
    messaging launcher on `PATH`. Visible proof-backed Sessions receive write access only to this
-   precreated 0700 management directory, not the whole OpenTag home.
+   precreated 0700 management directory, not the whole openTag home.
 3. If there is no usable native login, run
    `opentag slack manage -- auth login --no-prompt`. The user executes the returned `/slackauthticket`
    command in Slack, reviews permissions, and returns the challenge. Complete the same ticket with
    `opentag slack manage --project-dir project-<intent> -- auth login --ticket <ticket> --challenge <challenge>`. This does not use a localhost browser callback;
    the user can act on their own device. Physical cross-device acceptance remains a live QA item.
 4. Generate the initial manifest with
-   `opentag slack manifest --creation-intent <uuid> --display-name <name>`. It reuses OpenTag's name
+   `opentag slack manifest --creation-intent <uuid> --display-name <name>`. It reuses openTag's name
    rules, all 18 Bot scopes, and writable App Home, with no event or interactivity callbacks.
 5. Use the official API via
    `opentag slack manage --project-dir project-<intent> --team <team-id> --output-file project-<intent>/create-response.json -- api apps.manifest.create --json <manifest-request-json>`.
@@ -53,7 +53,7 @@ For native API help, use `opentag slack manage -- api --help` or `-h`. Help requ
 This flow intentionally reuses the existing Computer-level trust boundary: visible proof-backed
 Sessions on the same Computer share the private native Slack management directory and its retained
 login. Such Agents can manage every App available to that Slack CLI authorization. The Account
-operation code gates OpenTag creation and binding; it does not restrict native Slack management to
+operation code gates openTag creation and binding; it does not restrict native Slack management to
 one App or isolate one Agent from other Agents on that Computer. Only run trusted Agents there.
 No per-Agent Slack authorization or credential isolation mechanism is added.
 

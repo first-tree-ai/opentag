@@ -86,7 +86,7 @@ export async function generateThirdPartyNotices() {
     await appendBundledNotices(sections, packageRequire, bundledPackage);
   }
 
-  return `OpenTag Third-Party Notices\n\nThis distribution includes source code from the following packages.\n\n${sections.join("\n\n---\n\n")}\n`;
+  return `openTag Third-Party Notices\n\nThis distribution includes source code from the following packages.\n\n${sections.join("\n\n---\n\n")}\n`;
 }
 
 async function appendBundledNotices(sections, packageRequire, entry) {

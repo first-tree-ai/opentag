@@ -5,7 +5,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../../api.js";
 import { installableEntries } from "./catalog/mcp-catalog-model.js";
 import { McpPage } from "./mcp-page.js";
-import { AGENT_ID, authorization, entry, openDetails, SERVER_ID, stub, wrap } from "./mcp-test-fixtures.js";
+import {
+  AGENT_ID,
+  authorization,
+  chooseAuthentication,
+  entry,
+  openDetails,
+  SERVER_ID,
+  stub,
+  wrap,
+} from "./mcp-test-fixtures.js";
 
 afterEach(() => vi.restoreAllMocks());
 const click = (name: string) => fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name }));
@@ -13,6 +22,24 @@ const key = () =>
   screen.getByLabelText("API key or token", { selector: "input:not([type=radio])" }) as HTMLInputElement;
 
 describe("MCP inline authentication", () => {
+  it.each(["bearer", "none"] as const)("keeps a failed %s save local without offering a tool retry", async (kind) => {
+    stub([entry()]);
+    vi.spyOn(browserApi, "setMcpAuthorization").mockRejectedValue(new ApiError(503, "private detail"));
+    const probe = vi.spyOn(browserApi, "probeMcpServer");
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openDetails();
+    if (kind === "bearer") {
+      click("Update");
+      fireEvent.change(key(), { target: { value: "replacement-key" } });
+    } else fireEvent.click(screen.getByRole("radio", { name: "No authentication" }));
+    click("Save");
+    await within(screen.getByRole("dialog")).findByText("Couldn't save changes");
+    click("Close linear");
+    expect(screen.queryByText("Couldn't save changes")).toBeNull();
+    await openDetails();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(probe).not.toHaveBeenCalled();
+  });
   it("keeps method selection local until Save and has no clear-credentials action", async () => {
     stub([entry()]);
     const authorize = vi
@@ -68,12 +95,8 @@ describe("MCP inline authentication", () => {
     click("Authorize");
     const failure = await within(screen.getByRole("dialog")).findByRole("alert");
     expect(failure.textContent).toBe("Authorization failed");
-    expect(failure.parentElement).toBe(
-      within(screen.getByRole("dialog")).getByRole("button", { name: "Authorize" }).parentElement,
-    );
-    const actionRow = failure.parentElement;
-    if (!actionRow) throw new Error("Missing authorization action row");
-    expect(within(actionRow).queryByRole("button", { name: "Use API key or token" })).toBeNull();
+    expect(failure.closest(".mcp-preset-feedback")).toBeTruthy();
+    expect(within(screen.getByRole("dialog")).getByRole("combobox", { name: "Authentication" })).toBeTruthy();
     click("Authorize");
     await waitFor(() => expect(oauth).toHaveBeenCalledTimes(2));
     expect(screen.getAllByRole("dialog")).toHaveLength(1);
@@ -92,20 +115,19 @@ describe("MCP inline authentication", () => {
     wrap(<McpPage agentId={AGENT_ID} />);
     await openDetails("Firecrawl");
     const expiry = within(screen.getByRole("dialog")).getByText("Authorization expired");
-    expect(expiry.parentElement).toBe(
-      within(screen.getByRole("dialog")).getByRole("button", { name: "Reauthorize" }).parentElement,
-    );
-    expect((screen.getByLabelText("Connector address") as HTMLInputElement).readOnly).toBe(true);
+    expect(expiry.closest(".mcp-preset-feedback")).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Connector address" }).textContent).toContain(preset.url);
+    expect(screen.queryByRole("textbox", { name: "Connector address" })).toBeNull();
     expect(screen.queryByRole("radio")).toBeNull();
     expect(screen.queryByRole("button", { name: /Advanced|Tools|Delete|Clear|Save/ })).toBeNull();
-    click("Use API key or token");
-    expect((screen.getByLabelText("Connector address") as HTMLInputElement).value).toBe(preset.keyAuth.url);
+    await chooseAuthentication("API key or token");
+    expect(screen.getByRole("region", { name: "Connector address" }).textContent).toContain(preset.keyAuth.url);
     fireEvent.change(key(), { target: { value: "draft-key" } });
     expect(update).not.toHaveBeenCalled();
     expect(authorize).not.toHaveBeenCalled();
     click("Cancel");
-    expect((screen.getByLabelText("Connector address") as HTMLInputElement).value).toBe(preset.url);
-    expect(screen.getByRole("button", { name: "Use API key or token" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Connector address" }).textContent).toContain(preset.url);
+    expect(screen.getByRole("combobox", { name: "Authentication" }).textContent).toContain("Account sign-in");
     expect(browserApi.revokeMcpAuthorization).not.toHaveBeenCalled();
   });
   it("saves an alternate preset key without restoring the old method after a rejected probe", async () => {
@@ -143,7 +165,7 @@ describe("MCP inline authentication", () => {
     });
     wrap(<McpPage agentId={AGENT_ID} />);
     await openDetails("Firecrawl");
-    click("Use API key or token");
+    await chooseAuthentication("API key or token");
     fireEvent.change(key(), { target: { value: "replacement-key" } });
     click("Save");
     await screen.findByRole("button", { name: "Update" });
@@ -151,7 +173,7 @@ describe("MCP inline authentication", () => {
     expect(authorize).toHaveBeenCalledWith(AGENT_ID, SERVER_ID, { kind: "bearer", bearerKey: "replacement-key" });
     expect(current.authorization?.kind).toBe("bearer");
     expect(current.authorization?.hasCredential).toBe(true);
-    expect((screen.getByLabelText("Connector address") as HTMLInputElement).value).toBe(preset.keyAuth.url);
+    expect(screen.getByRole("region", { name: "Connector address" }).textContent).toContain(preset.keyAuth.url);
   });
   it("does not offer a method switch for a single-method preset", async () => {
     const preset = installableEntries(MCP_CATALOG_ENTRIES).find((item) => item.id === "notion");
@@ -166,5 +188,6 @@ describe("MCP inline authentication", () => {
     wrap(<McpPage agentId={AGENT_ID} />);
     await openDetails("Notion");
     expect(screen.queryByRole("button", { name: /^Use / })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Authentication" })).toBeNull();
   });
 });

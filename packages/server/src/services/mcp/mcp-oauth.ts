@@ -358,7 +358,7 @@ export class McpOAuthClient {
   readonly #softwareVersion: string;
 
   constructor(options: McpOAuthOptions) {
-    this.#clientName = options.clientName ?? "OpenTag";
+    this.#clientName = options.clientName ?? "openTag";
     this.#fetcher = options.fetcher;
     this.#publicUrl = options.publicUrl.replace(/\/+$/, "");
     this.#softwareId = options.softwareId ?? "opentag";

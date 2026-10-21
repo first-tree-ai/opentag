@@ -69,7 +69,7 @@ function validateMachineCredentials(value: unknown): StoredMachineCredentials | 
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const record = value as Record<string, unknown>;
   if (Object.keys(record).length !== 2 || record.version !== 3) {
-    throw new Error("The OpenTag Computer credentials file uses an unsupported format; reconnect this Computer");
+    throw new Error("The openTag Computer credentials file uses an unsupported format; reconnect this Computer");
   }
   const computer = readComputerEntry(record.computer);
   return computer ? { version: 3, computer } : undefined;
@@ -81,18 +81,18 @@ function checkMachineCredentialsToWrite(value: StoredMachineCredentials): Stored
 
 function checkMachineCredentialsStrict(
   value: unknown,
-  failurePrefix = "The stored OpenTag Computer credentials contain",
+  failurePrefix = "The stored openTag Computer credentials contain",
 ): StoredMachineCredentials {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("The OpenTag Computer credentials file is invalid");
+    throw new Error("The openTag Computer credentials file is invalid");
   }
   const record = value as Record<string, unknown>;
   if (Object.keys(record).length !== 2 || record.version !== 3) {
-    throw new Error("The OpenTag Computer credentials file uses an unsupported format; reconnect this Computer");
+    throw new Error("The openTag Computer credentials file uses an unsupported format; reconnect this Computer");
   }
   const computer = readComputerEntry(record.computer);
   if (!computer) {
-    throw new Error(`${failurePrefix} an unusable OpenTag Computer credential`);
+    throw new Error(`${failurePrefix} an unusable openTag Computer credential`);
   }
   return { version: 3, computer };
 }

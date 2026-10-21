@@ -5,6 +5,7 @@ import { forwardErrorReport } from "../observability/error-reporting.js";
 import * as m from "../paraglide/messages.js";
 import { Button, Text } from "../ui/design-system.js";
 import { OpenTagLogo } from "../ui/opentag-logo.js";
+import { ContextFreeSignOut } from "./session/sign-out-button.js";
 
 type BoundaryError = {
   readonly error: Error;
@@ -84,6 +85,7 @@ export function RouteErrorPage({ reset }: ErrorComponentProps) {
         <Link className="text-sm font-medium text-kumo-brand underline-offset-4 hover:underline" to="/agents">
           {m.errors_back_to_agents()}
         </Link>
+        <ContextFreeSignOut />
       </div>
     </BoundaryCard>
   );
@@ -105,6 +107,7 @@ export function StandaloneErrorPage({ actionLabel, onAction }: { actionLabel: st
           <a className="text-sm font-medium text-kumo-brand underline-offset-4 hover:underline" href="/agents">
             {m.errors_back_to_agents()}
           </a>
+          <ContextFreeSignOut />
         </div>
       </BoundaryCard>
     </main>

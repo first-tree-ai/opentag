@@ -1,6 +1,6 @@
-# OpenTag Playwright E2E
+# openTag Playwright E2E
 
-This package drives the built OpenTag Server and Web application against a disposable PostgreSQL database. The suite
+This package drives the built openTag Server and Web application against a disposable PostgreSQL database. The suite
 uses the loopback development sign-in only inside the local E2E harness, connects a temporary Computer with the built
 CLI, and supplies temporary Claude Code and Feishu CLI probes. No provider credentials are required.
 

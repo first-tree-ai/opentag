@@ -1,7 +1,7 @@
 import type { CloudAvailability, CreateAgentRequest } from "@opentag/shared/browser";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { analytics } from "../analytics/analytics.js";
 import { ANALYTICS_EVENT, activationStep } from "../analytics/events.js";
 import { ApiError, browserApi } from "../api.js";
@@ -124,6 +124,7 @@ function creationReport(preview: unknown): CreationReport {
  * as soon as the Server returns an id, the exact-Agent Issue 437 surface owns every remaining step.
  */
 export function AgentSetupSurface({
+  accountControl,
   agentId,
   computerAdapter,
   creationPreview,
@@ -142,6 +143,8 @@ export function AgentSetupSurface({
   setupPreviewInitialView,
   slackOAuthError,
 }: {
+  /** Sign-out and Account identity for a signed-in Account that has no shell around this page. */
+  accountControl?: ReactNode;
   agentId?: string;
   computerAdapter?: AgentSetupPageProps["computerAdapter"];
   creationPreview?: (request: CreateAgentRequest) => Promise<{ readonly id: string }>;
@@ -163,6 +166,7 @@ export function AgentSetupSurface({
   if (agentId) {
     return (
       <AgentSetupPage
+        accountControl={accountControl}
         adapter={setupAdapter}
         agentId={agentId}
         computerAdapter={computerAdapter}
@@ -179,6 +183,7 @@ export function AgentSetupSurface({
   }
   return (
     <AgentCreatePage
+      accountControl={accountControl}
       creationPreview={creationPreview}
       creationPreviewInitialView={creationPreviewInitialView}
       existingAgentNames={existingAgentNames}
@@ -199,6 +204,7 @@ async function creationRequest(selected: SelectedCreation, preview: boolean): Pr
 }
 
 function AgentCreatePage({
+  accountControl,
   creationPreview,
   creationPreviewInitialView = "destination",
   existingAgentNames = [],
@@ -206,6 +212,7 @@ function AgentCreatePage({
   onAgentAvailable,
   onBackToAgents,
 }: {
+  accountControl?: ReactNode;
   creationPreview?: (request: CreateAgentRequest) => Promise<{ readonly id: string }>;
   creationPreviewInitialView?: CreationPreviewView;
   existingAgentNames?: readonly string[];
@@ -326,16 +333,20 @@ function AgentCreatePage({
     <div className="otv2-shell flex min-h-screen flex-col bg-kumo-canvas" data-ui="agent-create">
       <header className="flex items-center justify-between p-6">
         <OpenTagLogo label={m.onboarding_v2_brand_name()} />
-        {/*
-          The only way out, and only for an Account that has somewhere to go. An Account with no
-          Agent has nothing behind this page: leaving would land on a list that sends it straight
-          back. Undoing a choice made here is Go back's job, one page at a time.
-        */}
-        {onBackToAgents ? (
-          <Button disabled={submitting} onClick={onBackToAgents} variant="ghost">
-            {m.onboarding_v2_back_to_agents()}
-          </Button>
-        ) : null}
+        <div className="flex items-start gap-2">
+          {/*
+            Leaving for the Agent list is offered only to an Account that has somewhere to go. An
+            Account with no Agent has nothing behind this page: that list would send it straight
+            back. Undoing a choice made here is Go back's job, one page at a time. Signing out is
+            the one exit that is always real, so it is offered regardless.
+          */}
+          {onBackToAgents ? (
+            <Button disabled={submitting} onClick={onBackToAgents} variant="ghost">
+              {m.onboarding_v2_back_to_agents()}
+            </Button>
+          ) : null}
+          {accountControl}
+        </div>
       </header>
       <main className="otv2-frame mx-auto flex w-full flex-1 flex-col items-center gap-6 p-6">
         {destinationConfirmed ? <StepRail steps={CREATE_STEPS} /> : null}

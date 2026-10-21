@@ -66,11 +66,11 @@ describe("locale-aware formatters", () => {
   it("uses locale-aware collation and case folding", () => {
     withLocale("en", () => {
       expect(compareText("Ada", "Bob")).toBeLessThan(0);
-      expect(foldCase("OpenTag")).toBe("opentag");
+      expect(foldCase("openTag")).toBe("opentag");
     });
     withLocale("zh", () => {
       expect(compareText("阿", "张")).toBeLessThan(0);
-      expect(foldCase("OpenTag")).toBe("opentag");
+      expect(foldCase("openTag")).toBe("opentag");
     });
   });
 

@@ -15,7 +15,7 @@ beforeAll(async () => {
     join(root, "bot-avatars"),
     { recursive: true },
   );
-  await writeFile(join(root, "index.html"), "<!doctype html><title>OpenTag</title>");
+  await writeFile(join(root, "index.html"), "<!doctype html><title>openTag</title>");
   await writeFile(join(root, "assets", "app.js"), "globalThis.OPENTAG_APP = true;");
 });
 
@@ -33,7 +33,7 @@ describe("Web App static serving", () => {
         });
         expect(response.statusCode).toBe(200);
         expect(response.headers["content-type"]).toContain("image/png");
-        expect(response.headers["cache-control"]).toContain("immutable");
+        expect(response.headers["cache-control"]).toBe("public, max-age=0, must-revalidate");
         // Feishu loads each preset with `crossOrigin="anonymous"` and crops it on a canvas before
         // creating the App, so a response without this allowance is discarded in favour of Feishu's
         // own default avatar.
@@ -41,6 +41,12 @@ describe("Web App static serving", () => {
         expect(response.rawPayload.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
         expect(response.rawPayload.readUInt32BE(16)).toBe(512);
         expect(response.rawPayload.readUInt32BE(20)).toBe(512);
+        const svg = await app.inject({ method: "GET", url: `/bot-avatars/v1/${name}.svg` });
+        expect(svg.statusCode).toBe(200);
+        expect(svg.headers["content-type"]).toContain("image/svg+xml");
+        expect(svg.headers["cache-control"]).toBe("public, max-age=0, must-revalidate");
+        expect(svg.headers["access-control-allow-origin"]).toBe("*");
+        expect(svg.body).toContain("<svg");
       }
     } finally {
       await app.close();
@@ -50,10 +56,10 @@ describe("Web App static serving", () => {
   it("serves SPA routes with security headers without swallowing API or health paths", async () => {
     const app = createApp({ webAppRoot: root });
     try {
-      expect((await app.inject({ method: "GET", url: "/" })).body).toContain("OpenTag");
+      expect((await app.inject({ method: "GET", url: "/" })).body).toContain("openTag");
       const spa = await app.inject({ method: "GET", url: "/agents/example/runtime" });
       expect(spa.statusCode).toBe(200);
-      expect(spa.body).toContain("OpenTag");
+      expect(spa.body).toContain("openTag");
       const policy = String(spa.headers["content-security-policy"]);
       expect(policy).toContain("frame-ancestors 'none'");
       expect(policy).toContain("style-src 'self' 'unsafe-inline'");

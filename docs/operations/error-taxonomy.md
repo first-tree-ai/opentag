@@ -5,7 +5,7 @@ description: "The structured diagnostic error event, its redaction, and supervis
 
 # Error taxonomy and background supervision
 
-OpenTag reports operational failures as a small, structured diagnostic event. The event is safe to
+openTag reports operational failures as a small, structured diagnostic event. The event is safe to
 send to a log sink, metric exporter, or trace because the payload is redacted before it crosses that
 boundary. A structured error is an operational contract, not an API response contract: keep the
 existing `ErrorEnvelope` for client-facing HTTP responses.
@@ -33,7 +33,7 @@ existing `ErrorEnvelope` for client-facing HTTP responses.
 | `authorization` | The principal is known but is not allowed to perform the operation. |
 | `unavailable` | A required service or runtime cannot currently be reached. |
 | `timeout` | A bounded deadline elapsed before completion. |
-| `internal` | An unexpected OpenTag failure with no safer classification. |
+| `internal` | An unexpected openTag failure with no safer classification. |
 | `conflict` | The requested state conflicts with a newer or exclusive state. |
 | `not_found` | The addressed resource does not exist in this boundary. |
 | `rate_limit` | Work was rejected by a local or provider quota. |

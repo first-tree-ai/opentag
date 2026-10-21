@@ -44,6 +44,8 @@ export const DEPLOY_WORKFLOWS = [
     resolveEnvironment: npmPublishEnvironment,
     notes: () => [],
     defaultPhase: "发布前校验",
+    // Failing here with a head that is no longer origin/main means a newer commit superseded this run.
+    staleRevisionSteps: ["Verify staging revision is current main", "Recheck staging revision is current main"],
     phases: [
       { phase: "npm 发布", steps: ["Publish staging package", "Publish production package"] },
       { phase: "Runner 镜像发布", steps: ["Publish and verify the CLI-matched Runner"] },

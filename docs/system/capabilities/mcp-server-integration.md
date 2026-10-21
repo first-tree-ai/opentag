@@ -13,7 +13,7 @@ description: "Per-Agent MCP Server bindings and authorization, the MCP gateway, 
 > and background token maintenance, in the Server API, the Web UI, and the CLI.
 >
 > Runtime delivery is [the MCP gateway](#the-mcp-gateway): one inbound Streamable HTTP endpoint on
-> the OpenTag Server that an Agent's provider CLI mounts like any other remote MCP Server. **No
+> the openTag Server that an Agent's provider CLI mounts like any other remote MCP Server. **No
 > upstream credential is ever delivered to a Provider** — the gateway resolves the Agent's own
 > authorization row and calls upstream itself.
 >
@@ -30,7 +30,7 @@ description: "Per-Agent MCP Server bindings and authorization, the MCP gateway, 
 ## What this feature is for
 
 An Agent's usefulness is bounded by the tools it can reach. MCP is the emerging standard for
-exposing those tools, so OpenTag needs to be able to register an MCP Server once per Account,
+exposing those tools, so openTag needs to be able to register an MCP Server once per Account,
 mount it selectively per Agent, and hold a distinct credential for each of those mounts.
 
 The design goal that shapes everything below: **authorization is strictly per Agent.** One Server
@@ -51,8 +51,8 @@ only to the sandbox" expressible.
 
 ### Pi and Cloud runtime delivery
 
-Pi has no native MCP configuration surface. OpenTag pins `pi-mcp-adapter` 2.36.0 and explicitly
-loads one OpenTag wrapper extension while Pi's implicit extension discovery remains disabled. The
+Pi has no native MCP configuration surface. openTag pins `pi-mcp-adapter` 2.36.0 and explicitly
+loads one openTag wrapper extension while Pi's implicit extension discovery remains disabled. The
 wrapper supplies an isolated programmatic configuration containing only `opentag-mcp`; Pi's global
 and project MCP files are never merged. The gateway bearer travels in the Pi process environment,
 not its arguments or persisted Session binding. The adapter uses the gateway's supported legacy
@@ -218,6 +218,20 @@ Two consequences follow, and both are handled:
 
 Detaching is also what drops a credential: a Server an Agent no longer mounts keeps no usable secret
 for it.
+
+Bearer and anonymous saves validate and write in one short transaction, taking Agent → Server
+definition → binding → authorization locks. Agent ownership/status and definition ownership are
+rechecked before the locked mount authorizes the write. The Agent and definition use
+`FOR SHARE` so saves on independent mounts and existing child-row FK key shares remain compatible; the mount uses
+the same binding lock as cleanup. If detach wins, save finds no mount and returns
+`MCP_BINDING_NOT_FOUND`; if save wins, detach removes that authorization afterward. A mount cannot
+be deleted and recreated between the save's binding read and its commit. Disabling retains the
+credential. No provider request or browser authorization wait runs inside this save transaction.
+
+Probe settlement matches both the existing authorization row ID and its revision. A recreated
+authorization can start at the same revision, so revision alone does not identify the row probed.
+Late probe success, failure or transport errors leave a replacement authorization unchanged.
+OAuth callback state/row fences and refresh claim fences retain their existing behavior.
 
 ## Authorization resolution
 
@@ -833,14 +847,20 @@ Codex always defers MCP tools behind its built-in `tool_search`, so the model se
 
 ### What the gateway speaks
 
-Both protocol eras, not one. This deployment speaks `2026-07-28` upstream, but the clients that mount
-this endpoint are the provider CLIs, and Claude Code's own in-process bridge still speaks
-`2025-03-26`. A modern-only gateway would be unusable by the client it exists for.
+The inbound gateway supports `2025-11-25`, `2025-06-18`, and `2025-03-26`. Its upstream client
+separately supports the modern `2026-07-28` revision. Claude Code's in-process bridge still speaks
+`2025-03-26`, and Pi explicitly uses the legacy handshake. Codex receives the gateway URL and bearer
+when rebinding its thread; openTag does not pin a modern protocol revision in that configuration.
+
+The gateway does not implement modern per-request version metadata, mirrored HTTP header validation,
+or `resultType` responses, so it must not advertise that revision. Discovery lists only the three
+legacy revisions, allowing an automatically negotiating client to fall back to `initialize` before
+listing or calling tools.
 
 | Method | Answer |
 | --- | --- |
-| `initialize` + `notifications/initialized` | The legacy handshake. An unsupported requested version is answered with one this deployment does speak, never echoed — echoing would strand the session |
-| `server/discover` | The modern path: the whole supported set, so the client chooses |
+| `initialize` + `notifications/initialized` | The legacy handshake. A supported requested revision is echoed; an unsupported or modern revision selects the newest supported legacy revision |
+| `server/discover` | Only the three supported legacy revisions; modern support is not advertised |
 | `ping` | `{}` |
 | `tools/list` | The aggregated catalogue, served whole; no cursor, because there is never a further page |
 | `tools/call` | Routed upstream |
@@ -1001,49 +1021,42 @@ provides tools to an Agent; messaging channels let a user communicate with the A
 connectors use MCP. Protocol labels, endpoint instructions, configuration import formats, CLI
 commands, API paths, schema names, and the `/agents/{agentId}/mcp` page URL retain their MCP names.
 
-The page lives at `/agents/{agentId}/mcp`, under the existing shell routes. It shows one Agent's
-mounted Servers, and each row displays **four independent states** rather than one merged status:
+The page shows one Agent's installed connectors. The entire left side of each row opens Details,
+including the icon, name, description, and surrounding space. It uses the same hover and keyboard
+focus feedback as Skills, without an arrow beside the name. The enable switch and more-actions menu
+remain vertically centered on the right and operate independently. The more-actions button uses
+the same compact vertical-ellipsis control as Skills. The menu contains **Details**
+and **Delete**.
 
-| Column | Values |
-| --- | --- |
-| Mount | Enabled / Disabled |
-| Authorization method | Bearer / OAuth / Anonymous |
-| Authorization status | Authorized / Awaiting authorization / Expired / Reauthorization required / None |
-| Discovery | View tools (N) for a saved snapshot / Discovering… / Discovery failed / Not discovered |
+A normal row shows the connector description. When attention is needed, a short known reason replaces
+the description; recovery actions live in Details. An unauthenticated connector shows **Authorization
+required**. Successful tool snapshots have no aggregate Connected badge, success dot, or tool count.
+A completed snapshot remains quiet while its background replacement is pending; first-time loading,
+explicit Retry, and confirmed failures still show feedback. Disabling a connector preserves its
+configuration and credential. Deleting requires confirmation and removes this Agent's installation
+and credential; an unused definition is also removed, while a definition still used elsewhere is kept.
 
-They are kept separate because "disabled" and "not authorized" are different problems with different
-fixes: a disabled Server keeps its credential and needs no reauthorization, while an unauthorized one
-does. A merged column would send a user to reauthorize a Server that was only switched off.
+Preset Details places **Authentication** above the visible, copyable **Connector address**. A
+single supported authentication method is plain text; multiple configured methods use the shared
+Select. OAuth offers **Authorize** or **Reauthorize**. A saved API key or token is masked and offers
+**Update**; editing exposes local **Save** and **Cancel** actions. A method selection remains a draft
+until submission. There is no tool browser, credential-clearing action, advanced configuration, delete
+action, or global save footer in preset Details. Custom Details retains editable connection settings
+and collapsed Advanced settings.
 
-Each row offers the enable/disable switch, authorize / reauthorize / revoke, view tools, re-probe,
-edit, and remove.
-
-- **Settings** displays the current Agent's connection address, authentication status, and tools.
-  Advanced settings is collapsed by default. Authentication header and token prefix appear only for
-  API-key/token authorization; extra headers are directly editable for all authorization methods.
-  Account-default selectors, restore controls, shared-editor links, and the Account-page MCP manager
-  are omitted. Generic setup guidance is omitted; the short empty-prefix hint is retained.
-  Only changed fields are written through the existing Agent binding API. Unedited inherited fields
-  continue following shared definitions; this UI change does not introduce connection snapshots or
-  alter API, CLI, authorization-header validation, or database behavior.
-- **Remove** disconnects this Agent and drops its credential. The shared definition remains available
-  in the backend registry and can still be managed by the CLI's definition-management commands.
-- **Authorize** chooses the method for this Agent and, for OAuth, navigates the top-level browsing
-  context to the authorization server rather than fetching the URL.
-- **View tools (N)** sits on the right of a dedicated tool footer, separated from the Server's
-  identity by an inset horizontal rule. Tool status and expandable warnings sit on the left; on
-  narrow rows the actions wrap below them. The count is the number of tools in the
-  saved snapshot shown by the dialog; it is not a promise that every tool is currently available.
-  Successful discovery has no duplicate count row.
-  The dialog shows the tools discovered with *this Agent's* credential, with the era and version
-  that produced them. An incomplete snapshot has a lightweight, initially collapsed notice on the
-  left of its Server row. Expanding it explains that some tools may be unavailable without guessing
-  the cause or promising that refreshing will fix it; the dialog also shows that explanation.
-  Discovery progress and failure remain visible; historical snapshots use **View saved tools (N)**.
-- **Refresh tools** is a maintenance action in the Server's more-actions menu and tool browser while
-  the Server is enabled and its authorization is active. It is disabled during discovery. A failed
-  discovery offers **Retry** in the tool footer, with the same pending guard; a partial list alone
-  does not promote that action.
+Authentication feedback sits directly below its controls. **Retry** and **Open window** follow the
+reason and wrap together on narrow screens. Controls keep their positions while authorization,
+key editing, saving, and recovery feedback change. Primary form actions use the shared default
+control size; supporting text actions use the compact size, with the shared mobile touch targets.
+The method selector and key field share an input column, with actions aligned to the right in a
+reserved column. On narrow screens both fields fill the dialog and actions move below them.
+Closing Details or Discover does not cancel an ongoing OAuth attempt. Both views expose the same
+attempt, prevent duplicate authorization for that connector, and provide explicit cancellation.
+A successful recovery clears earlier local failure feedback. OAuth completion refreshes the saved
+Agent data immediately; a failed tool probe keeps the credential and offers **Retry**.
+If Retry needs OAuth, it uses the same connector session as Details so blocked-window recovery,
+cancellation, and closing/reopening the dialog remain available. A failed key or anonymous-method
+save remains a local form error; it does not turn into a tool-probe failure on the list.
 
 ### Adding a Connector
 
@@ -1117,7 +1130,7 @@ text itself is not sent anywhere. Only the values the user confirms travel, thro
 create → attach → authorize sequence used by the connection flow.
 
 - **Only remote Servers are importable.** `stdio`, `local`, `command`, and `npx` entries are listed
-  by name and reported as a category OpenTag does not support. An entry that declares a `command` is
+  by name and reported as a category openTag does not support. An entry that declares a `command` is
   local even when its arguments contain an HTTPS URL (`npx -y mcp-remote https://…`): reading that as
   remote would create a definition the gateway could never reach.
 - **A paste that holds several Servers lists all of them** and imports exactly one per confirmation.
@@ -1164,7 +1177,8 @@ create → attach → authorize sequence used by the connection flow.
 
 An Agent with no Server mounted has an empty tool surface and no way in unless its user already knows
 an endpoint. The marketplace catalog closes that gap: a curated set of remote Streamable HTTP Servers
-that an Agent can add from the independent **Discover** directory.
+that an Agent can add from the independent **Discover** directory. The same catalog is served to
+third-party MCP clients by the [public MCP catalog endpoint](public-mcp-catalog.md).
 The page keeps one **Add custom** action in its header alongside the independent directory action.
 Add custom opens the URL-and-configured-connectors dialog for empty and populated Agents alike; it has no
 Discover, manual-configuration, or import source switch. The standalone directory owns its add state.
@@ -1335,7 +1349,7 @@ than 45 characters in English and 20 in Chinese, including punctuation; these ar
 budgets, not rendering limits. Allow natural wrapping on narrow screens without truncating the
 meaning. Review both locales in Discover. Descriptions summarize documented MCP
 capabilities within the preset's configured scopes; they do not promise every feature of the
-provider's product or establish successful OpenTag authorization.
+provider's product or establish successful openTag authorization.
 
 The description review on 2026-10-10 used the following provider documentation. These references
 record provenance for maintainers without adding links or explanatory copy to the cards.

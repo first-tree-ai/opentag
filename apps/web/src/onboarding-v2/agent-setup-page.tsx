@@ -173,6 +173,8 @@ export interface AgentSetupPageProps {
   readonly onPreviewViewChange?: (view: AgentSetupPreviewView) => void;
   /** Returns to this exact Agent; Setup presents it as Back before ready and Open after ready. */
   readonly onOpenAgent?: () => void;
+  /** Rendered in the header; the caller supplies it because only the route knows an Account session exists. */
+  readonly accountControl?: ReactNode;
   /** Told once the snapshot's stage is `ready`, so the route can mark setup complete. */
   readonly onReady?: (agentId: string) => Promise<void> | void;
   /** A staging Re-board stays inspectable until the tester explicitly finishes the review. */
@@ -668,6 +670,7 @@ function useReadyReport(
 }
 
 export function AgentSetupPage({
+  accountControl,
   agentId,
   adapter,
   computerAdapter,
@@ -689,6 +692,7 @@ export function AgentSetupPage({
   // what retires everything the previous one still had in flight.
   return (
     <AgentSetupPageContent
+      accountControl={accountControl}
       adapter={resolvedAdapter}
       agentId={agentId}
       computerAdapter={computerAdapter}
@@ -707,6 +711,7 @@ export function AgentSetupPage({
 }
 
 function AgentSetupPageContent({
+  accountControl,
   agentId,
   adapter,
   computerAdapter,
@@ -772,11 +777,14 @@ function AgentSetupPageContent({
     <div className="otv2-shell flex min-h-screen flex-col bg-kumo-canvas" data-ui="agent-setup">
       <header className="flex items-center justify-between p-6">
         <OpenTagLogo label={m.onboarding_v2_brand_name()} />
-        {onOpenAgent && !ready ? (
-          <Button onClick={onOpenAgent} variant="ghost">
-            {setupExitLabel(snapshot)}
-          </Button>
-        ) : null}
+        <div className="flex items-start gap-2">
+          {onOpenAgent && !ready ? (
+            <Button onClick={onOpenAgent} variant="ghost">
+              {setupExitLabel(snapshot)}
+            </Button>
+          ) : null}
+          {accountControl}
+        </div>
       </header>
       <main className="otv2-frame mx-auto flex w-full flex-1 flex-col gap-6 p-6">
         <SetupPhaseView

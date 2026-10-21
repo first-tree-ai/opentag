@@ -9,6 +9,7 @@ import { McpAuthorizationService } from "../services/mcp/mcp-authorization-servi
 import { McpCredentialCipher } from "../services/mcp/mcp-credential-cipher.js";
 import type { McpProbe, McpProbeResult } from "../services/mcp/mcp-probe.js";
 import { McpServerService } from "../services/mcp/mcp-server-service.js";
+import { deferred } from "./support/deferred.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 /**
@@ -783,3 +784,31 @@ describe("OAuth attempt cancellation", () => {
     expect(await readRow(ids)).toEqual(before);
   });
 });
+
+it.each(["success", "failure", "throw"] as const)(
+  "does not apply an old probe %s to a recreated authorization at the same revision",
+  async (outcome) => {
+    const ids = await seed({ defaultAuthKind: "none" });
+    const h = build();
+    await h.authorization.setBearerOrNone(ids.accountId, ids.agentId, ids.mcpServerId, { kind: "none" });
+    const old = await readRow(ids);
+    const answer = deferred<McpProbeResult>();
+    h.probe.probe.mockReturnValueOnce(answer.promise);
+    const pending = h.authorization.probe(ids.accountId, ids.agentId, ids.mcpServerId);
+    try {
+      await vi.waitFor(() => expect(h.probe.probe).toHaveBeenCalledOnce());
+      await h.servers.detachServer(ids.accountId, ids.agentId, ids.mcpServerId);
+      await h.servers.attachServer(ids.accountId, ids.agentId, ids.mcpServerId, true);
+      const replacement = await readRow(ids);
+      expect(replacement?.revision).toBe(old?.revision);
+      expect(replacement?.id).not.toBe(old?.id);
+      if (outcome === "throw") answer.reject(new Error("Synthetic upstream failure"));
+      else answer.resolve(outcome === "success" ? probeSuccess() : probeFailure());
+      await pending;
+      expect(await readRow(ids)).toEqual(replacement);
+    } finally {
+      answer.resolve(probeFailure());
+      await pending;
+    }
+  },
+);

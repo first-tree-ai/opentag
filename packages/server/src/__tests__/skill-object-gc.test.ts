@@ -43,8 +43,8 @@ beforeEach(async () => {
   await stagingUnit.reset();
 });
 
-function objectKey(accountId: string, agentId: string, sha256 = "a".repeat(64)): string {
-  return skillObjectKey({ prefix: "skills", accountId, agentId, skillId: randomUUID(), sha256 });
+function objectKey(accountId: string, agentId: string, objectId = "a".repeat(64)): string {
+  return skillObjectKey({ prefix: "skills", accountId, agentId, skillId: randomUUID(), objectId });
 }
 
 function gc(store: FakeSkillObjectStore, options: Partial<ConstructorParameters<typeof SkillObjectGc>[0]> = {}) {
@@ -272,7 +272,7 @@ describe("SkillObjectGc", () => {
       accountId,
       agentId,
       skillId: randomUUID(),
-      sha256: "d".repeat(64),
+      objectId: "d".repeat(64),
     });
     store.plant(siblingKey, new Uint8Array([1]));
     store.setLastModified(siblingKey, OLD);

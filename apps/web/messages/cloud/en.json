@@ -1,5 +1,5 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
-  "cloud_computer_managed": "Runs on OpenTag Cloud, managed by the platform",
+  "cloud_computer_managed": "Runs on openTag Cloud, managed by the platform",
   "cloud_progress_save_failed": "Some execution progress could not be saved. Your latest changes may be unavailable next time."
 }

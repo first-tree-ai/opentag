@@ -1,26 +1,32 @@
-# OpenTag artwork
+# openTag artwork
 
-The product follows the [OpenTag homepage](https://opentag.build/). Source assets and brand styling are pinned to
-[first-tree-ai/opentag-site, commit dfe9d13355109a7d8f573c4c494ce2f9d63ac178](https://github.com/first-tree-ai/opentag-site/tree/dfe9d13355109a7d8f573c4c494ce2f9d63ac178),
-verified against the live homepage and a read-only checkout of that commit on 2026-09-11.
+The application uses the website's supplied artwork:
 
-- `logo-light-transparent.svg` copies the artwork from `public/assets/opentag-logo.svg` in that repository. Its paths
-  are byte-identical to the homepage light mark; only a nonvisual `OpenTag` title is added.
-- `logo-dark-transparent.svg` is the matching white-outline variant: the same paths with the body outline and a face
-  stroke in white, supplied in `OpenTag-SVG-Essentials-2/opentag_svg` on 2026-09-11. Its paths and colors are unchanged.
-- `ui/opentag-logo.tsx` composes the mark with real OpenTag text, following the app [design guide](../../../../../design.md)
-  lockup: Manrope 700 lettering at 19px with -0.02em letter spacing, a 26px mark, and a 9px gap. Manrope is
-  self-hosted by the app. Always pair OpenTag lettering with the icon; text-only wordmarks are not supported. The mark
-  variant displays the icon alone for compact surfaces. Earlier separate lockup and wordmark SVGs used different
-  lettering and were removed.
-- The app's namespaced `data-opentag-mode` selects the light or dark mark and the semantic `var(--fg)` or
-  `var(--on-dark)` text color, including locally themed surfaces. Decorative artwork is hidden from assistive technology and labeled uses
-  expose the supplied label once.
+- `site-brand-mark.png` copies `public/assets/icon/brand-mark.png`, the mark rendered by the website Agents preview.
+- `site-lockup.svg` copies `public/assets/opentag-lockup-green.svg`, the official lockup used on branded app surfaces.
+- The mark is byte-identical; the lockup adds only a nonvisual accessibility title. Both are exports from `first-tree-ai/opentag-site` commit
+  `4f63d20383045861ca5cd93be8196829f0974e5f` (`codex/design-token-refresh`).
+- `ui/opentag-logo.tsx` chooses the supplied mark or lockup and exposes one accessible label. It does not redraw the
+  wordmark. Dark-mode compatibility retains `logo-dark-transparent.svg`; light mode is the supported product theme.
+- Cat artwork in `public/bot-avatars/v1/` uses the website's four Lark avatar exports plus two approved
+  generated additions. Every existing `.png` and `.svg` filename remains available; PNGs are 512 × 512.
+  Custom avatars and fallback behavior are unchanged.
 
-Browser icons in `apps/web/public/icons/` copy `public/assets/icon/favicon.svg`, `favicon.ico`,
-`favicon-16.png`, `favicon-32.png`, and `apple-touch-icon.png` from the same homepage commit. The ICO is also available
-at `apps/web/public/favicon.ico` for clients that request the conventional root path. `apps/web/index.html` declares
-local icon URLs; the SVG favicon retains the homepage's `prefers-color-scheme` adaptation for dark tab strips. No
-runtime asset request goes to the homepage. The SVG favicon adds only a nonvisual `OpenTag` title to satisfy the
-repository accessibility check; all paths, colors, proportions, and the media query remain unchanged. The binary icons
-are byte-identical to the source files.
+| Stable filename stem | Artwork |
+| --- | --- |
+| `developer` | Website Engineering |
+| `engineer` | Website General |
+| `artist` | Website Design |
+| `sales` | Website Growth |
+| `architect` | Approved rose/cream Product cat |
+| `businessman` | Approved teal/mint Operations cat |
+
+The four site SVGs retain their drawing paths and add an accessibility title; PNGs are rasterized
+from them. The two generated additions are resized from the approved images in
+`testing/web-ui/site-redesign/avatar-concepts/`. Their SVGs embed the same PNG bytes to preserve
+the existing SVG URLs without approximating or redrawing the approved artwork. They are raster-backed
+SVGs, not editable vector masters. Source concepts and generation prompts are preserved in that directory.
+
+The older `logo-light-transparent.svg`, dark compatibility artwork, and browser icons retain their provenance from
+`first-tree-ai/opentag-site` commit `dfe9d13355109a7d8f573c4c494ce2f9d63ac178`. Browser icons are served locally from
+`public/icons/` and `public/favicon.ico`; no runtime artwork request goes to the website.

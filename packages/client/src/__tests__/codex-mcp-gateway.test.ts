@@ -27,7 +27,7 @@ const THREAD_PARAMS = {
   developerInstructions: "OpenTag managed system prompt",
   approvalPolicy: "never",
   sandbox: "workspace-write",
-  serviceName: "OpenTag",
+  serviceName: "openTag",
 };
 
 type Handler = (params: Record<string, unknown>, signal: AbortSignal | undefined) => Promise<unknown>;

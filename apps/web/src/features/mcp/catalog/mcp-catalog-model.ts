@@ -6,6 +6,7 @@ import {
   type MCPServer,
 } from "@opentag/shared/browser";
 import { getLocale, type Locale } from "../../../i18n/locale.js";
+import { hasMcpToolSnapshot } from "../mcp-tool-snapshot.js";
 
 /**
  * Reads and joins for the marketplace catalog.
@@ -175,7 +176,10 @@ export function catalogEntryState(
   if (!binding) return "available";
   if (!binding.enabled) return "disabled";
   const auth = binding.authorization;
-  return auth?.status === "active" && auth.probeState === "succeeded" ? "added" : "unconnected";
+  if (auth?.status !== "active") return "unconnected";
+  return auth.probeState === "succeeded" || (auth.probeState === "pending" && hasMcpToolSnapshot(binding))
+    ? "added"
+    : "unconnected";
 }
 
 export function findCatalogBinding(

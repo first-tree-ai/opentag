@@ -12,9 +12,9 @@ describe("OpenTag Web App Shell", () => {
     installApi({ unauthenticated: true });
     window.history.replaceState({}, "", path);
     render(<App />);
-    const heading = await screen.findByRole("heading", { name: "Sign in to OpenTag" });
+    const heading = await screen.findByRole("heading", { name: "Sign in to openTag" });
     expect(heading.closest("main")?.getAttribute("data-ui")).toBe("login-page");
-    expect(screen.getByText("OpenTag").closest('[data-ui="login-brand-lockup"]')).toBeTruthy();
+    expect(screen.getByText("openTag").closest('[data-ui="login-brand-lockup"]')).toBeTruthy();
     expect(screen.getByText("Manage your Agents and Computers.")).toBeTruthy();
     expect(screen.queryByText(/Permissions are checked/)).toBeNull();
     const expectedNext = path === "/" ? "/agents" : path;

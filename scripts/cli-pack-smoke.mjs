@@ -272,8 +272,8 @@ export async function runCliPackSmoke({ channel, expectedName, expectedVersion, 
       expectedStatus: 1,
     });
     for (const expectedOutput of [
-      "OpenTag Doctor",
-      "OpenTag Home:",
+      "openTag Doctor",
+      "openTag Home:",
       "(environment)",
       "Local configuration",
       "not checked because there is no connected Server",
@@ -290,7 +290,7 @@ export async function runCliPackSmoke({ channel, expectedName, expectedVersion, 
       throw new Error(`CLI doctor diagnostics must be written to stdout, got stderr:\n${doctor.stderr}`);
     }
     if ((await readdir(doctorHome)).length !== 0) {
-      throw new Error("CLI doctor smoke mutated its OpenTag Home");
+      throw new Error("CLI doctor smoke mutated its openTag Home");
     }
 
     // Unknown options are Commander usage errors: the common CLI validation contract

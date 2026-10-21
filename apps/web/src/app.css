@@ -39,8 +39,8 @@
   height: 100%;
 }
 .opentag-logo--lockup > img {
-  width: 26px;
-  height: 26px;
+  width: auto;
+  height: 36px;
 }
 .opentag-logo__text {
   font-family: var(--ui-font);
@@ -62,6 +62,12 @@
   background: var(--bg);
   font-family: var(--ui-font);
   font-synthesis: none;
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-xs--line-height: 1.5;
+  --text-sm--line-height: 1.5;
+  --text-base--line-height: 1.5;
 }
 html,
 body,
@@ -80,9 +86,6 @@ body {
 #root {
   min-height: 100dvh;
 }
-.app-mobile-header {
-  display: flex;
-}
 .app-error-boundary {
   min-height: 100%;
   place-items: center;
@@ -92,18 +95,29 @@ body {
   max-width: 36rem;
   margin-inline: auto;
 }
-
+.app-navigation[data-sidebar="sidebar"] {
+  height: 100%;
+  margin: 0;
+  padding: 20px 8px;
+  border: 0;
+  border-right: 1px solid var(--border);
+  border-radius: 0;
+  box-shadow: none;
+  background: var(--card);
+}
 .app-home-link {
   display: flex;
   min-width: 0;
-  min-height: 2.75rem;
   align-items: center;
-  gap: 0.75rem;
+  gap: 14px;
   border-radius: var(--ui-control-radius);
-  padding: 0.5rem 0.75rem;
-  color: var(--text-color-kumo-strong);
-  font-weight: 500;
+  padding: 12px 16px;
+  color: var(--fg);
+  font-weight: 600;
   white-space: nowrap;
+}
+.app-workspace-shell[data-scope="agent"] .app-home-link {
+  min-height: 49px;
 }
 .app-home-link:hover,
 .app-account-trigger:hover,
@@ -112,28 +126,26 @@ body {
 }
 .app-home-link[aria-current="page"] {
   background: var(--brand-soft);
-  color: var(--text-color-kumo-brand);
+  color: var(--fg);
 }
 .app-home-link:focus-visible,
 .app-account-trigger:focus-visible {
-  outline: 2px solid var(--color-kumo-focus);
+  outline: 2px solid var(--focus);
   outline-offset: -2px;
 }
 .app-global-navigation {
-  display: flex;
   flex-shrink: 0;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.75rem 0.375rem 1rem;
 }
-.app-global-navigation > :first-child {
-  flex: 1;
+.app-home-icon,
+.app-home-icon > svg {
+  width: 20px;
+  height: 20px;
 }
 .app-brand-mark {
   display: flex;
-  min-height: 4rem;
   align-items: center;
   justify-content: center;
+  margin-bottom: 24px;
 }
 .app-agent-navigation {
   display: flex;
@@ -141,10 +153,33 @@ body {
   flex: 1;
   flex-direction: column;
 }
+.app-agent-switcher {
+  margin: 28px 16px 24px;
+  padding: 0;
+}
+.app-agent-link {
+  line-height: 1.5;
+}
+.app-agent-link > div {
+  gap: 12px;
+}
+.app-agent-link[data-active]:hover {
+  background: var(--brand-soft);
+}
 .app-account-navigation {
   margin-top: auto;
   border-top: 1px solid var(--border);
   background: transparent;
+  padding: 20px 12px 0;
+  height: auto;
+}
+.app-account-trigger {
+  min-height: 32px;
+  padding: 0;
+}
+.app-account-avatar {
+  background: var(--avatar-bg);
+  color: var(--avatar-fg);
 }
 .app-account-menu {
   min-width: max(11rem, var(--anchor-width));
@@ -152,15 +187,16 @@ body {
 .app-account-menu,
 .app-agent-menu {
   border: 1px solid var(--border);
-  border-radius: var(--ui-surface-radius);
-  padding: 0.375rem;
+  border-radius: var(--ui-control-radius);
+  padding: 4px;
   box-shadow: 0 4px 16px color-mix(in srgb, var(--fg) 8%, transparent);
 }
 .app-account-menu [role="menuitem"],
 .app-agent-menu [role="menuitem"] {
-  min-height: 2.25rem;
-  border-radius: var(--ui-control-radius);
-  padding: 0.375rem;
+  min-height: 36px;
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 14px;
 }
 .app-account-menu [role="menuitem"][data-highlighted],
 .app-agent-menu [role="menuitem"][data-highlighted]:not([aria-current="true"]) {
@@ -168,84 +204,149 @@ body {
 }
 .app-account-menu [role="separator"],
 .app-agent-menu [role="separator"] {
-  margin: 0.375rem;
+  margin: 4px;
 }
-
-@media (min-width: 48rem) {
-  .app-mobile-header {
-    display: none;
+.app-content-frame {
+  max-width: var(--ui-frame-width);
+  padding: 40px clamp(24px, 5vw, 100px);
+}
+.app-workspace-shell[data-scope="workspace"] .app-content-frame {
+  max-width: 1280px;
+  padding: 40px 32px;
+}
+.app-workspace-shell[data-scope="workspace"] .app-agent-navigation {
+  display: none;
+}
+.app-workspace-shell[data-scope="workspace"] .app-nav-label {
+  display: none;
+}
+.app-workspace-shell[data-scope="workspace"] .app-account-navigation {
+  padding: 16px 4px 0;
+}
+.app-home-link[data-compact="true"] {
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  justify-content: center;
+  margin: auto;
+}
+.app-account-trigger[data-compact="true"] {
+  justify-content: center;
+  padding: 4px;
+}
+.app-account-trigger[data-compact="true"] > div {
+  gap: 0;
+  translate: none;
+}
+.app-workspace-shell[data-scope="workspace"] [data-ui="page"] {
+  gap: 32px;
+}
+@media (min-width: 641px) and (max-width: 950px) {
+  .app-workspace-shell[data-scope="agent"] {
+    --sidebar-width: 200px;
+  }
+  .app-content-frame {
+    padding: 28px 24px;
+  }
+}
+@media (max-width: 640px) {
+  .app-workspace-shell[data-scope="workspace"] {
+    --sidebar-width: 56px;
   }
   .app-navigation[data-sidebar="sidebar"] {
-    width: var(--sidebar-width);
-    height: 100%;
-    margin: 0;
-    border: 0;
-    border-right: 1px solid var(--border);
-    border-radius: 0;
-    box-shadow: none;
-    background: var(--card);
-  }
-  .app-navigation .app-navigation-container {
-    overflow: hidden;
-    border: 0;
-    border-radius: 0;
-    background: var(--card);
-  }
-  .app-account-trigger {
-    min-height: 2.75rem;
-    padding-inline: 0.75rem;
-  }
-  .app-workspace-shell[data-scope="workspace"] .app-global-navigation {
-    padding: 0.25rem 0.75rem;
-  }
-  .app-workspace-shell[data-scope="workspace"] .app-account-navigation {
-    padding: 0.5rem 0.75rem;
-    height: auto;
-  }
-  .app-workspace-shell[data-scope="workspace"] .app-agent-navigation {
-    display: none;
-  }
-  .app-workspace-shell[data-scope="workspace"] .app-nav-label {
-    display: none;
-  }
-  .app-home-link[data-compact="true"],
-  .app-account-trigger[data-compact="true"] {
-    min-height: 2.75rem;
-    border-radius: var(--ui-control-radius);
-    padding-inline: 0.5rem;
+    padding: 16px 4px;
   }
   .app-home-link[data-compact="true"] {
-    justify-content: center;
-    gap: 0;
+    width: 44px;
+    height: 44px;
   }
-  .app-account-trigger[data-compact="true"] > div {
-    gap: 0;
-    translate: none;
+  .app-content-frame,
+  .app-workspace-shell[data-scope="workspace"] .app-content-frame {
+    padding: 24px 16px;
   }
-  .app-account-trigger[data-compact="true"] .app-account-icon {
-    width: 1.75rem;
-    height: 1.75rem;
+  .app-workspace-shell[data-scope="workspace"] h1 {
+    font-size: 20px;
   }
-  .app-account-trigger[data-compact="true"] .app-account-avatar {
-    width: 1.75rem;
-    height: 1.75rem;
+  .app-workspace-shell[data-scope="agent"] {
+    flex-direction: column;
+    --sidebar-width: 100%;
+  }
+  .app-workspace-shell[data-scope="agent"] .app-navigation {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 8px;
+    height: auto;
+    padding: 12px;
+    overflow: visible;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .app-workspace-shell[data-scope="agent"] .app-global-navigation {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .app-workspace-shell[data-scope="agent"] .app-home-link {
+    padding: 8px;
+  }
+  .app-workspace-shell[data-scope="agent"] .app-home-link .app-nav-label {
+    display: none;
+  }
+  .app-workspace-shell[data-scope="agent"] .app-agent-navigation {
+    display: contents;
+  }
+  .app-agent-switcher {
+    grid-column: 2;
+    grid-row: 1;
+    min-width: 0;
+    margin: 0;
+  }
+  .app-agent-links {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    min-width: 0;
+    overflow-x: auto;
+  }
+  .app-agent-links [data-sidebar="viewport"] {
+    overflow: visible;
+  }
+  .app-agent-links [data-sidebar="menu"] {
+    flex-direction: row;
+    width: max-content;
+  }
+  .app-agent-links [data-sidebar="group"] {
+    padding: 0;
+  }
+  .app-agent-link {
+    padding: 8px 12px;
+    white-space: nowrap;
+  }
+  .app-agent-link svg {
+    width: 16px;
+    height: 16px;
+  }
+  .app-workspace-shell[data-scope="agent"] .app-account-navigation {
+    grid-column: 3;
+    grid-row: 1;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+  .app-workspace-shell[data-scope="agent"] .app-account-navigation .app-nav-label {
+    display: none;
   }
 }
 @media (max-width: 47.999rem) {
+  .app-home-link,
+  .app-account-trigger,
+  .app-agent-switcher button,
+  .app-agent-link,
   .app-account-menu [role="menuitem"],
   .app-agent-menu [role="menuitem"] {
-    min-height: 2.75rem;
+    min-height: 44px;
   }
-  .app-mobile-header .app-account-trigger {
-    min-height: 2.75rem;
-    padding: 0.375rem;
-  }
-  .app-navigation[data-mobile="true"] {
-    margin: 0;
-    border-radius: 0;
-  }
-  .app-brand-mark {
-    display: none;
+  .app-home-link,
+  .app-account-trigger {
+    min-width: 44px;
   }
 }
 @media (prefers-reduced-motion: reduce) {

@@ -145,7 +145,7 @@ describe("GitHub account settings", () => {
     render(<GitHubIntegrationSettings />);
     expect(await screen.findByText("@octocat")).toBeTruthy();
     expect(
-      screen.getByText("Authorize your GitHub account and allow OpenTag to access the repositories you need."),
+      screen.getByText("Authorize your GitHub account and allow openTag to access the repositories you need."),
     ).toBeTruthy();
     const link = screen.getByRole("link", { name: "Configure on GitHub" });
     expect(link.getAttribute("href")).toBe("/api/v1/integrations/github/installation");
@@ -220,7 +220,7 @@ describe("GitHub account settings", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Remove account" }));
     const dialog = await screen.findByRole("dialog", { name: "Remove GitHub account?" });
     expect(within(dialog).getByText(/All your Agents will lose GitHub access through @octocat/)).toBeTruthy();
-    expect(within(dialog).getByText(/uninstall the OpenTag App/)).toBeTruthy();
+    expect(within(dialog).getByText(/uninstall the openTag App/)).toBeTruthy();
     expect(disconnect).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
@@ -302,7 +302,7 @@ describe("GitHub account settings", () => {
     fireEvent.click(help);
     const popover = await screen.findByRole("dialog", { name: "About GitHub repository access" });
     expect(help.getAttribute("aria-expanded")).toBe("true");
-    expect(within(popover).getByText(/Install or configure the OpenTag App on GitHub/)).toBeTruthy();
+    expect(within(popover).getByText(/Install or configure the openTag App on GitHub/)).toBeTruthy();
     expect(within(popover).getByText(/All your Agents share this repository access/)).toBeTruthy();
     expect(
       within(popover).getByText(/contact an organization administrator if you don't have permission/),
@@ -356,7 +356,7 @@ describe("GitHubIntegrationSettings failure language", () => {
   it.each([
     [
       "GITHUB_INTEGRATION_UNAVAILABLE",
-      "The GitHub App hasn't been set up for OpenTag. Contact your OpenTag administrator.",
+      "The GitHub App hasn't been set up for openTag. Contact your openTag administrator.",
     ],
     ["GITHUB_RATE_LIMITED", "GitHub's request limit has been reached. Try again shortly."],
     ["GITHUB_UPSTREAM_UNAVAILABLE", "GitHub is temporarily unavailable. Try again shortly."],

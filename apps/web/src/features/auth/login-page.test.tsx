@@ -46,7 +46,7 @@ describe("LoginPage", () => {
     });
     await renderInRouter(<LoginPage next="/agents" />);
     expect(await screen.findByRole("link", { name: "Sign in with Google" })).toBeTruthy();
-    expect(await screen.findByRole("heading", { name: "Sign in to OpenTag" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign in to openTag" })).toBeTruthy();
     expect(screen.getByText("or")).toBeTruthy();
   });
 
@@ -57,7 +57,7 @@ describe("LoginPage", () => {
     await renderInRouter(<LoginPage />);
     expect(await screen.findByText("No sign-in methods are currently available.")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Sign-in unavailable" })).toBeTruthy();
-    expect(screen.getByText("Contact your OpenTag administrator for help.")).toBeTruthy();
+    expect(screen.getByText("Contact your openTag administrator for help.")).toBeTruthy();
     expect(screen.queryByLabelText("Email")).toBeNull();
   });
 
@@ -145,7 +145,7 @@ describe("LoginPage", () => {
     expect(input.autocomplete).toBe("new-password");
     expect(screen.getByText("At least 12 characters.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
-    expect(screen.getByRole("heading", { name: "Sign in to OpenTag" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Sign in to openTag" })).toBeTruthy();
     expect(input.autocomplete).toBe("current-password");
     expect(screen.queryByLabelText("Name")).toBeNull();
   });
@@ -185,7 +185,7 @@ describe("LoginPage", () => {
     await renderInRouter(<LoginPage />);
     const link = await screen.findByRole("link", { name: "使用 Google 登录" });
     expect(link.textContent).toBe("使用 Google 登录");
-    expect(screen.getByRole("heading", { name: "登录 OpenTag" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "登录 openTag" })).toBeTruthy();
     expect(screen.getByRole("main").getAttribute("lang")).toBe("zh");
   });
 

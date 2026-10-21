@@ -17,7 +17,7 @@ settings, and its Computer once one is bound. Runtime collaboration creates
 Sessions under an existing Agent; it does not create another Agent.
 
 A Session is a stable logical identity, not a Provider process or an activity
-status. OpenTag has channel, thread, and internal Sessions. For Sessions that
+status. openTag has channel, thread, and internal Sessions. For Sessions that
 have not ended, an Agent has at most one channel Session per Integration and
 channel, and at most one thread Session per Integration, channel, and thread.
 Multiple internal Sessions may coexist within the same conversation scope.
@@ -63,6 +63,36 @@ records the explicit Provider, and the Computer when the caller names one,
 without consulting readiness. Readiness can affect route availability and Turn
 execution, but it cannot silently rewrite the Agent's Provider or create a
 Session lifecycle state.
+
+## Management writes
+
+Agent rebind and targeted Computer connect-code issuance/exchange lock the Agent
+before the Computer, matching scheduled dispatch admission and IM inbound
+persistence. Exchange reuses that locked Agent row for binding validation and
+mutation; untargeted exchange does not lock an Agent. Computer access mutations
+retain their Account guard with
+`FOR NO KEY UPDATE`: it serializes those mutations and conflicts with Account
+updates/deletion while allowing the KEY SHARE required by existing ownership
+foreign keys. Agent creation and rebind add no Account lock or query.
+
+Agent creation and rebind lock their owned target Computer with `FOR NO KEY UPDATE`.
+The existing owner, kind and deletion checks stay under that lock, which still excludes
+concurrent Computer mutation. It permits the `KEY SHARE` required when a Session CLI
+proof is first inserted. Rebind keeps Agent → target Computer → Session placements order;
+proof minting keeps its placement lock and existing connection/generation checks. A rebind
+to the current Computer retains its no-op semantics and does not rotate an existing proof.
+
+The staging/development reset uses the same weaker guard during Computer access
+revocation. Its separate final cleanup verification keeps its existing lock.
+Agent creation, placement changes, and credential exchange retain their small
+transactions so related durable facts commit together. Connection cleanup and
+Runtime notifications run after commit.
+
+AgentService mutation queries select the caller's ownership in the locking
+predicate, then validate lifecycle and revision while holding the row lock. A foreign or
+missing Agent returns the same not-found result without waiting for a foreign
+Agent row lock. Detail and configuration reads apply the same ownership
+predicate in their first query.
 
 ## Rationale
 

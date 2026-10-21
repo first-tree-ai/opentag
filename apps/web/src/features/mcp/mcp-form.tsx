@@ -98,6 +98,8 @@ export function McpAuthFields({
   variant = "setup",
   fixedMethod = false,
   hideKey = false,
+  hideKeyLabel = false,
+  keyFeedbackId,
   disabled = false,
 }: {
   draft: AuthDraft;
@@ -106,11 +108,19 @@ export function McpAuthFields({
   variant?: "setup" | "settings";
   fixedMethod?: boolean;
   hideKey?: boolean;
+  hideKeyLabel?: boolean;
+  keyFeedbackId?: string;
   disabled?: boolean;
 }) {
   if (fixedMethod)
     return !hideKey && draft.kind === "bearer" ? (
-      <McpKeyField draft={draft} onChange={onChange} disabled={disabled} />
+      <McpKeyField
+        draft={draft}
+        onChange={onChange}
+        disabled={disabled}
+        hideLabel={hideKeyLabel}
+        feedbackId={keyFeedbackId}
+      />
     ) : null;
   const choiceClass = variant === "settings" ? "mcp-auth-choice" : undefined;
   return (
@@ -145,22 +155,27 @@ function McpKeyField({
   draft,
   onChange,
   disabled,
+  hideLabel = false,
+  feedbackId,
 }: {
   draft: AuthDraft;
   onChange: (draft: AuthDraft) => void;
   disabled: boolean;
+  hideLabel?: boolean;
+  feedbackId?: string;
 }) {
   const [visible, setVisible] = useState(false);
   return (
-    <Field htmlFor="mcp-bearer-key" label={m.mcp_authorize_bearer_label()}>
+    <Field htmlFor="mcp-bearer-key" label={m.mcp_authorize_bearer_label()} hideLabel={hideLabel}>
       <div className="relative">
         <KumoInputControl
-          className="w-full pr-10"
+          className="w-full pr-12"
           aria-label={m.mcp_authorize_bearer_label()}
           id="mcp-bearer-key"
           type={visible ? "text" : "password"}
           autoComplete="off"
           disabled={disabled}
+          aria-describedby={feedbackId}
           value={draft.token}
           onChange={(event) => onChange({ ...draft, token: event.target.value })}
         />
@@ -168,7 +183,7 @@ function McpKeyField({
           aria-label={visible ? m.mcp_hide_key() : m.mcp_show_key()}
           aria-pressed={visible}
           disabled={disabled}
-          className="absolute right-1 top-1"
+          className="absolute right-0.5 top-1/2 -translate-y-1/2"
           shape="square"
           size="compact"
           variant="ghost"

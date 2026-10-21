@@ -38,7 +38,7 @@ export async function runLogin(options: LoginOptions): Promise<LoginResult> {
   const serverUrl = normalizeServerUrl(options.serverUrl);
   const computer = await readComputerIdentity(home);
   if (computer && computer.serverUrl !== serverUrl) {
-    throw new Error("This OpenTag home is bound to another server; choose a different OPENTAG_HOME");
+    throw new Error("This openTag home is bound to another server; choose a different OPENTAG_HOME");
   }
   const api = options.api ?? (await resolveCommandContext({ home, serverUrl })).api;
   if (!api) throw new Error("Command context did not resolve an API");
@@ -54,7 +54,7 @@ export async function runLogin(options: LoginOptions): Promise<LoginResult> {
   await recordAccountIdentity(home, credentials, userId, options.logger ?? createLogger("login"));
   return {
     credentialsPath: credentialsPath(home),
-    message: `Logged in to OpenTag at ${serverUrl}`,
+    message: `Logged in to openTag at ${serverUrl}`,
   };
 }
 

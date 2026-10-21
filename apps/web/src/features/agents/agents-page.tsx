@@ -90,11 +90,11 @@ export function AgentRow({ agent }: { agent: AgentListItem }) {
   const channel = agent.availability.dependencies.channel.provider;
   return (
     <article
-      className="relative grid gap-3 px-5 py-4 transition-colors hover:bg-kumo-tint focus-within:outline-2 focus-within:outline-offset-[-2px] focus-within:outline-kumo-focus @min-[42rem]/agent-roster:grid-cols-[minmax(0,1.5fr)_minmax(11rem,1fr)_1rem] @min-[42rem]/agent-roster:items-center"
+      className="relative grid grid-cols-1 @min-[42rem]/agent-roster:grid-cols-[minmax(0,1fr)_auto] items-center gap-8 p-5 max-[640px]:gap-3 max-[640px]:p-4 transition-colors hover:bg-kumo-tint focus-within:outline-2 focus-within:outline-offset-[-2px] focus-within:outline-kumo-focus"
       data-tone={status.tone}
       data-ui="agent-row"
     >
-      <div className="flex min-w-0 items-center gap-3 pr-6 @min-[42rem]/agent-roster:pr-0" data-ui="agent-row-identity">
+      <div className="flex min-w-0 items-center gap-3" data-ui="agent-row-identity">
         <AgentAvatar
           displayName={agent.displayName}
           avatarPath={agent.avatarPath}
@@ -102,7 +102,9 @@ export function AgentRow({ agent }: { agent: AgentListItem }) {
           data-ui="agent-row-avatar"
         />
         <div className="grid min-w-0 gap-1">
-          <strong className="truncate text-base">{agent.displayName}</strong>
+          <strong className="[overflow-wrap:anywhere] @min-[42rem]/agent-roster:truncate text-sm font-semibold">
+            {agent.displayName}
+          </strong>
           {channel ? (
             <span className="flex items-center gap-1.5 text-sm text-kumo-subtle">
               <ProviderIcon className="size-4" provider={channel} />
@@ -111,7 +113,10 @@ export function AgentRow({ agent }: { agent: AgentListItem }) {
           ) : null}
         </div>
       </div>
-      <div className="grid gap-1.5 pl-13 @min-[42rem]/agent-roster:pl-0" data-ui="agent-row-status">
+      <div
+        className="grid min-w-0 justify-items-start gap-1 text-left @min-[42rem]/agent-roster:justify-items-end @min-[42rem]/agent-roster:text-right"
+        data-ui="agent-row-status"
+      >
         <StatusIndicator label={status.label} tone={status.tone} />
         {status.detail ? (
           <p className="text-sm text-kumo-subtle" data-ui="agent-row-state">
@@ -124,19 +129,15 @@ export function AgentRow({ agent }: { agent: AgentListItem }) {
         */}
         {continueSetup ? (
           <Link
-            className="relative z-10 inline-flex w-fit items-center gap-1 text-sm text-kumo-link"
+            className="relative z-10 inline-flex min-h-6 w-fit items-center gap-1 text-sm text-kumo-link"
             data-ui="agent-row-continue-setup"
             {...continueSetup.link}
           >
             {continueSetup.label}
-            <Icon className="size-3.5" name="chevron-right" />
+            <Icon className="size-3.5" name="arrow-right" />
           </Link>
         ) : null}
       </div>
-      <Icon
-        className="absolute right-5 top-5 text-kumo-subtle @min-[42rem]/agent-roster:static @min-[42rem]/agent-roster:justify-self-end"
-        name="chevron-right"
-      />
       <Link
         aria-label={m.agents_open_agent({ name: agent.displayName })}
         className="absolute inset-0 focus:outline-none"

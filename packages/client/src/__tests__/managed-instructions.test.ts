@@ -36,6 +36,28 @@ const cloudSession: ManagedSessionContext = {
 };
 
 describe("renderManagedSystemPrompt Agent Home", () => {
+  it.each([session, cloudSession])(
+    "provides fixed CLI manuals in the $environment visible Session prompt",
+    (context) => {
+      const prompt = renderManagedSystemPrompt(snapshot, context);
+      expect(prompt).toContain("Agent ID: agent-1");
+      expect(prompt).toContain("GitHub integration, when enabled");
+      expect(prompt).toContain("slack api chat.postMessage --json");
+      expect(prompt).toContain("lark-cli im +messages-reply");
+      expect(prompt).toContain("files.getUploadURLExternal");
+      expect(prompt).toContain("messages-resources-download");
+      expect(prompt).toContain("If a provider result is unknown, query the provider");
+      expect(prompt.match(/slack api chat.postMessage --json/g)).toHaveLength(1);
+    },
+  );
+
+  it("keeps internal Session prompts free of IM outbox manuals", () => {
+    const prompt = renderManagedSystemPrompt(snapshot, { ...session, sessionKind: "internal" });
+    expect(prompt).toContain("GitHub integration, when enabled");
+    expect(prompt).not.toContain("slack api chat.postMessage");
+    expect(prompt).not.toContain("messages-resources-download");
+  });
+
   it("describes one persistent Home with prompt-only source-repos, worktrees, and files conventions", () => {
     const prompt = renderManagedSystemPrompt(snapshot, { ...session, agentHome: "/tmp/agent-home" });
 

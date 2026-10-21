@@ -9,12 +9,26 @@ describe("OpenTag palette accessibility", () => {
         expect(contrast(text, surface), `${mode}: ${text} on ${surface}`).toBeGreaterThanOrEqual(4.5);
       }
     }
-    for (const surface of [t.canvas, t.surface]) {
-      expect(contrast(t.actionText, surface)).toBeGreaterThanOrEqual(4.5);
-      expect(contrast(t.controlBorder, surface)).toBeGreaterThanOrEqual(3);
+    for (const fill of [t.action, t.actionHover, t.actionPressed]) {
+      expect(contrast(t.actionForeground, fill), `${mode}: primary ${fill}`).toBeGreaterThanOrEqual(4.5);
     }
-    for (const fill of [t.action, t.actionHover, t.actionPressed, t.danger, t.dangerHover]) {
+    for (const surface of [t.canvas, t.surface, t.selected]) {
+      expect(contrast(t.focus, surface)).toBeGreaterThanOrEqual(3);
+    }
+    for (const fill of [t.danger, t.dangerHover]) {
       expect(contrast(t.inverse, fill), `${mode}: action ${fill}`).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+  it.each(["light", "dark"] as const)("keeps %s status and link roles legible", (mode) => {
+    const t = designTokens[mode];
+    for (const surface of [t.canvas, t.surface]) {
+      for (const text of [t.actionText, t.success, t.warningText, t.dangerText]) {
+        expect(contrast(text, surface), `${mode}: status/link ${text} on ${surface}`).toBeGreaterThanOrEqual(4.5);
+      }
+      for (const indicator of [t.success, t.warning, t.dangerText]) {
+        expect(contrast(indicator, surface), `${mode}: indicator ${indicator} on ${surface}`).toBeGreaterThanOrEqual(3);
+      }
+      expect(contrast(t.controlBorder, surface)).toBeGreaterThanOrEqual(3);
     }
   });
 });

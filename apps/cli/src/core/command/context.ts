@@ -33,10 +33,10 @@ export async function resolveCommandContext(options: CommandContextOptions = {})
     const recordedServerUrl = computerIdentity?.serverUrl ?? machineCredentials?.computer.serverUrl;
     if (recordedServerUrl) {
       throw new Error(
-        `OpenTag is not logged in: this OpenTag home has machine credentials (computer-credentials.json/computer.json) but no Account credentials (credentials.json). Get an Account login code issued by the server (today via POST /api/v1/me/connect-codes), then run ${channelConfig.binName} login --server ${recordedServerUrl} -- <code>.`,
+        `openTag is not logged in: this openTag home has machine credentials (computer-credentials.json/computer.json) but no Account credentials (credentials.json). Get an Account login code issued by the server (today via POST /api/v1/me/connect-codes), then run ${channelConfig.binName} login --server ${recordedServerUrl} -- <code>.`,
       );
     }
-    throw new Error("OpenTag is not logged in; run login first");
+    throw new Error("openTag is not logged in; run login first");
   }
   const accessToken = await new client.AccessTokenProvider({ home }).getAccessToken();
   return { accessToken, api: new client.OpenTagApi(credentials.serverUrl), credentials, environment, home };

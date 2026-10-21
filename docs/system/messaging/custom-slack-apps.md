@@ -34,8 +34,8 @@ readiness checks remain unchanged.
 ```mermaid
 sequenceDiagram
     actor U as User
-    participant W as OpenTag Web
-    participant S as OpenTag Server
+    participant W as openTag Web
+    participant S as openTag Server
     participant D as Existing database
     participant L as Slack
     participant A as Agent runtime

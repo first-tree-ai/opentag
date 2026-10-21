@@ -51,7 +51,7 @@ BIN_PATH="$BIN_DIR/$BIN_NAME"
 cd "$REPO_ROOT"
 printf 'Installing workspace dependencies...\n'
 pnpm install --frozen-lockfile
-printf 'Building OpenTag...\n'
+printf 'Building openTag...\n'
 pnpm build
 
 if [[ ! -x "$CLI_DIST" ]]; then

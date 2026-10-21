@@ -47,7 +47,7 @@ describe("setup piece layout", () => {
     expect(declarationValue(".ots-command__expired button:hover", "background")).toBe(
       "color-mix(in srgb, var(--fg) 8%, transparent)",
     );
-    expect(declarationValue(".ots-command__expired button:hover", "color")).toBe("var(--color-kumo-brand-hover)");
+    expect(declarationValue(".ots-command__expired button:hover", "color")).toBe("var(--text-color-kumo-link)");
   });
 
   it("keeps idle, issuing, issued, failed, and expired states on one measured command surface", () => {

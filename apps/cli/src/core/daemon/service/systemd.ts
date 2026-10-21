@@ -46,7 +46,7 @@ export function renderSystemdUnit(options: {
     .map((argument) => quoteSystemdToken(argument.replace(/\$/gu, () => "$$")))
     .join(" ");
   return `[Unit]
-Description=OpenTag daemon (${options.serviceId})
+Description=openTag daemon (${options.serviceId})
 StartLimitIntervalSec=300
 StartLimitBurst=10
 
@@ -191,7 +191,7 @@ export function createSystemdBackend(options: SystemdBackendOptions): DaemonServ
 
   const preflight = async (): Promise<void> => {
     if (uid === 0) {
-      throw new DaemonServiceError("UNSUPPORTED_PLATFORM", "OpenTag supports only non-root user systemd services");
+      throw new DaemonServiceError("UNSUPPORTED_PLATFORM", "openTag supports only non-root user systemd services");
     }
     const result = await options.runner.run(systemctl, ["--user", "show-environment"], {
       timeoutMs: SYSTEMD_TIMEOUT_MS,
@@ -232,7 +232,7 @@ export function createSystemdBackend(options: SystemdBackendOptions): DaemonServ
       if (current.state !== "active") {
         throw new DaemonServiceError(
           "OPERATION_FAILED",
-          "systemd reported that the OpenTag service did not become active",
+          "systemd reported that the openTag service did not become active",
         );
       }
       return linger.code === 0

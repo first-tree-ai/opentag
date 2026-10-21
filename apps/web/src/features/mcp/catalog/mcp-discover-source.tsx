@@ -6,6 +6,7 @@ import * as m from "../../../paraglide/messages.js";
 import { Button, Field, KumoInputControl, Select } from "../../../ui/design-system.js";
 import { authorizationAction, connectorFeedback } from "../mcp-feedback.js";
 import { McpServiceIcon } from "../mcp-service-icon.js";
+import { hasMcpToolSnapshot } from "../mcp-tool-snapshot.js";
 import { McpCatalogActions, McpCatalogDescription, type McpCatalogFeedback } from "./mcp-catalog-feedback.js";
 import {
   catalogEntryState,
@@ -205,7 +206,11 @@ function catalogFeedback(
   if (!feedback.label) return;
   return {
     entryId: entry.id,
-    phase: feedback.neutral ? (binding.authorization?.probeState === "pending" ? "checking" : "notice") : "error",
+    phase: feedback.neutral
+      ? binding.authorization?.probeState === "pending" && !hasMcpToolSnapshot(binding)
+        ? "checking"
+        : "notice"
+      : "error",
     label: feedback.label,
     action: feedback.action,
     actionLabel: feedback.action === "authorize" ? authorizationAction(binding) : undefined,

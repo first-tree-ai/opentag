@@ -1,20 +1,20 @@
 ---
 title: "Trademarks"
-description: "Ownership and referential use of third-party marks and OpenTag's own name and mark."
+description: "Ownership and referential use of third-party marks and openTag's own name and mark."
 ---
 
 # Trademarks
 
-OpenTag connects to products built by other companies. To identify those products in the interface
+openTag connects to products built by other companies. To identify those products in the interface
 we display their own marks, as published by their owners.
 
 ## Ownership
 
-Every mark below belongs to its owner, not to this project. OpenTag uses third-party marks only as
+Every mark below belongs to its owner, not to this project. openTag uses third-party marks only as
 unmodified, referential identifiers for the products and integrations they name. Their presence
-does not imply that any owner sponsors, endorses, or is affiliated with OpenTag.
+does not imply that any owner sponsors, endorses, or is affiliated with openTag.
 
-OpenTag's own name and mark belong to this project. They are **not** covered by the repository
+openTag's own name and mark belong to this project. They are **not** covered by the repository
 [LICENSE](https://github.com/first-tree-ai/opentag/blob/main/LICENSE): Apache-2.0 section 6 grants no trademark rights, and the code licence says
 nothing about using our name or mark. Permission to use them is separate, and this document does
 not grant it — ask the project owners.
@@ -50,7 +50,7 @@ them has been redrawn, recoloured, or restyled, and the repository licence does 
   [logo package](https://cdn.openai.com/brand/openai-logos.zip), under OpenAI's
   [brand guidelines and Marks usage terms](https://openai.com/brand/). It identifies Codex as an
   OpenAI service, appears beside the explicit “Codex / OpenAI” label, and remains subordinate to
-  OpenTag's own brand. The black and white published variants preserve the mark in light and dark
+  openTag's own brand. The black and white published variants preserve the mark in light and dark
   colour schemes without recolouring it.
 - **Google.** The sign-in button follows
   [Google's identity guidelines](https://developers.google.com/identity/branding-guidelines). Its unmodified G mark was
@@ -69,7 +69,7 @@ them has been redrawn, recoloured, or restyled, and the repository licence does 
   It is used unmodified only to identify the Pi runtime; the publisher's current terms govern its
   use and this record does not imply endorsement or affiliation.
 - **Every mark.** Displayed at its native proportions without alteration, less prominently than
-  OpenTag's own identity, and never used in a way that suggests a partnership or endorsement.
+  openTag's own identity, and never used in a way that suggests a partnership or endorsement.
 
 ## Adding another
 
@@ -80,4 +80,4 @@ are permitted; geometry, colours, proportions, and appearance must remain unchan
 proposed display is a truthful, narrow reference to a product or integration and is consistent with
 the owner's current guidelines. If those terms prohibit carrying the file in this repository,
 reference an owner-hosted asset where appropriate or omit the mark. Never redraw, recolour, animate,
-or combine it with OpenTag's own mark.
+or combine it with openTag's own mark.

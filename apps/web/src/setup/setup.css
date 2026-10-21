@@ -154,7 +154,7 @@
 
 .ots-command__action button:hover {
   background: color-mix(in srgb, var(--fg) 8%, transparent);
-  color: var(--color-kumo-brand-hover);
+  color: var(--text-color-kumo-link);
 }
 
 /*
@@ -180,7 +180,7 @@
 
 .ots-command__expired button:hover {
   background: color-mix(in srgb, var(--fg) 8%, transparent);
-  color: var(--color-kumo-brand-hover);
+  color: var(--text-color-kumo-link);
 }
 
 /* Measurements ----------------------------------------------------------- */

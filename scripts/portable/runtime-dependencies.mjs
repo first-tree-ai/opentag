@@ -597,8 +597,8 @@ export function runContextTreeRuntimeProbe({ appDir, nodePath, homeDir, probeOpe
   }
   if (probeOpenTag) {
     const result = runNode(nodePath, [entryPath, "--help"], cleanEnv);
-    if (!result.stdout.includes("OpenTag command-line interface") || result.stdout.includes("context-tree")) {
-      fail(`OpenTag did not expose the expected Agent-managed CLI surface: ${result.stdout}\n${result.stderr}`);
+    if (!result.stdout.includes("openTag command-line interface") || result.stdout.includes("context-tree")) {
+      fail(`openTag did not expose the expected Agent-managed CLI surface: ${result.stdout}\n${result.stderr}`);
     }
   }
   const leftovers = readdirSync(homeDir).filter((name) => name !== "." && name !== "..");

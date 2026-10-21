@@ -69,3 +69,13 @@ export function buildAlert({ run, jobs, profile, rehearsal = false }) {
     rootCause: null,
   };
 }
+
+/**
+ * A stale-revision check fails by design when a newer commit reached main first; that newer commit
+ * deploys normally, so the failure needs no human. The step name alone is not enough: the same step
+ * also fails when git cannot fetch, which must still alert. Callers pass the current main head.
+ */
+export function isSupersededRun({ profile, stepName, runSha, mainSha }) {
+  if (!profile.staleRevisionSteps?.includes(stepName)) return false;
+  return Boolean(mainSha) && mainSha !== runSha;
+}

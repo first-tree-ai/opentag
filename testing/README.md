@@ -13,6 +13,8 @@ contents, and machine-specific operational logs outside the repository.
 
 ## Verification by feature
 
+- [Account, Agent, and Computer management writes](verification/account-agent-computer-writes.md)
+
 - [Agent Runtime contract](verification/agent-runtime-contract.md)
 - [Agent Skills](verification/agent-skills.md)
 - [Cloud billing](verification/cloud-billing.md)
@@ -26,11 +28,17 @@ contents, and machine-specific operational logs outside the repository.
 - [Custom Slack Apps](verification/custom-slack-apps.md)
 - [GitHub platform integration](verification/github-platform-integration.md)
 - [IM delivery claim queries](im-delivery-claim/README.md)
+- [IM Turn budget and recovery](im-turn-budget-recovery/README.md)
+- [Steered IM custody without terminal reports](verification/im-steer-custody.md)
+- [Provider process shutdown](verification/provider-process-custody.md)
 - [IM content and attachment delivery](verification/im-content-delivery.md)
+- [Inbound receipt recovery](verification/inbound-receipt-recovery.md)
 - [MCP Server integration](verification/mcp-server-integration.md)
 - [Release guide](verification/releasing.md)
+- [Session collaboration writes](verification/session-collaboration-writes.md)
 - [Skill details reader](verification/skill-details-reader.md)
 - [Installing Skills from a remote source](verification/skill-remote-install.md)
+- [Slack installation lifecycle writes](verification/slack-installation-writes.md)
 - [Staging onboarding reset](verification/staging-onboarding-reset.md)
 - [Web App analytics](verification/web-analytics.md)
 - [Web tools](verification/web-tools.md)
@@ -51,5 +59,6 @@ Screenshots and browser checks for Web UI changes, one directory per change:
 - [mcp-settings-simplification](web-ui/mcp-settings-simplification/README.md)
 - [mcp-unified-connect](web-ui/mcp-unified-connect/README.md)
 - [sidebar-navigation](web-ui/sidebar-navigation/README.md)
+- [site-redesign](web-ui/site-redesign/README.md)
 - [skill-reader](web-ui/skill-reader/README.md)
 - [skills-management](web-ui/skills-management/README.md)

@@ -13,7 +13,7 @@ import { useMcpDiscoverState } from "./catalog/mcp-discover-state.js";
 import { McpAddDialog } from "./mcp-add-dialog.js";
 import { actionError } from "./mcp-form-model.js";
 import { readMcpOAuthOutcome } from "./mcp-oauth-outcome.js";
-import type { McpOAuthSession } from "./mcp-oauth-session.js";
+import { type McpOAuthSession, useMcpOAuthSessions } from "./mcp-oauth-session.js";
 import { publishMcpOAuthWindowReturn, readMcpOAuthWindowReturn } from "./mcp-oauth-window.js";
 import { useAgentMcpServers, useDetachMcpServer, useUpdateMcpBinding } from "./mcp-queries.js";
 import { consumeMcpReturn, consumePendingMcpSetupReturn, type McpReturnContext } from "./mcp-return-context.js";
@@ -58,7 +58,9 @@ function McpManagementPage({ agentId }: { agentId: string }) {
   const mounted = useAgentMcpServers(agentId);
   const detach = useDetachMcpServer(agentId);
   const servers = mounted.data?.servers ?? [];
-  const connection = useMcpCatalogConnection(agentId);
+  const detailOAuth = useMcpOAuthSessions(agentId);
+  const connection = useMcpCatalogConnection(agentId, detailOAuth);
+  const [detailFailures, setDetailFailures] = useState<Record<string, string | undefined>>({});
   const addDisabled = mounted.isPending || mounted.isError || Boolean(connection.connectingId);
   const [{ outcome, returnContext }] = useState(() => {
     const outcome = readMcpOAuthOutcome();
@@ -69,6 +71,10 @@ function McpManagementPage({ agentId }: { agentId: string }) {
   });
   const restored = useRef(false);
   const [panel, setPanel] = useState<Panel>({ kind: "none" });
+  useEffect(() => {
+    if (panel.kind === "edit" && !servers.some((entry) => entry.mcpServerId === panel.entry.mcpServerId))
+      setPanel({ kind: "none" });
+  }, [panel, servers]);
   const [highlight, setHighlight] = useState(outcome?.outcome.kind === "success" ? outcome.mcpServerId : undefined);
   const pendingFocus = useRef<string | undefined>(undefined);
   useEffect(() => {
@@ -150,12 +156,13 @@ function McpManagementPage({ agentId }: { agentId: string }) {
   const connect = async (entry: MCPAgentServer, token?: string, definition?: MCPServer, reauthorize = false) => {
     if (discover.connections[entry.mcpServerId]?.pending) return;
     discover.clearFailure(entry.mcpServerId);
+    setDetailFailures((all) => ({ ...all, [entry.mcpServerId]: undefined }));
     if (entry.mcpServerId === outcome?.mcpServerId) setReturnedFailure(false);
     const result = await connection.connect(entry, token, definition, reauthorize);
     if (result === "key") setPanel({ kind: "authorize", entry });
-    else if (result === "connected") locate(entry.mcpServerId);
   };
   const addedFromCatalog = (entry: MCPAgentServer, _catalog: McpInstallableCatalogEntry, _definition?: MCPServer) => {
+    setDetailFailures((all) => ({ ...all, [entry.mcpServerId]: undefined }));
     if (connection.failure?.binding.mcpServerId === entry.mcpServerId) connection.clearFailure();
     setHighlight(entry.mcpServerId);
   };
@@ -164,12 +171,22 @@ function McpManagementPage({ agentId }: { agentId: string }) {
     agentId,
     agentName,
     mounted: servers,
+    oauthSessions: Object.fromEntries(servers.map((entry) => [entry.mcpServerId, detailOAuth(entry.mcpServerId)])),
     ...restoredDiscoverProps(returnContext, outcome),
     ...discoverPanelProps(panel),
     onClose: close,
     onAdded: addedFromCatalog,
   };
   const discover = useMcpDiscoverState(discoverProps);
+  const sessionFor = (id: string) => {
+    const session = discover.connections[id]?.oauth;
+    return session?.phase ? session : detailOAuth(id);
+  };
+  const errorFor = (id: string) =>
+    detailFailures[id] ??
+    discover.connections[id]?.error ??
+    connection.errorFor(id) ??
+    returnedConnectionError(outcome, id, returnedFailure);
   useEffect(() => {
     if (!outcome?.mcpServerId || mounted.isPending) return;
     document.getElementById(`mcp-server-${outcome.mcpServerId}`)?.scrollIntoView({ block: "nearest" });
@@ -212,28 +229,16 @@ function McpManagementPage({ agentId }: { agentId: string }) {
               highlighted={highlight === entry.mcpServerId}
               connecting={
                 connection.connectingId === entry.mcpServerId ||
-                Boolean(discover.connections[entry.mcpServerId]?.pending)
+                Boolean(discover.connections[entry.mcpServerId]?.pending) ||
+                Boolean(detailOAuth(entry.mcpServerId).phase)
               }
-              connectionError={
-                panel.kind === "authorize"
-                  ? undefined
-                  : (discover.connections[entry.mcpServerId]?.error ??
-                    connection.errorFor(entry.mcpServerId) ??
-                    returnedConnectionError(outcome, entry.mcpServerId, returnedFailure))
-              }
-              onRetry={() => void connect(entry)}
-              oauthSession={
-                connection.connectingId === entry.mcpServerId
-                  ? connection.oauth
-                  : discover.connections[entry.mcpServerId]?.oauth
-              }
+              connectionError={errorFor(entry.mcpServerId)}
+              oauthSession={sessionFor(entry.mcpServerId)}
               onAction={(kind) => {
                 if (kind === "authorize" && entry.authorization?.kind === "oauth") {
                   void connect(entry, undefined, undefined, true);
                   return;
                 }
-                connection.clearFailure();
-                discover.clearFailure(entry.mcpServerId);
                 const index = servers.indexOf(entry);
                 neighbors.current = [...servers.slice(index + 1), ...servers.slice(0, index).reverse()].map(
                   (server) => server.mcpServerId,
@@ -270,8 +275,16 @@ function McpManagementPage({ agentId }: { agentId: string }) {
         onClose={close}
         onLocate={locate}
         onRemoved={removedServer}
-        connecting={Boolean(connection.connectingId)}
-        connectionError={panel.kind === "authorize" ? connection.errorFor(panel.entry.mcpServerId) : undefined}
+        sessionFor={sessionFor}
+        errorFor={errorFor}
+        onRetry={(entry) => void connect(entry)}
+        onAuthenticationFeedback={(entry, label) => {
+          setDetailFailures((all) => ({ ...all, [entry.mcpServerId]: label }));
+          connection.clearFailure();
+          discover.clearFailure(entry.mcpServerId);
+          if (entry.mcpServerId === outcome?.mcpServerId) setReturnedFailure(false);
+        }}
+        retryingId={connection.connectingId}
         onCompleted={(entry) => locate(entry.mcpServerId)}
       />
     </section>
@@ -318,11 +331,18 @@ function McpPanel({
   onLocate,
   onCompleted,
   onRemoved,
-  connectionError,
+  sessionFor,
+  errorFor,
+  onRetry,
+  onAuthenticationFeedback,
+  retryingId,
 }: {
   panel: Panel;
-  connecting?: boolean;
-  connectionError?: string;
+  sessionFor: (id: string) => McpOAuthSession;
+  errorFor: (id: string) => string | undefined;
+  onRetry: (entry: MCPAgentServer) => void;
+  onAuthenticationFeedback: (entry: MCPAgentServer, label?: string) => void;
+  retryingId?: string;
   agentId: string;
   agentName: string;
   servers: MCPAgentServer[];
@@ -349,10 +369,20 @@ function McpPanel({
   if (!("entry" in panel)) return null;
   // Dialogs follow saved connection updates; Settings rebases its own local drafts.
   const current = servers.find((entry) => entry.mcpServerId === panel.entry.mcpServerId) ?? panel.entry;
-  const props = { agentId, agentName, entry: current, onClose };
+  const props = {
+    agentId,
+    agentName,
+    entry: current,
+    onClose,
+    oauthSession: sessionFor(current.mcpServerId),
+    connectionError: errorFor(current.mcpServerId),
+    retrying: retryingId === current.mcpServerId,
+    onRetry: () => onRetry(current),
+    onAuthenticationFeedback: (label?: string) => onAuthenticationFeedback(current, label),
+  };
   switch (panel.kind) {
     case "authorize":
-      return <McpSettingsDialog {...props} initialAuthentication authenticationError={connectionError} />;
+      return <McpSettingsDialog {...props} initialAuthentication />;
     case "delete":
       return <McpConfirmDialog {...props} onConfirmed={() => onRemoved(current)} />;
     case "edit":
@@ -381,7 +411,6 @@ function McpRow({
   onAction,
   connecting,
   connectionError,
-  onRetry,
   oauthSession,
 }: {
   agentId: string;
@@ -391,7 +420,6 @@ function McpRow({
   onAction: (action: ServerAction) => void;
   connecting: boolean;
   connectionError?: string;
-  onRetry: () => void;
   oauthSession?: McpOAuthSession;
 }) {
   const update = useUpdateMcpBinding(agentId);
@@ -422,8 +450,6 @@ function McpRow({
           m.mcp_edit_failed(),
         )
       }
-      onProbe={onRetry}
-      probing={connecting}
       toggling={update.isPending}
       error={error}
       connectionError={connectionError}

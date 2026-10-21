@@ -11,7 +11,7 @@ function Harness({ onSuccess = () => undefined }: { onSuccess?: () => void }) {
       {(control) => (
         <>
           <button type="button" onClick={() => void control.startOAuth("create")}>
-            Add OpenTag
+            Add openTag
           </button>
           <button type="button" onClick={() => void control.startOAuth("reauthorize")}>
             Reauthorize
@@ -39,7 +39,7 @@ describe("SlackConfiguration", () => {
     });
     try {
       render(<Harness />);
-      fireEvent.click(screen.getByRole("button", { name: "Add OpenTag" }));
+      fireEvent.click(screen.getByRole("button", { name: "Add openTag" }));
       await waitFor(() => expect(start).toHaveBeenCalledWith(agentId, { intent: "create" }));
       expect(assign).toHaveBeenCalledWith("https://slack.com/oauth/v2/authorize?client_id=client&state=signed-state");
     } finally {
@@ -72,7 +72,7 @@ describe("SlackConfiguration", () => {
       new ApiError(403, "forbidden", "IM_BINDING_FORBIDDEN", "deterministic"),
     );
     render(<Harness />);
-    fireEvent.click(screen.getByRole("button", { name: "Add OpenTag" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add openTag" }));
     expect(await screen.findByRole("alert")).toHaveProperty(
       "textContent",
       "Couldn’t connect Slack. Start the connection again from this Agent.",

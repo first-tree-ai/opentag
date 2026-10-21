@@ -45,16 +45,6 @@ export {
   registrationAadContext,
 } from "./mcp-credential-cipher.js";
 export {
-  dispatchGatewayRequest,
-  jsonRpcError,
-  MCP_GATEWAY_INSTRUCTIONS_MAX_BYTES,
-  type McpGatewayHandlers,
-  type McpGatewayReply,
-  type McpGatewayRpcRequest,
-  parseGatewayRequest,
-  toolErrorResult,
-} from "./mcp-gateway-protocol.js";
-export {
   type McpGatewayCatalog,
   McpGatewayService,
   type McpGatewayServiceOptions,
@@ -67,6 +57,17 @@ export {
   type McpUpstreamCallInput,
   type McpUpstreamCallResult,
 } from "./mcp-gateway-upstream.js";
+export {
+  dispatchInboundRequest,
+  jsonRpcError,
+  MCP_INBOUND_INSTRUCTIONS_MAX_BYTES,
+  type McpInboundHandlers,
+  type McpInboundReply,
+  type McpInboundRpcRequest,
+  type McpInboundServerInfo,
+  parseInboundRequest,
+  toolErrorResult,
+} from "./mcp-inbound-protocol.js";
 export {
   authorizationServerMetadataUrls,
   MCP_OAUTH_STATE_TTL_MS,

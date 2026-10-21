@@ -37,7 +37,7 @@ export function AgentDetailPage({ agentId, scheduleId }: { agentId: string; sche
              * Usage and status share a row: neither fills the width on its own, and a failed
              * dependency belongs beside the work it is stopping rather than in a banner above it.
              */}
-            <div className="grid gap-6 @min-[48rem]/content:grid-cols-2">
+            <div className="grid gap-6 min-[951px]:grid-cols-2">
               <AgentUsageOverview accountId={me.user.id} agentId={agent.id} />
               <AgentStatusCard agent={agent} />
             </div>
@@ -79,10 +79,10 @@ export function AgentObjectHeader({
           {backToSettings ? agent.displayName : m.agents_title()}
         </Link>
       ) : null}
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="flex min-w-0 items-center gap-3">
-          <AgentAvatar displayName={agent.displayName} avatarPath={agent.avatarPath} className="size-10" />
-          <div className="grid min-w-0 gap-1">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex min-w-0 items-center gap-4">
+          <AgentAvatar displayName={agent.displayName} avatarPath={agent.avatarPath} className="size-11" />
+          <div className="grid min-w-0 gap-1.5">
             <div className="flex flex-wrap items-center gap-3">
               <Text as="h1" size="lg" variant="heading">
                 {agent.displayName}
@@ -98,11 +98,11 @@ export function AgentObjectHeader({
         <div className="flex flex-wrap items-center justify-end gap-3">
           {!backToSettings ? (
             <Link
-              className={buttonClassName({ variant: "secondary" })}
+              className={buttonClassName({ variant: "outline" })}
               state={{ agent }}
               {...agentSettingsLink(agent.id)}
             >
-              <Icon name="settings" /> {m.agents_settings()}
+              {m.agents_settings()}
             </Link>
           ) : null}
         </div>
@@ -121,7 +121,7 @@ export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
   const binding = agent.messaging.kind === "ready" ? agent.messaging.value : undefined;
   return (
     <section
-      className="grid ui-surface bg-kumo-base p-4 ring ring-kumo-line"
+      className="grid ui-surface bg-kumo-base p-6 max-[640px]:p-5 ring ring-kumo-line"
       aria-label={m.agents_status_region()}
       data-ui="agent-status-overview"
     >
@@ -151,7 +151,7 @@ export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
               {runtime.action ? (
                 <Link className="inline-flex items-center gap-1 text-sm text-kumo-link" {...runtime.action.link}>
                   {runtime.action.label}
-                  <Icon className="size-3.5" name="chevron-right" />
+                  <Icon className="size-3.5" name="arrow-right" />
                 </Link>
               ) : null}
             </div>
@@ -183,7 +183,7 @@ function AgentStatusRow({
   name: string;
   status: AgentDependencyStatus;
 }) {
-  const rowClassName = "grid content-center gap-2 py-4 first:pt-0 last:pb-0";
+  const rowClassName = "grid content-start gap-0 py-5 first:pt-0 last:pb-0";
   const dataUi = dependency === "messaging" ? "agent-status-message-channel" : "agent-status-computer";
   return (
     <li className={rowClassName} data-ui={dataUi}>
@@ -210,7 +210,7 @@ function AgentStatusRow({
               {...status.action.link}
             >
               {status.action.label}
-              <Icon className="size-3.5" name="chevron-right" />
+              <Icon className="size-3.5" name="arrow-right" />
             </Link>
           ) : null}
         </div>
@@ -221,7 +221,7 @@ function AgentStatusRow({
 
 function dependencyStatusClassName(tone: AgentDependencyStatus["tone"]): string {
   if (tone === "success") return "text-kumo-success";
-  if (tone === "warning") return "text-kumo-warning";
+  if (tone === "warning") return "text-(--status-warning)";
   if (tone === "danger") return "text-kumo-danger";
   if (tone === "info") return "text-kumo-subtle";
   return "text-kumo-subtle";
@@ -263,11 +263,7 @@ export function AgentLifecycleNotice({ agent }: { agent: AgentDetailView }) {
         <p className="text-sm text-kumo-subtle">{agentRecoveryMessage()}</p>
       </div>
       {recovery ? (
-        <Link
-          className={buttonClassName({ size: "compact", variant: "secondary" })}
-          state={{ agent }}
-          {...recovery.link}
-        >
+        <Link className={buttonClassName({ size: "compact", variant: "outline" })} state={{ agent }} {...recovery.link}>
           {recovery.label}
         </Link>
       ) : null}

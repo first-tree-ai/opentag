@@ -1,5 +1,5 @@
 <?xml version='1.0' encoding='utf-8'?>
-<svg xmlns="http://www.w3.org/2000/svg" width="1254" height="1254" viewBox="0 0 1254 1254" role="img"><title>OpenTag</title><style>/* The pack ships two transparent marks whose paths are byte-identical;
+<svg xmlns="http://www.w3.org/2000/svg" width="1254" height="1254" viewBox="0 0 1254 1254" role="img"><title>openTag</title><style>/* The pack ships two transparent marks whose paths are byte-identical;
    only the outline colour and a stroke on the face differ. So one set of
    paths carries both, and the query picks. A tab strip can be either
    colour and a favicon has no way to ask. */

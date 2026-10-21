@@ -53,9 +53,14 @@ export function registerWebApp(app: FastifyInstance, root: string): void {
      * no preflight.
      */
     if (registrationAvatar) reply.header("access-control-allow-origin", "*");
+    // Avatar filenames are stable compatibility URLs; their artwork can change between releases.
     reply.header(
       "cache-control",
-      path.startsWith("/assets/") || registrationAvatar ? "public, max-age=31536000, immutable" : "no-store",
+      registrationAvatar
+        ? "public, max-age=0, must-revalidate"
+        : path.startsWith("/assets/")
+          ? "public, max-age=31536000, immutable"
+          : "no-store",
     );
   });
 

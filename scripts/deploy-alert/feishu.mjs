@@ -59,7 +59,7 @@ function button(text, url, type) {
 
 function cardTitle(alert) {
   const prefix = alert.rehearsal ? "【演练】" : "";
-  return `${prefix}【${alert.environment.label}】OpenTag ${ALERT_KEYWORD}`;
+  return `${prefix}【${alert.environment.label}】openTag ${ALERT_KEYWORD}`;
 }
 
 // Values from commits and actors go in plain_text blocks, never lark_md, so nothing in them can

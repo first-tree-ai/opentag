@@ -157,8 +157,8 @@ describe("Agent Setup route boundary", () => {
       if (input === "/api/v1/agents" && init?.method === undefined) {
         return json({
           agents: [
-            { ...agentListItem, name: "opentag", displayName: "OpenTag" },
-            { ...secondAgentListItem, name: "opentag-2", displayName: "OpenTag 2", status: "suspended" },
+            { ...agentListItem, name: "opentag", displayName: "openTag" },
+            { ...secondAgentListItem, name: "opentag-2", displayName: "openTag 2", status: "suspended" },
           ],
         });
       }

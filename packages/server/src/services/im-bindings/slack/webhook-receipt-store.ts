@@ -1,9 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { type StructuredError, StructuredErrorSchema } from "@opentag/shared";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type { DatabaseClient } from "../../../db/client.js";
 import { slackWebhookReceipts } from "../../../db/schema/index.js";
 import type { PolicyErrorCategory, PolicyPhase, PolicyRetryability } from "../../im/external-call-policy.js";
+import { InboundReceiptWorkStore } from "../../im/inbound-receipt-work-store.js";
+import {
+  INBOUND_WORK_LEASE_MS,
+  type InboundWork,
+  InboundWorkSchema,
+  inboundWorkRetryDelay,
+} from "../../im/inbound-work.js";
 
 export class SlackWebhookReceiptError extends Error {
   declare readonly code: string;
@@ -41,12 +48,23 @@ type SlackWebhookReceiptMetricDetails = { status?: "processing" | "processed" | 
 export type SlackWebhookReceiptMetric = SlackWebhookReceiptMetricCore & SlackWebhookReceiptMetricDetails;
 
 type SlackWebhookReceiptClaimCore = { accepted: boolean; duplicate: boolean };
-type SlackWebhookReceiptClaimDetails = { receiptId?: string; status?: "processing" | "processed" | "failed" };
+type SlackWebhookReceiptClaimDetails = {
+  receiptId?: string;
+  attempt?: number;
+  receivedAt?: Date;
+  status?: "processing" | "processed" | "failed";
+};
 export type SlackWebhookReceiptClaim = SlackWebhookReceiptClaimCore & SlackWebhookReceiptClaimDetails;
 
-type SlackWebhookReceiptInput = { installationId: string; credentialGeneration: number; eventId: string };
+type SlackWebhookReceiptInput = {
+  installationId: string;
+  credentialGeneration: number;
+  eventId: string;
+  work?: InboundWork;
+};
 
 export class SlackWebhookReceiptStore {
+  readonly recovery: InboundReceiptWorkStore;
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
   readonly #onMetric: (metric: SlackWebhookReceiptMetric) => void;
@@ -55,6 +73,7 @@ export class SlackWebhookReceiptStore {
     database: DatabaseClient,
     options: { now?: () => Date; onMetric?: (metric: SlackWebhookReceiptMetric) => void } = {},
   ) {
+    this.recovery = new InboundReceiptWorkStore(database, "slack", options.now ?? (() => new Date()));
     this.#database = database;
     this.#now = options.now ?? (() => new Date());
     this.#onMetric = options.onMetric ?? (() => undefined);
@@ -71,7 +90,11 @@ export class SlackWebhookReceiptStore {
     ) {
       throw new SlackWebhookReceiptError("SLACK_RECEIPT_EVENT_ID_INVALID");
     }
+    const work = input.work === undefined ? undefined : InboundWorkSchema.parse(input.work);
+    if (work && work.provider !== "slack") throw new Error("IM_INBOUND_WORK_PROVIDER_MISMATCH");
     return this.#database.transaction(async (transaction) => {
+      const receivedAt = this.#now();
+      const leaseExpiresAt = work ? new Date(receivedAt.getTime() + INBOUND_WORK_LEASE_MS) : null;
       const [created] = await transaction
         .insert(slackWebhookReceipts)
         .values({
@@ -79,7 +102,10 @@ export class SlackWebhookReceiptStore {
           credentialGeneration: input.credentialGeneration,
           eventId: input.eventId,
           status: "processing",
-          receivedAt: this.#now(),
+          receivedAt,
+          workPayload: work ?? null,
+          leaseExpiresAt,
+          nextAttemptAt: leaseExpiresAt,
           attemptCount: 1,
         })
         .onConflictDoNothing({
@@ -89,7 +115,12 @@ export class SlackWebhookReceiptStore {
             slackWebhookReceipts.eventId,
           ],
         })
-        .returning({ id: slackWebhookReceipts.id, status: slackWebhookReceipts.status });
+        .returning({
+          id: slackWebhookReceipts.id,
+          status: slackWebhookReceipts.status,
+          attempt: slackWebhookReceipts.attemptCount,
+          receivedAt: slackWebhookReceipts.receivedAt,
+        });
       if (created) {
         this.#onMetric({
           type: "receipt",
@@ -97,7 +128,13 @@ export class SlackWebhookReceiptStore {
           eventId: input.eventId,
           status: "processing",
         });
-        return { accepted: true, duplicate: false, receiptId: created.id, status: created.status };
+        return {
+          accepted: true,
+          duplicate: false,
+          receiptId: created.id,
+          status: created.status,
+          ...(work ? { attempt: created.attempt, receivedAt: created.receivedAt } : {}),
+        };
       }
       const [existing] = await transaction
         .select({ id: slackWebhookReceipts.id, status: slackWebhookReceipts.status })
@@ -125,11 +162,26 @@ export class SlackWebhookReceiptStore {
     });
   }
 
-  async markProcessed(receiptId: string): Promise<void> {
+  async markProcessed(receiptId: string, attempt?: number): Promise<void> {
     const [updated] = await this.#database
       .update(slackWebhookReceipts)
-      .set({ status: "processed", processedAt: this.#now(), lastErrorCode: null, lastErrorAt: null })
-      .where(eq(slackWebhookReceipts.id, receiptId))
+      .set({
+        status: "processed",
+        processedAt: this.#now(),
+        lastErrorCode: null,
+        lastErrorAt: null,
+        workPayload: null,
+        leaseExpiresAt: null,
+        nextAttemptAt: null,
+      })
+      .where(
+        and(
+          eq(slackWebhookReceipts.id, receiptId),
+          attempt === undefined
+            ? and(isNull(slackWebhookReceipts.workPayload), eq(slackWebhookReceipts.attemptCount, 1))
+            : and(eq(slackWebhookReceipts.attemptCount, attempt), eq(slackWebhookReceipts.status, "processing")),
+        ),
+      )
       .returning({
         id: slackWebhookReceipts.id,
         installationId: slackWebhookReceipts.installationId,
@@ -145,12 +197,27 @@ export class SlackWebhookReceiptStore {
     }
   }
 
-  async markFailed(receiptId: string, errorCode: string): Promise<void> {
+  async markFailed(receiptId: string, errorCode: string, attempt?: number, retry = true): Promise<void> {
     const safeCode = errorCode.replace(/[^A-Za-z0-9_.:-]/g, "_").slice(0, 120) || "SLACK_EVENT_PROCESSING_FAILED";
     const [updated] = await this.#database
       .update(slackWebhookReceipts)
-      .set({ status: "failed", lastErrorCode: safeCode, lastErrorAt: this.#now() })
-      .where(eq(slackWebhookReceipts.id, receiptId))
+      .set({
+        status: "failed",
+        lastErrorCode: safeCode,
+        lastErrorAt: this.#now(),
+        leaseExpiresAt: null,
+        nextAttemptAt:
+          attempt === undefined || !retry ? null : new Date(this.#now().getTime() + inboundWorkRetryDelay(attempt)),
+        ...(retry ? {} : { workPayload: null }),
+      })
+      .where(
+        and(
+          eq(slackWebhookReceipts.id, receiptId),
+          attempt === undefined
+            ? and(isNull(slackWebhookReceipts.workPayload), eq(slackWebhookReceipts.attemptCount, 1))
+            : and(eq(slackWebhookReceipts.attemptCount, attempt), eq(slackWebhookReceipts.status, "processing")),
+        ),
+      )
       .returning({
         id: slackWebhookReceipts.id,
         installationId: slackWebhookReceipts.installationId,

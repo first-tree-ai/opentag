@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { createFileRoute, Outlet, useRouter } from "@tanstack/react-router";
+import { createFileRoute, Outlet, useNavigate, useRouter } from "@tanstack/react-router";
 import { useCallback, useRef, useState } from "react";
 import { analytics } from "../analytics/analytics.js";
 import { useAccountIdentityReport } from "../analytics/milestones.js";
@@ -7,8 +7,12 @@ import { ApiError, browserApi } from "../api.js";
 import { Redirect } from "../features/navigation/redirect.js";
 import { AsyncState, toResourceState } from "../features/resource/resource-state.js";
 import { AccountContext } from "../features/session/session-context.js";
+import { SignOutControl } from "../features/session/sign-out-button.js";
+import { useSignOutFlow } from "../features/session/use-sign-out.js";
 import { setErrorReportUser } from "../observability/error-reporting.js";
+import * as m from "../paraglide/messages.js";
 import { queryKeys } from "../query/keys.js";
+import { Button } from "../ui/design-system.js";
 
 export const Route = createFileRoute("/_authenticated")({
   component: AuthenticatedAccountGate,
@@ -33,7 +37,8 @@ function AuthenticatedAccountGate() {
     return pathname === "/" ? "/agents" : `${pathname}${searchStr}`;
   });
   const queryClient = useQueryClient();
-  const state = toResourceState(useQuery({ queryKey: queryKeys.me(), queryFn: () => browserApi.me() }));
+  const meQuery = useQuery({ queryKey: queryKeys.me(), queryFn: () => browserApi.me() });
+  const state = toResourceState(meQuery);
   /**
    * The Server refusing this read is the session ending. It is computed once and used both to
    * release the analytics identity and to redirect, so the two can never come to disagree about
@@ -75,8 +80,32 @@ function AuthenticatedAccountGate() {
     if (session.current === startedIn) queryClient.setQueryData(queryKeys.me(), next);
     return next;
   }, [queryClient]);
+  const navigate = useNavigate();
+  // The gate sits above AccountContext, so it cannot use `useSignOut`; it shares the same flow with
+  // the `endSession` it is about to publish.
+  const signOutState = useSignOutFlow(() => {
+    endSession();
+    void navigate({ replace: true, to: "/login" });
+  });
   if (sessionLost) {
     return <Redirect replace search={{ next: requested }} to="/login" />;
+  }
+  if (state.kind === "error") {
+    // A failed Account read must not trap the visitor: without `me` no Account control exists
+    // anywhere below, so retrying and signing out are offered here.
+    return (
+      <div className="grid gap-3 p-6" data-ui="account-gate-error">
+        <div className="rounded-md bg-kumo-danger-tint p-3 text-sm text-kumo-danger" role="alert">
+          {state.error.message}
+        </div>
+        <div className="flex flex-wrap items-start gap-2">
+          <Button loading={meQuery.isFetching} onClick={() => void meQuery.refetch()}>
+            {m.common_try_again()}
+          </Button>
+          <SignOutControl {...signOutState} />
+        </div>
+      </div>
+    );
   }
   return (
     <AsyncState state={state}>

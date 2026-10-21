@@ -2,7 +2,7 @@
 
 [简体中文](./SECURITY.zh-CN.md)
 
-OpenTag is pre-alpha and does not currently publish supported production releases. Security reports are still welcome
+openTag is pre-alpha and does not currently publish supported production releases. Security reports are still welcome
 because early disclosure helps us fix unsafe foundations before they become stable interfaces.
 
 ## Report a vulnerability

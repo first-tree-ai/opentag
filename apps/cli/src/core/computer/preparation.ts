@@ -259,7 +259,7 @@ export function providerComponentFromEnsureResult(
       ...base,
       status: "checking" as const,
       blocking: true,
-      message: `${label} preparation is owned by another OpenTag process.`,
+      message: `${label} preparation is owned by another openTag process.`,
       nextAction: { command: providerRepairCommand(provider) },
     };
   }

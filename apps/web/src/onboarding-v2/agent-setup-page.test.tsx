@@ -286,7 +286,7 @@ describe("AgentSetupPage stages", () => {
     await advance(1);
 
     expect(screen.getByRole("heading", { name: "Connect your computer" })).toBeTruthy();
-    expect(screen.getByText("Reviewer runs on your computer; messages and results pass through OpenTag.")).toBeTruthy();
+    expect(screen.getByText("Reviewer runs on your computer; messages and results pass through openTag.")).toBeTruthy();
     const summary = document.querySelector('[data-ui="agent-setup-computer-summary"]');
     expect(summary?.textContent).toContain("No computer connected");
     expect(summary?.textContent).toContain("Not connected");

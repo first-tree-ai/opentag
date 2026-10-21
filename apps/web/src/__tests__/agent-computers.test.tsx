@@ -145,7 +145,7 @@ describe("OpenTag Web App Shell", () => {
       .querySelector('[data-ui="agent-status-message-channel"]') as HTMLElement;
     // Unreadable evidence says so; it must not be reported as "no channel connected".
     expect(within(messagingRow).getByText("Status unavailable")).toBeTruthy();
-    expect(within(messagingRow).queryByText("OpenTag could not read this Agent's messaging connection.")).toBeNull();
+    expect(within(messagingRow).queryByText("openTag could not read this Agent's messaging connection.")).toBeNull();
     expect(within(messagingRow).getByRole("link", { name: "View channel" }).getAttribute("href")).toBe(
       `/agents/${agentId}/settings/messaging`,
     );
@@ -192,7 +192,7 @@ describe("OpenTag Web App Shell", () => {
     expect(within(computerRow).queryByText("Online")).toBeNull();
     expect(within(computerRow).getByText("Codex status unavailable")).toBeTruthy();
     expect(within(computerRow).queryByRole("link")).toBeNull();
-    expect(within(computerRow).queryByText("OpenTag could not confirm Codex on this Computer.")).toBeNull();
+    expect(within(computerRow).queryByText("openTag could not confirm Codex on this Computer.")).toBeNull();
     unconfirmedRuntime.unmount();
 
     installApi({ bound: true, handoffEvidenceFails: true });
@@ -205,7 +205,7 @@ describe("OpenTag Web App Shell", () => {
       .querySelector('[data-ui="agent-status-message-channel"]') as HTMLElement;
     expect(within(messagingRow).queryByText("Connected")).toBeNull();
     expect(within(messagingRow).getByText("Status unavailable")).toBeTruthy();
-    expect(within(messagingRow).queryByText("OpenTag could not confirm whether messages reach this Agent.")).toBeNull();
+    expect(within(messagingRow).queryByText("openTag could not confirm whether messages reach this Agent.")).toBeNull();
   });
 
   it("keeps Computer status concise and offers a precise exit only when action is useful", async () => {
@@ -343,7 +343,7 @@ describe("OpenTag Web App Shell", () => {
       .getByRole("region", { name: "Agent status" })
       .querySelector('[data-ui="agent-status-runtime"]') as HTMLElement;
     expect(within(row).getByText("Checking Codex")).toBeTruthy();
-    expect(within(row).queryByText("OpenTag is still checking Codex on this Computer.")).toBeNull();
+    expect(within(row).queryByText("openTag is still checking Codex on this Computer.")).toBeNull();
     expect(within(row).queryByRole("link")).toBeNull();
   });
 });

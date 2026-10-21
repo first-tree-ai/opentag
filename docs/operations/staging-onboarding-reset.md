@@ -39,7 +39,7 @@ There is no shared test Account to take turns on, and nothing to configure. Two 
 time: each resets only their own Account, each connects their own Computer, and each Feishu authorization creates its own
 application in the test tenant, so their bindings do not contend.
 
-One shared cost remains. Reset disables OpenTag's binding but cannot delete the application it created in the Feishu
+One shared cost remains. Reset disables openTag's binding but cannot delete the application it created in the Feishu
 tenant, so repeated runs accumulate applications there. Clear them out by hand from time to time.
 
 ## Configuration
@@ -136,7 +136,7 @@ identity; use a clean VM or CI host when you need those.
 
 ## Feishu between runs
 
-Reset disables OpenTag's binding, clears the encrypted credential and setup context, and ends active Sessions. It does
+Reset disables openTag's binding, clears the encrypted credential and setup context, and ends active Sessions. It does
 not delete the Bot or App from the external Feishu test tenant, because no reliable provider-deletion seam exists today.
 
 A real run still validates QR authorization, binding activation, granted capabilities, handoff readiness and onboarding

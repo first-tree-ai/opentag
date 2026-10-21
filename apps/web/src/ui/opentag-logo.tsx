@@ -1,14 +1,10 @@
 import markDark from "../assets/opentag/logo-dark-transparent.svg";
-import markLight from "../assets/opentag/logo-light-transparent.svg";
+import markLight from "../assets/opentag/site-brand-mark.png";
+import lockup from "../assets/opentag/site-lockup.svg";
 
 const MARK = { light: markLight, dark: markDark, width: 1254, height: 1254 };
 
-/**
- * Homepage brand identity: the official OpenTag mark beside Manrope 700 "OpenTag" lettering, as in
- * the https://opentag.build/ navigation. The mark pair keeps the light/dark artwork swap driven by
- * data-opentag-mode; the lettering follows the app foreground. One accessible label covers the
- * whole treatment, so the visual text is the label and stays hidden when none is given.
- */
+/** Official website artwork; cat avatars are owned separately. */
 export function OpenTagLogo({
   variant = "lockup",
   label,
@@ -20,10 +16,10 @@ export function OpenTagLogo({
 }) {
   return (
     <span aria-hidden={label ? undefined : true} className={`opentag-logo opentag-logo--${variant} ${className}`}>
-      <img alt="" className="opentag-logo__light" height={MARK.height} src={MARK.light} width={MARK.width} />
+      <img alt="" className="opentag-logo__light" src={variant === "mark" ? MARK.light : lockup} />
       <img alt="" className="opentag-logo__dark" height={MARK.height} src={MARK.dark} width={MARK.width} />
-      {variant === "mark" ? null : <span className="opentag-logo__text">{label || "OpenTag"}</span>}
-      {variant === "mark" && label ? <span className="sr-only">{label}</span> : null}
+
+      {label ? <span className="sr-only">{label}</span> : null}
     </span>
   );
 }

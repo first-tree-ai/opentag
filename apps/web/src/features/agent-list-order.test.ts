@@ -86,7 +86,7 @@ describe("Agent availability model and presentation", () => {
     lastSeenAt: "2026-08-20T00:00:00.000Z",
     providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
   } as unknown as AccountComputerSummary;
-  const binding = (bindingState: string, provider = "feishu", displayName: string | null = "OpenTag") =>
+  const binding = (bindingState: string, provider = "feishu", displayName: string | null = "openTag") =>
     ({
       id: "33333333-3333-4333-8333-333333333333",
       agentId: agent.id,

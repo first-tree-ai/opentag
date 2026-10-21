@@ -9,10 +9,11 @@ import {
   useMcpConnectionOperation,
 } from "../mcp-connection.js";
 import { connectionAuthKind } from "../mcp-connection-model.js";
+import type { McpOAuthSession } from "../mcp-oauth-session.js";
 import { closeMcpOAuthWindow, prepareMcpOAuthWindow } from "../mcp-oauth-window.js";
 
 /** Page-owned recovery for installed connections; errors remain visible outside dialogs. */
-export function useMcpCatalogConnection(agentId: string) {
+export function useMcpCatalogConnection(agentId: string, sessionFor: (id: string) => McpOAuthSession) {
   const operation = useMcpConnectionOperation(agentId);
   const inFlight = useRef(false);
   const alive = useRef(true);
@@ -39,6 +40,7 @@ export function useMcpCatalogConnection(agentId: string) {
         source: "authorize",
         isAlive: () => alive.current,
         oauthWindow,
+        oauthSession: sessionFor(binding.mcpServerId),
       });
       return alive.current ? result : ("busy" as const);
     } catch (cause) {
@@ -59,7 +61,6 @@ export function useMcpCatalogConnection(agentId: string) {
   }
   return {
     connect,
-    oauth: operation.oauth,
     connectingId,
     failure,
     clearFailure: () => setFailure(undefined),

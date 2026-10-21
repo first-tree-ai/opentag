@@ -296,7 +296,7 @@ describe("MCP client metadata document", () => {
     expect(response.headers["cache-control"]).toBe("public, max-age=3600");
     expect(response.json()).toEqual({
       client_id: `${PUBLIC_ORIGIN}${MCP_CLIENT_METADATA_PATH}`,
-      client_name: "OpenTag",
+      client_name: "openTag",
       redirect_uris: [`${PUBLIC_ORIGIN}${MCP_OAUTH_CALLBACK_PATH}`],
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],

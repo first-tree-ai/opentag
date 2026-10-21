@@ -29,7 +29,7 @@ test("browser negotiation renders the supported locale without persisting an imp
   try {
     const page = await context.newPage();
     await page.goto("/login", { waitUntil: "networkidle" });
-    await expect(page.getByRole("heading", { name: "登录 OpenTag", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "登录 openTag", exact: true })).toBeVisible();
     await expect(page.getByText("管理你的 Agent 和 Computer。", { exact: true })).toBeVisible();
     // Document metadata follows the negotiated locale without persisting an implicit preference.
     await expect(page.locator("html")).toHaveAttribute("lang", "zh");

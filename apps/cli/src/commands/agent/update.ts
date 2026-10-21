@@ -26,7 +26,7 @@ export function registerAgentUpdateCommand(agent: Command): void {
         "clearMaxDuration",
       ),
     )
-    .addOption(new Option("--clear-max-duration", "use the OpenTag default Turn duration").conflicts("maxDurationMs"))
+    .addOption(new Option("--clear-max-duration", "use the openTag default Turn duration").conflicts("maxDurationMs"))
     .option("--json", "print JSON")
     .action(async (agentId, options) => {
       process.exitCode = await executeCommand(

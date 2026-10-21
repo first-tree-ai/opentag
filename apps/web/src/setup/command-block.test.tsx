@@ -12,7 +12,7 @@ import { CommandBlock } from "./command-block.js";
  */
 
 const COPY_FEEDBACK_MS = 1_600;
-const COMMENT = "Run this command to set up OpenTag on this computer.";
+const COMMENT = "Run this command to set up openTag on this computer.";
 const COMMAND = "curl -fsSL https://app.opentag.build/install.sh | sh otc_abc123";
 const LABELS = {
   copiedLabel: "Command copied",

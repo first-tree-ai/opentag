@@ -27,6 +27,7 @@ export type DiscoverProps = {
   agentId: string;
   agentName: string;
   mounted: MCPAgentServer[];
+  oauthSessions?: Record<string, McpOAuthSession>;
   onClose: () => void;
   onAdded: (entry: MCPAgentServer, catalog: McpInstallableCatalogEntry, server?: MCPServer) => void;
   initialContext?: McpReturnContext;
@@ -42,6 +43,13 @@ export function useMcpDiscoverState(props: DiscoverProps) {
   const definitions = useMcpInstallationDefinitions(props.mounted, props.initialContext?.serverId);
   const servers = definitions.servers;
   const servedCatalog = useMcpCatalogEntries();
+  const externalPending: Record<string, { serverId: string; oauth: McpOAuthSession }> = {};
+  for (const binding of props.mounted) {
+    const oauth = props.oauthSessions?.[binding.mcpServerId];
+    if (!oauth?.phase) continue;
+    const catalog = findCatalogEntryByUrl(binding.effective.url, servedCatalog.entries);
+    if (catalog) externalPending[catalog.id] = { serverId: binding.mcpServerId, oauth };
+  }
   // A card may still change its endpoint until the deployment's catalog endpoints have loaded.
   const loading = definitions.isPending || servedCatalog.isPending;
   const create = useCreateMcpServer(props.agentId);
@@ -56,7 +64,7 @@ export function useMcpDiscoverState(props: DiscoverProps) {
   const [keySetups, setKeySetups] = useState<Record<string, Setup>>({});
   const keySetup = Object.values(keySetups)[0];
   const getSession = useMcpOAuthSessions(props.agentId);
-  const busy = restoring || Object.keys(pending).length > 0;
+  const busy = restoring || Object.keys(pending).length > 0 || Object.keys(externalPending).length > 0;
   const sameTab = window.matchMedia("(max-width: 640px)").matches;
   const catalogBusy = restoring || (sameTab && busy);
   const keyBusy = Boolean(keySetup && pending[keySetup.catalog.id]);
@@ -218,6 +226,7 @@ export function useMcpDiscoverState(props: DiscoverProps) {
     return (
       restoring ||
       inFlight.current.has(id) ||
+      Boolean(externalPending[id]) ||
       (window.matchMedia("(max-width: 640px)").matches && inFlight.current.size > 0)
     );
   }
@@ -296,6 +305,12 @@ export function useMcpDiscoverState(props: DiscoverProps) {
     }
   }
   const { feedback, connections } = discoverPresentation(pending, failures, created.current, getSession);
+  const shownPending = { ...pending };
+  for (const [id, { serverId, oauth }] of Object.entries(externalPending)) {
+    shownPending[id] = { action: "connect", checking: oauth.phase === "checking", serverId };
+    feedback[id] = discoverFeedback(id, false, oauth);
+    connections[serverId] = { pending: true, oauth };
+  }
   return {
     definitions,
     catalog: servedCatalog,
@@ -305,7 +320,7 @@ export function useMcpDiscoverState(props: DiscoverProps) {
     busy,
     keyBusy,
     catalogBusy,
-    pending,
+    pending: shownPending,
     keySetup,
     feedback,
     connections,

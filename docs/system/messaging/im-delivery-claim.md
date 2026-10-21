@@ -32,6 +32,60 @@ the existing claim marker or recovery lease. Each scan attempts at most eight su
 Pending ingress expiry uses the database clock, as before. The existing dispatch, steer, receipt,
 report, cancellation, retry, and timeout state transitions still apply.
 
+## Runtime budget and accepted recovery
+
+Message retention is an ingress deadline, not an execution budget. A Local or Cloud Client Turn
+uses the explicit `runtime.budget.maxDurationMs`, or the existing 30-minute default when it is
+absent, then takes the smaller of that budget and the remaining message deadline. An explicit
+budget may exceed the default. An already expired request produces a timeout report without
+starting the Provider, with `executionEffects: not_started`. Execution and Slack activity use the
+same budget calculation; a running Provider must still honor abort and complete its native cleanup
+before the Client can report. A Client upgrade does not change an already running Turn's timer.
+
+For accepted Local custody, a reconcile response does not settle the delivery. `busy`, `running`,
+`reporting`, `recovery_required`, and `rejected` are recorded as distinct deferred status codes.
+`ready` and `stopped` without a recorded report mean `IM_DELIVERY_RECOVERY_AWAITING_REPORT`.
+`busy`, `running`, and `reporting` keep the operation span's `deferred` outcome and retry metric
+without emitting an error diagnostic. Transport failures, `rejected`, `recovery_required`, and
+unreported `ready`/`stopped` responses remain diagnostic. The stopped reconciliation used here
+returns `busy / active_turn` for live activity; `running` and `reporting` are handled defensively,
+not observed from this request shape.
+These responses and reconcile transport failures use the existing capped exponential schedule:
+2, 4, 8, 16, then 30 seconds, based on the post-claim attempt count. A retry update applies only
+while the delivery is still accepted, unreported, and at that attempt; a late report or newer
+attempt wins. The response never fabricates a report, expires accepted custody, or dispatches
+the input again. Only the actual report settles custody.
+
+An accepted target without a recorded terminal report retains its steered children and their
+target identity. Error codes, expired retry backoff, an offline Computer, and an ended Session
+do not prove that execution ended and cannot requeue those children. Existing error diagnostics
+remain available for investigation. Reconnecting the same report owner can settle the original
+Turn through the existing report identity and ownership checks.
+
+A recorded `completed` report keeps the children steered. Recording a valid `failed`, `cancelled`,
+or `unknown` report requeues them once in the same transaction; replaying the report cannot requeue
+them again. The janitor can recover children of an already recorded non-completed report or an
+explicitly disposed target. A missing report can therefore retain custody indefinitely, including
+after Session closure. Abandonment and ownership fencing require a separate policy; maintenance
+does not synthesize a terminal report.
+
+Non-completed report recovery locks the target and steered children's Sessions in ID order with
+`FOR NO KEY UPDATE` before acquiring placement and delivery locks. It rechecks report identity,
+placement generation, ownership, and child state under the existing locks. Completed reports keep
+their existing path. The janitor first selects a bounded, unlocked set of eligible target IDs.
+It processes each target in its own short transaction: take that target's Session locks with
+`SKIP LOCKED`, lock and recheck the target, recover its children, then commit before taking the next
+target's locks. This releases unrelated Session locks before recovery can rebuild an ended Session
+and acquire the existing binding foreign-key lock. Busy Sessions or targets wait for another sweep.
+Earlier targets remain committed if a later target fails; subsequent sweeps use the same state
+predicates to resume idempotently. Session locks remain compatible with foreign-key `KEY SHARE`;
+recovery does not upgrade them to `FOR UPDATE`. Report persistence and its child recovery still
+commit or roll back together, without automatically retrying deadlocked transactions.
+
+`busy / active_turn` can include report custody. An empty retained-report manifest does not prove
+that the Client has no report on disk: live activity can prevent recovery from enumerating it.
+Offline Computer retry and final-abandonment policy are separate from this response backoff.
+
 Undispatched Cloud inputs retain provider order within a Session, including an earlier input in
 retry backoff or locked by another worker. A narrow `LATERAL` lookup reads each pending input's
 message by primary key and lets PostgreSQL order the message fields. A persisted dispatch or claim

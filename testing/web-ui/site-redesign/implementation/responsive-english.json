@@ -1,0 +1,38 @@
+[
+  {
+    "mainScroll": 320,
+    "mainWidth": 320,
+    "scroll": 320,
+    "width": 320
+  },
+  {
+    "mainScroll": 390,
+    "mainWidth": 390,
+    "scroll": 390,
+    "width": 390
+  },
+  {
+    "mainScroll": 640,
+    "mainWidth": 640,
+    "scroll": 640,
+    "width": 640
+  },
+  {
+    "mainScroll": 568,
+    "mainWidth": 568,
+    "scroll": 768,
+    "width": 768
+  },
+  {
+    "mainScroll": 750,
+    "mainWidth": 750,
+    "scroll": 950,
+    "width": 950
+  },
+  {
+    "mainScroll": 1200,
+    "mainWidth": 1200,
+    "scroll": 1440,
+    "width": 1440
+  }
+]

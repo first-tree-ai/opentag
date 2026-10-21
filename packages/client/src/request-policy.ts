@@ -125,10 +125,10 @@ export function statusFallback(status: number): {
     return { code: "VALIDATION_ERROR", category: "deterministic", message: "The request conflicts with current state" };
   }
   if (status === 429) {
-    return { code: "RATE_LIMITED", category: "rate_limit", message: "The OpenTag server rate limit was reached" };
+    return { code: "RATE_LIMITED", category: "rate_limit", message: "The openTag server rate limit was reached" };
   }
   if (status >= 500) {
-    return { code: "SERVICE_UNAVAILABLE", category: "transient", message: "The OpenTag server is unavailable" };
+    return { code: "SERVICE_UNAVAILABLE", category: "transient", message: "The openTag server is unavailable" };
   }
   if (status === 401 || status === 403) {
     return { code: "AUTH_INVALID_TOKEN", category: "credential", message: "Authentication failed" };
@@ -167,7 +167,7 @@ export function prepareRequest(init: RequestInit, options: RequestOptions, defau
   else callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
   timer = setTimeout(() => {
     abortReason = "deadline";
-    controller.abort(new Error(`OpenTag request deadline exceeded after ${timeoutMs}ms`));
+    controller.abort(new Error(`openTag request deadline exceeded after ${timeoutMs}ms`));
   }, timeoutMs);
   const headers = new Headers(init.headers);
   if (!headers.has(REQUEST_ID_HEADER)) headers.set(REQUEST_ID_HEADER, requestId);

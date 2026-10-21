@@ -100,14 +100,14 @@ describe("computer connect", () => {
   it("presents an unauthenticated Computer list as a clean non-zero command result", async () => {
     const listSpy = vi
       .spyOn(computerQueries, "listComputers")
-      .mockRejectedValue(new Error("OpenTag is not logged in; run login first"));
+      .mockRejectedValue(new Error("openTag is not logged in; run login first"));
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     const previousExitCode = process.exitCode;
     process.exitCode = undefined;
     try {
       await createProgram().parseAsync(["node", "opentag", "computer", "list"]);
       expect(process.exitCode).toBe(1);
-      expect(stderr).toHaveBeenCalledWith(expect.stringContaining("OpenTag is not logged in; run login first"));
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining("openTag is not logged in; run login first"));
       expect(stderr).not.toHaveBeenCalledWith(expect.stringContaining("at listComputers"));
     } finally {
       process.exitCode = previousExitCode;
@@ -151,7 +151,7 @@ describe("computer connect", () => {
 
   it("requires Account login before listing Computers", async () => {
     const home = await temporaryHome();
-    await expect(listComputers(home)).rejects.toThrow("OpenTag is not logged in; run login first");
+    await expect(listComputers(home)).rejects.toThrow("openTag is not logged in; run login first");
   });
 
   it("explains how to finish Account login after Computer onboarding", async () => {

@@ -71,7 +71,7 @@ export function formatFeishuSetup(attempt: FeishuSetupAttempt): string {
     `errorCode\t${attempt.errorCode ?? "-"}`,
     ...(attempt.activation
       ? [
-          `authorization\tSaved; OpenTag will connect automatically when requirements are ready. No new scan is needed.`,
+          `authorization\tSaved; openTag will connect automatically when requirements are ready. No new scan is needed.`,
           `appId\t${attempt.activation.appId}`,
           `waitingFor\t${activationReason(attempt.activation.reason)}`,
           `missingScopes\t${attempt.activation.missingScopes.join(",") || "-"}`,

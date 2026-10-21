@@ -8,6 +8,7 @@ import {
   type RuntimeImDeliveryContent,
   type RuntimeImSteerRequest,
   RuntimeImSteerRequestSchema,
+  type SessionReconcileResult,
 } from "@opentag/shared";
 import { and, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
@@ -79,6 +80,20 @@ const DEFAULT_INTERVAL_MS = 500;
 const RETRY_DELAY_MS = 2_000;
 const CLAIM_LEASE_MS = 15_000;
 const CLAIM_RENEW_MS = 5_000;
+const RECOVERY_RETRY_CODES: Record<SessionReconcileResult["status"], string> = {
+  ready: "IM_DELIVERY_RECOVERY_AWAITING_REPORT",
+  stopped: "IM_DELIVERY_RECOVERY_AWAITING_REPORT",
+  running: "IM_DELIVERY_RECOVERY_RUNNING",
+  reporting: "IM_DELIVERY_RECOVERY_REPORTING",
+  busy: "IM_DELIVERY_RECOVERY_BUSY",
+  recovery_required: "IM_DELIVERY_RECOVERY_REQUIRED",
+  rejected: "IM_DELIVERY_RECOVERY_REJECTED",
+};
+const EXPECTED_RECOVERY_CODES = new Set([
+  RECOVERY_RETRY_CODES.busy,
+  RECOVERY_RETRY_CODES.running,
+  RECOVERY_RETRY_CODES.reporting,
+]);
 function positiveWorkerLimit(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive safe integer`);
   return value;
@@ -1032,7 +1047,7 @@ export class ImDeliveryWorker {
     }
     if (!(await this.#validateRecoveryPayload(row, deliveryId))) return;
     try {
-      await this.#domain.requestReconcile(row.computer.id, instanceId, {
+      const result = await this.#domain.requestReconcile(row.computer.id, instanceId, {
         type: "session:reconcile",
         requestId: randomUUID(),
         installationId: row.computer.currentInstallationId,
@@ -1042,10 +1057,30 @@ export class ImDeliveryWorker {
         // Accepted work must settle before applying any snapshot, including after an upgrade.
         desired: "stopped",
       });
-      setActiveSpanAttributes(outcomeAttrs("recovered"));
+      await this.#deferRecovery(deliveryId, row.delivery.attemptCount, RECOVERY_RETRY_CODES[result.status]);
     } catch {
-      await this.#recordFailure(deliveryId, "IM_DELIVERY_RECOVERY_FAILED");
+      await this.#deferRecovery(deliveryId, row.delivery.attemptCount, "IM_DELIVERY_RECOVERY_FAILED");
     }
+  }
+
+  /** A reconcile response is not a report; preserve custody until the actual report settles it. */
+  async #deferRecovery(deliveryId: string, attemptCount: number, code: string): Promise<void> {
+    const [updated] = await this.#database
+      .update(imMessageDeliveries)
+      .set({ lastErrorCode: code, nextAttemptAt: new Date(this.#now() + cappedRetryDelayMs(attemptCount)) })
+      .where(
+        and(
+          eq(imMessageDeliveries.id, deliveryId),
+          eq(imMessageDeliveries.state, "accepted"),
+          isNull(imMessageDeliveries.reportedAt),
+          eq(imMessageDeliveries.attemptCount, attemptCount),
+        ),
+      )
+      .returning({ id: imMessageDeliveries.id });
+    if (!updated) return;
+    setActiveSpanAttributes(outcomeAttrs("deferred", code));
+    if (!EXPECTED_RECOVERY_CODES.has(code)) this.#onDiagnostic(code);
+    this.#onMetric({ name: "retry", value: 1 });
   }
 
   /** Verify the original dispatch identity without preparing new business or rewriting old hashes. */

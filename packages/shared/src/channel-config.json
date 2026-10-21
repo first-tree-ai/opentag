@@ -3,21 +3,21 @@
     "binName": "opentag-dev",
     "defaultHomeDirectory": ".opentag-dev",
     "defaultServerUrl": "http://127.0.0.1:8000",
-    "displayName": "OpenTag Dev",
+    "displayName": "openTag Dev",
     "packageName": "open-tag",
     "serviceId": "opentag-dev"
   },
   "staging": {
     "binName": "opentag-staging",
     "defaultHomeDirectory": ".opentag-staging",
-    "displayName": "OpenTag Staging",
+    "displayName": "openTag Staging",
     "packageName": "open-tag-staging",
     "serviceId": "opentag-staging"
   },
   "prod": {
     "binName": "opentag",
     "defaultHomeDirectory": ".opentag",
-    "displayName": "OpenTag",
+    "displayName": "openTag",
     "packageName": "open-tag",
     "serviceId": "opentag"
   }

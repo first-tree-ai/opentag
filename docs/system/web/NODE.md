@@ -1,15 +1,18 @@
 ---
 title: "Web App"
-description: "Web UI contract, Computer and Skill surfaces, internationalization, and analytics of the OpenTag Web App."
+description: "Design guide, Web UI contract, Computer and Skill surfaces, internationalization, and analytics of the openTag Web App."
 ---
 
 # Web App
 
 The Web App is the owner's management surface for Agents, Computers, and their
-capabilities. Visual rules live in the repository's
-[design guide](https://github.com/first-tree-ai/opentag/blob/main/design.md).
+capabilities. Its design guide and UI contract define visual direction and
+application behavior together.
 
 ## Pages
+
+- **[openTag design guide](design.md)** — shared visual rules and website
+  references, with application implementation ownership made explicit.
 
 - **[Web UI contract](web-ui-contract.md)** — composition rules and
   acceptance criteria for product UI.

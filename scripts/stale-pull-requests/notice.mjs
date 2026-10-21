@@ -28,7 +28,7 @@ export function renderNotice({ idleDays, warnAfterDays, closeAfterDays, exemptLa
   return `${NOTICE_MARKER}
 ${renderMentions(mentions)}this pull request has had no activity for ${idleDays} day(s).
 
-OpenTag closes pull requests after **${closeAfterDays} days** without activity, so this one is scheduled to close in about ${remainingDays} day(s). Any of these resets the clock:
+openTag closes pull requests after **${closeAfterDays} days** without activity, so this one is scheduled to close in about ${remainingDays} day(s). Any of these resets the clock:
 
 - push a commit
 - leave a comment

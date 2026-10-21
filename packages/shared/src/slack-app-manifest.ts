@@ -14,7 +14,7 @@ export function slackBotDisplayName(agentId: string, displayName: string): strin
 export function slackAppCreationManifest(agentId: string, displayName: string) {
   return {
     _metadata: { major_version: 1, minor_version: 3 },
-    display_information: { name: [...displayName].slice(0, 35).join("") || "OpenTag Agent" },
+    display_information: { name: [...displayName].slice(0, 35).join("") || "openTag Agent" },
     features: {
       bot_user: { display_name: slackBotDisplayName(agentId, displayName), always_online: false },
       app_home: { home_tab_enabled: false, messages_tab_enabled: true, messages_tab_read_only_enabled: false },

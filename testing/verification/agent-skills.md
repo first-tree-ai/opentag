@@ -30,8 +30,50 @@ The Server and Web lanes add the coverage those layers owe:
 | `packages/server/src/__tests__/skill-object-prefix.test.ts` | The bound key matcher (exact match, extra namespace segment, different prefix with a valid tail, a string-prefix of the first segment, malformed tail) and the normalizer (leading/trailing/repeated slashes, empty and all-slash rejected, traversal rejected) |
 | `packages/server/src/__tests__/skill-preset-service.test.ts` | Per-Agent preset state, install/update semantics and provenance on both install surfaces over a real `SkillService`, and that a user upload landing between the catalog read and the preset write survives — the preset replaces only the row it read |
 | `packages/server/src/__tests__/integration/skills-api.test.ts` | The account lifecycle and Computer manifest over real HTTP and PostgreSQL, with the bundle headers |
+| `packages/server/src/__tests__/integration/skill-object-write-concurrency.test.ts` | Actual PostgreSQL writes with a local object-store fixture: a GC DELETE already past its final reference check, a losing writer's cleanup DELETE finishing after another successful same-content replacement, concurrent identical replacements, and legacy hash-key reads and collection. Each race verifies the current bundle's actual bytes and hash after deletion completes |
 | `apps/web/src/features/skills/*.test.ts(x)` | The error-code map is exhaustive over the contract, an upload/toggle revision conflict reports the new sentence without opening the Replace dialog, and every other page rule |
+
+## Physical object identity regressions
+
+The object-write concurrency suite pauses only external DELETE completion or a real conditional SQL
+update. It does not simulate the losing writer's revision conflict: a separate connection commits a
+newer revision first. Both formerly destructive schedules must leave the current archive readable
+after the delayed DELETE completes, even when its bytes match an earlier upload.
+
+Identical replacements use independent keys while retaining one current row, the revision CAS,
+enabled state, source, and archive hash. Legacy content-hash filenames are seeded as existing objects:
+they remain readable and protected while referenced, then become ordinary GC candidates after a
+replacement. The unit lifecycle, exact-prefix, remote/preset install, and local HTTP S3-adapter suites
+cover rollback cleanup, uncertain commits, HEAD restoration, source routing, hash signing and namespace
+isolation. No live S3/GCS or production state is needed. Older writers in a mixed deployment remain
+outside the independent-key guarantee; no historical missing object is repaired by these tests.
 
 The remaining end-to-end path is owned by the Client lane: upload a Skill through each of the three
 surfaces and observe a Local Computer materialize it into the provider's skill directory at runtime
 start.
+
+
+## Concurrent final admission
+
+`integration/skills-api.test.ts` drives actual SkillService account and Agent entry points on
+independent migrated PostgreSQL connections. A barrier after both real object PUTs forces both
+uploads to pass the old 63-row fast check. Exactly one distinct-name upload succeeds, the other
+returns `SKILL_LIMIT_REACHED`, and both the runtime schema and authenticated Computer API return
+64 Skills. The same-name case retains `SKILL_NAME_CONFLICT`; replacing at capacity preserves
+id/revision CAS, source and disabled state. A separate check counts disabled Skills toward admission.
+The PUT barrier also permits an independent Agent row lock, proving storage does not hold it.
+
+Actual Agent deletion and operator transfer during PUT reject stale final admission and remove the
+unreferenced object. A real SQL trigger verifies rollback cleanup; lost commit acknowledgement and
+an unreadable cleanup recheck preserve committed objects and downloadable archives. The unit object
+lifecycle harness injects failures into the actual admission transaction, including after commit.
+All storage and credentials are fixtures. Existing historical over-limit rows are neither collected
+nor hidden by manifest truncation; this validation does not measure production prevalence.
+
+
+The final combined capability-write checks passed on Node 24.20.0: 691 script tests, 10,098 package
+tests, Runtime coverage (650 tests, all metrics 100%) and migrated PostgreSQL (64 files, 901 tests).
+Changed-line coverage was 101/101 (100%). See the
+[shared validation record](mcp-server-integration.md#module-07-local-validation--2026-10-20)
+for the initial PostgreSQL timeouts and unchanged-source/configuration reruns. These checks do not
+establish production data prevalence or live acceptance.

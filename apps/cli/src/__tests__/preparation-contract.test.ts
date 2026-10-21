@@ -527,7 +527,7 @@ describe("F6 shared preparation matrix, CLI boundary", () => {
     // verify command is the idempotent read-only runtime-inspect.
     expect(runtime.nextAction?.command).toBeUndefined();
     expect(runtime.nextAction?.instruction).toBe(
-      "Install and sign in to the Codex CLI yourself (OpenTag never installs Runtime CLIs), then run the verify command.",
+      "Install and sign in to the Codex CLI yourself (openTag never installs Runtime CLIs), then run the verify command.",
     );
     expect(runtime.verifyAction?.command).toContain("computer runtime-inspect --provider codex");
     const jsonText = JSON.stringify(preparation.components);
@@ -603,10 +603,10 @@ describe("F6 shared preparation matrix, CLI boundary", () => {
     if (!lark) throw new Error("missing lark row");
     expect(lark.status).toBe("checking");
     expect(lark.blocking).toBe(true);
-    expect(lark.message).toContain("owned by another OpenTag process");
+    expect(lark.message).toContain("owned by another openTag process");
     const humanRun = await run(scenario, false);
     expect(humanRun.stderr).toContain("[im-cli:lark] checking (blocking)");
-    expect(humanRun.stderr).toContain("owned by another OpenTag process");
+    expect(humanRun.stderr).toContain("owned by another openTag process");
   });
 
   it("skips only the daemon when --no-start is real and prints idempotent install and status commands", async () => {

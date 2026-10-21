@@ -7,7 +7,7 @@ import {
 
 /**
  * Deterministic in-memory double of `SkillObjectStore` with the contract semantics the tests rely
- * on: content-addressed keys, exact-byte reads, and typed `SkillObjectStoreError` failures so the
+ * on: independent object keys, exact-byte reads, and typed `SkillObjectStoreError` failures so the
  * service's error mapping and best-effort cleanup paths are exercised for real. Instrumented with
  * call counters and injectable failures.
  */

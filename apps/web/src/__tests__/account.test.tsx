@@ -118,7 +118,7 @@ describe("OpenTag Web App Shell", () => {
 
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toBe(
-      "Your display name was saved. OpenTag could not refresh the account, so the rest of the page still shows the previous name.",
+      "Your display name was saved. openTag could not refresh the account, so the rest of the page still shows the previous name.",
     );
     // The write committed, so the page must not offer to repeat it, must not offer to discard it,
     // and must not describe the saved value as unsaved.
@@ -248,7 +248,7 @@ describe("OpenTag Web App Shell", () => {
     await expectPreparationGate();
     expect(window.location.pathname).toBe("/agents/setup");
     expect(window.location.search).toBe(`?agentId=${agentId}`);
-    expect(screen.queryByRole("heading", { name: "OpenTag is not ready for this account" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "openTag is not ready for this account" })).toBeNull();
   });
 
   it("keeps standalone Agent Setup reachable for an Account without completed admission", async () => {
@@ -329,7 +329,7 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Connect your computer" })).toBeTruthy();
-    expect(screen.getByText("Reviewer runs on your computer; messages and results pass through OpenTag.")).toBeTruthy();
+    expect(screen.getByText("Reviewer runs on your computer; messages and results pass through openTag.")).toBeTruthy();
     expect(screen.getByText("No computer connected")).toBeTruthy();
     expect(window.location.pathname).toBe("/agents/setup");
 
@@ -354,7 +354,7 @@ describe("OpenTag Web App Shell", () => {
     // nothing whether or not the shell rendered.
     expect(screen.queryByRole("complementary", { name: "Primary navigation" })).toBeNull();
     expect(screen.queryByRole("link", { name: "All Agents" })).toBeNull();
-    expect(screen.queryAllByRole("link", { name: "OpenTag" })).toHaveLength(0);
+    expect(screen.queryAllByRole("link", { name: "openTag" })).toHaveLength(0);
   });
 
   it("resolves a completed Account's target when Agent Setup is requested directly", async () => {
@@ -419,7 +419,7 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("button", { name: "Save account profile" })).toBeTruthy();
     const { menu: accountMenu } = await openAccountMenu();
     fireEvent.click(within(accountMenu).getByRole("menuitem", { name: "Sign out" }));
-    expect(await screen.findByRole("heading", { name: "Sign in to OpenTag" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign in to openTag" })).toBeTruthy();
     expect(vi.mocked(fetch)).toHaveBeenCalledWith(
       "/api/v1/auth/browser/logout",
       expect.objectContaining({ method: "POST" }),
@@ -449,7 +449,7 @@ describe("OpenTag Web App Shell", () => {
     await act(async () => {
       releaseMe(json({ error: { message: "Sign in required" } }, 401));
     });
-    expect(await screen.findByRole("heading", { name: "Sign in to OpenTag" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign in to openTag" })).toBeTruthy();
   });
 
   it("discards an Account refresh that outlived the session that started it", async () => {
@@ -500,7 +500,7 @@ describe("OpenTag Web App Shell", () => {
     await act(async () => {
       releaseMe(json({ error: { message: "Sign in required" } }, 401));
     });
-    expect(await screen.findByRole("heading", { name: "Sign in to OpenTag" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign in to openTag" })).toBeTruthy();
   });
 
   it("opens the Computers page from the account menu", async () => {

@@ -1,13 +1,13 @@
 ---
 title: "Server observability"
-description: "Optional OpenTelemetry tracing, the logging vocabulary, and what is and is not exported."
+description: "Optional OpenTelemetry tracing, the logging vocabulary, what is and is not exported, and the production alerts and log pipeline on Google Cloud."
 ---
 
 # Server observability
 
-OpenTag Server can export optional OpenTelemetry traces through OTLP/HTTP. The implementation is disabled by default and covers provider connections, IM ingress, durable delivery, and Runtime lifecycle boundaries.
+openTag Server can export optional OpenTelemetry traces through OTLP/HTTP. The implementation is disabled by default and covers provider connections, IM ingress, durable delivery, and Runtime lifecycle boundaries.
 
-Tracing is not log shipping. Pino continues to write server logs to stdout, and this feature does not upload all stdout logs to Logfire. Logfire receives spans, span attributes, and bounded exception events only.
+Tracing is not log shipping. Pino continues to write server logs to stdout, and this feature does not upload all stdout logs to Logfire. Logfire receives spans, span attributes, and bounded exception events only. A separate path does ship stdout logs: production forwards `WARNING` and above to Cloud Logging. See [Production monitoring on Google Cloud](#production-monitoring-on-google-cloud).
 
 Failures that happen in the Web App or the CLI rather than on the server travel a separate path: the server relays them to Google Cloud Error Reporting. See [Client error reporting](error-reporting.md).
 
@@ -78,7 +78,7 @@ For CapRover, add the four values as app environment variables and mark the head
 
 The endpoint and attribute vocabulary remain OTLP-oriented. Logfire is the currently documented backend, but collectors using an API key, tenant headers, non-Bearer authorization, or a custom trace path are also supported. Malformed or duplicate header entries fail server startup without echoing their values.
 
-The server owns an explicit OpenTelemetry trace provider and OTLP exporter. Only the canonical Fastify instrumentation and OpenTag's explicit business spans are accepted. Logfire's automatic process exception reporting and Node auto-instrumentations are not installed, so Pino records, PostgreSQL queries, outbound transports, and arbitrary process errors cannot bypass the telemetry scrubber.
+The server owns an explicit OpenTelemetry trace provider and OTLP exporter. Only the canonical Fastify instrumentation and openTag's explicit business spans are accepted. Logfire's automatic process exception reporting and Node auto-instrumentations are not installed, so Pino records, PostgreSQL queries, outbound transports, and arbitrary process errors cannot bypass the telemetry scrubber.
 
 ## What is traced
 
@@ -164,11 +164,64 @@ opentag agent im diagnose <agent-id>
 Then query traces for the incident time window:
 
 1. Filter `feishu.connection.connect`, `feishu.connection.transition`, and `feishu.connection.error` by `opentag.im.binding.id`. Confirm that a current replica connected and did not enter a reconnect or credential failure loop.
-2. Search for `im.inbound.process` with the same binding. Its presence proves the OpenTag SDK callback ran; its error code separates admission, normalization, fencing, and persistence failures.
+2. Search for `im.inbound.process` with the same binding. Its presence proves the openTag SDK callback ran; its error code separates admission, normalization, fencing, and persistence failures.
 3. When persistence succeeded, follow `opentag.im.message.id` and `opentag.im.delivery.id` into `im.delivery.dispatch`, `runtime.reconcile`, `runtime.delivery`, and `runtime.report`.
-4. If the Agent ran but no reply appeared, inspect the Agent trace, the provider CLI result, and the Turn report's captured Lark outgoing-reply snapshot when present. OpenTag does not trace provider outbound writes; Task history may include bounded send receipts, which are not read receipts.
+4. If the Agent ran but no reply appeared, inspect the Agent trace, the provider CLI result, and the Turn report's captured Lark outgoing-reply snapshot when present. openTag does not trace provider outbound writes; Task history may include bounded send receipts, which are not read receipts.
 
-No `im.inbound.process` span means OpenTag did not observe the provider callback during the sampled window. It does not prove that Feishu delivered the event. Combine that negative evidence with `connection`, `lastInboundAt`, `providerCliReadiness`, granted scopes, and Feishu event-subscription state.
+No `im.inbound.process` span means openTag did not observe the provider callback during the sampled window. It does not prove that Feishu delivered the event. Combine that negative evidence with `connection`, `lastInboundAt`, `providerCliReadiness`, granted scopes, and Feishu event-subscription state.
+
+## Production monitoring on Google Cloud
+
+The production Server runs on one Compute Engine VM with a dedicated Cloud SQL instance, both in the production Google
+Cloud project. This page states the reusable parts only: the policy thresholds, the probe choice, and the log pipeline.
+The repository is public, so it does not carry the project, VM, or instance names; read those from the Cloud Monitoring
+console. Cloud Monitoring watches the Server from outside and through the platform metrics:
+
+| Signal | Policy | Threshold | Notifies |
+| --- | --- | --- | --- |
+| Uptime check on `https://app.opentag.build/readyz`, content must contain `"status":"ready"`, every 60 s from four regions | Production down | Fails from more than one region for 3 minutes | Email and SMS |
+| Same uptime check, certificate lifetime | TLS certificate expiry | Less than 14 days left | Email |
+| Cloud SQL disk utilization | Database disk | Above 80% for 10 minutes | Email and DB alert email |
+| Cloud SQL memory utilization | Database memory | Above 90% for 10 minutes | Email and DB alert email |
+| Cloud SQL CPU utilization | Database CPU | Above 50% for 5 minutes | Email, SMS, and DB alert email |
+| Production VM CPU utilization | VM CPU | Above 85% for 10 minutes | Email |
+| VM memory used (Ops Agent) | VM memory | Above 90% for 10 minutes | Email |
+| VM root disk `/dev/sda1` used (Ops Agent) | VM root disk | Above 85% for 10 minutes | Email |
+| Server log at `CRITICAL` (Pino `fatal`); no server code emits it yet, see Known gaps | Fatal log | Any entry; at most one notice per 10 minutes | Email and SMS |
+| Server log at `ERROR` or above, other than `IM_DELIVERY_RUNTIME_UNAVAILABLE` | New error type | Any entry; at most one notice per 30 minutes | Email |
+
+`/readyz` is the probe target because it answers `503` until bootstrap readiness has completed all four stages
+(`configuration`, `migration`, `application`, `listen`), and again whenever the database probe fails. `/healthz` only
+proves that the process is up. The check needs no credential.
+
+### Server logs in Cloud Logging
+
+The Ops Agent on the production VM tails the Docker `json-file` logs under `/var/lib/docker/containers/` and writes the
+log `opentag_server`. Each line is a Docker wrapper around a Pino line, so the pipeline unwraps both layers. Pino writes
+`level` as a number, which the agent's `map_values` cannot match, so a regex first captures it as a string and then maps
+`40`, `50`, and `60` to `WARNING`, `ERROR`, and `CRITICAL`. The agent keeps only `WARNING` and above, and drops `info`
+lines and the CapRover nginx lines before upload, which keeps volume low and keeps routine resource identifiers on the
+host. Entries carry the label `service=opentag-server`. The agent config is `/etc/google-cloud-ops-agent/config.yaml`.
+
+- `exclude_logs` rejects `<` comparisons and panics the logging sub-agent at start, so the filter uses a regex on
+  `severity`. Validate any edit before restarting with
+  `google_cloud_ops_agent_engine -service=fluentbit -in <file> -logs <dir> -state <dir>`.
+- The agent reads new lines only. A restart does not replay older logs.
+- `IM_DELIVERY_RUNTIME_UNAVAILABLE` is excluded from the new-error alert because it fires continuously. Remove the
+  exclusion once its cause is fixed, so that its return is visible.
+- The agent collects host metrics only. The Docker engine metrics endpoint that the staging VM scrapes needs a Docker
+  daemon restart, which restarts the Server container, so it is not enabled on production.
+
+Known gaps:
+
+- Staging is not probed. It is publicly reachable on its own public URL, so this is a missing uptime check rather than a
+  reachability limit.
+- A crash produces no `fatal` line. Nothing in the Server calls `.fatal(` and no `uncaughtException` or
+  `unhandledRejection` handler is installed, so Node prints a plain-text stack that carries no Pino `level`. The
+  severity filter cannot match that line, so it never reaches Cloud Logging. A crash is therefore visible only as an
+  uptime-check failure, and a crash that restarts faster than the 3-minute threshold is invisible. Install a
+  process-level `fatal` log before relying on the `CRITICAL` policy.
+- The Server is a single VM, so a VM outage also stops its own logs; the uptime check covers that case.
 
 ## Sampling and limits
 

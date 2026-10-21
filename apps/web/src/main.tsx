@@ -14,7 +14,7 @@ import * as m from "./paraglide/messages.js";
 configureLocaleRuntime();
 applyDocumentLocale();
 const root = document.getElementById("root");
-if (!root) throw new Error("OpenTag root element is missing");
+if (!root) throw new Error("openTag root element is missing");
 // Finish a popup before mounting account navigation or reporting intentionally aborted lazy loads.
 const callbackAgent = /^\/agents\/([^/]+)\/mcp\/?$/.exec(window.location.pathname)?.[1];
 const popupReturn = callbackAgent ? readMcpOAuthWindowReturn(callbackAgent) : undefined;

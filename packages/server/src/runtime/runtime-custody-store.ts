@@ -20,7 +20,7 @@ import {
 } from "../db/schema/index.js";
 import { finishSlackWorkingTurn } from "../services/im/slack-working-store.js";
 import { SessionService } from "../services/sessions/session-service.js";
-import { requeueSteeredDeliveries } from "./im-delivery-recovery.js";
+import { lockSteeredRecoverySessions, requeueSteeredDeliveries } from "./im-delivery-recovery.js";
 import type { RuntimeCustodyStoreDispatchRelease } from "./runtime-custody-store.types.js";
 import type { RuntimeBusinessContext } from "./runtime-session.js";
 
@@ -488,6 +488,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
     context: RuntimeBusinessContext,
   ): Promise<TurnReportResult["status"] | undefined> {
     return this.#database.transaction(async (transaction) => {
+      if (report.outcome !== "completed") await lockSteeredRecoverySessions(transaction, [report.deliveryId]);
       const scope = await this.#deliveryScope(transaction, report.deliveryId);
       if (!scope) return undefined;
       if (!recordTurnIdentityMatches(scope, report)) return "conflict";

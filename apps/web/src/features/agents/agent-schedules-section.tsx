@@ -105,7 +105,7 @@ export function AgentSchedulesSection({ agentId, scheduleId }: { agentId: string
 
   return (
     <section
-      className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+      className="grid gap-4 ui-surface bg-kumo-base p-6 max-[640px]:p-5 ring ring-kumo-line"
       aria-label={m.agents_schedules_title()}
     >
       <Text as="h2" size="lg" variant="heading">

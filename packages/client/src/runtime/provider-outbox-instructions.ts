@@ -8,25 +8,38 @@ export interface ProviderOutboxInstructionOptions {
 }
 
 export function buildProviderOutboxInstructions(options: ProviderOutboxInstructionOptions): readonly string[] {
+  const cli = options.provider === "feishu" ? "lark-cli" : "slack api";
+  return [
+    `Only the official ${cli} CLI delivers messages to the IM participant; all ordinary output, including final text, is the OpenTag runtime console.`,
+    options.actionInstruction,
+    `${options.targetLabel}: ${JSON.stringify(options.target)}`,
+  ];
+}
+
+export function renderProviderOutboxGuidance(): readonly string[] {
   return [
     'Who reads your output: inside OpenTag, the "user" your underlying agent addresses — the reader of everything you produce apart from running a provider CLI command, including the text that closes this Turn — is the OpenTag runtime. This is your runtime console; ordinary output is not delivered to the IM participant.',
-    options.provider === "feishu"
-      ? "The IM participant is a separate audience. The official lark-cli CLI is your outbox and the only path from this Turn to that audience."
-      : "The IM participant is a separate audience. The official slack api CLI is your outbox and the only path from this Turn to that audience.",
+    "Follow the CLI guidance for the provider named in the current Turn's provider reference or default outbox context.",
     "The console addresses OpenTag; running the provider CLI performs the provider action. Describing a reply, reaction, or proactive message in your output only records it in OpenTag; it does not deliver it.",
-    options.actionInstruction,
-    options.provider === "feishu"
-      ? "To write to this Feishu conversation, run lark-cli directly. The launcher loads this Turn's credentials automatically; do not source $OPENTAG_PROVIDER_ENV_FILE before ordinary CLI commands."
-      : "To write to this Slack conversation, run the official slack api CLI directly. The launcher loads this Turn's credentials automatically; do not source $OPENTAG_PROVIDER_ENV_FILE before ordinary CLI commands.",
-    ...providerBodyInstructions(options.provider),
-    ...providerAttachmentInstructions(options.provider),
     "Pass message bodies as quoted literal arguments or JSON. Plain CLI commands may be chained or piped to head, tail, cat, echo, printf, jq, wc, or stat, with sleep for rate limits; each command retains its own native permission check. Avoid shell variables, command substitutions, redirects, and heredocs for ordinary messaging commands.",
     "OpenTag has no hosted message send, reply, or reaction tool, and you do not report provider send results to OpenTag.",
-
-    "Use the provider-native identifiers below. Do not substitute an OpenTag Session or message ID.",
+    "The current Turn supplies provider-native identifiers. Do not substitute an OpenTag Session or message ID.",
     "If a provider result is unknown, query the provider before deciding whether to retry.",
-    `${options.targetLabel}: ${JSON.stringify(options.target)}`,
-    `For version-specific commands and native formats, run ${options.provider === "feishu" ? "lark-cli im --help" : "slack api --help"}.`,
+    "Incoming attachments are references, not downloaded files. Read them only when the task needs them. Run the provider CLI directly; the launcher loads this Turn's credentials automatically. Never print credentials or the environment file.",
+    "The source message and attachment IDs are provider-native. If the input is truncated or an older Server supplied only OpenTag resource ordinals, query the original provider message to discover its resources. A message readback can reflect later edits; do not present it as the frozen historical version.",
+    "A failed attachment read does not authorize replaying the Turn or repeating a send. Report deleted, inaccessible, unsupported, or unreadable content accurately; do not invent its contents.",
+    ...(["slack", "feishu"] as const).flatMap((provider) => [
+      provider === "slack" ? "### Slack" : "### Feishu/Lark",
+      provider === "feishu"
+        ? "The IM participant is a separate audience. The official lark-cli CLI is your outbox and the only path from this Turn to that audience."
+        : "The IM participant is a separate audience. The official slack api CLI is your outbox and the only path from this Turn to that audience.",
+      provider === "feishu"
+        ? "To write to this Feishu conversation, run lark-cli directly. The launcher loads this Turn's credentials automatically; do not source $OPENTAG_PROVIDER_ENV_FILE before ordinary CLI commands."
+        : "To write to this Slack conversation, run the official slack api CLI directly. The launcher loads this Turn's credentials automatically; do not source $OPENTAG_PROVIDER_ENV_FILE before ordinary CLI commands.",
+      ...providerBodyInstructions(provider),
+      ...providerAttachmentInstructions(provider),
+      `For version-specific commands and native formats, run ${provider === "feishu" ? "lark-cli im --help" : "slack api --help"}.`,
+    ]),
   ];
 }
 
@@ -68,14 +81,8 @@ export const GITHUB_NATIVE_CLI_INSTRUCTIONS =
 
 /** On-demand reads support both default Local credentials and the Cloud credential proxy. */
 function providerAttachmentInstructions(provider: ProviderOutboxProvider): readonly string[] {
-  const common = [
-    "Incoming attachments are references, not downloaded files. Read them only when the task needs them. Run the provider CLI directly; the launcher loads this Turn's credentials automatically. Never print credentials or the environment file.",
-    "The source message and attachment IDs are provider-native. If the input is truncated or an older Server supplied only OpenTag resource ordinals, query the original provider message to discover its resources. A message readback can reflect later edits; do not present it as the frozen historical version.",
-    "A failed attachment read does not authorize replaying the Turn or repeating a send. Report deleted, inaccessible, unsupported, or unreadable content accurately; do not invent its contents.",
-  ];
   if (provider === "slack")
     return [
-      ...common,
       "For a Slack file_id, run `slack api files.info --data 'file=F...'`. Check ok, then download url_private_download (or url_private) to a workspace file using the matching credential path below. files.info returns metadata, not file bytes. URL-encode parameter values, including spaces, &, and Unicode. Use conversations.history with channelId and messageTs for source messages, or conversations.replies with channelId and threadTs for a thread.",
       "For raw attachment requests, run `printenv OPENTAG_PROVIDER_ENV_FILE`, then `rg '^export OPENTAG_(PROVIDER_(PROXY_URL|CA_PATH)|SLACK_DOWNLOAD_CONFIG)=' '<returned path>'` to read only nonsecret routing/config paths. Do not read the download config, source the environment, add authorization headers, or use shell substitutions.",
       "When proxy URL and CA are present, use literal values in `curl https://slack.com --request-target '/__opentag__/handles/<id>' --proxy '<proxy URL>' --cacert '<CA path>' --noproxy '' --fail --silent --show-error`. Copy the handle path from upload_url, url_private, or url_private_download. Upload with --request POST --data-binary @<file>; download with --output <file>.",
@@ -83,7 +90,6 @@ function providerAttachmentInstructions(provider: ProviderOutboxProvider): reado
       "Private download handles and Turn configs expire. Re-query files.info once if expired; retry only the read. Do not poll or bulk-fetch unrelated messages.",
     ];
   return [
-    ...common,
     "For Feishu/Lark attachments, run `lark-cli im +messages-resources-download --message-id <messageId> --file-key <key> --type image|file --as bot --output ./attachment.bin`. Use image for image_key, file for files/audio/video file_key, and a workspace-relative output path. The video body and cover have different keys. Use `lark-cli im --help` for source-message reads in the installed version; retain the configured bot identity and do not log in interactively.",
   ];
 }

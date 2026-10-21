@@ -7,7 +7,7 @@ description: "Runtime protocol v2 version layers, capability negotiation, and co
 
 ## Scope
 
-Runtime protocol v2 removes the release-time dependency between the OpenTag Client and Server. It keeps the existing v1 dialect and its separately negotiated Provider-readiness extension frozen for rolling upgrades, then adds capability negotiation plus a per-connection fence. Domain delivery, Turn, and Session idempotency remain owned by their existing request identities and hashes.
+Runtime protocol v2 removes the release-time dependency between the openTag Client and Server. It keeps the existing v1 dialect and its separately negotiated Provider-readiness extension frozen for rolling upgrades, then adds capability negotiation plus a per-connection fence. Domain delivery, Turn, and Session idempotency remain owned by their existing request identities and hashes.
 
 This phase does not add durable drain state, a minimum secure Client release policy, or a persistent generic request ledger.
 
@@ -90,7 +90,7 @@ model. The Server rechecks Agent placement before returning the response.
 | --- | --- | --- |
 | Web query result | Browser memory, keyed by `agentId`, `computerId`, provider, and model | Fresh for 30 seconds; a visible model page polls every 30 seconds; focus and reconnect request again; signing out clears the cache |
 | Server request | In-memory pending map, keyed by a random `requestId` and fenced by `computerId` and `instanceId` | Removed on completion, cancellation, or timeout; no model catalog is persisted |
-| Native provider catalog | Owned by the CLI and its local provider configuration | Provider-specific; OpenTag does not clear or persist this cache |
+| Native provider catalog | Owned by the CLI and its local provider configuration | Provider-specific; openTag does not clear or persist this cache |
 | Saved model and effort | PostgreSQL `agent_runtime_configs`, keyed by `agent_id` | Written only when configuration is saved, with an expected-revision check |
 
 The HTTP response uses `Cache-Control: no-store`. The model page updates automatically

@@ -290,7 +290,7 @@ export function AgentTasksSection({ agentId }: { agentId: string }) {
 
   return (
     <section
-      className="grid gap-4 ui-surface bg-kumo-base p-4 ring ring-kumo-line"
+      className="grid gap-4 ui-surface bg-kumo-base p-6 max-[640px]:p-5 ring ring-kumo-line"
       aria-labelledby="agent-tasks-heading"
       data-ui="agent-tasks"
     >

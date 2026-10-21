@@ -219,8 +219,8 @@ export function renderDoctorReport(report: DoctorReport): string {
   ).length;
   const baselineSummary =
     blockingFailures === 0
-      ? "Baseline checks passed for this OpenTag Home."
-      : `${blockingFailures} blocking baseline check(s) failed for this OpenTag Home.`;
+      ? "Baseline checks passed for this openTag Home."
+      : `${blockingFailures} blocking baseline check(s) failed for this openTag Home.`;
   const providerSummary =
     report.providerCliSetup === "ready"
       ? "Lark and Slack CLIs are ready."
@@ -228,10 +228,10 @@ export function renderDoctorReport(report: DoctorReport): string {
         ? "Lark and Slack CLI readiness could not be fully inspected."
         : "At least one messaging CLI still needs attention.";
   const lines = [
-    "OpenTag Doctor",
+    "openTag Doctor",
     "",
     "Target",
-    `  - OpenTag Home: ${report.target.home} (${report.target.homeSource === "environment" ? "environment" : "channel default"})`,
+    `  - openTag Home: ${report.target.home} (${report.target.homeSource === "environment" ? "environment" : "channel default"})`,
     `  - CLI: ${report.target.cliVersion}, ${report.target.channel}, ${report.target.platform} ${report.target.arch}, Node.js ${report.target.nodeVersion}`,
   ];
   for (const [heading, scope] of [
@@ -265,7 +265,7 @@ function targetCheck(target: DoctorTarget): DoctorCheck {
     scope: "target",
     status: "info",
     blocking: false,
-    label: "OpenTag Home",
+    label: "openTag Home",
     detail: target.home,
     path: target.home,
     observedFrom: target.homeSource,
@@ -316,7 +316,7 @@ function localCheck(code: string, label: string, status: "pass" | "fail" | "unkn
     detail,
     ...(status === "fail"
       ? {
-          remediation: `Review this OpenTag Home and run '${channelConfig.binName} connect' with a valid connect code`,
+          remediation: `Review this openTag Home and run '${channelConfig.binName} connect' with a valid connect code`,
         }
       : {}),
   };
@@ -346,7 +346,7 @@ function daemonCheck(result: PromiseSettledResult<DaemonServiceInfo>, home: stri
     info.drifted === false &&
     info.runtimeOwner?.consistency === "consistent";
   const detail = passed
-    ? `active for this OpenTag Home; logs: ${info.logHint}`
+    ? `active for this openTag Home; logs: ${info.logHint}`
     : `${daemonFailureDetail(info, sameHome)}; logs: ${info.logHint}`;
   return {
     code: "daemon.service",
@@ -364,7 +364,7 @@ function daemonCheck(result: PromiseSettledResult<DaemonServiceInfo>, home: stri
 function daemonFailureDetail(info: DaemonServiceInfo, sameHome: boolean): string {
   if (info.platform === "unsupported") return "unsupported on this platform";
   if (info.state !== "active") return info.detail ? `${info.state} (${truncate(info.detail)})` : info.state;
-  if (!sameHome) return "active for a different or unverifiable OpenTag Home";
+  if (!sameHome) return "active for a different or unverifiable openTag Home";
   if (info.drifted !== false) return "service definition is drifted or unverifiable";
   if (info.runtimeOwner?.consistency !== "consistent") {
     return `runtime owner is ${info.runtimeOwner?.consistency ?? "unverified"}`;

@@ -433,7 +433,7 @@ test("removing a shared GitHub account requires confirmation before the mutation
   const dialog = page.getByRole("dialog", { name: "Remove GitHub account?" });
   await expect(dialog).toBeVisible();
   await expect(dialog).toContainText("All your Agents will lose GitHub access through @octocat");
-  await expect(dialog).toContainText("uninstall the OpenTag App");
+  await expect(dialog).toContainText("uninstall the openTag App");
   await expect(dialog.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
   expect(fixture.disconnectCalls, "No shared authorization should be removed before confirmation").toBe(0);
   await expectAccessible(page);
@@ -499,7 +499,7 @@ test("GitHub help and cancelled removal preserve the unsaved display-name draft"
   await displayName.fill(draft);
   await page.getByRole("button", { name: "About GitHub repository access" }).click();
   const help = page.getByRole("dialog", { name: "About GitHub repository access" });
-  await expect(help.getByText(/Install or configure the OpenTag App on GitHub/)).toBeVisible();
+  await expect(help.getByText(/Install or configure the openTag App on GitHub/)).toBeVisible();
   await expect(help.getByText(/All your Agents share this repository access/)).toBeVisible();
   await expect(help.getByText(/contact an organization administrator if you don't have permission/)).toBeVisible();
   await page.keyboard.press("Escape");
@@ -543,7 +543,7 @@ test("Chinese GitHub management keeps identity, help and confirmation usable at 
   await page.addInitScript(() => localStorage.setItem("PARAGLIDE_LOCALE", "zh"));
   await page.goto("/account", { waitUntil: "networkidle" });
   const github = page.locator('[data-ui="account-github"]');
-  await expect(github.getByText("授权 GitHub 账户，并允许 OpenTag 访问所需仓库。", { exact: true })).toBeVisible();
+  await expect(github.getByText("授权 GitHub 账户，并允许 openTag 访问所需仓库。", { exact: true })).toBeVisible();
   for (const width of [1440, 320]) {
     await page.setViewportSize({ width, height: 900 });
     await expect(github.getByText("@octocat", { exact: true })).toBeVisible();
@@ -553,14 +553,14 @@ test("Chinese GitHub management keeps identity, help and confirmation usable at 
   }
   await github.getByRole("button", { name: "了解 GitHub 仓库访问" }).click();
   const help = page.getByRole("dialog", { name: "了解 GitHub 仓库访问" });
-  await expect(help.getByText(/如果你没有权限安装或配置 OpenTag App，请联系组织管理员/)).toBeVisible();
+  await expect(help.getByText(/如果你没有权限安装或配置 openTag App，请联系组织管理员/)).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(help).toBeHidden();
   await expect(page.getByRole("button", { name: "更换账户", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "移除账户", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "移除 GitHub 账户？" });
   await expect(dialog).toBeVisible();
-  await expect(dialog).toContainText("不会卸载 OpenTag App");
+  await expect(dialog).toContainText("不会卸载 openTag App");
   await expect(dialog.getByRole("button", { name: "取消", exact: true })).toBeFocused();
   await expectDialogReady(dialog);
   await expectAccessible(page);

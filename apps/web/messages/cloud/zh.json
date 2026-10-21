@@ -1,5 +1,5 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
-  "cloud_computer_managed": "运行于 OpenTag Cloud，由平台托管",
+  "cloud_computer_managed": "运行于 openTag Cloud，由平台托管",
   "cloud_progress_save_failed": "部分执行进展未能保存，最新更改可能无法在下次执行时恢复。"
 }

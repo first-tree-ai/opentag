@@ -1,0 +1,169 @@
+/* openTag design foundation v1. Semantic values are the public API. */
+:root {
+  --ot-blue-50: #edf5ff;
+  --ot-blue-200: #c9dffc;
+  --ot-blue-500: #2563e0;
+  --ot-blue-700: #2563e0;
+  --supporting: var(--ot-blue-500);
+  --supporting-foreground: var(--ot-gray-0);
+  --supporting-subtle: var(--ot-blue-50);
+  --supporting-text: var(--ot-blue-700);
+  --supporting-border: var(--ot-blue-200);
+  --slack-search: #8d619c;
+  --border-table: #dce0e6;
+  --border-subtle: #e5e8ed;
+  --text-strong-secondary: #34383e;
+  --surface-neutral-faint: #f8f9fb;
+  --surface-card-muted: var(--surface-hover);
+  --surface-footer: var(--surface-selected);
+  --ot-green-500: #00cbb4;
+  --ot-green-600: #00b69f;
+  --ot-green-700: #007f70;
+  --ot-green-50: #e6faf6;
+  --ot-gray-0: #ffffff;
+  --ot-gray-50: #fafafa;
+  --ot-gray-100: #f4f5f7;
+  --ot-gray-200: #e9ebef;
+  --ot-gray-500: #7d8187;
+  --ot-gray-600: #6b6e75;
+  --ot-gray-900: #25282d;
+  --background: var(--ot-gray-0);
+  --foreground: var(--ot-gray-900);
+  --popover: var(--ot-gray-0);
+  --popover-foreground: var(--foreground);
+  --card: var(--ot-gray-0);
+  --card-foreground: var(--foreground);
+  --primary: var(--ot-green-500);
+  --primary-foreground: var(--foreground);
+  --primary-hover: var(--ot-green-600);
+  --secondary: var(--ot-gray-100);
+  --secondary-foreground: var(--foreground);
+  --muted: var(--ot-gray-100);
+  --muted-foreground: var(--ot-gray-600);
+  --accent: var(--ot-green-50);
+  --accent-foreground: var(--ot-green-700);
+  --border: var(--ot-gray-200);
+  --input: #c6cbd1;
+  --ring: var(--ot-green-700);
+  --destructive: #e5502e;
+  --success: #007f70;
+  --warning: #e5502e;
+  --surface-page: var(--background);
+  --surface-subtle: var(--muted);
+  --surface-selected: #eef0f3;
+  --text-selected: var(--foreground);
+  --text-primary: var(--foreground);
+  --text-secondary: var(--muted-foreground);
+  --text-link: var(--supporting-text);
+  --font-sans: Manrope, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+  --icon-size: 18px;
+  --status-dot-size: 6px;
+  --select-min-width: 144px;
+  --select-max-height: 280px;
+  --text-xs: 12px;
+  --text-sm: 14px;
+  --text-base: 16px;
+  --text-lg: 20px;
+  --text-title: 32px;
+  --text-display: 42px;
+  --leading-body: 1.5;
+  --leading-heading: 1.2;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-card: 16px;
+  --radius-full: 9999px;
+  --radius: 10px;
+  --control-height: 40px;
+  --control-height-sm: 32px;
+  --control-height-lg: 48px;
+  --shadow-panel: 0 16px 36px -20px rgba(53, 36, 61, 0.18);
+  --disabled-opacity: 0.45;
+  --motion-fast: 120ms;
+  --motion-normal: 200ms;
+  --slack-topbar: #6f3a82;
+  --slack-sidebar: #894b94;
+  --slack-selected: #caa3d2;
+  --slack-selected-text: #44005c;
+  --lark-sidebar: #f7f7fa;
+  --lark-selected: #e2edfe;
+  --lark-avatar: #d4d9e2;
+  --lark-avatar-selected: #c9daf2;
+}
+[data-surface="product"] {
+  --surface-page: var(--ot-gray-50);
+}
+:root {
+  --avatar-background: #dce1e8;
+  --avatar-foreground: #344155;
+  --avatar-border: #cdd4de;
+}
+/* Neutral interaction family: hover < selected < visible focus. */
+:root {
+  --surface-hover: #f4f5f7;
+  --surface-selected: #eef0f3;
+  --ring: #697586;
+}
+
+/* Marketing layout roles: measured between visible content, outside product UI. */
+:root {
+  --space-section: 96px;
+  --space-section-heading: 32px;
+  --space-hero-top: 48px;
+  --comparison-mascot-width: 176px;
+  --closing-mascot-width: 500px;
+  --closing-mascot-height: 280px;
+}
+@media (max-width: 800px) {
+  :root {
+    --space-section: 64px;
+    --space-section-heading: 24px;
+    --space-hero-top: 24px;
+    --closing-mascot-width: 300px;
+    --closing-mascot-height: 184px;
+  }
+}
+
+/* Marketing accents and mascot geometry; independent of product UI states. */
+:root {
+  --comparison-header: var(--slack-sidebar);
+  --comparison-header-featured: var(--slack-topbar);
+  --comparison-header-text: var(--ot-gray-0);
+  --trust-ink: #414147;
+  --trust-label-width: 192px;
+  --agent-circle-size: 144px;
+  --agent-upcoming-size: calc(var(--agent-circle-size) * 0.4);
+  --agent-lounge-width: calc(var(--agent-circle-size) * 1.35);
+  --agent-cat-clearance: calc(var(--agent-circle-size) * 0.6);
+  --faq-mascot-width: 128px;
+}
+@media (max-width: 1000px) {
+  :root {
+    --agent-circle-size: 128px;
+  }
+}
+@media (max-width: 800px) {
+  :root {
+    --faq-mascot-width: 96px;
+  }
+}
+
+/* Editorial measures for the blog: comfortable long-form reading and restrained art. */
+:root {
+  --blog-reading-width: 720px;
+  --blog-surface: #f1ebff;
+  --blog-art-width: 280px;
+  --blog-leading: 1.8;
+}

@@ -1,7 +1,7 @@
-# OpenTag 开发指南
+# openTag 开发指南
 
 > 权威来源：[DEVELOPMENT.md](./DEVELOPMENT.md)
-> 同步日期：2026-10-09
+> 同步日期：2026-10-20
 
 ## 从源码在本地运行
 
@@ -9,7 +9,7 @@
 支持 Compose 的 Docker，以及已登录的 Codex 或 Claude Code CLI。保持 Docker 运行，
 并在已克隆仓库的根目录执行以下命令。
 
-### 1. 安装 OpenTag
+### 1. 安装 openTag
 
 ```bash
 ./scripts/dev-install.sh

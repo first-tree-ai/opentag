@@ -953,6 +953,9 @@ describe("SessionRuntimeManager", () => {
     });
     await restartedManager.ensureRuntime("session-1");
     expect(restartedFactory.resumed).toEqual([binding("thread-2")]);
+    expect(restartedFactory.resumedRequests[0]?.systemPrompt).toContain("slack api chat.postMessage --json");
+    expect(restartedFactory.resumedRequests[0]?.systemPrompt).toContain("messages-resources-download");
+    expect(restartedFactory.resumedRequests[0]?.systemPrompt).toContain("GitHub integration, when enabled");
 
     await expect(
       restarted.reconcile({ ...upgraded, requestId: randomUUID(), desired: "stopped", runtime: undefined }),
@@ -1563,6 +1566,7 @@ class FakeFactory implements AgentRuntimeFactory {
   };
   readonly created: CreateAgentRuntimeRequest[] = [];
   readonly resumed: AgentRuntimeBinding[] = [];
+  readonly resumedRequests: ResumeAgentRuntimeRequest[] = [];
   readonly runtimes: FakeRuntime[] = [];
   readonly #withoutBinding: boolean;
   readonly #closeGate?: Promise<void>;
@@ -1598,6 +1602,7 @@ class FakeFactory implements AgentRuntimeFactory {
 
   async resume(request: ResumeAgentRuntimeRequest): Promise<AgentRuntime> {
     this.resumed.push(request.binding);
+    this.resumedRequests.push(request);
     return this.#open(request, request.binding);
   }
 

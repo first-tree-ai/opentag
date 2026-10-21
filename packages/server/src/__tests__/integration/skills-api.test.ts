@@ -12,18 +12,20 @@ import {
   ListAgentSkillsResponseSchema,
   ListSkillPresetsResponseSchema,
   RUNTIME_SKILL_PRESETS_PATH,
+  RuntimeSkillManifestSchema,
   runtimeSkillPresetInstallPath,
   SESSION_CLI_PROOF_HEADER,
   SKILL_FORMAT_HEADER,
+  SKILL_MAX_PER_AGENT,
   SKILL_SHA256_HEADER,
   SKILL_UPLOAD_CONTENT_TYPE,
   SkillDetailSchema,
 } from "@opentag/shared";
 import { SKILL_PRESETS } from "@opentag/skill-presets";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createApp } from "../../app.js";
-import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
+import { createDatabaseClient, type DatabaseClient, type DatabaseTransaction } from "../../db/client.js";
 import { AgentService } from "../../services/agents/index.js";
 import type { UserAuthService } from "../../services/auth/index.js";
 import { MachineAuthService } from "../../services/computers/index.js";
@@ -31,6 +33,7 @@ import { SessionCliProofError, type SessionCliProofService } from "../../service
 import { SkillPresetService, SkillService } from "../../services/skills/index.js";
 import { RemoteSkillService } from "../../services/skills/source/remote-skill-service.js";
 import { SkillSourceFetcher } from "../../services/skills/source/source-fetcher.js";
+import { deferred } from "../support/deferred.js";
 import { FakeSkillObjectStore } from "../support/fake-skill-object-store.js";
 import { skillManifest, tarGz } from "../support/skill-archive-fixtures.js";
 import { staticTransport } from "../support/skill-source-fixtures.js";
@@ -522,3 +525,187 @@ describe("preset Skill surfaces", () => {
     expect(row?.source).toBe("preset");
   }, 60_000);
 });
+
+async function skillInput(name: string, replace = false) {
+  const bytes = await tarGz([{ name: "SKILL.md", body: skillManifest(name) }]);
+  return { bytes, declaredSha256: sha256(bytes), format: "tar.gz" as const, replace, source: "web_upload" as const };
+}
+
+describe("Skill admission across PostgreSQL connections", () => {
+  it.each(["distinct names", "same name"] as const)(
+    "admits one final slot with %s and keeps the Computer manifest valid",
+    async (kind) => {
+      const h = await boot();
+      const clients = [0, 1].map(() => createDatabaseClient(databaseUrl, { max: 1 }));
+      clients.forEach((client) => {
+        openPools.push(client.sql);
+      });
+      const services = clients.map(
+        (client) => new SkillService({ database: client.database, store: h.store, keyPrefix: "skills" }),
+      );
+      const service = services[0];
+      if (!service) throw new Error("Missing upload service");
+      for (let i = 0; i < SKILL_MAX_PER_AGENT - 1; i++) {
+        await service.upload(h.accountId, h.agentId, await skillInput(`seed-${i}`));
+      }
+      const ready = deferred(),
+        resume = deferred();
+      const put = h.store.put.bind(h.store);
+      let arrivals = 0;
+      const paused = vi.spyOn(h.store, "put").mockImplementation(async (...args) => {
+        await put(...args);
+        if (++arrivals === 2) ready.resolve();
+        await resume.promise;
+      });
+      const names = kind === "same name" ? ["last-slot", "last-slot"] : ["last-slot-a", "last-slot-b"];
+      const inputs = await Promise.all(names.map((name) => skillInput(name)));
+      const pending = Promise.allSettled(
+        services.map((writer, index) => {
+          const input = inputs[index];
+          if (!input) throw new Error("Missing upload input");
+          return index === 0 ? writer.upload(h.accountId, h.agentId, input) : writer.uploadForAgent(h.agentId, input);
+        }),
+      );
+      try {
+        await vi.waitFor(() => expect(arrivals).toBe(2), { timeout: 5_000 });
+        await ready.promise;
+        await h.sql.begin(async (sql) => {
+          await sql`select id from agents where id = ${h.agentId} for update nowait`;
+        });
+      } finally {
+        resume.resolve();
+        await pending;
+        paused.mockRestore();
+      }
+      const results = await pending;
+      const successes = results.filter((result) => result.status === "fulfilled");
+      const failures = results.filter((result) => result.status === "rejected");
+      expect(successes).toHaveLength(1);
+      expect(failures.map((result) => result.reason.code)).toEqual([
+        kind === "same name" ? "SKILL_NAME_CONFLICT" : "SKILL_LIMIT_REACHED",
+      ]);
+      expect((await service.list(h.accountId, h.agentId)).skills).toHaveLength(SKILL_MAX_PER_AGENT);
+      expect(h.store.keys()).toHaveLength(SKILL_MAX_PER_AGENT);
+      expect(h.store.deletes).toBe(1);
+      const manifest = await service.manifestForComputer(h.computerId, h.agentId);
+      expect(RuntimeSkillManifestSchema.parse(manifest).skills).toHaveLength(SKILL_MAX_PER_AGENT);
+      const response = await h.app.inject({
+        method: "GET",
+        url: COMPUTER_AGENT_SKILLS_TEMPLATE.replace(":agentId", h.agentId),
+        headers: { authorization: `Bearer ${h.machineToken}` },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(RuntimeSkillManifestSchema.parse(response.json()).skills).toHaveLength(SKILL_MAX_PER_AGENT);
+      const winner = successes[0];
+      if (winner?.status !== "fulfilled") throw new Error("Missing admitted Skill");
+      await service.setEnabled(h.accountId, h.agentId, winner.value.id, false);
+      const replaced = await service.upload(h.accountId, h.agentId, await skillInput(winner.value.name, true));
+      expect(replaced).toMatchObject({ id: winner.value.id, revision: 2, enabled: false, source: "web_upload" });
+      expect((await service.list(h.accountId, h.agentId)).skills).toHaveLength(SKILL_MAX_PER_AGENT);
+    },
+    30_000,
+  );
+
+  it("counts disabled Skills toward admission without writing an object", async () => {
+    const h = await boot();
+    for (let i = 0; i < SKILL_MAX_PER_AGENT; i++) await seededRow(h.sql, h.agentId, `seed-${i}`);
+    await h.sql`update agent_skills set enabled = false where agent_id = ${h.agentId}`;
+    const service = new SkillService({ database: h.database, store: h.store, keyPrefix: "skills" });
+    await expect(service.upload(h.accountId, h.agentId, await skillInput("over-limit"))).rejects.toMatchObject({
+      code: "SKILL_LIMIT_REACHED",
+    });
+    expect(h.store.puts).toBe(0);
+    expect((await service.manifestForComputer(h.computerId, h.agentId)).skills).toHaveLength(0);
+  });
+});
+
+it.each(["deleted", "transferred"] as const)("rechecks the Agent after PUT when it was %s", async (operation) => {
+  const h = await boot();
+  const uploadClient = createDatabaseClient(databaseUrl, { max: 1 });
+  openPools.push(uploadClient.sql);
+  const service = new SkillService({ database: uploadClient.database, store: h.store, keyPrefix: "skills" });
+  const resume = deferred();
+  const put = h.store.put.bind(h.store);
+  const pause = vi.fn(async (...args: Parameters<FakeSkillObjectStore["put"]>) => {
+    await put(...args);
+    await resume.promise;
+  });
+  vi.spyOn(h.store, "put").mockImplementationOnce(pause);
+  const pending = Promise.allSettled([service.upload(h.accountId, h.agentId, await skillInput("retired-owner"))]);
+  try {
+    await vi.waitFor(() => expect(h.store.keys()).toHaveLength(1));
+    const lifecycle = new AgentService(h.database);
+    await lifecycle.suspendById(h.accountId, h.agentId);
+    if (operation === "deleted") await lifecycle.deleteById(h.accountId, h.agentId);
+    else {
+      const accountId = randomUUID();
+      await h.sql`insert into users (id, email, display_name) values (${accountId}, ${`${accountId}@example.test`}, 'New owner')`;
+      await lifecycle.transferToAccount({ agentId: h.agentId, targetAccountId: accountId, slack: "disable" });
+    }
+  } finally {
+    resume.resolve();
+  }
+  expect(await pending).toMatchObject([{ status: "rejected", reason: { code: "SKILL_NOT_FOUND" } }]);
+  expect(await h.sql`select id from agent_skills where agent_id = ${h.agentId}`).toHaveLength(0);
+  expect(h.store.keys()).toHaveLength(0);
+});
+
+it.each(["rollback", "commit acknowledgement lost", "commit and cleanup read lost"] as const)(
+  "preserves object references after %s during admission",
+  async (failure) => {
+    const h = await boot();
+    let committed = false;
+    const database =
+      failure === "rollback"
+        ? h.database
+        : new Proxy(h.database, {
+            get(target, key) {
+              if (key === "transaction")
+                return async (run: (transaction: DatabaseTransaction) => Promise<unknown>) => {
+                  await target.transaction(run);
+                  committed = true;
+                  throw new Error("Synthetic commit acknowledgement lost");
+                };
+              if (key === "select" && committed && failure === "commit and cleanup read lost")
+                return () => {
+                  throw new Error("Synthetic cleanup read lost");
+                };
+              const value = Reflect.get(target, key);
+              return typeof value === "function" ? value.bind(target) : value;
+            },
+          });
+    if (failure === "rollback") {
+      await h.sql.unsafe(
+        "create function fail_skill_admission() returns trigger language plpgsql as $$ begin raise exception 'synthetic insert failure' using errcode='40001'; end $$",
+      );
+      await h.sql.unsafe(
+        "create trigger fail_skill_admission before insert on agent_skills for each row execute function fail_skill_admission()",
+      );
+    }
+    const service = new SkillService({ database, store: h.store, keyPrefix: "skills" });
+    try {
+      await expect(service.upload(h.accountId, h.agentId, await skillInput("uncertain-upload"))).rejects.toBeDefined();
+    } finally {
+      if (failure === "rollback") {
+        await h.sql.unsafe("drop trigger fail_skill_admission on agent_skills");
+        await h.sql.unsafe("drop function fail_skill_admission()");
+      }
+    }
+    const fresh = new SkillService({ database: h.database, store: h.store, keyPrefix: "skills" });
+    const listed = await fresh.list(h.accountId, h.agentId);
+    if (failure === "rollback") {
+      expect(listed.skills).toHaveLength(0);
+      expect(h.store.keys()).toHaveLength(0);
+      expect(h.store.deletes).toBe(1);
+    } else {
+      expect(listed.skills).toHaveLength(1);
+      expect(h.store.keys()).toHaveLength(1);
+      expect(h.store.deletes).toBe(0);
+      const skill = listed.skills[0];
+      if (!skill) throw new Error("Missing committed Skill");
+      const bundle = await fresh.openBundle(h.accountId, h.agentId, skill.id);
+      expect(bundle.sha256).toBe(skill.archiveSha256);
+      expect(sha256(new Uint8Array(await new Response(bundle.stream).arrayBuffer()))).toBe(skill.archiveSha256);
+    }
+  },
+);

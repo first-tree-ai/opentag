@@ -11,6 +11,7 @@ import {
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { agents, computerConnectCodes, computerCredentials, computers } from "../../db/schema/index.js";
+import type { ServiceLogger } from "../../observability/service-logger.js";
 import { AuthServiceError, generateSecret, hashSecret } from "../auth/index.js";
 import { lockActiveAccount } from "./account-lock.js";
 import { uniqueConstraintName } from "./pg-errors.js";
@@ -20,6 +21,7 @@ const COMPUTER_CONNECT_CODE_PREFIX = "otcc_";
 const TARGETED_CONNECT_CODE_RANDOM_BYTES = 16;
 const TARGETED_CONNECT_CODE_PAYLOAD_BYTES = 16 + TARGETED_CONNECT_CODE_RANDOM_BYTES;
 const MACHINE_TOKEN_PREFIX = "otmc_";
+const CREDENTIAL_ROTATION_CLOSE_TIMEOUT_MS = 1_000;
 const SAFE_SHELL_ARG_PATTERN = /^[A-Za-z0-9_@%+=:,./-]+$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const LEGACY_TARGETED_CONNECT_CODE_PATTERN =
@@ -80,20 +82,27 @@ export interface ComputerAuthVerifier {
 
 export interface MachineAuthServiceOptions {
   now?: () => Date;
-  onCredentialRotated?: (computerId: string) => Promise<void> | void;
+  onCredentialRotated?: (computerId: string, revokedCredentialIds: readonly string[]) => Promise<void> | void;
+  logger?: ServiceLogger;
 }
 
 type ConnectCodeRow = typeof computerConnectCodes.$inferSelect;
+type ConnectTargetAgent = Pick<
+  typeof agents.$inferSelect,
+  "computerId" | "createdByUserId" | "runtimeProvider" | "status"
+>;
 
 export class MachineAuthService implements ComputerAuthVerifier, MachineConnectCodeIssuer {
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
   readonly #onCredentialRotated?: MachineAuthServiceOptions["onCredentialRotated"];
+  readonly #logger?: ServiceLogger;
 
   constructor(database: DatabaseClient, options: MachineAuthServiceOptions = {}) {
     this.#database = database;
     this.#now = options.now ?? (() => new Date());
     this.#onCredentialRotated = options.onCredentialRotated;
+    this.#logger = options.logger;
   }
 
   async issueForAccount(
@@ -165,7 +174,7 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
   async exchangeConnectCode(input: ComputerConnectExchangeInput): Promise<ComputerConnectExchangeResult> {
     const clientSupportsRuntimeProvider = clientSupportsComputerRuntimeProvider(input.clientVersion);
     const tokenHash = hashSecret(input.code);
-    const result = await this.#database.transaction(async (transaction) => {
+    const { result, revokedCredentialIds } = await this.#database.transaction(async (transaction) => {
       // All access mutations lock Account before code and Computer. Read the immutable issuer first,
       // then re-read and validate under the code lock: disconnect/reset cannot race a redemption.
       const [issuer] = await transaction
@@ -192,18 +201,23 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
         throw invalidMachineCredential("AUTH_CODE_EXPIRED", "The Computer connect code has expired");
       }
 
+      const targetAgentId = targetAgentIdFromConnectCode(input.code);
+      const targetAgent = await lockConnectTargetAgent(transaction, targetAgentId);
       const computer =
         connectCode.mode === "repair"
           ? await this.#repairComputer(transaction, connectCode, input, now)
           : await this.#createComputer(transaction, connectCode, input, now);
-      const targetAgentId = targetAgentIdFromConnectCode(input.code);
-      const boundRuntimeProvider = await bindTargetAgentWhenTargeted(transaction, {
-        accountId: connectCode.issuedByAccountId,
-        agentId: targetAgentId,
-        computerId: computer.id,
-        mode: connectCode.mode,
-        now,
-      });
+      const boundRuntimeProvider = await bindTargetAgentWhenTargeted(
+        transaction,
+        {
+          accountId: connectCode.issuedByAccountId,
+          agentId: targetAgentId,
+          computerId: computer.id,
+          mode: connectCode.mode,
+          now,
+        },
+        targetAgent,
+      );
       const credential = await rotateComputerCredentials(transaction, computer.id, connectCode.issuedByAccountId, now);
       const [consumed] = await transaction
         .update(computerConnectCodes)
@@ -214,15 +228,42 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
         throw invalidMachineCredential("AUTH_CODE_CONSUMED", "The Computer connect code has already been used");
       }
       return {
-        ...targetedIdentityEvidence(targetAgentId, boundRuntimeProvider, clientSupportsRuntimeProvider),
-        credentialId: credential.id,
-        computerId: computer.id,
-        installationId: input.installationId,
-        machineToken: `${MACHINE_TOKEN_PREFIX}${credential.id}.${credential.secret}`,
+        revokedCredentialIds: credential.revokedCredentialIds,
+        result: {
+          ...targetedIdentityEvidence(targetAgentId, boundRuntimeProvider, clientSupportsRuntimeProvider),
+          credentialId: credential.id,
+          computerId: computer.id,
+          installationId: input.installationId,
+          machineToken: `${MACHINE_TOKEN_PREFIX}${credential.id}.${credential.secret}`,
+        },
       };
     });
-    await this.#onCredentialRotated?.(result.computerId);
+    await this.#closeRotatedConnection(result.computerId, revokedCredentialIds);
     return result;
+  }
+
+  async #closeRotatedConnection(computerId: string, revokedCredentialIds: readonly string[]): Promise<void> {
+    if (!this.#onCredentialRotated) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.resolve().then(() => this.#onCredentialRotated?.(computerId, revokedCredentialIds)),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("Connection close timed out")),
+            CREDENTIAL_ROTATION_CLOSE_TIMEOUT_MS,
+          );
+          timer.unref();
+        }),
+      ]);
+    } catch (error) {
+      this.#logger?.warn(
+        { computerId, errorType: error instanceof Error ? error.name : "UnknownError" },
+        "Connection close failed; Computer credentials remain rotated",
+      );
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   async verifyMachineToken(machineToken: string): Promise<ComputerAuthContext> {
@@ -269,6 +310,7 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
       targetAgentId?: string;
     },
   ): Promise<IssuedComputerConnectCode> {
+    const targetAgent = await lockConnectTargetAgent(transaction, input.targetAgentId);
     if (input.mode === "repair") {
       if (!input.targetComputerId) {
         throw new AuthServiceError("COMPUTER_NOT_FOUND", "deterministic", "The requested Computer was not found", 404);
@@ -279,9 +321,8 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
       }
     }
     if (input.targetAgentId) {
-      await assertConnectTargetAgent(transaction, {
+      assertConnectTargetAgent(targetAgent, {
         accountId: input.accountId,
-        agentId: input.targetAgentId,
         mode: input.mode,
         targetComputerId: input.targetComputerId,
       });
@@ -436,21 +477,14 @@ function uuidFromBytes(value: Uint8Array): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-async function assertConnectTargetAgent(
-  transaction: DatabaseTransaction,
+function assertConnectTargetAgent(
+  agent: ConnectTargetAgent | undefined,
   input: {
     accountId: string;
-    agentId: string;
     mode: ComputerConnectCodeMode;
     targetComputerId?: string;
   },
-): Promise<void> {
-  const [agent] = await transaction
-    .select({ computerId: agents.computerId, createdByUserId: agents.createdByUserId, status: agents.status })
-    .from(agents)
-    .where(eq(agents.id, input.agentId))
-    .limit(1)
-    .for("update");
+): void {
   if (!agent || agent.createdByUserId !== input.accountId || agent.status !== "active") {
     throw new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The requested resource was not found", 404);
   }
@@ -468,23 +502,23 @@ async function assertConnectTargetAgent(
   }
 }
 
-/**
- * Binds the Agent a targeted code names, when the code names one at all. An untargeted exchange
- * never touches the Agent row and therefore never yields a `runtimeProvider`.
- */
-async function bindTargetAgentWhenTargeted(
+async function lockConnectTargetAgent(
   transaction: DatabaseTransaction,
-  input: {
-    accountId: string;
-    agentId: string | undefined;
-    computerId: string;
-    mode: ComputerConnectCodeMode;
-    now: Date;
-  },
-): Promise<AgentRuntimeProvider | undefined> {
-  const { agentId, ...bindInput } = input;
+  agentId: string | undefined,
+): Promise<ConnectTargetAgent | undefined> {
   if (!agentId) return undefined;
-  return bindConnectTargetAgent(transaction, { ...bindInput, agentId });
+  const [agent] = await transaction
+    .select({
+      computerId: agents.computerId,
+      createdByUserId: agents.createdByUserId,
+      runtimeProvider: agents.runtimeProvider,
+      status: agents.status,
+    })
+    .from(agents)
+    .where(eq(agents.id, agentId))
+    .limit(1)
+    .for("update");
+  return agent;
 }
 
 /**
@@ -502,27 +536,18 @@ function targetedIdentityEvidence(
   };
 }
 
-async function bindConnectTargetAgent(
+async function bindTargetAgentWhenTargeted(
   transaction: DatabaseTransaction,
   input: {
     accountId: string;
-    agentId: string;
+    agentId: string | undefined;
     computerId: string;
     mode: ComputerConnectCodeMode;
     now: Date;
   },
-): Promise<AgentRuntimeProvider> {
-  const [agent] = await transaction
-    .select({
-      computerId: agents.computerId,
-      createdByUserId: agents.createdByUserId,
-      runtimeProvider: agents.runtimeProvider,
-      status: agents.status,
-    })
-    .from(agents)
-    .where(eq(agents.id, input.agentId))
-    .limit(1)
-    .for("update");
+  agent: ConnectTargetAgent | undefined,
+): Promise<AgentRuntimeProvider | undefined> {
+  if (!input.agentId) return undefined;
   const expectedComputerId = input.mode === "repair" ? input.computerId : null;
   if (
     !agent ||
@@ -532,7 +557,6 @@ async function bindConnectTargetAgent(
   ) {
     throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code target is no longer valid");
   }
-  // The row is already bound to the very Computer this repair names; the lock above is the check.
   if (agent.computerId === input.computerId) return agent.runtimeProvider;
   const [bound] = await transaction
     .update(agents)
@@ -564,7 +588,7 @@ async function rotateComputerCredentials(
   computerId: string,
   accountId: string,
   now: Date,
-): Promise<{ id: string; secret: string }> {
+): Promise<{ id: string; secret: string; revokedCredentialIds: string[] }> {
   const [computer] = await transaction
     .select({ id: computers.id })
     .from(computers)
@@ -573,10 +597,11 @@ async function rotateComputerCredentials(
   if (!computer) {
     throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
   }
-  await transaction
+  const revoked = await transaction
     .update(computerCredentials)
     .set({ revokedByUserId: accountId, revokedAt: now })
-    .where(and(eq(computerCredentials.computerId, computerId), isNull(computerCredentials.revokedAt)));
+    .where(and(eq(computerCredentials.computerId, computerId), isNull(computerCredentials.revokedAt)))
+    .returning({ id: computerCredentials.id });
   const credentialId = randomUUID();
   const secret = generateSecret(32);
   const secretHash = hashSecret(secret);
@@ -587,7 +612,7 @@ async function rotateComputerCredentials(
     issuedByUserId: accountId,
     issuedAt: now,
   });
-  return { id: credentialId, secret };
+  return { id: credentialId, secret, revokedCredentialIds: revoked.map((credential) => credential.id) };
 }
 
 function matchesSecretHash(expectedHash: string, secret: string): boolean {

@@ -50,7 +50,7 @@ export function useSoulEditorHeight(
       editor.style.minHeight = `${minimum}px`;
       editor.style.height = "auto";
       const contentHeight = editor.scrollHeight + borders;
-      const height = state.manualHeight ?? Math.min(maximum, contentHeight);
+      const height = state.manualHeight ?? Math.min(maximum, Math.max(state.viewportHeight * 0.56, contentHeight));
       editor.style.height = `${Math.max(minimum, height)}px`;
       editor.style.overflowY = contentHeight > editor.getBoundingClientRect().height ? "auto" : "hidden";
       state.height = editor.getBoundingClientRect().height;
@@ -73,8 +73,7 @@ export function useSoulEditorHeight(
       return true;
     }
 
-    resizeEditor();
-    const observer = new ResizeObserver((entries) => {
+    function applyObservedChanges(changes: ResizeObserverEntry[]) {
       if (updateFooterObservation(observer)) {
         resizeEditor();
         return;
@@ -89,7 +88,22 @@ export function useSoulEditorHeight(
         state.height = rect.height;
         editor.style.overflowY = "auto";
       }
-      if (entries.some((entry) => entry.target === example || entry.target === observedFooter)) resizeEditor();
+      if (changes.some((entry) => entry.target === example || entry.target === observedFooter)) resizeEditor();
+    }
+
+    let resizeFrame = 0;
+    let pendingEntries: ResizeObserverEntry[] = [];
+    resizeEditor();
+    const observer = new ResizeObserver((entries) => {
+      pendingEntries.push(...entries);
+      if (resizeFrame) return;
+      // Finish observer delivery before changing overflow or resizing observed regions.
+      resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = 0;
+        const changes = pendingEntries;
+        pendingEntries = [];
+        applyObservedChanges(changes);
+      });
     });
     observer.observe(editor);
     if (example) observer.observe(example);
@@ -98,6 +112,7 @@ export function useSoulEditorHeight(
     document.fonts?.addEventListener("loadingdone", resizeEditor);
     return () => {
       observer.disconnect();
+      cancelAnimationFrame(resizeFrame);
       window.removeEventListener("resize", resizeEditor);
       document.fonts?.removeEventListener("loadingdone", resizeEditor);
     };
@@ -110,8 +125,8 @@ function editorHeights(editor: HTMLTextAreaElement, exampleHeight: number) {
   const borders = pixels(style.borderTopWidth) + pixels(style.borderBottomWidth);
   const padding = pixels(style.paddingTop) + pixels(style.paddingBottom);
   return {
-    minimum: Math.max(12 * lineHeight + padding + borders, exampleHeight),
-    rowMaximum: 24 * lineHeight + padding + borders,
+    minimum: Math.max(window.matchMedia("(max-width: 640px)").matches ? 440 : 420, exampleHeight),
+    rowMaximum: Math.min(800, 24 * lineHeight + padding + borders),
     borders,
   };
 }

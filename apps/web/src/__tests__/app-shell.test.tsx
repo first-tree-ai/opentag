@@ -63,7 +63,6 @@ describe("OpenTag Web App Shell", () => {
     const agentRow = agentLink.closest('[data-ui="agent-row"]');
     expect(agentRow).toBeTruthy();
     expect(agentRow?.parentElement?.classList.contains("@container/agent-roster")).toBe(true);
-    expect(agentRow?.className).toContain("/agent-roster:grid-cols-");
     expect(screen.queryByText(/Monitor availability/)).toBeNull();
     expect(screen.getByText("1 Agent")).toBeTruthy();
     expect(screen.queryByText(/currently working/)).toBeNull();
@@ -96,7 +95,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByText("Mentions only")).toBeNull();
     fireEvent.click(agentLink);
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
-    expect(screen.queryByRole("link", { name: "OpenTag" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "openTag" })).toBeNull();
     const accountAgentsNavigation = screen.getByRole("navigation", { name: "Account Agents" });
     const backToAgents = within(accountAgentsNavigation).getByRole("link", { name: "All Agents" });
     expect(backToAgents.getAttribute("href")).toBe("/agents");
@@ -112,7 +111,7 @@ describe("OpenTag Web App Shell", () => {
        * Soul, Memory, Skills and Connectors are present with no Internal Tools flag: they are
        * ordinary management surfaces, unlike Integrations which the next test gates.
        */
-    ).toEqual(["Overview", "Tasks", "Soul", "Memory", "Skills", "Connectors", "Usage"]);
+    ).toEqual(["Overview", "Tasks", "Soul", "Memory", "Connectors", "Skills", "Usage"]);
     expect(within(workspaceNavigation).getByRole("link", { name: "Connectors" }).getAttribute("href")).toBe(
       `/agents/${agentId}/mcp`,
     );
@@ -167,7 +166,7 @@ describe("OpenTag Web App Shell", () => {
         within(workspaceNavigation)
           .getAllByRole("link")
           .map((item) => item.textContent),
-      ).toEqual(["Overview", "Tasks", "Soul", "Memory", "Skills", "Connectors", "Usage"]),
+      ).toEqual(["Overview", "Tasks", "Soul", "Memory", "Connectors", "Skills", "Usage"]),
     );
   });
 

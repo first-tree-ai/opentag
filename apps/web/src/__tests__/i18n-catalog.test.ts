@@ -30,7 +30,7 @@ const areas = [
 ] as const;
 const localeCodes = ["en", "zh"] as const;
 const allowedUntranslatedValues = new Set([
-  "OpenTag",
+  "openTag",
   "Cloud",
   "Codex",
   "Claude Code",

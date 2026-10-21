@@ -11,7 +11,7 @@ soft_links:
 
 ## Decision
 
-OpenTag's human-facing surface is Feishu and Slack. A person invokes a
+openTag's human-facing surface is Feishu and Slack. A person invokes a
 long-lived Agent identity by mentioning it in a channel or thread or by
 messaging it directly. One Agent may participate in many channels, and one
 conversation may involve several Agents. The Agent profile is reused, while
@@ -91,7 +91,7 @@ author-type filtering.
 - Feishu and Slack share the same identity, permission, and attention semantics
   even when their thread, mention, and presentation behavior differs.
 - Choosing between Feishu and Slack is the team's decision rather than a
-  recommendation OpenTag makes. Surfaces offering the choice give the two equal
+  recommendation openTag makes. Surfaces offering the choice give the two equal
   weight; what varies between deployments is availability, not preference.
 - Only channel and thread Sessions may modify human-visible IM state.
 - Internal Sessions return summaries and artifact references to a visible

@@ -73,7 +73,7 @@ describe("GitHub repository access", () => {
       const dialog = await open();
       const text = installed
         ? "No accessible repositories found. Check repository access on GitHub and make sure your account has access."
-        : "No accessible repositories found. Install or configure the OpenTag App on GitHub and select the repositories you need.";
+        : "No accessible repositories found. Install or configure the openTag App on GitHub and select the repositories you need.";
       expect(await within(dialog).findByText(text)).toBeTruthy();
       expect(within(dialog).getAllByRole("heading")).toHaveLength(1);
       expect(within(dialog).queryByText("@octocat")).toBeNull();
@@ -92,7 +92,7 @@ describe("GitHub repository access", () => {
       .mockResolvedValueOnce(page([1]));
     const dialog = await open();
     expect(await within(dialog).findByText("Couldn't load repositories. Try again.")).toBeTruthy();
-    expect(within(dialog).queryByText(/Install or configure the OpenTag App/)).toBeNull();
+    expect(within(dialog).queryByText(/Install or configure the openTag App/)).toBeNull();
     fireEvent.click(within(dialog).getByRole("button", { name: "Try again" }));
     expect(await within(dialog).findByText("acme/repo-1")).toBeTruthy();
     expect(discover).toHaveBeenCalledTimes(2);
@@ -207,7 +207,7 @@ describe("GitHub repository access", () => {
       const dialog = await open();
       expect(
         await within(dialog).findByText(
-          reason === "suspended" ? /Some OpenTag App installations are suspended/ : /The repository list is incomplete/,
+          reason === "suspended" ? /Some openTag App installations are suspended/ : /The repository list is incomplete/,
         ),
       ).toBeTruthy();
       expect(within(dialog).queryByText(/No accessible repositories found/)).toBeNull();

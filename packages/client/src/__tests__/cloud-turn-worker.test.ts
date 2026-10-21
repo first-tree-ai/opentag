@@ -426,6 +426,10 @@ describe("cloud-turn-worker", () => {
     expect(captured.map((entry) => entry.sessionDirectory)).toEqual([sessionDirectory, sessionDirectory]);
     expect(captured[1]?.args.join(" ")).toContain(`--session-id ${persistedBinding.payload.sessionId}`);
     for (const entry of captured) {
+      const systemPrompt = entry.args[entry.args.indexOf("--append-system-prompt") + 1];
+      expect(systemPrompt).toContain("slack api chat.postMessage --json");
+      expect(systemPrompt).toContain("messages-resources-download");
+      expect(systemPrompt).toContain("GitHub integration, when enabled");
       expect(entry.environment.HOME).not.toBe(process.env.HOME);
       expect(entry.environment.OPENTAG_RUNNER_BOOTSTRAP_TOKEN).toBeUndefined();
       expect(entry.environment.GITHUB_TOKEN).toBeUndefined();
@@ -687,6 +691,7 @@ describe("cloud-turn-worker", () => {
       fileContent?: string;
       fileMode?: number;
       inputText?: string;
+      systemPrompt?: string;
       ghCache?: string;
     } = {};
     const createPiFactory = (input: { environment: Record<string, string> }): CloudTurnPiFactory => {
@@ -694,8 +699,9 @@ describe("cloud-turn-worker", () => {
       expect(input.environment.XDG_CACHE_HOME).toBeUndefined();
       observed.ghCache = join(input.environment.HOME as string, ".cache", "gh");
       return {
-        create: async () =>
-          ({
+        create: async (request) => {
+          observed.systemPrompt = request.systemPrompt;
+          return {
             close: async () => undefined,
             prompt: async (request: AgentPromptRequest) => {
               observed.inputText = request.input.items.map((item) => item.text).join("\n");
@@ -707,7 +713,8 @@ describe("cloud-turn-worker", () => {
               }
               return { output: [{ text: "reply-path", type: "text" }], status: "completed" };
             },
-          }) as unknown as CloudTurnPiRuntime,
+          } as unknown as CloudTurnPiRuntime;
+        },
         resume: async () => {
           throw new Error("unexpected resume");
         },
@@ -720,9 +727,11 @@ describe("cloud-turn-worker", () => {
       workspace: join(root, "workspace"),
     });
     expect(completion.outcome).toBe("completed");
-    // The managed outbox instructions from buildAgentInput are preserved in the Cloud prompt.
     expect(observed.inputText).toContain('<opentag-im-context source="managed">');
-    expect(observed.inputText).toContain("$OPENTAG_PROVIDER_ENV_FILE");
+    expect(observed.inputText).toContain("runtime console");
+    expect(observed.inputText).not.toContain("$OPENTAG_PROVIDER_ENV_FILE");
+    expect(observed.systemPrompt).toContain("$OPENTAG_PROVIDER_ENV_FILE");
+    expect(observed.systemPrompt).toContain("messages-resources-download");
     expect(observed.inputText).toContain("lark-cli");
     // The instruction target exists for the Turn, is private, and carries the published proxy env.
     expect(observed.environmentFile).toBeDefined();

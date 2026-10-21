@@ -70,7 +70,7 @@
 }
 
 .otv2-choice[aria-pressed="true"] {
-  border-color: var(--color-kumo-brand);
+  border-color: var(--focus);
   background: var(--brand-soft);
 }
 
@@ -92,7 +92,7 @@
 
 .otv2-rail__step[data-status="current"],
 .otv2-rail__step[data-status="complete"] {
-  border-top-color: var(--color-kumo-brand);
+  border-top-color: var(--focus);
 }
 
 .otv2-rail__marker {
@@ -102,8 +102,8 @@
 }
 
 .otv2-rail__step[data-status="current"] .otv2-rail__marker {
-  background: var(--color-kumo-brand);
-  color: var(--text-color-kumo-inverse);
+  background: var(--focus);
+  color: var(--bg);
 }
 
 /* Measurements ----------------------------------------------------------- */

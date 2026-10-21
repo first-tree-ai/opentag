@@ -5,9 +5,9 @@ description: "How Web App and CLI failures are redacted and relayed through the 
 
 # Client error reporting
 
-OpenTag relays failures that happen in the Web App and in the CLI to
+openTag relays failures that happen in the Web App and in the CLI to
 [Google Cloud Error Reporting](https://cloud.google.com/error-reporting/), through the server. Neither client
-holds a Google credential or talks to Google directly: each posts a small, redacted report to its own OpenTag
+holds a Google credential or talks to Google directly: each posts a small, redacted report to its own openTag
 server, and the server forwards it with the official `@google-cloud/error-reporting` library. Server-side
 failures are not part of this path; they are covered by [Server observability](observability.md).
 
@@ -37,7 +37,7 @@ server. Unknown fields are rejected, so a client cannot attach anything the sche
 | `occurredAt` | both | ISO 8601 timestamp |
 | `reportId` | both | One identifier per report, tying the tracker event to the server log line |
 | `userId` | both | The Account the client believed it was signed in as |
-| `computerId` | CLI | The Account Computer this OpenTag home is connected as — the uuid the Server and the Web App know — read from the machine credential, only when that credential names the server the report goes to |
+| `computerId` | CLI | The Account Computer this openTag home is connected as — the uuid the Server and the Web App know — read from the machine credential, only when that credential names the server the report goes to |
 | `installationId` | CLI | This installation's own locally generated identity (`computer.json`), the value the daemon logs under the same name, only when that file names the server the report goes to; otherwise the machine credential's copy, under the same condition |
 | `agentId`, `sessionId`, `turnId` | CLI | Present when the failure happened inside an Agent turn |
 | `provider` | CLI | The Agent runtime provider, such as `claude-code` |
@@ -58,7 +58,7 @@ Where each identifier comes from:
 - **Web App.** The Account uuid the signed-in session resolved, attached alongside the analytics identity in
   `useAccountIdentityReport` (`apps/web/src/analytics/milestones.ts`) and cleared on both of a session's exits —
   signing out, and the Server refusing the next read. A failure before sign-in carries no `userId`.
-- **CLI.** The Account recorded at sign-in in `account-identity.json`, beside `credentials.json` in the OpenTag
+- **CLI.** The Account recorded at sign-in in `account-identity.json`, beside `credentials.json` in the openTag
   home, so a report can name it without a round trip on a path that is already failing. It is a separate file on
   purpose: every installed CLI reads `credentials.json` with a strict schema, so a key added there by a newer CLI
   would make the file invalid for an older one, and the documented rollback (`install.sh --version <previous>`)
@@ -164,7 +164,7 @@ covered by the same handlers, and an unexpected terminal daemon failure is repor
 **Agent turns.** A turn that fails inside the daemon never reaches a terminal, so the tracker is the only place
 it can be seen. The turn runner hands every turn that did not complete to the reporter installed by
 `apps/cli/src/core/daemon/runtime.ts` — a value the provider threw and a failed result it returned alike — and
-the reporter applies the same judgement the command path applies: only failures that describe OpenTag are
+the reporter applies the same judgement the command path applies: only failures that describe openTag are
 relayed, which today means `provider_protocol_error` and `turn_state_unknown`. The first is a provider that
 answered in a shape the runtime could not read, and it keeps that name whether the provider threw it or returned
 it. The second is the important one, being the catch-all for a throw nothing classified. A provider that is not

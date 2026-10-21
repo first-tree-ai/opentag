@@ -10,6 +10,7 @@ import { AgentAvatar } from "../agents/agent-avatar.js";
 import { agentDetailLink } from "../agents/agent-routes.js";
 import { Redirect } from "../navigation/redirect.js";
 import { useAccount } from "../session/session-context.js";
+import { AccountSignOut } from "../session/sign-out-button.js";
 
 /** An exact setup target is a uuid; anything else can never name an Agent and fails closed. */
 const AGENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -216,6 +217,7 @@ function TargetedAgentSetup({
           {m.agent_setup_target_read_failed_detail()}
         </p>
         <Button onClick={() => setAttempt((current) => current + 1)}>{m.agent_setup_target_retry()}</Button>
+        <AccountSignOut />
       </div>
     );
   }
@@ -232,6 +234,7 @@ function TargetedAgentSetup({
         <p className="text-sm text-kumo-subtle m-0 max-w-prose text-center" role="alert">
           {m.agent_setup_target_unavailable_detail()}
         </p>
+        <AccountSignOut />
       </div>
     );
   }
@@ -264,6 +267,7 @@ function TargetedAgentSetup({
             </li>
           ))}
         </ul>
+        <AccountSignOut />
       </div>
     );
   }
@@ -286,6 +290,7 @@ function TargetedAgentSetup({
 
   return (
     <AgentSetupSurface
+      accountControl={<AccountSignOut />}
       existingAgentNames={resolution.existingAgentNames}
       onBackToAgents={accountCompleted ? onBackToAgents : undefined}
       onAgentAvailable={onTarget}
@@ -375,12 +380,14 @@ function ExactAgentSetup({
           {m.agent_setup_target_adoption_failed_detail()}
         </p>
         <Button onClick={() => setAttempt((current) => current + 1)}>{m.agent_setup_target_retry()}</Button>
+        <AccountSignOut />
       </div>
     );
   }
 
   return (
     <AgentSetupSurface
+      accountControl={<AccountSignOut />}
       agentId={agentId}
       onOpenAgent={() => onOpenAgent(agentId)}
       onReady={reviewMode ? onReviewFinished : undefined}

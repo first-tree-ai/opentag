@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   type ListAgentSkillsResponse,
   type ReadSkillFileQuery,
@@ -11,7 +11,7 @@ import {
   type SkillSource,
 } from "@opentag/shared";
 import { and, asc, eq, ne, sql } from "drizzle-orm";
-import type { DatabaseClient } from "../../db/client.js";
+import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { agentSkills, agents } from "../../db/schema/index.js";
 import { isUniqueViolation } from "../../db/unique-violation.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
@@ -44,7 +44,7 @@ import { type SkillObjectStore, skillObjectKey } from "./skill-object-store.js";
  *    by joining `agents.created_by_user_id` and excluding soft-deleted Agents, so a caller from
  *    another Account and a missing Agent are deliberately indistinguishable (`SKILL_NOT_FOUND`).
  * 2. **Object keys are derived, never supplied.** The key is built from the Agent's owner, the Agent,
- *    the Skill id, and the Server's own sha256, which is what makes a replace safe without a lock:
+ *    the Skill id, and a fresh random object id for every write, which makes a replace safe without a lock:
  *    write the new key, update the row, and leave the old object for `SkillObjectGc` to collect.
  */
 
@@ -312,35 +312,38 @@ export class SkillService {
       accountId,
       agentId,
       skillId,
-      sha256: normalized.sha256,
+      objectId: randomBytes(32).toString("hex"),
     });
     await this.#putObject(store, objectKey, normalized.archive, normalized.sha256);
     const now = this.#now();
     let row: SkillRow | undefined;
     try {
-      // The try covers ONLY the insert. Nothing after a committed insert may ever delete its object:
+      // The try covers only final admission. Nothing after a committed insert may ever delete its object:
       // the row would be left pointing at a missing object, which no retry could repair. The catch's
       // cleanup is therefore conditional — it deletes only when the row is absent.
-      [row] = await this.#database
-        .insert(agentSkills)
-        .values({
-          id: skillId,
-          agentId,
-          name: normalized.manifest.name,
-          description: normalized.manifest.description,
-          enabled: true,
-          source: input.source,
-          objectKey,
-          archiveSha256: normalized.sha256,
-          archiveBytes: normalized.archive.byteLength,
-          fileCount: normalized.fileCount,
-          files: normalized.files,
-          filesTruncated: normalized.filesTruncated,
-          revision: 1,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .returning();
+      [row] = await this.#database.transaction(async (transaction) => {
+        await this.#lockSkillAdmission(transaction, accountId, agentId, normalized.manifest.name);
+        return transaction
+          .insert(agentSkills)
+          .values({
+            id: skillId,
+            agentId,
+            name: normalized.manifest.name,
+            description: normalized.manifest.description,
+            enabled: true,
+            source: input.source,
+            objectKey,
+            archiveSha256: normalized.sha256,
+            archiveBytes: normalized.archive.byteLength,
+            fileCount: normalized.fileCount,
+            files: normalized.files,
+            filesTruncated: normalized.filesTruncated,
+            revision: 1,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning();
+      });
       if (!row) throw new Error("The Skill insert returned no row");
     } catch (error) {
       // The insert may have committed before the failure surfaced — a dropped connection returns no
@@ -368,7 +371,7 @@ export class SkillService {
       accountId,
       agentId: existing.agentId,
       skillId: existing.id,
-      sha256: normalized.sha256,
+      objectId: randomBytes(32).toString("hex"),
     });
     await this.#putObject(store, objectKey, normalized.archive, normalized.sha256);
     let row: SkillRow | undefined;
@@ -392,8 +395,7 @@ export class SkillService {
         .where(and(eq(agentSkills.id, existing.id), eq(agentSkills.revision, existing.revision)))
         .returning();
     } catch (error) {
-      // A same-content replace reuses the row's existing key, so this must never delete it: route
-      // the cleanup through the unreferenced-object guard instead of deleting blindly.
+      // A failed acknowledgement can follow a committed write; retain its referenced object.
       await discardUnreferencedObject(this.#database, store, objectKey, existing.id, this.#logger);
       throw error;
     }
@@ -401,10 +403,8 @@ export class SkillService {
       await discardUnreferencedObject(this.#database, store, objectKey, existing.id, this.#logger);
       throw skillRevisionConflict("The Skill changed concurrently; retry the upload");
     }
-    // The previous object is deliberately NOT deleted here. An inline delete is check-then-act: a
-    // later replace may already have made the old key current again, so deleting it could strand
-    // that row on a missing object. It is left as an orphan and collected by `SkillObjectGc` once it
-    // is past the grace period and no row references it.
+    // Leave previous objects to GC's grace period and reference checks, including legacy keys that
+    // an older writer can reuse during a rolling deployment.
     // Deliberately outside the update's try/catch: the row is already committed, so a failure here
     // surfaces as SKILL_STORAGE_UNAVAILABLE and must never trigger cleanup of `objectKey`.
     await ensureObjectPresent(this.#database, store, objectKey, row.id, normalized, this.#logger);
@@ -481,6 +481,24 @@ export class SkillService {
       .from(agentSkills)
       .where(eq(agentSkills.agentId, agentId));
     return row?.count ?? 0;
+  }
+
+  async #lockSkillAdmission(transaction: DatabaseTransaction, accountId: string, agentId: string, name: string) {
+    const [agent] = await transaction
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, accountId), ne(agents.status, "deleted")))
+      .for("no key update");
+    if (!agent) throw skillNotFound("The Agent was not found");
+    const [current] = await transaction
+      .select({
+        count: sql<number>`count(*)::int`,
+        nameExists: sql<boolean>`coalesce(bool_or(lower(${agentSkills.name}) = ${name.toLowerCase()}), false)`,
+      })
+      .from(agentSkills)
+      .where(eq(agentSkills.agentId, agentId));
+    if (current?.nameExists) throw skillNameConflict();
+    if ((current?.count ?? 0) >= SKILL_MAX_PER_AGENT) throw skillLimitReached();
   }
 
   /** An Agent is owned by the Account that created it, and a deleted Agent is not addressable. */

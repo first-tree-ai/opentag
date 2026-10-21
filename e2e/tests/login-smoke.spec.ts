@@ -58,7 +58,7 @@ test("mobile visitors can switch language and reveal a password with the keyboar
   await expect(chinese).toBeVisible();
   await chinese.focus();
   await chinese.press("Enter");
-  await expect(page.getByRole("heading", { name: "登录 OpenTag", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "登录 openTag", exact: true })).toBeVisible();
   await expect(page.locator("main")).toHaveAttribute("lang", "zh");
   await expect(page.getByRole("combobox", { name: "语言", exact: true })).toContainText("中文");
   const password = page.getByLabel("密码", { exact: true });

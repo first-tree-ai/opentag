@@ -43,6 +43,7 @@ describe("Soul editor height", () => {
   let styles: HTMLStyleElement;
   const originalHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
   beforeEach(() => {
+    vi.useFakeTimers();
     Object.defineProperty(window, "innerHeight", { configurable: true, value: 900 });
     styles = document.createElement("style");
     styles.textContent =
@@ -66,11 +67,12 @@ describe("Soul editor height", () => {
     styles.remove();
     observers.clear();
     vi.restoreAllMocks();
+    vi.useRealTimers();
     globalThis.ResizeObserver = originalObserver;
     if (originalHeight) Object.defineProperty(window, "innerHeight", originalHeight);
   });
 
-  it("caps automatic growth at 24 rows and reserves actions when the window shrinks", () => {
+  it("reserves actions and keeps the preview minimum height when the window shrinks", () => {
     render(<EditorWithActions value="Long working principles" />);
     for (const observer of observers) observer.flush();
     const editor = screen.getByRole("textbox", { name: "Soul" }) as HTMLTextAreaElement;
@@ -80,16 +82,18 @@ describe("Soul editor height", () => {
     expect(editor.style.height).toBe("496px");
     Object.defineProperty(window, "innerHeight", { configurable: true, value: 640 });
     fireEvent(window, new Event("resize"));
-    expect(editor.style.height).toBe("368px");
+    expect(editor.style.height).toBe("420px");
     expect(editor.style.overflowY).toBe("auto");
   });
 
   it("preserves a manually adjusted height on subsequent edits", () => {
     const view = render(<EditorWithActions value="Working principles" />);
     for (const observer of observers) observer.flush();
+    vi.advanceTimersToNextFrame();
     const editor = screen.getByRole("textbox", { name: "Soul" }) as HTMLTextAreaElement;
     editor.style.height = "450px";
     for (const observer of observers) observer.flush();
+    vi.advanceTimersToNextFrame();
     view.rerender(<EditorWithActions value="Revised working principles" />);
     expect(editor.style.height).toBe("450px");
     expect(editor.style.overflowY).toBe("auto");
@@ -106,10 +110,14 @@ describe("Soul editor height", () => {
     });
     render(<EditorWithActions value="Long working principles" />);
     for (const observer of observers) observer.flush();
+    vi.advanceTimersToNextFrame();
     const editor = screen.getByRole("textbox", { name: "Soul" }) as HTMLTextAreaElement;
     expect(editor.style.height).toBe("432px");
     width = 900;
-    fireEvent(window, new Event("resize"));
+    for (const observer of observers) observer.flush();
+    // Observer delivery reads geometry without resizing another observed region in the same frame.
+    expect(editor.style.height).toBe("432px");
+    vi.advanceTimersToNextFrame();
     expect(editor.style.height).toBe("588px");
   });
 });

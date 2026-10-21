@@ -1,8 +1,8 @@
-# Contributing to OpenTag
+# Contributing to openTag
 
 [简体中文](./CONTRIBUTING.zh-CN.md)
 
-OpenTag is pre-alpha. Please keep changes focused, explain the user or contributor problem they solve, and avoid adding
+openTag is pre-alpha. Please keep changes focused, explain the user or contributor problem they solve, and avoid adding
 product capabilities without an agreed design.
 
 ## Workflow

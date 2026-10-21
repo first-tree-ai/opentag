@@ -112,7 +112,7 @@ export function registerMcpOAuthRoutes(app: FastifyInstance, options: McpOAuthRo
       .code(200)
       .send({
         client_id: clientId,
-        client_name: "OpenTag",
+        client_name: "openTag",
         redirect_uris: [callback],
         grant_types: ["authorization_code", "refresh_token"],
         response_types: ["code"],

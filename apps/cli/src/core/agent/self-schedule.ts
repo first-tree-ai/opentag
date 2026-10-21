@@ -67,7 +67,7 @@ async function context(
   if (!environment.OPENTAG_SESSION_PROOF_FILE) {
     throw new CommandError(
       { code: "AGENT_SELF_SESSION_REQUIRED", category: "validation", retryability: "never", phase: "validation" },
-      "agent self schedule commands run only inside an OpenTag-managed Agent Session",
+      "agent self schedule commands run only inside an openTag-managed Agent Session",
     );
   }
   return resolveSessionProofContext(environment);

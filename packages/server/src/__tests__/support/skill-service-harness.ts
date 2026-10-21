@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { SkillSource } from "@opentag/shared";
 import { eq, sql } from "drizzle-orm";
-import type { DatabaseClient } from "../../db/client.js";
+import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { agentSkills, agents, computers, users } from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import { SkillService, type SkillUploadInput } from "../../services/skills/index.js";
@@ -39,7 +39,7 @@ export interface SkillHarness {
   capturingLogger(): { logger: ServiceLogger; warns: Array<Record<string, unknown>> };
 }
 
-export function createSkillHarness(unit: UnitDatabase): SkillHarness {
+export function createSkillHarness(unit: Pick<UnitDatabase, "database">): SkillHarness {
   const database = unit.database;
 
   const sha256 = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
@@ -158,58 +158,52 @@ export function createSkillHarness(unit: UnitDatabase): SkillHarness {
     }) as DatabaseClient;
   }
 
-  /** Wraps the client so a Skill row insert fails, exercising the object-cleanup compensation path. */
+  /** Fails the real admission transaction at its row insert so compensation sees a rollback. */
   function failingInsertDatabase(): DatabaseClient {
     return new Proxy(database, {
-      get(target, property, receiver) {
-        if (property === "insert") {
-          return (table: unknown) => {
-            if (table === agentSkills) {
-              return {
-                values: () => ({
-                  returning: async () => {
-                    throw new Error("forced Skill row write failure");
+      get(target, property) {
+        if (property === "transaction") {
+          return (run: (transaction: DatabaseTransaction) => Promise<unknown>) =>
+            target.transaction((transaction) =>
+              run(
+                new Proxy(transaction, {
+                  get(executor, method) {
+                    if (method === "insert")
+                      return (table: Parameters<DatabaseTransaction["insert"]>[0]) => {
+                        if (table === agentSkills)
+                          return {
+                            values: () => ({
+                              returning: async () => {
+                                throw new Error("forced Skill row write failure");
+                              },
+                            }),
+                          };
+                        return executor.insert(table);
+                      };
+                    const value = Reflect.get(executor, method);
+                    return typeof value === "function" ? value.bind(executor) : value;
                   },
                 }),
-              };
-            }
-            const insert = Reflect.get(target, "insert", receiver) as (value: unknown) => unknown;
-            return insert.call(target, table);
-          };
+              ),
+            );
         }
-        return Reflect.get(target, property, receiver);
+        const value = Reflect.get(target, property);
+        return typeof value === "function" ? value.bind(target) : value;
       },
     });
   }
 
-  /**
-   * Wraps the client so a Skill row insert commits and then throws, modelling a dropped connection
-   * that returns no result even though the row landed.
-   */
+  /** Loses the acknowledgement after the actual admission transaction has committed. */
   function committingThenThrowingInsertDatabase(): DatabaseClient {
     return new Proxy(database, {
-      get(target, property, receiver) {
-        if (property === "insert") {
-          return (table: unknown) => {
-            if (table === agentSkills) {
-              const insert = Reflect.get(target, "insert", receiver) as (value: unknown) => {
-                values: (input: unknown) => { returning: () => Promise<unknown> };
-              };
-              const builder = insert.call(target, table);
-              return {
-                values: (input: unknown) => ({
-                  returning: async () => {
-                    await builder.values(input).returning();
-                    throw new Error("forced insert commit-then-throw");
-                  },
-                }),
-              };
-            }
-            const insert = Reflect.get(target, "insert", receiver) as (value: unknown) => unknown;
-            return insert.call(target, table);
+      get(target, property) {
+        if (property === "transaction")
+          return async (run: (transaction: DatabaseTransaction) => Promise<unknown>) => {
+            await target.transaction(run);
+            throw new Error("forced insert commit-then-throw");
           };
-        }
-        return Reflect.get(target, property, receiver);
+        const value = Reflect.get(target, property);
+        return typeof value === "function" ? value.bind(target) : value;
       },
     });
   }

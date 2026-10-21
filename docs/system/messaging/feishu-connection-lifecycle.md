@@ -15,13 +15,17 @@ or Server restart must not discard that saved authorization.
 Registration offers six cat presets in Feishu's native picker: developer, engineer, architect,
 artist, businessman, and sales. Their versioned square PNGs are served under
 `/bot-avatars/v1/` on `OPENTAG_PUBLIC_URL`; this deployment URL must be publicly reachable
-for Feishu to load them. SVG originals are kept beside the PNG exports in `apps/web/public`.
+for Feishu to load them. Filenames are stable compatibility identifiers, so avatar responses
+require cache revalidation rather than declaring the artwork immutable. PNGs remain 512 × 512.
+Matching SVG files remain available: the four website cats are vectors, while architect and
+businessman embed their approved raster artwork. Existing provider-uploaded Bot avatars are
+separate copies and are not automatically replaced when these preset files change.
 
-On connection or reauthorization, OpenTag reads the actual Bot profile and caches its name and
+On connection or reauthorization, openTag reads the actual Bot profile and caches its name and
 avatar in the binding. Optional profile failures do not block activation. Previously cached
 metadata survives a failed lookup only for the same App, workspace, and Bot identity.
 Existing connections acquire avatars on their next connection or reauthorization; provider-side
-changes remain cached until then. OpenTag displays initials when the image is absent or fails to load.
+changes remain cached until then. openTag displays initials when the image is absent or fails to load.
 
 ## User experience
 
@@ -32,7 +36,7 @@ a prerequisite to starting registration.
 After credentials are saved, the setup page shows the remaining condition: permissions,
 App availability, Runtime readiness, or a temporary upstream failure. It explains that the
 user may close the page. An administrator handles any enterprise approval through Feishu;
-OpenTag does not submit approvals or require the connecting user to be an administrator.
+openTag does not submit approvals or require the connecting user to be an administrator.
 
 The Server checks automatically. “Check latest status” uses the same due-time and concurrency
 limits; it does not create another App, bypass approval, or force repeated provider calls.
@@ -123,6 +127,12 @@ commit can still lose the new secret. Large candidate populations also incur sca
 cost because this change intentionally adds no scheduling index.
 
 ## Release and rollback boundary
+
+Inbound event recovery is separate from setup recovery. Receipts persist bounded
+normalized input before Inbox processing and recover it only through the current
+connection holder and epoch, while retaining the original credential generation.
+See [durable inbound receipt work](message-domains.md#durable-inbound-receipt-work)
+for deduplication, input cleanup, deadlines, and the receipt-writer cutover boundary.
 
 The migration alone does not make old Server binaries compatible with the new state or
 payload. Use a coordinated, non-overlapping Server cutover: stop every old setup writer,

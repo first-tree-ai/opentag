@@ -149,7 +149,7 @@ The target selects new Instances. A previously verified, ready Instance with the
 reconnect across a target change when its protocol remains compatible and the provider confirms the Instance has not
 been updated since creation. [Cloud Run](https://docs.cloud.google.com/run/docs/reference/rest/v2/projects.locations.instances)
 supports in-place image updates without changing the resource UID, so UID alone
-is insufficient: this path requires the original provider generation. OpenTag itself never updates an Instance image.
+is insufficient: this path requires the original provider generation. openTag itself never updates an Instance image.
 Initial admission keeps the strict target-image and version checks. Old-image Instances cannot be borrowed by another
 Session. They continue existing work, save and
 leave through the existing idle reclamation path; the next allocation restores the same Session storage URI.

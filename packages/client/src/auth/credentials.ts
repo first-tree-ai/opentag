@@ -55,8 +55,8 @@ function validateCredentials(value: unknown): StoredCredentials {
   try {
     return normalizeCredentials(StoredCredentialsSchema.parse(value));
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith("The OpenTag server URL")) throw error;
-    throw new Error("The OpenTag credentials file is invalid", { cause: error });
+    if (error instanceof Error && error.message.startsWith("The openTag server URL")) throw error;
+    throw new Error("The openTag credentials file is invalid", { cause: error });
   }
 }
 

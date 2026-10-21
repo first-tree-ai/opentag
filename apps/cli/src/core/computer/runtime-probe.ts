@@ -218,7 +218,7 @@ export function runtimeComponentFromProbeResult(
         diagnosticCode: issue.code,
         message: `${label} is not installed or could not run.`,
         nextAction: {
-          instruction: `Install and sign in to the ${label} yourself (OpenTag never installs Runtime CLIs), then run the verify command.`,
+          instruction: `Install and sign in to the ${label} yourself (openTag never installs Runtime CLIs), then run the verify command.`,
         },
         verifyAction,
       };
@@ -302,7 +302,7 @@ export function unconfirmedRuntimeComponent(): LocalPreparationComponent {
     diagnosticCode: "RUNTIME_UNCONFIRMED",
     message: "The connected Server did not report which Runtime CLI this Agent uses.",
     nextAction: {
-      instruction: "Upgrade the OpenTag Server (and this CLI), then recheck this Computer in the OpenTag Web app.",
+      instruction: "Upgrade the openTag Server (and this CLI), then recheck this Computer in the openTag Web app.",
     },
   };
 }

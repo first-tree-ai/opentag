@@ -31,7 +31,7 @@ function fakeRouter(pathname: string, fullPath: string | undefined, searchStr = 
 function fakeWindow(referrer = ""): Window {
   return {
     location: { origin: "https://app.opentag.build" },
-    document: { referrer, title: "OpenTag" },
+    document: { referrer, title: "openTag" },
   } as unknown as Window;
 }
 
@@ -60,7 +60,7 @@ describe("route analytics", () => {
           page_location: "https://app.opentag.build/agents",
           page_path: "/agents",
           page_referrer: undefined,
-          page_title: "OpenTag",
+          page_title: "openTag",
         },
       ],
     ]);
@@ -81,7 +81,7 @@ describe("route analytics", () => {
       page_location: "https://app.opentag.build/agents/:agentId/settings/:section",
       page_path: "/agents/:agentId/settings/:section",
       page_referrer: "https://app.opentag.build/agents",
-      page_title: "OpenTag",
+      page_title: "openTag",
     });
     expect(JSON.stringify(sent)).not.toContain("private-note");
     expect(JSON.stringify(sent)).not.toContain("6f1b3c2e");

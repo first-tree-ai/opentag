@@ -816,7 +816,7 @@ export class AgentService {
       .innerJoin(creator, eq(creator.id, agents.createdByUserId))
       .leftJoin(imBindings, and(eq(imBindings.agentId, agents.id), ne(imBindings.status, "disabled")))
       .leftJoin(computers, eq(computers.id, agents.computerId))
-      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
+      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
       .limit(1);
     if (!row || row.createdByUserId !== callerUserId) throw resourceNotFound();
     const recoveryStartedAt = new Date(this.#now().getTime() - AGENT_ACTIVITY_RECOVERY_WINDOW_MS);
@@ -1599,7 +1599,7 @@ export class AgentService {
     const [row] = await transaction
       .select({ agent: agents, computerId: agents.computerId })
       .from(agents)
-      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
+      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
       .limit(1)
       .for("update");
     if (!row || row.agent.createdByUserId !== callerUserId) throw resourceNotFound();
@@ -1681,7 +1681,7 @@ export class AgentService {
       .from(computers)
       .where(and(eq(computers.id, computerId), eq(computers.ownerAccountId, accountId), isNull(computers.deletedAt)))
       .limit(1)
-      .for("update");
+      .for("no key update");
     if (!computer) {
       throw new AgentServiceError("COMPUTER_NOT_FOUND", "deterministic", "The requested Computer was not found", 404);
     }
@@ -1730,7 +1730,7 @@ export class AgentService {
     const [row] = await executor
       .select({ agent: agents, computerId: agents.computerId })
       .from(agents)
-      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
+      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
       .limit(1);
     if (!row || row.agent.createdByUserId !== callerUserId) throw resourceNotFound();
     return { agent: row.agent, canManage: true, computerId: row.computerId };
@@ -1745,7 +1745,7 @@ export class AgentService {
       .select({ agent: agents, computerId: agents.computerId, runtimeConfig: agentRuntimeConfigs })
       .from(agents)
       .innerJoin(agentRuntimeConfigs, eq(agentRuntimeConfigs.agentId, agents.id))
-      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
+      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
       .limit(1);
     if (!row || row.agent.createdByUserId !== callerUserId) throw resourceNotFound();
     return {

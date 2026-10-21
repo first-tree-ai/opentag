@@ -211,7 +211,7 @@ describe("ComputerConnect", () => {
     // Idle is the one state with no command and no countdown, so it renders no lead row. The
     // failed and expired states still introduce a command that is not there to paste; that is
     // older than this change and left alone rather than half-fixed here.
-    expect(screen.queryByText(/Start OpenTag on Ada's Mac/)).toBeNull();
+    expect(screen.queryByText(/Start openTag on Ada's Mac/)).toBeNull();
     fireEvent.click(repairAction);
     await flushAsync();
 
@@ -361,7 +361,7 @@ describe("ComputerConnect", () => {
     await flushAsync();
 
     expect(onConnected).not.toHaveBeenCalled();
-    expect(screen.getByRole("status").textContent).toContain("Command accepted. Waiting for OpenTag to come online");
+    expect(screen.getByRole("status").textContent).toContain("Command accepted. Waiting for openTag to come online");
   });
 
   it("keeps an issued command through a transient poll failure and clears the error on recovery", async () => {

@@ -48,8 +48,8 @@ export function registerLoginCommand(program: Command, dependencies: LoginComman
     .command("login")
     .description("Exchange a one-time Account login code and store Account credentials")
     .argument("<code>", "one-time Account login code")
-    .option("--server <url>", "OpenTag server URL")
-    .option("--home <path>", "OpenTag home directory")
+    .option("--server <url>", "openTag server URL")
+    .option("--home <path>", "openTag home directory")
     .option("--json", "print JSON")
     .action(async (code: string, options: LoginCommandOptions) => {
       process.exitCode = await executeCommand(

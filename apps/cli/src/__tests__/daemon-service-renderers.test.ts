@@ -636,7 +636,7 @@ describe("systemd service backend", () => {
         username: "test",
       });
 
-      await expect(manager[mutation]()).rejects.toThrow("belongs to a different OpenTag home");
+      await expect(manager[mutation]()).rejects.toThrow("belongs to a different openTag home");
       const managerMutations = runner.run.mock.calls.filter(([, args]) =>
         args.some((argument) => ["daemon-reload", "disable", "enable", "restart", "start", "stop"].includes(argument)),
       );
@@ -714,7 +714,7 @@ describe("systemd service backend", () => {
 
     const unitPath = join(userHome, ".config", "systemd", "user", `${channelConfig.serviceId}.service`);
     expect(await readFile(unitPath, "utf8")).toContain(`OPENTAG_HOME=${canonicalFirstHome}`);
-    await expect(second.installAndStart()).rejects.toThrow("belongs to a different OpenTag home");
+    await expect(second.installAndStart()).rejects.toThrow("belongs to a different openTag home");
   });
 
   it.each(["installAndStart", "stop"] as const)(

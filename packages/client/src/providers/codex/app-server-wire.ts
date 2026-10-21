@@ -201,7 +201,7 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
     const response = await this.request(
       "initialize",
       {
-        clientInfo: { name: "opentag", title: "OpenTag", version: clientVersion },
+        clientInfo: { name: "opentag", title: "openTag", version: clientVersion },
         capabilities: { experimentalApi: true },
       },
       signal,

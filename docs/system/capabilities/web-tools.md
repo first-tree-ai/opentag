@@ -1,13 +1,13 @@
 ---
 title: "Web tools"
-description: "Platform-provided `web_search` and `web_fetch` for Pi Agents through OpenTag-managed Tavily access."
+description: "Platform-provided `web_search` and `web_fetch` for Pi Agents through openTag-managed Tavily access."
 ---
 
 # Web tools
 
 ## Scope
 
-Web tools expose `web_search` and `web_fetch` to Pi Agent Runs through OpenTag-managed Tavily access. Web access is a
+Web tools expose `web_search` and `web_fetch` to Pi Agent Runs through openTag-managed Tavily access. Web access is a
 **default platform capability** — on par with platform LLM access — not a per-Account key, an opt-in step, or a user
 setting. A deployment that has not configured the platform Web provider still fails closed: no grant, no bearer, no
 socket, no extension.
@@ -20,8 +20,8 @@ Two boundaries consume the same Server routes:
 
 ## Server configuration (Tavily access)
 
-OpenTag Server talks to the existing Router over fixed HTTPS routes and presents a **single deployment-wide Router
-web-only key**. The Tavily provider key itself never leaves the Router gateway; OpenTag Server never holds it.
+openTag Server talks to the existing Router over fixed HTTPS routes and presents a **single deployment-wide Router
+web-only key**. The Tavily provider key itself never leaves the Router gateway; openTag Server never holds it.
 
 | Variable | Required | Meaning |
 | --- | --- | --- |
@@ -45,13 +45,13 @@ When the deployment is enabled, the web policy grants `web:search` and `web:fetc
 execution** that requests the service, exactly like platform model access. There is no per-Account mapping and no
 user-facing switch.
 
-Router billing is **shared across Accounts** in this implementation; OpenTag does not claim per-Account Router billing.
-What OpenTag does retain is the authenticated Account ID in its own structured usage logging (`WEB_DISPATCH`: code,
+Router billing is **shared across Accounts** in this implementation; openTag does not claim per-Account Router billing.
+What openTag does retain is the authenticated Account ID in its own structured usage logging (`WEB_DISPATCH`: code,
 Account, execution, operation) and in the request's Account attribution, with **no query content and no credentials**.
 The Account is read from the live execution record, never from the request body.
 
 The Router must already carry its own migration that adds `api_keys(scopes)`, web service pricing, and the web
-request/usage-ledger columns; that migration is owned by the Router repository. OpenTag adds no new tables, no new
+request/usage-ledger columns; that migration is owned by the Router repository. openTag adds no new tables, no new
 service, and no database migration for this feature. There is no LiteLLM involvement of any kind.
 
 ## Local client opt-in
@@ -94,7 +94,7 @@ and no endpoint exists.
 
 ## Key custody and isolation
 
-- The Tavily key lives only in the Router gateway. OpenTag Server holds only the deployment-wide Router web-only key.
+- The Tavily key lives only in the Router gateway. openTag Server holds only the deployment-wide Router web-only key.
 - The trusted CLI/daemon continues to hold its existing Computer machine/control credential and to negotiate
   capabilities at the control boundary; that trusted host authentication is unchanged. The **Tavily key and the Router
   web-only key** never leave Router/Server custody: they never enter the Agent process, the Sandbox, request bodies,

@@ -12,6 +12,6 @@ describe("default Agent names", () => {
   });
 
   it("compares held names defensively without case or surrounding whitespace", () => {
-    expect(availableDefaultAgentName([" OpenTag "])).toBe("opentag-2");
+    expect(availableDefaultAgentName([" openTag "])).toBe("opentag-2");
   });
 });

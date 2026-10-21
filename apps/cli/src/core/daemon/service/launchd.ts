@@ -240,7 +240,7 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
     const lastState = current ? `; last state: ${current.state}${current.detail ? ` (${current.detail})` : ""}` : "";
     throw new DaemonServiceError(
       "OPERATION_FAILED",
-      `launchd reported that the OpenTag service did not become active${lastState}`,
+      `launchd reported that the openTag service did not become active${lastState}`,
     );
   };
 

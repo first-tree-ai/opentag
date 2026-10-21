@@ -11,7 +11,7 @@ soft_links:
 
 ## Decision
 
-The OpenTag Server is the authoritative control plane for Agent identity and
+The openTag Server is the authoritative control plane for Agent identity and
 policy, Session identity, placement, IM facts, authorization, and global
 routing. The Client Runtime is an execution node: it prepares Computers and
 Workspaces, manages Provider runtimes, injects Session input, performs local
@@ -26,12 +26,12 @@ teardown are daemon-internal reconcile actions.
 
 Human and script product commands call the Server API. Agent runtime tools call
 in-process Client Runtime handlers. Daemon start, stop, and status use the host
-service manager plus per-home ownership evidence. OpenTag does not introduce a
+service manager plus per-home ownership evidence. openTag does not introduce a
 local socket or named-pipe RPC boundary between product commands and the daemon.
 
 ## Client connection
 
-One OpenTag home has at most one daemon. That daemon manages the Local Computer
+One openTag home has at most one daemon. That daemon manages the Local Computer
 and multiplexes its Agents and Session Runtimes over one authenticated
 WebSocket. Computer registration uses stable Computer identity; heartbeat and
 silence detection describe only the current connection. Connection-instance
@@ -51,6 +51,20 @@ and local Turn binding before reporting acceptance. Retained custody and Turn
 reports can then be reconciled after reconnect or Server restart without
 starting a second Turn. Placement generation and connection-instance checks
 fence every acceptance and report.
+
+Computer repair commits installation replacement, old credential revocation,
+new credential issuance, and connect-code consumption in one transaction. The
+Server then waits at most one second for connection cleanup. A cleanup failure
+or timeout is logged separately and does not replace the committed exchange
+response. Cleanup targets only the revoked credential IDs, so a delayed close
+cannot evict a subsequent connection authenticated with another credential.
+
+The committed repair clears the current instance. Registration, heartbeat,
+and queued Runtime business frames independently validate the active credential;
+delivery and approval authority also require the current instance and connection.
+Closing the old socket is cleanup, rather than the authority that revokes it.
+Work already executing on an offline Client cannot be physically stopped by
+Server credential revocation alone.
 
 ## Readiness
 

@@ -94,17 +94,19 @@ describe("SkillService object lifecycle", () => {
     expect(bundle.sha256).toBe((await service.get(accountId, agentId, seeded.id)).archiveSha256);
   });
 
-  it("keeps the object when the replacement content is identical", async () => {
+  it("allocates an independent object when the replacement content is identical", async () => {
     const accountId = await h.createUser();
     const agentId = await h.createAgent(accountId);
     const store = new FakeSkillObjectStore();
     const service = h.serviceWith(store);
 
     const first = await h.upload(service, accountId, agentId, "same-bytes");
+    const firstKey = await h.objectKeyOf(first.id);
     const replaced = await h.upload(service, accountId, agentId, "same-bytes", { replace: true });
     expect(replaced.revision).toBe(first.revision + 1);
     expect(replaced.archiveSha256).toBe(first.archiveSha256);
-    expect(store.keys()).toHaveLength(1);
+    expect(await h.objectKeyOf(first.id)).not.toBe(firstKey);
+    expect(store.keys()).toHaveLength(2);
     const bundle = await service.openBundle(accountId, agentId, replaced.id);
     expect(bundle.sha256).toBe(replaced.archiveSha256);
     expect(bundle.bytes).toBe(replaced.archiveBytes);
@@ -134,7 +136,7 @@ describe("SkillService object lifecycle", () => {
     // A reads revision 1 and writes a new key, but its row update is held just before it executes.
     const winner = h.upload(service, accountId, agentId, "race", { replace: true, files: { "a.txt": "a" } });
     await pauseReached;
-    // B re-uploads the ORIGINAL content while A is held; it lands on the original key.
+    // B re-uploads the original content while A is held, using its own independent key.
     const late = await h.upload(service, accountId, agentId, "race", { replace: true });
     release();
     await expect(winner).rejects.toMatchObject({
@@ -143,9 +145,10 @@ describe("SkillService object lifecycle", () => {
     });
 
     expect(late.archiveSha256).toBe(original.archiveSha256);
-    expect(await h.objectKeyOf(original.id)).toBe(originalKey);
+    const currentKey = (await h.objectKeyOf(original.id)) as string;
+    expect(currentKey).not.toBe(originalKey);
     expect(store.stored(originalKey)).toBeDefined();
-    expect(store.keys()).toEqual([originalKey]);
+    expect(store.keys()).toEqual([originalKey, currentKey].sort());
   });
 
   it("rejects a stale setEnabled and a stale remove", async () => {
@@ -204,8 +207,9 @@ describe("SkillService object lifecycle", () => {
     await expect(h.upload(service, accountId, agentId, "failed-replace", { replace: true })).rejects.toThrow(
       "forced Skill row update failure",
     );
-    // The cleanup must not delete the key the unchanged row still references.
-    expect(store.deletes).toBe(0);
+    // Only the failed write's independent key is removed.
+    expect(store.deletes).toBe(1);
+    expect(store.keys()).toEqual([objectKey]);
     expect(store.stored(objectKey)).toBeDefined();
     const bundle = await h.serviceWith(store).openBundle(accountId, agentId, seeded.id);
     expect(bundle.sha256).toBe(seeded.archiveSha256);

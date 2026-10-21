@@ -109,9 +109,9 @@ body {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   border-radius: var(--ui-control-radius);
-  padding: 12px 16px;
+  padding: 12px;
   color: var(--fg);
   font-weight: 600;
   white-space: nowrap;
@@ -119,10 +119,12 @@ body {
 .app-workspace-shell[data-scope="agent"] .app-home-link {
   min-height: 49px;
 }
-.app-home-link:hover,
+.app-home-link:hover {
+  background: var(--surface-hover);
+}
 .app-account-trigger:hover,
 .app-account-trigger[aria-expanded="true"] {
-  background: var(--surface-hover);
+  background: color-mix(in srgb, var(--surface-hover) 75%, var(--card));
 }
 .app-home-link[aria-current="page"] {
   background: var(--brand-soft);
@@ -136,7 +138,10 @@ body {
 .app-global-navigation {
   flex-shrink: 0;
 }
-.app-home-icon,
+.app-home-icon {
+  width: 32px;
+  height: 20px;
+}
 .app-home-icon > svg {
   width: 20px;
   height: 20px;
@@ -154,8 +159,12 @@ body {
   flex-direction: column;
 }
 .app-agent-switcher {
-  margin: 28px 16px 24px;
+  margin: 20px 0 16px;
   padding: 0;
+}
+.app-agent-switcher-trigger {
+  min-height: 48px;
+  padding: 8px 12px;
 }
 .app-agent-link {
   line-height: 1.5;
@@ -170,12 +179,12 @@ body {
   margin-top: auto;
   border-top: 1px solid var(--border);
   background: transparent;
-  padding: 20px 12px 0;
+  padding: 20px 0 0;
   height: auto;
 }
 .app-account-trigger {
-  min-height: 32px;
-  padding: 0;
+  min-height: 48px;
+  padding: 8px 12px;
 }
 .app-account-avatar {
   background: var(--avatar-bg);
@@ -232,9 +241,11 @@ body {
 }
 .app-account-trigger[data-compact="true"] {
   justify-content: center;
+  min-height: 44px;
   padding: 4px;
 }
 .app-account-trigger[data-compact="true"] > div {
+  flex: none;
   gap: 0;
   translate: none;
 }
@@ -286,7 +297,8 @@ body {
     grid-row: 1;
   }
   .app-workspace-shell[data-scope="agent"] .app-home-link {
-    padding: 8px;
+    min-height: 44px;
+    padding: 6px;
   }
   .app-workspace-shell[data-scope="agent"] .app-home-link .app-nav-label {
     display: none;
@@ -299,6 +311,10 @@ body {
     grid-row: 1;
     min-width: 0;
     margin: 0;
+  }
+  .app-agent-switcher-trigger {
+    min-height: 44px;
+    padding: 6px 8px;
   }
   .app-agent-links {
     grid-column: 1 / -1;
@@ -324,6 +340,10 @@ body {
     width: 16px;
     height: 16px;
   }
+  .app-agent-nav-icon {
+    width: 16px;
+    height: 16px;
+  }
   .app-workspace-shell[data-scope="agent"] .app-account-navigation {
     grid-column: 3;
     grid-row: 1;
@@ -333,6 +353,15 @@ body {
   }
   .app-workspace-shell[data-scope="agent"] .app-account-navigation .app-nav-label {
     display: none;
+  }
+  .app-workspace-shell[data-scope="agent"] .app-account-trigger {
+    min-height: 44px;
+    justify-content: center;
+    padding: 6px;
+  }
+  .app-workspace-shell[data-scope="agent"] .app-account-trigger > div {
+    flex: none;
+    gap: 0;
   }
 }
 @media (max-width: 47.999rem) {

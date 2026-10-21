@@ -35,7 +35,7 @@
   "integrations_github_removing": "Removing…",
   "integrations_github_repositories_authorize": "Authorize your GitHub account to view repository access.",
   "integrations_github_repositories_close": "Close repository list",
-  "integrations_github_repositories_description": "These repositories are within the scope of your current GitHub authorization.",
+  "integrations_github_repositories_description": "Your Agents can access these repositories.",
   "integrations_github_repositories_empty": "No accessible repositories found. Install or configure the openTag App on GitHub and select the repositories you need.",
   "integrations_github_repositories_empty_installed": "No accessible repositories found. Check repository access on GitHub and make sure your account has access.",
   "integrations_github_repositories_error": "Couldn't load repositories. Try again.",

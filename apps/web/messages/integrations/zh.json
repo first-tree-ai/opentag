@@ -35,7 +35,7 @@
   "integrations_github_removing": "正在移除…",
   "integrations_github_repositories_authorize": "授权 GitHub 账户后，可查看仓库访问范围。",
   "integrations_github_repositories_close": "关闭仓库列表",
-  "integrations_github_repositories_description": "以下仓库已在当前 GitHub 授权的访问范围内。",
+  "integrations_github_repositories_description": "你的 Agent 可访问以下仓库。",
   "integrations_github_repositories_empty": "暂未找到可访问的仓库。请在 GitHub 安装或配置 openTag App，并选择所需仓库。",
   "integrations_github_repositories_empty_installed": "暂未找到可访问的仓库。请在 GitHub 检查仓库授权，并确认当前账户有访问权限。",
   "integrations_github_repositories_error": "暂时无法读取仓库，请重试。",

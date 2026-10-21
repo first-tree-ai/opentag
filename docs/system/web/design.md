@@ -119,6 +119,8 @@ The marketing container is centred and capped at 1280px; comparison, testimonial
 
 Shared controls use a 40px default height, with 32px and 48px variants. Radius roles are 6, 10, 12, and 16px, with full rounding for circles. Standard controls use 10px corners; outer product cards use 16px. Keep existing illustration geometry and documented marketing exceptions intact rather than rounding SVG coordinates to the UI scale.
 
+In the expanded app sidebar, All Agents, the Agent switcher, navigation items, and the Account trigger share an icon column and text alignment. The Account trigger leaves space around its avatar inside the hover surface. Compact layouts keep the avatar centred and preserve touch targets. Repository dialogs align their title, description, filter, and list; the scrolling body leaves room for the filter's focus ring, and the footer follows the content without excess empty space.
+
 ## Page composition and artwork
 
 | Section | Approved treatment |

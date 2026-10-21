@@ -65,11 +65,11 @@ export default function AgentNavigation({ agentId, pathname }: { agentId: string
                     key={item.section}
                     active={active}
                     aria-current={active ? "page" : undefined}
-                    className="app-agent-link h-auto rounded-[10px] px-4 py-3 font-normal data-[active]:bg-(--brand-soft) data-[active]:font-semibold data-[active]:text-kumo-default focus-visible:ring-2 focus-visible:ring-kumo-focus [&>div]:translate-none"
+                    className="app-agent-link h-auto rounded-[10px] px-3 py-3 font-normal data-[active]:bg-(--brand-soft) data-[active]:font-semibold data-[active]:text-kumo-default focus-visible:ring-2 focus-visible:ring-kumo-focus [&>div]:translate-none"
                     href={router.buildLocation(item.link).href}
                     icon={
                       <span
-                        className="grid size-4.5 shrink-0 place-items-center text-kumo-subtle group-data-[active]/menu-button:text-kumo-default"
+                        className="app-agent-nav-icon grid h-4.5 w-8 shrink-0 place-items-center text-kumo-subtle group-data-[active]/menu-button:text-kumo-default"
                         aria-hidden="true"
                       >
                         <Icon className="size-4.5" name={item.icon} weight="regular" />
@@ -121,7 +121,7 @@ function AgentSwitcher({
             aria-label={
               agent ? m.shell_switch_agent_current({ currentAgent: agent.displayName }) : m.shell_switch_agent()
             }
-            className="min-h-8 rounded-lg px-0 hover:bg-kumo-fill-hover focus-visible:ring-2 focus-visible:ring-kumo-focus [&>div]:translate-none"
+            className="app-agent-switcher-trigger rounded-lg hover:bg-kumo-fill-hover focus-visible:ring-2 focus-visible:ring-kumo-focus [&>div]:translate-none"
             icon={
               <AgentAvatar
                 displayName={agent?.displayName ?? "A"}

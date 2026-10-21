@@ -64,7 +64,7 @@ export function GitHubRepositoryAccess({
     ? m.integrations_github_repository_access_description()
     : connection
       ? m.integrations_github_repositories_reauthorize()
-      : m.integrations_github_repositories_authorize();
+      : undefined;
   return (
     <>
       <SettingsRow

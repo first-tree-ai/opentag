@@ -2,7 +2,7 @@ import type { GitHubConnectionStatus } from "@opentag/shared/browser";
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
-import { Banner, Button, Dialog, Loader, SettingsList, Text } from "../../ui/design-system.js";
+import { Banner, Button, Dialog, Loader, SettingsList, SettingsRow, Text } from "../../ui/design-system.js";
 import { useGitHubActionFocus } from "../integrations/github-action-focus.js";
 import {
   type GitHubOAuthOutcome,
@@ -465,9 +465,9 @@ function AccountGitHubBody({
   const connection = view.kind === "account" ? view.connection : undefined;
   return (
     <SettingsList className="github-settings-list">
-      <div className="grid gap-3 p-4">
-        <strong className="text-sm font-medium text-kumo-strong">{m.integrations_github_authorize_account()}</strong>
-        {connection ? (
+      {connection ? (
+        <div className="grid gap-3 p-4">
+          <strong className="text-sm font-medium text-kumo-strong">{m.integrations_github_authorize_account()}</strong>
           <GitHubAccountIdentity
             connection={connection}
             action={action}
@@ -476,20 +476,12 @@ function AccountGitHubBody({
             onAuthorize={onAuthorize}
             onRemove={onRemove}
           />
-        ) : (
-          <div className="grid justify-items-start gap-2">
-            <Text as="p" variant="secondary">
-              {m.integrations_github_add_account_description()}
-            </Text>
-            <GitHubAuthorizationButton
-              intent="create"
-              action={action}
-              busyLabel={busyLabel}
-              onAuthorize={onAuthorize}
-            />
-          </div>
-        )}
-      </div>
+        </div>
+      ) : (
+        <SettingsRow label={m.integrations_github_authorize_account()}>
+          <GitHubAuthorizationButton intent="create" action={action} busyLabel={busyLabel} onAuthorize={onAuthorize} />
+        </SettingsRow>
+      )}
       <GitHubRepositoryAccess
         key={connection ? `${connection.id}/${connection.authorizationVersion}/${connection.status}` : "empty"}
         connection={connection}

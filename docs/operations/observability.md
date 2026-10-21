@@ -1,13 +1,13 @@
 ---
 title: "Server observability"
-description: "Optional OpenTelemetry tracing, the logging vocabulary, and what is and is not exported."
+description: "Optional OpenTelemetry tracing, the logging vocabulary, what is and is not exported, and the production alerts and log pipeline on Google Cloud."
 ---
 
 # Server observability
 
 OpenTag Server can export optional OpenTelemetry traces through OTLP/HTTP. The implementation is disabled by default and covers provider connections, IM ingress, durable delivery, and Runtime lifecycle boundaries.
 
-Tracing is not log shipping. Pino continues to write server logs to stdout, and this feature does not upload all stdout logs to Logfire. Logfire receives spans, span attributes, and bounded exception events only.
+Tracing is not log shipping. Pino continues to write server logs to stdout, and this feature does not upload all stdout logs to Logfire. Logfire receives spans, span attributes, and bounded exception events only. A separate path does ship stdout logs: production forwards `WARNING` and above to Cloud Logging. See [Production monitoring on Google Cloud](#production-monitoring-on-google-cloud).
 
 Failures that happen in the Web App or the CLI rather than on the server travel a separate path: the server relays them to Google Cloud Error Reporting. See [Client error reporting](error-reporting.md).
 
@@ -172,28 +172,31 @@ No `im.inbound.process` span means OpenTag did not observe the provider callback
 
 ## Production monitoring on Google Cloud
 
-The production Server runs on the `opentag-prod` VM with the `opentag-prod-db` Cloud SQL instance in the
-`kael-product` project. Cloud Monitoring watches it from outside and from the platform metrics:
+The production Server runs on one Compute Engine VM with a dedicated Cloud SQL instance, both in the production Google
+Cloud project. This page states the reusable parts only: the policy thresholds, the probe choice, and the log pipeline.
+The repository is public, so it does not carry the project, VM, or instance names; read those from the Cloud Monitoring
+console. Cloud Monitoring watches the Server from outside and through the platform metrics:
 
 | Signal | Policy | Threshold | Notifies |
 | --- | --- | --- | --- |
 | Uptime check on `https://app.opentag.build/readyz`, content must contain `"status":"ready"`, every 60 s from four regions | Production down | Fails from more than one region for 3 minutes | Email and SMS |
 | Same uptime check, certificate lifetime | TLS certificate expiry | Less than 14 days left | Email |
-| Cloud SQL disk utilization | `opentag-prod-db` disk | Above 80% for 10 minutes | Email and DB alert email |
-| Cloud SQL memory utilization | `opentag-prod-db` memory | Above 90% for 10 minutes | Email and DB alert email |
-| Cloud SQL CPU utilization | `opentag-prod-db` CPU | Above 50% for 5 minutes | Email, SMS, and DB alert email |
-| `opentag-prod` VM CPU utilization | VM CPU | Above 85% for 10 minutes | Email |
+| Cloud SQL disk utilization | Database disk | Above 80% for 10 minutes | Email and DB alert email |
+| Cloud SQL memory utilization | Database memory | Above 90% for 10 minutes | Email and DB alert email |
+| Cloud SQL CPU utilization | Database CPU | Above 50% for 5 minutes | Email, SMS, and DB alert email |
+| Production VM CPU utilization | VM CPU | Above 85% for 10 minutes | Email |
 | VM memory used (Ops Agent) | VM memory | Above 90% for 10 minutes | Email |
 | VM root disk `/dev/sda1` used (Ops Agent) | VM root disk | Above 85% for 10 minutes | Email |
-| Server log at `CRITICAL` (Pino `fatal`) | Fatal log | Any entry; at most one notice per 10 minutes | Email and SMS |
+| Server log at `CRITICAL` (Pino `fatal`); no server code emits it yet, see Known gaps | Fatal log | Any entry; at most one notice per 10 minutes | Email and SMS |
 | Server log at `ERROR` or above, other than `IM_DELIVERY_RUNTIME_UNAVAILABLE` | New error type | Any entry; at most one notice per 30 minutes | Email |
 
-`/readyz` is the probe target because it answers `503` when the Server is draining or the database probe fails, while
-`/healthz` only proves that the process is up. The check needs no credential.
+`/readyz` is the probe target because it answers `503` until bootstrap readiness has completed all four stages
+(`configuration`, `migration`, `application`, `listen`), and again whenever the database probe fails. `/healthz` only
+proves that the process is up. The check needs no credential.
 
 ### Server logs in Cloud Logging
 
-The Ops Agent on `opentag-prod` tails the Docker `json-file` logs under `/var/lib/docker/containers/` and writes the
+The Ops Agent on the production VM tails the Docker `json-file` logs under `/var/lib/docker/containers/` and writes the
 log `opentag_server`. Each line is a Docker wrapper around a Pino line, so the pipeline unwraps both layers. Pino writes
 `level` as a number, which the agent's `map_values` cannot match, so a regex first captures it as a string and then maps
 `40`, `50`, and `60` to `WARNING`, `ERROR`, and `CRITICAL`. The agent keeps only `WARNING` and above, and drops `info`
@@ -211,7 +214,13 @@ host. Entries carry the label `service=opentag-server`. The agent config is `/et
 
 Known gaps:
 
-- The Staging environment is not probed, because it has no public address.
+- Staging is not probed. It is publicly reachable on its own public URL, so this is a missing uptime check rather than a
+  reachability limit.
+- A crash produces no `fatal` line. Nothing in the Server calls `.fatal(` and no `uncaughtException` or
+  `unhandledRejection` handler is installed, so Node prints a plain-text stack that carries no Pino `level`. The
+  severity filter cannot match that line, so it never reaches Cloud Logging. A crash is therefore visible only as an
+  uptime-check failure, and a crash that restarts faster than the 3-minute threshold is invisible. Install a
+  process-level `fatal` log before relying on the `CRITICAL` policy.
 - The Server is a single VM, so a VM outage also stops its own logs; the uptime check covers that case.
 
 ## Sampling and limits

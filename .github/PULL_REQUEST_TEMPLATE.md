@@ -4,7 +4,8 @@
 
 ## Testing
 
-<!-- List the commands and manual checks you ran. -->
+<!-- List the commands and manual checks you ran, why that scope covers the change, and anything not run or blocked.
+     Follow DEVELOPMENT.md#local-validation; the complete CI matrix must pass before merge. -->
 
 ## UI validation
 
@@ -25,6 +26,6 @@
 
 - [ ] The change is focused and contains no unrelated work.
 - [ ] Tests and documentation cover the changed behavior.
-- [ ] `pnpm check`, `pnpm build`, `pnpm typecheck`, and `pnpm test` pass.
+- [ ] `pnpm check` and the applicable local checks in `DEVELOPMENT.md#local-validation` pass; omissions are explained above.
 - [ ] No credentials, private data, or generated build output are included.
 - [ ] Canonical English docs and Chinese mirrors are synchronized when applicable.

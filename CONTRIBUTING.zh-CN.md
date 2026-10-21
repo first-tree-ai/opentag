@@ -1,7 +1,7 @@
 # 为 openTag 贡献
 
 > Canonical source: [CONTRIBUTING.md](./CONTRIBUTING.md)
-> Last synced with: 2026-09-02
+> Last synced with: 2026-10-21
 
 openTag 处于 pre-alpha 阶段。请保持改动聚焦，说明其解决的用户或贡献者问题，并避免在没有既定设计时增加产品能力。
 
@@ -11,7 +11,8 @@ openTag 处于 pre-alpha 阶段。请保持改动聚焦，说明其解决的用�
 2. 运行 `pnpm install` 安装依赖。该命令同时会安装 Git hooks：commit 前对暂存文件执行 lint 与格式化，push 前重新检查
    整个仓库，详见 [DEVELOPMENT.zh-CN.md](./DEVELOPMENT.zh-CN.md#git-hooks-与-worktree)。
 3. 完成最小且完整的改动，并更新相关测试和文档。
-4. 运行 `pnpm check`、`pnpm build`、`pnpm typecheck` 和 `pnpm test`。
+4. 运行 `pnpm check`，并按照[本地验证](./DEVELOPMENT.zh-CN.md#本地验证)执行与改动相关的检查。
+   本地使用有针对性的测试，完整回归矩阵由 CI 执行。
 5. 使用仓库模板创建 Pull Request。
 
 Commit message 遵循 [Conventional Commits](https://www.conventionalcommits.org/)，例如：

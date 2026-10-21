@@ -12,7 +12,8 @@ product capabilities without an agreed design.
    commit and re-check the repository before a push, described in
    [DEVELOPMENT.md](./DEVELOPMENT.md#git-hooks-and-worktrees).
 3. Make the smallest coherent change and update relevant tests and documentation.
-4. Run `pnpm check`, `pnpm build`, `pnpm typecheck`, and `pnpm test`.
+4. Run `pnpm check` and the checks appropriate to the change under
+   [Local validation](./DEVELOPMENT.md#local-validation). Use focused tests locally; CI runs the complete regression matrix.
 5. Open a pull request using the repository template.
 
 Use [Conventional Commits](https://www.conventionalcommits.org/) for commit messages, for example:

@@ -1,7 +1,7 @@
 # openTag 开发指南
 
 > 权威来源：[DEVELOPMENT.md](./DEVELOPMENT.md)
-> 同步日期：2026-10-20
+> 同步日期：2026-10-21
 
 ## 从源码在本地运行
 
@@ -152,24 +152,67 @@ pnpm --filter @opentag/server start
 
 ## 检查
 
-提交 pull request 前运行：
+### 本地验证
+
+根据变更行为及其使用方选择检查范围。开发过程中与创建 pull request 前使用同一套标准；无需仅为创建 PR
+而重复运行未变更代码上已经通过的检查。每次 commit 前运行 `pnpm check`。完整回归矩阵由 CI 执行，合并前必须通过。
+
+| 改动 | 本地验证 |
+| --- | --- |
+| 仅文档 | `pnpm check`；无需应用构建或测试。同步根目录的中文镜像。作为运行时输入发布的 Markdown（如内置 Skills）应按受影响 package 的范围验证。 |
+| 单个 package 内的行为 | 相关测试文件与该 package 的类型检查。影响遍及 package 或范围不明确时，扩展到整个 package 的测试套件。 |
+| 共用 schema、公共导出或跨 package 契约 | 提供方测试，以及受影响使用方的测试与类型检查。测试使用方前先构建变更的导出。 |
+| 数据库查询、事务、锁或持久化 | 相关服务器单元测试与 PostgreSQL 集成测试。新增 migration 必须运行完整集成套件，并按 `AGENTS.md` 更新 migration 计数。 |
+| `vitest.agent-runtime.config.ts` 覆盖的 Agent Runtime 实现或测试，或该配置本身 | 先运行针对性测试，再运行 `pnpm --filter @opentag/client test:agent-runtime:coverage`。100% 覆盖率门禁以 CI 的 Ubuntu 主机为准；报告平台相关失败。 |
+| 仓库脚本或 workflow | 相关 `scripts/__tests__/*.test.mjs` 文件，以及改动涉及的构建或打包冒烟检查。 |
+| 构建、导出、生成代码或打包 | 受影响的构建，以及相关测试与类型检查。 |
+| 依赖、工具链或共用测试/构建配置 | 扩展到受影响的 package 及其使用方；影响涉及整个仓库或无法界定时，运行 `pnpm build`、`pnpm typecheck` 和 `pnpm test`。 |
+| 根目录覆盖率配置或全仓库覆盖率排查 | `pnpm test:coverage`。常规改动依靠 CI 的覆盖率检查。 |
+
+渲染 UI 的改动还需执行相关浏览器验证，见 [E2E 指南](./e2e/README.md)。
+在 PR 中记录执行的命令、所选范围为何覆盖改动，以及未执行或受阻的检查。只有后续编辑影响检查的输入或行为，
+或新的失败、风险要求扩大验证范围时，才重新运行已通过的检查。筛选后没有匹配测试不算验证成功。
+
+### 针对性命令
+
+以下示例从仓库根目录运行，请按实际改动选择 package 与文件。测试通过构建后的导出导入工作区依赖。
+直接运行 package 命令前先准备依赖，修改依赖源码后重新构建：
 
 ```bash
-pnpm check
-pnpm build
-pnpm typecheck
-pnpm test
-pnpm --filter @opentag/client test:agent-runtime:coverage
-pnpm --filter @opentag/server test:integration
+# 仅构建 client 的工作区依赖，然后运行一个测试文件。
+pnpm exec turbo run build --filter='@opentag/client^...'
+pnpm --filter @opentag/client test src/__tests__/auth.test.ts
+
+# 运行整个 package 的测试与类型检查，由 Turbo 准备依赖。
+pnpm exec turbo run test typecheck --filter=@opentag/web --concurrency=2
+
+# 包含变更的 shared package 及依赖它的工作区。
+pnpm exec turbo run test typecheck --filter='...@opentag/shared' --concurrency=2
+
+# 运行一个仓库脚本测试。
+node --test scripts/__tests__/git-hooks.test.mjs
+
+# 准备 server 依赖并运行一个 PostgreSQL 集成测试文件（需要 Docker）。
+pnpm exec turbo run build --filter='@opentag/server^...'
+pnpm --filter @opentag/server exec vitest run src/__tests__/integration/tasks.test.ts --maxWorkers=2
 ```
 
-服务器集成测试需要 Docker。修改覆盖率配置或排查覆盖率缺口时，运行 `pnpm test:coverage`。
-浏览器测试见 [E2E 指南](./e2e/README.md)。
+CLI 的 package 名称是 `open-tag`。运行针对性的 web 测试前，先用
+`pnpm exec turbo run build --filter='@opentag/web^...'` 准备依赖，然后运行 `pnpm --filter @opentag/web test <test-file>`。
+Vitest 的 Vite 插件会自动生成翻译。直接运行 web 类型检查前，先运行 `pnpm --filter @opentag/web paraglide`；
+Turbo 的 web typecheck 任务已包含此步骤。文件路径相对于选定的 package。
+文件筛选参数应直接传给 package 命令，不要转发到无关 package 的套件。
+
+运行针对性的服务器集成测试时，使用上方直接调用 `exec vitest run` 的示例。向 `test:integration`
+追加文件名仍会保留脚本已有的目录筛选条件，因而仍然选择整个集成套件。
+需要完整集成套件时，运行 `pnpm --filter @opentag/server test:integration`。
 
 每个 PostgreSQL 集成测试 fixture 启动独立的一次性数据库。本机 Docker 的随机映射端口只绑定
 `127.0.0.1`；远程 Docker 保留默认绑定方式。启动后先从宿主机执行 `SELECT 1`，连接超时为五秒，
 成功后才开始迁移或测试。若容器健康检查通过，但该查询失败，应检查 Docker 端口转发：TCP 端口开放
 不代表 PostgreSQL 请求已到达容器。查询失败时，fixture 会关闭探测连接并删除容器。
+
+### CI 与完整套件复现
 
 CI 将格式检查、构建、类型检查、仓库脚本测试、PostgreSQL 集成测试和 Agent Runtime 覆盖率检查放在并行任务中执行。
 工作区单元测试在 Node.js 22.22.2、24 和 26 上运行，每个版本使用三个 Vitest 分片。
@@ -194,6 +237,8 @@ pnpm exec turbo run test --concurrency=2 -- --shard=1/3
 ## Git hooks 与 worktree
 
 `pnpm install` 会安装 Git hook，在提交前格式化并检查暂存文件，在推送前检查仓库。
+pre-push hook 执行仓库 lint、format、`pnpm check` 与 `pnpm typecheck`；两个 hook 都不运行测试。
+这些 hook 检查在上方的针对性测试之外执行。
 新建 Git worktree 时会自动安装依赖。如果 worktree 尚未初始化，请在其中运行 `pnpm worktree:setup`。
 分支和 pull request 约定见[贡献指南](./CONTRIBUTING.zh-CN.md)。
 

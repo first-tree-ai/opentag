@@ -58,10 +58,25 @@ pnpm --filter @opentag/client test:agent-runtime:coverage
 pnpm --filter @opentag/server test:integration
 ```
 
-Run directly affected tests during development and all commands above before opening a pull request. Unit tests must not
-depend on the public network, external providers, or a running PostgreSQL instance. Run `pnpm test:coverage` when changing
-the root coverage configuration or investigating repository-wide coverage gaps; the scheduled `Unit Coverage` workflow
-owns the recurring baseline measurement.
+These commands are available checks, not a checklist to run for every change. Follow
+[Local validation](DEVELOPMENT.md#local-validation) during development and before opening a pull request:
+
+- Start with tests for the changed behavior. Expand to the owning package and affected consumers when contracts,
+  shared code, or dependencies change; use the full suite when the impact cannot be bounded.
+- Documentation-only changes need `pnpm check`, not application builds or tests. For code changes, run affected
+  package type checks and build when the change affects bundling, exports, generated code, or packaging.
+  Markdown shipped as runtime input (such as bundled Skills) follows the affected package's validation scope.
+- Run relevant PostgreSQL integration tests for database behavior changes. New migrations still require the full
+  server integration suite as specified below.
+- Run Agent Runtime coverage for changes to its covered implementation, tests, or coverage configuration;
+  run `pnpm test:coverage` for root coverage configuration changes or repository-wide coverage investigations.
+- Do not repeat successful checks on unchanged code just to finish a task or open a pull request. Rerun when later
+  edits affect the checked behavior, a failure needs investigation, or a broader check is justified by the risk.
+- Report what ran, why that scope was chosen, and anything not run or blocked. CI owns the complete regression
+  matrix and must pass before merge; targeted local checks do not establish that CI is green.
+
+Unit tests must not depend on the public network, external providers, or a running PostgreSQL instance.
+The scheduled `Unit Coverage` workflow owns the recurring full coverage baseline measurement.
 
 ## Knowledge base and testing records
 

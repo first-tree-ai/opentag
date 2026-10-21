@@ -158,25 +158,72 @@ For UI translations, see [Web i18n](./docs/system/web/i18n.md).
 
 ## Checks
 
-Run these before opening a pull request:
+### Local validation
+
+Choose checks from the changed behavior and its consumers. Use the same scope during development and before opening
+a pull request; opening a PR does not require repeating successful checks on unchanged code. Run `pnpm check` before
+every commit. CI runs the complete regression matrix and must pass before merge.
+
+| Change | Local validation |
+| --- | --- |
+| Documentation only | `pnpm check`; no application build or tests. Keep root Chinese mirrors synchronized. Markdown shipped as runtime input, such as bundled Skills, follows the affected package's validation scope. |
+| Behavior within one package | Relevant test files and the package's type check. Expand to the package suite when the impact spans the package or is unclear. |
+| Shared schemas, public exports, or cross-package contracts | Producer tests and affected consumer tests/type checks. Build changed exports before testing consumers. |
+| Database queries, transactions, locking, or persistence | Relevant server unit and PostgreSQL integration tests. A new migration requires the full integration suite and migration-count update in `AGENTS.md`. |
+| Agent Runtime implementation or tests covered by `vitest.agent-runtime.config.ts`, or that configuration | Focused tests, then `pnpm --filter @opentag/client test:agent-runtime:coverage`. Its 100% gate is authoritative on CI's Ubuntu host; report host-specific failures. |
+| Repository scripts or workflows | Relevant `scripts/__tests__/*.test.mjs` files and any build/package smoke checks exercised by the change. |
+| Build, exports, generated code, or packaging | Affected builds plus relevant tests and type checks. |
+| Dependencies, toolchain, or shared test/build configuration | Expand to affected packages and consumers; run `pnpm build`, `pnpm typecheck`, and `pnpm test` when the impact is repository-wide or cannot be bounded. |
+| Root coverage configuration or repository-wide coverage investigation | `pnpm test:coverage`. Routine changes rely on CI's coverage checks. |
+
+Include relevant browser validation for rendered UI changes; see the [E2E guide](./e2e/README.md).
+Record the commands run, why their scope covers the change, and checks not run or blocked in the PR. Rerun successful
+checks only when subsequent edits affect their inputs or behavior, or a new failure or risk justifies broader validation.
+Do not interpret a filtered run with no matching tests as successful validation.
+
+### Targeted commands
+
+Run these examples from the repository root, selecting the package and files relevant to your change. Tests import
+workspace dependencies through built exports. Prepare dependencies before direct package commands, and rebuild them
+after changing their source:
 
 ```bash
-pnpm check
-pnpm build
-pnpm typecheck
-pnpm test
-pnpm --filter @opentag/client test:agent-runtime:coverage
-pnpm --filter @opentag/server test:integration
+# Build only the client's workspace dependencies, then run one test file.
+pnpm exec turbo run build --filter='@opentag/client^...'
+pnpm --filter @opentag/client test src/__tests__/auth.test.ts
+
+# Run an entire package suite and its type check, preparing dependencies through Turbo.
+pnpm exec turbo run test typecheck --filter=@opentag/web --concurrency=2
+
+# Include a changed shared package and its dependent workspaces.
+pnpm exec turbo run test typecheck --filter='...@opentag/shared' --concurrency=2
+
+# Run one repository script test.
+node --test scripts/__tests__/git-hooks.test.mjs
+
+# Prepare server dependencies and run one PostgreSQL integration file (requires Docker).
+pnpm exec turbo run build --filter='@opentag/server^...'
+pnpm --filter @opentag/server exec vitest run src/__tests__/integration/tasks.test.ts --maxWorkers=2
 ```
 
-The server integration tests need Docker. Run `pnpm test:coverage` when changing coverage configuration or
-investigating coverage gaps. See the [E2E guide](./e2e/README.md) for browser tests.
+Use `open-tag` as the CLI package name. For focused web tests, prepare web dependencies with
+`pnpm exec turbo run build --filter='@opentag/web^...'` before `pnpm --filter @opentag/web test <test-file>`.
+Vitest's Vite plugin generates translations automatically. For direct web type checks, run
+`pnpm --filter @opentag/web paraglide` first; Turbo's web typecheck task already includes this step.
+File paths are relative to the selected
+package. Keep file filters on direct package commands; do not forward them to unrelated package suites.
+
+For a focused server integration run, use the direct `exec vitest run` example above. Appending a filename to
+`test:integration` keeps the script's existing directory filter and still selects the entire integration suite.
+Use `pnpm --filter @opentag/server test:integration` when the full integration suite is required.
 
 Each PostgreSQL integration fixture starts its own disposable database. With a local Docker endpoint, its random
 published port binds to `127.0.0.1`; remote Docker endpoints retain Docker's default binding. Startup runs a host-side
 `SELECT 1` with a five-second connection timeout before migrations or tests begin. If container health passes but this
 query fails, check Docker port forwarding: an open TCP port alone does not prove that PostgreSQL traffic reaches the
 container. The fixture closes the probe connection and removes the container on failure.
+
+### CI and full-suite reproduction
 
 CI runs formatting, builds, type checks, repository script tests, PostgreSQL integration tests, and Agent Runtime
 coverage in parallel jobs. Workspace unit tests run on Node.js 22.22.2, 24, and 26, with three Vitest shards per version.
@@ -203,6 +250,8 @@ pnpm exec turbo run test --concurrency=2 -- --shard=1/3
 ## Git hooks and worktrees
 
 `pnpm install` installs hooks that format and lint staged files before commits and check the repository before pushes.
+The pre-push hook runs repository lint, format, `pnpm check`, and `pnpm typecheck`; neither hook runs tests.
+These hook checks are additional to the targeted tests above.
 New Git worktrees install dependencies automatically. If a worktree wasn't initialized, run `pnpm worktree:setup` in it.
 See [Contributing](./CONTRIBUTING.md) for branch and pull request conventions.
 

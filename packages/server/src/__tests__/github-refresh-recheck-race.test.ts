@@ -5,7 +5,7 @@ import { GitHubConnectionService } from "../services/github/github-connection-se
 import { GitHubConnectionRecheckStore } from "../services/github/github-recheck-store.js";
 import { GitHubCredentialRefreshStore } from "../services/github/github-refresh-store.js";
 import { sha256Hex } from "../services/github/hashes.js";
-import { createAccount, GITHUB_TEST_APP_ID, testCredentialCipher } from "./support/github-fixtures.js";
+import { createAccount, GITHUB_TEST_CLIENT_ID, testCredentialCipher } from "./support/github-fixtures.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 let unit: UnitDatabase;
@@ -22,10 +22,19 @@ describe("GitHub refresh and recheck concurrency", () => {
     const cipher = testCredentialCipher();
     const account = await createAccount(unit);
     const connections = new GitHubConnectionService(unit.database, { now: () => now });
-    const refresh = new GitHubCredentialRefreshStore(unit.database, { now: () => now });
-    const recheck = new GitHubConnectionRecheckStore(unit.database, { now: () => now });
+    const refresh = new GitHubCredentialRefreshStore(unit.database, {
+      oauthClientId: "Ov23testclient",
+      now: () => now,
+    });
+    const recheck = new GitHubConnectionRecheckStore(unit.database, {
+      oauthClientId: "Ov23testclient",
+      now: () => now,
+    });
     const loginSessionHash = sha256Hex("account:session");
-    const { flow } = await connections.createConnection(account.id, { appId: GITHUB_TEST_APP_ID, loginSessionHash });
+    const { flow } = await connections.createConnection(account.id, {
+      oauthClientId: GITHUB_TEST_CLIENT_ID,
+      loginSessionHash,
+    });
     const claimed = await connections.claimOAuthCallback({ stateHash: sha256Hex(flow.state), loginSessionHash });
     await connections.completeAuthorization(account.id, {
       connectionId: claimed.connectionId,
@@ -55,7 +64,7 @@ describe("GitHub refresh and recheck concurrency", () => {
           connectionId: flow.connectionId,
           accountId: account.id,
           githubHost: "github.com",
-          appId: GITHUB_TEST_APP_ID,
+          oauthClientId: GITHUB_TEST_CLIENT_ID,
           githubUserId: "42",
         },
         { accessToken: "new-access", refreshToken: "new-refresh" },

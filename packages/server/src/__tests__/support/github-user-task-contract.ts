@@ -101,7 +101,7 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
       id: randomUUID(),
       accountId: account.id,
       githubHost: "github.com",
-      appId: "88",
+      oauthClientId: "88",
       githubUserId: "42",
       githubLogin: "owner",
       status: "active",

@@ -75,7 +75,7 @@ export async function completeClaimedFlow(
       id: connectionId,
       accountId: row.accountId,
       githubHost: row.githubHost,
-      appId: row.appId,
+      oauthClientId: row.oauthClientId,
       status: "active",
       githubUserId,
       githubLogin: proof.githubLogin,

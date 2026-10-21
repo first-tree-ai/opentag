@@ -37,11 +37,11 @@ function connections() {
 }
 
 function refreshStore() {
-  return new GitHubCredentialRefreshStore(client.database, { now: () => clock });
+  return new GitHubCredentialRefreshStore(client.database, { oauthClientId: "Ov23testclient", now: () => clock });
 }
 
 function recheckStore() {
-  return new GitHubConnectionRecheckStore(client.database, { now: () => clock });
+  return new GitHubConnectionRecheckStore(client.database, { oauthClientId: "Ov23testclient", now: () => clock });
 }
 
 function credential(suffix = "") {
@@ -57,7 +57,10 @@ async function activeConnection(email: string) {
   const [account] = await client.database.insert(users).values({ displayName: "Owner", email }).returning();
   if (!account) throw new Error("Missing test Account");
   const service = connections();
-  const { flow } = await service.createConnection(account.id, { appId: "871235", loginSessionHash: sessionHash });
+  const { flow } = await service.createConnection(account.id, {
+    oauthClientId: "Ov23testclient",
+    loginSessionHash: sessionHash,
+  });
   const stateHash = sha256Hex(flow.state);
   const claim = await service.claimOAuthCallback({ stateHash, loginSessionHash: sessionHash });
   const proof: GitHubOAuthCompletionProof = {

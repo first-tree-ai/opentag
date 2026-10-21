@@ -1,21 +1,19 @@
 /*
- * Server-only GitHub App user-token transport for connection and credential management.
+ * Server-only GitHub OAuth App user-token transport for connection and credential management.
  *
- * Speaks the official GitHub App user-authorization protocol only: the OAuth token endpoint on
+ * Speaks the official GitHub OAuth App user-authorization protocol only: the OAuth token endpoint on
  * https://github.com (code exchange with PKCE, refresh-token grant) and the REST API on
- * https://api.github.com (user identity, installations, repository scope and token management). Origins are fixed
+ * https://api.github.com (user identity, repositories and token validation). Origins are fixed
  * by construction — no caller can supply a URL, a Host, or extra headers — and every call is
  * bounded in time and response size, refuses redirects, and never reads an error body into an
  * exception. Errors carry a controlled code, an optional HTTP status, and an optional bounded
  * rate-limit hint — never upstream text, URLs, headers, or token material.
  *
- * The deployment's GitHub App must issue expiring user access tokens. A token response missing
+ * The deployment's GitHub OAuth App must issue expiring user access tokens. A token response missing
  * `expires_in`, `refresh_token`, or `refresh_token_expires_in` is a configuration failure this
  * client refuses (GITHUB_TOKEN_LIFETIME_UNSUPPORTED) rather than persisting an unmaintainable
  * credential.
  */
-
-import type { GitHubRepositoryTokenPermissions } from "./user-token-types.js";
 
 const GITHUB_OAUTH_ORIGIN = "https://github.com";
 const GITHUB_API_ORIGIN = "https://api.github.com";
@@ -23,8 +21,7 @@ const GITHUB_API_VERSION = "2022-11-28";
 const USER_AGENT = "opentag-server-github-management";
 const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
-export const GITHUB_USER_INSTALLATIONS_PER_PAGE = 100;
-export const GITHUB_INSTALLATION_REPOSITORIES_PER_PAGE = 100;
+export const GITHUB_REPOSITORIES_PER_PAGE = 100;
 const MAX_TOKEN_LENGTH = 4_096;
 const MAX_LOGIN_LENGTH = 100;
 const MAX_FULL_NAME_LENGTH = 255;
@@ -35,7 +32,6 @@ const MAX_EXPIRY_SECONDS = 31_536_000; // one year: above every GitHub-documente
 const DECIMAL_ID_PATTERN = /^[1-9]\d{0,18}$/;
 const TOKEN_PATTERN = /^[-A-Za-z0-9._~+/]+=*$/;
 const OAUTH_ERROR_PATTERN = /^[a-z_]{1,64}$/;
-const PERMISSION_LEVELS = new Set(["read", "write"]);
 
 export const GITHUB_API_CLIENT_ERROR_CODES = {
   OAUTH_EXCHANGE_REJECTED: "GITHUB_OAUTH_EXCHANGE_REJECTED",
@@ -83,32 +79,12 @@ export interface GitHubAuthenticatedUser {
   login: string;
 }
 
-export interface GitHubUserInstallation {
-  installationId: string;
-  appId: string;
-  accountLogin: string;
-  accountType: "User" | "Organization";
-  repositorySelection: "all" | "selected";
-  permissions: Record<string, "read" | "write">;
-  suspended: boolean;
-}
-
-export interface GitHubUserInstallationsPage {
-  totalCount: number;
-  installations: GitHubUserInstallation[];
-}
-
-export interface GitHubInstallationRepository {
+export interface GitHubRepository {
   repositoryId: string;
   fullName: string;
   private: boolean;
   defaultBranch: string | null;
   permissions: { admin: boolean; pull: boolean; push: boolean };
-}
-
-export interface GitHubInstallationRepositoriesPage {
-  totalCount: number;
-  repositories: GitHubInstallationRepository[];
 }
 
 export interface GitHubApiClientOptions {
@@ -169,18 +145,10 @@ function parseLifetimeSeconds(value: unknown, field: string): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0 || value > MAX_EXPIRY_SECONDS) {
     throw new GitHubApiClientError(
       GITHUB_API_CLIENT_ERROR_CODES.TOKEN_LIFETIME_UNSUPPORTED,
-      `The GitHub App does not issue a usable ${field}; enable expiring user access tokens on the App`,
+      `The GitHub OAuth App does not issue a usable ${field}; enable expiring user access tokens on the App`,
     );
   }
   return value;
-}
-
-function parseIsoDate(value: unknown): Date | null {
-  if (value === null || value === undefined) return null;
-  if (typeof value !== "string") throw invalidResponse("The GitHub API response timestamp is malformed");
-  const ms = Date.parse(value);
-  if (!Number.isFinite(ms)) throw invalidResponse("The GitHub API response timestamp is malformed");
-  return new Date(ms);
 }
 
 function boundedSeconds(value: number): number {
@@ -204,45 +172,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function parsePermissions(value: unknown): Record<string, "read" | "write"> {
-  if (!isRecord(value)) throw invalidResponse("The GitHub API response permissions are malformed");
-  const permissions: Record<string, "read" | "write"> = {};
-  for (const [key, level] of Object.entries(value)) {
-    if (typeof key !== "string" || key.length === 0 || key.length > 64) {
-      throw invalidResponse("The GitHub API response permissions carry an unrecognized grant");
-    }
-    if (typeof level !== "string" || !PERMISSION_LEVELS.has(level)) {
-      throw invalidResponse("The GitHub API response permissions carry an unrecognized grant");
-    }
-    permissions[key] = level as "read" | "write";
-  }
-  return permissions;
-}
-
-export function parseGitHubInstallation(value: unknown): GitHubUserInstallation {
-  if (!isRecord(value)) throw invalidResponse("The GitHub API response installation is malformed");
-  const account = value.account;
-  if (!isRecord(account)) throw invalidResponse("The GitHub API response installation account is malformed");
-  const accountType = account.type;
-  if (accountType !== "User" && accountType !== "Organization") {
-    throw invalidResponse("The GitHub API response installation account type is unsupported");
-  }
-  const selection = value.repository_selection;
-  if (selection !== "all" && selection !== "selected") {
-    throw invalidResponse("The GitHub API response installation repository selection is malformed");
-  }
-  return {
-    installationId: parseDecimalId(value.id, "installation id"),
-    appId: parseDecimalId(value.app_id, "installation app id"),
-    accountLogin: parseBoundedString(account.login, "installation account login", MAX_LOGIN_LENGTH),
-    accountType,
-    repositorySelection: selection,
-    permissions: parsePermissions(value.permissions),
-    suspended: parseIsoDate(value.suspended_at) !== null,
-  };
-}
-
-function parseRepository(value: unknown): GitHubInstallationRepository {
+function parseRepository(value: unknown): GitHubRepository {
   if (!isRecord(value)) throw invalidResponse("The GitHub API response repository is malformed");
   const permissions = value.permissions;
   if (
@@ -273,13 +203,6 @@ function parsePageItems<T>(value: unknown, field: string, parse: (entry: unknown
   return value.map(parse);
 }
 
-function parseTotalCount(value: unknown): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > 1_000_000) {
-    throw invalidResponse("The GitHub API response total_count is malformed");
-  }
-  return value;
-}
-
 /**
  * The bounded user-token transport for one configured App. The client secret leaves this class
  * only to fixed GitHub origins for OAuth or token management; it is never logged or serialized.
@@ -295,7 +218,7 @@ export class GitHubApiClient {
     if (typeof options.clientId !== "string" || options.clientId.length === 0 || options.clientId.length > 255) {
       throw new GitHubApiClientError(
         GITHUB_API_CLIENT_ERROR_CODES.REQUEST_INVALID,
-        "The GitHub App client ID is invalid",
+        "The GitHub OAuth App client ID is invalid",
       );
     }
     if (
@@ -305,14 +228,14 @@ export class GitHubApiClient {
     ) {
       throw new GitHubApiClientError(
         GITHUB_API_CLIENT_ERROR_CODES.REQUEST_INVALID,
-        "The GitHub App client secret is invalid",
+        "The GitHub OAuth App client secret is invalid",
       );
     }
     const redirect = new URL(options.redirectUri);
     if (redirect.protocol !== "https:" && redirect.hostname !== "127.0.0.1" && redirect.hostname !== "localhost") {
       throw new GitHubApiClientError(
         GITHUB_API_CLIENT_ERROR_CODES.REQUEST_INVALID,
-        "The GitHub App OAuth callback URL is invalid",
+        "The GitHub OAuth App OAuth callback URL is invalid",
       );
     }
     this.#clientId = options.clientId;
@@ -386,108 +309,59 @@ export class GitHubApiClient {
     };
   }
 
-  /** Exact target lookup with the user token: GitHub enforces the user/App intersection. */
+  /** Exact target lookup with the user token: GitHub enforces the user/OAuth scope intersection. */
   async getRepository(input: {
     accessToken: string;
     fullName: string;
     signal?: AbortSignal;
-  }): Promise<GitHubInstallationRepository> {
+  }): Promise<GitHubRepository> {
     if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(input.fullName) || input.fullName.includes(".."))
       throw requestError("Invalid repository name");
     return parseRepository(await this.#sendApi("GET", `/repos/${input.fullName}`, input.accessToken, input.signal));
   }
 
-  /** The scoped-token caller validates the attested identity, scope and expiry before use. */
-  async createScopedUserToken(input: {
-    accessToken: string;
-    target: string;
-    repositoryId: number;
-    permissions: GitHubRepositoryTokenPermissions;
-    signal?: AbortSignal;
-  }): Promise<unknown> {
-    return this.#sendTokenManagement(
-      "POST",
-      "/scoped",
-      {
-        access_token: parseToken(input.accessToken, "access token"),
-        target: input.target,
-        repository_ids: [input.repositoryId],
-        permissions: input.permissions,
-      },
-      input.signal,
-    );
-  }
-
-  /** Deletes this token only, never the user's authorization grant or refresh credential. */
-  async revokeUserToken(accessToken: string): Promise<void> {
-    await this.#sendTokenManagement("DELETE", "", { access_token: parseToken(accessToken, "access token") });
-  }
-
-  /** Installation membership probe; no repository catalog is returned or traversed. */
-  async assertUserInstallationAccess(input: {
-    accessToken: string;
-    installationId: string;
-    signal?: AbortSignal;
-  }): Promise<void> {
-    if (!DECIMAL_ID_PATTERN.test(input.installationId)) throw requestError("Invalid installation id");
-    const payload = await this.#sendApi(
-      "GET",
-      `/user/installations/${input.installationId}/repositories?per_page=1&page=1`,
-      input.accessToken,
-      input.signal,
-    );
-    if (!isRecord(payload) || !Array.isArray(payload.repositories) || payload.repositories.length > 1)
-      throw invalidResponse("Invalid installation membership response");
-    parseTotalCount(payload.total_count);
-  }
-
-  /** One page of the authenticated user's installations of the App this token belongs to. */
-  async listUserInstallations(input: {
-    accessToken: string;
-    page: number;
-    signal?: AbortSignal;
-  }): Promise<GitHubUserInstallationsPage> {
-    const page = parsePageNumber(input.page);
-    const payload = await this.#sendApi(
-      "GET",
-      `/user/installations?per_page=${GITHUB_USER_INSTALLATIONS_PER_PAGE}&page=${page}`,
-      input.accessToken,
-      input.signal,
-    );
-    if (!isRecord(payload)) throw invalidResponse("The GitHub API installations response is malformed");
-    return {
-      totalCount: parseTotalCount(payload.total_count),
-      installations: parsePageItems(payload.installations, "installations", parseGitHubInstallation),
-    };
-  }
-
-  /**
-   * One page of repositories the user can reach through one installation. The official API
-   * 2022-11-28 response carries exactly `total_count` and `repositories`; whether an installation
-   * covers all or only selected repositories is attested on the installation object itself
-   * (`GitHubUserInstallation.repositorySelection`), never on this page.
-   */
-  async listInstallationRepositories(input: {
-    accessToken: string;
-    installationId: string;
-    page: number;
-    signal?: AbortSignal;
-  }): Promise<GitHubInstallationRepositoriesPage> {
-    if (typeof input.installationId !== "string" || !DECIMAL_ID_PATTERN.test(input.installationId)) {
-      throw requestError("The installation ID is invalid");
+  async validateOAuthToken(input: { accessToken: string; signal?: AbortSignal }): Promise<GitHubAuthenticatedUser> {
+    let payload: unknown;
+    try {
+      payload = await this.#sendTokenManagement(
+        { access_token: parseToken(input.accessToken, "access token") },
+        input.signal,
+      );
+    } catch (error) {
+      if (error instanceof GitHubApiClientError && error.status === 404)
+        throw new GitHubApiClientError(
+          GITHUB_API_CLIENT_ERROR_CODES.CREDENTIAL_INVALID,
+          "The OAuth credential is invalid",
+        );
+      throw error;
     }
+    if (!isRecord(payload) || !isRecord(payload.app) || !isRecord(payload.user) || payload.user.type !== "User")
+      throw invalidResponse("The OAuth token identity does not match this client");
+    if (payload.app.client_id !== this.#clientId)
+      throw new GitHubApiClientError(
+        GITHUB_API_CLIENT_ERROR_CODES.CREDENTIAL_INVALID,
+        "The OAuth token belongs to another client",
+      );
+    assertRepositoryScope(payload.scopes);
+    return {
+      id: parseDecimalId(payload.user.id, "user id"),
+      login: parseBoundedString(payload.user.login, "user login", MAX_LOGIN_LENGTH),
+    };
+  }
+
+  async listUserRepositories(input: {
+    accessToken: string;
+    page: number;
+    signal?: AbortSignal;
+  }): Promise<GitHubRepository[]> {
     const page = parsePageNumber(input.page);
     const payload = await this.#sendApi(
       "GET",
-      `/user/installations/${input.installationId}/repositories?per_page=${GITHUB_INSTALLATION_REPOSITORIES_PER_PAGE}&page=${page}`,
+      `/user/repos?per_page=${GITHUB_REPOSITORIES_PER_PAGE}&page=${page}&sort=full_name&direction=asc`,
       input.accessToken,
       input.signal,
     );
-    if (!isRecord(payload)) throw invalidResponse("The GitHub API repositories response is malformed");
-    return {
-      totalCount: parseTotalCount(payload.total_count),
-      repositories: parsePageItems(payload.repositories, "repositories", parseRepository),
-    };
+    return parsePageItems(payload, "repositories", parseRepository);
   }
 
   #parseTokenPayload(payload: unknown): GitHubUserTokenMaterial {
@@ -501,6 +375,10 @@ export class GitHubApiClient {
         `GitHub rejected the OAuth exchange (${slug})`,
       );
     }
+    if (payload.token_type !== "bearer") throw invalidResponse("The OAuth token type is invalid");
+    assertRepositoryScope(
+      typeof payload.scope === "string" ? payload.scope.split(/[ ,]+/).filter(Boolean) : payload.scope,
+    );
     const nowMs = this.#now().getTime();
     const accessExpiresIn = parseLifetimeSeconds(payload.expires_in, "access token expiry");
     const refreshExpiresIn = parseLifetimeSeconds(payload.refresh_token_expires_in, "refresh token expiry");
@@ -557,15 +435,10 @@ export class GitHubApiClient {
     });
   }
 
-  async #sendTokenManagement(
-    method: "POST" | "DELETE",
-    suffix: "" | "/scoped",
-    body: unknown,
-    signal?: AbortSignal,
-  ): Promise<unknown> {
+  async #sendTokenManagement(body: unknown, signal?: AbortSignal): Promise<unknown> {
     return this.#send({
-      method,
-      url: `${GITHUB_API_ORIGIN}/applications/${encodeURIComponent(this.#clientId)}/token${suffix}`,
+      method: "POST",
+      url: `${GITHUB_API_ORIGIN}/applications/${encodeURIComponent(this.#clientId)}/token`,
       headers: {
         accept: "application/vnd.github+json",
         authorization: `Basic ${Buffer.from(`${this.#clientId}:${this.#clientSecret}`).toString("base64")}`,
@@ -575,7 +448,7 @@ export class GitHubApiClient {
       },
       body: JSON.stringify(body),
       signal,
-      expectedStatus: method === "DELETE" ? 204 : 200,
+      expectedStatus: 200,
     });
   }
 
@@ -594,7 +467,7 @@ export class GitHubApiClient {
   }
 
   async #send(options: {
-    method: "GET" | "POST" | "DELETE";
+    method: "GET" | "POST";
     url: string;
     headers: Record<string, string>;
     body?: string;
@@ -722,4 +595,17 @@ function parsePageNumber(value: unknown): number {
     throw requestError("The page number is invalid");
   }
   return value;
+}
+
+function assertRepositoryScope(value: unknown): void {
+  if (
+    !Array.isArray(value) ||
+    value.length > 100 ||
+    value.some((scope) => typeof scope !== "string" || scope.length > 100) ||
+    !value.includes("repo")
+  )
+    throw new GitHubApiClientError(
+      GITHUB_API_CLIENT_ERROR_CODES.CREDENTIAL_INVALID,
+      "The OAuth credential does not grant repo scope",
+    );
 }

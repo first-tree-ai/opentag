@@ -1,4 +1,3 @@
-import { generateKeyPairSync } from "node:crypto";
 import { readMigrationFiles } from "drizzle-orm/migrator";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
@@ -37,12 +36,6 @@ const required = {
   OPENTAG_JWT_SECRET: "a-secret-that-is-at-least-32-characters",
   OPENTAG_PUBLIC_URL: "http://localhost:8000",
 };
-
-const githubAppPrivateKeyPem = generateKeyPairSync("rsa", {
-  modulusLength: 2048,
-  publicKeyEncoding: { type: "spki", format: "pem" },
-  privateKeyEncoding: { type: "pkcs8", format: "pem" },
-}).privateKey;
 
 describe("parseServerConfig", () => {
   it("accepts an image source revision and rejects a malformed deployment proof", () => {
@@ -628,72 +621,39 @@ describe("parseServerConfig", () => {
     }
   });
 
-  it("requires complete GitHub App configuration and a callback on this origin", () => {
+  it("requires an OAuth client pair and the exact local callback origin", () => {
     const github = {
-      OPENTAG_GITHUB_APP_ID: "871235",
-      OPENTAG_GITHUB_APP_CLIENT_ID: "Iv1.githubclient",
-      OPENTAG_GITHUB_APP_CLIENT_SECRET: "github-client-secret",
-      OPENTAG_GITHUB_APP_PRIVATE_KEY: githubAppPrivateKeyPem,
-      OPENTAG_GITHUB_APP_WEBHOOK_SECRET: "github-webhook-secret",
+      OPENTAG_GITHUB_OAUTH_CLIENT_ID: "Ov23testclient",
+      OPENTAG_GITHUB_OAUTH_CLIENT_SECRET: "client-secret",
     };
-    const configured = parseServerConfig({ ...required, ...github });
-    expect(configured.githubApp).toMatchObject({
-      appId: "871235",
-      clientId: "Iv1.githubclient",
-      clientSecret: "github-client-secret",
-      webhookSecret: "github-webhook-secret",
-      oauthCallbackUrl: "http://localhost:8000/api/v1/integrations/github/oauth/callback",
+    expect(parseServerConfig({ ...required, ...github }).githubOAuth).toEqual({
+      clientId: "Ov23testclient",
+      clientSecret: "client-secret",
+      oauthCallbackUrl: "http://localhost:8000/api/v2/integrations/github/oauth/callback",
     });
-    expect(configured.githubApp?.privateKey).toContain("-----BEGIN");
+    expect(parseServerConfig(required).githubOAuth).toBeUndefined();
     expect(
-      parseServerConfig({
-        ...required,
+      parseServerConfig({ ...required, OPENTAG_GITHUB_APP_ID: "871235", OPENTAG_GITHUB_APP_CLIENT_ID: "old" })
+        .githubOAuth,
+    ).toBeUndefined();
+    for (const invalid of [
+      { OPENTAG_GITHUB_OAUTH_CLIENT_ID: "Ov23testclient" },
+      { OPENTAG_GITHUB_OAUTH_CLIENT_SECRET: "client-secret" },
+      {
         ...github,
-        OPENTAG_GITHUB_OAUTH_REDIRECT_URL: "http://localhost:8000",
-      }).githubApp?.oauthCallbackUrl,
-    ).toBe("http://localhost:8000/api/v1/integrations/github/oauth/callback");
-    expect(
-      parseServerConfig({
-        ...required,
+        OPENTAG_GITHUB_OAUTH_REDIRECT_URL: "https://evil.example/api/v2/integrations/github/oauth/callback",
+      },
+      {
         ...github,
         OPENTAG_GITHUB_OAUTH_REDIRECT_URL: "http://localhost:8000/api/v1/integrations/github/oauth/callback",
-      }).githubApp?.oauthCallbackUrl,
-    ).toBe("http://localhost:8000/api/v1/integrations/github/oauth/callback");
-    // A base64-encoded PEM configures identically to the literal form.
-    expect(
-      parseServerConfig({
-        ...required,
-        ...github,
-        OPENTAG_GITHUB_APP_PRIVATE_KEY: Buffer.from(githubAppPrivateKeyPem, "utf8").toString("base64"),
-      }).githubApp?.privateKey,
-    ).toBe(configured.githubApp?.privateKey);
-    expect(parseServerConfig(required).githubApp).toBeUndefined();
-
-    for (const invalid of [
-      { OPENTAG_GITHUB_APP_ID: "871235" },
-      { ...github, OPENTAG_GITHUB_APP_WEBHOOK_SECRET: undefined },
-      { ...github, OPENTAG_GITHUB_APP_ID: "not-decimal" },
-      { ...github, OPENTAG_GITHUB_APP_PRIVATE_KEY: "not-a-pem" },
-      {
-        ...github,
-        OPENTAG_GITHUB_OAUTH_REDIRECT_URL: "https://evil.example/api/v1/integrations/github/oauth/callback",
       },
-      { ...github, OPENTAG_GITHUB_OAUTH_REDIRECT_URL: "http://localhost:8000/api/v1/auth/google/callback" },
-      {
-        ...github,
-        OPENTAG_ENV: "prod",
-        OPENTAG_PUBLIC_URL: "https://opentag.example.com",
-        OPENTAG_GITHUB_OAUTH_REDIRECT_URL: "http://opentag.example.com/api/v1/integrations/github/oauth/callback",
-      },
-    ]) {
+    ])
       expect(() => parseServerConfig({ ...required, ...invalid })).toThrow();
-    }
-    // The all-or-none error never echoes configured material.
     try {
-      parseServerConfig({ ...required, OPENTAG_GITHUB_APP_CLIENT_SECRET: "github-client-secret" });
-      expect.unreachable("partial GitHub App configuration must fail");
+      parseServerConfig({ ...required, OPENTAG_GITHUB_OAUTH_CLIENT_SECRET: "client-secret" });
+      expect.unreachable("partial OAuth configuration must fail");
     } catch (error) {
-      expect(error instanceof Error ? error.message : String(error)).not.toContain("github-client-secret");
+      expect(String(error)).not.toContain("client-secret");
     }
   });
 

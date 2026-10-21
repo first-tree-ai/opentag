@@ -125,7 +125,7 @@ describe("GitHubConnectionStatusSchema", () => {
       id: "9f0f2f6c-2f5c-4d43-a9fb-9a1c9f0000bb",
       accountId: "9f0f2f6c-2f5c-4d43-a9fb-9a1c9f0000cc",
       githubHost: "github.com",
-      appId: "987654",
+      oauthClientId: "987654",
       githubUserId: "42",
       githubLogin: "octocat",
       status: "active",
@@ -152,22 +152,25 @@ describe("GitHubConnectionStatusSchema", () => {
 
 describe("management request DTOs", () => {
   it("defaults the host and return surface on create and rejects unknown fields", () => {
-    expect(CreateGitHubConnectionRequestSchema.parse({ appId: "1234" })).toEqual({
+    expect(CreateGitHubConnectionRequestSchema.parse({ oauthClientId: "1234" })).toEqual({
       githubHost: "github.com",
-      appId: "1234",
+      oauthClientId: "1234",
       returnSurface: "account-integrations",
       agentId: null,
     });
-    expect(CreateGitHubConnectionRequestSchema.safeParse({ appId: "1234", clientSecret: "x" }).success).toBe(false);
+    expect(CreateGitHubConnectionRequestSchema.safeParse({ oauthClientId: "1234", clientSecret: "x" }).success).toBe(
+      false,
+    );
     expect(
       CreateGitHubConnectionRequestSchema.safeParse({
-        appId: "1234",
+        oauthClientId: "1234",
         returnSurface: "agent-integrations",
         agentId: "9f0f2f6c-2f5c-4d43-a9fb-9a1c9f0000dd",
       }).success,
     ).toBe(true);
     expect(
-      CreateGitHubConnectionRequestSchema.safeParse({ appId: "1234", returnSurface: "agent-integrations" }).success,
+      CreateGitHubConnectionRequestSchema.safeParse({ oauthClientId: "1234", returnSurface: "agent-integrations" })
+        .success,
     ).toBe(false);
   });
 

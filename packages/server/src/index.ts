@@ -84,9 +84,8 @@ import { CloudUsageService } from "./services/cloud-usage.js";
 import { ComputerService, MachineAuthService } from "./services/computers/index.js";
 import { ApplicationCipher } from "./services/crypto.js";
 import { createGitHubIntegration } from "./services/github/index.js";
-import { GitHubInstallationTokenClient } from "./services/github/installation-token-client.js";
 import { GitHubCredentialCipher } from "./services/github-credential-material.js";
-import { GitHubUserTokenLeases } from "./services/github-proxy/user-token-leases.js";
+import { GitHubExecutionCredentials } from "./services/github-proxy/execution-credentials.js";
 import { ExternalCallPolicy } from "./services/im/external-call-policy.js";
 import { ImMessageInbox, ImResourceService } from "./services/im/index.js";
 import { SlackWorkingStore } from "./services/im/slack-working-store.js";
@@ -268,10 +267,6 @@ async function createCloudModelRuntime(
   };
 }
 
-function githubInstallationOptions(config: ServerConfig) {
-  return config.githubApp ? { installation: new GitHubInstallationTokenClient(config.githubApp) } : {};
-}
-
 function optionalCloudUsage(config: ServerConfig, cloudUsage: CloudUsageService) {
   return config.cloudModel.enabled ? { cloudUsage } : {};
 }
@@ -399,7 +394,7 @@ function createContextTreeServices(
     ? new CloudContextTreeOperations({
         management: github.management,
         computerKind,
-        leases: new GitHubUserTokenLeases(github.userTokens),
+        credentials: new GitHubExecutionCredentials(github.management),
       })
     : undefined;
   return {
@@ -586,10 +581,10 @@ export async function startServer(): Promise<void> {
      * The GitHub management plane exists only when the deployment App is coherently configured;
      * the routes are registered either way so the UI reads explicit availability instead of a 404.
      */
-    const github = config.githubApp
+    const github = config.githubOAuth
       ? createGitHubIntegration({
           database,
-          config: config.githubApp,
+          config: config.githubOAuth,
           cipher: new GitHubCredentialCipher(applicationCipher),
           worker: {
             logger: {
@@ -1255,13 +1250,12 @@ export async function startServer(): Promise<void> {
           }),
       },
       githubIntegrations: {
-        ...githubInstallationOptions(config),
-        availability: config.githubApp
-          ? ({ available: true, githubHost: "github.com", appId: config.githubApp.appId } as const)
-          : ({ available: false, githubHost: "github.com", appId: null } as const),
+        availability: config.githubOAuth
+          ? ({ available: true, githubHost: "github.com", oauthClientId: config.githubOAuth.clientId } as const)
+          : ({ available: false, githubHost: "github.com", oauthClientId: null } as const),
         publicOrigin: config.publicUrl,
         secureCookies: isHostedEnvironment(config.environment),
-        ...(github ? { management: github.management, webhook: github.webhook } : {}),
+        ...(github ? { management: github.management } : {}),
       },
       ...(setupResetService ? { internalNavigationService, setupResetService } : {}),
       accountSetupService,

@@ -27,9 +27,8 @@ export const githubConnectionStatus = pgEnum("github_connection_status", [
 export const githubConnectionRefreshStatus = pgEnum("github_connection_refresh_status", ["idle", "claimed", "unknown"]);
 
 /**
- * One row is one OpenTag Account's current-or-historical connection to one GitHub App on one GitHub
- * host. The current row is unique per (account_id, github_host, app_id); revoked/superseded rows are
- * retained history and never hold secrets.
+ * One row is a current OAuth connection or retained connection history. An Account has at most
+ * one current OAuth connection per host. Legacy App rows remain terminal and never hold secrets.
  *
  * Lifecycle groupings enforced as SQL checks: secret pairs (credential ciphertext/key ID, token
  * expiries, encrypted OAuth slot/key ID) are null together or present together; active rows carry
@@ -47,7 +46,8 @@ export const githubConnections = pgTable(
       .references(() => users.id, { onDelete: "restrict" }),
     githubHost: text("github_host").notNull(),
     /** The GitHub App's numeric ID (not its client ID), as a decimal string. */
-    appId: text("app_id").notNull(),
+    appId: text("app_id"),
+    oauthClientId: text("oauth_client_id"),
     githubUserId: text("github_user_id"),
     githubLogin: text("github_login"),
     status: githubConnectionStatus("status").notNull().default("pending"),
@@ -86,6 +86,20 @@ export const githubConnections = pgTable(
     uniqueIndex("github_connections_current_unique")
       .on(table.accountId, table.githubHost, table.appId)
       .where(sql`${table.status} in ('pending', 'active', 'reauthorization_required')`),
+    uniqueIndex("github_connections_oauth_current_unique")
+      .on(table.accountId, table.githubHost)
+      .where(
+        sql`${table.oauthClientId} is not null and ${table.status} in ('pending', 'active', 'reauthorization_required')`,
+      ),
+    check(
+      "github_connections_application_shape",
+      sql`(
+        ${table.appId} is not null and ${table.oauthClientId} is null and ${table.status} in ('revoked', 'superseded')
+      ) or (
+        ${table.appId} is null and ${table.oauthClientId} is not null and
+        char_length(${table.oauthClientId}) between 1 and 255 and ${table.oauthClientId} = btrim(${table.oauthClientId})
+      )`,
+    ),
     uniqueIndex("github_connections_oauth_state_unique")
       .on(table.oauthStateHash)
       .where(sql`${table.oauthStateHash} is not null`),

@@ -8,7 +8,7 @@ const binding: GitHubUserCredentialBinding = {
   connectionId: "aabbccdd-1234-4234-8234-123456789abc",
   accountId: "aabbccdd-1234-4234-8234-123456789abd",
   githubHost: "github.com",
-  appId: "123",
+  oauthClientId: "123",
   githubUserId: "456",
 };
 const credential = { accessToken: "access-secret", refreshToken: "refresh-secret" };
@@ -16,7 +16,7 @@ const oauthBinding = {
   connectionId: binding.connectionId,
   accountId: binding.accountId,
   githubHost: binding.githubHost,
-  appId: binding.appId,
+  oauthClientId: binding.oauthClientId,
   flowId: "aabbccdd-1234-4234-8234-123456789abe",
 };
 
@@ -31,7 +31,7 @@ describe("GitHub credential material", () => {
   it.each([
     { connectionId: "aabbccdd-1234-4234-8234-123456789abf" },
     { accountId: "aabbccdd-1234-4234-8234-123456789abf" },
-    { appId: "124" },
+    { oauthClientId: "124" },
     { githubUserId: "457" },
   ])("rejects moving the encrypted pair to a different identity %j", (other) => {
     const encrypted = material.encryptUserCredential(binding, credential);

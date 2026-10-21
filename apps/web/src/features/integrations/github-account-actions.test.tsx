@@ -5,7 +5,7 @@ import { browserApi } from "../../api.js";
 import { GitHubIntegrationSettings } from "../account/github-integration-settings.js";
 
 const empty: GitHubIntegrationOverview = {
-  availability: { available: true, githubHost: "github.com", appId: "871235" },
+  availability: { available: true, githubHost: "github.com", oauthClientId: "871235" },
   connection: null,
 };
 afterEach(() => vi.restoreAllMocks());

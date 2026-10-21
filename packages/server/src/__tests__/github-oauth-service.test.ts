@@ -8,7 +8,7 @@ import { GitHubOAuthService } from "../services/github/github-oauth-service.js";
 import { sha256Hex } from "../services/github/hashes.js";
 import {
   createAccount,
-  GITHUB_TEST_APP_ID,
+  GITHUB_TEST_CLIENT_ID,
   stubGitHubApi,
   testCredentialCipher,
   tokenMaterial,
@@ -17,7 +17,7 @@ import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.j
 
 let unit: UnitDatabase;
 const cipher = testCredentialCipher();
-const REDIRECT_URI = "https://opentag.example.com/api/v1/integrations/github/oauth/callback";
+const REDIRECT_URI = "https://opentag.example.com/api/v2/integrations/github/oauth/callback";
 const sessionSecret = "session-secret";
 const loginSessionHash = sha256Hex(`account:${sessionSecret}`);
 
@@ -41,7 +41,7 @@ function oauthService(api: ReturnType<typeof stubGitHubApi>) {
     connections,
     cipher,
     api: api.asClient(),
-    clientId: "Iv1.client",
+    clientId: "Ov23testclient",
     redirectUri: REDIRECT_URI,
   });
   return { connections, service };
@@ -61,12 +61,12 @@ describe("GitHubOAuthService.startAuthorization", () => {
       returnSurface: "account-integrations",
       agentId: null,
       loginSessionHash,
-      appId: GITHUB_TEST_APP_ID,
+      oauthClientId: GITHUB_TEST_CLIENT_ID,
     });
     const url = new URL(started.authorizationUrl);
     expect(url.origin).toBe("https://github.com");
     expect(url.pathname).toBe("/login/oauth/authorize");
-    expect(url.searchParams.get("client_id")).toBe("Iv1.client");
+    expect(url.searchParams.get("client_id")).toBe("Ov23testclient");
     expect(url.searchParams.get("redirect_uri")).toBe(REDIRECT_URI);
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
     const challenge = url.searchParams.get("code_challenge");
@@ -93,14 +93,14 @@ describe("GitHubOAuthService.startAuthorization", () => {
       returnSurface: "account-integrations",
       agentId: null,
       loginSessionHash,
-      appId: GITHUB_TEST_APP_ID,
+      oauthClientId: GITHUB_TEST_CLIENT_ID,
     });
     const second = await service.startAuthorization(id, {
       intent: "create",
       returnSurface: "account-integrations",
       agentId: null,
       loginSessionHash,
-      appId: GITHUB_TEST_APP_ID,
+      oauthClientId: GITHUB_TEST_CLIENT_ID,
     });
     expect(second.connectionId).toBe(first.connectionId);
     expect(new URL(second.authorizationUrl).searchParams.get("state")).not.toBe(
@@ -121,14 +121,14 @@ describe("GitHubOAuthService.startAuthorization", () => {
       returnSurface: "account-integrations",
       agentId: null,
       loginSessionHash,
-      appId: GITHUB_TEST_APP_ID,
+      oauthClientId: GITHUB_TEST_CLIENT_ID,
     });
     const started = await service.startAuthorization(id, {
       intent: "create",
       returnSurface: "account-integrations",
       agentId: null,
       loginSessionHash,
-      appId: GITHUB_TEST_APP_ID,
+      oauthClientId: GITHUB_TEST_CLIENT_ID,
     });
     await service.completeCallback(id, callbackFromUrl(started.authorizationUrl));
     await expect(
@@ -137,7 +137,7 @@ describe("GitHubOAuthService.startAuthorization", () => {
         returnSurface: "account-integrations",
         agentId: null,
         loginSessionHash,
-        appId: GITHUB_TEST_APP_ID,
+        oauthClientId: GITHUB_TEST_CLIENT_ID,
       }),
     ).rejects.toMatchObject({ code: GITHUB_CONNECTION_ERROR_CODES.CONNECTION_CONFLICT });
     const other = await createAccount(unit);
@@ -147,7 +147,7 @@ describe("GitHubOAuthService.startAuthorization", () => {
         returnSurface: "account-integrations",
         agentId: null,
         loginSessionHash,
-        appId: GITHUB_TEST_APP_ID,
+        oauthClientId: GITHUB_TEST_CLIENT_ID,
       }),
     ).rejects.toMatchObject({ code: GITHUB_CONNECTION_ERROR_CODES.CONNECTION_NOT_FOUND });
   });
@@ -171,7 +171,7 @@ describe("GitHubOAuthService.completeCallback", () => {
       returnSurface: "account-integrations",
       agentId: null,
       loginSessionHash,
-      appId: GITHUB_TEST_APP_ID,
+      oauthClientId: GITHUB_TEST_CLIENT_ID,
     });
     // The sealed verifier opens to the PKCE secret whose challenge the URL carried.
     const challenge = new URL(started.authorizationUrl).searchParams.get("code_challenge");
@@ -193,7 +193,7 @@ describe("GitHubOAuthService.completeCallback", () => {
         connectionId: row?.id as string,
         accountId: id,
         githubHost: "github.com",
-        appId: GITHUB_TEST_APP_ID,
+        oauthClientId: GITHUB_TEST_CLIENT_ID,
         githubUserId: "42",
       },
       { ciphertext: row?.credentialCiphertext as string, keyId: row?.credentialKeyId as string },
@@ -218,7 +218,7 @@ describe("GitHubOAuthService.completeCallback", () => {
       returnSurface: "account-integrations",
       agentId: null,
       loginSessionHash,
-      appId: GITHUB_TEST_APP_ID,
+      oauthClientId: GITHUB_TEST_CLIENT_ID,
     });
     await service.completeCallback(id, callbackFromUrl(created.authorizationUrl));
     // The owner's repository scopes carry their explicit task delegation; reauthorization must not
@@ -250,7 +250,7 @@ describe("GitHubOAuthService.completeCallback", () => {
       returnSurface: "account-integrations",
       agentId: null,
       loginSessionHash,
-      appId: GITHUB_TEST_APP_ID,
+      oauthClientId: GITHUB_TEST_CLIENT_ID,
     });
     expect(reauth.connectionId).toBe(created.connectionId);
     api.exchangeCodeForUserToken.mockResolvedValue(tokenMaterial({ accessToken: "ghu_next" }));
@@ -273,7 +273,7 @@ describe("GitHubOAuthService.completeCallback", () => {
       returnSurface: "account-integrations",
       agentId: null,
       loginSessionHash,
-      appId: GITHUB_TEST_APP_ID,
+      oauthClientId: GITHUB_TEST_CLIENT_ID,
     });
     await service.completeCallback(id, callbackFromUrl(created.authorizationUrl));
     // The owner's repository scopes carry their explicit task delegation; reauthorization must not
@@ -305,7 +305,7 @@ describe("GitHubOAuthService.completeCallback", () => {
       returnSurface: "account-integrations",
       agentId: null,
       loginSessionHash,
-      appId: GITHUB_TEST_APP_ID,
+      oauthClientId: GITHUB_TEST_CLIENT_ID,
     });
     api.getAuthenticatedUser.mockResolvedValue({ id: "77", login: "impostor" });
     await expect(service.completeCallback(id, callbackFromUrl(reauth.authorizationUrl))).rejects.toMatchObject({
@@ -330,7 +330,7 @@ describe("GitHubOAuthService.completeCallback", () => {
       returnSurface: "account-integrations",
       agentId: null,
       loginSessionHash,
-      appId: GITHUB_TEST_APP_ID,
+      oauthClientId: GITHUB_TEST_CLIENT_ID,
     });
     await service.completeCallback(id, callbackFromUrl(created.authorizationUrl));
     // Seed a binding so the replace must prove it is not inherited.
@@ -360,7 +360,7 @@ describe("GitHubOAuthService.completeCallback", () => {
       returnSurface: "account-integrations",
       agentId: null,
       loginSessionHash,
-      appId: GITHUB_TEST_APP_ID,
+      oauthClientId: GITHUB_TEST_CLIENT_ID,
     });
     api.getAuthenticatedUser.mockResolvedValue({ id: "77", login: "new-user" });
     const result = await service.completeCallback(id, callbackFromUrl(replace.authorizationUrl));
@@ -392,7 +392,7 @@ describe("GitHubOAuthService.completeCallback", () => {
       returnSurface: "account-integrations",
       agentId: null,
       loginSessionHash,
-      appId: GITHUB_TEST_APP_ID,
+      oauthClientId: GITHUB_TEST_CLIENT_ID,
     });
     const state = new URL(started.authorizationUrl).searchParams.get("state") as string;
     const error = await service
@@ -418,7 +418,7 @@ describe("GitHubOAuthService.completeCallback", () => {
       returnSurface: "account-integrations",
       agentId: null,
       loginSessionHash,
-      appId: GITHUB_TEST_APP_ID,
+      oauthClientId: GITHUB_TEST_CLIENT_ID,
     });
     await expect(
       service.completeCallback(id, {
@@ -448,7 +448,7 @@ describe("GitHubOAuthService.abortCallback", () => {
       returnSurface: "agent-integrations",
       agentId,
       loginSessionHash,
-      appId: GITHUB_TEST_APP_ID,
+      oauthClientId: GITHUB_TEST_CLIENT_ID,
     });
     const aborted = await service.abortCallback(id, {
       state: new URL(started.authorizationUrl).searchParams.get("state") as string,

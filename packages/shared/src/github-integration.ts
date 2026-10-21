@@ -197,7 +197,7 @@ export const GitHubConnectionStatusSchema = z
     id: UuidSchema,
     accountId: UuidSchema,
     githubHost: z.string().min(1).max(255),
-    appId: GitHubDecimalIdSchema,
+    oauthClientId: z.string().trim().min(1).max(255),
     githubUserId: GitHubDecimalIdSchema.nullable(),
     githubLogin: z.string().min(1).max(100).nullable(),
     status: GitHubConnectionStateSchema,
@@ -221,7 +221,7 @@ export const GitHubConnectionStatusSchema = z
 export const CreateGitHubConnectionRequestSchema = z
   .object({
     githubHost: z.literal("github.com").default("github.com"),
-    appId: GitHubDecimalIdSchema,
+    oauthClientId: z.string().trim().min(1).max(255),
     returnSurface: GitHubOAuthReturnSurfaceSchema.default("account-integrations"),
     agentId: UuidSchema.nullable().default(null),
   })

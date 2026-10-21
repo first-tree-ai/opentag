@@ -46,14 +46,12 @@ export const SLACK_OAUTH_CALLBACK_PATH = `${API_V1_PREFIX}/im-bindings/slack/oau
  * connection per Account; the OAuth callback and webhook are the only unauthenticated paths and
  * each has its own verification (state+session claim, raw-body HMAC).
  */
-export const GITHUB_INTEGRATION_PATH = `${API_V1_PREFIX}/integrations/github`;
+export const GITHUB_INTEGRATION_PATH = "/api/v2/integrations/github";
 export const GITHUB_INTEGRATION_AUTHORIZATION_PATH = `${GITHUB_INTEGRATION_PATH}/authorization`;
-export const GITHUB_INTEGRATION_INSTALLATION_PATH = `${GITHUB_INTEGRATION_PATH}/installation`;
 export const GITHUB_INTEGRATION_REPOSITORIES_PATH = `${GITHUB_INTEGRATION_PATH}/repositories`;
 export const GITHUB_INTEGRATION_BINDINGS_PATH = `${GITHUB_INTEGRATION_PATH}/bindings`;
 export const GITHUB_INTEGRATION_DISCONNECT_PATH = `${GITHUB_INTEGRATION_PATH}/disconnect`;
 export const GITHUB_OAUTH_CALLBACK_PATH = `${GITHUB_INTEGRATION_PATH}/oauth/callback`;
-export const GITHUB_WEBHOOK_PATH = `${GITHUB_INTEGRATION_PATH}/webhook`;
 export const RUNTIME_IM_RESOURCE_TEMPLATE = `${API_V1_PREFIX}/runtime/im-messages/:imMessageId/resources/:ordinal`;
 export const RUNTIME_INTERNAL_SESSIONS_PATH = `${API_V1_PREFIX}/runtime/sessions/internal`;
 export const RUNTIME_SESSION_MESSAGES_PATH = `${API_V1_PREFIX}/runtime/session-messages`;
@@ -199,7 +197,6 @@ export const HTTP_PATHS = {
   slackEvents: SLACK_EVENTS_PATH,
   githubIntegration: GITHUB_INTEGRATION_PATH,
   githubOAuthCallback: GITHUB_OAUTH_CALLBACK_PATH,
-  githubWebhook: GITHUB_WEBHOOK_PATH,
   mcpServers: MCP_SERVERS_PATH,
   mcpOAuthCallback: MCP_OAUTH_CALLBACK_PATH,
   mcpClientMetadata: MCP_CLIENT_METADATA_PATH,

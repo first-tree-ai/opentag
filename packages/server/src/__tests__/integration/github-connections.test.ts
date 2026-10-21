@@ -70,7 +70,8 @@ async function completeFlow(
   const existing = await connections.getCurrentConnection(accountId, "github.com", "871235");
   let flow: GitHubAuthorizationFlowHandle;
   if (intent === "create") {
-    flow = (await connections.createConnection(accountId, { appId: "871235", loginSessionHash: sessionHash })).flow;
+    flow = (await connections.createConnection(accountId, { oauthClientId: "871235", loginSessionHash: sessionHash }))
+      .flow;
   } else {
     if (!existing) throw new Error("Missing current connection for the flow");
     flow = await connections.beginAuthorizationFlow(accountId, existing.id, { intent, loginSessionHash: sessionHash });
@@ -108,12 +109,12 @@ function bindingFor(agentId: string): GitHubRepositoryBinding[] {
 }
 
 describe("GitHub connection lifecycle", () => {
-  it("keeps a single current row per account, host, and app", async () => {
+  it("keeps a single current row per account and host", async () => {
     const accountId = await createAccount("single@example.com");
     const connections = service();
-    await connections.createConnection(accountId, { appId: "871235", loginSessionHash: sessionHash });
+    await connections.createConnection(accountId, { oauthClientId: "871235", loginSessionHash: sessionHash });
     await expect(
-      connections.createConnection(accountId, { appId: "871235", loginSessionHash: sessionHash }),
+      connections.createConnection(accountId, { oauthClientId: "871235", loginSessionHash: sessionHash }),
     ).rejects.toMatchObject({ code: "GITHUB_CONNECTION_CONFLICT" });
 
     const pending = await connections.getCurrentConnection(accountId, "github.com", "871235");
@@ -121,7 +122,10 @@ describe("GitHub connection lifecycle", () => {
     const revoked = await connections.disconnect(accountId, pending.id);
     expect(revoked.status).toBe("revoked");
 
-    const recreated = await connections.createConnection(accountId, { appId: "871235", loginSessionHash: sessionHash });
+    const recreated = await connections.createConnection(accountId, {
+      oauthClientId: "871235",
+      loginSessionHash: sessionHash,
+    });
     expect(recreated.connection.id).not.toBe(pending.id);
     const rows = await client.database
       .select()
@@ -133,7 +137,10 @@ describe("GitHub connection lifecycle", () => {
   it("activates a pending connection exactly once and guards the flow", async () => {
     const accountId = await createAccount("activate@example.com");
     const connections = service();
-    const { flow } = await connections.createConnection(accountId, { appId: "871235", loginSessionHash: sessionHash });
+    const { flow } = await connections.createConnection(accountId, {
+      oauthClientId: "871235",
+      loginSessionHash: sessionHash,
+    });
     const stateHash = sha256Hex(flow.state);
 
     await expect(connections.claimOAuthCallback({ stateHash, loginSessionHash: "b".repeat(64) })).rejects.toMatchObject(
@@ -242,7 +249,10 @@ describe("GitHub connection lifecycle", () => {
   it("never resurrects a disconnected row through a late OAuth callback", async () => {
     const accountId = await createAccount("late@example.com");
     const connections = service();
-    const { flow } = await connections.createConnection(accountId, { appId: "871235", loginSessionHash: sessionHash });
+    const { flow } = await connections.createConnection(accountId, {
+      oauthClientId: "871235",
+      loginSessionHash: sessionHash,
+    });
     const stateHash = sha256Hex(flow.state);
     const claim = await connections.claimOAuthCallback({ stateHash, loginSessionHash: sessionHash });
     await connections.disconnect(accountId, flow.connectionId);
@@ -291,7 +301,7 @@ describe("GitHub connection lifecycle", () => {
     const accountId = await createAccount("dto@example.com");
     const connections = service();
     const { connection: pending, flow } = await connections.createConnection(accountId, {
-      appId: "871235",
+      oauthClientId: "871235",
       loginSessionHash: sessionHash,
       oauthSecret: () => ({ ciphertext: "encrypted-pkce-verifier", keyId: "key-2026-09" }),
     });
@@ -330,9 +340,9 @@ describe("GitHub connection lifecycle", () => {
 });
 
 describe("GitHub connection SQL constraints", () => {
-  it("enforces active completeness, secret pairs, decimal IDs, and bounded JSON", async () => {
+  it("enforces active completeness, secret pairs, OAuth client IDs, and bounded JSON", async () => {
     const accountId = await createAccount("constraints@example.com");
-    const base = { accountId, githubHost: "github.com", appId: "871235" };
+    const base = { accountId, githubHost: "github.com", oauthClientId: "871235" };
     const activeIdentity = { githubUserId: "424242", githubLogin: "octocat" };
 
     await expect(
@@ -354,7 +364,7 @@ describe("GitHub connection SQL constraints", () => {
     ).rejects.toThrow();
 
     await expect(
-      client.database.insert(githubConnections).values({ accountId, githubHost: "github.com", appId: "87a235" }),
+      client.database.insert(githubConnections).values({ accountId, githubHost: "github.com", oauthClientId: " " }),
     ).rejects.toThrow();
 
     await expect(

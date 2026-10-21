@@ -34,7 +34,7 @@ beforeEach(async () => {
     .values({
       accountId,
       githubHost: "github.com",
-      appId: "123",
+      oauthClientId: "Ov23testclient",
       githubUserId: "456",
       githubLogin: "owner",
       status: "active",
@@ -52,7 +52,11 @@ beforeEach(async () => {
 
 describe("GitHub one-time refresh safety", () => {
   it("does not exchange the same token again after a worker loses its result", async () => {
-    const store = new GitHubCredentialRefreshStore(client.database, { now: () => clock, claimTtlMs: 1000 });
+    const store = new GitHubCredentialRefreshStore(client.database, {
+      oauthClientId: "Ov23testclient",
+      now: () => clock,
+      claimTtlMs: 1000,
+    });
     const first = await store.claimRefresh(connectionId);
     expect(first.claimed).toBe(true);
     clock = new Date(clock.getTime() + 1001);
@@ -67,7 +71,7 @@ describe("GitHub one-time refresh safety", () => {
   });
 
   it("beginning OAuth cannot erase a live refresh claim and permit duplicate consumption", async () => {
-    const options = { now: () => clock };
+    const options = { oauthClientId: "Ov23testclient", now: () => clock };
     const refresh = new GitHubCredentialRefreshStore(client.database, options);
     expect((await refresh.claimRefresh(connectionId)).claimed).toBe(true);
     await new GitHubConnectionService(client.database, options).beginAuthorizationFlow(accountId, connectionId, {

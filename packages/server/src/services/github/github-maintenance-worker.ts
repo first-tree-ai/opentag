@@ -57,7 +57,7 @@ export interface GitHubMaintenanceWorkerOptions {
 
 export interface GitHubMaintenanceTickSummary {
   sweptFlows: number;
-  deletedPending: number;
+
   refresh: { claimed: number; completed: number; failed: number; released: number; skipped: number };
   recheck: { scanned: number; healthy: number; permissionRevoked: number; unauthorized: number; transient: number };
 }
@@ -165,13 +165,12 @@ export class GitHubMaintenanceWorker {
     const deadline = this.#now().getTime() + this.#tickBudgetMs;
     const summary: GitHubMaintenanceTickSummary = {
       sweptFlows: 0,
-      deletedPending: 0,
+
       refresh: { claimed: 0, completed: 0, failed: 0, released: 0, skipped: 0 },
       recheck: { scanned: 0, healthy: 0, permissionRevoked: 0, unauthorized: 0, transient: 0 },
     };
     const swept = await this.#recheckStore.sweepExpiredOAuthFlows({ limit: 100 });
     summary.sweptFlows = swept.clearedFlows;
-    summary.deletedPending = swept.deletedPending;
 
     const candidates = await this.#refreshStore.listRefreshDue({
       withinMs: this.#refreshWithinMs,
@@ -214,6 +213,15 @@ export class GitHubMaintenanceWorker {
   async #exchangeRefresh(claim: ClaimedGitHubRefresh): Promise<boolean> {
     const current = this.#decryptClaimed(claim);
     const tokens = await this.#api.refreshUserToken({ refreshToken: current.refreshToken });
+    try {
+      const user = await this.#api.validateOAuthToken({ accessToken: tokens.accessToken });
+      if (user.id !== claim.githubUserId) throw new Error("OAuth refresh identity changed");
+    } catch {
+      throw new GitHubApiClientError(
+        GITHUB_API_CLIENT_ERROR_CODES.CREDENTIAL_INVALID,
+        "The rotated OAuth credential could not be verified",
+      );
+    }
     const sealed = this.#cipher.encryptUserCredential(bindingOf(claim), {
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
@@ -312,7 +320,7 @@ export class GitHubMaintenanceWorker {
           connectionId: snapshot.connectionId,
           accountId: snapshot.accountId,
           githubHost: "github.com",
-          appId: snapshot.appId,
+          oauthClientId: snapshot.oauthClientId,
           githubUserId: snapshot.githubUserId,
         },
         snapshot.credential,
@@ -331,7 +339,7 @@ export class GitHubMaintenanceWorker {
       return { kind: "transient_failure", errorCode: GITHUB_ACCESS_TOKEN_EXPIRED_CODE };
     }
     try {
-      const user = await this.#api.getAuthenticatedUser({ accessToken });
+      const user = await this.#api.validateOAuthToken({ accessToken });
       if (user.id !== snapshot.githubUserId) {
         return { kind: "unauthorized", errorCode: GITHUB_IDENTITY_MISMATCH_CODE };
       }
@@ -369,7 +377,7 @@ function bindingOf(claim: ClaimedGitHubRefresh) {
     connectionId: claim.connectionId,
     accountId: claim.accountId,
     githubHost: "github.com" as const,
-    appId: claim.appId,
+    oauthClientId: claim.oauthClientId,
     githubUserId: claim.githubUserId,
   };
 }

@@ -1,4 +1,3 @@
-import { createPrivateKey } from "node:crypto";
 import { isIP } from "node:net";
 import { fileURLToPath } from "node:url";
 import {
@@ -214,65 +213,6 @@ const EncryptionKeyRingSchema = z
 const ServerLogLevelSchema = z.enum(["trace", "debug", "info", "warn", "error", "fatal", "silent"]).default("info");
 export type ServerLogLevel = z.infer<typeof ServerLogLevelSchema>;
 
-/*
- * The App private key arrives either as a base64-encoded PEM (friendly to single-line environment
- * variables) or as a PEM literal with escaped or real newlines. Validation only checks that the
- * material parses as an RSA key of at least 2048 bits; the value itself never appears in an issue
- * or error message, because it is key material.
- */
-const GitHubAppPrivateKeySchema = z
-  .string()
-  .min(1)
-  .max(16 * 1024)
-  .optional()
-  .transform((value, context) => {
-    if (value === undefined) return undefined;
-    const pem = normalizeGitHubAppPrivateKey(value);
-    if (!pem) {
-      context.addIssue({ code: "custom", message: "Must be a base64-encoded or literal PEM private key" });
-      return z.NEVER;
-    }
-    try {
-      const key = createPrivateKey({ key: pem, format: "pem" });
-      if (key.asymmetricKeyType !== "rsa" || (key.asymmetricKeyDetails?.modulusLength ?? 0) < 2048) {
-        context.addIssue({ code: "custom", message: "Must be an RSA private key of at least 2048 bits" });
-        return z.NEVER;
-      }
-    } catch {
-      context.addIssue({ code: "custom", message: "Must be a parseable PEM private key" });
-      return z.NEVER;
-    }
-    return pem;
-  });
-
-function normalizeGitHubAppPrivateKey(value: string): string | undefined {
-  const trimmed = value.trim();
-  const candidates = [trimmed.replaceAll("\\n", "\n")];
-  try {
-    const decoded = Buffer.from(trimmed, "base64").toString("utf8");
-    if (decoded) candidates.push(decoded);
-  } catch {
-    // Not base64; the literal candidate above is the only one.
-  }
-  for (const candidate of candidates) {
-    if (candidate.includes("-----BEGIN") && candidate.includes("-----END")) {
-      // Canonical form: trimmed body with one trailing newline, so every spelling stores alike.
-      return `${candidate.trim()}\n`;
-    }
-  }
-  return undefined;
-}
-
-/**
- * The deployment GitHub App's cross-field rules: all five material values together or none, and an
- * optional callback URL that stays on this server's origin (HTTPS there when hosted). Extracted from
- * the schema's refinement so the App rule reads as one unit.
- */
-/**
- * The MCP Google client is a separate pair from the sign-in one: it has its own redirect URI and
- * consent scopes, so a half-configured pair must fail startup rather than silently disable Google
- * Workspace authorizations.
- */
 function validateMcpGoogleClientPair(
   value: {
     OPENTAG_MCP_GOOGLE_CLIENT_ID?: string | undefined;
@@ -341,32 +281,22 @@ function resolveMcpGoogleOAuth(parsed: {
   };
 }
 
-function validateGitHubAppConfiguration(
+function validateGitHubOAuthConfiguration(
   value: {
-    OPENTAG_GITHUB_APP_ID?: string | undefined;
-    OPENTAG_GITHUB_APP_CLIENT_ID?: string | undefined;
-    OPENTAG_GITHUB_APP_CLIENT_SECRET?: string | undefined;
-    OPENTAG_GITHUB_APP_PRIVATE_KEY?: string | undefined;
-    OPENTAG_GITHUB_APP_WEBHOOK_SECRET?: string | undefined;
+    OPENTAG_GITHUB_OAUTH_CLIENT_ID?: string | undefined;
+    OPENTAG_GITHUB_OAUTH_CLIENT_SECRET?: string | undefined;
     OPENTAG_GITHUB_OAUTH_REDIRECT_URL?: string | undefined;
     OPENTAG_PUBLIC_URL: string;
     OPENTAG_ENV: ChannelName;
   },
   context: z.RefinementCtx,
 ): void {
-  const githubAppValues = [
-    value.OPENTAG_GITHUB_APP_ID,
-    value.OPENTAG_GITHUB_APP_CLIENT_ID,
-    value.OPENTAG_GITHUB_APP_CLIENT_SECRET,
-    value.OPENTAG_GITHUB_APP_PRIVATE_KEY,
-    value.OPENTAG_GITHUB_APP_WEBHOOK_SECRET,
-  ];
-  const githubAppConfiguredCount = githubAppValues.filter(Boolean).length;
-  if (githubAppConfiguredCount > 0 && githubAppConfiguredCount < githubAppValues.length) {
+  const githubOAuthValues = [value.OPENTAG_GITHUB_OAUTH_CLIENT_ID, value.OPENTAG_GITHUB_OAUTH_CLIENT_SECRET];
+  const githubOAuthConfiguredCount = githubOAuthValues.filter(Boolean).length;
+  if (githubOAuthConfiguredCount > 0 && githubOAuthConfiguredCount < githubOAuthValues.length) {
     context.addIssue({
       code: "custom",
-      message:
-        "OPENTAG_GITHUB_APP_ID, OPENTAG_GITHUB_APP_CLIENT_ID, OPENTAG_GITHUB_APP_CLIENT_SECRET, OPENTAG_GITHUB_APP_PRIVATE_KEY, and OPENTAG_GITHUB_APP_WEBHOOK_SECRET must be configured together",
+      message: "OPENTAG_GITHUB_OAUTH_CLIENT_ID and OPENTAG_GITHUB_OAUTH_CLIENT_SECRET must be configured together",
     });
   }
   if (value.OPENTAG_GITHUB_OAUTH_REDIRECT_URL) {
@@ -440,19 +370,13 @@ const ServerEnvironmentSchema = z
     OPENTAG_SLACK_SIGNING_SECRET: z.string().min(1).optional(),
     OPENTAG_SLACK_REDIRECT_URL: z.string().min(1).optional(),
     /*
-     * Deployment-level GitHub App. All five material values are configured together or not at all;
+     * Deployment-level GitHub OAuth App. Both client values are configured together or not at all;
      * an absent group disables the integration with explicit availability metadata rather than a
      * half-configured one. The App must issue expiring user access tokens — the management plane
      * refuses the non-expiring kind instead of silently accepting a credential it cannot maintain.
      */
-    OPENTAG_GITHUB_APP_ID: z
-      .string()
-      .regex(/^[1-9][0-9]{0,18}$/, "Must be the GitHub App's numeric ID as a decimal string")
-      .optional(),
-    OPENTAG_GITHUB_APP_CLIENT_ID: z.string().trim().min(1).max(255).optional(),
-    OPENTAG_GITHUB_APP_CLIENT_SECRET: z.string().min(1).max(255).optional(),
-    OPENTAG_GITHUB_APP_PRIVATE_KEY: GitHubAppPrivateKeySchema,
-    OPENTAG_GITHUB_APP_WEBHOOK_SECRET: z.string().min(1).max(255).optional(),
+    OPENTAG_GITHUB_OAUTH_CLIENT_ID: z.string().trim().min(1).max(255).optional(),
+    OPENTAG_GITHUB_OAUTH_CLIENT_SECRET: z.string().min(1).max(255).optional(),
     OPENTAG_GITHUB_OAUTH_REDIRECT_URL: z.string().min(1).optional(),
     OPENTAG_HOST: z.string().min(1).default("127.0.0.1"),
     OPENTAG_JWT_SECRET: z.string().min(32),
@@ -592,7 +516,7 @@ const ServerEnvironmentSchema = z
         });
       }
     }
-    validateGitHubAppConfiguration(value, context);
+    validateGitHubOAuthConfiguration(value, context);
     if (isHostedEnvironment(value.OPENTAG_ENV) && !value.OPENTAG_PUBLIC_URL.startsWith("https://")) {
       context.addIssue({ code: "custom", message: "OPENTAG_PUBLIC_URL must use HTTPS in hosted environments" });
     }
@@ -854,11 +778,11 @@ export interface ServerConfig {
   google?: { clientId: string; clientSecret: string };
   slackOAuth?: { clientId: string; clientSecret: string; signingSecret: string; redirectUrl: string };
   /**
-   * The deployment-level GitHub App the management plane connects Accounts to, present only when
+   * The deployment-level GitHub OAuth App the management plane connects Accounts to, present only when
    * coherently configured (all values together). Secrets stay in this object; they are never
    * logged. `oauthCallbackUrl` is the resolved exact callback on this server's public origin.
    */
-  githubApp?: GitHubAppConfig;
+  githubOAuth?: GitHubOAuthConfig;
   host: string;
   /** Signs Slack OAuth state. No longer signs any Account credential; Better Auth owns those. */
   jwtSecret: string;
@@ -975,14 +899,9 @@ export type WebToolsConfig =
 
 export type CloudIdentitiesConfig = { enabled: false } | { enabled: true; storageBase: string; runnerVersion: string };
 
-export interface GitHubAppConfig {
-  /** The GitHub App's numeric ID (decimal string), not its client ID. */
-  appId: string;
+export interface GitHubOAuthConfig {
   clientId: string;
   clientSecret: string;
-  /** Normalized PEM; parse-validated RSA >= 2048 bits at config load. */
-  privateKey: string;
-  webhookSecret: string;
   oauthCallbackUrl: string;
 }
 
@@ -1043,11 +962,8 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_SLACK_CLIENT_SECRET: emptyToUndefined(environment.OPENTAG_SLACK_CLIENT_SECRET),
     OPENTAG_SLACK_SIGNING_SECRET: emptyToUndefined(environment.OPENTAG_SLACK_SIGNING_SECRET),
     OPENTAG_SLACK_REDIRECT_URL: emptyToUndefined(environment.OPENTAG_SLACK_REDIRECT_URL),
-    OPENTAG_GITHUB_APP_ID: emptyToUndefined(environment.OPENTAG_GITHUB_APP_ID),
-    OPENTAG_GITHUB_APP_CLIENT_ID: emptyToUndefined(environment.OPENTAG_GITHUB_APP_CLIENT_ID),
-    OPENTAG_GITHUB_APP_CLIENT_SECRET: emptyToUndefined(environment.OPENTAG_GITHUB_APP_CLIENT_SECRET),
-    OPENTAG_GITHUB_APP_PRIVATE_KEY: emptyToUndefined(environment.OPENTAG_GITHUB_APP_PRIVATE_KEY),
-    OPENTAG_GITHUB_APP_WEBHOOK_SECRET: emptyToUndefined(environment.OPENTAG_GITHUB_APP_WEBHOOK_SECRET),
+    OPENTAG_GITHUB_OAUTH_CLIENT_ID: emptyToUndefined(environment.OPENTAG_GITHUB_OAUTH_CLIENT_ID),
+    OPENTAG_GITHUB_OAUTH_CLIENT_SECRET: emptyToUndefined(environment.OPENTAG_GITHUB_OAUTH_CLIENT_SECRET),
     OPENTAG_GITHUB_OAUTH_REDIRECT_URL: emptyToUndefined(environment.OPENTAG_GITHUB_OAUTH_REDIRECT_URL),
     OPENTAG_HOST: environment.OPENTAG_HOST,
     OPENTAG_JWT_SECRET: environment.OPENTAG_JWT_SECRET,
@@ -1129,18 +1045,11 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
       : {}),
     host: parsed.OPENTAG_HOST,
     jwtSecret: parsed.OPENTAG_JWT_SECRET,
-    ...(parsed.OPENTAG_GITHUB_APP_ID &&
-    parsed.OPENTAG_GITHUB_APP_CLIENT_ID &&
-    parsed.OPENTAG_GITHUB_APP_CLIENT_SECRET &&
-    parsed.OPENTAG_GITHUB_APP_PRIVATE_KEY &&
-    parsed.OPENTAG_GITHUB_APP_WEBHOOK_SECRET
+    ...(parsed.OPENTAG_GITHUB_OAUTH_CLIENT_ID && parsed.OPENTAG_GITHUB_OAUTH_CLIENT_SECRET
       ? {
-          githubApp: {
-            appId: parsed.OPENTAG_GITHUB_APP_ID,
-            clientId: parsed.OPENTAG_GITHUB_APP_CLIENT_ID,
-            clientSecret: parsed.OPENTAG_GITHUB_APP_CLIENT_SECRET,
-            privateKey: parsed.OPENTAG_GITHUB_APP_PRIVATE_KEY,
-            webhookSecret: parsed.OPENTAG_GITHUB_APP_WEBHOOK_SECRET,
+          githubOAuth: {
+            clientId: parsed.OPENTAG_GITHUB_OAUTH_CLIENT_ID,
+            clientSecret: parsed.OPENTAG_GITHUB_OAUTH_CLIENT_SECRET,
             oauthCallbackUrl: parsed.OPENTAG_GITHUB_OAUTH_REDIRECT_URL
               ? (parseGitHubOAuthRedirectUrl(
                   parsed.OPENTAG_GITHUB_OAUTH_REDIRECT_URL,

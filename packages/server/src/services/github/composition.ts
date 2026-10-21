@@ -1,10 +1,4 @@
-/*
- * Real composition of the GitHub management plane: one factory wires the bounded API transport,
- * OAuth orchestration, admission verification, the Account-facing management facade, the
- * maintenance worker, and the webhook ingress from the deployment configuration. The Server
- * bootstrap calls this only when the GitHub App is coherently configured; routes receive the
- * facade, the webhook handler, and explicit availability metadata either way.
- */
+/* Compose the OAuth management facade and the credential maintenance worker. */
 
 import type { DatabaseClient } from "../../db/client.js";
 import type { GitHubCredentialCipher } from "../github-credential-material.js";
@@ -15,18 +9,12 @@ import { GitHubManagementService } from "./github-management-service.js";
 import { GitHubOAuthService } from "./github-oauth-service.js";
 import { GitHubConnectionRecheckStore } from "./github-recheck-store.js";
 import { GitHubCredentialRefreshStore } from "./github-refresh-store.js";
-import { GitHubWebhookService } from "./github-webhook.js";
-import { GitHubInstallationTokenClient } from "./installation-token-client.js";
 import { GitHubRepositoryAdmissionService } from "./repository-admission.js";
-import { GitHubUserTokenClient } from "./user-token-client.js";
 
-/** The deployment App configuration for user OAuth and JWT-authenticated installation metadata. */
+/** The deployment OAuth App configuration. */
 export interface GitHubIntegrationConfig {
-  appId: string;
   clientId: string;
   clientSecret: string;
-  privateKey: string;
-  webhookSecret: string;
   /** Exact OAuth callback URL on this Server's public origin. */
   oauthCallbackUrl: string;
 }
@@ -34,8 +22,6 @@ export interface GitHubIntegrationConfig {
 export interface GitHubIntegrationComposition {
   management: GitHubManagementService;
   worker: GitHubMaintenanceWorker;
-  webhook: GitHubWebhookService;
-  userTokens: GitHubUserTokenClient;
 }
 
 export function createGitHubIntegration(options: {
@@ -58,16 +44,7 @@ export function createGitHubIntegration(options: {
     now,
   });
   const connections = new GitHubConnectionService(options.database, { now });
-  const admission = new GitHubRepositoryAdmissionService({
-    api,
-    appId: options.config.appId,
-    now,
-    installations: new GitHubInstallationTokenClient({
-      ...options.config,
-      ...(options.fetch ? { fetch: options.fetch } : {}),
-      now,
-    }),
-  });
+  const admission = new GitHubRepositoryAdmissionService({ api });
   const oauth = new GitHubOAuthService({
     connections,
     cipher: options.cipher,
@@ -77,15 +54,21 @@ export function createGitHubIntegration(options: {
   });
   const management = new GitHubManagementService({
     database: options.database,
-    appId: options.config.appId,
+    oauthClientId: options.config.clientId,
     connections,
     oauth,
     admission,
     cipher: options.cipher,
     now,
   });
-  const refreshStore = new GitHubCredentialRefreshStore(options.database, { now });
-  const recheckStore = new GitHubConnectionRecheckStore(options.database, { now, appId: options.config.appId });
+  const refreshStore = new GitHubCredentialRefreshStore(options.database, {
+    now,
+    oauthClientId: options.config.clientId,
+  });
+  const recheckStore = new GitHubConnectionRecheckStore(options.database, {
+    now,
+    oauthClientId: options.config.clientId,
+  });
   const worker = new GitHubMaintenanceWorker({
     refreshStore,
     recheckStore,
@@ -98,18 +81,5 @@ export function createGitHubIntegration(options: {
     ...(options.worker?.refreshWithinMs !== undefined ? { refreshWithinMs: options.worker.refreshWithinMs } : {}),
     ...(options.worker?.logger ? { logger: options.worker.logger } : {}),
   });
-  const webhook = new GitHubWebhookService({
-    webhookSecret: options.config.webhookSecret,
-    recheckStore,
-    now,
-  });
-  const userTokens = new GitHubUserTokenClient({
-    api,
-    management,
-    clientId: options.config.clientId,
-    now,
-    onRevokeFailure: () =>
-      options.worker?.logger?.warn({ code: "user_token_revoke_failed" }, "GitHub user token cleanup failed"),
-  });
-  return { management, worker, webhook, userTokens };
+  return { management, worker };
 }

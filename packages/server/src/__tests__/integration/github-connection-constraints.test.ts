@@ -26,7 +26,7 @@ beforeEach(async () => {
 });
 
 function pending() {
-  return { accountId, githubHost: "github.com", appId: "123" };
+  return { accountId, githubHost: "github.com", oauthClientId: "123" };
 }
 
 describe("GitHub connection SQL boundaries", () => {

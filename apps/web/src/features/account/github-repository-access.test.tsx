@@ -8,7 +8,7 @@ const connection: GitHubConnectionStatus = {
   id: "3c63a21e-f6c7-4474-91ea-4dabf0566a24",
   accountId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
   githubHost: "github.com",
-  appId: "871235",
+  oauthClientId: "871235",
   githubUserId: "42",
   githubLogin: "octocat",
   status: "active",
@@ -23,27 +23,17 @@ const connection: GitHubConnectionStatus = {
   createdAt: "2026-10-18T00:00:00.000Z",
   updatedAt: "2026-10-19T00:00:00.000Z",
 };
-const installation = {
-  installationId: "77",
-  accountLogin: "acme",
-  accountType: "Organization" as const,
-  repositorySelection: "selected" as const,
-  suspended: false,
-};
 function page(ids: number[], overrides: Partial<GitHubRepositoryDiscoveryPage> = {}): GitHubRepositoryDiscoveryPage {
   return {
-    installations: [installation],
     repositories: ids.map((id) => ({
       repositoryId: String(id),
-      installationId: "77",
       fullName: `acme/repo-${id}`,
       private: true,
       defaultBranch: "main",
       permissions: { pull: true, push: false },
     })),
     nextCursor: null,
-    truncatedInstallations: [],
-    installationsTruncated: false,
+    truncated: false,
     ...overrides,
   };
 }
@@ -64,26 +54,22 @@ describe("GitHub repository access", () => {
     expect(screen.getByRole("link", { name: "Configure on GitHub" })).toBeTruthy();
   });
 
-  it.each([false, true])(
-    "shows one compact empty paragraph with an installation-aware next step (%s)",
-    async (installed) => {
-      vi.spyOn(browserApi, "githubRepositories").mockResolvedValue(
-        page([], { installations: installed ? [installation] : [] }),
-      );
-      const dialog = await open();
-      const text = installed
-        ? "No accessible repositories found. Check repository access on GitHub and make sure your account has access."
-        : "No accessible repositories found. Install or configure the openTag App on GitHub and select the repositories you need.";
-      expect(await within(dialog).findByText(text)).toBeTruthy();
-      expect(within(dialog).getAllByRole("heading")).toHaveLength(1);
-      expect(within(dialog).queryByText("@octocat")).toBeNull();
-      expect(within(dialog).queryByRole("searchbox")).toBeNull();
-      expect(within(dialog).getByText(/If you can't configure access to organization repositories/)).toBeTruthy();
-      const configure = within(dialog).getByRole("link", { name: "Configure on GitHub" });
-      expect(configure.getAttribute("href")).toBe("/api/v1/integrations/github/installation");
-      expect(configure.getAttribute("rel")).toBe("noopener noreferrer");
-    },
-  );
+  it("shows OAuth repository guidance and links to GitHub authorizations", async () => {
+    vi.spyOn(browserApi, "githubRepositories").mockResolvedValue(page([]));
+    const dialog = await open();
+    expect(
+      await within(dialog).findByText(
+        "No accessible repositories found. Check your GitHub account permissions and OAuth authorization.",
+      ),
+    ).toBeTruthy();
+    expect(within(dialog).getAllByRole("heading")).toHaveLength(1);
+    expect(within(dialog).queryByText("@octocat")).toBeNull();
+    expect(within(dialog).queryByRole("searchbox")).toBeNull();
+    expect(within(dialog).getByText(/If organization repositories are missing/)).toBeTruthy();
+    const configure = within(dialog).getByRole("link", { name: "Configure on GitHub" });
+    expect(configure.getAttribute("href")).toBe("https://github.com/settings/applications");
+    expect(configure.getAttribute("rel")).toBe("noopener noreferrer");
+  });
 
   it("offers retry for failed reads without guessing an installation or authorization problem", async () => {
     const discover = vi
@@ -195,22 +181,10 @@ describe("GitHub repository access", () => {
     expect(discover).toHaveBeenCalledTimes(2);
   });
 
-  it.each(["suspended", "truncated"] as const)(
-    "does not present %s discovery as a complete empty list",
-    async (reason) => {
-      vi.spyOn(browserApi, "githubRepositories").mockResolvedValue(
-        page([], {
-          installations: [{ ...installation, suspended: reason === "suspended" }],
-          installationsTruncated: reason === "truncated",
-        }),
-      );
-      const dialog = await open();
-      expect(
-        await within(dialog).findByText(
-          reason === "suspended" ? /Some openTag App installations are suspended/ : /The repository list is incomplete/,
-        ),
-      ).toBeTruthy();
-      expect(within(dialog).queryByText(/No accessible repositories found/)).toBeNull();
-    },
-  );
+  it("does not present truncated discovery as a complete empty list", async () => {
+    vi.spyOn(browserApi, "githubRepositories").mockResolvedValue(page([], { truncated: true }));
+    const dialog = await open();
+    expect(await within(dialog).findByText(/The repository list is incomplete/)).toBeTruthy();
+    expect(within(dialog).queryByText(/No accessible repositories found/)).toBeNull();
+  });
 });

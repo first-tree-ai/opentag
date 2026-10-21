@@ -325,6 +325,11 @@
       "idx": 64,
       "tag": "0064_inbound_receipt_work",
       "sha256": "93142f64a7ea0df988581b2fb3a8a48370c05044ea9f69adad212d2895fb6df5"
+    },
+    {
+      "idx": 65,
+      "tag": "0065_github_oauth_cutover",
+      "sha256": "4adf50e1b9838b38a5ec445b679bdddad6992f7cbf7ae9f6a2987c053c0c7d86"
     }
   ]
 }

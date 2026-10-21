@@ -7,7 +7,6 @@ import {
   ErrorEnvelopeSchema,
   GITHUB_INTEGRATION_AUTHORIZATION_PATH,
   GITHUB_INTEGRATION_DISCONNECT_PATH,
-  GITHUB_INTEGRATION_INSTALLATION_PATH,
   GITHUB_INTEGRATION_PATH,
   GITHUB_INTEGRATION_REPOSITORIES_PATH,
 } from "@opentag/shared/browser";
@@ -23,7 +22,7 @@ const linkedAccount: GitHubConnectionStatus = {
   id: "3c63a21e-f6c7-4474-91ea-4dabf0566a24",
   accountId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
   githubHost: "github.com",
-  appId: "871235",
+  oauthClientId: "871235",
   githubUserId: "42",
   githubLogin: "octocat",
   status: "active",
@@ -40,19 +39,9 @@ const linkedAccount: GitHubConnectionStatus = {
 };
 
 const discovered: GitHubRepositoryDiscoveryPage = {
-  installations: [
-    {
-      installationId: "55123456",
-      accountLogin: "review-org",
-      accountType: "Organization",
-      repositorySelection: "selected",
-      suspended: false,
-    },
-  ],
   repositories: [],
   nextCursor: null,
-  truncatedInstallations: [],
-  installationsTruncated: false,
+  truncated: false,
 };
 
 const discoveryFailure = ErrorEnvelopeSchema.parse({
@@ -81,12 +70,12 @@ async function githubFixture(page: Page) {
     authorizationIntents: [] as string[],
   };
   await page.route(
-    /\/api\/v1\/integrations\/github(?:\/(?:repositories|authorization|disconnect))?(?:\?.*)?$/,
+    /\/api\/v2\/integrations\/github(?:\/(?:repositories|authorization|disconnect))?(?:\?.*)?$/,
     async (route) => {
       const path = new URL(route.request().url()).pathname;
       if (path === GITHUB_INTEGRATION_PATH) {
         const json: GitHubIntegrationOverview = {
-          availability: { available: true, githubHost: "github.com", appId: linkedAccount.appId },
+          availability: { available: true, githubHost: "github.com", oauthClientId: linkedAccount.oauthClientId },
           connection: state.current,
         };
         await route.fulfill({ json });
@@ -158,7 +147,7 @@ test("real unavailable deployment does not offer unusable GitHub authorization",
   await expectAccessible(page);
 });
 
-test("active GitHub management exposes the exact account and server-owned installation destination", async ({
+test("active GitHub management exposes the exact account and OAuth authorization settings destination", async ({
   page,
 }) => {
   await githubFixture(page);
@@ -166,7 +155,7 @@ test("active GitHub management exposes the exact account and server-owned instal
   const github = page.locator('[data-ui="account-github"]');
   await expect(github.getByText(/@octocat/)).toBeVisible();
   const install = github.getByRole("link", { name: "Configure on GitHub", exact: true });
-  await expect(install).toHaveAttribute("href", GITHUB_INTEGRATION_INSTALLATION_PATH);
+  await expect(install).toHaveAttribute("href", "https://github.com/settings/applications");
   await expect(install).toHaveAttribute("target", "_blank");
   await expect(install).toHaveAttribute("rel", /noopener/);
   await expectAccessible(page);
@@ -178,7 +167,7 @@ test("repository access is queried on demand and keeps missing-filter results se
   const fixture = await githubFixture(page);
   const repositories = Array.from({ length: 101 }, (_, i) => ({
     repositoryId: String(i + 1),
-    installationId: "55123456",
+
     fullName: `review-org/repo-${i + 1}`,
     private: true,
     defaultBranch: "main",
@@ -211,7 +200,7 @@ test("paginated repository results never mix after account replacement in anothe
   const fixture = await githubFixture(page);
   const repositories = Array.from({ length: 102 }, (_, i) => ({
     repositoryId: String(i + 1),
-    installationId: "55123456",
+
     fullName: `review-org/previous-${i + 1}`,
     private: true,
     defaultBranch: "main",
@@ -246,7 +235,7 @@ test("paginated repository results never mix after account replacement in anothe
   await expectAccessible(page);
 });
 
-test("repository read failure retries into a compact installation-aware empty result", async ({ page }) => {
+test("repository read failure retries into a compact OAuth authorization empty result", async ({ page }) => {
   const fixture = await githubFixture(page);
   fixture.failDiscovery = true;
   await page.goto("/account", { waitUntil: "networkidle" });
@@ -263,10 +252,7 @@ test("repository read failure retries into a compact installation-aware empty re
   ).toBeVisible();
   await expect(dialog.getByRole("heading")).toHaveCount(1);
   await expect(dialog.getByRole("searchbox")).toHaveCount(0);
-  await expect(dialog.getByRole("link", { name: "Configure on GitHub", exact: true })).toHaveAttribute(
-    "href",
-    GITHUB_INTEGRATION_INSTALLATION_PATH,
-  );
+  await expect(dialog.getByRole("link", { name: "Configure on GitHub", exact: true })).toHaveAttribute("href");
   await expectAccessible(page);
 });
 
@@ -314,11 +300,11 @@ const viewerLabels = {
     title: "Agent 可访问的仓库",
     close: "关闭仓库列表",
     help: "了解仓库访问范围",
-    empty: "暂未找到可访问的仓库。",
+    empty: "未找到可访问的仓库。",
     error: "暂时无法读取仓库，请重试。",
   },
 };
-type ViewerScene = "loaded" | "empty" | "no-installation" | "error";
+type ViewerScene = "loaded" | "empty" | "error";
 
 async function expectDialogReady(dialog: ReturnType<Page["getByRole"]>) {
   await expect(dialog).toBeVisible();
@@ -343,12 +329,10 @@ async function reviewViewerCase(
   fixture.discoveryPages = {
     start: {
       ...discovered,
-      installations: scene === "no-installation" ? [] : discovered.installations,
       repositories:
         scene === "loaded"
           ? [
               {
-                installationId: "55123456",
                 repositoryId: "1",
                 fullName: "review-org/web",
                 private: true,
@@ -356,7 +340,6 @@ async function reviewViewerCase(
                 permissions: { pull: true, push: true },
               },
               {
-                installationId: "55123456",
                 repositoryId: "2",
                 fullName: "review-org/api",
                 private: true,
@@ -405,7 +388,7 @@ test("repository viewer keeps results, empty guidance and errors readable in bot
       await page
         .locator('[data-ui="account-github"]')
         .screenshot({ path: test.info().outputPath(`account-github-${locale}-${width}.png`) });
-      for (const scene of ["loaded", "empty", "no-installation", "error"] as const) {
+      for (const scene of ["loaded", "empty", "error"] as const) {
         await reviewViewerCase(page, fixture, locale, width, scene);
       }
     }
@@ -433,7 +416,7 @@ test("removing a shared GitHub account requires confirmation before the mutation
   const dialog = page.getByRole("dialog", { name: "Remove GitHub account?" });
   await expect(dialog).toBeVisible();
   await expect(dialog).toContainText("All your Agents will lose GitHub access through @octocat");
-  await expect(dialog).toContainText("uninstall the openTag App");
+  await expect(dialog).toContainText("You can revoke it in GitHub settings");
   await expect(dialog.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
   expect(fixture.disconnectCalls, "No shared authorization should be removed before confirmation").toBe(0);
   await expectAccessible(page);
@@ -499,9 +482,11 @@ test("GitHub help and cancelled removal preserve the unsaved display-name draft"
   await displayName.fill(draft);
   await page.getByRole("button", { name: "About GitHub repository access" }).click();
   const help = page.getByRole("dialog", { name: "About GitHub repository access" });
-  await expect(help.getByText(/Install or configure the openTag App on GitHub/)).toBeVisible();
+  await expect(help.getByText(/OAuth repository access follows your GitHub account permissions/)).toBeVisible();
   await expect(help.getByText(/All your Agents share this repository access/)).toBeVisible();
-  await expect(help.getByText(/contact an organization administrator if you don't have permission/)).toBeVisible();
+  await expect(
+    help.getByText(/Organization repositories may require organization approval or SSO authorization/),
+  ).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(help).toBeHidden();
   await expect(page.getByRole("button", { name: "About GitHub repository access" })).toBeFocused();
@@ -553,14 +538,14 @@ test("Chinese GitHub management keeps identity, help and confirmation usable at 
   }
   await github.getByRole("button", { name: "了解 GitHub 仓库访问" }).click();
   const help = page.getByRole("dialog", { name: "了解 GitHub 仓库访问" });
-  await expect(help.getByText(/如果你没有权限安装或配置 openTag App，请联系组织管理员/)).toBeVisible();
+  await expect(help.getByText(/组织仓库可能需要组织审批或 SSO 授权/)).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(help).toBeHidden();
   await expect(page.getByRole("button", { name: "更换账户", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "移除账户", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "移除 GitHub 账户？" });
   await expect(dialog).toBeVisible();
-  await expect(dialog).toContainText("不会卸载 openTag App");
+  await expect(dialog).toContainText("可以前往 GitHub 设置撤销");
   await expect(dialog.getByRole("button", { name: "取消", exact: true })).toBeFocused();
   await expectDialogReady(dialog);
   await expectAccessible(page);

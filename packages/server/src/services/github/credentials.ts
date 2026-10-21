@@ -1,6 +1,6 @@
 import type { GitHubOAuthSecretBinding, GitHubUserCredentialBinding } from "../github-credential-material.js";
 import { GITHUB_CONNECTION_ERROR_CODES, GitHubConnectionServiceError } from "./errors.js";
-import type { GitHubConnectionRow } from "./rows.js";
+import { type GitHubConnectionRow, requireOAuthConnection } from "./rows.js";
 
 export const GITHUB_CIPHERTEXT_MAX_LENGTH = 16 * 1024;
 export const GITHUB_KEY_ID_MAX_LENGTH = 255;
@@ -28,7 +28,7 @@ export type GitHubOAuthSecretFactory = (binding: GitHubOAuthSecretBinding) => Gi
 
 export function sealOAuthSecret(
   factory: GitHubOAuthSecretFactory | undefined,
-  binding: { connectionId: string; accountId: string; appId: string; githubHost: string; flowId: string },
+  binding: { connectionId: string; accountId: string; oauthClientId: string; githubHost: string; flowId: string },
 ): GitHubOAuthSecretSlot | null {
   if (!factory) return null;
   const slot = factory({ ...binding, githubHost: supportedHost(binding.githubHost) });
@@ -46,7 +46,7 @@ export function sealUserCredential(
   const material = factory({
     connectionId,
     accountId: row.accountId,
-    appId: row.appId,
+    oauthClientId: requireOAuthConnection(row).oauthClientId,
     githubHost: supportedHost(row.githubHost),
     githubUserId,
   });

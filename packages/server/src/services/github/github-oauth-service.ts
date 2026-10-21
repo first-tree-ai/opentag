@@ -1,5 +1,5 @@
 /*
- * GitHub App user-authorization orchestration: builds the real authorize URL with one-time state
+ * GitHub OAuth App user-authorization orchestration: builds the real authorize URL with one-time state
  * and a PKCE S256 challenge, then processes the callback through the connection state machine.
  *
  * The one-time state is only ever persisted as a hash; the PKCE verifier is sealed into the
@@ -72,18 +72,19 @@ export class GitHubOAuthService {
       returnSurface: GitHubOAuthReturnSurface;
       agentId: string | null;
       loginSessionHash: string;
-      appId: string;
+      oauthClientId: string;
     },
   ): Promise<GitHubAuthorizationStart> {
+    if (input.oauthClientId !== this.#clientId) throw new Error("OAuth client identity changed");
     const pkceVerifier = randomBytes(PKCE_VERIFIER_BYTES).toString("base64url");
     const sealVerifier = (binding: Parameters<GitHubCredentialCipher["encryptOAuthSecret"]>[0]) =>
       this.#cipher.encryptOAuthSecret(binding, pkceVerifier);
     let flow: { connectionId: string; flowId: string; state: string; expiresAt: Date };
     if (input.intent === "create") {
-      const current = await this.#connections.getCurrentConnection(accountId, "github.com", input.appId);
+      const current = await this.#connections.getCurrentConnection(accountId, "github.com", input.oauthClientId);
       if (current === null) {
         const created = await this.#connections.createConnection(accountId, {
-          appId: input.appId,
+          oauthClientId: input.oauthClientId,
           returnSurface: input.returnSurface,
           agentId: input.agentId,
           loginSessionHash: input.loginSessionHash,
@@ -106,7 +107,7 @@ export class GitHubOAuthService {
         );
       }
     } else {
-      const current = await this.#connections.getCurrentConnection(accountId, "github.com", input.appId);
+      const current = await this.#connections.getCurrentConnection(accountId, "github.com", input.oauthClientId);
       if (current === null) {
         throw new GitHubConnectionServiceError(
           GITHUB_CONNECTION_ERROR_CODES.CONNECTION_NOT_FOUND,
@@ -124,6 +125,7 @@ export class GitHubOAuthService {
     }
     const authorizationUrl = new URL(GITHUB_AUTHORIZE_URL);
     authorizationUrl.searchParams.set("client_id", this.#clientId);
+    authorizationUrl.searchParams.set("scope", "repo offline_access");
     authorizationUrl.searchParams.set("redirect_uri", this.#redirectUri);
     authorizationUrl.searchParams.set("state", flow.state);
     authorizationUrl.searchParams.set(
@@ -163,9 +165,12 @@ export class GitHubOAuthService {
       );
     }
     try {
+      if (claimed.oauthClientId !== this.#clientId) throw new Error("OAuth client identity changed");
       const pkceVerifier = this.#openPkceVerifier(claimed);
       const tokens = await this.#api.exchangeCodeForUserToken({ code: input.code, codeVerifier: pkceVerifier });
-      const user = await this.#api.getAuthenticatedUser({ accessToken: tokens.accessToken });
+      const user = await this.#api.validateOAuthToken({ accessToken: tokens.accessToken });
+      const authenticated = await this.#api.getAuthenticatedUser({ accessToken: tokens.accessToken });
+      if (user.id !== authenticated.id) throw new Error("OAuth user identity changed");
       const sealCredential: GitHubCredentialFactory = (binding) => {
         const material = this.#cipher.encryptUserCredential(binding, {
           accessToken: tokens.accessToken,
@@ -249,7 +254,7 @@ export class GitHubOAuthService {
         {
           connectionId: claimed.connectionId,
           accountId: claimed.accountId,
-          appId: claimed.appId,
+          oauthClientId: claimed.oauthClientId,
           githubHost: "github.com",
           flowId: claimed.flowId,
         },
@@ -276,7 +281,7 @@ function mapCallbackFailure(error: unknown): GitHubConnectionServiceError {
       return new GitHubConnectionServiceError(
         GITHUB_CONNECTION_ERROR_CODES.TOKEN_LIFETIME_UNSUPPORTED,
         502,
-        "The GitHub App does not issue expiring user access tokens; enable them on the App and retry",
+        "The GitHub OAuth App does not issue expiring user access tokens; enable them on the App and retry",
         "deterministic",
       );
     }

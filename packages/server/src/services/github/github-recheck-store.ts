@@ -3,7 +3,7 @@ import type { DatabaseClient } from "../../db/client.js";
 import { githubConnections } from "../../db/schema/index.js";
 import { boundedGitHubErrorCode } from "./errors.js";
 import type { GitHubConnectionRow } from "./rows.js";
-import { gitHubConnectionColumns } from "./rows.js";
+import { gitHubConnectionColumns, oauthConnectionScope } from "./rows.js";
 import { GITHUB_RECHECK_INTERVAL_MS, GITHUB_RECHECK_RETRY_DELAY_MS, githubWorkerBatchLimit } from "./timing.js";
 
 /** The fencing snapshot a recheck worker captures before any external GitHub call. */
@@ -21,7 +21,7 @@ export interface GitHubActiveConnectionSnapshot {
   connectionId: string;
   accountId: string;
   githubHost: string;
-  appId: string;
+  oauthClientId: string;
   githubUserId: string;
   authorizationVersion: bigint;
   recheckGeneration: bigint;
@@ -37,7 +37,7 @@ export type GitHubRecheckOutcome =
   /**
    * The credential still authenticates, but a verified permission invalidation advances the
    * authorization version. Connection health is rechecked independently; each target operation
-   * must always prove current user/App access.
+   * must always prove current user/OAuth scope access.
    */
   | { kind: "permission_revoked"; errorCode: string }
   | { kind: "unauthorized"; errorCode: string };
@@ -55,14 +55,14 @@ export type GitHubRecheckCommitResult =
 export class GitHubConnectionRecheckStore {
   private readonly now: () => Date;
   private readonly recheckIntervalMs: number;
-  private readonly appId: string | undefined;
+  private readonly oauthClientId: string;
   private readonly retryDelayMs: number;
 
   constructor(
     private readonly database: DatabaseClient,
-    options: { appId?: string; now?: () => Date; recheckIntervalMs?: number; retryDelayMs?: number } = {},
+    options: { oauthClientId: string; now?: () => Date; recheckIntervalMs?: number; retryDelayMs?: number },
   ) {
-    this.appId = options.appId;
+    this.oauthClientId = options.oauthClientId;
     this.now = options.now ?? (() => new Date());
     this.recheckIntervalMs = options.recheckIntervalMs ?? GITHUB_RECHECK_INTERVAL_MS;
     this.retryDelayMs = options.retryDelayMs ?? GITHUB_RECHECK_RETRY_DELAY_MS;
@@ -73,7 +73,13 @@ export class GitHubConnectionRecheckStore {
     const rows = await this.database
       .select(gitHubConnectionColumns())
       .from(githubConnections)
-      .where(and(eq(githubConnections.status, "active"), lte(githubConnections.nextRecheckAt, now)))
+      .where(
+        and(
+          oauthConnectionScope(this.oauthClientId),
+          eq(githubConnections.status, "active"),
+          lte(githubConnections.nextRecheckAt, now),
+        ),
+      )
       .orderBy(asc(githubConnections.nextRecheckAt))
       .limit(githubWorkerBatchLimit(input.limit));
     return rows.map(toRecheckDueConnection);
@@ -92,6 +98,7 @@ export class GitHubConnectionRecheckStore {
       .where(
         and(
           eq(githubConnections.id, input.connectionId),
+          oauthConnectionScope(this.oauthClientId),
           eq(githubConnections.status, "active"),
           eq(githubConnections.authorizationVersion, input.expectedAuthorizationVersion),
           eq(githubConnections.recheckGeneration, input.expectedRecheckGeneration),
@@ -102,7 +109,7 @@ export class GitHubConnectionRecheckStore {
     const [row] = await this.database
       .select({ id: githubConnections.id, status: githubConnections.status })
       .from(githubConnections)
-      .where(eq(githubConnections.id, input.connectionId))
+      .where(and(oauthConnectionScope(this.oauthClientId), eq(githubConnections.id, input.connectionId)))
       .limit(1);
     if (!row) return { applied: false, reason: "not_found" };
     if (row.status !== "active") return { applied: false, reason: "not_active" };
@@ -121,67 +128,13 @@ export class GitHubConnectionRecheckStore {
         recheckGeneration: sql`${githubConnections.recheckGeneration} + 1`,
         updatedAt: now,
       })
-      .where(and(inArray(githubConnections.id, input.connectionIds), eq(githubConnections.status, "active")))
-      .returning({ id: githubConnections.id });
-    return updated.length;
-  }
-
-  /** Connections of this deployment App are invalidated conservatively; no installation directory is stored. */
-  async listActiveConnectionIdsByInstallation(_installationId: string): Promise<string[]> {
-    const rows = await this.database
-      .select({ id: githubConnections.id })
-      .from(githubConnections)
       .where(
-        and(eq(githubConnections.status, "active"), this.appId ? eq(githubConnections.appId, this.appId) : undefined),
+        and(
+          inArray(githubConnections.id, input.connectionIds),
+          oauthConnectionScope(this.oauthClientId),
+          eq(githubConnections.status, "active"),
+        ),
       )
-      .orderBy(asc(githubConnections.id))
-      .limit(1000);
-    return rows.map((row) => row.id);
-  }
-
-  /** Active connections of one GitHub user, found for an authorization-revoked event; bounded. */
-  async listActiveConnectionIdsByGitHubUser(githubUserId: string): Promise<string[]> {
-    const rows = await this.database
-      .select({ id: githubConnections.id })
-      .from(githubConnections)
-      .where(and(eq(githubConnections.status, "active"), eq(githubConnections.githubUserId, githubUserId)))
-      .orderBy(asc(githubConnections.id))
-      .limit(1000);
-    return rows.map((row) => row.id);
-  }
-
-  /**
-   * Fail-closed invalidation for a provider-attested revocation (for example a
-   * `github_app_authorization` revoked webhook): every listed active row moves to
-   * reauthorization_required with its authorization version bumped and every secret cleared. The
-   * transition is monotonic — it can never resurrect a disconnected row or clear a pending one.
-   */
-  async invalidateActiveConnections(input: { connectionIds: string[]; errorCode: string }): Promise<number> {
-    if (input.connectionIds.length === 0) return 0;
-    const now = this.now();
-    const updated = await this.database
-      .update(githubConnections)
-      .set({
-        status: "reauthorization_required" as const,
-        authorizationVersion: sql`${githubConnections.authorizationVersion} + 1`,
-        credentialCiphertext: null,
-        credentialKeyId: null,
-        accessExpiresAt: null,
-        refreshExpiresAt: null,
-        oauthStateHash: null,
-        oauthContext: null,
-        oauthContextCiphertext: null,
-        oauthContextKeyId: null,
-        refreshAttemptId: null,
-        refreshClaimUntil: null,
-        refreshStatus: "idle" as const,
-        nextRecheckAt: null,
-        recheckRequired: false,
-        recheckGeneration: sql`${githubConnections.recheckGeneration} + 1`,
-        lastErrorCode: boundedGitHubErrorCode(input.errorCode),
-        updatedAt: now,
-      })
-      .where(and(inArray(githubConnections.id, input.connectionIds), eq(githubConnections.status, "active")))
       .returning({ id: githubConnections.id });
     return updated.length;
   }
@@ -194,10 +147,17 @@ export class GitHubConnectionRecheckStore {
     const [row] = await this.database
       .select(gitHubConnectionColumns())
       .from(githubConnections)
-      .where(and(eq(githubConnections.id, connectionId), eq(githubConnections.status, "active")))
+      .where(
+        and(
+          eq(githubConnections.id, connectionId),
+          oauthConnectionScope(this.oauthClientId),
+          eq(githubConnections.status, "active"),
+        ),
+      )
       .limit(1);
     if (!row) return null;
     if (
+      row.oauthClientId === null ||
       row.githubUserId === null ||
       row.credentialCiphertext === null ||
       row.credentialKeyId === null ||
@@ -210,7 +170,7 @@ export class GitHubConnectionRecheckStore {
       connectionId: row.id,
       accountId: row.accountId,
       githubHost: row.githubHost,
-      appId: row.appId,
+      oauthClientId: row.oauthClientId,
       githubUserId: row.githubUserId,
       authorizationVersion: row.authorizationVersion,
       recheckGeneration: row.recheckGeneration,
@@ -222,12 +182,9 @@ export class GitHubConnectionRecheckStore {
   }
 
   /**
-   * OAuth expiry cleanup: pending rows whose only flow expired carry no secrets and are deleted so
-   * the Account can reconnect; current rows keep their connection and only the dead flow slot clears.
+   * Expired flows are cleared in place; pending connections remain available for a fresh authorization.
    */
-  async sweepExpiredOAuthFlows(
-    input: { limit: number } = { limit: 100 },
-  ): Promise<{ clearedFlows: number; deletedPending: number }> {
+  async sweepExpiredOAuthFlows(input: { limit: number } = { limit: 100 }): Promise<{ clearedFlows: number }> {
     const now = this.now();
     const expiredFlow = sql`(${githubConnections.oauthContext} ->> 'expiresAt')::timestamptz <= ${now.toISOString()}`;
     return this.database.transaction(async (transaction) => {
@@ -236,6 +193,7 @@ export class GitHubConnectionRecheckStore {
         .from(githubConnections)
         .where(
           and(
+            oauthConnectionScope(this.oauthClientId),
             inArray(githubConnections.status, ["pending", "active", "reauthorization_required"]),
             isNotNull(githubConnections.oauthStateHash),
             expiredFlow,
@@ -244,11 +202,8 @@ export class GitHubConnectionRecheckStore {
         .orderBy(asc(githubConnections.id))
         .limit(githubWorkerBatchLimit(input.limit))
         .for("update", { skipLocked: true });
-      const pendingIds = candidates.filter((row) => row.status === "pending").map((row) => row.id);
-      const currentIds = candidates.filter((row) => row.status !== "pending").map((row) => row.id);
-      if (pendingIds.length)
-        await transaction.delete(githubConnections).where(inArray(githubConnections.id, pendingIds));
-      if (currentIds.length)
+      const ids = candidates.map((row) => row.id);
+      if (ids.length)
         await transaction
           .update(githubConnections)
           .set({
@@ -258,8 +213,8 @@ export class GitHubConnectionRecheckStore {
             oauthContextKeyId: null,
             updatedAt: now,
           })
-          .where(inArray(githubConnections.id, currentIds));
-      return { clearedFlows: currentIds.length, deletedPending: pendingIds.length };
+          .where(and(oauthConnectionScope(this.oauthClientId), inArray(githubConnections.id, ids)));
+      return { clearedFlows: ids.length };
     });
   }
 

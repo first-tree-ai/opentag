@@ -46,7 +46,7 @@ function service() {
   return new GitHubConnectionService(client.database, { now: () => clock });
 }
 function context(connectionId: string, githubUserId: string): GitHubUserCredentialBinding {
-  return { connectionId, accountId, appId: "123", githubHost: "github.com", githubUserId };
+  return { connectionId, accountId, oauthClientId: "123", githubHost: "github.com", githubUserId };
 }
 async function proof(flow: GitHubAuthorizationFlowHandle, githubUserId: string) {
   const stateHash = sha256Hex(flow.state);
@@ -76,7 +76,7 @@ describe("GitHub encrypted connection lifecycle", () => {
   it("binds PKCE after both the connection ID and OAuth flow ID have been allocated", async () => {
     const verifier = "v".repeat(43);
     const { flow } = await service().createConnection(accountId, {
-      appId: "123",
+      oauthClientId: "123",
       loginSessionHash: sessionHash,
       oauthSecret: (binding) => cipher.encryptOAuthSecret(binding, verifier),
     });
@@ -87,14 +87,23 @@ describe("GitHub encrypted connection lifecycle", () => {
     if (!claim.oauthSecret) throw new Error("Missing test PKCE slot");
     expect(
       cipher.decryptOAuthSecret(
-        { connectionId: flow.connectionId, accountId, githubHost: "github.com", appId: "123", flowId: flow.flowId },
+        {
+          connectionId: flow.connectionId,
+          accountId,
+          githubHost: "github.com",
+          oauthClientId: "123",
+          flowId: flow.flowId,
+        },
         claim.oauthSecret,
       ),
     ).toBe(verifier);
   });
 
   it("seals replacement credentials against the new connection and user, and clears the old pair", async () => {
-    const { flow } = await service().createConnection(accountId, { appId: "123", loginSessionHash: sessionHash });
+    const { flow } = await service().createConnection(accountId, {
+      oauthClientId: "123",
+      loginSessionHash: sessionHash,
+    });
     const first = await service().completeAuthorization(accountId, await proof(flow, "456"));
     expect(
       cipher.decryptUserCredential(context(first.connection.id, "456"), sealed(await row(first.connection.id))),
@@ -116,7 +125,10 @@ describe("GitHub encrypted connection lifecycle", () => {
   });
 
   it("retains the active connection when replacement encryption fails", async () => {
-    const { flow } = await service().createConnection(accountId, { appId: "123", loginSessionHash: sessionHash });
+    const { flow } = await service().createConnection(accountId, {
+      oauthClientId: "123",
+      loginSessionHash: sessionHash,
+    });
     const first = await service().completeAuthorization(accountId, await proof(flow, "456"));
     const replace = await service().beginAuthorizationFlow(accountId, first.connection.id, {
       intent: "replace",

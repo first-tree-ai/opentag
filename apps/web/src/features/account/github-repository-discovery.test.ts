@@ -7,16 +7,8 @@ import {
   readRepositoryBatch,
 } from "./github-repository-discovery.js";
 
-const installation = {
-  installationId: "77",
-  accountLogin: "acme",
-  accountType: "Organization" as const,
-  repositorySelection: "selected" as const,
-  suspended: false,
-};
 function repository(id: number): GitHubDiscoveredRepository {
   return {
-    installationId: "77",
     repositoryId: String(id),
     fullName: `acme/repo-${id}`,
     private: true,
@@ -29,11 +21,9 @@ function page(
   overrides: Partial<GitHubRepositoryDiscoveryPage> = {},
 ): GitHubRepositoryDiscoveryPage {
   return {
-    installations: [installation],
     repositories,
     nextCursor: null,
-    installationsTruncated: false,
-    truncatedInstallations: [],
+    truncated: false,
     ...overrides,
   };
 }
@@ -70,13 +60,13 @@ describe("GitHub repository discovery batches", () => {
     );
   });
 
-  it("does not offer Load more for exactly 100 repositories followed by an empty installation", async () => {
+  it("does not offer Load more for exactly 100 repositories followed by an empty page", async () => {
     const readPage = vi
       .fn()
       .mockResolvedValueOnce(
         page(
           Array.from({ length: 100 }, (_, i) => repository(i + 1)),
-          { nextCursor: "empty-installation" },
+          { nextCursor: "empty-page" },
         ),
       )
       .mockResolvedValueOnce(page([]));
@@ -102,32 +92,21 @@ describe("GitHub repository discovery batches", () => {
     expect(readPage).toHaveBeenCalledTimes(2);
   });
 
-  it("deduplicates repositories and excludes suspended installations and missing user access", async () => {
+  it("deduplicates repositories and excludes missing user access", async () => {
     const readPage = vi
       .fn()
       .mockResolvedValue(
-        page(
-          [
-            repository(1),
-            repository(1),
-            { ...repository(2), installationId: "88" },
-            { ...repository(3), permissions: { pull: false, push: false } },
-          ],
-          { installations: [installation, { ...installation, installationId: "88", suspended: true }] },
-        ),
+        page([repository(1), repository(1), { ...repository(2), permissions: { pull: false, push: false } }]),
       );
     expect((await read(readPage)).repositories.map((entry) => entry.repositoryId)).toEqual(["1"]);
   });
 
-  it("retains truncation across pages and treats older responses as incomplete", async () => {
+  it("retains truncation across pages", async () => {
     const readPage = vi
       .fn()
-      .mockResolvedValueOnce(page([], { nextCursor: "next", truncatedInstallations: ["77"] }))
+      .mockResolvedValueOnce(page([], { nextCursor: "next", truncated: true }))
       .mockResolvedValueOnce(page([repository(1)]));
     expect(catalogIsPartial(await read(readPage))).toBe(true);
-    expect(
-      catalogIsPartial(await read(vi.fn().mockResolvedValue(page([], { installationsTruncated: undefined })))),
-    ).toBe(true);
   });
 
   it("bounds sparse discovery without claiming the empty list is complete", async () => {
@@ -167,15 +146,5 @@ describe("GitHub repository discovery batches", () => {
     await expect(read(vi.fn().mockResolvedValue(page([], { nextCursor: "same" })))).rejects.toThrow(
       "repeated a cursor",
     );
-  });
-
-  it("drops repositories whose installation vanished during pagination and marks the result partial", async () => {
-    const readPage = vi
-      .fn()
-      .mockResolvedValueOnce(page([repository(1)], { nextCursor: "next" }))
-      .mockResolvedValueOnce(page([], { installations: [] }));
-    const result = await read(readPage);
-    expect(result.repositories).toHaveLength(0);
-    expect(catalogIsPartial(result)).toBe(true);
   });
 });

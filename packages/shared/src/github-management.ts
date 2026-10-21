@@ -10,7 +10,7 @@ import {
 } from "./github-integration.js";
 
 /**
- * GitHub management API contract: the Account-facing DTOs of the deployment-level GitHub App
+ * GitHub management API contract: the Account-facing DTOs of the deployment-level GitHub OAuth App
  * integration — availability, connection overview, authorization start, repository discovery, and
  * the OAuth callback outcome the fixed local return surfaces receive.
  *
@@ -38,12 +38,12 @@ export const GitHubOAuthOutcomeSearchSchema = z
  * one of the `GITHUB_CONNECTION_ERROR_CODES` persisted on the connection status DTO.
  */
 export const GITHUB_MANAGEMENT_ERROR_CODES = {
-  /** The deployment has no GitHub App configured; the UI must explain, never demo. */
+  /** The deployment has no GitHub OAuth App configured; the UI must explain, never demo. */
   INTEGRATION_UNAVAILABLE: GITHUB_CONNECTION_ERROR_CODES.INTEGRATION_UNAVAILABLE,
   UPSTREAM_UNAVAILABLE: GITHUB_CONNECTION_ERROR_CODES.UPSTREAM_UNAVAILABLE,
   UPSTREAM_ERROR: GITHUB_CONNECTION_ERROR_CODES.UPSTREAM_ERROR,
   RATE_LIMITED: GITHUB_CONNECTION_ERROR_CODES.RATE_LIMITED,
-  /** The GitHub App does not issue expiring user tokens; the deployment must enable them. */
+  /** The GitHub OAuth App does not issue expiring user tokens; the deployment must enable them. */
   TOKEN_LIFETIME_UNSUPPORTED: GITHUB_CONNECTION_ERROR_CODES.TOKEN_LIFETIME_UNSUPPORTED,
   /** The connected user's live admission no longer covers a requested binding. */
   ADMISSION_INSTALLATION_MISSING: GITHUB_CONNECTION_ERROR_CODES.ADMISSION_INSTALLATION_MISSING,
@@ -60,15 +60,15 @@ export type GitHubManagementErrorCode =
   (typeof GITHUB_MANAGEMENT_ERROR_CODES)[keyof typeof GITHUB_MANAGEMENT_ERROR_CODES];
 
 /**
- * Whether this deployment offers the GitHub integration, with the configured App's public numeric
+ * Whether this deployment offers the GitHub integration, with the configured OAuth App's client
  * ID. Unavailable integrations return this metadata on every management route so the UI can explain
- * the state; `appId` is null while unconfigured.
+ * the state; `oauthClientId` is null while unconfigured.
  */
 export const GitHubIntegrationAvailabilitySchema = z
   .object({
     available: z.boolean(),
     githubHost: z.literal("github.com"),
-    appId: GitHubDecimalIdSchema.nullable(),
+    oauthClientId: z.string().trim().min(1).max(255).nullable(),
   })
   .strict();
 export type GitHubIntegrationAvailability = z.infer<typeof GitHubIntegrationAvailabilitySchema>;
@@ -126,26 +126,8 @@ export const StartGitHubAuthorizationResponseSchema = z
   .strict();
 export type StartGitHubAuthorizationResponse = z.infer<typeof StartGitHubAuthorizationResponseSchema>;
 
-/** Installation metadata as far as repository discovery and the UI need it. */
-export const GitHubDiscoveredInstallationSchema = z
-  .object({
-    installationId: GitHubDecimalIdSchema,
-    accountLogin: z.string().min(1).max(100),
-    accountType: z.enum(["User", "Organization"]),
-    repositorySelection: z.enum(["all", "selected"]),
-    suspended: z.boolean(),
-  })
-  .strict();
-export type GitHubDiscoveredInstallation = z.infer<typeof GitHubDiscoveredInstallationSchema>;
-
-/**
- * One repository the connected user can reach through the configured App's installations. The
- * stable numeric IDs route authorization; `fullName` and `defaultBranch` are display/default
- * metadata only. `permissions` is GitHub's verdict for this exact user on this exact repository.
- */
 export const GitHubDiscoveredRepositorySchema = z
   .object({
-    installationId: GitHubDecimalIdSchema,
     repositoryId: GitHubDecimalIdSchema,
     fullName: GitHubRepositoryFullNameSchema,
     private: z.boolean(),
@@ -160,38 +142,16 @@ export const GitHubDiscoveredRepositorySchema = z
   .strict();
 export type GitHubDiscoveredRepository = z.infer<typeof GitHubDiscoveredRepositorySchema>;
 
-export const GITHUB_REPOSITORY_DISCOVERY_MAX_INSTALLATIONS = 500;
 export const GITHUB_REPOSITORY_DISCOVERY_PAGE_SIZE = 100;
-
-/**
- * One page of the repository discovery stream. `installations` repeats the current installation
- * list on every page so a late reader can render install state without a second call; `nextCursor`
- * is an opaque server-owned continuation — callers treat it as unreadable and never construct one.
- * One installation is listed at most ten pages deep; `truncatedInstallations` names every
- * installation whose repositories exceed that bound, so a partial listing is always explicit and
- * never presented as exhaustive.
- * `installationsTruncated` attests the separate 500-installation enumeration bound. Its absence
- * on an older Server leaves completeness unknown; suspended installations remain in metadata but
- * are never enumerated as accessible repositories.
- */
 export const GitHubRepositoryDiscoveryPageSchema = z
   .object({
-    installations: z.array(GitHubDiscoveredInstallationSchema).max(GITHUB_REPOSITORY_DISCOVERY_MAX_INSTALLATIONS),
     repositories: z.array(GitHubDiscoveredRepositorySchema).max(GITHUB_REPOSITORY_DISCOVERY_PAGE_SIZE),
     nextCursor: z.string().min(1).max(512).nullable(),
-    // Older servers do not attest installation-list completeness. Readers must not infer it.
-    installationsTruncated: z.boolean().optional(),
-    // The server always emits this; it is optional so readers and fixtures keep accepting a
-    // server that predates explicit truncation marking.
-    truncatedInstallations: z
-      .array(GitHubDecimalIdSchema)
-      .max(GITHUB_REPOSITORY_DISCOVERY_MAX_INSTALLATIONS)
-      .optional(),
+    truncated: z.boolean(),
   })
   .strict();
 export type GitHubRepositoryDiscoveryPage = z.infer<typeof GitHubRepositoryDiscoveryPageSchema>;
 
-/** A viewer can pin discovery to one authorization; legacy unscoped reads remain accepted. */
 export const GitHubRepositoryDiscoveryQuerySchema = z
   .object({
     cursor: z.string().min(1).max(512).optional(),

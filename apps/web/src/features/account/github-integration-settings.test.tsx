@@ -9,7 +9,7 @@ const CONNECTION_ID = "3c63a21e-f6c7-4474-91ea-4dabf0566a24";
 
 function overview(connection: GitHubConnectionStatus | null): GitHubIntegrationOverview {
   return {
-    availability: { available: true, githubHost: "github.com", appId: APP_ID },
+    availability: { available: true, githubHost: "github.com", oauthClientId: APP_ID },
     connection,
   };
 }
@@ -19,7 +19,7 @@ function connection(overrides: Partial<GitHubConnectionStatus> = {}): GitHubConn
     id: CONNECTION_ID,
     accountId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
     githubHost: "github.com",
-    appId: APP_ID,
+    oauthClientId: APP_ID,
     githubUserId: "42",
     githubLogin: "octocat",
     status: "active",
@@ -51,7 +51,7 @@ describe("GitHub account settings", () => {
     expect(screen.getByText("Account authorization", { exact: true })).toBeTruthy();
     expect(screen.getByText("Repository access", { exact: true })).toBeTruthy();
     const configure = screen.getByRole("link", { name: "Configure on GitHub" });
-    expect(configure.getAttribute("href")).toBe("/api/v1/integrations/github/installation");
+    expect(configure.getAttribute("href")).toBe("https://github.com/settings/applications");
     expect(configure.getAttribute("target")).toBe("_blank");
     expect(discover).not.toHaveBeenCalled();
   });
@@ -130,7 +130,7 @@ describe("GitHub account settings", () => {
 
   it("explains deployment unavailability without unusable controls or health badges", async () => {
     vi.spyOn(browserApi, "githubIntegration").mockResolvedValue({
-      availability: { available: false, githubHost: "github.com", appId: null },
+      availability: { available: false, githubHost: "github.com", oauthClientId: null },
       connection: null,
     });
     render(<GitHubIntegrationSettings />);
@@ -148,7 +148,7 @@ describe("GitHub account settings", () => {
       screen.getByText("Authorize your GitHub account and allow openTag to access the repositories you need."),
     ).toBeTruthy();
     const link = screen.getByRole("link", { name: "Configure on GitHub" });
-    expect(link.getAttribute("href")).toBe("/api/v1/integrations/github/installation");
+    expect(link.getAttribute("href")).toBe("https://github.com/settings/applications");
     expect(link.getAttribute("target")).toBe("_blank");
     expect(link.getAttribute("rel")).toBe("noopener noreferrer");
     expect(discover).not.toHaveBeenCalled();
@@ -220,7 +220,7 @@ describe("GitHub account settings", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Remove account" }));
     const dialog = await screen.findByRole("dialog", { name: "Remove GitHub account?" });
     expect(within(dialog).getByText(/All your Agents will lose GitHub access through @octocat/)).toBeTruthy();
-    expect(within(dialog).getByText(/uninstall the openTag App/)).toBeTruthy();
+    expect(within(dialog).getByText(/You can revoke it in GitHub settings/)).toBeTruthy();
     expect(disconnect).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
@@ -302,10 +302,10 @@ describe("GitHub account settings", () => {
     fireEvent.click(help);
     const popover = await screen.findByRole("dialog", { name: "About GitHub repository access" });
     expect(help.getAttribute("aria-expanded")).toBe("true");
-    expect(within(popover).getByText(/Install or configure the openTag App on GitHub/)).toBeTruthy();
+    expect(within(popover).getByText(/OAuth repository access follows your GitHub account permissions/)).toBeTruthy();
     expect(within(popover).getByText(/All your Agents share this repository access/)).toBeTruthy();
     expect(
-      within(popover).getByText(/contact an organization administrator if you don't have permission/),
+      within(popover).getByText(/Organization repositories may require organization approval or SSO authorization/),
     ).toBeTruthy();
     fireEvent.click(help);
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "About GitHub repository access" })).toBeNull());
@@ -356,7 +356,7 @@ describe("GitHubIntegrationSettings failure language", () => {
   it.each([
     [
       "GITHUB_INTEGRATION_UNAVAILABLE",
-      "The GitHub App hasn't been set up for openTag. Contact your openTag administrator.",
+      "The GitHub OAuth App hasn't been set up for openTag. Contact your openTag administrator.",
     ],
     ["GITHUB_RATE_LIMITED", "GitHub's request limit has been reached. Try again shortly."],
     ["GITHUB_UPSTREAM_UNAVAILABLE", "GitHub is temporarily unavailable. Try again shortly."],

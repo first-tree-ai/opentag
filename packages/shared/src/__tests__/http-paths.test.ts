@@ -86,7 +86,6 @@ import {
   GITHUB_INTEGRATION_PATH,
   GITHUB_INTEGRATION_REPOSITORIES_PATH,
   GITHUB_OAUTH_CALLBACK_PATH,
-  GITHUB_WEBHOOK_PATH,
   githubIntegrationAuthorizationPath,
   githubIntegrationBindingsPath,
   githubIntegrationDisconnectPath,
@@ -248,24 +247,24 @@ describe("http paths", () => {
   describe("github integration paths", () => {
     it("returns the deployment-level collection paths", () => {
       expect(githubIntegrationPath()).toBe(GITHUB_INTEGRATION_PATH);
-      expect(githubIntegrationPath()).toBe("/api/v1/integrations/github");
+      expect(githubIntegrationPath()).toBe("/api/v2/integrations/github");
       expect(githubIntegrationAuthorizationPath()).toBe(GITHUB_INTEGRATION_AUTHORIZATION_PATH);
       expect(githubIntegrationBindingsPath()).toBe(GITHUB_INTEGRATION_BINDINGS_PATH);
-      expect(githubIntegrationBindingsPath()).toBe("/api/v1/integrations/github/bindings");
+      expect(githubIntegrationBindingsPath()).toBe("/api/v2/integrations/github/bindings");
       expect(githubIntegrationDisconnectPath()).toBe(GITHUB_INTEGRATION_DISCONNECT_PATH);
     });
 
     it("omits the query when no cursor was given", () => {
       expect(githubIntegrationRepositoriesPath()).toBe(GITHUB_INTEGRATION_REPOSITORIES_PATH);
-      expect(githubIntegrationRepositoriesPath(undefined)).toBe("/api/v1/integrations/github/repositories");
+      expect(githubIntegrationRepositoriesPath(undefined)).toBe("/api/v2/integrations/github/repositories");
     });
 
     it("encodes a cursor as a query parameter", () => {
-      expect(githubIntegrationRepositoriesPath("abc")).toBe("/api/v1/integrations/github/repositories?cursor=abc");
+      expect(githubIntegrationRepositoriesPath("abc")).toBe("/api/v2/integrations/github/repositories?cursor=abc");
       expect(githubIntegrationRepositoriesPath("a b&c=d")).toBe(
-        "/api/v1/integrations/github/repositories?cursor=a+b%26c%3Dd",
+        "/api/v2/integrations/github/repositories?cursor=a+b%26c%3Dd",
       );
-      expect(githubIntegrationRepositoriesPath("")).toBe("/api/v1/integrations/github/repositories?cursor=");
+      expect(githubIntegrationRepositoriesPath("")).toBe("/api/v2/integrations/github/repositories?cursor=");
     });
 
     it("preserves a viewer authorization scope with or without a continuation", () => {
@@ -487,7 +486,6 @@ describe("http paths", () => {
       expect(HTTP_PATHS.agentAvatar).toBe(AGENT_AVATAR_TEMPLATE);
       expect(HTTP_PATHS.githubIntegration).toBe(GITHUB_INTEGRATION_PATH);
       expect(HTTP_PATHS.githubOAuthCallback).toBe(GITHUB_OAUTH_CALLBACK_PATH);
-      expect(HTTP_PATHS.githubWebhook).toBe(GITHUB_WEBHOOK_PATH);
       expect(HTTP_PATHS.mcpServers).toBe(MCP_SERVERS_PATH);
       expect(HTTP_PATHS.mcpOAuthCallback).toBe(MCP_OAUTH_CALLBACK_PATH);
       expect(HTTP_PATHS.mcpClientMetadata).toBe(MCP_CLIENT_METADATA_PATH);

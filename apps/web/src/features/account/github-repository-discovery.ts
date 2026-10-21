@@ -1,8 +1,4 @@
-import type {
-  GitHubDiscoveredInstallation,
-  GitHubDiscoveredRepository,
-  GitHubRepositoryDiscoveryPage,
-} from "@opentag/shared/browser";
+import type { GitHubDiscoveredRepository, GitHubRepositoryDiscoveryPage } from "@opentag/shared/browser";
 
 export const REPOSITORIES_PER_BATCH = 100;
 const MAX_PAGES_PER_BATCH = 10;
@@ -10,42 +6,23 @@ const MAX_PAGES_PER_BATCH = 10;
 export type RepositoryCatalog = {
   repositories: GitHubDiscoveredRepository[];
   visibleCount: number;
-  installations: GitHubDiscoveredInstallation[];
   nextCursor: string | null;
   incomplete: boolean;
 };
 
 type ReadPage = (cursor: string | undefined, signal: AbortSignal) => Promise<GitHubRepositoryDiscoveryPage>;
 
-function installationSignature(installations: GitHubDiscoveredInstallation[]) {
-  return installations
-    .map((entry) => `${entry.installationId}:${entry.suspended}`)
-    .sort()
-    .join(",");
-}
-
 function mergePage(previous: RepositoryCatalog | undefined, page: GitHubRepositoryDiscoveryPage, target: number) {
-  const active = new Set(page.installations.filter((entry) => !entry.suspended).map((entry) => entry.installationId));
   const repositories = new Map(
     [...(previous?.repositories ?? []), ...page.repositories]
-      .filter((entry) => active.has(entry.installationId) && (entry.permissions.pull || entry.permissions.push))
+      .filter((entry) => entry.permissions.pull || entry.permissions.push)
       .map((entry) => [entry.repositoryId, entry]),
   );
-  const changed =
-    previous !== undefined &&
-    installationSignature(previous.installations) !== installationSignature(page.installations);
   return {
     repositories: [...repositories.values()],
     visibleCount: Math.min(target, repositories.size),
-    installations: page.installations,
     nextCursor: page.nextCursor,
-    incomplete: Boolean(
-      previous?.incomplete ||
-        changed ||
-        page.installationsTruncated !== false ||
-        page.truncatedInstallations === undefined ||
-        page.truncatedInstallations.length > 0,
-    ),
+    incomplete: Boolean(previous?.incomplete || page.truncated),
   };
 }
 

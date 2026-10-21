@@ -11,7 +11,7 @@ const ConnectionBindingSchema = z
     connectionId: UuidSchema,
     accountId: UuidSchema,
     githubHost: z.literal("github.com"),
-    appId: GitHubDecimalIdSchema,
+    oauthClientId: z.string().trim().min(1).max(255),
   })
   .strict();
 const UserCredentialBindingSchema = ConnectionBindingSchema.extend({ githubUserId: GitHubDecimalIdSchema });
@@ -49,11 +49,11 @@ export type GitHubEncryptedMaterial = z.infer<typeof EncryptedMaterialSchema>;
 function userCredentialContext(binding: GitHubUserCredentialBinding): string {
   const value = UserCredentialBindingSchema.parse(binding);
   return JSON.stringify([
-    "github-user-credential",
+    "github-oauth-user-credential-v1",
     value.connectionId,
     value.accountId,
     value.githubHost,
-    value.appId,
+    value.oauthClientId,
     value.githubUserId,
   ]);
 }
@@ -61,11 +61,11 @@ function userCredentialContext(binding: GitHubUserCredentialBinding): string {
 function oauthContext(binding: GitHubOAuthSecretBinding): string {
   const value = OAuthBindingSchema.parse(binding);
   return JSON.stringify([
-    "github-oauth-pkce",
+    "github-oauth-pkce-v1",
     value.connectionId,
     value.accountId,
     value.githubHost,
-    value.appId,
+    value.oauthClientId,
     value.flowId,
   ]);
 }

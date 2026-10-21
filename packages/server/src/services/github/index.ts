@@ -23,10 +23,6 @@ export {
   type GitHubApiClientErrorCode,
   type GitHubApiClientOptions,
   type GitHubAuthenticatedUser,
-  type GitHubInstallationRepositoriesPage,
-  type GitHubInstallationRepository,
-  type GitHubUserInstallation,
-  type GitHubUserInstallationsPage,
   type GitHubUserTokenMaterial,
 } from "./github-api-client.js";
 export {
@@ -69,17 +65,8 @@ export {
   type GitHubRefreshClaimResult,
   type GitHubRefreshWriteResult,
 } from "./github-refresh-store.js";
-export {
-  GITHUB_WEBHOOK_EVENTS,
-  GitHubWebhookService,
-  type GitHubWebhookServiceOptions,
-  type GitHubWebhookVerdict,
-} from "./github-webhook.js";
 export { generateOAuthState, sha256Hex } from "./hashes.js";
-export {
-  type GitHubBindingRequirement,
-  GitHubRepositoryAdmissionService,
-} from "./repository-admission.js";
+export { GitHubRepositoryAdmissionService } from "./repository-admission.js";
 export { type GitHubConnectionRow, toGitHubConnectionStatus } from "./rows.js";
 export {
   GITHUB_OAUTH_FLOW_TTL_MS,

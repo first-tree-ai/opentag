@@ -60,7 +60,7 @@ function connection(overrides: Partial<GitHubConnectionStatus> = {}): GitHubConn
     id: randomUUID(),
     accountId: ACCOUNT,
     githubHost: "github.com",
-    appId: "1",
+    oauthClientId: "1",
     githubUserId: "42",
     githubLogin: "acme",
     status: "active",
@@ -81,7 +81,10 @@ function connection(overrides: Partial<GitHubConnectionStatus> = {}): GitHubConn
 }
 
 function overview(row: GitHubConnectionStatus | null) {
-  return { availability: { available: true as const, githubHost: "github.com" as const, appId: "1" }, connection: row };
+  return {
+    availability: { available: true as const, githubHost: "github.com" as const, oauthClientId: "1" },
+    connection: row,
+  };
 }
 
 function management(row: GitHubConnectionStatus | null | (() => GitHubConnectionStatus | null)) {
@@ -135,7 +138,9 @@ function operations(
 ) {
   return new CloudContextTreeOperations({
     management: managementStub,
-    leases: { acquire: vi.fn(async () => ({ token: "ghu_scoped_test_token", release: vi.fn(async () => undefined) })) },
+    credentials: {
+      acquire: vi.fn(async () => ({ token: "ghu_scoped_test_token", release: vi.fn(async () => undefined) })),
+    },
     computerKind: vi.fn(async () => "cloud" as const),
     workspace: { close: vi.fn(async () => undefined) } as unknown as GitWorkspace,
     treeHeads: verifier(),
@@ -521,7 +526,7 @@ describe("Cloud Context Tree verification with the pinned CLI", () => {
     const github = management(connection({ bindings: [binding({ fullNameDisplay: `acme/${name}` })] }));
     const cloud = new CloudContextTreeOperations({
       management: github,
-      leases: {
+      credentials: {
         acquire: vi.fn(async () => ({ token: "ghu_scoped_test_token", release: vi.fn(async () => undefined) })),
       },
       computerKind: async () => "cloud",

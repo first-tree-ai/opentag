@@ -11,19 +11,16 @@ import type { GitHubRepositoryBinding } from "./support/legacy-github-fixtures.j
  * verification on the webhook.
  */
 
-import { createHmac, generateKeyPairSync, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { GitHubIntegrationAvailability } from "@opentag/shared";
 import {
   GITHUB_INTEGRATION_AUTHORIZATION_PATH,
   GITHUB_INTEGRATION_BINDINGS_PATH,
   GITHUB_INTEGRATION_DISCONNECT_PATH,
-  GITHUB_INTEGRATION_INSTALLATION_PATH,
   GITHUB_INTEGRATION_PATH,
   GITHUB_INTEGRATION_REPOSITORIES_PATH,
   GITHUB_OAUTH_CALLBACK_PATH,
-  GITHUB_WEBHOOK_PATH,
   type GitHubConnectionStatus,
-  githubIntegrationRepositoriesPath,
 } from "@opentag/shared";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -35,20 +32,12 @@ import { GitHubConnectionService } from "../services/github/github-connection-se
 import { GitHubManagementService } from "../services/github/github-management-service.js";
 import { GitHubOAuthService } from "../services/github/github-oauth-service.js";
 import { GitHubConnectionRecheckStore } from "../services/github/github-recheck-store.js";
-import { GitHubWebhookService } from "../services/github/github-webhook.js";
-import {
-  GitHubInstallationTokenClient,
-  GitHubInstallationTokenError,
-} from "../services/github/installation-token-client.js";
 import { GitHubRepositoryAdmissionService } from "../services/github/repository-admission.js";
 import { GitHubCredentialCipher } from "../services/github-credential-material.js";
 import { signedInBrowser } from "./signed-in-browser.js";
 import {
   createAccount,
-  GITHUB_TEST_APP_ID,
-  installation,
-  installationsPage,
-  repositoriesPage,
+  GITHUB_TEST_CLIENT_ID,
   repository,
   stubGitHubApi,
   tokenMaterial,
@@ -56,7 +45,7 @@ import {
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 const NOW = new Date("2026-09-16T00:00:00.000Z");
-const REDIRECT_URI = "https://opentag.example.com/api/v1/integrations/github/oauth/callback";
+const REDIRECT_URI = "https://opentag.example.com/api/v2/integrations/github/oauth/callback";
 const PUBLIC_ORIGIN = "https://opentag.example.com";
 const OAUTH_COOKIE = "opentag_github_oauth_context";
 /* The fixed authorization issuer GitHub documents for its OAuth callback `iss` parameter. */
@@ -118,17 +107,17 @@ function authService(accounts: { owner: AccountFixture; other: AccountFixture })
 function buildManagement(api: ReturnType<typeof stubGitHubApi>) {
   const now = () => NOW;
   const connections = new GitHubConnectionService(unit.database, { now });
-  const admission = new GitHubRepositoryAdmissionService({ api: api.asClient(), appId: GITHUB_TEST_APP_ID, now });
+  const admission = new GitHubRepositoryAdmissionService({ api: api.asClient() });
   const oauth = new GitHubOAuthService({
     connections,
     cipher,
     api: api.asClient(),
-    clientId: "Iv1.client",
+    clientId: "Ov23testclient",
     redirectUri: REDIRECT_URI,
   });
   return new GitHubManagementService({
     database: unit.database,
-    appId: GITHUB_TEST_APP_ID,
+    oauthClientId: GITHUB_TEST_CLIENT_ID,
     connections,
     oauth,
     admission,
@@ -137,25 +126,18 @@ function buildManagement(api: ReturnType<typeof stubGitHubApi>) {
   });
 }
 
-async function appFixture(
-  options: {
-    withManagement?: boolean;
-    withWebhook?: boolean;
-    withBrowser?: boolean;
-    installation?: { installationUrl: () => Promise<string> };
-  } = {},
-) {
+async function appFixture(options: { withManagement?: boolean; withBrowser?: boolean } = {}) {
   const owner = await createAccount(unit, "owner@example.com");
   const other = await createAccount(unit, "other@example.com");
   const api = stubGitHubApi();
   const availability: GitHubIntegrationAvailability = options.withManagement
-    ? { available: true, githubHost: "github.com", appId: GITHUB_TEST_APP_ID }
-    : { available: false, githubHost: "github.com", appId: null };
+    ? { available: true, githubHost: "github.com", oauthClientId: GITHUB_TEST_CLIENT_ID }
+    : { available: false, githubHost: "github.com", oauthClientId: null };
   const management = options.withManagement ? buildManagement(api) : undefined;
-  const recheckStore = new GitHubConnectionRecheckStore(unit.database, { now: () => NOW });
-  const webhook = options.withWebhook
-    ? new GitHubWebhookService({ webhookSecret: "webhook-secret", recheckStore, now: () => NOW })
-    : undefined;
+  const recheckStore = new GitHubConnectionRecheckStore(unit.database, {
+    oauthClientId: "Ov23testclient",
+    now: () => NOW,
+  });
   const app = createApp({
     ...(options.withBrowser
       ? {
@@ -165,16 +147,14 @@ async function appFixture(
       : {}),
     authService: authService({ owner, other }),
     githubIntegrations: {
-      ...(options.installation ? { installation: options.installation } : {}),
       availability,
       publicOrigin: PUBLIC_ORIGIN,
       secureCookies: true,
       ...(management ? { management } : {}),
-      ...(webhook ? { webhook } : {}),
     },
   });
   apps.push(app);
-  return { app, api, owner, other, management, webhook, recheckStore };
+  return { app, api, owner, other, management, recheckStore };
 }
 
 function ownerHeaders(token = ACCESS_TOKEN) {
@@ -317,33 +297,6 @@ describe("Server-only GitHub execution credential", () => {
     await f.management?.disconnect(f.owner.id);
     expect(await f.management?.getExecutionUserCredential(input)).toBeNull();
   });
-
-  it("protects the current Account parent after authorization changes and OAuth replacement", async () => {
-    const f = await appFixture({ withManagement: true });
-    const original = await activeConnection(f);
-    const originalToken = tokenMaterial().accessToken;
-    expect(await f.management?.isCurrentUserCredential(f.owner.id, originalToken)).toBe(true);
-    expect(await f.management?.isCurrentUserCredential(f.other.id, originalToken)).toBe(false);
-    expect(await f.management?.isCurrentUserCredential(f.owner.id, "ghu_child")).toBe(false);
-    await unit.database
-      .update(githubConnections)
-      .set({ authorizationVersion: original.authorizationVersion + 1n })
-      .where(eq(githubConnections.id, original.id));
-    expect(await f.management?.isCurrentUserCredential(f.owner.id, originalToken)).toBe(true);
-    f.api.exchangeCodeForUserToken.mockResolvedValue({ ...tokenMaterial(), accessToken: "ghu_reconnected_parent" });
-    f.api.getAuthenticatedUser.mockResolvedValue({ id: GITHUB_USER_TWO, login: "replacement" });
-    const started = await startAuthorization(f.app, { intent: "replace" });
-    const callback = await completeCallback(f.app, {
-      state: started.state,
-      cookie: started.cookie,
-      code: "replace-code",
-    });
-    expect(locationOf(callback).searchParams.get("github_oauth")).toBe("success");
-    expect((await f.management?.getOverview(f.owner.id))?.connection?.id).not.toBe(original.id);
-    expect(await f.management?.isCurrentUserCredential(f.owner.id, originalToken)).toBe(false);
-    expect(await f.management?.isCurrentUserCredential(f.owner.id, "ghu_reconnected_parent")).toBe(true);
-    expect(await f.management?.isCurrentUserCredential(f.other.id, "ghu_reconnected_parent")).toBe(false);
-  });
 });
 
 async function createAgent(accountId: string, name = "reviewer") {
@@ -370,96 +323,12 @@ function bindingDocument(agentId: string, overrides: Partial<GitHubRepositoryBin
 }
 
 describe("GitHub integration availability and authentication", () => {
-  it("opens the configured App install page for a signed-in Account without changing its connection", async () => {
-    const installationUrl = vi.fn(async () => "https://github.com/apps/opentag-staging/installations/new");
-    const { app, management, owner } = await appFixture({
-      withManagement: true,
-      withBrowser: true,
-      installation: { installationUrl },
-    });
-    const response = await app.inject({
-      method: "GET",
-      url: `${GITHUB_INTEGRATION_INSTALLATION_PATH}?url=https://attacker.example`,
-      headers: { cookie: "opentag.session_token=browser-session" },
-    });
-    expect(response.statusCode).toBe(302);
-    expect(response.headers.location).toBe("https://github.com/apps/opentag-staging/installations/new");
-    expect(response.headers["cache-control"]).toBe("no-store");
-    expect(installationUrl).toHaveBeenCalledOnce();
-    expect((await management?.getOverview(owner.id))?.connection).toBeNull();
-  });
-
-  it("keeps the install route unavailable when no App is configured", async () => {
-    const { app } = await appFixture();
-    const response = await app.inject({
-      method: "GET",
-      url: GITHUB_INTEGRATION_INSTALLATION_PATH,
-      headers: ownerHeaders(),
-    });
-    expect(response.statusCode).toBe(503);
-    expect(response.json().error.code).toBe("GITHUB_INTEGRATION_UNAVAILABLE");
-  });
-
-  it.each([undefined, "Iv1.other-app"])(
-    "refuses to redirect when authenticated App OAuth metadata is %j",
-    async (clientId) => {
-      const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2_048 });
-      const fetchApp = vi.fn<typeof fetch>(
-        async () =>
-          new Response(
-            JSON.stringify({
-              id: Number(GITHUB_TEST_APP_ID),
-              slug: "opentag-staging",
-              client_id: clientId,
-            }),
-            { status: 200, headers: { "content-type": "application/json" } },
-          ),
-      );
-      const installation = new GitHubInstallationTokenClient({
-        appId: GITHUB_TEST_APP_ID,
-        clientId: "Iv1.configured-app",
-        privateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
-        fetch: fetchApp,
-      });
-      const { app } = await appFixture({ withManagement: true, installation });
-      const response = await app.inject({
-        method: "GET",
-        url: GITHUB_INTEGRATION_INSTALLATION_PATH,
-        headers: ownerHeaders(),
-      });
-      expect(response.statusCode).toBe(503);
-      expect(response.json().error.code).toBe("GITHUB_UPSTREAM_UNAVAILABLE");
-      expect(response.headers.location).toBeUndefined();
-      expect(response.body).not.toContain("Iv1.");
-      expect(fetchApp).toHaveBeenCalledOnce();
-    },
-  );
-
-  it.each([
-    [new Error("upstream-secret-must-not-leak"), 503, "GITHUB_UPSTREAM_UNAVAILABLE"],
-    [new GitHubInstallationTokenError("GITHUB_API_RATE_LIMITED", "bounded"), 429, "GITHUB_RATE_LIMITED"],
-  ] as const)("bounds installation lookup failures", async (error, status, code) => {
-    const installationUrl = vi.fn(async () => {
-      throw error;
-    });
-    const { app } = await appFixture({ withManagement: true, installation: { installationUrl } });
-    const response = await app.inject({
-      method: "GET",
-      url: GITHUB_INTEGRATION_INSTALLATION_PATH,
-      headers: ownerHeaders(),
-    });
-    expect(response.statusCode).toBe(status);
-    expect(response.json().error.code).toBe(code);
-    expect(response.body).not.toContain("upstream-secret");
-    expect(response.headers.location).toBeUndefined();
-  });
-
   it("serves explicit unavailable availability with a null connection, never a 404 or a demo", async () => {
     const { app } = await appFixture();
     const response = await app.inject({ method: "GET", url: GITHUB_INTEGRATION_PATH, headers: ownerHeaders() });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
-      availability: { available: false, githubHost: "github.com", appId: null },
+      availability: { available: false, githubHost: "github.com", oauthClientId: null },
       connection: null,
     });
     expect(response.body).not.toContain("client");
@@ -481,7 +350,6 @@ describe("GitHub integration availability and authentication", () => {
     const { app, api } = await appFixture({ withManagement: true });
     for (const request of [
       { method: "GET" as const, url: GITHUB_INTEGRATION_PATH },
-      { method: "GET" as const, url: GITHUB_INTEGRATION_INSTALLATION_PATH },
       { method: "GET" as const, url: GITHUB_INTEGRATION_REPOSITORIES_PATH },
       {
         method: "POST" as const,
@@ -511,7 +379,7 @@ describe("GitHub integration browser mutation security", () => {
       betterAuth: signedInBrowser(owner.id),
       browserAuth: { publicOrigin: PUBLIC_ORIGIN, secureCookies: true, sessionTtlSeconds: 3_600 },
       githubIntegrations: {
-        availability: { available: true, githubHost: "github.com", appId: GITHUB_TEST_APP_ID },
+        availability: { available: true, githubHost: "github.com", oauthClientId: GITHUB_TEST_CLIENT_ID },
         publicOrigin: PUBLIC_ORIGIN,
         secureCookies: true,
         management: buildManagement(api),
@@ -725,111 +593,28 @@ describe("GitHub OAuth callback", () => {
 });
 
 describe("GitHub repository discovery and bindings", () => {
-  it("rejects a continuation after another tab replaces the GitHub account", async () => {
-    const fixture = await appFixture({ withManagement: true });
-    const current = await activeConnection(fixture);
-    if (!fixture.management) throw new Error("Missing GitHub management");
-    fixture.api.listUserInstallations.mockResolvedValue(installationsPage([installation()]));
-    fixture.api.listInstallationRepositories.mockResolvedValue(repositoriesPage([repository()], 250));
-    const first = await fixture.management.discoverRepositories(fixture.owner.id);
-    expect(first.nextCursor).toBeTruthy();
-    const started = await startAuthorization(fixture.app, { intent: "replace" });
-    fixture.api.getAuthenticatedUser.mockResolvedValue({ id: GITHUB_USER_TWO, login: "replacement-user" });
-    const callback = await completeCallback(fixture.app, { ...started, code: "replacement-code" });
-    expect(locationOf(callback).searchParams.get("github_oauth")).toBe("success");
-    await expect(
-      fixture.management.discoverRepositories(fixture.owner.id, first.nextCursor ?? undefined, {
-        id: current.id,
-        authorizationVersion: current.authorizationVersion.toString(),
-      }),
-    ).rejects.toMatchObject({ code: "GITHUB_AUTHORIZATION_VERSION_CONFLICT" });
-    expect(fixture.api.listInstallationRepositories).toHaveBeenCalledTimes(1);
-  });
-
-  it("discards a discovery page if authorization changes during the upstream read", async () => {
-    const fixture = await appFixture({ withManagement: true });
-    const current = await activeConnection(fixture);
-    if (!fixture.management) throw new Error("Missing GitHub management");
-    fixture.api.listUserInstallations.mockResolvedValue(installationsPage([installation()]));
-    fixture.api.listInstallationRepositories.mockImplementationOnce(async () => {
-      await unit.database
-        .update(githubConnections)
-        .set({ authorizationVersion: current.authorizationVersion + 1n })
-        .where(eq(githubConnections.id, current.id));
-      return repositoriesPage([repository()]);
-    });
-    await expect(fixture.management.discoverRepositories(fixture.owner.id)).rejects.toMatchObject({
-      code: "GITHUB_AUTHORIZATION_VERSION_CONFLICT",
-    });
-  });
-
-  it("rejects an outdated viewer authorization before making a GitHub request", async () => {
-    const fixture = await appFixture({ withManagement: true });
-    const current = await activeConnection(fixture);
-    const query = new URLSearchParams({
-      connectionId: current.id,
-      authorizationVersion: (current.authorizationVersion + 1n).toString(),
-    });
-    const response = await fixture.app.inject({
-      method: "GET",
-      url: `${GITHUB_INTEGRATION_REPOSITORIES_PATH}?${query}`,
-      headers: ownerHeaders(),
-    });
-    expect(response.statusCode).toBe(409);
-    expect(response.json().error.code).toBe("GITHUB_AUTHORIZATION_VERSION_CONFLICT");
-    expect(fixture.api.listUserInstallations).not.toHaveBeenCalled();
-  });
-
-  it("paginates installations and repositories with an opaque cursor", async () => {
-    const fixture = await appFixture({ withManagement: true });
-    const current = await activeConnection(fixture);
-    const authorization = { id: current.id, authorizationVersion: current.authorizationVersion.toString() };
-    fixture.api.listUserInstallations.mockResolvedValue(
-      installationsPage([
-        installation({ installationId: "111" }),
-        installation({ installationId: "222", accountLogin: "second-org" }),
-      ]),
-    );
-    fixture.api.listInstallationRepositories.mockResolvedValue(
-      repositoriesPage([repository({ repositoryId: "900", fullName: "octocat/hello-world" })], 250),
-    );
-
-    const first = await fixture.app.inject({
-      method: "GET",
-      url: githubIntegrationRepositoriesPath(undefined, authorization),
-      headers: ownerHeaders(),
-    });
-    expect(first.statusCode).toBe(200);
-    const firstPage = first.json() as { installations: unknown[]; repositories: unknown[]; nextCursor: string | null };
-    expect(firstPage.installations).toHaveLength(2);
-    expect(firstPage.repositories).toHaveLength(1);
-    expect(firstPage.nextCursor).toBeTruthy();
-    expect(first.body).not.toContain("ghu_");
-
-    fixture.api.listInstallationRepositories.mockResolvedValue(
-      repositoriesPage([repository({ repositoryId: "901", fullName: "second-org/tool" })], 250),
-    );
-    const second = await fixture.app.inject({
-      method: "GET",
-      url: githubIntegrationRepositoriesPath(firstPage.nextCursor ?? undefined, authorization),
-      headers: ownerHeaders(),
-    });
-    expect(second.statusCode).toBe(200);
-    const secondPage = second.json() as { repositories: { repositoryId: string }[] };
-    expect(secondPage.repositories.map((entry) => entry.repositoryId)).toEqual(["901"]);
-  });
-
-  it("rejects an installation that belongs to a different App instead of trusting discovery", async () => {
+  it("paginates the OAuth user's repositories without installation metadata", async () => {
     const fixture = await appFixture({ withManagement: true });
     await activeConnection(fixture);
-    fixture.api.listUserInstallations.mockResolvedValue(installationsPage([installation({ appId: "999999" })]));
-    const response = await fixture.app.inject({
+    fixture.api.listUserRepositories.mockResolvedValue(
+      Array.from({ length: 100 }, (_, i) => repository({ repositoryId: String(i + 1), fullName: `owner/repo-${i}` })),
+    );
+    const first = await fixture.app.inject({
       method: "GET",
       url: GITHUB_INTEGRATION_REPOSITORIES_PATH,
       headers: ownerHeaders(),
     });
-    expect(response.statusCode).toBe(502);
-    expect(response.json().error.code).toBe("GITHUB_APP_IDENTITY_MISMATCH");
+    expect(first.statusCode).toBe(200);
+    expect(first.json()).toMatchObject({ nextCursor: "2", truncated: false });
+    expect(first.json().repositories).toHaveLength(100);
+    expect(first.body).not.toContain("installationId");
+    fixture.api.listUserRepositories.mockResolvedValue([repository()]);
+    const second = await fixture.app.inject({
+      method: "GET",
+      url: `${GITHUB_INTEGRATION_REPOSITORIES_PATH}?cursor=2`,
+      headers: ownerHeaders(),
+    });
+    expect(second.json()).toMatchObject({ nextCursor: null, truncated: false });
   });
 
   it("retires repository configuration without changing historical data", async () => {
@@ -860,8 +645,7 @@ describe("GitHub connection lifecycle", () => {
     const fixture = await appFixture({ withManagement: true });
     const original = await activeConnection(fixture);
     const agent = await createAgent(fixture.owner.id);
-    fixture.api.listUserInstallations.mockResolvedValue(installationsPage([installation()]));
-    fixture.api.listInstallationRepositories.mockResolvedValue(repositoriesPage([repository()]));
+
     await fixture.app.inject({
       method: "PUT",
       url: GITHUB_INTEGRATION_BINDINGS_PATH,
@@ -950,74 +734,94 @@ describe("GitHub connection lifecycle", () => {
   });
 });
 
-describe("GitHub webhook ingress", () => {
-  it("verifies the raw-body HMAC and marks an authoritative recheck without restoring access", async () => {
-    const fixture = await appFixture({ withManagement: true, withWebhook: true });
-    const connection = await activeConnection(fixture);
-    // The webhook resolves affected connections through their bindings, so install one first.
-    await unit.database
-      .update(githubConnections)
-      .set({ repositoryBindings: bindingDocument("1a63a21e-f6c7-4474-91ea-4dabf0566a24") })
-      .where(eq(githubConnections.id, connection.id));
-    const payload = Buffer.from(JSON.stringify({ action: "deleted", installation: { id: 55123456 } }), "utf8");
-    const signature = `sha256=${createHmac("sha256", "webhook-secret").update(payload).digest("hex")}`;
-
-    const forged = await fixture.app.inject({
-      method: "POST",
-      url: GITHUB_WEBHOOK_PATH,
-      headers: {
-        "content-type": "application/json",
-        "x-hub-signature-256": "sha256=deadbeef",
-        "x-github-event": "installation",
-      },
-      payload,
-    });
-    expect(forged.statusCode).toBe(401);
-    expect(forged.json().status).toBe("rejected");
-
-    const accepted = await fixture.app.inject({
-      method: "POST",
-      url: GITHUB_WEBHOOK_PATH,
-      headers: {
-        "content-type": "application/json",
-        "x-hub-signature-256": signature,
-        "x-github-event": "installation",
-        "x-github-delivery": "delivery-1",
-      },
-      payload,
-    });
-    expect(accepted.statusCode).toBe(200);
-    expect(accepted.json()).toMatchObject({ status: "processed", recheckMarkedConnections: 1 });
-
-    // The event only requested a recheck; the credential and status are untouched until the worker
-    // authoritatively decides.
-    const [row] = await unit.database.select().from(githubConnections).where(eq(githubConnections.id, connection.id));
-    expect(row?.status).toBe("active");
-    expect(row?.credentialCiphertext).toBe(connection.credentialCiphertext);
-    expect(row?.recheckRequired).toBe(true);
+describe("repository discovery authorization fences", () => {
+  it("rejects a continuation after another tab replaces the GitHub account", async () => {
+    const fixture = await appFixture({ withManagement: true });
+    const current = await activeConnection(fixture);
+    if (!fixture.management) throw new Error("Missing GitHub management");
+    fixture.api.listUserRepositories.mockResolvedValue([repository()]);
+    fixture.api.listUserRepositories.mockResolvedValue(
+      Array.from({ length: 100 }, (_, index) => repository({ repositoryId: String(index + 1) })),
+    );
+    const first = await fixture.management.discoverRepositories(fixture.owner.id);
+    expect(first.nextCursor).toBeTruthy();
+    const started = await startAuthorization(fixture.app, { intent: "replace" });
+    fixture.api.getAuthenticatedUser.mockResolvedValue({ id: GITHUB_USER_TWO, login: "replacement-user" });
+    fixture.api.validateOAuthToken.mockResolvedValue({ id: GITHUB_USER_TWO, login: "replacement-user" });
+    const callback = await completeCallback(fixture.app, { ...started, code: "replacement-code" });
+    expect(locationOf(callback).searchParams.get("github_oauth")).toBe("success");
+    await expect(
+      fixture.management.discoverRepositories(fixture.owner.id, first.nextCursor ?? undefined, {
+        id: current.id,
+        authorizationVersion: current.authorizationVersion.toString(),
+      }),
+    ).rejects.toMatchObject({ code: "GITHUB_AUTHORIZATION_VERSION_CONFLICT" });
+    expect(fixture.api.listUserRepositories).toHaveBeenCalledTimes(1);
   });
 
-  it("invalidates fail-closed on a provider-attested authorization revocation", async () => {
-    const fixture = await appFixture({ withManagement: true, withWebhook: true });
-    const connection = await activeConnection(fixture);
-    const payload = Buffer.from(JSON.stringify({ action: "revoked", sender: { id: Number(GITHUB_USER_ONE) } }), "utf8");
-    const signature = `sha256=${createHmac("sha256", "webhook-secret").update(payload).digest("hex")}`;
-    const response = await fixture.app.inject({
-      method: "POST",
-      url: GITHUB_WEBHOOK_PATH,
-      headers: {
-        "content-type": "application/json",
-        "x-hub-signature-256": signature,
-        "x-github-event": "github_app_authorization",
-        "x-github-delivery": "delivery-2",
-      },
-      payload,
+  it("discards a discovery page if authorization changes during the upstream read", async () => {
+    const fixture = await appFixture({ withManagement: true });
+    const current = await activeConnection(fixture);
+    if (!fixture.management) throw new Error("Missing GitHub management");
+    fixture.api.listUserRepositories.mockResolvedValue([repository()]);
+    fixture.api.listUserRepositories.mockImplementationOnce(async () => {
+      await unit.database
+        .update(githubConnections)
+        .set({ authorizationVersion: current.authorizationVersion + 1n })
+        .where(eq(githubConnections.id, current.id));
+      return [repository()];
     });
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ status: "processed", invalidatedConnections: 1 });
-    const [row] = await unit.database.select().from(githubConnections).where(eq(githubConnections.id, connection.id));
-    expect(row?.status).toBe("reauthorization_required");
-    expect(row?.credentialCiphertext).toBeNull();
-    expect(row?.authorizationVersion).toBe(connection.authorizationVersion + 1n);
+    await expect(fixture.management.discoverRepositories(fixture.owner.id)).rejects.toMatchObject({
+      code: "GITHUB_AUTHORIZATION_VERSION_CONFLICT",
+    });
+  });
+
+  it("rejects an outdated viewer authorization before making a GitHub request", async () => {
+    const fixture = await appFixture({ withManagement: true });
+    const current = await activeConnection(fixture);
+    const query = new URLSearchParams({
+      connectionId: current.id,
+      authorizationVersion: (current.authorizationVersion + 1n).toString(),
+    });
+    const response = await fixture.app.inject({
+      method: "GET",
+      url: `${GITHUB_INTEGRATION_REPOSITORIES_PATH}?${query}`,
+      headers: ownerHeaders(),
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error.code).toBe("GITHUB_AUTHORIZATION_VERSION_CONFLICT");
+    expect(fixture.api.listUserRepositories).not.toHaveBeenCalled();
+  });
+});
+
+describe("retired GitHub App ingress", () => {
+  it.each([
+    "/api/v1/integrations/github",
+    "/api/v1/integrations/github/webhook",
+    "/api/v1/integrations/github/oauth/callback",
+    "/api/v1/integrations/github/disconnect",
+  ])("returns 410 without changing the OAuth connection for %s", async (path) => {
+    const fixture = await appFixture({ withManagement: true });
+    const connection = await activeConnection(fixture);
+    await unit.database.insert(githubConnections).values({
+      accountId: fixture.owner.id,
+      githubHost: "github.com",
+      appId: "871235",
+      status: "revoked",
+      githubUserId: GITHUB_USER_ONE,
+      githubLogin: `user-${GITHUB_USER_ONE}`,
+    });
+    const before = await unit.database.select().from(githubConnections);
+    for (const method of ["GET", "POST"] as const) {
+      const result = await fixture.app.inject({
+        method,
+        url: path,
+        headers: { ...ownerHeaders(), "x-github-event": "github_app_authorization" },
+        ...(method === "POST" ? { payload: { action: "revoked", sender: { id: Number(GITHUB_USER_ONE) } } } : {}),
+      });
+      expect(result.statusCode).toBe(410);
+    }
+    expect(await unit.database.select().from(githubConnections)).toEqual(before);
+    expect((await fixture.management?.getOverview(fixture.owner.id))?.connection?.id).toBe(connection.id);
   });
 });

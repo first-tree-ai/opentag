@@ -5,14 +5,14 @@ import { githubConnections } from "../../db/schema/index.js";
 import { assertGitHubCredentialMaterial, type GitHubConnectionCredentialMaterial } from "./credentials.js";
 import { boundedGitHubErrorCode } from "./errors.js";
 import type { GitHubConnectionRow } from "./rows.js";
-import { gitHubConnectionColumns } from "./rows.js";
+import { gitHubConnectionColumns, oauthConnectionScope } from "./rows.js";
 import { GITHUB_REFRESH_CLAIM_TTL_MS, githubWorkerBatchLimit } from "./timing.js";
 
 export interface GitHubRefreshCandidate {
   connectionId: string;
   accountId: string;
   githubHost: string;
-  appId: string;
+  oauthClientId: string;
   githubUserId: string;
   credentialGeneration: bigint;
   accessExpiresAt: Date;
@@ -47,11 +47,13 @@ export const GITHUB_REFRESH_OUTCOME_UNKNOWN_ERROR_CODE = "GITHUB_REFRESH_OUTCOME
 export class GitHubCredentialRefreshStore {
   private readonly now: () => Date;
   private readonly claimTtlMs: number;
+  private readonly oauthClientId: string;
 
   constructor(
     private readonly database: DatabaseClient,
-    options: { now?: () => Date; claimTtlMs?: number } = {},
+    options: { oauthClientId: string; now?: () => Date; claimTtlMs?: number },
   ) {
+    this.oauthClientId = options.oauthClientId;
     this.now = options.now ?? (() => new Date());
     this.claimTtlMs = options.claimTtlMs ?? GITHUB_REFRESH_CLAIM_TTL_MS;
   }
@@ -63,6 +65,7 @@ export class GitHubCredentialRefreshStore {
       .from(githubConnections)
       .where(
         and(
+          oauthConnectionScope(this.oauthClientId),
           eq(githubConnections.status, "active"),
           lt(githubConnections.accessExpiresAt, new Date(now.getTime() + input.withinMs)),
           or(
@@ -91,6 +94,7 @@ export class GitHubCredentialRefreshStore {
       .where(
         and(
           eq(githubConnections.id, connectionId),
+          oauthConnectionScope(this.oauthClientId),
           eq(githubConnections.status, "active"),
           eq(githubConnections.refreshStatus, "idle"),
         ),
@@ -102,7 +106,7 @@ export class GitHubCredentialRefreshStore {
     const [row] = await this.database
       .select(gitHubConnectionColumns())
       .from(githubConnections)
-      .where(eq(githubConnections.id, connectionId))
+      .where(and(oauthConnectionScope(this.oauthClientId), eq(githubConnections.id, connectionId)))
       .limit(1);
     if (!row) return { claimed: false, reason: "not_found" };
     if (row.status !== "active") return { claimed: false, reason: "not_active" };
@@ -122,6 +126,7 @@ export class GitHubCredentialRefreshStore {
       .where(
         and(
           eq(githubConnections.id, connectionId),
+          oauthConnectionScope(this.oauthClientId),
           eq(githubConnections.status, "active"),
           or(
             eq(githubConnections.refreshStatus, "unknown"),
@@ -164,6 +169,7 @@ export class GitHubCredentialRefreshStore {
       .where(
         and(
           eq(githubConnections.id, input.connectionId),
+          oauthConnectionScope(this.oauthClientId),
           eq(githubConnections.status, "active"),
           eq(githubConnections.refreshStatus, "claimed"),
           eq(githubConnections.refreshAttemptId, input.attemptId),
@@ -188,6 +194,7 @@ export class GitHubCredentialRefreshStore {
       .where(
         and(
           eq(githubConnections.id, input.connectionId),
+          oauthConnectionScope(this.oauthClientId),
           eq(githubConnections.status, "active"),
           eq(githubConnections.refreshAttemptId, input.attemptId),
           eq(githubConnections.credentialGeneration, input.expectedCredentialGeneration),
@@ -220,6 +227,7 @@ export class GitHubCredentialRefreshStore {
       .where(
         and(
           eq(githubConnections.id, input.connectionId),
+          oauthConnectionScope(this.oauthClientId),
           eq(githubConnections.status, "active"),
           eq(githubConnections.refreshStatus, "claimed"),
           eq(githubConnections.refreshAttemptId, input.attemptId),
@@ -236,7 +244,7 @@ export class GitHubCredentialRefreshStore {
     const [row] = await this.database
       .select({ id: githubConnections.id, status: githubConnections.status })
       .from(githubConnections)
-      .where(eq(githubConnections.id, connectionId))
+      .where(and(oauthConnectionScope(this.oauthClientId), eq(githubConnections.id, connectionId)))
       .limit(1);
     if (!row) return { applied: false, reason: "not_found" };
     if (row.status !== "active") return { applied: false, reason: "not_active" };
@@ -245,14 +253,19 @@ export class GitHubCredentialRefreshStore {
 }
 
 function toRefreshCandidate(row: GitHubConnectionRow): GitHubRefreshCandidate {
-  if (row.githubUserId === null || row.accessExpiresAt === null || row.refreshExpiresAt === null) {
+  if (
+    row.oauthClientId === null ||
+    row.githubUserId === null ||
+    row.accessExpiresAt === null ||
+    row.refreshExpiresAt === null
+  ) {
     throw new Error("An active GitHub connection is missing its credential identity");
   }
   return {
     connectionId: row.id,
     accountId: row.accountId,
     githubHost: row.githubHost,
-    appId: row.appId,
+    oauthClientId: row.oauthClientId,
     githubUserId: row.githubUserId,
     credentialGeneration: row.credentialGeneration,
     accessExpiresAt: row.accessExpiresAt,

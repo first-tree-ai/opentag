@@ -2,9 +2,9 @@
  * Account-facing GitHub integration management routes.
  *
  * Every management route requires an authenticated Account and follows the existing CSRF/origin
- * patterns through the shared user-auth preHandler. The two public paths verify their own callers:
- * the OAuth callback claims its one-time state against the persisted flow and the login-session
- * cookie, and the webhook verifies the raw-body HMAC with the deployment secret. Responses are the
+ * patterns through the shared user-auth preHandler. The public OAuth callback claims its one-time
+ * state against the persisted flow and the login-session cookie. Retired v1 routes return 410
+ * before invoking any business handler. Responses are the
  * shared safe DTOs only — no credential ciphertext, key IDs, state, session values, or tokens ever
  * cross this boundary, and the callback redirects only to fixed local return surfaces with a
  * bounded outcome parameter.
@@ -14,7 +14,6 @@ import {
   GITHUB_INTEGRATION_AUTHORIZATION_PATH,
   GITHUB_INTEGRATION_BINDINGS_PATH,
   GITHUB_INTEGRATION_DISCONNECT_PATH,
-  GITHUB_INTEGRATION_INSTALLATION_PATH,
   GITHUB_INTEGRATION_PATH,
   GITHUB_INTEGRATION_REPOSITORIES_PATH,
   GITHUB_OAUTH_CALLBACK_PATH,
@@ -22,7 +21,6 @@ import {
   GITHUB_OAUTH_OUTCOME_ERROR,
   GITHUB_OAUTH_OUTCOME_PARAM,
   GITHUB_OAUTH_OUTCOME_SUCCESS,
-  GITHUB_WEBHOOK_PATH,
   GitHubConnectionStatusSchema,
   type GitHubIntegrationAvailability,
   GitHubIntegrationOverviewSchema,
@@ -47,12 +45,7 @@ import {
   GITHUB_CONNECTION_ERROR_CODES,
   GitHubConnectionServiceError,
   type GitHubManagementService,
-  type GitHubWebhookService,
 } from "../services/github/index.js";
-import {
-  type GitHubInstallationTokenClient,
-  GitHubInstallationTokenError,
-} from "../services/github/installation-token-client.js";
 import { parseRequest } from "./request-validation.js";
 
 /** The HttpOnly login-session proof carried through the OAuth round trip; only its hash persists. */
@@ -84,11 +77,8 @@ export interface GitHubIntegrationsRouteOptions {
   secureCookies: boolean;
   /** Precomputed deployment availability; the UI explains an unavailable integration with it. */
   availability: GitHubIntegrationAvailability;
-  /** Present exactly when the deployment GitHub App is configured. */
+  /** Present exactly when the deployment GitHub OAuth App is configured. */
   management?: GitHubManagementService;
-  /** Server-only App metadata lookup; its private key and JWT never reach the browser. */
-  installation?: Pick<GitHubInstallationTokenClient, "installationUrl">;
-  webhook?: GitHubWebhookService;
 }
 
 function authenticatedUserId(request: FastifyRequest): string {
@@ -153,7 +143,12 @@ function publicErrorCode(error: unknown): string {
 export function registerGitHubIntegrationsRoutes(app: FastifyInstance, options: GitHubIntegrationsRouteOptions): void {
   const preHandler = createUserAuthPreHandler(options.authService, options.authOptions ?? {});
   const logger = createServiceLoggerPort(() => app.log, "github-integrations");
-  registerGitHubInstallationRoute(app, options, preHandler);
+  const retired = (_request: FastifyRequest, reply: FastifyReply) =>
+    reply.code(410).send({
+      error: { code: "GITHUB_INTEGRATION_RETIRED", message: "Refresh OpenTag and reconnect GitHub using OAuth." },
+    });
+  app.all("/api/v1/integrations/github", retired);
+  app.all("/api/v1/integrations/github/*", retired);
 
   app.get(GITHUB_INTEGRATION_PATH, { preHandler }, async (request, reply) => {
     if (!options.management) {
@@ -291,72 +286,4 @@ export function registerGitHubIntegrationsRoutes(app: FastifyInstance, options: 
       );
     }
   });
-
-  /*
-   * The webhook: raw-body HMAC verification local to this encapsulated scope's content parser.
-   * Payload bodies are never logged; the handler only invalidates fail-closed or marks an
-   * authoritative recheck.
-   */
-  if (options.webhook) {
-    const webhook = options.webhook;
-    app.register(async (webhookApp) => {
-      webhookApp.removeContentTypeParser("application/json");
-      webhookApp.addContentTypeParser(
-        "application/json",
-        { parseAs: "buffer", bodyLimit: 256 * 1024 },
-        (_request, body, done) => {
-          done(null, body);
-        },
-      );
-      webhookApp.post(GITHUB_WEBHOOK_PATH, async (request, reply) => {
-        const signature = firstHeader(request.headers["x-hub-signature-256"]);
-        const event = firstHeader(request.headers["x-github-event"]);
-        const deliveryId = firstHeader(request.headers["x-github-delivery"]);
-        const rawBody = request.body;
-        if (!Buffer.isBuffer(rawBody)) {
-          return reply.code(400).send({ status: "rejected" });
-        }
-        const verdict = await webhook.handle({ rawBody, signature256: signature, event, deliveryId });
-        if (verdict.status === "rejected") {
-          logger.warn({ eventPresent: event !== undefined }, "GitHub webhook rejected");
-          return reply.code(401).send({ status: "rejected" });
-        }
-        return reply.code(200).send(
-          verdict.status === "processed"
-            ? {
-                status: "processed",
-                invalidatedConnections: verdict.invalidatedConnections,
-                recheckMarkedConnections: verdict.recheckMarkedConnections,
-              }
-            : { status: "ignored" },
-        );
-      });
-    });
-  }
-}
-
-function registerGitHubInstallationRoute(
-  app: FastifyInstance,
-  options: GitHubIntegrationsRouteOptions,
-  preHandler: ReturnType<typeof createUserAuthPreHandler>,
-): void {
-  app.get(GITHUB_INTEGRATION_INSTALLATION_PATH, { preHandler }, async (_request, reply) => {
-    if (!options.installation) throw unavailable();
-    try {
-      const url = await options.installation.installationUrl();
-      return reply.header("cache-control", "no-store").redirect(url, 302);
-    } catch (error) {
-      const rateLimited = error instanceof GitHubInstallationTokenError && error.code === "GITHUB_API_RATE_LIMITED";
-      throw new GitHubConnectionServiceError(
-        rateLimited ? GITHUB_CONNECTION_ERROR_CODES.RATE_LIMITED : GITHUB_CONNECTION_ERROR_CODES.UPSTREAM_UNAVAILABLE,
-        rateLimited ? 429 : 503,
-        "The GitHub App installation page could not be resolved; try again",
-        "transient",
-      );
-    }
-  });
-}
-
-function firstHeader(value: string | string[] | undefined): string | undefined {
-  return Array.isArray(value) ? value[0] : value;
 }

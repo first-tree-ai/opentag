@@ -5,7 +5,7 @@ import {
   GitHubApiClientError,
 } from "../services/github/github-api-client.js";
 
-const REDIRECT_URI = "https://opentag.example.com/api/v1/integrations/github/oauth/callback";
+const REDIRECT_URI = "https://opentag.example.com/api/v2/integrations/github/oauth/callback";
 
 function jsonResponse(status: number, body: unknown, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -21,14 +21,14 @@ function tokenPayload(overrides: Record<string, unknown> = {}) {
     expires_in: 28_800,
     refresh_token: "ghr_refresh-token",
     refresh_token_expires_in: 15_897_600,
-    scope: "",
+    scope: "repo offline_access",
     ...overrides,
   };
 }
 
 function clientWithFetch(fetchImpl: typeof fetch, now = new Date("2026-09-16T00:00:00.000Z")) {
   const client = new GitHubApiClient({
-    clientId: "Iv1.client",
+    clientId: "Ov23testclient",
     clientSecret: "client-secret",
     redirectUri: REDIRECT_URI,
     fetch: fetchImpl,
@@ -50,7 +50,7 @@ describe("GitHubApiClient OAuth token endpoint", () => {
     expect(calls[0]?.init.method).toBe("POST");
     const body = JSON.parse(String(calls[0]?.init.body)) as Record<string, unknown>;
     expect(body).toEqual({
-      client_id: "Iv1.client",
+      client_id: "Ov23testclient",
       client_secret: "client-secret",
       code: "oauth-code",
       redirect_uri: REDIRECT_URI,
@@ -70,7 +70,7 @@ describe("GitHubApiClient OAuth token endpoint", () => {
     });
     const material = await client.refreshUserToken({ refreshToken: "ghr_current" });
     expect(bodies[0]).toEqual({
-      client_id: "Iv1.client",
+      client_id: "Ov23testclient",
       client_secret: "client-secret",
       grant_type: "refresh_token",
       refresh_token: "ghr_current",
@@ -93,7 +93,7 @@ describe("GitHubApiClient OAuth token endpoint", () => {
 
   it("fails clearly when the App does not issue expiring user tokens", async () => {
     const client = clientWithFetch(async () =>
-      jsonResponse(200, { access_token: "ghu_noexpiry", token_type: "bearer", scope: "" }),
+      jsonResponse(200, { access_token: "ghu_noexpiry", token_type: "bearer", scope: "repo offline_access" }),
     );
     const error = await client
       .exchangeCodeForUserToken({ code: "code", codeVerifier: "v".repeat(64) })
@@ -122,23 +122,6 @@ describe("GitHubApiClient OAuth token endpoint", () => {
 
 async function clientReady(client: GitHubApiClient): Promise<unknown> {
   return client.exchangeCodeForUserToken({ code: "code", codeVerifier: "v".repeat(64) });
-}
-
-/** One installation entry in the exact `2022-11-28` shape the client accepts. */
-function installationPayload(overrides: Record<string, unknown> = {}) {
-  return {
-    id: 55_123_456,
-    app_id: 871_235,
-    account: { login: "octocat", type: "Organization" },
-    repository_selection: "selected",
-    permissions: { contents: "write" },
-    suspended_at: null,
-    ...overrides,
-  };
-}
-
-function installationsResponse(installation: unknown, totalCount: number | unknown = 1): Response {
-  return jsonResponse(200, { total_count: totalCount, installations: [installation] });
 }
 
 describe("GitHubApiClient REST endpoints", () => {
@@ -180,216 +163,6 @@ describe("GitHubApiClient REST endpoints", () => {
     });
   });
 
-  it("paginates user installations with verified shapes", async () => {
-    const client = clientWithFetch(async (url) => {
-      expect(String(url)).toBe("https://api.github.com/user/installations?per_page=100&page=2");
-      return jsonResponse(200, {
-        total_count: 150,
-        installations: [
-          {
-            id: 55_123_456,
-            app_id: 871_235,
-            account: { login: "octocat", type: "Organization" },
-            repository_selection: "selected",
-            permissions: { contents: "write", pull_requests: "write", metadata: "read" },
-            suspended_at: null,
-          },
-        ],
-      });
-    });
-    const page = await client.listUserInstallations({ accessToken: "ghu_token", page: 2 });
-    expect(page.totalCount).toBe(150);
-    expect(page.installations[0]).toEqual({
-      installationId: "55123456",
-      appId: "871235",
-      accountLogin: "octocat",
-      accountType: "Organization",
-      repositorySelection: "selected",
-      permissions: { contents: "write", pull_requests: "write", metadata: "read" },
-      suspended: false,
-    });
-  });
-
-  it("reads installation repositories with per-user permissions", async () => {
-    const client = clientWithFetch(async (url) => {
-      expect(String(url)).toBe("https://api.github.com/user/installations/55123456/repositories?per_page=100&page=1");
-      return jsonResponse(200, {
-        total_count: 1,
-        repositories: [
-          {
-            id: 987_654_321,
-            full_name: "octocat/hello-world",
-            private: true,
-            default_branch: "main",
-            permissions: { admin: false, pull: true, push: true, triage: true, maintain: false },
-          },
-        ],
-      });
-    });
-    const page = await client.listInstallationRepositories({
-      accessToken: "ghu_token",
-      installationId: "55123456",
-      page: 1,
-    });
-    expect(page).toEqual({
-      totalCount: 1,
-      repositories: [
-        {
-          repositoryId: "987654321",
-          fullName: "octocat/hello-world",
-          private: true,
-          defaultBranch: "main",
-          permissions: { admin: false, pull: true, push: true },
-        },
-      ],
-    });
-  });
-
-  it("returns an empty repositories page at the requested page index", async () => {
-    const client = clientWithFetch(async (url) => {
-      expect(String(url)).toBe("https://api.github.com/user/installations/55123456/repositories?per_page=100&page=3");
-      return jsonResponse(200, { total_count: 2, repositories: [] });
-    });
-    const page = await client.listInstallationRepositories({
-      accessToken: "ghu_token",
-      installationId: "55123456",
-      page: 3,
-    });
-    expect(page).toEqual({ totalCount: 2, repositories: [] });
-  });
-
-  it("rejects repository pages with a malformed total_count", async () => {
-    for (const totalCount of ["2", -1, 1.5, 1_000_001]) {
-      const client = clientWithFetch(async () => jsonResponse(200, { total_count: totalCount, repositories: [] }));
-      await expect(
-        client.listInstallationRepositories({ accessToken: "ghu_token", installationId: "55123456", page: 1 }),
-      ).rejects.toMatchObject({ code: GITHUB_API_CLIENT_ERROR_CODES.RESPONSE_INVALID });
-    }
-  });
-
-  it("rejects repository pages whose repositories are not a bounded array", async () => {
-    const notArray = clientWithFetch(async () => jsonResponse(200, { total_count: 1, repositories: {} }));
-    await expect(
-      notArray.listInstallationRepositories({ accessToken: "ghu_token", installationId: "55123456", page: 1 }),
-    ).rejects.toMatchObject({ code: GITHUB_API_CLIENT_ERROR_CODES.RESPONSE_INVALID });
-    const oversized = clientWithFetch(async () =>
-      jsonResponse(200, {
-        total_count: 101,
-        repositories: Array.from({ length: 101 }, () => ({
-          id: 987_654_321,
-          full_name: "octocat/hello-world",
-          private: true,
-          default_branch: "main",
-          permissions: { admin: false, pull: true, push: true },
-        })),
-      }),
-    );
-    await expect(
-      oversized.listInstallationRepositories({ accessToken: "ghu_token", installationId: "55123456", page: 1 }),
-    ).rejects.toMatchObject({ code: GITHUB_API_CLIENT_ERROR_CODES.RESPONSE_INVALID });
-  });
-
-  it("rejects repository entries whose permissions lack the boolean grants", async () => {
-    const missingGrant = clientWithFetch(async () =>
-      jsonResponse(200, {
-        total_count: 1,
-        repositories: [
-          {
-            id: 987_654_321,
-            full_name: "octocat/hello-world",
-            private: true,
-            default_branch: "main",
-            permissions: { pull: true, push: true },
-          },
-        ],
-      }),
-    );
-    await expect(
-      missingGrant.listInstallationRepositories({ accessToken: "ghu_token", installationId: "55123456", page: 1 }),
-    ).rejects.toMatchObject({ code: GITHUB_API_CLIENT_ERROR_CODES.RESPONSE_INVALID });
-    const nonBooleanGrant = clientWithFetch(async () =>
-      jsonResponse(200, {
-        total_count: 1,
-        repositories: [
-          {
-            id: 987_654_321,
-            full_name: "octocat/hello-world",
-            private: true,
-            default_branch: "main",
-            permissions: { admin: "yes", pull: true, push: true },
-          },
-        ],
-      }),
-    );
-    await expect(
-      nonBooleanGrant.listInstallationRepositories({ accessToken: "ghu_token", installationId: "55123456", page: 1 }),
-    ).rejects.toMatchObject({ code: GITHUB_API_CLIENT_ERROR_CODES.RESPONSE_INVALID });
-  });
-
-  it("accepts the official repositories page shape, which carries no repository_selection", async () => {
-    // API 2022-11-28: GET /user/installations/{id}/repositories
-    // answers HTTP 200 with exactly total_count and repositories; repository_selection exists
-    // only on the installation object, never on this page.
-    const client = clientWithFetch(async (url) => {
-      expect(String(url)).toBe("https://api.github.com/user/installations/55123456/repositories?per_page=100&page=1");
-      return jsonResponse(200, {
-        total_count: 2,
-        repositories: [
-          {
-            id: 987_654_321,
-            full_name: "staging-org/alpha-private",
-            private: true,
-            default_branch: "main",
-            permissions: { admin: true, maintain: true, push: true, triage: true, pull: true },
-          },
-          {
-            id: 987_654_322,
-            full_name: "staging-org/beta-private",
-            private: true,
-            default_branch: "main",
-            permissions: { admin: true, maintain: true, push: true, triage: true, pull: true },
-          },
-        ],
-      });
-    });
-    const page = await client.listInstallationRepositories({
-      accessToken: "ghu_token",
-      installationId: "55123456",
-      page: 1,
-    });
-    expect(page).toEqual({
-      totalCount: 2,
-      repositories: [
-        {
-          repositoryId: "987654321",
-          fullName: "staging-org/alpha-private",
-          private: true,
-          defaultBranch: "main",
-          permissions: { admin: true, pull: true, push: true },
-        },
-        {
-          repositoryId: "987654322",
-          fullName: "staging-org/beta-private",
-          private: true,
-          defaultBranch: "main",
-          permissions: { admin: true, pull: true, push: true },
-        },
-      ],
-    });
-  });
-
-  it("rejects malformed installation pages instead of guessing", async () => {
-    const client = clientWithFetch(async () =>
-      jsonResponse(200, {
-        total_count: 1,
-        installations: [{ id: "not-a-number", app_id: 871_235 }],
-      }),
-    );
-    await expect(client.listUserInstallations({ accessToken: "ghu_token", page: 1 })).rejects.toMatchObject({
-      code: GITHUB_API_CLIENT_ERROR_CODES.RESPONSE_INVALID,
-    });
-  });
-
   it("bounds oversized responses", async () => {
     const huge = "x".repeat(5 * 1024 * 1024);
     const client = clientWithFetch(async () => new Response(`{"access_token":"${huge}"}`, { status: 200 }));
@@ -398,7 +171,7 @@ describe("GitHubApiClient REST endpoints", () => {
 });
 
 describe("GitHubApiClient construction", () => {
-  const base = { clientId: "Iv1.client", clientSecret: "client-secret", redirectUri: REDIRECT_URI };
+  const base = { clientId: "Ov23testclient", clientSecret: "client-secret", redirectUri: REDIRECT_URI };
 
   it.each([
     ["an empty client id", { clientId: "" }],
@@ -406,7 +179,7 @@ describe("GitHubApiClient construction", () => {
     ["a non-string client id", { clientId: 7 }],
   ])("rejects %s", (_label, overrides) => {
     expect(() => new GitHubApiClient({ ...base, ...overrides } as never)).toThrow(
-      /The GitHub App client ID is invalid/,
+      /The GitHub OAuth App client ID is invalid/,
     );
   });
 
@@ -416,7 +189,7 @@ describe("GitHubApiClient construction", () => {
     ["a non-string client secret", { clientSecret: null }],
   ])("rejects %s", (_label, overrides) => {
     expect(() => new GitHubApiClient({ ...base, ...overrides } as never)).toThrow(
-      /The GitHub App client secret is invalid/,
+      /The GitHub OAuth App client secret is invalid/,
     );
   });
 
@@ -506,22 +279,6 @@ describe("GitHubApiClient request validation", () => {
   });
 
   it.each([
-    ["a non-decimal installation id", "not-a-number"],
-    ["a zero-leading installation id", "055123456"],
-    ["a non-string installation id", 55123456 as never],
-  ])("rejects %s before any request", async (_label, installationId) => {
-    const calls: string[] = [];
-    const client = clientWithFetch(async (url) => {
-      calls.push(String(url));
-      return jsonResponse(200, { total_count: 0, repositories: [] });
-    });
-    await expect(
-      client.listInstallationRepositories({ accessToken: "ghu_token", installationId, page: 1 }),
-    ).rejects.toMatchObject({ code: GITHUB_API_CLIENT_ERROR_CODES.REQUEST_INVALID });
-    expect(calls).toEqual([]);
-  });
-
-  it.each([
     ["zero", 0],
     ["a negative page", -1],
     ["a fractional page", 1.5],
@@ -533,7 +290,7 @@ describe("GitHubApiClient request validation", () => {
       calls.push(String(url));
       return jsonResponse(200, { total_count: 0, installations: [] });
     });
-    await expect(client.listUserInstallations({ accessToken: "ghu_token", page })).rejects.toMatchObject({
+    await expect(client.listUserRepositories({ accessToken: "ghu_token", page })).rejects.toMatchObject({
       code: GITHUB_API_CLIENT_ERROR_CODES.REQUEST_INVALID,
     });
     expect(calls).toEqual([]);
@@ -552,81 +309,7 @@ describe("GitHubApiClient request validation", () => {
   });
 });
 
-describe("GitHubApiClient installation payload validation", () => {
-  it("accepts a decimal string id and app id and a suspended installation", async () => {
-    const client = clientWithFetch(async () =>
-      installationsResponse(
-        installationPayload({
-          id: "55123456",
-          app_id: "871235",
-          account: { login: "octocat", type: "User" },
-          suspended_at: "2026-09-01T00:00:00Z",
-        }),
-      ),
-    );
-    const page = await client.listUserInstallations({ accessToken: "ghu_token", page: 1 });
-    expect(page.installations[0]).toMatchObject({
-      accountType: "User",
-      appId: "871235",
-      installationId: "55123456",
-      suspended: true,
-    });
-  });
-
-  it.each([
-    ["a floating-point id", { id: 55_123_456.5 }],
-    ["a negative id", { id: -1 }],
-    ["a zero id", { id: 0 }],
-    ["a null id", { id: null }],
-    ["a zero-leading string id", { id: "055123456" }],
-  ])("refuses an installation with %s", async (_label, overrides) => {
-    const client = clientWithFetch(async () => installationsResponse(installationPayload(overrides)));
-    await expect(client.listUserInstallations({ accessToken: "ghu_token", page: 1 })).rejects.toMatchObject({
-      code: GITHUB_API_CLIENT_ERROR_CODES.RESPONSE_INVALID,
-    });
-  });
-
-  it.each([
-    ["a non-object installation", "not-an-object"],
-    ["an array installation", []],
-    ["a missing account", installationPayload({ account: null })],
-    ["an unsupported account type", installationPayload({ account: { login: "octocat", type: "Bot" } })],
-    ["an empty account login", installationPayload({ account: { login: "", type: "User" } })],
-    ["an over-long account login", installationPayload({ account: { login: "l".repeat(101), type: "User" } })],
-    ["a non-string account login", installationPayload({ account: { login: 7, type: "User" } })],
-    ["an unknown repository selection", installationPayload({ repository_selection: "none" })],
-    ["non-object permissions", installationPayload({ permissions: null })],
-    ["an empty permission grant", installationPayload({ permissions: { "": "read" } })],
-    ["an over-long permission name", installationPayload({ permissions: { ["p".repeat(65)]: "read" } })],
-    ["an unsupported permission level", installationPayload({ permissions: { contents: "admin" } })],
-    ["a non-string permission level", installationPayload({ permissions: { contents: 1 } })],
-    ["a non-string suspended_at", installationPayload({ suspended_at: 123 })],
-    ["an unparseable suspended_at", installationPayload({ suspended_at: "not-a-date" })],
-    ["a missing id", installationPayload({ id: undefined })],
-    ["a missing app_id", installationPayload({ app_id: undefined })],
-  ])("refuses %s", async (_label, payload) => {
-    const client = clientWithFetch(async () => installationsResponse(payload));
-    await expect(client.listUserInstallations({ accessToken: "ghu_token", page: 1 })).rejects.toMatchObject({
-      code: GITHUB_API_CLIENT_ERROR_CODES.RESPONSE_INVALID,
-    });
-  });
-
-  it("refuses an installations page that is not a bounded array", async () => {
-    const notAnArray = clientWithFetch(async () => jsonResponse(200, { total_count: 1, installations: {} }));
-    await expect(notAnArray.listUserInstallations({ accessToken: "ghu_token", page: 1 })).rejects.toMatchObject({
-      code: GITHUB_API_CLIENT_ERROR_CODES.RESPONSE_INVALID,
-    });
-    const oversized = clientWithFetch(async () =>
-      jsonResponse(200, {
-        total_count: 101,
-        installations: Array.from({ length: 101 }, () => installationPayload()),
-      }),
-    );
-    await expect(oversized.listUserInstallations({ accessToken: "ghu_token", page: 1 })).rejects.toMatchObject({
-      code: GITHUB_API_CLIENT_ERROR_CODES.RESPONSE_INVALID,
-    });
-  });
-
+describe("GitHub user identity validation", () => {
   it("refuses a user identity that is not a user account", async () => {
     const client = clientWithFetch(async () => jsonResponse(200, { id: 42, login: "octocat", type: "Bot" }));
     await expect(client.getAuthenticatedUser({ accessToken: "ghu_token" })).rejects.toMatchObject({
@@ -640,94 +323,7 @@ describe("GitHubApiClient installation payload validation", () => {
       code: GITHUB_API_CLIENT_ERROR_CODES.RESPONSE_INVALID,
     });
   });
-
-  it.each([
-    [
-      "the installations response",
-      (c: GitHubApiClient) => c.listUserInstallations({ accessToken: "ghu_token", page: 1 }),
-    ],
-    [
-      "the repositories response",
-      (c: GitHubApiClient) =>
-        c.listInstallationRepositories({ accessToken: "ghu_token", installationId: "55123456", page: 1 }),
-    ],
-  ])("refuses a non-object %s", async (_label, call) => {
-    const client = clientWithFetch(async () => jsonResponse(200, "not-an-object"));
-    await expect(call(client)).rejects.toMatchObject({ code: GITHUB_API_CLIENT_ERROR_CODES.RESPONSE_INVALID });
-  });
-
-  it.each([
-    ["a non-object repository", "not-an-object"],
-    ["a repository with no permissions", { id: 1, full_name: "octocat/hello-world", permissions: null }],
-    [
-      "a repository with a non-boolean grant",
-      { id: 1, full_name: "octocat/hello-world", permissions: { admin: false, pull: true, push: "yes" } },
-    ],
-    [
-      "a repository with a missing full name",
-      { id: 1, full_name: "", permissions: { admin: false, pull: true, push: true } },
-    ],
-    [
-      "a repository with an over-long full name",
-      { id: 1, full_name: "n".repeat(256), permissions: { admin: false, pull: true, push: true } },
-    ],
-    [
-      "a repository with an over-long default branch",
-      {
-        id: 1,
-        full_name: "octocat/hello-world",
-        default_branch: "b".repeat(256),
-        permissions: { admin: false, pull: true, push: true },
-      },
-    ],
-    [
-      "a repository with an empty default branch",
-      {
-        id: 1,
-        full_name: "octocat/hello-world",
-        default_branch: "",
-        permissions: { admin: false, pull: true, push: true },
-      },
-    ],
-    [
-      "a repository with a malformed id",
-      { id: "not-a-number", full_name: "octocat/hello-world", permissions: { admin: false, pull: true, push: true } },
-    ],
-  ])("refuses %s", async (_label, repository) => {
-    const client = clientWithFetch(async () => jsonResponse(200, { total_count: 1, repositories: [repository] }));
-    await expect(
-      client.listInstallationRepositories({ accessToken: "ghu_token", installationId: "55123456", page: 1 }),
-    ).rejects.toMatchObject({ code: GITHUB_API_CLIENT_ERROR_CODES.RESPONSE_INVALID });
-  });
-
-  it.each([
-    ["an absent default branch", undefined, null],
-    ["a null default branch", null, null],
-    ["a real default branch", "main", "main"],
-  ])("maps %s to the documented default branch value", async (_label, defaultBranch, expected) => {
-    const client = clientWithFetch(async () =>
-      jsonResponse(200, {
-        total_count: 1,
-        repositories: [
-          {
-            id: 1,
-            full_name: "octocat/hello-world",
-            private: true,
-            default_branch: defaultBranch,
-            permissions: { admin: false, pull: true, push: true },
-          },
-        ],
-      }),
-    );
-    const page = await client.listInstallationRepositories({
-      accessToken: "ghu_token",
-      installationId: "55123456",
-      page: 1,
-    });
-    expect(page.repositories[0]?.defaultBranch).toBe(expected);
-  });
 });
-
 describe("GitHubApiClient token payload validation", () => {
   it.each([
     ["a null access token", { access_token: null }],
@@ -903,7 +499,7 @@ describe("GitHubApiClient deadline and transport failure precedence", () => {
   it("uses the wall clock when no now override is configured", async () => {
     const before = Date.now();
     const client = new GitHubApiClient({
-      clientId: "Iv1.client",
+      clientId: "Ov23testclient",
       clientSecret: "client-secret",
       redirectUri: REDIRECT_URI,
       fetch: async () => jsonResponse(200, tokenPayload({ expires_in: 60, refresh_token_expires_in: 120 })),
@@ -1029,20 +625,92 @@ describe("GitHubApiClient exact target lookup", () => {
   );
 });
 
-it("proves exact user/App installation membership with a bounded probe and no catalog traversal", async () => {
-  const fetcher = vi.fn(async () => jsonResponse(200, { total_count: 50000, repositories: [{}] }));
-  await clientWithFetch(fetcher).assertUserInstallationAccess({ accessToken: "ghu_current", installationId: "777" });
-  expect(fetcher).toHaveBeenCalledTimes(1);
-  expect(fetcher).toHaveBeenCalledWith(
-    "https://api.github.com/user/installations/777/repositories?per_page=1&page=1",
-    expect.objectContaining({
-      method: "GET",
-      redirect: "error",
-      headers: expect.objectContaining({ authorization: "Bearer ghu_current" }),
-    }),
-  );
-  const inaccessible = clientWithFetch(async () => jsonResponse(404, {}));
-  await expect(
-    inaccessible.assertUserInstallationAccess({ accessToken: "ghu_current", installationId: "777" }),
-  ).rejects.toThrow();
+describe("OAuth client and repository scope verification", () => {
+  const payload = () => ({
+    app: { client_id: "Ov23testclient" },
+    scopes: ["repo", "offline_access"],
+    user: { id: 42, login: "octocat", type: "User" },
+  });
+  it("checks the exact OAuth client with Basic authentication and returns only user identity", async () => {
+    const fetcher = vi.fn<typeof fetch>(async () => jsonResponse(200, payload()));
+    expect(await clientWithFetch(fetcher).validateOAuthToken({ accessToken: "gho_parent" })).toEqual({
+      id: "42",
+      login: "octocat",
+    });
+    const [url, init] = fetcher.mock.calls[0] ?? [];
+    if (!init) throw new Error("OAuth verification request is missing");
+    expect(url).toBe("https://api.github.com/applications/Ov23testclient/token");
+    expect(init.method).toBe("POST");
+    expect(new Headers(init.headers).get("authorization")).toBe(
+      `Basic ${Buffer.from("Ov23testclient:client-secret").toString("base64")}`,
+    );
+    expect(JSON.parse(String(init.body))).toEqual({ access_token: "gho_parent" });
+  });
+  it.each([
+    { app: { client_id: "other" } },
+    { scopes: ["public_repo"] },
+    { scopes: "repo" },
+    { scopes: Array(101).fill("repo") },
+    { user: { id: 42, login: "bot", type: "Bot" } },
+    { user: { id: 0, login: "octocat", type: "User" } },
+  ])("rejects a mismatched or insufficient token proof %j", async (override) => {
+    await expect(
+      clientWithFetch(async () => jsonResponse(200, { ...payload(), ...override })).validateOAuthToken({
+        accessToken: "gho_parent",
+      }),
+    ).rejects.toBeInstanceOf(GitHubApiClientError);
+  });
+  it("treats a missing OAuth token as invalid without exposing the upstream response", async () => {
+    await expect(
+      clientWithFetch(async () => jsonResponse(404, { message: "secret-upstream" })).validateOAuthToken({
+        accessToken: "gho_parent",
+      }),
+    ).rejects.toMatchObject({ code: GITHUB_API_CLIENT_ERROR_CODES.CREDENTIAL_INVALID });
+  });
+  it.each(["", "public_repo", undefined])("rejects token exchange without repo scope (%s)", async (scope) => {
+    await expect(
+      clientWithFetch(async () => jsonResponse(200, tokenPayload({ scope }))).exchangeCodeForUserToken({
+        code: "code",
+        codeVerifier: "v".repeat(64),
+      }),
+    ).rejects.toMatchObject({ code: GITHUB_API_CLIENT_ERROR_CODES.CREDENTIAL_INVALID });
+  });
+  it("reads a bounded repository array from the fixed user endpoint", async () => {
+    const fetcher = vi.fn<typeof fetch>(async () =>
+      jsonResponse(200, [
+        {
+          id: 123,
+          full_name: "owner/repo",
+          private: true,
+          default_branch: "main",
+          permissions: { admin: false, pull: true, push: false },
+        },
+      ]),
+    );
+    expect(await clientWithFetch(fetcher).listUserRepositories({ accessToken: "gho_parent", page: 2 })).toEqual([
+      {
+        repositoryId: "123",
+        fullName: "owner/repo",
+        private: true,
+        defaultBranch: "main",
+        permissions: { admin: false, pull: true, push: false },
+      },
+    ]);
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe(
+      "https://api.github.com/user/repos?per_page=100&page=2&sort=full_name&direction=asc",
+    );
+  });
+  it.each([
+    {},
+    null,
+    Array(101).fill({}),
+    [{ id: 1, full_name: "owner/repo", private: true, permissions: { pull: true } }],
+  ])("rejects malformed or unbounded repository pages", async (payload) => {
+    await expect(
+      clientWithFetch(async () => jsonResponse(200, payload)).listUserRepositories({
+        accessToken: "gho_parent",
+        page: 1,
+      }),
+    ).rejects.toMatchObject({ code: GITHUB_API_CLIENT_ERROR_CODES.RESPONSE_INVALID });
+  });
 });

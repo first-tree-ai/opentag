@@ -17,16 +17,7 @@ import {
 
 const AGENT_ID = "9f0f2f6c-2f5c-4d43-a9fb-9a1c9f0000dd";
 
-const installation = {
-  installationId: "55123456",
-  accountLogin: "octocat",
-  accountType: "Organization",
-  repositorySelection: "selected",
-  suspended: false,
-} as const;
-
 const repository = {
-  installationId: "55123456",
   repositoryId: "987654321",
   fullName: "octocat/hello-world",
   private: true,
@@ -38,7 +29,7 @@ const connectionStatus = {
   id: "9f0f2f6c-2f5c-4d43-a9fb-9a1c9f0000bb",
   accountId: "9f0f2f6c-2f5c-4d43-a9fb-9a1c9f0000cc",
   githubHost: "github.com",
-  appId: "871235",
+  oauthClientId: "871235",
   githubUserId: "42",
   githubLogin: "octocat",
   status: "active",
@@ -57,24 +48,30 @@ const connectionStatus = {
 describe("GitHubIntegrationAvailabilitySchema", () => {
   it("describes configured and unconfigured deployments without secrets", () => {
     expect(
-      GitHubIntegrationAvailabilitySchema.parse({ available: true, githubHost: "github.com", appId: "871235" }),
-    ).toEqual({ available: true, githubHost: "github.com", appId: "871235" });
+      GitHubIntegrationAvailabilitySchema.parse({ available: true, githubHost: "github.com", oauthClientId: "871235" }),
+    ).toEqual({ available: true, githubHost: "github.com", oauthClientId: "871235" });
     expect(
-      GitHubIntegrationAvailabilitySchema.parse({ available: false, githubHost: "github.com", appId: null }),
-    ).toEqual({ available: false, githubHost: "github.com", appId: null });
+      GitHubIntegrationAvailabilitySchema.parse({ available: false, githubHost: "github.com", oauthClientId: null }),
+    ).toEqual({ available: false, githubHost: "github.com", oauthClientId: null });
     expect(
-      GitHubIntegrationAvailabilitySchema.safeParse({ available: true, githubHost: "ghe.example.com", appId: "1" })
-        .success,
+      GitHubIntegrationAvailabilitySchema.safeParse({
+        available: true,
+        githubHost: "ghe.example.com",
+        oauthClientId: "1",
+      }).success,
     ).toBe(false);
     expect(
-      GitHubIntegrationAvailabilitySchema.safeParse({ available: true, githubHost: "github.com", appId: "871235" })
-        .success,
+      GitHubIntegrationAvailabilitySchema.safeParse({
+        available: true,
+        githubHost: "github.com",
+        oauthClientId: "871235",
+      }).success,
     ).toBe(true);
     expect(
       GitHubIntegrationAvailabilitySchema.safeParse({
         available: true,
         githubHost: "github.com",
-        appId: "871235",
+        oauthClientId: "871235",
         clientSecret: "x",
       }).success,
     ).toBe(false);
@@ -84,12 +81,12 @@ describe("GitHubIntegrationAvailabilitySchema", () => {
 describe("GitHubIntegrationOverviewSchema", () => {
   it("carries availability with or without a current connection", () => {
     const unavailable = GitHubIntegrationOverviewSchema.parse({
-      availability: { available: false, githubHost: "github.com", appId: null },
+      availability: { available: false, githubHost: "github.com", oauthClientId: null },
       connection: null,
     });
     expect(unavailable.connection).toBeNull();
     const overview = GitHubIntegrationOverviewSchema.parse({
-      availability: { available: true, githubHost: "github.com", appId: "871235" },
+      availability: { available: true, githubHost: "github.com", oauthClientId: "871235" },
       connection: connectionStatus,
     });
     expect(overview.connection?.githubLogin).toBe("octocat");
@@ -104,7 +101,7 @@ describe("StartGitHubAuthorizationRequestSchema", () => {
       agentId: null,
     });
     expect(
-      StartGitHubAuthorizationRequestSchema.safeParse({ intent: "create", appId: "1", clientId: "x" }).success,
+      StartGitHubAuthorizationRequestSchema.safeParse({ intent: "create", oauthClientId: "1", clientId: "x" }).success,
     ).toBe(false);
   });
 
@@ -153,47 +150,17 @@ describe("StartGitHubAuthorizationResponseSchema", () => {
 });
 
 describe("GitHubRepositoryDiscoveryPageSchema", () => {
-  it("accepts a bounded discovery page and rejects secret-bearing shapes", () => {
-    const page = GitHubRepositoryDiscoveryPageSchema.parse({
-      installations: [installation],
-      repositories: [repository],
-      nextCursor: "eyJ2IjoxfQ",
-    });
-    expect(page.repositories[0]?.permissions).toEqual({ pull: true, push: true });
+  it("accepts bounded OAuth repository pages and rejects legacy installation data and secrets", () => {
+    const page = { repositories: [repository], nextCursor: "2", truncated: false };
+    expect(GitHubRepositoryDiscoveryPageSchema.parse(page)).toEqual(page);
+    expect(GitHubRepositoryDiscoveryPageSchema.safeParse({ ...page, installations: [] }).success).toBe(false);
     expect(
-      GitHubRepositoryDiscoveryPageSchema.safeParse({
-        installations: [installation],
-        repositories: [{ ...repository, token: "x-access-token" }],
-        nextCursor: null,
-      }).success,
+      GitHubRepositoryDiscoveryPageSchema.safeParse({ ...page, repositories: [{ ...repository, token: "secret" }] })
+        .success,
     ).toBe(false);
     expect(
-      GitHubRepositoryDiscoveryPageSchema.safeParse({
-        installations: [{ ...installation, appSecret: "x" }],
-        repositories: [],
-        nextCursor: null,
-      }).success,
-    ).toBe(false);
-  });
-
-  it("accepts an empty terminal page", () => {
-    expect(
-      GitHubRepositoryDiscoveryPageSchema.parse({ installations: [], repositories: [], nextCursor: null }).nextCursor,
+      GitHubRepositoryDiscoveryPageSchema.parse({ repositories: [], nextCursor: null, truncated: false }).nextCursor,
     ).toBeNull();
-  });
-
-  it("preserves the server's installation completeness attestation", () => {
-    const result = GitHubRepositoryDiscoveryPageSchema.parse({
-      installations: [],
-      repositories: [],
-      nextCursor: null,
-      installationsTruncated: true,
-      truncatedInstallations: [],
-    });
-    expect(result.installationsTruncated).toBe(true);
-    expect(GitHubRepositoryDiscoveryPageSchema.safeParse({ ...result, installationsTruncated: "false" }).success).toBe(
-      false,
-    );
   });
 });
 

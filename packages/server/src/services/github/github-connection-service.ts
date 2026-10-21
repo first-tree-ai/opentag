@@ -28,6 +28,7 @@ import { claimOAuthFlowContext, newOAuthFlowContext, oauthFlowIsExpired, parseOA
 import {
   type GitHubConnectionRow,
   gitHubConnectionColumns,
+  requireOAuthConnection,
   requireOwnedConnection,
   toGitHubConnectionStatus,
 } from "./rows.js";
@@ -54,7 +55,7 @@ export interface ClaimedGitHubOAuthFlow {
   connectionId: string;
   accountId: string;
   githubHost: string;
-  appId: string;
+  oauthClientId: string;
   flowId: string;
   intent: GitHubOAuthFlowIntent;
   returnSurface: GitHubOAuthReturnSurface;
@@ -124,7 +125,7 @@ export class GitHubConnectionService {
   async getCurrentConnection(
     accountId: string,
     githubHost: string,
-    appId: string,
+    oauthClientId: string,
   ): Promise<GitHubConnectionStatus | null> {
     const [row] = await this.database
       .select(gitHubConnectionColumns())
@@ -133,7 +134,7 @@ export class GitHubConnectionService {
         and(
           eq(githubConnections.accountId, accountId),
           eq(githubConnections.githubHost, githubHost),
-          eq(githubConnections.appId, appId),
+          eq(githubConnections.oauthClientId, oauthClientId),
           inArray(githubConnections.status, CURRENT_CONNECTION_STATES),
         ),
       )
@@ -146,7 +147,7 @@ export class GitHubConnectionService {
     accountId: string,
     input: {
       githubHost?: string;
-      appId: string;
+      oauthClientId: string;
       returnSurface?: string;
       agentId?: string | null;
       loginSessionHash: string;
@@ -155,7 +156,7 @@ export class GitHubConnectionService {
   ): Promise<{ connection: GitHubConnectionStatus; flow: GitHubAuthorizationFlowHandle }> {
     const request = CreateGitHubConnectionRequestSchema.parse({
       githubHost: input.githubHost,
-      appId: input.appId,
+      oauthClientId: input.oauthClientId,
       returnSurface: input.returnSurface,
       agentId: input.agentId ?? null,
     });
@@ -173,7 +174,7 @@ export class GitHubConnectionService {
     const oauthSecret = sealOAuthSecret(input.oauthSecret, {
       connectionId,
       accountId,
-      appId: request.appId,
+      oauthClientId: request.oauthClientId,
       githubHost: request.githubHost,
       flowId: context.flowId,
     });
@@ -184,7 +185,7 @@ export class GitHubConnectionService {
           id: connectionId,
           accountId,
           githubHost: request.githubHost,
-          appId: request.appId,
+          oauthClientId: request.oauthClientId,
           status: "pending",
           oauthStateHash: stateHash,
           oauthContext: context,
@@ -195,11 +196,11 @@ export class GitHubConnectionService {
       if (!row) throw new Error("The GitHub connection insert returned no row");
       return { connection: toGitHubConnectionStatus(row), flow: flowHandle(row.id, context, state) };
     } catch (error) {
-      if (isGitHubConnectionUniqueViolation(error, "github_connections_current_unique")) {
+      if (isGitHubConnectionUniqueViolation(error, "github_connections_oauth_current_unique")) {
         throw new GitHubConnectionServiceError(
           GITHUB_CONNECTION_ERROR_CODES.CONNECTION_CONFLICT,
           409,
-          "A current GitHub connection already exists for this Account and GitHub App",
+          "A current GitHub connection already exists for this Account and GitHub OAuth App",
         );
       }
       throw error;
@@ -250,7 +251,7 @@ export class GitHubConnectionService {
       const oauthSecret = sealOAuthSecret(input.oauthSecret, {
         connectionId: ownedRow.id,
         accountId: ownedRow.accountId,
-        appId: ownedRow.appId,
+        oauthClientId: ownedRow.oauthClientId,
         githubHost: ownedRow.githubHost,
         flowId: context.flowId,
       });
@@ -328,7 +329,7 @@ export class GitHubConnectionService {
         connectionId: row.id,
         accountId: row.accountId,
         githubHost: row.githubHost,
-        appId: row.appId,
+        oauthClientId: requireOAuthConnection(row).oauthClientId,
         flowId: context.flowId,
         intent: context.intent,
         returnSurface: context.returnSurface,

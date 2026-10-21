@@ -75,7 +75,7 @@ describe("Account profile authorization drafts", () => {
 
   it("does not restore an abandoned edit after authorization fails before navigation", async () => {
     vi.spyOn(browserApi, "githubIntegration").mockResolvedValue({
-      availability: { available: true, githubHost: "github.com", appId: "871235" },
+      availability: { available: true, githubHost: "github.com", oauthClientId: "871235" },
       connection: null,
     });
     vi.spyOn(browserApi, "startGitHubAuthorization").mockRejectedValue(new Error("Authorization start failed"));

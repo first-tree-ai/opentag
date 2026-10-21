@@ -1,6 +1,4 @@
-import { gitHubConnectionColumns } from "./rows.js";
-import type { GitHubExecutionUserCredential } from "./user-token-types.js";
-/* Account connection management and Server-only, per-target user/App admission. */
+/* Account connection management and Server-only, per-target user/OAuth scope admission. */
 
 import type {
   GitHubConnectionStatus,
@@ -18,10 +16,11 @@ import { GITHUB_API_CLIENT_ERROR_CODES, GitHubApiClientError } from "./github-ap
 import type { GitHubConnectionService } from "./github-connection-service.js";
 import type { GitHubOAuthCallbackResult, GitHubOAuthService } from "./github-oauth-service.js";
 import type { GitHubRepositoryAdmissionService } from "./repository-admission.js";
+import { gitHubConnectionColumns, oauthConnectionScope } from "./rows.js";
 
 export interface GitHubManagementServiceOptions {
   database: DatabaseClient;
-  appId: string;
+  oauthClientId: string;
   connections: GitHubConnectionService;
   oauth: GitHubOAuthService;
   admission: GitHubRepositoryAdmissionService;
@@ -30,6 +29,13 @@ export interface GitHubManagementServiceOptions {
 }
 
 /** The decrypted current user credential with its fencing versions. Server-side only; never logged. */
+export interface GitHubExecutionUserCredential {
+  accessToken: string;
+  githubUserId: string;
+  accessExpiresAt: Date;
+  credentialGeneration: bigint;
+}
+
 export interface GitHubRuntimeUserCredential {
   connectionId: string;
   accountId: string;
@@ -47,7 +53,7 @@ interface ActiveCredentialRow {
   connectionId: string;
   accountId: string;
   githubHost: string;
-  appId: string;
+  oauthClientId: string;
   githubUserId: string;
   authorizationVersion: bigint;
   credentialGeneration: bigint;
@@ -58,7 +64,7 @@ interface ActiveCredentialRow {
 
 export class GitHubManagementService {
   readonly #database: DatabaseClient;
-  readonly #appId: string;
+  readonly #oauthClientId: string;
   readonly #connections: GitHubConnectionService;
   readonly #oauth: GitHubOAuthService;
   readonly #admission: GitHubRepositoryAdmissionService;
@@ -67,7 +73,7 @@ export class GitHubManagementService {
 
   constructor(options: GitHubManagementServiceOptions) {
     this.#database = options.database;
-    this.#appId = options.appId;
+    this.#oauthClientId = options.oauthClientId;
     this.#connections = options.connections;
     this.#oauth = options.oauth;
     this.#admission = options.admission;
@@ -77,9 +83,9 @@ export class GitHubManagementService {
 
   /** The Account's overview: the current connection for the configured App, or null. */
   async getOverview(accountId: string): Promise<GitHubIntegrationOverview> {
-    const connection = await this.#connections.getCurrentConnection(accountId, "github.com", this.#appId);
+    const connection = await this.#connections.getCurrentConnection(accountId, "github.com", this.#oauthClientId);
     return {
-      availability: { available: true, githubHost: "github.com", appId: this.#appId },
+      availability: { available: true, githubHost: "github.com", oauthClientId: this.#oauthClientId },
       connection,
     };
   }
@@ -94,7 +100,7 @@ export class GitHubManagementService {
       loginSessionHash: string;
     },
   ): Promise<{ connectionId: string; authorizationUrl: string; expiresAt: string }> {
-    const started = await this.#oauth.startAuthorization(accountId, { ...input, appId: this.#appId });
+    const started = await this.#oauth.startAuthorization(accountId, { ...input, oauthClientId: this.#oauthClientId });
     return {
       connectionId: started.connectionId,
       authorizationUrl: started.authorizationUrl,
@@ -147,7 +153,7 @@ export class GitHubManagementService {
 
   /** Revokes the current connection; returns its final status, or null when there is none. */
   async disconnect(accountId: string): Promise<GitHubConnectionStatus | null> {
-    const current = await this.#connections.getCurrentConnection(accountId, "github.com", this.#appId);
+    const current = await this.#connections.getCurrentConnection(accountId, "github.com", this.#oauthClientId);
     if (current === null) return null;
     return this.#connections.disconnect(accountId, current.id);
   }
@@ -189,7 +195,7 @@ export class GitHubManagementService {
     if (
       !row ||
       row.accountId !== input.accountId ||
-      row.appId !== this.#appId ||
+      row.oauthClientId !== this.#oauthClientId ||
       row.githubHost !== "github.com" ||
       `github:${row.authorizationVersion}` !== input.authorizationRevision ||
       row.accessExpiresAt.getTime() <= this.#now().getTime()
@@ -203,14 +209,6 @@ export class GitHubManagementService {
     };
   }
 
-  /** Cleanup guard only; a stale execution must not delete a newly connected parent credential. */
-  async isCurrentUserCredential(accountId: string, token: string): Promise<boolean> {
-    const current = await this.#connections.getCurrentConnection(accountId, "github.com", this.#appId);
-    if (!current) return false;
-    const row = await this.#readActiveCredentialRow(current.id);
-    return !!row && row.accountId === accountId && this.#decrypt(row).accessToken === token;
-  }
-
   async resolveRepository(input: {
     connectionId: string;
     fullName: string;
@@ -219,7 +217,7 @@ export class GitHubManagementService {
     signal?: AbortSignal;
   }) {
     const row = await this.#readActiveCredentialRow(input.connectionId);
-    if (!row || row.accessExpiresAt.getTime() <= Date.now())
+    if (!row || row.accessExpiresAt.getTime() <= this.#now().getTime())
       throw new GitHubConnectionServiceError(
         GITHUB_CONNECTION_ERROR_CODES.CONNECTION_STATE_INVALID,
         403,
@@ -238,7 +236,7 @@ export class GitHubManagementService {
     githubUserId: string;
     authorizationVersion: bigint;
   }> {
-    const current = await this.#connections.getCurrentConnection(accountId, "github.com", this.#appId);
+    const current = await this.#connections.getCurrentConnection(accountId, "github.com", this.#oauthClientId);
     if (current === null) {
       throw new GitHubConnectionServiceError(
         GITHUB_CONNECTION_ERROR_CODES.CONNECTION_NOT_FOUND,
@@ -296,10 +294,17 @@ export class GitHubManagementService {
     const [row] = await this.#database
       .select(gitHubConnectionColumns())
       .from(githubConnections)
-      .where(and(eq(githubConnections.id, connectionId), eq(githubConnections.status, "active")))
+      .where(
+        and(
+          eq(githubConnections.id, connectionId),
+          oauthConnectionScope(this.#oauthClientId),
+          eq(githubConnections.status, "active"),
+        ),
+      )
       .limit(1);
     if (!row) return null;
     if (
+      row.oauthClientId === null ||
       row.githubUserId === null ||
       row.credentialCiphertext === null ||
       row.credentialKeyId === null ||
@@ -312,7 +317,7 @@ export class GitHubManagementService {
       connectionId: row.id,
       accountId: row.accountId,
       githubHost: row.githubHost,
-      appId: row.appId,
+      oauthClientId: row.oauthClientId,
       githubUserId: row.githubUserId,
       authorizationVersion: row.authorizationVersion,
       credentialGeneration: row.credentialGeneration,
@@ -330,7 +335,7 @@ export class GitHubManagementService {
           connectionId: row.connectionId,
           accountId: row.accountId,
           githubHost: "github.com",
-          appId: row.appId,
+          oauthClientId: row.oauthClientId,
           githubUserId: row.githubUserId,
         },
         row.credential,
@@ -369,7 +374,7 @@ function mapManagementApiFailure(error: unknown): unknown {
     return new GitHubConnectionServiceError(
       GITHUB_CONNECTION_ERROR_CODES.TOKEN_LIFETIME_UNSUPPORTED,
       502,
-      "The GitHub App does not issue expiring user access tokens; enable them on the App and retry",
+      "The GitHub OAuth App does not issue expiring user access tokens; enable them on the App and retry",
       "deterministic",
     );
   }

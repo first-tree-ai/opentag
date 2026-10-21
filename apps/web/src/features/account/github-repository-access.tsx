@@ -1,4 +1,4 @@
-import { GITHUB_INTEGRATION_INSTALLATION_PATH, type GitHubConnectionStatus } from "@opentag/shared/browser";
+import type { GitHubConnectionStatus } from "@opentag/shared/browser";
 import { ArrowClockwise, ArrowUpRight, Question } from "@phosphor-icons/react";
 import { type RefObject, useRef, useState } from "react";
 import * as m from "../../paraglide/messages.js";
@@ -11,7 +11,7 @@ function GitHubConfigurationLink({ onClick }: { onClick?: () => void }) {
   return (
     <a
       className="inline-flex min-h-11 w-fit items-center gap-1 text-sm text-kumo-link hover:underline"
-      href={GITHUB_INTEGRATION_INSTALLATION_PATH}
+      href="https://github.com/settings/applications"
       target="_blank"
       rel="noopener noreferrer"
       onClick={onClick}
@@ -219,14 +219,10 @@ function RepositoryRows({ matches, partial }: { matches: RepositoryCatalog["repo
 }
 
 function RepositoryEmpty({ catalog }: { catalog: RepositoryCatalog }) {
-  if (catalogIsPartial(catalog) || catalog.installations.some((entry) => entry.suspended)) return null;
+  if (catalogIsPartial(catalog)) return null;
   return (
     <div className="grid gap-2 py-4 text-sm text-kumo-subtle" data-ui="github-repositories-empty">
-      <p>
-        {catalog.installations.length
-          ? m.integrations_github_repositories_empty_installed()
-          : m.integrations_github_repositories_empty()}
-      </p>
+      <p>{m.integrations_github_repositories_empty()}</p>
       <p>{m.integrations_github_repositories_organization()}</p>
     </div>
   );
@@ -255,9 +251,6 @@ function RepositoryNotices({ catalog }: { catalog: RepositoryCatalog }) {
   return (
     <div className="grid gap-2 text-sm text-kumo-subtle">
       {catalog.incomplete ? <p className="py-2">{m.integrations_github_repositories_incomplete()}</p> : null}
-      {catalog.installations.some((entry) => entry.suspended) ? (
-        <p className="py-2">{m.integrations_github_repositories_suspended()}</p>
-      ) : null}
       {!catalog.incomplete && !catalog.repositories.length && catalogHasMore(catalog) ? (
         <p className="py-2">{m.integrations_github_repositories_incomplete()}</p>
       ) : null}

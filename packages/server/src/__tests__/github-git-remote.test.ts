@@ -379,7 +379,7 @@ describe("GitHubPublicationRemote publish", () => {
     const argv = calls[0]?.argv ?? [];
     expect(argv).toContain("--atomic");
     expect(argv).toContain("--porcelain");
-    // A fresh ref leases against the empty string; an existing one leases against its known old SHA.
+    // A fresh ref credentials against the empty string; an existing one credentials against its known old SHA.
     expect(argv).toContain(`--force-with-lease=refs/heads/opentag/topic:${SHA_B}`);
     expect(argv).toContain("--force-with-lease=refs/heads/opentag/new:");
     expect(argv).toContain(`${SHA_A}:refs/heads/opentag/topic`);

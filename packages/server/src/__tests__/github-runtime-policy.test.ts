@@ -16,7 +16,7 @@ function connectionStatus(overrides: Partial<GitHubConnectionStatus> = {}): GitH
     id: BINDING_ID,
     accountId: ACCOUNT,
     githubHost: "github.com",
-    appId: "101",
+    oauthClientId: "101",
     githubUserId: "42",
     githubLogin: "octocat",
     status: "active",

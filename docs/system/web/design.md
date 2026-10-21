@@ -44,6 +44,8 @@ the Tokens column supplies the unit. Cached input is a subset of input and is ex
 below the table rather than repeated as an exclusion on the row.
 
 Overview keeps Usage and dependency status above Schedules, followed by the Agent-scoped Tasks list.
+The detail header presents the Agent identity without an availability or activity badge beside the name;
+dependency status and lifecycle notices remain in the page content.
 Schedules retain their card layout. Tasks preserve server paging and Load more; the full Tasks page
 remains available through View all. Long Agent names, handles, and Computer identities wrap within
 their available space rather than widening the page.

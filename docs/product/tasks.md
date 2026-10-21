@@ -50,10 +50,9 @@ thread Session owns, and a delivery expired because a newer revision of its mess
 A message steered into a running Turn gets a small annotation on the input; it does not create a
 second Agent response or report.
 
-Execution summaries remain separate from sent replies. When captured replies exist, the summary is
-collapsed by default, and expanding it survives background refresh and pagination. Without captured
-replies the summary stays visible and labelled. Execution failures, unavailable or incomplete reply
-history, and truncated content remain visible even when the summary is collapsed.
+Execution summaries, when reported, remain visible as separate execution records in the conversation.
+They never substitute for captured sent replies. Execution failures, unavailable or incomplete reply
+history, and truncated content remain visible.
 
 Inbound attachments show their stored name, type, and any processing availability limitation. The
 Task API projects metadata from existing message resources, omitting provider resource keys. Older

@@ -257,8 +257,8 @@ body {
     padding: 16px 4px;
   }
   .app-home-link[data-compact="true"] {
-    width: 40px;
-    height: 40px;
+    width: 44px;
+    height: 44px;
   }
   .app-content-frame,
   .app-workspace-shell[data-scope="workspace"] .app-content-frame {
@@ -334,9 +334,19 @@ body {
   .app-workspace-shell[data-scope="agent"] .app-account-navigation .app-nav-label {
     display: none;
   }
+}
+@media (max-width: 47.999rem) {
+  .app-home-link,
+  .app-account-trigger,
+  .app-agent-switcher button,
+  .app-agent-link,
   .app-account-menu [role="menuitem"],
   .app-agent-menu [role="menuitem"] {
     min-height: 44px;
+  }
+  .app-home-link,
+  .app-account-trigger {
+    min-width: 44px;
   }
 }
 @media (prefers-reduced-motion: reduce) {

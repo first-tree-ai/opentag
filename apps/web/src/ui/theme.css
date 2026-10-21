@@ -8,8 +8,8 @@
   --surface-tint: #f4f5f7;
   --surface-hover: #f4f5f7;
   --fg: #25282d;
-  --fg-2: #6b6e75;
-  --muted-fg: #6b6e75;
+  --fg-2: #696c73;
+  --muted-fg: #696c73;
   --border: #e9ebef;
   --border-strong: #8a8e95;
   --brand: #00cbb4;
@@ -19,6 +19,8 @@
   --focus: #697586;
   --status-success: #007f70;
   --status-warning: #e5502e;
+  --status-warning-text: #a63f22;
+  --status-danger: #b42318;
   --avatar-bg: #dce1e8;
   --avatar-fg: #344155;
   --opentag-button-primary-hover: #00b69f;
@@ -56,7 +58,9 @@
   --text-color-kumo-success: var(--status-success);
   --color-kumo-success: var(--status-success);
   --color-kumo-warning: var(--status-warning);
-  --color-kumo-danger: var(--status-warning);
+  --color-kumo-danger: var(--status-danger);
+  --text-color-kumo-danger: var(--status-danger);
+  --text-color-kumo-warning: var(--status-warning-text);
   --color-kumo-brand: var(--brand);
   --color-kumo-brand-hover: var(--opentag-button-primary-hover);
   --text-color-kumo-default: var(--fg);
@@ -90,6 +94,8 @@
   --focus: #c4b5ff;
   --status-success: #5ed7b0;
   --status-warning: #ffab8f;
+  --status-warning-text: #ffab8f;
+  --status-danger: #ff938a;
   --avatar-bg: #413b49;
   --avatar-fg: #f7f4fa;
   --opentag-button-primary-hover: #6143d3;

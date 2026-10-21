@@ -210,7 +210,12 @@ for (const width of [320, 390]) {
       await page.goto(`/agents/${agentId}/instructions`, { waitUntil: "networkidle" });
       await expect(page.getByRole("textbox", { name: "Instructions", exact: true })).toBeVisible();
       await expectNoPageOverflow(page);
-      await page.getByRole("button", { name: "Open Agent navigation", exact: true }).tap();
+      await expect(page.getByRole("button", { name: "Open Agent navigation", exact: true })).toHaveCount(0);
+      const overview = page.getByRole("link", { name: "Overview", exact: true });
+      await expectWithinViewport(overview);
+      await overview.focus();
+      await page.keyboard.press("Enter");
+      await expect(page).toHaveURL(new RegExp(`/agents/${agentId}$`));
       const switcher = page.getByRole("button", { name: /Switch Agent/ });
       await switcher.tap();
       await expectWithinViewport(page.getByRole("menu"));

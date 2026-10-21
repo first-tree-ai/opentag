@@ -21,6 +21,12 @@ implementation seams. App values live in
 choices do not replace those app contracts. Update this guide alongside visual
 changes, and use the appropriate repository's code and tokens for exact values.
 
+The app currently supports light mode. The retained violet dark palette is compatibility-only,
+not a supported alternative brand theme; a dark release requires its own reviewed specification.
+The app strengthens supporting text to `#696c73` so it remains readable on selected grey surfaces.
+Orange `#e5502e` is a warning indicator; warning body text uses `#a63f22`, and danger uses
+`#b42318`. Selection outlines and progress markers use the slate focus token; links use blue.
+
 ## Website reference sources
 
 | Source | Responsibility |
@@ -88,12 +94,8 @@ Letter avatars use `--avatar-background` (`#dce1e8`), `--avatar-foreground` (`#3
 
 ### Vendor demonstrations
 
-| Surface | Treatment |
-| --- | --- |
-| Slack | Purple top bar `#6f3a82`, search `#8d619c`, sidebar `#894b94`, lilac selection `#caa3d2`, selected text `#44005c`; fine monochrome grain inside the frame |
-| Lark | Sidebar `#f7f7fa`, selection `#e2edfe`, avatar `#d4d9e2`, selected avatar `#c9daf2` |
-
-Do not recolour vendor logos or demonstrations with the primary brand palette.
+Vendor frame palettes belong to the [website design guide](https://github.com/first-tree-ai/opentag-site/blob/4f63d20383045861ca5cd93be8196829f0974e5f/design.md).
+Do not recolour vendor logos or demonstrations with the app palette.
 
 ## Typography, spacing, and geometry
 
@@ -135,7 +137,7 @@ Shared controls use a 40px default height, with 32px and 48px variants. Radius r
 
 ### Agent and mascot geometry
 
-Use `--agent-circle-size`: 144px above 1000px and 128px at or below 1000px. The lower main circles sit `sqrt(3)/2` diameters below Codex. Upcoming-agent circles are 0.4 times the main diameter; preserve their derived tangent placement so circles touch without overlapping. Logos retain accessible names even though visible labels are removed.
+The marketing Agent-circle dimensions and placement belong to the [website design guide](https://github.com/first-tree-ai/opentag-site/blob/4f63d20383045861ca5cd93be8196829f0974e5f/design.md). They do not size avatars in the app. Logos retain accessible names even when visible labels are removed.
 
 The Codex mascot is [lounge-cat-arc-v1.webp](https://github.com/first-tree-ai/opentag-site/blob/4f63d20383045861ca5cd93be8196829f0974e5f/public/assets/agent-scene/lounge-cat-arc-v1.webp), the 640 × 427px wrapped calico. Its width and reserved clearance use `--agent-lounge-width` (1.35 times the circle diameter) and `--agent-cat-clearance` (0.6 times the diameter). Preserve its optical offset and 0.37-diameter overlap so the artwork follows the circle.
 

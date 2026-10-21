@@ -149,11 +149,6 @@
   background: transparent;
   box-shadow: none;
 }
-.ui-status[data-state="warning"],
-.ui-status[data-state="danger"] {
-  --color-kumo-warning: var(--status-warning);
-  --color-kumo-danger: var(--status-warning);
-}
 
 .ui-select-option {
   margin-inline: 4px;
@@ -180,6 +175,9 @@
 .ui-status[data-state="success"] > span > [aria-hidden="true"] {
   background: var(--status-success);
 }
-.ui-status:is([data-state="warning"], [data-state="danger"]) > span > [aria-hidden="true"] {
+.ui-status[data-state="warning"] > span > [aria-hidden="true"] {
   background: var(--status-warning);
+}
+.ui-status[data-state="danger"] > span > [aria-hidden="true"] {
+  background: var(--status-danger);
 }

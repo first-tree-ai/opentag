@@ -90,7 +90,7 @@ export function AgentRow({ agent }: { agent: AgentListItem }) {
   const channel = agent.availability.dependencies.channel.provider;
   return (
     <article
-      className="relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-8 p-5 max-[640px]:gap-3 max-[640px]:p-4 transition-colors hover:bg-kumo-tint focus-within:outline-2 focus-within:outline-offset-[-2px] focus-within:outline-kumo-focus"
+      className="relative grid grid-cols-1 @min-[42rem]/agent-roster:grid-cols-[minmax(0,1fr)_auto] items-center gap-8 p-5 max-[640px]:gap-3 max-[640px]:p-4 transition-colors hover:bg-kumo-tint focus-within:outline-2 focus-within:outline-offset-[-2px] focus-within:outline-kumo-focus"
       data-tone={status.tone}
       data-ui="agent-row"
     >
@@ -102,7 +102,9 @@ export function AgentRow({ agent }: { agent: AgentListItem }) {
           data-ui="agent-row-avatar"
         />
         <div className="grid min-w-0 gap-1">
-          <strong className="truncate text-sm font-semibold">{agent.displayName}</strong>
+          <strong className="[overflow-wrap:anywhere] @min-[42rem]/agent-roster:truncate text-sm font-semibold">
+            {agent.displayName}
+          </strong>
           {channel ? (
             <span className="flex items-center gap-1.5 text-sm text-kumo-subtle">
               <ProviderIcon className="size-4" provider={channel} />
@@ -111,7 +113,10 @@ export function AgentRow({ agent }: { agent: AgentListItem }) {
           ) : null}
         </div>
       </div>
-      <div className="grid justify-items-end gap-1 text-right" data-ui="agent-row-status">
+      <div
+        className="grid min-w-0 justify-items-start gap-1 text-left @min-[42rem]/agent-roster:justify-items-end @min-[42rem]/agent-roster:text-right"
+        data-ui="agent-row-status"
+      >
         <StatusIndicator label={status.label} tone={status.tone} />
         {status.detail ? (
           <p className="text-sm text-kumo-subtle" data-ui="agent-row-state">

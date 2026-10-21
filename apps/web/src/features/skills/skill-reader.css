@@ -48,7 +48,7 @@
   flex-shrink: 0;
 }
 .skill-reader-file--selected {
-  color: var(--brand);
+  color: var(--text-color-kumo-default);
   background: var(--brand-soft);
   font-weight: 600;
 }
@@ -149,7 +149,7 @@
 }
 .skill-reader-markdown a,
 .skill-reader-markdown .skill-reader-package-link {
-  color: var(--brand);
+  color: var(--text-color-kumo-link);
   text-decoration: underline;
   text-underline-offset: 3px;
 }
@@ -233,7 +233,7 @@
 .skill-reader-markdown pre:focus-visible,
 .skill-reader-table:focus-visible,
 .skill-reader-source:focus-visible {
-  outline: 2px solid var(--brand);
+  outline: 2px solid var(--focus);
   outline-offset: -2px;
 }
 @media (max-width: 767px) {
@@ -290,6 +290,6 @@
   overflow: visible;
 }
 .skill-reader-code:focus-visible {
-  outline: 2px solid var(--brand);
+  outline: 2px solid var(--focus);
   outline-offset: -2px;
 }

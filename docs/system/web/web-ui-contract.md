@@ -78,7 +78,7 @@ Authenticated pages use the named `content` container and the shared content fra
 container queries for page composition because the Sidebar changes the space available to the route without changing
 the viewport. The shell follows the website app preview breakpoints: 240px Agent sidebar above 950px, 200px from 641px to 950px,
 and inline scrolling navigation at 640px and below. Compact controls retain account access and Agent switching.
-The same route outlet remains mounted across those changes.
+The same route outlet remains mounted across those changes. Agent roster rows stack identity above status below a 42rem roster container width, keeping names and setup actions readable at 320px.
 
 UI changes must be checked at these representative widths when the surface can render there:
 

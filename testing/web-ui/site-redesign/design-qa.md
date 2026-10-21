@@ -23,7 +23,7 @@ The guide was initially copied verbatim from that source; it now lives in
 links, and application ownership context. Generated concepts
 are superseded and were not used as acceptance baselines.
 
-Implementation: the production web build served by `preview-server.mjs` at
+Implementation: the production web build served by `scripts/e2e/site-redesign-preview.mjs` at
 <http://127.0.0.1:4317/agents>, using two isolated fixture Agents, incomplete setup,
 zero usage, empty schedules/tasks and a blank Soul editor. Both sides use Chinese
 for direct comparison. The second fixture name differs from the source example.
@@ -148,3 +148,34 @@ No production data was changed and no deployment was performed.
 - Cats and working production controls preserved.
 - App ownership documentation updated separately from the copied site guide.
 - Local fixture, comparison captures and validation evidence saved here.
+
+## Review regression checks
+
+The production browser smoke suite includes `e2e/tests/site-design-smoke.spec.ts`.
+It creates real Agent identities and supplies deterministic no-Computer, runtime
+sign-in, and messaging-permission states. All eight English/Chinese combinations
+at 320, 390, 700, and 1440px check readable, unclipped names, page overflow, axe,
+keyboard row/setup navigation, menu dismissal/focus return, and the 44px mobile
+home/account/switcher/menu targets. A ninth case checks selected Skill filenames,
+links, and keyboard scroll-region focus.
+
+- Browser Smoke: **94 passed**, four Chromium workers, normal repository config.
+- Complete web unit suite: **166 files, 2,021 tests passed**.
+- Build, workspace typecheck, standalone E2E typecheck, and `pnpm check`: passed.
+- Token tests include secondary/muted text on selected surfaces, separate warning
+  and danger text, and meaningful status-indicator contrast.
+- The deterministic preview server now lives in `scripts/e2e/`, alongside existing
+  browser tooling. No coverage thresholds or exclusions were changed.
+
+Representative captures from the passing smoke run:
+
+- [English 320px](review-validation/roster-en-320.png),
+  [English 390px](review-validation/roster-en-390.png),
+  [Chinese 320px](review-validation/roster-zh-320.png),
+  [Chinese 390px](review-validation/roster-zh-390.png).
+- [700px shell](review-validation/roster-en-700.png),
+  [1440px roster](review-validation/roster-en-1440.png),
+  [Skill reader and keyboard focus](review-validation/skill-reader-contrast.png).
+
+The desktop journey retains the website's 40px minimum account control and 32px
+avatar; the separate narrow-screen matrix asserts the stronger 44px mobile floor.

@@ -222,7 +222,7 @@ function AgentStatusRow({
 function dependencyStatusClassName(tone: AgentDependencyStatus["tone"]): string {
   if (tone === "success") return "text-kumo-success";
   if (tone === "warning") return "text-(--status-warning)";
-  if (tone === "danger") return "text-(--status-warning)";
+  if (tone === "danger") return "text-kumo-danger";
   if (tone === "info") return "text-kumo-subtle";
   return "text-kumo-subtle";
 }

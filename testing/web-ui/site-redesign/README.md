@@ -93,18 +93,18 @@ danger buttons and other existing fills.
 
 ## Refreshed screen concepts
 
-1. **[All Agents](concepts/all-agents-v2.png):** the preview's single divided roster, existing cat portraits,
+1. **[All Agents](concepts/all-agents-v2.webp):** the preview's single divided roster, existing cat portraits,
    messaging identity, separate readiness/activity, and setup continuation. One
    New Agent action; usage totals remain within the Agent.
-2. **[Agent overview](concepts/agent-overview-v2.png):** identity first, paired usage and connection sections, then a
+2. **[Agent overview](concepts/agent-overview-v2.webp):** identity first, paired usage and connection sections, then a
    readable task list. Existing schedules, capabilities, repair paths, and settings
    remain available even when outside the initial concept's visible area.
-3. **[Soul](concepts/soul-editor-v2.png):** the preview's spacious editor adapted to the real app's draft state,
+3. **[Soul](concepts/soul-editor-v2.webp):** the preview's spacious editor adapted to the real app's draft state,
    Apply changes / Discard changes controls, and next-response notice. Keep
    presets, unsaved-change protection, and error recovery in implementation.
 
-The initial concepts remain as `all-agents.png`, `agent-overview.png`, and
-`soul-editor.png` for comparison. Both image sets are superseded by direct matching
+The initial concepts remain as `all-agents.webp`, `agent-overview.webp`, and
+`soul-editor.webp` for comparison. Both image sets are superseded by direct matching
 to the site preview pages, as specified in [PLAN.md](PLAN.md).
 The image-edit prompts preserve each screen's content and hierarchy while applying
 the branch's token changes. The roster changes setup links to blue, warning dots
@@ -168,9 +168,13 @@ recorded in [design QA](design-qa.md).
 ## Local implementation preview
 
 Run `pnpm --filter @opentag/web build`, then
-`node testing/web-ui/site-redesign/preview-server.mjs` from the repository root.
+`node scripts/e2e/site-redesign-preview.mjs` from the repository root.
 Open <http://127.0.0.1:4317/agents>. This serves the real built app with isolated
 fixture data. It supports the representative screens and Soul saves in memory;
 it is not a replacement for the server or an end-to-end integration environment.
 Restarting the fixture resets saves. Append `?qa=1` to a route to expose the
 fixture-only axe checker.
+
+The eight exploration images use lossless WebP: 9,302,919 source PNG bytes become
+5,040,358 bytes with identical decoded RGBA pixels. Production avatar filenames and
+the approved high-resolution README animation remain unchanged.

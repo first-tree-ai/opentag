@@ -116,7 +116,7 @@ presets, save/discard, and unsaved-navigation protection remain functional. Cat 
 unchanged. Official website artwork is documented in `src/assets/opentag/README.md`.
 
 The reference's pale input boundary is strengthened to `#8a8e95` for a 3:1 control boundary. Supporting body text uses
-`#6b6e75`; the lighter decorative muted token is not used for normal text. Selected rows use foreground text.
-Orange-red `#e5502e` is used for status dots; destructive text/buttons retain the accessible darker red `#b42318`.
+`#696c73`; the lighter decorative muted token is not used for normal text. Selected rows use foreground text; supporting text also meets 4.5:1 on the selected surface.
+Orange-red `#e5502e` is reserved for warning dots, with `#a63f22` warning text. Danger dots, text, and buttons use `#b42318`. Selection indicators and progress markers use the slate focus token.
 Primary-button foreground has its own token; inverse text elsewhere remains white. These are accessibility treatments,
 not a second visual direction. The light palette contrast tests cover text, buttons, boundaries, and focus.

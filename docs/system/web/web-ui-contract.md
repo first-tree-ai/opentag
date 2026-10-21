@@ -72,8 +72,11 @@ description of impact, a non-destructive default focus target, and an execution 
 outcome is uncertain. A low-impact action may execute immediately only when it is reliably reversible and offers a clear,
 keyboard-accessible Undo path for long enough to recover.
 
-Every full-screen state that replaces the application shell must keep a way to sign out, because the Account menu lives
-only inside the shell and an Account that has not finished setup is shown nothing else. This covers the Agent Setup
+Every full-screen state that replaces the application shell must keep a way to sign out, because an Account that has
+not finished setup is shown nothing else. Creation and exact setup headers reuse the shared Account menu, aligned
+with their navigation action. Until Account setup is complete, that menu offers only Sign out; navigation links
+would redirect back to setup and discard the creation draft. Other full-screen states offer a direct sign-out control.
+This covers the Agent Setup
 states (creation header, exact setup header, unavailable, read-failed, adoption-failed, and choice), the Account gate
 when `/api/v1/me` fails (which also offers Retry), and the error and not-found pages. Sign-out always follows one
 contract (`features/session/use-sign-out.ts`): the Server confirms the logout first, then the Account session ends and
@@ -122,6 +125,77 @@ openTag Web targets WCAG 2.2 AA for product UI:
 
 Automated axe checks are required for representative browser flows, but they do not replace keyboard testing or review
 of contrast, focus order, accessible names, and task completion.
+
+## Soul editing and template selection
+
+Soul has a persistent **Browse templates** action in the page header. With no saved content and no active draft, it
+uses a borderless, centered composition with the same light 32px icon and typography as Skills and Connectors.
+The heading identifies the empty state. One natural sentence offers **Start with a template** or
+**write your own** for direct editing. Both complete phrases are inline buttons in the same brand color; connecting
+text and punctuation are not interactive, and underlines appear only on hover. Both template entries open the same
+chooser. Keyboard focus remains visible. There is no separate action row or decorative container. Writing opens and focuses the free-text editor; Cancel returns an unchanged empty
+editor to the empty state. Guidance is never saved.
+The editor displays formatted Markdown directly, with no separate preview or edit mode. Tiptap owns editing,
+selection, history, and Markdown conversion; its BubbleMenu hosts the shared Kumo Toolbar and Toolbar.Button
+controls for heading, bold, and bullet list. Selecting text reveals the toolbar; Alt+F10 focuses it, and Escape
+returns to the document. Standard keyboard shortcuts remain available. Existing task lists, tables, links, and
+code remain supported without adding more toolbar actions. Prompt markup, comments, and image references remain
+inert editable source text. Opening, focusing, or changing the interface locale must preserve the exact saved
+Markdown; an unrelated edit must not silently remove existing content. The API still accepts the same string.
+An actual content edit serializes the complete document. Markdown spelling and whitespace may then normalize,
+including bullet markers, emphasis delimiters, heading syntax, code fences, list spacing, tables, and bare links.
+This is not a block-preserving source editor. Ordinary comparison symbols and ampersands remain literal prompt text,
+identifiers such as `read_file` and `{{user_name}}` gain no escapes, and literal line-start markers retain the escapes
+needed to prevent them from turning into headings, lists, quotes, or rules on reload.
+This includes block and inline XML, valid source indentation, literal entities, and reference-style images.
+Keyboard-created prompt tags retain their literal syntax. Plain-text paste inside code or prompt-source blocks
+stays literal instead of inserting a separately parsed Markdown document. Ordinary horizontal rules remain
+formatting boundaries; frontmatter recognition is limited to the document preamble. The formatting menu tracks
+the editable document's own scroll container.
+Template previews and editable documents share the same scoped typography: 14px body text on desktop, 16px on
+narrow screens, 16px semibold section headings, 8px after headings, 16px between paragraphs, and 24px before sections.
+Bullet and numbered lists share indentation, markers, and item spacing in both contexts, including user-added text.
+Only the enclosing surfaces differ: template bodies are lightly tinted; the editable field stays white.
+Automatic height measurement preserves the editor's scroll position so typing in a long document keeps the caret
+and surrounding text visible instead of jumping back to the beginning.
+There is no additional visible Instructions field heading. Clearing text during editing keeps the editor mounted;
+only applying the clear or discarding back to empty content restores the empty state. A failed save preserves explicit
+writing mode, including when the user clears a first draft to rewrite it. Submission resets writing mode only after a
+confirmed save; explicit Cancel and Discard remain available.
+
+The chooser offers eight task-oriented templates: Engineering, Design, Product, Research, Writing, Data Analysis,
+Growth, and Operations. Each has a Phosphor icon, name, concise list summary, applicability overview, and complete
+localized body. English and Simplified Chinese catalog copy belongs to the `agent-settings` message area.
+The page subtitle is fixed, without the Agent name, and identifies the editable role, communication style, and working principles; empty guidance offers
+direct writing or browsing for a starting point. Body headings consistently identify role and purpose, working
+approach, deliverables, and communication style, keeping comparisons predictable while their contents remain specific
+to each role.
+Role and purpose and communication style use short paragraphs. Working approach presents three to five parallel
+principles as a flat bullet list, and deliverables groups distinct requirements into a short list. Template structure
+applies when a template is selected; existing saved documents retain their original content and structure.
+
+Desktop selection uses a list beside one scrollable reader. The name and applicability overview remain on white;
+the complete body sits in one very lightly tinted surface, expanded by default. Spacing and background distinguish
+the two parts without an extra content label, explanation, border, shadow, or separating rule. Body headings remain
+smaller than the template name. The dialog header and footer remain available while reading. Below 768px the same dialog shows
+the list first, then the selected detail with an **All templates** back action. Returning to the list restores focus to
+the selected template. Both layouts retain the complete document without an inner textarea or disclosure toggle.
+
+Selecting an item only previews it. **Use template** copies exactly the current locale's body into the draft and closes
+the chooser, returning focus to the editor. It does not save. Closing, Cancel, or Escape preserves the draft and returns
+focus to the opening control. With an existing draft, footer copy explains replacement and the separate apply step.
+Templates are editable starting points, not active bindings; catalog locale changes do not translate editor content.
+They do not grant capabilities, integrations, or background schedules.
+
+Only changed drafts expose **Discard changes** and **Apply changes**. Discard restores the latest confirmed saved text;
+Apply persists the draft with its expected revision and takes effect with the next response. There is no separate
+template Undo or blank template. Clearing saved text remains a change with an explicit clear notice. Saving disables
+editing and browsing, errors preserve the draft, and success stays near the actions. The existing unsaved-navigation
+guard offers continuing to edit or discarding and leaving.
+The editor footer uses one shared action row. Pending copy explains that applying affects the next response;
+after a confirmed save, one muted sentence combines confirmation and timing in the same location while actions
+disappear. No separate success banner or second explanation line is added. Narrow layouts may wrap the actions
+below the sentence.
 
 ## Theme, color, and motion
 

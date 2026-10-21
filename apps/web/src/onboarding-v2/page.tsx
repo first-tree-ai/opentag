@@ -331,9 +331,9 @@ function AgentCreatePage({
 
   return (
     <div className="otv2-shell flex min-h-screen flex-col bg-kumo-canvas" data-ui="agent-create">
-      <header className="flex items-center justify-between p-6">
+      <header className="flex flex-wrap items-center justify-between gap-3 p-6">
         <OpenTagLogo label={m.onboarding_v2_brand_name()} />
-        <div className="flex items-start gap-2">
+        <div className="ml-auto flex items-center gap-2">
           {/*
             Leaving for the Agent list is offered only to an Account that has somewhere to go. An
             Account with no Agent has nothing behind this page: that list would send it straight

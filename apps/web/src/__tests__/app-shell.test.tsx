@@ -190,7 +190,7 @@ describe("OpenTag Web App Shell", () => {
     const agentRow = (await screen.findByRole("link", { name: "Open Reviewer" })).closest('[data-ui="agent-row"]');
     expect(agentRow).toBeTruthy();
     const status = within(agentRow as HTMLElement)
-      .getByText("Ready for new work")
+      .getByText("Ready")
       .closest("[data-state]");
     expect(status).toBeTruthy();
     expect(screen.getByText("1 Agent · 1 working")).toBeTruthy();

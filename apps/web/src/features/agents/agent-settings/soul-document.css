@@ -1,0 +1,169 @@
+/* Shared Soul document typography; the editor frame remains scoped to its editable surface. */
+.soul-document {
+  color: var(--fg);
+  font-family: var(--ui-font);
+  font-size: 14px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.soul-editor {
+  position: relative;
+  display: block;
+  width: 100%;
+  resize: vertical;
+  overflow: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--ui-control-radius);
+  background: var(--card);
+  padding: 24px;
+  white-space: pre-wrap;
+  outline: none;
+}
+.soul-editor:focus-visible {
+  outline: 2px solid var(--color-kumo-focus);
+  outline-offset: 2px;
+}
+.soul-editor[aria-disabled="true"] {
+  opacity: 0.65;
+}
+.soul-editor[data-empty="true"]::before {
+  position: absolute;
+  top: 24px;
+  left: 24px;
+  right: 24px;
+  color: var(--muted-fg);
+  content: attr(data-placeholder);
+  pointer-events: none;
+}
+.soul-document > :first-child {
+  margin-top: 0;
+}
+.soul-document > :last-child {
+  margin-bottom: 0;
+}
+.soul-document p {
+  margin: 0 0 16px;
+}
+.soul-document :is(h1, h2, h3, h4, h5, h6) {
+  margin: 24px 0 8px;
+  font-weight: 600;
+  line-height: 1.5;
+  font-size: 16px;
+}
+.soul-document h1 {
+  font-size: 18px;
+}
+.soul-document :is(ul, ol) {
+  margin: 0 0 16px;
+  padding-left: 24px;
+}
+.soul-document ul {
+  list-style: disc;
+}
+.soul-document ol {
+  list-style: decimal;
+}
+.soul-document li {
+  margin: 4px 0;
+}
+.soul-document li p {
+  margin: 0;
+}
+.soul-document li p + p {
+  margin-top: 8px;
+}
+.soul-document li :is(ul, ol) {
+  margin-bottom: 4px;
+}
+.soul-document blockquote {
+  margin: 16px 0;
+  border-left: 2px solid var(--border);
+  padding-left: 16px;
+  color: var(--fg-2);
+}
+.soul-document a {
+  color: var(--brand-ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.soul-document code {
+  border-radius: 4px;
+  background: var(--surface-recessed);
+  padding: 2px 4px;
+  font-family: monospace;
+  font-size: 0.9em;
+}
+.soul-document pre {
+  margin: 16px 0;
+  overflow-x: auto;
+  border-radius: 8px;
+  background: var(--surface-recessed);
+  padding: 16px;
+  white-space: pre;
+}
+.soul-document pre code {
+  background: none;
+  padding: 0;
+}
+.soul-document pre[data-soul-source] {
+  background: none;
+  padding: 0;
+  white-space: pre-wrap;
+  font: inherit;
+}
+.soul-document hr {
+  margin: 24px 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+.soul-document table {
+  width: 100%;
+  margin: 16px 0;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+.soul-document :is(td, th) {
+  min-width: 48px;
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  vertical-align: top;
+}
+.soul-document th {
+  background: var(--surface-recessed);
+  font-weight: 600;
+}
+.soul-document :is(td, th) p {
+  margin: 0;
+}
+.soul-document ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0;
+}
+.soul-document li[data-type="taskItem"] {
+  display: flex;
+  gap: 10px;
+}
+.soul-document li[data-type="taskItem"] > label {
+  flex: none;
+  padding-top: 2px;
+}
+.soul-document li[data-type="taskItem"] > div {
+  min-width: 0;
+  flex: 1;
+}
+.soul-editor .ProseMirror-selectednode {
+  outline: 2px solid var(--color-kumo-focus);
+}
+@media (max-width: 47.999rem) {
+  .soul-document {
+    font-size: 16px;
+  }
+  .soul-editor {
+    padding: 20px;
+  }
+  .soul-editor[data-empty="true"]::before {
+    top: 20px;
+    left: 20px;
+    right: 20px;
+  }
+}

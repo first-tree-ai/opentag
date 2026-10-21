@@ -18,11 +18,13 @@ export function AccountMenu({
   placement: "page" | "sidebar" | "dock";
 }) {
   const { me } = useAccount();
+  const setupCompleted = Boolean(me.setupCompletedAt);
   const { error: accountError, signOut, signingOut: loggingOut } = useSignOut();
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const internalToolsOffered =
     useQuery({
+      enabled: setupCompleted,
       queryKey: queryKeys.internalToolsOffered(),
       queryFn: () => browserApi.internalToolsOffered(),
       staleTime: Number.POSITIVE_INFINITY,
@@ -83,30 +85,34 @@ export function AccountMenu({
         side={placement === "dock" ? "right" : placement === "sidebar" ? "top" : "bottom"}
         sideOffset={placement === "dock" ? 16 : 8}
       >
-        <DropdownMenu.LinkItem
-          closeOnClick
-          icon={<MenuItemIcon name="laptop" />}
-          render={<Link to="/agents/computers" onClick={() => onNavigate?.()} />}
-        >
-          {m.shell_computers()}
-        </DropdownMenu.LinkItem>
-        <DropdownMenu.LinkItem
-          closeOnClick
-          icon={<MenuItemIcon name="user" />}
-          render={<Link to="/account" onClick={() => onNavigate?.()} />}
-        >
-          {m.shell_account()}
-        </DropdownMenu.LinkItem>
-        {internalToolsOffered ? (
-          <DropdownMenu.LinkItem
-            closeOnClick
-            icon={<MenuItemIcon name="settings" />}
-            render={<Link to="/internal" onClick={() => onNavigate?.()} />}
-          >
-            {m.shell_internal_tools()}
-          </DropdownMenu.LinkItem>
+        {setupCompleted ? (
+          <>
+            <DropdownMenu.LinkItem
+              closeOnClick
+              icon={<MenuItemIcon name="laptop" />}
+              render={<Link to="/agents/computers" onClick={() => onNavigate?.()} />}
+            >
+              {m.shell_computers()}
+            </DropdownMenu.LinkItem>
+            <DropdownMenu.LinkItem
+              closeOnClick
+              icon={<MenuItemIcon name="user" />}
+              render={<Link to="/account" onClick={() => onNavigate?.()} />}
+            >
+              {m.shell_account()}
+            </DropdownMenu.LinkItem>
+            {internalToolsOffered ? (
+              <DropdownMenu.LinkItem
+                closeOnClick
+                icon={<MenuItemIcon name="settings" />}
+                render={<Link to="/internal" onClick={() => onNavigate?.()} />}
+              >
+                {m.shell_internal_tools()}
+              </DropdownMenu.LinkItem>
+            ) : null}
+            <DropdownMenu.Separator />
+          </>
         ) : null}
-        <DropdownMenu.Separator />
         <DropdownMenu.Item
           closeOnClick={false}
           disabled={loggingOut}

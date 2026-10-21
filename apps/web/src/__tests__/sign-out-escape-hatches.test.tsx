@@ -26,9 +26,13 @@ function region(selector: string): HTMLElement {
   return found;
 }
 
-async function signOutFrom(container: HTMLElement) {
+async function signOutFrom(container: HTMLElement, fromMenu = false) {
+  if (fromMenu) {
+    fireEvent.click(within(container).getByRole("button", { name: "Account menu" }));
+    container = await within(container).findByRole("menu");
+  }
   preserveProfileNavigationDraft("account", "Ada", "Unsaved name");
-  fireEvent.click(within(container).getByRole("button", { name: "Sign out" }));
+  fireEvent.click(within(container).getByRole(fromMenu ? "menuitem" : "button", { name: "Sign out" }));
   expect(await screen.findByRole("heading", { name: "Sign in to openTag" })).toBeTruthy();
   expect(logoutCalls()).toHaveLength(1);
   expect(window.location.pathname).toBe("/login");
@@ -93,8 +97,35 @@ describe("sign-out from full-screen states of an Account that has not finished s
     render(<App />);
 
     await screen.findByRole("heading", { name: "Where should your agent run?" });
-    await signOutFrom(region('[data-ui="agent-create"] header'));
+    await signOutFrom(region('[data-ui="agent-create"] header'), true);
   });
+
+  it.each([
+    { setupCompletedAt: null, items: ["Sign out"] },
+    {
+      setupCompletedAt: "2026-08-20T00:00:00.000Z",
+      items: ["Computer", "Account", "Internal tools", "Sign out"],
+    },
+  ])(
+    "offers only reachable creation-menu actions with setupCompletedAt=$setupCompletedAt",
+    async ({ setupCompletedAt, items }) => {
+      installApi({ emptyAgents: true, setupCompletedAt, internalToolsOffered: true });
+      window.history.replaceState({}, "", "/agents/setup?action=create");
+      render(<App />);
+
+      await screen.findByRole("heading", { name: "Where should your agent run?" });
+      const header = region('[data-ui="agent-create"] header');
+      fireEvent.click(within(header).getByRole("button", { name: "Account menu" }));
+      const menu = await within(header).findByRole("menu");
+      await waitFor(() =>
+        expect(
+          within(menu)
+            .getAllByRole("menuitem")
+            .map((item) => item.textContent?.trim()),
+        ).toEqual(items),
+      );
+    },
+  );
 
   it("offers it in the header of the exact setup page, next to the Account name", async () => {
     installApi({ setupCompletedAt: null });
@@ -104,7 +135,7 @@ describe("sign-out from full-screen states of an Account that has not finished s
     await screen.findByRole("heading", { name: "Prepare this computer" });
     const header = region('[data-ui="agent-setup"] header');
     expect(within(header).getByText("Ada")).toBeTruthy();
-    await signOutFrom(header);
+    await signOutFrom(header, true);
   });
 
   it("keeps the visitor on the page and says why when the Server refuses the logout", async () => {

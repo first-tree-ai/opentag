@@ -358,7 +358,7 @@ describe("OpenTag Web App Shell", () => {
     installApi({ agentListStatus: () => agentListStatus, bound: true });
     window.history.replaceState({}, "", "/agents");
     render(<App />);
-    expect(await screen.findByText("Ready for new work")).toBeTruthy();
+    expect(await screen.findByText("Ready")).toBeTruthy();
 
     agentListStatus = 503;
     fireEvent(window, new Event("focus"));

@@ -1,6 +1,8 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { useRef } from "react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readSoul, replaceSoul } from "../../../__tests__/soul-editor.js";
+import { overwriteGetLocale } from "../../../paraglide/runtime.js";
 import { SoulEditor } from "./soul-editor.js";
 
 const observers = new Set<LayoutObserver>();
@@ -47,12 +49,12 @@ describe("Soul editor height", () => {
     Object.defineProperty(window, "innerHeight", { configurable: true, value: 900 });
     styles = document.createElement("style");
     styles.textContent =
-      "textarea {font-size:14px;line-height:22.75px;padding:20px;border:1px solid} main {padding:32px}";
+      ".soul-editor {font-size:14px;line-height:22.75px;padding:20px;border:1px solid} main {padding:32px}";
     document.head.append(styles);
     globalThis.ResizeObserver = LayoutObserver;
     vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
       const element = this as HTMLElement;
-      const top = element.tagName === "TEXTAREA" ? 120 : 0;
+      const top = element.classList.contains("soul-editor") ? 120 : 0;
       const height =
         element.tagName === "MAIN"
           ? window.innerHeight
@@ -75,14 +77,14 @@ describe("Soul editor height", () => {
   it("reserves actions and keeps the preview minimum height when the window shrinks", () => {
     render(<EditorWithActions value="Long working principles" />);
     for (const observer of observers) observer.flush();
-    const editor = screen.getByRole("textbox", { name: "Soul" }) as HTMLTextAreaElement;
+    const editor = screen.getByRole("textbox", { name: "Soul" }) as HTMLElement;
     expect(editor.style.height).toBe("588px");
     Object.defineProperty(window, "innerHeight", { configurable: true, value: 768 });
     fireEvent(window, new Event("resize"));
     expect(editor.style.height).toBe("496px");
     Object.defineProperty(window, "innerHeight", { configurable: true, value: 640 });
     fireEvent(window, new Event("resize"));
-    expect(editor.style.height).toBe("420px");
+    expect(editor.style.height).toBe("368px");
     expect(editor.style.overflowY).toBe("auto");
   });
 
@@ -90,7 +92,7 @@ describe("Soul editor height", () => {
     const view = render(<EditorWithActions value="Working principles" />);
     for (const observer of observers) observer.flush();
     vi.advanceTimersToNextFrame();
-    const editor = screen.getByRole("textbox", { name: "Soul" }) as HTMLTextAreaElement;
+    const editor = screen.getByRole("textbox", { name: "Soul" }) as HTMLElement;
     editor.style.height = "450px";
     for (const observer of observers) observer.flush();
     vi.advanceTimersToNextFrame();
@@ -99,7 +101,24 @@ describe("Soul editor height", () => {
     expect(editor.style.overflowY).toBe("auto");
   });
 
-  it("releases space reserved for stacked preset controls when the layout widens", () => {
+  it("preserves the reading position when content is remeasured", () => {
+    const view = render(<EditorWithActions value="Working principles" />);
+    const editor = screen.getByRole("textbox", { name: "Soul" });
+    // Model the browser expanding a scrollable document during intrinsic-height measurement.
+    Object.defineProperty(editor.style, "height", {
+      configurable: true,
+      get: () => editor.style.getPropertyValue("height"),
+      set: (next: string) => {
+        if (next === "auto") editor.scrollTop = 0;
+        editor.style.setProperty("height", next);
+      },
+    });
+    editor.scrollTop = 320;
+    view.rerender(<EditorWithActions value="Revised working principles" />);
+    expect(editor.scrollTop).toBe(320);
+  });
+
+  it("releases space reserved for stacked save controls when the layout widens", () => {
     let width = 500;
     const measure = vi.mocked(Element.prototype.getBoundingClientRect).getMockImplementation();
     if (!measure) throw new Error("Layout measurement mock missing");
@@ -111,7 +130,7 @@ describe("Soul editor height", () => {
     render(<EditorWithActions value="Long working principles" />);
     for (const observer of observers) observer.flush();
     vi.advanceTimersToNextFrame();
-    const editor = screen.getByRole("textbox", { name: "Soul" }) as HTMLTextAreaElement;
+    const editor = screen.getByRole("textbox", { name: "Soul" }) as HTMLElement;
     expect(editor.style.height).toBe("432px");
     width = 900;
     for (const observer of observers) observer.flush();
@@ -119,5 +138,147 @@ describe("Soul editor height", () => {
     expect(editor.style.height).toBe("432px");
     vi.advanceTimersToNextFrame();
     expect(editor.style.height).toBe("588px");
+  });
+});
+
+function Document({
+  source,
+  onChange,
+  disabled = false,
+}: {
+  source: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+}) {
+  const [value, setValue] = useState(source);
+  const footer = useRef<HTMLDivElement>(null);
+  return (
+    <form>
+      <SoulEditor
+        disabled={disabled}
+        footerRef={footer}
+        id="soul"
+        value={value}
+        onValueChange={(next) => {
+          setValue(next);
+          onChange(next);
+        }}
+      />
+    </form>
+  );
+}
+
+describe("Soul document editing", () => {
+  afterEach(() => overwriteGetLocale(() => "en"));
+
+  it.each([
+    ["```text\nbefore\n```", "pre code", "one\n**two**"],
+    ["<rules>before</rules>", "pre[data-soul-source]", "one\n**two**"],
+    ["Keep `before` literal.", "code", "one **two**"],
+    ["Use <rule> inline.", "span[data-soul-source=inline]", "one **two**"],
+    ["![diagram](https://example.com/image.png)", "span[data-soul-source=image]", "one **two**"],
+  ])("pastes literal text without parsing Markdown inside %s", async (source, selector, pasted) => {
+    render(<Document source={source} onChange={vi.fn()} />);
+    const editor = screen.getByRole("textbox", { name: "Soul" });
+    const literal = editor.querySelector(selector);
+    if (!literal) throw new Error("Literal document fixture missing");
+    editor.focus();
+    const range = document.createRange();
+    if (!literal.firstChild) throw new Error("Literal text fixture missing");
+    range.setStart(literal.firstChild, 2);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    fireEvent(document, new Event("selectionchange"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fireEvent.paste(editor, {
+      clipboardData: { getData: (format: string) => (format === "text/plain" ? pasted : "") },
+    });
+    expect(editor.querySelectorAll(selector)).toHaveLength(1);
+    expect(editor.querySelector(selector)?.textContent).toContain("**two**");
+    expect(editor.querySelector("strong")).toBeNull();
+  });
+
+  it("prevents formatting an in-flight saved document", async () => {
+    const onChange = vi.fn();
+    const view = render(<Document source="Keep this rule." onChange={onChange} />);
+    const editor = screen.getByRole("textbox", { name: "Soul" });
+    editor.focus();
+    fireEvent.keyDown(editor, { key: "F10", altKey: true });
+    await screen.findByRole("button", { name: "Heading" });
+    view.rerender(<Document source="Keep this rule." onChange={onChange} disabled />);
+    await waitFor(() => {
+      const current = screen.queryByRole("button", { name: "Heading", hidden: true });
+      expect(!current || current.hasAttribute("disabled") || current.getAttribute("aria-disabled") === "true").toBe(
+        true,
+      );
+    });
+    const current = screen.queryByRole("button", { name: "Heading", hidden: true });
+    if (current) fireEvent.click(current);
+    expect(readSoul(editor)).toBe("Keep this rule.");
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("renders Markdown without changing the original source on focus or locale changes", () => {
+    const source = "## Role\n\nBe **careful**.\n\n- Verify sources\n- Explain limits\n";
+    const onChange = vi.fn();
+    const view = render(<Document source={source} onChange={onChange} />);
+    const editor = screen.getByRole("textbox", { name: "Soul" });
+    expect(editor.querySelector("h2")?.textContent).toBe("Role");
+    expect(editor.querySelector("strong")?.textContent).toBe("careful");
+    expect(editor.querySelectorAll("li")).toHaveLength(2);
+    editor.focus();
+    overwriteGetLocale(() => "zh");
+    view.rerender(<Document source={source} onChange={onChange} />);
+    expect(readSoul(editor)).toBe(source);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("uses standard formatting shortcuts and restores the exact original source on undo", () => {
+    const source = "An original rule.\n";
+    const onChange = vi.fn();
+    render(<Document source={source} onChange={onChange} />);
+    const editor = screen.getByRole("textbox", { name: "Soul" });
+    editor.focus();
+    fireEvent.keyDown(editor, { key: "a", ctrlKey: true });
+    fireEvent.keyDown(editor, { key: "b", ctrlKey: true });
+    expect(editor.querySelector("strong")?.textContent).toBe("An original rule.");
+    expect(readSoul(editor)).toContain("**An original rule.**");
+    fireEvent.keyDown(editor, { key: "z", ctrlKey: true });
+    expect(readSoul(editor)).toBe(source);
+  });
+
+  it("accepts Markdown clipboard content and clears to a genuinely empty string", () => {
+    render(<Document source="Existing rule." onChange={vi.fn()} />);
+    const editor = screen.getByRole("textbox", { name: "Soul" });
+    replaceSoul(editor, "## New role\n\n- Be concise\n- Verify claims");
+    expect(editor.querySelector("h2")?.textContent).toBe("New role");
+    expect(editor.querySelectorAll("li")).toHaveLength(2);
+    expect(readSoul(editor)).not.toContain("Existing rule.");
+    replaceSoul(editor, "");
+    expect(readSoul(editor)).toBe("");
+    expect(document.activeElement).toBe(editor);
+  });
+
+  it("opens the standard toolbar from the keyboard and returns focus with Escape", async () => {
+    const onChange = vi.fn();
+    const view = render(<Document source="Be precise." onChange={onChange} />);
+    const editor = screen.getByRole("textbox", { name: "Soul" });
+    editor.focus();
+    fireEvent.keyDown(editor, { key: "F10", altKey: true });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Heading" })));
+    const heading = screen.getByRole("button", { name: "Heading" });
+    fireEvent.keyDown(heading, { key: "ArrowRight" });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Bold" })));
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Escape" });
+    await waitFor(() => expect(document.activeElement).toBe(editor));
+    await waitFor(() => expect(screen.queryByRole("toolbar")).toBeNull());
+    overwriteGetLocale(() => "zh");
+    view.rerender(<Document source="Be precise." onChange={onChange} />);
+    fireEvent.keyDown(editor, { key: "F10", altKey: true });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "标题" })));
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowRight" });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "加粗" })));
   });
 });

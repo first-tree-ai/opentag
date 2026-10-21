@@ -105,3 +105,30 @@ keeps that physical name and UID without create/PATCH and each Session restores 
 archive. Separately, let the idle budget expire, verify provider-confirmed deletion, and restore
 the original Session into a fresh Instance. Also verify a stale Session bearer cannot follow the
 transfer, and explicit stop wins against an in-flight borrow or automatic release.
+
+### Native bridge fixture port reuse regression
+
+The native provider bridge test originally released one ephemeral port before selecting the
+second. Linux can immediately reuse that port. With identical entry ports, the real helper exits
+with code 2 during startup and the parent reports `The native provider bridge session closed
+unexpectedly`, before the intended SIGKILL test begins. The fixture now retains both listening
+reservations until both ports have been selected; production bridge behavior is unchanged.
+
+Local validation on October 21, 2026:
+
+- The unchanged runtime reproduced the startup error on Linux Node 24 and Node 26.12.0 using
+  duplicate ports returned by the original allocator.
+- With a 16-port Linux ephemeral range, the original fixture failed on iteration four. The
+  corrected allocator passed 200 real helper startup/SIGKILL/shutdown cycles on Node 26.12.0.
+- The complete 17-case bridge suite passed separately on Node 22.22.2, 24.15.0 and 26.12.0.
+- Repository checks, workspace build and typecheck passed, including normal commit/push hooks.
+
+The [full branch validation](https://github.com/first-tree-ai/opentag/actions/runs/39550780769)
+passed all nine unit shards, PostgreSQL integration, browser smoke, runtime coverage and
+compatibility/pack/container checks. Its manual full-history Secret Scan reported two historical
+test-database strings outside this change, so the aggregate run failed; no scan exclusion or
+policy was changed. Pull requests retain the normal change-range scan.
+
+These local child-process and container fixtures verify transport preparation and cleanup, not
+native Cloud Run isolation or a live Provider. Reproduction sources and raw logs remain in task
+evidence outside the repository.

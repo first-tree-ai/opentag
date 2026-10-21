@@ -60,5 +60,6 @@ Screenshots and browser checks for Web UI changes, one directory per change:
 - [mcp-unified-connect](web-ui/mcp-unified-connect/README.md)
 - [sidebar-navigation](web-ui/sidebar-navigation/README.md)
 - [site-redesign](web-ui/site-redesign/README.md)
+- [soul-template-browser](web-ui/soul-template-browser/README.md)
 - [skill-reader](web-ui/skill-reader/README.md)
 - [skills-management](web-ui/skills-management/README.md)

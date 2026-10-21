@@ -775,9 +775,9 @@ function AgentSetupPageContent({
 
   return (
     <div className="otv2-shell flex min-h-screen flex-col bg-kumo-canvas" data-ui="agent-setup">
-      <header className="flex items-center justify-between p-6">
+      <header className="flex flex-wrap items-center justify-between gap-3 p-6">
         <OpenTagLogo label={m.onboarding_v2_brand_name()} />
-        <div className="flex items-start gap-2">
+        <div className="ml-auto flex items-center gap-2">
           {onOpenAgent && !ready ? (
             <Button onClick={onOpenAgent} variant="ghost">
               {setupExitLabel(snapshot)}

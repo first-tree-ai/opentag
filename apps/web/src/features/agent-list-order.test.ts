@@ -341,7 +341,7 @@ describe("Agent availability model and presentation", () => {
           },
         },
       }),
-    ).toBe("Ready for new work");
+    ).toBe("Ready");
     expect(agentAvailabilitySummary({ ...base, availability: { ...base.availability, state: "suspended" } })).toBe(
       "Not receiving new work",
     );
@@ -384,7 +384,7 @@ describe("Agent availability model and presentation", () => {
     ).toBeUndefined();
     expect(agentCardStatus({ ...base, evidenceConfirmed: true } as never)).toEqual({
       detail: undefined,
-      label: "Ready for new work",
+      label: "Ready",
       tone: "success",
     });
     expect(
@@ -395,7 +395,7 @@ describe("Agent availability model and presentation", () => {
       } as never),
     ).toEqual({
       detail: "Working now · started 8m ago",
-      label: "Ready for new work",
+      label: "Ready",
       tone: "success",
     });
     expect(agentCardStatus({ ...base, evidenceConfirmed: false } as never)).toMatchObject({

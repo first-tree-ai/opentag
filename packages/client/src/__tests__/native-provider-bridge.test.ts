@@ -35,6 +35,26 @@ async function freePort(): Promise<number> {
   await new Promise<void>((resolve) => server.close(() => resolve()));
   return port;
 }
+async function freeEntryPorts(): Promise<{ connect: number; slack: number }> {
+  const connect = createServer();
+  const slack = createServer();
+  const servers = [connect, slack];
+  try {
+    // Keep both reservations open until selection is complete: Linux can immediately reuse a released port.
+    await Promise.all(
+      servers.map(async (server) => {
+        server.listen(0, "127.0.0.1");
+        await once(server, "listening");
+      }),
+    );
+    return {
+      connect: (connect.address() as { port: number }).port,
+      slack: (slack.address() as { port: number }).port,
+    };
+  } finally {
+    await Promise.all(servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
+  }
+}
 function localSandbox(source?: string) {
   const children: ChildProcessWithoutNullStreams[] = [];
   const sandbox = new NativeSandbox({
@@ -63,7 +83,7 @@ async function open(
   options: { source?: string; signal?: AbortSignal; ports?: { connect: number; slack: number } } = {},
 ) {
   const local = localSandbox(options.source);
-  const ports = options.ports ?? { connect: await freePort(), slack: await freePort() };
+  const ports = options.ports ?? (await freeEntryPorts());
   const bridge = await NativeProviderBridge.open({
     sandbox: local.sandbox,
     targets: { connect: port, slack: port },
@@ -189,7 +209,7 @@ describe("native provider transport over exec stdio", () => {
       accepted += 1;
       socket.end("must not arrive");
     });
-    const ports = { connect: await freePort(), slack: await freePort() };
+    const ports = await freeEntryPorts();
     const source =
       `process.argv = ["node", "${ports.connect}", "${ports.slack}"];\n` +
       NATIVE_PROVIDER_BRIDGE_SOURCE.replace(

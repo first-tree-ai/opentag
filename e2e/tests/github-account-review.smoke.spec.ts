@@ -63,6 +63,14 @@ const discoveryFailure = ErrorEnvelopeSchema.parse({
   },
 });
 
+function matchesDiscoveryAuthorization(query: URLSearchParams, connection: GitHubConnectionStatus | null) {
+  return (
+    connection !== null &&
+    query.get("connectionId") === connection.id &&
+    query.get("authorizationVersion") === connection.authorizationVersion
+  );
+}
+
 async function githubFixture(page: Page) {
   const state = {
     current: { ...linkedAccount } as GitHubConnectionStatus | null,
@@ -86,13 +94,27 @@ async function githubFixture(page: Page) {
       }
       if (path === GITHUB_INTEGRATION_REPOSITORIES_PATH) {
         state.discoveryCalls += 1;
+        const query = new URL(route.request().url()).searchParams;
+        if (!matchesDiscoveryAuthorization(query, state.current)) {
+          await route.fulfill({
+            status: 409,
+            json: ErrorEnvelopeSchema.parse({
+              error: {
+                code: "GITHUB_AUTHORIZATION_VERSION_CONFLICT",
+                category: "credential",
+                message: "The GitHub authorization changed",
+              },
+            }),
+          });
+          return;
+        }
         await route.fulfill(
           state.failDiscovery
             ? {
                 status: 503,
                 json: discoveryFailure,
               }
-            : { json: state.discoveryPages[new URL(route.request().url()).searchParams.get("cursor") ?? "start"] },
+            : { json: state.discoveryPages[query.get("cursor") ?? "start"] },
         );
         return;
       }
@@ -185,6 +207,45 @@ test("repository access is queried on demand and keeps missing-filter results se
   expect(fixture.discoveryCalls).toBe(2);
 });
 
+test("paginated repository results never mix after account replacement in another tab", async ({ page }) => {
+  const fixture = await githubFixture(page);
+  const repositories = Array.from({ length: 102 }, (_, i) => ({
+    repositoryId: String(i + 1),
+    installationId: "55123456",
+    fullName: `review-org/previous-${i + 1}`,
+    private: true,
+    defaultBranch: "main",
+    permissions: { pull: true, push: false },
+  }));
+  fixture.discoveryPages = {
+    start: { ...discovered, repositories: repositories.slice(0, 100), nextCursor: "second" },
+    second: { ...discovered, repositories: repositories.slice(100, 101), nextCursor: "third" },
+    third: { ...discovered, repositories: repositories.slice(101) },
+  };
+  await page.goto("/account", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "View repositories", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Accessible repositories", exact: true });
+  await expect(dialog.getByRole("listitem")).toHaveCount(100);
+  await expect(dialog.getByRole("button", { name: "Load more", exact: true })).toBeEnabled();
+  fixture.current = { ...linkedAccount, githubLogin: "replacement-user", authorizationVersion: "3" };
+  fixture.discoveryPages = {
+    start: {
+      ...discovered,
+      repositories: repositories.slice(0, 1).map((repository) => ({
+        ...repository,
+        repositoryId: "201",
+        fullName: "review-org/replacement",
+      })),
+    },
+  };
+  await dialog.getByRole("button", { name: "Load more", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByText("@replacement-user", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "View repositories", exact: true }).click();
+  await expect(dialog.getByRole("listitem")).toHaveText(["review-org/replacement"]);
+  await expectAccessible(page);
+});
+
 test("repository read failure retries into a compact installation-aware empty result", async ({ page }) => {
   const fixture = await githubFixture(page);
   fixture.failDiscovery = true;
@@ -208,6 +269,36 @@ test("repository read failure retries into a compact installation-aware empty re
   );
   await expectAccessible(page);
 });
+
+for (const status of ["reauthorization_required", "revoked"] as const) {
+  test(`repository access reconciles a ${status} authorization without a page reload`, async ({ page }) => {
+    const fixture = await githubFixture(page);
+    await page.goto("/account", { waitUntil: "networkidle" });
+    await expect(page.getByRole("button", { name: "View repositories", exact: true })).toBeVisible();
+    fixture.current = status === "revoked" ? null : { ...linkedAccount, status, authorizationVersion: "3" };
+    await page.route(`**${GITHUB_INTEGRATION_REPOSITORIES_PATH}*`, (route) =>
+      route.fulfill({
+        status: status === "revoked" ? 404 : 409,
+        json: ErrorEnvelopeSchema.parse({
+          error: {
+            code: status === "revoked" ? "GITHUB_CONNECTION_NOT_FOUND" : "GITHUB_CONNECTION_STATE_INVALID",
+            category: "credential",
+            message: "The GitHub authorization has changed",
+          },
+        }),
+      }),
+    );
+    await page.getByRole("button", { name: "View repositories", exact: true }).click();
+    await expect(page.getByRole("dialog", { name: "Accessible repositories", exact: true })).toHaveCount(0);
+    const authorize = page.getByRole("button", {
+      name: status === "revoked" ? "Authorize GitHub account" : "Reauthorize",
+      exact: true,
+    });
+    await expect(authorize).toBeVisible();
+    await expect(authorize).toBeFocused();
+    await expectAccessible(page);
+  });
+}
 
 const viewerLabels = {
   en: {
@@ -379,6 +470,25 @@ test("GitHub authorization round trip preserves an unsaved display-name draft", 
   await expect(displayName).toHaveValue(draft, { timeout: 2_000 });
   await expect(page.locator('[data-ui="account-github"]').getByText("@octocat", { exact: true })).toBeVisible();
   expect(profileWrites).toBe(0);
+});
+
+test("a failed GitHub authorization start does not restore an abandoned profile edit", async ({ page }) => {
+  await githubFixture(page);
+  await page.route(`**${GITHUB_INTEGRATION_AUTHORIZATION_PATH}`, (route) =>
+    route.fulfill({ status: 503, json: discoveryFailure }),
+  );
+  await page.goto("/account", { waitUntil: "networkidle" });
+  const displayName = page.getByRole("textbox", { name: "Display name", exact: true });
+  const confirmed = await displayName.inputValue();
+  await displayName.fill(`${confirmed} abandoned edit`);
+  await page.getByRole("button", { name: "Change account", exact: true }).click();
+  await expect(page.locator('[data-ui="account-github-message"]')).toContainText("GitHub is temporarily unavailable");
+  await displayName.fill(confirmed);
+  await expect(page.getByText("Unsaved changes", { exact: true })).toHaveCount(0);
+  await page.goto("/agents", { waitUntil: "networkidle" });
+  await page.goto("/account", { waitUntil: "networkidle" });
+  await expect(displayName).toHaveValue(confirmed);
+  await expect(page.getByText("Unsaved changes", { exact: true })).toHaveCount(0);
 });
 
 test("GitHub help and cancelled removal preserve the unsaved display-name draft", async ({ page }) => {

@@ -6,6 +6,7 @@ import {
   GitHubOAuthFlowIntentSchema,
   GitHubOAuthReturnSurfaceSchema,
   GitHubRepositoryFullNameSchema,
+  GitHubVersionStringSchema,
 } from "./github-integration.js";
 
 /**
@@ -190,10 +191,15 @@ export const GitHubRepositoryDiscoveryPageSchema = z
   .strict();
 export type GitHubRepositoryDiscoveryPage = z.infer<typeof GitHubRepositoryDiscoveryPageSchema>;
 
-/** The discovery query: an optional opaque continuation cursor. */
+/** A viewer can pin discovery to one authorization; legacy unscoped reads remain accepted. */
 export const GitHubRepositoryDiscoveryQuerySchema = z
   .object({
     cursor: z.string().min(1).max(512).optional(),
+    connectionId: GitHubConnectionStatusSchema.shape.id.optional(),
+    authorizationVersion: GitHubVersionStringSchema.optional(),
   })
-  .strict();
+  .strict()
+  .refine((query) => (query.connectionId === undefined) === (query.authorizationVersion === undefined), {
+    message: "A discovery authorization requires both connectionId and authorizationVersion",
+  });
 export type GitHubRepositoryDiscoveryQuery = z.infer<typeof GitHubRepositoryDiscoveryQuerySchema>;

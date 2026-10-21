@@ -23,6 +23,7 @@ import {
   GITHUB_OAUTH_CALLBACK_PATH,
   GITHUB_WEBHOOK_PATH,
   type GitHubConnectionStatus,
+  githubIntegrationRepositoriesPath,
 } from "@opentag/shared";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -724,9 +725,65 @@ describe("GitHub OAuth callback", () => {
 });
 
 describe("GitHub repository discovery and bindings", () => {
+  it("rejects a continuation after another tab replaces the GitHub account", async () => {
+    const fixture = await appFixture({ withManagement: true });
+    const current = await activeConnection(fixture);
+    if (!fixture.management) throw new Error("Missing GitHub management");
+    fixture.api.listUserInstallations.mockResolvedValue(installationsPage([installation()]));
+    fixture.api.listInstallationRepositories.mockResolvedValue(repositoriesPage([repository()], 250));
+    const first = await fixture.management.discoverRepositories(fixture.owner.id);
+    expect(first.nextCursor).toBeTruthy();
+    const started = await startAuthorization(fixture.app, { intent: "replace" });
+    fixture.api.getAuthenticatedUser.mockResolvedValue({ id: GITHUB_USER_TWO, login: "replacement-user" });
+    const callback = await completeCallback(fixture.app, { ...started, code: "replacement-code" });
+    expect(locationOf(callback).searchParams.get("github_oauth")).toBe("success");
+    await expect(
+      fixture.management.discoverRepositories(fixture.owner.id, first.nextCursor ?? undefined, {
+        id: current.id,
+        authorizationVersion: current.authorizationVersion.toString(),
+      }),
+    ).rejects.toMatchObject({ code: "GITHUB_AUTHORIZATION_VERSION_CONFLICT" });
+    expect(fixture.api.listInstallationRepositories).toHaveBeenCalledTimes(1);
+  });
+
+  it("discards a discovery page if authorization changes during the upstream read", async () => {
+    const fixture = await appFixture({ withManagement: true });
+    const current = await activeConnection(fixture);
+    if (!fixture.management) throw new Error("Missing GitHub management");
+    fixture.api.listUserInstallations.mockResolvedValue(installationsPage([installation()]));
+    fixture.api.listInstallationRepositories.mockImplementationOnce(async () => {
+      await unit.database
+        .update(githubConnections)
+        .set({ authorizationVersion: current.authorizationVersion + 1n })
+        .where(eq(githubConnections.id, current.id));
+      return repositoriesPage([repository()]);
+    });
+    await expect(fixture.management.discoverRepositories(fixture.owner.id)).rejects.toMatchObject({
+      code: "GITHUB_AUTHORIZATION_VERSION_CONFLICT",
+    });
+  });
+
+  it("rejects an outdated viewer authorization before making a GitHub request", async () => {
+    const fixture = await appFixture({ withManagement: true });
+    const current = await activeConnection(fixture);
+    const query = new URLSearchParams({
+      connectionId: current.id,
+      authorizationVersion: (current.authorizationVersion + 1n).toString(),
+    });
+    const response = await fixture.app.inject({
+      method: "GET",
+      url: `${GITHUB_INTEGRATION_REPOSITORIES_PATH}?${query}`,
+      headers: ownerHeaders(),
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error.code).toBe("GITHUB_AUTHORIZATION_VERSION_CONFLICT");
+    expect(fixture.api.listUserInstallations).not.toHaveBeenCalled();
+  });
+
   it("paginates installations and repositories with an opaque cursor", async () => {
     const fixture = await appFixture({ withManagement: true });
-    await activeConnection(fixture);
+    const current = await activeConnection(fixture);
+    const authorization = { id: current.id, authorizationVersion: current.authorizationVersion.toString() };
     fixture.api.listUserInstallations.mockResolvedValue(
       installationsPage([
         installation({ installationId: "111" }),
@@ -739,7 +796,7 @@ describe("GitHub repository discovery and bindings", () => {
 
     const first = await fixture.app.inject({
       method: "GET",
-      url: GITHUB_INTEGRATION_REPOSITORIES_PATH,
+      url: githubIntegrationRepositoriesPath(undefined, authorization),
       headers: ownerHeaders(),
     });
     expect(first.statusCode).toBe(200);
@@ -754,7 +811,7 @@ describe("GitHub repository discovery and bindings", () => {
     );
     const second = await fixture.app.inject({
       method: "GET",
-      url: `${GITHUB_INTEGRATION_REPOSITORIES_PATH}?cursor=${encodeURIComponent(firstPage.nextCursor as string)}`,
+      url: githubIntegrationRepositoriesPath(firstPage.nextCursor ?? undefined, authorization),
       headers: ownerHeaders(),
     });
     expect(second.statusCode).toBe(200);

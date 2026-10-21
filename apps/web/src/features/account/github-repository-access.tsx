@@ -48,7 +48,15 @@ export function GitHubRepositoryHelp({ scope = false }: { scope?: boolean }) {
   );
 }
 
-export function GitHubRepositoryAccess({ connection, busy }: { connection?: GitHubConnectionStatus; busy: boolean }) {
+export function GitHubRepositoryAccess({
+  connection,
+  busy,
+  onConnectionInvalid,
+}: {
+  connection?: GitHubConnectionStatus;
+  busy: boolean;
+  onConnectionInvalid?: (signal: AbortSignal) => Promise<void>;
+}) {
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
   const available = connection?.status === "active";
@@ -77,23 +85,33 @@ export function GitHubRepositoryAccess({ connection, busy }: { connection?: GitH
           <GitHubConfigurationLink />
         </div>
       </SettingsRow>
-      {available ? (
-        <GitHubRepositoryDialog open={open} onClose={() => setOpen(false)} returnFocusRef={trigger} />
+      {available && connection ? (
+        <GitHubRepositoryDialog
+          connection={connection}
+          open={open}
+          onClose={() => setOpen(false)}
+          returnFocusRef={trigger}
+          onConnectionInvalid={onConnectionInvalid}
+        />
       ) : null}
     </>
   );
 }
 
 function GitHubRepositoryDialog({
+  connection,
   open,
   onClose,
   returnFocusRef,
+  onConnectionInvalid,
 }: {
+  connection: GitHubConnectionStatus;
   open: boolean;
   onClose: () => void;
   returnFocusRef: RefObject<HTMLButtonElement | null>;
+  onConnectionInvalid?: (signal: AbortSignal) => Promise<void>;
 }) {
-  const state = useGitHubRepositories(open);
+  const state = useGitHubRepositories(open, connection, onConnectionInvalid);
   const [filter, setFilter] = useState("");
   const input = useRef<HTMLInputElement>(null);
   const visible = state.catalog?.repositories.slice(0, state.catalog.visibleCount) ?? [];

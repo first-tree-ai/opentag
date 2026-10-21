@@ -11,6 +11,7 @@ import {
 } from "../integrations/github-oauth-outcome.js";
 
 import { GitHubRepositoryAccess } from "./github-repository-access.js";
+import { clearProfileNavigationDraft } from "./profile-navigation-draft.js";
 
 type GitHubAuthorizationIntent = "create" | "reauthorize" | "replace";
 type GitHubAction = GitHubAuthorizationIntent | "remove" | "retry";
@@ -69,6 +70,30 @@ export function GitHubIntegrationSettings({ beforeAuthorize }: { beforeAuthorize
   const [confirming, setConfirming] = useState(false);
   const [message, setMessage] = useState<string>();
   const [error, setError] = useState<string>();
+  const sectionRef = useRef<HTMLElement>(null);
+
+  const reconcileConnection = useCallback(
+    async (signal: AbortSignal) => {
+      try {
+        const next = await resolveAccountGitHubView();
+        if (signal.aborted) return;
+        setView(next);
+        setOutcome(undefined);
+        setError(undefined);
+        setMessage(m.integrations_github_details_updated());
+        requestAnimationFrame(() => {
+          if (document.activeElement?.closest('[role="dialog"]')) return;
+          const authorize = sectionRef.current?.querySelector<HTMLButtonElement>(
+            '[data-ui="github-account-authorize"]',
+          );
+          (authorize ?? resultRef.current)?.focus();
+        });
+      } catch (cause) {
+        if (!signal.aborted) setError(actionErrorMessage(cause));
+      }
+    },
+    [resultRef],
+  );
 
   const load = useCallback(async () => {
     try {
@@ -103,15 +128,20 @@ export function GitHubIntegrationSettings({ beforeAuthorize }: { beforeAuthorize
 
   function authorize(intent: GitHubAuthorizationIntent): void {
     void run(intent, async () => {
-      beforeAuthorize?.();
-      const started = await browserApi.startGitHubAuthorization({
-        intent,
-        returnSurface: "account-integrations",
-        agentId: null,
-      });
-      // Capture edits made while the authorization request was in flight, too.
-      beforeAuthorize?.();
-      window.location.assign(started.authorizationUrl);
+      try {
+        beforeAuthorize?.();
+        const started = await browserApi.startGitHubAuthorization({
+          intent,
+          returnSurface: "account-integrations",
+          agentId: null,
+        });
+        // Capture edits made while the authorization request was in flight, too.
+        beforeAuthorize?.();
+        window.location.assign(started.authorizationUrl);
+      } catch (cause) {
+        clearProfileNavigationDraft();
+        throw cause;
+      }
     });
   }
   function remove(): void {
@@ -136,7 +166,7 @@ export function GitHubIntegrationSettings({ beforeAuthorize }: { beforeAuthorize
     action && ["create", "reauthorize", "replace"].includes(action) ? m.integrations_github_authorizing() : undefined;
   const feedbackError = confirming ? undefined : error;
   return (
-    <section className="grid gap-4" aria-labelledby="account-github-title" data-ui="account-github">
+    <section ref={sectionRef} className="grid gap-4" aria-labelledby="account-github-title" data-ui="account-github">
       <div className="grid gap-1">
         <Text as="h2" id="account-github-title" variant="heading">
           {m.integrations_github_account_title()}
@@ -170,6 +200,7 @@ export function GitHubIntegrationSettings({ beforeAuthorize }: { beforeAuthorize
           setError(undefined);
           setConfirming(true);
         }}
+        onConnectionInvalid={reconcileConnection}
       />
       <GitHubActionFeedback message={message} error={feedbackError} resultRef={resultRef} />
       {connection ? (
@@ -298,6 +329,7 @@ function GitHubAuthorizationButton({
   const accessibleLabel = intent === "replace" ? m.integrations_github_change_account() : label;
   return (
     <Button
+      data-ui="github-account-authorize"
       disabled={action !== null}
       size={intent === "create" ? undefined : "compact"}
       variant={intent === "replace" ? "ghost" : "primary"}
@@ -384,6 +416,7 @@ function AccountGitHubBody({
   onAuthorize,
   onRetry,
   onRemove,
+  onConnectionInvalid,
 }: {
   view: View;
   action: GitHubAction | null;
@@ -393,6 +426,7 @@ function AccountGitHubBody({
   onAuthorize: (intent: GitHubAuthorizationIntent) => void;
   onRetry: () => void;
   onRemove: () => void;
+  onConnectionInvalid: (signal: AbortSignal) => Promise<void>;
 }) {
   if (view.kind === "loading")
     return (
@@ -460,6 +494,7 @@ function AccountGitHubBody({
         key={connection ? `${connection.id}/${connection.authorizationVersion}/${connection.status}` : "empty"}
         connection={connection}
         busy={busy}
+        onConnectionInvalid={onConnectionInvalid}
       />
     </SettingsList>
   );

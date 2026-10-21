@@ -71,6 +71,43 @@ The subsequent alignment and popover changes pass 43 component/design-contract t
 
 Keyboard checks cover initial Cancel focus, Escape and focus restoration after idle confirmation, disabled cancellation during removal, and clearing a failed removal when its dialog is dismissed. No theme tokens or shared primitive behavior changed. These component fixtures do not establish live GitHub OAuth, organization policies, App installation, repository access, or native Git/gh execution.
 
+## Independent full-PR review
+
+An independent `codex review` process reviewed the complete PR against the merge base of
+`94947523d0b6bedcde443f8f5187f0df4619dff6` and `56f088d1d6c98f427da5d01cd73a868475a36003` on October 21, 2026.
+Follow-up passes included the working-tree corrections. The final static pass verified all three corrections and
+reported no remaining concrete regression or authorization issue. This is code-review evidence, not human ownership
+approval or live-provider acceptance.
+
+| Finding | Correction and regression evidence |
+| --- | --- |
+| Explicit repository connection-state failures left stale account controls and an unrecoverable retry loop | Re-read the authoritative overview only for missing, invalid, or changed authorization. Preserve identity when reconciliation fails, retain transient repository retry, and restore focus when the obsolete viewer closes. |
+| A failed OAuth start retained a profile snapshot that could restore an abandoned edit | Clear the snapshot whenever authorization fails before document navigation; existing successful-round-trip preservation remains covered. |
+| Another tab could replace the GitHub authorization between discovery pages and mix repository lists | Pin every viewer request to its connection ID and authorization version. Validate the paired query, check the credential version before opening it, and check the current authorization after the upstream read. Reject changed scopes before merging results. |
+
+The first two findings were reproduced by three failing component regressions before correction. The pagination finding
+was reproduced through the real management service and PGlite database, including an actual replacement OAuth callback
+with a stubbed GitHub origin, before correction. All 176 affected tests now pass: 83 Web/component, 42 Server admission
+and management API, and 51 shared contract/path tests.
+
+The final built application passes the complete 92-case smoke project with zero failures, skips, or flakes, including
+16 GitHub cases and the new authorization-recovery, abandoned-draft, and cross-account-pagination scenarios. English and
+Chinese repository presentations retain desktop/mobile and accessibility checks. The separate journey project and
+repository-wide unit results are recorded below and in the [final review summary](full-pr-review.json). The earlier
+exploratory combined-project run is not acceptance evidence because the projects can interfere through shared setup state.
+
+| Additional validation | Result |
+| --- | --- |
+| GitHub PostgreSQL integration | All 55 tests in six connection, constraints, credential-lifecycle, refresh, maintenance, and task-authority suites passed. |
+| Complete journey project, one worker | 16 passed, 11 failed, and nine were blocked by an earlier serial failure. Failures include outdated MCP/navigation locators, Soul editor navigation diagnostics, a switcher accessibility check, and the local runtime test. Their test files and corresponding feature implementations are outside this PR's changes. |
+| Repository-wide unit command | Failed on Client Context Tree timeouts and skill-sync timing. An isolated default-timeout retry still failed Context Tree cases; a diagnostic-only 15-second timeout passed all seven Context Tree cases. No repository timeout was changed. |
+| Repository-wide PostgreSQL command | Stopped after repeated five-second migration/IM test timeouts. No migration or IM implementation changed; the six GitHub-specific suites passed separately. |
+
+Repository checks, the workspace build/typecheck, and E2E TypeScript validation pass. Full repository regression
+acceptance remains incomplete; the PR stays a draft. Raw logs, failing journey screenshots/traces, and the complete
+browser JSON reports are retained in the task evidence directory rather than committed. Test containers, databases,
+ports, authentication state, and runtime metadata were cleaned up without changing existing local services.
+
 ## Screenshots
 
 - [Current account layout, Chinese](github-active-zh.png)

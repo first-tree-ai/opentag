@@ -70,6 +70,64 @@ describe("GitHub account settings", () => {
     expect(screen.getByText("@octocat")).toBeTruthy();
   });
 
+  it.each([
+    ["GITHUB_CONNECTION_STATE_INVALID", "reauthorization_required", "Reauthorize"],
+    ["GITHUB_CONNECTION_NOT_FOUND", null, "Authorize GitHub account"],
+  ] as const)("reconciles %s against the authoritative overview", async (code, status, action) => {
+    const readOverview = vi
+      .spyOn(browserApi, "githubIntegration")
+      .mockResolvedValueOnce(overview(connection()))
+      .mockResolvedValueOnce(overview(status ? connection({ status, authorizationVersion: "3" }) : null));
+    const discover = vi
+      .spyOn(browserApi, "githubRepositories")
+      .mockRejectedValue(new ApiError(409, "Connection changed", code));
+    render(<GitHubIntegrationSettings />);
+    fireEvent.click(await screen.findByRole("button", { name: "View repositories" }));
+    const authorize = await screen.findByRole("button", { name: action });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(authorize));
+    expect(readOverview).toHaveBeenCalledTimes(2);
+    expect(discover).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps transient repository failures independent of the account overview", async () => {
+    const readOverview = vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection()));
+    const discover = vi
+      .spyOn(browserApi, "githubRepositories")
+      .mockRejectedValue(new ApiError(502, "Upstream outage", "GITHUB_UPSTREAM_UNAVAILABLE"));
+    render(<GitHubIntegrationSettings />);
+    fireEvent.click(await screen.findByRole("button", { name: "View repositories" }));
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByText("Couldn't load repositories. Try again.");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(discover).toHaveBeenCalledTimes(2));
+    expect(readOverview).toHaveBeenCalledTimes(1);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close repository list" }));
+    expect(await screen.findByRole("button", { name: "Change account" })).toBeTruthy();
+    expect(screen.getByText("@octocat")).toBeTruthy();
+  });
+
+  it("preserves identity when overview reconciliation fails and retries without reloading the page", async () => {
+    const readOverview = vi
+      .spyOn(browserApi, "githubIntegration")
+      .mockResolvedValueOnce(overview(connection()))
+      .mockRejectedValueOnce(new Error("Overview unavailable"))
+      .mockResolvedValueOnce(overview(connection({ status: "reauthorization_required", authorizationVersion: "3" })));
+    vi.spyOn(browserApi, "githubRepositories").mockRejectedValue(
+      new ApiError(409, "Connection changed", "GITHUB_CONNECTION_STATE_INVALID"),
+    );
+    render(<GitHubIntegrationSettings />);
+    fireEvent.click(await screen.findByRole("button", { name: "View repositories" }));
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByText("Couldn't load repositories. Try again.");
+    expect(screen.getByText("@octocat")).toBeTruthy();
+    expect(screen.getByText("Overview unavailable")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Try again" }));
+    expect(await screen.findByRole("button", { name: "Reauthorize" })).toBeTruthy();
+    expect(readOverview).toHaveBeenCalledTimes(3);
+    expect(screen.queryByText("Overview unavailable")).toBeNull();
+  });
+
   it("explains deployment unavailability without unusable controls or health badges", async () => {
     vi.spyOn(browserApi, "githubIntegration").mockResolvedValue({
       availability: { available: false, githubHost: "github.com", appId: null },

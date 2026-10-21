@@ -122,14 +122,24 @@ export class GitHubManagementService {
    * One page of repository discovery with the connected user's live credential. Requires an active
    * connection; pending and reauthorization_required rows must finish authorization first.
    */
-  async discoverRepositories(accountId: string, cursor?: string): Promise<GitHubRepositoryDiscoveryPage> {
+  async discoverRepositories(
+    accountId: string,
+    cursor?: string,
+    authorization?: Pick<GitHubConnectionStatus, "id" | "authorizationVersion">,
+  ): Promise<GitHubRepositoryDiscoveryPage> {
     const current = await this.#requireActiveConnection(accountId);
-    const credential = await this.#openUserCredential(current.id);
+    this.#assertDiscoveryAuthorization(current, authorization);
+    const credential = await this.#openUserCredential(current.id, current.authorizationVersion);
     try {
-      return await this.#admission.discoverRepositories({
+      const page = await this.#admission.discoverRepositories({
         accessToken: credential.accessToken,
         ...(cursor !== undefined ? { cursor } : {}),
       });
+      this.#assertDiscoveryAuthorization(await this.#requireActiveConnection(accountId), {
+        id: current.id,
+        authorizationVersion: current.authorizationVersion.toString(),
+      });
+      return page;
     } catch (error) {
       throw mapManagementApiFailure(error);
     }
@@ -251,7 +261,7 @@ export class GitHubManagementService {
   }
 
   /** Opens the current UAT for one active connection of this Account. Never logged. */
-  async #openUserCredential(connectionId: string): Promise<{ accessToken: string }> {
+  async #openUserCredential(connectionId: string, authorizationVersion: bigint): Promise<{ accessToken: string }> {
     const row = await this.#readActiveCredentialRow(connectionId);
     if (row === null) {
       throw new GitHubConnectionServiceError(
@@ -260,7 +270,26 @@ export class GitHubManagementService {
         "The GitHub connection is no longer active",
       );
     }
+    this.#assertDiscoveryAuthorization(
+      { id: row.connectionId, authorizationVersion: row.authorizationVersion },
+      { id: connectionId, authorizationVersion: authorizationVersion.toString() },
+    );
     return { accessToken: this.#decrypt(row).accessToken };
+  }
+
+  #assertDiscoveryAuthorization(
+    current: { id: string; authorizationVersion: bigint },
+    expected?: Pick<GitHubConnectionStatus, "id" | "authorizationVersion">,
+  ): void {
+    if (
+      expected &&
+      (current.id !== expected.id || current.authorizationVersion !== parseVersion(expected.authorizationVersion))
+    )
+      throw new GitHubConnectionServiceError(
+        GITHUB_CONNECTION_ERROR_CODES.AUTHORIZATION_VERSION_CONFLICT,
+        409,
+        "The GitHub authorization changed; reload repository access",
+      );
   }
 
   async #readActiveCredentialRow(connectionId: string): Promise<ActiveCredentialRow | null> {

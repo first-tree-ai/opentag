@@ -1,8 +1,10 @@
 import type { MeResponse } from "@opentag/shared/browser";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { browserApi } from "../../api.js";
 import * as locale from "../../i18n/locale.js";
 import { AccountSettings } from "./account-page.js";
+import { GitHubIntegrationSettings } from "./github-integration-settings.js";
 
 const user: MeResponse["user"] = {
   id: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
@@ -68,6 +70,30 @@ describe("Account profile authorization drafts", () => {
     expect((screen.getByRole("textbox", { name: "Display name" }) as HTMLInputElement).value).toBe("Unsaved name");
     expect(screen.getByText("Unsaved changes")).toBeTruthy();
     expect(refresh).not.toHaveBeenCalled();
+    expect(window.sessionStorage.getItem("opentag.account-profile-navigation-draft")).toBeNull();
+  });
+
+  it("does not restore an abandoned edit after authorization fails before navigation", async () => {
+    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue({
+      availability: { available: true, githubHost: "github.com", appId: "871235" },
+      connection: null,
+    });
+    vi.spyOn(browserApi, "startGitHubAuthorization").mockRejectedValue(new Error("Authorization start failed"));
+    const guard = { current: null as (() => void) | null };
+    const first = render(
+      <>
+        <AccountSettings navigationGuardRef={guard} refreshMe={vi.fn()} user={user} />
+        <GitHubIntegrationSettings beforeAuthorize={() => guard.current?.()} />
+      </>,
+    );
+    fireEvent.change(screen.getByRole("textbox", { name: "Display name" }), { target: { value: "Abandoned edit" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Authorize GitHub account" }));
+    await screen.findByText("Authorization start failed");
+    fireEvent.change(screen.getByRole("textbox", { name: "Display name" }), { target: { value: user.displayName } });
+    expect(screen.queryByText("Unsaved changes")).toBeNull();
+    first.unmount();
+    render(<AccountSettings refreshMe={vi.fn()} user={user} />);
+    expect((screen.getByRole("textbox", { name: "Display name" }) as HTMLInputElement).value).toBe(user.displayName);
     expect(window.sessionStorage.getItem("opentag.account-profile-navigation-draft")).toBeNull();
   });
 

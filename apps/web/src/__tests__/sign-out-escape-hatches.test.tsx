@@ -26,7 +26,7 @@ function region(selector: string): HTMLElement {
 
 async function signOutFrom(container: HTMLElement) {
   fireEvent.click(within(container).getByRole("button", { name: "Sign out" }));
-  expect(await screen.findByRole("heading", { name: "Sign in to OpenTag" })).toBeTruthy();
+  expect(await screen.findByRole("heading", { name: "Sign in to openTag" })).toBeTruthy();
   expect(logoutCalls()).toHaveLength(1);
   expect(window.location.pathname).toBe("/login");
 }

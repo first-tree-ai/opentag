@@ -232,6 +232,7 @@ test("paginated repository results never mix after account replacement in anothe
   await expect(page.getByText("@replacement-user", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "View repositories", exact: true }).click();
   await expect(dialog.getByRole("listitem")).toHaveText(["review-org/replacement"]);
+  await expect(dialog).toHaveCSS("opacity", "1");
   await expectAccessible(page);
 });
 
@@ -246,7 +247,7 @@ test("repository read failure retries into a compact OAuth authorization empty r
   await dialog.getByRole("button", { name: "Try again", exact: true }).click();
   await expect(
     dialog.getByText(
-      "No accessible repositories found. Check repository access on GitHub and make sure your account has access.",
+      "No accessible repositories found. Check your GitHub account permissions and OAuth authorization.",
       { exact: true },
     ),
   ).toBeVisible();
@@ -419,6 +420,7 @@ test("removing a shared GitHub account requires confirmation before the mutation
   await expect(dialog).toContainText("You can revoke it in GitHub settings");
   await expect(dialog.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
   expect(fixture.disconnectCalls, "No shared authorization should be removed before confirmation").toBe(0);
+  await expect(dialog).toHaveCSS("opacity", "1");
   await expectAccessible(page);
   await page.screenshot({ path: test.info().outputPath("remove-confirmation.png"), fullPage: true });
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();

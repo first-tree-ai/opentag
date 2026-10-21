@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { readMigrationFiles } from "drizzle-orm/migrator";
 import postgres from "postgres";
@@ -11,7 +12,11 @@ import { startPostgresTestContainer } from "./postgres-test-container.js";
 const migrations = readMigrationFiles({
   migrationsFolder: fileURLToPath(new URL("../../../drizzle", import.meta.url)),
 });
-const cutoverMigration = migrations.at(-1);
+const journal: { entries: Array<{ tag: string }> } = JSON.parse(
+  await readFile(new URL("../../../drizzle/meta/_journal.json", import.meta.url), "utf8"),
+);
+const cutoverIndex = journal.entries.findIndex((entry) => entry.tag === "0065_github_oauth_cutover");
+const cutoverMigration = migrations[cutoverIndex];
 if (!cutoverMigration) throw new Error("OAuth cutover migration is missing");
 let container: Awaited<ReturnType<typeof startPostgresTestContainer>>;
 let sql: ReturnType<typeof postgres>;
@@ -22,7 +27,7 @@ beforeAll(async () => {
   container = await startPostgresTestContainer();
   sql = postgres(container.getConnectionUri(), { max: 1, onnotice: () => undefined });
   client = createDatabaseClient(container.getConnectionUri());
-  for (const migration of migrations.slice(0, -1))
+  for (const migration of migrations.slice(0, cutoverIndex))
     await sql.begin(async (tx) => {
       for (const statement of migration.sql) await tx.unsafe(statement);
     });

@@ -240,8 +240,8 @@ this identifies acceptance tests correctly to the changed-line coverage classifi
 
 ## Pull-request serialization corrections
 
-After the separate PR reviews, 24 retained regression cases cover literal prose, identifiers, placeholders, line-start
-markers, and directly typed block-like text. All 128 affected tests pass. A fresh repository-root Web coverage run
+After the separate PR reviews, 27 retained regression cases cover literal prose, identifiers, placeholders, line-start
+markers, and directly typed block-like text. All 131 affected tests pass. A fresh repository-root Web coverage run
 passes 2,123 tests with 94.58% line coverage and no retries; the six additional typed-block cases also pass in the final
 affected run. The updated source-preservation browser journey passes real save/API/reload checks, the literal-paste
 journey passes all five contexts, and the complete bilingual 320/390/768/1440px journey passes again. The contract

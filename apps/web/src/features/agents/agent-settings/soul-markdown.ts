@@ -15,15 +15,33 @@ const promptMarkup =
   /(?:<!--[\s\S]*?(?:-->|$)|<!\[CDATA\[[\s\S]*?(?:\]\]>|$)|<\?[\s\S]*?(?:\?>|$)|<![A-Za-z](?:"[^"]*"|'[^']*'|[^'">])*>|<\/?[A-Za-z][\w:.-]*(?=[\s/>])(?:"[^"]*"|'[^']*'|[^'">])*>)/u;
 const literalPromptParts = new RegExp(`(${promptMarkup.source}|[<>&]|[\\p{L}\\p{N}]+(?:_+[\\p{L}\\p{N}]+)+)`, "u");
 
+function escapeLiteralBlockMarkers(text: string): string {
+  const sourceRanges = Array.from(text.matchAll(new RegExp(promptMarkup.source, "gu")), (match): [number, number] => [
+    match.index,
+    match.index + match[0].length,
+  ]);
+  new Marked().walkTokens(new Lexer().inlineTokens(text), (token) => {
+    if (token.type !== "codespan" && token.type !== "image") return;
+    for (let start = text.indexOf(token.raw); start !== -1; start = text.indexOf(token.raw, start + token.raw.length))
+      sourceRanges.push([start, start + token.raw.length]);
+  });
+  return text.replace(
+    /^( {0,3})(#{1,6}(?=[ \t]|$)|>|[-+](?=[ \t]|$)|\d{1,9}[.)](?=[ \t]|$)|-(?:[ \t]*-){2,}(?=[ \t]*$)|=+(?=[ \t]*$))/gm,
+    (match: string, indent: string, marker: string, offset: number) => {
+      const position = offset + indent.length;
+      if (sourceRanges.some(([start, end]) => position >= start && position < end)) return match;
+      if (marker.startsWith("=") && offset === 0) return match;
+      const escaped = /^\d/.test(marker) ? marker.replace(/([.)])$/, "\\$1") : `\\${marker}`;
+      return indent + escaped;
+    },
+  );
+}
+
 const SoulParagraph = Paragraph.extend({
   renderMarkdown(node, helpers, context) {
     const text = this.parent?.(node, helpers, context) ?? helpers.renderChildren(node.content ?? []);
     // Plain paragraph text must not become a heading, list, quote, or rule on the next load.
-    return text
-      .replace(/^( {0,3})(#{1,6}|[-+>])(?=[ \t]|$)/gm, "$1\\$2")
-      .replace(/^( {0,3}\d{1,9})([.)])(?=[ \t]|$)/gm, "$1\\$2")
-      .replace(/^( {0,3})(-(?:[ \t]*-){2,})[ \t]*$/gm, "$1\\$2")
-      .replace(/(\n {0,3})(=+)(?=[ \t]*(?:\n|$))/g, "$1\\$2");
+    return escapeLiteralBlockMarkers(text);
   },
 });
 

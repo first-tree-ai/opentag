@@ -146,9 +146,10 @@ comparison symbols and ampersands became HTML entities, identifiers gained under
 line starts became headings, lists, or quotes after reload. Fourteen new regression cases failed before correction.
 
 The serializer now retains literal comparison symbols, ampersands, and intraword identifier underscores while using
-the standard paragraph extension to protect literal block markers. Twenty-four retained cases cover loaded and typed
+the standard paragraph extension to protect literal block markers. Marked token ranges and prompt-source ranges
+keep that protection outside inline code, images, and raw source spans. Twenty-seven retained cases cover loaded and typed
 prose, repeated reloads, Unicode identifiers, placeholders, formatted text, table cells, and literal heading/list/quote/
-rule markers. The affected editor, catalog, Markdown, and runtime-configuration suites pass all 128 tests.
+rule markers. The affected editor, catalog, Markdown, and runtime-configuration suites pass all 131 tests.
 
 The updated [source-preservation browser journey](markup-preservation-journey.spec.js) verifies the emitted draft,
 real API persistence, and reload for the reported cases. Existing entities, XML, references, and code remain covered.

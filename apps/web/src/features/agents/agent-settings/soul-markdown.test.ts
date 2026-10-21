@@ -110,6 +110,35 @@ describe("Soul Markdown compatibility", () => {
     expect(editor(saved).getJSON()).toEqual(original.getJSON());
   });
 
+  it.each(["<!-- note\n# keep this literal\n-->", "<![CDATA[\n- keep this literal\n]]>"])(
+    "does not apply paragraph escaping inside multiline prompt source: %s",
+    (source) => {
+      const original = editor("");
+      original.commands.insertContent({
+        type: "paragraph",
+        content: [
+          { type: "text", text: "Use " },
+          { type: "soulSourceInline", content: [{ type: "text", text: source }] },
+          { type: "text", text: " inline." },
+        ],
+      });
+      original.commands.insertContentAt(original.state.doc.content.size, {
+        type: "paragraph",
+        content: [{ type: "text", text: "Added." }],
+      });
+      expect(serializeSoul(original)).toContain(`Use ${source} inline.`);
+    },
+  );
+
+  it("does not apply paragraph escaping inside a pasted inline code span", () => {
+    const original = editor("");
+    original.commands.insertContent({
+      type: "paragraph",
+      content: [{ type: "text", text: "line\n- keep this literal", marks: [{ type: "code" }] }],
+    });
+    expect(serializeSoul(original)).toBe("`line\n- keep this literal`");
+  });
+
   it("keeps horizontal rules inside a blockquote as formatted content", () => {
     const original = editor("> ---\n>\n> ## Principles\n>\n> - Verify\n>\n> ---\n\nAfter.");
     expect(original.view.dom.querySelectorAll("blockquote hr")).toHaveLength(2);

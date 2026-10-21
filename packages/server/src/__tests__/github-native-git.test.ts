@@ -12,6 +12,12 @@ import { verifyPublishedContextTree } from "../services/github-proxy/tree-verifi
 import { nativeProxyChannel } from "./support/native-proxy-channel.js";
 
 const run = promisify(execFile);
+function assertGitFixtureExit(code: number | null, inputError: NodeJS.ErrnoException | undefined) {
+  // Git may finish its response before consuming all input; other failures must still fail the fixture.
+  if (code !== 0 || (inputError && inputError.code !== "EPIPE"))
+    throw new Error("Git fixture failed", { cause: inputError });
+}
+
 for (const cloud of [false, true])
   describe.skipIf(cloud && process.platform !== "linux")(
     `${cloud ? "Cloud" : "Local"} real Git through the full provider channel`,
@@ -87,9 +93,13 @@ for (const cloud of [false, true])
           const output: Uint8Array[] = [];
           child.stdout.on("data", (chunk) => output.push(chunk));
           child.stderr.resume();
+          let inputError: NodeJS.ErrnoException | undefined;
+          child.stdin.on("error", (error: NodeJS.ErrnoException) => {
+            inputError = error;
+          });
           child.stdin.end(body);
           const [code] = await once(child, "close");
-          if (code !== 0) throw Error("Git fixture failed");
+          assertGitFixtureExit(code, inputError);
           const result = Buffer.concat(output),
             end = result.indexOf("\r\n\r\n");
           if (end < 0) throw Error("Invalid CGI response");

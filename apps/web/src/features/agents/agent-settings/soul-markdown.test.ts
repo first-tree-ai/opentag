@@ -16,6 +16,89 @@ afterEach(() => {
 });
 
 describe("Soul Markdown compatibility", () => {
+  it.each([
+    "If score > 0.8 then stop.",
+    "Map a -> b and x => y.",
+    "Use a < b.",
+    "a & b",
+    "Q&A and R&D",
+    "Call read_file and chat_send.",
+    "Use {{user_name}} and env.API_KEY.",
+    "调用 read_file，并保留 用户_名称。",
+  ])("preserves literal prompt prose after loaded and typed edits: %s", (source) => {
+    const loaded = editor(source);
+    loaded.commands.insertContentAt(loaded.state.doc.content.size, {
+      type: "paragraph",
+      content: [{ type: "text", text: "Added." }],
+    });
+    expect(serializeSoul(loaded)).toBe(`${source}\n\nAdded.`);
+    const typed = editor("");
+    typed.commands.insertContent({ type: "text", text: source });
+    let saved = serializeSoul(typed);
+    expect(saved).toBe(source);
+    for (let index = 0; index < 3; index++) {
+      const reloaded = editor(saved);
+      expect(reloaded.view.dom.textContent).toBe(source);
+      saved = serializeSoul(reloaded);
+      expect(saved).toBe(source);
+    }
+  });
+
+  it.each([
+    "1\\. Not a list item.",
+    "2\\) Not a list item.",
+    "\\# Not a heading",
+    "\\- not a bullet",
+    "\\+ not a bullet",
+    "\\> not a quote",
+  ])("retains literal line starts through editing and reload: %s", (source) => {
+    const original = editor(source);
+    original.commands.insertContentAt(original.state.doc.content.size, {
+      type: "paragraph",
+      content: [{ type: "text", text: "Added." }],
+    });
+    const saved = serializeSoul(original);
+    expect(saved).toBe(`${source}\n\nAdded.`);
+    expect(editor(saved).getJSON()).toEqual(original.getJSON());
+    expect(editor(saved).view.dom.querySelector("ol, ul, h1, blockquote")).toBeNull();
+  });
+
+  it("keeps identifiers and comparison symbols inside formatting and table cells", () => {
+    const source =
+      "**Call read_file & chat_send when a > b.**\n\n| Tool | Rule |\n| --- | --- |\n| read_file | a < b & c > d |";
+    const original = editor(source);
+    original.commands.insertContentAt(original.state.doc.content.size, {
+      type: "paragraph",
+      content: [{ type: "text", text: "Added." }],
+    });
+    const saved = serializeSoul(original);
+    expect(saved).toContain("**Call read_file & chat_send when a > b.**");
+    expect(saved).toContain("read_file | a < b & c > d");
+    expect(editor(saved).getJSON()).toEqual(original.getJSON());
+  });
+
+  it.each(["\\---", "\\- - -", "Keep this line.\n\\==="])("retains literal rule and setext markers: %s", (source) => {
+    const original = editor(source);
+    const saved = serializeSoul(original);
+    expect(saved).toBe(source);
+    expect(editor(saved).getJSON()).toEqual(original.getJSON());
+  });
+
+  it.each([
+    ["---", "\\---"],
+    ["- not a bullet", "\\- not a bullet"],
+    ["1. step one", "1\\. step one"],
+    [">", "\\>"],
+    ["<", "<"],
+    ["&", "&"],
+  ])("preserves typed literal block-like text: %s", (text, source) => {
+    const original = editor("");
+    original.commands.insertContent({ type: "text", text });
+    expect(serializeSoul(original)).toBe(source);
+    expect(editor(source).getJSON()).toEqual(original.getJSON());
+    expect(editor(source).view.dom.textContent).toBe(text);
+  });
+
   it("preserves code containing shorter fences and instructions after it", () => {
     const original = editor("````md\n```text\nexample\n```\n````\n\n## Next\n\nKeep this rule.");
     original.commands.insertContentAt(original.state.doc.content.size, {

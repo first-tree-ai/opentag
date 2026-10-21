@@ -237,3 +237,15 @@ pnpm exec vitest run --config vitest.coverage.config.ts --project web apps/web/s
 Retained Playwright CLI scripts use the `.spec.js` test-file convention. Their content and invocation are unchanged;
 this identifies acceptance tests correctly to the changed-line coverage classifier. Product coverage floors and the
 80% changed-line threshold are unchanged.
+
+## Pull-request serialization corrections
+
+After the separate PR reviews, 24 retained regression cases cover literal prose, identifiers, placeholders, line-start
+markers, and directly typed block-like text. All 128 affected tests pass. A fresh repository-root Web coverage run
+passes 2,123 tests with 94.58% line coverage and no retries; the six additional typed-block cases also pass in the final
+affected run. The updated source-preservation browser journey passes real save/API/reload checks, the literal-paste
+journey passes all five contexts, and the complete bilingual 320/390/768/1440px journey passes again. The contract
+explicitly describes whole-document Markdown normalization after editing. See the [review record](independent-review.md).
+
+The PR keeps this acceptance evidence and the approved bilingual catalog with its pinned source map. Superseded
+design iterations and exploratory research are archived locally rather than included in the final change.

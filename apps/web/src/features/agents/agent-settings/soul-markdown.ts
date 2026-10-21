@@ -1,6 +1,7 @@
 import { type Editor, type JSONContent, Mark, Node } from "@tiptap/core";
 import CodeBlock from "@tiptap/extension-code-block";
 import { TaskItem, TaskList } from "@tiptap/extension-list";
+import Paragraph from "@tiptap/extension-paragraph";
 import { TableKit } from "@tiptap/extension-table";
 import { Markdown } from "@tiptap/markdown";
 import StarterKit from "@tiptap/starter-kit";
@@ -12,7 +13,19 @@ function literalText(node: JSONContent): string {
 
 const promptMarkup =
   /(?:<!--[\s\S]*?(?:-->|$)|<!\[CDATA\[[\s\S]*?(?:\]\]>|$)|<\?[\s\S]*?(?:\?>|$)|<![A-Za-z](?:"[^"]*"|'[^']*'|[^'">])*>|<\/?[A-Za-z][\w:.-]*(?=[\s/>])(?:"[^"]*"|'[^']*'|[^'">])*>)/u;
-const promptMarkupParts = new RegExp(`(${promptMarkup.source})`, "u");
+const literalPromptParts = new RegExp(`(${promptMarkup.source}|[<>&]|[\\p{L}\\p{N}]+(?:_+[\\p{L}\\p{N}]+)+)`, "u");
+
+const SoulParagraph = Paragraph.extend({
+  renderMarkdown(node, helpers, context) {
+    const text = this.parent?.(node, helpers, context) ?? helpers.renderChildren(node.content ?? []);
+    // Plain paragraph text must not become a heading, list, quote, or rule on the next load.
+    return text
+      .replace(/^( {0,3})(#{1,6}|[-+>])(?=[ \t]|$)/gm, "$1\\$2")
+      .replace(/^( {0,3}\d{1,9})([.)])(?=[ \t]|$)/gm, "$1\\$2")
+      .replace(/^( {0,3})(-(?:[ \t]*-){2,})[ \t]*$/gm, "$1\\$2")
+      .replace(/(\n {0,3})(=+)(?=[ \t]*(?:\n|$))/g, "$1\\$2");
+  },
+});
 
 // Prompt markup is data, never executable HTML. Preserve it through unrelated edits.
 const SourceBlock = Node.create({
@@ -118,7 +131,7 @@ const SourceImage = SourceInline.extend({
   parseMarkdown: (token) => ({ type: "soulSourceImage", content: [{ type: "text", text: token.raw ?? "" }] }),
 });
 
-// Used only while serializing keyboard-created tags: retain their literal syntax and existing marks.
+// Suppress HTML/entity and identifier escaping in prompt text while retaining its formatting marks.
 const LiteralPrompt = Mark.create({
   name: "soulLiteralPrompt",
   code: true,
@@ -140,7 +153,7 @@ function literalPromptText(node: JSONContent): JSONContent {
     content: node.content.flatMap((child) => {
       if (child.type !== "text" || child.marks?.some((mark) => mark.type === "code")) return [literalPromptText(child)];
       return (child.text ?? "")
-        .split(promptMarkupParts)
+        .split(literalPromptParts)
         .map((text, index) => ({
           ...child,
           text,
@@ -155,11 +168,13 @@ export function soulEditorExtensions() {
   return [
     StarterKit.configure({
       codeBlock: false,
+      paragraph: false,
       underline: false,
       trailingNode: false,
       link: { openOnClick: false, autolink: false, linkOnPaste: false },
     }),
     SoulCodeBlock,
+    SoulParagraph,
     TaskList,
     TaskItem.configure({ nested: true }),
     TableKit.configure({ table: { resizable: false } }),

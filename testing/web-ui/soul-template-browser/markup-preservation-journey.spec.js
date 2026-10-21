@@ -47,6 +47,16 @@ async function _markupPreservation(page) {
     "[source]: https://example.com/private.png",
     "",
     "Keep &lt;literal&gt; and &amp; unchanged.",
+    "",
+    "If score > 0.8 then stop. Use a < b, Q&A, and R&D.",
+    "",
+    "Call read_file and chat_send with {{user_name}}.",
+    "",
+    "1\\. Not a list item.",
+    "",
+    "\\# Not a heading",
+    "",
+    "\\- not a bullet",
   ].join("\n");
   await editor().evaluate((el, text) => {
     const data = new DataTransfer();
@@ -77,7 +87,9 @@ async function _markupPreservation(page) {
   });
   await page.keyboard.press("Enter");
   await page.keyboard.press("Enter");
-  await page.keyboard.type('Wrap replies in <answer>...</answer>. Use <rule when="a > b">x</rule>.');
+  await page.keyboard.type(
+    'Wrap replies in <answer>...</answer>. Use <rule when="a > b">x</rule>. If score > 0.8, call read_file & chat_send with {{user_name}}.',
+  );
   const typed = await source();
   assert(typed.includes("Wrap replies in <answer>...</answer>."), "Keyboard-created tags remain literal");
   assert(typed.includes("<![CDATA[Keep this instruction]]>"), "Unrelated typing retains XML content");
@@ -88,6 +100,20 @@ async function _markupPreservation(page) {
   assert(typed.includes("read [policy]."), "Shortcut references remain intact");
   assert(typed.includes("  <!-- keep this indented note -->"), "Indented source remains intact");
   assert(typed.includes("Keep &lt;literal&gt; and &amp; unchanged."), "Existing entity literals remain unchanged");
+  assert(
+    typed.includes("If score > 0.8 then stop. Use a < b, Q&A, and R&D."),
+    "Prose comparisons and ampersands stay literal",
+  );
+  assert(
+    typed.includes("Call read_file and chat_send with {{user_name}}."),
+    "Loaded tool names and placeholders gain no escapes",
+  );
+  assert(
+    typed.includes("If score > 0.8, call read_file & chat_send with {{user_name}}."),
+    "Typed prompt text gains no entities or identifier escapes",
+  );
+  for (const literal of ["1\\. Not a list item.", "\\# Not a heading", "\\- not a bullet"])
+    assert(typed.includes(literal), "Literal line starts retain their structural escapes");
   await button("Apply changes").click();
   await page.getByRole("status").filter({ hasText: "Saved." }).waitFor();
   const path = new URL(page.url()).pathname.replace(/\/instructions$/, "/config");
@@ -99,6 +125,14 @@ async function _markupPreservation(page) {
   await page.reload();
   await editor().waitFor();
   assert((await source()) === typed, "Reload preserves the saved prompt exactly");
+  assert(
+    (await editor().textContent()).includes("If score > 0.8 then stop."),
+    "Reload displays comparison symbols literally",
+  );
+  assert(
+    (await editor().getByRole("heading", { name: "Not a heading", exact: true }).count()) === 0,
+    "Escaped heading remains paragraph text",
+  );
   assert((await editor().locator("answer, script, img").count()) === 0, "Prompt markup remains inert");
   await page.screenshot({ path: "testing/web-ui/soul-template-browser/markup-preservation-en-1440.png" });
   await editor().fill("");
@@ -108,6 +142,7 @@ async function _markupPreservation(page) {
     "Loaded XML survives unrelated edits",
     "Keyboard prompt tags remain literal",
     "Entities remain exact",
+    "Comparisons, ampersands, identifiers, and escaped line starts remain stable",
     "Horizontal rules retain editable headings/lists",
     "Real save/reload and confirmed clear",
   ];

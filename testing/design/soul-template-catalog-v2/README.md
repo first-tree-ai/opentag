@@ -35,7 +35,10 @@ Key boundaries:
 
 ## Revision basis
 
-The [Agency Agents audit](../../research/soul-catalog-agency-deep-comparison.md) inspected twelve full definitions and the [Awesome OpenClaw Agents audit](../../research/soul-catalog-openclaw-deep-comparison.md) inspected eight. The source map traces each proposed body to relevant methods and discloses direct, specialist, adjacent, workflow, or coordination matches. This second draft is explicitly based on those later inspections; the earlier draft is retained separately.
+The catalog draws on twelve Agency Agents definitions and eight Awesome OpenClaw Agents definitions. The
+[source map](source-map.md) traces each body to pinned original definitions and discloses direct, specialist, adjacent,
+workflow, or coordination matches. This acceptance fixture retains the approved copy and its source map; exploratory
+audits and superseded design drafts are outside the pull request.
 
 The revision replaces repeated general principles with observable work habits and task-appropriate deliverables. It retains a four-section body, with natural length variation rather than a mandatory word count.
 

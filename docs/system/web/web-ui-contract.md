@@ -139,6 +139,11 @@ returns to the document. Standard keyboard shortcuts remain available. Existing 
 code remain supported without adding more toolbar actions. Prompt markup, comments, and image references remain
 inert editable source text. Opening, focusing, or changing the interface locale must preserve the exact saved
 Markdown; an unrelated edit must not silently remove existing content. The API still accepts the same string.
+An actual content edit serializes the complete document. Markdown spelling and whitespace may then normalize,
+including bullet markers, emphasis delimiters, heading syntax, code fences, list spacing, tables, and bare links.
+This is not a block-preserving source editor. Ordinary comparison symbols and ampersands remain literal prompt text,
+identifiers such as `read_file` and `{{user_name}}` gain no escapes, and literal line-start markers retain the escapes
+needed to prevent them from turning into headings, lists, quotes, or rules on reload.
 This includes block and inline XML, valid source indentation, literal entities, and reference-style images.
 Keyboard-created prompt tags retain their literal syntax. Plain-text paste inside code or prompt-source blocks
 stays literal instead of inserting a separately parsed Markdown document. Ordinary horizontal rules remain

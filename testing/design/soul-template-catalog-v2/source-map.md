@@ -1,6 +1,7 @@
 # Source-to-template design map
 
-These references were inspected in the [Agency Agents comparison](../../research/soul-catalog-agency-deep-comparison.md) and [Awesome OpenClaw Agents comparison](../../research/soul-catalog-openclaw-deep-comparison.md). Every link is pinned to an observed commit.
+These inspected references come from Agency Agents and Awesome OpenClaw Agents. Every link is pinned to an observed
+commit so the approved catalog's provenance can be checked without retaining the exploratory research history.
 
 The role scope, names, icons, summaries, overviews, and bilingual bodies are OpenTag editorial decisions. The bodies are independently written, informed by the referenced working methods. A source match does not establish prompt effectiveness or demand for this catalog.
 

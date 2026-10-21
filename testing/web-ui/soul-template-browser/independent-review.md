@@ -138,3 +138,24 @@ The final independent, read-only correction review reported: **“No actionable 
 It reran 43 retained tests and 15 additional in-memory cases covering the final six findings. No files were modified by
 the reviewer. Earlier broad passes supplied the remaining findings above; this last pass specifically verified their
 latest corrections rather than repeating a new broad design review.
+
+## Pull-request review: literal prose and Markdown structure
+
+A separate pull-request reviewer reproduced three serialization defects at `22c9af4d`:
+comparison symbols and ampersands became HTML entities, identifiers gained underscore escapes, and escaped literal
+line starts became headings, lists, or quotes after reload. Fourteen new regression cases failed before correction.
+
+The serializer now retains literal comparison symbols, ampersands, and intraword identifier underscores while using
+the standard paragraph extension to protect literal block markers. Twenty-four retained cases cover loaded and typed
+prose, repeated reloads, Unicode identifiers, placeholders, formatted text, table cells, and literal heading/list/quote/
+rule markers. The affected editor, catalog, Markdown, and runtime-configuration suites pass all 128 tests.
+
+The updated [source-preservation browser journey](markup-preservation-journey.spec.js) verifies the emitted draft,
+real API persistence, and reload for the reported cases. Existing entities, XML, references, and code remain covered.
+The Web UI contract now explicitly distinguishes exact preservation before editing from whole-document Markdown
+normalization after an actual edit; it does not promise preservation of every original formatting delimiter.
+
+A separate Server coverage run also reported an unhandled `EPIPE` from a real-Git test fixture after all assertions
+passed. The fixture now observes stdin errors, accepts an early closed input pipe only when Git exits successfully
+with a valid CGI response, and propagates other errors. The existing Local Git scenario passes; Cloud execution is
+Linux-only and remains covered by CI. No Server product behavior or schema was changed.

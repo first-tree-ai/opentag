@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(resolve(root, "e2e/package.json"));
 // biome-ignore lint/correctness/noUndeclaredDependencies: Resolved from the E2E workspace, which declares this dependency.
 const { chromium, expect } = require("@playwright/test");

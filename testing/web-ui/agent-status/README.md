@@ -21,8 +21,12 @@ Install dependencies and build the two Web dependencies, then run from the repos
 pnpm install --frozen-lockfile
 pnpm --filter @opentag/shared build
 pnpm --filter @opentag/mcp-presets build
-OPENTAG_STATUS_BASELINE_REF=2d24de50f09da8048b11dd8a499fce209ee2cec6 node testing/web-ui/agent-status/verify.mjs
+OPENTAG_STATUS_BASELINE_REF=2d24de50f09da8048b11dd8a499fce209ee2cec6 node scripts/verify-agent-status-layout.mjs
 ```
+
+The browser verification tool lives in `scripts/`, alongside manually-run tooling already excluded from
+unit patch coverage. Captured screenshots and measurements remain here under `testing/`; the unit coverage
+threshold and production-source coverage rules are unchanged.
 
 The script builds an isolated page containing both the actual changed component and the original component
 from the specified Git revision. Both use the repository's real fonts, theme, Tailwind output, and status

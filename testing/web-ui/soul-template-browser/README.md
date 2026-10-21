@@ -31,7 +31,7 @@ reader's focus indicator; `preview-*.png` show the normal presentation.
 
 ## Browser acceptance
 
-The [Playwright CLI journey](journey.js) runs against a disposable Agent in an isolated local development database.
+The [Playwright CLI journey](journey.spec.js) runs against a disposable Agent in an isolated local development database.
 The application, sign-in, Agent creation, configuration reads, and successful writes use the built product and real local
 APIs. Only the deliberately failing/held save responses and the same-origin axe script are browser fixtures. It does not
 contact public providers or run an Agent model.
@@ -51,7 +51,7 @@ selection survives desktop-to-mobile resizing and returning from detail to the l
 Run the CLI journey from the repository root after opening an empty, disposable Soul in a named browser session:
 
 ```bash
-playwright-cli -s=soul run-code --filename=testing/web-ui/soul-template-browser/journey.js
+playwright-cli -s=soul run-code --filename=testing/web-ui/soul-template-browser/journey.spec.js
 ```
 
 ## Code checks and limits
@@ -102,7 +102,7 @@ and a fresh independent review reporting no actionable issues in the correction.
 [review report, original reproduction, and fix evidence](independent-review.md).
 
 The full eight-case language/width browser journey and axe checks passed again after the save-state correction.
-The [retained save-failure regression](save-failure-regression.js) separately covers failure, clearing with focus retained,
+The [retained save-failure regression](save-failure-regression.spec.js) separately covers failure, clearing with focus retained,
 rewriting and real persistence, confirmed clearing, and explicit cancellation through both entry paths.
 
 ## Direct document editing
@@ -119,7 +119,7 @@ Validation:
 - 84 affected tests pass across the editor, Markdown compatibility, runtime form, catalog, and Kumo contract.
 - `pnpm check`, `pnpm typecheck`, and `pnpm build` pass. Existing lint and bundle-size warnings remain.
 - The full bilingual 320/390/768/1440px browser journey and axe checks pass with the rich editor.
-- [Rich editor journey](rich-editor-journey.js) verifies Markdown paste and rendered structure, three standard
+- [Rich editor journey](rich-editor-journey.spec.js) verifies Markdown paste and rendered structure, three standard
   controls, Alt+F10 entry, Kumo arrow-key navigation, bold, undo, Escape focus, stable save-row height,
   exact source preservation on reload and locale changes, a 390px selection menu, axe, and confirmed clearing.
 - [Saved English document](rich-saved-en-1440.png) and [Chinese mobile selection](rich-selection-zh-390.png)
@@ -147,7 +147,7 @@ were made during this review. Screenshots: [English desktop](detail-hierarchy-en
 Verified on 2026-10-21. Intrinsic-height measurement temporarily expands the editable document, which resets its
 internal scroll offset. The hook now restores the offset after measuring and setting its final height.
 
-The retained [browser regression](typing-scroll-regression.js) failed before the fix: a single typed character
+The retained [browser regression](typing-scroll-regression.spec.js) failed before the fix: a single typed character
 changed scrollTop from 1580 to 0, moving the caret from the visible 676–696px range to 2257–2276px. After the fix,
 scrollTop remains 1580 and the caret stays visible. The same sequence passes at 1440×900, 1440×700, and 390×844,
 including continued typing, committed Chinese text, wrapping, and eight new paragraphs. This uses a disposable
@@ -174,7 +174,7 @@ Validation:
 
 - All 87 affected tests pass, including all 16 catalog bodies, Markdown round trips, and bilingual template-to-editor
   list preservation alongside personal additions.
-- The [retained shared-document journey](shared-document-journey.js) passes for English and Chinese at 1440, 768, 390,
+- The [retained shared-document journey](shared-document-journey.spec.js) passes for English and Chinese at 1440, 768, 390,
   and 320px. It compares actual computed typography between preview and editor, checks visible bullets and Markdown
   structure, and adds a personal heading and list through the editor's keyboard shortcuts. All preview and editor axe
   checks pass. Drafts are discarded on the disposable verification Agent; existing user Agents are untouched.
@@ -223,3 +223,17 @@ gate limitations remain explicit for PR/CI review.
 Manual preview data and the user's active verification Agent were preserved. Browser writes used a separate
 `Soul editor verification (PR)` Agent, and all its journeys finish with an empty saved Soul. Native OS IME composition,
 screen-reader use, and model effectiveness remain outside these automated checks.
+
+## Pull-request CI compatibility
+
+The catalog fixture is resolved relative to the test module rather than the process working directory. The same five
+catalog tests pass both from `apps/web` and through the repository-root coverage project:
+
+```bash
+pnpm --filter @opentag/web exec vitest run src/features/agents/agent-settings/soul-templates.test.tsx
+pnpm exec vitest run --config vitest.coverage.config.ts --project web apps/web/src/features/agents/agent-settings/soul-templates.test.tsx --coverage.enabled=false
+```
+
+Retained Playwright CLI scripts use the `.spec.js` test-file convention. Their content and invocation are unchanged;
+this identifies acceptance tests correctly to the changed-line coverage classifier. Product coverage floors and the
+80% changed-line threshold are unchanged.

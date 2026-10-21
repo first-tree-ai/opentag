@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -12,7 +13,13 @@ afterEach(() => overwriteGetLocale(() => "en"));
 
 describe("Soul template catalog", () => {
   const approved = JSON.parse(
-    readFileSync(resolve("../../testing/design/soul-template-catalog-v2/catalog.json"), "utf8"),
+    readFileSync(
+      resolve(
+        dirname(fileURLToPath(import.meta.url)),
+        "../../../../../../testing/design/soul-template-catalog-v2/catalog.json",
+      ),
+      "utf8",
+    ),
   );
   it.each(["en", "zh"] as const)("ships every approved %s name, summary, overview, and complete body", (locale) => {
     overwriteGetLocale(() => locale);

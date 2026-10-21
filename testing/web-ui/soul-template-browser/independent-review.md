@@ -33,7 +33,7 @@ Reproduction:
 5. Observe that the editor disappears and the empty state returns.
 
 A temporary component regression test independently failed with this sequence and was removed after review.
-The separate [browser reproduction](review-repro.js) used a real local Agent and API reads, with only the deliberately
+The separate [browser reproduction](review-repro.spec.js) used a real local Agent and API reads, with only the deliberately
 failing PATCH mocked as HTTP 503. It observed:
 
 ```json
@@ -75,7 +75,7 @@ failed against the original implementation when the editor disappeared after cle
 76 directly affected tests passed, together with `pnpm check`, the Web typecheck, and the Web production build.
 The tests also verify rewriting, retrying successfully, and restoring the empty state after a later confirmed clear.
 
-The [browser regression](save-failure-regression.js) passed for both entry paths in English desktop and Chinese mobile.
+The [browser regression](save-failure-regression.spec.js) passed for both entry paths in English desktop and Chinese mobile.
 It verifies retained editor identity and focus after a failed first save followed by clearing, real persistence of the
 rewritten draft, confirmed clearing, and explicit Cancel with writing-action focus restoration. Only the deliberate
 save failures are mocked; successful writes and confirmation reads use the real local APIs.
@@ -121,9 +121,9 @@ The independent review passes found seventeen actionable issues, all corrected:
 
 Retained tests cover loaded and typed XML, indentation, ordinary separators and frontmatter, reference images, existing
 entities, and paste within fenced code, prompt-source blocks, and inline code. Real browser regressions additionally
-exercise [source preservation through API save/reload](markup-preservation-journey.js),
-[literal clipboard handling](literal-paste-journey.js), and
-[formatting-menu scrolling](formatting-scroll-journey.js). The menu regression was observed failing before the correction;
+exercise [source preservation through API save/reload](markup-preservation-journey.spec.js),
+[literal clipboard handling](literal-paste-journey.spec.js), and
+[formatting-menu scrolling](formatting-scroll-journey.spec.js). The menu regression was observed failing before the correction;
 afterward a 40px document scroll moves the menu by the same 40px.
 
 Browser validation also caught an integration difference in the updated main typography: preview headings inherited

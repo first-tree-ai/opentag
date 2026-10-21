@@ -299,7 +299,7 @@ export function AgentTasksSection({ agentId }: { agentId: string }) {
           {m.tasks_title()}
         </Text>
         <Link className="text-sm text-kumo-link" {...agentTasksLink(agentId)}>
-          All Tasks
+          {m.tasks_view_all()}
         </Link>
       </div>
       {!unavailable && tasksQuery.isPending ? (

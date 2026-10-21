@@ -68,7 +68,12 @@ expose Kumo-specific types or composition to callers.
 source; `pnpm theme:generate` produces `theme.css`. The repository check rejects stale output. `primitives.css`
 applies the shared Manrope hierarchy, control sizing, flat button fills, and surface radii through adapter classes.
 Primary actions use teal with charcoal labels; links use blue; selected rows use neutral grey with charcoal text.
-Focus uses slate. Success, warning, danger, and info retain independent semantic roles.
+Focus uses a single 2px contour at the existing control boundary, replacing the Kumo ring rather than
+stacking a separated outline on it. Inputs retain visible focus while editing; actions use keyboard
+focus-visible. Filled primary and danger actions use contrasting inset indicators. Invalid controls
+retain danger focus, and forced-colors mode uses the system highlight. The Soul editor follows the
+same boundary without changing its editing or save behavior. Success, warning, danger, and info
+retain independent semantic roles.
 Generic recessed, tint, table-row, disabled, and hover surfaces stay neutral; `--brand-soft` is reserved for explicit
 selected/current states. The button adapter assigns the same reviewed fill to Kumo's gradient endpoints and ring,
 removing the decorative treatment. Tests verify normal text, action fills, and meaningful control boundaries.

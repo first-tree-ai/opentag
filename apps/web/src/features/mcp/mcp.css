@@ -97,7 +97,7 @@
 }
 .mcp-disclosure-trigger:focus-visible {
   outline: 2px solid var(--color-kumo-focus);
-  outline-offset: 2px;
+  outline-offset: -1px;
 }
 .mcp-settings-dialog > [data-ui="dialog-header"] {
   align-items: center;
@@ -329,7 +329,7 @@
 }
 .mcp-settings-row:focus-visible {
   outline: 2px solid var(--color-kumo-focus);
-  outline-offset: 2px;
+  outline-offset: -1px;
 }
 .mcp-settings-row-value {
   display: flex;

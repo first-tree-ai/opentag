@@ -43,6 +43,11 @@ internal-session usage. The breakdown uses 16px medium quantities and 12px secon
 the Tokens column supplies the unit. Cached input is a subset of input and is explained once
 below the table rather than repeated as an exclusion on the row.
 
+Overview keeps Usage and dependency status above Schedules, followed by the Agent-scoped Tasks list.
+Schedules retain their card layout. Tasks preserve server paging and Load more; the full Tasks page
+remains available through View all. Long Agent names, handles, and Computer identities wrap within
+their available space rather than widening the page.
+
 ## Website reference sources
 
 | Source | Responsibility |
@@ -93,7 +98,7 @@ Partner and integration logos retain their identity and proportions. Vendor demo
 | Warning and error | `--warning` / `--destructive` | Orange-red `#e5502e`; retain separate semantic roles and descriptive labels/icons |
 | Footer surface | `--surface-footer` | Cool gray `#eef0f3` |
 | Table / FAQ borders | `--border-table` / `--border-subtle` | `#dce0e6` / `#e5e8ed` |
-| Keyboard focus | `--ring` | `#697586`; shared controls use a 2px outline with 3px offset |
+| Keyboard focus | `--ring` | `#697586`; shared controls use one 2px focus contour at the existing boundary, without a separated outer ring |
 | Comparison header | `--comparison-header` | Slack sidebar purple, `#894b94` |
 | Featured comparison cell | `--comparison-header-featured` | Slack topbar purple, `#6f3a82` |
 | Comparison header text | `--comparison-header-text` | White, `#ffffff` |

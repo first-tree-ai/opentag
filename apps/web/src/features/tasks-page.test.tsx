@@ -946,7 +946,7 @@ describe("Tasks view", () => {
     await waitFor(() => expect(screen.getByRole("heading", { name: "No Tasks yet" })).toBeTruthy());
   });
 
-  it("renders Agent Tasks loading, empty, append success, and append failure states", async () => {
+  it("keeps every loaded Agent Task with paging, empty, loading, and append failure states", async () => {
     let release: (value: { tasks: TaskSummary[]; nextCursor: string | null }) => void = () => undefined;
     vi.spyOn(browserApi, "tasks").mockReturnValue(
       new Promise((resolve) => {
@@ -958,16 +958,25 @@ describe("Tasks view", () => {
     release({ tasks: [], nextCursor: null });
     expect(await screen.findByText("Message this Agent in your chat app to put it to work.")).toBeTruthy();
 
+    const firstPage = Array.from({ length: 6 }, (_, index) => ({
+      ...task,
+      id: `66666666-6666-4666-8666-${String(index).padStart(12, "0")}`,
+      title: `Loaded Task ${index + 1}`,
+    }));
     vi.mocked(browserApi.tasks)
-      .mockResolvedValueOnce({ tasks: [task], nextCursor: "next" })
+      .mockResolvedValueOnce({ tasks: firstPage, nextCursor: "next" })
       .mockResolvedValueOnce({
         tasks: [{ ...task, id: "66666666-6666-4666-8666-666666666666", title: "Next Task" }],
         nextCursor: null,
       });
     view.rerender(<AgentTasksSection agentId="44444444-4444-4444-8444-444444444444" />);
-    expect(await screen.findByRole("link", { name: task.title })).toBeTruthy();
+    expect(await screen.findByRole("link", { name: "Loaded Task 6" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "View all" }).getAttribute("href")).toBe(
+      "/agents/44444444-4444-4444-8444-444444444444/tasks",
+    );
     fireEvent.click(screen.getByRole("button", { name: "Load more" }));
     expect(await screen.findByRole("link", { name: "Next Task" })).toBeTruthy();
+    for (const row of firstPage) expect(screen.getByRole("link", { name: row.title })).toBeTruthy();
 
     vi.mocked(browserApi.tasks)
       .mockResolvedValueOnce({ tasks: [task], nextCursor: "retry" })

@@ -80,22 +80,22 @@ export function AgentObjectHeader({
         </Link>
       ) : null}
       <div className="flex flex-wrap items-center justify-between gap-4">
-        <div className="flex min-w-0 items-center gap-4">
+        <div className="flex min-w-0 flex-1 basis-64 items-start gap-4">
           <AgentAvatar displayName={agent.displayName} avatarPath={agent.avatarPath} className="size-11" />
           <div className="grid min-w-0 gap-1.5">
             <div className="flex flex-wrap items-center gap-3">
-              <Text as="h1" size="lg" variant="heading">
+              <Text as="h1" DANGEROUS_className="wrap-anywhere" size="lg" variant="heading">
                 {agent.displayName}
               </Text>
               <AgentAvailabilityAction agent={agent} />
             </div>
             <p className="flex flex-wrap items-center gap-3 text-sm text-kumo-subtle">
-              {handle ? <span>@{handle}</span> : null}
+              {handle ? <span className="min-w-0 wrap-anywhere">@{handle}</span> : null}
               {showCreator ? <span>{m.agents_created_by({ name: agent.createdBy.displayName })}</span> : null}
             </p>
           </div>
         </div>
-        <div className="flex flex-wrap items-center justify-end gap-3">
+        <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-3">
           {!backToSettings ? (
             <Link
               className={buttonClassName({ variant: "outline" })}
@@ -202,7 +202,7 @@ function AgentStatusRow({
       </div>
       {identity || status.action ? (
         <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-1">
-          {identity ? <span className="min-w-0 flex-1 truncate text-sm text-kumo-subtle">{identity}</span> : null}
+          {identity ? <span className="min-w-0 flex-1 wrap-anywhere text-sm text-kumo-subtle">{identity}</span> : null}
           {status.action ? (
             <Link
               className="ml-auto inline-flex w-fit shrink-0 items-center gap-1 text-sm text-kumo-link"

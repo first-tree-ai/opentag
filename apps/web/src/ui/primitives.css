@@ -91,11 +91,6 @@
 .ui-dialog {
   border-radius: var(--ui-dialog-radius);
 }
-.ui-button:focus-visible,
-.ui-control:focus-visible {
-  outline: 2px solid var(--color-kumo-focus);
-  outline-offset: 3px;
-}
 @media (max-width: 640px) {
   .ui-text[data-text-size]:is(h1),
   .ui-text[data-text-size][data-heading-size="page"] {
@@ -146,6 +141,34 @@
 }
 .ui-control[data-kumo-component="Select"]:hover:not(:disabled) {
   background: var(--surface-hover);
+}
+
+/* Replace Kumo's ring at the control contour; an offset outline would draw a second frame. */
+.ui-control:focus,
+.ui-button:focus-visible {
+  outline: 2px solid var(--color-kumo-focus);
+  outline-offset: -1px;
+  box-shadow: none;
+}
+.ui-control:is([aria-invalid="true"], [data-control-error="true"]):focus {
+  outline-color: var(--color-kumo-danger);
+}
+.ui-button--primary:focus-visible {
+  outline-color: var(--on-primary);
+  outline-offset: -2px;
+}
+.ui-button--danger:focus-visible {
+  outline-color: var(--inverse);
+  /* Keep the light indicator inside the danger surface so it remains visible on white pages. */
+  outline-offset: -3px;
+}
+@media (forced-colors: active) {
+  .ui-control:focus,
+  .ui-control:is([aria-invalid="true"], [data-control-error="true"]):focus,
+  .ui-button:focus-visible {
+    outline-color: Highlight;
+    outline-offset: -1px;
+  }
 }
 .ui-status > span {
   border: 1px solid var(--border);

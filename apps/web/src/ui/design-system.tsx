@@ -190,6 +190,7 @@ export const Input: typeof KumoInput = forwardRef<HTMLInputElement, KumoInputPro
       ref={ref}
       size={size}
       data-control-size={size}
+      data-control-error={Boolean(props.error) || props.variant === "error" || undefined}
       className={
         typeof className === "function"
           ? (state) => classes("ui-control ring-kumo-interact", className(state))
@@ -202,7 +203,14 @@ export const InputArea: typeof KumoInputArea = forwardRef<HTMLTextAreaElement, K
   { className, ...props },
   ref,
 ) {
-  return <KumoInputArea {...props} ref={ref} className={classes("ui-control ring-kumo-interact", className)} />;
+  return (
+    <KumoInputArea
+      {...props}
+      ref={ref}
+      data-control-error={Boolean(props.error) || props.variant === "error" || undefined}
+      className={classes("ui-control ring-kumo-interact", className)}
+    />
+  );
 });
 function ProductSelect<T, Multiple extends boolean | undefined = false>(
   props: Parameters<typeof KumoSelect<T, Multiple>>[0],
@@ -338,6 +346,7 @@ export function buttonClassName({
     buttonVariants({ variant: kumoButtonVariant(variant), size: size === "compact" ? "sm" : "base" }),
     "ui-button justify-center shadow-none",
     variant === "primary" && "ui-button--primary !text-(--on-primary)",
+    variant === "danger" && "ui-button--danger",
     (variant === "secondary" || variant === "outline") && "ui-button--secondary",
     size === "compact" && "ui-button--compact",
     variant === "primary" &&

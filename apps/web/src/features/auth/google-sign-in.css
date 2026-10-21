@@ -36,7 +36,7 @@
 
 .auth-google-link:focus-visible {
   outline: 2px solid var(--color-kumo-focus);
-  outline-offset: 3px;
+  outline-offset: -1px;
 }
 
 .auth-google-link[aria-disabled="true"] {

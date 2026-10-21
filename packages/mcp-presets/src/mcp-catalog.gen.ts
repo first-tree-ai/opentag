@@ -1175,7 +1175,7 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       sideEffects: "write",
       dataAccess: "private",
       notes: {
-        en: "Needs a Zoom General app that the Server operator sets up.",
+        en: "Zoom does not support automatic client registration; the Server operator must set up a Zoom General app.",
         zh: "Zoom 不支持自动注册客户端，需要 Server 运维人员预先配置 Zoom General app。",
       },
     },

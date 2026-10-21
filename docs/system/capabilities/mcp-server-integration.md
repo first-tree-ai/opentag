@@ -551,7 +551,9 @@ also derives the variable names; the Canva client above is a row of the same tab
 Operator setup, for every brand: register `<OPENTAG_PUBLIC_URL>/api/v1/mcp-servers/oauth/callback` as
 the redirect URL. Create a HubSpot **MCP Auth App** (Development > MCP Auth Apps), an Asana app of
 type **MCP app**, and a Zoom **General app** with user-level OAuth. HubSpot assigns scopes at
-installation and advertises none in its metadata.
+installation and advertises none in its metadata. Zoom's challenge carries no `scope`, so the flow
+requests every `scopes_supported` entry its protected resource metadata advertises; a Zoom app grants
+only the scopes listed on its **Scopes** page, so add the full advertised list there.
 
 Each client follows the same rules as the Google and Canva clients: it is resolved from configuration
 and never stored, and it is offered only when the Server's effective origin is one of the provider's

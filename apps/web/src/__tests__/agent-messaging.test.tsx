@@ -53,7 +53,11 @@ describe("OpenTag Web App Shell", () => {
       expect(within(row).getByText(state.label)).toBeTruthy();
       if (state.detail) expect(within(row).getByText(state.detail)).toBeTruthy();
       if (state.exit) {
-        expect(within(row).getByRole("link", { name: state.exit }).getAttribute("href")).toBe(state.href);
+        expect(
+          within(row)
+            .getByRole("link", { name: (name) => name.endsWith(state.exit ?? "") })
+            .getAttribute("href"),
+        ).toBe(state.href);
       } else {
         expect(within(row).queryByRole("link")).toBeNull();
       }
@@ -333,7 +337,7 @@ describe("OpenTag Web App Shell", () => {
 
     releaseComputerRead();
     expect(await screen.findByText("Offline")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Restore connection" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: /Restore connection$/ })).toBeTruthy();
   });
 
   it("invalidates a stale Agent detail after a background not-found response", async () => {
@@ -503,7 +507,7 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
     expect(await screen.findByText("Permissions required")).toBeTruthy();
     expect(screen.queryByText(/Online/)).toBeNull();
-    expect(screen.getByRole("button", { name: "Update permissions" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Update permissions$/ })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Change bot" }));
     expect(await screen.findByRole("dialog", { name: "Change Lark bot" })).toBeTruthy();
     const request = vi

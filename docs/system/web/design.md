@@ -46,8 +46,18 @@ below the table rather than repeated as an exclusion on the row.
 Overview keeps Usage and dependency status above Schedules, followed by the Agent-scoped Tasks list.
 The detail header presents the Agent identity without an availability or activity badge beside the name;
 dependency status and lifecycle notices remain in the page content.
+The Overview status card keeps its healthy two-section, two-line composition in every dependency state.
+Computer summarizes the connection and the selected runtime Provider, with an existing runtime status replacing
+Online when attention is needed. The identity line always includes the Agent's selected Provider after the
+Computer name and platform; this is not the Computer's list of installed Providers. At narrow card widths the
+platform is omitted and long identities are truncated. Full identities remain accessible through the healthy
+row's details popover or the actionable row's recovery destination. Existing state values and localized status
+wording remain unchanged. Recovery uses the status row itself, with an arrow beside its status, rather than an
+additional action or explanation line. Each row retains two line boxes even when an identity is absent. Details
+and recovery never expand the card or move its divider; there is no larger fixed-height shell or reserved third line.
+A runtime failure remains actionable when the Agent is paused.
 Schedules retain their card layout. Tasks preserve server paging and Load more; the full Tasks page
-remains available through View all. Long Agent names, handles, and Computer identities wrap within
+remains available through View all. Long Agent names, handles, and Computer identities outside the compact Overview status card wrap within
 their available space rather than widening the page.
 
 Soul keeps the page subtitle and Browse templates action. Saved content uses the same white document frame

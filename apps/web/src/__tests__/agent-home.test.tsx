@@ -25,7 +25,7 @@ describe("OpenTag Web App Shell", () => {
     const status = screen.getByRole("region", { name: "Agent status" });
     expect(within(status).getByText("Computer")).toBeTruthy();
     expect(within(status).getByText("Messaging")).toBeTruthy();
-    expect(within(status).getByText("Ada's Mac · macOS")).toBeTruthy();
+    expect(within(status).getByText("Ada's Mac")).toBeTruthy();
     expect(within(status).getByText("Lark · @reviewer")).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Lark · @reviewer" })).toBeNull();
     const header = screen.getByRole("heading", { name: "Reviewer" }).closest("header");
@@ -55,7 +55,7 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
     const status = screen.getByRole("region", { name: "Agent status" });
-    const setupLinks = within(status).getAllByRole("link", { name: "Continue setup" });
+    const setupLinks = within(status).getAllByRole("link", { name: /Continue setup$/ });
     expect(setupLinks).toHaveLength(1);
     expect(setupLinks[0]?.getAttribute("href")).toBe(`/agents/setup?agentId=${agentId}`);
 
@@ -72,7 +72,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}`);
     render(<App />);
 
-    expect((await screen.findByRole("link", { name: "Continue setup" })).getAttribute("href")).toBe(
+    expect((await screen.findByRole("link", { name: /Continue setup$/ })).getAttribute("href")).toBe(
       `/agents/setup?agentId=${agentId}`,
     );
   });
@@ -82,7 +82,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}`);
     render(<App />);
 
-    expect((await screen.findByRole("link", { name: "Continue setup" })).getAttribute("href")).toBe(
+    expect((await screen.findByRole("link", { name: /Continue setup$/ })).getAttribute("href")).toBe(
       `/agents/setup?agentId=${agentId}`,
     );
   });
@@ -92,10 +92,10 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}`);
     render(<App />);
 
-    expect((await screen.findByRole("link", { name: "Restore connection" })).getAttribute("href")).toBe(
+    expect((await screen.findByRole("link", { name: /Restore connection$/ })).getAttribute("href")).toBe(
       `/agents/computers?computerId=${computerId}&fromAgent=${agentId}`,
     );
-    expect(screen.queryByRole("link", { name: "Continue setup" })).toBeNull();
+    expect(screen.queryByRole("link", { name: /Continue setup$/ })).toBeNull();
   });
 
   it("keeps Messaging reauthorization in Settings", async () => {
@@ -103,10 +103,10 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}`);
     render(<App />);
 
-    expect((await screen.findByRole("link", { name: "Update permissions" })).getAttribute("href")).toBe(
+    expect((await screen.findByRole("link", { name: /Update permissions$/ })).getAttribute("href")).toBe(
       `/agents/${agentId}/settings/messaging`,
     );
-    expect(screen.queryByRole("link", { name: "Continue setup" })).toBeNull();
+    expect(screen.queryByRole("link", { name: /Continue setup$/ })).toBeNull();
   });
 
   it("shows another Admin's creation identity as audit information, not management ownership", async () => {
@@ -234,7 +234,7 @@ describe("OpenTag Web App Shell", () => {
 
     const status = await screen.findByRole("region", { name: "Agent status" });
     expect(within(status).getByText("Setup in progress")).toBeTruthy();
-    const setupLink = within(status).getByRole("link", { name: "Continue setup" });
+    const setupLink = within(status).getByRole("link", { name: /Continue setup$/ });
     expect(setupLink.closest('[data-ui="agent-status-message-channel"]')).toBeTruthy();
     fireEvent.click(setupLink);
     expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();

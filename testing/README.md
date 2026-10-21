@@ -48,6 +48,7 @@ contents, and machine-specific operational logs outside the repository.
 
 Screenshots and browser checks for Web UI changes, one directory per change:
 
+- [Agent status layout](web-ui/agent-status/README.md)
 - [computer-recovery](web-ui/computer-recovery/README.md)
 - [computer-status-alignment](web-ui/computer-status-alignment/README.md)
 - [connector-polish](web-ui/connector-polish/README.md)

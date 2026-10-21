@@ -494,7 +494,7 @@ export function agentRuntimeIssue(agent: AgentDetailView): (AgentDependencyStatu
     unavailable: () => m.computer_runtime_unavailable_help(context),
   };
   return {
-    action: setupOrMaintenanceAction(agent, "runtime_unavailable"),
+    action: continueSetupAction(agent.id),
     label: labels[runtime.status](),
     guidance: localComputer ? guidance[runtime.status]() : undefined,
     tone: "warning",

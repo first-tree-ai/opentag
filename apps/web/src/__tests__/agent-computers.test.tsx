@@ -27,7 +27,7 @@ describe("OpenTag Web App Shell", () => {
     installApi({ bound: true, computerStatus: () => "offline" });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
     render(<App />);
-    fireEvent.click(await screen.findByRole("link", { name: "Restore connection" }));
+    fireEvent.click(await screen.findByRole("link", { name: /Restore connection$/ }));
     expect(await screen.findByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Back to Reviewer settings" }).getAttribute("href")).toBe(
       `/agents/${agentId}/settings/computer`,
@@ -70,7 +70,7 @@ describe("OpenTag Web App Shell", () => {
       .querySelector('[data-ui="agent-status-computer"]') as HTMLElement;
     expect(computerRow).toBeTruthy();
     expect(within(computerRow).getByText("Offline")).toBeTruthy();
-    expect(within(computerRow).getByRole("link", { name: "Restore connection" })).toBeTruthy();
+    expect(within(computerRow).getByRole("link", { name: /Restore connection$/ })).toBeTruthy();
   });
 
   it("keeps Agent cards useful when Computer status cannot be confirmed", async () => {
@@ -124,13 +124,15 @@ describe("OpenTag Web App Shell", () => {
       .getByRole("region", { name: "Agent status" })
       .querySelector('[data-ui="agent-status-message-channel"]') as HTMLElement;
     expect(within(messagingRow).queryByText("Messages cannot be delivered to this Agent right now.")).toBeNull();
-    expect(within(messagingRow).getByRole("link", { name: "Continue setup" }).getAttribute("href")).toBe(
-      `/agents/setup?agentId=${agentId}`,
-    );
+    expect(
+      within(messagingRow)
+        .getByRole("link", { name: /Continue setup$/ })
+        .getAttribute("href"),
+    ).toBe(`/agents/setup?agentId=${agentId}`);
     expect(screen.getByRole("heading", { name: "Usage" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Tasks" })).toBeTruthy();
     expect(screen.queryByText("Handoff")).toBeNull();
-    expect(screen.queryByText("Ada's Mac")).toBeNull();
+    expect(screen.getByText("Ada's Mac")).toBeTruthy();
     expect(screen.queryByText("Runtime")).toBeNull();
   });
 
@@ -146,9 +148,11 @@ describe("OpenTag Web App Shell", () => {
     // Unreadable evidence says so; it must not be reported as "no channel connected".
     expect(within(messagingRow).getByText("Status unavailable")).toBeTruthy();
     expect(within(messagingRow).queryByText("openTag could not read this Agent's messaging connection.")).toBeNull();
-    expect(within(messagingRow).getByRole("link", { name: "View channel" }).getAttribute("href")).toBe(
-      `/agents/${agentId}/settings/messaging`,
-    );
+    expect(
+      within(messagingRow)
+        .getByRole("link", { name: /View channel$/ })
+        .getAttribute("href"),
+    ).toBe(`/agents/${agentId}/settings/messaging`);
     expect(screen.queryByText("Not connected")).toBeNull();
     expect(screen.queryByRole("link", { name: "Connect messaging" })).toBeNull();
     expect(screen.queryByText("Handoff")).toBeNull();
@@ -188,7 +192,7 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
     const computerRow = screen
       .getByRole("region", { name: "Agent status" })
-      .querySelector('[data-ui="agent-status-runtime"]') as HTMLElement;
+      .querySelector('[data-ui="agent-status-computer"]') as HTMLElement;
     expect(within(computerRow).queryByText("Online")).toBeNull();
     expect(within(computerRow).getByText("Codex status unavailable")).toBeTruthy();
     expect(within(computerRow).queryByRole("link")).toBeNull();
@@ -271,17 +275,15 @@ describe("OpenTag Web App Shell", () => {
       const rendered = render(<App />);
 
       expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
-      const runtimeRow = "computerProviderReadiness" in state.options;
       const row = screen
         .getByRole("region", { name: "Agent status" })
-        .querySelector(
-          runtimeRow ? '[data-ui="agent-status-runtime"]' : '[data-ui="agent-status-computer"]',
-        ) as HTMLElement;
+        .querySelector('[data-ui="agent-status-computer"]') as HTMLElement;
       expect(row).toBeTruthy();
+      expect(within(screen.getByRole("region", { name: "Agent status" })).getAllByRole("listitem")).toHaveLength(2);
       expect(within(row).getByText(state.label)).toBeTruthy();
       // The unbound row names no machine, because there is none to name.
-      if (!runtimeRow && !("agentUnbound" in state.options)) {
-        expect(within(row).getByText("Ada's Mac · macOS")).toBeTruthy();
+      if (!("agentUnbound" in state.options)) {
+        expect(within(row).getByText("Ada's Mac")).toBeTruthy();
       }
       expectRecoveryLink(row, state.exit, state.href);
       rendered.unmount();
@@ -289,21 +291,33 @@ describe("OpenTag Web App Shell", () => {
   });
 
   it.each([
-    { status: "install" as const, instruction: "Install Codex on Ada's Mac." },
-    { status: "sign-in" as const, instruction: "Sign in to Codex on Ada's Mac." },
-    { status: "unavailable" as const, instruction: "Open Codex on Ada's Mac and check for errors." },
-  ])("explains $status on the named computer, including for a paused Agent", async ({ status, instruction }) => {
-    installApi({
-      bound: true,
-      initialStatus: "suspended",
-      computerProviderReadiness: [{ provider: "codex", status, observedAt: "2026-08-20T00:00:00.000Z" }],
-    });
-    window.history.replaceState({}, "", `/agents/${agentId}`);
-    render(<App />);
-    expect(await screen.findByText(instruction)).toBeTruthy();
-    const row = screen.getByText(instruction).closest("li") as HTMLElement;
-    expect(within(row).queryByRole("link", { name: /computer/i })).toBeNull();
-  });
+    { status: "install" as const, label: "Codex not installed" },
+    { status: "sign-in" as const, label: "Codex sign-in required" },
+    { status: "unavailable" as const, label: "Codex unavailable" },
+  ])(
+    "keeps $status actionable without adding a runtime row, including for a paused Agent",
+    async ({ status, label }) => {
+      installApi({
+        bound: true,
+        initialStatus: "suspended",
+        computerProviderReadiness: [{ provider: "codex", status, observedAt: "2026-08-20T00:00:00.000Z" }],
+      });
+      window.history.replaceState({}, "", `/agents/${agentId}`);
+      render(<App />);
+      expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+      const card = screen.getByRole("region", { name: "Agent status" });
+      expect(within(card).getAllByRole("listitem")).toHaveLength(2);
+      expect(card.querySelector('[data-ui="agent-status-runtime"]')).toBeNull();
+      const row = card.querySelector('[data-ui="agent-status-computer"]') as HTMLElement;
+      expect(within(row).getByText(label)).toBeTruthy();
+      expect(
+        within(row)
+          .getByRole("link", { name: /Continue setup$/ })
+          .getAttribute("href"),
+      ).toBe(`/agents/setup?agentId=${agentId}`);
+      expect(within(row).getByText("Codex")).toBeTruthy();
+    },
+  );
 
   it.each(["online", "offline"] as const)(
     "hides cached runtime failures while computer status is %s",
@@ -317,12 +331,34 @@ describe("OpenTag Web App Shell", () => {
       window.history.replaceState({}, "", `/agents/${agentId}`);
       render(<App />);
       expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
-      expect(
-        screen.getByRole("region", { name: "Agent status" }).querySelector('[data-ui="agent-status-runtime"]'),
-      ).toBeNull();
+      const card = screen.getByRole("region", { name: "Agent status" });
+      expect(within(card).getAllByRole("listitem")).toHaveLength(2);
+      expect(within(card).queryByText("Codex sign-in required")).toBeNull();
+      expect(within(card).getByText(status === "offline" ? "Offline" : "Status unavailable")).toBeTruthy();
       expect(screen.queryByText("Sign in to Codex on Ada's Mac.")).toBeNull();
     },
   );
+
+  it.each([
+    { provider: "codex" as const, name: "Codex" },
+    { provider: "claude-code" as const, name: "Claude Code" },
+    { provider: "pi" as const, name: "Pi" },
+  ])("always identifies the selected $name Provider and makes full identity available", async ({ provider, name }) => {
+    installApi({
+      bound: true,
+      runtimeProvider: provider,
+      computerProviderReadiness: [{ provider, status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}`);
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+    const card = screen.getByRole("region", { name: "Agent status" });
+    expect(card.querySelector('[data-ui="agent-status-provider"]')?.textContent).toBe(name);
+    const details = within(card).getByRole("button", { name: "Computer: Online" });
+    expect(details.getAttribute("aria-description")).toBe(`Ada's Mac · macOS · ${name}`);
+    fireEvent.click(details);
+    expect(await screen.findByText(`Ada's Mac · macOS · ${name}`)).toBeTruthy();
+  });
 
   it("does not let a paused Agent make the Computer row contradict itself", async () => {
     /*
@@ -341,7 +377,7 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
     const row = screen
       .getByRole("region", { name: "Agent status" })
-      .querySelector('[data-ui="agent-status-runtime"]') as HTMLElement;
+      .querySelector('[data-ui="agent-status-computer"]') as HTMLElement;
     expect(within(row).getByText("Checking Codex")).toBeTruthy();
     expect(within(row).queryByText("openTag is still checking Codex on this Computer.")).toBeNull();
     expect(within(row).queryByRole("link")).toBeNull();
@@ -349,6 +385,11 @@ describe("OpenTag Web App Shell", () => {
 });
 
 function expectRecoveryLink(row: HTMLElement, label: string | undefined, href: string | undefined) {
-  if (label) expect(within(row).getByRole("link", { name: label }).getAttribute("href")).toBe(href);
+  if (label)
+    expect(
+      within(row)
+        .getByRole("link", { name: (name) => name.endsWith(label) })
+        .getAttribute("href"),
+    ).toBe(href);
   else expect(within(row).queryByRole("link")).toBeNull();
 }

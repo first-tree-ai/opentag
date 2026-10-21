@@ -2,6 +2,7 @@ import type { AgentAdminConfig, CloudModelOptions } from "@opentag/shared/browse
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { replaceSoul } from "../../../__tests__/soul-editor.js";
 import { ApiError, browserApi } from "../../../api.js";
 import { queryKeys } from "../../../query/keys.js";
 import { RuntimeConfigurationForm } from "./runtime-configuration.js";
@@ -81,9 +82,10 @@ describe("Cloud model settings", () => {
         <RuntimeConfigurationForm computerKind="cloud" initialConfig={config} save={save} section="instructions" />
       </QueryClientProvider>,
     );
-    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Be concise." } });
+    fireEvent.click(screen.getByRole("button", { name: "write your own" }));
+    replaceSoul(screen.getByRole("textbox", { name: "Soul" }), "Be concise.");
     fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
-    expect(await screen.findByText("Changes applied.")).toBeTruthy();
+    expect(await screen.findByText("Saved. Takes effect with the next response.")).toBeTruthy();
     expect(read).not.toHaveBeenCalled();
     expect(save).toHaveBeenCalledWith({ expectedRevision: 4, runtimeConfig: { instructions: "Be concise." } });
   });

@@ -8,7 +8,7 @@ import {
   type UpdateAgentRuntimeConfig,
 } from "@opentag/shared/browser";
 import { useQuery } from "@tanstack/react-query";
-import { type FormEvent, useRef, useState } from "react";
+import { type FormEvent, useState } from "react";
 import { ApiError, browserApi } from "../../../api.js";
 import * as m from "../../../paraglide/messages.js";
 import { queryKeys } from "../../../query/keys.js";
@@ -20,9 +20,7 @@ import { PermissionsField } from "./permissions-field.js";
 import { type CloudModelState, RuntimeModelField, runtimeModelField } from "./runtime-model-field.js";
 import { RuntimeTestAction } from "./runtime-test-action.js";
 import { AgentSettingsPageHeader, SettingsSaveActions, UnsavedChangesGuard } from "./settings-layout.js";
-import { SoulEditor } from "./soul-editor.js";
-import { SoulFooter } from "./soul-footer.js";
-import { SoulPresetSelector } from "./soul-preset-selector.js";
+import { SoulConfigurationSection } from "./soul-configuration-section.js";
 
 const CUSTOM_MODEL_OPTION = "__custom_model__";
 const PROVIDER_DEFAULT_OPTION = "__provider_default__";
@@ -85,9 +83,7 @@ function RuntimeConfigurationEditor({
     initialConfig.runtimeConfig.reasoningEffort ?? PROVIDER_DEFAULT_OPTION,
   );
   const [instructionsDraft, setInstructionsDraft] = useState(initialConfig.runtimeConfig.instructions);
-  const [showSoulExample, setShowSoulExample] = useState(true);
   const [permissionsDraft, setPermissionsDraft] = useState(initialConfig.runtimeConfig.permissions);
-  const soulFooterRef = useRef<HTMLDivElement>(null);
   const [message, setMessage] = useState<{
     kind: "error" | "success";
     section: "runtime" | "instructions";
@@ -156,9 +152,9 @@ function RuntimeConfigurationEditor({
     }
   }
 
-  async function saveInstructions(event: FormEvent<HTMLFormElement>) {
+  async function saveInstructions(event: FormEvent<HTMLFormElement>): Promise<boolean> {
     event.preventDefault();
-    if (saving) return;
+    if (saving) return false;
     setSaving("instructions");
     setMessage(undefined);
     try {
@@ -169,8 +165,10 @@ function RuntimeConfigurationEditor({
       setConfig(updated);
       setInstructionsDraft(updated.runtimeConfig.instructions);
       setMessage({ kind: "success", section: "instructions", text: m.agent_settings_soul_updated() });
+      return true;
     } catch {
       setMessage({ kind: "error", section: "instructions", text: m.agent_settings_soul_apply_failed() });
+      return false;
     } finally {
       setSaving(undefined);
     }
@@ -296,65 +294,23 @@ function RuntimeConfigurationEditor({
       ) : null}
 
       {section !== "execution" ? (
-        <section
-          aria-labelledby="agent-instructions-heading"
-          className={section === "instructions" ? "grid gap-6" : "grid gap-4"}
-        >
-          {section === "instructions" ? (
-            <AgentSettingsPageHeader
-              description={m.agent_settings_instructions_description({ agentName: config.displayName })}
-              id="agent-instructions-heading"
-              title={m.agent_settings_instructions_title()}
-            />
-          ) : (
-            <header className="grid gap-2">
-              <Text as="h3" id="agent-instructions-heading" variant="heading">
-                {m.agent_settings_instructions_title()}
-              </Text>
-              <p className="text-sm text-kumo-subtle">
-                {m.agent_settings_instructions_description({ agentName: config.displayName })}
-              </p>
-            </header>
-          )}
-          <form className="grid gap-4" onSubmit={saveInstructions}>
-            <SoulEditor
-              disabled={Boolean(saving)}
-              exampleEnabled={showSoulExample}
-              footerRef={soulFooterRef}
-              id={fieldId("instructions")}
-              value={instructionsDraft}
-              onValueChange={(value) => {
-                setInstructionsDraft(value);
-                setShowSoulExample(true);
-                setMessage(undefined);
-              }}
-            />
-            <div className="grid gap-4" ref={soulFooterRef}>
-              <SoulPresetSelector
-                disabled={Boolean(saving)}
-                id={fieldId("instructions")}
-                key={config.runtimeConfig.revision}
-                value={instructionsDraft}
-                onValueChange={(value) => {
-                  setInstructionsDraft(value);
-                  setShowSoulExample(value !== "");
-                  setMessage(undefined);
-                }}
-              />
-              <SoulFooter
-                busy={Boolean(saving)}
-                dirty={instructionsDirty}
-                empty={instructionsDraft === ""}
-                feedback={message?.section === "instructions" ? message : undefined}
-                onDiscard={() => {
-                  setInstructionsDraft(config.runtimeConfig.instructions);
-                  setShowSoulExample(true);
-                  setMessage(undefined);
-                }}
-              />
-            </div>
-          </form>
-        </section>
+        <SoulConfigurationSection
+          busy={Boolean(saving)}
+          dirty={instructionsDirty}
+          feedback={message?.section === "instructions" ? message : undefined}
+          id={fieldId("instructions")}
+          standalone={section === "instructions"}
+          value={instructionsDraft}
+          onSubmit={saveInstructions}
+          onValueChange={(value) => {
+            setInstructionsDraft(value);
+            setMessage(undefined);
+          }}
+          onDiscard={() => {
+            setInstructionsDraft(config.runtimeConfig.instructions);
+            setMessage(undefined);
+          }}
+        />
       ) : null}
     </div>
   );

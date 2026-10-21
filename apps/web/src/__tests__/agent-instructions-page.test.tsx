@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../api.js";
 import { App } from "../app.js";
+import { readSoul, replaceSoul } from "./soul-editor.js";
 import { agentId, installApi, resetWebAppState } from "./support/app-fixtures.js";
 
 describe("Agent Soul page", () => {
@@ -29,19 +30,20 @@ describe("Agent Soul page", () => {
     expect(window.location.pathname).toBe(`/agents/${agentId}/instructions`);
     expect(within(navigation).getByRole("link", { name: "Soul" }).getAttribute("aria-current")).toBe("page");
     expect(screen.queryByRole("heading", { name: "Model" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "write your own" }));
     const editor = screen.getByRole("textbox", { name: "Soul" });
-    fireEvent.change(editor, { target: { value: "Be concise." } });
+    replaceSoul(editor, "Be concise.");
     fireEvent.click(within(navigation).getByRole("link", { name: "Overview" }));
     expect(await screen.findByRole("dialog", { name: "Discard your changes?" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
-    expect((editor as HTMLTextAreaElement).value).toBe("Be concise.");
+    expect(readSoul(editor)).toBe("Be concise.");
     fireEvent.click(within(navigation).getByRole("link", { name: "Overview" }));
     const dialog = await screen.findByRole("dialog", { name: "Discard your changes?" });
     expect(within(dialog).getByText("Your edits will be lost if you leave.")).toBeTruthy();
     expect(within(dialog).getByRole("button", { name: "Discard and leave" })).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "Keep editing" }));
     fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
-    expect(await screen.findByText("Changes applied.")).toBeTruthy();
+    expect(await screen.findByText("Saved. Takes effect with the next response.")).toBeTruthy();
     expect(save).toHaveBeenCalledWith(agentId, {
       expectedRevision: config.revision,
       runtimeConfig: { instructions: "Be concise." },

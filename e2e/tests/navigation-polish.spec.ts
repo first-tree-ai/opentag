@@ -172,21 +172,23 @@ test("Instructions saves on its own page and preserves the section when switchin
   await expect(navigation.getByRole("link", { name: "Connectors", exact: true })).toBeVisible();
   await navigation.getByRole("link", { name: "Soul", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/agents/${firstId}/instructions$`));
+  await page.getByRole("button", { name: "write your own", exact: true }).click();
   const editor = page.getByRole("textbox", { name: "Soul", exact: true });
+  const instructions = page.locator('input[name="instructions"]');
   await editor.fill("Be concise and explain the evidence.");
   await navigation.getByRole("link", { name: "Overview", exact: true }).click();
   await page.getByRole("button", { name: "Keep editing", exact: true }).click();
-  await expect(editor).toHaveValue("Be concise and explain the evidence.");
+  await expect(instructions).toHaveValue("Be concise and explain the evidence.");
   await page.getByRole("button", { name: "Apply changes", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText("Changes applied.");
+  await expect(page.getByRole("status")).toContainText("Saved. Takes effect with the next response.");
   await page.goto(`/agents/${firstId}/settings/instructions`, { waitUntil: "networkidle" });
   await expect(page).toHaveURL(new RegExp(`/agents/${firstId}/instructions$`));
-  await expect(editor).toHaveValue("Be concise and explain the evidence.");
+  await expect(instructions).toHaveValue("Be concise and explain the evidence.");
   await expectAccessible(page);
   await page.getByRole("button", { name: /Switch Agent/ }).click();
   await page.getByRole("menuitem", { name: "Instructions destination", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/agents/${secondId}/instructions$`));
-  await expect(editor).toHaveValue("");
+  await expect(page.getByRole("heading", { name: "No Soul yet", exact: true })).toBeVisible();
 });
 
 for (const width of [320, 390]) {
@@ -211,7 +213,7 @@ for (const width of [320, 390]) {
 
       const agentId = await createAgent(page, "Mobile navigation");
       await page.goto(`/agents/${agentId}/instructions`, { waitUntil: "networkidle" });
-      await expect(page.getByRole("textbox", { name: "Soul", exact: true })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "No Soul yet", exact: true })).toBeVisible();
       await expectNoPageOverflow(page);
       await expect(page.getByRole("button", { name: "Open Agent navigation", exact: true })).toHaveCount(0);
       const overview = page.getByRole("link", { name: "Overview", exact: true });

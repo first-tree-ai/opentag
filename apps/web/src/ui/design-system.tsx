@@ -24,6 +24,7 @@ import {
   Switch as KumoSwitch,
   Tabs as KumoTabs,
   Text as KumoText,
+  Toolbar as KumoToolbar,
   Link,
   LinkButton,
   Loader,
@@ -47,9 +48,12 @@ import {
   CaretDown,
   CaretRight,
   CaretUp,
+  ChartBar,
   ChartLine,
   ChatCircle,
   Check,
+  Code,
+  Compass,
   Copy,
   Cpu,
   DotsThreeVertical,
@@ -63,13 +67,20 @@ import {
   Info,
   Laptop,
   List,
+  ListBullets,
+  ListChecks,
   MagnifyingGlass,
+  Palette,
+  PenNib,
   type Icon as PhosphorIcon,
   PlugsConnected,
   Plus,
   Shield,
   SquaresFour,
+  TextB,
+  TextH,
   TreeStructure,
+  TrendUp,
   UploadSimple,
   User,
   Wrench,
@@ -139,6 +150,30 @@ export const Text = ((props: Parameters<typeof KumoText>[0]) => (
     DANGEROUS_className={classes("ui-text", props.DANGEROUS_className)}
   />
 )) as typeof KumoText;
+
+export const Toolbar: typeof KumoToolbar = Object.assign(
+  forwardRef<HTMLDivElement, ComponentPropsWithoutRef<typeof KumoToolbar>>(function Toolbar(props, ref) {
+    return <KumoToolbar {...props} ref={ref} />;
+  }),
+  {
+    Link: KumoToolbar.Link,
+    Input: KumoToolbar.Input,
+    InputGroup: KumoToolbar.InputGroup,
+    Button: forwardRef<HTMLButtonElement, ComponentPropsWithoutRef<typeof KumoToolbar.Button>>(function ToolbarButton(
+      { className, shape, ...props },
+      ref,
+    ) {
+      return (
+        <KumoToolbar.Button
+          {...props}
+          ref={ref}
+          shape={shape}
+          className={classes("ui-button", shape && shape !== "base" && "ui-button--icon", className)}
+        />
+      );
+    }),
+  },
+);
 
 export const Input: typeof KumoInput = forwardRef<HTMLInputElement, KumoInputProps>(function Input(
   { className, size = "base", ...props },
@@ -528,6 +563,9 @@ export type IconName =
   | "arrow-left"
   | "arrow-right"
   | "check"
+  | "code"
+  | "compass"
+  | "chart-bar"
   | "chevron-down"
   | "chevron-right"
   | "chevron-up"
@@ -547,13 +585,21 @@ export type IconName =
   | "model"
   | "more-vertical"
   | "plus"
+  | "palette"
+  | "pen-nib"
+  | "search"
   | "settings"
   | "shield"
   | "skills"
   | "soul"
   | "sign-out"
   | "tree"
+  | "trend-up"
   | "tasks"
+  | "text-bold"
+  | "text-heading"
+  | "list-bullets"
+  | "list-checks"
   | "upload"
   | "user"
   | "usage";
@@ -562,6 +608,9 @@ const icons: Record<IconName, PhosphorIcon> = {
   "arrow-left": ArrowLeft,
   "arrow-right": ArrowRight,
   check: Check,
+  code: Code,
+  compass: Compass,
+  "chart-bar": ChartBar,
   "chevron-down": CaretDown,
   "chevron-right": CaretRight,
   "chevron-up": CaretUp,
@@ -581,6 +630,9 @@ const icons: Record<IconName, PhosphorIcon> = {
   model: Cpu,
   "more-vertical": DotsThreeVertical,
   plus: Plus,
+  palette: Palette,
+  "pen-nib": PenNib,
+  search: MagnifyingGlass,
   settings: Gear,
   shield: Shield,
   skills: Shield,
@@ -588,6 +640,11 @@ const icons: Record<IconName, PhosphorIcon> = {
   "sign-out": ArrowRight,
   tree: TreeStructure,
   tasks: List,
+  "trend-up": TrendUp,
+  "text-bold": TextB,
+  "text-heading": TextH,
+  "list-bullets": ListBullets,
+  "list-checks": ListChecks,
   upload: UploadSimple,
   user: User,
   usage: ChartLine,

@@ -44,6 +44,12 @@ Object.defineProperty(window, "matchMedia", {
 // an unhandled error on each route change. Scroll position is not something these tests assert on.
 Object.defineProperty(window, "scrollTo", { configurable: true, value: () => undefined });
 
+// ProseMirror measures DOM Ranges when keeping the selection visible; jsdom has no layout engine.
+if (!Range.prototype.getClientRects) {
+  Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
+  Range.prototype.getBoundingClientRect = () => new DOMRect();
+}
+
 if (!Element.prototype.getAnimations) {
   Object.defineProperty(Element.prototype, "getAnimations", {
     configurable: true,

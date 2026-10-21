@@ -29,6 +29,7 @@ export function SettingsSaveActions({
   saveLabel = m.agent_settings_save_changes_action(),
   savingLabel = m.agent_settings_saving_action(),
   statusLabel = m.agent_settings_unsaved_changes(),
+  showActions = true,
   discardLabel = m.agent_settings_discard_action(),
 }: {
   busy: boolean;
@@ -36,20 +37,23 @@ export function SettingsSaveActions({
   saveDisabled?: boolean;
   saveLabel?: string;
   savingLabel?: string;
-  statusLabel?: string | null;
+  statusLabel?: ReactNode;
+  showActions?: boolean;
   discardLabel?: string;
 }) {
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-kumo-line pt-3">
+    <div className="flex min-h-[57px] flex-wrap items-center justify-between gap-3 border-t border-kumo-line pt-3 md:min-h-[53px]">
       {statusLabel ? <span className="text-sm text-kumo-subtle">{statusLabel}</span> : null}
-      <div className="ml-auto flex flex-wrap justify-end gap-2">
-        <Button disabled={busy} type="button" variant="ghost" onClick={onDiscard}>
-          {discardLabel}
-        </Button>
-        <Button disabled={busy || saveDisabled} type="submit">
-          {busy ? savingLabel : saveLabel}
-        </Button>
-      </div>
+      {showActions ? (
+        <div className="ml-auto flex flex-wrap justify-end gap-2">
+          <Button disabled={busy} type="button" variant="ghost" onClick={onDiscard}>
+            {discardLabel}
+          </Button>
+          <Button disabled={busy || saveDisabled} type="submit">
+            {busy ? savingLabel : saveLabel}
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 }

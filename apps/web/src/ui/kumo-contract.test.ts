@@ -159,6 +159,9 @@ describe("Kumo integration contract", () => {
       "features/mcp/mcp-add-dialog.tsx -> ./mcp.css",
       // Skill reader owns document typography and independent file/body scrolling.
       "features/skills/skill-details-dialog.tsx -> ./skill-reader.css",
+      // Soul shares document typography between previews and editing; scrolling stays in the owning surface.
+      "features/agents/agent-settings/soul-editor.tsx -> ./soul-document.css",
+      "features/agents/agent-settings/soul-template-browser.tsx -> ./soul-document.css",
       // Skills owns list/card geometry, description clamping, and bounded dialog scrolling.
       // Controls, typography values, and palette continue to use the shared Kumo adapter.
       "features/skills/skills-page.tsx -> ./skills.css",

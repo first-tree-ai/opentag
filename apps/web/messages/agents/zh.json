@@ -129,6 +129,7 @@
   "agents_status_computer_runtime_sign_in_required": "需要登录 {providerName}",
   "agents_status_computer_runtime_unavailable": "{providerName} 不可用",
   "agents_status_details_label": "{name}：{status}",
+  "agents_status_identity_label": "{status}。{identity}",
   "agents_status_message_channel": "消息渠道",
   "agents_status_region": "Agent 状态",
   "agents_status_temporarily_unavailable": "状态暂时不可用",

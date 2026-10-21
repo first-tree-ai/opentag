@@ -9,6 +9,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -21,6 +35,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Checking Codex",
+        "width": 107,
+        "contentWidth": 107,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -33,6 +61,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex not installed",
+        "width": 127,
+        "contentWidth": 127,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -45,6 +87,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex sign-in required",
+        "width": 149,
+        "contentWidth": 149,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -57,6 +113,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex unavailable",
+        "width": 120,
+        "contentWidth": 120,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -69,6 +139,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex status unavailable",
+        "width": 165,
+        "contentWidth": 165,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -81,6 +165,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Offline",
+        "width": 44,
+        "contentWidth": 44,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -93,6 +191,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Status unavailable",
+        "width": 121,
+        "contentWidth": 121,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -105,6 +217,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "No computer assigned",
+        "width": 147,
+        "contentWidth": 147,
+        "insideRow": true
+      },
+      {
+        "text": "Not connected",
+        "width": 98,
+        "contentWidth": 98,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -117,6 +243,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Not connected",
+        "width": 98,
+        "contentWidth": 98,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -129,6 +269,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Setup in progress",
+        "width": 116,
+        "contentWidth": 116,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -141,6 +295,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Permissions need updating",
+        "width": 178,
+        "contentWidth": 178,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -153,6 +321,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Connection failed",
+        "width": 117,
+        "contentWidth": 117,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -165,6 +347,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Disconnected",
+        "width": 92,
+        "contentWidth": 92,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -177,6 +373,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Preparing CLI",
+        "width": 87,
+        "contentWidth": 87,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -189,6 +399,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Checking credentials",
+        "width": 139,
+        "contentWidth": 139,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -201,6 +425,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Cannot receive messages",
+        "width": 170,
+        "contentWidth": 170,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -213,6 +451,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Cannot receive messages",
+        "width": 170,
+        "contentWidth": 170,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -225,6 +477,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Status unavailable",
+        "width": 121,
+        "contentWidth": 121,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -237,6 +503,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex unavailable",
+        "width": 120,
+        "contentWidth": 120,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -249,30 +529,280 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
     "width": 320,
     "locale": "en",
-    "scenario": "claude-code",
+    "scenario": "claude-code-checking",
     "height": 167,
     "baselineHeight": 167,
     "divider": 84,
     "rows": 2,
     "provider": 83.4375,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Checking Claude Code",
+        "width": 150,
+        "contentWidth": 150,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
     "width": 320,
     "locale": "en",
-    "scenario": "pi",
+    "scenario": "claude-code-install",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Claude Code not installed",
+        "width": 169,
+        "contentWidth": 169,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 320,
+    "locale": "en",
+    "scenario": "claude-code-sign-in",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Claude Code sign-in required",
+        "width": 191,
+        "contentWidth": 191,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 320,
+    "locale": "en",
+    "scenario": "claude-code-unavailable",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Claude Code unavailable",
+        "width": 162,
+        "contentWidth": 162,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 320,
+    "locale": "en",
+    "scenario": "claude-code-null",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Claude Code status unavailable",
+        "width": 207,
+        "contentWidth": 207,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 320,
+    "locale": "en",
+    "scenario": "pi-checking",
     "height": 167,
     "baselineHeight": 167,
     "divider": 84,
     "rows": 2,
     "provider": 11.734375,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Checking Pi",
+        "width": 77,
+        "contentWidth": 77,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 320,
+    "locale": "en",
+    "scenario": "pi-install",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Pi not installed",
+        "width": 97,
+        "contentWidth": 97,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 320,
+    "locale": "en",
+    "scenario": "pi-sign-in",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Pi sign-in required",
+        "width": 119,
+        "contentWidth": 119,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 320,
+    "locale": "en",
+    "scenario": "pi-unavailable",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Pi unavailable",
+        "width": 89,
+        "contentWidth": 89,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 320,
+    "locale": "en",
+    "scenario": "pi-null",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Pi status unavailable",
+        "width": 135,
+        "contentWidth": 135,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -285,6 +815,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -297,6 +841,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "正在检查 Codex",
+        "width": 101,
+        "contentWidth": 101,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -309,6 +867,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "未安装 Codex",
+        "width": 87,
+        "contentWidth": 87,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -321,6 +893,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "需要登录 Codex",
+        "width": 101,
+        "contentWidth": 101,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -333,6 +919,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex 不可用",
+        "width": 87,
+        "contentWidth": 87,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -345,6 +945,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "暂时无法确认 Codex 的状态",
+        "width": 174,
+        "contentWidth": 174,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -357,6 +971,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "离线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -369,6 +997,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "状态暂时不可用",
+        "width": 98,
+        "contentWidth": 98,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -381,6 +1023,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "未指定电脑",
+        "width": 70,
+        "contentWidth": 70,
+        "insideRow": true
+      },
+      {
+        "text": "未连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -393,6 +1049,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "未连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -405,6 +1075,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "正在设置",
+        "width": 56,
+        "contentWidth": 56,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -417,6 +1101,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "权限需要更新",
+        "width": 84,
+        "contentWidth": 84,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -429,6 +1127,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "连接失败",
+        "width": 56,
+        "contentWidth": 56,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -441,6 +1153,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "已断开连接",
+        "width": 70,
+        "contentWidth": 70,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -453,6 +1179,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "正在准备消息 CLI",
+        "width": 108,
+        "contentWidth": 108,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -465,6 +1205,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "正在检查消息凭证",
+        "width": 112,
+        "contentWidth": 112,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -477,6 +1231,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "无法接收消息",
+        "width": 84,
+        "contentWidth": 84,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -489,6 +1257,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "无法接收消息",
+        "width": 84,
+        "contentWidth": 84,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -501,6 +1283,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "状态暂时不可用",
+        "width": 98,
+        "contentWidth": 98,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -513,6 +1309,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex 不可用",
+        "width": 87,
+        "contentWidth": 87,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -525,30 +1335,280 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
     "width": 320,
     "locale": "zh",
-    "scenario": "claude-code",
+    "scenario": "claude-code-checking",
     "height": 167,
     "baselineHeight": 167,
     "divider": 84,
     "rows": 2,
     "provider": 83.4375,
     "overflow": false,
+    "labels": [
+      {
+        "text": "正在检查 Claude Code",
+        "width": 143,
+        "contentWidth": 143,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
     "width": 320,
     "locale": "zh",
-    "scenario": "pi",
+    "scenario": "claude-code-install",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "未安装 Claude Code",
+        "width": 129,
+        "contentWidth": 129,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 320,
+    "locale": "zh",
+    "scenario": "claude-code-sign-in",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "需要登录 Claude Code",
+        "width": 143,
+        "contentWidth": 143,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 320,
+    "locale": "zh",
+    "scenario": "claude-code-unavailable",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Claude Code 不可用",
+        "width": 129,
+        "contentWidth": 129,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 320,
+    "locale": "zh",
+    "scenario": "claude-code-null",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "暂时无法确认 Claude Code 的状态",
+        "width": 216,
+        "contentWidth": 216,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 320,
+    "locale": "zh",
+    "scenario": "pi-checking",
     "height": 167,
     "baselineHeight": 167,
     "divider": 84,
     "rows": 2,
     "provider": 11.734375,
     "overflow": false,
+    "labels": [
+      {
+        "text": "正在检查 Pi",
+        "width": 71,
+        "contentWidth": 71,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 320,
+    "locale": "zh",
+    "scenario": "pi-install",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "未安装 Pi",
+        "width": 57,
+        "contentWidth": 57,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 320,
+    "locale": "zh",
+    "scenario": "pi-sign-in",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "需要登录 Pi",
+        "width": 71,
+        "contentWidth": 71,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 320,
+    "locale": "zh",
+    "scenario": "pi-unavailable",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Pi 不可用",
+        "width": 57,
+        "contentWidth": 57,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 320,
+    "locale": "zh",
+    "scenario": "pi-null",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "暂时无法确认 Pi 的状态",
+        "width": 144,
+        "contentWidth": 144,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -561,6 +1621,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -573,6 +1647,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Checking Codex",
+        "width": 107,
+        "contentWidth": 107,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -585,6 +1673,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex not installed",
+        "width": 127,
+        "contentWidth": 127,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -597,6 +1699,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex sign-in required",
+        "width": 149,
+        "contentWidth": 149,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -609,6 +1725,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex unavailable",
+        "width": 120,
+        "contentWidth": 120,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -621,6 +1751,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex status unavailable",
+        "width": 165,
+        "contentWidth": 165,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -633,6 +1777,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Offline",
+        "width": 44,
+        "contentWidth": 44,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -645,6 +1803,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Status unavailable",
+        "width": 121,
+        "contentWidth": 121,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -657,6 +1829,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "No computer assigned",
+        "width": 147,
+        "contentWidth": 147,
+        "insideRow": true
+      },
+      {
+        "text": "Not connected",
+        "width": 98,
+        "contentWidth": 98,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -669,6 +1855,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Not connected",
+        "width": 98,
+        "contentWidth": 98,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -681,6 +1881,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Setup in progress",
+        "width": 116,
+        "contentWidth": 116,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -693,6 +1907,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Permissions need updating",
+        "width": 178,
+        "contentWidth": 178,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -705,6 +1933,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Connection failed",
+        "width": 117,
+        "contentWidth": 117,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -717,6 +1959,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Disconnected",
+        "width": 92,
+        "contentWidth": 92,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -729,6 +1985,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Preparing CLI",
+        "width": 87,
+        "contentWidth": 87,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -741,6 +2011,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Checking credentials",
+        "width": 139,
+        "contentWidth": 139,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -753,6 +2037,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Cannot receive messages",
+        "width": 170,
+        "contentWidth": 170,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -765,6 +2063,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Cannot receive messages",
+        "width": 170,
+        "contentWidth": 170,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -777,6 +2089,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Status unavailable",
+        "width": 121,
+        "contentWidth": 121,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -789,6 +2115,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex unavailable",
+        "width": 120,
+        "contentWidth": 120,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -801,30 +2141,280 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
     "width": 390,
     "locale": "en",
-    "scenario": "claude-code",
+    "scenario": "claude-code-checking",
     "height": 167,
     "baselineHeight": 167,
     "divider": 84,
     "rows": 2,
     "provider": 83.4375,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Checking Claude Code",
+        "width": 150,
+        "contentWidth": 150,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
     "width": 390,
     "locale": "en",
-    "scenario": "pi",
+    "scenario": "claude-code-install",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Claude Code not installed",
+        "width": 169,
+        "contentWidth": 169,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 390,
+    "locale": "en",
+    "scenario": "claude-code-sign-in",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Claude Code sign-in required",
+        "width": 191,
+        "contentWidth": 191,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 390,
+    "locale": "en",
+    "scenario": "claude-code-unavailable",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Claude Code unavailable",
+        "width": 162,
+        "contentWidth": 162,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 390,
+    "locale": "en",
+    "scenario": "claude-code-null",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Claude Code status unavailable",
+        "width": 207,
+        "contentWidth": 207,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 390,
+    "locale": "en",
+    "scenario": "pi-checking",
     "height": 167,
     "baselineHeight": 167,
     "divider": 84,
     "rows": 2,
     "provider": 11.734375,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Checking Pi",
+        "width": 77,
+        "contentWidth": 77,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 390,
+    "locale": "en",
+    "scenario": "pi-install",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Pi not installed",
+        "width": 97,
+        "contentWidth": 97,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 390,
+    "locale": "en",
+    "scenario": "pi-sign-in",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Pi sign-in required",
+        "width": 119,
+        "contentWidth": 119,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 390,
+    "locale": "en",
+    "scenario": "pi-unavailable",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Pi unavailable",
+        "width": 89,
+        "contentWidth": 89,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 390,
+    "locale": "en",
+    "scenario": "pi-null",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Pi status unavailable",
+        "width": 135,
+        "contentWidth": 135,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -837,6 +2427,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -849,6 +2453,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "正在检查 Codex",
+        "width": 101,
+        "contentWidth": 101,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -861,6 +2479,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "未安装 Codex",
+        "width": 87,
+        "contentWidth": 87,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -873,6 +2505,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "需要登录 Codex",
+        "width": 101,
+        "contentWidth": 101,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -885,6 +2531,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex 不可用",
+        "width": 87,
+        "contentWidth": 87,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -897,6 +2557,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "暂时无法确认 Codex 的状态",
+        "width": 174,
+        "contentWidth": 174,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -909,6 +2583,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "离线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -921,6 +2609,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "状态暂时不可用",
+        "width": 98,
+        "contentWidth": 98,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -933,6 +2635,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "未指定电脑",
+        "width": 70,
+        "contentWidth": 70,
+        "insideRow": true
+      },
+      {
+        "text": "未连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -945,6 +2661,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "未连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -957,6 +2687,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "正在设置",
+        "width": 56,
+        "contentWidth": 56,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -969,6 +2713,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "权限需要更新",
+        "width": 84,
+        "contentWidth": 84,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -981,6 +2739,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "连接失败",
+        "width": 56,
+        "contentWidth": 56,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -993,6 +2765,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "已断开连接",
+        "width": 70,
+        "contentWidth": 70,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1005,6 +2791,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "正在准备消息 CLI",
+        "width": 108,
+        "contentWidth": 108,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1017,6 +2817,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "正在检查消息凭证",
+        "width": 112,
+        "contentWidth": 112,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1029,6 +2843,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "无法接收消息",
+        "width": 84,
+        "contentWidth": 84,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1041,6 +2869,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "无法接收消息",
+        "width": 84,
+        "contentWidth": 84,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1053,6 +2895,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "状态暂时不可用",
+        "width": 98,
+        "contentWidth": 98,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1065,6 +2921,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex 不可用",
+        "width": 87,
+        "contentWidth": 87,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1077,30 +2947,280 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
     "width": 390,
     "locale": "zh",
-    "scenario": "claude-code",
+    "scenario": "claude-code-checking",
     "height": 167,
     "baselineHeight": 167,
     "divider": 84,
     "rows": 2,
     "provider": 83.4375,
     "overflow": false,
+    "labels": [
+      {
+        "text": "正在检查 Claude Code",
+        "width": 143,
+        "contentWidth": 143,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
     "width": 390,
     "locale": "zh",
-    "scenario": "pi",
+    "scenario": "claude-code-install",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "未安装 Claude Code",
+        "width": 129,
+        "contentWidth": 129,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 390,
+    "locale": "zh",
+    "scenario": "claude-code-sign-in",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "需要登录 Claude Code",
+        "width": 143,
+        "contentWidth": 143,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 390,
+    "locale": "zh",
+    "scenario": "claude-code-unavailable",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Claude Code 不可用",
+        "width": 129,
+        "contentWidth": 129,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 390,
+    "locale": "zh",
+    "scenario": "claude-code-null",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "暂时无法确认 Claude Code 的状态",
+        "width": 216,
+        "contentWidth": 216,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 390,
+    "locale": "zh",
+    "scenario": "pi-checking",
     "height": 167,
     "baselineHeight": 167,
     "divider": 84,
     "rows": 2,
     "provider": 11.734375,
     "overflow": false,
+    "labels": [
+      {
+        "text": "正在检查 Pi",
+        "width": 71,
+        "contentWidth": 71,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 390,
+    "locale": "zh",
+    "scenario": "pi-install",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "未安装 Pi",
+        "width": 57,
+        "contentWidth": 57,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 390,
+    "locale": "zh",
+    "scenario": "pi-sign-in",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "需要登录 Pi",
+        "width": 71,
+        "contentWidth": 71,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 390,
+    "locale": "zh",
+    "scenario": "pi-unavailable",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Pi 不可用",
+        "width": 57,
+        "contentWidth": 57,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 390,
+    "locale": "zh",
+    "scenario": "pi-null",
+    "height": 167,
+    "baselineHeight": 167,
+    "divider": 84,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "暂时无法确认 Pi 的状态",
+        "width": 144,
+        "contentWidth": 144,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1113,6 +3233,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1125,6 +3259,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Checking Codex",
+        "width": 107,
+        "contentWidth": 107,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1137,6 +3285,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex not installed",
+        "width": 127,
+        "contentWidth": 127,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1149,6 +3311,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex sign-in required",
+        "width": 149,
+        "contentWidth": 149,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1161,6 +3337,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex unavailable",
+        "width": 120,
+        "contentWidth": 120,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1173,6 +3363,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex status unavailable",
+        "width": 165,
+        "contentWidth": 165,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1185,6 +3389,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Offline",
+        "width": 44,
+        "contentWidth": 44,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1197,6 +3415,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Status unavailable",
+        "width": 121,
+        "contentWidth": 121,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1209,6 +3441,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "No computer assigned",
+        "width": 147,
+        "contentWidth": 147,
+        "insideRow": true
+      },
+      {
+        "text": "Not connected",
+        "width": 98,
+        "contentWidth": 98,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1221,6 +3467,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Not connected",
+        "width": 98,
+        "contentWidth": 98,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1233,6 +3493,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Setup in progress",
+        "width": 116,
+        "contentWidth": 116,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1245,6 +3519,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Permissions need updating",
+        "width": 178,
+        "contentWidth": 178,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1257,6 +3545,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Connection failed",
+        "width": 117,
+        "contentWidth": 117,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1269,6 +3571,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Disconnected",
+        "width": 92,
+        "contentWidth": 92,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1281,6 +3597,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Preparing CLI",
+        "width": 87,
+        "contentWidth": 87,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1293,6 +3623,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Checking credentials",
+        "width": 139,
+        "contentWidth": 139,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1305,6 +3649,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Cannot receive messages",
+        "width": 170,
+        "contentWidth": 170,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1317,6 +3675,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Cannot receive messages",
+        "width": 170,
+        "contentWidth": 170,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1329,6 +3701,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Status unavailable",
+        "width": 121,
+        "contentWidth": 121,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1341,6 +3727,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex unavailable",
+        "width": 120,
+        "contentWidth": 120,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1353,30 +3753,280 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
     "width": 768,
     "locale": "en",
-    "scenario": "claude-code",
+    "scenario": "claude-code-checking",
     "height": 175,
     "baselineHeight": 175,
     "divider": 88,
     "rows": 2,
     "provider": 83.4375,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Checking Claude Code",
+        "width": 150,
+        "contentWidth": 150,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
     "width": 768,
     "locale": "en",
-    "scenario": "pi",
+    "scenario": "claude-code-install",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Claude Code not installed",
+        "width": 169,
+        "contentWidth": 169,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 768,
+    "locale": "en",
+    "scenario": "claude-code-sign-in",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Claude Code sign-in required",
+        "width": 191,
+        "contentWidth": 191,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 768,
+    "locale": "en",
+    "scenario": "claude-code-unavailable",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Claude Code unavailable",
+        "width": 162,
+        "contentWidth": 162,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 768,
+    "locale": "en",
+    "scenario": "claude-code-null",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Claude Code status unavailable",
+        "width": 207,
+        "contentWidth": 207,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 768,
+    "locale": "en",
+    "scenario": "pi-checking",
     "height": 175,
     "baselineHeight": 175,
     "divider": 88,
     "rows": 2,
     "provider": 11.734375,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Checking Pi",
+        "width": 77,
+        "contentWidth": 77,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 768,
+    "locale": "en",
+    "scenario": "pi-install",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Pi not installed",
+        "width": 97,
+        "contentWidth": 97,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 768,
+    "locale": "en",
+    "scenario": "pi-sign-in",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Pi sign-in required",
+        "width": 119,
+        "contentWidth": 119,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 768,
+    "locale": "en",
+    "scenario": "pi-unavailable",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Pi unavailable",
+        "width": 89,
+        "contentWidth": 89,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 768,
+    "locale": "en",
+    "scenario": "pi-null",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Pi status unavailable",
+        "width": 135,
+        "contentWidth": 135,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1389,6 +4039,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1401,6 +4065,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "正在检查 Codex",
+        "width": 101,
+        "contentWidth": 101,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1413,6 +4091,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "未安装 Codex",
+        "width": 87,
+        "contentWidth": 87,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1425,6 +4117,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "需要登录 Codex",
+        "width": 101,
+        "contentWidth": 101,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1437,6 +4143,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex 不可用",
+        "width": 87,
+        "contentWidth": 87,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1449,6 +4169,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "暂时无法确认 Codex 的状态",
+        "width": 174,
+        "contentWidth": 174,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1461,6 +4195,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "离线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1473,6 +4221,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "状态暂时不可用",
+        "width": 98,
+        "contentWidth": 98,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1485,6 +4247,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "未指定电脑",
+        "width": 70,
+        "contentWidth": 70,
+        "insideRow": true
+      },
+      {
+        "text": "未连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1497,6 +4273,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "未连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1509,6 +4299,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "正在设置",
+        "width": 56,
+        "contentWidth": 56,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1521,6 +4325,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "权限需要更新",
+        "width": 84,
+        "contentWidth": 84,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1533,6 +4351,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "连接失败",
+        "width": 56,
+        "contentWidth": 56,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1545,6 +4377,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "已断开连接",
+        "width": 70,
+        "contentWidth": 70,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1557,6 +4403,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "正在准备消息 CLI",
+        "width": 108,
+        "contentWidth": 108,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1569,6 +4429,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "正在检查消息凭证",
+        "width": 112,
+        "contentWidth": 112,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1581,6 +4455,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "无法接收消息",
+        "width": 84,
+        "contentWidth": 84,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1593,6 +4481,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "无法接收消息",
+        "width": 84,
+        "contentWidth": 84,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1605,6 +4507,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "状态暂时不可用",
+        "width": 98,
+        "contentWidth": 98,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1617,6 +4533,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex 不可用",
+        "width": 87,
+        "contentWidth": 87,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1629,30 +4559,280 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
     "width": 768,
     "locale": "zh",
-    "scenario": "claude-code",
+    "scenario": "claude-code-checking",
     "height": 175,
     "baselineHeight": 175,
     "divider": 88,
     "rows": 2,
     "provider": 83.4375,
     "overflow": false,
+    "labels": [
+      {
+        "text": "正在检查 Claude Code",
+        "width": 143,
+        "contentWidth": 143,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
     "width": 768,
     "locale": "zh",
-    "scenario": "pi",
+    "scenario": "claude-code-install",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "未安装 Claude Code",
+        "width": 129,
+        "contentWidth": 129,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 768,
+    "locale": "zh",
+    "scenario": "claude-code-sign-in",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "需要登录 Claude Code",
+        "width": 143,
+        "contentWidth": 143,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 768,
+    "locale": "zh",
+    "scenario": "claude-code-unavailable",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Claude Code 不可用",
+        "width": 129,
+        "contentWidth": 129,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 768,
+    "locale": "zh",
+    "scenario": "claude-code-null",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "暂时无法确认 Claude Code 的状态",
+        "width": 216,
+        "contentWidth": 216,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 768,
+    "locale": "zh",
+    "scenario": "pi-checking",
     "height": 175,
     "baselineHeight": 175,
     "divider": 88,
     "rows": 2,
     "provider": 11.734375,
     "overflow": false,
+    "labels": [
+      {
+        "text": "正在检查 Pi",
+        "width": 71,
+        "contentWidth": 71,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 768,
+    "locale": "zh",
+    "scenario": "pi-install",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "未安装 Pi",
+        "width": 57,
+        "contentWidth": 57,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 768,
+    "locale": "zh",
+    "scenario": "pi-sign-in",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "需要登录 Pi",
+        "width": 71,
+        "contentWidth": 71,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 768,
+    "locale": "zh",
+    "scenario": "pi-unavailable",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Pi 不可用",
+        "width": 57,
+        "contentWidth": 57,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 768,
+    "locale": "zh",
+    "scenario": "pi-null",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "暂时无法确认 Pi 的状态",
+        "width": 144,
+        "contentWidth": 144,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1665,6 +4845,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1677,6 +4871,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Checking Codex",
+        "width": 107,
+        "contentWidth": 107,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1689,6 +4897,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex not installed",
+        "width": 127,
+        "contentWidth": 127,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1701,6 +4923,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex sign-in required",
+        "width": 149,
+        "contentWidth": 149,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1713,6 +4949,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex unavailable",
+        "width": 120,
+        "contentWidth": 120,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1725,6 +4975,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex status unavailable",
+        "width": 165,
+        "contentWidth": 165,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1737,6 +5001,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Offline",
+        "width": 44,
+        "contentWidth": 44,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1749,6 +5027,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Status unavailable",
+        "width": 121,
+        "contentWidth": 121,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1761,6 +5053,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "No computer assigned",
+        "width": 147,
+        "contentWidth": 147,
+        "insideRow": true
+      },
+      {
+        "text": "Not connected",
+        "width": 98,
+        "contentWidth": 98,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1773,6 +5079,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Not connected",
+        "width": 98,
+        "contentWidth": 98,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1785,6 +5105,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Setup in progress",
+        "width": 116,
+        "contentWidth": 116,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1797,6 +5131,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Permissions need updating",
+        "width": 178,
+        "contentWidth": 178,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1809,6 +5157,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Connection failed",
+        "width": 117,
+        "contentWidth": 117,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1821,6 +5183,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Disconnected",
+        "width": 92,
+        "contentWidth": 92,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1833,6 +5209,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Preparing CLI",
+        "width": 87,
+        "contentWidth": 87,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1845,6 +5235,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Checking credentials",
+        "width": 139,
+        "contentWidth": 139,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1857,6 +5261,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Cannot receive messages",
+        "width": 170,
+        "contentWidth": 170,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1869,6 +5287,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Cannot receive messages",
+        "width": 170,
+        "contentWidth": 170,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1881,6 +5313,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Status unavailable",
+        "width": 121,
+        "contentWidth": 121,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1893,6 +5339,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex unavailable",
+        "width": 120,
+        "contentWidth": 120,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1905,30 +5365,280 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Online",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
     "width": 1440,
     "locale": "en",
-    "scenario": "claude-code",
+    "scenario": "claude-code-checking",
     "height": 175,
     "baselineHeight": 175,
     "divider": 88,
     "rows": 2,
     "provider": 83.4375,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Checking Claude Code",
+        "width": 150,
+        "contentWidth": 150,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
     "width": 1440,
     "locale": "en",
-    "scenario": "pi",
+    "scenario": "claude-code-install",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Claude Code not installed",
+        "width": 169,
+        "contentWidth": 169,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 1440,
+    "locale": "en",
+    "scenario": "claude-code-sign-in",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Claude Code sign-in required",
+        "width": 191,
+        "contentWidth": 191,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 1440,
+    "locale": "en",
+    "scenario": "claude-code-unavailable",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Claude Code unavailable",
+        "width": 162,
+        "contentWidth": 162,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 1440,
+    "locale": "en",
+    "scenario": "claude-code-null",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Claude Code status unavailable",
+        "width": 207,
+        "contentWidth": 207,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 1440,
+    "locale": "en",
+    "scenario": "pi-checking",
     "height": 175,
     "baselineHeight": 175,
     "divider": 88,
     "rows": 2,
     "provider": 11.734375,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Checking Pi",
+        "width": 77,
+        "contentWidth": 77,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 1440,
+    "locale": "en",
+    "scenario": "pi-install",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Pi not installed",
+        "width": 97,
+        "contentWidth": 97,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 1440,
+    "locale": "en",
+    "scenario": "pi-sign-in",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Pi sign-in required",
+        "width": 119,
+        "contentWidth": 119,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 1440,
+    "locale": "en",
+    "scenario": "pi-unavailable",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Pi unavailable",
+        "width": 89,
+        "contentWidth": 89,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 1440,
+    "locale": "en",
+    "scenario": "pi-null",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Pi status unavailable",
+        "width": 135,
+        "contentWidth": 135,
+        "insideRow": true
+      },
+      {
+        "text": "Connected",
+        "width": 74,
+        "contentWidth": 74,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1941,6 +5651,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1953,6 +5677,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "正在检查 Codex",
+        "width": 101,
+        "contentWidth": 101,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1965,6 +5703,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "未安装 Codex",
+        "width": 87,
+        "contentWidth": 87,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1977,6 +5729,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "需要登录 Codex",
+        "width": 101,
+        "contentWidth": 101,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -1989,6 +5755,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex 不可用",
+        "width": 87,
+        "contentWidth": 87,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -2001,6 +5781,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "暂时无法确认 Codex 的状态",
+        "width": 174,
+        "contentWidth": 174,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -2013,6 +5807,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "离线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -2025,6 +5833,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "状态暂时不可用",
+        "width": 98,
+        "contentWidth": 98,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -2037,6 +5859,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "未指定电脑",
+        "width": 70,
+        "contentWidth": 70,
+        "insideRow": true
+      },
+      {
+        "text": "未连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -2049,6 +5885,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "未连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -2061,6 +5911,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "正在设置",
+        "width": 56,
+        "contentWidth": 56,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -2073,6 +5937,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "权限需要更新",
+        "width": 84,
+        "contentWidth": 84,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -2085,6 +5963,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "连接失败",
+        "width": 56,
+        "contentWidth": 56,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -2097,6 +5989,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "已断开连接",
+        "width": 70,
+        "contentWidth": 70,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -2109,6 +6015,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "正在准备消息 CLI",
+        "width": 108,
+        "contentWidth": 108,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -2121,6 +6041,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "正在检查消息凭证",
+        "width": 112,
+        "contentWidth": 112,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -2133,6 +6067,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "无法接收消息",
+        "width": 84,
+        "contentWidth": 84,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -2145,6 +6093,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "无法接收消息",
+        "width": 84,
+        "contentWidth": 84,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -2157,6 +6119,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "状态暂时不可用",
+        "width": 98,
+        "contentWidth": 98,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -2169,6 +6145,20 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "Codex 不可用",
+        "width": 87,
+        "contentWidth": 87,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
@@ -2181,30 +6171,280 @@
     "rows": 2,
     "provider": 41.875,
     "overflow": false,
+    "labels": [
+      {
+        "text": "在线",
+        "width": 28,
+        "contentWidth": 28,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
     "width": 1440,
     "locale": "zh",
-    "scenario": "claude-code",
+    "scenario": "claude-code-checking",
     "height": 175,
     "baselineHeight": 175,
     "divider": 88,
     "rows": 2,
     "provider": 83.4375,
     "overflow": false,
+    "labels": [
+      {
+        "text": "正在检查 Claude Code",
+        "width": 143,
+        "contentWidth": 143,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   },
   {
     "width": 1440,
     "locale": "zh",
-    "scenario": "pi",
+    "scenario": "claude-code-install",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "未安装 Claude Code",
+        "width": 129,
+        "contentWidth": 129,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 1440,
+    "locale": "zh",
+    "scenario": "claude-code-sign-in",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "需要登录 Claude Code",
+        "width": 143,
+        "contentWidth": 143,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 1440,
+    "locale": "zh",
+    "scenario": "claude-code-unavailable",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Claude Code 不可用",
+        "width": 129,
+        "contentWidth": 129,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 1440,
+    "locale": "zh",
+    "scenario": "claude-code-null",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 83.4375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "暂时无法确认 Claude Code 的状态",
+        "width": 216,
+        "contentWidth": 216,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 1440,
+    "locale": "zh",
+    "scenario": "pi-checking",
     "height": 175,
     "baselineHeight": 175,
     "divider": 88,
     "rows": 2,
     "provider": 11.734375,
     "overflow": false,
+    "labels": [
+      {
+        "text": "正在检查 Pi",
+        "width": 71,
+        "contentWidth": 71,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 1440,
+    "locale": "zh",
+    "scenario": "pi-install",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "未安装 Pi",
+        "width": 57,
+        "contentWidth": 57,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 1440,
+    "locale": "zh",
+    "scenario": "pi-sign-in",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "需要登录 Pi",
+        "width": 71,
+        "contentWidth": 71,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 1440,
+    "locale": "zh",
+    "scenario": "pi-unavailable",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "Pi 不可用",
+        "width": 57,
+        "contentWidth": 57,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
+    "targets": [44, 44]
+  },
+  {
+    "width": 1440,
+    "locale": "zh",
+    "scenario": "pi-null",
+    "height": 175,
+    "baselineHeight": 175,
+    "divider": 88,
+    "rows": 2,
+    "provider": 11.734375,
+    "overflow": false,
+    "labels": [
+      {
+        "text": "暂时无法确认 Pi 的状态",
+        "width": 144,
+        "contentWidth": 144,
+        "insideRow": true
+      },
+      {
+        "text": "已连接",
+        "width": 42,
+        "contentWidth": 42,
+        "insideRow": true
+      }
+    ],
     "targets": [44, 44]
   }
 ]

@@ -51,7 +51,14 @@ describe("OpenTag Web App Shell", () => {
         .querySelector('[data-ui="agent-status-message-channel"]') as HTMLElement;
       expect(row).toBeTruthy();
       expect(within(row).getByText(state.label)).toBeTruthy();
-      if (state.detail) expect(within(row).getByText(state.detail)).toBeTruthy();
+      if (state.detail) {
+        expect(within(row).getByText(state.detail)).toBeTruthy();
+      } else {
+        const trigger = within(row).getByRole("link");
+        expect(trigger.hasAttribute("title")).toBe(false);
+        expect(trigger.hasAttribute("aria-description")).toBe(false);
+        expect(trigger.getAttribute("aria-label")).toBe(`Messaging: ${state.label}. ${state.exit}`);
+      }
       if (state.exit) {
         expect(
           within(row)

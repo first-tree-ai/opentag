@@ -50,12 +50,14 @@ The Overview status card keeps its healthy two-section, two-line composition in 
 Computer summarizes the connection and the selected runtime Provider, with an existing runtime status replacing
 Online when attention is needed. The identity line always includes the Agent's selected Provider after the
 Computer name and platform; this is not the Computer's list of installed Providers. At narrow card widths the
-platform is omitted and long identities are truncated. Full identities remain accessible through the healthy
-row's details popover or the actionable row's recovery destination. Existing state values and localized status
-wording remain unchanged. Recovery uses the status row itself, with an arrow beside its status, rather than an
+platform is omitted and long identities are truncated. Status text remains complete; the static section name
+can truncate and the recovery arrow is omitted when space is limited. Full identities are included in the
+accessible row name and are available through the details popover or recovery destination. Existing state
+values and localized status wording remain unchanged. Recovery uses the status row itself, rather than an
 additional action or explanation line. Each row retains two line boxes even when an identity is absent. Details
 and recovery never expand the card or move its divider; there is no larger fixed-height shell or reserved third line.
-A runtime failure remains actionable when the Agent is paused.
+For paused Agents, runtime failures open the existing local recovery guidance in a popover; they do not
+link to setup, which accepts only active Agents.
 Schedules retain their card layout. Tasks preserve server paging and Load more; the full Tasks page
 remains available through View all. Long Agent names, handles, and Computer identities outside the compact Overview status card wrap within
 their available space rather than widening the page.

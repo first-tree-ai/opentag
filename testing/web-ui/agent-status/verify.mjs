@@ -18,7 +18,7 @@ const entryFile = resolve(root, "apps/web/status-validation.tsx");
 const htmlFile = resolve(root, "apps/web/status-validation.html");
 const configFile = resolve(root, "apps/web/status-validation.config.ts");
 const port = Number(process.env.OPENTAG_STATUS_REVIEW_PORT ?? 5179);
-const baselineRef = process.env.OPENTAG_STATUS_BASELINE_REF ?? "HEAD";
+const baselineRef = process.env.OPENTAG_STATUS_BASELINE_REF ?? "2d24de50f09da8048b11dd8a499fce209ee2cec6";
 
 // The original healthy card is rendered alongside the changed component, with the same real CSS.
 const baseline = execFileSync("git", ["show", `${baselineRef}:apps/web/src/features/agents/agent-detail-page.tsx`], {
@@ -74,7 +74,14 @@ const cases = [
   { id: "messaging-unknown", messagingUnknown: true },
   { id: "paused-runtime", paused: true, runtime: "unavailable" },
   { id: "long-names", longName: true },
-  ...["claude-code", "pi"].map((provider) => ({ id: provider, provider, runtime: "sign-in", longName: true })),
+  ...["claude-code", "pi"].flatMap((provider) =>
+    ["checking", "install", "sign-in", "unavailable", null].map((runtime) => ({
+      id: `${provider}-${runtime}`,
+      provider,
+      runtime,
+      longName: true,
+    })),
+  ),
 ];
 
 await mkdir(output, { recursive: true });
@@ -146,6 +153,12 @@ export default mergeConfig({...config, plugins: config.plugins.filter(plugin => 
             rows: rows.length,
             provider: card.querySelector('[data-ui="agent-status-provider"]').getBoundingClientRect().width,
             overflow: document.documentElement.scrollWidth > window.innerWidth,
+            labels: [...card.querySelectorAll('[data-ui="agent-status-label"]')].map((label) => ({
+              text: label.textContent,
+              width: label.clientWidth,
+              contentWidth: label.scrollWidth,
+              insideRow: label.getBoundingClientRect().right <= label.closest("li").getBoundingClientRect().right,
+            })),
             targets: rows.map((row) => row.querySelector("a, button").getBoundingClientRect().height),
           };
         });
@@ -156,6 +169,10 @@ export default mergeConfig({...config, plugins: config.plugins.filter(plugin => 
         assert(
           geometry.targets.every((height) => height >= 44),
           `${width}/${locale}/${scenario.id}: touch targets`,
+        );
+        assert(
+          geometry.labels.every((label) => label.contentWidth <= label.width && label.insideRow),
+          `${width}/${locale}/${scenario.id}: complete status labels: ${JSON.stringify(geometry.labels)}`,
         );
         measurements.push({ width, locale, scenario: scenario.id, ...geometry });
       }

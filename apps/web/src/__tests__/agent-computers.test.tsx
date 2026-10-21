@@ -291,12 +291,16 @@ describe("OpenTag Web App Shell", () => {
   });
 
   it.each([
-    { status: "install" as const, label: "Codex not installed" },
-    { status: "sign-in" as const, label: "Codex sign-in required" },
-    { status: "unavailable" as const, label: "Codex unavailable" },
+    { status: "install" as const, label: "Codex not installed", guidance: "Install Codex on Ada's Mac." },
+    { status: "sign-in" as const, label: "Codex sign-in required", guidance: "Sign in to Codex on Ada's Mac." },
+    {
+      status: "unavailable" as const,
+      label: "Codex unavailable",
+      guidance: "Open Codex on Ada's Mac and check for errors.",
+    },
   ])(
-    "keeps $status actionable without adding a runtime row, including for a paused Agent",
-    async ({ status, label }) => {
+    "opens $status guidance for a paused Agent without linking to unavailable setup",
+    async ({ status, label, guidance }) => {
       installApi({
         bound: true,
         initialStatus: "suspended",
@@ -310,11 +314,12 @@ describe("OpenTag Web App Shell", () => {
       expect(card.querySelector('[data-ui="agent-status-runtime"]')).toBeNull();
       const row = card.querySelector('[data-ui="agent-status-computer"]') as HTMLElement;
       expect(within(row).getByText(label)).toBeTruthy();
-      expect(
-        within(row)
-          .getByRole("link", { name: /Continue setup$/ })
-          .getAttribute("href"),
-      ).toBe(`/agents/setup?agentId=${agentId}`);
+      expect(within(row).queryByRole("link")).toBeNull();
+      fireEvent.click(within(row).getByRole("button", { name: /^Computer:/ }));
+      const details = await screen.findByRole("dialog", { name: "Computer" });
+      expect(within(details).getByText(guidance)).toBeTruthy();
+      expect(within(details).getByText(label)).toBeTruthy();
+      expect(within(card).getAllByRole("listitem")).toHaveLength(2);
       expect(within(row).getByText("Codex")).toBeTruthy();
     },
   );
@@ -354,8 +359,8 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
     const card = screen.getByRole("region", { name: "Agent status" });
     expect(card.querySelector('[data-ui="agent-status-provider"]')?.textContent).toBe(name);
-    const details = within(card).getByRole("button", { name: "Computer: Online" });
-    expect(details.getAttribute("aria-description")).toBe(`Ada's Mac · macOS · ${name}`);
+    const details = within(card).getByRole("button", { name: /^Computer: Online/ });
+    expect(details.getAttribute("aria-label")).toContain(`Ada's Mac · macOS · ${name}`);
     fireEvent.click(details);
     expect(await screen.findByText(`Ada's Mac · macOS · ${name}`)).toBeTruthy();
   });

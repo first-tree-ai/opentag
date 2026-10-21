@@ -1,7 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import * as m from "../../paraglide/messages.js";
-import { Icon, Popover } from "../../ui/design-system.js";
+import { Button, Icon, Popover } from "../../ui/design-system.js";
 import type { AgentDetailView } from "./agent-model.js";
 import {
   type AgentDependencyStatus,
@@ -78,24 +78,31 @@ function AgentStatusRow({
   fullIdentity: string;
   identity: ReactNode;
   name: string;
-  status: AgentDependencyStatus;
+  status: AgentDependencyStatus & { guidance?: string };
 }) {
   // The 44px target uses 1px of existing space on either side of the original 42px two-line block.
   const triggerClassName = "-my-px grid h-11 min-w-0 grid-rows-2 py-px text-left text-sm";
+  const accessibleStatus = fullIdentity
+    ? m.agents_status_identity_label({ status: status.label, identity: fullIdentity })
+    : status.label;
   const content = (
     <>
-      <span className="flex min-w-0 items-center justify-between gap-4">
-        <strong className="shrink-0 font-semibold text-kumo-strong">{name}</strong>
+      <span className="flex min-w-0 items-center justify-between gap-0 @min-[24rem]/agent-status:gap-4">
+        <strong className="min-w-0 truncate font-semibold text-kumo-strong">{name}</strong>
         <span
-          className={`inline-flex min-w-0 items-center gap-1.5 font-medium ${status.action ? "text-kumo-link" : "text-kumo-default"}`}
+          className={`inline-flex shrink-0 items-center gap-1.5 font-medium ${status.action ? "text-kumo-link" : "text-kumo-default"}`}
           data-state={status.tone}
         >
           <span
             aria-hidden="true"
             className={`size-1.5 shrink-0 rounded-full bg-current ${dependencyStatusClassName(status.tone)}`}
           />
-          <span className="truncate">{status.label}</span>
-          {status.action ? <Icon className="size-3.5 shrink-0" name="arrow-right" /> : null}
+          <span className="whitespace-nowrap" data-ui="agent-status-label">
+            {status.label}
+          </span>
+          {status.action ? (
+            <Icon className="hidden size-3.5 shrink-0 @min-[24rem]/agent-status:block" name="arrow-right" />
+          ) : null}
         </span>
       </span>
       <span className="flex min-w-0 items-center gap-1.5 whitespace-nowrap text-kumo-subtle" aria-hidden="true">
@@ -108,9 +115,8 @@ function AgentStatusRow({
       {status.action ? (
         <Link
           className={triggerClassName}
-          aria-label={m.agents_status_action_label({ name, status: status.label, action: status.action.label })}
-          aria-description={fullIdentity}
-          title={`${fullIdentity} · ${status.label}`}
+          aria-label={m.agents_status_action_label({ name, status: accessibleStatus, action: status.action.label })}
+          title={fullIdentity ? `${fullIdentity} · ${status.label}` : undefined}
           state={{ agent, returnAgentId: agent.id, returnLabel: agent.displayName }}
           {...status.action.link}
         >
@@ -120,11 +126,11 @@ function AgentStatusRow({
         <Popover>
           <Popover.Trigger
             render={
-              <button
+              <Button
+                variant="inline"
                 type="button"
-                className={triggerClassName}
-                aria-label={m.agents_status_details_label({ name, status: status.label })}
-                aria-description={fullIdentity}
+                className={`${triggerClassName} h-11! w-full grid-cols-[minmax(0,1fr)] items-stretch justify-stretch gap-0 px-0! font-normal! hover:bg-transparent`}
+                aria-label={m.agents_status_details_label({ name, status: accessibleStatus })}
               />
             }
           >
@@ -135,6 +141,7 @@ function AgentStatusRow({
             <Popover.Description render={<div className="grid gap-1 text-sm wrap-anywhere" />}>
               {fullIdentity ? <p>{fullIdentity}</p> : null}
               <p>{status.label}</p>
+              {status.guidance ? <p>{status.guidance}</p> : null}
             </Popover.Description>
           </Popover.Content>
         </Popover>

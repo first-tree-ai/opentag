@@ -43,6 +43,7 @@ describe("Soul editor height", () => {
   let styles: HTMLStyleElement;
   const originalHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
   beforeEach(() => {
+    vi.useFakeTimers();
     Object.defineProperty(window, "innerHeight", { configurable: true, value: 900 });
     styles = document.createElement("style");
     styles.textContent =
@@ -66,6 +67,7 @@ describe("Soul editor height", () => {
     styles.remove();
     observers.clear();
     vi.restoreAllMocks();
+    vi.useRealTimers();
     globalThis.ResizeObserver = originalObserver;
     if (originalHeight) Object.defineProperty(window, "innerHeight", originalHeight);
   });
@@ -87,9 +89,11 @@ describe("Soul editor height", () => {
   it("preserves a manually adjusted height on subsequent edits", () => {
     const view = render(<EditorWithActions value="Working principles" />);
     for (const observer of observers) observer.flush();
+    vi.advanceTimersToNextFrame();
     const editor = screen.getByRole("textbox", { name: "Soul" }) as HTMLTextAreaElement;
     editor.style.height = "450px";
     for (const observer of observers) observer.flush();
+    vi.advanceTimersToNextFrame();
     view.rerender(<EditorWithActions value="Revised working principles" />);
     expect(editor.style.height).toBe("450px");
     expect(editor.style.overflowY).toBe("auto");
@@ -106,10 +110,14 @@ describe("Soul editor height", () => {
     });
     render(<EditorWithActions value="Long working principles" />);
     for (const observer of observers) observer.flush();
+    vi.advanceTimersToNextFrame();
     const editor = screen.getByRole("textbox", { name: "Soul" }) as HTMLTextAreaElement;
     expect(editor.style.height).toBe("432px");
     width = 900;
-    fireEvent(window, new Event("resize"));
+    for (const observer of observers) observer.flush();
+    // Observer delivery reads geometry without resizing another observed region in the same frame.
+    expect(editor.style.height).toBe("432px");
+    vi.advanceTimersToNextFrame();
     expect(editor.style.height).toBe("588px");
   });
 });

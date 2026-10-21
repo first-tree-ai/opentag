@@ -73,8 +73,7 @@ export function useSoulEditorHeight(
       return true;
     }
 
-    resizeEditor();
-    const observer = new ResizeObserver((entries) => {
+    function applyObservedChanges(changes: ResizeObserverEntry[]) {
       if (updateFooterObservation(observer)) {
         resizeEditor();
         return;
@@ -89,7 +88,22 @@ export function useSoulEditorHeight(
         state.height = rect.height;
         editor.style.overflowY = "auto";
       }
-      if (entries.some((entry) => entry.target === example || entry.target === observedFooter)) resizeEditor();
+      if (changes.some((entry) => entry.target === example || entry.target === observedFooter)) resizeEditor();
+    }
+
+    let resizeFrame = 0;
+    let pendingEntries: ResizeObserverEntry[] = [];
+    resizeEditor();
+    const observer = new ResizeObserver((entries) => {
+      pendingEntries.push(...entries);
+      if (resizeFrame) return;
+      // Finish observer delivery before changing overflow or resizing observed regions.
+      resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = 0;
+        const changes = pendingEntries;
+        pendingEntries = [];
+        applyObservedChanges(changes);
+      });
     });
     observer.observe(editor);
     if (example) observer.observe(example);
@@ -98,6 +112,7 @@ export function useSoulEditorHeight(
     document.fonts?.addEventListener("loadingdone", resizeEditor);
     return () => {
       observer.disconnect();
+      cancelAnimationFrame(resizeFrame);
       window.removeEventListener("resize", resizeEditor);
       document.fonts?.removeEventListener("loadingdone", resizeEditor);
     };

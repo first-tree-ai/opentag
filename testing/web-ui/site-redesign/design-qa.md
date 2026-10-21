@@ -179,3 +179,37 @@ Representative captures from the passing smoke run:
 
 The desktop journey retains the website's 40px minimum account control and 32px
 avatar; the separate narrow-screen matrix asserts the stronger 44px mobile floor.
+
+### Full journey follow-up
+
+The full 36-test journey project was executed. It exposed stale redesign
+expectations and a Soul editor ResizeObserver delivery error. The editor now
+coalesces observer work into the next animation frame and cancels pending work on
+unmount. Its three height tests pass, including manual-height preservation and
+layout changes after the observer callback has returned. Navigation assertions
+now exercise Soul's real labels and actions, inline mobile links, keyboard
+switching, and the legacy Integrations redirect to Account.
+
+All **19 targeted app/navigation journeys pass** after these fixes:
+
+```sh
+pnpm --filter @opentag/e2e exec playwright test tests/app.spec.ts tests/navigation-polish.spec.ts --project=journey --workers=1 --grep-invert 'Internal tools opens from Agent navigation'
+```
+
+The full journey suite is **not recorded as green**. The broader run also found
+these existing tests outside the redesigned flows:
+
+- `runtime-test.spec.ts`: the first Claude connection test timed out waiting for
+  success; local model options were unavailable. Four dependent serial tests did
+  not run.
+- `mcp-auth-rejection.spec.ts`: four 401/403 cases still target the former
+  `Connector URL` input or a former list `Connect` button. These selectors no
+  longer match the current connector UI.
+- `navigation-polish.spec.ts`: the Internal tools toggle case expects an
+  `Integrations` navigation link. Current navigation omits that link, and legacy
+  Agent integration routes redirect to Account. This behavior and the stale
+  assertion are also present in the PR base source.
+
+The targeted command excludes only that last legacy-toggle case; it includes
+both 320px and 390px Internal tools/account navigation tests. No permanent test
+exclusion, weakened axe rule, or coverage-policy change was added.

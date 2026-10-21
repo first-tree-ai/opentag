@@ -588,8 +588,8 @@ test("the screenshot pass captures every primary page and writes a contact sheet
     },
     { file: "usage", route: `/agents/${agentId}/usage`, heading: "Usage" },
     { file: "skills", route: `/agents/${agentId}/skills`, heading: "Skills" },
-    // The navigation calls the page "Integrations"; its own heading is the GitHub repositories block.
-    { file: "integrations", route: `/agents/${agentId}/integrations`, heading: "GitHub repositories" },
+    // Historical integration links redirect to the Account's GitHub connection surface.
+    { file: "integrations", route: `/agents/${agentId}/integrations`, heading: "Account" },
     { file: "account", route: "/account", heading: "Account" },
     {
       file: "internal-agent-setup",
@@ -623,6 +623,7 @@ test("the screenshot pass captures every primary page and writes a contact sheet
       }
     } else {
       await page.goto(item.route, { waitUntil: "networkidle" });
+      if (item.file === "integrations") await expect(page).toHaveURL(/\/account$/);
       await expect(page.getByRole("heading", { name: item.heading, exact: true }).first()).toBeVisible({
         timeout: 30_000,
       });

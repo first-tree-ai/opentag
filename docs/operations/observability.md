@@ -170,6 +170,50 @@ Then query traces for the incident time window:
 
 No `im.inbound.process` span means OpenTag did not observe the provider callback during the sampled window. It does not prove that Feishu delivered the event. Combine that negative evidence with `connection`, `lastInboundAt`, `providerCliReadiness`, granted scopes, and Feishu event-subscription state.
 
+## Production monitoring on Google Cloud
+
+The production Server runs on the `opentag-prod` VM with the `opentag-prod-db` Cloud SQL instance in the
+`kael-product` project. Cloud Monitoring watches it from outside and from the platform metrics:
+
+| Signal | Policy | Threshold | Notifies |
+| --- | --- | --- | --- |
+| Uptime check on `https://app.opentag.build/readyz`, content must contain `"status":"ready"`, every 60 s from four regions | Production down | Fails from more than one region for 3 minutes | Email and SMS |
+| Same uptime check, certificate lifetime | TLS certificate expiry | Less than 14 days left | Email |
+| Cloud SQL disk utilization | `opentag-prod-db` disk | Above 80% for 10 minutes | Email and DB alert email |
+| Cloud SQL memory utilization | `opentag-prod-db` memory | Above 90% for 10 minutes | Email and DB alert email |
+| Cloud SQL CPU utilization | `opentag-prod-db` CPU | Above 50% for 5 minutes | Email, SMS, and DB alert email |
+| `opentag-prod` VM CPU utilization | VM CPU | Above 85% for 10 minutes | Email |
+| VM memory used (Ops Agent) | VM memory | Above 90% for 10 minutes | Email |
+| VM root disk `/dev/sda1` used (Ops Agent) | VM root disk | Above 85% for 10 minutes | Email |
+| Server log at `CRITICAL` (Pino `fatal`) | Fatal log | Any entry; at most one notice per 10 minutes | Email and SMS |
+| Server log at `ERROR` or above, other than `IM_DELIVERY_RUNTIME_UNAVAILABLE` | New error type | Any entry; at most one notice per 30 minutes | Email |
+
+`/readyz` is the probe target because it answers `503` when the Server is draining or the database probe fails, while
+`/healthz` only proves that the process is up. The check needs no credential.
+
+### Server logs in Cloud Logging
+
+The Ops Agent on `opentag-prod` tails the Docker `json-file` logs under `/var/lib/docker/containers/` and writes the
+log `opentag_server`. Each line is a Docker wrapper around a Pino line, so the pipeline unwraps both layers. Pino writes
+`level` as a number, which the agent's `map_values` cannot match, so a regex first captures it as a string and then maps
+`40`, `50`, and `60` to `WARNING`, `ERROR`, and `CRITICAL`. The agent keeps only `WARNING` and above, and drops `info`
+lines and the CapRover nginx lines before upload, which keeps volume low and keeps routine resource identifiers on the
+host. Entries carry the label `service=opentag-server`. The agent config is `/etc/google-cloud-ops-agent/config.yaml`.
+
+- `exclude_logs` rejects `<` comparisons and panics the logging sub-agent at start, so the filter uses a regex on
+  `severity`. Validate any edit before restarting with
+  `google_cloud_ops_agent_engine -service=fluentbit -in <file> -logs <dir> -state <dir>`.
+- The agent reads new lines only. A restart does not replay older logs.
+- `IM_DELIVERY_RUNTIME_UNAVAILABLE` is excluded from the new-error alert because it fires continuously. Remove the
+  exclusion once its cause is fixed, so that its return is visible.
+- The agent collects host metrics only. The Docker engine metrics endpoint that the staging VM scrapes needs a Docker
+  daemon restart, which restarts the Server container, so it is not enabled on production.
+
+Known gaps:
+
+- The Staging environment is not probed, because it has no public address.
+- The Server is a single VM, so a VM outage also stops its own logs; the uptime check covers that case.
+
 ## Sampling and limits
 
 The default sample rate is `1`. Keep production at `1` while traffic is low and silent-message incidents are rare; lower the single global rate only after measuring trace volume and cost. The MVP does not use route-specific or provider-specific sampling.

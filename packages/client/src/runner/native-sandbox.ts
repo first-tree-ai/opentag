@@ -494,7 +494,7 @@ export class NativeSandbox {
   async exec(
     command: string,
     args: readonly string[],
-    options: { timeoutMs: number; stdin?: string; signal?: AbortSignal },
+    options: { timeoutMs: number; stdin?: string; signal?: AbortSignal; onStderr?: (chunk: Buffer) => void },
   ): Promise<SandboxExecResult> {
     assertSafeOperand(command, "exec command");
     const argv = buildSandboxExecArgv({ name: this.#name, command, args, sandboxBinary: this.#binary });
@@ -636,7 +636,7 @@ export class NativeSandbox {
   #runToExit(
     command: string,
     args: readonly string[],
-    options: { timeoutMs: number; stdin?: string; signal?: AbortSignal },
+    options: { timeoutMs: number; stdin?: string; signal?: AbortSignal; onStderr?: (chunk: Buffer) => void },
   ): Promise<SandboxExecResult> {
     if (options.signal?.aborted)
       return Promise.reject(new NativeSandboxError("exec_failed", "Sandbox execution cancelled before spawn"));
@@ -690,6 +690,11 @@ export class NativeSandbox {
         stdoutBytes += kept.length;
       });
       child.stderr.on("data", (chunk: Buffer) => {
+        try {
+          options.onStderr?.(chunk);
+        } catch {
+          // A diagnostic observer does not own the command's result or cleanup.
+        }
         const kept = chunk.subarray(0, Math.max(0, CAPTURE_LIMIT_BYTES - stderrBytes));
         if (kept.length > 0) stderr.push(Buffer.from(kept));
         stderrBytes += kept.length;

@@ -6,6 +6,7 @@ import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentRuntimeEvent, CreateAgentRuntimeRequest } from "../agent-runtime/types.js";
+import type { PiDiagnosticEvent, PiDiagnosticSink, PiProcessExit } from "../observability/pi-diagnostics.js";
 import { PiAgentRuntimeFactory, piAgentRuntimeEnvironment } from "../providers/pi/agent-runtime.js";
 import { type PiRpcClient, PiRpcError } from "../providers/pi/rpc-wire.js";
 
@@ -760,9 +761,11 @@ describe("PiAgentRuntime exhaustive behavior", () => {
     ).rejects.toMatchObject({ code: "closed" });
     await vi.waitFor(() => expect(successfulRuntime.state.phase).toBe("closed"));
 
+    const diagnostics: PiDiagnosticEvent[] = [];
     const protocolEvents: AgentRuntimeEvent[] = [];
     const protocolClient = new ManualPiClient({ closeError: new Error("process tree still running") });
-    const protocolRuntime = await factory(protocolClient).create(
+    protocolClient.exitStatus = { code: 7, signal: null };
+    const protocolRuntime = await factory(protocolClient, (event) => diagnostics.push(event)).create(
       request((event) => {
         protocolEvents.push(event);
       }),
@@ -774,6 +777,10 @@ describe("PiAgentRuntime exhaustive behavior", () => {
       status: "failed",
       error: { code: "provider_protocol_error", message: "Pi settled without an assistant result" },
     });
+    expect(diagnostics.filter((event) => event.event === "failure")).toMatchObject([
+      { phase: "await_terminal", exitCode: 7, error: { name: "AgentProviderError" } },
+      { phase: "cleanup", exitCode: 7, error: { name: "Error" } },
+    ]);
     expect(protocolEvents.some((event) => event.type === "run_completed")).toBe(false);
     await expect(
       protocolRuntime.prompt({ runId: "cleanup-after-protocol-next", input: input("again") }),
@@ -1188,6 +1195,7 @@ exec '${process.execPath}' -e 'setInterval(() => undefined, 1000)'
 });
 
 class ManualPiClient implements PiRpcClient {
+  exitStatus: PiProcessExit | undefined;
   args: readonly string[] = [];
   readonly commands: Readonly<Record<string, unknown>>[] = [];
   readonly #listeners = new Set<(message: Readonly<Record<string, unknown>>) => void>();
@@ -1265,8 +1273,9 @@ class ManualPiClient implements PiRpcClient {
   }
 }
 
-function factory(client: ManualPiClient): PiAgentRuntimeFactory {
+function factory(client: ManualPiClient, onDiagnostic?: PiDiagnosticSink): PiAgentRuntimeFactory {
   return new PiAgentRuntimeFactory({
+    onDiagnostic,
     createSessionId: () => SESSION_ID,
     createClient: (_cwd, args) => {
       client.args = args;

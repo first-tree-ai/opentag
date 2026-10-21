@@ -1,4 +1,4 @@
-import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -65,6 +65,19 @@ describe("PiRpcProcess", () => {
       message: expect.stringContaining("fixture"),
     });
     await process.close();
+  });
+
+  it("records the direct Pi child exit rather than the native exec wrapper", async () => {
+    const child = new PiRpcProcess({
+      command: process.execPath,
+      args: [fixture, "exit"],
+      cwd: tmpdir(),
+      env: {},
+      spawnProcess: (command, args, options) => spawn(command, [...args], { ...options, stdio: "pipe" }),
+    });
+    await expect(child.request({ type: "get_state" })).rejects.toMatchObject({ code: "exited" });
+    await child.close();
+    expect(child.exitStatus).toEqual({ code: 1, signal: null });
   });
 
   it("validates bounds, commands, pre-aborted requests, and synchronous spawn failures", async () => {

@@ -18,8 +18,9 @@ import type {
   CreateAgentRuntimeRequest,
   ResumeAgentRuntimeRequest,
 } from "../agent-runtime/types.js";
+import type { PiDiagnosticEvent } from "../observability/pi-diagnostics.js";
 import { PiAgentRuntimeFactory } from "../providers/pi/agent-runtime.js";
-import type { PiRpcClient } from "../providers/pi/rpc-wire.js";
+import { type PiRpcClient, PiRpcError } from "../providers/pi/rpc-wire.js";
 import type { CloudContextTreePreparation } from "../runner/cloud-context-tree.js";
 import {
   type CloudTurnPiFactory,
@@ -54,6 +55,79 @@ function turnRequest(executionDir: string, sessionDirectory?: string) {
   };
   return request;
 }
+
+it("reports the original get_state abort and the Turn deadline through the Cloud observer", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cloud-worker-diagnostics-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const executionDir = await fixtureExecution(root, "diagnostic-turn");
+  const request = turnRequest(executionDir);
+  request.delivery = cloudDeliveryFixture({ deadlineAt: new Date(Date.now() + 1_000).toISOString() });
+  const diagnostics: PiDiagnosticEvent[] = [];
+  const commands: unknown[] = [];
+  const completion = await runCloudTurnWorker(request, {
+    executionMount: join(root, "mount"),
+    localProxyLoopbackSeam: true,
+    workspace: join(root, "workspace"),
+    onDiagnostic: (event) => diagnostics.push(event),
+    prepareContextTree: async () => ({ status: { status: "unavailable", reason: "TIMEOUT" } }),
+    createPiFactory: ({ onDiagnostic }) =>
+      new PiAgentRuntimeFactory({
+        onDiagnostic,
+        createClient: () => ({
+          request: (command, signal) => {
+            commands.push(command.type);
+            if (command.type === "abort") return Promise.resolve(undefined);
+            return new Promise((_, reject) => {
+              signal?.addEventListener("abort", () => reject(new PiRpcError("aborted", "Pi RPC request was aborted")), {
+                once: true,
+              });
+            });
+          },
+          subscribe: () => () => undefined,
+          close: async () => undefined,
+        }),
+      }),
+  });
+  expect(completion).toMatchObject({ outcome: "failed", errorReason: "turn_timeout" });
+  expect(commands.filter((command) => command === "get_state" || command === "prompt")).toEqual(["get_state"]);
+  expect(diagnostics).toContainEqual(
+    expect.objectContaining({
+      phase: "get_state",
+      event: "failure",
+      abortSource: "turn_timeout",
+      error: expect.objectContaining({ errorCode: "aborted", message: "Pi RPC request was aborted" }),
+    }),
+  );
+  expect(diagnostics.at(-1)).toMatchObject({ phase: "cleanup", event: "end" });
+});
+
+it("captures a prompt rejection before runtime execution converts it to a completion", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cloud-worker-prompt-rejected-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const executionDir = await fixtureExecution(root, "rejected-turn");
+  const diagnostics: PiDiagnosticEvent[] = [];
+  const runtime = {
+    close: async () => undefined,
+    prompt: async () => {
+      throw Object.assign(new Error("private validation text"), { code: "EINVAL" });
+    },
+  };
+  const completion = await runCloudTurnWorker(turnRequest(executionDir), {
+    executionMount: join(root, "mount"),
+    localProxyLoopbackSeam: true,
+    workspace: join(root, "workspace"),
+    onDiagnostic: (event) => diagnostics.push(event),
+    prepareContextTree: async () => ({ status: { status: "unavailable", reason: "TIMEOUT" } }),
+    createPiFactory: () => ({ create: async () => runtime, resume: async () => runtime }),
+  });
+  expect(completion).toMatchObject({ outcome: "unknown", errorReason: "turn_state_unknown" });
+  expect(diagnostics.at(-1)).toMatchObject({
+    phase: "worker_preparation",
+    event: "failure",
+    error: { errorCode: "EINVAL", messageOrigin: "omitted" },
+  });
+  expect(JSON.stringify(diagnostics)).not.toContain("private validation text");
+});
 
 it("mounts only the execution-scoped MCP gateway in the Cloud Pi configuration", async () => {
   const root = await mkdtemp(join(tmpdir(), "cloud-worker-mcp-"));
@@ -750,6 +824,7 @@ describe("cloud-turn-worker", () => {
   });
 
   it("never starts Pi when the execution deadline fires during Context Tree preparation", async () => {
+    const diagnostics: PiDiagnosticEvent[] = [];
     const root = await mkdtemp(join(tmpdir(), "cloud-worker-prep-deadline-"));
     cleanup.push(() => rm(root, { recursive: true, force: true }));
     const executionDir = await fixtureExecution(root, "turn-1");
@@ -761,6 +836,7 @@ describe("cloud-turn-worker", () => {
         factoryBuilt = true;
         throw new Error("Pi must not start after the execution deadline");
       },
+      onDiagnostic: (event) => diagnostics.push(event),
       executionMount: join(root, "mount"),
       localProxyLoopbackSeam: true,
       prepareContextTree: async (input): Promise<CloudContextTreePreparation> => {
@@ -774,10 +850,17 @@ describe("cloud-turn-worker", () => {
     });
     expect(completion.outcome).toBe("failed");
     expect(completion.errorReason).toBe("turn_timeout");
+    expect(diagnostics.at(-1)).toMatchObject({
+      phase: "worker_preparation",
+      event: "end",
+      abortSource: "turn_timeout",
+      outcome: "aborted",
+    });
     expect(factoryBuilt).toBe(false);
   });
 
   it("never starts Pi when the caller stops during Context Tree preparation", async () => {
+    const diagnostics: PiDiagnosticEvent[] = [];
     const root = await mkdtemp(join(tmpdir(), "cloud-worker-prep-stop-"));
     cleanup.push(() => rm(root, { recursive: true, force: true }));
     const executionDir = await fixtureExecution(root, "turn-1");
@@ -790,6 +873,7 @@ describe("cloud-turn-worker", () => {
       createPiFactory: () => {
         throw new Error("Pi must not start after the caller stopped");
       },
+      onDiagnostic: (event) => diagnostics.push(event),
       executionMount: join(root, "mount"),
       localProxyLoopbackSeam: true,
       prepareContextTree: async (input): Promise<CloudContextTreePreparation> => {
@@ -808,6 +892,12 @@ describe("cloud-turn-worker", () => {
     const completion = await running;
     expect(completion.outcome).toBe("cancelled");
     expect(completion.errorReason).toBe("client_shutdown");
+    expect(diagnostics.at(-1)).toMatchObject({
+      phase: "worker_preparation",
+      event: "end",
+      abortSource: "client_shutdown",
+      outcome: "aborted",
+    });
   });
 
   it("continues the base task with a truthful status when only the preparation budget expires", async () => {

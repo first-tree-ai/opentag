@@ -39,6 +39,7 @@ import {
   runWithAbortSignal,
 } from "../../agent-runtime/validation.js";
 import { createLogger } from "../../observability/logger.js";
+import { type PiDiagnosticSink, PiRunDiagnostics } from "../../observability/pi-diagnostics.js";
 import {
   PI_RPC_REQUEST_TIMEOUT_MS,
   type PiRpcClient,
@@ -106,6 +107,7 @@ const PI_MCP_GATEWAY_EXTENSION = fileURLToPath(new URL("../../pi-extensions/mcp-
 const PI_MCP_GATEWAY_BUNDLED_EXTENSION = fileURLToPath(new URL("./pi-extensions/mcp-gateway.mjs", import.meta.url));
 
 interface PiRuntimeOptions {
+  readonly onDiagnostic?: PiDiagnosticSink;
   readonly mcpAdapterEntry?: string;
   readonly binding: AgentRuntimeBinding;
   readonly configuration?: AgentRunConfiguration;
@@ -121,6 +123,7 @@ interface PiRuntimeOptions {
 }
 
 export interface PiAgentRuntimeFactoryOptions {
+  readonly onDiagnostic?: PiDiagnosticSink;
   /** Trusted Cloud image path; Local resolves its pinned Client dependency. */
   readonly mcpAdapterEntry?: string;
   readonly process?: {
@@ -185,7 +188,19 @@ interface PiPromptAcceptanceClock {
   readonly pause: () => void;
 }
 
+function piResultAfterCleanup(
+  result: AgentProviderRunResult,
+  cleanupFailure: Error | undefined,
+): AgentProviderRunResult {
+  if (cleanupFailure && result.status !== "failed") {
+    throw new AgentProviderError("provider_error", cleanupFailure.message, { cause: cleanupFailure });
+  }
+  return result;
+}
+
 export class PiAgentRuntime extends BaseAgentRuntime {
+  readonly #onDiagnostic: PiDiagnosticSink | undefined;
+  #diagnostics = new PiRunDiagnostics();
   readonly #mcpAdapterEntry?: string;
   readonly #sessionId: string;
   readonly #policy: AgentRuntimePolicy;
@@ -228,6 +243,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       eventSink: options.eventSink,
       binding: options.binding,
     });
+    this.#onDiagnostic = options.onDiagnostic;
     const binding = parsePiBinding(options.binding);
     this.#sessionId = binding.sessionId;
     this.#sessionFileHash = binding.sessionFileHash;
@@ -247,6 +263,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     context: AgentProviderRunContext,
   ): Promise<AgentProviderRunResult> {
     this.#resetRun(context);
+    this.#diagnostics = new PiRunDiagnostics(this.#onDiagnostic);
     this.#mcpEnabled = Boolean(
       parseProviderConfiguration(mergeConfiguration(this.#configuration, request.configuration)?.provider).mcpGateway,
     );
@@ -254,29 +271,40 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     let cleanupFailure: Error | undefined;
     let result: AgentProviderRunResult;
     try {
+      this.#diagnostics.start("pi_spawn");
       client = this.#createClient(
         this.#arguments(request),
         piExtensionEnvironment(request, this.#configuration, this.#mcpAdapterEntry),
       );
+      this.#diagnostics.end();
       this.#client = client;
       this.#unsubscribe = client.subscribe((message) => this.#enqueue(message));
-      const state = requireRecord(
-        await client.request({ type: "get_state" }, context.signal),
-        "Pi get_state returned invalid data",
-      );
+      this.#diagnostics.start("get_state", this.#promptAcceptanceTimeoutMs);
+      const rawState = await client.request({ type: "get_state" }, context.signal);
+      this.#diagnostics.end();
+      this.#diagnostics.start("session_restore");
+      const state = requireRecord(rawState, "Pi get_state returned invalid data");
       await this.#restoreSessionState(state, context);
-      await this.#requestPrompt(client, piInput(request), context.signal);
+      this.#diagnostics.end();
+      this.#diagnostics.start("prompt_acceptance", this.#promptAcceptanceTimeoutMs);
+      const accepted = await this.#requestPrompt(client, piInput(request), context.signal);
+      if (accepted) {
+        this.#diagnostics.end();
+        this.#diagnostics.start("await_terminal");
+      }
       const terminal = await this.#terminal?.promise;
       /* v8 ignore next -- resetRun always creates the terminal before Provider I/O begins. */
       if (!terminal) throw protocolError("Pi run has no terminal state");
       await this.#eventTail;
       if (this.#providerFailure) throw this.#providerFailure;
       result = this.#runResult(terminal);
+      if (accepted) this.#diagnostics.end(undefined, result.status);
     } catch (error) {
       const failure = error instanceof Error ? error : new Error("Pi run failed");
       logger.debug({ code: "provider_run_failed", error: failure.message }, "Pi provider run failed");
       this.#promptAccepted?.reject(failure);
       const causalFailure = this.#providerFailure ?? failure;
+      this.#diagnostics.failure(causalFailure, client?.exitStatus, context.signal.aborted);
       if (!context.signal.aborted && isIrrecoverablePiFailure(causalFailure)) this.closeForProviderFailure();
       if (causalFailure instanceof AgentProviderError) throw causalFailure;
       throw new AgentProviderError(
@@ -287,12 +315,11 @@ export class PiAgentRuntime extends BaseAgentRuntime {
         { cause: causalFailure },
       );
     } finally {
+      this.#diagnostics.start("cleanup");
       cleanupFailure = await this.#cleanupRun(client);
+      this.#diagnostics.completeCleanup(cleanupFailure, client?.exitStatus);
     }
-    if (cleanupFailure && result.status !== "failed") {
-      throw new AgentProviderError("provider_error", cleanupFailure.message, { cause: cleanupFailure });
-    }
-    return result;
+    return piResultAfterCleanup(result, cleanupFailure);
   }
 
   /**
@@ -305,15 +332,17 @@ export class PiAgentRuntime extends BaseAgentRuntime {
    * shared RPC timeout error, so classification is unchanged. An interrupt that closed Pi before
    * acceptance is not a Provider failure: `abortProvider` owns the aborted terminal instead.
    */
-  async #requestPrompt(client: PiRpcClient, message: unknown, signal: AbortSignal): Promise<void> {
+  async #requestPrompt(client: PiRpcClient, message: unknown, signal: AbortSignal): Promise<boolean> {
     const expired = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const pause = (): void => {
       clearTimeout(timer);
       timer = undefined;
+      this.#diagnostics.acceptancePause();
     };
     const arm = (): void => {
       pause();
+      this.#diagnostics.acceptanceArm();
       timer = setTimeout(() => expired.abort(), this.#promptAcceptanceTimeoutMs);
       timer.unref();
     };
@@ -322,10 +351,12 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     try {
       await client.request({ type: "prompt", message }, AbortSignal.any([signal, expired.signal]), { timeoutMs: null });
       this.#promptAccepted?.resolve();
+      return true;
     } catch (error) {
       if (this.#closingForAbort && error instanceof PiRpcError && error.code === "aborted") {
         this.#promptAccepted?.reject(error);
-        return;
+        this.#diagnostics.failure(error, client.exitStatus, true);
+        return false;
       }
       if (expired.signal.aborted && !signal.aborted) {
         throw new PiRpcError("timeout", "Pi RPC request timed out: prompt");
@@ -487,10 +518,12 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     this.#claimTerminalAtIngress(message);
     if (message.type === "compaction_start") {
       this.#compacting = true;
+      this.#diagnostics.compactionStart();
       this.#promptAcceptanceClock?.pause();
     }
     if (message.type === "compaction_end") {
       this.#compacting = false;
+      this.#diagnostics.compactionEnd();
       this.#promptAcceptanceClock?.arm();
     }
     const next = this.#eventTail.then(async () => {
@@ -874,6 +907,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
 }
 
 export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
+  readonly #onDiagnostic: PiDiagnosticSink | undefined;
   readonly #mcpAdapterEntry?: string;
   readonly manifest = PI_AGENT_RUNTIME_MANIFEST;
   readonly #createSessionId: () => string;
@@ -892,6 +926,7 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
   readonly #promptAcceptanceTimeoutMs?: number;
 
   constructor(options: PiAgentRuntimeFactoryOptions = {}) {
+    this.#onDiagnostic = options.onDiagnostic;
     if (options.mcpAdapterEntry && !isAbsolute(options.mcpAdapterEntry)) {
       throw new AgentRuntimeError("configuration_invalid", "Pi mcpAdapterEntry must be an absolute path");
     }
@@ -1028,6 +1063,7 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
     try {
       await request.eventSink({ type: "binding_changed", binding });
       return new PiAgentRuntime({
+        onDiagnostic: this.#onDiagnostic,
         binding,
         ...(this.#mcpAdapterEntry ? { mcpAdapterEntry: this.#mcpAdapterEntry } : {}),
         configuration: request.configuration,

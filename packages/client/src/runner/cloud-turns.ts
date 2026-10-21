@@ -29,6 +29,7 @@ import {
 import { z } from "zod";
 import { publishExecutionMaterial } from "../cloud-runtime/bridge-material.js";
 import { CLOUD_EXECUTION_MOUNT } from "../cloud-runtime/sandbox-entry.js";
+import { createPiDiagnosticReader, type PiDiagnosticContext } from "../observability/pi-diagnostics.js";
 import type { TurnCompletion } from "../runtime/agent-turn-runner.js";
 import { turnTimeoutMs } from "../runtime/agent-turn-runner.js";
 import { truncateUtf8 } from "../runtime/provider-cli/outgoing-reply-process.js";
@@ -139,6 +140,7 @@ export interface CloudTurnRunnerOptions {
   /** E5: quiesce writers and save while the Turn slot is held, before publishing its report. */
   readonly checkpoint?: () => Promise<void>;
   readonly log?: (message: string) => void;
+  readonly onDiagnostic?: (record: Readonly<Record<string, unknown>>) => void;
   /** Unexpected durable-boundary failures that must surface instead of being swallowed. */
   readonly onPersistenceError?: (error: unknown) => void;
   /** Test seam: replace the credential-execution bridge pipeline. */
@@ -147,9 +149,30 @@ export interface CloudTurnRunnerOptions {
   readonly openSessionExecution?: (input: CloudSessionExecutionOpenInput) => Promise<CloudTurnExecutionHandle>;
   /** Test seam: replace the in-sandbox worker invocation. */
   readonly runWorker?: (
-    input: { stdin: string; timeoutMs: number },
+    input: { stdin: string; timeoutMs: number; onStderr?: (chunk: Buffer) => void },
     signal: AbortSignal,
   ) => Promise<{ code: number; stdout: string; stderr: string }>;
+}
+
+function workerStopDiagnostic(
+  exitCode: number | undefined,
+  failed: boolean,
+  error: unknown,
+  aborted: boolean,
+  bridgeFailed: boolean,
+) {
+  let stopType = "worker_exit";
+  if (aborted) stopType = "client_shutdown";
+  else if (bridgeFailed) stopType = "bridge_failure";
+  else if (error instanceof NativeSandboxError && error.message === "Sandbox execution deadline exceeded")
+    stopType = "exec_timeout";
+  else if (failed) stopType = "exec_rejected";
+  return {
+    severity: failed || exitCode !== 0 ? "ERROR" : "INFO",
+    workerExitCode: exitCode,
+    errorCode: error instanceof NativeSandboxError ? error.code : undefined,
+    stopType,
+  };
 }
 
 export interface CloudTurnExecutionOpenInput {
@@ -1419,7 +1442,11 @@ export class CloudTurnRunner {
       });
       const timeoutMs = turnTimeoutMs(delivery, Date.now()) + CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS;
       this.#activity.start(delivery, entry.turnId);
-      return await this.#runWorker({ stdin, timeoutMs }, signal, execution);
+      return await this.#runWorker({ stdin, timeoutMs }, signal, execution, {
+        ...scope,
+        turnId: entry.turnId,
+        deliveryId: delivery.deliveryId,
+      });
     } finally {
       this.#activity.end(entry.turnId);
       await execution.close().catch((error) => this.#reportPersistenceError(error));
@@ -1541,7 +1568,11 @@ export class CloudTurnRunner {
         ...(this.#options.piSessionDirectory ? { piSessionDirectory: this.#options.piSessionDirectory } : {}),
       });
       const timeoutMs = Math.max(1, Date.parse(deadlineAt) - Date.now()) + CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS;
-      return await this.#runWorker({ stdin, timeoutMs }, signal, execution);
+      return await this.#runWorker({ stdin, timeoutMs }, signal, execution, {
+        ...scope,
+        turnId: entry.turnId,
+        messageId: message.messageId,
+      });
     } finally {
       await execution.close().catch((error) => this.#reportPersistenceError(error));
     }
@@ -1552,10 +1583,15 @@ export class CloudTurnRunner {
     input: { stdin: string; timeoutMs: number },
     signal: AbortSignal,
     execution: CloudTurnExecutionHandle,
+    context: PiDiagnosticContext,
   ): Promise<TurnCompletion> {
     const workerSignal = execution.bridgeFailureSignal
       ? AbortSignal.any([signal, execution.bridgeFailureSignal])
       : signal;
+    const diagnostics = createPiDiagnosticReader(context, (record) => this.#options.onDiagnostic?.(record));
+    let workerExitCode: number | undefined;
+    let execFailed = false;
+    let execError: unknown;
     const runWorker =
       this.#options.runWorker ??
       ((input, workerSignal) =>
@@ -1563,10 +1599,12 @@ export class CloudTurnRunner {
           signal: workerSignal,
           stdin: input.stdin,
           timeoutMs: input.timeoutMs,
+          onStderr: input.onStderr,
         }));
     try {
       // The worker owns its runtime deadline; the exec backstop includes the reporting grace.
-      const exec = await runWorker(input, workerSignal);
+      const exec = await runWorker({ ...input, onStderr: diagnostics.consume }, workerSignal);
+      workerExitCode = exec.code;
       if (signal.aborted) {
         return { errorReason: "client_shutdown", executionEffects: "may_have_occurred", outcome: "cancelled" };
       }
@@ -1580,10 +1618,23 @@ export class CloudTurnRunner {
       }
       return completion;
     } catch (error) {
+      execFailed = true;
+      execError = error;
       if (execution.bridgeFailure?.() && !signal.aborted) {
         return { errorReason: "turn_state_unknown", executionEffects: "may_have_occurred", outcome: "unknown" };
       }
       throw error;
+    } finally {
+      diagnostics.finish({
+        ...workerStopDiagnostic(
+          workerExitCode,
+          execFailed,
+          execError,
+          signal.aborted,
+          Boolean(execution.bridgeFailure?.()),
+        ),
+        execTimeoutMs: input.timeoutMs,
+      });
     }
   }
 

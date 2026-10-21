@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentRuntimeBinding, AgentRuntimeEvent, CreateAgentRuntimeRequest } from "../agent-runtime/types.js";
+import type { PiDiagnosticEvent, PiDiagnosticSink } from "../observability/pi-diagnostics.js";
 import { PiAgentRuntime, PiAgentRuntimeFactory, piAgentRuntimeEnvironment } from "../providers/pi/agent-runtime.js";
 import { type PiRpcClient, PiRpcError, type PiRpcRequestOptions } from "../providers/pi/rpc-wire.js";
 
@@ -619,9 +620,10 @@ describe("PiAgentRuntime", () => {
   });
 
   it("lets preflight compaction outlast the prompt acceptance budget, then runs the prompt", async () => {
+    const diagnostics: PiDiagnosticEvent[] = [];
     const client = new PreflightPiClient();
     const events: AgentRuntimeEvent[] = [];
-    const runtime = await preflightFactory(client).create(
+    const runtime = await preflightFactory(client, (event) => diagnostics.push(event)).create(
       createRequest((event) => {
         events.push(event);
       }),
@@ -660,16 +662,78 @@ describe("PiAgentRuntime", () => {
       // The summary request's usage joins the answer's usage (102,439 + 10 + 5).
       usage: { inputTokens: 102_454, cachedInputTokens: 2, outputTokens: 1_769 },
     });
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({
+        phase: "prompt_acceptance",
+        event: "end",
+        compactionCount: 1,
+        acceptanceWindowSeq: 2,
+        acceptanceTimerPaused: true,
+        compactionDurationMs: expect.any(Number),
+      }),
+    );
+    await runtime.close();
+  });
+
+  it("captures a get_state timeout before cleanup and never issues prompt", async () => {
+    const diagnostics: PiDiagnosticEvent[] = [];
+    const client = new PreflightPiClient();
+    const request = vi.spyOn(client, "request").mockImplementation(async () => {
+      await sleep(10);
+      throw new PiRpcError("timeout", "Pi RPC request timed out: get_state");
+    });
+    const runtime = await preflightFactory(client, (event) => diagnostics.push(event)).create(
+      createRequest(() => undefined),
+    );
+    await expect(runtime.prompt({ runId: "get-state-timeout", input: input("private prompt") })).resolves.toMatchObject(
+      { status: "failed", error: { code: "provider_error" } },
+    );
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request.mock.calls[0]?.[0]).toEqual({ type: "get_state" });
+    const failure = diagnostics.find((event) => event.event === "failure");
+    expect(failure).toMatchObject({
+      phase: "get_state",
+      error: { name: "PiRpcError", errorCode: "timeout", message: "Pi RPC request timed out: get_state" },
+    });
+    expect(failure?.durationMs).toBeGreaterThanOrEqual(8);
+    expect(diagnostics.at(-1)).toMatchObject({ phase: "cleanup", event: "end" });
+    expect(JSON.stringify(diagnostics)).not.toContain("private prompt");
+    await runtime.close();
+  });
+
+  it("keeps execution unchanged when the diagnostic callback throws", async () => {
+    const client = new PreflightPiClient();
+    const runtime = await preflightFactory(client, () => {
+      throw new Error("observer failed");
+    }).create(createRequest(() => undefined));
+    await expect(runtime.prompt({ runId: "observer-failure", input: input("hello") })).resolves.toMatchObject({
+      status: "failed",
+      error: { message: "Pi RPC request timed out: prompt" },
+    });
+    expect(client.commands.filter((command) => command.type === "prompt")).toHaveLength(1);
     await runtime.close();
   });
 
   it("still times out a prompt Pi never accepts outside compaction", async () => {
+    const diagnostics: PiDiagnosticEvent[] = [];
     const client = new PreflightPiClient();
-    const runtime = await preflightFactory(client).create(createRequest(() => undefined));
+    const runtime = await preflightFactory(client, (event) => diagnostics.push(event)).create(
+      createRequest(() => undefined),
+    );
     await expect(runtime.prompt({ runId: "run-stuck-preflight", input: input("hello") })).resolves.toMatchObject({
       status: "failed",
       error: { code: "provider_error", message: "Pi RPC request timed out: prompt" },
     });
+    expect(client.commands.filter((command) => command.type === "prompt")).toHaveLength(1);
+    expect(diagnostics).toContainEqual(expect.objectContaining({ phase: "get_state", event: "end" }));
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({
+        phase: "prompt_acceptance",
+        event: "failure",
+        durationMs: expect.any(Number),
+        error: expect.objectContaining({ errorCode: "timeout", message: "Pi RPC request timed out: prompt" }),
+      }),
+    );
     expect(client.closed).toBe(true);
     await runtime.close();
   });
@@ -699,8 +763,11 @@ describe("PiAgentRuntime", () => {
   });
 
   it("bounds cancellation during preflight compaction by closing Pi", async () => {
+    const diagnostics: PiDiagnosticEvent[] = [];
     const client = new PreflightPiClient();
-    const runtime = await preflightFactory(client).create(createRequest(() => undefined));
+    const runtime = await preflightFactory(client, (event) => diagnostics.push(event)).create(
+      createRequest(() => undefined),
+    );
     const run = runtime.prompt({ runId: "run-preflight-cancel", input: input("hello") });
     await vi.waitFor(() => expect(client.promptPending).toBe(true));
     client.emit({ type: "compaction_start", reason: "threshold" });
@@ -711,6 +778,19 @@ describe("PiAgentRuntime", () => {
     expect(client.commands.some((command) => command.type === "abort")).toBe(false);
     expect(client.closed).toBe(true);
     await expect(run).resolves.toMatchObject({ status: "aborted", error: { code: "run_aborted" } });
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({
+        phase: "prompt_acceptance",
+        event: "failure",
+        abortSource: "run_signal",
+        compactionCount: 1,
+        error: expect.objectContaining({ name: "PiRpcError", errorCode: "aborted", message: "Pi RPC is closing" }),
+      }),
+    );
+    expect(diagnostics.some((event) => event.phase === "prompt_acceptance" && event.event === "end")).toBe(false);
+    expect(diagnostics.some((event) => event.phase === "await_terminal")).toBe(false);
+    expect(diagnostics.at(-1)).toMatchObject({ phase: "cleanup", event: "end" });
+    expect(client.commands.filter((command) => command.type === "prompt")).toHaveLength(1);
     await runtime.close();
   });
 
@@ -1193,12 +1273,13 @@ function providerEventPayloadTypes(events: readonly AgentRuntimeEvent[]): unknow
 
 const PROMPT_ACCEPTANCE_TIMEOUT_MS = 50;
 
-function preflightFactory(client: PreflightPiClient): PiAgentRuntimeFactory {
+function preflightFactory(client: PiRpcClient, onDiagnostic?: PiDiagnosticSink): PiAgentRuntimeFactory {
   return new PiAgentRuntimeFactory({
     createSessionId: () => SESSION_ID,
     createClient: () => client,
     probeRunner: async () => ({ credential: true, rpc: true, version: "fixture" }),
     process: { requestTimeoutMs: PROMPT_ACCEPTANCE_TIMEOUT_MS },
+    onDiagnostic,
   });
 }
 

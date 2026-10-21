@@ -51,6 +51,77 @@ editing the LaunchAgent or systemd unit.
 `opentag.im.binding.id` and `opentag.runtime.connection.id`; do **not** pass their result as a Pino payload. Map values to
 the fixed camelCase Pino vocabulary instead.
 
+## Cloud Pi phase diagnostics
+
+Cloud Turn workers emit a bounded diagnostic stream independently of `OPENTAG_LOG_LEVEL`.
+The worker writes fixed-prefix JSON lines to stderr; the parent consumes them while native
+`exec` is still running and writes standalone JSON lines to the Runner's existing stderr.
+No diagnostic is stored in the workspace, database, or Turn report. Local Pi runs do not enable
+this stream.
+
+The parent owns `turnId`, `deliveryId` (or `messageId` for Session collaboration), `sessionId`,
+`sandboxId`, `environmentGeneration`, and the Instance's `resourceName`. Child fields cannot
+replace them. The parent's startup record includes the probed Runner and Pi versions once.
+Use `module=cloud-pi`, `operation=pi.diagnostic`, and `provider=pi` to identify this stream.
+Failures have `severity=ERROR`; normal transitions have `severity=INFO`.
+
+| Phase | Boundary |
+| --- | --- |
+| `worker_startup` | Parent launch to first valid worker diagnostic; includes module loading and input delivery. |
+| `worker_preparation` | Worker setup, proxy readiness, Context Tree preparation, and runtime construction. |
+| `pi_spawn` | Pi client creation; spawning does not establish readiness. |
+| `get_state` | First state RPC, with `rpcCommand=get_state`. |
+| `session_restore` | State validation and history restoration. |
+| `prompt_acceptance` | One prompt until acknowledgement, with `rpcCommand=prompt`. |
+| `await_terminal` | Acknowledged prompt until terminal result and queued events settle. |
+| `cleanup` | Pi shutdown; any failure remains separate from the original failure. |
+
+Each phase has `start` and `end` or `failure` records. `durationMs` measures the current phase,
+`elapsedMs` measures worker elapsed time, and `seq` orders worker records. All use process-local
+monotonic clocks; `receivedElapsedMs` is the parent's independent receive clock. Never subtract
+clocks across processes. The parent `worker_end` summary uses `durationMs` for the entire native
+exec span, not the last RPC. Existing RPC budgets, compaction handling, Turn deadlines, cancellation,
+retry, stdout completion, and report classification are unchanged.
+
+Prompt diagnostics include compaction count and duration, the current acceptance-window sequence
+and elapsed time, and whether its timer is paused. These observe the existing pause/re-arm hooks.
+Total prompt wall time can exceed the RPC budget during compaction. An acknowledged prompt's
+timer is already cleared, so its end record reports it as paused.
+
+The first failure has `primaryFailure=true`; the parent summary retains `failurePhase` even
+when later cleanup fails. Errors preserve safe name/code, up to two causes, and bounded stack
+frames with function names and source basenames/line numbers. Trusted fixed RPC messages,
+including `Pi RPC request timed out: get_state` and `Pi RPC request timed out: prompt`, are kept.
+Free text, including Pi stderr embedded in exit errors, is replaced with an explicit omission
+marker (`messageOrigin=omitted`, `redacted=true`). No prompts, request/response bodies, tool
+payloads, raw stdout/stderr, absolute paths, or credentials are forwarded. `truncated` marks
+bounded stacks/causes. `exitCode` and `exitSignal` describe the directly spawned Cloud Pi child;
+`workerExitCode` describes the parent native exec and is a separate fact.
+
+The parent always attempts a final `worker_end` summary, including on exec rejection. It carries
+the last `phase`, `phaseComplete`, `failurePhase`, `originalErrorReceived`, `stopType`, and
+`diagnosticIncomplete`. Stop types distinguish worker exit, caller shutdown, bridge failure,
+exec timeout, and other exec rejection. `abortSource` distinguishes a Turn deadline from caller
+shutdown when observed inside the worker. A started phase with no end is unconfirmed, not a
+fabricated RPC timeout. A worker that never emits a valid diagnostic remains in `worker_startup`.
+
+The parser accepts only the fixed prefix, schema version, known phases, and allowed fields.
+It bounds partial lines and ignores unrelated stderr. Output is limited to 4 KiB per line,
+32 records and 64 KiB per Turn, with reserved capacity for failure, cleanup and the parent
+summary. Dropped, rejected, missing worker-end or truncated diagnostics set `diagnosticIncomplete=true`.
+An observer or log-write exception does not change execution results. The existing Cloud Logging
+pipeline and retention policy apply; deployment and actual Cloud Logging arrival require live
+acceptance. Simultaneous loss of the Instance and both processes cannot create a missing exception.
+
+A Cloud Logging query after deployment can correlate the complete stream without filtering away
+its INFO phase records:
+
+```text
+jsonPayload.module="cloud-pi"
+jsonPayload.operation="pi.diagnostic"
+jsonPayload.turnId="<turn UUID>"
+```
+
 ## Configuration
 
 Tracing is disabled when `OPENTAG_OTEL_ENDPOINT` is empty. The exporter sends traces to the configured URL exactly as written and accepts any valid OTLP collector headers.

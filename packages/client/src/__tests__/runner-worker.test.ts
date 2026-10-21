@@ -7,6 +7,7 @@ import type {
   RuntimeImOutboxContext,
 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
+import { PiAgentRuntimeFactory } from "../providers/pi/agent-runtime.js";
 import type { CloudTurnWorkerRunOptions } from "../runner/cloud-turn-worker.js";
 import type { WorkerIo } from "../runner/worker.js";
 import { runRunnerWorker } from "../runner/worker.js";
@@ -26,6 +27,7 @@ const COMPLETION: TurnCompletion = { executionEffects: "completed", finalText: "
 
 function io(payload: string) {
   const stdout: string[] = [];
+  const stderr: string[] = [];
   const stdin = new EventEmitter() as NodeJS.ReadStream;
   (stdin as { destroy?: () => void }).destroy = () => undefined;
   queueMicrotask(() => {
@@ -34,10 +36,10 @@ function io(payload: string) {
   });
   const workerIo: WorkerIo = {
     stdin,
-    stderr: { write: () => undefined },
+    stderr: { write: (chunk) => void stderr.push(chunk) },
     stdout: { write: (chunk: string) => void stdout.push(chunk) },
   };
-  return { stdout, workerIo };
+  return { stdout, stderr, workerIo };
 }
 
 function cloudRunner() {
@@ -83,6 +85,62 @@ const OUTBOX: RuntimeImOutboxContext = {
 };
 
 describe("runRunnerWorker cloud request parsing", () => {
+  it("preserves the original preparation failure on stderr and the existing stdout protocol", async () => {
+    const output = io(JSON.stringify(turnRequest()));
+    const code = await runRunnerWorker(output.workerIo, {
+      runCloudTurn: async () => {
+        throw Object.assign(new Error("secret payload"), { code: "ENOENT" });
+      },
+    });
+    expect(code).toBe(1);
+    expect(JSON.parse(output.stdout.join(""))).toEqual({
+      kind: "error",
+      code: "worker_failed",
+      message: "The in-sandbox Turn worker failed",
+    });
+    expect(output.stderr.join("")).toContain('"event":"failure"');
+    expect(output.stderr.join("")).toContain('"errorCode":"ENOENT"');
+    expect(output.stderr.join("")).not.toContain("secret payload");
+  });
+
+  it("retains the real incompatible persisted Pi binding error before any Pi process starts", async () => {
+    const output = io(JSON.stringify(turnRequest()));
+    const code = await runRunnerWorker(output.workerIo, {
+      runCloudTurn: async () => {
+        const factory = new PiAgentRuntimeFactory({
+          createClient: () => {
+            throw new Error("Pi must not start");
+          },
+        });
+        await factory.resume({
+          binding: { providerId: "pi", schemaVersion: 1, payload: { sessionId: "invalid" } },
+          eventSink: () => undefined,
+          systemPrompt: "fixture",
+          workspace: { cwd: "/workspace" },
+          policy: {
+            fileSystem: "read-only",
+            network: "disabled",
+            approvals: "never",
+            tools: { mode: "provider-default" },
+          },
+        });
+        throw new Error("invalid binding must reject");
+      },
+    });
+    expect(code).toBe(1);
+    expect(JSON.parse(output.stdout.join(""))).toMatchObject({ kind: "error", code: "worker_failed" });
+    const failure = output.stderr
+      .join("")
+      .split("\n")
+      .filter((line) => line.startsWith("opentag-pi-diagnostic:"))
+      .map((line) => JSON.parse(line.slice("opentag-pi-diagnostic:".length)))
+      .find((record) => record.event === "failure");
+    expect(failure).toMatchObject({
+      phase: "worker_preparation",
+      error: { name: "AgentRuntimeError", errorCode: "binding_incompatible", messageOrigin: "omitted" },
+    });
+  });
+
   it("routes an internal session-message document to the Cloud worker", async () => {
     const runCloudTurn = cloudRunner();
     const output = io(JSON.stringify(sessionRequest()));

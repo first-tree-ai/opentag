@@ -10,6 +10,7 @@ import {
   RunnerPiConfigInputSchema,
 } from "@opentag/shared";
 import { z } from "zod";
+import { createPiDiagnosticStderrWriter, createPiDiagnosticWriter } from "../observability/pi-diagnostics.js";
 import { runRunnerAcceptance } from "./acceptance.js";
 import { runCloudTurnWorker } from "./cloud-turn-worker.js";
 import { copyIsolatedPiConfig } from "./config.js";
@@ -115,7 +116,7 @@ export async function runRunnerWorker(io: WorkerIo, options: WorkerOptions = {})
       return 2;
     }
     if (parsed.kind === "turn" || parsed.kind === "session-message") {
-      return await runCloudTurn(parsed, emit, options);
+      return await runCloudTurn(parsed, emit, io.stderr, options);
     }
     // Everything disposable lives under one owned scratch root inside the sandbox filesystem.
     scratch = await mkdtemp(join(tmpdir(), "opentag-runner-worker-"));
@@ -166,16 +167,24 @@ export async function runRunnerWorker(io: WorkerIo, options: WorkerOptions = {})
 async function runCloudTurn(
   request: RunnerCloudWorkerRequest,
   emit: (value: unknown) => void,
+  stderr: WorkerIo["stderr"],
   options: WorkerOptions,
 ): Promise<number> {
+  const diagnostics = createPiDiagnosticWriter(createPiDiagnosticStderrWriter(stderr));
+  diagnostics.emit({ phase: "worker_preparation", event: "ready", durationMs: 0 });
+  diagnostics.emit({ phase: "worker_preparation", event: "start", durationMs: 0 });
   try {
     const completion = await (options.runCloudTurn ?? runCloudTurnWorker)(request, {
       workspace: options.workspace ?? WORKER_DEFAULT_WORKSPACE,
+      onDiagnostic: diagnostics.emit,
     });
     emit({ kind: "result", completion });
     return completion.outcome === "completed" ? 0 : 1;
-  } catch {
+  } catch (error) {
+    diagnostics.failure(error);
     emit({ kind: "error", code: "worker_failed", message: "The in-sandbox Turn worker failed" });
     return 1;
+  } finally {
+    diagnostics.finish();
   }
 }

@@ -609,6 +609,55 @@ describe("native sandbox launch, probe, and exec failure classification", () => 
     expect(result.stdout).toBe("HELLO STDIN");
   });
 
+  it("streams stderr before a real exec deadline rejects and isolates observer errors", async () => {
+    const workspace = await temporaryDirectory("opentag-native-diagnostic-");
+    const sandbox = new NativeSandbox({
+      name: "ots-diagnostic",
+      workspace,
+      spawnProcess: (_command, args) => {
+        const separator = args.indexOf("--");
+        return spawn(process.execPath, args.slice(separator + 2), { stdio: "pipe" });
+      },
+    });
+    let observed: () => void = () => undefined;
+    const received = new Promise<void>((resolve) => {
+      observed = resolve;
+    });
+    let stderr = "";
+    const running = sandbox.exec(
+      SANDBOX_NODE,
+      ["-e", "process.stderr.write('stage-before-timeout\\n');setInterval(()=>{},1000)"],
+      {
+        timeoutMs: 1_500,
+        onStderr: (chunk) => {
+          stderr += chunk.toString();
+          observed();
+          throw new Error("observer failed");
+        },
+      },
+    );
+    const rejected = expect(running).rejects.toMatchObject({
+      code: "exec_failed",
+      message: "Sandbox execution deadline exceeded",
+    });
+    await received;
+    expect(stderr).toBe("stage-before-timeout\n");
+    await rejected;
+    const fixed = new NativeSandbox({
+      name: "ots-observer",
+      workspace,
+      spawnProcess: recordingSpawn(() => ({ code: 0, stderr: "diagnostic", stdout: "result" })).spawn,
+    });
+    await expect(
+      fixed.exec(SANDBOX_NODE, ["--version"], {
+        timeoutMs: 1_000,
+        onStderr: () => {
+          throw new Error("observer failed");
+        },
+      }),
+    ).resolves.toEqual({ code: 0, stderr: "diagnostic", stdout: "result" });
+  });
+
   it("classifies an exec deadline, a cancellation, and a spawn failure", async () => {
     const workspace = await temporaryDirectory("opentag-native-sandbox-");
     await expect(

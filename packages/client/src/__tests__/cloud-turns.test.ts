@@ -10,6 +10,8 @@ import type {
   SessionMessageDeliveryRequest,
 } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createPiDiagnosticWriter } from "../observability/pi-diagnostics.js";
+import { PiRpcError } from "../providers/pi/rpc-wire.js";
 import {
   CloudJournal,
   CloudJournalError,
@@ -17,6 +19,7 @@ import {
   cloudJournalEntryKey,
 } from "../runner/cloud-journal.js";
 import { CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS, CloudTurnRunner, type CloudTurnScope } from "../runner/cloud-turns.js";
+import { NativeSandboxError } from "../runner/native-sandbox.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
 
 const MODEL_GRANT: RunnerCloudModelGrant = {
@@ -244,7 +247,10 @@ describe("CloudTurnRunner", () => {
     options: {
       delivery?: ReturnType<typeof cloudDeliveryFixture>;
       scope?: Partial<CloudTurnScope>;
-      worker?: (input: { stdin: string; timeoutMs: number }, signal: AbortSignal) => Promise<ExecResult>;
+      worker?: (
+        input: { stdin: string; timeoutMs: number; onStderr?: (chunk: Buffer) => void },
+        signal: AbortSignal,
+      ) => Promise<ExecResult>;
       canStart?: () => boolean;
       journal?: CloudJournal;
       runnerOptions?: Partial<ConstructorParameters<typeof CloudTurnRunner>[0]>;
@@ -303,6 +309,80 @@ describe("CloudTurnRunner", () => {
       workerInputs,
     };
   }
+
+  it("wires native exec stderr to diagnostics without changing the failed completion", async () => {
+    const diagnostics: Readonly<Record<string, unknown>>[] = [];
+    const h = harness({
+      runnerOptions: {
+        runWorker: undefined,
+        onDiagnostic: (record) => diagnostics.push(record),
+        sandbox: {
+          name: "native-diagnostic-fixture",
+          openDuplex: () => {
+            throw new Error("unused duplex");
+          },
+          exec: async (_command, _args, options) => {
+            const writer = createPiDiagnosticWriter((line) => options.onStderr?.(Buffer.from(line)));
+            writer.emit({ phase: "get_state", event: "start", durationMs: 0, timeoutMs: 60_000 });
+            writer.failure(new PiRpcError("timeout", "Pi RPC request timed out: get_state"));
+            writer.emit({ phase: "cleanup", event: "end", durationMs: 2 });
+            writer.finish();
+            return {
+              code: 1,
+              stderr: "ignored raw stderr",
+              stdout: `${JSON.stringify({ kind: "result", completion: { outcome: "failed", errorReason: "provider_failed", executionEffects: "may_have_occurred" } })}\n`,
+            };
+          },
+        },
+      },
+    });
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+    await h.runner.waitForActive();
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({ phase: "get_state", event: "failure", primaryFailure: true, errorCode: "timeout" }),
+    );
+    expect(diagnostics.at(-1)).toMatchObject({
+      diagnosticIncomplete: false,
+      originalErrorReceived: true,
+      failurePhase: "get_state",
+      workerExitCode: 1,
+    });
+    expect(reportsOf(h.sent)[0]?.report).toMatchObject({ outcome: "failed", errorReason: "provider_failed" });
+    expect(JSON.stringify(diagnostics)).not.toContain("ignored raw stderr");
+    await h.runner.close();
+  });
+
+  it("relays diagnostic records before exec completes and preserves them after exec timeout", async () => {
+    const diagnostics: Readonly<Record<string, unknown>>[] = [];
+    const gate = deferred<ExecResult>();
+    const h = harness({
+      runnerOptions: { onDiagnostic: (record) => diagnostics.push(record) },
+      worker: async (input) => {
+        const writer = createPiDiagnosticWriter((line) => input.onStderr?.(Buffer.from(line)));
+        writer.emit({ phase: "get_state", event: "start", durationMs: 0, timeoutMs: 60_000 });
+        await gate.promise;
+        throw new NativeSandboxError("exec_failed", "Sandbox execution deadline exceeded");
+      },
+    });
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+    await waitFor(() => diagnostics.some((record) => record.phase === "get_state"), "streamed stage");
+    expect(reportsOf(h.sent)).toHaveLength(0);
+    gate.resolve(completedExec());
+    await h.runner.waitForActive();
+    expect(diagnostics.at(-1)).toMatchObject({
+      phase: "get_state",
+      phaseComplete: false,
+      originalErrorReceived: false,
+      diagnosticIncomplete: true,
+      stopType: "exec_timeout",
+      deliveryId: h.delivery.deliveryId,
+      resourceName: h.scope.resourceName,
+    });
+    expect(reportsOf(h.sent)[0]?.report).toMatchObject({ outcome: "unknown", errorReason: "turn_state_unknown" });
+    await h.runner.close();
+  });
 
   it("publishes liveness only after verification starts the Slack worker", async () => {
     const delivery = cloudDeliveryFixture();

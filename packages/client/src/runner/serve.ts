@@ -22,6 +22,7 @@ import {
 } from "@opentag/shared";
 import WebSocket, { type ClientOptions } from "ws";
 import { CLOUD_EXECUTION_MOUNT } from "../cloud-runtime/sandbox-entry.js";
+import { createPiDiagnosticStderrWriter } from "../observability/pi-diagnostics.js";
 import { resolveWebToolsExtensionPath } from "../runtime/web-tools-artifact.js";
 import {
   assignmentsMatch,
@@ -392,6 +393,7 @@ function createCloudTurnRunner(input: {
 }): CloudTurnRunner {
   const server = new URL(input.serverUrl);
   server.protocol = server.protocol === "wss:" ? "https:" : "http:";
+  const writeDiagnostic = createPiDiagnosticStderrWriter(input.options.stderr);
   return new CloudTurnRunner({
     canStart: () => {
       const current = input.state();
@@ -431,6 +433,17 @@ function createCloudTurnRunner(input: {
     serverUrl: server.origin,
     stateDirectory: input.privateTurnRoot,
     log: (message) => logLine(input.options.stderr, message),
+    onDiagnostic: (record) => {
+      const probe = input.state()?.probe;
+      writeDiagnostic(
+        `${JSON.stringify({
+          ...record,
+          ...(record.phase === "worker_startup" && record.event === "start" && probe
+            ? { runnerVersion: probe.runnerVersion, piVersion: probe.piVersion }
+            : {}),
+        })}\n`,
+      );
+    },
     ...(input.options.cloudTurnSeams ?? {}),
   });
 }

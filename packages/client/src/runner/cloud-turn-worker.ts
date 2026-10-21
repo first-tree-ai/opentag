@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promise
 import { connect as connectTcp } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { connect as connectTls } from "node:tls";
 import type { RunnerCloudWorkerRequest } from "@opentag/shared";
 import type {
@@ -20,6 +21,12 @@ import {
   CLOUD_SANDBOX_CA_FILE,
   CLOUD_SLACK_API_PORT,
 } from "../cloud-runtime/sandbox-entry.js";
+import {
+  emitPiDiagnostic,
+  type PiDiagnosticPhase,
+  type PiDiagnosticSink,
+  piDiagnosticError,
+} from "../observability/pi-diagnostics.js";
 import { PiAgentRuntimeFactory } from "../providers/pi/agent-runtime.js";
 import type { PiRpcProcessSpawnOptions } from "../providers/pi/rpc-wire.js";
 import { completionForError, completionForResult, type TurnCompletion } from "../runtime/agent-turn-runner.js";
@@ -290,6 +297,7 @@ export interface CloudTurnPiRuntime {
 }
 
 export interface CloudTurnWorkerRunOptions {
+  readonly onDiagnostic?: PiDiagnosticSink;
   readonly now?: () => number;
   readonly signal?: AbortSignal;
   readonly workspace: string;
@@ -330,13 +338,14 @@ export interface CloudTurnWorkerRunOptions {
     readonly environment: Record<string, string>;
     readonly sessionDirectory: string;
     readonly pids: Set<number>;
+    readonly onDiagnostic: PiDiagnosticSink;
   }) => CloudTurnPiFactory;
 }
 
 /** The effective execution bounds shared by optional preparation and the Pi run. */
 interface TurnExecutionContext {
   readonly signal: AbortSignal;
-  readonly stopReason: () => string | undefined;
+  readonly stopReason: () => "client_shutdown" | "turn_timeout" | undefined;
 }
 
 function createTurnExecutionContext(
@@ -377,10 +386,39 @@ function prepareTurnContextTree(
   });
 }
 
+function cloudPiDiagnostics(
+  sink: PiDiagnosticSink | undefined,
+  execution: TurnExecutionContext,
+  preparationStarted: number,
+) {
+  let phase: PiDiagnosticPhase = "worker_preparation";
+  let started = preparationStarted;
+  let failed = false;
+  const emit: PiDiagnosticSink = (event) => {
+    phase = event.phase;
+    if (event.event === "start") started = performance.now();
+    if (event.event === "failure") failed = true;
+    emitPiDiagnostic(sink, { ...event, abortSource: execution.stopReason() ?? event.abortSource });
+  };
+  return {
+    emit,
+    failure(error: unknown) {
+      if (failed) return;
+      emit({
+        phase,
+        event: "failure",
+        durationMs: Math.max(0, performance.now() - started),
+        error: piDiagnosticError(error),
+      });
+    },
+  };
+}
+
 export async function runCloudTurnWorker(
   request: RunnerCloudWorkerRequest,
   options: CloudTurnWorkerRunOptions,
 ): Promise<TurnCompletion> {
+  const preparationStarted = performance.now();
   assertSafeInSandboxPath(request.executionDir, "execution directory");
   const executionMount = options.executionMount ?? CLOUD_EXECUTION_MOUNT;
   if (!request.executionDir.startsWith(`${executionMount}/`)) {
@@ -425,11 +463,20 @@ export async function runCloudTurnWorker(
     // The effective execution deadline and caller cancellation bound everything below, including
     // optional Context Tree preparation (which additionally has its own small budget).
     const execution = createTurnExecutionContext(request, options);
+    const diagnostics = cloudPiDiagnostics(options.onDiagnostic, execution, preparationStarted);
     const contextTree = await prepareTurnContextTree(request, options, execution, scratch, manifest.environment);
     if (execution.signal.aborted) {
       // The execution deadline or caller stop fired during preparation. The preparation child
       // (including any nested git) was stopped and awaited, so Pi must not start now.
-      return completionForError(new Error("The Turn stopped during Context Tree preparation"), execution.stopReason());
+      const abortSource = execution.stopReason();
+      emitPiDiagnostic(options.onDiagnostic, {
+        phase: "worker_preparation",
+        event: "end",
+        outcome: "aborted",
+        durationMs: Math.max(0, performance.now() - preparationStarted),
+        abortSource,
+      });
+      return completionForError(new Error("The Turn stopped during Context Tree preparation"), abortSource);
     }
 
     const documents = cloudTurnPiDocuments(request);
@@ -478,8 +525,14 @@ export async function runCloudTurnWorker(
     const toolSkills = await assembleRunnerToolSkills();
     const skillPaths = [...(contextTreeSkills?.skillPaths ?? []), ...toolSkills.skills.map((skill) => skill.directory)];
     const factory =
-      options.createPiFactory?.({ environment: runtimeEnvironment, pids, sessionDirectory }) ??
+      options.createPiFactory?.({
+        environment: runtimeEnvironment,
+        pids,
+        sessionDirectory,
+        onDiagnostic: diagnostics.emit,
+      }) ??
       new PiAgentRuntimeFactory({
+        onDiagnostic: diagnostics.emit,
         mcpAdapterEntry: CLOUD_PI_MCP_ADAPTER_ENTRY,
         process: {
           args: skillArgsOf(skillPaths),
@@ -510,6 +563,11 @@ export async function runCloudTurnWorker(
       ? await factory.resume({ ...common, binding: persisted })
       : await factory.create(common);
     runtime = activeRuntime;
+    emitPiDiagnostic(options.onDiagnostic, {
+      phase: "worker_preparation",
+      event: "end",
+      durationMs: Math.max(0, performance.now() - preparationStarted),
+    });
 
     const onAbort = () => terminateTrackedProcesses(pids);
     execution.signal.addEventListener("abort", onAbort, { once: true });
@@ -527,6 +585,7 @@ export async function runCloudTurnWorker(
           ? completionForResult(result, undefined)
           : completionForResult(result, execution.stopReason());
     } catch (error) {
+      diagnostics.failure(error);
       completion = completionForError(error, execution.stopReason());
     } finally {
       execution.signal.removeEventListener("abort", onAbort);

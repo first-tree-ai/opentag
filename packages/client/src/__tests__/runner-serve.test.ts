@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer, type WebSocket as WsSocket } from "ws";
+import { createPiDiagnosticWriter } from "../observability/pi-diagnostics.js";
 import { CloudJournal } from "../runner/cloud-journal.js";
 import {
   buildSandboxDeleteArgv,
@@ -1173,6 +1174,10 @@ describe("Runner cancellation and connection lifetime", () => {
           }),
           runWorker: async (input) => {
             workerInputs.push(input);
+            const diagnostics = createPiDiagnosticWriter((line) => input.onStderr?.(Buffer.from(line)));
+            diagnostics.emit({ phase: "get_state", event: "start", durationMs: 0, timeoutMs: 60_000 });
+            diagnostics.emit({ phase: "get_state", event: "end", durationMs: 5 });
+            diagnostics.finish();
             return {
               code: 0,
               stderr: "",
@@ -1216,6 +1221,30 @@ describe("Runner cancellation and connection lifetime", () => {
       report: { outcome: string; resultHash: string; turnId: string };
     };
     expect(reportFrame.report.outcome).toBe("completed");
+    const diagnostics = output.chunks.stderr
+      .join("")
+      .split("\n")
+      .filter((line) => line.startsWith("{"))
+      .map((line) => JSON.parse(line));
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({
+        module: "cloud-pi",
+        operation: "pi.diagnostic",
+        phase: "get_state",
+        event: "end",
+        durationMs: 5,
+        severity: "INFO",
+        turnId: reportFrame.report.turnId,
+        deliveryId: delivery.deliveryId,
+      }),
+    );
+    expect(diagnostics.at(-1)).toMatchObject({
+      event: "worker_end",
+      diagnosticIncomplete: false,
+      stopType: "worker_exit",
+    });
+    expect(diagnostics[0]).toHaveProperty("runnerVersion");
+    expect(JSON.stringify(diagnostics)).not.toMatch(/unit-execution-token|ephemeral-proof/);
     await waitFor(() => workerInputs.length === 1, "single cloud worker");
     // The worker stdin never carries any trusted (private/journal) host path from the Runner state root.
     expect(workerInputs[0]?.stdin).not.toContain(stateDir);

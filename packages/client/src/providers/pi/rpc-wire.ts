@@ -1,5 +1,6 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { type ClientLogger, createLogger } from "../../observability/logger.js";
+import type { PiProcessExit } from "../../observability/pi-diagnostics.js";
 import { signalWatchedProcess, spawnWatchedProcess } from "../process-owner.js";
 
 export const PI_RPC_MAX_LINE_BYTES = 8 * 1024 * 1024;
@@ -12,8 +13,9 @@ export class PiRpcError extends Error {
   constructor(
     readonly code: "aborted" | "command" | "exited" | "protocol" | "spawn" | "timeout" | "write",
     message: string,
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
     this.name = "PiRpcError";
   }
 }
@@ -50,6 +52,7 @@ export interface PiRpcRequestOptions {
 }
 
 export interface PiRpcClient {
+  readonly exitStatus?: PiProcessExit;
   request(
     command: Readonly<Record<string, unknown>>,
     signal?: AbortSignal,
@@ -85,6 +88,7 @@ export class PiRpcProcess implements PiRpcClient {
   #closed = false;
   #closing = false;
   #failure?: Error;
+  #exitStatus: PiProcessExit | undefined;
 
   constructor(options: PiRpcSpawnOptions) {
     this.#maxLineBytes = options.maxLineBytes ?? PI_RPC_MAX_LINE_BYTES;
@@ -111,7 +115,9 @@ export class PiRpcProcess implements PiRpcClient {
       });
     } catch (error) {
       this.#logger.debug({ code: "spawn_failed", error: String(error) }, "Pi RPC process spawn failed");
-      throw new PiRpcError("spawn", error instanceof Error ? error.message : "Pi could not be started");
+      throw new PiRpcError("spawn", error instanceof Error ? error.message : "Pi could not be started", {
+        cause: error,
+      });
     }
     this.#child.stdout.on("data", (chunk: Buffer) => this.#onStdout(chunk));
     this.#child.stderr.on("data", (chunk: Buffer) => this.#onStderr(chunk));
@@ -119,7 +125,14 @@ export class PiRpcProcess implements PiRpcClient {
       this.#logger.debug({ code: "process_error", error: String(error) }, "Pi RPC process failed");
       this.#onChildError(error);
     });
-    this.#child.on("close", () => this.#onExit());
+    this.#child.on("close", (code, signal) => {
+      this.#exitStatus = { code: code ?? null, signal: signal ?? null };
+      this.#onExit();
+    });
+  }
+
+  get exitStatus(): PiProcessExit | undefined {
+    return this.#exitStatus;
   }
 
   get pid(): number | undefined {
@@ -327,7 +340,7 @@ export class PiRpcProcess implements PiRpcClient {
   }
 
   #onChildError(error: Error): void {
-    this.#fail(new PiRpcError("spawn", error.message));
+    this.#fail(new PiRpcError("spawn", error.message, { cause: error }));
     this.#closed = true;
     this.#resolveExit?.();
     this.#resolveExit = undefined;

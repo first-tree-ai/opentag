@@ -109,6 +109,11 @@ only after this cleanup. Reconnection waits for the same cleanup barrier. A clea
 terminates the Runner with a failing status. This E3 fixture reset is not a durable Session resume
 implementation.
 
+Cloud Pi worker failures are observed through the parent's live stderr diagnostic stream, with
+separate `get_state`, prompt acceptance, terminal, and cleanup timings. The operational fields,
+redaction rules, quotas, and missing-evidence semantics are defined in
+[Cloud Pi phase diagnostics](../../operations/observability.md#cloud-pi-phase-diagnostics).
+
 ## E4 Cloud IM delivery (opt-in)
 
 E4 delivers a normalized IM message to a Session's existing Cloud allocation over the same

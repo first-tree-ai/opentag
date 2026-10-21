@@ -2,6 +2,61 @@
 
 Test and acceptance material for [Cloud Runner execution](../../docs/system/cloud/cloud-runner-execution.md).
 
+## Cloud Pi diagnostics verification
+
+Local synthetic verification covers the worker-to-parent diagnostic stream without a model,
+external Provider, cloud task, replay, or deployment:
+
+```bash
+pnpm --filter @opentag/client exec vitest run src/__tests__/pi-diagnostics.test.ts src/__tests__/pi-agent-runtime.test.ts src/__tests__/pi-agent-runtime-exhaustive.test.ts src/__tests__/pi-rpc-wire.test.ts src/__tests__/runner-worker.test.ts src/__tests__/runner-native-sandbox.test.ts src/__tests__/cloud-turn-worker.test.ts src/__tests__/cloud-turns.test.ts src/__tests__/runner-serve.test.ts --maxWorkers=1
+pnpm --filter @opentag/client test:agent-runtime:coverage
+```
+
+- A prompt rejection before runtime execution is captured before completion conversion, with
+  the existing unknown outcome preserved.
+- A delayed `get_state` failure records the original RPC timeout and stage duration, before
+  cleanup, with zero prompt requests. Prompt acceptance timeout records the distinct prompt
+  message, after successful state retrieval, with exactly one prompt request.
+- Preflight compaction retains its existing pause/re-arm semantics, while diagnostics distinguish
+  total phase time, compaction duration, and the current acceptance window.
+- A short Cloud Turn deadline during `get_state` records `abortSource=turn_timeout` and the
+  original `aborted` RPC error rather than fabricating a request timeout. Preparation cancellation
+  and deadlines stop before Pi and retain their distinct sources.
+- Direct Pi exit code is observed separately from native exec. An original runtime failure and a
+  later cleanup error remain separate records. Recorder exceptions leave results unchanged.
+- Real local child stderr arrives before a real exec deadline rejects; a parent lifecycle fixture
+  retains the last stage and missing-original-error marker after exec rejection. Loopback Runner
+  serve writes independent structured JSON with trusted correlation and the probed version.
+- Split lines, oversized/noisy stderr, forbidden fields, untrusted error text, incomplete streams,
+  exhausted quotas, and throwing writers exercise bounded parsing, redaction, and failure reserves.
+
+These checks prove local execution and serialization. They do not prove deployed Runner source,
+Cloud Logging ingestion, retention after Sandbox deletion, or the historical incident's root cause.
+Live acceptance requires separately authorized staging execution: record the source/image identity,
+query both INFO and ERROR records by the same Turn ID after success and failure, and re-query them
+after task-owned Sandbox cleanup. Preserve phase timings, original error/omission flags and stop
+source; reconcile created resources. Do not call image publication or local printing live acceptance.
+
+### Local validation record (2026-10-21)
+
+Base: `ff4c237ed50b434d5e473d9492bbb55d78e58379`.
+Local branch: `fix/issue-961-pi-diagnostics-20261021`.
+
+| Check | Observed result |
+| --- | --- |
+| `pnpm check` | Passed, including complexity ratchet and Context Tree verification. |
+| `pnpm build` | Passed: 8 workspace tasks. |
+| `pnpm typecheck` | Passed: 12 workspace tasks. |
+| Agent Runtime coverage gate | 655 tests passed; statements, branches, functions and lines each 100%. |
+| Latest focused worker/parent/serialization suites | 169 tests passed in 5 files. |
+| `pnpm test` | Exited 1: Client had 2,534 passed, 6 skipped and one existing Context Tree test hit its 5,000 ms test timeout. Server had 3,989 passed / 16 skipped; Web had 2,134 passed. This is not a clean whole-workspace pass. |
+| Isolated Context Tree recheck | All 7 tests passed without changing their timeout or source. The same file also passed in the earlier whole-workspace run. |
+
+No database integration suite, CI, PR, image publication, deployment, cloud replay, or Cloud
+Logging delivery acceptance was performed. Runtime budgets and the timed-out Context Tree
+source/test were not changed. These local observations do not determine the historical failures'
+root cause or establish cloud delivery.
+
 ## Acceptance
 
 First run the repository checks and the image's offline toolchain suite. The latter now checks

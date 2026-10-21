@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
-import type { RuntimeApprovalRequest } from "@opentag/shared";
+import {
+  RuntimeApprovalDecisionSchema,
+  type RuntimeApprovalRequest,
+  RuntimeApprovalResultSchema,
+  ServerRuntimeBusinessFrameSchema,
+} from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import type { ApprovalStore, PendingApproval } from "../runtime/approval-store.js";
@@ -142,6 +147,50 @@ function setup(provider: "slack" | "feishu" = "slack") {
 }
 
 describe("Runtime approvals", () => {
+  it.each([
+    ["slack", "accept", "approved"],
+    ["slack", "decline", "denied"],
+    ["feishu", "accept", "approved"],
+    ["feishu", "decline", "denied"],
+  ] as const)("delivers and acknowledges a presented %s %s decision", async (provider, decision, status) => {
+    const s = setup(provider);
+    s.request.commandPresentation = { command: "git push", reason: "Push?" };
+    await s.owner.businessOptions().handle(s.request, s.context);
+    expect(await s.owner.decide({ ...s.action(), decision })).toBe("recorded");
+    await s.owner.poll();
+    const frame = RuntimeApprovalDecisionSchema.parse(
+      ServerRuntimeBusinessFrameSchema.parse(s.registry.send.mock.calls[0]?.[2]),
+    );
+    expect(frame).toEqual({
+      type: "approval:decision",
+      requestId: s.request.requestId,
+      turnId: s.request.turnId,
+      sessionId: s.request.sessionId,
+      deliveryId: s.request.deliveryId,
+      placementGeneration: s.request.placementGeneration,
+      decision,
+    });
+    expect(s.messenger.finish).not.toHaveBeenCalled();
+    const { decision: _decision, ...identity } = frame;
+    const result = RuntimeApprovalResultSchema.parse({ ...identity, type: "approval:result", status: "applied" });
+    await s.owner.businessOptions().handle(result, s.context);
+    await s.owner.poll();
+    expect(s.row().status).toBe(status);
+    expect(s.messenger.finish).toHaveBeenCalledWith(expect.objectContaining({ status }));
+    expect(s.row().cardUpdatedAt).toBeInstanceOf(Date);
+  });
+
+  it.each(["failureResult", "overloadResult"] as const)("omits presentation from %s declines", (method) => {
+    const s = setup();
+    s.request.commandPresentation = { command: "git push", reason: "Push?" };
+    const frame = s.owner.businessOptions()[method](s.request);
+    expect(ServerRuntimeBusinessFrameSchema.parse(frame)).toMatchObject({
+      type: "approval:decision",
+      requestId: s.request.requestId,
+      decision: "decline",
+    });
+  });
+
   it.each(["slack", "feishu"] as const)(
     "delivers a %s decision once to the same turn and waits for acknowledgement",
     async (provider) => {
@@ -244,8 +293,9 @@ describe("Runtime approvals", () => {
 
   it("denies a request when its authority is unavailable", async () => {
     const s = setup();
+    s.request.commandPresentation = { command: "git push", reason: "Push?" };
     s.load.mockResolvedValue(undefined as never);
-    expect(await s.owner.request(s.request, s.context)).toMatchObject({
+    expect(ServerRuntimeBusinessFrameSchema.parse(await s.owner.request(s.request, s.context))).toMatchObject({
       type: "approval:decision",
       decision: "decline",
     });
@@ -254,11 +304,17 @@ describe("Runtime approvals", () => {
 
   it("expires a pending request without applying a late approval", async () => {
     const s = setup();
+    s.request.commandPresentation = { command: "git push", reason: "Push?" };
     await s.owner.request(s.request, s.context);
     s.advance();
     expect(await s.owner.decide(s.action())).toBe("unavailable");
     await s.owner.poll();
     expect(s.row().status).toBe("stale");
+    expect(ServerRuntimeBusinessFrameSchema.parse(s.registry.send.mock.calls[0]?.[2])).toMatchObject({
+      type: "approval:decision",
+      requestId: s.request.requestId,
+      decision: "decline",
+    });
     expect(s.registry.send).toHaveBeenCalledWith(
       s.context.computerId,
       s.context.instanceId,

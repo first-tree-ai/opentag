@@ -257,8 +257,15 @@ export function matchesActor(row: PendingApproval, action: ApprovalAction): bool
   );
 }
 function decline(request: RuntimeApprovalRequest): RuntimeApprovalDecision {
-  const { title: _title, description: _description, expiresAt: _expiresAt, ...identity } = request;
-  return { ...identity, type: "approval:decision", decision: "decline" };
+  return {
+    type: "approval:decision",
+    requestId: request.requestId,
+    turnId: request.turnId,
+    sessionId: request.sessionId,
+    deliveryId: request.deliveryId,
+    placementGeneration: request.placementGeneration,
+    decision: "decline",
+  };
 }
 function approvalId(
   request: Pick<RuntimeApprovalRequest, "requestId" | "turnId" | "sessionId" | "deliveryId" | "placementGeneration">,

@@ -135,6 +135,8 @@ carry `commandPresentation` with a separately redacted command and reason. The c
 negotiated, so older Servers with strict request schemas still receive their original payload.
 Servers accept requests without this field and render their full description; this capability
 changes presentation only, never approval authority or decision semantics.
+Decision frames contain only the request identity and decision. Request-only presentation fields
+are never copied into decisions, including automatic declines and expired requests.
 
 ## Channel target advertisement
 

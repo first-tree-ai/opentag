@@ -10,9 +10,8 @@ type ReactionOutcome = { generation: number; failed: boolean };
 
 /** Best-effort feedback from existing terminal delivery events; the provider owns reaction state. */
 export class ImFailureReactions {
-  readonly #scheduler = new KeyedTaskScheduler({ maxConcurrent: 2, maxQueuedPerKey: 1, maxQueuedTotal: 256 });
+  readonly #scheduler = new KeyedTaskScheduler({ maxConcurrent: 1, maxQueuedPerKey: 1, maxQueuedTotal: 256 });
   readonly #pending = new Map<string, Promise<void>>();
-  readonly #messages = new Map<string, Promise<void>>();
   #closed = false;
   constructor(
     readonly options: {
@@ -85,12 +84,7 @@ export class ImFailureReactions {
         );
       for (const target of targets) {
         if (this.#closed) return;
-        const key = JSON.stringify([target.bindingId, target.channelId, target.externalMessageId]);
-        const previous = this.#messages.get(key) ?? Promise.resolve();
-        const update = previous.then(() => this.#apply(target)).catch(() => this.#failed());
-        this.#messages.set(key, update);
-        await update;
-        if (this.#messages.get(key) === update) this.#messages.delete(key);
+        await this.#apply(target).catch(() => this.#failed());
       }
     } catch {
       this.#failed();

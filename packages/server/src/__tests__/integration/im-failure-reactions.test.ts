@@ -10,14 +10,14 @@ let testDatabase: MigratedTestDatabase;
 let client: ReturnType<typeof createDatabaseClient>;
 beforeAll(async () => {
   testDatabase = await startMigratedTestDatabase();
-  client = createDatabaseClient(testDatabase.databaseUrl, { max: 2 });
+  client = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
 }, 120_000);
 afterAll(async () => {
   await client?.sql.end();
   await testDatabase?.stop();
 });
 
-it("keeps a two-connection pool available while reaction calls from an expiry batch are blocked", async () => {
+it("keeps a single-connection pool available while an expiry reaction call is blocked", async () => {
   const clock = new Date(),
     h = await createFailureReactionFixture(client.database, () => clock);
   const deliveries = await Promise.all(Array.from({ length: 8 }, () => h.delivery()));
@@ -63,13 +63,13 @@ it("keeps a two-connection pool available while reaction calls from an expiry ba
       },
       (id) => h.reactions.notify(id),
     );
-    await expect.poll(() => active).toBe(2);
+    await expect.poll(() => active).toBe(1);
     const jobs = deliveries.map(({ frame }) => h.reactions.sync(frame.deliveryId));
-    // Both reaction calls remain blocked, so a query can finish only if they released their connections.
+    // The reaction call remains blocked, so a query can finish only if it released the connection.
     await expect(client.sql`select 1 as available`).resolves.toMatchObject([{ available: 1 }]);
     release();
     await Promise.all(jobs);
-    expect(peak).toBe(2);
+    expect(peak).toBe(1);
     expect(h.setFailureReaction).toHaveBeenCalledTimes(deliveries.length);
   } finally {
     release();

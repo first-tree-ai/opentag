@@ -262,7 +262,7 @@ describe("best-effort message failure reactions", () => {
     expect(onDeliverySettled).toHaveBeenCalledExactlyOnceWith(delivery.frame.deliveryId);
   });
 
-  it("limits an expiry burst to two reaction calls and coalesces repeat notifications", async () => {
+  it("processes an expiry burst one reaction at a time and coalesces repeat notifications", async () => {
     const h = await fixture();
     const deliveries = await Promise.all(Array.from({ length: 8 }, () => h.delivery()));
     for (const { frame } of deliveries) {
@@ -320,7 +320,7 @@ describe("best-effort message failure reactions", () => {
         },
         (id) => reactions.notify(id),
       );
-      await expect.poll(() => active).toBe(2);
+      await expect.poll(() => active).toBe(1);
       const jobs = deliveries.flatMap(({ frame }) => [
         reactions.sync(frame.deliveryId),
         reactions.sync(frame.deliveryId),
@@ -328,7 +328,7 @@ describe("best-effort message failure reactions", () => {
       expect(transaction).not.toHaveBeenCalled();
       release();
       await Promise.all(jobs);
-      expect(peak).toBe(2);
+      expect(peak).toBe(1);
       expect(h.setFailureReaction).toHaveBeenCalledTimes(deliveries.length);
     } finally {
       release();
@@ -407,7 +407,7 @@ describe("best-effort message failure reactions", () => {
     });
     const jobs = deliveries.map(({ frame }) => h.reactions.sync(frame.deliveryId));
     try {
-      await expect.poll(() => h.setFailureReaction.mock.calls.length).toBe(2);
+      await expect.poll(() => h.setFailureReaction.mock.calls.length).toBe(1);
       let closed = false;
       const closing = h.reactions.close().then(() => {
         closed = true;
@@ -418,7 +418,7 @@ describe("best-effort message failure reactions", () => {
       await closing;
       await Promise.all(jobs);
       h.reactions.notify(deliveries[0]?.frame.deliveryId ?? "closed");
-      expect(h.setFailureReaction).toHaveBeenCalledTimes(2);
+      expect(h.setFailureReaction).toHaveBeenCalledTimes(1);
       expect(h.warn).not.toHaveBeenCalled();
     } finally {
       release();

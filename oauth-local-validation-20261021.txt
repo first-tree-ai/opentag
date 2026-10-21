@@ -1,0 +1,2 @@
+OAuth capability validation only. Do not merge.
+This temporary branch exercises git push and gh pull request operations using the isolated test OAuth App.

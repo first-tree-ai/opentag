@@ -86,10 +86,12 @@ retry, stdout completion, and report classification are unchanged.
 Prompt diagnostics include compaction count and duration, the current acceptance-window sequence
 and elapsed time, and whether its timer is paused. These observe the existing pause/re-arm hooks.
 Total prompt wall time can exceed the RPC budget during compaction. An acknowledged prompt's
-timer is already cleared, so its end record reports it as paused.
+timer is already cleared, so its end record reports it as paused. Cancellation before acknowledgement
+records the aborted RPC in `prompt_acceptance` and does not enter `await_terminal`.
 
 The first failure has `primaryFailure=true`; the parent summary retains `failurePhase` even
-when later cleanup fails. Errors preserve safe name/code, up to two causes, and bounded stack
+when later cleanup fails. Errors preserve safe name/code, including the owned `AgentRuntimeError`
+code union and `provider_start_failed`, up to two causes, and bounded stack
 frames with function names and source basenames/line numbers. Trusted fixed RPC messages,
 including `Pi RPC request timed out: get_state` and `Pi RPC request timed out: prompt`, are kept.
 Free text, including Pi stderr embedded in exit errors, is replaced with an explicit omission
@@ -109,7 +111,9 @@ The parser accepts only the fixed prefix, schema version, known phases, and allo
 It bounds partial lines and ignores unrelated stderr. Output is limited to 4 KiB per line,
 32 records and 64 KiB per Turn, with reserved capacity for failure, cleanup and the parent
 summary. Dropped, rejected, missing worker-end or truncated diagnostics set `diagnosticIncomplete=true`.
-An observer or log-write exception does not change execution results. The existing Cloud Logging
+An observer or log-write exception does not change execution results. A shared stderr error listener
+handles asynchronous write failures, including EPIPE; later diagnostic writes stop without
+terminating the worker or Runner. The existing Cloud Logging
 pipeline and retention policy apply; deployment and actual Cloud Logging arrival require live
 acceptance. Simultaneous loss of the Instance and both processes cannot create a missing exception.
 

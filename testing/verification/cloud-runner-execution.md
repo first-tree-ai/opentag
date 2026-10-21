@@ -18,7 +18,8 @@ pnpm --filter @opentag/client test:agent-runtime:coverage
   cleanup, with zero prompt requests. Prompt acceptance timeout records the distinct prompt
   message, after successful state retrieval, with exactly one prompt request.
 - Preflight compaction retains its existing pause/re-arm semantics, while diagnostics distinguish
-  total phase time, compaction duration, and the current acceptance window.
+  total phase time, compaction duration, and the current acceptance window. Cancellation before
+  prompt acknowledgement retains the original aborted RPC and never claims `await_terminal`.
 - A short Cloud Turn deadline during `get_state` records `abortSource=turn_timeout` and the
   original `aborted` RPC error rather than fabricating a request timeout. Preparation cancellation
   and deadlines stop before Pi and retain their distinct sources.
@@ -27,6 +28,10 @@ pnpm --filter @opentag/client test:agent-runtime:coverage
 - Real local child stderr arrives before a real exec deadline rejects; a parent lifecycle fixture
   retains the last stage and missing-original-error marker after exec rejection. Loopback Runner
   serve writes independent structured JSON with trusted correlation and the probed version.
+- Real subprocess tests keep stdin/stdout open while closing stderr, verifying worker and parent
+  diagnostic sinks survive asynchronous EPIPE. Repeated writers share one error listener per stream.
+- Every owned runtime error code and provider startup failures retain their safe identity; an actual
+  incompatible Pi resume binding is rejected and logged before any Pi process starts.
 - Split lines, oversized/noisy stderr, forbidden fields, untrusted error text, incomplete streams,
   exhausted quotas, and throwing writers exercise bounded parsing, redaction, and failure reserves.
 
@@ -52,10 +57,35 @@ Local branch: `fix/issue-961-pi-diagnostics-20261021`.
 | `pnpm test` | Exited 1: Client had 2,534 passed, 6 skipped and one existing Context Tree test hit its 5,000 ms test timeout. Server had 3,989 passed / 16 skipped; Web had 2,134 passed. This is not a clean whole-workspace pass. |
 | Isolated Context Tree recheck | All 7 tests passed without changing their timeout or source. The same file also passed in the earlier whole-workspace run. |
 
-No database integration suite, CI, PR, image publication, deployment, cloud replay, or Cloud
-Logging delivery acceptance was performed. Runtime budgets and the timed-out Context Tree
+The initial validation performed no database integration suite, CI, PR, image publication,
+deployment, cloud replay, or Cloud Logging delivery acceptance. Runtime budgets and the timed-out Context Tree
 source/test were not changed. These local observations do not determine the historical failures'
 root cause or establish cloud delivery.
+
+### Independent review and pre-PR validation
+
+The implementation was independently reviewed in a separate context. Three P2 issues were found
+and verified fixed: cancellation before prompt acknowledgement, omitted owned runtime error
+identities/codes, and asynchronous stderr EPIPE terminating execution. The independent reviewer
+then reported no remaining actionable findings. Its final delta suites passed 65 tests, and all
+four real worker/parent normal/closed-pipe subprocess cases exited normally.
+
+The implementation was rebased onto `854875c526848c1c97fa998037e718b3abddb9b1`; `git range-diff`
+confirmed the implementation patch was unchanged. Following the current local-validation policy,
+checks cover Pi Runtime, both IM and Session Cloud Turn paths, worker parsing, native stderr
+transport, parent Runner JSON output, serialization limits, and directly affected package types
+and build outputs:
+
+- `pnpm exec turbo run build typecheck --filter=@opentag/client --concurrency=2`: passed.
+- Eight focused diagnostic/worker/native/parent suites: 245 tests passed.
+- `pnpm --filter @opentag/client test:agent-runtime:coverage`: 658 tests passed; statements,
+  branches, functions and lines each remain at 100%.
+
+The earlier full-suite timeout remains disclosed above. The unchanged full workspace and
+PostgreSQL integration suites are not rerun for this bounded Client-only change: no database,
+public protocol, timeout, retry, or shared schema changes are introduced. CI remains the authority
+for the full regression matrix and must pass before merge. Cloud execution and Cloud Logging
+arrival remain unverified locally.
 
 ## Acceptance
 

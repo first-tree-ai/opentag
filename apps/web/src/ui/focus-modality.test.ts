@@ -12,12 +12,52 @@ describe("shared control focus modality", () => {
     expect(document.documentElement.getAttribute(attribute)).toBe("keyboard");
     fireEvent.pointerDown(document.body);
     expect(document.documentElement.getAttribute(attribute)).toBe("pointer");
-    for (const key of ["a", " ", "Enter"]) fireEvent.keyDown(document.body, { key });
+    const field = document.createElement("textarea");
+    document.body.append(field);
+    try {
+      for (const key of ["a", " ", "Enter"]) fireEvent.keyDown(field, { key });
+    } finally {
+      field.remove();
+    }
     expect(document.documentElement.getAttribute(attribute)).toBe("pointer");
     fireEvent.keyDown(document.body, { key: "Tab", shiftKey: true });
     expect(document.documentElement.getAttribute(attribute)).toBe("keyboard");
     fireEvent.pointerDown(document.body);
     expect(document.documentElement.getAttribute(attribute)).toBe("pointer");
+  });
+
+  it.each(["Enter", " ", "Escape", "ArrowDown"])("restores keyboard focus for the %s action", (key) => {
+    uninstall = installFocusModality(document);
+    const trigger = document.createElement("button");
+    document.body.append(trigger);
+    try {
+      fireEvent.pointerDown(trigger);
+      fireEvent.keyDown(trigger, { key });
+      expect(document.documentElement.getAttribute(attribute)).toBe("keyboard");
+    } finally {
+      trigger.remove();
+    }
+  });
+
+  it("preserves contenteditable typing but restores focus for shortcuts and Escape", () => {
+    uninstall = installFocusModality(document);
+    const editor = document.createElement("div");
+    editor.setAttribute("contenteditable", "true");
+    const paragraph = document.createElement("p");
+    editor.append(paragraph);
+    document.body.append(editor);
+    try {
+      fireEvent.pointerDown(paragraph);
+      fireEvent.keyDown(paragraph, { key: "Enter" });
+      expect(document.documentElement.getAttribute(attribute)).toBe("pointer");
+      fireEvent.keyDown(paragraph, { key: "k", metaKey: true });
+      expect(document.documentElement.getAttribute(attribute)).toBe("keyboard");
+      fireEvent.pointerDown(paragraph);
+      fireEvent.keyDown(paragraph, { key: "Escape" });
+      expect(document.documentElement.getAttribute(attribute)).toBe("keyboard");
+    } finally {
+      editor.remove();
+    }
   });
 
   it("captures pointer input in body-mounted popups even when propagation stops", () => {

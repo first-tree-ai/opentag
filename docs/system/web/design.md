@@ -106,9 +106,9 @@ Partner and integration logos retain their identity and proportions. Vendor demo
 | Warning and error | `--warning` / `--destructive` | Orange-red `#e5502e`; retain separate semantic roles and descriptive labels/icons |
 | Footer surface | `--surface-footer` | Cool gray `#eef0f3` |
 | Table / FAQ borders | `--border-table` / `--border-subtle` | `#dce0e6` / `#e5e8ed` |
-| Idle control boundary | `--control-border-idle` | `#cbd1d9`; one 1px border shared by inputs, textareas, Select triggers, and the Soul editor |
-| Pointer focus / open Select | `--border-strong` | `#8a8e95`; deepen the existing 1px boundary without a shadow or additional ring |
-| Keyboard focus | `--ring` | `#697586`; Tab navigation uses one 2px contour at the existing boundary, without a separated outer ring |
+| Idle control boundary | `--border-strong` | `#8a8e95`; one 1px border shared by inputs, textareas, Select triggers, and the Soul editor, preserving 3:1 boundary contrast |
+| Pointer focus / open Select | `--ring` | `#697586`; deepen the existing 1px boundary without a shadow or additional ring |
+| Keyboard focus | `--ring` | `#697586`; Keyboard navigation uses one 2px contour at the existing boundary, without a separated outer ring |
 | Comparison header | `--comparison-header` | Slack sidebar purple, `#894b94` |
 | Featured comparison cell | `--comparison-header-featured` | Slack topbar purple, `#6f3a82` |
 | Comparison header text | `--comparison-header-text` | White, `#ffffff` |

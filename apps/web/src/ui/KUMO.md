@@ -46,9 +46,9 @@ existing product vocabulary to Kumo primitives:
   full-width row; the default layout retains its bounded description and content-level alignment.
 - `Tabs`, `SettingsList`, and `SettingsRow` retain their semantic API while
   emitting Kumo tabs and semantic utility classes.
-- `Text` keeps document heading levels independent of visual size through `headingSize` (`page` or `section`).
-  These choices reuse the existing page and section tokens. For example, a Task detail keeps its
-  `h1` while using section typography; other callers retain their existing defaults.
+- `Text` keeps document heading levels independent of visual size through `headingSize` (`page`, `section` or `body`).
+  These choices reuse existing page, section and body sizes. A Task detail keeps its `h1` while using
+  16px medium body typography; other callers retain their existing defaults.
 
 Use Kumo `Input`, `InputArea`, `Select`, `Checkbox`, `Switch`, `Table`,
 `LayerCard`, `Surface`, `Banner`, `Empty`, `Meter`, `Loader`, and `SkeletonLine`
@@ -68,11 +68,12 @@ expose Kumo-specific types or composition to callers.
 source; `pnpm theme:generate` produces `theme.css`. The repository check rejects stale output. `primitives.css`
 applies the shared Manrope hierarchy, control sizing, flat button fills, and surface radii through adapter classes.
 Primary actions use teal with charcoal labels; links use blue; selected rows use neutral grey with charcoal text.
-Input, InputArea, Select and Soul share a 1px idle boundary using `--control-border-idle`. Pointer focus
-and an expanded Select deepen that same boundary to `--border-strong`, without an additional ring or shadow.
-Tab navigation uses one 2px contour at the existing boundary. The App tracks pointer input and Tab at
-the document level, including body-mounted popups; typing in a pointer-focused field does not thicken its
-border. Isolated components fall back to keyboard focus. Actions retain keyboard focus-visible.
+Input, InputArea, Select and Soul share a 1px idle boundary using `--border-strong`, preserving the
+3:1 contrast contract. Pointer focus and an expanded Select use the slate focus token on that same
+1px boundary, without an additional ring or shadow. Keyboard navigation uses one 2px contour at the
+existing boundary. The App tracks pointer input and keyboard navigation, actions and shortcuts at
+the document level, including body-mounted popups; typing in a pointer-focused field does not thicken
+its border. Isolated components fall back to keyboard focus. Actions retain keyboard focus-visible.
 Filled primary and danger actions use contrasting inset indicators. Invalid controls retain danger focus,
 and forced-colors mode uses the system highlight. The Soul editor follows the
 same boundary without changing its editing or save behavior. Success, warning, danger, and info

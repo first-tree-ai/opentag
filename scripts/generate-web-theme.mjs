@@ -15,7 +15,6 @@ const aliases = {
   secondary: ["--fg-2"],
   muted: ["--muted-fg"],
   border: ["--border"],
-  controlBorderIdle: ["--control-border-idle"],
   controlBorder: ["--border-strong"],
   action: ["--brand", "--opentag-button-primary-bg"],
   actionText: ["--brand-ink"],

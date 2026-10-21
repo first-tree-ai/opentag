@@ -6,8 +6,11 @@ export function installFocusModality(document: Document): () => void {
   root.setAttribute(attribute, "keyboard");
   const pointer = () => root.setAttribute(attribute, "pointer");
   const keyboard = (event: KeyboardEvent) => {
-    // Typing in a pointer-focused editor does not change its focus treatment.
-    if (event.key === "Tab" && !event.altKey && !event.ctrlKey && !event.metaKey) {
+    // Preserve pointer typing; keyboard navigation, actions and shortcuts need visible focus.
+    const target = event.target;
+    const editor = target instanceof Element ? target.closest("input, textarea, [contenteditable]") : null;
+    const editing = editor !== null && editor.getAttribute("contenteditable") !== "false";
+    if (event.key === "Tab" || event.key === "Escape" || !editing || event.ctrlKey || event.metaKey) {
       root.setAttribute(attribute, "keyboard");
     }
   };

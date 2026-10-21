@@ -21,10 +21,10 @@ import {
 } from "./design-system.js";
 
 describe("Kumo semantic adapter", () => {
-  it("preserves document heading levels when a record title uses section typography", () => {
+  it.each(["section", "body"] as const)("preserves document heading levels with %s typography", (headingSize) => {
     render(
       <>
-        <Text as="h1" headingSize="section" variant="heading">
+        <Text as="h1" headingSize={headingSize} variant="heading">
           Review the release
         </Text>
         <Text as="h2" variant="heading">

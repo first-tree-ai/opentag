@@ -143,7 +143,7 @@ export {
 // Kumo's conditional generic props distribute differently through JSX. The implementation accepts
 // their complete union; retain the original generic call signature for product callers.
 type TextVariant = NonNullable<Parameters<typeof KumoText>[0]["variant"]>;
-type HeadingSize = "page" | "section";
+type HeadingSize = "page" | "section" | "body";
 export const Text = (({ headingSize, ...props }: Parameters<typeof KumoText>[0] & { headingSize?: HeadingSize }) => (
   <KumoText
     {...props}

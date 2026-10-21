@@ -429,7 +429,9 @@ export function TaskDetailPage({
          * or the Agent name measures.
          */}
         <div className="min-w-0 wrap-anywhere">
-          <h1 className="text-base font-medium leading-6">{task.title}</h1>
+          <Text as="h1" headingSize="body" variant="heading">
+            {task.title}
+          </Text>
         </div>
         <dl
           className="grid grid-cols-2 gap-x-8 gap-y-4 border-y border-kumo-line py-4 @min-[36rem]/content:grid-cols-3 @min-[60rem]/content:grid-cols-5"

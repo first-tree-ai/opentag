@@ -42,6 +42,12 @@
   line-height: 1.5;
   letter-spacing: normal;
 }
+.ui-text[data-text-size][data-heading-size="body"] {
+  font-size: var(--text-base);
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: normal;
+}
 .ui-button {
   height: var(--ui-control-height);
   border-radius: var(--ui-control-radius);
@@ -133,9 +139,9 @@
   padding-inline: 16px;
 }
 .ui-control {
-  --control-active-border: var(--border-strong);
+  --control-active-border: var(--color-kumo-focus);
   --control-keyboard-focus: var(--color-kumo-focus);
-  border: 1px solid var(--control-border-idle);
+  border: 1px solid var(--border-strong);
   background: var(--card);
   box-shadow: none;
   outline: none;

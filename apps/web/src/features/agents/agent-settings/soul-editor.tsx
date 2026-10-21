@@ -41,7 +41,7 @@ export function SoulEditor({
     injectCSS: false,
     editorProps: {
       attributes: ({ doc }) => ({
-        class: "soul-editor soul-document",
+        class: "ui-control soul-editor soul-document",
         id,
         role: "textbox",
         tabindex: disabled ? "-1" : "0",

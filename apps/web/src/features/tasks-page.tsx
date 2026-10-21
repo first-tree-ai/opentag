@@ -429,9 +429,7 @@ export function TaskDetailPage({
          * or the Agent name measures.
          */}
         <div className="min-w-0 wrap-anywhere">
-          <Text as="h1" headingSize="section" variant="heading">
-            {task.title}
-          </Text>
+          <h1 className="text-base font-medium leading-6">{task.title}</h1>
         </div>
         <dl
           className="grid grid-cols-2 gap-x-8 gap-y-4 border-y border-kumo-line py-4 @min-[36rem]/content:grid-cols-3 @min-[60rem]/content:grid-cols-5"
@@ -808,7 +806,7 @@ function TaskRow({
 
 function TaskTitleLink({ showExamples, task }: { showExamples: boolean; task: TaskSummary }) {
   const className =
-    "line-clamp-2 max-w-[40rem] wrap-anywhere text-base font-medium text-kumo-default hover:text-kumo-link @min-[40rem]/content:line-clamp-1";
+    "line-clamp-2 max-w-[40rem] wrap-anywhere text-sm font-normal text-kumo-default hover:text-kumo-link @min-[40rem]/content:line-clamp-1";
   if (showExamples) {
     return (
       <Link

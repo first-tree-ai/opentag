@@ -12,16 +12,11 @@
   width: 100%;
   resize: vertical;
   overflow: auto;
-  border: 1px solid var(--border-strong);
   border-radius: var(--ui-control-radius);
   background: var(--card);
   padding: 24px;
   white-space: pre-wrap;
   outline: none;
-}
-.soul-editor:focus-visible {
-  outline: 2px solid var(--color-kumo-focus);
-  outline-offset: -1px;
 }
 .soul-editor[aria-disabled="true"] {
   opacity: 0.65;

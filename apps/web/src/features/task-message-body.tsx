@@ -5,12 +5,11 @@ import { Text } from "../ui/design-system.js";
 
 type TaskMessageBodyProps = {
   format: "markdown" | "plain_text";
-  size?: "sm" | "base";
   text: string;
 };
 
-export function TaskMessageBody({ format, size = "base", text }: TaskMessageBodyProps) {
-  const typography = size === "sm" ? "text-sm leading-normal" : "text-base leading-6";
+export function TaskMessageBody({ format, text }: TaskMessageBodyProps) {
+  const typography = "text-sm font-normal leading-normal";
   if (format === "plain_text") {
     return (
       <p className={`wrap-anywhere whitespace-pre-wrap ${typography}`} data-content-format="plain_text">

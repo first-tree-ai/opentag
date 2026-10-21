@@ -133,25 +133,40 @@
   padding-inline: 16px;
 }
 .ui-control {
+  --control-active-border: var(--border-strong);
+  --control-keyboard-focus: var(--color-kumo-focus);
+  border: 1px solid var(--control-border-idle);
   background: var(--card);
+  box-shadow: none;
+  outline: none;
 }
 .ui-control[data-kumo-component="Select"] {
   padding-inline: 12px;
-  box-shadow: 0 0 0 1px var(--border-strong);
 }
 .ui-control[data-kumo-component="Select"]:hover:not(:disabled) {
   background: var(--surface-hover);
 }
 
-/* Replace Kumo's ring at the control contour; an offset outline would draw a second frame. */
-.ui-control:focus,
+/* Pointer focus and an open Select deepen the same 1px boundary without adding a ring. */
+.ui-control:is(:focus, [aria-expanded="true"]):not(:disabled):not([aria-disabled="true"]) {
+  border-color: var(--control-active-border);
+}
+.ui-control:is([aria-invalid="true"], [data-control-error="true"]) {
+  --control-active-border: var(--color-kumo-danger);
+  --control-keyboard-focus: var(--color-kumo-danger);
+  border-color: var(--color-kumo-danger);
+}
+/* Keep keyboard navigation distinct, including browsers that focus text fields on a pointer click. */
+:root:not([data-opentag-input-modality="pointer"]) .ui-control:focus-visible {
+  border-color: var(--control-keyboard-focus);
+  outline: 2px solid var(--control-keyboard-focus);
+  outline-offset: -1px;
+  box-shadow: none;
+}
 .ui-button:focus-visible {
   outline: 2px solid var(--color-kumo-focus);
   outline-offset: -1px;
   box-shadow: none;
-}
-.ui-control:is([aria-invalid="true"], [data-control-error="true"]):focus {
-  outline-color: var(--color-kumo-danger);
 }
 .ui-button--primary:focus-visible {
   outline-color: var(--on-primary);
@@ -163,8 +178,15 @@
   outline-offset: -3px;
 }
 @media (forced-colors: active) {
-  .ui-control:focus,
-  .ui-control:is([aria-invalid="true"], [data-control-error="true"]):focus,
+  .ui-control {
+    border-color: ButtonBorder;
+  }
+  .ui-control:is(:focus, [aria-expanded="true"]) {
+    border-color: Highlight;
+    outline: 2px solid Highlight;
+    outline-offset: -1px;
+  }
+  :root:not([data-opentag-input-modality="pointer"]) .ui-control:focus-visible,
   .ui-button:focus-visible {
     outline-color: Highlight;
     outline-offset: -1px;

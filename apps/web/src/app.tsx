@@ -8,6 +8,7 @@ import { ThemeIntegrityNotice } from "./features/theme-integrity-notice.js";
 import { installRouteErrorContext } from "./observability/route-error-context.js";
 import { createQueryClient } from "./query/client.js";
 import { type AppRouter, createAppRouter } from "./router.js";
+import { installFocusModality } from "./ui/focus-modality.js";
 
 const AppLink = forwardRef<HTMLAnchorElement, LinkComponentProps>(function AppLink({ href, ...props }, ref) {
   if (href?.startsWith("http://") || href?.startsWith("https://")) {
@@ -32,6 +33,7 @@ export function App({ router }: { router?: AppRouter } = {}) {
     router ? { instance: router, owned: false } : { instance: createAppRouter(), owned: true },
   );
   const [queryClient] = useState(createQueryClient);
+  useEffect(() => installFocusModality(document), []);
   useEffect(() => {
     if (!owned) return;
     return () => instance.history.destroy();

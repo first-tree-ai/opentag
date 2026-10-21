@@ -88,23 +88,23 @@ that nobody replied to has no such Session and returns `404`.
 
 ## Web presentation
 
-The Task list retains the shared page title. Task titles use 16px medium text; column headings use
-14px medium text, and source, Agent and activity-time values use 14px regular text. Long list titles
-remain one line on wide containers and at most two lines on narrow containers, with the full stored
-title available in the link's title attribute and on the detail page.
+The Task list retains the shared page title. Task titles in both Tasks and Overview use 14px regular
+body text; column headings use 14px medium text, and source, Agent and activity-time values use 14px
+regular text. Long list titles remain one line on wide containers and at most two lines on narrow
+containers, with the full stored title available in the link's title attribute and on the detail page.
 
-The detail title remains the page's `h1` and uses the existing 20px, 600-weight section typography,
-with a 30px line height and natural wrapping. It displays the complete stored title without an
-additional clamp. Task facts retain their order in two, three or five columns according to the
-content container width. The start time spans both columns in the narrow layout so the complete
+The detail title remains the page's `h1` and uses 16px medium text with a 24px line height and natural
+wrapping. It displays the complete stored title without an additional clamp. Task facts retain their
+order in two, three or five columns according to the content container width. The start time spans both columns in the narrow layout so the complete
 date and time can wrap without squeezing the other facts.
 
 The conversation follows the facts without a visible Activity heading; its existing Activity heading
-remains available to assistive technology. Requests and sent replies use 16px text with a 24px line
-height. Authors use 14px semibold text and timestamps use 12px regular text. Execution summaries and
-operational notices stay at 14px, and code retains its existing monospace treatment. Wide code, native
-message payloads and message tables scroll locally, with named, keyboard-focusable regions. The conversation's
-768px reading width, message order, paging and scroll anchoring are unchanged.
+remains available to assistive technology. Requests, sent replies and execution summaries use 14px
+regular text with a 21px line height. Authors use 14px medium text and timestamps use 12px regular
+text. Operational notices stay at 14px. Message headings, emphasis and monospace code retain their
+content formatting. Wide code, native message payloads and message tables scroll locally, with named,
+keyboard-focusable regions. The conversation's 768px reading width, message order, paging and scroll
+anchoring are unchanged.
 
 ## Cancelling a queued Task
 

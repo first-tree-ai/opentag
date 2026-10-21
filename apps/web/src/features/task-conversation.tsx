@@ -99,7 +99,7 @@ function TaskEntry({
       <div className="grid min-w-0 gap-2">
         {!compact ? (
           <header className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1" data-ui="task-message-author-agent">
-            <strong className="min-w-0 wrap-anywhere text-sm font-semibold">{task.agent.displayName}</strong>
+            <strong className="min-w-0 wrap-anywhere text-sm font-medium">{task.agent.displayName}</strong>
             <TaskAgentMeta entry={entry} />
           </header>
         ) : null}
@@ -152,7 +152,7 @@ function TaskRequest({ turn, id }: { turn: TaskTurn; id: string }) {
       </span>
       <div className="grid min-w-0 gap-2">
         <header className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1" data-ui="task-message-author">
-          <strong className="min-w-0 wrap-anywhere text-sm font-semibold">{author}</strong>
+          <strong className="min-w-0 wrap-anywhere text-sm font-medium">{author}</strong>
           <small className="text-xs text-kumo-subtle">
             {attentionLabel(turn.attention)} · {formatDateTime(turn.message.occurredAt)}
           </small>
@@ -233,7 +233,7 @@ function TaskExecutionSummary({ text }: { text: string }) {
   return (
     // biome-ignore lint/a11y/useSemanticElements: This groups summary content, not form controls.
     <div className="grid gap-2" data-ui="task-execution-summary" role="group" aria-label={m.tasks_execution_summary()}>
-      <TaskMessageBody format="markdown" size="sm" text={text} />
+      <TaskMessageBody format="markdown" text={text} />
     </div>
   );
 }
@@ -278,7 +278,7 @@ function TaskCapturedReplyEntry({
       />
       <div className="grid min-w-0 gap-2">
         <header className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1" data-ui="task-message-author-agent">
-          <strong className="min-w-0 wrap-anywhere text-sm font-semibold">{task.agent.displayName}</strong>
+          <strong className="min-w-0 wrap-anywhere text-sm font-medium">{task.agent.displayName}</strong>
           <TaskCapturedReplyMeta reply={entry.reply} />
         </header>
         {/* biome-ignore lint/a11y/useSemanticElements: This groups message content, not form controls. */}

@@ -68,15 +68,18 @@ expose Kumo-specific types or composition to callers.
 source; `pnpm theme:generate` produces `theme.css`. The repository check rejects stale output. `primitives.css`
 applies the shared Manrope hierarchy, control sizing, flat button fills, and surface radii through adapter classes.
 Primary actions use teal with charcoal labels; links use blue; selected rows use neutral grey with charcoal text.
-Focus uses a single 2px contour at the existing control boundary, replacing the Kumo ring rather than
-stacking a separated outline on it. Inputs retain visible focus while editing; actions use keyboard
-focus-visible. Filled primary and danger actions use contrasting inset indicators. Invalid controls
-retain danger focus, and forced-colors mode uses the system highlight. The Soul editor follows the
+Input, InputArea, Select and Soul share a 1px idle boundary using `--control-border-idle`. Pointer focus
+and an expanded Select deepen that same boundary to `--border-strong`, without an additional ring or shadow.
+Tab navigation uses one 2px contour at the existing boundary. The App tracks pointer input and Tab at
+the document level, including body-mounted popups; typing in a pointer-focused field does not thicken its
+border. Isolated components fall back to keyboard focus. Actions retain keyboard focus-visible.
+Filled primary and danger actions use contrasting inset indicators. Invalid controls retain danger focus,
+and forced-colors mode uses the system highlight. The Soul editor follows the
 same boundary without changing its editing or save behavior. Success, warning, danger, and info
 retain independent semantic roles.
 Generic recessed, tint, table-row, disabled, and hover surfaces stay neutral; `--brand-soft` is reserved for explicit
 selected/current states. The button adapter assigns the same reviewed fill to Kumo's gradient endpoints and ring,
-removing the decorative treatment. Tests verify normal text, action fills, and meaningful control boundaries.
+removing the decorative treatment. Tests verify normal text, action fills, active boundaries, and keyboard focus.
 
 The theme uses explicit `data-opentag-theme="opentag"` and `data-opentag-mode="light|dark"`
 attributes, set statically on `<html>` in `index.html`. The namespacing keeps third-party code

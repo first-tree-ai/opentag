@@ -284,9 +284,6 @@
 .mcp-settings-dialog label[for="mcp-edit-url"] {
   margin-bottom: 0.375rem;
 }
-.mcp-settings-dialog .ui-control:not(:focus) {
-  --tw-ring-color: var(--color-kumo-line);
-}
 .mcp-settings-rows {
   display: grid;
   gap: 0.25rem;

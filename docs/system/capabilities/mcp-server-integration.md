@@ -531,6 +531,35 @@ of the entry and continue working through their own client. A new Web installati
 preferred endpoint and creates an independent definition, with name-conflict handling if an older
 installation already holds the catalog name.
 
+#### The deployment HubSpot, Asana, and Zoom clients
+
+These providers offer neither dynamic registration nor a client metadata document, so a deployment
+that wants its Agents to use them registers its own OAuth app with each provider and configures
+`OPENTAG_MCP_<BRAND>_CLIENT_ID` and `OPENTAG_MCP_<BRAND>_CLIENT_SECRET` — both together or neither; a
+half-configured pair fails startup. Without a pair, the card keeps the automatic resolution above and
+fails with `OAUTH_FAILED` because no client can be registered.
+
+The providers are declared once in `MCP_STATIC_OAUTH_PROVIDERS` (`packages/shared/src/mcp.ts`), which
+also derives the variable names; the Canva client above is a row of the same table.
+
+| Brand | Variables | Origin | Issuer | Token endpoint authentication |
+| --- | --- | --- | --- | --- |
+| HubSpot | `OPENTAG_MCP_HUBSPOT_CLIENT_*` | `https://mcp.hubspot.com` | `https://mcp.hubspot.com` | `client_secret_post` |
+| Asana | `OPENTAG_MCP_ASANA_CLIENT_*` | `https://mcp.asana.com` | `https://app.asana.com` | `client_secret_basic` |
+| Zoom | `OPENTAG_MCP_ZOOM_CLIENT_*` | `https://mcp.zoom.us` | `https://zoom.us` | `client_secret_basic` |
+
+Operator setup, for every brand: register `<OPENTAG_PUBLIC_URL>/api/v1/mcp-servers/oauth/callback` as
+the redirect URL. Create a HubSpot **MCP Auth App** (Development > MCP Auth Apps), an Asana app of
+type **MCP app**, and a Zoom **General app** with user-level OAuth. HubSpot assigns scopes at
+installation and advertises none in its metadata.
+
+Each client follows the same rules as the Google and Canva clients: it is resolved from configuration
+and never stored, and it is offered only when the Server's effective origin is one of the provider's
+origins and the discovered issuer is exactly the provider's. The token endpoint authentication method
+is part of the provider row, because each authorization server rejects the other one. Changing the
+client ID invalidates refresh tokens that the previous client obtained; `invalid_client` is terminal,
+so those Agents must authorize again.
+
 ### The authorization round trip
 
 - PKCE `S256`; the verifier is encrypted and the challenge travels.

@@ -31,6 +31,7 @@ Retrieved on 2026-10-09:
 | `supabase.svg` | [Supabase brand assets](https://supabase.com/brand-assets) | `brand-assets/supabase-logo-icon.svg` from the [official brand archive](https://supabase.com/brand-assets.zip) |
 | `amplitude.png` | [Amplitude website](https://amplitude.com/) | [Official website Apple touch icon](https://amplitude.com/nextjs-public/favicon/apple-touch-icon.png) |
 | `stripe.svg` | [Stripe website](https://stripe.com/) | [Official website SVG product mark](https://images.stripeassets.com/fzn2n1nzq965/1hgcBNd12BfT9VLgbId7By/01d91920114b124fb4cf6d448f9f06eb/favicon.svg) |
+| `zoom.png` | [Zoom website](https://www.zoom.com/) | [Official website 96px favicon](https://st1.zoom.us/zoom.ico); the response is already PNG, retained without conversion |
 
 The People API documentation does not identify a separate product mark. Its catalog entry keeps the neutral connection icon instead of borrowing the Google Contacts logo.
 

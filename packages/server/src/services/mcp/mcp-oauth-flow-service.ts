@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import {
-  CANVA_DEVELOPER_PORTAL_AUTHORIZATION_SERVER,
   GOOGLE_WORKSPACE_MCP_AUTHORIZATION_SERVER,
-  isCanvaDeveloperPortalMcpEndpoint,
   isGoogleWorkspaceMcpEndpoint,
+  isMcpStaticOAuthEndpoint,
   MCP_CATALOG_DEPLOYMENT_ENDPOINTS,
+  MCP_STATIC_OAUTH_PROVIDERS,
   type MCPCatalogEndpoint,
+  type McpStaticOAuthBrand,
 } from "@opentag/shared";
 import { and, eq, isNull, lte, or, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
@@ -60,12 +61,12 @@ export interface McpOAuthFlowServiceOptions {
    */
   googleMcpClient?: { clientId: string; clientSecret: string };
   /**
-   * The deployment's Canva Developer Portal OAuth client, present only when the
-   * `OPENTAG_MCP_CANVA_CLIENT_*` pair is configured. It is offered only to the Developer Portal MCP
-   * endpoint that resolves `https://www.canva.com`. The waitlist endpoint at `mcp.canva.com` keeps its
-   * automatic resolution either way.
+   * The deployment's static clients for providers without DCR or CIMD (Canva, HubSpot, Asana, Zoom),
+   * keyed by brand and present only for a brand whose `OPENTAG_MCP_<BRAND>_CLIENT_*` pair is
+   * configured. Each is offered only to that provider's own MCP origins and exact issuer. Canva's is
+   * Developer Portal only: the waitlist endpoint at `mcp.canva.com` keeps its automatic resolution.
    */
-  canvaMcpClient?: { clientId: string; clientSecret: string };
+  staticMcpClients?: Partial<Record<McpStaticOAuthBrand, { clientId: string; clientSecret: string }>>;
   now?: () => Date;
 }
 
@@ -80,6 +81,8 @@ interface DeploymentOAuthClient {
   clientId: string;
   clientSecret: string;
   authorizationParams?: Record<string, string>;
+  /** What the provider's authorization server accepts at its token endpoint. */
+  tokenEndpointAuthMethod: "client_secret_basic" | "client_secret_post";
   /** The catalog entry whose endpoint this client requires, when it differs from the shipped one. */
   catalogId?: string;
 }
@@ -90,17 +93,21 @@ function deploymentOAuthClients(options: McpOAuthFlowServiceOptions): readonly D
     clients.push({
       matchesEndpoint: isGoogleWorkspaceMcpEndpoint,
       issuer: GOOGLE_WORKSPACE_MCP_AUTHORIZATION_SERVER,
+      tokenEndpointAuthMethod: "client_secret_basic",
       ...options.googleMcpClient,
       // Google issues a refresh token only for an offline request, and again only with fresh consent.
       authorizationParams: { access_type: "offline", prompt: "consent" },
     });
   }
-  if (options.canvaMcpClient) {
+  for (const provider of MCP_STATIC_OAUTH_PROVIDERS) {
+    const client = options.staticMcpClients?.[provider.brand];
+    if (!client) continue;
     clients.push({
-      matchesEndpoint: isCanvaDeveloperPortalMcpEndpoint,
-      issuer: CANVA_DEVELOPER_PORTAL_AUTHORIZATION_SERVER,
-      ...options.canvaMcpClient,
-      catalogId: "canva",
+      matchesEndpoint: (effectiveUrl) => isMcpStaticOAuthEndpoint(provider, effectiveUrl),
+      issuer: provider.issuer,
+      tokenEndpointAuthMethod: provider.tokenEndpointAuthMethod,
+      ...client,
+      ...(provider.catalogId === undefined ? {} : { catalogId: provider.catalogId }),
     });
   }
   return clients;
@@ -396,7 +403,7 @@ export class McpOAuthFlowService {
   }
 
   /**
-   * The deployment's pre-registered client for this flow (Google or Canva), resolved rather than
+   * The deployment's pre-registered client for this flow (Google or a static brand), resolved rather than
    * stored, or undefined when this flow must not use one.
    *
    * Two conditions are deliberate, and both are required. The Server's effective origin must be the
@@ -416,7 +423,7 @@ export class McpOAuthFlowService {
       source: "preregistered",
       clientId: configured.clientId,
       clientSecret: configured.clientSecret,
-      tokenEndpointAuthMethod: "client_secret_basic",
+      tokenEndpointAuthMethod: configured.tokenEndpointAuthMethod,
       ...(configured.authorizationParams ? { authorizationParams: configured.authorizationParams } : {}),
     };
   }
@@ -430,7 +437,7 @@ export class McpOAuthFlowService {
    * and the credential was destroyed — so authorizing a second Agent silently killed the first.
    *
    * Order of preference, matching the discovery rules:
-   * - the deployment's Google or Canva client, when this Server is one it is bound to;
+   * - the deployment's Google or static-provider client, when this Server is one it is bound to;
    * - a `preregistered` row, which is the deployment's own client and always wins;
    * - an existing DCR row, reused as-is;
    * - otherwise a fresh registration, which is the only case that writes the row.

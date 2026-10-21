@@ -118,7 +118,9 @@ function build(
   options: {
     now?: () => Date;
     googleMcpClient?: { clientId: string; clientSecret: string };
-    canvaMcpClient?: { clientId: string; clientSecret: string };
+    staticMcpClients?: Partial<
+      Record<"canva" | "hubspot" | "asana" | "zoom", { clientId: string; clientSecret: string }>
+    >;
   } = {},
 ) {
   const { calls, fetchImpl } = oauthNode(routes);
@@ -308,7 +310,7 @@ describe("McpOAuthFlowService.catalogEndpoints", () => {
   });
 
   it("replaces the Canva entry with the Developer Portal endpoint and returns no client material", () => {
-    const endpoints = build({}, { canvaMcpClient: CANVA_CLIENT }).flows.catalogEndpoints();
+    const endpoints = build({}, { staticMcpClients: { canva: CANVA_CLIENT } }).flows.catalogEndpoints();
     expect(endpoints).toEqual([{ catalogId: "canva", url: CANVA_MCP_URL }]);
     expect(JSON.stringify(endpoints)).not.toContain(CANVA_CLIENT.clientId);
     expect(JSON.stringify(endpoints)).not.toContain(CANVA_CLIENT.clientSecret);
@@ -572,7 +574,7 @@ describe("McpOAuthFlowService.start", () => {
 
   it("uses the deployment Canva client for the Developer Portal endpoint and registers nothing", async () => {
     const ids = await seed(CANVA_MCP_URL);
-    const { calls, flows } = build(canvaRoutes(), { canvaMcpClient: CANVA_CLIENT });
+    const { calls, flows } = build(canvaRoutes(), { staticMcpClients: { canva: CANVA_CLIENT } });
     const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
     const authorizationUrl = new URL(started.authorizationUrl);
     expect(`${authorizationUrl.origin}${authorizationUrl.pathname}`).toBe(`${CANVA_ISSUER}/api/oauth/authorize`);
@@ -601,7 +603,7 @@ describe("McpOAuthFlowService.start", () => {
         ...canvaRoutes(),
         [CANVA_TOKEN_URL]: doc({ access_token: "at_1", refresh_token: "rt_1", expires_in: 600 }),
       },
-      { canvaMcpClient: CANVA_CLIENT },
+      { staticMcpClients: { canva: CANVA_CLIENT } },
     );
     const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
     await flows.callback({ code: "code-1", state: stateOf(started.authorizationUrl) }, FLOW_SECRET);
@@ -636,6 +638,99 @@ describe("McpOAuthFlowService.start", () => {
     });
   });
 
+  describe.each([
+    {
+      brand: "hubspot" as const,
+      mcpUrl: "https://mcp.hubspot.com",
+      prmUrl: "https://mcp.hubspot.com/.well-known/oauth-protected-resource",
+      issuer: "https://mcp.hubspot.com",
+      tokenUrl: "https://mcp.hubspot.com/oauth/v3/token",
+      method: "post",
+    },
+    {
+      brand: "asana" as const,
+      mcpUrl: "https://mcp.asana.com/v2/mcp",
+      prmUrl: "https://mcp.asana.com/.well-known/oauth-protected-resource/v2/mcp",
+      issuer: "https://app.asana.com",
+      tokenUrl: "https://app.asana.com/-/oauth_token",
+      method: "basic",
+    },
+    {
+      brand: "zoom" as const,
+      mcpUrl: "https://mcp.zoom.us/mcp/zoom/streamable",
+      prmUrl: "https://mcp.zoom.us/.well-known/oauth-protected-resource/mcp/zoom/streamable",
+      issuer: "https://zoom.us",
+      tokenUrl: "https://zoom.us/oauth/token",
+      method: "basic",
+    },
+  ])("the deployment $brand client", ({ brand, mcpUrl, prmUrl, issuer, tokenUrl, method }) => {
+    const client = { clientId: `${brand}-client-id`, clientSecret: `${brand}-client-secret` };
+    const routes = (): RouteMap => ({
+      [prmUrl]: doc({ resource: mcpUrl, authorization_servers: [issuer] }),
+      [`${issuer}/.well-known/oauth-authorization-server`]: doc({
+        issuer,
+        authorization_endpoint: `${issuer}/oauth/authorize`,
+        token_endpoint: tokenUrl,
+        response_types_supported: ["code"],
+        code_challenge_methods_supported: ["S256"],
+      }),
+      [tokenUrl]: doc({ access_token: "at_1", refresh_token: "rt_1", expires_in: 600 }),
+    });
+
+    it("is presented at start, the callback and refresh, and registers nothing", async () => {
+      const ids = await seed(mcpUrl);
+      const { calls, flows } = build(routes(), { staticMcpClients: { [brand]: client } });
+      const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+      expect(new URL(started.authorizationUrl).searchParams.get("client_id")).toBe(client.clientId);
+      expect(started.authorizationUrl).not.toContain(client.clientSecret);
+      await flows.callback({ code: "code-1", state: stateOf(started.authorizationUrl) }, FLOW_SECRET);
+      const row = await readAuthorization(ids);
+      expect(row?.status).toBe("active");
+      await flows.refreshAuthorization(row?.id as string);
+      const tokenCalls = calls.filter((call) => call.url === tokenUrl);
+      expect(tokenCalls).toHaveLength(2);
+      for (const call of tokenCalls) {
+        const form = new URLSearchParams(String(call.init.body));
+        if (method === "post") {
+          expect(authorizationHeader(call)).toBeNull();
+          expect(form.get("client_id")).toBe(client.clientId);
+          expect(form.get("client_secret")).toBe(client.clientSecret);
+        } else {
+          expect(authorizationHeader(call)).toBe(basicAuth(client));
+          expect(form.has("client_id")).toBe(false);
+          expect(form.has("client_secret")).toBe(false);
+        }
+      }
+      expect(await unit.database.select().from(mcpClientRegistrations)).toEqual([]);
+    });
+
+    it("is not offered to another origin that merely names the provider's issuer", async () => {
+      const hostile = "https://evil.example/mcp";
+      const ids = await seed(hostile);
+      const { flows } = build(
+        {
+          ...routes(),
+          "https://evil.example/.well-known/oauth-protected-resource/mcp": doc({
+            resource: hostile,
+            authorization_servers: [issuer],
+          }),
+        },
+        { staticMcpClients: { [brand]: client } },
+      );
+      await expect(flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET)).rejects.toMatchObject({
+        code: MCP_ERROR_CODES.OAUTH_FAILED,
+      });
+    });
+
+    it("does not exist when the pair is not configured", async () => {
+      const ids = await seed(mcpUrl);
+      const { flows } = build(routes());
+      await expect(flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET)).rejects.toMatchObject({
+        code: MCP_ERROR_CODES.OAUTH_FAILED,
+      });
+    });
+  });
+
   it("keeps the waitlist endpoint on CIMD even when a deployment Canva client is configured", async () => {
     /*
      * The waitlist endpoint belongs to another authorization server, which never issued the
@@ -647,7 +742,7 @@ describe("McpOAuthFlowService.start", () => {
         ...canvaWaitlistRoutes(),
         [CANVA_WAITLIST_TOKEN_URL]: doc({ access_token: "at_1", refresh_token: "rt_1", expires_in: 600 }),
       },
-      { canvaMcpClient: CANVA_CLIENT },
+      { staticMcpClients: { canva: CANVA_CLIENT } },
     );
     const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
     expect(new URL(started.authorizationUrl).searchParams.get("client_id")).toBe(
@@ -694,7 +789,7 @@ describe("McpOAuthFlowService.start", () => {
         }),
         [`${CANVA_ISSUER}/register`]: doc({ client_id: "dcr_evil", client_secret: "cs_evil" }),
       },
-      { canvaMcpClient: CANVA_CLIENT },
+      { staticMcpClients: { canva: CANVA_CLIENT } },
     );
     const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
     expect(new URL(started.authorizationUrl).searchParams.get("client_id")).toBe("dcr_evil");
@@ -709,7 +804,7 @@ describe("McpOAuthFlowService.start", () => {
         [AS_URL]: asMetadata({ registration_endpoint: REGISTER_URL }),
         [REGISTER_URL]: doc({ client_id: "dcr_default", client_secret: "cs_default" }),
       },
-      { canvaMcpClient: CANVA_CLIENT },
+      { staticMcpClients: { canva: CANVA_CLIENT } },
     );
     const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
     expect(new URL(started.authorizationUrl).searchParams.get("client_id")).toBe("dcr_default");
@@ -721,7 +816,7 @@ describe("McpOAuthFlowService.start", () => {
     const google = await seed(GOOGLE_MCP_URL);
     const { flows } = build(
       { ...canvaRoutes(), ...googleRoutes() },
-      { googleMcpClient: GOOGLE_CLIENT, canvaMcpClient: CANVA_CLIENT },
+      { googleMcpClient: GOOGLE_CLIENT, staticMcpClients: { canva: CANVA_CLIENT } },
     );
     const canvaStarted = await flows.start(canva.accountId, canva.agentId, canva.mcpServerId, [], FLOW_SECRET);
     const googleStarted = await flows.start(google.accountId, google.agentId, google.mcpServerId, [], FLOW_SECRET);

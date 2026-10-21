@@ -1034,12 +1034,12 @@ export async function startServer(): Promise<void> {
        */
       googleMcpClient: config.mcpGoogleOAuth,
       /*
-       * The deployment's Canva Developer Portal client, present only when the
-       * OPENTAG_MCP_CANVA_CLIENT_* pair is configured. The flow offers it only to the Developer
-       * Portal endpoint that resolves Canva's issuer, and it also makes the catalog's Canva card
-       * create its Server on that endpoint.
+       * The deployment's static clients for providers without DCR or CIMD (Canva, HubSpot, Asana,
+       * Zoom), present per brand only when its OPENTAG_MCP_<BRAND>_CLIENT_* pair is configured. The
+       * flow offers each only to that provider's own endpoints and issuer, and Canva's also makes the
+       * catalog's Canva card create its Server on the Developer Portal endpoint.
        */
-      canvaMcpClient: config.mcpCanvaOAuth,
+      staticMcpClients: config.mcpStaticOAuth,
     });
     const mcpRefreshWorker = new McpRefreshWorker({
       authorization: mcpAuthorization,

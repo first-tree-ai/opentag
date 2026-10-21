@@ -4,13 +4,16 @@ import {
   GOOGLE_WORKSPACE_MCP_ORIGINS,
   isCanvaDeveloperPortalMcpEndpoint,
   isGoogleWorkspaceMcpEndpoint,
+  isMcpStaticOAuthEndpoint,
   MCP_CATALOG_DEPLOYMENT_ENDPOINTS,
+  MCP_STATIC_OAUTH_PROVIDERS,
   MCP_TOOL_DESCRIPTION_MAX_BYTES,
   MCP_TOOL_INPUT_SCHEMA_MAX_BYTES,
   MCP_TOOL_NAME_MAX_BYTES,
   MCP_TOOL_SNAPSHOT_DESCRIPTION_MAX_BYTES,
   MCPCatalogEndpointsResponseSchema,
   MCPToolSnapshotSchema,
+  mcpStaticOAuthEnvNames,
   probedServerDescription,
 } from "../mcp.js";
 
@@ -232,5 +235,37 @@ describe("MCP catalog deployment endpoints", () => {
         endpoints: [{ catalogId: "canva", url: CANVA_DEVELOPER_PORTAL_MCP_URL, secret: "x" }],
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("MCP static OAuth providers", () => {
+  const provider = (brand: string) => {
+    const found = MCP_STATIC_OAUTH_PROVIDERS.find((candidate) => candidate.brand === brand);
+    if (!found) throw new Error(`missing provider ${brand}`);
+    return found;
+  };
+
+  it("derives the OPENTAG_MCP_<BRAND>_CLIENT_* names", () => {
+    expect(mcpStaticOAuthEnvNames("hubspot")).toEqual({
+      clientId: "OPENTAG_MCP_HUBSPOT_CLIENT_ID",
+      clientSecret: "OPENTAG_MCP_HUBSPOT_CLIENT_SECRET",
+    });
+  });
+
+  it("matches only each provider's own origins", () => {
+    expect(isMcpStaticOAuthEndpoint(provider("zoom"), "https://mcp.zoom.us/mcp/zoom/streamable")).toBe(true);
+    expect(isMcpStaticOAuthEndpoint(provider("hubspot"), "https://mcp.hubspot.com")).toBe(true);
+    expect(isMcpStaticOAuthEndpoint(provider("asana"), "https://mcp.asana.com/v2/mcp")).toBe(true);
+    for (const url of [
+      "https://mcp.zoom.us.evil.example/mcp",
+      "https://evil.example/mcp.zoom.us",
+      "http://mcp.zoom.us/mcp",
+      "https://mcp.zoom.us:8443/mcp",
+      "https://user:secret@mcp.zoom.us/mcp",
+      "not a url",
+    ]) {
+      expect(isMcpStaticOAuthEndpoint(provider("zoom"), url)).toBe(false);
+    }
+    expect(isMcpStaticOAuthEndpoint(provider("asana"), "https://mcp.zoom.us/mcp")).toBe(false);
   });
 });

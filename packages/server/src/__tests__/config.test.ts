@@ -748,20 +748,22 @@ describe("parseServerConfig", () => {
 
   it("requires the MCP Canva client pair to be configured together", () => {
     // Absent and empty both mean "no deployment Canva client": Canva keeps automatic resolution.
-    expect(parseServerConfig(required).mcpCanvaOAuth).toBeUndefined();
+    expect(parseServerConfig(required).mcpStaticOAuth).toBeUndefined();
     expect(
       parseServerConfig({
         ...required,
         OPENTAG_MCP_CANVA_CLIENT_ID: "",
         OPENTAG_MCP_CANVA_CLIENT_SECRET: "   ",
-      }).mcpCanvaOAuth,
+      }).mcpStaticOAuth,
     ).toBeUndefined();
     const configured = parseServerConfig({
       ...required,
       OPENTAG_MCP_CANVA_CLIENT_ID: "canva-client",
       OPENTAG_MCP_CANVA_CLIENT_SECRET: "canva-secret",
     });
-    expect(configured).toMatchObject({ mcpCanvaOAuth: { clientId: "canva-client", clientSecret: "canva-secret" } });
+    expect(configured).toMatchObject({
+      mcpStaticOAuth: { canva: { clientId: "canva-client", clientSecret: "canva-secret" } },
+    });
     // The two deployment clients are independent: configuring Canva configures nothing for Google.
     expect(configured.mcpGoogleOAuth).toBeUndefined();
     expect(() => parseServerConfig({ ...required, OPENTAG_MCP_CANVA_CLIENT_ID: "canva-client" })).toThrow(
@@ -773,6 +775,24 @@ describe("parseServerConfig", () => {
       expect.unreachable("partial MCP Canva client configuration must fail");
     } catch (error) {
       expect(error instanceof Error ? error.message : String(error)).not.toContain("canva-secret");
+    }
+  });
+
+  it.each(["HUBSPOT", "ASANA", "ZOOM"])("requires the MCP %s client pair to be configured together", (brand) => {
+    const id = `OPENTAG_MCP_${brand}_CLIENT_ID`;
+    const secret = `OPENTAG_MCP_${brand}_CLIENT_SECRET`;
+    const key = brand.toLowerCase();
+    expect(parseServerConfig(required).mcpStaticOAuth).toBeUndefined();
+    expect(parseServerConfig({ ...required, [id]: "", [secret]: "   " }).mcpStaticOAuth).toBeUndefined();
+    expect(parseServerConfig({ ...required, [id]: "client", [secret]: "shh" }).mcpStaticOAuth).toEqual({
+      [key]: { clientId: "client", clientSecret: "shh" },
+    });
+    expect(() => parseServerConfig({ ...required, [id]: "client" })).toThrow(new RegExp(`${id} and ${secret}`));
+    try {
+      parseServerConfig({ ...required, [secret]: "shh" });
+      expect.unreachable("partial MCP client configuration must fail");
+    } catch (error) {
+      expect(error instanceof Error ? error.message : String(error)).not.toContain("shh");
     }
   });
 

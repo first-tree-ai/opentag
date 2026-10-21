@@ -695,6 +695,10 @@ export class McpOAuthClient {
       headers.authorization = `Basic ${Buffer.from(`${client.clientId}:${client.clientSecret}`).toString("base64")}`;
     } else {
       body.set("client_id", client.clientId);
+      // HubSpot's token endpoint accepts only this method; sending a Basic header there is refused.
+      if (client.clientSecret && client.tokenEndpointAuthMethod === "client_secret_post") {
+        body.set("client_secret", client.clientSecret);
+      }
     }
     const response = await this.#fetcher.fetchOutbound(accountId, tokenEndpoint, {
       method: "POST",

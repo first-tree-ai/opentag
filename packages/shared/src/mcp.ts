@@ -824,6 +824,70 @@ export function isCanvaDeveloperPortalMcpEndpoint(url: string): boolean {
 }
 
 /**
+ * The providers whose MCP Servers cannot register a client automatically (no DCR, no CIMD), so the
+ * deployment registers one out of band and supplies it as `OPENTAG_MCP_<BRAND>_CLIENT_ID` and
+ * `OPENTAG_MCP_<BRAND>_CLIENT_SECRET`.
+ *
+ * Each row binds a client to both halves, as the Google and Canva clients are: the Server's effective
+ * origin must be one of `origins`, and the discovered issuer must be exactly `issuer`. A Server that
+ * merely names the provider as its authorization server therefore never receives the credential.
+ * `tokenEndpointAuthMethod` is what the provider's authorization server accepts; presenting the
+ * other method is rejected by it, so it is data here, not a default.
+ */
+export const MCP_STATIC_OAUTH_BRANDS = ["canva", "hubspot", "asana", "zoom"] as const;
+
+export type McpStaticOAuthBrand = (typeof MCP_STATIC_OAUTH_BRANDS)[number];
+
+export interface McpStaticOAuthProvider {
+  brand: McpStaticOAuthBrand;
+  origins: readonly string[];
+  issuer: string;
+  tokenEndpointAuthMethod: "client_secret_basic" | "client_secret_post";
+  /** The catalog entry whose endpoint this client requires, when it differs from the shipped one. */
+  catalogId?: string;
+}
+
+export const MCP_STATIC_OAUTH_PROVIDERS: readonly McpStaticOAuthProvider[] = [
+  {
+    brand: "canva",
+    origins: [new URL(CANVA_DEVELOPER_PORTAL_MCP_URL).origin],
+    issuer: CANVA_DEVELOPER_PORTAL_AUTHORIZATION_SERVER,
+    tokenEndpointAuthMethod: "client_secret_basic",
+    catalogId: "canva",
+  },
+  {
+    brand: "hubspot",
+    origins: ["https://mcp.hubspot.com"],
+    issuer: "https://mcp.hubspot.com",
+    tokenEndpointAuthMethod: "client_secret_post",
+  },
+  {
+    brand: "asana",
+    origins: ["https://mcp.asana.com"],
+    issuer: "https://app.asana.com",
+    tokenEndpointAuthMethod: "client_secret_basic",
+  },
+  {
+    // Zoom serves several MCP Servers by product area on this one origin, all behind `https://zoom.us`.
+    brand: "zoom",
+    origins: ["https://mcp.zoom.us"],
+    issuer: "https://zoom.us",
+    tokenEndpointAuthMethod: "client_secret_basic",
+  },
+];
+
+/** The environment variable names that configure one brand's static client. */
+export function mcpStaticOAuthEnvNames(brand: McpStaticOAuthBrand): { clientId: string; clientSecret: string } {
+  const prefix = `OPENTAG_MCP_${brand.toUpperCase()}_CLIENT`;
+  return { clientId: `${prefix}_ID`, clientSecret: `${prefix}_SECRET` };
+}
+
+/** Whether an MCP endpoint URL is on one of the provider's own origins. */
+export function isMcpStaticOAuthEndpoint(provider: McpStaticOAuthProvider, url: string): boolean {
+  return isAllowedMcpOrigin(url, provider.origins);
+}
+
+/**
  * The catalog entries whose endpoint a deployment client replaces, keyed by catalog entry ID.
  *
  * A catalog entry names the endpoint that works without configuration. When the deployment has its

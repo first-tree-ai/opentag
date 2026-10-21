@@ -954,3 +954,38 @@
     icon: stripe.svg
     icon_is_official: true
   homepage: https://stripe.com
+
+- schema_version: 1
+  id: mcp/zoom
+  kind: mcp
+  name:
+    en: "Zoom"
+    zh: "Zoom"
+  summary:
+    en: "Search meetings and recordings."
+    zh: "搜索会议和录制内容。"
+  when_to_use:
+    en: "Use when the task needs to find Zoom meetings or recordings."
+    zh: "当任务需要查找 Zoom 的会议或录制内容时使用。"
+  keywords: ["meetings", "recordings", "video calls"]
+  capabilities: ["search-meetings", "read-recordings", "manage-meetings"]
+  status: active
+  auth:
+    methods: [oauth]
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: write
+    data_access: private
+    notes:
+      en: "Needs a Zoom General app that the Server operator sets up."
+      zh: "Zoom 不支持自动注册客户端，需要 Server 运维人员预先配置 Zoom General app。"
+  remotes:
+    - type: streamable-http
+      url: https://mcp.zoom.us/mcp/zoom/streamable
+  catalog:
+    category: communication
+    order: 50
+    icon: zoom.png
+    icon_is_official: true
+  homepage: https://www.zoom.com

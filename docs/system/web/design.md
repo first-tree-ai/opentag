@@ -34,6 +34,15 @@ use 12px regular text. Execution summaries and operational notices remain at 14p
 section heading remains accessible without adding a visible label above the conversation.
 List columns distinguish 16px medium task titles from 14px headings and supporting values.
 
+Usage keeps the period selector beside the title and lets the concise description use the
+available width, wrapping naturally on smaller screens. Daily UTC token totals use bars from
+a zero baseline, with no interpolation between days. Totals and charts show recorded usage;
+missing task reports remain explicit and do not imply zero actual usage. Agent totals combine
+local IM reports with recorded cloud model calls, so the description does not exclude all
+internal-session usage. The breakdown uses 16px medium quantities and 12px secondary percentages;
+the Tokens column supplies the unit. Cached input is a subset of input and is explained once
+below the table rather than repeated as an exclusion on the row.
+
 ## Website reference sources
 
 | Source | Responsibility |

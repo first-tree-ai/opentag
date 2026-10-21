@@ -42,6 +42,8 @@ existing product vocabulary to Kumo primitives:
 - `PageHeader` is the owned Kumo block in `src/components/kumo/page-header`.
   It uses the adapter’s semantic `Text` for semantic `h1` titles and secondary descriptions, and
   keeps page actions in the header row when tabs are not present.
+  Its `title-actions` layout places actions beside the title and gives the description a separate
+  full-width row; the default layout retains its bounded description and content-level alignment.
 - `Tabs`, `SettingsList`, and `SettingsRow` retain their semantic API while
   emitting Kumo tabs and semantic utility classes.
 - `Text` keeps document heading levels independent of visual size through `headingSize` (`page` or `section`).

@@ -1,4 +1,4 @@
-import { LineChart } from "echarts/charts";
+import { BarChart } from "echarts/charts";
 import { AriaComponent, BrushComponent, GridComponent, ToolboxComponent, TooltipComponent } from "echarts/components";
 import * as echarts from "echarts/core";
 import { CanvasRenderer } from "echarts/renderers";
@@ -12,7 +12,7 @@ import { CanvasRenderer } from "echarts/renderers";
  */
 echarts.use([
   AriaComponent,
-  LineChart,
+  BarChart,
   BrushComponent,
   GridComponent,
   ToolboxComponent,
@@ -20,11 +20,20 @@ echarts.use([
   CanvasRenderer,
 ]);
 
-// Date ticks near a calendar boundary can overlap even with a small tick count.
+// Usage is bucketed by UTC day, even in the rolling 24-hour window.
 echarts.registerPreprocessor((option) => {
+  option.useUTC = true;
   const axes = Array.isArray(option.xAxis) ? option.xAxis : [option.xAxis];
   for (const axis of axes) {
-    if (axis?.type === "time") axis.axisLabel = { ...axis.axisLabel, hideOverlap: true };
+    if (axis?.type === "time") {
+      axis.minInterval = 86_400_000;
+      axis.axisLabel = { ...axis.axisLabel, hideOverlap: true, showMinLabel: true, showMaxLabel: true };
+    }
+  }
+  const series = Array.isArray(option.series) ? option.series : [option.series];
+  for (const item of series) {
+    // A short window may contain only one or two days; keep its bars proportionate.
+    if (item?.type === "bar") item.barMaxWidth = 24;
   }
 });
 

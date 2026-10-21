@@ -1,6 +1,6 @@
 import type { AgentUsageDetail } from "@opentag/shared/browser";
 import { useQueryClient } from "@tanstack/react-query";
-import { cleanup, fireEvent, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../__tests__/support/router.js";
 import { ApiError, browserApi } from "../api.js";
@@ -48,7 +48,7 @@ describe("AgentUsageOverview", () => {
     await renderInRouter(<AgentUsageOverview agentId="agent-1" />);
 
     expect(await screen.findByText("428K")).toBeTruthy();
-    expect(screen.queryByText("Partial data")).toBeNull();
+    expect(screen.queryByText(/tasks reported token usage/)).toBeNull();
     const metrics = screen.getByLabelText(/Last 30 days/);
     expect(metrics.classList.contains("grid-cols-2")).toBe(true);
     expect(metrics.classList.contains("divide-x")).toBe(true);
@@ -61,14 +61,28 @@ describe("AgentUsageOverview", () => {
     await renderInRouter(<AgentUsageTab agentId="agent-1" />);
 
     expect(screen.getByRole("heading", { level: 1, name: "Usage" })).toBeTruthy();
-    expect(await screen.findByRole("heading", { level: 2, name: "Token usage over time" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { level: 2, name: "Daily token usage" })).toBeTruthy();
     expect(screen.getByRole("heading", { level: 2, name: "Token breakdown" })).toBeTruthy();
     expect(screen.getByRole("combobox", { name: "Usage period" }).textContent).toBe("Last 30 days");
     expect(screen.getByLabelText(/Last 30 days/).classList.contains("grid-cols-2")).toBe(true);
     expect(document.querySelector('[data-ui="usage-tab"]')?.classList.contains("@container/usage-tab")).toBe(true);
     expect(document.querySelector('[data-ui="usage-analysis"]')?.className).toContain("/usage-tab:grid-cols-");
     expect(screen.getByRole("table", { name: "Token breakdown" })).toBeTruthy();
-    expect(screen.getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["Type", "Usage"]);
+    expect(screen.getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["Type", "Tokens"]);
+    const table = screen.getByRole("table", { name: "Token breakdown" });
+    const rows = within(table).getAllByRole("row");
+    expect(
+      rows.slice(1).map((row) =>
+        within(row)
+          .getAllByRole("cell")
+          .map((cell) => cell.textContent),
+      ),
+    ).toEqual([
+      ["Input", "400K93.5%"],
+      ["Output", "28K6.5%"],
+      ["Cached input", "350K"],
+    ]);
+    expect(screen.getByText("Cached input is included in input tokens and shown separately here.")).toBeTruthy();
     expect(screen.queryByText("Total Tokens recorded each day.")).toBeNull();
     expect(screen.queryByText("Input and output within the selected period.")).toBeNull();
   });
@@ -88,7 +102,7 @@ describe("AgentUsageOverview", () => {
     await renderInRouter(<AgentUsageTab agentId="agent-empty" />);
 
     expect(await screen.findByRole("heading", { level: 2, name: "No token usage" })).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "Token usage over time" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Daily token usage" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Token breakdown" })).toBeNull();
     expect(screen.queryByRole("table", { name: "Token breakdown" })).toBeNull();
     expect(document.querySelector('[data-ui="usage-analysis"]')).toBeNull();
@@ -98,7 +112,12 @@ describe("AgentUsageOverview", () => {
   it("limits time-axis tick density for every supported usage window", () => {
     expect(([1, 7, 30, 90] as const).map((days) => usageXAxisTickCount(days))).toEqual([4, 3, 3, 3]);
     expect(usageXAxisTickLabel(Date.parse("2026-08-28T12:00:00.000Z"), "2026-09-01T23:59:59.999Z", 30)).toBe("Aug 28");
-    expect(usageXAxisTickLabel(Date.parse("2026-08-31T12:00:00.000Z"), "2026-09-01T23:59:59.999Z", 30)).toBe("");
+    expect(usageXAxisTickLabel(Date.parse("2026-08-31T12:00:00.000Z"), "2026-09-01T23:59:59.999Z", 30)).toBe("Aug 31");
+    expect(usageXAxisTickLabel(Date.parse("2026-09-01T00:00:00.000Z"), "2026-09-01T14:00:00.000Z", 30)).toBe("");
+    expect(usageXAxisTickLabel(Date.parse("2026-09-01T12:00:00.000Z"), "2026-09-01T14:00:00.000Z", 30)).toBe("Sep 1");
+    expect(usageXAxisTickLabel(Date.parse("2026-08-31T12:00:00.000Z"), "2026-09-01T14:00:00.000Z", 1)).toBe("Aug 31");
+    expect(usageXAxisTickLabel(Date.parse("2026-09-01T00:00:00.000Z"), "2026-09-01T14:00:00.000Z", 1)).toBe("");
+    expect(usageXAxisTickLabel(Date.parse("2026-09-01T12:00:00.000Z"), "2026-09-01T14:00:00.000Z", 1)).toBe("Sep 1");
   });
 
   it("reads one window once for the overview and the tab that show it together", async () => {
@@ -111,8 +130,8 @@ describe("AgentUsageOverview", () => {
       </>,
     );
 
-    expect(await screen.findByText("Partial data")).toBeTruthy();
-    expect(screen.getAllByText("Partial data")).toHaveLength(1);
+    expect(await screen.findByText(/31 of 32 tasks reported token usage/)).toBeTruthy();
+    expect(screen.getAllByText(/31 of 32 tasks reported token usage/)).toHaveLength(1);
     expect(loadUsage).toHaveBeenCalledTimes(1);
     for (const period of screen.getAllByRole("combobox", { name: "Usage period" })) {
       expect(period.classList.contains("w-full")).toBe(true);
@@ -136,7 +155,7 @@ describe("AgentUsageOverview", () => {
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
 
     expect(await screen.findByText("428K")).toBeTruthy();
-    expect(screen.queryByText("Partial data")).toBeNull();
+    expect(screen.queryByText(/tasks reported token usage/)).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
     expect(loadUsage).toHaveBeenCalledTimes(2);
     expect(loadUsage).toHaveBeenNthCalledWith(2, "agent-1", 30);
@@ -175,7 +194,7 @@ describe("AgentUsageOverview", () => {
       ],
     });
     await renderInRouter(<AgentUsageTab agentId="agent-covered" />);
-    expect(await screen.findByText("Token data unavailable")).toBeTruthy();
+    expect(await screen.findByText(/No token data was reported for the 2 tasks/)).toBeTruthy();
     expect(screen.getByRole("img", { name: /10 Tokens used/ })).toBeTruthy();
     expect(usageWindowLabel(1)).toBe("Last 24 hours");
   });

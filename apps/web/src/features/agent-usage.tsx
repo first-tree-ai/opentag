@@ -79,9 +79,11 @@ export function usageXAxisTickCount(days: AgentUsageWindowDays): number {
 
 export function usageXAxisTickLabel(value: number, endedAt: string, windowDays: AgentUsageWindowDays): string {
   const timestamp = new Date(value).toISOString();
-  const distanceFromEnd = Date.parse(endedAt) - value;
-  const endLabelBuffer = windowDays === 1 ? 4 * 60 * 60 * 1_000 : 2 * 24 * 60 * 60 * 1_000;
-  return distanceFromEnd >= 0 && distanceFromEnd < endLabelBuffer ? "" : formatDay(timestamp);
+  const isBucketCenter = timestamp.slice(11, 19) === "12:00:00";
+  // Time axes add calendar ticks as well as the data endpoints. Label a short window's
+  // two day buckets once, and reserve the final day's label for its bar center.
+  if ((windowDays === 1 || timestamp.slice(0, 10) === endedAt.slice(0, 10)) && !isBucketCenter) return "";
+  return formatDay(timestamp);
 }
 
 export function AgentUsageOverview({ accountId, agentId }: { accountId?: string; agentId: string }) {
@@ -141,7 +143,13 @@ export function AgentUsageTab({ agentId }: { agentId: string }) {
   const { retry, state } = useAgentUsage(agentId, windowDays);
   return (
     <div className="@container/usage-tab grid gap-6" data-ui="usage-tab">
-      <PageHeader description={m.usage_description()} title={m.usage_title()} titleId="agent-usage-page-heading">
+      <PageHeader
+        description={m.usage_description()}
+        layout="title-actions"
+        spacing="relaxed"
+        title={m.usage_title()}
+        titleId="agent-usage-page-heading"
+      >
         <UsageWindowSelect options={AGENT_USAGE_WINDOW_OPTIONS} value={windowDays} onChange={setWindowDays} />
       </PageHeader>
       <UsageSummaryState state={state} onRetry={retry} />
@@ -383,7 +391,6 @@ function UsageCoverage({ usage }: { usage: AgentUsageDetail }) {
       }
       role="status"
       size="sm"
-      title={noCoverage ? m.usage_coverage_none_title() : m.usage_coverage_partial_title()}
       variant="alert"
     />
   );
@@ -490,6 +497,7 @@ export function TokenTrendChart({
       ]}
       height={288}
       tooltipValueFormat={(value) => m.usage_chart_tooltip({ tokens: formatCompactNumber(value) })}
+      type="bar"
       xAxisTickCount={usageXAxisTickCount(usage.windowDays)}
       xAxisTickFormat={(value) => usageXAxisTickLabel(value, usage.endedAt, usage.windowDays)}
       yAxisTickFormat={(value) => formatCompactNumber(value)}
@@ -545,11 +553,15 @@ export function TokenBreakdown({
   return (
     <div className="grid gap-3">
       <div className="min-w-0 overflow-x-auto rounded-lg">
-        <Table aria-label={m.usage_breakdown_title()} data-ui="usage-breakdown-table">
+        <Table
+          aria-label={m.usage_breakdown_title()}
+          className="[&_th]:text-sm [&_th]:font-medium"
+          data-ui="usage-breakdown-table"
+        >
           <Table.Header variant="compact">
             <Table.Row>
               <Table.Head>{m.usage_breakdown_type()}</Table.Head>
-              <Table.Head className="text-right">{m.usage_breakdown_usage()}</Table.Head>
+              <Table.Head className="text-right">{m.usage_breakdown_tokens()}</Table.Head>
             </Table.Row>
           </Table.Header>
           <Table.Body>
@@ -564,11 +576,7 @@ export function TokenBreakdown({
               value={usage.outputTokens}
             />
             {includeCached ? (
-              <BreakdownRow
-                label={m.usage_breakdown_cached_input()}
-                share={m.usage_breakdown_not_in_total()}
-                value={usage.cachedInputTokens}
-              />
+              <BreakdownRow label={m.usage_breakdown_cached_input()} value={usage.cachedInputTokens} />
             ) : null}
           </Table.Body>
         </Table>
@@ -582,7 +590,7 @@ export function TokenBreakdown({
   );
 }
 
-function BreakdownRow({ label, share, value }: { label: string; share: string; value: number }) {
+function BreakdownRow({ label, share, value }: { label: string; share?: string; value: number }) {
   return (
     <Table.Row>
       <Table.Cell>
@@ -592,12 +600,14 @@ function BreakdownRow({ label, share, value }: { label: string; share: string; v
       </Table.Cell>
       <Table.Cell className="align-middle">
         <span className="grid justify-items-end gap-0.5 text-right">
-          <Text as="span" DANGEROUS_className="tabular-nums text-xl! font-semibold" size="sm">
-            {m.usage_chart_tooltip({ tokens: formatCompactNumber(value) })}
+          <Text as="span" DANGEROUS_className="tabular-nums font-medium" size="lg">
+            {formatCompactNumber(value)}
           </Text>
-          <Text as="span" DANGEROUS_className="tabular-nums text-xl! font-semibold" size="xs" variant="secondary">
-            {share}
-          </Text>
+          {share ? (
+            <Text as="span" DANGEROUS_className="tabular-nums" size="xs" variant="secondary">
+              {share}
+            </Text>
+          ) : null}
         </span>
       </Table.Cell>
     </Table.Row>

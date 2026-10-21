@@ -18,13 +18,10 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByText("Failed Tasks")).toBeNull();
     expect(screen.queryByText("Average per measured Task")).toBeNull();
     const coverage = screen.getByRole("status");
-    expect(within(coverage).getByText("Partial data")).toBeTruthy();
     expect(
-      within(coverage).getByText(
-        "Token data is available for 31 of 32 tasks. Totals and charts reflect only reported data.",
-      ),
+      within(coverage).getByText("31 of 32 tasks reported token usage; totals and charts show recorded usage only."),
     ).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Token usage over time" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Daily token usage" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Token breakdown" })).toBeTruthy();
     expect(screen.getAllByText(/0 Tokens$/).length).toBeGreaterThan(0);
     expect(screen.getByText("Input")).toBeTruthy();
@@ -62,14 +59,18 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/usage`);
     render(<App />);
 
-    const coverage = (await screen.findByText("Token data unavailable")).closest<HTMLElement>("[role='status']");
+    const coverage = (
+      await screen.findByText("No token data was reported for the 4 tasks. Totals and charts show recorded usage only.")
+    ).closest<HTMLElement>("[role='status']");
     expect(coverage).toBeTruthy();
     if (!coverage) throw new Error("Expected the unavailable Token data banner");
     expect(
-      within(coverage).getByText("None of the 4 tasks reported token usage. Totals and charts may be empty."),
+      within(coverage).getByText(
+        "No token data was reported for the 4 tasks. Totals and charts show recorded usage only.",
+      ),
     ).toBeTruthy();
     expect(screen.getByRole("heading", { level: 2, name: "No token usage" })).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "Token usage over time" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Daily token usage" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Token breakdown" })).toBeNull();
     expect(screen.queryByRole("table", { name: "Token breakdown" })).toBeNull();
   });
@@ -92,6 +93,6 @@ describe("OpenTag Web App Shell", () => {
     const loading = await screen.findByLabelText("Loading Agent usage");
     expect(loading.children).toHaveLength(2);
     releaseUsage();
-    expect(await screen.findByText("Partial data")).toBeTruthy();
+    expect(await screen.findByText(/31 of 32 tasks reported token usage/)).toBeTruthy();
   });
 });

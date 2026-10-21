@@ -46,6 +46,7 @@ export interface PageHeaderProps extends KumoPageHeaderVariantsProps {
   title?: string;
   description?: string;
   titleId?: string;
+  layout?: "default" | "title-actions";
   tabs?: PageHeaderTab[];
   defaultTab?: string;
   onValueChange?: (value: string) => void;
@@ -59,6 +60,7 @@ export function PageHeader({
   title,
   description,
   titleId,
+  layout = "default",
   tabs,
   defaultTab,
   onValueChange,
@@ -66,6 +68,13 @@ export function PageHeader({
   className,
   children,
 }: PageHeaderProps) {
+  const descriptionContent = description ? (
+    <div className={layout === "default" ? "max-w-prose" : undefined}>
+      <Text as="p" size="lg" variant="secondary">
+        {description}
+      </Text>
+    </div>
+  ) : null;
   return (
     <div className={cn(pageHeaderVariants({ spacing }), className)} data-ui="page-header">
       {breadcrumbs ? <div className="border-b border-kumo-line">{breadcrumbs}</div> : null}
@@ -83,17 +92,12 @@ export function PageHeader({
                 {title}
               </Text>
             )}
-            {description && (
-              <div className="max-w-prose">
-                <Text as="p" size="lg" variant="secondary">
-                  {description}
-                </Text>
-              </div>
-            )}
+            {layout === "default" ? descriptionContent : null}
           </div>
           {!tabs && children ? <div className="flex flex-wrap items-center gap-2">{children}</div> : null}
         </div>
       )}
+      {layout === "title-actions" ? descriptionContent : null}
 
       {tabs && (
         <div className="flex w-full items-center justify-between border-b border-kumo-line pt-1 pb-3 pl-3">

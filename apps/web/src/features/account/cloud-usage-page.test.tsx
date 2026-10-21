@@ -30,7 +30,7 @@ describe("account-wide cloud usage", () => {
     const load = vi.spyOn(browserApi, "cloudUsage").mockResolvedValue(usage);
     const agents = vi.spyOn(browserApi, "agentUsage");
     mount();
-    expect(await screen.findByRole("heading", { name: "Token usage over time" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Daily token usage" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Cloud usage" })).toBeTruthy();
     expect(screen.getByText("Model calls")).toBeTruthy();
     expect(screen.getByRole("img", { name: /300 Tokens used/ })).toBeTruthy();

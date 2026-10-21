@@ -46,7 +46,7 @@ async function expectUsageFixtureState(page: Page, fixture: UsageVisualFixture):
     return;
   }
 
-  await expect(page.getByRole("heading", { level: 2, name: "Token usage over time" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 2, name: "Daily token usage" })).toBeVisible();
   await expect(page.getByRole("heading", { level: 2, name: "Token breakdown" })).toBeVisible();
   const table = page.getByRole("table", { name: "Token breakdown" });
   await expect(table).toBeVisible();

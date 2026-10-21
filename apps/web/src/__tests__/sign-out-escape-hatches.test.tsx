@@ -100,6 +100,33 @@ describe("sign-out from full-screen states of an Account that has not finished s
     await signOutFrom(region('[data-ui="agent-create"] header'), true);
   });
 
+  it.each([
+    { setupCompletedAt: null, items: ["Sign out"] },
+    {
+      setupCompletedAt: "2026-08-20T00:00:00.000Z",
+      items: ["Computer", "Account", "Internal tools", "Sign out"],
+    },
+  ])(
+    "offers only reachable creation-menu actions with setupCompletedAt=$setupCompletedAt",
+    async ({ setupCompletedAt, items }) => {
+      installApi({ emptyAgents: true, setupCompletedAt, internalToolsOffered: true });
+      window.history.replaceState({}, "", "/agents/setup?action=create");
+      render(<App />);
+
+      await screen.findByRole("heading", { name: "Where should your agent run?" });
+      const header = region('[data-ui="agent-create"] header');
+      fireEvent.click(within(header).getByRole("button", { name: "Account menu" }));
+      const menu = await within(header).findByRole("menu");
+      await waitFor(() =>
+        expect(
+          within(menu)
+            .getAllByRole("menuitem")
+            .map((item) => item.textContent?.trim()),
+        ).toEqual(items),
+      );
+    },
+  );
+
   it("offers it in the header of the exact setup page, next to the Account name", async () => {
     installApi({ setupCompletedAt: null });
     window.history.replaceState({}, "", `/agents/setup?agentId=${agentId}`);

@@ -74,7 +74,9 @@ keyboard-accessible Undo path for long enough to recover.
 
 Every full-screen state that replaces the application shell must keep a way to sign out, because an Account that has
 not finished setup is shown nothing else. Creation and exact setup headers reuse the shared Account menu, aligned
-with their navigation action; other full-screen states offer a direct sign-out control. This covers the Agent Setup
+with their navigation action. Until Account setup is complete, that menu offers only Sign out; navigation links
+would redirect back to setup and discard the creation draft. Other full-screen states offer a direct sign-out control.
+This covers the Agent Setup
 states (creation header, exact setup header, unavailable, read-failed, adoption-failed, and choice), the Account gate
 when `/api/v1/me` fails (which also offers Retry), and the error and not-found pages. Sign-out always follows one
 contract (`features/session/use-sign-out.ts`): the Server confirms the logout first, then the Account session ends and

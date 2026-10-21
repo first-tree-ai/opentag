@@ -76,14 +76,15 @@ provider mutation occurred during this review. Raw logs, private credentials and
 ## PR review follow-up
 
 The external reviews of `4e3c9582b5f24f2680a87ffc9d11b4bcf41cd60b` identified four distinct blocking issues.
-This follow-up addresses three and leaves OAuth client replacement pending a data-write design decision.
+The follow-up addresses three. The product decision subsequently defers OAuth App replacement and documents it as
+an unsupported scenario, without adding cross-client compatibility or data writes.
 
 | Feedback | Disposition and regression evidence |
 | --- | --- |
 | A transient post-refresh check discarded a successful rotation | Removed the redundant network check before persistence. The client-authenticated token exchange is sealed and committed through the existing refresh CAS. Tests retain the new pair and authorization version after rate limits, upstream failures and malformed rechecks; retry verifies the new access token without replaying the consumed refresh token. Definite identity/scope rejection still clears credentials. |
 | Periodic checks shared the OAuth client-credential budget | Worker rechecks use Bearer `GET /user` and the granted `X-OAuth-Scopes` header. Missing/malformed evidence is transient, explicit missing `repo` is definitive. `X-Accepted-OAuth-Scopes` cannot substitute for granted scope. Client-authenticated check-token remains on callback only. |
 | A denial with `error_uri` failed strict callback parsing | Accept an ignored, bounded `error_uri`. Both relative and absolute documented denial shapes now return `GITHUB_OAUTH_DENIED` and clear the claimed flow; an oversized URI is rejected before consuming it. |
-| Replacing the configured OAuth Client ID prevents reconnection | Still open. Existing current rows belong to the old client, but uniqueness spans the Account/host. The proposed explicit-connect transaction would supersede and clear that Account's old-client row, preserve history and insert the new pending row atomically. No cross-client write or startup cleanup has been added pending confirmation. |
+| Replacing the configured OAuth Client ID prevents reconnection | Explicitly deferred by the user. The deployment must keep the Client ID stable while current OAuth bindings exist. The contract and environment example document the unsupported replacement scenario and its connection/disconnect behavior. No cross-client compatibility, supersede transaction, startup cleanup or data migration is added. Reviewer acceptance of this scope decision remains separate. |
 | Tree verifier credential scope | Documented that the verifier holds the user's full OAuth grant; configured repository/read-only restrictions are Server/verifier enforcement, not a narrower GitHub token. |
 | Stale App environment configuration | Startup warns with nonempty retired variable names only, without values; the old configuration remains ignored. |
 | IPv6 loopback callback | API client uses the shared loopback predicate with an explicit HTTP/HTTPS protocol check. IPv6 loopback works; non-loopback HTTP and loopback FTP remain rejected. |
@@ -108,4 +109,4 @@ Follow-up validation (isolated local environment; no production data or real gra
 The four PostgreSQL suites use disposable Testcontainers databases. No migration changed, so the complete integration suite
 was not repeated. Native proxy implementation, browser presentation and Runner code did not change in this follow-up; their
 prior evidence remains historical and CI owns the new-head regression matrix. Review threads remain for the reviewers to
-reassess; the pending client-replacement issue is not claimed resolved.
+reassess; OAuth App replacement is documented as unsupported and is not claimed implemented.

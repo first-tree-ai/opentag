@@ -752,8 +752,14 @@ export class BrowserApi {
     });
   }
 
-  githubRepositories(cursor?: string): Promise<GitHubRepositoryDiscoveryPage> {
-    return this.request(githubIntegrationRepositoriesPath(cursor), GitHubRepositoryDiscoveryPageSchema);
+  githubRepositories(
+    cursor?: string,
+    signal?: AbortSignal,
+    authorization?: Pick<GitHubConnectionStatus, "id" | "authorizationVersion">,
+  ): Promise<GitHubRepositoryDiscoveryPage> {
+    return this.request(githubIntegrationRepositoriesPath(cursor, authorization), GitHubRepositoryDiscoveryPageSchema, {
+      signal,
+    });
   }
 
   disconnectGitHub(): Promise<GitHubConnectionStatus | undefined> {

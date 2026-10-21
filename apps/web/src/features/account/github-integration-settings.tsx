@@ -1,33 +1,31 @@
-import type { GitHubConnectionStatus, GitHubDiscoveredInstallation } from "@opentag/shared/browser";
-import { useCallback, useEffect, useState } from "react";
+import type { GitHubConnectionStatus } from "@opentag/shared/browser";
+import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
-import { Badge, Banner, Button, SettingsList, SettingsRow, StatusIndicator, Text } from "../../ui/design-system.js";
+import { Banner, Button, Dialog, Loader, SettingsList, Text } from "../../ui/design-system.js";
 import { useGitHubActionFocus } from "../integrations/github-action-focus.js";
-import { GitHubInstallationActions } from "../integrations/github-installation-actions.js";
 import {
   type GitHubOAuthOutcome,
   githubOAuthOutcomeMessage,
   readGitHubOAuthOutcome,
 } from "../integrations/github-oauth-outcome.js";
 
-/**
- * The Account's GitHub connection, backed by the real management API.
- *
- * The Server authors every authorize URL; this surface only opens it and reports the bounded
- * outcome the callback redirected back with. An unavailable deployment is explained, never demoed.
- * Connection status, reauthorization, explicit replacement, and disconnect are all real state
- * transitions — the component never keeps a local copy of the connection.
- */
+import { GitHubRepositoryAccess } from "./github-repository-access.js";
+import { clearProfileNavigationDraft } from "./profile-navigation-draft.js";
+
+type GitHubAuthorizationIntent = "create" | "reauthorize" | "replace";
+type GitHubAction = GitHubAuthorizationIntent | "remove" | "retry";
 
 type View =
   | { kind: "loading" }
   | { kind: "error"; message: string }
   | { kind: "unavailable" }
-  | { kind: "disconnected" }
-  | { kind: "pending" }
-  | { kind: "reauthorize"; connection: GitHubConnectionStatus }
-  | { kind: "active"; connection: GitHubConnectionStatus; installations: GitHubDiscoveredInstallation[] };
+  | { kind: "empty" }
+  | { kind: "account"; connection: GitHubConnectionStatus };
+
+function githubAccountLabel(connection: GitHubConnectionStatus): string {
+  return connection.githubLogin ? `@${connection.githubLogin}` : m.integrations_github_account_unknown();
+}
 
 function actionErrorMessage(cause: unknown): string {
   if (cause instanceof ApiError) {
@@ -52,103 +50,123 @@ function actionErrorMessage(cause: unknown): string {
   return cause instanceof Error && cause.message ? cause.message : m.integrations_github_error_generic();
 }
 
-function statusTone(status: GitHubConnectionStatus["status"]): "success" | "warning" | "neutral" {
-  if (status === "active") return "success";
-  if (status === "pending" || status === "reauthorization_required") return "warning";
-  return "neutral";
+/** Account identity is independent of repository discovery and its upstream availability. */
+async function resolveAccountGitHubView(): Promise<View> {
+  const overview = await browserApi.githubIntegration();
+  if (!overview.availability.available) return { kind: "unavailable" };
+  const connection = overview.connection;
+  if (connection === null || ["pending", "revoked", "superseded"].includes(connection.status)) return { kind: "empty" };
+  return { kind: "account", connection };
 }
 
-function statusLabel(status: GitHubConnectionStatus["status"]): string {
-  switch (status) {
-    case "active":
-      return m.integrations_github_status_active();
-    case "pending":
-      return m.integrations_github_status_pending();
-    case "reauthorization_required":
-      return m.integrations_github_status_reauthorize();
-    case "revoked":
-      return m.integrations_github_status_disconnected();
-    default:
-      return m.integrations_github_status_superseded();
-  }
-}
-
-export function GitHubIntegrationSettings() {
+export function GitHubIntegrationSettings({ beforeAuthorize }: { beforeAuthorize?: () => void }) {
   const [view, setView] = useState<View>({ kind: "loading" });
   const [outcome, setOutcome] = useState<GitHubOAuthOutcome | undefined>(() => readGitHubOAuthOutcome());
-  const [action, setAction] = useState<"authorize" | "disconnect" | "refresh" | null>(null);
+  const [action, setAction] = useState<GitHubAction | null>(null);
+  const inFlight = useRef(false);
   const busy = action !== null;
-  const refreshing = action === "refresh";
   const { resultRef, captureFocus } = useGitHubActionFocus(busy);
+  const removeRef = useRef<HTMLButtonElement>(null);
+  const [confirming, setConfirming] = useState(false);
   const [message, setMessage] = useState<string>();
   const [error, setError] = useState<string>();
+  const sectionRef = useRef<HTMLElement>(null);
+
+  const reconcileConnection = useCallback(
+    async (signal: AbortSignal) => {
+      try {
+        const next = await resolveAccountGitHubView();
+        if (signal.aborted) return;
+        setView(next);
+        setOutcome(undefined);
+        setError(undefined);
+        setMessage(m.integrations_github_details_updated());
+        requestAnimationFrame(() => {
+          if (document.activeElement?.closest('[role="dialog"]')) return;
+          const authorize = sectionRef.current?.querySelector<HTMLButtonElement>(
+            '[data-ui="github-account-authorize"]',
+          );
+          (authorize ?? resultRef.current)?.focus();
+        });
+      } catch (cause) {
+        if (!signal.aborted) setError(actionErrorMessage(cause));
+      }
+    },
+    [resultRef],
+  );
 
   const load = useCallback(async () => {
-    setError(undefined);
     try {
       setView(await resolveAccountGitHubView());
+      return true;
     } catch (cause) {
       setView({ kind: "error", message: actionErrorMessage(cause) });
+      return false;
     }
   }, []);
-
   useEffect(() => {
     void load();
   }, [load]);
 
   async function run(kind: Exclude<typeof action, null>, perform: () => Promise<void>): Promise<void> {
-    if (busy) return;
+    if (inFlight.current) return;
+    inFlight.current = true;
     captureFocus();
     setAction(kind);
+    setOutcome(undefined);
     setMessage(undefined);
     setError(undefined);
     try {
       await perform();
     } catch (cause) {
-      setMessage(undefined);
       setError(actionErrorMessage(cause));
     } finally {
+      inFlight.current = false;
       setAction(null);
     }
   }
 
-  function connect(intent: "create" | "reauthorize" | "replace"): void {
-    void run("authorize", async () => {
-      const started = await browserApi.startGitHubAuthorization({
-        intent,
-        returnSurface: "account-integrations",
-        agentId: null,
-      });
-      window.location.assign(started.authorizationUrl);
+  function authorize(intent: GitHubAuthorizationIntent): void {
+    void run(intent, async () => {
+      try {
+        beforeAuthorize?.();
+        const started = await browserApi.startGitHubAuthorization({
+          intent,
+          returnSurface: "account-integrations",
+          agentId: null,
+        });
+        // Capture edits made while the authorization request was in flight, too.
+        beforeAuthorize?.();
+        window.location.assign(started.authorizationUrl);
+      } catch (cause) {
+        clearProfileNavigationDraft();
+        throw cause;
+      }
     });
   }
-
-  function disconnect(): void {
-    void run("disconnect", async () => {
+  function remove(): void {
+    void run("remove", async () => {
       await browserApi.disconnectGitHub();
+      // A confirmed mutation is authoritative even if a subsequent read would fail.
+      setView({ kind: "empty" });
+      setConfirming(false);
       setOutcome(undefined);
-      setMessage(m.integrations_github_disconnected_message());
-      await load();
+      setMessage(m.integrations_github_removed());
+      requestAnimationFrame(() => resultRef.current?.focus());
     });
   }
 
-  function refresh(): void {
-    void run("refresh", async () => {
-      setMessage(m.integrations_github_refreshing());
-      const next = await resolveAccountGitHubView();
-      setView(next);
-      setMessage(
-        next.kind === "active"
-          ? m.integrations_github_refreshed({ count: String(next.installations.length) })
-          : m.integrations_github_connection_changed(),
-      );
-    });
+  function closeRemoval(): void {
+    setConfirming(false);
+    setError(undefined);
   }
 
-  const busyLabel = action === "authorize" ? m.integrations_github_working() : undefined;
-
+  const connection = view.kind === "account" ? view.connection : undefined;
+  const busyLabel =
+    action && ["create", "reauthorize", "replace"].includes(action) ? m.integrations_github_authorizing() : undefined;
+  const feedbackError = confirming ? undefined : error;
   return (
-    <section className="grid gap-4" aria-labelledby="account-github-title" data-ui="account-github">
+    <section ref={sectionRef} className="grid gap-4" aria-labelledby="account-github-title" data-ui="account-github">
       <div className="grid gap-1">
         <Text as="h2" id="account-github-title" variant="heading">
           {m.integrations_github_account_title()}
@@ -157,249 +175,327 @@ export function GitHubIntegrationSettings() {
           {m.integrations_github_account_description()}
         </Text>
       </div>
-
       {outcome ? (
         <Banner
           data-ui="account-github-outcome"
-          role="status"
+          className={outcome.kind === "error" ? "text-kumo-strong" : undefined}
+          role={outcome.kind === "success" ? "status" : "alert"}
           title={githubOAuthOutcomeMessage(outcome)}
           variant={outcome.kind === "success" ? "default" : "alert"}
         />
       ) : null}
-
       <AccountGitHubBody
-        busy={busy}
-        refreshing={refreshing}
-        busyLabel={busyLabel}
-        onConnect={connect}
-        onDisconnect={disconnect}
-        onRefresh={refresh}
-        onRetry={refresh}
         view={view}
+        action={action}
+        busy={busy}
+        busyLabel={busyLabel}
+        removeRef={removeRef}
+        onAuthorize={authorize}
+        onRetry={() =>
+          void run("retry", async () => {
+            if (await load()) setMessage(m.integrations_github_details_updated());
+          })
+        }
+        onRemove={() => {
+          setError(undefined);
+          setConfirming(true);
+        }}
+        onConnectionInvalid={reconcileConnection}
       />
-
-      <p
-        className="text-sm text-kumo-subtle"
-        data-ui="account-github-message"
-        role="status"
-        aria-live="polite"
-        aria-atomic="true"
-        ref={resultRef}
-        tabIndex={-1}
-      >
-        {message}
-      </p>
-      {error ? (
-        <p className="text-sm text-kumo-danger" data-ui="account-github-action-error" role="alert">
-          {error}
-        </p>
+      <GitHubActionFeedback message={message} error={feedbackError} resultRef={resultRef} />
+      {connection ? (
+        <GitHubRemovalConfirmation
+          connection={connection}
+          open={confirming}
+          busy={busy}
+          error={error}
+          removeRef={removeRef}
+          onClose={closeRemoval}
+          onRemove={remove}
+        />
       ) : null}
     </section>
   );
 }
 
-/** The Account overview resolved to one view state; the Server is the only source of truth. */
-async function resolveAccountGitHubView(): Promise<View> {
-  const overview = await browserApi.githubIntegration();
-  if (!overview.availability.available) return { kind: "unavailable" };
-  const connection = overview.connection;
-  if (connection === null) return { kind: "disconnected" };
-  if (connection.status === "pending") return { kind: "pending" };
-  if (connection.status !== "active") return { kind: "reauthorize", connection };
-  const discovery = await browserApi.githubRepositories();
-  return { kind: "active", connection, installations: discovery.installations };
+function GitHubActionFeedback({
+  message,
+  error,
+  resultRef,
+}: {
+  message: string | undefined;
+  error: string | undefined;
+  resultRef: RefObject<HTMLParagraphElement | null>;
+}) {
+  return (
+    <p
+      className={error ? "text-sm text-kumo-danger" : message ? "text-sm text-kumo-subtle" : "sr-only"}
+      data-ui="account-github-message"
+      role={error ? "alert" : "status"}
+      aria-live={error ? "assertive" : "polite"}
+      aria-atomic="true"
+      ref={resultRef}
+      tabIndex={-1}
+    >
+      {error ?? message}
+    </p>
+  );
 }
 
-/** Everything below the Account GitHub heading: one mutually exclusive connection state. */
-function AccountGitHubBody({
+function GitHubRemovalConfirmation({
+  connection,
+  open,
   busy,
-  refreshing,
-  busyLabel,
-  onConnect,
-  onDisconnect,
-  onRefresh,
-  onRetry,
-  view,
+  error,
+  removeRef,
+  onClose,
+  onRemove,
 }: {
+  connection: GitHubConnectionStatus;
+  open: boolean;
   busy: boolean;
-  refreshing: boolean;
-  busyLabel: string | undefined;
-  onConnect: (intent: "create" | "reauthorize" | "replace") => void;
-  onDisconnect: () => void;
-  onRefresh: () => void;
-  onRetry: () => void;
-  view: View;
+  error: string | undefined;
+  removeRef: RefObject<HTMLButtonElement | null>;
+  onClose: () => void;
+  onRemove: () => void;
 }) {
-  if (view.kind === "loading") {
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const removeLabel = busy ? m.integrations_github_removing() : m.integrations_github_remove_account();
+  return (
+    <Dialog
+      open={open}
+      busy={busy}
+      title={m.integrations_github_remove_title()}
+      onClose={onClose}
+      initialFocusRef={cancelRef}
+      returnFocusRef={removeRef}
+      description={m.integrations_github_remove_description({
+        account: githubAccountLabel(connection),
+      })}
+    >
+      <div className="grid gap-4">
+        <Text as="p" variant="secondary">
+          {m.integrations_github_remove_scope()}
+        </Text>
+        {error ? (
+          <p className="text-sm text-kumo-danger" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <div className="flex flex-wrap justify-end gap-3">
+          <Button ref={cancelRef} disabled={busy} variant="ghost" onClick={onClose}>
+            {m.common_cancel()}
+          </Button>
+          <Button
+            disabled={busy}
+            aria-busy={busy}
+            aria-label={removeLabel}
+            icon={
+              busy ? (
+                <span className="inline-flex" aria-hidden="true">
+                  <Loader size="sm" />
+                </span>
+              ) : undefined
+            }
+            variant="danger"
+            onClick={onRemove}
+          >
+            {removeLabel}
+          </Button>
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
+function GitHubAuthorizationButton({
+  intent,
+  action,
+  busyLabel,
+  onAuthorize,
+}: {
+  intent: GitHubAuthorizationIntent;
+  action: GitHubAction | null;
+  busyLabel: string | undefined;
+  onAuthorize: (intent: GitHubAuthorizationIntent) => void;
+}) {
+  const active = action === intent;
+  const label =
+    intent === "create"
+      ? m.integrations_github_add_account()
+      : intent === "replace"
+        ? m.integrations_github_change()
+        : m.integrations_github_reauthorize();
+  const accessibleLabel = intent === "replace" ? m.integrations_github_change_account() : label;
+  return (
+    <Button
+      data-ui="github-account-authorize"
+      disabled={action !== null}
+      size={intent === "create" ? undefined : "compact"}
+      variant={intent === "replace" ? "ghost" : "primary"}
+      aria-label={active ? busyLabel : accessibleLabel}
+      aria-busy={active}
+      aria-describedby={intent === "reauthorize" ? "account-github-reauthorize-description" : undefined}
+      icon={
+        active ? (
+          <span className="inline-flex" aria-hidden="true">
+            <Loader size="sm" />
+          </span>
+        ) : undefined
+      }
+      onClick={() => onAuthorize(intent)}
+      type="button"
+    >
+      {active && intent === "create" ? busyLabel : label}
+    </Button>
+  );
+}
+
+function GitHubAccountIdentity({
+  connection,
+  action,
+  busyLabel,
+  removeRef,
+  onAuthorize,
+  onRemove,
+}: {
+  connection: GitHubConnectionStatus;
+  action: GitHubAction | null;
+  busyLabel: string | undefined;
+  removeRef: RefObject<HTMLButtonElement | null>;
+  onAuthorize: (intent: GitHubAuthorizationIntent) => void;
+  onRemove: () => void;
+}) {
+  const reauthorizationRequired = connection.status === "reauthorization_required";
+  return (
+    <div className="grid gap-2" data-ui="github-account-identity">
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
+          <span className="min-w-0 break-all text-sm font-medium text-kumo-strong">
+            {githubAccountLabel(connection)}
+          </span>
+          {reauthorizationRequired ? (
+            <GitHubAuthorizationButton
+              intent="reauthorize"
+              action={action}
+              busyLabel={busyLabel}
+              onAuthorize={onAuthorize}
+            />
+          ) : null}
+        </div>
+        <div className="flex items-center gap-2">
+          <GitHubAuthorizationButton intent="replace" action={action} busyLabel={busyLabel} onAuthorize={onAuthorize} />
+          <Button
+            ref={removeRef}
+            disabled={action !== null}
+            variant="ghost"
+            size="compact"
+            aria-label={m.integrations_github_remove_account()}
+            onClick={onRemove}
+            type="button"
+          >
+            {m.integrations_github_remove()}
+          </Button>
+        </div>
+      </div>
+      {reauthorizationRequired ? (
+        <p id="account-github-reauthorize-description" className="text-sm text-kumo-subtle" role="alert">
+          {m.integrations_github_reauthorize_description()}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function AccountGitHubBody({
+  view,
+  action,
+  busy,
+  busyLabel,
+  removeRef,
+  onAuthorize,
+  onRetry,
+  onRemove,
+  onConnectionInvalid,
+}: {
+  view: View;
+  action: GitHubAction | null;
+  busy: boolean;
+  busyLabel: string | undefined;
+  removeRef: RefObject<HTMLButtonElement | null>;
+  onAuthorize: (intent: GitHubAuthorizationIntent) => void;
+  onRetry: () => void;
+  onRemove: () => void;
+  onConnectionInvalid: (signal: AbortSignal) => Promise<void>;
+}) {
+  if (view.kind === "loading")
     return (
-      <Text as="p" data-ui="account-github-loading" variant="secondary">
-        {m.integrations_github_loading()}
-      </Text>
+      <div className="flex items-center gap-2" role="status" aria-live="polite">
+        <span className="inline-flex" aria-hidden="true">
+          <Loader size="sm" />
+        </span>
+        <Text as="p" variant="secondary">
+          {m.integrations_github_loading()}
+        </Text>
+      </div>
     );
-  }
-  if (view.kind === "error") {
+  if (view.kind === "error")
     return (
       <Banner
-        action={<Banner.Action onClick={onRetry}>{m.common_try_again()}</Banner.Action>}
-        data-ui="account-github-error"
+        className="text-kumo-strong"
+        action={
+          <Button disabled={busy} size="compact" variant="secondary" onClick={onRetry}>
+            {m.common_try_again()}
+          </Button>
+        }
         role="alert"
         title={view.message}
         variant="alert"
       />
     );
-  }
-  if (view.kind === "unavailable") {
+  if (view.kind === "unavailable")
     return (
-      <SettingsList>
-        <SettingsRow
-          description={m.integrations_github_unavailable_description()}
-          label={m.integrations_github_unavailable_title()}
-        >
-          <Badge variant="secondary">{m.integrations_github_unavailable_badge()}</Badge>
-        </SettingsRow>
-      </SettingsList>
+      <div className="grid gap-1">
+        <Text as="p">{m.integrations_github_unavailable_title()}</Text>
+        <Text as="p" variant="secondary">
+          {m.integrations_github_unavailable_description()}
+        </Text>
+      </div>
     );
-  }
-  if (view.kind === "disconnected") {
-    return (
-      <SettingsList>
-        <SettingsRow
-          description={m.integrations_github_disconnected_description()}
-          label={m.integrations_github_connection_label()}
-        >
-          <Button disabled={busy} onClick={() => onConnect("create")} type="button">
-            {busyLabel ?? m.integrations_github_connect()}
-          </Button>
-        </SettingsRow>
-      </SettingsList>
-    );
-  }
-  if (view.kind === "pending") {
-    return (
-      <SettingsList>
-        <SettingsRow
-          description={m.integrations_github_pending_description()}
-          label={<ConnectionLabel status="pending" />}
-        >
-          <div className="flex flex-wrap justify-end gap-2">
-            <Button disabled={busy} onClick={() => onConnect("create")} type="button">
-              {busyLabel ?? m.integrations_github_finish_connect()}
-            </Button>
-            <Button disabled={busy} onClick={onDisconnect} type="button" variant="ghost">
-              {m.integrations_github_cancel()}
-            </Button>
-          </div>
-        </SettingsRow>
-      </SettingsList>
-    );
-  }
+  const connection = view.kind === "account" ? view.connection : undefined;
   return (
-    <ConnectionDetails
-      busy={busy}
-      refreshing={refreshing}
-      busyLabel={busyLabel}
-      connection={view.connection}
-      installations={view.kind === "active" ? view.installations : []}
-      onDisconnect={onDisconnect}
-      onRefresh={onRefresh}
-      onReauthorize={() => onConnect("reauthorize")}
-      onReplace={() => onConnect("replace")}
-    />
-  );
-}
-
-/** The connection row's label plus its live state badge; shared by every connection view. */
-function ConnectionLabel({ status }: { status: GitHubConnectionStatus["status"] }) {
-  return (
-    <span className="flex items-center gap-2">
-      {m.integrations_github_connection_label()}
-      <StatusIndicator label={statusLabel(status)} tone={statusTone(status)} />
-    </span>
-  );
-}
-
-function ConnectionDetails({
-  busy,
-  refreshing,
-  busyLabel,
-  connection,
-  installations,
-  onDisconnect,
-  onRefresh,
-  onReauthorize,
-  onReplace,
-}: {
-  busy: boolean;
-  refreshing: boolean;
-  busyLabel: string | undefined;
-  connection: GitHubConnectionStatus;
-  installations: GitHubDiscoveredInstallation[];
-  onDisconnect: () => void;
-  onRefresh: () => void;
-  onReauthorize: () => void;
-  onReplace: () => void;
-}) {
-  return (
-    <SettingsList>
-      <SettingsRow
-        description={
-          connection.githubLogin
-            ? m.integrations_github_connected_as({ login: connection.githubLogin })
-            : m.integrations_github_connected()
-        }
-        label={<ConnectionLabel status={connection.status} />}
-      >
-        <div className="flex flex-wrap justify-end gap-2">
-          <Button disabled={busy} onClick={onReauthorize} type="button" variant="secondary">
-            {busyLabel ?? m.integrations_github_reconnect()}
-          </Button>
-          <Button disabled={busy} onClick={onReplace} type="button" variant="ghost">
-            {m.integrations_github_use_another_account()}
-          </Button>
-          <Button disabled={busy} onClick={onDisconnect} type="button" variant="ghost">
-            {m.integrations_github_disconnect()}
-          </Button>
-        </div>
-      </SettingsRow>
-
-      {connection.status === "reauthorization_required" ? (
-        <SettingsRow
-          description={m.integrations_github_reauth_description()}
-          label={m.integrations_github_reauth_title()}
-        >
-          <Button disabled={busy} onClick={onReauthorize} type="button">
-            {busyLabel ?? m.integrations_github_reconnect()}
-          </Button>
-        </SettingsRow>
-      ) : null}
-
-      <SettingsRow
-        description={m.integrations_github_installations_description()}
-        label={m.integrations_github_installations_title()}
-      >
-        <div className="grid gap-2">
-          {installations.length === 0 ? (
-            <Text as="p" data-ui="account-github-no-installations" variant="secondary">
-              {m.integrations_github_no_installations()}
+    <SettingsList className="github-settings-list">
+      <div className="grid gap-3 p-4">
+        <strong className="text-sm font-medium text-kumo-strong">{m.integrations_github_authorize_account()}</strong>
+        {connection ? (
+          <GitHubAccountIdentity
+            connection={connection}
+            action={action}
+            busyLabel={busyLabel}
+            removeRef={removeRef}
+            onAuthorize={onAuthorize}
+            onRemove={onRemove}
+          />
+        ) : (
+          <div className="grid justify-items-start gap-2">
+            <Text as="p" variant="secondary">
+              {m.integrations_github_add_account_description()}
             </Text>
-          ) : (
-            <ul className="flex flex-wrap justify-end gap-2" data-ui="account-github-installations">
-              {installations.map((entry) => (
-                <li key={entry.installationId}>
-                  <Badge variant={entry.suspended ? "secondary" : "neutral"}>
-                    {entry.suspended
-                      ? m.integrations_github_installation_suspended({ account: entry.accountLogin })
-                      : entry.accountLogin}
-                  </Badge>
-                </li>
-              ))}
-            </ul>
-          )}
-          {connection.status === "active" ? (
-            <GitHubInstallationActions busy={busy} refreshing={refreshing} onRefresh={onRefresh} />
-          ) : null}
-        </div>
-      </SettingsRow>
+            <GitHubAuthorizationButton
+              intent="create"
+              action={action}
+              busyLabel={busyLabel}
+              onAuthorize={onAuthorize}
+            />
+          </div>
+        )}
+      </div>
+      <GitHubRepositoryAccess
+        key={connection ? `${connection.id}/${connection.authorizationVersion}/${connection.status}` : "empty"}
+        connection={connection}
+        busy={busy}
+        onConnectionInvalid={onConnectionInvalid}
+      />
     </SettingsList>
   );
 }

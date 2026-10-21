@@ -1,0 +1,66 @@
+.github-repository-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+@container content (min-width: 44rem) {
+  .github-settings-list > [data-ui="settings-row"] {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .github-repository-actions {
+    justify-content: flex-end;
+  }
+}
+.github-repositories-dialog {
+  width: min(35rem, calc(100vw - 2rem));
+  max-width: none;
+  max-height: min(90dvh, 42rem);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+.github-repositories-dialog > header {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 1.25rem 1.25rem 0.75rem;
+}
+.github-repositories-dialog [data-ui="dialog-heading"] {
+  min-width: 0;
+}
+.github-repositories-dialog > header + p {
+  flex-shrink: 0;
+  margin-inline: 1.25rem;
+}
+.github-repositories-body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 1.25rem 1rem;
+}
+.github-repositories-body > input {
+  width: 100%;
+}
+.github-repositories-footer {
+  display: flex;
+  flex-shrink: 0;
+  justify-content: flex-end;
+  border-top: 1px solid var(--border);
+  padding: 0.75rem 1.25rem;
+}
+@media (max-width: 420px) {
+  .github-repositories-dialog > header {
+    gap: 0.5rem;
+    padding-inline: 1rem;
+  }
+  .github-repositories-body {
+    padding-inline: 1rem;
+  }
+  .github-repositories-dialog > header + p {
+    margin-inline: 1rem;
+  }
+  .github-repositories-footer {
+    padding-inline: 1rem;
+  }
+}

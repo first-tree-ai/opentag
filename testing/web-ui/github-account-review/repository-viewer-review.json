@@ -1,0 +1,26 @@
+{
+  "date": "2026-10-20",
+  "webUnitAndContractTests": 82,
+  "serverUnitAndManagementApiTests": 39,
+  "sharedContractTests": 12,
+  "fullApplicationGitHubE2eTests": 12,
+  "presentationCases": 16,
+  "locales": ["en", "zh"],
+  "viewportWidths": [1440, 320],
+  "checks": ["pnpm check", "pnpm build", "pnpm typecheck", "pnpm exec tsc --project e2e/tsconfig.json --noEmit"],
+  "boundaries": "The built Web application, Server, browser authentication, and disposable PostgreSQL are real. Browser fixtures control GitHub management responses and authorization navigation; no live GitHub OAuth, installation, repository, or token is changed.",
+  "coverage": [
+    "on-demand reads",
+    "100-row batches and provider-page lookahead",
+    "loaded-list filtering",
+    "compact installation-aware empty guidance",
+    "read retry",
+    "aborted reads and fresh reopening",
+    "stale results after refresh failure",
+    "retrying continuation cursors",
+    "one refresh after actual GitHub leave/return",
+    "suspended and truncated discovery",
+    "keyboard focus and nested popover dismissal",
+    "WCAG checks after dialog entry transitions"
+  ]
+}

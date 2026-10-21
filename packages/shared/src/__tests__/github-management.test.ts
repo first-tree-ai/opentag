@@ -181,13 +181,38 @@ describe("GitHubRepositoryDiscoveryPageSchema", () => {
       GitHubRepositoryDiscoveryPageSchema.parse({ installations: [], repositories: [], nextCursor: null }).nextCursor,
     ).toBeNull();
   });
+
+  it("preserves the server's installation completeness attestation", () => {
+    const result = GitHubRepositoryDiscoveryPageSchema.parse({
+      installations: [],
+      repositories: [],
+      nextCursor: null,
+      installationsTruncated: true,
+      truncatedInstallations: [],
+    });
+    expect(result.installationsTruncated).toBe(true);
+    expect(GitHubRepositoryDiscoveryPageSchema.safeParse({ ...result, installationsTruncated: "false" }).success).toBe(
+      false,
+    );
+  });
 });
 
 describe("GitHubRepositoryDiscoveryQuerySchema", () => {
-  it("accepts an opaque cursor and nothing else", () => {
+  it("accepts an opaque cursor without caller-owned installation IDs", () => {
     expect(GitHubRepositoryDiscoveryQuerySchema.parse({})).toEqual({});
     expect(GitHubRepositoryDiscoveryQuerySchema.parse({ cursor: "abc" })).toEqual({ cursor: "abc" });
     expect(GitHubRepositoryDiscoveryQuerySchema.safeParse({ cursor: "abc", installationId: "1" }).success).toBe(false);
+  });
+
+  it("requires the connection and authorization version together when scoping a viewer", () => {
+    const scope = { connectionId: connectionStatus.id, authorizationVersion: "2" };
+    expect(GitHubRepositoryDiscoveryQuerySchema.parse(scope)).toEqual(scope);
+    expect(GitHubRepositoryDiscoveryQuerySchema.parse({ ...scope, cursor: "next" })).toEqual({
+      ...scope,
+      cursor: "next",
+    });
+    expect(GitHubRepositoryDiscoveryQuerySchema.safeParse({ connectionId: scope.connectionId }).success).toBe(false);
+    expect(GitHubRepositoryDiscoveryQuerySchema.safeParse({ authorizationVersion: "2" }).success).toBe(false);
   });
 });
 

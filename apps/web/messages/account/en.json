@@ -18,6 +18,8 @@
   "account_display_name_description": "This identity is used throughout openTag.",
   "account_email": "Email",
   "account_email_description": "Your sign-in email cannot be changed here.",
+  "account_error_draft_storage": "Your browser could not retain your unsaved display name. Save or discard the edit before authorizing GitHub.",
+  "account_error_profile_navigation_busy": "Wait for your account changes to finish saving, then try again.",
   "account_error_profile_save_failed": "Unable to save the account profile",
   "account_error_refresh_failed": "Your display name was saved. openTag could not refresh the account, so the rest of the page still shows the previous name.",
   "account_language_description": "Choose the language used throughout openTag.",

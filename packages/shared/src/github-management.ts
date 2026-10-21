@@ -6,6 +6,7 @@ import {
   GitHubOAuthFlowIntentSchema,
   GitHubOAuthReturnSurfaceSchema,
   GitHubRepositoryFullNameSchema,
+  GitHubVersionStringSchema,
 } from "./github-integration.js";
 
 /**
@@ -169,12 +170,17 @@ export const GITHUB_REPOSITORY_DISCOVERY_PAGE_SIZE = 100;
  * One installation is listed at most ten pages deep; `truncatedInstallations` names every
  * installation whose repositories exceed that bound, so a partial listing is always explicit and
  * never presented as exhaustive.
+ * `installationsTruncated` attests the separate 500-installation enumeration bound. Its absence
+ * on an older Server leaves completeness unknown; suspended installations remain in metadata but
+ * are never enumerated as accessible repositories.
  */
 export const GitHubRepositoryDiscoveryPageSchema = z
   .object({
     installations: z.array(GitHubDiscoveredInstallationSchema).max(GITHUB_REPOSITORY_DISCOVERY_MAX_INSTALLATIONS),
     repositories: z.array(GitHubDiscoveredRepositorySchema).max(GITHUB_REPOSITORY_DISCOVERY_PAGE_SIZE),
     nextCursor: z.string().min(1).max(512).nullable(),
+    // Older servers do not attest installation-list completeness. Readers must not infer it.
+    installationsTruncated: z.boolean().optional(),
     // The server always emits this; it is optional so readers and fixtures keep accepting a
     // server that predates explicit truncation marking.
     truncatedInstallations: z
@@ -185,10 +191,15 @@ export const GitHubRepositoryDiscoveryPageSchema = z
   .strict();
 export type GitHubRepositoryDiscoveryPage = z.infer<typeof GitHubRepositoryDiscoveryPageSchema>;
 
-/** The discovery query: an optional opaque continuation cursor. */
+/** A viewer can pin discovery to one authorization; legacy unscoped reads remain accepted. */
 export const GitHubRepositoryDiscoveryQuerySchema = z
   .object({
     cursor: z.string().min(1).max(512).optional(),
+    connectionId: GitHubConnectionStatusSchema.shape.id.optional(),
+    authorizationVersion: GitHubVersionStringSchema.optional(),
   })
-  .strict();
+  .strict()
+  .refine((query) => (query.connectionId === undefined) === (query.authorizationVersion === undefined), {
+    message: "A discovery authorization requires both connectionId and authorizationVersion",
+  });
 export type GitHubRepositoryDiscoveryQuery = z.infer<typeof GitHubRepositoryDiscoveryQuerySchema>;

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../__tests__/support/router.js";
+import { clearProfileNavigationDraft, preserveProfileNavigationDraft } from "./account/profile-navigation-draft.js";
 import { AppErrorBoundary, RouteErrorPage } from "./error-boundary.js";
 import { StandaloneNotFoundPage } from "./not-found.js";
 
@@ -20,10 +21,14 @@ describe("sign-out on error and not-found pages", () => {
     document.cookie = present ? "opentag_csrf=token; path=/" : "opentag_csrf=; path=/; max-age=0";
   }
 
-  beforeEach(() => setSession(true));
+  beforeEach(() => {
+    setSession(true);
+    preserveProfileNavigationDraft("account", "Ada", "Unsaved name");
+  });
 
   afterEach(() => {
     setSession(false);
+    clearProfileNavigationDraft();
     vi.restoreAllMocks();
     Object.defineProperty(window, "location", { configurable: true, value: originalLocation });
     assign.mockReset();
@@ -47,6 +52,7 @@ describe("sign-out on error and not-found pages", () => {
 
     await vi.waitFor(() => expect(assign).toHaveBeenCalledWith("/login"));
     expect(fetch).toHaveBeenCalledWith("/api/v1/auth/browser/logout", expect.objectContaining({ method: "POST" }));
+    expect(window.sessionStorage.getItem("opentag.account-profile-navigation-draft")).toBeNull();
   });
 
   it("keeps the boundary intact and reports the failure when the logout is refused", async () => {
@@ -67,6 +73,7 @@ describe("sign-out on error and not-found pages", () => {
 
     expect((await screen.findByRole("alert")).textContent).toContain("Request failed");
     expect(assign).not.toHaveBeenCalled();
+    expect(window.sessionStorage.getItem("opentag.account-profile-navigation-draft")).toContain("Unsaved name");
     expect(screen.getByRole("heading", { name: "Something went wrong" })).toBeTruthy();
   });
 

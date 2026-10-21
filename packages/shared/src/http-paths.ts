@@ -1,3 +1,5 @@
+import type { GitHubConnectionStatus } from "./github-integration.js";
+
 export const API_V1_PREFIX = "/api/v1";
 export const AGENT_BY_ID_TEMPLATE = `${API_V1_PREFIX}/agents/:agentId`;
 export const AGENT_SETUP_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/setup`;
@@ -417,9 +419,18 @@ export function githubIntegrationAuthorizationPath(): string {
   return GITHUB_INTEGRATION_AUTHORIZATION_PATH;
 }
 
-export function githubIntegrationRepositoriesPath(cursor?: string): string {
-  if (cursor === undefined) return GITHUB_INTEGRATION_REPOSITORIES_PATH;
-  return `${GITHUB_INTEGRATION_REPOSITORIES_PATH}?${new URLSearchParams({ cursor }).toString()}`;
+export function githubIntegrationRepositoriesPath(
+  cursor?: string,
+  authorization?: Pick<GitHubConnectionStatus, "id" | "authorizationVersion">,
+): string {
+  const query = new URLSearchParams();
+  if (cursor !== undefined) query.set("cursor", cursor);
+  if (authorization) {
+    query.set("connectionId", authorization.id);
+    query.set("authorizationVersion", authorization.authorizationVersion);
+  }
+  const suffix = query.toString();
+  return `${GITHUB_INTEGRATION_REPOSITORIES_PATH}${suffix ? `?${suffix}` : ""}`;
 }
 
 export function githubIntegrationBindingsPath(): string {

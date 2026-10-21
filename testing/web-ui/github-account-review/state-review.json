@@ -1,0 +1,26 @@
+{
+  "surface": "Production GitHubIntegrationSettings and stylesheet with local API fixtures",
+  "reviewed": 156,
+  "locales": ["zh", "en"],
+  "widths": [320, 390, 768, 1440],
+  "runtimeErrors": [],
+  "failures": [],
+  "repositoryDiscoveryCalls": 0,
+  "externalReturnDoesNotInferSuccess": true,
+  "boundaries": "This component audit does not include a live Server, PostgreSQL, GitHub OAuth exchange, App installation, or organization approval.",
+  "layoutAndPopoverReview": {
+    "reviewed": 32,
+    "touchChecks": 2,
+    "locales": ["zh", "en"],
+    "widths": [320, 390, 768, 1440],
+    "runtimeErrors": [],
+    "failures": [],
+    "desktopActionRightEdgesAligned": true,
+    "mobileActionBelowDescription": true,
+    "popoverDoesNotResizeCard": true,
+    "popoverWithinViewport": true,
+    "keyboardToggleEscapeOutsideDismissal": true,
+    "escapeRestoresTriggerFocus": true,
+    "repositoryDiscoveryCalls": 0
+  }
+}

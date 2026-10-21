@@ -192,7 +192,15 @@ export function registerGitHubIntegrationsRoutes(app: FastifyInstance, options: 
   app.get(GITHUB_INTEGRATION_REPOSITORIES_PATH, { preHandler }, async (request, reply) => {
     if (!options.management) throw unavailable();
     const query = parseRequest(GitHubRepositoryDiscoveryQuerySchema, request.query ?? {});
-    const page = await options.management.discoverRepositories(authenticatedUserId(request), query.cursor);
+    const authorization =
+      query.connectionId !== undefined && query.authorizationVersion !== undefined
+        ? { id: query.connectionId, authorizationVersion: query.authorizationVersion }
+        : undefined;
+    const page = await options.management.discoverRepositories(
+      authenticatedUserId(request),
+      query.cursor,
+      authorization,
+    );
     return reply.code(200).send(GitHubRepositoryDiscoveryPageSchema.parse(page));
   });
 

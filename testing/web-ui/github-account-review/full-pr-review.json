@@ -1,0 +1,117 @@
+{
+  "date": "2026-10-21",
+  "reviewedHeadBeforeCorrections": "56f088d1d6c98f427da5d01cd73a868475a36003",
+  "baseAtStart": "94947523d0b6bedcde443f8f5187f0df4619dff6",
+  "independentReview": {
+    "tool": "codex review",
+    "passes": 3,
+    "finalPassIncludedWorkingTreeCorrections": true,
+    "remainingConcreteFindings": 0
+  },
+  "resolvedFindings": [
+    {
+      "priority": "P2",
+      "issue": "Stale account controls after explicit repository authorization failures",
+      "resolution": "Reconcile the authoritative overview and preserve transient repository retry."
+    },
+    {
+      "priority": "P2",
+      "issue": "Failed OAuth start could restore an abandoned profile draft",
+      "resolution": "Clear the captured snapshot when authorization fails before navigation."
+    },
+    {
+      "priority": "P2",
+      "issue": "Discovery could mix pages across GitHub account replacement",
+      "resolution": "Pin viewer requests to connection ID and authorization version, with pre-credential and post-upstream checks."
+    }
+  ],
+  "focusedTests": {
+    "webComponentAndContract": 83,
+    "serverAdmissionAndManagementApi": 42,
+    "sharedContractAndPaths": 51,
+    "githubPostgreSqlIntegration": 55
+  },
+  "browser": {
+    "smoke": {
+      "startTime": "2026-10-21T03:01:38.901Z",
+      "duration": 150343.198,
+      "expected": 92,
+      "skipped": 0,
+      "unexpected": 0,
+      "flaky": 0
+    },
+    "githubCasesInSmoke": 16,
+    "journey": {
+      "startTime": "2026-10-21T03:05:10.651Z",
+      "duration": 709252.11,
+      "expected": 16,
+      "skipped": 9,
+      "unexpected": 11,
+      "flaky": 0
+    },
+    "journeyFailures": [
+      {
+        "file": "app.spec.ts",
+        "test": "global return, local return, history, and dirty settings keep their own destinations"
+      },
+      {
+        "file": "mcp-auth-rejection.spec.ts",
+        "test": "real HTTP 401 anonymous rejection starts OAuth"
+      },
+      {
+        "file": "mcp-auth-rejection.spec.ts",
+        "test": "real HTTP 401 bearer rejection keeps the API key editable"
+      },
+      {
+        "file": "mcp-auth-rejection.spec.ts",
+        "test": "real HTTP 403 anonymous rejection starts OAuth"
+      },
+      {
+        "file": "mcp-auth-rejection.spec.ts",
+        "test": "real HTTP 403 bearer rejection keeps the API key editable"
+      },
+      {
+        "file": "navigation-polish.spec.ts",
+        "test": "Internal tools opens from Agent navigation and retains working previews and reset cancellation"
+      },
+      {
+        "file": "navigation-polish.spec.ts",
+        "test": "long Agent names stay bounded in the switcher and preserve the current section"
+      },
+      {
+        "file": "navigation-polish.spec.ts",
+        "test": "Instructions saves on its own page and preserves the section when switching Agents"
+      },
+      {
+        "file": "navigation-polish.spec.ts",
+        "test": "keeps Internal tools reachable and returns to All Agents"
+      },
+      {
+        "file": "navigation-polish.spec.ts",
+        "test": "keeps Internal tools reachable and returns to All Agents"
+      },
+      {
+        "file": "runtime-test.spec.ts",
+        "test": "runtime test pass is user-visible through the saved Claude Code path"
+      }
+    ],
+    "journeyBlockedAfterSerialFailure": 9
+  },
+  "checks": {
+    "pnpmCheck": "passed",
+    "workspaceBuild": "passed",
+    "workspaceTypecheck": "passed",
+    "e2eTypecheck": "passed",
+    "repositoryUnitSuite": "failed in Client Context Tree timeouts and skill-sync timing; no complete success claimed",
+    "fullPostgreSqlSuite": "interrupted after repeated unrelated migration and IM test timeouts; targeted GitHub suite passed"
+  },
+  "diagnostics": {
+    "clientContextTreeAtDefaultTimeout": "failed",
+    "clientContextTreeWithDiagnostic15SecondTimeout": "7 passed; diagnostic override only, no repository timeout changed",
+    "browserProjects": "smoke and journey ran sequentially for acceptance; exploratory combined run excluded",
+    "docker": "Host forwarding failed on the temporary 10.x subnet. An independent 172.16.x test subnet passed the same SQL probe; product configuration unchanged."
+  },
+  "scope": "Account-shared GitHub authorization remains; no database migration or Agent Connector direction changes.",
+  "providerBoundary": "The built Web app, Server, browser authentication and disposable PostgreSQL are real. GitHub responses and authorization navigation use controlled fixtures; no live OAuth grant, App installation, repository or provider token was changed.",
+  "acceptance": "GitHub fixes, independent review, affected tests and complete smoke passed. Repository-wide regression acceptance remains incomplete; PR stays draft."
+}

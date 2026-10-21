@@ -267,6 +267,16 @@ describe("http paths", () => {
       );
       expect(githubIntegrationRepositoriesPath("")).toBe("/api/v1/integrations/github/repositories?cursor=");
     });
+
+    it("preserves a viewer authorization scope with or without a continuation", () => {
+      const scope = { id: "9f0f2f6c-2f5c-4d43-a9fb-9a1c9f0000bb", authorizationVersion: "2" };
+      for (const cursor of [undefined, "next"]) {
+        const url = new URL(githubIntegrationRepositoriesPath(cursor, scope), "https://opentag.example.com");
+        expect(url.searchParams.get("connectionId")).toBe(scope.id);
+        expect(url.searchParams.get("authorizationVersion")).toBe(scope.authorizationVersion);
+        expect(url.searchParams.get("cursor")).toBe(cursor ?? null);
+      }
+    });
   });
 
   describe("mcp paths", () => {

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
+import { preserveProfileNavigationDraft } from "../features/account/profile-navigation-draft.js";
 import {
   agentId,
   agentListItem,
@@ -11,6 +12,7 @@ import {
 } from "./support/app-fixtures.js";
 
 const missingAgentId = "00000000-0000-4000-8000-000000000099";
+const profileDraftKey = "opentag.account-profile-navigation-draft";
 
 function logoutCalls() {
   return vi
@@ -25,10 +27,12 @@ function region(selector: string): HTMLElement {
 }
 
 async function signOutFrom(container: HTMLElement) {
+  preserveProfileNavigationDraft("account", "Ada", "Unsaved name");
   fireEvent.click(within(container).getByRole("button", { name: "Sign out" }));
   expect(await screen.findByRole("heading", { name: "Sign in to openTag" })).toBeTruthy();
   expect(logoutCalls()).toHaveLength(1);
   expect(window.location.pathname).toBe("/login");
+  expect(window.sessionStorage.getItem(profileDraftKey)).toBeNull();
 }
 
 async function findGate(): Promise<HTMLElement> {
@@ -110,6 +114,7 @@ describe("sign-out from full-screen states of an Account that has not finished s
 
     await screen.findByRole("heading", { name: "This agent cannot be set up" });
     const page = region('[data-ui="agent-setup-target-unavailable"]');
+    preserveProfileNavigationDraft("account", "Ada", "Unsaved name");
     fireEvent.click(within(page).getByRole("button", { name: "Sign out" }));
 
     // The page already carries its own alert, so wait for the one the failed sign-out adds.
@@ -120,6 +125,7 @@ describe("sign-out from full-screen states of an Account that has not finished s
       expect((within(page).getByRole("button", { name: "Sign out" }) as HTMLButtonElement).disabled).toBe(false),
     );
     expect(logoutCalls()).toHaveLength(1);
+    expect(window.sessionStorage.getItem(profileDraftKey)).toContain("Unsaved name");
   });
 });
 
@@ -146,9 +152,11 @@ describe("the Account gate when the Account cannot be read", () => {
     render(<App />);
 
     const gate = await findGate();
+    preserveProfileNavigationDraft("account", "Ada", "Unsaved name");
     fireEvent.click(within(gate).getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(window.location.pathname).toBe("/login"));
     expect(logoutCalls()).toHaveLength(1);
+    expect(window.sessionStorage.getItem(profileDraftKey)).toBeNull();
   });
 
   it("reports a refused logout on the gate and stays", async () => {

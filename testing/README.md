@@ -51,6 +51,7 @@ Screenshots and browser checks for Web UI changes, one directory per change:
 - [computer-recovery](web-ui/computer-recovery/README.md)
 - [computer-status-alignment](web-ui/computer-status-alignment/README.md)
 - [connector-polish](web-ui/connector-polish/README.md)
+- [GitHub account settings](web-ui/github-account-review/README.md)
 - [discover-categories](web-ui/discover-categories/README.md)
 - [mcp-add-server](web-ui/mcp-add-server/README.md)
 - [mcp-management](web-ui/mcp-management/README.md)

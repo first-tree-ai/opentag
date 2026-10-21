@@ -46,11 +46,9 @@ export const GITHUB_MANAGEMENT_ERROR_CODES = {
   /** The GitHub OAuth App does not issue expiring user tokens; the deployment must enable them. */
   TOKEN_LIFETIME_UNSUPPORTED: GITHUB_CONNECTION_ERROR_CODES.TOKEN_LIFETIME_UNSUPPORTED,
   /** The connected user's live admission no longer covers a requested binding. */
-  ADMISSION_INSTALLATION_MISSING: GITHUB_CONNECTION_ERROR_CODES.ADMISSION_INSTALLATION_MISSING,
   ADMISSION_REPOSITORY_MISSING: GITHUB_CONNECTION_ERROR_CODES.ADMISSION_REPOSITORY_MISSING,
   ADMISSION_PERMISSION_INSUFFICIENT: GITHUB_CONNECTION_ERROR_CODES.ADMISSION_PERMISSION_INSUFFICIENT,
   /** GitHub returned an identity for the configured App that does not match — upstream integrity. */
-  APP_IDENTITY_MISMATCH: GITHUB_CONNECTION_ERROR_CODES.APP_IDENTITY_MISMATCH,
   /** The user denied the authorization on GitHub. */
   OAUTH_DENIED: GITHUB_CONNECTION_ERROR_CODES.OAUTH_DENIED,
   /** The callback arrived without an authenticated Account session. */

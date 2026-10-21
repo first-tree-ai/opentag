@@ -243,7 +243,6 @@ export class CloudContextTreeOperations implements CloudContextTreeOperationRunn
         case GITHUB_CONNECTION_ERROR_CODES.CONNECTION_STATE_INVALID:
           return failed("authentication_required");
         case GITHUB_CONNECTION_ERROR_CODES.ADMISSION_PERMISSION_INSUFFICIENT:
-        case GITHUB_CONNECTION_ERROR_CODES.ADMISSION_INSTALLATION_MISSING:
         case GITHUB_CONNECTION_ERROR_CODES.ADMISSION_REPOSITORY_MISSING:
           return failed("permission_denied");
         case GITHUB_CONNECTION_ERROR_CODES.AUTHORIZATION_VERSION_CONFLICT:

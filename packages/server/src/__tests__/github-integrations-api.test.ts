@@ -1,14 +1,10 @@
 import type { GitHubRepositoryBinding } from "./support/legacy-github-fixtures.js";
 /*
  * Account-facing GitHub integration HTTP surface: deployment availability, authenticated management
- * routes, the public OAuth callback, and the webhook ingress.
- *
- * The suite runs the real routes, the real connection/bindings/refresh state machine, and a real
- * PostgreSQL (PGlite) schema; only the GitHub origin is stubbed. It asserts the boundaries the
- * management plane must never lose: Account authentication on every management route, browser CSRF,
- * cross-Account isolation, one-time callback claims, authoritative admission instead of forged
- * installation IDs, CAS-fenced bindings, fail-closed replacement cleanup, and raw-body HMAC
- * verification on the webhook.
+ * routes, and the public OAuth callback. The suite uses the real connection/refresh state machine
+ * and PostgreSQL (PGlite) schema with a stubbed GitHub origin. It covers Account authentication,
+ * browser CSRF, cross-Account isolation, one-time callback claims, repository access, and fenced
+ * replacement cleanup.
  */
 
 import { randomUUID } from "node:crypto";
@@ -208,11 +204,22 @@ async function startAuthorization(
 
 async function completeCallback(
   app: ReturnType<typeof createApp>,
-  input: { state: string; cookie: string; token?: string; code?: string; error?: string; iss?: string | string[] },
+  input: {
+    state: string;
+    cookie: string;
+    token?: string;
+    code?: string;
+    error?: string;
+    errorDescription?: string;
+    errorUri?: string;
+    iss?: string | string[];
+  },
 ) {
   const query = new URLSearchParams();
   if (input.code !== undefined) query.set("code", input.code);
   if (input.error !== undefined) query.set("error", input.error);
+  if (input.errorDescription !== undefined) query.set("error_description", input.errorDescription);
+  if (input.errorUri !== undefined) query.set("error_uri", input.errorUri);
   query.set("state", input.state);
   const issuers = input.iss === undefined ? [] : Array.isArray(input.iss) ? input.iss : [input.iss];
   for (const issuer of issuers) query.append("iss", issuer);
@@ -450,7 +457,10 @@ describe("GitHub OAuth callback", () => {
     expect(row?.credentialCiphertext).toBeTruthy();
   });
 
-  it("maps a GitHub denial to a fixed surface without exchanging a code", async () => {
+  it.each([
+    "/apps/managing-oauth-apps/troubleshooting-authorization-request-errors/#access-denied",
+    "https://docs.github.com/apps/managing-oauth-apps/troubleshooting-authorization-request-errors/#access-denied",
+  ])("handles the complete GitHub denial redirect without exchanging a code (%s)", async (errorUri) => {
     const fixture = await appFixture({ withManagement: true });
     const started = await startAuthorization(fixture.app, {
       intent: "create",
@@ -461,11 +471,34 @@ describe("GitHub OAuth callback", () => {
       state: started.state,
       cookie: started.cookie,
       error: "access_denied",
+      errorDescription: "The user has denied your application access.",
+      errorUri,
     });
     const location = locationOf(denied);
     expect(location.pathname).toBe("/agents/1a63a21e-f6c7-4474-91ea-4dabf0566a24/integrations");
     expect(location.searchParams.get("github_oauth")).toBe("error");
     expect(location.searchParams.get("github_oauth_error")).toBe("GITHUB_OAUTH_DENIED");
+    expect(fixture.api.exchangeCodeForUserToken).not.toHaveBeenCalled();
+    expect(location.toString()).not.toContain("error_uri");
+    expect(await storedFlowPhase(fixture.owner.id)).toBeNull();
+    const [row] = await unit.database
+      .select()
+      .from(githubConnections)
+      .where(eq(githubConnections.accountId, fixture.owner.id));
+    expect(row).toMatchObject({ oauthStateHash: null, oauthContextCiphertext: null, oauthContextKeyId: null });
+  });
+
+  it("rejects an oversized denial URI before consuming the flow", async () => {
+    const fixture = await appFixture({ withManagement: true });
+    const started = await startAuthorization(fixture.app);
+    const denied = await completeCallback(fixture.app, {
+      state: started.state,
+      cookie: started.cookie,
+      error: "access_denied",
+      errorUri: "x".repeat(2049),
+    });
+    expect(locationOf(denied).searchParams.get("github_oauth_error")).toBe("GITHUB_OAUTH_FLOW_INVALID");
+    expect(await storedFlowPhase(fixture.owner.id)).toBe("awaiting_callback");
     expect(fixture.api.exchangeCodeForUserToken).not.toHaveBeenCalled();
   });
 

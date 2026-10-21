@@ -492,6 +492,17 @@ function reportIgnoredCloudBilling(config: ServerConfig, log: { warn(payload: ob
   );
 }
 
+function reportIgnoredGitHubAppConfiguration(log: { warn(payload: object, message: string): void }) {
+  const variables = Object.keys(process.env)
+    .filter((name) => name.startsWith("OPENTAG_GITHUB_APP_") && process.env[name]?.trim())
+    .sort();
+  if (variables.length === 0) return;
+  log.warn(
+    { event: "github_app_configuration_ignored", variables },
+    "OPENTAG_GITHUB_APP_* is ignored; configure OPENTAG_GITHUB_OAUTH_* to enable GitHub connections",
+  );
+}
+
 export async function startServer(): Promise<void> {
   const readiness = new BootstrapReadiness();
   let app: ReturnType<typeof createApp> | undefined;
@@ -1301,6 +1312,7 @@ export async function startServer(): Promise<void> {
     });
     app.log.info(serverEnvironmentSummary(config), "Resolved OpenTag environment");
     reportIgnoredCloudBilling(config, app.log);
+    reportIgnoredGitHubAppConfiguration(app.log);
     readiness.complete("application");
     await app.listen({ host: config.host, port: config.port });
     readiness.complete("listen");

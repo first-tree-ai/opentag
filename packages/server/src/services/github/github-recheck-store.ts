@@ -34,12 +34,6 @@ export interface GitHubActiveConnectionSnapshot {
 export type GitHubRecheckOutcome =
   | { kind: "healthy" }
   | { kind: "transient_failure"; errorCode: string }
-  /**
-   * The credential still authenticates, but a verified permission invalidation advances the
-   * authorization version. Connection health is rechecked independently; each target operation
-   * must always prove current user/OAuth scope access.
-   */
-  | { kind: "permission_revoked"; errorCode: string }
   | { kind: "unauthorized"; errorCode: string };
 
 export type GitHubRecheckCommitResult =
@@ -233,18 +227,6 @@ export class GitHubConnectionRecheckStore {
     }
     if (outcome.kind === "transient_failure") {
       return {
-        nextRecheckAt: new Date(now.getTime() + this.retryDelayMs),
-        recheckRequired: true,
-        recheckGeneration,
-        lastErrorCode: boundedGitHubErrorCode(outcome.errorCode),
-        updatedAt: now,
-      };
-    }
-    if (outcome.kind === "permission_revoked") {
-      // The credential is still valid and stays; issued runtime access dies with the version bump,
-      // and the required connection recheck will refresh credential health.
-      return {
-        authorizationVersion: sql`${githubConnections.authorizationVersion} + 1`,
         nextRecheckAt: new Date(now.getTime() + this.retryDelayMs),
         recheckRequired: true,
         recheckGeneration,

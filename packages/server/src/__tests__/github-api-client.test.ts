@@ -10,7 +10,7 @@ const REDIRECT_URI = "https://opentag.example.com/api/v2/integrations/github/oau
 function jsonResponse(status: number, body: unknown, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json", ...headers },
+    headers: { "content-type": "application/json", "x-oauth-scopes": "repo", ...headers },
   });
 }
 
@@ -139,6 +139,53 @@ describe("GitHubApiClient REST endpoints", () => {
     expect(headers["x-github-api-version"]).toBe("2022-11-28");
   });
 
+  it.each(["", "public_repo", "read:user, public_repo", "repo:status"])(
+    "rejects insufficient granted scopes: %s",
+    async (scope) => {
+      const client = clientWithFetch(async () =>
+        jsonResponse(
+          200,
+          { id: 42, login: "octocat", type: "User" },
+          {
+            "x-oauth-scopes": scope,
+            "x-accepted-oauth-scopes": "repo",
+          },
+        ),
+      );
+      await expect(client.getAuthenticatedUser({ accessToken: "ghu_token" })).rejects.toMatchObject({
+        code: GITHUB_API_CLIENT_ERROR_CODES.CREDENTIAL_INVALID,
+      });
+    },
+  );
+
+  it.each([null, "repo read:user", `repo,${"x".repeat(101)}`, "repo,".repeat(101), "x".repeat(10_101)])(
+    "treats a missing or malformed scope header as an unconfirmed recheck",
+    async (scope) => {
+      const headers = new Headers({ "x-accepted-oauth-scopes": "repo" });
+      if (scope !== null) headers.set("x-oauth-scopes", scope);
+      const client = clientWithFetch(
+        async () => new Response(JSON.stringify({ id: 42, login: "octocat", type: "User" }), { headers }),
+      );
+      await expect(client.getAuthenticatedUser({ accessToken: "ghu_token" })).rejects.toMatchObject({
+        code: GITHUB_API_CLIENT_ERROR_CODES.RESPONSE_INVALID,
+      });
+    },
+  );
+
+  it("accepts the repo scope alongside other granted scopes", async () => {
+    const client = clientWithFetch(async () =>
+      jsonResponse(
+        200,
+        { id: 42, login: "octocat", type: "User" },
+        { "x-oauth-scopes": "read:user, repo, user:email" },
+      ),
+    );
+    await expect(client.getAuthenticatedUser({ accessToken: "ghu_token" })).resolves.toEqual({
+      id: "42",
+      login: "octocat",
+    });
+  });
+
   it("classifies 401 as credential invalid, 429 as rate limited, and 5xx as unavailable", async () => {
     const unauthorized = clientWithFetch(async () => jsonResponse(401, { message: "Bad credentials" }));
     await expect(unauthorized.getAuthenticatedUser({ accessToken: "ghu_dead" })).rejects.toMatchObject({
@@ -196,6 +243,8 @@ describe("GitHubApiClient construction", () => {
   it.each([
     ["a plain http callback", "http://opentag.example.com/callback"],
     ["a non-http callback scheme", "ftp://opentag.example.com/callback"],
+    ["a non-http loopback callback", "ftp://localhost/callback"],
+    ["a non-loopback IPv6 callback", "http://[2001:db8::1]/callback"],
   ])("rejects %s", (_label, redirectUri) => {
     expect(() => new GitHubApiClient({ ...base, redirectUri })).toThrow(/OAuth callback URL is invalid/);
   });
@@ -203,6 +252,8 @@ describe("GitHubApiClient construction", () => {
   it.each([
     ["a 127.0.0.1 loopback callback", "http://127.0.0.1:8000/callback"],
     ["a localhost callback", "http://localhost:8000/callback"],
+    ["an IPv6 loopback callback", "http://[::1]:8000/callback"],
+    ["another IPv4 loopback callback", "http://127.0.0.2:8000/callback"],
     ["an https callback", "https://opentag.example.com/callback"],
   ])("accepts %s", (_label, redirectUri) => {
     expect(() => new GitHubApiClient({ ...base, redirectUri })).not.toThrow();

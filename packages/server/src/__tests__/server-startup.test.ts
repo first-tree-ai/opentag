@@ -676,6 +676,28 @@ describe("Server startup", () => {
     );
   });
 
+  it("reports ignored GitHub App configuration names without logging their values", async () => {
+    vi.stubEnv("OPENTAG_GITHUB_APP_CLIENT_ID", "legacy-client-id");
+    vi.stubEnv("OPENTAG_GITHUB_APP_CLIENT_SECRET", "legacy-client-secret");
+    vi.stubEnv("OPENTAG_GITHUB_APP_PRIVATE_KEY", " ");
+    try {
+      await startServer();
+      const warn = (state.app as { log: { warn: ReturnType<typeof vi.fn> } }).log.warn;
+      expect(warn).toHaveBeenCalledWith(
+        {
+          event: "github_app_configuration_ignored",
+          variables: ["OPENTAG_GITHUB_APP_CLIENT_ID", "OPENTAG_GITHUB_APP_CLIENT_SECRET"],
+        },
+        expect.stringContaining("OPENTAG_GITHUB_OAUTH_*"),
+      );
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("legacy-client-id");
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("legacy-client-secret");
+      expect(state.events).toContain("listen");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("verifies checked-in migrations before listening when auto-migrate is disabled", async () => {
     state.config = { ...defaultConfig(), autoMigrate: false, google: undefined, devAuth: undefined };
 

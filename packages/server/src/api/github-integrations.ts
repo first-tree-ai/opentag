@@ -66,6 +66,7 @@ const CallbackQuerySchema = z
     state: z.string().min(1).max(512),
     error: z.string().min(1).max(256).optional(),
     error_description: z.string().max(1024).optional(),
+    error_uri: z.string().max(2048).optional(),
     iss: z.literal(GITHUB_OAUTH_CALLBACK_ISSUER).optional(),
   })
   .strict();

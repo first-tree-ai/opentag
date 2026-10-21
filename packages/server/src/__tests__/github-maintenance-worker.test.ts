@@ -196,6 +196,8 @@ describe("GitHubMaintenanceWorker refresh pass", () => {
     expect(row?.status).toBe("active");
     expect(row?.credentialGeneration).toBe(2n);
     expect(row?.refreshStatus).toBe("idle");
+    expect(api.validateOAuthToken).not.toHaveBeenCalled();
+    expect(api.getAuthenticatedUser).not.toHaveBeenCalled();
     const opened = cipher.decryptUserCredential(
       {
         connectionId,
@@ -212,29 +214,84 @@ describe("GitHubMaintenanceWorker refresh pass", () => {
     expect(second.refresh.claimed).toBe(0);
   });
 
-  it.each(["rate-limit", "identity-mismatch"])(
-    "never replays a consumed refresh after post-exchange %s",
+  it.each([
+    ["rate limit", GITHUB_API_CLIENT_ERROR_CODES.RATE_LIMITED],
+    ["timeout or 5xx", GITHUB_API_CLIENT_ERROR_CODES.UPSTREAM_UNAVAILABLE],
+    ["malformed response", GITHUB_API_CLIENT_ERROR_CODES.RESPONSE_INVALID],
+  ])("retains the rotated pair after a recheck %s without replaying the refresh", async (_label, code) => {
+    const { connectionId } = await activeConnection();
+    await makeRecheckDue(connectionId);
+    const before = await rowOf(connectionId);
+    const api = stubGitHubApi();
+    api.refreshUserToken.mockResolvedValue(tokenMaterial({ accessToken: "ghu_next", refreshToken: "ghr_next" }));
+    api.getAuthenticatedUser.mockRejectedValueOnce(new GitHubApiClientError(code, "recheck failed"));
+    const worker = workerFor(api.asClient());
+
+    const result = await worker.runTickOnce();
+    expect(result.refresh).toMatchObject({ completed: 1, failed: 0, released: 0 });
+    expect(result.recheck).toMatchObject({ transient: 1, unauthorized: 0 });
+    const rotated = await rowOf(connectionId);
+    if (!rotated?.credentialCiphertext || !rotated.credentialKeyId) throw new Error("Missing rotated credential");
+    expect(rotated).toMatchObject({
+      status: "active",
+      credentialGeneration: 2n,
+      authorizationVersion: before?.authorizationVersion,
+      refreshStatus: "idle",
+      refreshAttemptId: null,
+      recheckRequired: true,
+    });
+    expect(
+      cipher.decryptUserCredential(
+        {
+          connectionId,
+          accountId: rotated.accountId,
+          githubHost: "github.com",
+          oauthClientId: GITHUB_TEST_CLIENT_ID,
+          githubUserId: "42",
+        },
+        { ciphertext: rotated.credentialCiphertext, keyId: rotated.credentialKeyId },
+      ),
+    ).toEqual({ accessToken: "ghu_next", refreshToken: "ghr_next" });
+    expect(api.getAuthenticatedUser).toHaveBeenCalledWith({ accessToken: "ghu_next" });
+
+    clock = new Date(clock.getTime() + 6 * 60_000);
+    const recovered = await worker.runTickOnce();
+    expect(recovered.refresh.claimed).toBe(0);
+    expect(recovered.recheck.healthy).toBe(1);
+    expect(await rowOf(connectionId)).toMatchObject({
+      credentialCiphertext: rotated?.credentialCiphertext,
+      credentialGeneration: 2n,
+      authorizationVersion: before?.authorizationVersion,
+      recheckRequired: false,
+    });
+    expect(api.refreshUserToken).toHaveBeenCalledExactlyOnceWith({ refreshToken: "ghr_current" });
+    expect(api.validateOAuthToken).not.toHaveBeenCalled();
+  });
+
+  it.each(["identity mismatch", "revoked repo scope"])(
+    "invalidates a rotated pair on a definite %s",
     async (failure) => {
       const { connectionId } = await activeConnection();
+      await makeRecheckDue(connectionId);
       const api = stubGitHubApi();
       api.refreshUserToken.mockResolvedValue(tokenMaterial());
-      if (failure === "rate-limit") {
-        api.validateOAuthToken.mockRejectedValue(
-          new GitHubApiClientError(GITHUB_API_CLIENT_ERROR_CODES.RATE_LIMITED, "limited", { status: 429 }),
+      if (failure === "identity mismatch") api.getAuthenticatedUser.mockResolvedValue({ id: "999", login: "foreign" });
+      else
+        api.getAuthenticatedUser.mockRejectedValue(
+          new GitHubApiClientError(GITHUB_API_CLIENT_ERROR_CODES.CREDENTIAL_INVALID, "Missing repo scope"),
         );
-      } else {
-        api.validateOAuthToken.mockResolvedValue({ id: "999", login: "foreign" });
-      }
       const worker = workerFor(api.asClient());
+
       const result = await worker.runTickOnce();
-      expect(result.refresh.failed).toBe(1);
-      expect(result.refresh.released).toBe(0);
+      expect(result.refresh.completed).toBe(1);
+      expect(result.recheck.unauthorized).toBe(1);
       expect(await rowOf(connectionId)).toMatchObject({
         status: "reauthorization_required",
         credentialCiphertext: null,
       });
       expect((await worker.runTickOnce()).refresh.claimed).toBe(0);
       expect(api.refreshUserToken).toHaveBeenCalledTimes(1);
+      expect(api.validateOAuthToken).not.toHaveBeenCalled();
     },
   );
 
@@ -735,7 +792,7 @@ describe("GitHubMaintenanceWorker tick scheduling", () => {
       .mockResolvedValueOnce({
         sweptFlows: 0,
         refresh: { claimed: 0, completed: 0, failed: 0, released: 0, skipped: 0 },
-        recheck: { scanned: 0, healthy: 0, permissionRevoked: 0, unauthorized: 0, transient: 0 },
+        recheck: { scanned: 0, healthy: 0, unauthorized: 0, transient: 0 },
       });
     worker.start();
     await vi.waitFor(() => expect(failures).toHaveLength(1), { timeout: 2_000 });
@@ -787,7 +844,7 @@ describe("GitHubMaintenanceWorker guards and defaults", () => {
     await expect(worker.runTickOnce()).resolves.toEqual({
       sweptFlows: 0,
       refresh: { claimed: 0, completed: 0, failed: 0, released: 0, skipped: 0 },
-      recheck: { scanned: 0, healthy: 0, permissionRevoked: 0, unauthorized: 0, transient: 0 },
+      recheck: { scanned: 0, healthy: 0, unauthorized: 0, transient: 0 },
     });
   });
 
@@ -820,7 +877,7 @@ describe("GitHubMaintenanceWorker guards and defaults", () => {
       return {
         sweptFlows: 0,
         refresh: { claimed: 0, completed: 0, failed: 0, released: 0, skipped: 0 },
-        recheck: { scanned: 0, healthy: 0, permissionRevoked: 0, unauthorized: 0, transient: 0 },
+        recheck: { scanned: 0, healthy: 0, unauthorized: 0, transient: 0 },
       };
     });
     worker.start();

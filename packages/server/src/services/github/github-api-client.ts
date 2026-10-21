@@ -15,6 +15,8 @@
  * credential.
  */
 
+import { isLoopbackHostname } from "@opentag/shared";
+
 const GITHUB_OAUTH_ORIGIN = "https://github.com";
 const GITHUB_API_ORIGIN = "https://api.github.com";
 const GITHUB_API_VERSION = "2022-11-28";
@@ -232,7 +234,7 @@ export class GitHubApiClient {
       );
     }
     const redirect = new URL(options.redirectUri);
-    if (redirect.protocol !== "https:" && redirect.hostname !== "127.0.0.1" && redirect.hostname !== "localhost") {
+    if (redirect.protocol !== "https:" && !(redirect.protocol === "http:" && isLoopbackHostname(redirect.hostname))) {
       throw new GitHubApiClientError(
         GITHUB_API_CLIENT_ERROR_CODES.REQUEST_INVALID,
         "The GitHub OAuth App OAuth callback URL is invalid",
@@ -297,9 +299,9 @@ export class GitHubApiClient {
     return this.#parseTokenPayload(payload);
   }
 
-  /** The GitHub-attested user identity behind a user access token. */
+  /** The GitHub-attested user identity and required repo scope behind a user access token. */
   async getAuthenticatedUser(input: { accessToken: string; signal?: AbortSignal }): Promise<GitHubAuthenticatedUser> {
-    const payload = await this.#sendApi("GET", "/user", input.accessToken, input.signal);
+    const payload = await this.#sendApi("GET", "/user", input.accessToken, input.signal, true);
     if (!isRecord(payload)) throw invalidResponse("The GitHub API user response is malformed");
     const type = payload.type;
     if (type !== "User") throw invalidResponse("The GitHub API user response is not a user");
@@ -452,7 +454,13 @@ export class GitHubApiClient {
     });
   }
 
-  async #sendApi(method: "GET", path: string, accessToken: string, signal?: AbortSignal): Promise<unknown> {
+  async #sendApi(
+    method: "GET",
+    path: string,
+    accessToken: string,
+    signal?: AbortSignal,
+    requireRepositoryScope = false,
+  ): Promise<unknown> {
     return this.#send({
       method,
       url: `${GITHUB_API_ORIGIN}${path}`,
@@ -463,6 +471,7 @@ export class GitHubApiClient {
         "x-github-api-version": GITHUB_API_VERSION,
       },
       signal,
+      requireRepositoryScope,
     });
   }
 
@@ -473,6 +482,7 @@ export class GitHubApiClient {
     body?: string;
     signal?: AbortSignal;
     expectedStatus?: number;
+    requireRepositoryScope?: boolean;
   }): Promise<unknown> {
     const deadline = this.#startDeadline(options.signal);
     try {
@@ -504,7 +514,9 @@ export class GitHubApiClient {
       if (options.expectedStatus !== undefined && response.status !== options.expectedStatus) {
         throw invalidResponse("The GitHub token endpoint returned an unexpected success status");
       }
-      return await this.#readJson(response, deadline);
+      const payload = await this.#readJson(response, deadline);
+      if (options.requireRepositoryScope) assertRepositoryScopeHeader(response.headers);
+      return payload;
     } catch (error) {
       if (error instanceof GitHubApiClientError) throw error;
       const failure = deadline.failure();
@@ -595,6 +607,18 @@ function parsePageNumber(value: unknown): number {
     throw requestError("The page number is invalid");
   }
   return value;
+}
+
+function assertRepositoryScopeHeader(headers: Headers): void {
+  const header = headers.get("x-oauth-scopes");
+  if (header === null || header.length > 10_100) throw invalidResponse("The OAuth scope header is missing or invalid");
+  const scopes = header
+    .split(",")
+    .map((scope) => scope.trim())
+    .filter(Boolean);
+  if (scopes.length > 100 || scopes.some((scope) => scope.length > 100 || !/^[a-z_]+(?::[a-z_]+)*$/.test(scope)))
+    throw invalidResponse("The OAuth scope header is malformed");
+  assertRepositoryScope(scopes);
 }
 
 function assertRepositoryScope(value: unknown): void {

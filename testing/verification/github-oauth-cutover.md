@@ -18,8 +18,8 @@ It found and corrected the following before PR creation:
 - The migration regression selected the last migration. It now selects the named cutover entry, so later migrations
   do not silently change its historical fixture.
 
-No unresolved blocking issue was identified in this pass. This is local code-review evidence, not human approval,
-CI success, deployment or production acceptance.
+No unresolved blocking issue was identified in that pre-PR pass. The later external review found the issues recorded
+below. Local review evidence does not establish human approval, CI success, deployment or production acceptance.
 
 ## Data and authorization boundaries
 
@@ -71,3 +71,41 @@ cloud egress differed; the two cloud instances shared an egress IP. No organizat
 These earlier checks establish OAuth credential and native CLI capability, not a complete deployed candidate Server/Runner
 workflow. Current product proxy behavior is checked separately by offline native regressions. No new real authorization or
 provider mutation occurred during this review. Raw logs, private credentials and machine-specific evidence stay outside Git.
+
+
+## PR review follow-up
+
+The external reviews of `4e3c9582b5f24f2680a87ffc9d11b4bcf41cd60b` identified four distinct blocking issues.
+This follow-up addresses three and leaves OAuth client replacement pending a data-write design decision.
+
+| Feedback | Disposition and regression evidence |
+| --- | --- |
+| A transient post-refresh check discarded a successful rotation | Removed the redundant network check before persistence. The client-authenticated token exchange is sealed and committed through the existing refresh CAS. Tests retain the new pair and authorization version after rate limits, upstream failures and malformed rechecks; retry verifies the new access token without replaying the consumed refresh token. Definite identity/scope rejection still clears credentials. |
+| Periodic checks shared the OAuth client-credential budget | Worker rechecks use Bearer `GET /user` and the granted `X-OAuth-Scopes` header. Missing/malformed evidence is transient, explicit missing `repo` is definitive. `X-Accepted-OAuth-Scopes` cannot substitute for granted scope. Client-authenticated check-token remains on callback only. |
+| A denial with `error_uri` failed strict callback parsing | Accept an ignored, bounded `error_uri`. Both relative and absolute documented denial shapes now return `GITHUB_OAUTH_DENIED` and clear the claimed flow; an oversized URI is rejected before consuming it. |
+| Replacing the configured OAuth Client ID prevents reconnection | Still open. Existing current rows belong to the old client, but uniqueness spans the Account/host. The proposed explicit-connect transaction would supersede and clear that Account's old-client row, preserve history and insert the new pending row atomically. No cross-client write or startup cleanup has been added pending confirmation. |
+| Tree verifier credential scope | Documented that the verifier holds the user's full OAuth grant; configured repository/read-only restrictions are Server/verifier enforcement, not a narrower GitHub token. |
+| Stale App environment configuration | Startup warns with nonempty retired variable names only, without values; the old configuration remains ignored. |
+| IPv6 loopback callback | API client uses the shared loopback predicate with an explicit HTTP/HTTPS protocol check. IPv6 loopback works; non-loopback HTTP and loopback FTP remain rejected. |
+| Obsolete comments, counters and vocabulary | Removed the unreachable permission-revoked branch/counter and unused installation/App errors; corrected the API test header and the migration number in `.env.example`. |
+| Unused legacy App index | Retained. Removing this inert index is optional and does not justify changing the approved migration in this follow-up. |
+
+Relevant provider contracts: [granted scope headers](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/scopes-for-oauth-apps),
+[authorization error redirects](https://docs.github.com/en/apps/oauth-apps/maintaining-oauth-apps/troubleshooting-authorization-request-errors),
+and [REST rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api).
+
+Follow-up validation (isolated local environment; no production data or real grants changed):
+
+| Check | Result |
+| --- | --- |
+| API client, maintenance worker, integration HTTP surface and Server startup | 4 files, 199 passed |
+| OAuth service, refresh/recheck races, Tree verifier/operations, configuration, execution credentials and encryption | 7 files, 93 passed |
+| Shared package | 47 files, 742 passed |
+| Affected Web account/discovery/actions | 5 files, 66 passed |
+| PostgreSQL worker CAS, refresh safety, credential lifecycle and legacy cutover | 4 files, 22 passed |
+| `pnpm check`; Shared/Server builds and type checks | Passed |
+
+The four PostgreSQL suites use disposable Testcontainers databases. No migration changed, so the complete integration suite
+was not repeated. Native proxy implementation, browser presentation and Runner code did not change in this follow-up; their
+prior evidence remains historical and CI owns the new-head regression matrix. Review threads remain for the reviewers to
+reassess; the pending client-replacement issue is not claimed resolved.

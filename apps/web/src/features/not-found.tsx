@@ -1,6 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import * as m from "../paraglide/messages.js";
 import { Text } from "../ui/design-system.js";
+import { ContextFreeSignOut } from "./session/sign-out-button.js";
 
 export function NotFoundPage() {
   return (
@@ -28,7 +29,10 @@ export function StandaloneNotFoundPage() {
       <Text as="p" variant="secondary">
         {m.errors_page_unavailable()}
       </Text>
-      <Link to="/agents">{m.errors_back_to_agents()}</Link>
+      <div className="flex flex-wrap items-center gap-3">
+        <Link to="/agents">{m.errors_back_to_agents()}</Link>
+        <ContextFreeSignOut />
+      </div>
     </main>
   );
 }

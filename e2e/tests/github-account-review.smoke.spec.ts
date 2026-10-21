@@ -52,6 +52,7 @@ const discovered: GitHubRepositoryDiscoveryPage = {
   repositories: [],
   nextCursor: null,
   truncatedInstallations: [],
+  installationsTruncated: false,
 };
 
 const discoveryFailure = ErrorEnvelopeSchema.parse({
@@ -68,6 +69,7 @@ async function githubFixture(page: Page) {
     failDiscovery: false,
     disconnectCalls: 0,
     discoveryCalls: 0,
+    discoveryPages: { start: discovered } as Record<string, GitHubRepositoryDiscoveryPage>,
     authorizationIntents: [] as string[],
   };
   await page.route(
@@ -90,7 +92,7 @@ async function githubFixture(page: Page) {
                 status: 503,
                 json: discoveryFailure,
               }
-            : { json: discovered },
+            : { json: state.discoveryPages[new URL(route.request().url()).searchParams.get("cursor") ?? "start"] },
         );
         return;
       }
@@ -129,7 +131,7 @@ test("real unavailable deployment does not offer unusable GitHub authorization",
   await page.goto("/account", { waitUntil: "networkidle" });
   const github = page.locator('[data-ui="account-github"]');
   await expect(github.getByText("GitHub integration unavailable", { exact: true })).toBeVisible();
-  await expect(github.getByRole("button", { name: "Add GitHub account", exact: true })).toHaveCount(0);
+  await expect(github.getByRole("button", { name: "Authorize GitHub account", exact: true })).toHaveCount(0);
   await expectNoPageOverflow(page);
   await expectAccessible(page);
 });
@@ -146,6 +148,177 @@ test("active GitHub management exposes the exact account and server-owned instal
   await expect(install).toHaveAttribute("target", "_blank");
   await expect(install).toHaveAttribute("rel", /noopener/);
   await expectAccessible(page);
+});
+
+test("repository access is queried on demand and keeps missing-filter results separate from authorization", async ({
+  page,
+}) => {
+  const fixture = await githubFixture(page);
+  const repositories = Array.from({ length: 101 }, (_, i) => ({
+    repositoryId: String(i + 1),
+    installationId: "55123456",
+    fullName: `review-org/repo-${i + 1}`,
+    private: true,
+    defaultBranch: "main",
+    permissions: { pull: true, push: false },
+  }));
+  fixture.discoveryPages = {
+    start: { ...discovered, repositories: repositories.slice(0, 100), nextCursor: "last" },
+    last: { ...discovered, repositories: repositories.slice(100) },
+  };
+  await page.goto("/account", { waitUntil: "networkidle" });
+  expect(fixture.discoveryCalls).toBe(0);
+  const trigger = page.getByRole("button", { name: "View repositories", exact: true });
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "Accessible repositories", exact: true });
+  await expect(dialog.getByRole("listitem")).toHaveCount(100);
+  await expect(dialog.getByText("@octocat", { exact: true })).toHaveCount(0);
+  await dialog.getByRole("searchbox").fill("repo-101");
+  await expect(dialog.getByText("No matches in the loaded repositories.", { exact: true })).toBeVisible();
+  await dialog.getByRole("button", { name: "Load more", exact: true }).click();
+  await expect(dialog.getByText("review-org/repo-101", { exact: true })).toBeVisible();
+  expect(fixture.discoveryCalls).toBe(2);
+  await expectAccessible(page);
+  await dialog.getByRole("button", { name: "Close repository list", exact: true }).click();
+  await expect(trigger).toBeFocused();
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  expect(fixture.discoveryCalls).toBe(2);
+});
+
+test("repository read failure retries into a compact installation-aware empty result", async ({ page }) => {
+  const fixture = await githubFixture(page);
+  fixture.failDiscovery = true;
+  await page.goto("/account", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "View repositories", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Accessible repositories", exact: true });
+  await expect(dialog.getByText("Couldn't load repositories. Try again.", { exact: true })).toBeVisible();
+  fixture.failDiscovery = false;
+  await dialog.getByRole("button", { name: "Try again", exact: true }).click();
+  await expect(
+    dialog.getByText(
+      "No accessible repositories found. Check repository access on GitHub and make sure your account has access.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(dialog.getByRole("heading")).toHaveCount(1);
+  await expect(dialog.getByRole("searchbox")).toHaveCount(0);
+  await expect(dialog.getByRole("link", { name: "Configure on GitHub", exact: true })).toHaveAttribute(
+    "href",
+    GITHUB_INTEGRATION_INSTALLATION_PATH,
+  );
+  await expectAccessible(page);
+});
+
+const viewerLabels = {
+  en: {
+    view: "View repositories",
+    title: "Accessible repositories",
+    close: "Close repository list",
+    help: "About repository access",
+    empty: "No accessible repositories found.",
+    error: "Couldn't load repositories. Try again.",
+  },
+  zh: {
+    view: "查看仓库",
+    title: "Agent 可访问的仓库",
+    close: "关闭仓库列表",
+    help: "了解仓库访问范围",
+    empty: "暂未找到可访问的仓库。",
+    error: "暂时无法读取仓库，请重试。",
+  },
+};
+type ViewerScene = "loaded" | "empty" | "no-installation" | "error";
+
+async function expectDialogReady(dialog: ReturnType<Page["getByRole"]>) {
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toHaveCSS("opacity", "1");
+  // Contrast is measured on the settled surface, not intermediate fade-in colors.
+  await dialog.evaluate(async (element) => {
+    const animations = element
+      .getAnimations({ subtree: true })
+      .filter((animation) => animation.effect?.getTiming().iterations !== Infinity);
+    await Promise.all(animations.map((animation) => animation.finished.catch(() => undefined)));
+  });
+}
+
+async function reviewViewerCase(
+  page: Page,
+  fixture: Awaited<ReturnType<typeof githubFixture>>,
+  locale: keyof typeof viewerLabels,
+  width: number,
+  scene: ViewerScene,
+) {
+  fixture.failDiscovery = scene === "error";
+  fixture.discoveryPages = {
+    start: {
+      ...discovered,
+      installations: scene === "no-installation" ? [] : discovered.installations,
+      repositories:
+        scene === "loaded"
+          ? [
+              {
+                installationId: "55123456",
+                repositoryId: "1",
+                fullName: "review-org/web",
+                private: true,
+                defaultBranch: "main",
+                permissions: { pull: true, push: true },
+              },
+              {
+                installationId: "55123456",
+                repositoryId: "2",
+                fullName: "review-org/api",
+                private: true,
+                defaultBranch: "main",
+                permissions: { pull: true, push: false },
+              },
+            ]
+          : [],
+    },
+  };
+  const labels = viewerLabels[locale];
+  await page.getByRole("button", { name: labels.view, exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: labels.title, exact: true });
+  if (scene === "loaded") await expect(dialog.getByRole("listitem")).toHaveCount(2);
+  else await expect(dialog).toContainText(scene === "error" ? labels.error : labels.empty);
+  await expectDialogReady(dialog);
+  await expectAccessible(page);
+  await expectNoPageOverflow(page);
+  const bounds = await dialog.boundingBox();
+  expect(bounds).not.toBeNull();
+  expect(bounds?.x ?? -1).toBeGreaterThanOrEqual(0);
+  expect((bounds?.x ?? 0) + (bounds?.width ?? 0)).toBeLessThanOrEqual(width);
+  expect((bounds?.y ?? 0) + (bounds?.height ?? 0)).toBeLessThanOrEqual(900);
+  await dialog.screenshot({ path: test.info().outputPath(`repositories-${locale}-${width}-${scene}.png`) });
+  if (scene === "loaded") {
+    await dialog.getByRole("button", { name: labels.help, exact: true }).click();
+    const help = page.getByRole("dialog", { name: labels.help, exact: true });
+    await expectDialogReady(help);
+    await expectAccessible(page);
+    await page.keyboard.press("Escape");
+    await expect(help).toBeHidden();
+    await expect(dialog).toBeVisible();
+  }
+  await dialog.getByRole("button", { name: labels.close, exact: true }).click();
+  await expect(dialog).toBeHidden();
+}
+
+test("repository viewer keeps results, empty guidance and errors readable in both locales", async ({ page }) => {
+  const fixture = await githubFixture(page);
+  await page.goto("/account", { waitUntil: "networkidle" });
+  for (const locale of ["en", "zh"] as const) {
+    await page.evaluate((value) => localStorage.setItem("PARAGLIDE_LOCALE", value), locale);
+    await page.reload({ waitUntil: "networkidle" });
+    for (const width of [1440, 320]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page
+        .locator('[data-ui="account-github"]')
+        .screenshot({ path: test.info().outputPath(`account-github-${locale}-${width}.png`) });
+      for (const scene of ["loaded", "empty", "no-installation", "error"] as const) {
+        await reviewViewerCase(page, fixture, locale, width, scene);
+      }
+    }
+  }
 });
 
 test("repository discovery failure preserves identity and account management", async ({ page }) => {
@@ -169,7 +342,7 @@ test("removing a shared GitHub account requires confirmation before the mutation
   const dialog = page.getByRole("dialog", { name: "Remove GitHub account?" });
   await expect(dialog).toBeVisible();
   await expect(dialog).toContainText("All your Agents will lose GitHub access through @octocat");
-  await expect(dialog).toContainText("App installation on GitHub will remain");
+  await expect(dialog).toContainText("uninstall the OpenTag App");
   await expect(dialog.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
   expect(fixture.disconnectCalls, "No shared authorization should be removed before confirmation").toBe(0);
   await expectAccessible(page);
@@ -180,7 +353,7 @@ test("removing a shared GitHub account requires confirmation before the mutation
   expect(fixture.disconnectCalls).toBe(0);
   await removeButton.click();
   await dialog.getByRole("button", { name: "Remove account", exact: true }).click();
-  await expect(github.getByRole("button", { name: "Add GitHub account" })).toBeVisible();
+  await expect(github.getByRole("button", { name: "Authorize GitHub account" })).toBeVisible();
   await expect(page.locator('[data-ui="account-github-message"]')).toBeFocused();
   expect(fixture.disconnectCalls).toBe(1);
 });
@@ -215,8 +388,13 @@ test("GitHub help and cancelled removal preserve the unsaved display-name draft"
   const draft = `${await displayName.inputValue()} unsaved refresh draft`;
   await displayName.fill(draft);
   await page.getByRole("button", { name: "About GitHub repository access" }).click();
-  await expect(page.getByText(/Install or configure the OpenTag App on GitHub/)).toBeVisible();
-  await expect(page.getByText(/contact an organization administrator if you don't have permission/)).toBeVisible();
+  const help = page.getByRole("dialog", { name: "About GitHub repository access" });
+  await expect(help.getByText(/Install or configure the OpenTag App on GitHub/)).toBeVisible();
+  await expect(help.getByText(/All your Agents share this repository access/)).toBeVisible();
+  await expect(help.getByText(/contact an organization administrator if you don't have permission/)).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(help).toBeHidden();
+  await expect(page.getByRole("button", { name: "About GitHub repository access" })).toBeFocused();
   await page.getByRole("button", { name: "Remove account", exact: true }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(displayName).toHaveValue(draft);
@@ -255,7 +433,7 @@ test("Chinese GitHub management keeps identity, help and confirmation usable at 
   await page.addInitScript(() => localStorage.setItem("PARAGLIDE_LOCALE", "zh"));
   await page.goto("/account", { waitUntil: "networkidle" });
   const github = page.locator('[data-ui="account-github"]');
-  await expect(github.getByText("供你的所有 Agent 使用。", { exact: true })).toBeVisible();
+  await expect(github.getByText("授权 GitHub 账户，并允许 OpenTag 访问所需仓库。", { exact: true })).toBeVisible();
   for (const width of [1440, 320]) {
     await page.setViewportSize({ width, height: 900 });
     await expect(github.getByText("@octocat", { exact: true })).toBeVisible();
@@ -264,13 +442,17 @@ test("Chinese GitHub management keeps identity, help and confirmation usable at 
     await page.screenshot({ path: test.info().outputPath(`github-zh-${width}.png`), fullPage: true });
   }
   await github.getByRole("button", { name: "了解 GitHub 仓库访问" }).click();
-  await expect(github.getByText(/如果没有安装或配置 App 的权限，请联系组织管理员协助/)).toBeVisible();
+  const help = page.getByRole("dialog", { name: "了解 GitHub 仓库访问" });
+  await expect(help.getByText(/如果你没有权限安装或配置 OpenTag App，请联系组织管理员/)).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(help).toBeHidden();
   await expect(page.getByRole("button", { name: "更换账户", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "移除账户", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "移除 GitHub 账户？" });
   await expect(dialog).toBeVisible();
-  await expect(dialog).toContainText("GitHub 上的授权与 App 安装会保留");
+  await expect(dialog).toContainText("不会卸载 OpenTag App");
   await expect(dialog.getByRole("button", { name: "取消", exact: true })).toBeFocused();
+  await expectDialogReady(dialog);
   await expectAccessible(page);
   await expectNoPageOverflow(page);
   await page.screenshot({ path: test.info().outputPath("github-zh-confirm-320.png"), fullPage: true });

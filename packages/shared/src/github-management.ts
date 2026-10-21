@@ -169,12 +169,17 @@ export const GITHUB_REPOSITORY_DISCOVERY_PAGE_SIZE = 100;
  * One installation is listed at most ten pages deep; `truncatedInstallations` names every
  * installation whose repositories exceed that bound, so a partial listing is always explicit and
  * never presented as exhaustive.
+ * `installationsTruncated` attests the separate 500-installation enumeration bound. Its absence
+ * on an older Server leaves completeness unknown; suspended installations remain in metadata but
+ * are never enumerated as accessible repositories.
  */
 export const GitHubRepositoryDiscoveryPageSchema = z
   .object({
     installations: z.array(GitHubDiscoveredInstallationSchema).max(GITHUB_REPOSITORY_DISCOVERY_MAX_INSTALLATIONS),
     repositories: z.array(GitHubDiscoveredRepositorySchema).max(GITHUB_REPOSITORY_DISCOVERY_PAGE_SIZE),
     nextCursor: z.string().min(1).max(512).nullable(),
+    // Older servers do not attest installation-list completeness. Readers must not infer it.
+    installationsTruncated: z.boolean().optional(),
     // The server always emits this; it is optional so readers and fixtures keep accepting a
     // server that predates explicit truncation marking.
     truncatedInstallations: z

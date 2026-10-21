@@ -110,13 +110,31 @@ export class GitHubRepositoryAdmissionService {
     cursor?: string;
     signal?: AbortSignal;
   }): Promise<GitHubRepositoryDiscoveryPage> {
-    const installations = await this.#listVerifiedInstallations(input.accessToken, input.signal);
+    const { installations, truncated: installationsTruncated } = await this.#listVerifiedInstallations(
+      input.accessToken,
+      input.signal,
+    );
     const cursor = input.cursor === undefined ? { v: 1 as const, i: 0, p: 1 } : decodeCursor(input.cursor);
     const summaries = installations.map(toDiscoveredInstallation);
     if (installations.length === 0 || cursor.i >= installations.length) {
-      return { installations: summaries, repositories: [], nextCursor: null, truncatedInstallations: [] };
+      return {
+        installations: summaries,
+        repositories: [],
+        nextCursor: null,
+        truncatedInstallations: [],
+        installationsTruncated,
+      };
     }
     const installation = installations[cursor.i] as GitHubUserInstallation;
+    if (installation.suspended) {
+      return {
+        installations: summaries,
+        repositories: [],
+        nextCursor: cursor.i + 1 < installations.length ? encodeCursor({ v: 1, i: cursor.i + 1, p: 1 }) : null,
+        truncatedInstallations: [],
+        installationsTruncated,
+      };
+    }
     const page = await this.#api.listInstallationRepositories({
       accessToken: input.accessToken,
       installationId: installation.installationId,
@@ -149,6 +167,7 @@ export class GitHubRepositoryAdmissionService {
       repositories,
       nextCursor,
       truncatedInstallations: truncated ? [installation.installationId] : [],
+      installationsTruncated,
     };
   }
 
@@ -199,8 +218,9 @@ export class GitHubRepositoryAdmissionService {
    * Every installation page, verified: each entry must belong to the configured App — a mismatch is
    * upstream integrity failure, never a silently skipped row. Bounded at five pages.
    */
-  async #listVerifiedInstallations(accessToken: string, signal?: AbortSignal): Promise<GitHubUserInstallation[]> {
+  async #listVerifiedInstallations(accessToken: string, signal?: AbortSignal) {
     const installations: GitHubUserInstallation[] = [];
+    let truncated = false;
     for (let page = 1; page <= MAX_INSTALLATION_PAGES; page += 1) {
       const result = await this.#api.listUserInstallations({
         accessToken,
@@ -218,13 +238,14 @@ export class GitHubRepositoryAdmissionService {
         }
         installations.push(installation);
       }
-      if (installations.length >= result.totalCount || result.installations.length === 0) break;
+      truncated = installations.length < result.totalCount;
+      if (!truncated || result.installations.length === 0) break;
     }
     installations.sort((left, right) => {
       const delta = BigInt(left.installationId) - BigInt(right.installationId);
       return delta < 0n ? -1 : delta > 0n ? 1 : 0;
     });
-    return installations;
+    return { installations, truncated };
   }
 
   #assertInstallationPermissions(installation: GitHubUserInstallation, requirement: GitHubBindingRequirement): void {

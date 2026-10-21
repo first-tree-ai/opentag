@@ -162,6 +162,8 @@ describe("Kumo integration contract", () => {
       // Skills owns list/card geometry, description clamping, and bounded dialog scrolling.
       // Controls, typography values, and palette continue to use the shared Kumo adapter.
       "features/skills/skills-page.tsx -> ./skills.css",
+      // GitHub owns repository dialog geometry and scrolling; controls and colors stay at Kumo.
+      "features/account/github-repository-access.tsx -> ./github-repository-access.css",
       "app.css -> @fontsource/manrope/400.css",
       "app.css -> @fontsource/manrope/500.css",
       "app.css -> @fontsource/manrope/600.css",

@@ -6,7 +6,19 @@ This acceptance record supports the [GitHub platform integration contract](../..
 
 ## Implemented scope
 
-Account settings shows the personal profile, GitHub, and conditional Cloud billing in that order. The normal GitHub section has two rows: the saved identity with directly visible Change/Remove actions, and Repository access with a permanent purpose description and Server-owned Configure on GitHub link. The identity leads its row without a redundant Account label. Without a saved identity, the section offers one standalone Add GitHub account button and explains the GitHub authorization step. Initial loading has a small progress indicator; unavailable deployments show setup guidance without a dummy settings row. There are no persistent connection-health badges, installation inventory, or refresh controls. An accessible click/tap toggle explains App installation/configuration, the user's own repository permissions, and conditional organization-administrator guidance. A required Reauthorize action and explanation stay inside the identity row. The bottom account menu still owns Computer management; MCP remains in each Agent's Connectors experience.
+Account settings keeps two independent settings: Account authorization and Repository access. Both are visible before authorization, without sequence numbers, completion checks, or health badges. The account setting offers Authorize GitHub account, or the saved identity with directly visible Change/Remove actions. Only an explicit Server requirement shows Reauthorize beside the identity. The introduction describes authorization without repeating shared Agent scope; help explains that scope. Computer remains in the account menu and MCP stays per Agent.
+
+Repository access offers View repositories after active account authorization, alongside the always-available Configure on GitHub link. Wide layouts give the action group its natural width and align it to the account controls' right edge; narrow layouts place it below the description. The question-mark controls open anchored, nonmodal popovers without resizing the settings card. Click again, outside click, and Escape dismiss help; Escape restores trigger focus. GitHub owns installation targets, repository selection, organization policies, and administrator requests.
+
+### Repository access viewer
+
+The production dialog uses the Browser API and Server-owned user credential. Discovery starts only when the dialog opens, never on the main settings page. Repository rows are read-only and show full names without account duplication, selections, permission badges, or installation inventories. The list merges provider pages into 100-row batches, deduplicates by repository ID, filters only visible loaded rows, and reads ahead before offering Load more. Each interaction is bounded to ten provider pages; incomplete streams remain explicit. Closing aborts browser reads, clears results, and restores focus. Connection identity, authorization version, and lifecycle status key the viewer lifetime.
+
+A completed empty result has no extra heading. Its paragraph suggests checking repository/account access when an installation was found, or installing/configuring the App when none was accessible. Both variants include conditional organization-administrator guidance and the same GitHub configuration link. Read failures offer retry without inferring missing installations or expired authorization. Successful earlier pages survive a failed continuation; refresh failure retains the old list with explicit stale feedback. Retry resumes a failed continuation rather than restarting or skipping pages.
+
+The Server now attests installation enumeration truncation and skips repository requests for suspended installations. Suspended, truncated, changing, or unattested older responses cannot produce ordinary complete-empty guidance. These are data-integrity guards and quiet explanations, not new account setup statuses. The list describes discovery scope; runtime authorization remains per target/operation.
+
+After opening configuration from the viewer, an actual leave/return triggers one fresh read while the viewer remains open. It never declares configuration success. Returning to the main settings page or focusing a closed viewer does not query discovery. The OAuth callback reports account authorization only. Specific operation limits and shared Agent scope stay in help.
 
 Change starts explicit replacement directly. A real Server requirement adds Reauthorize. An unfinished initial authorization can be started again without showing an internal pending state. Progress remains visible at the active control, with decorative loading icons and a readable action name describing navigation to GitHub. Starting a new action clears the previous callback outcome. Remove account requires one confirmation naming the identity and explaining the effect on all Agents, ongoing work, and the authorization/App installation retained on GitHub. Cancellation restores focus to the visible Remove button without mutating authorization; a failed mutation remains in the dialog for retry, and dismissing the dialog clears its error. Empty live regions remain available for focus recovery without occupying visual space.
 
@@ -23,7 +35,15 @@ The archived proposal includes follow-up ideas, such as returning to a task afte
 
 ## Validation
 
-The finalized account/repository layout passes `pnpm check`, `pnpm build`, `pnpm typecheck`, the E2E TypeScript check, and six directly affected Web suites (58 tests). Browser validation of this follow-up uses the production component and stylesheet with local API fixtures, as detailed below. The full application smoke results in the next list precede this layout follow-up; their updated specifications have been typechecked but not rerun as a full-stack suite here.
+The repository viewer passes 82 directly affected Web/component/design-contract tests, 39 Server admission and management-API tests, and 12 shared-contract tests. The current built application passes all 12 dedicated GitHub smoke tests, including 16 locale/viewport/result presentation combinations. Repository checks, the full workspace build and typecheck, and E2E TypeScript validation pass. [Viewer validation summary](repository-viewer-review.json).
+
+The current browser run uses the built Web application, real Server, real browser authentication, and a task-owned PostgreSQL database. GitHub responses and authorization navigation remain controlled fixtures. Contrast checks wait for the existing dialog entry transition to settle; product animations and global test deadlines are unchanged. The test database, container, volume, network, and listeners are cleaned up after the run. No real GitHub grant, installation, repository, or token is changed.
+
+The following records describe earlier account-setting iterations:
+
+The final independent-settings layout passes six directly affected Web suites (60 tests), repository checks, the production build, workspace typechecking, and the E2E TypeScript check. Current browser validation mounts the production component and stylesheet with local API fixtures. It verifies no repository-discovery calls, including after opening configuration and returning focus. The full application smoke results below precede this final simplification; the updated specifications have been typechecked but not rerun as a full-stack suite here.
+
+The following results are retained from the earlier full-application acceptance:
 
 - Production build: `pnpm build` passed.
 - Repository checks and the English knowledge-base gate: `pnpm check` passed.
@@ -37,7 +57,7 @@ The finalized account/repository layout passes `pnpm check`, `pnpm build`, `pnpm
 
 The original three browser failures were reproduced before implementation. All three passed against the built implementation. The broader first unit run encountered Account-shell deadlines during concurrent build/check work; the next run passed those cases and exposed a test assertion that did not wait for the existing Dialog exit animation. That assertion now waits for closure rather than changing product animation or global test deadlines.
 
-### Browser boundaries
+### Earlier full-stack browser boundaries
 
 The built Web application, Server, authentication, and disposable PostgreSQL are real. Browser fixtures control GitHub management responses and the external authorization navigation. The denied OAuth round trip verifies both the retained old GitHub identity and the unsaved display name, with zero profile writes. The unavailable-deployment test uses the actual Server response. Screenshots were inspected at desktop and mobile sizes; overflow checks cover 320, 390, 768, and 1440px. Accessibility checks include the normal account view and removal dialog.
 
@@ -45,15 +65,26 @@ No real GitHub authorization, App installation, repository, or provider token wa
 
 ### State presentation audit
 
-The isolated browser audit renders the production `GitHubIntegrationSettings` component and production stylesheet with local Browser API fixtures. It covers 18 main presentation cases, including a long account identity, in English and Chinese at 320, 390, 768, and 1440px, plus account-mismatch, expired-authorization, and rate-limit callback messages at 320 and 1440px: 156 combinations. All passed page/overlay bounds and axe WCAG checks, with no browser runtime errors. This component audit does not include the Server, authentication, or PostgreSQL.
+The isolated browser audit renders the production `GitHubIntegrationSettings` component and stylesheet with local Browser API fixtures. It checks 156 presentation combinations in English/Chinese at 320, 390, 768, and 1440px, independent account/repository controls, both external-link attributes and the no-discovery boundary. Callback feedback, authorization loading, overview retry, reauthorization, help, account replacement, and removal retain accessibility and overflow checks. These cases are verification scenarios, not additional product authorization statuses. [Audit summary](state-review.json).
 
-Keyboard checks cover initial Cancel focus, Escape and focus restoration after idle confirmation, disabled cancellation during removal, and clearing a failed removal when its dialog is dismissed. Warning copy uses the existing strong text token; banner actions use the product Button adapter for accessible colors and mobile target sizes. No theme tokens or shared primitive behavior changed. [Audit summary](state-review.json).
+The subsequent alignment and popover changes pass 43 component/design-contract tests, Web and E2E typechecks, and a focused browser audit of 32 locale/viewport/scenario combinations plus two 320px touch checks. The focused audit verifies desktop action alignment, narrow-layout placement, unchanged card geometry, viewport containment, keyboard opening, all three dismissal methods, focus restoration, and zero repository-discovery calls. WCAG checks pass for the open popover in both locales at all four widths. The current account, initial-authorization, reauthorization, and help screenshots include these changes.
+
+Keyboard checks cover initial Cancel focus, Escape and focus restoration after idle confirmation, disabled cancellation during removal, and clearing a failed removal when its dialog is dismissed. No theme tokens or shared primitive behavior changed. These component fixtures do not establish live GitHub OAuth, organization policies, App installation, repository access, or native Git/gh execution.
 
 ## Screenshots
 
 - [Current account layout, Chinese](github-active-zh.png)
 - [Current account layout, English](github-active-en.png)
-- [Standalone account addition](github-empty-zh.png)
+- [Repository access, Chinese](github-repositories-zh.png)
+- [Repository access at 320px](github-repositories-zh-320.png)
+- [Repository access, English](github-repositories-en.png)
+- [Empty result with an accessible installation](github-repositories-empty-installed-zh.png)
+- [Empty result without an accessible installation at 320px](github-repositories-empty-zh-320.png)
+- [Read failure and retry at 320px](github-repositories-error-zh-320.png)
+
+Prior account-state captures, before the repository viewer was added:
+
+- [Account authorization before an identity is saved](github-empty-zh.png)
 - [Initial loading](github-loading-zh.png)
 - [Deployment setup guidance](github-unavailable-zh.png)
 - [Read failure and retry](github-read-error-zh.png)

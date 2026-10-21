@@ -752,8 +752,8 @@ export class BrowserApi {
     });
   }
 
-  githubRepositories(cursor?: string): Promise<GitHubRepositoryDiscoveryPage> {
-    return this.request(githubIntegrationRepositoriesPath(cursor), GitHubRepositoryDiscoveryPageSchema);
+  githubRepositories(cursor?: string, signal?: AbortSignal): Promise<GitHubRepositoryDiscoveryPage> {
+    return this.request(githubIntegrationRepositoriesPath(cursor), GitHubRepositoryDiscoveryPageSchema, { signal });
   }
 
   disconnectGitHub(): Promise<GitHubConnectionStatus | undefined> {

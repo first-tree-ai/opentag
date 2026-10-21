@@ -181,6 +181,20 @@ describe("GitHubRepositoryDiscoveryPageSchema", () => {
       GitHubRepositoryDiscoveryPageSchema.parse({ installations: [], repositories: [], nextCursor: null }).nextCursor,
     ).toBeNull();
   });
+
+  it("preserves the server's installation completeness attestation", () => {
+    const result = GitHubRepositoryDiscoveryPageSchema.parse({
+      installations: [],
+      repositories: [],
+      nextCursor: null,
+      installationsTruncated: true,
+      truncatedInstallations: [],
+    });
+    expect(result.installationsTruncated).toBe(true);
+    expect(GitHubRepositoryDiscoveryPageSchema.safeParse({ ...result, installationsTruncated: "false" }).success).toBe(
+      false,
+    );
+  });
 });
 
 describe("GitHubRepositoryDiscoveryQuerySchema", () => {

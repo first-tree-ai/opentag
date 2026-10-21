@@ -43,6 +43,33 @@ afterEach(() => {
 });
 
 describe("GitHub account settings", () => {
+  it("keeps repository configuration available independently of account authorization", async () => {
+    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(null));
+    const discover = vi.spyOn(browserApi, "githubRepositories");
+    render(<GitHubIntegrationSettings />);
+    expect(await screen.findByRole("button", { name: "Authorize GitHub account" })).toBeTruthy();
+    expect(screen.getByText("Account authorization", { exact: true })).toBeTruthy();
+    expect(screen.getByText("Repository access", { exact: true })).toBeTruthy();
+    const configure = screen.getByRole("link", { name: "Configure on GitHub" });
+    expect(configure.getAttribute("href")).toBe("/api/v1/integrations/github/installation");
+    expect(configure.getAttribute("target")).toBe("_blank");
+    expect(discover).not.toHaveBeenCalled();
+  });
+
+  it("does not infer repository authorization from returning to the settings page", async () => {
+    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection()));
+    const discover = vi.spyOn(browserApi, "githubRepositories");
+    render(<GitHubIntegrationSettings />);
+    const configure = await screen.findByRole("link", { name: "Configure on GitHub" });
+    configure.addEventListener("click", (event) => event.preventDefault());
+    fireEvent.click(configure);
+    fireEvent.focus(window);
+    fireEvent(document, new Event("visibilitychange"));
+    expect(discover).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
+    expect(screen.getByText("@octocat")).toBeTruthy();
+  });
+
   it("explains deployment unavailability without unusable controls or health badges", async () => {
     vi.spyOn(browserApi, "githubIntegration").mockResolvedValue({
       availability: { available: false, githubHost: "github.com", appId: null },
@@ -50,7 +77,7 @@ describe("GitHub account settings", () => {
     });
     render(<GitHubIntegrationSettings />);
     expect(await screen.findByText("GitHub integration unavailable")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Add GitHub account" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Authorize GitHub account" })).toBeNull();
     expect(screen.queryByText("Not configured")).toBeNull();
   });
 
@@ -59,7 +86,9 @@ describe("GitHub account settings", () => {
     const discover = vi.spyOn(browserApi, "githubRepositories").mockRejectedValue(new Error("GitHub outage"));
     render(<GitHubIntegrationSettings />);
     expect(await screen.findByText("@octocat")).toBeTruthy();
-    expect(screen.getByText("Shared by all your Agents.")).toBeTruthy();
+    expect(
+      screen.getByText("Authorize your GitHub account and allow OpenTag to access the repositories you need."),
+    ).toBeTruthy();
     const link = screen.getByRole("link", { name: "Configure on GitHub" });
     expect(link.getAttribute("href")).toBe("/api/v1/integrations/github/installation");
     expect(link.getAttribute("target")).toBe("_blank");
@@ -71,7 +100,7 @@ describe("GitHub account settings", () => {
     expect(screen.getByRole("button", { name: "Remove account" })).toBeTruthy();
     expect(screen.queryByRole("menu")).toBeNull();
     expect(screen.queryByText("Account", { exact: true })).toBeNull();
-    expect(screen.getByText("Choose which repositories OpenTag can access.")).toBeTruthy();
+    expect(screen.getByText("View the repositories your Agents can access.")).toBeTruthy();
   });
 
   it.each([null, "pending", "revoked", "superseded"] as const)(
@@ -80,7 +109,7 @@ describe("GitHub account settings", () => {
       vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(status ? connection({ status }) : null));
       const start = vi.spyOn(browserApi, "startGitHubAuthorization").mockRejectedValue(new Error("Controlled stop"));
       render(<GitHubIntegrationSettings />);
-      const authorize = await screen.findByRole("button", { name: "Add GitHub account" });
+      const authorize = await screen.findByRole("button", { name: "Authorize GitHub account" });
       expect(screen.queryByText("Account", { exact: true })).toBeNull();
       fireEvent.click(authorize);
       await waitFor(() =>
@@ -112,7 +141,7 @@ describe("GitHub account settings", () => {
     const identity = screen.getByText("@octocat").closest('[data-ui="github-account-identity"]');
     expect(identity?.contains(reauthorize)).toBe(true);
     expect(within(identity as HTMLElement).getByRole("alert").textContent).toBe(
-      "Authorize again so OpenTag can continue using this account.",
+      "Authorize this account again so your Agents can continue using GitHub.",
     );
     fireEvent.click(reauthorize);
     await waitFor(() =>
@@ -133,7 +162,7 @@ describe("GitHub account settings", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Remove account" }));
     const dialog = await screen.findByRole("dialog", { name: "Remove GitHub account?" });
     expect(within(dialog).getByText(/All your Agents will lose GitHub access through @octocat/)).toBeTruthy();
-    expect(within(dialog).getByText(/App installation on GitHub will remain/)).toBeTruthy();
+    expect(within(dialog).getByText(/uninstall the OpenTag App/)).toBeTruthy();
     expect(disconnect).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
@@ -141,7 +170,7 @@ describe("GitHub account settings", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Remove account" }));
     fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Remove account" }));
     expect(await screen.findByText("GitHub account removed.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Add GitHub account" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Authorize GitHub account" })).toBeTruthy();
     expect(disconnect).toHaveBeenCalledTimes(1);
   });
 
@@ -197,27 +226,32 @@ describe("GitHub account settings", () => {
       }),
     );
     render(<GitHubIntegrationSettings />);
-    expect(await screen.findByText("GitHub authorization completed.")).toBeTruthy();
+    expect(await screen.findByText("GitHub account authorization completed.")).toBeTruthy();
     fireEvent.click(await screen.findByRole("button", { name: "Change account" }));
     expect(await screen.findByRole("button", { name: "Redirecting to GitHub…" })).toHaveProperty("disabled", true);
-    expect(screen.queryByText("GitHub authorization completed.")).toBeNull();
+    expect(screen.queryByText("GitHub account authorization completed.")).toBeNull();
     reject(new Error("Authorization could not start"));
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Authorization could not start");
     expect(screen.getByRole("button", { name: "Change account" })).toBeTruthy();
     expect(screen.getByText("@octocat")).toBeTruthy();
   });
 
-  it("makes repository access help available by an explicit accessible toggle", async () => {
+  it("opens repository access help in an accessible popover beside its trigger", async () => {
     vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection()));
     render(<GitHubIntegrationSettings />);
     const help = await screen.findByRole("button", { name: "About GitHub repository access" });
     expect(help.getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(help);
+    const popover = await screen.findByRole("dialog", { name: "About GitHub repository access" });
     expect(help.getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByText(/Install or configure the OpenTag App on GitHub/)).toBeTruthy();
-    expect(screen.getByText(/contact an organization administrator if you don't have permission/)).toBeTruthy();
+    expect(within(popover).getByText(/Install or configure the OpenTag App on GitHub/)).toBeTruthy();
+    expect(within(popover).getByText(/All your Agents share this repository access/)).toBeTruthy();
+    expect(
+      within(popover).getByText(/contact an organization administrator if you don't have permission/),
+    ).toBeTruthy();
     fireEvent.click(help);
-    expect(screen.queryByText(/Install or configure the OpenTag App on GitHub/)).toBeNull();
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "About GitHub repository access" })).toBeNull());
+    expect(help.getAttribute("aria-expanded")).toBe("false");
   });
 
   it("uses a neutral fallback when the recorded login is unavailable", async () => {
@@ -230,10 +264,10 @@ describe("GitHub account settings", () => {
 
   it.each([
     ["error&github_oauth_error=GITHUB_OAUTH_DENIED", "GitHub authorization was denied."],
-    ["success", "GitHub authorization completed."],
+    ["success", "GitHub account authorization completed."],
     [
       "error&github_oauth_error=GITHUB_IDENTITY_MISMATCH",
-      "That authorization returned a different GitHub account. Choose Change account to replace it.",
+      "This authorization used a different GitHub account. Choose Change to use that account.",
     ],
   ])("reports the bounded callback outcome %s once", async (query, text) => {
     window.history.replaceState({}, "", `/account?github_oauth=${query}&keep=1`);
@@ -253,7 +287,7 @@ describe("GitHub account settings", () => {
         }}
       />,
     );
-    fireEvent.click(await screen.findByRole("button", { name: "Add GitHub account" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Authorize GitHub account" }));
     expect(await screen.findByText("Save your edit first")).toBeTruthy();
     expect(start).not.toHaveBeenCalled();
   });
@@ -264,21 +298,21 @@ describe("GitHubIntegrationSettings failure language", () => {
   it.each([
     [
       "GITHUB_INTEGRATION_UNAVAILABLE",
-      "This deployment has no GitHub App configured. Ask an administrator to configure it before adding an account.",
+      "The GitHub App hasn't been set up for OpenTag. Contact your OpenTag administrator.",
     ],
-    ["GITHUB_RATE_LIMITED", "GitHub rate limit reached. Try again shortly."],
-    ["GITHUB_UPSTREAM_UNAVAILABLE", "GitHub is temporarily unavailable. Try again."],
-    ["GITHUB_UPSTREAM_ERROR", "GitHub is temporarily unavailable. Try again."],
-    ["GITHUB_AUTHORIZATION_VERSION_CONFLICT", "The connection changed. Reload and try again."],
-    ["GITHUB_CONNECTION_CONFLICT", "The connection changed. Reload and try again."],
-    ["GITHUB_CONNECTION_NOT_FOUND", "The GitHub connection does not support this action right now."],
-    ["GITHUB_CONNECTION_STATE_INVALID", "The GitHub connection does not support this action right now."],
+    ["GITHUB_RATE_LIMITED", "GitHub's request limit has been reached. Try again shortly."],
+    ["GITHUB_UPSTREAM_UNAVAILABLE", "GitHub is temporarily unavailable. Try again shortly."],
+    ["GITHUB_UPSTREAM_ERROR", "GitHub is temporarily unavailable. Try again shortly."],
+    ["GITHUB_AUTHORIZATION_VERSION_CONFLICT", "Your GitHub authorization has changed. Refresh the page and try again."],
+    ["GITHUB_CONNECTION_CONFLICT", "Your GitHub authorization has changed. Refresh the page and try again."],
+    ["GITHUB_CONNECTION_NOT_FOUND", "This action isn't available right now. Refresh the page and try again."],
+    ["GITHUB_CONNECTION_STATE_INVALID", "This action isn't available right now. Refresh the page and try again."],
   ] as const)("maps %s to its own sentence, never the Server's raw message", async (code, sentence) => {
     vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(null));
     vi.spyOn(browserApi, "startGitHubAuthorization").mockRejectedValue(new ApiError(409, "raw upstream", code));
     render(<GitHubIntegrationSettings />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Add GitHub account" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Authorize GitHub account" }));
 
     expect(await screen.findByText(sentence)).toBeTruthy();
     expect(screen.queryByText("raw upstream")).toBeNull();
@@ -291,7 +325,7 @@ describe("GitHubIntegrationSettings failure language", () => {
     );
     render(<GitHubIntegrationSettings />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Add GitHub account" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Authorize GitHub account" }));
 
     expect(await screen.findByText("Something unmapped happened")).toBeTruthy();
   });
@@ -301,7 +335,7 @@ describe("GitHubIntegrationSettings failure language", () => {
     vi.spyOn(browserApi, "startGitHubAuthorization").mockRejectedValue({ status: 500 } as never);
     render(<GitHubIntegrationSettings />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Add GitHub account" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Authorize GitHub account" }));
 
     expect(await screen.findByText("The GitHub request could not be completed.")).toBeTruthy();
   });
@@ -311,7 +345,7 @@ describe("GitHubIntegrationSettings failure language", () => {
     vi.spyOn(browserApi, "startGitHubAuthorization").mockRejectedValue(new ApiError(500, ""));
     render(<GitHubIntegrationSettings />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Add GitHub account" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Authorize GitHub account" }));
 
     expect(await screen.findByText("The GitHub request could not be completed.")).toBeTruthy();
   });

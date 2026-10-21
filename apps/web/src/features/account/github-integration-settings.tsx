@@ -1,15 +1,16 @@
-import { GITHUB_INTEGRATION_INSTALLATION_PATH, type GitHubConnectionStatus } from "@opentag/shared/browser";
-import { ArrowUpRight, Question } from "@phosphor-icons/react";
+import type { GitHubConnectionStatus } from "@opentag/shared/browser";
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
-import { Banner, Button, Dialog, Loader, SettingsList, SettingsRow, Text } from "../../ui/design-system.js";
+import { Banner, Button, Dialog, Loader, SettingsList, Text } from "../../ui/design-system.js";
 import { useGitHubActionFocus } from "../integrations/github-action-focus.js";
 import {
   type GitHubOAuthOutcome,
   githubOAuthOutcomeMessage,
   readGitHubOAuthOutcome,
 } from "../integrations/github-oauth-outcome.js";
+
+import { GitHubRepositoryAccess } from "./github-repository-access.js";
 
 type GitHubAuthorizationIntent = "create" | "reauthorize" | "replace";
 type GitHubAction = GitHubAuthorizationIntent | "remove" | "retry";
@@ -335,7 +336,7 @@ function GitHubAccountIdentity({
 }) {
   const reauthorizationRequired = connection.status === "reauthorization_required";
   return (
-    <div className="grid gap-2 p-4" data-ui="github-account-identity">
+    <div className="grid gap-2" data-ui="github-account-identity">
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
         <div className="flex min-w-0 flex-wrap items-center gap-3">
           <span className="min-w-0 break-all text-sm font-medium text-kumo-strong">
@@ -393,7 +394,6 @@ function AccountGitHubBody({
   onRetry: () => void;
   onRemove: () => void;
 }) {
-  const [helpOpen, setHelpOpen] = useState(false);
   if (view.kind === "loading")
     return (
       <div className="flex items-center gap-2" role="status" aria-live="polite">
@@ -428,68 +428,39 @@ function AccountGitHubBody({
         </Text>
       </div>
     );
-  if (view.kind === "empty")
-    return (
-      <div className="grid justify-items-start gap-2">
-        <GitHubAuthorizationButton intent="create" action={action} busyLabel={busyLabel} onAuthorize={onAuthorize} />
-        <Text as="p" variant="secondary">
-          {m.integrations_github_add_account_description()}
-        </Text>
-      </div>
-    );
-  const connection = view.connection;
+  const connection = view.kind === "account" ? view.connection : undefined;
   return (
-    <>
-      <SettingsList>
-        <GitHubAccountIdentity
-          connection={connection}
-          action={action}
-          busyLabel={busyLabel}
-          removeRef={removeRef}
-          onAuthorize={onAuthorize}
-          onRemove={onRemove}
-        />
-        <SettingsRow
-          label={
-            <span className="inline-flex items-center gap-1">
-              {m.integrations_github_repository_access()}
-              <Button
-                aria-label={m.integrations_github_repository_help_label()}
-                aria-expanded={helpOpen}
-                aria-controls="account-github-repository-help"
-                onClick={() => setHelpOpen(!helpOpen)}
-                variant="ghost"
-                shape="square"
-                size="compact"
-                type="button"
-              >
-                <Question aria-hidden className="size-4" />
-              </Button>
-            </span>
-          }
-          description={m.integrations_github_repository_access_description()}
-        >
-          <a
-            className="inline-flex min-h-11 w-fit items-center gap-1 text-sm text-kumo-link hover:underline"
-            href={GITHUB_INTEGRATION_INSTALLATION_PATH}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            {m.integrations_github_manage_on_github()}
-            <ArrowUpRight aria-hidden className="size-4" />
-          </a>
-        </SettingsRow>
-      </SettingsList>
-      {helpOpen ? (
-        <div id="account-github-repository-help" className="flex flex-col gap-2">
-          <Text as="p" variant="secondary">
-            {m.integrations_github_repository_help()}
-          </Text>
-          <Text as="p" variant="secondary">
-            {m.integrations_github_repository_help_organization()}
-          </Text>
-        </div>
-      ) : null}
-    </>
+    <SettingsList className="github-settings-list">
+      <div className="grid gap-3 p-4">
+        <strong className="text-sm font-medium text-kumo-strong">{m.integrations_github_authorize_account()}</strong>
+        {connection ? (
+          <GitHubAccountIdentity
+            connection={connection}
+            action={action}
+            busyLabel={busyLabel}
+            removeRef={removeRef}
+            onAuthorize={onAuthorize}
+            onRemove={onRemove}
+          />
+        ) : (
+          <div className="grid justify-items-start gap-2">
+            <Text as="p" variant="secondary">
+              {m.integrations_github_add_account_description()}
+            </Text>
+            <GitHubAuthorizationButton
+              intent="create"
+              action={action}
+              busyLabel={busyLabel}
+              onAuthorize={onAuthorize}
+            />
+          </div>
+        )}
+      </div>
+      <GitHubRepositoryAccess
+        key={connection ? `${connection.id}/${connection.authorizationVersion}/${connection.status}` : "empty"}
+        connection={connection}
+        busy={busy}
+      />
+    </SettingsList>
   );
 }

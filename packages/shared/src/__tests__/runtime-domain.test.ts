@@ -102,6 +102,20 @@ describe("runtime domain contract", () => {
     const decision = { ...identity, type: "approval:decision", decision: "accept" };
     const result = { ...identity, type: "approval:result", status: "applied" };
     expect(RuntimeApprovalRequestSchema.parse(request)).toEqual(request);
+    const presented = {
+      ...request,
+      commandPresentation: { command: "curl -I https://example.com", reason: "Check the response headers" },
+    };
+    expect(RuntimeApprovalRequestSchema.parse(presented)).toEqual(presented);
+    expect(
+      RuntimeApprovalRequestSchema.safeParse({ ...request, commandPresentation: { command: "", reason: "" } }).success,
+    ).toBe(false);
+    expect(
+      RuntimeApprovalRequestSchema.safeParse({
+        ...request,
+        commandPresentation: { command: "x".repeat(6001), reason: "" },
+      }).success,
+    ).toBe(false);
     expect(RuntimeApprovalDecisionSchema.parse(decision)).toEqual(decision);
     expect(RuntimeApprovalResultSchema.parse(result)).toEqual(result);
     for (const frame of [request, decision, result]) {

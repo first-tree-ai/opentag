@@ -33,6 +33,15 @@ import {
 } from "../runtime-protocol.js";
 
 describe("runtime protocol", () => {
+  it("negotiates approval presentation only with supporting peers", () => {
+    const offer = { [RUNTIME_CAPABILITY.approvalPresentation]: { min: 1, max: 1 } };
+    expect(negotiateRuntimeCapabilities(offer, RUNTIME_SERVER_CAPABILITY_OFFERS)).toEqual({
+      [RUNTIME_CAPABILITY.approvalPresentation]: 1,
+    });
+    expect(negotiateRuntimeCapabilities(RUNTIME_CLIENT_CAPABILITY_OFFERS, {})).toEqual({});
+    expect(RUNTIME_REQUIRED_CLIENT_CAPABILITIES).not.toContain(RUNTIME_CAPABILITY.approvalPresentation);
+    expect(RUNTIME_REQUIRED_SERVER_CAPABILITIES).not.toContain(RUNTIME_CAPABILITY.approvalPresentation);
+  });
   it("negotiates Slack auto setup only with approval-aware peers without requiring the capability", () => {
     const v1 = { [RUNTIME_CAPABILITY.slackAutoSetup]: { min: 1, max: 1 } };
     expect(negotiateRuntimeCapabilities(v1, RUNTIME_SERVER_CAPABILITY_OFFERS)).toEqual({});

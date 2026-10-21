@@ -5,6 +5,7 @@ import {
   RUNTIME_DEFAULT_MAX_DURATION_MS,
   RUNTIME_DIRECT_TEXT_MAX_BYTES,
   RUNTIME_FINAL_TEXT_MAX_BYTES,
+  type RuntimeApprovalRequest,
   RuntimeApprovalRequestSchema,
   RuntimeFrameEnvelopeSchema,
   type RuntimeImSteerRequest,
@@ -120,6 +121,9 @@ describe("AgentTurnRunner", () => {
     "cancel-failed",
     "no-details",
     "codex-command",
+    "legacy-command",
+    "literal-command",
+    "empty-command",
     "permissions",
     "external-directory",
     "file-edit",
@@ -157,7 +161,10 @@ describe("AgentTurnRunner", () => {
     const send = vi.fn(async (_frame: unknown) => undefined);
     const runner = new AgentTurnRunner({
       bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
-      connection: { send },
+      connection: {
+        send,
+        capabilityVersion: () => (scenario === "legacy-command" ? undefined : 1),
+      },
       custody: { markReporting: h.markReporting, recordResult: vi.fn() } as unknown as TurnCustodyOwner,
       reportOwner: { create: h.create, submit: h.submit } as unknown as TurnReportOwner,
       runtimeManager: {
@@ -200,6 +207,7 @@ describe("AgentTurnRunner", () => {
       send.mock.calls.find(([frame]) => (frame as { type?: string }).type === "approval:request")?.[0],
     );
     expect(ClientRuntimeBusinessFrameSchema.parse(approval)).toEqual(approval);
+    expectCommandPresentation(approval.commandPresentation, scenario, options);
     expect(RuntimeFrameEnvelopeSchema.parse(approval).requestId).toBe(approval.requestId);
     expect(approval.requestId).not.toBe("number:0");
     const reply = {
@@ -1874,8 +1882,27 @@ function steerRequest(): RuntimeImSteerRequest {
   };
 }
 
+function expectCommandPresentation(
+  presentation: RuntimeApprovalRequest["commandPresentation"],
+  scenario: string,
+  options: ReturnType<typeof approvalScenario>,
+) {
+  const command =
+    options.details && typeof options.details === "object" && !Array.isArray(options.details)
+      ? options.details.command
+      : undefined;
+  if (typeof command === "string" && command && scenario !== "legacy-command") {
+    expect(presentation).toEqual({
+      command,
+      reason: options.message && options.message !== command ? options.message : "",
+    });
+  } else {
+    expect(presentation).toBeUndefined();
+  }
+}
+
 function approvalScenario(scenario: string) {
-  const reviewActions: Record<string, { details: JsonValue; description: string }> = {
+  const reviewActions: Record<string, { details: JsonValue; description: string; message?: string }> = {
     permissions: {
       details: { permissions: { network: true, fileSystem: { write: ["/external/report.txt"], read: null } } },
       description: "network: true\nfile System: write: /external/report.txt\nread: null",
@@ -1890,6 +1917,11 @@ function approvalScenario(scenario: string) {
     },
     "command-array": { details: ["curl", "-I", "https://example.com"], description: "curl\n-I\nhttps://example.com" },
     "numeric-action": { details: 1, description: "1" },
+    "literal-command": {
+      details: { command: "printf '``` <@U123> & *literal*'\npnpm test" },
+      description: "printf '``` <@U123> & *literal*'\npnpm test",
+    },
+    "empty-command": { details: { command: "" }, message: "Review action", description: "Review action" },
   };
   const reviewAction = reviewActions[scenario];
   return {
@@ -1899,7 +1931,7 @@ function approvalScenario(scenario: string) {
     responseFails: ["response-failed", "cancel-failed"].includes(scenario),
     message:
       scenario === "empty" || reviewAction
-        ? undefined
+        ? reviewAction?.message
         : scenario === "oversized"
           ? "x".repeat(6001)
           : scenario === "codex-command"

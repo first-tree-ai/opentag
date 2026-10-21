@@ -1192,6 +1192,13 @@ export const RuntimeApprovalRequestSchema = RuntimeApprovalIdentitySchema.extend
   type: z.literal("approval:request"),
   title: z.string().min(1).max(256),
   description: z.string().max(6000),
+  commandPresentation: z
+    .object({
+      command: z.string().min(1).max(6000),
+      reason: z.string().max(6000),
+    })
+    .strict()
+    .optional(),
   expiresAt: z.string().datetime(),
 }).strict();
 export const RuntimeApprovalDecisionSchema = RuntimeApprovalIdentitySchema.extend({

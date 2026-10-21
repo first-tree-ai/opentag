@@ -157,11 +157,66 @@ describe("ApprovalMessenger", () => {
             type: "mrkdwn",
             text: slackText,
           });
-          expect(input.blocks.every((block) => block.type === "section")).toBe(true);
+          expect(input.blocks.some((block) => block.type === "actions")).toBe(false);
         }
       }
     },
   );
+
+  it.each(["pending", "approved", "denied", "stale"] as const)(
+    "preserves literal commands and separates the reason in %s Slack cards",
+    async (status) => {
+      const command = "printf '``` <@U123> & *literal*'\npnpm test";
+      const reason = "Rerun outside the sandbox?";
+      const approval = approvalFor("slack");
+      approval.status = status;
+      approval.request.description = `${reason}\n\n${command}`;
+      approval.request.commandPresentation = { command, reason };
+      const messenger = new ApprovalMessenger(
+        { getSlackConnectionMaterial: async () => ({ generation: 1, botAccessToken: "token" }) } as never,
+        { run: async (_operation: string, action: () => unknown) => action() } as never,
+      );
+      const posted = await messenger.post(approval);
+      await messenger.finish({ ...approval, messageId: posted.messageId, messageChannelId: posted.channelId });
+      for (const input of [sdk.post.mock.calls.at(-1)?.[0], sdk.update.mock.calls.at(-1)?.[0]]) {
+        expect(input).toMatchObject({
+          text: expect.stringContaining(`${reason}\n\n${command}`),
+          blocks: [
+            {
+              type: "rich_text",
+              elements: [
+                { type: "rich_text_section", elements: [{ text: "Command approval", style: { bold: true } }] },
+              ],
+            },
+            { type: "section", text: { type: "plain_text", text: reason } },
+            {
+              type: "rich_text",
+              elements: [{ type: "rich_text_preformatted", elements: [{ type: "text", text: command }] }],
+            },
+            status === "pending" ? { type: "actions" } : { type: "section" },
+          ],
+        });
+      }
+    },
+  );
+
+  it("shows a command without a reason and keeps long commands intact", async () => {
+    const approval = approvalFor("slack");
+    const command = "x".repeat(6000);
+    approval.request.description = command;
+    approval.request.commandPresentation = { command, reason: "" };
+    const messenger = new ApprovalMessenger(
+      { getSlackConnectionMaterial: async () => ({ generation: 1, botAccessToken: "token" }) } as never,
+      { run: async (_operation: string, action: () => unknown) => action() } as never,
+    );
+    await messenger.post(approval);
+    const input = sdk.post.mock.calls.at(-1)?.[0] as { blocks: { type: string; elements?: unknown[] }[] };
+    expect(input.blocks).toHaveLength(3);
+    expect(input.blocks[1]).toMatchObject({
+      type: "rich_text",
+      elements: [{ type: "rich_text_preformatted", elements: [{ text: command }] }],
+    });
+  });
 
   it.each(["feishu", "slack"] as const)(
     "finishes %s cards without retrying missing or replaced credentials",

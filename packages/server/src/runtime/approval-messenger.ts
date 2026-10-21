@@ -107,17 +107,43 @@ function statusText(status: Approval["status"]): string | undefined {
 }
 
 function slackCard(approval: Approval) {
-  const summary = `${approval.request.title}\n\n${approval.request.description}`;
+  const { commandPresentation } = approval.request;
+  const title = commandPresentation ? "Command approval" : approval.request.title;
+  const summary = `${title}\n\n${approval.request.description}`;
   const text = statusText(approval.status);
   const status =
     approval.status === "approved" ? "*✅ Approved*" : approval.status === "denied" ? "*⛔ Denied*" : undefined;
   return {
     text: text ? `${summary}\n\n${text}` : summary,
     blocks: [
-      ...(summary.match(/[\s\S]{1,2900}/gu)?.map((content) => ({
-        type: "section" as const,
-        text: { type: "plain_text" as const, text: content },
-      })) ?? []),
+      {
+        type: "rich_text" as const,
+        elements: [
+          {
+            type: "rich_text_section" as const,
+            elements: [{ type: "text" as const, text: title, style: { bold: true } }],
+          },
+        ],
+      },
+      ...((commandPresentation ? commandPresentation.reason : approval.request.description)
+        .match(/[\s\S]{1,2900}/gu)
+        ?.map((content) => ({
+          type: "section" as const,
+          text: { type: "plain_text" as const, text: content },
+        })) ?? []),
+      ...(commandPresentation
+        ? [
+            {
+              type: "rich_text" as const,
+              elements: [
+                {
+                  type: "rich_text_preformatted" as const,
+                  elements: [{ type: "text" as const, text: commandPresentation.command }],
+                },
+              ],
+            },
+          ]
+        : []),
       ...(text
         ? [{ type: "section" as const, text: { type: "mrkdwn" as const, text: status ?? text } }]
         : [

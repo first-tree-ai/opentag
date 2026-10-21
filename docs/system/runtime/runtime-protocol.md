@@ -127,6 +127,15 @@ these are per-Agent overrides, not per-Computer model catalogs.
 - `instanceId` fences a daemon process lifetime; `connectionId` fences one registered socket; placement generation continues to fence Session placement. The Server registry still verifies the exact current socket before and after sends.
 - Transport queues are never replayed across sockets. Domain retries reuse their stable `requestId` and semantic payload hash under the existing domain policy.
 
+## Approval presentation
+
+The optional `runtime.approvalPresentation` capability (version 1) allows `approval:request` to
+carry `commandPresentation` with a separately redacted command and reason. The complete legacy
+`description` is always retained. Clients omit the additional field unless the capability is
+negotiated, so older Servers with strict request schemas still receive their original payload.
+Servers accept requests without this field and render their full description; this capability
+changes presentation only, never approval authority or decision semantics.
+
 ## Channel target advertisement
 
 The optional `runtime.channelTarget` capability (version 1) lets a connected Client learn the exact channel latest target for automatic upgrades. When the capability is negotiated, every v2 `heartbeat:result` may carry an optional `channelTarget` field: the Server's release channel and the exact SemVer it currently advertises, read from the channel's published release pointer. The field is additive and negotiated, so older Clients with strict heartbeat schemas never receive it, and a Client behind an older Server simply sees no target. The Client treats only an exact version-string match as already current; SemVer precedence is used solely to reject an older target, while an equal-precedence target with different build metadata is installed. A target for another channel is rejected before any upgrade decision.

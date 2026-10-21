@@ -49,6 +49,12 @@ New QR registrations include this callback; existing Apps need it enabled in the
 
 Approval requests appear in a private message to the task sender with **Approve** and **Deny** buttons.
 Cards show the reason and action, without provider transport metadata or user IDs.
+Slack cards use a bold title at the same size as the body text and a separate explanation.
+When the Client supplies structured command presentation, the full redacted command appears
+in a native code block, preserving line breaks and literal formatting characters. The reason and
+command remain available in notification and screen-reader text and after the decision. Older
+Clients retain their full plain-text description. Execution outside the sandbox is not inferred
+from free-text reasons or the presence of an approval request.
 The provider remains paused; clicking a button answers the same live turn. Decisions are stored long
 enough to reach the server replica holding the runtime socket, and the card is resolved after the
 runtime acknowledges the answer. A failed card update is retried while the server is running. Duplicate clicks, wrong users, expired requests, changed bindings,

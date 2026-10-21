@@ -365,6 +365,9 @@ export class AgentTurnRunner {
       placementGeneration: owner.request.placementGeneration,
       title: request.title.slice(0, 256),
       description: redactSensitive(description),
+      ...(this.#connection.capabilityVersion?.(RUNTIME_CAPABILITY.approvalPresentation) === 1
+        ? approvalCommandPresentation(details, request.message)
+        : {}),
       expiresAt: turn.expiresAt,
     });
   }
@@ -880,6 +883,17 @@ export function completionForError(error: unknown, abortReason: unknown, expired
   }
   if (error instanceof AgentProviderError) return completionForProviderError(error);
   return { outcome: "unknown", executionEffects: "may_have_occurred", errorReason: "turn_state_unknown" };
+}
+
+function approvalCommandPresentation(details: JsonValue | undefined, message: string | undefined) {
+  if (!details || typeof details !== "object" || Array.isArray(details)) return {};
+  if (typeof details.command !== "string" || details.command.length === 0) return {};
+  return {
+    commandPresentation: {
+      command: redactSensitive(details.command),
+      reason: message && message !== details.command ? redactSensitive(message) : "",
+    },
+  };
 }
 
 function describeApprovalAction(value: JsonValue): string {

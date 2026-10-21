@@ -162,9 +162,9 @@ test("long Agent names stay bounded in the switcher and preserve the current sec
   await expect(page.getByRole("link", { name: "Usage", exact: true })).toHaveAttribute("aria-current", "page");
 });
 
-test("Instructions saves on its own page and preserves the section when switching Agents", async ({ page }) => {
-  const firstId = await createAgent(page, "Instructions Review");
-  const secondId = await createAgent(page, "Instructions destination");
+test("Soul saves, returns to reading, and preserves the section when switching Agents", async ({ page }) => {
+  const firstId = await createAgent(page, "Soul Review");
+  const secondId = await createAgent(page, "Soul destination");
   await page.goto(`/agents/${firstId}/settings`, { waitUntil: "networkidle" });
   await expect(page.getByRole("main").getByRole("link", { name: /^Soul/ })).toHaveCount(0);
   const navigation = page.getByRole("navigation", { name: "Agent", exact: true });
@@ -179,14 +179,29 @@ test("Instructions saves on its own page and preserves the section when switchin
   await navigation.getByRole("link", { name: "Overview", exact: true }).click();
   await page.getByRole("button", { name: "Keep editing", exact: true }).click();
   await expect(instructions).toHaveValue("Be concise and explain the evidence.");
-  await page.getByRole("button", { name: "Apply changes", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText("Saved. Takes effect with the next response.");
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await expect(page.getByRole("status")).toHaveText("Saved. Changes take effect with the next response.");
+  await expect(editor).toHaveAttribute("aria-readonly", "true");
+  const edit = page.getByRole("button", { name: "Edit", exact: true });
+  await expect(edit).toBeFocused();
+  await expect(page.getByRole("button", { name: "Save changes", exact: true })).toHaveCount(0);
+  await edit.click();
+  await expect(editor).toBeFocused();
+  await expect(editor).toHaveAttribute("contenteditable", "true");
+  await expect(page.getByRole("status")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Save changes", exact: true })).toBeDisabled();
+  await editor.fill("An unsaved replacement that should be discarded.");
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(instructions).toHaveValue("Be concise and explain the evidence.");
+  await expect(editor).toHaveAttribute("aria-readonly", "true");
+  await expect(edit).toBeFocused();
   await page.goto(`/agents/${firstId}/settings/instructions`, { waitUntil: "networkidle" });
   await expect(page).toHaveURL(new RegExp(`/agents/${firstId}/instructions$`));
   await expect(instructions).toHaveValue("Be concise and explain the evidence.");
+  await expect(editor).toHaveAttribute("aria-readonly", "true");
   await expectAccessible(page);
   await page.getByRole("button", { name: /Switch Agent/ }).click();
-  await page.getByRole("menuitem", { name: "Instructions destination", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Soul destination", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/agents/${secondId}/instructions$`));
   await expect(page.getByRole("heading", { name: "No Soul yet", exact: true })).toBeVisible();
 });

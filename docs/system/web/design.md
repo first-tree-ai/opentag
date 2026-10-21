@@ -27,6 +27,13 @@ The app strengthens supporting text to `#696c73` so it remains readable on selec
 Orange `#e5502e` is a warning indicator; warning body text uses `#a63f22`, and danger uses
 `#b42318`. Selection outlines and progress markers use the slate focus token; links use blue.
 
+Task screens use the existing application typography: the list retains the page-title scale,
+while an individual Task title keeps its `h1` semantics and uses the 20px section scale with
+30px line height. Conversation text uses 16px/24px; authors use 14px semibold and timestamps
+use 12px regular text. Execution summaries and operational notices remain at 14px. The Activity
+section heading remains accessible without adding a visible label above the conversation.
+List columns distinguish 16px medium task titles from 14px headings and supporting values.
+
 ## Website reference sources
 
 | Source | Responsibility |

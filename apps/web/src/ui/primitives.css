@@ -21,7 +21,8 @@
   font-weight: 600;
   line-height: 1.5;
 }
-.ui-text[data-text-size]:is(h1) {
+.ui-text[data-text-size]:is(h1),
+.ui-text[data-text-size][data-heading-size="page"] {
   font-size: var(--ui-page-title);
   line-height: 1.2;
   letter-spacing: -0.025em;
@@ -34,6 +35,12 @@
 }
 .ui-text[data-text-size]:is(h4, h5, h6) {
   font-size: 0.875rem;
+}
+/* Reuse section typography without changing a heading's document level. */
+.ui-text[data-text-size][data-heading-size="section"] {
+  font-size: var(--ui-section-title);
+  line-height: 1.5;
+  letter-spacing: normal;
 }
 .ui-button {
   height: var(--ui-control-height);
@@ -90,7 +97,8 @@
   outline-offset: 3px;
 }
 @media (max-width: 640px) {
-  .ui-text[data-text-size]:is(h1) {
+  .ui-text[data-text-size]:is(h1),
+  .ui-text[data-text-size][data-heading-size="page"] {
     font-size: var(--ui-page-title-compact);
   }
 }

@@ -41,7 +41,7 @@ export function TaskActivity({
   const entries = buildTaskTimeline(turns, task.source.provider, replies ?? []);
   return (
     <section className="grid w-full max-w-3xl gap-5" aria-labelledby="task-activity-title" data-ui="task-thread">
-      <Text as="h2" id="task-activity-title" variant="heading">
+      <Text as="h2" id="task-activity-title" variant="heading" DANGEROUS_className="sr-only">
         {m.tasks_activity()}
       </Text>
       <TaskActivityTimeline key={task.id} entryIds={entries.map((entry) => entry.id)}>
@@ -98,8 +98,8 @@ function TaskEntry({
       ) : null}
       <div className="grid min-w-0 gap-2">
         {!compact ? (
-          <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1" data-ui="task-message-author-agent">
-            <strong>{task.agent.displayName}</strong>
+          <header className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1" data-ui="task-message-author-agent">
+            <strong className="min-w-0 wrap-anywhere text-sm font-semibold">{task.agent.displayName}</strong>
             <TaskAgentMeta entry={entry} />
           </header>
         ) : null}
@@ -132,7 +132,7 @@ function TaskAgentMeta({ entry }: { entry: TaskTimelineEntry }) {
   if (entry.kind === "reply") return <TaskOutgoingReplyMeta reply={entry.reply} />;
   if (entry.kind === "report") return <TaskReportMeta report={entry.report} />;
   if (entry.kind === "status") {
-    return <small className="text-kumo-subtle">{deliveryStateLabel(entry.turn.delivery)}</small>;
+    return <small className="text-xs text-kumo-subtle">{deliveryStateLabel(entry.turn.delivery)}</small>;
   }
   return null;
 }
@@ -151,9 +151,9 @@ function TaskRequest({ turn, id }: { turn: TaskTurn; id: string }) {
         {initials(author)}
       </span>
       <div className="grid min-w-0 gap-2">
-        <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1" data-ui="task-message-author">
-          <strong className="break-words">{author}</strong>
-          <small className="text-kumo-subtle">
+        <header className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1" data-ui="task-message-author">
+          <strong className="min-w-0 wrap-anywhere text-sm font-semibold">{author}</strong>
+          <small className="text-xs text-kumo-subtle">
             {attentionLabel(turn.attention)} · {formatDateTime(turn.message.occurredAt)}
           </small>
         </header>
@@ -165,7 +165,7 @@ function TaskRequest({ turn, id }: { turn: TaskTurn; id: string }) {
           {turn.message.truncated ? <p className="text-sm text-kumo-subtle">{m.tasks_message_truncated()}</p> : null}
         </div>
         {turn.absorbedBy ? (
-          <small className="text-kumo-subtle" title={m.tasks_included_in_active_work()}>
+          <small className="text-xs text-kumo-subtle" title={m.tasks_included_in_active_work()}>
             {m.tasks_added_to_active_work()}
           </small>
         ) : null}
@@ -176,7 +176,7 @@ function TaskRequest({ turn, id }: { turn: TaskTurn; id: string }) {
 
 function TaskReportMeta({ report }: { report: TaskReport }) {
   return (
-    <small className="text-kumo-subtle">
+    <small className="text-xs text-kumo-subtle">
       {m.tasks_report_summary({ outcome: humanizeEnum(report.outcome), time: formatDateTime(report.reportedAt) })}
     </small>
   );
@@ -233,7 +233,7 @@ function TaskExecutionSummary({ text }: { text: string }) {
   return (
     // biome-ignore lint/a11y/useSemanticElements: This groups summary content, not form controls.
     <div className="grid gap-2" data-ui="task-execution-summary" role="group" aria-label={m.tasks_execution_summary()}>
-      <TaskMessageBody format="markdown" text={text} />
+      <TaskMessageBody format="markdown" size="sm" text={text} />
     </div>
   );
 }
@@ -277,8 +277,8 @@ function TaskCapturedReplyEntry({
         className="size-8 text-xs font-medium text-kumo-strong"
       />
       <div className="grid min-w-0 gap-2">
-        <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1" data-ui="task-message-author-agent">
-          <strong>{task.agent.displayName}</strong>
+        <header className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1" data-ui="task-message-author-agent">
+          <strong className="min-w-0 wrap-anywhere text-sm font-semibold">{task.agent.displayName}</strong>
           <TaskCapturedReplyMeta reply={entry.reply} />
         </header>
         {/* biome-ignore lint/a11y/useSemanticElements: This groups message content, not form controls. */}

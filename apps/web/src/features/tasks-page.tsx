@@ -423,18 +423,18 @@ export function TaskDetailPage({
 
       <header className="grid gap-4" data-ui="task-conversation-header">
         {/*
-         * The title is a message excerpt of unpredictable length, so nothing shares its row. The
+         * The title may be a message excerpt or a saved title, so nothing shares its row. The
          * status is a fact about the Task and sits with the other facts, last, where it reads as
          * the outcome of what precedes it; equal columns keep it in one place whatever the title
          * or the Agent name measures.
          */}
-        <div className="min-w-0 break-words">
-          <Text as="h1" size="lg" variant="heading">
+        <div className="min-w-0 wrap-anywhere">
+          <Text as="h1" headingSize="section" variant="heading">
             {task.title}
           </Text>
         </div>
         <dl
-          className="grid gap-x-8 gap-y-4 border-y border-kumo-line py-4 @min-[36rem]/content:grid-cols-3 @min-[60rem]/content:grid-cols-5"
+          className="grid grid-cols-2 gap-x-8 gap-y-4 border-y border-kumo-line py-4 @min-[36rem]/content:grid-cols-3 @min-[60rem]/content:grid-cols-5"
           aria-label={m.tasks_details()}
         >
           <TaskDetailFact label={m.tasks_agent_label()}>
@@ -444,7 +444,7 @@ export function TaskDetailPage({
                 avatarPath={task.agent.avatarPath}
                 className="size-7 text-xs font-medium text-kumo-strong"
               />
-              <strong className="min-w-0 break-words">{task.agent.displayName}</strong>
+              <span className="min-w-0 wrap-anywhere">{task.agent.displayName}</span>
             </span>
           </TaskDetailFact>
           <TaskDetailFact label={m.tasks_source_label()}>
@@ -453,7 +453,7 @@ export function TaskDetailPage({
               {sourceLabel(task)}
             </span>
           </TaskDetailFact>
-          <TaskDetailFact label={m.tasks_started_label()}>
+          <TaskDetailFact className="col-span-2 @min-[36rem]/content:col-span-1" label={m.tasks_started_label()}>
             <time dateTime={task.createdAt}>{formatDateTime(task.createdAt)}</time>
           </TaskDetailFact>
           <TaskDetailFact label={m.tasks_last_activity_label()}>
@@ -712,7 +712,7 @@ function TaskTable({
     >
       <Table
         aria-label={compact ? m.tasks_agent_tasks() : m.tasks_title()}
-        className={`block min-w-0 @min-[40rem]/content:table ${showAgent ? "@min-[40rem]/content:min-w-[65rem]" : "@min-[40rem]/content:min-w-[54rem]"}`}
+        className={`block min-w-0 text-sm [&_th]:text-sm [&_th]:font-medium @min-[40rem]/content:table ${showAgent ? "@min-[40rem]/content:min-w-[65rem]" : "@min-[40rem]/content:min-w-[54rem]"}`}
         data-ui="task-table"
         layout="fixed"
       >
@@ -808,7 +808,7 @@ function TaskRow({
 
 function TaskTitleLink({ showExamples, task }: { showExamples: boolean; task: TaskSummary }) {
   const className =
-    "line-clamp-2 max-w-[40rem] break-words font-medium text-kumo-default hover:text-kumo-link @min-[40rem]/content:line-clamp-1";
+    "line-clamp-2 max-w-[40rem] wrap-anywhere text-base font-medium text-kumo-default hover:text-kumo-link @min-[40rem]/content:line-clamp-1";
   if (showExamples) {
     return (
       <Link
@@ -829,9 +829,17 @@ function TaskTitleLink({ showExamples, task }: { showExamples: boolean; task: Ta
   );
 }
 
-function TaskDetailFact({ children, label }: { children: ReactNode; label: string }) {
+function TaskDetailFact({
+  children,
+  className = "",
+  label,
+}: {
+  children: ReactNode;
+  className?: string;
+  label: string;
+}) {
   return (
-    <div className="grid min-w-0 gap-1">
+    <div className={`grid min-w-0 gap-1 ${className}`}>
       <Text as="dt" size="xs" variant="secondary">
         {label}
       </Text>

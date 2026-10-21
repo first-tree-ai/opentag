@@ -35,6 +35,7 @@ describe("TaskMessageBody", () => {
     expect(screen.getByText("Five items").tagName).toBe("STRONG");
     expect(screen.getByText("pnpm check").tagName).toBe("CODE");
     expect(screen.getByRole("table")).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Message table" }).tabIndex).toBe(0);
     const link = screen.getByRole("link", { name: "Open docs" });
     expect(link.getAttribute("href")).toBe("https://example.com/docs");
     expect(link.getAttribute("target")).toBe("_blank");
@@ -109,6 +110,8 @@ describe("TaskMessageBody", () => {
     expect(container.querySelector("hr")).toBeTruthy();
     // The fenced block keeps its own pre, and its code child loses the inline-chip styling there.
     const pre = container.querySelector("pre");
+    expect(screen.getByRole("region", { name: "Code block" })).toBe(pre);
+    expect(pre?.tabIndex).toBe(0);
     expect(pre?.textContent).toContain("pnpm check");
     expect(pre?.querySelector("code")).toBeTruthy();
   });

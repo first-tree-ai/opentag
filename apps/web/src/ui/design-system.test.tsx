@@ -17,9 +17,25 @@ import {
   StatusIndicator,
   Switch,
   Tabs,
+  Text,
 } from "./design-system.js";
 
 describe("Kumo semantic adapter", () => {
+  it("preserves document heading levels when a record title uses section typography", () => {
+    render(
+      <>
+        <Text as="h1" headingSize="section" variant="heading">
+          Review the release
+        </Text>
+        <Text as="h2" variant="heading">
+          Results
+        </Text>
+      </>,
+    );
+    expect(screen.getByRole("heading", { level: 1, name: "Review the release" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 2, name: "Results" })).toBeTruthy();
+  });
+
   it.each(["standalone", "grouped"] as const)("preserves %s switch control, labels, refs, and busy state", (kind) => {
     const onChange = vi.fn();
     const ref = createRef<HTMLButtonElement>();

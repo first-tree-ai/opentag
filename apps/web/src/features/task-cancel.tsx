@@ -91,7 +91,7 @@ export function TaskCancelControl({
     }
   }
 
-  if (!enabled) return null;
+  if (!enabled || (task.status !== "queued" && !notice && !confirming)) return null;
   return (
     <div className="grid gap-3" data-ui="task-actions">
       {notice ? <Banner description={notice} role="status" variant="secondary" /> : null}

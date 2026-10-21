@@ -131,14 +131,19 @@ export {
 
 // Kumo's conditional generic props distribute differently through JSX. The implementation accepts
 // their complete union; retain the original generic call signature for product callers.
-export const Text = ((props: Parameters<typeof KumoText>[0]) => (
+type TextVariant = NonNullable<Parameters<typeof KumoText>[0]["variant"]>;
+type HeadingSize = "page" | "section";
+export const Text = (({ headingSize, ...props }: Parameters<typeof KumoText>[0] & { headingSize?: HeadingSize }) => (
   <KumoText
     {...props}
+    data-heading-size={headingSize}
     data-text-size={props.size ?? "base"}
     data-text-variant={props.variant ?? "body"}
     DANGEROUS_className={classes("ui-text", props.DANGEROUS_className)}
   />
-)) as typeof KumoText;
+)) as <Variant extends TextVariant = "body">(
+  props: Parameters<typeof KumoText<Variant>>[0] & { headingSize?: HeadingSize },
+) => ReturnType<typeof KumoText>;
 
 export const Input: typeof KumoInput = forwardRef<HTMLInputElement, KumoInputProps>(function Input(
   { className, size = "base", ...props },

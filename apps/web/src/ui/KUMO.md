@@ -44,6 +44,9 @@ existing product vocabulary to Kumo primitives:
   keeps page actions in the header row when tabs are not present.
 - `Tabs`, `SettingsList`, and `SettingsRow` retain their semantic API while
   emitting Kumo tabs and semantic utility classes.
+- `Text` keeps document heading levels independent of visual size through `headingSize` (`page` or `section`).
+  These choices reuse the existing page and section tokens. For example, a Task detail keeps its
+  `h1` while using section typography; other callers retain their existing defaults.
 
 Use Kumo `Input`, `InputArea`, `Select`, `Checkbox`, `Switch`, `Table`,
 `LayerCard`, `Surface`, `Banner`, `Empty`, `Meter`, `Loader`, and `SkeletonLine`

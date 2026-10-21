@@ -12,7 +12,7 @@ type OutgoingReply = OutgoingSnapshot["replies"][number];
 export function TaskOutgoingReplyMeta({ reply }: { reply: OutgoingReply }) {
   const typeLabel = replyTypeLabel(reply.content.msgType);
   const meta = [typeLabel, replyTime(reply.createTime)].filter(Boolean).join(" · ");
-  return <small className="text-kumo-subtle">{meta}</small>;
+  return <small className="text-xs text-kumo-subtle">{meta}</small>;
 }
 
 /** The platform-reported message type of a captured reply, mapped onto the same labels. */
@@ -28,7 +28,7 @@ export function TaskCapturedReplyMeta({ reply }: { reply: CapturedTaskReply }) {
   ]
     .filter(Boolean)
     .join(" · ");
-  return <small className="text-kumo-subtle">{meta}</small>;
+  return <small className="text-xs text-kumo-subtle">{meta}</small>;
 }
 
 /**
@@ -112,7 +112,7 @@ function OutgoingReplyBody({ reply }: { reply: OutgoingReply }) {
   }
   const mediaLabel = mediaDescription(content);
   if (mediaLabel) {
-    return <p className="break-words text-sm">{mediaLabel}</p>;
+    return <p className="wrap-anywhere text-sm">{mediaLabel}</p>;
   }
   if (content.text) return <TaskMessageBody format="plain_text" text={content.text} />;
   if (content.raw) return <RawPayload payload={content.raw} />;
@@ -136,9 +136,14 @@ function RawPayload({ payload }: { payload: unknown }) {
     <Collapsible.Root className="min-w-0 text-sm">
       <Collapsible.DefaultTrigger>{m.tasks_reply_native_content()}</Collapsible.DefaultTrigger>
       <Collapsible.Panel>
+        {/* biome-ignore lint/a11y/useSemanticElements: The named scroll region must retain native preformatted content semantics. */}
         <pre
-          className="mt-2 max-w-full overflow-x-auto rounded-md bg-kumo-recessed p-3 leading-5"
+          className="mt-2 max-w-full overflow-x-auto rounded-md bg-kumo-recessed p-3 leading-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-focus focus-visible:ring-inset"
           data-content-format="raw"
+          // biome-ignore lint/a11y/noNoninteractiveTabindex: Keyboard users must be able to scroll native message payloads.
+          tabIndex={0}
+          role="region"
+          aria-label={m.tasks_reply_native_content()}
         >
           {text}
         </pre>

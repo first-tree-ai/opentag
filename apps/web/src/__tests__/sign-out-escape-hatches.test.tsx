@@ -26,9 +26,13 @@ function region(selector: string): HTMLElement {
   return found;
 }
 
-async function signOutFrom(container: HTMLElement) {
+async function signOutFrom(container: HTMLElement, fromMenu = false) {
+  if (fromMenu) {
+    fireEvent.click(within(container).getByRole("button", { name: "Account menu" }));
+    container = await within(container).findByRole("menu");
+  }
   preserveProfileNavigationDraft("account", "Ada", "Unsaved name");
-  fireEvent.click(within(container).getByRole("button", { name: "Sign out" }));
+  fireEvent.click(within(container).getByRole(fromMenu ? "menuitem" : "button", { name: "Sign out" }));
   expect(await screen.findByRole("heading", { name: "Sign in to openTag" })).toBeTruthy();
   expect(logoutCalls()).toHaveLength(1);
   expect(window.location.pathname).toBe("/login");
@@ -93,7 +97,7 @@ describe("sign-out from full-screen states of an Account that has not finished s
     render(<App />);
 
     await screen.findByRole("heading", { name: "Where should your agent run?" });
-    await signOutFrom(region('[data-ui="agent-create"] header'));
+    await signOutFrom(region('[data-ui="agent-create"] header'), true);
   });
 
   it("offers it in the header of the exact setup page, next to the Account name", async () => {
@@ -104,7 +108,7 @@ describe("sign-out from full-screen states of an Account that has not finished s
     await screen.findByRole("heading", { name: "Prepare this computer" });
     const header = region('[data-ui="agent-setup"] header');
     expect(within(header).getByText("Ada")).toBeTruthy();
-    await signOutFrom(header);
+    await signOutFrom(header, true);
   });
 
   it("keeps the visitor on the page and says why when the Server refuses the logout", async () => {

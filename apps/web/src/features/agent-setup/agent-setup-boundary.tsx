@@ -11,6 +11,7 @@ import { agentDetailLink } from "../agents/agent-routes.js";
 import { Redirect } from "../navigation/redirect.js";
 import { useAccount } from "../session/session-context.js";
 import { AccountSignOut } from "../session/sign-out-button.js";
+import { AccountMenu } from "../shell/account-menu.js";
 
 /** An exact setup target is a uuid; anything else can never name an Agent and fails closed. */
 const AGENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -290,7 +291,7 @@ function TargetedAgentSetup({
 
   return (
     <AgentSetupSurface
-      accountControl={<AccountSignOut />}
+      accountControl={<AccountMenu placement="page" />}
       existingAgentNames={resolution.existingAgentNames}
       onBackToAgents={accountCompleted ? onBackToAgents : undefined}
       onAgentAvailable={onTarget}
@@ -387,7 +388,7 @@ function ExactAgentSetup({
 
   return (
     <AgentSetupSurface
-      accountControl={<AccountSignOut />}
+      accountControl={<AccountMenu placement="page" />}
       agentId={agentId}
       onOpenAgent={() => onOpenAgent(agentId)}
       onReady={reviewMode ? onReviewFinished : undefined}

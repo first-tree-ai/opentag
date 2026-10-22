@@ -72,30 +72,61 @@ must treat these URLs as provider configuration, never as user input.
 | Step | Request |
 | --- | --- |
 | Device authorization | `POST https://accounts.feishu.cn/oauth/v1/device_authorization`; form body `client_id=<app_id>&scope=<space-separated scopes>`; `Authorization: Basic base64(app_id:app_secret)` |
-| Device token poll | `POST https://open.feishu.cn/open-apis/authen/v1/oidc/access_token`; form body `grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code=<code>&client_id=<app_id>&client_secret=<app_secret>` |
-| Token refresh | Same token URL; JSON body `{"grant_type":"refresh_token","refresh_token":"<token>","client_id":"<app_id>","client_secret":"<app_secret>"}` |
+| Device token poll | `POST https://open.feishu.cn/authen/v2/oauth/token`; form body `grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code=<code>&client_id=<app_id>&client_secret=<app_secret>` |
+| Token refresh | Same v2 token URL; JSON body `{"grant_type":"refresh_token","refresh_token":"<token>","client_id":"<app_id>","client_secret":"<app_secret>"}` |
 | Identity check | `GET https://open.feishu.cn/open-apis/authen/v1/user_info`; `Authorization: Bearer <access_token>` |
 
 The asymmetry is deliberate and must not be normalized: device authorization uses Basic auth,
 device polling uses form credentials, and refresh uses JSON credentials. The pinned CLI and the
-verified refresh use those shapes.
+verified refresh use those shapes. `/open-apis/authen/v1/oidc/access_token` is a different legacy
+OIDC API and is not part of this contract.
 
 The device authorization response carries `device_code`, `user_code`, `verification_uri`,
-`verification_uri_complete`, `expires_in`, and `interval`. The token response carries
-`access_token`, `refresh_token`, `expires_in` (observed approximately two hours),
-`refresh_token_expires_in` (observed approximately seven days), `scope`, and `token_type`.
+`verification_uri_complete`, `expires_in`, and `interval`. The v2 token response carries a numeric
+`code`, `access_token`, `refresh_token`, `expires_in` (observed approximately two hours),
+`refresh_token_expires_in` (observed approximately seven days), `scope`, and `token_type`. It does
+not use the OAuth `error` / `invalid_grant` spelling for refresh failures.
+
+### Token response classification
+
+The provider client owns the code-to-outcome map. The shared refresh custody helper consumes only
+the normalized verdict, so the OAuth classifier is not reused unchanged.
+
+| Response | Verdict | Action |
+| --- | --- | --- |
+| `code = 0` and an `access_token` | Success | Store the rotated envelope |
+| `code = 0` but no `access_token` | Unknown | Keep the token, surface renewal failure, no retry |
+| `20026`, `20037`, `20064` | Terminal | Refresh token invalid, expired, or revoked; clear and require reconnect |
+| `20073` | Terminal | Refresh token already used; clear and require reconnect. This is what a lost rotation looks like |
+| `99991543`, `10014` | Terminal | Application/client credentials are wrong; clear and require reconnect |
+| `20050` | Retryable-preserve | Keep the refresh token; do not retry in the same pass; the next scheduled refresh pass retries |
+| `21000`, `21001` | Policy-stop | Keep the refresh token; surface a bounded security-challenge code; no automatic retry |
+| Missing `code`, transport failure, timeout, 5xx, unparseable body | Unknown | Keep the refresh token; `MCP_REFRESH_OUTCOME_UNKNOWN`; no automatic retry |
+| Any other numeric code | Unknown | Keep the refresh token; bounded renewal-failure code; no automatic retry |
+
+A retryable-preserve row stays `active` and releases its refresh claim, so the next scheduled pass
+can retry. It never retries inside the same pass. Policy-stop and unknown rows become `error`; the
+UI treats both as renewal failure and requires the owner to act.
+
+When a successful response omits `refresh_token`, the stored refresh token is kept (RFC 6749 §6).
+When it omits `refresh_token_expires_in`, the previous absolute refresh deadline is kept rather
+than granting a new window. When it omits `expires_in`, the provider's verified two-hour default
+(7200 seconds) applies. When it omits `scope`, the stored scopes are kept.
 
 Polling outcomes:
 
-| Provider error | Meaning | Action |
+| Provider response | Meaning | Action |
 | --- | --- | --- |
 | `authorization_pending` | Approval not finished | Keep the flow, poll after the current interval |
-| `slow_down` | Polling too fast | Add five seconds to the interval and keep the flow |
-| `access_denied` | User refused | Terminal; record a bounded denial code |
-| `expired_token`, `invalid_grant` | Device code is gone | Terminal; require a new connect |
-| Anything else | Unknown provider response | Terminal for the flow, bounded code only |
+| `slow_down` | Polling too fast | Add five seconds to the interval, capped at 60 seconds; keep the flow |
+| `access_denied` | User refused | Terminal flow status `denied`; bounded code only |
+| `expired_token`, `invalid_grant` | Device code is gone | Terminal flow status `expired`; require a new connect |
+| Transport failure, timeout, or unparseable body | Outcome unknown | Keep the flow; increase the interval with the same 60-second cap; retry later |
+| Any other provider error | Provider rejected the poll | Terminal flow status `failed`; bounded code only |
 
-`error_description` is never stored, logged, or shown.
+Polling is safe to retry: re-exchanging a consumed device code returns `invalid_grant`, which is
+terminal for the flow but cannot destroy an existing credential. Unlike refresh, a retried poll
+does not risk spending a rotating credential. `error_description` is never stored, logged, or shown.
 
 ## Deployment configuration
 
@@ -155,6 +186,7 @@ A separate table keeps pending device state out of the credential row's OAuth fl
 ```text
 mcp_provider_authorization_flows
   id, mcp_server_id, agent_id, provider,
+  status (pending | denied | expired | failed), failure_code,
   device_code_ciphertext,
   user_code, verification_uri, expires_at,
   poll_interval_seconds, next_poll_at,
@@ -165,27 +197,65 @@ mcp_provider_authorization_flows
 
 - The `device_code` is sealed with the existing authorization envelope AAD. The user code and
   verification URI are not secrets; they are bounded and never logged.
-- A new `start` upserts the row and invalidates the previous device code in the same write.
+- A new `start` upserts the row, resets it to `pending`, clears `failure_code`, and invalidates the
+  previous device code in the same write.
+- Success deletes the flow row in the same transaction that writes the credential. Cancellation and
+  explicit revocation delete it too. A denied, expired, or failed flow keeps the row with its
+  terminal status and bounded `failure_code` until the next `start`, so the UI can explain what
+  happened after a reload.
 - The flow row is the pending signal. Starting a re-connection does not downgrade a working
   credential, matching the OAuth reauthorization behavior.
-- Cancellation and explicit revocation delete the flow. Expiry marks it terminal only when the row
-  has no working credential.
+
+### First connect and terminal flow results
+
+`mcp_server_authorizations_bearer_has_credential` forbids a `bearer` row in `pending` or `active`
+without a ciphertext. The first Feishu connect therefore does not create a pending bearer row:
+
+- If no authorization row exists, `start` creates `kind = 'none'`, `status = 'pending'`,
+  `credential_source = 'manual'`, no credential. The flow row is what says a connection is in
+  progress; `resolveActiveCredential` still reports unauthorized.
+- If a row already exists, its `kind`, `status`, `credential_source`, and credential are left
+  untouched while the flow runs. This includes an anonymous `none`/`active` row and a working
+  manually supplied or managed credential.
+- On success, the row becomes `kind = 'bearer'`, `status = 'active'`, `credential_source =
+  'feishu_user'`, with the sealed credential and provider metadata written together.
+- On a denied, expired, or failed flow, the flow row keeps the terminal status. In addition, a
+  first-connect row still at `none`/`pending` becomes `none`/`error` with the same bounded
+  `failure_code`. A working credential or an anonymous `active` row is never downgraded by a failed
+  re-connection.
+
+### What drives polling
+
+Device codes expire in minutes, and the existing refresh worker ticks every five minutes. A
+five-minute tick cannot drive this flow. There are two pollers, both using the same flow-row claim
+and the same `next_poll_at` gate:
+
+- The Web App calls an authenticated, ownership-checked poll route while the connect dialog is
+  open. That request performs at most one claimed upstream poll; if `next_poll_at` is still in the
+  future it returns the current flow status without a provider call.
+- A dedicated short-interval worker claims due flow rows for restart recovery and for users who
+  closed the tab. Its interval is five seconds and its batch is bounded, so it can poll at the
+  provider's requested cadence without touching the refresh worker's schedule.
+
+The flow row's claim is a compare-and-swap; a stale claim is reclaimable after two minutes. A
+Server restart resumes from the persisted row and its `next_poll_at`.
 
 ## Lifecycle and states
 
 | State | Row | UI |
 | --- | --- | --- |
-| Connecting | Flow row exists and is unexpired; row may stay `active` if a credential already works | Show user code, verification link, countdown |
+| Connecting | Flow `pending`; authorization row is `none`/`pending` on a first connect, or unchanged while a working credential stays in place | Show user code, verification link, countdown |
 | Connected | `active`, `credential_source = 'feishu_user'`, credential present, probe current | "Connected with your Feishu account; renews automatically" |
 | Renewal failed | `error`, `failure_code = MCP_REFRESH_OUTCOME_UNKNOWN` or a bounded provider code | "Renewal failed; reconnect required"; never "connected" |
 | Reauthorization required | `revoked` or `expired`, or `failure_code = MCP_AUTHORIZATION_REQUIRED` | "Reconnect Feishu" |
-| Denied or expired flow | No live flow; bounded failure code when there was no credential | Connect again |
+| Denied, expired, or failed flow | Flow row terminal; authorization row unchanged, or `none`/`error` on a first connect | Show the bounded reason and offer connect again |
+| Refresh deadline reached | `expired`; no provider call | "Feishu authorization expired; reconnect" |
 | Manual bearer | `credential_source = 'manual'`, no refresh deadline | "Static credential; does not renew" |
 
 The authorization DTO adds `credentialSource`, `refreshTokenExpiresAt`, `providerAccountId`,
-`providerTenantKey`, and a nullable `pendingAuthorization` carrying only the user code,
-verification URI, and expiry. It still never carries a token, ciphertext, key ID, device code, or
-app secret.
+`providerTenantKey`, and a nullable `pendingAuthorization` carrying the flow status, user code,
+verification URI, expiry, and bounded failure code. It still never carries a token, ciphertext,
+key ID, device code, or app secret.
 
 ## Refresh ownership and concurrency
 
@@ -206,15 +276,29 @@ duplicated:
 - call the provider outside the database transaction;
 - write the new envelope and generation with a fence on the claim;
 - release the claim on a local decryption failure without changing state;
-- classify terminal versus unknown outcomes in one place.
+- write the row state from a normalized verdict (`success`, `terminal`, `retryable-preserve`,
+  `policy-stop`, `unknown`) so provider-specific code maps stay in the provider client.
 
 The database lease is a concurrency control, not an exactly-once guarantee. A process can die after
 the provider rotated the token and before the write-back. The proposal therefore keeps the existing
 rule: a transport failure, timeout, 5xx, or unparseable response is an **unknown outcome**. The row
 goes to `error` with `MCP_REFRESH_OUTCOME_UNKNOWN`, the old refresh token is kept, the connection is
-not reported healthy, and no automatic retry spends a token that may already be consumed. Only
-`invalid_grant` and `invalid_client` are terminal, and they clear the credential and require a new
-connect.
+not reported healthy, and no automatic retry spends a token that may already be consumed.
+
+Feishu terminal codes (`20026`, `20037`, `20064`, `20073`, and the invalid-client codes) clear the
+credential and require a new connect. `20050` is retryable-preserve: the row stays `active`, the
+claim is released, and the next scheduled refresh pass retries; it is never retried inside the same
+pass. A policy-challenge code (`21000`, `21001`) keeps the token, marks the row `error` with a
+bounded code, and waits for the owner to complete the Feishu challenge and reconnect. Any other
+numeric code is unknown: keep the token, mark the row `error`, and do not auto-retry.
+
+Before any refresh call, a `refresh_token_expires_at` at or past the current time marks the row
+`expired` without contacting the provider; there is nothing to spend. On a successful refresh, the
+deadline is `now + refresh_token_expires_in` when the provider returns one, and the previous
+absolute deadline when it omits the field. A first connect that omits it uses the verified
+seven-day default (604800 seconds). Whether the provider slides the deadline on each rotation is an
+open evidence item: if it is fixed from the original grant, the Connected UI must show the reconnect
+date rather than implying indefinite renewal.
 
 Device polling uses the same claim idea on the flow row. Two Server instances cannot exchange one
 device code concurrently; a stale poll claim is reclaimable after two minutes. A restart resumes
@@ -287,10 +371,11 @@ This is a generic least-privilege control, not a Feishu-specific branch in the g
    refresh-due index, optional `allowed_tools`.
 2. Extract OAuth refresh custody into a shared helper with unchanged behavior and tests.
 3. Feishu provider client: device authorization, poll, refresh, identity check, fixed endpoints,
-   fake-fetcher unit tests.
+   numeric code-to-verdict map, fake-fetcher unit tests.
 4. Feishu managed-credential service: start, poll, credential write, refresh, revoke, endpoint and
    application binding checks.
-5. Refresh worker: managed refresh dispatch, device-flow poll pass, expiry and restart recovery.
+5. Workers and polling: managed refresh dispatch, a dedicated five-second device-flow poll worker,
+   the authenticated on-demand poll route, expiry and restart recovery.
 6. Shared DTOs and server routes: start/poll/status, lifecycle fields, availability.
 7. Gateway allowlist: filter advertised tools and reject forbidden calls before upstream.
 8. Web App: connect dialog, pending/connected/renewal-failed/reauthorization-required states,

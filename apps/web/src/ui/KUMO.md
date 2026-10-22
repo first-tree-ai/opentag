@@ -32,10 +32,13 @@ existing product vocabulary to Kumo primitives:
   the neutral semantic token; brand teal is not used for operational state.
 - `Switch` and `Switch.Item` use brand teal when checked and neutral colors when
   unchecked. The adapter replaces Kumo's fixed track colors with semantic tokens while
-  preserving Kumo sizing, shape, motion, focus, disabled, and busy behavior. Color variants
+  preserving Kumo sizing, shape, motion, disabled, and busy behavior. Both switch forms use the
+  shared slate focus token for their keyboard ring, independently of checked-state brand color. Color variants
   are not exposed to callers; operational status text keeps its own semantics.
 - `Dialog` uses a permanently mounted Kumo compound dialog with controlled
   `open` state. Busy dialogs reject outside, Escape, and close-button dismissal.
+  Explicit return-focus targets are restored after the close transition and focus-trap cleanup,
+  including a replacement target when the opening control was deleted.
   Its non-landmark header exposes `data-ui="dialog-header"` for module layout and browser geometry checks.
 - `Icon` uses the Phosphor registry. Icon-only controls must have an accessible
   name or title.

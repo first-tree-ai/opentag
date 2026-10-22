@@ -1,0 +1,41 @@
+[
+  {
+    "pendingToggle": "ga-analysis",
+    "focus": "Delete skill research"
+  },
+  {
+    "pendingToggle": "research",
+    "focus": "Delete skill scientific-literature-review-with-a-deliberately-long-name"
+  },
+  {
+    "compactDesktop": {
+      "viewport": 1440,
+      "content": 526,
+      "nameCenter": 190.1953125,
+      "switchCenter": 190.1953125,
+      "deleteCenter": 190.1953125,
+      "scrollWidth": 1440
+    }
+  },
+  {
+    "touch": {
+      "maxTouchPoints": 1,
+      "coarse": true
+    },
+    "bottomRight": {
+      "x": 303,
+      "y": 262.09375
+    },
+    "topLeft": {
+      "x": 263,
+      "y": 222.09375
+    },
+    "gap": {
+      "x": 309,
+      "y": 242.09375
+    },
+    "gapIsSeparate": true,
+    "independentTouchTargets": true,
+    "disabledTargetSafe": true
+  }
+]

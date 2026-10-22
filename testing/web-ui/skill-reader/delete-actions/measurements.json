@@ -1,0 +1,129 @@
+[
+  {
+    "metrics": {
+      "width": 320,
+      "scrollWidth": 320,
+      "controls": [
+        {
+          "width": 44,
+          "height": 44,
+          "color": "rgb(105, 108, 115)",
+          "background": "rgba(0, 0, 0, 0)",
+          "outline": "rgb(105, 108, 115) none 3px"
+        },
+        {
+          "width": 44,
+          "height": 44,
+          "color": "rgb(105, 108, 115)",
+          "background": "rgba(0, 0, 0, 0)",
+          "outline": "rgb(105, 108, 115) none 3px"
+        },
+        {
+          "width": 44,
+          "height": 44,
+          "color": "rgb(105, 108, 115)",
+          "background": "rgba(0, 0, 0, 0)",
+          "outline": "rgb(105, 108, 115) none 3px"
+        }
+      ]
+    },
+    "axe": []
+  },
+  {
+    "metrics": {
+      "width": 390,
+      "scrollWidth": 390,
+      "controls": [
+        {
+          "width": 44,
+          "height": 44,
+          "color": "rgb(105, 108, 115)",
+          "background": "rgba(0, 0, 0, 0)",
+          "outline": "rgb(105, 108, 115) none 3px"
+        },
+        {
+          "width": 44,
+          "height": 44,
+          "color": "rgb(105, 108, 115)",
+          "background": "rgba(0, 0, 0, 0)",
+          "outline": "rgb(105, 108, 115) none 3px"
+        },
+        {
+          "width": 44,
+          "height": 44,
+          "color": "rgb(105, 108, 115)",
+          "background": "rgba(0, 0, 0, 0)",
+          "outline": "rgb(105, 108, 115) none 3px"
+        }
+      ]
+    },
+    "axe": []
+  },
+  {
+    "metrics": {
+      "width": 768,
+      "scrollWidth": 768,
+      "controls": [
+        {
+          "width": 32,
+          "height": 32,
+          "color": "rgb(105, 108, 115)",
+          "background": "rgba(0, 0, 0, 0)",
+          "outline": "rgb(105, 108, 115) none 3px"
+        },
+        {
+          "width": 32,
+          "height": 32,
+          "color": "rgb(105, 108, 115)",
+          "background": "rgba(0, 0, 0, 0)",
+          "outline": "rgb(105, 108, 115) none 3px"
+        },
+        {
+          "width": 32,
+          "height": 32,
+          "color": "rgb(105, 108, 115)",
+          "background": "rgba(0, 0, 0, 0)",
+          "outline": "rgb(105, 108, 115) none 3px"
+        }
+      ]
+    },
+    "axe": []
+  },
+  {
+    "metrics": {
+      "width": 1440,
+      "scrollWidth": 1440,
+      "controls": [
+        {
+          "width": 32,
+          "height": 32,
+          "color": "rgb(105, 108, 115)",
+          "background": "rgba(0, 0, 0, 0)",
+          "outline": "rgb(105, 108, 115) none 3px"
+        },
+        {
+          "width": 32,
+          "height": 32,
+          "color": "rgb(105, 108, 115)",
+          "background": "rgba(0, 0, 0, 0)",
+          "outline": "rgb(105, 108, 115) none 3px"
+        },
+        {
+          "width": 32,
+          "height": 32,
+          "color": "rgb(105, 108, 115)",
+          "background": "rgba(0, 0, 0, 0)",
+          "outline": "rgb(105, 108, 115) none 3px"
+        }
+      ]
+    },
+    "axe": []
+  },
+  {
+    "hover": {
+      "color": "rgb(180, 35, 24)",
+      "background": "rgb(244, 245, 247)"
+    },
+    "tooltip": "Delete skill"
+  }
+]

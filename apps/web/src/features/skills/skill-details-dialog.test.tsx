@@ -5,6 +5,7 @@ import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../../api.js";
 import { queryKeys } from "../../query/keys.js";
+import { TooltipProvider } from "../../ui/design-system.js";
 import { SkillDetailsDialog } from "./skill-details-dialog.js";
 import { SkillReaderMarkdown } from "./skill-reader-markdown.js";
 import { SkillsPage } from "./skills-page.js";
@@ -37,7 +38,11 @@ function response(
   return { path, files, archiveSha256: skill.archiveSha256, preview };
 }
 function wrap(node: React.ReactNode, client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
-  return render(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
+  return render(
+    <QueryClientProvider client={client}>
+      <TooltipProvider>{node}</TooltipProvider>
+    </QueryClientProvider>,
+  );
 }
 afterEach(() => vi.restoreAllMocks());
 

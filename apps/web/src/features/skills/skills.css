@@ -67,6 +67,20 @@
   /* Keep mobile controls above the stretched details target. */
   z-index: 1;
 }
+/* Reserve a 44px slot around Kumo's 36px track without changing its visual size or shape.
+   The transparent target stays inside the controls track on compact rows, above the reader target. */
+.skill-row-toggle {
+  margin-inline: 0.25rem;
+}
+.skill-row-toggle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 2.75rem;
+  height: 2.75rem;
+  translate: -50% -50%;
+}
 .skill-row-description {
   min-width: 0;
   overflow: hidden;

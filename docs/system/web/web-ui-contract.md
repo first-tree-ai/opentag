@@ -221,8 +221,9 @@ limited to theme sources and explicitly reviewed module-owned styles. Teal commu
 must not replace success, warning, danger, or informational status colors.
 
 Switches use brand teal for the checked state and neutral colors for the unchecked state. The semantic adapter
-owns this rule for both standalone and grouped switches; feature pages do not choose a color variant. Kumo continues
-to own their size, shape, motion, and interaction behavior.
+owns this rule for both standalone and grouped switches; feature pages do not choose a color variant. Keyboard focus
+uses the shared slate focus token rather than the checked-state brand color. Kumo continues to own their size, shape,
+motion, and interaction behavior.
 
 Motion must communicate a state change or spatial relationship. Prefer transform and opacity, avoid perpetual animation
 outside an active progress state, and provide a reduced-motion result that communicates the same information without

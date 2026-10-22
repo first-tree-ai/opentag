@@ -1,6 +1,6 @@
 import { SKILL_ERROR_CODES, type Skill, type SkillArchiveFormat } from "@opentag/shared/browser";
 import { useEffect, useRef, useState } from "react";
-import { ApiError, browserApi } from "../../api.js";
+import { ApiError } from "../../api.js";
 import { PageHeader } from "../../components/kumo/page-header/page-header.js";
 import * as m from "../../paraglide/messages.js";
 import { Banner, Button, DropdownMenu, Icon, Loader, Text } from "../../ui/design-system.js";
@@ -43,6 +43,10 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
   const skills = useAgentSkills(agentId);
   const upload = useUploadSkill();
   const invalidateSkills = useInvalidateAgentSkills();
+  const pageRef = useRef<HTMLElement>(null);
+  const deleteTrigger = useRef<HTMLButtonElement | null>(null);
+  const deleteReturnFocus = useRef<HTMLElement | null>(null);
+  const deleteNeighbours = useRef<HTMLButtonElement[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   /*
    * The body only remounts when the Agent changes, so within one instance this tracks unmount alone.
@@ -63,6 +67,20 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
   const [detailsTarget, setDetailsTarget] = useState<Skill | undefined>();
   const detailsTrigger = useRef<HTMLElement | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Skill | undefined>();
+  const closeDelete = (removed: boolean) => {
+    if (!alive.current) return;
+    // Preserve the opening row's neighbours, then skip unavailable targets at close time. An
+    // earlier pending toggle or background removal must not shift an index onto a different row.
+    const buttons = pageRef.current?.querySelectorAll<HTMLButtonElement>('[data-ui="skill-delete"]') ?? [];
+    const neighbour = [...deleteNeighbours.current, ...buttons].find(
+      (button) => button !== deleteTrigger.current && button.isConnected && !button.disabled,
+    );
+    deleteReturnFocus.current =
+      !removed && deleteTrigger.current?.isConnected && !deleteTrigger.current.disabled
+        ? deleteTrigger.current
+        : (neighbour ?? pageRef.current);
+    setDeleteTarget(undefined);
+  };
   /*
    * Remote installation lives in this body too, so a pending dialog cannot survive an Agent change:
    * the body is keyed by Agent and remounts, and the install mutation carries the Agent it was
@@ -196,7 +214,13 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
   );
 
   return (
-    <section className="grid gap-6" aria-labelledby="skills-page-title" data-ui="skills-page">
+    <section
+      className="grid gap-6 rounded-md outline-none focus-visible:outline-2 focus-visible:outline-kumo-focus"
+      aria-labelledby="skills-page-title"
+      data-ui="skills-page"
+      ref={pageRef}
+      tabIndex={-1}
+    >
       <PageHeader description={m.skills_page_description()} title={m.skills_page_title()} titleId="skills-page-title">
         {/*
          * A native file input is the only way to open the browser's file chooser; it stays hidden
@@ -246,9 +270,17 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
           detailsTrigger.current = trigger;
           setDetailsTarget(skill);
         }}
-        onDelete={setDeleteTarget}
+        onDelete={(skill, trigger) => {
+          deleteTrigger.current = trigger;
+          deleteReturnFocus.current = trigger;
+          const buttons = Array.from(
+            pageRef.current?.querySelectorAll<HTMLButtonElement>('[data-ui="skill-delete"]') ?? [],
+          );
+          const index = buttons.indexOf(trigger);
+          deleteNeighbours.current = [...buttons.slice(index + 1), ...buttons.slice(0, index).reverse()];
+          setDeleteTarget(skill);
+        }}
         skills={skills.data?.skills ?? []}
-        storageAvailable={storageAvailable}
       />
 
       {pendingReplace ? (
@@ -265,7 +297,7 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
         returnFocusRef={detailsTrigger}
         storageAvailable={storageAvailable}
       />
-      {deleteTarget ? <RemoveSkillDialog onClose={() => setDeleteTarget(undefined)} skill={deleteTarget} /> : null}
+      <RemoveSkillDialog onClose={closeDelete} returnFocusRef={deleteReturnFocus} skill={deleteTarget} />
       {installOpen ? (
         <InstallSkillDialog
           agentId={agentId}
@@ -290,14 +322,12 @@ function SkillList({
   onDelete,
   onViewDetails,
   skills,
-  storageAvailable,
 }: {
   hasData: boolean;
   isPending: boolean;
-  onDelete: (skill: Skill) => void;
+  onDelete: (skill: Skill, trigger: HTMLButtonElement) => void;
   onViewDetails: (skill: Skill, trigger: HTMLElement) => void;
   skills: Skill[];
-  storageAvailable: boolean;
 }) {
   if (isPending)
     return (
@@ -330,14 +360,7 @@ function SkillList({
       data-ui="skills-list"
     >
       {skills.map((skill) => (
-        <SkillRow
-          downloadUrl={browserApi.agentSkillBundleUrl(skill.agentId, skill.id)}
-          key={skill.id}
-          onDelete={onDelete}
-          onViewDetails={onViewDetails}
-          skill={skill}
-          storageAvailable={storageAvailable}
-        />
+        <SkillRow key={skill.id} onDelete={onDelete} onViewDetails={onViewDetails} skill={skill} />
       ))}
     </ul>
   );

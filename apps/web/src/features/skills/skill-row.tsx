@@ -1,9 +1,9 @@
 import type { Skill } from "@opentag/shared/browser";
-import { DownloadSimple, Trash } from "@phosphor-icons/react";
+import { Trash } from "@phosphor-icons/react";
 import { useState } from "react";
 import { ApiError } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
-import { Banner, Button, DropdownMenu, Icon, Switch, Text } from "../../ui/design-system.js";
+import { Banner, Button, Icon, Switch, Text, Tooltip } from "../../ui/design-system.js";
 import { skillErrorMessage } from "./skills-page-model.js";
 import { useUpdateSkill } from "./skills-queries.js";
 
@@ -11,21 +11,17 @@ import { useUpdateSkill } from "./skills-queries.js";
  * One Skill as a row.
  *
  * The switch writes immediately rather than waiting for a Save, so failures stay beside that Skill;
- * the delete action is a dialog, not an inline button, because
- * removing a Skill deletes its stored archive and cannot be undone.
+ * the inline delete button opens confirmation because removing a Skill deletes its stored archive
+ * and cannot be undone.
  */
 export function SkillRow({
-  downloadUrl,
   onDelete,
   onViewDetails,
   skill,
-  storageAvailable,
 }: {
-  downloadUrl: string;
-  onDelete: (skill: Skill) => void;
+  onDelete: (skill: Skill, trigger: HTMLButtonElement) => void;
   onViewDetails: (skill: Skill, trigger: HTMLElement) => void;
   skill: Skill;
-  storageAvailable: boolean;
 }) {
   // The write carries the row's own Agent id, not the page's current prop, so a row rendered for one
   // Agent can never be written through a mutation that belongs to another.
@@ -61,53 +57,33 @@ export function SkillRow({
         </p>
         <Icon name="chevron-right" className="skill-row-chevron text-kumo-subtle" />
       </div>
-      <div className="skill-row-controls flex shrink-0 items-center gap-3">
+      <div className="skill-row-controls flex shrink-0 items-center gap-2">
         <Switch
+          className="skill-row-toggle"
           aria-label={m.skills_toggle_label({ name: skill.name })}
           checked={skill.enabled}
           disabled={update.isPending}
           onCheckedChange={(next) => void toggle(next)}
           transitioning={update.isPending}
         />
-        <DropdownMenu>
-          <DropdownMenu.Trigger
-            render={
-              <Button
-                aria-label={m.skills_more_actions({ name: skill.name })}
-                shape="square"
-                size="compact"
-                variant="ghost"
-              />
-            }
-          >
-            <Icon name="more-vertical" />
-          </DropdownMenu.Trigger>
-          <DropdownMenu.Content align="end">
-            {storageAvailable ? (
-              <DropdownMenu.LinkItem
-                closeOnClick
-                href={downloadUrl}
-                icon={DownloadSimple}
-                render={<a href={downloadUrl} download={`${skill.name}.tar.gz`} />}
-              >
-                {m.skills_download_action()}
-              </DropdownMenu.LinkItem>
-            ) : (
-              <DropdownMenu.Item disabled icon={DownloadSimple} title={m.skills_error_storage_unavailable()}>
-                {m.skills_download_action()}
-              </DropdownMenu.Item>
-            )}
-            <DropdownMenu.Separator />
-            <DropdownMenu.Item
+        <Tooltip
+          content={m.skills_delete_action()}
+          render={
+            <Button
+              aria-label={m.skills_delete_label({ name: skill.name })}
+              aria-haspopup="dialog"
+              className="text-kumo-subtle hover:text-kumo-danger focus-visible:text-kumo-danger"
+              data-ui="skill-delete"
               disabled={update.isPending}
-              icon={Trash}
-              onClick={() => onDelete(skill)}
-              variant="danger"
+              shape="square"
+              size="compact"
+              variant="ghost"
+              onClick={(event) => onDelete(skill, event.currentTarget)}
             >
-              {m.skills_delete_action()}
-            </DropdownMenu.Item>
-          </DropdownMenu.Content>
-        </DropdownMenu>
+              <Trash aria-hidden="true" className="size-4" />
+            </Button>
+          }
+        />
       </div>
       {error ? (
         <div className="col-span-2 mt-2">

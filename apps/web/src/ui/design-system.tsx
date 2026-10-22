@@ -270,7 +270,7 @@ const SwitchItem: ForwardRefExoticComponent<SwitchItemProps & RefAttributes<HTML
       ref={ref}
       variant="neutral"
       className={classes(
-        "[&_[role=switch]]:bg-kumo-fill [&_[role=switch]]:ring-kumo-line [&_[role=switch][data-checked]]:bg-kumo-brand [&_[role=switch][data-checked]]:ring-kumo-brand [&_[role=switch]:focus-visible]:ring-kumo-brand",
+        "[&_[role=switch]]:bg-kumo-fill [&_[role=switch]]:ring-kumo-line [&_[role=switch][data-checked]]:bg-kumo-brand [&_[role=switch][data-checked]]:ring-kumo-brand [&_[role=switch]:focus-visible]:ring-kumo-focus [&_[role=switch][data-checked]:focus-visible]:ring-kumo-focus",
         className,
       )}
     />
@@ -288,7 +288,7 @@ export const Switch: ForwardRefExoticComponent<SwitchProps & RefAttributes<HTMLB
         ref={ref}
         variant="neutral"
         className={classes(
-          "bg-kumo-fill ring-kumo-line data-[checked]:bg-kumo-brand data-[checked]:ring-kumo-brand",
+          "bg-kumo-fill ring-kumo-line data-[checked]:bg-kumo-brand data-[checked]:ring-kumo-brand focus-visible:ring-kumo-focus data-[checked]:focus-visible:ring-kumo-focus",
           className,
         )}
       />
@@ -801,21 +801,23 @@ export function Dialog({
 }) {
   const id = useId();
   const headingRef = useRef<HTMLDivElement>(null);
-  const wasOpenRef = useRef(open);
+  const returnFocusTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(returnFocusTimer.current), []);
   useEffect(() => {
+    window.clearTimeout(returnFocusTimer.current);
     if (!open) return;
     const timer = window.setTimeout(() => (initialFocusRef?.current ?? headingRef.current)?.focus());
     return () => window.clearTimeout(timer);
   }, [initialFocusRef, open]);
-  useEffect(() => {
-    if (wasOpenRef.current && !open) returnFocusRef?.current?.focus();
-    wasOpenRef.current = open;
-  }, [open, returnFocusRef]);
   return (
     <KumoDialog.Root
       open={open}
       onOpenChangeComplete={(next) => {
+        window.clearTimeout(returnFocusTimer.current);
         if (next) initialFocusRef?.current?.focus();
+        // Restore after the focus trap and background inertness finish closing. In particular,
+        // deletion may replace the original trigger with another row or the empty page.
+        else returnFocusTimer.current = window.setTimeout(() => returnFocusRef?.current?.focus(), 0);
       }}
       onOpenChange={(next) => {
         if (!next && busy) return;

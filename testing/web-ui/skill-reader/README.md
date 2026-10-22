@@ -7,6 +7,13 @@ The server contract is separately covered with authenticated route/service tests
 The historical import-only and discovery/import screenshots below were captured in the Codex in-app browser with the same fixture entry. Earlier
 reader screenshots retain the previous action labels. Historical discovery screenshots show an entry that is now hidden.
 
+## Direct deletion (2026-10-22)
+
+The list now uses a persistent delete icon beside the switch. Downloads remain in the reader. The right action
+group reserves separate pointer targets with an 8px gap, and keyboard switch focus uses the shared slate token.
+See [direct-deletion acceptance](delete-actions/README.md) for current screenshots, keyboard/focus behavior,
+responsive measurements and accessibility scans. Earlier screenshots below retain the historical More menu.
+
 ## Centered row actions (2026-10-16)
 
 On wide content containers, the switch and More menu are vertically centered against the entire name-and-description

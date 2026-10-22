@@ -1,0 +1,23 @@
+[
+  {
+    "keyboardStyle": {
+      "color": "rgb(158, 56, 51)",
+      "outline": "rgb(105, 117, 134) solid 2px",
+      "focusVisible": true
+    },
+    "dialogAxe": [],
+    "download": "ga-analysis.tar.gz",
+    "cancelAndEscapeFocus": true,
+    "independentSwitch": true,
+    "busyDismissalGuard": true,
+    "nextPreviousAndEmptyFocus": true
+  },
+  {
+    "failedDeletionRetained": true,
+    "errorClearedOnReopen": true
+  },
+  {
+    "zhAxe": [],
+    "storageUnavailableDeletion": true
+  }
+]

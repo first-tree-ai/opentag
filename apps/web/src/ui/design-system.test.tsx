@@ -242,7 +242,7 @@ describe("Kumo semantic adapter", () => {
     await waitFor(() => expect(document.activeElement).toBe(heading));
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(document.activeElement).toBe(trigger);
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
   });
 
   it("keeps icon-only controls discoverable", () => {

@@ -11,6 +11,7 @@ import {
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../../api.js";
+import { TooltipProvider } from "../../ui/design-system.js";
 import { SkillsPage } from "./skills-page.js";
 
 /**
@@ -84,7 +85,9 @@ async function renderSkillsRoute(path: string) {
   await act(async () => {
     render(
       <QueryClientProvider client={queryClient}>
-        <RouterProvider router={router as never} />
+        <TooltipProvider>
+          <RouterProvider router={router as never} />
+        </TooltipProvider>
       </QueryClientProvider>,
     );
   });
@@ -240,8 +243,7 @@ describe("SkillsPage Agent changes", () => {
   it("closes the delete dialog when the Agent changes, confirming nothing", async () => {
     stubApi({ [AGENT_A]: [skill(AGENT_A)] });
     const router = await renderSkillsRoute(`/agents/${AGENT_A}/skills`);
-    fireEvent.click(await screen.findByRole("button", { name: "More actions for Release notes writer" }));
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Delete skill" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete skill Release notes writer" }));
     expect(await screen.findByText("Delete Release notes writer?")).toBeTruthy();
 
     await navigateTo(router, AGENT_B);

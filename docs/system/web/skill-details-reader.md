@@ -7,13 +7,25 @@ description: "Reading a Skill's full instructions and supporting files from the 
 
 A Skill's summary cannot replace its instructions. Click the installed Skill's content area—name, description or
 surrounding whitespace—to read the complete `SKILL.md` and switch to supporting files without leaving the management
-page. The reader integrates with the Skills management layout merged in PR #820. A stretched native name button owns
-this larger hit area; the switch and More menu remain separate siblings and retain their independent management actions.
+page. A stretched native name button owns this larger hit area; the switch and delete button remain separate siblings
+and retain their independent management actions. Downloads are available in the reader header only; the list has
+no More menu. The delete button is always visible as a secondary-color Phosphor trash icon, with a neutral hover
+surface, danger-color hover/focus feedback and the shared keyboard focus outline. A localized tooltip supplements
+the Skill-specific accessible name. Compact icon buttons retain at least 44px touch targets below 768px.
+Deletion opens an explicit confirmation with Cancel initially focused; pending requests prevent duplicate submission
+and dismissal, and failures remain in the dialog for retry. Cancelling restores focus to the delete button. After a
+confirmed deletion, focus moves to the next available row, the preceding row if needed, or the named Skills page
+when empty. Neighbouring row targets are retained when confirmation opens, so pending toggles and background removals
+cannot shift the focus destination onto a different row.
 The content area has a subtle hover fill and a visible keyboard focus outline, without an extra details action.
-Names use 16px semibold text and descriptions use 14px regular text. Controls align with the name; in narrow content
-containers the description spans the full width below the first row. The stretched trigger extends across that mobile
-content region, with the independent control group layered above it. Description tooltips are enabled only for actual
-horizontal overflow or two-line clamping, measured on text changes, element resizing and font loading. The header keeps a single
+The right action group preserves the switch-then-delete order and a consistent right inset. The switch retains
+Kumo's visual track while a transparent 44px target and matching layout slot improve pointer/touch access. An 8px
+gap separates its target from the delete button; no extra action labels or divider are added.
+Names use 16px semibold text and descriptions use 14px regular text. Controls center against the content group
+on wide containers and align with the name in narrow containers. In narrow content containers the description spans
+the full width below the first row. The stretched trigger extends across that mobile content region, with the
+independent control group layered above it. Descriptions stay on one line and truncate with an ellipsis, without a
+tooltip; the reader shows the full description. The header keeps a single
 outlined Import skill menu with Install from URL and Upload file. The empty state explains these two import methods
 without repeating the action. Explore skills is temporarily hidden in both the header and empty state while the discovery
 experience is being designed. The catalog component, translations and server APIs remain available for future integration.

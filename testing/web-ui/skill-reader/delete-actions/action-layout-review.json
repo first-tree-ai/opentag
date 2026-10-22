@@ -1,0 +1,1019 @@
+{
+  "results": [
+    {
+      "metrics": {
+        "width": 320,
+        "scrollWidth": 320,
+        "rows": [
+          {
+            "row": {
+              "x": 17,
+              "y": 220.09375,
+              "width": 286,
+              "height": 120,
+              "cx": 160,
+              "cy": 280.09375
+            },
+            "toggle": {
+              "x": 195,
+              "y": 257.09375,
+              "width": 36,
+              "height": 18,
+              "cx": 213,
+              "cy": 266.09375
+            },
+            "remove": {
+              "x": 243,
+              "y": 244.09375,
+              "width": 44,
+              "height": 44,
+              "cx": 265,
+              "cy": 266.09375
+            },
+            "controls": {
+              "x": 191,
+              "y": 244.09375,
+              "width": 96,
+              "height": 44,
+              "cx": 239,
+              "cy": 266.09375
+            },
+            "name": {
+              "x": 41,
+              "y": 254.09375,
+              "width": 139,
+              "height": 24,
+              "cx": 110.5,
+              "cy": 266.09375
+            },
+            "content": {
+              "x": 33,
+              "y": 236.09375,
+              "width": 254,
+              "height": 87,
+              "cx": 160,
+              "cy": 279.59375
+            },
+            "target": {
+              "width": 44,
+              "height": 44,
+              "allCornersHitSwitch": true
+            },
+            "targetGap": 8,
+            "rightInset": 16
+          },
+          {
+            "row": {
+              "x": 17,
+              "y": 340.09375,
+              "width": 286,
+              "height": 120,
+              "cx": 160,
+              "cy": 400.09375
+            },
+            "toggle": {
+              "x": 195,
+              "y": 377.09375,
+              "width": 36,
+              "height": 18,
+              "cx": 213,
+              "cy": 386.09375
+            },
+            "remove": {
+              "x": 243,
+              "y": 364.09375,
+              "width": 44,
+              "height": 44,
+              "cx": 265,
+              "cy": 386.09375
+            },
+            "controls": {
+              "x": 191,
+              "y": 364.09375,
+              "width": 96,
+              "height": 44,
+              "cx": 239,
+              "cy": 386.09375
+            },
+            "name": {
+              "x": 41,
+              "y": 374.09375,
+              "width": 139,
+              "height": 24,
+              "cx": 110.5,
+              "cy": 386.09375
+            },
+            "content": {
+              "x": 33,
+              "y": 356.09375,
+              "width": 254,
+              "height": 87,
+              "cx": 160,
+              "cy": 399.59375
+            },
+            "target": {
+              "width": 44,
+              "height": 44,
+              "allCornersHitSwitch": true
+            },
+            "targetGap": 8,
+            "rightInset": 16
+          },
+          {
+            "row": {
+              "x": 17,
+              "y": 460.09375,
+              "width": 286,
+              "height": 120,
+              "cx": 160,
+              "cy": 520.09375
+            },
+            "toggle": {
+              "x": 195,
+              "y": 497.09375,
+              "width": 36,
+              "height": 18,
+              "cx": 213,
+              "cy": 506.09375
+            },
+            "remove": {
+              "x": 243,
+              "y": 484.09375,
+              "width": 44,
+              "height": 44,
+              "cx": 265,
+              "cy": 506.09375
+            },
+            "controls": {
+              "x": 191,
+              "y": 484.09375,
+              "width": 96,
+              "height": 44,
+              "cx": 239,
+              "cy": 506.09375
+            },
+            "name": {
+              "x": 41,
+              "y": 494.09375,
+              "width": 139,
+              "height": 24,
+              "cx": 110.5,
+              "cy": 506.09375
+            },
+            "content": {
+              "x": 33,
+              "y": 476.09375,
+              "width": 254,
+              "height": 87,
+              "cx": 160,
+              "cy": 519.59375
+            },
+            "target": {
+              "width": 44,
+              "height": 44,
+              "allCornersHitSwitch": true
+            },
+            "targetGap": 8,
+            "rightInset": 16
+          },
+          {
+            "row": {
+              "x": 17,
+              "y": 580.09375,
+              "width": 286,
+              "height": 119,
+              "cx": 160,
+              "cy": 639.59375
+            },
+            "toggle": {
+              "x": 195,
+              "y": 617.09375,
+              "width": 36,
+              "height": 18,
+              "cx": 213,
+              "cy": 626.09375
+            },
+            "remove": {
+              "x": 243,
+              "y": 604.09375,
+              "width": 44,
+              "height": 44,
+              "cx": 265,
+              "cy": 626.09375
+            },
+            "controls": {
+              "x": 191,
+              "y": 604.09375,
+              "width": 96,
+              "height": 44,
+              "cx": 239,
+              "cy": 626.09375
+            },
+            "name": {
+              "x": 41,
+              "y": 614.09375,
+              "width": 139,
+              "height": 24,
+              "cx": 110.5,
+              "cy": 626.09375
+            },
+            "content": {
+              "x": 33,
+              "y": 596.09375,
+              "width": 254,
+              "height": 87,
+              "cx": 160,
+              "cy": 639.59375
+            },
+            "target": {
+              "width": 44,
+              "height": 44,
+              "allCornersHitSwitch": true
+            },
+            "targetGap": 8,
+            "rightInset": 16
+          }
+        ]
+      },
+      "axe": []
+    },
+    {
+      "metrics": {
+        "width": 390,
+        "scrollWidth": 390,
+        "rows": [
+          {
+            "row": {
+              "x": 17,
+              "y": 196.09375,
+              "width": 356,
+              "height": 120,
+              "cx": 195,
+              "cy": 256.09375
+            },
+            "toggle": {
+              "x": 265,
+              "y": 233.09375,
+              "width": 36,
+              "height": 18,
+              "cx": 283,
+              "cy": 242.09375
+            },
+            "remove": {
+              "x": 313,
+              "y": 220.09375,
+              "width": 44,
+              "height": 44,
+              "cx": 335,
+              "cy": 242.09375
+            },
+            "controls": {
+              "x": 261,
+              "y": 220.09375,
+              "width": 96,
+              "height": 44,
+              "cx": 309,
+              "cy": 242.09375
+            },
+            "name": {
+              "x": 41,
+              "y": 230.09375,
+              "width": 209,
+              "height": 24,
+              "cx": 145.5,
+              "cy": 242.09375
+            },
+            "content": {
+              "x": 33,
+              "y": 212.09375,
+              "width": 324,
+              "height": 87,
+              "cx": 195,
+              "cy": 255.59375
+            },
+            "target": {
+              "width": 44,
+              "height": 44,
+              "allCornersHitSwitch": true
+            },
+            "targetGap": 8,
+            "rightInset": 16
+          },
+          {
+            "row": {
+              "x": 17,
+              "y": 316.09375,
+              "width": 356,
+              "height": 120,
+              "cx": 195,
+              "cy": 376.09375
+            },
+            "toggle": {
+              "x": 265,
+              "y": 353.09375,
+              "width": 36,
+              "height": 18,
+              "cx": 283,
+              "cy": 362.09375
+            },
+            "remove": {
+              "x": 313,
+              "y": 340.09375,
+              "width": 44,
+              "height": 44,
+              "cx": 335,
+              "cy": 362.09375
+            },
+            "controls": {
+              "x": 261,
+              "y": 340.09375,
+              "width": 96,
+              "height": 44,
+              "cx": 309,
+              "cy": 362.09375
+            },
+            "name": {
+              "x": 41,
+              "y": 350.09375,
+              "width": 209,
+              "height": 24,
+              "cx": 145.5,
+              "cy": 362.09375
+            },
+            "content": {
+              "x": 33,
+              "y": 332.09375,
+              "width": 324,
+              "height": 87,
+              "cx": 195,
+              "cy": 375.59375
+            },
+            "target": {
+              "width": 44,
+              "height": 44,
+              "allCornersHitSwitch": true
+            },
+            "targetGap": 8,
+            "rightInset": 16
+          },
+          {
+            "row": {
+              "x": 17,
+              "y": 436.09375,
+              "width": 356,
+              "height": 120,
+              "cx": 195,
+              "cy": 496.09375
+            },
+            "toggle": {
+              "x": 265,
+              "y": 473.09375,
+              "width": 36,
+              "height": 18,
+              "cx": 283,
+              "cy": 482.09375
+            },
+            "remove": {
+              "x": 313,
+              "y": 460.09375,
+              "width": 44,
+              "height": 44,
+              "cx": 335,
+              "cy": 482.09375
+            },
+            "controls": {
+              "x": 261,
+              "y": 460.09375,
+              "width": 96,
+              "height": 44,
+              "cx": 309,
+              "cy": 482.09375
+            },
+            "name": {
+              "x": 41,
+              "y": 470.09375,
+              "width": 209,
+              "height": 24,
+              "cx": 145.5,
+              "cy": 482.09375
+            },
+            "content": {
+              "x": 33,
+              "y": 452.09375,
+              "width": 324,
+              "height": 87,
+              "cx": 195,
+              "cy": 495.59375
+            },
+            "target": {
+              "width": 44,
+              "height": 44,
+              "allCornersHitSwitch": true
+            },
+            "targetGap": 8,
+            "rightInset": 16
+          },
+          {
+            "row": {
+              "x": 17,
+              "y": 556.09375,
+              "width": 356,
+              "height": 119,
+              "cx": 195,
+              "cy": 615.59375
+            },
+            "toggle": {
+              "x": 265,
+              "y": 593.09375,
+              "width": 36,
+              "height": 18,
+              "cx": 283,
+              "cy": 602.09375
+            },
+            "remove": {
+              "x": 313,
+              "y": 580.09375,
+              "width": 44,
+              "height": 44,
+              "cx": 335,
+              "cy": 602.09375
+            },
+            "controls": {
+              "x": 261,
+              "y": 580.09375,
+              "width": 96,
+              "height": 44,
+              "cx": 309,
+              "cy": 602.09375
+            },
+            "name": {
+              "x": 41,
+              "y": 590.09375,
+              "width": 209,
+              "height": 24,
+              "cx": 145.5,
+              "cy": 602.09375
+            },
+            "content": {
+              "x": 33,
+              "y": 572.09375,
+              "width": 324,
+              "height": 87,
+              "cx": 195,
+              "cy": 615.59375
+            },
+            "target": {
+              "width": 44,
+              "height": 44,
+              "allCornersHitSwitch": true
+            },
+            "targetGap": 8,
+            "rightInset": 16
+          }
+        ]
+      },
+      "axe": []
+    },
+    {
+      "metrics": {
+        "width": 768,
+        "scrollWidth": 768,
+        "rows": [
+          {
+            "row": {
+              "x": 17,
+              "y": 144.1953125,
+              "width": 734,
+              "height": 108,
+              "cx": 384,
+              "cy": 198.1953125
+            },
+            "toggle": {
+              "x": 655,
+              "y": 188.6953125,
+              "width": 36,
+              "height": 18,
+              "cx": 673,
+              "cy": 197.6953125
+            },
+            "remove": {
+              "x": 703,
+              "y": 181.6953125,
+              "width": 32,
+              "height": 32,
+              "cx": 719,
+              "cy": 197.6953125
+            },
+            "controls": {
+              "x": 651,
+              "y": 181.6953125,
+              "width": 84,
+              "height": 32,
+              "cx": 693,
+              "cy": 197.6953125
+            },
+            "name": {
+              "x": 41,
+              "y": 172.1953125,
+              "width": 562,
+              "height": 24,
+              "cx": 322,
+              "cy": 184.1953125
+            },
+            "content": {
+              "x": 33,
+              "y": 164.1953125,
+              "width": 602,
+              "height": 67,
+              "cx": 334,
+              "cy": 197.6953125
+            },
+            "target": {
+              "width": 44,
+              "height": 44,
+              "allCornersHitSwitch": true
+            },
+            "targetGap": 8,
+            "rightInset": 16
+          },
+          {
+            "row": {
+              "x": 17,
+              "y": 252.1953125,
+              "width": 734,
+              "height": 108,
+              "cx": 384,
+              "cy": 306.1953125
+            },
+            "toggle": {
+              "x": 655,
+              "y": 296.6953125,
+              "width": 36,
+              "height": 18,
+              "cx": 673,
+              "cy": 305.6953125
+            },
+            "remove": {
+              "x": 703,
+              "y": 289.6953125,
+              "width": 32,
+              "height": 32,
+              "cx": 719,
+              "cy": 305.6953125
+            },
+            "controls": {
+              "x": 651,
+              "y": 289.6953125,
+              "width": 84,
+              "height": 32,
+              "cx": 693,
+              "cy": 305.6953125
+            },
+            "name": {
+              "x": 41,
+              "y": 280.1953125,
+              "width": 562,
+              "height": 24,
+              "cx": 322,
+              "cy": 292.1953125
+            },
+            "content": {
+              "x": 33,
+              "y": 272.1953125,
+              "width": 602,
+              "height": 67,
+              "cx": 334,
+              "cy": 305.6953125
+            },
+            "target": {
+              "width": 44,
+              "height": 44,
+              "allCornersHitSwitch": true
+            },
+            "targetGap": 8,
+            "rightInset": 16
+          },
+          {
+            "row": {
+              "x": 17,
+              "y": 360.1953125,
+              "width": 734,
+              "height": 108,
+              "cx": 384,
+              "cy": 414.1953125
+            },
+            "toggle": {
+              "x": 655,
+              "y": 404.6953125,
+              "width": 36,
+              "height": 18,
+              "cx": 673,
+              "cy": 413.6953125
+            },
+            "remove": {
+              "x": 703,
+              "y": 397.6953125,
+              "width": 32,
+              "height": 32,
+              "cx": 719,
+              "cy": 413.6953125
+            },
+            "controls": {
+              "x": 651,
+              "y": 397.6953125,
+              "width": 84,
+              "height": 32,
+              "cx": 693,
+              "cy": 413.6953125
+            },
+            "name": {
+              "x": 41,
+              "y": 388.1953125,
+              "width": 562,
+              "height": 24,
+              "cx": 322,
+              "cy": 400.1953125
+            },
+            "content": {
+              "x": 33,
+              "y": 380.1953125,
+              "width": 602,
+              "height": 67,
+              "cx": 334,
+              "cy": 413.6953125
+            },
+            "target": {
+              "width": 44,
+              "height": 44,
+              "allCornersHitSwitch": true
+            },
+            "targetGap": 8,
+            "rightInset": 16
+          },
+          {
+            "row": {
+              "x": 17,
+              "y": 468.1953125,
+              "width": 734,
+              "height": 108,
+              "cx": 384,
+              "cy": 522.1953125
+            },
+            "toggle": {
+              "x": 655,
+              "y": 513.1953125,
+              "width": 36,
+              "height": 18,
+              "cx": 673,
+              "cy": 522.1953125
+            },
+            "remove": {
+              "x": 703,
+              "y": 506.1953125,
+              "width": 32,
+              "height": 32,
+              "cx": 719,
+              "cy": 522.1953125
+            },
+            "controls": {
+              "x": 651,
+              "y": 506.1953125,
+              "width": 84,
+              "height": 32,
+              "cx": 693,
+              "cy": 522.1953125
+            },
+            "name": {
+              "x": 41,
+              "y": 496.6953125,
+              "width": 562,
+              "height": 24,
+              "cx": 322,
+              "cy": 508.6953125
+            },
+            "content": {
+              "x": 33,
+              "y": 488.6953125,
+              "width": 602,
+              "height": 67,
+              "cx": 334,
+              "cy": 522.1953125
+            },
+            "target": {
+              "width": 44,
+              "height": 44,
+              "allCornersHitSwitch": true
+            },
+            "targetGap": 8,
+            "rightInset": 16
+          }
+        ]
+      },
+      "axe": []
+    },
+    {
+      "metrics": {
+        "width": 1440,
+        "scrollWidth": 1440,
+        "rows": [
+          {
+            "row": {
+              "x": 204,
+              "y": 144.1953125,
+              "width": 1032,
+              "height": 108,
+              "cx": 720,
+              "cy": 198.1953125
+            },
+            "toggle": {
+              "x": 1140,
+              "y": 188.6953125,
+              "width": 36,
+              "height": 18,
+              "cx": 1158,
+              "cy": 197.6953125
+            },
+            "remove": {
+              "x": 1188,
+              "y": 181.6953125,
+              "width": 32,
+              "height": 32,
+              "cx": 1204,
+              "cy": 197.6953125
+            },
+            "controls": {
+              "x": 1136,
+              "y": 181.6953125,
+              "width": 84,
+              "height": 32,
+              "cx": 1178,
+              "cy": 197.6953125
+            },
+            "name": {
+              "x": 228,
+              "y": 172.1953125,
+              "width": 860,
+              "height": 24,
+              "cx": 658,
+              "cy": 184.1953125
+            },
+            "content": {
+              "x": 220,
+              "y": 164.1953125,
+              "width": 900,
+              "height": 67,
+              "cx": 670,
+              "cy": 197.6953125
+            },
+            "target": {
+              "width": 44,
+              "height": 44,
+              "allCornersHitSwitch": true
+            },
+            "targetGap": 8,
+            "rightInset": 16
+          },
+          {
+            "row": {
+              "x": 204,
+              "y": 252.1953125,
+              "width": 1032,
+              "height": 108,
+              "cx": 720,
+              "cy": 306.1953125
+            },
+            "toggle": {
+              "x": 1140,
+              "y": 296.6953125,
+              "width": 36,
+              "height": 18,
+              "cx": 1158,
+              "cy": 305.6953125
+            },
+            "remove": {
+              "x": 1188,
+              "y": 289.6953125,
+              "width": 32,
+              "height": 32,
+              "cx": 1204,
+              "cy": 305.6953125
+            },
+            "controls": {
+              "x": 1136,
+              "y": 289.6953125,
+              "width": 84,
+              "height": 32,
+              "cx": 1178,
+              "cy": 305.6953125
+            },
+            "name": {
+              "x": 228,
+              "y": 280.1953125,
+              "width": 860,
+              "height": 24,
+              "cx": 658,
+              "cy": 292.1953125
+            },
+            "content": {
+              "x": 220,
+              "y": 272.1953125,
+              "width": 900,
+              "height": 67,
+              "cx": 670,
+              "cy": 305.6953125
+            },
+            "target": {
+              "width": 44,
+              "height": 44,
+              "allCornersHitSwitch": true
+            },
+            "targetGap": 8,
+            "rightInset": 16
+          },
+          {
+            "row": {
+              "x": 204,
+              "y": 360.1953125,
+              "width": 1032,
+              "height": 108,
+              "cx": 720,
+              "cy": 414.1953125
+            },
+            "toggle": {
+              "x": 1140,
+              "y": 404.6953125,
+              "width": 36,
+              "height": 18,
+              "cx": 1158,
+              "cy": 413.6953125
+            },
+            "remove": {
+              "x": 1188,
+              "y": 397.6953125,
+              "width": 32,
+              "height": 32,
+              "cx": 1204,
+              "cy": 413.6953125
+            },
+            "controls": {
+              "x": 1136,
+              "y": 397.6953125,
+              "width": 84,
+              "height": 32,
+              "cx": 1178,
+              "cy": 413.6953125
+            },
+            "name": {
+              "x": 228,
+              "y": 388.1953125,
+              "width": 860,
+              "height": 24,
+              "cx": 658,
+              "cy": 400.1953125
+            },
+            "content": {
+              "x": 220,
+              "y": 380.1953125,
+              "width": 900,
+              "height": 67,
+              "cx": 670,
+              "cy": 413.6953125
+            },
+            "target": {
+              "width": 44,
+              "height": 44,
+              "allCornersHitSwitch": true
+            },
+            "targetGap": 8,
+            "rightInset": 16
+          },
+          {
+            "row": {
+              "x": 204,
+              "y": 468.1953125,
+              "width": 1032,
+              "height": 108,
+              "cx": 720,
+              "cy": 522.1953125
+            },
+            "toggle": {
+              "x": 1140,
+              "y": 513.1953125,
+              "width": 36,
+              "height": 18,
+              "cx": 1158,
+              "cy": 522.1953125
+            },
+            "remove": {
+              "x": 1188,
+              "y": 506.1953125,
+              "width": 32,
+              "height": 32,
+              "cx": 1204,
+              "cy": 522.1953125
+            },
+            "controls": {
+              "x": 1136,
+              "y": 506.1953125,
+              "width": 84,
+              "height": 32,
+              "cx": 1178,
+              "cy": 522.1953125
+            },
+            "name": {
+              "x": 228,
+              "y": 496.6953125,
+              "width": 860,
+              "height": 24,
+              "cx": 658,
+              "cy": 508.6953125
+            },
+            "content": {
+              "x": 220,
+              "y": 488.6953125,
+              "width": 900,
+              "height": 67,
+              "cx": 670,
+              "cy": 522.1953125
+            },
+            "target": {
+              "width": 44,
+              "height": 44,
+              "allCornersHitSwitch": true
+            },
+            "targetGap": 8,
+            "rightInset": 16
+          }
+        ]
+      },
+      "axe": []
+    }
+  ],
+  "focus": [
+    {
+      "name": "Enable ga-analysis",
+      "focusVisible": true,
+      "ring": "#697586",
+      "token": "#697586",
+      "shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgb(105, 117, 134) 0px 0px 0px 2px, rgba(0, 0, 0, 0) 0px 0px 0px 0px"
+    },
+    {
+      "name": "Standalone focus",
+      "focusVisible": true,
+      "ring": "#697586",
+      "token": "#697586",
+      "shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgb(105, 117, 134) 0px 0px 0px 2px, rgba(0, 0, 0, 0) 0px 0px 0px 0px"
+    },
+    {
+      "name": null,
+      "focusVisible": true,
+      "ring": "#697586",
+      "token": "#697586",
+      "shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgb(105, 117, 134) 0px 0px 0px 2px, rgba(0, 0, 0, 0) 0px 0px 0px 0px"
+    }
+  ],
+  "visiblePositionComparison": [
+    {
+      "width": 320,
+      "switchDeltaX": 0,
+      "switchDeltaY": 0.0,
+      "deleteDeltaX": 0,
+      "deleteDeltaY": 0.0
+    },
+    {
+      "width": 390,
+      "switchDeltaX": 0,
+      "switchDeltaY": 0.0,
+      "deleteDeltaX": 0,
+      "deleteDeltaY": 0.0
+    },
+    {
+      "width": 768,
+      "switchDeltaX": 0,
+      "switchDeltaY": 0.0,
+      "deleteDeltaX": 0,
+      "deleteDeltaY": 0.0
+    },
+    {
+      "width": 1440,
+      "switchDeltaX": 0,
+      "switchDeltaY": 0.0,
+      "deleteDeltaX": 0,
+      "deleteDeltaY": 0.0
+    }
+  ],
+  "checkedAndUncheckedFocus": [
+    {
+      "checked": "false",
+      "ring": "#697586",
+      "token": "#697586",
+      "focusVisible": true
+    },
+    {
+      "checked": "true",
+      "ring": "#697586",
+      "token": "#697586",
+      "focusVisible": true
+    }
+  ]
+}

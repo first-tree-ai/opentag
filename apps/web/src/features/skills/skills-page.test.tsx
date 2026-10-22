@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../../api.js";
 import { queryKeys } from "../../query/keys.js";
+import { TooltipProvider } from "../../ui/design-system.js";
 import { SkillsPage } from "./skills-page.js";
 
 /**
@@ -43,7 +44,11 @@ function stubList(skills: Skill[], storage: "available" | "unavailable" = "avail
 }
 
 function wrap(children: ReactNode, client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
-  return render(<QueryClientProvider client={client}>{children}</QueryClientProvider>);
+  return render(
+    <QueryClientProvider client={client}>
+      <TooltipProvider>{children}</TooltipProvider>
+    </QueryClientProvider>,
+  );
 }
 
 function uploadButton(): HTMLButtonElement {
@@ -73,7 +78,7 @@ function deferred<T>() {
 afterEach(() => vi.restoreAllMocks());
 
 describe("SkillsPage", () => {
-  it("shows names and descriptions, with archive download available through More", async () => {
+  it("shows names and descriptions with direct deletion and downloads only in details", async () => {
     stubList([skill()]);
     wrap(<SkillsPage agentId={AGENT_ID} />);
 
@@ -81,13 +86,9 @@ describe("SkillsPage", () => {
     expect(screen.getByText("Turns merged changes into clear release notes")).toBeTruthy();
     expect(screen.queryByText("Web upload")).toBeNull();
     expect(screen.queryByText(/2 KB · 3 files · Updated/)).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "More actions for Release notes writer" }));
-    const download = await screen.findByRole("menuitem", { name: "Download skill" });
-    expect(download.getAttribute("href")).toBe(`/api/v1/agents/${AGENT_ID}/skills/${SKILL_ID}/bundle`);
-    // W2: the saved filename is the canonical archive this page's own upload pre-check accepts.
-    expect(download.getAttribute("download")).toBe("Release notes writer.tar.gz");
-    fireEvent.click(download);
-    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    expect(screen.getByRole("button", { name: "Delete skill Release notes writer" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /More actions/ })).toBeNull();
+    expect(screen.queryByRole("link", { name: /Download/ })).toBeNull();
   });
 
   it("offers remote installation and opens the dialog", async () => {
@@ -303,8 +304,7 @@ describe("SkillsPage", () => {
     const remove = vi.spyOn(browserApi, "removeAgentSkill").mockResolvedValue(undefined);
     wrap(<SkillsPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "More actions for Release notes writer" }));
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Delete skill" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete skill Release notes writer" }));
     expect(await screen.findByText("Delete Release notes writer?")).toBeTruthy();
     expect(remove).not.toHaveBeenCalled();
 
@@ -312,13 +312,97 @@ describe("SkillsPage", () => {
     await waitFor(() => expect(remove).toHaveBeenCalledWith(AGENT_ID, SKILL_ID));
   });
 
+  it("focuses Cancel and restores the deletion trigger when cancelled", async () => {
+    stubList([skill()]);
+    const remove = vi.spyOn(browserApi, "removeAgentSkill");
+    wrap(<SkillsPage agentId={AGENT_ID} />);
+    const trigger = await screen.findByRole("button", { name: "Delete skill Release notes writer" });
+    trigger.focus();
+    fireEvent.click(trigger);
+    const cancel = await screen.findByRole("button", { name: "Cancel" });
+    await waitFor(() => expect(document.activeElement).toBe(cancel));
+    fireEvent.click(cancel);
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+    expect(remove).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it.each([
+    { index: 0, remaining: "Second skill" },
+    { index: 1, remaining: "Release notes writer" },
+    { index: 0, remaining: undefined },
+  ])("restores focus after deleting row $index with remaining target $remaining", async ({ index, remaining }) => {
+    const items = remaining
+      ? [skill(), skill({ id: "297da64d-7aee-4454-a931-280fc70971e7", name: "Second skill" })]
+      : [skill()];
+    const list = stubList(items);
+    vi.spyOn(browserApi, "removeAgentSkill").mockImplementation(async (_agentId, skillId) => {
+      list.mockResolvedValue({ skills: items.filter((item) => item.id !== skillId), storage: "available" });
+    });
+    wrap(<SkillsPage agentId={AGENT_ID} />);
+    const target = items[index];
+    if (!target) throw new Error("Missing deletion target");
+    const trigger = await screen.findByRole("button", { name: `Delete skill ${target.name}` });
+    trigger.focus();
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("button", { name: "Delete Skill" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    const destination = remaining
+      ? screen.getByRole("button", { name: `Delete skill ${remaining}` })
+      : screen.getByRole("region", { name: "Skills" });
+    await waitFor(() => expect(document.activeElement).toBe(destination));
+    expect(screen.queryByRole("button", { name: `Delete skill ${target.name}` })).toBeNull();
+  });
+
+  it.each(["pending earlier toggle", "pending next toggle", "background removal"] as const)(
+    "keeps deletion focus next to its original row during a %s",
+    async (scenario) => {
+      let items = ["Alpha", "Beta", "Charlie", "Delta"].map((name, index) =>
+        skill({ id: `9d4e1378-8ff2-4e41-a6dd-e8bf59ed775${index}`, name }),
+      );
+      const list = vi
+        .spyOn(browserApi, "agentSkills")
+        .mockImplementation(async () => ({ skills: items, storage: "available" }));
+      const update = deferred<Awaited<ReturnType<typeof browserApi.updateAgentSkill>>>();
+      vi.spyOn(browserApi, "updateAgentSkill").mockReturnValue(update.promise);
+      vi.spyOn(browserApi, "removeAgentSkill").mockImplementation(async (_agentId, id) => {
+        items = items.filter((entry) => entry.id !== id);
+      });
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      wrap(<SkillsPage agentId={AGENT_ID} />, client);
+      await screen.findByRole("button", { name: "Delete skill Beta" });
+      if (scenario !== "background removal") {
+        const name = scenario === "pending earlier toggle" ? "Alpha" : "Charlie";
+        fireEvent.click(screen.getByRole("switch", { name: `Enable ${name}` }));
+        await waitFor(() =>
+          expect((screen.getByRole("button", { name: `Delete skill ${name}` }) as HTMLButtonElement).disabled).toBe(
+            true,
+          ),
+        );
+      }
+      fireEvent.click(screen.getByRole("button", { name: "Delete skill Beta" }));
+      if (scenario === "background removal") {
+        items = items.filter((entry) => entry.name !== "Alpha");
+        await act(async () => {
+          await client.invalidateQueries({ queryKey: queryKeys.skills.agentSkills(AGENT_ID) });
+        });
+        expect(list).toHaveBeenCalledTimes(2);
+      }
+      fireEvent.click(await screen.findByRole("button", { name: "Delete Skill" }));
+      await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+      const next = scenario === "pending next toggle" ? "Delta" : "Charlie";
+      await waitFor(() =>
+        expect(document.activeElement).toBe(screen.getByRole("button", { name: `Delete skill ${next}` })),
+      );
+    },
+  );
+
   it("keeps deletion open while busy and shows a failed deletion inside its dialog", async () => {
     stubList([skill()]);
     const deletion = deferred<void>();
     const remove = vi.spyOn(browserApi, "removeAgentSkill").mockReturnValue(deletion.promise);
     wrap(<SkillsPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "More actions for Release notes writer" }));
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Delete skill" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete skill Release notes writer" }));
     fireEvent.click(await screen.findByRole("button", { name: "Delete Skill" }));
 
     expect(await screen.findByRole("button", { name: "Deleting…" })).toBeTruthy();
@@ -334,6 +418,10 @@ describe("SkillsPage", () => {
     expect((within(dialog).getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(screen.getByRole("heading", { name: "Release notes writer" })).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Delete skill Release notes writer" }));
+    expect(await screen.findByRole("alertdialog")).toBeTruthy();
+    expect(screen.queryByText("The Skill request failed. Try again.")).toBeNull();
   });
 
   it("keeps replacement open while its upload is running", async () => {
@@ -472,8 +560,7 @@ describe("SkillsPage", () => {
     vi.spyOn(browserApi, "removeAgentSkill").mockResolvedValue(undefined);
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     wrap(<SkillsPage agentId={AGENT_ID} />, client);
-    fireEvent.click(await screen.findByRole("button", { name: "More actions for Release notes writer" }));
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Delete skill" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete skill Release notes writer" }));
     await screen.findByText("Delete Release notes writer?");
 
     list.mockRejectedValue(new ApiError(503, "Skill storage unavailable"));
@@ -492,11 +579,12 @@ describe("SkillsPage", () => {
 
     expect(await screen.findByText(/Skill storage is not configured/)).toBeTruthy();
     expect((screen.getByRole("button", { name: "Import skill" }) as HTMLButtonElement).disabled).toBe(true);
-    // The Skill is still listed, with download disabled in its More menu.
+    // Existing Skills remain manageable even when archives cannot be read or uploaded.
     expect(screen.getByText("Release notes writer")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "More actions for Release notes writer" }));
-    const download = await screen.findByRole("menuitem", { name: "Download skill" });
-    expect(download.getAttribute("aria-disabled")).toBe("true");
+    expect(
+      (screen.getByRole("button", { name: "Delete skill Release notes writer" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    expect(screen.queryByRole("link", { name: /Download/ })).toBeNull();
 
     expect(list).toHaveBeenCalledTimes(1);
     expect(detail).not.toHaveBeenCalled();

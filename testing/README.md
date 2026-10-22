@@ -37,6 +37,7 @@ contents, and machine-specific operational logs outside the repository.
 - [MCP Server integration](verification/mcp-server-integration.md)
 - [Release guide](verification/releasing.md)
 - [Session collaboration writes](verification/session-collaboration-writes.md)
+- [Session configuration transitions](verification/session-configuration-transitions.md)
 - [Skill details reader](verification/skill-details-reader.md)
 - [Installing Skills from a remote source](verification/skill-remote-install.md)
 - [Slack installation lifecycle writes](verification/slack-installation-writes.md)

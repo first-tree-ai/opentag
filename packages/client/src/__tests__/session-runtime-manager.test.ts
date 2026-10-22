@@ -3,6 +3,7 @@ import { mkdtemp, readdir, realpath, rm, stat, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
+  computeLegacyRuntimeSnapshotHashes,
   computeRuntimeSnapshotHashes,
   type EffectiveRuntimeSnapshot,
   type SessionReconcileRequest,
@@ -21,9 +22,11 @@ import type {
   CreateAgentRuntimeRequest,
   ResumeAgentRuntimeRequest,
 } from "../agent-runtime/types.js";
+import { claudeCodeRuntimePolicy, validateClaudeCodeRuntimePolicy } from "../providers/claude-code/runtime-policy.js";
 import { codexRuntimePolicy, validateCodexRuntimePolicy } from "../providers/codex/runtime-policy.js";
 import { AgentRuntimeProviderRegistry } from "../runtime/agent-runtime-provider-registry.js";
 import { AgentWorkspaceManager } from "../runtime/agent-workspace.js";
+import { sessionBindingPath, snapshotPath } from "../runtime/runtime-paths.js";
 import { SessionBindingStore } from "../runtime/session-binding-store.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
 import {
@@ -31,6 +34,7 @@ import {
   type SessionRuntimeManagerOptions,
   SessionRuntimeNotPreparedError,
 } from "../runtime/session-runtime-manager.js";
+import { writeDurableJson } from "../storage/durable-file.js";
 
 class SessionRuntimeManager extends ProductionSessionRuntimeManager {
   constructor(options: Omit<SessionRuntimeManagerOptions, "ensureProviderReady">) {
@@ -930,6 +934,10 @@ describe("SessionRuntimeManager", () => {
     expect(factory.created).toHaveLength(2);
     expect(factory.runtimes[0]?.closed).toBe(true);
     expect((await store.read("agent-1", "session-1"))?.runtimeBinding).toEqual(binding("thread-2"));
+    await expect(
+      factory.runtimes[0]?.emit({ type: "binding_changed", binding: binding("late-old-thread") }),
+    ).rejects.toMatchObject({ name: "SessionBindingConflictError" });
+    expect((await store.read("agent-1", "session-1"))?.runtimeBinding).toEqual(binding("thread-2"));
     await factory.runtimes[1]?.close();
     await manager.prepareSession(upgraded, computeRuntimeSnapshotHashes(upgraded.runtime as never));
     await manager.ensureRuntime("session-1");
@@ -961,6 +969,98 @@ describe("SessionRuntimeManager", () => {
       restarted.reconcile({ ...upgraded, requestId: randomUUID(), desired: "stopped", runtime: undefined }),
     ).resolves.toMatchObject({ status: "stopped" });
     expect(restartedFactory.runtimes[0]?.closed).toBe(true);
+  });
+
+  it.each([
+    ["0.1.0", "codex", false],
+    ["0.1.0", "codex", true],
+    ["0.1.0", "claude-code", false],
+    ["0.1.0", "claude-code", true],
+    ["self-configuration", "codex", false],
+    ["self-configuration", "codex", true],
+    ["self-configuration", "claude-code", false],
+    ["self-configuration", "claude-code", true],
+  ] as const)(
+    "prepares %s on %s with Soul change %s, then resumes after restart",
+    async (layout, provider, changeSoul) => {
+      const { home, store, workspace, computerId, old, originalBinding, runtime } = await legacyRuntimeFixture(
+        layout,
+        provider,
+        changeSoul,
+      );
+      const factory = new FakeFactory();
+      factory.manifest.providerId = provider;
+      const manager = new SessionRuntimeManager({
+        bindingStore: store,
+        workspace,
+        providers: await providerRegistry(factory),
+        providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      });
+      const reconciler = new SessionReconciler({
+        installationId: computerId,
+        preparation: manager,
+        localPolicy: manager,
+      });
+      const request = reconcile(computerId, runtime);
+      const expectedCreates = changeSoul ? 1 : 0;
+      const expectedResumes = changeSoul ? [] : [originalBinding];
+      const expectedPolicy = provider === "codex" ? codexRuntimePolicy(runtime) : claudeCodeRuntimePolicy(runtime);
+      try {
+        for (let i = 0; i < 2; i++) {
+          await expect(reconciler.reconcile({ ...request, requestId: randomUUID() })).resolves.toMatchObject({
+            status: "ready",
+          });
+          await manager.ensureRuntime("session-1");
+        }
+        expect(factory.created).toHaveLength(expectedCreates);
+        expect(factory.resumed).toEqual(expectedResumes);
+        const start = factory.created[0] ?? factory.resumedRequests[0];
+        expect(start?.systemPrompt).toContain(runtime.instructions.agent);
+        expect(start?.policy).toEqual(expectedPolicy);
+        expect(start?.configuration?.model).toBe(old.model);
+      } finally {
+        await manager.close();
+      }
+      const saved = await store.read("agent-1", "session-1");
+      expect(saved?.runtimeBinding).toBeDefined();
+      await expectNativeResumeAfterRestart(home, computerId, runtime, saved?.runtimeBinding);
+    },
+  );
+
+  it("prepares a new native conversation when only the Agent revision advances in a warm Session", async () => {
+    const f = await legacyRuntimeFixture("0.1.0", "codex", false);
+    const factory = new FakeFactory();
+    const manager = new SessionRuntimeManager({
+      bindingStore: f.store,
+      workspace: f.workspace,
+      providers: await providerRegistry(factory),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+    });
+    const reconciler = new SessionReconciler({
+      installationId: f.computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
+    try {
+      await expect(reconciler.reconcile(reconcile(f.computerId, f.runtime))).resolves.toMatchObject({
+        status: "ready",
+      });
+      await manager.ensureRuntime("session-1");
+      expect(factory.resumed).toEqual([f.originalBinding]);
+      const next = structuredClone(f.runtime);
+      next.revision.agent = { sequence: 3, id: "agent-only-update" };
+      next.instructions.agent = "Updated Soul without a Session revision change";
+      await expect(reconciler.reconcile(reconcile(f.computerId, next))).resolves.toMatchObject({ status: "ready" });
+      await manager.ensureRuntime("session-1");
+      expect(factory.created).toHaveLength(1);
+      expect(factory.created[0]?.systemPrompt).toContain(next.instructions.agent);
+      expect(factory.runtimes[0]?.closed).toBe(true);
+      expect((await f.store.read("agent-1", "session-1"))?.lastEffectiveSnapshotHash).toBe(
+        computeRuntimeSnapshotHashes(next).effectiveSnapshotHash,
+      );
+    } finally {
+      await manager.close();
+    }
   });
 
   it("validates durable configuration without treating transient readiness as placement policy", async () => {
@@ -1537,6 +1637,80 @@ describe("SessionRuntimeManager", () => {
   });
 });
 
+async function expectNativeResumeAfterRestart(
+  home: string,
+  computerId: string,
+  runtime: EffectiveRuntimeSnapshot,
+  savedBinding: AgentRuntimeBinding | undefined,
+) {
+  const provider = runtime.provider;
+  const restartedStore = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+  const restartedFactory = new FakeFactory();
+  restartedFactory.manifest.providerId = provider;
+  const restarted = new SessionRuntimeManager({
+    bindingStore: restartedStore,
+    providers: await providerRegistry(restartedFactory),
+    workspace: new AgentWorkspaceManager({ home, bindingStore: restartedStore }),
+    providerEnvironmentPath: () => "/tmp/provider-env.sh",
+  });
+  try {
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: restarted,
+      localPolicy: restarted,
+    });
+    await expect(reconciler.reconcile(reconcile(computerId, runtime))).resolves.toMatchObject({
+      status: "ready",
+    });
+    await restarted.ensureRuntime("session-1");
+    expect(restartedFactory.created).toHaveLength(0);
+    expect(restartedFactory.resumed).toEqual([savedBinding]);
+    expect(restartedFactory.resumedRequests[0]?.systemPrompt).toContain(runtime.instructions.agent);
+  } finally {
+    await restarted.close();
+  }
+}
+
+async function legacyRuntimeFixture(
+  layout: "0.1.0" | "self-configuration",
+  provider: "codex" | "claude-code",
+  changeSoul: boolean,
+) {
+  const home = await mkdtemp(resolve(tmpdir(), "opentag-legacy-runtime-"));
+  homes.push(home);
+  const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+  const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
+  const old = {
+    ...snapshot(1),
+    provider,
+    ...(layout === "self-configuration" ? { selfConfigurationEnabled: true } : {}),
+  };
+  const computerId = randomUUID();
+  await workspace.prepareAgent(old, computeRuntimeSnapshotHashes(old));
+  const prepared = await store.prepare(reconcile(computerId, old), computeRuntimeSnapshotHashes(old));
+  const hashes = computeLegacyRuntimeSnapshotHashes(old, layout);
+  const originalBinding = { ...binding("original-native"), providerId: provider };
+  await writeDurableJson(snapshotPath(home, "agent-1", hashes.effectiveSnapshotHash), old);
+  await writeDurableJson(sessionBindingPath(home, "agent-1", "session-1"), {
+    ...prepared.binding,
+    runtimeBinding: originalBinding,
+    sessionConfigHash: hashes.sessionConfigHash,
+    lastEffectiveSnapshotHash: hashes.effectiveSnapshotHash,
+  });
+  const runtime: EffectiveRuntimeSnapshot = {
+    ...old,
+    selfConfigurationEnabled: old.selfConfigurationEnabled ?? false,
+    revision: { agent: { sequence: 2, id: "agent-new" }, session: { sequence: 2, id: "session-new" } },
+    instructions: { ...old.instructions, agent: changeSoul ? "A new engineering Soul" : old.instructions.agent },
+    execution: {
+      approvalPolicy: "on-request",
+      networkAccess: provider === "claude-code",
+      allowCommands: ["git status"],
+    },
+  };
+  return { home, store, workspace, computerId, old, originalBinding, runtime };
+}
+
 async function providerRegistry(factory?: AgentRuntimeFactory, ready = true): Promise<AgentRuntimeProviderRegistry> {
   const providers = new AgentRuntimeProviderRegistry(
     factory
@@ -1544,11 +1718,14 @@ async function providerRegistry(factory?: AgentRuntimeFactory, ready = true): Pr
           {
             artifactIdentity: "a".repeat(64),
             factory,
-            policy: codexRuntimePolicy,
+            policy: factory.manifest.providerId === "claude-code" ? claudeCodeRuntimePolicy : codexRuntimePolicy,
             requiresBindingReplacement: (runtimeBinding, hostedTools) =>
               (runtimeBinding.payload as { hostedToolsHash?: string }).hostedToolsHash !==
               (hostedTools ? "b".repeat(64) : undefined),
-            validate: validateCodexRuntimePolicy,
+            validate:
+              factory.manifest.providerId === "claude-code"
+                ? validateClaudeCodeRuntimePolicy
+                : validateCodexRuntimePolicy,
           },
         ]
       : [],
@@ -1644,6 +1821,7 @@ class FakeRuntime implements AgentRuntime {
     closeError?: Error,
   ) {
     this.binding = runtimeBinding;
+    this.manifest.providerId = runtimeBinding?.providerId ?? "codex";
     this.#sink = sink;
     this.#closeGate = closeGate;
     this.#closeError = closeError;

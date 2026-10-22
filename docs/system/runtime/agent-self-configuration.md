@@ -82,6 +82,12 @@ which become active without a separate credential step.
 `AGENT_REVISION_CONFLICT`; read again and retry. `--instructions` replaces the whole instruction text, so read the
 current value with `agent self show` and keep what still applies.
 
+For Local Sessions saved by an older Client, a valid newer Soul can apply directly during the
+first Session preparation after upgrade. A separate format-only migration is not required.
+Unresolved work settles first; the configuration change then starts a new native conversation
+while preserving the OpenTag Session and its history. The Client checks both Agent and Session
+revisions from the saved snapshot, so restarting does not bypass same-revision conflicts.
+
 ## Observability
 
 The Server logs `agent_self.config_updated`, `agent_self.mcp_attached`, `agent_self.mcp_binding_updated`, and

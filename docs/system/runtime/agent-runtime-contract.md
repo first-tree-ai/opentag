@@ -83,6 +83,25 @@ Broken forwarding pipes enter the same bounded shutdown instead of crashing the 
 escalation. This boundary covers the owned process group; a process that creates a separate
 session or process group is outside that ownership boundary.
 
+### Local Session configuration
+
+When preparing a Local Session within the same placement, the Client verifies its saved snapshot
+against the durable binding using the snapshot's original hash layout. Agent and Session
+revisions are checked independently: stale revisions and same-revision content conflicts are
+rejected, including after a Client restart. A newer Session revision does not excuse a conflicting
+Agent revision. Preparation runs again when the effective snapshot changes, including an
+Agent-only revision change.
+
+An unchanged snapshot or a supported compatible legacy upgrade can retain the native Provider
+conversation. A valid newer configuration with changed content creates a new native conversation
+within the same OpenTag Session. It preserves the workspace, historical snapshots, and delivery
+receipts, and uses the current requested permissions. Historical messages are not automatically
+replayed. An unresolved Turn must settle before a configuration switch.
+
+The Client writes the new snapshot before atomically updating the binding. A missing snapshot
+can be reconstructed from a request with the exact saved hash and identity; a different request
+cannot replace it without the original snapshot needed to validate the prior configuration.
+
 ## Provider and Product Support
 
 Provider implementation and production product support are separate claims:

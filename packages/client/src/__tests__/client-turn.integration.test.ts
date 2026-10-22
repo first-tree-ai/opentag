@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
   computeDirectInputHash,
+  computeLegacyDirectInputHash,
+  computeLegacyRuntimeSnapshotHashes,
   computeTurnResultHash,
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
@@ -34,11 +36,13 @@ import { AgentTurnRunner } from "../runtime/agent-turn-runner.js";
 import { AgentWorkspaceManager } from "../runtime/agent-workspace.js";
 import { MvpTurnReportRecovery } from "../runtime/mvp-turn-report-recovery.js";
 import type { RuntimeBusinessFrame, RuntimeConnectionState } from "../runtime/runtime-connection.js";
+import { sessionBindingPath, snapshotPath } from "../runtime/runtime-paths.js";
 import { SessionBindingStore } from "../runtime/session-binding-store.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
 import { SessionRuntimeManager } from "../runtime/session-runtime-manager.js";
 import { TurnCustodyOwner } from "../runtime/turn-custody-owner.js";
 import { TurnReportOwner } from "../runtime/turn-report-owner.js";
+import { writeDurableJson } from "../storage/durable-file.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 
 const directories: string[] = [];
@@ -252,6 +256,93 @@ describe("Agent Runtime Client Turn vertical", () => {
     });
     await fixture.record(report);
     await fixture.runtimeManager.close();
+  });
+
+  describe.each(["0.1.0", "self-configuration"] as const)("legacy %s recovery before Soul change", (layout) => {
+    it.each(["accepted", "starting", "running", "reporting"] as const)(
+      "settles a %s Turn before creating a conversation with the new Soul",
+      async (phase) => {
+        const fixture = await recoveryFixture(phase, layout);
+        const next: EffectiveRuntimeSnapshot = {
+          ...fixture.runtime,
+          selfConfigurationEnabled: fixture.runtime.selfConfigurationEnabled ?? false,
+          revision: { agent: { sequence: 2, id: "next-agent" }, session: { sequence: 2, id: "next-session" } },
+          instructions: { ...fixture.runtime.instructions, agent: "New engineering Soul after recovery" },
+          execution: { approvalPolicy: "on-request", networkAccess: false, allowCommands: [] },
+        };
+        const changed = { ...fixture.reconcile(), runtime: next };
+        const before = await fixture.store.read("agent-1", "session-1");
+        try {
+          await expect(fixture.reconciler.reconcile(changed)).resolves.toMatchObject({
+            status: "rejected",
+            reason: "unresolved_turn",
+          });
+          expect(await fixture.store.read("agent-1", "session-1")).toEqual(before);
+          const { runtime: _runtime, ...request } = fixture.reconcile();
+          const stopped = { ...request, desired: "stopped" as const };
+          const prepared = await fixture.recovery.prepare(stopped, await fixture.reconciler.reconcile(stopped));
+          expect(prepared.retainedReports?.[0]).toMatchObject({
+            turnId: "turn-1",
+            inputHash: before?.unresolvedTurn?.inputHash,
+          });
+          fixture.recovery.afterReconciled(stopped, prepared);
+          await vi.waitFor(() => expect(fixture.connection.reports()).toHaveLength(1));
+          const replay = fixture.connection.reports()[0];
+          if (!replay) throw new Error("Expected the historical report");
+          expect(replay).toMatchObject(fixture.expectedRecoveryReport);
+          if (phase === "reporting") expect(replay).toEqual(before?.unresolvedTurn?.report);
+          await expect(fixture.reconciler.reconcile({ ...changed, requestId: randomUUID() })).resolves.toMatchObject({
+            status: "recovery_required",
+          });
+          expect(fixture.clients).toHaveLength(0);
+          expect(fixture.providerReadyCalls()).toBe(0);
+          await fixture.reportOwner.handleResult({
+            type: "turn:report:result",
+            requestId: replay.requestId,
+            turnId: replay.turnId,
+            status: "recorded",
+            resultHash: replay.resultHash,
+          });
+          await vi.waitFor(() => expect(fixture.reconciler.protectedWorkSnapshot().recoveries).toHaveLength(0));
+          await expect(fixture.reconciler.reconcile({ ...changed, requestId: randomUUID() })).resolves.toMatchObject({
+            status: "ready",
+          });
+          expect((await fixture.store.read("agent-1", "session-1"))?.runtimeBinding).toBeUndefined();
+          const pending = delivery(next, "delivery-after-migration", "Use the new Soul");
+          const accepted = await fixture.custody.accept(pending);
+          expect(accepted.result.status).toBe("accepted");
+          await accepted.onAcceptedSent?.();
+          const result = await fixture.connection.waitForReport(1);
+          expect(result).toMatchObject({ outcome: "completed", executionEffects: "completed", finalText: "answer-1" });
+          expect(fixture.clients).toHaveLength(1);
+          expect(fixture.clients[0]?.methods).toContain("thread/start");
+          expect(fixture.clients[0]?.methods).not.toContain("thread/resume");
+          expect(fixture.clients[0]?.developerInstructions).toContain(next.instructions.agent);
+          await fixture.reportOwner.handleResult({
+            type: "turn:report:result",
+            requestId: result.requestId,
+            turnId: result.turnId,
+            status: "recorded",
+            resultHash: result.resultHash,
+          });
+          await vi.waitFor(() => expect(fixture.custody.admission.snapshot().client).toBe(0));
+          const recorded = await fixture.store.read("agent-1", "session-1");
+          expect(recorded?.unresolvedTurn).toBeUndefined();
+          expect(recorded?.recentRecordedInputs).toHaveLength(2);
+          expect(recorded?.recentRecordedInputs[0]).toMatchObject({
+            inputHash: before?.unresolvedTurn?.inputHash,
+            report: replay,
+            resultHash: replay.resultHash,
+          });
+          await expect(
+            fixture.store.recordAccepted(pending, computeDirectInputHash(pending), "duplicate-turn"),
+          ).resolves.toMatchObject({ status: "recorded" });
+          expect(fixture.clients).toHaveLength(1);
+        } finally {
+          await fixture.runtimeManager.close();
+        }
+      },
+    );
   });
 
   it.each(["accepted", "starting", "running", "reporting"] as const)(
@@ -574,11 +665,15 @@ function codexFactory(
  * provider thread binding, then survives only as durable state; the second rebuilds every
  * in-memory component the way a cold start does, with the interrupted Turn still unresolved.
  */
-async function recoveryFixture(phase: "accepted" | "starting" | "running" | "reporting") {
+async function recoveryFixture(
+  phase: "accepted" | "starting" | "running" | "reporting",
+  legacyLayout?: "0.1.0" | "self-configuration",
+) {
   const home = await mkdtemp(resolve(tmpdir(), "opentag-runtime-recovery-"));
   directories.push(home);
   const computerId = randomUUID();
   const runtime = snapshot(1, "codex");
+  if (legacyLayout === "self-configuration") runtime.selfConfigurationEnabled = true;
   const reconcile = (): SessionReconcileRequest => ({
     type: "session:reconcile",
     requestId: randomUUID(),
@@ -646,6 +741,18 @@ async function recoveryFixture(phase: "accepted" | "starting" | "running" | "rep
     await seedStore.updateUnresolved("agent-1", "session-1", "turn-1", "reporting", {
       report,
       resultHash: report.resultHash,
+    });
+  }
+  if (legacyLayout) {
+    const hashes = computeLegacyRuntimeSnapshotHashes(runtime, legacyLayout);
+    const binding = await seedStore.read("agent-1", "session-1");
+    if (!binding?.unresolvedTurn) throw new Error("Expected interrupted custody");
+    await writeDurableJson(snapshotPath(home, "agent-1", hashes.effectiveSnapshotHash), runtime);
+    await writeDurableJson(sessionBindingPath(home, "agent-1", "session-1"), {
+      ...binding,
+      sessionConfigHash: hashes.sessionConfigHash,
+      lastEffectiveSnapshotHash: hashes.effectiveSnapshotHash,
+      unresolvedTurn: { ...binding.unresolvedTurn, inputHash: computeLegacyDirectInputHash(interrupted, legacyLayout) },
     });
   }
   const expectedRecoveryReport =

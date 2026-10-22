@@ -21,3 +21,12 @@ Open <http://127.0.0.1:4318/account>. Append `?scenario=empty`, `?scenario=reaut
 - Inspect desktop and 390px mobile layouts in both languages for wrapping and horizontal overflow.
 
 The real local service at `http://127.0.0.1:4177/account` redirected to `/login?next=%2Faccount` during verification on 2026-10-22. No real OAuth or disconnect mutation was performed. This mock preview does not verify real GitHub consent or provider-side revocation.
+
+## Verification record (2026-10-22)
+
+- Passed: `pnpm install`, `pnpm check`, `pnpm build`, and `pnpm typecheck` on Node 22.22.2 / pnpm 10.12.1.
+- Passed: Account, repository discovery, profile draft protection, OAuth actions, and i18n catalog tests: 9 files / 93 tests. Three additional Web regression files passed on retry: 37 tests.
+- Browser: Chinese and English, desktop and 390px mobile; unauthenticated real service redirects to login; mock empty, active, reauthorization, unavailable, overview error, and repository error states; repository dialog/help; disconnect cancel/focus restoration and mock confirmation. Screenshots use mock data.
+- `pnpm test` was interrupted after unrelated failures appeared, including `cloud-turns.test.ts`, `runner-ws.test.ts`, `runner-serve.test.ts`, and `cloud-journal.test.ts`. The remaining broad scan was stopped under high host load; this command is not recorded as passing.
+- `pnpm --filter @opentag/client test:agent-runtime:coverage` failed in the Pi CLI probe fixture (657 passed / 1 failed). That probe passed when rerun alone; the coverage gate is not recorded as passing.
+- `pnpm test:coverage` was interrupted after its CLI and Web runs reported failures. CLI auto-update tests passed on retry (5 tests); final Account/i18n and the other reported Web regression files passed on retry as listed above. The broad coverage command is not recorded as passing. No runtime, Server, or database changes were made to address these failures.

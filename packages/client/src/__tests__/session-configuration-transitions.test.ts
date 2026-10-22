@@ -192,6 +192,65 @@ describe.each(legacyLayouts)("Session configuration transitions from %s", (layou
 });
 
 describe("Current-format Session configuration transitions", () => {
+  it.each(["warm", "cold"])("SCT-26 applies the one-time runtime revision repair in a %s Client", async (process) => {
+    const f = await fixture("current");
+    if (process === "warm") {
+      await expect(f.reconciler.reconcile(withRuntime(f, f.original))).resolves.toMatchObject({ status: "ready" });
+    }
+    const runtime = structuredClone(f.original);
+    runtime.revision.agent.sequence = 2;
+    runtime.revision.session.sequence = 2;
+    const reconciler = process === "warm" ? f.reconciler : createReconciler(f);
+    await expect(reconciler.reconcile(withRuntime(f, runtime))).resolves.toMatchObject({ status: "ready" });
+    const prepared = await validateAndPrepare(openStore(f.home), withRuntime(f, runtime));
+    expect(prepared.binding.runtimeBinding).toBeUndefined();
+    await expectPreservedHistory(f, prepared.binding);
+    await expectSingleCustody(f, runtime);
+  });
+
+  it.each([
+    ["warm", true],
+    ["warm", false],
+    ["cold", true],
+    ["cold", false],
+  ] as const)("SCT-25 applies an owner opt-in change in a %s Client to %s", async (process, enabled) => {
+    const f = await fixture("current", "codex", { selfConfigurationEnabled: !enabled });
+    if (process === "warm") {
+      await expect(f.reconciler.reconcile(withRuntime(f, f.original))).resolves.toMatchObject({ status: "ready" });
+    }
+    const runtime = currentSnapshot(f.original, 2);
+    runtime.selfConfigurationEnabled = enabled;
+    const reconciler = process === "warm" ? f.reconciler : createReconciler(f);
+    await expect(reconciler.reconcile(withRuntime(f, runtime))).resolves.toMatchObject({ status: "ready" });
+    expect(reconciler.checkDelivery(delivery(runtime, "pending"))).toBeUndefined();
+    const prepared = await validateAndPrepare(openStore(f.home), withRuntime(f, runtime));
+    expect(prepared.binding.runtimeBinding).toBeUndefined();
+    await expectPreservedHistory(f, prepared.binding);
+    await expectSingleCustody(f, runtime);
+    await expect(createReconciler(f).reconcile(withRuntime(f, runtime))).resolves.toMatchObject({ status: "ready" });
+  });
+
+  it("SCT-24 rechecks unresolved work committed after the configuration preflight", async () => {
+    const f = await fixture("current");
+    await expect(f.reconciler.reconcile(withRuntime(f, f.original))).resolves.toMatchObject({ status: "ready" });
+    const request = withRuntime(f, changedSnapshot(currentSnapshot(f.original, 2), "Soul"));
+    const hashes = computeRuntimeSnapshotHashes(request.runtime);
+    await f.store.validatePreparation(request, hashes);
+    const pending = delivery(f.original, "racing-delivery");
+    await f.store.recordAccepted(pending, computeDirectInputHash(pending), "racing-turn");
+    const before = await persistedState(f);
+
+    await expect(f.store.prepare(request, hashes)).rejects.toMatchObject({ code: "recovery_required" });
+    for (const requestId of [randomUUID(), randomUUID()]) {
+      await expect(f.reconciler.reconcile({ ...request, requestId })).resolves.toMatchObject({
+        status: "rejected",
+        reason: "unresolved_turn",
+      });
+    }
+    expect(f.reconciler.getSession("session-1")?.effectiveSnapshotHash).toBe(f.binding.lastEffectiveSnapshotHash);
+    expect(await persistedState(f)).toEqual(before);
+  });
+
   it("SCT-10 retains an unchanged native binding after a process restart", async () => {
     const f = await fixture("current");
     const before = await persistedState(f);

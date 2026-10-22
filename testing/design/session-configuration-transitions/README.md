@@ -196,12 +196,72 @@ changes were needed.
 ## Implementation and validation
 
 The user approved the simplified read/write design and both defect repairs before implementation.
-Production changes are confined to `session-binding-store.ts` and one preparation condition in
-`session-reconciler.ts`. No new schema, migration, transition object, public interface, or
-background mechanism was added.
+The initial Client refactor changes `session-binding-store.ts` and one preparation condition in
+`session-reconciler.ts`. The approved review follow-up below also changes the Server revision
+write and adds one data repair migration. No new schema, transition object, public interface,
+or background mechanism was added.
 
 Tests were expanded before the refactor. The final four changed test files were also run against
 the original two production files: 58 cases failed and 206 passed. The refactored files were then
 restored and verified byte-for-byte. The focused five-file regression passed all 277 cases without
 expected-failure markers. See the [verification record](../../verification/session-configuration-transitions.md)
 for final package-wide checks and external acceptance limits.
+
+## Review follow-up: runtime revision source (approved)
+
+The reviews on PR #986 at `72357155` found a missing cross-package invariant. The Server sets
+both snapshot sequences from `agent_runtime_configs.revision`, while the Agent content identity
+also includes `agents.self_configuration_enabled`. An owner toggle updates `agents.revision`
+but leaves the runtime sequence unchanged. A new test using the real `AgentService`, embedded
+PostgreSQL, and `EffectiveRuntimeSnapshotAssembler` reproduces this: the Agent identity changes
+but the sequence stays at 1. The earlier synthetic Client matrix did not establish this Server
+guarantee. The prior self-review conclusion is superseded by this blocking finding.
+
+The user approved the complete repair and its one-time conversation-reset impact before implementation:
+
+1. In the existing `AgentService.updateById` transaction, compare the locked old opt-in with the
+   returned updated Agent. Pass that concrete change flag to `#applyRuntimeConfigUpdate`. Skip
+   the runtime-config write only when neither its stored content nor opt-in changed. Otherwise
+   reuse the existing single update and `nextval('runtime_config_revision_sequence')`. Combined
+   opt-in/config changes allocate one new revision; repeated same-value updates and profile-only
+   edits retain the current runtime revision. Keep existing locks, compare-and-swap, and rollback.
+2. Repair already-emitted same-sequence changes with one data-only migration, following 0059:
+   `UPDATE agent_runtime_configs SET revision = nextval('runtime_config_revision_sequence');`.
+   Old toggles cannot be reliably identified from current rows because their prior values are not
+   recorded there. Advancing all rows lets every existing/offline Session receive an unambiguously
+   newer snapshot. No schema or API change is needed. Bump the migration-count assertion and keep
+   migration metadata consistent.
+3. Preserve Client revision fences and the #980 native replacement behavior. Update the contract
+   to identify the shared runtime-config sequence as the authority. `agents.name` is currently
+   immutable through the update API; no speculative rename mechanism is added.
+4. Add real-service tests for enable, disable, no-op, profile-only, combined updates, and stale
+   requests. Run PostgreSQL tests for atomic writes and the upgrade migration, the full required
+   integration suite for the new migration, and the relevant Client transitions/Runtime coverage.
+
+The one-time migration makes current-format Sessions start a new native conversation on their
+next eligible Turn, even if that Agent never toggled opt-in. The OpenTag Session, workspace,
+history, receipts, and unresolved-work settlement remain intact. This broader conversation-reset
+impact was explicitly included in the approved design.
+
+Alternative: keep the PR Client-only by removing the new durable Agent same-sequence conflict
+check. This restores the previous cold-restart behavior but leaves the warm-path toggle failure
+and the Server revision mismatch unresolved. It narrows the previously approved second repair.
+
+The Server repair reuses its existing transaction and runtime-config update; the only added input
+is the concrete opt-in-change boolean. Migration `0066_self_configuration_runtime_revision`
+repairs existing rows without changing their content or the schema. PostgreSQL regressions cover
+rollback of the owner write, upgrade from the preceding journal, migration rollback, ledger
+idempotence, unchanged data, and subsequent owner updates. SCT-25 covers warm/cold enable and
+disable; SCT-26 verifies the revision-only migration replaces the conversation and retains history.
+
+The review also raised a possible preflight/accepted-work race. SCT-24 records accepted work
+after successful preflight and then retries preparation: the existing store settlement guard
+rejects the changed hash without writes. No additional Runtime-manager guard or abstraction
+is needed for that trigger.
+
+The Server follow-up also rechecked `94947523` (#932) and `8ff8bc7b` (#954):
+owner scoping, the existing Agent/runtime-row lock order, and Computer `FOR NO KEY UPDATE`
+remain unchanged. The opt-in flag is compared only after the Agent row is locked; its revision
+write uses the already-locked runtime row in the same transaction. Migration 0066 follows the
+existing 0059 repair pattern; historical migration SQL is untouched and its generated schema
+snapshot differs from 0065 only in snapshot IDs.

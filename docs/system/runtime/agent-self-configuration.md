@@ -68,6 +68,9 @@ which become active without a separate credential step.
 
 ## When changes apply
 
+- An owner opt-in change advances the runtime configuration revision atomically with the Agent
+  update. The next eligible Turn uses the new setting and starts a new native conversation after
+  any unresolved work settles. Repeating the same value does not advance the runtime revision.
 - Instructions, model, and reasoning effort are read from the live Agent configuration when each Turn is assembled, so
   a change applies from the next Turn of every existing Session. These fields are part of the effective runtime
   snapshot hash, so that Turn starts a new provider conversation instead of resuming the previous one: earlier

@@ -56,8 +56,11 @@ The interruption cases do not claim an operating-system power-loss or `fsync` fa
 | SCT-21 | Current-format Agent/Session ID, binding hash, or snapshot content conflict | Reject before Agent preparation and preserve disk state | 4 |
 | SCT-22 | Legacy network widening at equal/newer versions | Equal version rejects; valid newer configuration replaces the native conversation | 4 |
 | SCT-23 | Legacy self-configuration changes at equal/newer versions | Preserve published layout semantics; a represented opt-in change needs a newer Agent revision and replaces native conversation | 4 |
+| SCT-24 | Work accepted after configuration preflight | Preparation rechecks durable custody and rejects replacement without writes | 1 |
+| SCT-25 | Owner opt-in enable/disable with a newer shared runtime sequence, warm/cold | Ready, replace native conversation, preserve history and delivery deduplication across restart | 4 |
+| SCT-26 | Revision-only repair migration, warm/cold | Accept the newer sequence with unchanged content IDs, replace native conversation, preserve history and receipts | 2 |
 
-Total: 149 expanded cases in the new store/reconciler suite. No `fails` or `skip` markers remain.
+Total: 156 expanded cases in the new store/reconciler suite. No `fails` or `skip` markers remain.
 
 Changing Soul before upgrading and changing it after upgrading but before this Session's first
 successful migration produce the same store input: a legacy persisted snapshot plus a newer
@@ -89,13 +92,13 @@ Before implementation, the markers were removed, the characterizations were upda
 approved outcomes, and missing version, permission, receipt, persistence, manager, and recovery
 cases were added.
 
-The final four changed test files were also checked against the original production store and
+The four changed test files at the initial PR head were also checked against the original production store and
 reconciler: **58 failed and 206 passed (264 total)**. The two refactored source files were restored
 in a `finally` block and verified byte-for-byte. Failures covered direct legacy replacement,
 cold Agent validation, the explicitly tightened missing-snapshot fallback, and warm Agent-only
 preparation. This reverse check does not count as a passing regression run.
 
-The focused five-file run passed **277/277** after implementation, including the original
+The initial focused five-file run passed **277/277** after implementation, including the original
 Session reconciler suite. The existing store scenarios for changed Soul, wider network, and
 changed self-configuration opt-in intentionally now assert native replacement at valid newer
 versions. Omitted opt-in remains equivalent to false and retains native conversation. The new
@@ -153,15 +156,15 @@ source file. The Server check is a unit suite and does not require PostgreSQL. L
 machine-readable results remain in `.codex/reports/issue980-session-tests-20261022/` under the
 parent workspace, not the repository.
 
-No database, dependency, exports, or packaging behavior changed. PostgreSQL integration,
-full-workspace CI, installed Provider execution, and real IM delivery are not established by these
-local component checks. The [design record](../design/session-configuration-transitions/README.md)
+These initial checks predate the approved Server and data-migration follow-up below. Installed
+Provider execution and real IM delivery are not established by local component checks. The [design record](../design/session-configuration-transitions/README.md)
 tracks approval and implementation scope.
 
 ## Pre-PR self-review
 
 The review rechecked the production diff, the callers in the workspace/Reconciler/Runtime manager,
-and the corresponding tests against the approved design. It found no additional blocking defect.
+and the corresponding tests against the approved Client design. Its no-blocker conclusion was
+superseded by the Server revision defect found during PR review, recorded below.
 Identity and placement checks, unresolved-work settlement, original receipt/report hashes,
 snapshot-before-binding persistence, missing-runtime preparation, and stale native callbacks
 retain their existing protections. The intentional missing-snapshot restriction and newer-legacy
@@ -176,6 +179,47 @@ The worktree was fast-forwarded to the integration base above without conflicts.
 commits change Cloud Pi diagnostics and Web setup navigation; neither overlaps the modified files.
 Client package regressions and the Runtime coverage gate were rerun because the base includes new
 Client/Provider code. The original failing-test evidence remains tied to its original baseline.
+
+## PR review follow-up
+
+Reviews of `72357155` found that owner opt-in updates changed Agent snapshot identity without
+advancing `agent_runtime_configs.revision`, which supplies both snapshot sequences. The new
+real-service/assembler test failed before the Server fix: expected a sequence greater than 1,
+received 1. This exposed a missing Server guarantee behind the synthetic Client matrix.
+
+The user approved the complete repair, including the migration's one-time native-conversation
+reset for all current-format Sessions on their next eligible Turn. The Server now advances the
+runtime revision inside the existing owner-update transaction for a real opt-in change; combined
+Soul/opt-in edits allocate one revision. No-op/profile-only changes retain it, stale requests
+still reject, and a failed runtime write rolls back the Agent row. Migration 0066 advances all
+existing runtime rows once without changing other data or the schema. Runtime hashes include
+sequences, so even Agents that never toggled opt-in get a new native conversation; OpenTag history,
+receipts, and unresolved-work recovery remain intact.
+
+The real PostgreSQL upgrade test starts from the previous migration journal, seeds old opt-in
+states, verifies rollback of the repair SQL, runs the production migration runner, checks unchanged
+non-revision data, reruns through the ledger, and exercises a subsequent owner toggle. SCT-24
+covers the review's preflight/custody race, while SCT-25 and SCT-26 cover the resulting Client
+transitions. No additional Runtime-manager abstraction was introduced.
+
+Follow-up local validation:
+
+| Check | Result |
+| --- | --- |
+| Client store/transitions/reconciler/manager plus Client Turn suites | 284 passed; final transition-only rerun 156 passed |
+| Full Server unit suite | 3,926 passed, 16 conditional skips; no failures |
+| Full PostgreSQL integration, default two workers | 69 files, 928 passed; no failures or skips |
+| Server and Client typechecks | Passed |
+| Migration drift, unchanged-schema comparison, repository checks | Passed |
+
+The first full PostgreSQL attempt had 868 passes, eight CLI failures because the built CLI entry
+was absent, and 52 cases skipped after a Docker port-forwarding connection timeout during the
+Slack fixture setup. The Slack suite then passed all 52 cases alone. After building `open-tag`
+and its dependencies, the complete unchanged-source/default-worker rerun passed all 928 cases.
+No test timeouts, concurrency settings, or assertions were relaxed. Logs retain both attempts.
+The Client full-suite and Runtime-coverage results above remain tied to the initial PR head;
+the Server follow-up does not change those production paths. Fresh full CI and exact-head
+non-author approval are required before merge.
 
 ## Follow-up acceptance cases
 

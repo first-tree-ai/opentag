@@ -309,6 +309,7 @@ export type ButtonVariant =
   | "secondary-destructive"
   | "outline"
   | "ghost"
+  | "filter"
   | "danger"
   | "inline";
 
@@ -327,7 +328,7 @@ function kumoButtonVariant(
   variant: ButtonVariant,
 ): "primary" | "secondary" | "secondary-destructive" | "outline" | "ghost" | "destructive" {
   if (variant === "danger") return "destructive";
-  if (variant === "inline") return "ghost";
+  if (variant === "inline" || variant === "filter") return "ghost";
   return variant;
 }
 
@@ -347,6 +348,7 @@ export function buttonClassName({
     "ui-button justify-center shadow-none",
     variant === "primary" && "ui-button--primary !text-(--on-primary)",
     variant === "danger" && "ui-button--danger",
+    variant === "filter" && "ui-button--filter",
     (variant === "secondary" || variant === "outline") && "ui-button--secondary",
     size === "compact" && "ui-button--compact",
     variant === "primary" &&

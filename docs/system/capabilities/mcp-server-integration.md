@@ -1260,6 +1260,19 @@ The catalog aligns rows to the top of its bounded scroll area. Minimum list heig
 below the cards instead of stretching a lone row. The directory omits the redundant Agent
 authorization footer.
 
+Category navigation starts with **All**, then follows the catalog's fixed order:
+Docs & Knowledge, Communication, Projects, Developer Tools, Web Search, Data & Analytics,
+and Design. Categories with fewer than two offered entries are omitted from navigation;
+their entries remain available in All and search. Other catalog categories follow these groups.
+Desktop filters stay on one line and move a trailing suffix into **More** according to the
+available container width. More retains the same order and marks the selected item. Selecting
+an overflow category replaces the trigger's label with that category's name without reordering
+or moving the direct choices. The trigger reserves label space, and the visible prefix is
+recalculated after resizing or font loading. Search spans the full directory and clears the
+category highlight; choosing a category clears search. Mobile uses the shared Kumo Select with
+the same order and selection. Buttons and the More trigger use the shared neutral-grey filter
+selection recipe, preserving the application's typography, control size, and focus behavior.
+
 The current management layout is preserved: service identity opens settings, the list shows connection
 status and Connect/Reconnect, and tools and advanced connection settings are reached from settings.
 The identity subtitle uses the matched catalog entry's localized purpose description. Custom connectors
@@ -1274,7 +1287,7 @@ The catalog is committed repository data in the `@opentag/mcp-presets` workspace
 
 | Source | Holds |
 | --- | --- |
-| `packages/mcp-presets/mcp-categories.yaml` | the category set: id, a localized label, and the tab order |
+| `packages/mcp-presets/mcp-categories.yaml` | the category set: id, a localized label, and the navigation order |
 | `packages/mcp-presets/mcp-catalog.yaml` | the entries, one registry-style record each: `id` (`mcp/<slug>`), localized `name`, `summary`, and `when_to_use`, `capabilities`, `status`, `auth` (`methods`, `default_kind`, and `oauth.scopes` — the scopes the provider's consent screen is configured for), `risk`, `remotes` endpoints with their header configuration and/or self-hosted `packages` (with `prerequisites` and `platforms`), `catalog` placement (category, order, icon), and `homepage` |
 | `packages/mcp-presets/schema/mcp-catalog-entry.schema.json` | the JSON Schema (draft 2020-12) every entry is validated against; the generator injects the supported locales |
 | `packages/mcp-presets/icons/` | the monochrome card marks referenced by the entries |

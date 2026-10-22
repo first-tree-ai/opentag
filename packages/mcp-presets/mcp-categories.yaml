@@ -7,7 +7,7 @@
 #
 # `label` must supply every locale listed in `apps/web/project.inlang/settings.json`. A missing locale
 # fails the build rather than falling back to another at render time.
-# `order` sets the tab order.
+# `order` sets the category navigation order.
 
 - id: docs
   label:
@@ -27,16 +27,16 @@
     zh: 项目管理
   order: 30
 
+- id: development
+  label:
+    en: Developer Tools
+    zh: 开发工具
+  order: 40
+
 - id: search
   label:
     en: Web Search
     zh: 网页搜索
-  order: 40
-
-- id: design
-  label:
-    en: Design
-    zh: 设计
   order: 50
 
 - id: data
@@ -45,10 +45,10 @@
     zh: 数据分析
   order: 60
 
-- id: development
+- id: design
   label:
-    en: Developer Tools
-    zh: 开发工具
+    en: Design
+    zh: 设计
   order: 70
 
 - id: sales

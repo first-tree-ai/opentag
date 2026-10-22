@@ -139,6 +139,10 @@
 [data-opentag-theme="opentag"] .ui-button--secondary:hover:not(:disabled) {
   background: var(--surface-hover);
 }
+[data-opentag-theme="opentag"] .ui-button--filter:is([aria-pressed="true"], [data-selected="true"]) {
+  background: var(--brand-soft);
+  color: var(--fg);
+}
 .ui-button {
   font-weight: 600;
 }

@@ -1,9 +1,10 @@
 import type { McpCatalogCategory, McpInstallableCatalogEntry } from "@opentag/mcp-presets";
 import type { MCPAgentServer, MCPServer } from "@opentag/shared/browser";
 import { useState } from "react";
+import { OverflowFilter } from "../../../components/kumo/overflow-filter/overflow-filter.js";
 import { getLocale } from "../../../i18n/locale.js";
 import * as m from "../../../paraglide/messages.js";
-import { Button, Field, KumoInputControl, Select } from "../../../ui/design-system.js";
+import { Field, KumoInputControl, Select } from "../../../ui/design-system.js";
 import { authorizationAction, connectorFeedback } from "../mcp-feedback.js";
 import { McpServiceIcon } from "../mcp-service-icon.js";
 import { hasMcpToolSnapshot } from "../mcp-tool-snapshot.js";
@@ -97,33 +98,18 @@ export function McpDiscoverSource({
           ))}
         </Select>
       </div>
-      <fieldset className="mcp-discover-category-tabs mt-5 flex flex-wrap gap-1 border-0 p-0">
-        <legend className="sr-only">{m.mcp_discover_categories()}</legend>
-        <Button
-          aria-pressed={!searching && !categoryId}
-          disabled={busy}
-          size="compact"
-          variant={!searching && !categoryId ? "secondary" : "ghost"}
-          onClick={() => chooseCategory("")}
-        >
-          {m.mcp_discover_all()}
-        </Button>
-        {shownCategories.map((category) => {
-          const active = !searching && category.id === categoryId;
-          return (
-            <Button
-              key={category.id}
-              aria-pressed={active}
-              disabled={busy}
-              size="compact"
-              variant={active ? "secondary" : "ghost"}
-              onClick={() => chooseCategory(category.id)}
-            >
-              {localizedText(category.label, locale)}
-            </Button>
-          );
-        })}
-      </fieldset>
+      <OverflowFilter
+        className="mcp-discover-category-tabs mt-5"
+        disabled={busy}
+        items={[
+          { value: "", label: m.mcp_discover_all() },
+          ...shownCategories.map((category) => ({ value: category.id, label: localizedText(category.label, locale) })),
+        ]}
+        label={m.mcp_discover_categories()}
+        moreLabel={m.mcp_discover_more()}
+        value={searching ? null : categoryId}
+        onValueChange={chooseCategory}
+      />
       {visible.length ? (
         <ul className="mcp-catalog-grid mt-4" data-ui="mcp-catalog">
           {visible.map((entry) => (

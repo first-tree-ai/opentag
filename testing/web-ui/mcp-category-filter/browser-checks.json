@@ -1,0 +1,75 @@
+[
+  {
+    "lang": "en",
+    "width": 320,
+    "options": [
+      "All",
+      "Docs & Knowledge",
+      "Communication",
+      "Projects",
+      "Developer Tools",
+      "Web Search",
+      "Data & Analytics",
+      "Design"
+    ],
+    "mobileControlHeight": 44,
+    "axeViolations": []
+  },
+  {
+    "lang": "en",
+    "width": 390,
+    "options": [
+      "All",
+      "Docs & Knowledge",
+      "Communication",
+      "Projects",
+      "Developer Tools",
+      "Web Search",
+      "Data & Analytics",
+      "Design"
+    ],
+    "mobileControlHeight": 44,
+    "axeViolations": []
+  },
+  {
+    "lang": "en",
+    "width": 768,
+    "direct": ["All", "Docs & Knowledge", "Communication", "Projects", "More"],
+    "overflow": ["Developer Tools", "Web Search", "Data & Analytics", "Design"],
+    "axeViolations": []
+  },
+  {
+    "lang": "en",
+    "width": 1440,
+    "direct": ["All", "Docs & Knowledge", "Communication", "Projects", "Developer Tools", "More"],
+    "overflow": ["Web Search", "Data & Analytics", "Design"],
+    "axeViolations": []
+  },
+  {
+    "lang": "zh",
+    "width": 320,
+    "options": ["全部", "文档与知识", "沟通", "项目管理", "开发工具", "网页搜索", "数据分析", "设计"],
+    "mobileControlHeight": 44,
+    "axeViolations": []
+  },
+  {
+    "lang": "zh",
+    "width": 390,
+    "options": ["全部", "文档与知识", "沟通", "项目管理", "开发工具", "网页搜索", "数据分析", "设计"],
+    "mobileControlHeight": 44,
+    "axeViolations": []
+  },
+  {
+    "lang": "zh",
+    "width": 768,
+    "direct": ["全部", "文档与知识", "沟通", "项目管理", "开发工具", "网页搜索", "更多"],
+    "overflow": ["数据分析", "设计"],
+    "axeViolations": []
+  },
+  {
+    "lang": "zh",
+    "width": 1440,
+    "direct": ["全部", "文档与知识", "沟通", "项目管理", "开发工具", "网页搜索", "数据分析", "设计"],
+    "axeViolations": []
+  }
+]

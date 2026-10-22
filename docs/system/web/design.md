@@ -27,6 +27,12 @@ The app strengthens supporting text to `#696c73` so it remains readable on selec
 Orange `#e5502e` is a warning indicator; warning body text uses `#a63f22`, and danger uses
 `#b42318`. Selection outlines and progress markers use the slate focus token; links use blue.
 
+Single-choice filter buttons use the shared `filter` intent: neutral grey selection (`selected`)
+with foreground text, preserving the normal button typography, radius, compact height, and focus
+recipe. The same selection is available to a menu trigger representing a selected overflow item.
+MCP directory categories occupy one desktop row with a trailing More menu, and use the existing
+Kumo Select on mobile. The selected overflow category stays in its original position in the menu.
+
 Task screens use the existing application typography: the list retains the page-title scale,
 while an individual Task title keeps its `h1` semantics and uses 16px medium text with a 24px
 line height. Requests, sent replies and execution summaries use 14px regular text with a 21px line

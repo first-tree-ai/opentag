@@ -27,6 +27,11 @@ existing product vocabulary to Kumo primitives:
 
 - `Button` maps `danger` to Kumo `destructive`, `compact` to `sm`, and `inline`
   to `ghost`.
+- `Button` maps `filter` to Kumo `ghost` with the shared neutral-grey selected recipe.
+  Direct choices use `aria-pressed`; a menu trigger representing a selected choice uses `data-selected`.
+- `OverflowFilter` is an owned block that measures available width, retains a fixed visible prefix,
+  and puts trailing choices into a Kumo radio menu. It reserves selected-label space so selection
+  does not shift peers, and recalculates after container or font changes. Callers own copy and order.
 - `Field` delegates label, description, and error rendering to Kumo Field.
 - `StatusIndicator` uses Kumo Badge dot appearance. Informational status uses
   the neutral semantic token; brand teal is not used for operational state.

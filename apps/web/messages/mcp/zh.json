@@ -44,6 +44,7 @@
   "mcp_disabled_hint": "已停用，授权仍保留。",
   "mcp_discover_categories": "分类",
   "mcp_discover_empty": "没有匹配的连接器。",
+  "mcp_discover_more": "更多",
   "mcp_discover_search": "搜索连接器",
   "mcp_discover_search_placeholder": "搜索连接器…",
   "mcp_discovery_failed_hint": "未能加载工具，请尝试刷新。",

@@ -57,6 +57,7 @@ Screenshots and browser checks for Web UI changes, one directory per change:
 - [GitHub OAuth cutover](web-ui/github-oauth-cutover/README.md)
 - [discover-categories](web-ui/discover-categories/README.md)
 - [mcp-add-server](web-ui/mcp-add-server/README.md)
+- [MCP category filter](web-ui/mcp-category-filter/README.md)
 - [mcp-management](web-ui/mcp-management/README.md)
 - [mcp-settings-refinement](web-ui/mcp-settings-refinement/README.md)
 - [mcp-settings-simplification](web-ui/mcp-settings-simplification/README.md)

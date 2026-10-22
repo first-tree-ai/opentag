@@ -44,6 +44,7 @@
   "mcp_disabled_hint": "Disabled. Authorization is kept.",
   "mcp_discover_categories": "Categories",
   "mcp_discover_empty": "No connectors match this search.",
+  "mcp_discover_more": "More",
   "mcp_discover_search": "Search connectors",
   "mcp_discover_search_placeholder": "Search connectors…",
   "mcp_discovery_failed_hint": "Tools couldn’t be loaded. Try refreshing.",

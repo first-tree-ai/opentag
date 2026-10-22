@@ -52,7 +52,12 @@ export class GitHubApiClientError extends Error {
   constructor(
     readonly code: GitHubApiClientErrorCode,
     message: string,
-    readonly details: { status?: number; retryAfterSeconds?: number } = {},
+    readonly details: {
+      status?: number;
+      retryAfterSeconds?: number;
+      requestStatus?: number;
+      transportCode?: "request_timeout" | "request_cancelled";
+    } = {},
     options?: ErrorOptions,
   ) {
     super(message, options);
@@ -114,8 +119,17 @@ function invalidResponse(message: string): GitHubApiClientError {
   return new GitHubApiClientError(GITHUB_API_CLIENT_ERROR_CODES.RESPONSE_INVALID, message);
 }
 
-function unavailable(message: string, options?: ErrorOptions): GitHubApiClientError {
-  return new GitHubApiClientError(GITHUB_API_CLIENT_ERROR_CODES.UPSTREAM_UNAVAILABLE, message, {}, options);
+function unavailable(
+  message: string,
+  options?: ErrorOptions,
+  transportCode?: "request_timeout" | "request_cancelled",
+): GitHubApiClientError {
+  return new GitHubApiClientError(
+    GITHUB_API_CLIENT_ERROR_CODES.UPSTREAM_UNAVAILABLE,
+    message,
+    transportCode === undefined ? {} : { transportCode },
+    options,
+  );
 }
 
 function parseDecimalId(value: unknown, field: string): string {
@@ -287,16 +301,25 @@ export class GitHubApiClient {
    * decides what happens next, this client only classifies.
    */
   async refreshUserToken(input: { refreshToken: string; signal?: AbortSignal }): Promise<GitHubUserTokenMaterial> {
-    const payload = await this.#sendOAuth(
-      {
-        client_id: this.#clientId,
-        client_secret: this.#clientSecret,
-        grant_type: "refresh_token",
-        refresh_token: parseToken(input.refreshToken, "refresh token"),
-      },
-      input.signal,
-    );
-    return this.#parseTokenPayload(payload);
+    const diagnostics: { status?: number } = {};
+    try {
+      const payload = await this.#sendOAuth(
+        {
+          client_id: this.#clientId,
+          client_secret: this.#clientSecret,
+          grant_type: "refresh_token",
+          refresh_token: parseToken(input.refreshToken, "refresh token"),
+        },
+        input.signal,
+        diagnostics,
+      );
+      return this.#parseTokenPayload(payload);
+    } catch (error) {
+      if (error instanceof GitHubApiClientError && diagnostics.status !== undefined) {
+        error.details.requestStatus = diagnostics.status;
+      }
+      throw error;
+    }
   }
 
   /** The GitHub-attested user identity and required repo scope behind a user access token. */
@@ -406,12 +429,15 @@ export class GitHubApiClient {
       rejectRejection(error);
       if (!controller.signal.aborted) controller.abort(error);
     };
-    const onCallerAbort = () => fail(unavailable("The GitHub request was cancelled"));
+    const onCallerAbort = () => fail(unavailable("The GitHub request was cancelled", undefined, "request_cancelled"));
     if (callerSignal) {
       if (callerSignal.aborted) onCallerAbort();
       else callerSignal.addEventListener("abort", onCallerAbort, { once: true });
     }
-    const timer = setTimeout(() => fail(unavailable("The GitHub request exceeded its time limit")), REQUEST_TIMEOUT_MS);
+    const timer = setTimeout(
+      () => fail(unavailable("The GitHub request exceeded its time limit", undefined, "request_timeout")),
+      REQUEST_TIMEOUT_MS,
+    );
     timer.unref?.();
     return {
       signal: controller.signal,
@@ -427,13 +453,18 @@ export class GitHubApiClient {
     };
   }
 
-  async #sendOAuth(body: Record<string, string>, signal?: AbortSignal): Promise<unknown> {
+  async #sendOAuth(
+    body: Record<string, string>,
+    signal?: AbortSignal,
+    diagnostics?: { status?: number },
+  ): Promise<unknown> {
     return this.#send({
       method: "POST",
       url: `${GITHUB_OAUTH_ORIGIN}/login/oauth/access_token`,
       headers: { accept: "application/json", "content-type": "application/json", "user-agent": USER_AGENT },
       body: JSON.stringify(body),
       signal,
+      diagnostics,
     });
   }
 
@@ -483,8 +514,10 @@ export class GitHubApiClient {
     signal?: AbortSignal;
     expectedStatus?: number;
     requireRepositoryScope?: boolean;
+    diagnostics?: { status?: number };
   }): Promise<unknown> {
     const deadline = this.#startDeadline(options.signal);
+    const { diagnostics = {} } = options;
     try {
       const preflightFailure = deadline.failure();
       if (preflightFailure) throw preflightFailure;
@@ -500,6 +533,7 @@ export class GitHubApiClient {
       ]);
       const inFlightFailure = deadline.failure();
       if (inFlightFailure) throw inFlightFailure;
+      diagnostics.status = response.status;
       if (response.redirected || (response.status >= 300 && response.status < 400)) {
         throw new GitHubApiClientError(
           GITHUB_API_CLIENT_ERROR_CODES.UPSTREAM_ERROR,

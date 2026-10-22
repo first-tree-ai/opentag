@@ -78,6 +78,17 @@ describe("GitHubApiClient OAuth token endpoint", () => {
     expect(material.accessToken).toBe("ghu_next");
   });
 
+  it("keeps a malformed refresh response status as diagnostics without changing status-based classification", async () => {
+    const client = clientWithFetch(async () => new Response("not JSON", { status: 200 }));
+    const failure = await client.refreshUserToken({ refreshToken: "ghr_current" }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(GitHubApiClientError);
+    expect(failure).toMatchObject({
+      code: GITHUB_API_CLIENT_ERROR_CODES.RESPONSE_INVALID,
+      details: { requestStatus: 200 },
+    });
+    expect((failure as GitHubApiClientError).status).toBeUndefined();
+  });
+
   it("treats a 200 error payload as a definitive rejection", async () => {
     const client = clientWithFetch(async () =>
       jsonResponse(200, { error: "bad_verification_code", error_description: "The code passed is incorrect" }),
@@ -575,6 +586,7 @@ describe("GitHubApiClient deadline and transport failure precedence", () => {
       const pending = clientReady(client);
       const settled = expect(pending).rejects.toMatchObject({
         code: GITHUB_API_CLIENT_ERROR_CODES.UPSTREAM_UNAVAILABLE,
+        details: { transportCode: "request_timeout" },
       });
       await vi.advanceTimersByTimeAsync(10_001);
       await settled;
@@ -601,6 +613,7 @@ describe("GitHubApiClient deadline and transport failure precedence", () => {
     controller.abort();
     await expect(pending).rejects.toMatchObject({
       code: GITHUB_API_CLIENT_ERROR_CODES.UPSTREAM_UNAVAILABLE,
+      details: { transportCode: "request_cancelled" },
     });
   });
 

@@ -599,6 +599,7 @@ export async function startServer(): Promise<void> {
           cipher: new GitHubCredentialCipher(applicationCipher),
           worker: {
             logger: {
+              info: (bindings, message) => app?.log.info(bindings, message),
               warn: (bindings, message) => app?.log.warn(bindings, message),
               error: (bindings, message) => app?.log.error(bindings, message),
             },

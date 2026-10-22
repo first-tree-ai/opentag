@@ -110,3 +110,24 @@ The four PostgreSQL suites use disposable Testcontainers databases. No migration
 was not repeated. Native proxy implementation, browser presentation and Runner code did not change in this follow-up; their
 prior evidence remains historical and CI owns the new-head regression matrix. Review threads remain for the reviewers to
 reassess; OAuth App replacement is documented as unsupported and is not claimed implemented.
+
+## Refresh diagnostics follow-up
+
+The local diagnostic regression uses the real API client, worker and credential cipher with an injected HTTP
+transport and store boundary; it makes no real GitHub request and changes no existing authorization. It covers
+successful phase correlation and monotonic timing, decrypt/seal/persist failures, HTTP 502, malformed HTTP 200,
+rejected grants, unsupported expiry, rate limits, allowlisted versus secret-bearing transport codes, the unchanged
+request timeout, stale completion/failure CAS, a second settlement failure, throwing log sinks and throwing error
+accessors. HTTP 200 diagnostic metadata does not change the existing status getter used by error classification.
+All captured log records are checked for exclusion of credential/upstream-text sentinels and ciphertext where used.
+
+The pre-PR independent read-only review found no blocking defect. It checked request count, deadlines, existing
+release/fail/CAS and reauthorization paths, safe field construction, diagnostic failures, and the Server entry point's
+logger wiring. The observer introduces no table, migration, query, persistence field, or new refresh/retry decision.
+
+Local validation includes `pnpm check`, Server build/typecheck, the complete Server unit selection and the GitHub
+API/maintenance/race/diagnostic regressions. No PostgreSQL persistence code changed, so the integration suite is not
+repeated. Client/Runner and Web behavior are unchanged; their complete regression matrix belongs to CI. This local
+evidence does not establish deployment, Cloud Logging arrival, or a live OAuth exchange. The first historical unknown
+refresh exception remains unrecoverable; the added records diagnose later failures only. See the
+[logging contract](../../docs/operations/observability.md#github-refresh-phase-diagnostics) for fields and collection levels.

@@ -49,6 +49,7 @@ export interface GitHubMaintenanceWorkerOptions {
   refreshWithinMs?: number;
   now?: () => Date;
   logger?: {
+    info?: (bindings: Record<string, unknown>, message: string) => void;
     warn: (bindings: Record<string, unknown>, message: string) => void;
     error: (bindings: Record<string, unknown>, message: string) => void;
   };
@@ -64,6 +65,27 @@ export interface GitHubMaintenanceTickSummary {
 type RecheckSnapshotLoad =
   | { kind: "active"; active: GitHubActiveConnectionSnapshot }
   | { kind: "outcome"; outcome: GitHubRecheckOutcome };
+
+type RefreshPhase = "decrypt" | "exchange" | "seal" | "persist";
+type RefreshObservation = { phase: RefreshPhase; startedAt: number; phaseStartedAt: number };
+
+const TRANSPORT_CODES = new Set([
+  "request_timeout",
+  "request_cancelled",
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ETIMEDOUT",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "EPIPE",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_SOCKET",
+  "CERT_HAS_EXPIRED",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+]);
 
 const DEFAULT_INTERVAL_MS = 60_000;
 const DEFAULT_TICK_BUDGET_MS = 45_000;
@@ -193,12 +215,41 @@ export class GitHubMaintenanceWorker {
     }
     summary.claimed += 1;
     const claim = claimed.claim;
+    const startedAt = performance.now();
+    const observation: RefreshObservation = { phase: "decrypt", startedAt, phaseStartedAt: startedAt };
+    this.#logRefresh("info", claim, observation, { outcome: "started" });
     try {
-      const applied = await this.#exchangeRefresh(claim);
+      const applied = await this.#exchangeRefresh(claim, observation);
+      this.#logRefresh("info", claim, observation, {
+        outcome: applied ? "completed" : "skipped",
+        casApplied: applied,
+      });
       if (applied) summary.completed += 1;
       else summary.skipped += 1;
     } catch (error) {
-      const outcome = await this.#reportRefreshFailure(claim, error);
+      this.#logRefresh("warn", claim, observation, { outcome: "failed", ...refreshErrorDetails(error) });
+      const settlementStartedAt = performance.now();
+      let outcome: "released" | "failed" | "skipped";
+      try {
+        outcome = await this.#reportRefreshFailure(claim, error);
+      } catch (settlementError) {
+        this.#logRefresh("error", claim, observation, {
+          phase: "settle",
+          failurePhase: observation.phase,
+          outcome: "failed",
+          durationMs: performance.now() - settlementStartedAt,
+          ...refreshErrorDetails(settlementError),
+        });
+        throw settlementError;
+      }
+      this.#logRefresh("warn", claim, observation, {
+        phase: "settle",
+        failurePhase: observation.phase,
+        outcome,
+        casApplied: outcome !== "skipped",
+        durationMs: performance.now() - settlementStartedAt,
+        ...(outcome === "failed" ? { errorCode: refreshFailureCode(error) } : {}),
+      });
       if (outcome === "released") summary.released += 1;
       else if (outcome === "failed") summary.failed += 1;
       else summary.skipped += 1;
@@ -206,13 +257,16 @@ export class GitHubMaintenanceWorker {
   }
 
   /** One rotation of a claimed attempt; the store CAS decides whether the sealed pair lands. */
-  async #exchangeRefresh(claim: ClaimedGitHubRefresh): Promise<boolean> {
+  async #exchangeRefresh(claim: ClaimedGitHubRefresh, observation: RefreshObservation): Promise<boolean> {
     const current = this.#decryptClaimed(claim);
+    this.#advanceRefreshPhase(claim, observation, "exchange");
     const tokens = await this.#api.refreshUserToken({ refreshToken: current.refreshToken });
+    this.#advanceRefreshPhase(claim, observation, "seal");
     const sealed = this.#cipher.encryptUserCredential(bindingOf(claim), {
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
     });
+    this.#advanceRefreshPhase(claim, observation, "persist");
     const applied = await this.#refreshStore.completeRefresh({
       connectionId: claim.connectionId,
       attemptId: claim.attemptId,
@@ -225,6 +279,40 @@ export class GitHubMaintenanceWorker {
       },
     });
     return applied.applied;
+  }
+
+  #advanceRefreshPhase(claim: ClaimedGitHubRefresh, observation: RefreshObservation, phase: RefreshPhase): void {
+    this.#logRefresh("info", claim, observation, { outcome: "completed" });
+    observation.phase = phase;
+    observation.phaseStartedAt = performance.now();
+    this.#logRefresh("info", claim, observation, { outcome: "started" });
+  }
+
+  #logRefresh(
+    level: "info" | "warn" | "error",
+    claim: ClaimedGitHubRefresh,
+    observation: RefreshObservation,
+    fields: Record<string, unknown>,
+  ): void {
+    try {
+      const now = performance.now();
+      this.#logger[level]?.(
+        {
+          module: "github-maintenance",
+          operation: "github.refresh",
+          connectionId: claim.connectionId,
+          attemptId: claim.attemptId,
+          credentialGeneration: claim.credentialGeneration.toString(),
+          phase: observation.phase,
+          durationMs: now - observation.phaseStartedAt,
+          elapsedMs: now - observation.startedAt,
+          ...fields,
+        },
+        "GitHub credential refresh",
+      );
+    } catch {
+      // Diagnostic sinks must not change token consumption or claim settlement.
+    }
   }
 
   /**
@@ -356,6 +444,40 @@ export class GitHubMaintenanceWorker {
       throw new GitHubCredentialEnvelopeError({ cause: error });
     }
   }
+}
+
+function refreshErrorDetails(error: unknown): Record<string, unknown> {
+  const fields: Record<string, unknown> = {
+    errorCode:
+      error instanceof GitHubCredentialEnvelopeError
+        ? "GITHUB_CREDENTIAL_ENVELOPE_ERROR"
+        : "GITHUB_REFRESH_LOCAL_ERROR",
+  };
+  try {
+    if (error instanceof GitHubApiClientError) {
+      if (Object.values(GITHUB_API_CLIENT_ERROR_CODES).includes(error.code)) fields.errorCode = error.code;
+      const status = error.details.requestStatus ?? error.status;
+      if (Number.isInteger(status) && status !== undefined && status >= 100 && status <= 599) fields.status = status;
+      if (error.details.transportCode && TRANSPORT_CODES.has(error.details.transportCode)) {
+        fields.transportCode = error.details.transportCode;
+      }
+    }
+    const transportCode = transportCodeOf(error);
+    if (transportCode !== undefined) fields.transportCode = transportCode;
+  } catch {
+    // Even an error with throwing property accessors is not allowed to affect settlement.
+  }
+  return fields;
+}
+
+function transportCodeOf(error: unknown): string | undefined {
+  let cause = error;
+  for (let depth = 0; depth < 3 && typeof cause === "object" && cause !== null; depth += 1) {
+    const candidate = cause as { code?: unknown; cause?: unknown };
+    if (typeof candidate.code === "string" && TRANSPORT_CODES.has(candidate.code)) return candidate.code;
+    cause = candidate.cause;
+  }
+  return undefined;
 }
 
 function bindingOf(claim: ClaimedGitHubRefresh) {

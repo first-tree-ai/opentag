@@ -51,6 +51,33 @@ editing the LaunchAgent or systemd unit.
 `opentag.im.binding.id` and `opentag.runtime.connection.id`; do **not** pass their result as a Pino payload. Map values to
 the fixed camelCase Pino vocabulary instead.
 
+## GitHub refresh phase diagnostics
+
+The Server maintenance worker emits `module=github-maintenance`, `operation=github.refresh` records
+for each claimed refresh. `connectionId`, `attemptId`, and the decimal-string `credentialGeneration`
+correlate the attempt without logging its credential envelope. The `decrypt`, `exchange`, `seal`, and
+`persist` phases have INFO `started` and `completed` records; a stale completion has `outcome=skipped`
+and `casApplied=false`. `durationMs` measures the phase and `elapsedMs` the attempt, both using the
+process-local monotonic clock rather than credential expiry or wall time.
+
+A handled phase failure emits WARN with its phase, controlled `errorCode`, observed HTTP `status`
+when available, and an allowlisted `transportCode` when recognized. A malformed HTTP 200 response
+retains status 200; an unobserved response has no fabricated status. Timeout and caller cancellation
+have separate controlled transport codes. Unknown transport codes are omitted. Error messages,
+names, stacks, response bodies, OAuth error descriptions, URLs, headers, tokens, client secrets,
+ciphertexts and key IDs are never included in these records.
+
+The subsequent WARN `phase=settle` record carries `failurePhase`, `outcome` (`released`, `failed`,
+or `skipped`) and `casApplied`. An applied failure also records the persisted reauthorization error
+code. If settlement itself throws, a separate ERROR retains `failurePhase`; it does not replace the
+earlier phase failure record. Logger exceptions cannot change refresh processing. Claims, CAS,
+timeouts, retry decisions, and reauthorization semantics remain unchanged: an uncertain exchange
+is never replayed, while local decrypt failures and rate limits still release their claims.
+
+Query `operation=github.refresh` together with `connectionId` or `attemptId`. Production's existing
+WARN-and-above stdout shipping retains failures and settlement records, not the INFO phase stream.
+Process termination can leave only a started phase; missing completion is not proof of a timeout.
+
 ## Cloud Pi phase diagnostics
 
 Cloud Turn workers emit a bounded diagnostic stream independently of `OPENTAG_LOG_LEVEL`.

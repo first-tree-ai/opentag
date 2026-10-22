@@ -10,7 +10,7 @@ import { pathToFileURL } from "node:url";
 const COMMAND_OUTPUT_LIMIT_BYTES = 16 * 1024 * 1024;
 
 /** The Context Tree `postinstall` line that means it never attempted an install. */
-const GUARD_DECLINED = "run `context-tree install` to add the skills to your agent";
+const GUARD_DECLINED = "run `context-tree skills install` to add the skills to your agent";
 /** The line it prints only after actually invoking its own installer. */
 const INSTALL_ATTEMPTED = "no agent directory found";
 

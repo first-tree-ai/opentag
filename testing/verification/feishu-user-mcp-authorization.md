@@ -19,7 +19,13 @@ the implementing pull request.
 Discovery and content access are separate claims. A successful six-tool listing is not evidence
 that a document or message can be read.
 
-## Application validation (operator, before enabling the feature)
+## Pre-implementation gate: application validation
+
+These are gates, not merely pre-enablement checks. Steps 1-8 in the design do not start until
+FUA-A1, A2, A3, A5, and A6 are recorded for the application OpenTag will own. A2, A3, A5, and A6
+may be produced with the pinned CLI or a controlled token, not the unbuilt feature. The CLI
+application used in the original investigation is not the product application, so its success is
+not evidence here. FUA-A4 is required before the dev rollout.
 
 | ID | Check | Evidence required |
 | --- | --- | --- |
@@ -46,17 +52,19 @@ described as read-only: the verified application returned broad historical grant
 | FUA-U7 | Transport, timeout, or unparseable poll response | Flow kept; interval increases with the 60-second cap; retry later |
 | FUA-U8 | Unexpected provider error | Flow status `failed`; bounded code; no secret in the message |
 | FUA-U9 | Successful poll | Tokens, scopes, access expiry, refresh expiry parsed; identity check issued with the access token |
-| FUA-U10 | Refresh request shape | `https://open.feishu.cn/authen/v2/oauth/token`; JSON body with `grant_type`, `refresh_token`, `client_id`, `client_secret` |
+| FUA-U10 | Refresh request shape | `https://open.feishu.cn/open-apis/authen/v2/oauth/token`; JSON body with `grant_type`, `refresh_token`, `client_id`, `client_secret` |
 | FUA-U11 | Refresh response | Rotated access and refresh tokens, `expires_in`, `refresh_token_expires_in` |
 | FUA-U12 | Oversized or malformed token fields | Refused by the envelope schema; nothing stored |
 | FUA-U13 | Outbound policy | A redirect or non-public resolution is refused with no request sent |
 | FUA-U14 | `20026`, `20037`, `20064`, `20073` | Terminal verdict; credential cleared; reconnect required |
-| FUA-U15 | `99991543`, `10014` | Terminal verdict; credential cleared; reconnect required |
+| FUA-U15 | `99991543`, `10014` | Config-error verdict; token kept; row `error` with `MCP_FEISHU_APP_CREDENTIALS_INVALID`; slow retry; no clear |
 | FUA-U16 | `20050` | Retryable-preserve verdict; token kept; no retry inside the same pass |
 | FUA-U17 | `21000`, `21001` | Policy-stop verdict; token kept; bounded security-challenge code; no auto-retry |
 | FUA-U18 | Missing `code`, missing `access_token`, or another numeric code | Unknown verdict; token kept; no auto-retry |
 | FUA-U19 | Omitted response fields | Missing `refresh_token` keeps the stored one; missing `refresh_token_expires_in` keeps the previous deadline; missing `expires_in` uses 7200 seconds; missing `scope` keeps stored scopes |
 | FUA-U20 | Identity check failure | Terminal flow failure; no credential stored; bounded code only |
+| FUA-U21 | Device success without `refresh_token` | Flow status `not_renewable`; no credential stored; no "renews automatically" claim |
+| FUA-U22 | Device success without `refresh_token_expires_in` | Seven-day default applied; flow succeeds only when the computed deadline is in the future |
 
 ## Persistence and lifecycle (integration)
 
@@ -69,7 +77,7 @@ described as read-only: the verified application returned broad historical grant
 | FUA-I5 | Concurrent refresh | One provider call; the losing worker does not spend the token |
 | FUA-I6 | Refresh write-back fence | A revocation or re-connect during the provider call wins; the stale success does not resurrect a credential |
 | FUA-I7 | Unknown refresh outcome | Row `error`, `MCP_REFRESH_OUTCOME_UNKNOWN`, old refresh token kept, no automatic retry |
-| FUA-I8 | Terminal refresh outcome | `20026`, `20037`, `20064`, `20073`, or an invalid-client code clears the credential and requires reconnect |
+| FUA-I8 | Terminal refresh outcome | `20026`, `20037`, `20064`, or `20073` clears the credential and requires reconnect; an invalid-client code keeps the token and follows FUA-I25 |
 | FUA-I9 | Refresh deadline | An access token refreshes before expiry; a refresh token past its deadline requires reconnect without an upstream call |
 | FUA-I10 | Changed endpoint | `MCP_AUTHORIZATION_REQUIRED`; no refresh call is made |
 | FUA-I11 | Changed application ID | `MCP_AUTHORIZATION_REQUIRED`; the grant is not sent to another application |
@@ -85,16 +93,22 @@ described as read-only: the verified application returned broad historical grant
 | FUA-I21 | `20050` lifecycle | The row stays `active`, the claim is released, and the next scheduled pass retries; no retry in the same pass |
 | FUA-I22 | Refresh deadline evidence | The stored deadline follows a returned `refresh_token_expires_in` and keeps the previous value when omitted; the slide-versus-fixed result is recorded |
 | FUA-I23 | Cancel first connect | The `none`/`pending` row created for the flow is deleted; cancelling a re-connection leaves the existing row untouched |
+| FUA-I24 | First write without renewal material | A missing refresh token or an invalid computed deadline cannot produce an `active` managed row; the service refuses and the flow is `not_renewable` |
+| FUA-I25 | Config-error recovery | Invalid-client codes keep the token, mark `error` with the bounded config code, retry slowly, and return to `active` after the secret is fixed |
+| FUA-I26 | Shared URL change after connect | The configuration write is rejected while the managed row is bound; a forced database change makes probe and `tools/call` fail closed with no upstream request and no credential header |
+| FUA-I27 | Agent URL override after connect | Setting the override is rejected; a forced override makes probe and `tools/call` fail closed with no upstream request and no credential header |
+| FUA-I28 | Managed tool-policy invariant | Editing the shared definition or an Agent override cannot clear or widen `managed_tool_names` or the forced provider header; the advertised and callable set stays the six names |
 
 ## Gateway and tool restriction (unit or integration)
 
 | ID | Scenario | Expected |
 | --- | --- | --- |
-| FUA-G1 | Allowed list set to the six tools | Advertised tools are exactly the allowed subset |
+| FUA-G1 | Managed tool list | The managed row advertises exactly `managed_tool_names`; a non-managed row keeps its existing behavior |
 | FUA-G2 | Forbidden `tools/call` | Rejected before any upstream request; the fixture request log is empty for that call |
-| FUA-G3 | No allowed list | Existing unrestricted behavior is unchanged |
-| FUA-G4 | Probe snapshot | Records what the provider advertises under the configured header; the UI reports how many tools the allowlist permits |
-| FUA-G5 | Manual token header | The managed token is sent as `X-Lark-MCP-UAT` with an empty prefix; no token appears in a DTO |
+| FUA-G3 | Unmanaged rows | No managed policy is applied; existing unrestricted behavior is unchanged |
+| FUA-G4 | Forced provider header | `X-Lark-MCP-Allowed-Tools` is exactly the six names even when the shared or Agent extra headers remove or widen it |
+| FUA-G5 | Endpoint binding | A managed row whose effective URL differs from `credential_endpoint` produces `MCP_AUTHORIZATION_REQUIRED` before any credential header or upstream request |
+| FUA-G6 | Managed token header | The managed token is sent as `X-Lark-MCP-UAT` with an empty prefix; no token appears in a DTO |
 
 ## Web App (unit)
 
@@ -108,6 +122,8 @@ described as read-only: the verified application returned broad historical grant
 | FUA-W6 | Manual bearer | Explicitly says the credential is static and does not renew |
 | FUA-W7 | Accessible connect/disconnect | Ownership is required; a non-owner cannot connect or disconnect |
 | FUA-W8 | Fixed refresh deadline | If the deadline does not slide, the Connected state shows the reconnect date instead of implying indefinite renewal |
+| FUA-W9 | Not-renewable flow | Shows the bounded not-renewable reason and a connect-again action, never "connected" or "renews automatically" |
+| FUA-W10 | Configuration error | Shows that the deployment's Feishu app configuration is invalid and needs an operator; it does not tell every user to re-authorize |
 
 ## Dev rollout (live)
 

@@ -1,0 +1,118 @@
+# Feishu user MCP authorization: verification and acceptance
+
+Test and acceptance material for [Feishu user MCP authorization](../../docs/system/capabilities/mcp-server-integration.md).
+Design: [Feishu user MCP authorization proposal](../design/feishu-user-mcp-authorization/README.md).
+
+Status: planned. No scenario below is claimed as passed until its evidence is recorded here or in
+the implementing pull request.
+
+## Evidence tiers
+
+| Tier | Meaning |
+| --- | --- |
+| Unit | No public network, no PostgreSQL; provider responses are fixtures |
+| Integration | PostgreSQL through testcontainers; provider is a loopback fixture |
+| Live discovery | The deployed Server reaches the real Feishu hosted MCP endpoint |
+| Live content | Approved representative document or IM data is actually read |
+| Live Agent | A real Agent turn uses the managed grant through the gateway |
+
+Discovery and content access are separate claims. A successful six-tool listing is not evidence
+that a document or message can be read.
+
+## Application validation (operator, before enabling the feature)
+
+| ID | Check | Evidence required |
+| --- | --- | --- |
+| FUA-A1 | The chosen Feishu application is the one OpenTag will own; its app ID and secret are recorded in the deployment secret store | App ID and the deployment revision, never the secret |
+| FUA-A2 | Device authorization is enabled for that application | One real device authorization reaches the consent screen |
+| FUA-A3 | The application has the seven IM/document read scopes plus `offline_access` | Granted `scope` from the token response, reviewed for the exact set |
+| FUA-A4 | The selected user and tenant are eligible under the organization's policy | Consent succeeds and the identity check returns the expected `open_id` and tenant key |
+| FUA-A5 | The token works at the hosted MCP endpoint with the six-tool allowed-tools header | `probeState = succeeded`, `toolsCount = 6`, `toolsTruncated = false` |
+| FUA-A6 | Refresh works for this application and rotates both tokens | Before/after token hashes differ; a post-refresh probe still lists six tools |
+
+FUA-A3 is an operator input (`OPENTAG_MCP_FEISHU_SCOPES`), not a guessed default. The grant is not
+described as read-only: the verified application returned broad historical grants.
+
+## Provider client (unit)
+
+| ID | Scenario | Expected |
+| --- | --- | --- |
+| FUA-U1 | Device authorization request | Fixed `accounts.feishu.cn` URL, form body, Basic auth, `offline_access` appended once |
+| FUA-U2 | Missing configuration | No request is made; a bounded "not configured" error |
+| FUA-U3 | `authorization_pending` | Flow kept; next poll at the current interval |
+| FUA-U4 | `slow_down` | Interval increases by five seconds, capped; flow kept |
+| FUA-U5 | `access_denied` | Flow terminal; bounded denial code; no provider text stored |
+| FUA-U6 | `expired_token` / `invalid_grant` | Flow terminal; reconnect required |
+| FUA-U7 | Unexpected provider error or unparseable body | Flow terminal with a bounded code; no secret in the message |
+| FUA-U8 | Successful poll | Tokens, scopes, access expiry, refresh expiry parsed; identity check issued with the access token |
+| FUA-U9 | Refresh request shape | Same token URL, JSON body with `grant_type`, `refresh_token`, `client_id`, `client_secret` |
+| FUA-U10 | Refresh response | Rotated access and refresh tokens, `expires_in`, `refresh_token_expires_in` |
+| FUA-U11 | Oversized or malformed token fields | Refused by the envelope schema; nothing stored |
+| FUA-U12 | Outbound policy | A redirect or non-public resolution is refused with no request sent |
+
+## Persistence and lifecycle (integration)
+
+| ID | Scenario | Expected |
+| --- | --- | --- |
+| FUA-I1 | Migration | Existing rows read `credential_source = 'manual'`; no credential or probe data changes |
+| FUA-I2 | Start device flow | One flow row per `(Server, Agent)`; device code sealed; starting again replaces the code |
+| FUA-I3 | Concurrent poll claims | Exactly one instance calls upstream with a live claim; the other waits |
+| FUA-I4 | Restart between start and approval | A new process resumes from the flow row and completes the connect |
+| FUA-I5 | Concurrent refresh | One provider call; the losing worker does not spend the token |
+| FUA-I6 | Refresh write-back fence | A revocation or re-connect during the provider call wins; the stale success does not resurrect a credential |
+| FUA-I7 | Unknown refresh outcome | Row `error`, `MCP_REFRESH_OUTCOME_UNKNOWN`, old refresh token kept, no automatic retry |
+| FUA-I8 | Terminal refresh outcome | `invalid_grant` / `invalid_client` clears the credential and requires reconnect |
+| FUA-I9 | Refresh deadline | An access token refreshes before expiry; a refresh token past its deadline requires reconnect without an upstream call |
+| FUA-I10 | Changed endpoint | `MCP_AUTHORIZATION_REQUIRED`; no refresh call is made |
+| FUA-I11 | Changed application ID | `MCP_AUTHORIZATION_REQUIRED`; the grant is not sent to another application |
+| FUA-I12 | Manual bearer isolation | Manual rows never enter the managed refresh scan; existing Bearer behavior is unchanged |
+| FUA-I13 | Standard OAuth isolation | OAuth refresh, claims, fencing, and revocation keep their existing behavior after custody extraction |
+| FUA-I14 | Soft-deleted Agent | No poll or refresh runs for it; its flow is not resumed |
+| FUA-I15 | Denied flow with a working credential | The working credential stays active; the denial is recorded, not a downgrade |
+| FUA-I16 | Cancel / revoke | Flow and credential are cleared; a late poll or refresh cannot restore them |
+
+## Gateway and tool restriction (unit or integration)
+
+| ID | Scenario | Expected |
+| --- | --- | --- |
+| FUA-G1 | Allowed list set to the six tools | Advertised tools are exactly the allowed subset |
+| FUA-G2 | Forbidden `tools/call` | Rejected before any upstream request; the fixture request log is empty for that call |
+| FUA-G3 | No allowed list | Existing unrestricted behavior is unchanged |
+| FUA-G4 | Probe inventory | The snapshot still records the provider's full inventory; the UI reports the allowed count |
+| FUA-G5 | Manual token header | The managed token is sent as `X-Lark-MCP-UAT` with an empty prefix; no token appears in a DTO |
+
+## Web App (unit)
+
+| ID | Scenario | Expected |
+| --- | --- | --- |
+| FUA-W1 | Start connect | User code, verification link, and expiry are shown; the dialog survives a reload |
+| FUA-W2 | Pending poll | The dialog reports pending without a spinner that implies failure |
+| FUA-W3 | Connected | Shows the Feishu-managed lifecycle, not the manual "Bearer" label |
+| FUA-W4 | Renewal failure | Shows "renewal failed; reconnect", never "connected" |
+| FUA-W5 | Reauthorization required | Offers reconnect and explains why |
+| FUA-W6 | Manual bearer | Explicitly says the credential is static and does not renew |
+| FUA-W7 | Accessible connect/disconnect | Ownership is required; a non-owner cannot connect or disconnect |
+
+## Dev rollout (live)
+
+| ID | Step | Evidence |
+| --- | --- | --- |
+| FUA-L1 | Configure the three variables on dev only; leave production unset | Deployment revision and variable names, not values |
+| FUA-L2 | Connect gan with the validated application | Flow completes; identity check succeeds; row `active` |
+| FUA-L3 | Pre-refresh discovery | Six tools, not truncated |
+| FUA-L4 | Force or wait for an access-token refresh | Rotation observed; row remains `active`; no manual token paste |
+| FUA-L5 | Post-refresh discovery | Six tools, not truncated |
+| FUA-L6 | Server restart | The credential survives; the next refresh succeeds |
+| FUA-L7 | Unknown-outcome simulation | UI shows renewal failure; no silent retry |
+| FUA-L8 | Revoke in Feishu or force terminal expiry | UI shows reconnect required; no false healthy state |
+| FUA-L9 | Real document read and real IM read with approved data | Content returned; recorded as content acceptance, not discovery |
+| FUA-L10 | Real Agent turn through the gateway | The Agent calls an allowed tool; a forbidden tool is refused |
+| FUA-L11 | Local and Cloud runtime | Both use the gateway; neither receives the upstream token |
+
+## Out of scope for this verification
+
+- A production rollout. The first rollout remains gan on dev.
+- Any write call to Feishu. Forbidden-write rejection uses fixtures.
+- Unapproved document, message, or organization data.
+- Multi-Agent sharing of one Feishu grant.
+- Hosted-MCP OAuth onboarding.

@@ -25,6 +25,7 @@ contents, and machine-specific operational logs outside the repository.
 - [Cloud Runner toolchain](verification/cloud-runner-toolchain.md)
 - [Cloud workspace persistence](verification/cloud-workspace-persistence.md)
 - [Context Tree integration](verification/context-tree-integration.md)
+- [Feishu user MCP authorization](verification/feishu-user-mcp-authorization.md)
 - [Custom Slack Apps](verification/custom-slack-apps.md)
 - [GitHub platform integration](verification/github-platform-integration.md)
 - [GitHub OAuth cutover](verification/github-oauth-cutover.md)

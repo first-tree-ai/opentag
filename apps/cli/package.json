@@ -1,6 +1,6 @@
 {
   "name": "open-tag",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "openTag command-line interface for connecting team messaging with AI coding agents.",
   "keywords": [

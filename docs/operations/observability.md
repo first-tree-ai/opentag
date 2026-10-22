@@ -316,6 +316,13 @@ window again. A callback that already failed on a query deadline rejects at once
 while the connection stays busy until TCP gives up, the same limit as a timed-out single query. A deadline during
 `commit` leaves the outcome unknown, not rolled back: the transaction may have committed on the server.
 
+For an external uptime monitor that should not depend on bootstrap stages or deployment headers, use
+`/healthz?deep=1`. It returns `200` with `{"status":"ok","service":"opentag-server","checks":{"database":"ok"}}` when
+the database probe passes, and `503` with `"status":"degraded"` and `"database":"fail"` when it fails or exceeds the
+one-second deadline. It reuses the `/readyz` database probe, never includes error text in the body, and logs the
+redacted error at `warn`. Only `deep=1` and `deep=true` enable it. The Docker `HEALTHCHECK` and `opentag doctor` keep
+the plain, database-independent `/healthz`.
+
 ### Server logs in Cloud Logging
 
 The Ops Agent on the production VM tails the Docker `json-file` logs under `/var/lib/docker/containers/` and writes the

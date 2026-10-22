@@ -14,11 +14,11 @@ Open <http://127.0.0.1:4318/account>. Append `?scenario=empty`, `?scenario=reaut
 ## Browser acceptance
 
 - Before authorization, only the account authorization action appears; no repository setting or visible GitHub configuration link appears.
-- Active authorization shows the identity, an adjacent View repositories control, Change, and Disconnect account authorization. Reauthorization retains identity and account actions while hiding the viewer.
+- Active authorization shows the identity, an adjacent View repositories control, Change account, and Disconnect. Reauthorization retains identity and account actions while hiding the viewer.
 - The viewer is read-only. Filtering and refresh work; closing restores focus to View repositories. Its help holds the secondary GitHub authorization settings link and shared-scope explanation.
 - Account authorization help explains shared Agent scope, organization approval/SSO, and that disconnecting locally does not revoke GitHub authorization.
 - Disconnect confirmation names the identity and all-Agent impact. Cancel preserves identity and restores focus; confirm returns to the authorization action. Errors remain actionable.
-- Inspect desktop and 390px mobile layouts in both languages for wrapping and horizontal overflow.
+- Inspect 320px, 390px, 768px, and 1440px layouts in both languages for wrapping and horizontal overflow.
 
 The real local service at `http://127.0.0.1:4177/account` redirected to `/login?next=%2Faccount` during verification on 2026-10-22. No real OAuth or disconnect mutation was performed. This mock preview does not verify real GitHub consent or provider-side revocation.
 
@@ -30,3 +30,15 @@ The real local service at `http://127.0.0.1:4177/account` redirected to `/login?
 - `pnpm test` was interrupted after unrelated failures appeared, including `cloud-turns.test.ts`, `runner-ws.test.ts`, `runner-serve.test.ts`, and `cloud-journal.test.ts`. The remaining broad scan was stopped under high host load; this command is not recorded as passing.
 - `pnpm --filter @opentag/client test:agent-runtime:coverage` failed in the Pi CLI probe fixture (657 passed / 1 failed). That probe passed when rerun alone; the coverage gate is not recorded as passing.
 - `pnpm test:coverage` was interrupted after its CLI and Web runs reported failures. CLI auto-update tests passed on retry (5 tests); final Account/i18n and the other reported Web regression files passed on retry as listed above. The broad coverage command is not recorded as passing. No runtime, Server, or database changes were made to address these failures.
+
+
+## Independent review and follow-up validation (2026-10-22)
+
+An independent read-only reviewer inspected the branch and ran the two affected UI files (44 tests passed). Supplementary browser review found the long English disconnect action clipped at 320px. Account action width constraints now preserve wrapping. Visible actions use **Change account / Disconnect** and their Chinese equivalents; accessible names and confirmation copy retain Account authorization context. The reviewer identified a Chinese Label in Name mismatch after shortening the visible label; the accessible name now contains the entire visible phrase, with a rendered regression test for both buttons. Final independent review has no remaining actionable findings.
+
+- Final focused suite: 9 files / **94 tests passed**, including Account, repository discovery, profile drafts, OAuth actions, i18n catalog, and the Chinese accessible-name regression.
+- Web production build passed after the copy and layout changes.
+- Agent Runtime coverage rerun: **658 tests passed**, with **100% statements, branches, functions, and lines**.
+- The complete `pnpm test` rerun failed in unchanged client tests: the Codex CLI probe fixture missed its marker file, and the Context Tree member-memory fixture exceeded its five-second timeout. The runtime coverage rerun covers and passes the Codex probe; the Context Tree case still timed out when retried alone. Turbo stopped the remaining package runs after the client failure. This full-suite command is not recorded as passing.
+- The new complete coverage run is in progress; its CLI phase reported the existing auto-update fixture failures. Final results will be recorded when the run ends.
+- Browser evidence uses mock data: [desktop, Chinese, 1440px](account-zh-1440.png), [mobile, English, 320px](account-en-320.png), [confirmation, 320px](disconnect-en-320.png), [390px](account-en-390.png), and [768px](account-en-768.png). Escape/cancel restores focus, and visible labels remain inside the available width.

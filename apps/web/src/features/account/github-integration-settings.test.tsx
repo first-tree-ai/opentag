@@ -2,6 +2,7 @@ import type { GitHubConnectionStatus, GitHubIntegrationOverview } from "@opentag
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../../api.js";
+import { overwriteGetLocale } from "../../paraglide/runtime.js";
 import { GitHubIntegrationSettings } from "./github-integration-settings.js";
 
 const APP_ID = "871235";
@@ -38,6 +39,7 @@ function connection(overrides: Partial<GitHubConnectionStatus> = {}): GitHubConn
 }
 
 afterEach(() => {
+  overwriteGetLocale(() => "en");
   vi.restoreAllMocks();
   window.history.replaceState({}, "", "/account");
 });
@@ -149,8 +151,8 @@ describe("GitHub account settings", () => {
     expect(discover).not.toHaveBeenCalled();
     expect(screen.queryByText("Connected")).toBeNull();
     expect(screen.queryByRole("button", { name: "Refresh installations" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Change account" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Disconnect account authorization" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Change account" }).textContent).toBe("Change account");
+    expect(screen.getByRole("button", { name: "Disconnect account authorization" }).textContent).toBe("Disconnect");
     expect(screen.queryByRole("menu")).toBeNull();
     expect(screen.queryByText("Account", { exact: true })).toBeNull();
     const identity = screen.getByText("@octocat").closest('[data-ui="github-account-identity"]');
@@ -209,6 +211,20 @@ describe("GitHub account settings", () => {
     expect(screen.getByText("@octocat")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "View repositories" })).toBeNull();
     expect(screen.queryByRole("link", { name: "GitHub authorization settings" })).toBeNull();
+  });
+
+  it("keeps the visible Chinese disconnect label in both accessible names", async () => {
+    overwriteGetLocale(() => "zh");
+    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection()));
+    render(<GitHubIntegrationSettings />);
+    const disconnect = await screen.findByRole("button", { name: "断开授权（GitHub 账户）" });
+    expect(disconnect.textContent).toBe("断开授权");
+    expect(disconnect.getAttribute("aria-label")).toContain(disconnect.textContent);
+    fireEvent.click(disconnect);
+    const dialog = await screen.findByRole("dialog", { name: "断开 GitHub 账户授权？" });
+    const confirm = within(dialog).getByRole("button", { name: "断开授权（GitHub 账户）" });
+    expect(confirm.textContent).toBe("断开授权");
+    expect(confirm.getAttribute("aria-label")).toContain(confirm.textContent);
   });
 
   it("confirms shared removal and lets cancellation leave the account untouched", async () => {
@@ -337,7 +353,7 @@ describe("GitHub account settings", () => {
     ["success", "GitHub account authorization completed."],
     [
       "error&github_oauth_error=GITHUB_IDENTITY_MISMATCH",
-      "This authorization used a different GitHub account. Choose Change to use that account.",
+      "This authorization used a different GitHub account. Choose Change account to use that account.",
     ],
   ])("reports the bounded callback outcome %s once", async (query, text) => {
     window.history.replaceState({}, "", `/account?github_oauth=${query}&keep=1`);

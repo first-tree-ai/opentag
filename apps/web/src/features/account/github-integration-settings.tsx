@@ -263,7 +263,7 @@ function GitHubRemovalConfirmation({
   onRemove: () => void;
 }) {
   const cancelRef = useRef<HTMLButtonElement>(null);
-  const removeLabel = busy ? m.integrations_github_removing() : m.integrations_github_remove_account();
+  const removeLabel = busy ? m.integrations_github_removing() : m.integrations_github_remove();
   return (
     <Dialog
       open={open}
@@ -292,7 +292,7 @@ function GitHubRemovalConfirmation({
           <Button
             disabled={busy}
             aria-busy={busy}
-            aria-label={removeLabel}
+            aria-label={busy ? m.integrations_github_removing() : m.integrations_github_remove_account()}
             icon={
               busy ? (
                 <span className="inline-flex" aria-hidden="true">
@@ -300,6 +300,7 @@ function GitHubRemovalConfirmation({
                 </span>
               ) : undefined
             }
+            className="max-w-full"
             variant="danger"
             onClick={onRemove}
           >
@@ -394,10 +395,11 @@ function GitHubAccountIdentity({
             />
           ) : null}
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
           <GitHubAuthorizationButton intent="replace" action={action} busyLabel={busyLabel} onAuthorize={onAuthorize} />
           <Button
             ref={removeRef}
+            className="max-w-full"
             disabled={action !== null}
             variant="ghost"
             size="compact"
@@ -405,7 +407,7 @@ function GitHubAccountIdentity({
             onClick={onRemove}
             type="button"
           >
-            {m.integrations_github_remove_account()}
+            {m.integrations_github_remove()}
           </Button>
         </div>
       </div>

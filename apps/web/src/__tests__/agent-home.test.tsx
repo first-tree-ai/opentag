@@ -48,7 +48,7 @@ describe("OpenTag Web App Shell", () => {
     expect(status.querySelector('[data-ui="agent-status-runtime"]')).toBeNull();
   });
 
-  it("offers one Continue setup exit for an unfinished Agent and returns to that Agent", async () => {
+  it("offers one Continue setup action and retains the account rail as the setup exit", async () => {
     installApi({ agentUnbound: true });
     window.history.replaceState({}, "", `/agents/${agentId}`);
     render(<App />);
@@ -61,8 +61,10 @@ describe("OpenTag Web App Shell", () => {
 
     fireEvent.click(setupLinks[0] as HTMLElement);
     expect(await screen.findByRole("heading", { name: "Connect your computer" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Back to agent" }));
-    await waitFor(() => expect(window.location.pathname).toBe(`/agents/${agentId}`));
+    expect(screen.queryByRole("button", { name: "Back to agent" })).toBeNull();
+    fireEvent.click(screen.getByRole("link", { name: "All Agents" }));
+    fireEvent.click(await screen.findByRole("link", { name: "Open Reviewer" }));
+    expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
   });
 
   it("routes an unfinished runtime state to Setup", async () => {
@@ -227,7 +229,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByText("Runtime")).toBeNull();
   });
 
-  it("returns to the Agent home when unfinished Messaging was opened from its setup shortcut", async () => {
+  it("keeps the account rail when unfinished Messaging was opened from its setup shortcut", async () => {
     installApi({ bindingState: "provisioning", bound: true });
     window.history.replaceState({}, "", `/agents/${agentId}`);
     render(<App />);
@@ -238,7 +240,9 @@ describe("OpenTag Web App Shell", () => {
     expect(setupLink.closest('[data-ui="agent-status-message-channel"]')).toBeTruthy();
     fireEvent.click(setupLink);
     expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Back to agent" }));
+    expect(screen.queryByRole("button", { name: "Back to agent" })).toBeNull();
+    fireEvent.click(screen.getByRole("link", { name: "All Agents" }));
+    fireEvent.click(await screen.findByRole("link", { name: "Open Reviewer" }));
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
   });
 

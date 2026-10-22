@@ -234,11 +234,13 @@ export function DestinationStep({
 }
 
 function AgentNameField({
+  disabled,
   draft,
   onBlur,
   onChange,
   showError,
 }: {
+  disabled: boolean;
   draft: AgentDraft;
   onBlur: () => void;
   onChange: (draft: AgentDraft) => void;
@@ -269,6 +271,7 @@ function AgentNameField({
         aria-describedby={errorText ? `${hintId} ${errorId}` : hintId}
         aria-invalid={errorText ? true : undefined}
         autoComplete="off"
+        disabled={disabled}
         id={nameId}
         onBlur={onBlur}
         onChange={(event) => onChange({ ...draft, name: event.target.value })}
@@ -304,7 +307,15 @@ function RuntimeMark({ runtime }: { runtime: Runtime }) {
   return <BrandMark brand={runtime} label={runtimeTitle(runtime)} />;
 }
 
-function RuntimePicker({ draft, onChange }: { draft: AgentDraft; onChange: (draft: AgentDraft) => void }) {
+function RuntimePicker({
+  disabled,
+  draft,
+  onChange,
+}: {
+  disabled: boolean;
+  draft: AgentDraft;
+  onChange: (draft: AgentDraft) => void;
+}) {
   if (draft.destination === "cloud") return null;
   return (
     <fieldset className={FIELDSET}>
@@ -316,6 +327,7 @@ function RuntimePicker({ draft, onChange }: { draft: AgentDraft; onChange: (draf
             <Button
               aria-pressed={draft.runtime === runtime}
               className={CARD}
+              disabled={disabled}
               onClick={() => onChange({ ...draft, runtime })}
               variant="ghost"
             >
@@ -346,10 +358,13 @@ export function AgentStep({
   submitting?: boolean;
 }) {
   const [touched, setTouched] = useState(false);
+  function change(next: AgentDraft) {
+    if (!submitting) onChange(next);
+  }
   function submit(event: FormEvent) {
     event.preventDefault();
     setTouched(true);
-    if (draftIsSubmittable(draft)) onSubmit();
+    if (!submitting && draftIsSubmittable(draft)) onSubmit();
   }
   return (
     <section className={STEP} data-ui="onboarding-v2-step-agent">
@@ -359,8 +374,14 @@ export function AgentStep({
         </Text>
       </header>
       <form className="flex flex-col gap-6" onSubmit={submit}>
-        <AgentNameField draft={draft} onBlur={() => setTouched(true)} onChange={onChange} showError={touched} />
-        <RuntimePicker draft={draft} onChange={onChange} />
+        <AgentNameField
+          disabled={submitting}
+          draft={draft}
+          onBlur={() => setTouched(true)}
+          onChange={change}
+          showError={touched}
+        />
+        <RuntimePicker disabled={submitting} draft={draft} onChange={change} />
         <StepNav
           back={onBack}
           backDisabled={submitting}

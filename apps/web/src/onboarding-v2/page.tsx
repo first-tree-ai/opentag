@@ -96,7 +96,6 @@ type CreationOutcome =
     };
 
 interface PendingCreation {
-  readonly draft: AgentDraft;
   readonly result: Promise<CreationOutcome>;
 }
 
@@ -298,18 +297,15 @@ function AgentCreatePage({
     };
     void pending.result.then(async (outcome) => {
       if (!live) return;
-      // A late result belongs to the submitted draft, not edits made while it was pending.
-      if (draft === pending.draft) {
-        await deliver(outcome).catch((cause: unknown) => {
-          if (live) setError(creationErrorMessage(cause));
-        });
-      }
+      await deliver(outcome).catch((cause: unknown) => {
+        if (live) setError(creationErrorMessage(cause));
+      });
       if (live) setPending(undefined);
     });
     return () => {
       live = false;
     };
-  }, [draft, onAgentAvailable, pending]);
+  }, [onAgentAvailable, pending]);
 
   useEffect(() => {
     onCreationPreviewViewChange?.(destinationConfirmed ? "agent" : "destination");
@@ -376,7 +372,6 @@ function AgentCreatePage({
       setTaken(undefined);
       const report = creationReport(creationPreview);
       const attempt: PendingCreation = {
-        draft: creation.draft,
         result: Promise.resolve().then(async (): Promise<CreationOutcome> => {
           try {
             const request = await creationRequest(selected, Boolean(creationPreview));

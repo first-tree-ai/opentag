@@ -45,7 +45,36 @@ No database schema or runtime implementation changed, so the PostgreSQL server i
 coverage were not rerun. The browser tests below do use PostgreSQL and the real Server. CI remains responsible for
 its complete regression matrix; these local checks do not establish CI status.
 
-## Real-backend browser acceptance on the final build
+## PR review follow-up: pending form lock
+
+The review on `38ca4eb8` identified that editing during a pending creation could hide the request's success or
+refusal and allow another creation without telling the user about the first. Name/runtime inputs are now locked,
+along with Back/Create, on both original and returning mounts. Change/submit handlers are guarded as well. The active
+observer always delivers success or refusal; a refused form unlocks for correction and retry. This supersedes the
+editable-pending B-draft behavior in the earlier acceptance record below.
+
+- The Agent Home, route boundary, creation-step, and Cloud-creation suites pass **71/71** tests.
+- Independent read-only verification passes **4/4** original/returning × success/refusal combinations, including
+  attempts to edit/re-submit, exact-Agent success, and successful correction/retry after refusal.
+- Web type checking and the production build pass.
+- The complete Web coverage run, `node scripts/unit-coverage.mjs --project web`, passes **173 files / 2176 tests**,
+  with zero failures, retries, or flaky passes. Line coverage is **94.61%** (8458/8939); statements **92.36%**,
+  functions **93.98%**, and branches **88.63%**. Local changed-line evaluation against the PR merge base passes
+  **176/176 executable lines (100%)**, above the repository's 80% threshold.
+- A fresh real Server/PostgreSQL browser run confirms name, all runtime choices, Back, and Create are disabled on
+  original and returning forms. Explicit form submissions produce no duplicate POST; the delayed real success opens
+  the exact Agent. A real duplicate-name refusal displays the error and unlocks the draft, then a corrected retry
+  succeeds. Exactly three POSTs occur: delayed creation, name-conflict refusal, and corrected retry.
+
+Initial PR CI also revealed two Agent Home tests still looking for the intentionally removed Back to agent button.
+They now use All Agents in the account rail and reopen the exact Agent. The same two stale assertions caused the
+Node 22/24/26 shard-1 failures and Web coverage measurement failure. Patch enforcement stopped at that failed
+measurement prerequisite; it did not establish insufficient changed-line coverage.
+The optional restored-tab hint behavior raised as P3 is documented explicitly: a restored tab retains full-screen
+setup through admission until its brand exit retires the hint. The setup rail intentionally remains account-level,
+so the corrected Agent Home tests use All Agents rather than introducing an Agent-specific Overview link.
+
+## Earlier real-backend browser acceptance
 
 The isolated stack uses port 8147, PostgreSQL port 55442, Compose project `opentag-navigation-e2e-f25b`, and disposable
 database `opentag_nav_e2e_f25b`. It does not reuse the existing local PostgreSQL services. Creation and navigation

@@ -94,8 +94,10 @@ The account rail's brand mark links to the Agent list, preserving the logo's hom
 On phones they follow the shell's existing compact navigation. The same shell and session-local page memory remain
 mounted when moving between the Agent list and setup. An unfinished creation draft, including its current step,
 name, runtime, and destination, is restored on return and cleared once its creation succeeds or the Account session ends.
-An in-flight creation is shared across those visits, preventing a second submission while it is pending. Its result
-only clears the submitted draft; edits made while waiting remain available and are not replaced by the older result.
+An in-flight creation is shared across those visits. While it is pending, the name, runtime, Back, and Create controls
+are disabled on both the original and returning form. The active form always receives its outcome: success opens the
+exact Agent's setup, while a refusal keeps the submitted draft available for editing and retry. Its result only clears
+the submitted draft; a departed form cannot clear a later draft or redirect the reader back into setup.
 Drafts are not persisted across a document reload or an external authorization round trip; after creation, the exact
 Agent's server snapshot restores the remaining setup steps.
 If a creation finishes after the user navigates away, it refreshes the Agent list without pulling the user back into setup.
@@ -104,6 +106,8 @@ First-time setup stays full-screen throughout its current journey, even when Acc
 Computer or messaging setup. An Account-scoped, tab-local layout marker preserves this presentation across reloads
 and external authorization; leaving setup or signing out clears it. If browser storage is unavailable, the current
 document still retains its layout and navigation and sign-out continue to work; the reload hint is optional.
+Restoring a browser tab that retains this hint also resumes full-screen setup, even after Account admission. The
+header's brand link exits to All Agents and retires the hint, so the next setup visit uses the account rail.
 Subsequent setup visits use the application shell.
 After an exact Agent has been admitted, the full-screen header's openTag logo links to the Agent list (`/agents`),
 including on the setup completion screen. The pre-Agent creation header keeps its existing navigation restrictions.

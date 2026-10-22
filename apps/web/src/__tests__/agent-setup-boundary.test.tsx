@@ -161,8 +161,8 @@ describe("Agent Setup route boundary", () => {
   });
 
   it.each([false, true])(
-    "shares a pending creation across navigation and preserves newer edits=%s",
-    async (editAfterReturning) => {
+    "locks the submitted draft while creation is pending after navigation=%s",
+    async (leaveAndReturn) => {
       let finishCreation: () => void = () => undefined;
       installApi({
         agentCreate: () =>
@@ -177,34 +177,56 @@ describe("Agent Setup route boundary", () => {
       fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "draft-a" } });
       fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
       await waitFor(() => expect(agentCreationPosts()).toHaveLength(1));
-      fireEvent.click(screen.getByRole("link", { name: "All Agents" }));
-      fireEvent.click(await screen.findByRole("link", { name: "New Agent" }));
-      await screen.findByLabelText("Agent name");
-      expect((screen.getByRole("button", { name: "Creating…" }) as HTMLButtonElement).disabled).toBe(true);
-      if (editAfterReturning) {
-        fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "draft-b" } });
+      if (leaveAndReturn) {
+        fireEvent.click(screen.getByRole("link", { name: "All Agents" }));
+        fireEvent.click(await screen.findByRole("link", { name: "New Agent" }));
       }
-      const form = screen.getByLabelText("Agent name").closest("form");
+      const name = await screen.findByLabelText("Agent name");
+      expect(name).toHaveProperty("disabled", true);
+      expect(screen.getByRole("button", { name: "Creating…" })).toHaveProperty("disabled", true);
+      expect(screen.getByRole("button", { name: /Claude Code/ })).toHaveProperty("disabled", true);
+      fireEvent.change(name, { target: { value: "draft-b" } });
+      fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
+      expect(name).toHaveProperty("value", "draft-a");
+      expect(screen.getByRole("button", { name: /Codex/ }).getAttribute("aria-pressed")).toBe("true");
+      const form = name.closest("form");
       if (!form) throw new Error("Creation form is unavailable");
       fireEvent.submit(form);
       expect(agentCreationPosts()).toHaveLength(1);
       await act(async () => finishCreation());
-
-      if (!editAfterReturning) {
-        await expectPreparationGate();
-        expect(window.location.search).toContain("agentId=");
-        return;
-      }
-      await waitFor(() =>
-        expect((screen.getByRole("button", { name: "Create Agent" }) as HTMLButtonElement).disabled).toBe(false),
-      );
-      expect(screen.getByLabelText("Agent name")).toHaveProperty("value", "draft-b");
-      fireEvent.click(screen.getByRole("link", { name: "All Agents" }));
-      fireEvent.click(await screen.findByRole("link", { name: "New Agent" }));
-      expect(await screen.findByLabelText("Agent name")).toHaveProperty("value", "draft-b");
+      await expectPreparationGate();
+      expect(window.location.search).toContain("agentId=");
       expect(agentCreationPosts()).toHaveLength(1);
     },
   );
+
+  it("reports a refused pending creation and unlocks its draft for correction and retry", async () => {
+    let refuseCreation: (cause: Error) => void = () => undefined;
+    installApi({
+      agentCreate: () =>
+        new Promise<void>((_resolve, reject) => {
+          refuseCreation = reject;
+        }),
+    });
+    window.history.replaceState({}, "", "/agents/setup?action=create");
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
+    fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "draft-a" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+    await waitFor(() => expect(agentCreationPosts()).toHaveLength(1));
+    fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "draft-b" } });
+    await act(async () => refuseCreation(new Error("Creation unavailable")));
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(screen.getByLabelText("Agent name")).toHaveProperty("value", "draft-a");
+    expect(screen.getByLabelText("Agent name")).toHaveProperty("disabled", false);
+    expect(screen.getByRole("button", { name: "Create Agent" })).toHaveProperty("disabled", false);
+    fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "draft-b" } });
+    fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
+    expect(screen.getByLabelText("Agent name")).toHaveProperty("value", "draft-b");
+    expect(screen.getByRole("button", { name: /Claude Code/ }).getAttribute("aria-pressed")).toBe("true");
+    expect(agentCreationPosts()).toHaveLength(1);
+  });
 
   it("keeps resource navigation and local sign-out working when layout storage is unavailable", async () => {
     vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {

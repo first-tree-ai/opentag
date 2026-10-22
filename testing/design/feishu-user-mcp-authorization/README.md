@@ -377,9 +377,9 @@ is rejected with a bounded conflict while an active managed row is bound to the 
 user must disconnect first. The resolve-time check is the backstop for a write that races, a
 database change, or a path that forgets the write-time guard.
 
-The six names are written at connect time and are not editable from the Server settings. A
-re-connect writes a fresh list with the new credential. This is a credential-coupled least-privilege
-policy, not a nullable generic field on a mutable definition.
+The six names are a provider constant written at connect time and are not editable from the Server
+settings. A re-connect writes a fresh list with the new credential. This is a credential-coupled
+least-privilege policy, not a nullable generic field on a mutable definition.
 
 ## Security boundary
 

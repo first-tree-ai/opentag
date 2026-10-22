@@ -95,8 +95,8 @@ described as read-only: the verified application returned broad historical grant
 | FUA-I23 | Cancel first connect | The `none`/`pending` row created for the flow is deleted; cancelling a re-connection leaves the existing row untouched |
 | FUA-I24 | First write without renewal material | A missing refresh token or an invalid computed deadline cannot produce an `active` managed row; the service refuses and the flow is `not_renewable` |
 | FUA-I25 | Config-error recovery | Invalid-client codes keep the token, mark `error` with the bounded config code, retry slowly, and return to `active` after the secret is fixed |
-| FUA-I26 | Shared URL change after connect | The configuration write is rejected while the managed row is bound; a forced database change makes probe and `tools/call` fail closed with no upstream request and no credential header |
-| FUA-I27 | Agent URL override after connect | Setting the override is rejected; a forced override makes probe and `tools/call` fail closed with no upstream request and no credential header |
+| FUA-I26 | Shared URL change after connect | The configuration write is rejected while any credential-holding `feishu_user` row is bound, including an `error` row; a forced database change makes probe and `tools/call` fail closed with no upstream request and no credential header |
+| FUA-I27 | Agent URL override after connect | Setting the override is rejected while any credential-holding `feishu_user` row is bound, including an `error` row; a forced override makes probe and `tools/call` fail closed with no upstream request and no credential header |
 | FUA-I28 | Managed tool-policy invariant | Editing the shared definition or an Agent override cannot clear or widen `managed_tool_names` or the forced provider header; the advertised and callable set stays the six names |
 
 ## Gateway and tool restriction (unit or integration)
@@ -106,7 +106,7 @@ described as read-only: the verified application returned broad historical grant
 | FUA-G1 | Managed tool list | The managed row advertises exactly `managed_tool_names`; a non-managed row keeps its existing behavior |
 | FUA-G2 | Forbidden `tools/call` | Rejected before any upstream request; the fixture request log is empty for that call |
 | FUA-G3 | Unmanaged rows | No managed policy is applied; existing unrestricted behavior is unchanged |
-| FUA-G4 | Forced provider header | `X-Lark-MCP-Allowed-Tools` is exactly the six names even when the shared or Agent extra headers remove or widen it |
+| FUA-G4 | Forced provider header | `X-Lark-MCP-Allowed-Tools` is exactly the six names even when a lowercase shared or Agent override removes or widens it; the fixture asserts one header value, not a combined value |
 | FUA-G5 | Endpoint binding | A managed row whose effective URL differs from `credential_endpoint` produces `MCP_AUTHORIZATION_REQUIRED` before any credential header or upstream request |
 | FUA-G6 | Managed token header | The managed token is sent as `X-Lark-MCP-UAT` with an empty prefix; no token appears in a DTO |
 

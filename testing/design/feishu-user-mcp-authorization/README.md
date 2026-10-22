@@ -362,10 +362,11 @@ configuration at send time.
 - require the row's `managed_tool_names` to be non-empty.
 
 `buildHeadersFor` re-checks the same endpoint binding for callers that already hold a resolved row,
-and for a managed row it forces the wire format to `X-Lark-MCP-UAT` with an empty prefix and
-replaces `X-Lark-MCP-Allowed-Tools` in the effective extra headers with
+and for a managed row it removes every case variant of the authorization and allowed-tools header
+names from the effective extra headers (extra headers are stored lowercase), then sets exactly one
+lowercase `x-lark-mcp-uat` with an empty prefix and one lowercase `x-lark-mcp-allowed-tools` with
 `managed_tool_names.join(",")`. A shared-definition edit or an Agent override therefore cannot
-remove, rename, or widen the managed credential's headers.
+remove, rename, duplicate, or widen the managed credential's headers.
 
 The gateway filters the advertised tool list to `managed_tool_names` and rejects a `tools/call`
 for any other name before dialing upstream. The probe snapshot still records what the provider
@@ -373,7 +374,8 @@ advertises, so an operator can see the effect of the header, but the model-facin
 surface is the row's list.
 
 Configuration writes are the first gate: changing the shared URL or setting an Agent `url_override`
-is rejected with a bounded conflict while an active managed row is bound to the old endpoint; the
+is rejected with a bounded conflict while any `feishu_user` row that holds a credential is bound to
+the old endpoint, including an `error` row whose slow retry could later return it to `active`; the
 user must disconnect first. The resolve-time check is the backstop for a write that races, a
 database change, or a path that forgets the write-time guard.
 

@@ -44,6 +44,12 @@ tree-shake that unused import successfully. This change does not modify shared p
 - Existing MCP surface, semantic adapter, theme identity, and Kumo contract tests
 - MCP preset package tests (80 cases)
 - Shared/MCP preset builds required by package exports, and the Web production build
+- The existing authenticated Discover authorization browser spec: all eight cases passed against
+  the built application with an isolated disposable PostgreSQL database. Its category helper
+  exercises direct buttons, More menu radio items, and the mobile Select; desktop assertions
+  preserve the selected category and require More to close after selection.
 
-Database integration, full repository unit tests, and authenticated application E2E were not run:
-this change concerns category data, a Web control, and its shared visual recipe.
+The targeted browser command was
+`pnpm --filter @opentag/e2e exec playwright test tests/mcp-discover-authorization.spec.ts --project=smoke --workers=2`.
+The server and Web application were built for that harness. The full database integration suite,
+full repository unit suite, and remaining application E2E specs were not run locally.

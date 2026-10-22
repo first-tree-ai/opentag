@@ -3,19 +3,32 @@ import { expectAccessible, expectNoPageOverflow } from "./browser-contract.js";
 import { expect, smokeTest as test } from "./fixtures.js";
 import { createAgent, mcpFixture } from "./mcp-browser-fixture.js";
 
+async function chooseDiscoverCategory(page: Page, dialog: Locator, category: string) {
+  const categorySelect = dialog.getByRole("combobox", { name: "Categories", exact: true });
+  if (await categorySelect.isVisible()) {
+    await categorySelect.click();
+    await page.getByRole("option", { name: category, exact: true }).click();
+  } else {
+    const directChoice = dialog
+      .getByRole("button", { name: category, exact: true })
+      .and(dialog.locator("[aria-pressed]"));
+    if (await directChoice.isVisible()) {
+      await directChoice.click();
+    } else {
+      await dialog.locator('[data-ui="overflow-filter"] button[aria-haspopup="menu"]').click();
+      await page.getByRole("menuitemradio", { name: category, exact: true }).click();
+      await expect(page.getByRole("menu")).toHaveCount(0);
+    }
+  }
+}
+
 async function openDiscover(page: Page, agentId: string, category = "Data & Analytics") {
   await page.goto(`/agents/${agentId}/mcp`);
   await page.getByRole("button", { name: "Discover", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Discover", exact: true });
   await expect(dialog.getByLabel("Search connectors")).toBeVisible();
   await expect(dialog.locator('[data-ui="dialog-heading"]')).toBeFocused();
-  const categorySelect = dialog.getByRole("combobox", { name: "Categories", exact: true });
-  if (await categorySelect.isVisible()) {
-    await categorySelect.click();
-    await page.getByRole("option", { name: category, exact: true }).click();
-  } else {
-    await dialog.getByRole("button", { name: category, exact: true }).click();
-  }
+  await chooseDiscoverCategory(page, dialog, category);
   return { dialog, card: dialog.getByRole("listitem").filter({ has: page.getByText("Airtable", { exact: true }) }) };
 }
 
@@ -77,9 +90,8 @@ for (const width of [1440, 736]) {
     await expect(card.getByRole("img", { name: "Added", exact: true })).toBeVisible();
     await expect(card.locator(".mcp-catalog-card-description")).toHaveText(originalDescription);
     await expectHeight(card, height);
-    await expect(dialog.getByRole("button", { name: "Data & Analytics", exact: true })).toHaveAttribute(
-      "aria-pressed",
-      "true",
+    await expect(dialog.locator('button[aria-pressed="true"], button[data-selected="true"]')).toHaveText(
+      "Data & Analytics",
     );
     await expectNoPageOverflow(page);
     await dialog.getByRole("button", { name: "Close Discover", exact: true }).click();
@@ -236,7 +248,7 @@ for (const finishFirst of ["cancel", "success"] as const) {
     fixture.releaseProbe();
     await search.fill("Google Calendar");
     await expect(calendar.getByRole("img", { name: "Added", exact: true })).toBeVisible();
-    await dialog.getByRole("button", { name: "Data & Analytics", exact: true }).click();
+    await chooseDiscoverCategory(page, dialog, "Data & Analytics");
     if (finishFirst === "success")
       await expect(airtable.getByRole("img", { name: "Added", exact: true })).toBeVisible();
     else await expect(airtable.getByRole("button", { name: "Add: Airtable", exact: true })).toBeEnabled();

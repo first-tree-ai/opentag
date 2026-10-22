@@ -368,14 +368,14 @@ test("real local OAuth popup cancellation removes new setup and reconnect retain
     const retryWindow = page.waitForEvent("popup");
     await page
       .getByRole("dialog")
-      .getByRole("button", { name: /^(Authorize|Reauthorize)$/, exact: true })
+      .getByRole("button", { name: /^(Authorize|Reauthorize)(?:: .+)?$/, exact: true })
       .click();
     const retry = await retryWindow;
     await retry.getByRole("link", { name: "Cancel sign-in" }).click();
     await expect(page.getByRole("button", { name: "Authorize", exact: true })).toBeEnabled();
     expect(await mounts(page, current.id)).toHaveLength(1);
     const failureWindow = page.waitForEvent("popup");
-    await page.getByRole("button", { name: /^(Authorize|Reauthorize)$/, exact: true }).click();
+    await page.getByRole("button", { name: /^(Authorize|Reauthorize)(?:: .+)?$/, exact: true }).click();
     upstream.tokenFailure(true);
     await (await failureWindow).getByRole("link", { name: "Approve", exact: true }).click();
     await expect(
@@ -383,7 +383,7 @@ test("real local OAuth popup cancellation removes new setup and reconnect retain
     ).toBeVisible();
     upstream.tokenFailure(false);
     const finalWindow = page.waitForEvent("popup");
-    await page.getByRole("button", { name: /^(Authorize|Reauthorize)$/, exact: true }).click();
+    await page.getByRole("button", { name: /^(Authorize|Reauthorize)(?:: .+)?$/, exact: true }).click();
     await (await finalWindow).getByRole("link", { name: "Approve", exact: true }).click();
     await expectReady(page, current.id);
     expect((await mounts(page, current.id))[0]?.mcpServerId).toBe(serverId);
@@ -709,7 +709,9 @@ for (const kind of ["oauth", "bearer", "none"] as const) {
           .poll(() => (entries.get(id)?.[0]?.authorization as { probeState?: string })?.probeState)
           .toBe("succeeded");
         await expect(
-          page.locator('[data-ui="mcp-server-list"]').getByRole("button", { name: /^(Authorize|Reauthorize|Retry)$/ }),
+          page
+            .locator('[data-ui="mcp-server-list"]')
+            .getByRole("button", { name: /^(Authorize|Reauthorize|Retry)(?:: .+)?$/ }),
         ).toHaveCount(0);
       }
       expect(entries.get(id)).toHaveLength(1);
@@ -747,7 +749,7 @@ for (const width of [320, 390, 768, 1440]) {
       const controls = row.locator(".mcp-server-controls");
       await expect(row.getByText("Authorization required", { exact: true })).toBeVisible();
       await expect(controls.getByRole("switch")).toHaveCount(0);
-      await expect(controls.getByRole("button", { name: "Authorize", exact: true })).toBeVisible();
+      await expect(controls.getByRole("button", { name: `Authorize: ${name}`, exact: true })).toBeVisible();
       await expect(controls.getByRole("button", { name: `Remove ${name}`, exact: true })).toBeVisible();
       const rowBox = await row.boundingBox();
       const controlBox = await controls.boundingBox();
@@ -789,8 +791,8 @@ for (const width of [320, 390, 768, 1440]) {
       await expect(page.locator('[data-ui="mcp-server-row"] .mcp-server-controls')).not.toContainText(
         /Authorize|Retry|Cancel/,
       );
-      await row.getByRole("button", { name: "Resume", exact: true }).click();
-      await expect(row.getByRole("button", { name: "Resume", exact: true })).toHaveCount(0);
+      await row.getByRole("button", { name: `Resume: ${name}`, exact: true }).click();
+      await expect(row.getByRole("button", { name: `Resume: ${name}`, exact: true })).toHaveCount(0);
       await expectReady(page, current.id);
       expect((await mounts(page, current.id))[0]?.authorization?.kind).toBe("none");
     } finally {

@@ -20,6 +20,7 @@ type CardProps = {
   connectionError?: string;
   highlighted?: boolean;
   connecting?: boolean;
+  recoveryDisabled?: boolean;
   oauthSession?: McpOAuthSession;
 };
 
@@ -42,7 +43,7 @@ export function McpServerCard(props: CardProps) {
     >
       <McpIdentity {...props} connecting={connecting} />
       <div className="mcp-server-controls">
-        <McpControls {...props} connecting={connecting} />
+        <McpControls {...props} checking={connecting} />
       </div>
     </li>
   );
@@ -86,17 +87,24 @@ function McpIdentity(props: CardProps) {
   );
 }
 
-function McpControls(props: CardProps) {
-  const { entry, connecting, resuming, onResume, onAction } = props;
-  const feedback = rowFeedback(props);
+function McpControls(props: CardProps & { checking: boolean }) {
+  const { entry, checking: connecting, resuming, onResume, onAction } = props;
+  const feedback = rowFeedback({ ...props, connecting });
+  const busy = Boolean(props.connecting || props.oauthSession?.phase || resuming);
+  const actionLabel =
+    feedback.action === "retry"
+      ? m.mcp_retry()
+      : entry.authorization?.kind === "bearer" && entry.authorization.hasCredential
+        ? m.mcp_update_credentials()
+        : authorizationAction(entry);
   return (
     <div className="mcp-server-actions">
       {!connecting && !entry.enabled ? (
         <Button
           variant="ghost"
           size="compact"
-          aria-describedby={`mcp-server-${entry.mcpServerId}-name`}
-          disabled={resuming || connecting}
+          aria-label={m.mcp_connector_action({ action: m.mcp_resume_action(), server: mcpTitle(entry) })}
+          disabled={busy || props.recoveryDisabled}
           loading={resuming}
           onClick={onResume}
         >
@@ -107,19 +115,16 @@ function McpControls(props: CardProps) {
         <Button
           variant="ghost"
           size="compact"
-          aria-describedby={`mcp-server-${entry.mcpServerId}-name`}
+          aria-label={m.mcp_connector_action({ action: actionLabel, server: mcpTitle(entry) })}
+          disabled={props.recoveryDisabled}
           onClick={() => onAction(feedback.action === "retry" ? "retry" : "authorize")}
         >
-          {feedback.action === "retry"
-            ? m.mcp_retry()
-            : entry.authorization?.kind === "bearer" && entry.authorization.hasCredential
-              ? m.mcp_update_credentials()
-              : authorizationAction(entry)}
+          {actionLabel}
         </Button>
       ) : null}
       <Tooltip
         content={m.mcp_detach_action()}
-        disabled={Boolean(resuming || connecting)}
+        disabled={busy}
         render={
           <Button
             data-ui="mcp-remove"
@@ -129,7 +134,7 @@ function McpControls(props: CardProps) {
             className="text-kumo-subtle hover:text-kumo-danger focus-visible:text-kumo-danger"
             aria-label={m.mcp_remove_connector({ server: mcpTitle(entry) })}
             aria-haspopup="dialog"
-            disabled={resuming || connecting}
+            disabled={busy}
             onClick={() => onAction("delete")}
           />
         }

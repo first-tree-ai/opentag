@@ -207,6 +207,12 @@ function McpManagementPage({ agentId }: { agentId: string }) {
     if (!outcome?.mcpServerId || mounted.isPending) return;
     document.getElementById(`mcp-server-${outcome.mcpServerId}`)?.scrollIntoView({ block: "nearest" });
   }, [outcome, mounted.isPending]);
+  const recoveryDisabled = [
+    connection.connectingId,
+    addingId,
+    ...Object.values(discover.connections).map((state) => state.pending),
+    ...servers.map((server) => detailOAuth(server.mcpServerId).phase),
+  ].some(Boolean);
   return (
     <section
       ref={pageRef}
@@ -254,6 +260,7 @@ function McpManagementPage({ agentId }: { agentId: string }) {
                 Boolean(discover.connections[entry.mcpServerId]?.pending) ||
                 Boolean(detailOAuth(entry.mcpServerId).phase)
               }
+              recoveryDisabled={recoveryDisabled}
               connectionError={errorFor(entry.mcpServerId)}
               oauthSession={sessionFor(entry.mcpServerId)}
               onAction={(kind) => {
@@ -441,6 +448,7 @@ function McpRow({
   highlighted,
   onAction,
   connecting,
+  recoveryDisabled,
   connectionError,
   oauthSession,
 }: {
@@ -449,6 +457,7 @@ function McpRow({
   highlighted: boolean;
   onAction: (action: ServerAction) => void;
   connecting: boolean;
+  recoveryDisabled: boolean;
   connectionError?: string;
   oauthSession?: McpOAuthSession;
 }) {
@@ -477,6 +486,7 @@ function McpRow({
       entry={entry}
       highlighted={highlighted}
       connecting={connecting}
+      recoveryDisabled={recoveryDisabled}
       onAction={onAction}
       onResume={() => void resume()}
       resuming={update.isPending}

@@ -22,7 +22,8 @@ No outstanding blocking finding was identified within this Web-only change.
 
 ## Automated checks
 
-- MCP tests: **28 files, 372 tests passed**, including the new authorization-refusal regression.
+- Original MCP-only review: **28 files, 372 tests passed**, including the new authorization-refusal regression.
+  The latest broader run and review follow-up are recorded in `submission-validation.md` and `review-tests.txt`.
 - Web TypeScript check passed.
 - Web production build passed with its normal bundle budgets. Existing externalization/chunk-size
   warnings did not fail the build.

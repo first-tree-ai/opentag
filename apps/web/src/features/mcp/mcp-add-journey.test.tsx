@@ -128,7 +128,7 @@ describe("custom connector setup across dialogs", () => {
       await closeAdd();
       expect(await screen.findByText("Waiting for authorization…")).toBeTruthy();
       expect(screen.getByRole("button", { name: "Remove review" }).hasAttribute("disabled")).toBe(true);
-      expect(screen.queryByRole("button", { name: /^(Authorize|Reauthorize|Retry|Cancel)$/ })).toBeNull();
+      expect(screen.queryByRole("button", { name: /^(Authorize|Reauthorize|Retry|Cancel)(?:: .+)?$/ })).toBeNull();
       await openDetails("review");
       expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" })).toBeTruthy();
       expect(within(screen.getByRole("dialog")).queryByRole("button", { name: "Authorize" })).toBeNull();

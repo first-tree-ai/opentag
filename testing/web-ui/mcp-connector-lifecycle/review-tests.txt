@@ -1,8 +1,17 @@
- Test Files  28 passed (28)
-      Tests  372 passed (372)
-   Start at  15:20:02
-   Duration  111.07s (import 53%, environment 16%, tests 14%, transform 10%, setup 6%)
+Latest review follow-up validation (2026-10-22)
 
-     Import  |web| 1760 modules were evaluated 42344 times · 57.23s total, 53% of tracked time
-             ~54.85s faster with isolate: false — shared modules are evaluated once per worker instead of once per file
-             learn more: https://vitest.dev/guide/improving-performance#test-isolation
+Command:
+pnpm --filter @opentag/web test src/features/mcp src/ui/design-system.test.tsx src/__tests__/i18n-catalog.test.ts src/__tests__/agent-instructions-page.test.tsx
+
+31 files / 399 tests: 398 passed initially; one MCP first-render query exceeded
+Testing Library's default 1-second wait. After giving that query the same bounded
+10-second wait as other initial page loads, the owning mcp-page suite passed
+all 24 tests on its targeted rerun. All 399 distinct cases are accounted for;
+this is not a claim of a single green 399-test run.
+
+The earlier 28-file / 372-test transcript measured the MCP-only suite before
+synchronization. It has been replaced here to avoid presenting it as the latest
+broader validation command.
+
+Additional coverage-mode check:
+Soul page: 1 file / 4 tests passed with the root V8 coverage configuration.

@@ -1071,7 +1071,9 @@ successful tool discovery makes it usable without another enable action.
 A normal row shows the connector description. When attention is needed, a short known reason replaces
 the description and one contextual text action appears before the trash icon: **Authorize**,
 **Reauthorize**, **Update credentials**, or **Retry**. OAuth and tool retries run directly; credential
-entry opens the existing management dialog. An unauthenticated connector shows **Authorization
+entry opens the existing management dialog. Each recovery button's accessible name includes the
+connector name. Recovery actions are disabled while another browser connection attempt is active,
+so an unavailable action cannot silently drop a click. An unauthenticated connector shows **Authorization
 required**. The identity remains the single entry for full settings. Successful tool snapshots have
 no aggregate Connected badge, success dot, or tool count.
 A completed snapshot remains quiet while its background replacement is pending; first-time loading,
@@ -1084,7 +1086,9 @@ assuming usability. Web does not offer another disable action. The database fiel
 CLI enable/disable commands remain supported, so disabled mounts created outside Web stay visible.
 During an actual authorization or initial connection check, the description position shows
 **Waiting for authorization…** or **Checking connection…**. The right side contains only the disabled
-trash button; recovery actions return after failure. Blocked authorization is explained in the row,
+trash button for the browser-owned attempt; recovery actions return after failure. A saved pending
+background probe still shows checking feedback but leaves Remove available, so a delayed worker
+cannot lock the user out of removing the connector. Blocked authorization is explained in the row,
 with the existing Open window and Cancel controls inside management. A pending authorization record
 without a live browser session does not imply an ongoing flow. On narrow content widths, rows
 with a recovery action place that action and the trash icon together below the identity, aligned

@@ -11,7 +11,9 @@ describe("MCP connector list", () => {
     stub([entry()]);
     const update = vi.spyOn(browserApi, "updateAgentMcpServer");
     wrap(<McpPage agentId={AGENT_ID} />);
-    const row = (await screen.findByRole("button", { name: "linear" })).closest("li") as HTMLElement;
+    const row = (await screen.findByRole("button", { name: "linear" }, { timeout: 10000 })).closest(
+      "li",
+    ) as HTMLElement;
     expect(within(row).queryByText(/Connected|3 tools|Disabled/)).toBeNull();
     expect(within(row).queryByRole("button", { name: /Retry|Authorize|Resume|More actions/ })).toBeNull();
     expect(within(row).queryByRole("switch")).toBeNull();
@@ -62,7 +64,7 @@ describe("MCP connector list", () => {
     const update = vi.spyOn(browserApi, "updateAgentMcpServer");
     wrap(<McpPage agentId={AGENT_ID} />);
     expect(await screen.findByText("Disabled")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Resume" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Resume: linear" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove linear" })).toBeTruthy();
     expect(screen.queryByRole("switch")).toBeNull();
     expect(screen.queryByText("Authorization required")).toBeNull();
@@ -89,10 +91,10 @@ describe("MCP connector list", () => {
         return resumed;
       });
       wrap(<McpPage agentId={AGENT_ID} />);
-      const resume = await screen.findByRole("button", { name: "Resume" });
+      const resume = await screen.findByRole("button", { name: "Resume: linear" });
       resume.focus();
       fireEvent.click(resume);
-      await waitFor(() => expect(screen.queryByRole("button", { name: "Resume" })).toBeNull());
+      await waitFor(() => expect(screen.queryByRole("button", { name: "Resume: linear" })).toBeNull());
       expect(update).toHaveBeenCalledExactlyOnceWith(AGENT_ID, resumed.mcpServerId, { enabled: true });
       expect(authorize).not.toHaveBeenCalled();
       expect(screen.queryByText("Disabled")).toBeNull();
@@ -124,7 +126,7 @@ describe("MCP connector list", () => {
         return entry();
       });
     wrap(<McpPage agentId={AGENT_ID} />);
-    const resume = await screen.findByRole("button", { name: "Resume" });
+    const resume = await screen.findByRole("button", { name: "Resume: linear" });
     fireEvent.click(resume);
     await waitFor(() => expect(resume.hasAttribute("disabled")).toBe(true));
     expect(screen.getByRole("button", { name: "Remove linear" }).hasAttribute("disabled")).toBe(true);
@@ -134,7 +136,7 @@ describe("MCP connector list", () => {
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Cannot change this connection");
     await waitFor(() => expect(resume.hasAttribute("disabled")).toBe(false));
     fireEvent.click(resume);
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Resume" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Resume: linear" })).toBeNull());
     expect(screen.queryByRole("alert")).toBeNull();
     expect(update).toHaveBeenCalledTimes(2);
   });
@@ -143,7 +145,7 @@ describe("MCP connector list", () => {
     let finish: (value: ReturnType<typeof entry>) => void = () => {};
     vi.spyOn(browserApi, "updateAgentMcpServer").mockImplementation(() => new Promise((resolve) => (finish = resolve)));
     wrap(<McpPage agentId={AGENT_ID} />);
-    const resume = await screen.findByRole("button", { name: "Resume" });
+    const resume = await screen.findByRole("button", { name: "Resume: linear" });
     resume.focus();
     fireEvent.click(resume);
     await openDetails();

@@ -586,7 +586,7 @@ describe("Discover authorization lifecycle", () => {
       const row = within(document.getElementById(`mcp-server-${ALPHA_ID}`) as HTMLElement);
       await row.findByText("Waiting for authorization…");
       expect(row.queryByRole("button", { name: "Cancel" })).toBeNull();
-      expect(row.queryByRole("button", { name: /^(Reauthorize|Authorize)$/ })).toBeNull();
+      expect(row.queryByRole("button", { name: /^(Reauthorize|Authorize)(?:: .+)?$/ })).toBeNull();
       await complete(browser, calls.mounts);
       await waitFor(() => expect(calls.probe).toHaveBeenCalledWith(AGENT_ID, ALPHA_ID));
       expect(calls.detach).not.toHaveBeenCalled();

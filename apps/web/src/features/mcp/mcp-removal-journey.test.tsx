@@ -66,7 +66,7 @@ describe("MCP removal", () => {
       vi.mocked(browserApi.agentMcpServers).mockResolvedValue({ servers: [previous, next] });
     });
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Resume" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Resume: gamma" }));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Remove gamma" }).hasAttribute("disabled")).toBe(true),
     );

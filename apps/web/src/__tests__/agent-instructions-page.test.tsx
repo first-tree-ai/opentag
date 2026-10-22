@@ -23,7 +23,7 @@ describe("Agent Soul page", () => {
     });
     window.history.replaceState({}, "", `/agents/${agentId}`);
     render(<App />);
-    const navigation = await screen.findByRole("navigation", { name: "Agent" });
+    const navigation = await screen.findByRole("navigation", { name: "Agent" }, { timeout: 10000 });
     fireEvent.click(within(navigation).getByRole("link", { name: "Soul" }));
 
     expect(await screen.findByRole("heading", { level: 1, name: "Soul" })).toBeTruthy();

@@ -248,8 +248,9 @@ Add an optional `allowed_tools` list to the shared Server definition:
 - `NULL` means unrestricted, preserving every existing Server.
 - The gateway filters the advertised tool list to allowed names and rejects a `tools/call` for any
   other name before dialing upstream.
-- The probe still records the full provider inventory, so an operator can see what the grant can
-  actually reach; the UI reports how many tools are allowed.
+- The probe records what the provider advertises under the configured header. The gateway applies
+  the allowlist as a second, independent check, so a provider that ignores or changes that header
+  cannot widen what the Agent calls. The UI reports how many tools are allowed.
 - The Feishu preset sets the six names and the allowed-tools header together.
 
 This is a generic least-privilege control, not a Feishu-specific branch in the gateway.

@@ -78,7 +78,7 @@ described as read-only: the verified application returned broad historical grant
 | FUA-G1 | Allowed list set to the six tools | Advertised tools are exactly the allowed subset |
 | FUA-G2 | Forbidden `tools/call` | Rejected before any upstream request; the fixture request log is empty for that call |
 | FUA-G3 | No allowed list | Existing unrestricted behavior is unchanged |
-| FUA-G4 | Probe inventory | The snapshot still records the provider's full inventory; the UI reports the allowed count |
+| FUA-G4 | Probe snapshot | Records what the provider advertises under the configured header; the UI reports how many tools the allowlist permits |
 | FUA-G5 | Manual token header | The managed token is sent as `X-Lark-MCP-UAT` with an empty prefix; no token appears in a DTO |
 
 ## Web App (unit)

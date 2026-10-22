@@ -82,10 +82,13 @@ verified refresh use those shapes. `/open-apis/authen/v1/oidc/access_token` is a
 OIDC API and is not part of this contract.
 
 The device authorization response carries `device_code`, `user_code`, `verification_uri`,
-`verification_uri_complete`, `expires_in`, and `interval`. The v2 token response carries a numeric
-`code`, `access_token`, `refresh_token`, `expires_in` (observed approximately two hours),
-`refresh_token_expires_in` (observed approximately seven days), `scope`, and `token_type`. It does
-not use the OAuth `error` / `invalid_grant` spelling for refresh failures.
+`verification_uri_complete`, `expires_in`, and `interval`. The v2 token endpoint is shared by
+device polling and refresh, but the two grants do not share an error convention: device polling
+reports OAuth-style `error` strings (`authorization_pending`, `slow_down`, `access_denied`,
+`expired_token`), while refresh reports a numeric `code`. The provider client owns both maps.
+The success body carries `access_token`, `refresh_token`, `expires_in` (observed approximately two
+hours), `refresh_token_expires_in` (observed approximately seven days), `scope`, and `token_type`.
+Refresh failures do not use the OAuth `invalid_grant` / `invalid_client` spelling.
 
 ### Token response classification
 
@@ -217,12 +220,16 @@ without a ciphertext. The first Feishu connect therefore does not create a pendi
 - If a row already exists, its `kind`, `status`, `credential_source`, and credential are left
   untouched while the flow runs. This includes an anonymous `none`/`active` row and a working
   manually supplied or managed credential.
-- On success, the row becomes `kind = 'bearer'`, `status = 'active'`, `credential_source =
-  'feishu_user'`, with the sealed credential and provider metadata written together.
+- On success, the identity check (`user_info`) runs before anything is stored. A failed identity
+  check is a terminal flow failure and stores no credential. On success, the row becomes
+  `kind = 'bearer'`, `status = 'active'`, `credential_source = 'feishu_user'`, with the sealed
+  credential and provider metadata written together.
 - On a denied, expired, or failed flow, the flow row keeps the terminal status. In addition, a
   first-connect row still at `none`/`pending` becomes `none`/`error` with the same bounded
   `failure_code`. A working credential or an anonymous `active` row is never downgraded by a failed
   re-connection.
+- Cancelling a first-connect flow deletes the `none`/`pending` row created for it, restoring the
+  "no authorization row" state. Cancelling a re-connection leaves the existing row untouched.
 
 ### What drives polling
 

@@ -56,6 +56,7 @@ described as read-only: the verified application returned broad historical grant
 | FUA-U17 | `21000`, `21001` | Policy-stop verdict; token kept; bounded security-challenge code; no auto-retry |
 | FUA-U18 | Missing `code`, missing `access_token`, or another numeric code | Unknown verdict; token kept; no auto-retry |
 | FUA-U19 | Omitted response fields | Missing `refresh_token` keeps the stored one; missing `refresh_token_expires_in` keeps the previous deadline; missing `expires_in` uses 7200 seconds; missing `scope` keeps stored scopes |
+| FUA-U20 | Identity check failure | Terminal flow failure; no credential stored; bounded code only |
 
 ## Persistence and lifecycle (integration)
 
@@ -83,6 +84,7 @@ described as read-only: the verified application returned broad historical grant
 | FUA-I20 | Polling drivers | The on-demand route polls once when `next_poll_at` is due and does not call upstream before it; the dedicated worker recovers a flow after restart |
 | FUA-I21 | `20050` lifecycle | The row stays `active`, the claim is released, and the next scheduled pass retries; no retry in the same pass |
 | FUA-I22 | Refresh deadline evidence | The stored deadline follows a returned `refresh_token_expires_in` and keeps the previous value when omitted; the slide-versus-fixed result is recorded |
+| FUA-I23 | Cancel first connect | The `none`/`pending` row created for the flow is deleted; cancelling a re-connection leaves the existing row untouched |
 
 ## Gateway and tool restriction (unit or integration)
 

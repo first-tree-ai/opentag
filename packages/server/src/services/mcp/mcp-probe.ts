@@ -29,6 +29,19 @@ import type { McpOutboundFetcher } from "./mcp-url-policy.js";
  * while probes run concurrently.
  */
 
+/*
+ * Endpoint URLs may carry credentials in the path or query (for example `?exaApiKey=...`), and the
+ * service logger redacts by key name only, so a raw URL string would pass through unmasked. Every
+ * probe log line binds the origin instead. Revisit only if the logger gains value-based redaction.
+ */
+function endpointOrigin(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "invalid-url";
+  }
+}
+
 /** Total probe budget across every page, so a Server cannot keep us paginating forever. */
 const DEFAULT_PROBE_BUDGET_MS = 30_000;
 const MAX_PROBE_PAGES = 20;
@@ -127,7 +140,7 @@ export class McpProbe {
       this.#logger?.info(
         {
           accountId: input.accountId,
-          url: input.url,
+          endpoint: endpointOrigin(input.url),
           cachedEra: input.cachedEra,
           errorCode: error instanceof McpServiceError ? error.code : undefined,
           upstreamStatus: error instanceof McpTransportError ? error.status : undefined,
@@ -186,7 +199,7 @@ export class McpProbe {
         this.#logger?.info(
           {
             accountId: input.accountId,
-            url: input.url,
+            endpoint: endpointOrigin(input.url),
             upstreamStatus: error.status,
             rpcCode: error.rpcError?.code,
           },
@@ -366,7 +379,7 @@ export class McpProbe {
       skipped += 1;
       const { ok: _ok, name, ...detail } = validation;
       this.#logger?.warn(
-        { accountId: input.accountId, url: input.url, tool: name, ...detail },
+        { accountId: input.accountId, endpoint: endpointOrigin(input.url), tool: name, ...detail },
         "MCP probe skipped a tool that violates a per-tool bound",
       );
     }

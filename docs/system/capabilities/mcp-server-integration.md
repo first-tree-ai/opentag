@@ -138,7 +138,8 @@ replays on `-32601`, because a `tools/call` can raise it from inside the tool.
 The probe API answers `200` whether or not the probe succeeded and never returns the upstream
 status. A failed probe and a legacy fallback each write one `info` line carrying `upstreamStatus`,
 `rpcCode`, and `errorCode` — never the upstream message — so the status the Server really sent is
-readable in the service log.
+readable in the service log. Every probe log line identifies the Server by `endpoint`, the URL origin only,
+because an endpoint path or query can carry a credential that the logger's key-name redaction does not catch.
 
 A dual-endpoint HTTP+SSE Server (2024-11-05) is reported as `MCP_TRANSPORT_UNSUPPORTED` rather than
 being half-supported.

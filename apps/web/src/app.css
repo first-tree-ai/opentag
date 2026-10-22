@@ -42,14 +42,6 @@
   width: auto;
   height: 36px;
 }
-.opentag-logo__text {
-  font-family: var(--ui-font);
-  font-size: 19px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  line-height: 1;
-  white-space: nowrap;
-}
 .opentag-logo__light {
   display: var(--opentag-logo-light-display);
 }

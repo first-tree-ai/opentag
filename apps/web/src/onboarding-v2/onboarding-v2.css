@@ -95,10 +95,11 @@
   border-top-color: var(--focus);
 }
 
+/* 1.4 keeps the digit or check ink inside its own line box; the circle below centres that box. */
 .otv2-rail__marker {
   width: 18px;
   height: 18px;
-  line-height: 1;
+  line-height: 1.4;
 }
 
 .otv2-rail__step[data-status="current"] .otv2-rail__marker {
@@ -356,7 +357,7 @@
   border: 1px solid var(--color-kumo-line);
   border-radius: 50%;
   font-size: 0.75rem;
-  line-height: 1;
+  line-height: 1.4;
   color: var(--text-color-kumo-subtle);
 }
 

@@ -130,6 +130,7 @@ describe("OverflowFilter", () => {
     fireEvent.click(screen.getByRole("button", { name: "More" }));
     fireEvent.click(await screen.findByRole("menuitemradio", { name: "Developer Tools" }));
     await waitFor(() => expect(labels()).toEqual(["All", "Knowledge", "Developer Tools"]));
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
     expect(screen.getByRole("button", { name: "Developer Tools" }).getAttribute("data-selected")).toBe("true");
     fireEvent.click(screen.getByRole("button", { name: "Developer Tools" }));
     expect((await screen.findByRole("menuitemradio", { name: "Developer Tools" })).getAttribute("aria-checked")).toBe(
@@ -170,5 +171,9 @@ describe("OverflowFilter", () => {
     for (const button of within(screen.getByRole("group", { name: "Categories" })).getAllByRole("button")) {
       expect(button.hasAttribute("disabled")).toBe(true);
     }
+    view.rerender(<Example />);
+    expect(screen.queryByRole("menu")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    await screen.findByRole("menu");
   });
 });

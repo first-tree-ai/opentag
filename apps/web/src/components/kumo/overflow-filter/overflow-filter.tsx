@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button, DropdownMenu, Icon, Tooltip } from "../../../ui/design-system.js";
 
 export type OverflowFilterItem = { value: string; label: string };
@@ -38,6 +38,10 @@ export function OverflowFilter({
   const [open, setOpen] = useState(false);
   const container = useRef<HTMLDivElement>(null);
   const measures = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
 
   useLayoutEffect(() => {
     let disposed = false;
@@ -133,6 +137,7 @@ export function OverflowFilter({
                   {overflow.map((item) => (
                     <DropdownMenu.RadioItem
                       key={item.value}
+                      closeOnClick
                       className="gap-6 data-checked:bg-(--brand-soft) data-checked:font-semibold data-checked:text-kumo-default"
                       disabled={disabled}
                       value={item.value}

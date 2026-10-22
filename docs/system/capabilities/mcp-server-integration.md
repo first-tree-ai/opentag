@@ -1268,9 +1268,10 @@ Desktop filters stay on one line and move a trailing suffix into **More** accord
 available container width. More retains the same order and marks the selected item. Selecting
 an overflow category replaces the trigger's label with that category's name without reordering
 or moving the direct choices. The trigger reserves label space, and the visible prefix is
-recalculated after resizing or font loading. Search spans the full directory and clears the
-category highlight; choosing a category clears search. Mobile uses the shared Kumo Select with
-the same order and selection. Buttons and the More trigger use the shared neutral-grey filter
+recalculated after resizing or font loading. Choosing a menu item closes More. Becoming busy
+also closes it; finishing the action never reopens the menu without user input. Search spans the
+full directory and clears the category highlight; choosing a category clears search. Mobile uses
+the shared Kumo Select with the same order and selection. Buttons and the More trigger use the shared neutral-grey filter
 selection recipe, preserving the application's typography, control size, and focus behavior.
 
 The current management layout is preserved: service identity opens settings, the list shows connection

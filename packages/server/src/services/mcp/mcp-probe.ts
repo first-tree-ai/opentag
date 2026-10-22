@@ -29,6 +29,19 @@ import type { McpOutboundFetcher } from "./mcp-url-policy.js";
  * while probes run concurrently.
  */
 
+/*
+ * Endpoint URLs may carry credentials in the path or query (for example `?exaApiKey=...`), and the
+ * service logger redacts by key name only, so a raw URL string would pass through unmasked. Every
+ * probe log line binds the origin instead. Revisit only if the logger gains value-based redaction.
+ */
+function endpointOrigin(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "invalid-url";
+  }
+}
+
 /** Total probe budget across every page, so a Server cannot keep us paginating forever. */
 const DEFAULT_PROBE_BUDGET_MS = 30_000;
 const MAX_PROBE_PAGES = 20;
@@ -90,7 +103,10 @@ export interface McpProbeOptions {
   now?: () => Date;
   probeBudgetMs?: number;
   clientInfo?: { name: string; version: string };
-  /** Receives one `warn` line per skipped tool; absent means skipped tools are counted silently. */
+  /**
+   * Receives one `warn` line per skipped tool, plus an `info` line for a failed probe and for a
+   * legacy fallback; absent means skipped tools are counted silently and nothing else is logged.
+   */
   logger?: ServiceLogger;
 }
 
@@ -116,6 +132,22 @@ export class McpProbe {
         ? await this.#probeLegacy(input, deadline)
         : await this.#probeModern(input, deadline);
     } catch (error) {
+      /*
+       * The probe API answers 200 whether or not the probe succeeded, and the upstream status never
+       * reaches the response, so this line is the only place that shows what the Server really sent.
+       * Only the status and codes are bound: the upstream message stays out of the log line.
+       */
+      this.#logger?.info(
+        {
+          accountId: input.accountId,
+          endpoint: endpointOrigin(input.url),
+          cachedEra: input.cachedEra,
+          errorCode: error instanceof McpServiceError ? error.code : undefined,
+          upstreamStatus: error instanceof McpTransportError ? error.status : undefined,
+          rpcCode: error instanceof McpTransportError ? error.rpcError?.code : undefined,
+        },
+        "MCP probe failed",
+      );
       return failed(error, invalidatesProtocolEra(error));
     }
   }
@@ -163,7 +195,18 @@ export class McpProbe {
     } catch (error) {
       if (!(error instanceof McpTransportError) || error.status === undefined) throw error;
       const detection = detectEraFromRpcError(error.status, error.rpcError);
-      if (detection.era === "legacy") return { kind: "legacy" };
+      if (detection.era === "legacy") {
+        this.#logger?.info(
+          {
+            accountId: input.accountId,
+            endpoint: endpointOrigin(input.url),
+            upstreamStatus: error.status,
+            rpcCode: error.rpcError?.code,
+          },
+          "MCP probe falls back to the legacy handshake",
+        );
+        return { kind: "legacy" };
+      }
       /*
        * Modern peer, wrong version. Retry once with a version it advertised; if it advertised none
        * this client speaks, `negotiateProtocolVersion` reports a protocol failure rather than
@@ -336,7 +379,7 @@ export class McpProbe {
       skipped += 1;
       const { ok: _ok, name, ...detail } = validation;
       this.#logger?.warn(
-        { accountId: input.accountId, url: input.url, tool: name, ...detail },
+        { accountId: input.accountId, endpoint: endpointOrigin(input.url), tool: name, ...detail },
         "MCP probe skipped a tool that violates a per-tool bound",
       );
     }

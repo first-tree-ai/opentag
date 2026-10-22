@@ -68,6 +68,9 @@ which become active without a separate credential step.
 
 ## When changes apply
 
+- An owner opt-in change advances the runtime configuration revision atomically with the Agent
+  update. The next eligible Turn uses the new setting and starts a new native conversation after
+  any unresolved work settles. Repeating the same value does not advance the runtime revision.
 - Instructions, model, and reasoning effort are read from the live Agent configuration when each Turn is assembled, so
   a change applies from the next Turn of every existing Session. These fields are part of the effective runtime
   snapshot hash, so that Turn starts a new provider conversation instead of resuming the previous one: earlier
@@ -81,6 +84,12 @@ which become active without a separate credential step.
 `agent self update` reads the current revision first and sends it as `expectedRevision`. A concurrent change returns
 `AGENT_REVISION_CONFLICT`; read again and retry. `--instructions` replaces the whole instruction text, so read the
 current value with `agent self show` and keep what still applies.
+
+For Local Sessions saved by an older Client, a valid newer Soul can apply directly during the
+first Session preparation after upgrade. A separate format-only migration is not required.
+Unresolved work settles first; the configuration change then starts a new native conversation
+while preserving the OpenTag Session and its history. The Client checks both Agent and Session
+revisions from the saved snapshot, so restarting does not bypass same-revision conflicts.
 
 ## Observability
 

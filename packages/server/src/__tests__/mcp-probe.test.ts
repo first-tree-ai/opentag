@@ -1,5 +1,6 @@
 import { MCP_AUTH_REJECTION_SUMMARY, MCP_ERROR_CODES } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
+import { createServiceLoggerPort } from "../observability/service-logger.js";
 import { McpProbe } from "../services/mcp/mcp-probe.js";
 import { McpOutboundFetcher } from "../services/mcp/mcp-url-policy.js";
 
@@ -231,7 +232,7 @@ describe("MCP probe success path", () => {
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({
         accountId: ACCOUNT,
-        url: ENDPOINT,
+        endpoint: "https://mcp.example.com",
         tool: "a".repeat(129),
         reason: "over_bound",
         bound: "MCP_TOOL_NAME_MAX_BYTES",
@@ -517,6 +518,146 @@ describe("MCP probe era handling", () => {
     expect(result.protocolEra).toBe("legacy");
     expect(result.protocolVersion).toBe("2025-06-18");
     expect(result.tools.map((tool) => tool.name)).toEqual(["legacy-tool"]);
+  });
+
+  /*
+   * Zoom's MCP Server rejects `server/discover` with `-32601` at HTTP 200 while listing the method as
+   * valid. A status-only gate read that as a modern peer and failed the probe without ever trying
+   * `initialize`.
+   */
+  it("downgrades to the legacy handshake when server/discover is rejected with -32601 at HTTP 200", async () => {
+    const methods: string[] = [];
+    const fetchImpl = vi.fn(async (_url: URL | string, init?: RequestInit) => {
+      const method = (JSON.parse(String(init?.body)) as { method?: string }).method ?? "";
+      methods.push(method);
+      if (method === "server/discover") {
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: "1",
+            error: { code: -32601, message: "Unknown protocol method: 'server/discover'. Valid methods: ping" },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (method === "initialize") {
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: "1", result: { protocolVersion: "2025-06-18", capabilities: {} } }),
+          { status: 200, headers: { "content-type": "application/json", "mcp-session-id": "session-1" } },
+        );
+      }
+      if (method === "notifications/initialized") return new Response("", { status: 202 });
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", result: { tools: [{ name: "zoom-tool" }] } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const probe = new McpProbe({
+      fetcher: new McpOutboundFetcher({ ...PUBLIC_RESOLVE, allowLoopback: false, fetch: fetchImpl }),
+      logger,
+    });
+    const result = await probe.probe(request());
+    expect(methods).toEqual(["server/discover", "initialize", "notifications/initialized", "tools/list"]);
+    expect(result.probeState).toBe("succeeded");
+    expect(result.protocolEra).toBe("legacy");
+    expect(result.tools.map((tool) => tool.name)).toEqual(["zoom-tool"]);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ upstreamStatus: 200, rpcCode: -32601 }),
+      "MCP probe falls back to the legacy handshake",
+    );
+  });
+
+  it("logs the upstream status and codes, never the upstream message, when the probe fails", async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: "1", error: { code: -32603, message: "secret-upstream-detail" } }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    ) as unknown as typeof globalThis.fetch;
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const probe = new McpProbe({
+      fetcher: new McpOutboundFetcher({ ...PUBLIC_RESOLVE, allowLoopback: false, fetch: fetchImpl }),
+      logger,
+    });
+    const result = await probe.probe(request());
+    expect(result.probeState).toBe("failed");
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accountId: ACCOUNT,
+        errorCode: MCP_ERROR_CODES.UPSTREAM_ERROR,
+        upstreamStatus: 200,
+        rpcCode: -32603,
+      }),
+      "MCP probe failed",
+    );
+    expect(JSON.stringify(logger.info.mock.calls)).not.toContain("secret-upstream-detail");
+  });
+
+  /*
+   * The service logger redacts by key name only, so a credential in an endpoint query would pass
+   * through a raw `url` binding. These cases drive the real production logger port over a URL that
+   * carries a key and assert it reaches no log line, whichever path wrote the line.
+   */
+  describe("endpoint credentials never reach the log", () => {
+    const SECRET_URL = "https://mcp.example.com/mcp?exaApiKey=sk-endpoint-secret";
+
+    const rpc = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
+      new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
+
+    async function run(handler: (method: string) => Response) {
+      const written: string[] = [];
+      const sink = (...args: unknown[]) => void written.push(JSON.stringify(args));
+      const pino = { info: sink, warn: sink, error: sink, debug: sink };
+      const fetchImpl = vi.fn(async (_url: URL | string, init?: RequestInit) =>
+        handler((JSON.parse(String(init?.body)) as { method?: string }).method ?? ""),
+      ) as unknown as typeof globalThis.fetch;
+      const probe = new McpProbe({
+        fetcher: new McpOutboundFetcher({ ...PUBLIC_RESOLVE, allowLoopback: false, fetch: fetchImpl }),
+        logger: createServiceLoggerPort(() => pino as never, "mcp-probe"),
+      });
+      const result = await probe.probe({ ...request(), url: SECRET_URL });
+      return { result, written: written.join("\n") };
+    }
+
+    it("on the failed-probe line", async () => {
+      const { result, written } = await run(() =>
+        rpc({ jsonrpc: "2.0", id: "1", error: { code: -32603, message: "x" } }),
+      );
+      expect(result.probeState).toBe("failed");
+      expect(written).toContain("MCP probe failed");
+      expect(written).toContain("https://mcp.example.com");
+      expect(written).not.toContain("sk-endpoint-secret");
+    });
+
+    it("on the legacy-fallback line", async () => {
+      const { result, written } = await run((method) => {
+        if (method === "server/discover")
+          return rpc({ jsonrpc: "2.0", id: "1", error: { code: -32601, message: "x" } });
+        if (method === "initialize") {
+          return rpc({ jsonrpc: "2.0", id: "1", result: { protocolVersion: "2025-06-18", capabilities: {} } }, 200, {
+            "mcp-session-id": "s",
+          });
+        }
+        if (method === "notifications/initialized") return new Response("", { status: 202 });
+        return rpc({ jsonrpc: "2.0", id: "1", result: { tools: [{ name: "t" }] } });
+      });
+      expect(result.probeState).toBe("succeeded");
+      expect(written).toContain("MCP probe falls back to the legacy handshake");
+      expect(written).not.toContain("sk-endpoint-secret");
+    });
+
+    it("on the skipped-tool line", async () => {
+      const { result, written } = await run((method) =>
+        method === "server/discover"
+          ? rpc({ jsonrpc: "2.0", id: "1", result: { capabilities: {} } })
+          : rpc({ jsonrpc: "2.0", id: "1", result: { tools: [{ name: "a".repeat(129) }, { name: "ok" }] } }),
+      );
+      expect(result.toolsSkipped).toBe(1);
+      expect(written).toContain("MCP probe skipped a tool");
+      expect(written).not.toContain("sk-endpoint-secret");
+    });
   });
 
   /*

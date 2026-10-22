@@ -66,6 +66,24 @@ async function enableSelfConfiguration(value: Awaited<ReturnType<typeof fixture>
 }
 
 describe("Agent self-configuration against PostgreSQL", () => {
+  it("rolls back the owner toggle if the runtime revision write fails", async () => {
+    const value = await fixture();
+    try {
+      await value.sql.unsafe(`
+        CREATE FUNCTION reject_runtime_revision() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'simulated runtime revision write failure'; END $$;
+        CREATE TRIGGER reject_runtime_revision BEFORE UPDATE ON agent_runtime_configs
+        FOR EACH ROW EXECUTE FUNCTION reject_runtime_revision();
+      `);
+      await expect(enableSelfConfiguration(value)).rejects.toThrow();
+      expect(await value.agentService.getConfigById(value.accountId, value.agent.id)).toEqual(value.agent);
+    } finally {
+      await value.sql.unsafe("DROP TRIGGER IF EXISTS reject_runtime_revision ON agent_runtime_configs");
+      await value.sql.unsafe("DROP FUNCTION IF EXISTS reject_runtime_revision()");
+      await value.sql.end();
+    }
+  });
+
   it("resolves the owning Account from the Agent and updates its runtime config", async () => {
     const value = await fixture();
     try {

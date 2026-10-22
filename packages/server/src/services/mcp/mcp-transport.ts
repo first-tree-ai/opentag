@@ -516,6 +516,13 @@ export type McpEraDetection = { era: "modern"; retryWithVersions: readonly strin
  * The MCP-registered error codes only a modern Server emits. A generic JSON-RPC error is not one of
  * them: an older Server also answers `-32601` for a method it does not know, so treating that as a
  * modern signal would retry forever instead of falling back once.
+ *
+ * Zoom's MCP Server shows the other half of that: it answers `server/discover` with `-32601` at a
+ * status outside 400/404/405 (the body lists `server/discover` as valid, yet rejects it). The status
+ * gate alone read that as a modern peer and never reached `initialize`, so `-32601` decides the era
+ * on its own in `detectEraFromRpcError`. Use that only on a read such as `server/discover`: the
+ * gateway excludes `-32601` from its replay rule because a `tools/call` can raise it from inside the
+ * tool.
  */
 const MODERN_ERA_ERROR_CODES = new Set([
   MCP_RPC_HEADER_MISMATCH,
@@ -530,9 +537,11 @@ export function detectEraFromFailure(status: number, bodyText: string): McpEraDe
 /**
  * The same rule, for a caller that already parsed the envelope. A `400`/`404`/`405` whose body is a
  * recognizable modern JSON-RPC error is a modern peer telling us to retry with a different version;
- * any other body at those statuses is a peer that predates the modern model.
+ * any other body at those statuses is a peer that predates the modern model. `-32601` is legacy at
+ * any status, because a peer that does not know the discovery method predates it.
  */
 export function detectEraFromRpcError(status: number, error: McpJsonRpcError | undefined): McpEraDetection {
+  if (error?.code === MCP_RPC_METHOD_NOT_FOUND) return { era: "legacy" };
   if (status !== 400 && status !== 404 && status !== 405) return { era: "modern", retryWithVersions: [] };
   if (!error || !MODERN_ERA_ERROR_CODES.has(error.code)) return { era: "legacy" };
   if (error.code !== MCP_RPC_UNSUPPORTED_PROTOCOL_VERSION) return { era: "modern", retryWithVersions: [] };

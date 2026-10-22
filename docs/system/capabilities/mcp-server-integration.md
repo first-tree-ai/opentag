@@ -129,6 +129,18 @@ The MCP-registered codes `-32020`, `-32021`, and `-32022` are the modern signals
 `-32601` is deliberately *not* one: an older Server also answers `-32601` for a method it does not
 know, so treating it as a modern signal would retry forever instead of falling back once.
 
+The same `-32601` decides the era **at any status**, not only on `400`, `404`, or `405`. Zoom's MCP
+Server rejects `server/discover` with `-32601` at HTTP `200` while listing the method as valid; a
+status-only gate read that as a modern peer and failed the probe with `MCP_UPSTREAM_ERROR` before
+`initialize` was ever tried. This applies to the probe's `server/discover` only. The gateway never
+replays on `-32601`, because a `tools/call` can raise it from inside the tool.
+
+The probe API answers `200` whether or not the probe succeeded and never returns the upstream
+status. A failed probe and a legacy fallback each write one `info` line carrying `upstreamStatus`,
+`rpcCode`, and `errorCode` — never the upstream message — so the status the Server really sent is
+readable in the service log. Every probe log line identifies the Server by `endpoint`, the URL origin only,
+because an endpoint path or query can carry a credential that the logger's key-name redaction does not catch.
+
 A dual-endpoint HTTP+SSE Server (2024-11-05) is reported as `MCP_TRANSPORT_UNSUPPORTED` rather than
 being half-supported.
 

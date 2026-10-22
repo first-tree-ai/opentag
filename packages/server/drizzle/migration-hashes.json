@@ -330,6 +330,11 @@
       "idx": 65,
       "tag": "0065_github_oauth_cutover",
       "sha256": "4adf50e1b9838b38a5ec445b679bdddad6992f7cbf7ae9f6a2987c053c0c7d86"
+    },
+    {
+      "idx": 66,
+      "tag": "0066_self_configuration_runtime_revision",
+      "sha256": "8c64fc95151d1cda7ef07eb973f364b2897c5d25edf99621d9825ac5d66a629d"
     }
   ]
 }

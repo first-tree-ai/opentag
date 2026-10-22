@@ -1019,6 +1019,7 @@ export class AgentService {
           currentRuntimeConfig,
           input.runtimeConfig,
           now,
+          updated.selfConfigurationEnabled !== scope.agent.selfConfigurationEnabled,
         );
         return { config: toAgentAdminConfig(updated, runtimeConfig, scope.computerId) };
       }
@@ -1640,6 +1641,7 @@ export class AgentService {
     current: AgentRuntimeConfigRow,
     input: UpdateAgentRequest["runtimeConfig"],
     now: Date,
+    selfConfigurationChanged: boolean,
   ): Promise<AgentRuntimeConfigRow> {
     const projection = toRuntimeConfig(current);
     const next = resolveAgentRuntimeConfig({
@@ -1650,7 +1652,7 @@ export class AgentService {
       instructions: input?.instructions ?? projection.instructions,
       maxDurationMs: input?.maxDurationMs !== undefined ? input.maxDurationMs : projection.maxDurationMs,
     });
-    if (runtimeConfigsEqual(current, next)) return current;
+    if (!selfConfigurationChanged && runtimeConfigsEqual(current, next)) return current;
     const [updated] = await transaction
       .update(agentRuntimeConfigs)
       .set({ ...next, revision: sql`nextval('runtime_config_revision_sequence')`, updatedAt: now })

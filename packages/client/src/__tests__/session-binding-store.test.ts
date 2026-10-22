@@ -69,24 +69,10 @@ describe("SessionBindingStore", () => {
       ["missing snapshot directory", agentRuntimePaths(fixture.home, "agent-1").snapshots],
     ]).get(scenario);
     if (missingSnapshot) await rm(missingSnapshot, { recursive: true });
-    const revisionSequence = scenario === "same revision" ? 1 : 2;
-    const next: EffectiveRuntimeSnapshot = {
-      ...old,
-      selfConfigurationEnabled: false,
-      revision: {
-        agent: { sequence: revisionSequence, id: "new-agent-hash" },
-        session: { sequence: revisionSequence, id: "new-session-hash" },
-      },
-      execution: {
-        approvalPolicy: "on-request",
-        networkAccess: ["migrated Claude", "looser network"].includes(scenario),
-        allowCommands: [],
-      },
-    };
-    if (scenario === "changed input") next.instructions = { ...next.instructions, agent: "different" };
+    const next = legacyUpgradeSnapshot(old, scenario);
     const request = { ...fixture.reconcile, requestId: randomUUID(), runtime: next };
     const hashes = computeRuntimeSnapshotHashes(next);
-    if (!["same revision", "migrated Codex", "migrated Claude"].includes(scenario)) {
+    if (!["same revision", "migrated Codex", "migrated Claude", "changed input", "looser network"].includes(scenario)) {
       const before = await readFile(path, "utf8");
       await expect(fixture.store.validatePreparation(request, hashes)).rejects.toThrow();
       await expect(fixture.store.prepare(request, hashes)).rejects.toThrow();
@@ -95,7 +81,9 @@ describe("SessionBindingStore", () => {
     }
     await fixture.store.validatePreparation(request, hashes);
     const prepared = await fixture.store.prepare(request, hashes);
-    expect(prepared.binding.runtimeBinding).toEqual(binding.runtimeBinding);
+    expect(prepared.binding.runtimeBinding).toEqual(
+      ["changed input", "looser network"].includes(scenario) ? undefined : binding.runtimeBinding,
+    );
     expect(prepared.binding.recentRecordedInputs).toEqual(binding.recentRecordedInputs);
     expect(prepared.binding.lastEffectiveSnapshotHash).toBe(hashes.effectiveSnapshotHash);
     expect(await fixture.store.prepare(request, hashes)).toEqual(prepared);
@@ -127,15 +115,9 @@ describe("SessionBindingStore", () => {
       };
       const request = { ...fixture.reconcile, requestId: randomUUID(), runtime };
       const nextHashes = computeRuntimeSnapshotHashes(runtime);
-      if (optIn === "changed") {
-        const before = await readFile(path, "utf8");
-        await expect(fixture.store.prepare(request, nextHashes)).rejects.toThrow("changed content");
-        expect(await readFile(path, "utf8")).toBe(before);
-        return;
-      }
       await fixture.store.validatePreparation(request, nextHashes);
       const prepared = await fixture.store.prepare(request, nextHashes);
-      expect(prepared.binding.runtimeBinding).toEqual(binding.runtimeBinding);
+      expect(prepared.binding.runtimeBinding).toEqual(optIn === "changed" ? undefined : binding.runtimeBinding);
       expect(prepared.binding.recentRecordedInputs).toEqual(binding.recentRecordedInputs);
       expect(prepared.binding.lastEffectiveSnapshotHash).toBe(nextHashes.effectiveSnapshotHash);
       expect(
@@ -908,6 +890,25 @@ describe("SessionBindingStore", () => {
     ).rejects.toThrow(/real director|directories/i);
   });
 });
+
+function legacyUpgradeSnapshot(old: EffectiveRuntimeSnapshot, scenario: string): EffectiveRuntimeSnapshot {
+  const revisionSequence = scenario === "same revision" ? 1 : 2;
+  const next: EffectiveRuntimeSnapshot = {
+    ...old,
+    selfConfigurationEnabled: false,
+    revision: {
+      agent: { sequence: revisionSequence, id: "new-agent-hash" },
+      session: { sequence: revisionSequence, id: "new-session-hash" },
+    },
+    execution: {
+      approvalPolicy: "on-request",
+      networkAccess: ["migrated Claude", "looser network"].includes(scenario),
+      allowCommands: [],
+    },
+  };
+  if (scenario === "changed input") next.instructions = { ...next.instructions, agent: "different" };
+  return next;
+}
 
 async function bindingFixture() {
   const fixture = await unpreparedBindingFixture();

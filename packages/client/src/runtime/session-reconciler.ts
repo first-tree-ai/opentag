@@ -371,7 +371,7 @@ export class SessionReconciler {
     const shouldPrepareSession =
       !existingSession ||
       request.placementGeneration > existingSession.placementGeneration ||
-      snapshot.revision.session.sequence > existingSession.revisionSequence ||
+      hashes.effectiveSnapshotHash !== existingSession.effectiveSnapshotHash ||
       existingSession.status === "stopped" ||
       this.#preparation.requiresSessionPreparation?.(request, hashes) === true;
     const prepared = await this.#prepareOrReject(request, snapshot, hashes, shouldPrepareAgent, shouldPrepareSession);

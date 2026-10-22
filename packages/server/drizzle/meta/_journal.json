@@ -463,6 +463,13 @@
       "when": 1792586475987,
       "tag": "0065_github_oauth_cutover",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1792658060350,
+      "tag": "0066_self_configuration_runtime_revision",
+      "breakpoints": true
     }
   ]
 }

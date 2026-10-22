@@ -135,7 +135,7 @@ export class SessionBindingStore {
     if (!current) return;
     this.#validateIdentity(current, request);
     assertSettledBindingChange(current, request, hashes);
-    this.#assertRevision(current, request, hashes, await this.#canContinueLegacy(current, request));
+    await this.#validateAndSelectRuntimeBinding(current, request, hashes);
   }
 
   prepare(request: SessionReconcileRequest, hashes: RuntimeSnapshotHashes): Promise<SessionPreparationResult> {
@@ -152,8 +152,9 @@ export class SessionBindingStore {
       if (current?.unresolvedTurn) {
         return { binding: current, unresolvedTurn: current.unresolvedTurn };
       }
-      const legacyContinuation = current !== undefined && (await this.#canContinueLegacy(current, request));
-      if (current) this.#assertRevision(current, request, hashes, legacyContinuation);
+      const runtimeBinding = current
+        ? await this.#validateAndSelectRuntimeBinding(current, request, hashes)
+        : undefined;
 
       const snapshot = EffectiveRuntimeSnapshotSchema.parse(runtime);
       const storedSnapshot = snapshotPath(this.#home, request.agentId, hashes.effectiveSnapshotHash);
@@ -174,7 +175,7 @@ export class SessionBindingStore {
         placementGeneration: request.placementGeneration,
         provider: runtime.provider,
         providerHomeIdentity: this.#artifactIdentity(runtime.provider),
-        ...retainedRuntimeBinding(current, hashes.effectiveSnapshotHash, legacyContinuation),
+        ...(runtimeBinding ? { runtimeBinding } : {}),
         appliedSessionRevisionSequence: runtime.revision.session.sequence,
         appliedSessionRevisionId: runtime.revision.session.id,
         sessionConfigHash: hashes.sessionConfigHash,
@@ -416,84 +417,45 @@ export class SessionBindingStore {
     });
   }
 
-  #assertRevision(
+  async #validateAndSelectRuntimeBinding(
     current: LocalSessionBinding,
     request: SessionReconcileRequest,
     hashes: RuntimeSnapshotHashes,
-    legacyContinuation: boolean,
-  ): void {
-    const runtime = request.runtime;
+  ): Promise<AgentRuntimeBinding | undefined> {
     if (request.placementGeneration < current.placementGeneration) {
       throw new SessionBindingConflictError("stale", "The placement generation is stale");
     }
-    if (!runtime || request.placementGeneration !== current.placementGeneration) return;
-    if (runtime.revision.session.sequence < current.appliedSessionRevisionSequence) {
-      throw new SessionBindingConflictError("stale", "The Session runtime revision is stale");
-    }
-    if (
-      !legacyContinuation &&
-      runtime.revision.session.sequence === current.appliedSessionRevisionSequence &&
-      (runtime.revision.session.id !== current.appliedSessionRevisionId ||
-        hashes.sessionConfigHash !== current.sessionConfigHash)
-    ) {
-      throw new SessionBindingConflictError("conflict", "The Session runtime revision conflicts with the binding");
-    }
-  }
-
-  async #canContinueLegacy(current: LocalSessionBinding, request: SessionReconcileRequest): Promise<boolean> {
     const runtime = request.runtime;
-    if (!runtime || current.unresolvedTurn || current.placementGeneration !== request.placementGeneration) return false;
+    const unchanged = current.lastEffectiveSnapshotHash === hashes.effectiveSnapshotHash;
+    if (!runtime || current.placementGeneration !== request.placementGeneration) {
+      return unchanged ? current.runtimeBinding : undefined;
+    }
     const path = snapshotPath(this.#home, request.agentId, current.lastEffectiveSnapshotHash);
-    const stored = (await validatePrivateDirectory(this.#home, dirname(path)))
+    let old = (await validatePrivateDirectory(this.#home, dirname(path)))
       ? await readDurableJson(path, EffectiveRuntimeSnapshotSchema.parse)
       : undefined;
-    if (!stored) {
-      if (
-        current.runtimeBinding &&
-        current.lastEffectiveSnapshotHash !== computeRuntimeSnapshotHashes(runtime).effectiveSnapshotHash
-      )
+    if (!old) {
+      if (!unchanged) {
         throw new SessionBindingConflictError("conflict", "The original snapshot is required to continue the Session");
-      return false;
+      }
+      old = EffectiveRuntimeSnapshotSchema.parse(runtime);
     }
-    if (computeRuntimeSnapshotHashes(stored).effectiveSnapshotHash === current.lastEffectiveSnapshotHash) return false;
-    const layout = legacySnapshotLayout(stored, current.lastEffectiveSnapshotHash);
-    const old = stored;
-    const hashes = computeLegacyRuntimeSnapshotHashes(old, layout);
-    if (
-      hashes.effectiveSnapshotHash !== current.lastEffectiveSnapshotHash ||
-      hashes.sessionConfigHash !== current.sessionConfigHash ||
-      old.revision.session.sequence !== current.appliedSessionRevisionSequence ||
-      old.revision.session.id !== current.appliedSessionRevisionId ||
-      old.agentId !== current.agentId ||
-      old.provider !== current.provider ||
-      old.workspace.workspaceId !== current.workspaceId ||
-      runtime.revision.agent.sequence < old.revision.agent.sequence ||
-      runtime.revision.session.sequence < old.revision.session.sequence
-    )
-      throw new SessionBindingConflictError("conflict", "The original Session snapshot identity cannot be verified");
-    // Migrations 0058/0059 add permissions and advance revisions; Codex also loses network access.
-    // Compare unchanged content using the original identity, then apply the current permissions.
-    const { selfConfigurationEnabled: _selfConfiguration, ...unchanged } = runtime;
-    const { allowCommands: _commands, ...execution } = unchanged.execution;
-    const candidate = {
-      ...unchanged,
-      ...(layout === "self-configuration" ? { selfConfigurationEnabled: runtime.selfConfigurationEnabled } : {}),
-      revision: old.revision,
-      execution: {
-        ...execution,
-        approvalPolicy: "never",
-        networkAccess:
-          old.provider === "codex" && old.execution.networkAccess && !execution.networkAccess
-            ? true
-            : execution.networkAccess,
-      },
-    };
-    if (computeLegacyRuntimeSnapshotHashes(candidate, layout).effectiveSnapshotHash !== hashes.effectiveSnapshotHash)
-      throw new SessionBindingConflictError(
-        "conflict",
-        "The legacy Session cannot safely continue with changed content",
-      );
-    return true;
+    const currentHashes = computeRuntimeSnapshotHashes(old);
+    const layout =
+      currentHashes.effectiveSnapshotHash === current.lastEffectiveSnapshotHash
+        ? undefined
+        : legacySnapshotLayout(old, current.lastEffectiveSnapshotHash);
+    let oldHashes = currentHashes;
+    let nextHashes = computeRuntimeSnapshotHashes(runtime);
+    if (layout) {
+      oldHashes = computeLegacyRuntimeSnapshotHashes(old, layout);
+      nextHashes = compareLegacySnapshot(runtime, old, layout);
+    }
+    validateStoredSnapshot(current, old, oldHashes);
+    assertSnapshotRevisions(old, runtime, oldHashes, nextHashes, layout ? "conflict" : "stale");
+    const compatibleLegacy =
+      layout !== undefined && nextHashes.effectiveSnapshotHash === oldHashes.effectiveSnapshotHash;
+    return unchanged || compatibleLegacy ? current.runtimeBinding : undefined;
   }
 
   async #requireBinding(agentId: string, sessionId: string): Promise<LocalSessionBinding> {
@@ -865,12 +827,77 @@ function legacySnapshotLayout(snapshot: EffectiveRuntimeSnapshot, hash: string):
   const original = LegacyRuntimeSnapshotSchema.safeParse(snapshot);
   if (original.success && computeLegacyRuntimeSnapshotHashes(original.data).effectiveSnapshotHash === hash)
     return "0.1.0";
+  if (!LegacyRuntimeSnapshotSchema.shape.execution.safeParse(snapshot.execution).success) {
+    throw new SessionBindingConflictError("conflict", "The original Session snapshot identity cannot be verified");
+  }
   return "self-configuration";
 }
 
-function retainedRuntimeBinding(current: LocalSessionBinding | undefined, hash: string, legacy: boolean) {
-  if (!current?.runtimeBinding) return {};
-  return current.lastEffectiveSnapshotHash === hash || legacy ? { runtimeBinding: current.runtimeBinding } : {};
+function validateStoredSnapshot(
+  current: LocalSessionBinding,
+  snapshot: EffectiveRuntimeSnapshot,
+  hashes: RuntimeSnapshotHashes,
+): void {
+  if (
+    hashes.effectiveSnapshotHash !== current.lastEffectiveSnapshotHash ||
+    hashes.sessionConfigHash !== current.sessionConfigHash ||
+    snapshot.revision.session.sequence !== current.appliedSessionRevisionSequence ||
+    snapshot.revision.session.id !== current.appliedSessionRevisionId ||
+    snapshot.agentId !== current.agentId ||
+    snapshot.provider !== current.provider ||
+    snapshot.workspace.workspaceId !== current.workspaceId
+  ) {
+    throw new SessionBindingConflictError("conflict", "The original Session snapshot identity cannot be verified");
+  }
+}
+
+function assertSnapshotRevisions(
+  old: EffectiveRuntimeSnapshot,
+  runtime: EffectiveRuntimeSnapshot,
+  oldHashes: RuntimeSnapshotHashes,
+  nextHashes: RuntimeSnapshotHashes,
+  staleCode: "conflict" | "stale",
+): void {
+  if (
+    runtime.revision.agent.sequence < old.revision.agent.sequence ||
+    runtime.revision.session.sequence < old.revision.session.sequence
+  ) {
+    throw new SessionBindingConflictError(staleCode, "The runtime revision is stale");
+  }
+  if (
+    (runtime.revision.agent.sequence === old.revision.agent.sequence &&
+      nextHashes.agentConfigHash !== oldHashes.agentConfigHash) ||
+    (runtime.revision.session.sequence === old.revision.session.sequence &&
+      nextHashes.sessionConfigHash !== oldHashes.sessionConfigHash)
+  ) {
+    throw new SessionBindingConflictError("conflict", "The runtime revision conflicts with the binding");
+  }
+}
+
+function compareLegacySnapshot(
+  runtime: EffectiveRuntimeSnapshot,
+  old: EffectiveRuntimeSnapshot,
+  layout: "0.1.0" | "self-configuration",
+): RuntimeSnapshotHashes {
+  // Compare published content across 0058/0059; preparation still uses the requested current policy.
+  const { selfConfigurationEnabled: _selfConfiguration, ...unchanged } = runtime;
+  const { allowCommands: _commands, ...execution } = unchanged.execution;
+  return computeLegacyRuntimeSnapshotHashes(
+    {
+      ...unchanged,
+      ...(layout === "self-configuration" ? { selfConfigurationEnabled: runtime.selfConfigurationEnabled } : {}),
+      revision: old.revision,
+      execution: {
+        ...execution,
+        approvalPolicy: "never",
+        networkAccess:
+          old.provider === "codex" && old.execution.networkAccess && !execution.networkAccess
+            ? true
+            : execution.networkAccess,
+      },
+    },
+    layout,
+  );
 }
 
 function assertSettledBindingChange(

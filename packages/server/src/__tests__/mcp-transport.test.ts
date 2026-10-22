@@ -379,6 +379,20 @@ describe("MCP era detection and downgrade", () => {
     ).toEqual({ era: "legacy" });
   });
 
+  it("reads a method-not-found as a legacy peer at any status, not only 400/404/405", () => {
+    const body = JSON.stringify({ jsonrpc: "2.0", error: { code: -32601, message: "Unknown protocol method" } });
+    for (const status of [200, 422, 500]) {
+      expect(detectEraFromFailure(status, body)).toEqual({ era: "legacy" });
+    }
+  });
+
+  it("keeps every other failure outside 400/404/405 a modern peer with no versions to retry", () => {
+    expect(
+      detectEraFromFailure(200, JSON.stringify({ jsonrpc: "2.0", error: { code: -32603, message: "internal" } })),
+    ).toEqual({ era: "modern", retryWithVersions: [] });
+    expect(detectEraFromFailure(500, "boom")).toEqual({ era: "modern", retryWithVersions: [] });
+  });
+
   it("refuses to negotiate a version this client does not speak", () => {
     expect(negotiateProtocolVersion(["2025-11-25", "2026-07-28"])).toBe("2026-07-28");
     expect(negotiateProtocolVersion(["2025-06-18"])).toBe("2025-06-18");

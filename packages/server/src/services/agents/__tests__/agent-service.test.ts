@@ -19,6 +19,7 @@ import {
 } from "../../../db/schema/index.js";
 import { CloudCallStore } from "../../cloud-call-store.js";
 import { CloudUsageService } from "../../cloud-usage.js";
+import { EffectiveRuntimeSnapshotAssembler } from "../../runtime-config/effective-runtime-snapshot-assembler.js";
 import { DEFAULT_AGENT_RUNTIME_CONFIG } from "../../runtime-config/index.js";
 import { AGENT_ACTIVITY_READ_LIMIT, AGENT_ACTIVITY_RECOVERY_WINDOW_HOURS, AgentService } from "../index.js";
 
@@ -647,6 +648,63 @@ describe("AgentService", () => {
     await expect(
       service.updateById(bootstrap.userId, crypto.randomUUID(), { expectedRevision: 1, displayName: "Missing" }),
     ).rejects.toMatchObject({ code: "RESOURCE_NOT_FOUND" });
+  });
+
+  it("advances runtime snapshot revisions when the owner toggles self-configuration", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    let agent = await createAgent(service, bootstrap.userId, computer.id);
+    const binding = await createBinding(agent.id);
+    const session = await createSession(binding.id, computer.id);
+    const assembler = new EffectiveRuntimeSnapshotAssembler(unitDatabase.database);
+    for (const selfConfigurationEnabled of [true, false]) {
+      const previous = await assembler.assembleForSession(session.id);
+      agent = await service.updateById(bootstrap.userId, agent.id, {
+        expectedRevision: agent.revision,
+        selfConfigurationEnabled,
+      });
+      const next = await assembler.assembleForSession(session.id);
+      expect(next.selfConfigurationEnabled).toBe(selfConfigurationEnabled);
+      expect(next.revision.agent.id).not.toBe(previous.revision.agent.id);
+      expect(next.revision.agent.sequence).toBeGreaterThan(previous.revision.agent.sequence);
+      expect(next.revision.session.sequence).toBe(next.revision.agent.sequence);
+      expect(next.revision.agent.sequence).toBe(agent.runtimeConfig.revision);
+      expect(next.instructions).toEqual(previous.instructions);
+      expect(next.execution).toEqual(previous.execution);
+    }
+  });
+
+  it("retains the runtime revision for unchanged opt-in and profile-only edits", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    let agent = await createAgent(service, bootstrap.userId, computer.id);
+    const runtimeConfig = agent.runtimeConfig;
+    for (const input of [
+      { selfConfigurationEnabled: false },
+      { displayName: "Renamed" },
+      { receiveMode: "mention_only" as const },
+      { selfConfigurationEnabled: false, runtimeConfig: { instructions: runtimeConfig.instructions } },
+    ]) {
+      agent = await service.updateById(bootstrap.userId, agent.id, { expectedRevision: agent.revision, ...input });
+      expect(agent.runtimeConfig).toEqual(runtimeConfig);
+    }
+  });
+
+  it("allocates one runtime revision for a combined opt-in and Soul change and rejects stale retries", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const agent = await createAgent(service, bootstrap.userId, computer.id);
+    const updated = await service.updateById(bootstrap.userId, agent.id, {
+      expectedRevision: agent.revision,
+      selfConfigurationEnabled: true,
+      runtimeConfig: { instructions: "Updated Soul" },
+    });
+    expect(updated.runtimeConfig.revision).toBe(agent.runtimeConfig.revision + 1);
+    expect(updated).toMatchObject({ selfConfigurationEnabled: true, runtimeConfig: { instructions: "Updated Soul" } });
+    await expect(
+      service.updateById(bootstrap.userId, agent.id, {
+        expectedRevision: agent.revision,
+        selfConfigurationEnabled: false,
+      }),
+    ).rejects.toMatchObject({ code: "AGENT_REVISION_CONFLICT" });
+    expect(await service.getConfigById(bootstrap.userId, agent.id)).toEqual(updated);
   });
 
   it("enforces Feishu receive-mode scopes and invokes membership hooks", async () => {

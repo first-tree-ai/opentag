@@ -96,7 +96,7 @@ transport's URL rewrite does not change the selected repository's identity.
 
 ## Distribution
 
-OpenTag pins `@first-tree-ai/context-tree` to `1.0.0`. Portable builds and Cloud images
+OpenTag pins `@first-tree-ai/context-tree` to `1.0.1`. Portable builds and Cloud images
 include its CLI, public contracts, and six skills: init, connect, read, write, cleanup,
 and schedule-cleanup. Native cleanup schedules belong on persistent supported hosts,
 not ephemeral Cloud sandboxes. Server, Local runtimes, and Cloud images use the same

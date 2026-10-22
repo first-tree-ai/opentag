@@ -172,7 +172,7 @@ export function GitHubIntegrationSettings({ beforeAuthorize }: { beforeAuthorize
           <Text as="h2" id="account-github-title" variant="heading">
             {m.integrations_github_account_title()}
           </Text>
-          <GitHubRepositoryHelp />
+          <GitHubRepositoryHelp hasConnection={Boolean(connection)} />
         </div>
         <Text as="p" variant="secondary">
           {m.integrations_github_account_description()}
@@ -328,16 +328,15 @@ function GitHubAuthorizationButton({
     intent === "create"
       ? m.integrations_github_add_account()
       : intent === "replace"
-        ? m.integrations_github_change()
+        ? m.integrations_github_change_account()
         : m.integrations_github_reauthorize();
-  const accessibleLabel = intent === "replace" ? m.integrations_github_change_account() : label;
   return (
     <Button
       data-ui="github-account-authorize"
       disabled={action !== null}
       size={intent === "create" ? undefined : "compact"}
       variant={intent === "replace" ? "ghost" : "primary"}
-      aria-label={active ? busyLabel : accessibleLabel}
+      aria-label={active ? busyLabel : label}
       aria-busy={active}
       aria-describedby={intent === "reauthorize" ? "account-github-reauthorize-description" : undefined}
       icon={

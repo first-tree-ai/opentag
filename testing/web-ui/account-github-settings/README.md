@@ -6,7 +6,7 @@ From the repository root:
 
 ```bash
 pnpm build
-node testing/web-ui/account-github-settings/preview.mjs
+node scripts/e2e/account-github-settings-preview.mjs
 ```
 
 Open <http://127.0.0.1:4318/account>. Append `?scenario=empty`, `?scenario=reauthorize`, `?scenario=unavailable`, `?scenario=overview-error`, or `?scenario=repository-error` to inspect those states. Use the Account language selector for English and Chinese.
@@ -16,7 +16,7 @@ Open <http://127.0.0.1:4318/account>. Append `?scenario=empty`, `?scenario=reaut
 - Before authorization, only the account authorization action appears; no repository setting or visible GitHub configuration link appears.
 - Active authorization shows the identity, an adjacent View repositories control, Change account, and Disconnect. Reauthorization retains identity and account actions while hiding the viewer.
 - The viewer is read-only. Filtering and refresh work; closing restores focus to View repositories. Its help holds the secondary GitHub authorization settings link and shared-scope explanation.
-- Account authorization help explains shared Agent scope, organization approval/SSO, and that disconnecting locally does not revoke GitHub authorization.
+- Account authorization help explains shared Agent scope and organization approval/SSO. When connected, it also explains that disconnecting locally does not revoke GitHub authorization.
 - Disconnect confirmation names the identity and all-Agent impact. Cancel preserves identity and restores focus; confirm returns to the authorization action. Errors remain actionable.
 - Inspect 320px, 390px, 768px, and 1440px layouts in both languages for wrapping and horizontal overflow.
 
@@ -42,3 +42,11 @@ An independent read-only reviewer inspected the branch and ran the two affected 
 - The complete `pnpm test` rerun failed in unchanged client tests: the Codex CLI probe fixture missed its marker file, and the Context Tree member-memory fixture exceeded its five-second timeout. The runtime coverage rerun covers and passes the Codex probe; the Context Tree case still timed out when retried alone. Turbo stopped the remaining package runs after the client failure. This full-suite command is not recorded as passing.
 - The coverage rerun completed the Web package: **2201/2202 tests passed**, with **94.65% line coverage**. Its only failure was an unchanged Agent Soul navigation fixture; that file passed alone afterward (**4 tests**). The CLI phase reported its two unchanged auto-update fixture failures. Remaining client/Server coverage scans were stopped after these failures; the complete coverage command is not recorded as passing.
 - Browser evidence uses mock data: [desktop, Chinese, 1440px](account-zh-1440.png), [mobile, English, 320px](account-en-320.png), [confirmation, 320px](disconnect-en-320.png), [390px](account-en-390.png), and [768px](account-en-768.png). Escape/cancel restores focus, and visible labels remain inside the available width.
+
+## PR follow-up validation (2026-10-22)
+
+- Updated the tracked GitHub Account browser smoke journeys for the new help-link location and Disconnect labels. Existing destination, security attributes, confirmation, focus, profile draft, and multilingual layout assertions remain; an unlinked-account journey was added. All **17 browser tests passed** against the built app with real local authentication and a disposable PostgreSQL database. GitHub responses remain controlled fixtures.
+- Moved the unchanged mock preview to `scripts/e2e/account-github-settings-preview.mjs`, alongside existing browser preview tooling. Coverage rules and thresholds are unchanged.
+- The repository's patch coverage evaluator reports **38/38 changed executable product lines covered (100%)** using freshly collected coverage from the two affected UI suites (**45 tests passed**). Remote CI remains authoritative.
+- Account tests: **88 passed** across seven files. OAuth action/focus and i18n catalog checks: **8 passed** across three files. Web production build, Web typecheck, E2E typecheck, and repository checks passed.
+- Independent read-only follow-up review found no actionable issue in the smoke migration, tooling move, contextual help, or translation-key consolidation.

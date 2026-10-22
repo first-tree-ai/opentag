@@ -6,7 +6,6 @@
   "integrations_github_add_account": "授权 GitHub 账户",
   "integrations_github_authorize_account": "账户授权",
   "integrations_github_authorizing": "正在前往 GitHub…",
-  "integrations_github_change": "更换账户",
   "integrations_github_change_account": "更换账户",
   "integrations_github_connected_success": "GitHub 账户授权已完成。",
   "integrations_github_details_updated": "GitHub 账户信息已更新。",

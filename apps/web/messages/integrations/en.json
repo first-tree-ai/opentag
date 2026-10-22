@@ -6,7 +6,6 @@
   "integrations_github_add_account": "Authorize GitHub account",
   "integrations_github_authorize_account": "Account authorization",
   "integrations_github_authorizing": "Redirecting to GitHub…",
-  "integrations_github_change": "Change account",
   "integrations_github_change_account": "Change account",
   "integrations_github_connected_success": "GitHub account authorization completed.",
   "integrations_github_details_updated": "GitHub account details updated.",

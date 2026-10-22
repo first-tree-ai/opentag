@@ -22,7 +22,15 @@ function GitHubConfigurationLink({ onClick }: { onClick?: () => void }) {
   );
 }
 
-export function GitHubRepositoryHelp({ scope = false, onConfigure }: { scope?: boolean; onConfigure?: () => void }) {
+export function GitHubRepositoryHelp({
+  scope = false,
+  hasConnection = false,
+  onConfigure,
+}: {
+  scope?: boolean;
+  hasConnection?: boolean;
+  onConfigure?: () => void;
+}) {
   const label = scope ? m.integrations_github_repositories_help_label() : m.integrations_github_repository_help_label();
   return (
     <Popover>
@@ -42,9 +50,11 @@ export function GitHubRepositoryHelp({ scope = false, onConfigure }: { scope?: b
               ? m.integrations_github_repositories_operations()
               : m.integrations_github_repository_help_organization()}
           </Text>
-          <Text as="p" variant="secondary">
-            {m.integrations_github_remove_scope()}
-          </Text>
+          {!scope && hasConnection ? (
+            <Text as="p" variant="secondary">
+              {m.integrations_github_remove_scope()}
+            </Text>
+          ) : null}
           <GitHubConfigurationLink onClick={onConfigure} />
         </Popover.Description>
       </Popover.Content>

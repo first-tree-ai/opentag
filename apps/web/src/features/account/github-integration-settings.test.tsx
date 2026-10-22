@@ -55,6 +55,9 @@ describe("GitHub account settings", () => {
     expect(screen.queryByRole("button", { name: "View repositories" })).toBeNull();
     expect(screen.queryByRole("link")).toBeNull();
     expect(discover).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "About GitHub authorization" }));
+    const help = await screen.findByRole("dialog", { name: "About GitHub authorization" });
+    expect(within(help).queryByText(/Disconnecting in openTag/)).toBeNull();
   });
 
   it("does not infer repository authorization from returning to the settings page", async () => {

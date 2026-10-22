@@ -73,6 +73,7 @@ describe("GitHub repository access", () => {
     expect(within(dialog).queryByRole("link")).toBeNull();
     fireEvent.click(within(dialog).getByRole("button", { name: "About repository access" }));
     const help = await screen.findByRole("dialog", { name: "About repository access" });
+    expect(within(help).queryByText(/Disconnecting in openTag/)).toBeNull();
     const configure = within(help).getByRole("link", { name: "GitHub authorization settings" });
     expect(configure.getAttribute("href")).toBe("https://github.com/settings/applications");
     expect(configure.getAttribute("rel")).toBe("noopener noreferrer");

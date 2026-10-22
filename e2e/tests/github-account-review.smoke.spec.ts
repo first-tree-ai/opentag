@@ -147,6 +147,21 @@ test("real unavailable deployment does not offer unusable GitHub authorization",
   await expectAccessible(page);
 });
 
+test("an unlinked GitHub account offers authorization without a repository configuration step", async ({ page }) => {
+  const fixture = await githubFixture(page);
+  fixture.current = null;
+  await page.goto("/account", { waitUntil: "networkidle" });
+  const github = page.locator('[data-ui="account-github"]');
+  await expect(github.getByRole("button", { name: "Authorize GitHub account", exact: true })).toBeVisible();
+  await expect(github.getByRole("button", { name: "View repositories", exact: true })).toHaveCount(0);
+  await expect(github.getByRole("button", { name: "Disconnect account authorization", exact: true })).toHaveCount(0);
+  await expect(github.getByText("Repository access", { exact: true })).toHaveCount(0);
+  await expect(github.getByRole("link")).toHaveCount(0);
+  expect(fixture.discoveryCalls).toBe(0);
+  await expectNoPageOverflow(page);
+  await expectAccessible(page);
+});
+
 test("active GitHub management exposes the exact account and OAuth authorization settings destination", async ({
   page,
 }) => {
@@ -154,11 +169,18 @@ test("active GitHub management exposes the exact account and OAuth authorization
   await page.goto("/account", { waitUntil: "networkidle" });
   const github = page.locator('[data-ui="account-github"]');
   await expect(github.getByText(/@octocat/)).toBeVisible();
-  const install = github.getByRole("link", { name: "Configure on GitHub", exact: true });
-  await expect(install).toHaveAttribute("href", "https://github.com/settings/applications");
-  await expect(install).toHaveAttribute("target", "_blank");
-  await expect(install).toHaveAttribute("rel", /noopener/);
+  await expect(github.getByRole("link", { name: "GitHub authorization settings", exact: true })).toHaveCount(0);
+  const helpButton = github.getByRole("button", { name: "About GitHub authorization", exact: true });
+  await helpButton.click();
+  const help = page.getByRole("dialog", { name: "About GitHub authorization", exact: true });
+  const settings = help.getByRole("link", { name: "GitHub authorization settings", exact: true });
+  await expect(settings).toHaveAttribute("href", "https://github.com/settings/applications");
+  await expect(settings).toHaveAttribute("target", "_blank");
+  await expect(settings).toHaveAttribute("rel", "noopener noreferrer");
   await expectAccessible(page);
+  await page.keyboard.press("Escape");
+  await expect(help).toBeHidden();
+  await expect(helpButton).toBeFocused();
 });
 
 test("repository access is queried on demand and keeps missing-filter results separate from authorization", async ({
@@ -253,7 +275,13 @@ test("repository read failure retries into a compact OAuth authorization empty r
   ).toBeVisible();
   await expect(dialog.getByRole("heading")).toHaveCount(1);
   await expect(dialog.getByRole("searchbox")).toHaveCount(0);
-  await expect(dialog.getByRole("link", { name: "Configure on GitHub", exact: true })).toHaveAttribute("href");
+  await expect(dialog.getByRole("link", { name: "GitHub authorization settings", exact: true })).toHaveCount(0);
+  await dialog.getByRole("button", { name: "About repository access", exact: true }).click();
+  const help = page.getByRole("dialog", { name: "About repository access", exact: true });
+  const settings = help.getByRole("link", { name: "GitHub authorization settings", exact: true });
+  await expect(settings).toHaveAttribute("href", "https://github.com/settings/applications");
+  await expect(settings).toHaveAttribute("target", "_blank");
+  await expect(settings).toHaveAttribute("rel", "noopener noreferrer");
   await expectAccessible(page);
 });
 
@@ -403,23 +431,23 @@ test("repository discovery failure preserves identity and account management", a
   const github = page.locator('[data-ui="account-github"]');
   await expect(github.getByText("@octocat", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Change account", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Remove account", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Disconnect account authorization", exact: true })).toBeVisible();
   expect(fixture.discoveryCalls).toBe(0);
   await page.screenshot({ path: test.info().outputPath("discovery-independent.png"), fullPage: true });
 });
 
-test("removing a shared GitHub account requires confirmation before the mutation", async ({ page }) => {
+test("disconnecting a shared GitHub account requires confirmation before the mutation", async ({ page }) => {
   const fixture = await githubFixture(page);
   await page.goto("/account", { waitUntil: "networkidle" });
   const github = page.locator('[data-ui="account-github"]');
-  const removeButton = github.getByRole("button", { name: "Remove account", exact: true });
+  const removeButton = github.getByRole("button", { name: "Disconnect account authorization", exact: true });
   await removeButton.click();
-  const dialog = page.getByRole("dialog", { name: "Remove GitHub account?" });
+  const dialog = page.getByRole("dialog", { name: "Disconnect GitHub account authorization?" });
   await expect(dialog).toBeVisible();
   await expect(dialog).toContainText("All your Agents will lose GitHub access through @octocat");
   await expect(dialog).toContainText("You can revoke it in GitHub settings");
   await expect(dialog.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
-  expect(fixture.disconnectCalls, "No shared authorization should be removed before confirmation").toBe(0);
+  expect(fixture.disconnectCalls, "No shared authorization should be disconnected before confirmation").toBe(0);
   await expect(dialog).toHaveCSS("opacity", "1");
   await expectAccessible(page);
   await page.screenshot({ path: test.info().outputPath("remove-confirmation.png"), fullPage: true });
@@ -428,7 +456,7 @@ test("removing a shared GitHub account requires confirmation before the mutation
   await expect(removeButton).toBeFocused();
   expect(fixture.disconnectCalls).toBe(0);
   await removeButton.click();
-  await dialog.getByRole("button", { name: "Remove account", exact: true }).click();
+  await dialog.getByRole("button", { name: "Disconnect account authorization", exact: true }).click();
   await expect(github.getByRole("button", { name: "Authorize GitHub account" })).toBeVisible();
   await expect(page.locator('[data-ui="account-github-message"]')).toBeFocused();
   expect(fixture.disconnectCalls).toBe(1);
@@ -476,23 +504,23 @@ test("a failed GitHub authorization start does not restore an abandoned profile 
   await expect(page.getByText("Unsaved changes", { exact: true })).toHaveCount(0);
 });
 
-test("GitHub help and cancelled removal preserve the unsaved display-name draft", async ({ page }) => {
+test("GitHub help and cancelled disconnection preserve the unsaved display-name draft", async ({ page }) => {
   await githubFixture(page);
   await page.goto("/account", { waitUntil: "networkidle" });
   const displayName = page.getByRole("textbox", { name: "Display name", exact: true });
   const draft = `${await displayName.inputValue()} unsaved refresh draft`;
   await displayName.fill(draft);
-  await page.getByRole("button", { name: "About GitHub repository access" }).click();
-  const help = page.getByRole("dialog", { name: "About GitHub repository access" });
+  await page.getByRole("button", { name: "About GitHub authorization" }).click();
+  const help = page.getByRole("dialog", { name: "About GitHub authorization" });
   await expect(help.getByText(/OAuth repository access follows your GitHub account permissions/)).toBeVisible();
-  await expect(help.getByText(/All your Agents share this repository access/)).toBeVisible();
+  await expect(help.getByText(/All your Agents share this account authorization and repository access/)).toBeVisible();
   await expect(
     help.getByText(/Organization repositories may require organization approval or SSO authorization/),
   ).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(help).toBeHidden();
-  await expect(page.getByRole("button", { name: "About GitHub repository access" })).toBeFocused();
-  await page.getByRole("button", { name: "Remove account", exact: true }).click();
+  await expect(page.getByRole("button", { name: "About GitHub authorization" })).toBeFocused();
+  await page.getByRole("button", { name: "Disconnect account authorization", exact: true }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(displayName).toHaveValue(draft);
 });
@@ -530,22 +558,30 @@ test("Chinese GitHub management keeps identity, help and confirmation usable at 
   await page.addInitScript(() => localStorage.setItem("PARAGLIDE_LOCALE", "zh"));
   await page.goto("/account", { waitUntil: "networkidle" });
   const github = page.locator('[data-ui="account-github"]');
-  await expect(github.getByText("授权 GitHub 账户，并允许 openTag 访问所需仓库。", { exact: true })).toBeVisible();
+  await expect(github.getByText("授权 GitHub 账户，供你的所有 Agent 共享使用。", { exact: true })).toBeVisible();
   for (const width of [1440, 320]) {
     await page.setViewportSize({ width, height: 900 });
     await expect(github.getByText("@octocat", { exact: true })).toBeVisible();
-    await expect(github.getByRole("link", { name: "在 GitHub 配置", exact: true })).toBeVisible();
+    await expect(github.getByRole("link", { name: "GitHub 授权设置", exact: true })).toHaveCount(0);
+    const helpButton = github.getByRole("button", { name: "了解 GitHub 账户授权", exact: true });
+    await helpButton.click();
+    const help = page.getByRole("dialog", { name: "了解 GitHub 账户授权", exact: true });
+    const settings = help.getByRole("link", { name: "GitHub 授权设置", exact: true });
+    await expect(settings).toHaveAttribute("href", "https://github.com/settings/applications");
+    await expect(settings).toHaveAttribute("target", "_blank");
+    await expect(settings).toHaveAttribute("rel", "noopener noreferrer");
+    await expect(help.getByText(/组织仓库可能需要组织审批或 SSO 授权/)).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(help).toBeHidden();
+    await expect(helpButton).toBeFocused();
     await expectNoPageOverflow(page);
     await page.screenshot({ path: test.info().outputPath(`github-zh-${width}.png`), fullPage: true });
   }
-  await github.getByRole("button", { name: "了解 GitHub 仓库访问" }).click();
-  const help = page.getByRole("dialog", { name: "了解 GitHub 仓库访问" });
-  await expect(help.getByText(/组织仓库可能需要组织审批或 SSO 授权/)).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(help).toBeHidden();
   await expect(page.getByRole("button", { name: "更换账户", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "移除账户", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "移除 GitHub 账户？" });
+  const disconnect = page.getByRole("button", { name: "断开授权（GitHub 账户）", exact: true });
+  await expect(disconnect).toHaveText("断开授权");
+  await disconnect.click();
+  const dialog = page.getByRole("dialog", { name: "断开 GitHub 账户授权？" });
   await expect(dialog).toBeVisible();
   await expect(dialog).toContainText("可以前往 GitHub 设置撤销");
   await expect(dialog.getByRole("button", { name: "取消", exact: true })).toBeFocused();

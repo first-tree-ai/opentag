@@ -1,5 +1,7 @@
 # GitHub account settings: review and acceptance
 
+This is a historical acceptance record for the October 19–21 layout. The current Account authorization UI and its validation are documented in [Account GitHub authorization settings](../account-github-settings/README.md).
+
 Baseline: `9f80f340db562274069731887f27092b4f50b7f1`, fetched from `origin/main`. Reviewed and implemented on October 19, 2026.
 
 This acceptance record supports the [GitHub platform integration contract](../../../docs/system/capabilities/github-platform-integration.md).

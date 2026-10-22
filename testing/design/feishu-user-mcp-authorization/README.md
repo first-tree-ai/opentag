@@ -459,8 +459,8 @@ Discovery-only results are not accepted as content-access validation.
    addition.
 2. Use one deployment-owned Feishu application for the first rollout, configured only on dev.
 3. Accept the Agent-scoped grant policy and its explicit disclosure in the connect UI.
-4. Include OpenTag's call-time tool allowlist in the first implementation rather than relying only
-   on the provider header.
+4. Include the credential-coupled call-time tool allowlist in the first implementation rather than
+   relying only on the provider header.
 5. Approve the schema shape above, including the flow table and the credential-source, endpoint,
    and managed-tool binding columns.
 6. Treat FUA-A1-A3, A5, and A6 as the pre-implementation gate, not merely pre-enablement checks.

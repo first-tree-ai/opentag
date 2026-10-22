@@ -37,6 +37,7 @@ async function signOutFrom(container: HTMLElement, fromMenu = false) {
   expect(logoutCalls()).toHaveLength(1);
   expect(window.location.pathname).toBe("/login");
   expect(window.sessionStorage.getItem(profileDraftKey)).toBeNull();
+  expect(window.sessionStorage.getItem("opentag:standalone-setup-account")).toBeNull();
 }
 
 async function findGate(): Promise<HTMLElement> {
@@ -114,9 +115,11 @@ describe("sign-out from full-screen states of an Account that has not finished s
       render(<App />);
 
       await screen.findByRole("heading", { name: "Where should your agent run?" });
-      const header = region('[data-ui="agent-create"] header');
-      fireEvent.click(within(header).getByRole("button", { name: "Account menu" }));
-      const menu = await within(header).findByRole("menu");
+      const controls = setupCompletedAt
+        ? screen.getByRole("complementary", { name: "Account Agents" })
+        : region('[data-ui="agent-create"] header');
+      fireEvent.click(within(controls).getByRole("button", { name: "Account menu" }));
+      const menu = await within(controls).findByRole("menu");
       await waitFor(() =>
         expect(
           within(menu)

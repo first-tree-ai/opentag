@@ -3,6 +3,7 @@ import { useCallback, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
 import { clearProfileNavigationDraft } from "../account/profile-navigation-draft.js";
+import { clearStandaloneSetup } from "../shell/setup-layout.js";
 import { useAccount } from "./session-context.js";
 
 export interface SignOutState {
@@ -35,6 +36,7 @@ export function useSignOutFlow(afterSignOut: () => void | Promise<void>): SignOu
     try {
       await browserApi.logout();
       clearProfileNavigationDraft();
+      clearStandaloneSetup();
       await after.current();
       // Stays "signing out" on success: the page is about to be replaced and must not offer a second attempt.
     } catch (cause) {

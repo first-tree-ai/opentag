@@ -90,7 +90,7 @@ describe("Setup completion sync", () => {
     expect(memory.inspect().snapshot.stage).toBe("ready");
 
     // The completion synced before any navigation: the binding cached as absent is already stale.
-    fireEvent.click(screen.getByRole("button", { name: "Open agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "View agent" }));
     expect(open).toHaveBeenCalledTimes(1);
     view.rerender(
       <>

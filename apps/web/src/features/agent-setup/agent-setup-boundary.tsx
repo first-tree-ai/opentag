@@ -6,12 +6,14 @@ import { forgetReboardReview, isReboardReviewFor } from "../../internal/reboard-
 import { AgentSetupSurface } from "../../onboarding-v2/page.js";
 import * as m from "../../paraglide/messages.js";
 import { Button, Loader, Text } from "../../ui/design-system.js";
+import { OpenTagLogo } from "../../ui/opentag-logo.js";
 import { AgentAvatar } from "../agents/agent-avatar.js";
 import { agentDetailLink } from "../agents/agent-routes.js";
 import { Redirect } from "../navigation/redirect.js";
 import { useAccount } from "../session/session-context.js";
 import { AccountSignOut } from "../session/sign-out-button.js";
 import { AccountMenu } from "../shell/account-menu.js";
+import { useInAppShell } from "../shell/shell-context.js";
 
 /** An exact setup target is a uuid; anything else can never name an Agent and fails closed. */
 const AGENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -145,6 +147,7 @@ function TargetedAgentSetup({
   slackOAuthError?: string;
 }) {
   const [attempt, setAttempt] = useState(0);
+  const frameHeight = useInAppShell() ? "min-h-64" : "min-h-screen";
   const [resolution, setResolution] = useState<TargetResolution>({ kind: "loading" });
   const retryResolution = useCallback(() => setAttempt((current) => current + 1), []);
 
@@ -194,7 +197,7 @@ function TargetedAgentSetup({
   if (resolution.kind === "loading") {
     return (
       <div
-        className="flex min-h-screen flex-col items-center justify-center gap-3 bg-kumo-canvas"
+        className={`flex ${frameHeight} flex-col items-center justify-center gap-3 bg-kumo-canvas`}
         data-ui="agent-setup-target-loading"
       >
         <Loader />
@@ -208,7 +211,7 @@ function TargetedAgentSetup({
   if (resolution.kind === "read-failed") {
     return (
       <div
-        className="flex min-h-screen flex-col items-center justify-center gap-3 bg-kumo-canvas p-6"
+        className={`flex ${frameHeight} flex-col items-center justify-center gap-3 bg-kumo-canvas p-6`}
         data-ui="agent-setup-target-read-failed"
       >
         <Text as="h1" size="lg" variant="heading">
@@ -226,7 +229,7 @@ function TargetedAgentSetup({
   if (resolution.kind === "unavailable") {
     return (
       <div
-        className="flex min-h-screen flex-col items-center justify-center gap-3 bg-kumo-canvas p-6"
+        className={`flex ${frameHeight} flex-col items-center justify-center gap-3 bg-kumo-canvas p-6`}
         data-ui="agent-setup-target-unavailable"
       >
         <Text as="h1" size="lg" variant="heading">
@@ -247,7 +250,7 @@ function TargetedAgentSetup({
   if (resolution.kind === "choice") {
     return (
       <div
-        className="flex min-h-screen flex-col items-center justify-center gap-4 bg-kumo-canvas p-6"
+        className={`flex ${frameHeight} flex-col items-center justify-center gap-4 bg-kumo-canvas p-6`}
         data-ui="agent-setup-target-choice"
       >
         <Text as="h1" size="lg" variant="heading">
@@ -326,6 +329,7 @@ function ExactAgentSetup({
   slackOAuthError?: string;
 }) {
   const [attempt, setAttempt] = useState(0);
+  const frameHeight = useInAppShell() ? "min-h-64" : "min-h-screen";
   const [admission, setAdmission] = useState<AdmissionState>(accountCompleted ? "ready" : "loading");
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: `attempt` is the explicit retry signal; incrementing it must repeat admission even though the value is not otherwise read.
@@ -357,7 +361,7 @@ function ExactAgentSetup({
   if (admission === "loading") {
     return (
       <div
-        className="flex min-h-screen flex-col items-center justify-center gap-3 bg-kumo-canvas"
+        className={`flex ${frameHeight} flex-col items-center justify-center gap-3 bg-kumo-canvas`}
         data-ui="agent-setup-target-adopting"
       >
         <Loader />
@@ -371,7 +375,7 @@ function ExactAgentSetup({
   if (admission === "failed") {
     return (
       <div
-        className="flex min-h-screen flex-col items-center justify-center gap-3 bg-kumo-canvas p-6"
+        className={`flex ${frameHeight} flex-col items-center justify-center gap-3 bg-kumo-canvas p-6`}
         data-ui="agent-setup-target-adoption-failed"
       >
         <Text as="h1" size="lg" variant="heading">
@@ -390,6 +394,14 @@ function ExactAgentSetup({
     <AgentSetupSurface
       accountControl={<AccountMenu placement="page" />}
       agentId={agentId}
+      brandControl={
+        <Link
+          className="inline-flex rounded-sm focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-kumo-brand"
+          to="/agents"
+        >
+          <OpenTagLogo label={m.onboarding_v2_brand_name()} />
+        </Link>
+      }
       onOpenAgent={() => onOpenAgent(agentId)}
       onReady={reviewMode ? onReviewFinished : undefined}
       reviewMode={reviewMode}

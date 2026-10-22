@@ -35,6 +35,7 @@ import {
 } from "../features/computer-connect/computer-connect.js";
 import { ComputerRecovery } from "../features/computer-connect/computer-recovery.js";
 import { isTerminalResourceError } from "../features/resource/resource-state.js";
+import { useInAppShell } from "../features/shell/shell-context.js";
 import { formatDateTime, spaceScriptBoundary } from "../i18n/format.js";
 import { FeishuActivationWaiting } from "../im/feishu-activation-waiting.js";
 import { messagingProviderAlternateBrand, messagingProviderLabel } from "../im/provider-label.js";
@@ -175,6 +176,8 @@ export interface AgentSetupPageProps {
   readonly onOpenAgent?: () => void;
   /** Rendered in the header; the caller supplies it because only the route knows an Account session exists. */
   readonly accountControl?: ReactNode;
+  /** The route supplies brand navigation after Account admission. */
+  readonly brandControl?: ReactNode;
   /** Told once the snapshot's stage is `ready`, so the route can mark setup complete. */
   readonly onReady?: (agentId: string) => Promise<void> | void;
   /** A staging Re-board stays inspectable until the tester explicitly finishes the review. */
@@ -672,6 +675,7 @@ function useReadyReport(
 export function AgentSetupPage({
   accountControl,
   agentId,
+  brandControl,
   adapter,
   computerAdapter,
   onExternalNavigation,
@@ -695,6 +699,7 @@ export function AgentSetupPage({
       accountControl={accountControl}
       adapter={resolvedAdapter}
       agentId={agentId}
+      brandControl={brandControl}
       computerAdapter={computerAdapter}
       key={agentId}
       onExternalNavigation={onExternalNavigation}
@@ -713,6 +718,7 @@ export function AgentSetupPage({
 function AgentSetupPageContent({
   accountControl,
   agentId,
+  brandControl,
   adapter,
   computerAdapter,
   onExternalNavigation,
@@ -734,6 +740,8 @@ function AgentSetupPageContent({
   readonly syncAgentCachesOnReady?: boolean;
 }) {
   const queryClient = useQueryClient();
+  const embedded = useInAppShell();
+  const Main = embedded ? "div" : "main";
   const controller = useAgentSetup(agentId, adapter, onExternalNavigation);
   const previousRefreshSignal = useRef(refreshSignal);
   const [oauthError] = useState(() => (slackOAuthError ? slackSetupErrorMessage(slackOAuthError) : undefined));
@@ -774,19 +782,24 @@ function AgentSetupPageContent({
   }, [controller.reload, refreshSignal]);
 
   return (
-    <div className="otv2-shell flex min-h-screen flex-col bg-kumo-canvas" data-ui="agent-setup">
-      <header className="flex flex-wrap items-center justify-between gap-3 p-6">
-        <OpenTagLogo label={m.onboarding_v2_brand_name()} />
-        <div className="ml-auto flex items-center gap-2">
-          {onOpenAgent && !ready ? (
-            <Button onClick={onOpenAgent} variant="ghost">
-              {setupExitLabel(snapshot)}
-            </Button>
-          ) : null}
-          {accountControl}
-        </div>
-      </header>
-      <main className="otv2-frame mx-auto flex w-full flex-1 flex-col gap-6 p-6">
+    <div
+      className={`otv2-shell flex flex-col bg-kumo-canvas ${embedded ? "min-h-0" : "min-h-screen"}`}
+      data-ui="agent-setup"
+    >
+      {!embedded && (
+        <header className="flex flex-wrap items-center justify-between gap-3 p-6">
+          {brandControl ?? <OpenTagLogo label={m.onboarding_v2_brand_name()} />}
+          <div className="ml-auto flex items-center gap-2">
+            {onOpenAgent && !ready ? (
+              <Button onClick={onOpenAgent} variant="ghost">
+                {setupExitLabel(snapshot)}
+              </Button>
+            ) : null}
+            {accountControl}
+          </div>
+        </header>
+      )}
+      <Main className={`otv2-frame mx-auto flex w-full flex-1 flex-col gap-6 ${embedded ? "" : "p-6"}`}>
         <SetupPhaseView
           slackApi={adapter.slackSetup}
           agentId={agentId}
@@ -798,7 +811,7 @@ function AgentSetupPageContent({
           previewInitialView={previewInitialView}
           report={report}
         />
-      </main>
+      </Main>
     </div>
   );
 }

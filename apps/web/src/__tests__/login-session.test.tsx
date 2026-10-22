@@ -73,6 +73,8 @@ describe("Login session entry", () => {
     render(<App />);
 
     expect(await screen.findByRole("button", { name: "Generate and copy code" })).toBeTruthy();
+    expect(screen.getByRole("complementary", { name: "Account Agents" })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Account menu" })).toHaveLength(1);
     expect(window.location.pathname + window.location.search).toBe(next);
     expect(screen.queryByRole("heading", { name: "Prepare this computer" })).toBeNull();
     expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input) === "/api/v1/me/connect-codes")).toBe(false);

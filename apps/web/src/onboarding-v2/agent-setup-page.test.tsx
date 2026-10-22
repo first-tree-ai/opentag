@@ -2249,7 +2249,7 @@ describe("AgentSetupPage request fencing", () => {
 });
 
 describe("AgentSetupPage closed failures and review", () => {
-  it("replaces the return action with Open agent when setup becomes ready", async () => {
+  it("replaces the return action with View agent when setup becomes ready", async () => {
     const onOpenAgent = vi.fn();
     const memory = createMemorySetupAdapter({
       agent: setupAgent(),
@@ -2259,7 +2259,7 @@ describe("AgentSetupPage closed failures and review", () => {
     await settle();
 
     expect(screen.queryByRole("button", { name: "Back to agent" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Open agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "View agent" }));
     expect(onOpenAgent).toHaveBeenCalledTimes(1);
   });
 

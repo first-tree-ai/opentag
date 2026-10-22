@@ -286,7 +286,7 @@ describe("agent setup lab page", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Scan (Feishu|Lark) code/ }));
     fireEvent.click(await screen.findByRole("button", { name: "Observe messaging handoff" }));
     expect(await screen.findByText("reviewer is ready.")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Open agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "View agent" }));
     expect(
       await screen.findByText("The real product would open Reviewer here. The Lab keeps this in-memory run isolated."),
     ).toBeTruthy();

@@ -158,7 +158,7 @@
   "onboarding_v2_nav_back": "返回上一步",
   "onboarding_v2_nav_next": "继续",
   "onboarding_v2_nav_retry": "重试",
-  "onboarding_v2_open_agent": "打开 Agent",
+  "onboarding_v2_open_agent": "查看 Agent",
   "onboarding_v2_prep_checking_automatically": "正在自动检查 {item}，无需操作…",
   "onboarding_v2_prep_checking_paused": "自动检查已暂停，请重新检查。",
   "onboarding_v2_prep_cli_checking": "正在检查 {computerName} 上的 {cli} CLI。",

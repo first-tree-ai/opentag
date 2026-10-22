@@ -73,8 +73,8 @@ outcome is uncertain. A low-impact action may execute immediately only when it i
 keyboard-accessible Undo path for long enough to recover.
 
 Every full-screen state that replaces the application shell must keep a way to sign out, because an Account that has
-not finished setup is shown nothing else. Creation and exact setup headers reuse the shared Account menu, aligned
-with their navigation action. Until Account setup is complete, that menu offers only Sign out; navigation links
+not finished setup is shown nothing else. First-time creation and exact setup headers reuse the shared Account menu,
+aligned with their navigation action. Until Account setup is complete, that menu offers only Sign out; navigation links
 would redirect back to setup and discard the creation draft. Other full-screen states offer a direct sign-out control.
 This covers the Agent Setup
 states (creation header, exact setup header, unavailable, read-failed, adoption-failed, and choice), the Account gate
@@ -84,6 +84,32 @@ the browser goes to sign-in; a refused logout is shown inline and leaves the ses
 outside the Router, Query, or Account contexts use the context-free variant, which reloads onto sign-in instead. Because
 the error and not-found pages also serve signed-out visitors, the context-free control appears only while the
 script-readable CSRF cookie is present; without it the Server would refuse the logout.
+
+Accounts entering Agent Setup from the application keep the account-level navigation rail throughout creation,
+Computer preparation, messaging connection, and completion. The Agent-specific navigation does not appear inside
+setup. These embedded pages omit their own header, including the brand, Account menu, and Back to agent/Set up later
+action, and share the shell's single main landmark. The account rail provides the exit from unfinished setup;
+completion provides the central View agent action.
+The account rail's brand mark links to the Agent list, preserving the logo's home action in either layout.
+On phones they follow the shell's existing compact navigation. The same shell and session-local page memory remain
+mounted when moving between the Agent list and setup. An unfinished creation draft, including its current step,
+name, runtime, and destination, is restored on return and cleared once its creation succeeds or the Account session ends.
+An in-flight creation is shared across those visits, preventing a second submission while it is pending. Its result
+only clears the submitted draft; edits made while waiting remain available and are not replaced by the older result.
+Drafts are not persisted across a document reload or an external authorization round trip; after creation, the exact
+Agent's server snapshot restores the remaining setup steps.
+If a creation finishes after the user navigates away, it refreshes the Agent list without pulling the user back into setup.
+
+First-time setup stays full-screen throughout its current journey, even when Account admission completes before
+Computer or messaging setup. An Account-scoped, tab-local layout marker preserves this presentation across reloads
+and external authorization; leaving setup or signing out clears it. If browser storage is unavailable, the current
+document still retains its layout and navigation and sign-out continue to work; the reload hint is optional.
+Subsequent setup visits use the application shell.
+After an exact Agent has been admitted, the full-screen header's openTag logo links to the Agent list (`/agents`),
+including on the setup completion screen. The pre-Agent creation header keeps its existing navigation restrictions.
+The completion screen stays visible until the user navigates away. Its primary action, **View agent**
+(**查看 Agent** in Chinese), opens that Agent's overview. Global navigation provides the return to the Agent list;
+the completion screen does not repeat that destination as a secondary action or redirect automatically.
 
 ## Layout and responsive acceptance
 

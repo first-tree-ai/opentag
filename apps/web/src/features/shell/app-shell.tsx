@@ -4,8 +4,8 @@ import * as m from "../../paraglide/messages.js";
 import { Icon, Sidebar, SidebarProvider, SkeletonLine, Tooltip } from "../../ui/design-system.js";
 import { OpenTagLogo } from "../../ui/opentag-logo.js";
 import { AccountMenu } from "./account-menu.js";
+import { AppShellContext } from "./shell-context.js";
 import { ShellMain } from "./shell-main.js";
-import { ShellMemoryProvider } from "./shell-memory.js";
 
 const ACCOUNT_ONLY_AGENT_SEGMENTS = new Set(["computers", "new", "setup"]);
 const AgentNavigation = lazy(() => import("./agent-shell.js"));
@@ -16,7 +16,7 @@ export function AppShell() {
     select: (state) => agentIdFromPathname(state.resolvedLocation?.pathname ?? state.location.pathname),
   });
   return (
-    <ShellMemoryProvider>
+    <AppShellContext value={true}>
       <SidebarProvider
         className="h-full min-h-0 overflow-hidden bg-kumo-canvas"
         collapsible="none"
@@ -31,7 +31,7 @@ export function AppShell() {
       >
         <WorkspaceShell />
       </SidebarProvider>
-    </ShellMemoryProvider>
+    </AppShellContext>
   );
 }
 
@@ -53,9 +53,12 @@ function WorkspaceShell() {
         contentClassName="app-navigation-container"
       >
         {!agentId && (
-          <div className="app-brand-mark" aria-hidden="true">
-            <OpenTagLogo variant="mark" label="" />
-          </div>
+          <Link
+            className="app-brand-mark rounded-sm focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-kumo-brand"
+            to="/agents"
+          >
+            <OpenTagLogo variant="mark" label={m.auth_brand_name()} />
+          </Link>
         )}
         <nav className="app-global-navigation" aria-label={m.shell_account_agents()}>
           <GlobalHome compact={!agentId} active={isHome} />

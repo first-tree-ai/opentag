@@ -158,7 +158,7 @@
   "onboarding_v2_nav_back": "Back",
   "onboarding_v2_nav_next": "Continue",
   "onboarding_v2_nav_retry": "Try again",
-  "onboarding_v2_open_agent": "Open agent",
+  "onboarding_v2_open_agent": "View agent",
   "onboarding_v2_prep_checking_automatically": "Checking {item} automatically. No action needed…",
   "onboarding_v2_prep_checking_paused": "Automatic checking paused. Check again to retry.",
   "onboarding_v2_prep_cli_checking": "Checking the {cli} CLI on {computerName}.",

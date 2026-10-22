@@ -1,13 +1,6 @@
-import { createFileRoute, Outlet } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
+import { ResourceLayout } from "../../features/shell/resource-layout.js";
 
 export const Route = createFileRoute("/_authenticated/_resources")({
-  component: AuthenticatedResourceLayout,
+  component: ResourceLayout,
 });
-
-/**
- * Pathless layout for Account-owned resource pages. Setup completion is enforced by the
- * onboarding and shell routes.
- */
-function AuthenticatedResourceLayout() {
-  return <Outlet />;
-}

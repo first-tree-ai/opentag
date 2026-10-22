@@ -41,10 +41,8 @@ export const Route = createFileRoute("/_authenticated/_resources/agents/setup")(
 });
 
 /**
- * Agent Setup can run before the Account has entered the application, so it carries no AppShell: the
- * primary navigation would offer destinations this route sends straight back here, and a second
- * brand mark beside the one Agent Setup renders itself. The route stays thin — admission and the
- * exact-target decision live in the boundary.
+ * The resource layout preserves the application shell for existing Accounts and keeps first-time
+ * setup full-screen. Admission and the exact-target decision live in the boundary.
  */
 function AgentSetupRoute() {
   const { action, agentId, invalid, review, slack_oauth, slack_oauth_error } = Route.useSearch();

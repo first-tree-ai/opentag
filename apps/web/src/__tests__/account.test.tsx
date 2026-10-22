@@ -349,12 +349,13 @@ describe("OpenTag Web App Shell", () => {
 
     // The Account has not entered the application yet. Every destination the primary navigation
     // offers is behind the setup gate, which sends them all straight back here, and the shell
-    // brand would stand beside the one Agent Setup renders itself.
+    // brand would stand beside the one Agent Setup renders itself. After admission, the
+    // full-screen setup header provides its own home link without introducing the sidebar.
     // The sidebar is an <aside>, so it is `complementary`; asking for `navigation` here matched
     // nothing whether or not the shell rendered.
-    expect(screen.queryByRole("complementary", { name: "Primary navigation" })).toBeNull();
+    expect(screen.queryByRole("complementary")).toBeNull();
     expect(screen.queryByRole("link", { name: "All Agents" })).toBeNull();
-    expect(screen.queryAllByRole("link", { name: "openTag" })).toHaveLength(0);
+    expect(screen.getByRole("link", { name: "openTag" }).getAttribute("href")).toBe("/agents");
   });
 
   it("resolves a completed Account's target when Agent Setup is requested directly", async () => {

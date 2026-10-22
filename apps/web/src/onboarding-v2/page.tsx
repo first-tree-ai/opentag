@@ -6,6 +6,8 @@ import { analytics } from "../analytics/analytics.js";
 import { ANALYTICS_EVENT, activationStep } from "../analytics/events.js";
 import { ApiError, browserApi } from "../api.js";
 import { agentDetailLink } from "../features/agents/agent-routes.js";
+import { useInAppShell } from "../features/shell/shell-context.js";
+import { useRememberedState, useShellMemory } from "../features/shell/shell-memory.js";
 import * as m from "../paraglide/messages.js";
 import { syncAgentQueries } from "../query/agent-sync.js";
 import { Banner, Button, Icon } from "../ui/design-system.js";
@@ -85,6 +87,26 @@ interface SelectedCreation {
   readonly destination: "local" | "cloud";
 }
 
+type CreationOutcome =
+  | { readonly kind: "created"; readonly agentId: string }
+  | {
+      readonly kind: "refused";
+      readonly message: string;
+      readonly holder: Awaited<ReturnType<typeof refusedNameHolder>>;
+    };
+
+interface PendingCreation {
+  readonly draft: AgentDraft;
+  readonly result: Promise<CreationOutcome>;
+}
+
+const CREATION_DRAFT_KEY = "agent-create";
+const CREATION_PENDING_KEY = "agent-create-pending";
+
+function creationErrorMessage(cause: unknown): string {
+  return cause instanceof Error && cause.message ? cause.message : m.agent_create_failed();
+}
+
 /** A preview creates no Agent, so it has nothing to report about one. */
 const SILENT_CREATION_REPORT: CreationReport = { created: () => undefined, refused: () => undefined };
 
@@ -126,6 +148,7 @@ function creationReport(preview: unknown): CreationReport {
 export function AgentSetupSurface({
   accountControl,
   agentId,
+  brandControl,
   computerAdapter,
   creationPreview,
   creationPreviewInitialView,
@@ -146,6 +169,7 @@ export function AgentSetupSurface({
   /** Sign-out and Account identity for a signed-in Account that has no shell around this page. */
   accountControl?: ReactNode;
   agentId?: string;
+  brandControl?: ReactNode;
   computerAdapter?: AgentSetupPageProps["computerAdapter"];
   creationPreview?: (request: CreateAgentRequest) => Promise<{ readonly id: string }>;
   creationPreviewInitialView?: CreationPreviewView;
@@ -169,6 +193,7 @@ export function AgentSetupSurface({
         accountControl={accountControl}
         adapter={setupAdapter}
         agentId={agentId}
+        brandControl={brandControl}
         computerAdapter={computerAdapter}
         onExternalNavigation={onExternalNavigation}
         onOpenAgent={onOpenAgent}
@@ -221,11 +246,25 @@ function AgentCreatePage({
   onBackToAgents?: () => void;
 }) {
   const queryClient = useQueryClient();
+  const embedded = useInAppShell();
+  const memory = useShellMemory();
+  const Main = embedded ? "div" : "main";
   // Local is the default destination. Cloud is an explicit choice, offered once the deployment's
   // availability answer says it can run — nothing pre-selects it.
-  const [draft, setDraft] = useState<AgentDraft>(() => ({ ...emptyDraft(existingAgentNames), destination: "local" }));
-  const [destinationConfirmed, setDestinationConfirmed] = useState(creationPreviewInitialView === "agent");
-  const [submitting, setSubmitting] = useState(false);
+  const [creation, setCreation] = useRememberedState<{ draft: AgentDraft; destinationConfirmed: boolean }>(
+    CREATION_DRAFT_KEY,
+    {
+      draft: { ...emptyDraft(existingAgentNames), destination: "local" },
+      destinationConfirmed: creationPreviewInitialView === "agent",
+    },
+  );
+  const { draft, destinationConfirmed } = creation;
+  const setDraft = (next: AgentDraft) => setCreation({ ...creation, draft: next });
+  const setDestinationConfirmed = (next: boolean) => setCreation({ ...creation, destinationConfirmed: next });
+  const [pending, setPending] = useState<PendingCreation | undefined>(
+    () => memory?.values.get(CREATION_PENDING_KEY) as PendingCreation | undefined,
+  );
+  const submitting = pending !== undefined;
   const [error, setError] = useState<string>();
   /**
    * The deployment's Cloud availability. Creation never blocks on it for Local, never offers Cloud
@@ -243,6 +282,34 @@ function AgentCreatePage({
   const [taken, setTaken] = useState<{ id: string; name: string } | "unnamed">();
   /** One creation at a time. A second press before the first answers would ask for a second Agent. */
   const createInFlight = useRef(false);
+
+  // Each mount observes the same in-flight request. A departed page releases its observer;
+  // returning while pending keeps submission disabled and receives that request's outcome.
+  useEffect(() => {
+    if (!pending) return;
+    let live = true;
+    const deliver = async (outcome: CreationOutcome) => {
+      if (outcome.kind === "refused") {
+        setError(outcome.message);
+        setTaken(outcome.holder);
+      } else {
+        await onAgentAvailable?.(outcome.agentId);
+      }
+    };
+    void pending.result.then(async (outcome) => {
+      if (!live) return;
+      // A late result belongs to the submitted draft, not edits made while it was pending.
+      if (draft === pending.draft) {
+        await deliver(outcome).catch((cause: unknown) => {
+          if (live) setError(creationErrorMessage(cause));
+        });
+      }
+      if (live) setPending(undefined);
+    });
+    return () => {
+      live = false;
+    };
+  }, [draft, onAgentAvailable, pending]);
 
   useEffect(() => {
     onCreationPreviewViewChange?.(destinationConfirmed ? "agent" : "destination");
@@ -296,59 +363,73 @@ function AgentCreatePage({
   }, [draft]);
 
   /*
-   * Creation keeps no record of its own. A request whose answer never arrives is reconciled where
-   * every other question about this Account's Agents is answered — the Agent list, which shows
-   * whether the Agent exists and what it still needs. A second store here would only be a second
-   * account of the same fact, and one that can disagree.
+   * A pending request survives navigation within this Account session. Once it settles, the Agent
+   * list remains the source of truth; only an unchanged submitted draft is cleared on success.
    */
   const create = useCallback(
-    async (selected: SelectedCreation) => {
-      if (createInFlight.current) return;
+    (selected: SelectedCreation) => {
+      if (createInFlight.current || memory?.values.has(CREATION_PENDING_KEY)) return;
       createInFlight.current = true;
-      setSubmitting(true);
       setError(undefined);
       // Cleared with the error it belongs to: an offer left over from a previous refusal would sit
       // under a failure it does not describe.
       setTaken(undefined);
       const report = creationReport(creationPreview);
-      try {
-        const request = await creationRequest(selected, Boolean(creationPreview));
-        const created = creationPreview ? await creationPreview(request) : await browserApi.createAgent(request);
-        report.created(request.runtimeProvider);
-        if (!creationPreview) void syncAgentQueries(queryClient, created.id);
-        await Promise.resolve(onAgentAvailable?.(created.id));
-      } catch (cause) {
-        report.refused(cause);
-        setError(cause instanceof Error && cause.message ? cause.message : m.agent_create_failed());
-        setTaken(await refusedNameHolder(cause, selected.request.name));
-      } finally {
-        createInFlight.current = false;
-        setSubmitting(false);
-      }
+      const attempt: PendingCreation = {
+        draft: creation.draft,
+        result: Promise.resolve().then(async (): Promise<CreationOutcome> => {
+          try {
+            const request = await creationRequest(selected, Boolean(creationPreview));
+            const submit = creationPreview ?? ((request: CreateAgentRequest) => browserApi.createAgent(request));
+            const created = await submit(request);
+            if (memory?.values.get(CREATION_DRAFT_KEY) === creation) memory.values.delete(CREATION_DRAFT_KEY);
+            report.created(request.runtimeProvider);
+            if (!creationPreview) void syncAgentQueries(queryClient, created.id);
+            return { kind: "created", agentId: created.id };
+          } catch (cause) {
+            report.refused(cause);
+            return {
+              kind: "refused",
+              message: creationErrorMessage(cause),
+              holder: await refusedNameHolder(cause, selected.request.name),
+            };
+          } finally {
+            createInFlight.current = false;
+            if (memory?.values.get(CREATION_PENDING_KEY) === attempt) memory.values.delete(CREATION_PENDING_KEY);
+          }
+        }),
+      };
+      memory?.values.set(CREATION_PENDING_KEY, attempt);
+      setPending(attempt);
     },
-    [creationPreview, onAgentAvailable, queryClient],
+    [creation, creationPreview, memory, queryClient],
   );
 
   return (
-    <div className="otv2-shell flex min-h-screen flex-col bg-kumo-canvas" data-ui="agent-create">
-      <header className="flex flex-wrap items-center justify-between gap-3 p-6">
-        <OpenTagLogo label={m.onboarding_v2_brand_name()} />
-        <div className="ml-auto flex items-center gap-2">
-          {/*
+    <div
+      className={`otv2-shell flex flex-col bg-kumo-canvas ${embedded ? "min-h-0" : "min-h-screen"}`}
+      data-ui="agent-create"
+    >
+      {!embedded && (
+        <header className="flex flex-wrap items-center justify-between gap-3 p-6">
+          <OpenTagLogo label={m.onboarding_v2_brand_name()} />
+          <div className="ml-auto flex items-center gap-2">
+            {/*
             Leaving for the Agent list is offered only to an Account that has somewhere to go. An
             Account with no Agent has nothing behind this page: that list would send it straight
             back. Undoing a choice made here is Go back's job, one page at a time. Signing out is
             the one exit that is always real, so it is offered regardless.
           */}
-          {onBackToAgents ? (
-            <Button disabled={submitting} onClick={onBackToAgents} variant="ghost">
-              {m.onboarding_v2_back_to_agents()}
-            </Button>
-          ) : null}
-          {accountControl}
-        </div>
-      </header>
-      <main className="otv2-frame mx-auto flex w-full flex-1 flex-col items-center gap-6 p-6">
+            {onBackToAgents ? (
+              <Button disabled={submitting} onClick={onBackToAgents} variant="ghost">
+                {m.onboarding_v2_back_to_agents()}
+              </Button>
+            ) : null}
+            {accountControl}
+          </div>
+        </header>
+      )}
+      <Main className={`otv2-frame mx-auto flex w-full flex-1 flex-col items-center gap-6 ${embedded ? "" : "p-6"}`}>
         {destinationConfirmed ? <StepRail steps={CREATE_STEPS} /> : null}
         <div className="flex w-full flex-col gap-4">
           {error ? (
@@ -399,7 +480,7 @@ function AgentCreatePage({
             />
           )}
         </div>
-      </main>
+      </Main>
     </div>
   );
 }

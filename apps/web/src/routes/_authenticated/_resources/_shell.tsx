@@ -1,7 +1,6 @@
-import { createFileRoute, useLocation } from "@tanstack/react-router";
+import { createFileRoute, Outlet, useLocation } from "@tanstack/react-router";
 import { Redirect } from "../../../features/navigation/redirect.js";
 import { useAccount } from "../../../features/session/session-context.js";
-import { AppShell } from "../../../features/shell/app-shell.js";
 
 export const Route = createFileRoute("/_authenticated/_resources/_shell")({
   component: AccountShell,
@@ -24,5 +23,5 @@ function AccountShell() {
       <Redirect replace search={slackOAuthError ? { slack_oauth_error: slackOAuthError } : {}} to="/agents/setup" />
     );
   }
-  return <AppShell />;
+  return <Outlet />;
 }

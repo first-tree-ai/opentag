@@ -448,6 +448,33 @@ describe("MCP per-Agent authorization", () => {
     expect(JSON.stringify(body)).not.toContain("sk-secret");
   });
 
+  it.each([6717, 16_384])("accepts a %i-character bearer credential without returning it", async (length) => {
+    const { app, authorization } = build();
+    const bearerKey = "k".repeat(length);
+    const { body, status } = await send(app, "PUT", AGENT_MCP_AUTHORIZATION_TEMPLATE_PATH, {
+      payload: { kind: "bearer", bearerKey },
+    });
+    expect(status).toBe(200);
+    expect(authorization.setBearerOrNone).toHaveBeenCalledWith(ACCOUNT, AGENT, SERVER, {
+      kind: "bearer",
+      bearerKey,
+    });
+    expect(JSON.stringify(body)).not.toContain(bearerKey);
+  });
+
+  it("rejects an oversized bearer credential before storing it or probing upstream", async () => {
+    const { app, authorization } = build();
+    const bearerKey = "k".repeat(16_385);
+    const { body, status } = await send(app, "PUT", AGENT_MCP_AUTHORIZATION_TEMPLATE_PATH, {
+      payload: { kind: "bearer", bearerKey },
+    });
+    expect(status).toBe(400);
+    expect((body.error as { code: string }).code).toBe(VALIDATION_ERROR);
+    expect(authorization.setBearerOrNone).not.toHaveBeenCalled();
+    expect(authorization.probe).not.toHaveBeenCalled();
+    expect(JSON.stringify(body)).not.toContain(bearerKey);
+  });
+
   it("writes an anonymous authorization without a key field", async () => {
     const { app, authorization } = build();
     await send(app, "PUT", `${AGENT_MCP_AUTHORIZATION_TEMPLATE_PATH}`, {

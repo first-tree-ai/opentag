@@ -259,6 +259,11 @@ immediately.
 `extra_headers` are additional static headers sent for all three kinds, since they are configuration
 rather than credentials.
 
+Bearer credential input accepts 1–16,384 characters, including long provider-issued access tokens.
+This bound applies to the encrypted credential input; extra header values retain their separate
+4,096-byte limit. A manually supplied access token uses the Bearer lifecycle and is not refreshed
+automatically.
+
 Header construction lives in exactly one place, `mcp-auth-headers.ts`, and its input is always the
 **effective** configuration — the shared definition with the Agent's overrides applied. Probing and
 any future runtime call take that same path, so a rule cannot be enforced in one and forgotten in

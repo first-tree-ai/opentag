@@ -633,7 +633,7 @@ export type UpdateMCPBindingRequest = z.infer<typeof UpdateMCPBindingRequestSche
 export const SetMCPAuthorizationRequestSchema = z
   .object({
     kind: z.enum(["none", "bearer"]),
-    bearerKey: z.string().min(1).max(4096).optional(),
+    bearerKey: z.string().min(1).max(16_384).optional(),
   })
   .strict()
   .superRefine((value, context) => {

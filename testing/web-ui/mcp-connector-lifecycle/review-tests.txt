@@ -1,0 +1,8 @@
+ Test Files  28 passed (28)
+      Tests  372 passed (372)
+   Start at  15:20:02
+   Duration  111.07s (import 53%, environment 16%, tests 14%, transform 10%, setup 6%)
+
+     Import  |web| 1760 modules were evaluated 42344 times · 57.23s total, 53% of tracked time
+             ~54.85s faster with isolate: false — shared modules are evaluated once per worker instead of once per file
+             learn more: https://vitest.dev/guide/improving-performance#test-isolation

@@ -428,7 +428,7 @@ test("closing reauthorization keeps saved tools quiet without waiting for a back
     expect(lastProbeAt).toEqual(expect.any(String));
     await consent.close();
     await details.getByRole("button", { name: `Close ${installed.name}`, exact: true }).click();
-    await expect(page.locator('[data-ui="mcp-server-list"]').getByText("Loading tools…")).toHaveCount(0);
+    await expect(page.locator('[data-ui="mcp-server-list"]').getByText("Checking connection…")).toHaveCount(0);
     expect((await mounts(page, current.id))[0]?.authorization).toMatchObject({
       status: "active",
       hasCredential: true,
@@ -746,12 +746,15 @@ for (const width of [320, 390, 768, 1440]) {
       const row = page.locator('[data-ui="mcp-server-row"]');
       const controls = row.locator(".mcp-server-controls");
       await expect(row.getByText("Authorization required", { exact: true })).toBeVisible();
-      await expect(controls.getByRole("switch")).toBeVisible();
-      await expect(controls.getByRole("button", { name: `More actions for ${name}`, exact: true })).toBeVisible();
+      await expect(controls.getByRole("switch")).toHaveCount(0);
+      await expect(controls.getByRole("button", { name: "Authorize", exact: true })).toBeVisible();
+      await expect(controls.getByRole("button", { name: `Remove ${name}`, exact: true })).toBeVisible();
       const rowBox = await row.boundingBox();
       const controlBox = await controls.boundingBox();
       if (!rowBox || !controlBox) throw new Error("Missing connector row geometry");
-      expect(Math.abs(rowBox.y + rowBox.height / 2 - controlBox.y - controlBox.height / 2)).toBeLessThan(1);
+      if (width >= 768)
+        expect(Math.abs(rowBox.y + rowBox.height / 2 - controlBox.y - controlBox.height / 2)).toBeLessThan(1);
+      else expect(controlBox.y + controlBox.height).toBeLessThanOrEqual(rowBox.y + rowBox.height);
       await page.screenshot({ path: test.info().outputPath(`mcp-row-${width}.png`) });
       await page.getByRole("button", { name, exact: true }).focus();
       await page.keyboard.press("Enter");
@@ -776,14 +779,18 @@ for (const width of [320, 390, 768, 1440]) {
       await expect.poll(async () => (await mounts(page, current.id))[0]?.authorization?.kind).toBe("none");
       await expect(dialog.getByRole("button", { name: "Tools", exact: true })).toHaveCount(0);
       await dialog.getByRole("button", { name: `Close ${name}`, exact: true }).click();
-      const toggle = page.getByRole("switch", { name: `Allow MCP Connect review to use ${name}` });
-      await toggle.click();
-      await expect(toggle).not.toBeChecked();
+      const disabled = await page.request.patch(`/api/v1/agents/${current.id}/mcp-servers/${serverId}`, {
+        headers: current.headers,
+        data: { enabled: false },
+      });
+      expect(disabled.ok()).toBeTruthy();
+      await page.reload();
+      await expect(row.getByText("Disabled", { exact: true })).toBeVisible();
       await expect(page.locator('[data-ui="mcp-server-row"] .mcp-server-controls')).not.toContainText(
         /Authorize|Retry|Cancel/,
       );
-      await toggle.click();
-      await expect(toggle).toBeChecked();
+      await row.getByRole("button", { name: "Resume", exact: true }).click();
+      await expect(row.getByRole("button", { name: "Resume", exact: true })).toHaveCount(0);
       await expectReady(page, current.id);
       expect((await mounts(page, current.id))[0]?.authorization?.kind).toBe("none");
     } finally {

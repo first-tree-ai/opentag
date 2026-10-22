@@ -50,7 +50,7 @@ test("Details OAuth retry stays recoverable when its authorization window is blo
   await expect(details.getByRole("button", { name: "Cancel", exact: true })).toBeEnabled();
   await details.getByRole("button", { name: "Close Firecrawl", exact: true }).click();
   const row = page.locator('[data-ui="mcp-server-row"]');
-  await expect(row.getByText("Authorizing…", { exact: true })).toBeVisible();
+  await expect(row.getByText("Authorization page did not open", { exact: true })).toBeVisible();
   await row.getByRole("button", { name: "Firecrawl", exact: true }).click();
   await expect(details.getByRole("button", { name: "Open window", exact: true })).toBeEnabled();
   expect(attempts).toBe(2);
@@ -85,11 +85,11 @@ for (const outcome of ["success", "cancel"] as const) {
     const row = page
       .locator('[data-ui="mcp-server-row"]')
       .filter({ has: page.getByRole("button", { name: "Firecrawl", exact: true }) });
-    await expect(row.getByText("Authorizing…", { exact: true })).toBeVisible();
+    await expect(row.getByText("Waiting for authorization…", { exact: true })).toBeVisible();
     await expect(row.getByRole("button", { name: "Cancel", exact: true })).toHaveCount(0);
     await expect(row.getByRole("button", { name: /^(Authorize|Reauthorize)$/ })).toHaveCount(0);
-    await expect(row.getByRole("switch")).toBeDisabled();
-    await expect(row.getByRole("button", { name: "More actions for Firecrawl", exact: true })).toBeDisabled();
+    await expect(row.getByRole("switch")).toHaveCount(0);
+    await expect(row.getByRole("button", { name: "Remove Firecrawl", exact: true })).toBeDisabled();
     if (outcome === "cancel") {
       await row.getByRole("button", { name: "Firecrawl", exact: true }).click();
       const details = page.getByRole("dialog", { name: "Firecrawl", exact: true });
@@ -102,11 +102,11 @@ for (const outcome of ["success", "cancel"] as const) {
     } else {
       fixture.completeOAuth(agentId);
       await consent.getByRole("link", { name: "Finish authorization" }).click();
-      await expect(row.getByText("Loading tools…", { exact: true })).toBeVisible();
+      await expect(row.getByText("Checking connection…", { exact: true })).toBeVisible();
       await expect(row.getByRole("button", { name: "Cancel", exact: true })).toHaveCount(0);
       fixture.releaseProbe();
-      await expect(row.getByText("Loading tools…", { exact: true })).toHaveCount(0);
-      await expect(row.getByRole("switch")).toBeEnabled();
+      await expect(row.getByText("Checking connection…", { exact: true })).toHaveCount(0);
+      await expect(row.getByRole("button", { name: "Remove Firecrawl", exact: true })).toBeEnabled();
       await expect(dialog).toBeHidden();
       expect(fixture.writes.filter((write) => write.path.endsWith("/authorization/oauth"))).toHaveLength(1);
     }
@@ -136,7 +136,7 @@ for (const width of [1440, 320]) {
       .locator('[data-ui="mcp-server-row"]')
       .filter({ has: page.getByRole("button", { name: "Firecrawl", exact: true }) });
     await expect(row.getByText("Authorization failed", { exact: true })).toBeVisible();
-    await expect(row.getByRole("button", { name: "Authorize", exact: true })).toHaveCount(0);
+    await expect(row.getByRole("button", { name: /^(Authorize|Reauthorize)$/ })).toBeVisible();
     await expect(row.getByRole("button", { name: "Cancel", exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Discover", exact: true }).click();
     await expect(card.getByRole("alert")).toHaveText("Authorization failed");
@@ -171,7 +171,7 @@ test("successful authorization from Details clears an earlier Discover failure",
   await details.getByRole("button", { name: "Close Firecrawl", exact: true }).click();
   await expect(row.getByText("Authorization failed", { exact: true })).toHaveCount(0);
   await expect(row.getByRole("button", { name: /^(Authorize|Reauthorize|Retry)$/ })).toHaveCount(0);
-  await expect(row.getByRole("switch")).toBeEnabled();
+  await expect(row.getByRole("button", { name: "Remove Firecrawl", exact: true })).toBeEnabled();
 });
 
 test("Discover reuses an authorization started in Details", async ({ page }) => {
@@ -253,15 +253,16 @@ for (const source of ["list", "discover"] as const) {
     if (source === "discover") {
       await page.getByRole("button", { name: "Discover", exact: true }).click();
       await page.getByLabel("Search connectors").fill("Firecrawl");
-    } else await page.getByRole("button", { name: "Firecrawl", exact: true }).click();
+    }
     const surface =
       source === "list"
-        ? page.getByRole("dialog", { name: "Firecrawl", exact: true })
+        ? page.locator('[data-ui="mcp-server-row"]')
         : page.getByRole("dialog", { name: "Discover", exact: true });
     await page.getByRole("button", { name: source === "list" ? "Retry" : "Retry: Firecrawl", exact: true }).click();
-    await expect(surface.getByText("Loading tools…", { exact: true })).toBeVisible();
+    const loading = source === "list" ? "Checking connection…" : "Loading tools…";
+    await expect(surface.getByText(loading, { exact: true })).toBeVisible();
     fixture.releaseProbe();
-    await expect(surface.getByText("Loading tools…", { exact: true })).toHaveCount(0);
+    await expect(surface.getByText(loading, { exact: true })).toHaveCount(0);
     expect(fixture.writes.filter((write) => write.path.endsWith("/authorization/oauth"))).toHaveLength(0);
     expect(opened).toHaveLength(0);
     expect(auth.hasCredential).toBe(true);

@@ -272,7 +272,11 @@ export function useMcpDiscoverState(props: DiscoverProps) {
     }
   }
   async function reportFailure(cause: unknown, catalog: McpInstallableCatalogEntry, setup?: Setup, token?: string) {
-    const label = connectionFailure(cause, setup?.binding.authorization?.kind ?? catalog.defaultAuthKind);
+    const label = connectionFailure(
+      cause,
+      setup?.binding.authorization?.kind ?? catalog.defaultAuthKind,
+      setup ? undefined : m.mcp_add_failed(),
+    );
     if (token) setError(label);
     else
       setFailure({

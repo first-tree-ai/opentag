@@ -2,6 +2,7 @@ import { MCP_CATALOG_ENTRIES } from "@opentag/mcp-presets";
 import { type MCPAgentServer, type MCPAuthKind, type MCPServer, MCPServerUrlSchema } from "@opentag/shared/browser";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, browserApi } from "../../api.js";
+import * as m from "../../paraglide/messages.js";
 import { comparableUrl, findCatalogBinding, findCatalogEntryByUrl } from "./catalog/mcp-catalog-model.js";
 import type { McpAddProps } from "./mcp-add-dialog.js";
 import {
@@ -42,6 +43,7 @@ type Attempt = {
   authHeader?: string;
   authScheme?: string;
   extraHeaders?: Record<string, string>;
+  progressId?: string;
 };
 export function useMcpAddConnection(props: McpAddProps) {
   const [restoreId, setRestoreId] = useState(props.initialServerId);
@@ -50,6 +52,7 @@ export function useMcpAddConnection(props: McpAddProps) {
   const attach = useAttachMcpServer(props.agentId);
   const detach = useDetachMcpServer(props.agentId);
   const operation = useMcpConnectionOperation(props.agentId);
+  const [sessionId, setSessionId] = useState(props.initialServerId);
   const [url, setUrl] = useState("");
   const [authentication, setAuthentication] = useState(() => authDraft(defaultConnection, "oauth"));
   const update = useUpdateMcpBinding(props.agentId);
@@ -176,12 +179,15 @@ export function useMcpAddConnection(props: McpAddProps) {
     const pending = { binding: current.binding, kind: current.kind };
     try {
       const result = await operation.run(pending, {
+        oauthSession: props.oauthSessionFor?.(pending.binding.mcpServerId),
         oauthWindow: oauthWindow.current,
         reauthorize: connectorFeedback(pending.binding).action === "authorize",
         token: key,
         source: "add",
         returnContext: { newBinding: current.temporary },
-        onTools: () => setPhase("tools"),
+        onTools: () => {
+          if (alive.current) setPhase("tools");
+        },
         isAlive: () => true,
       });
       if (result === "connected") {
@@ -222,15 +228,33 @@ export function useMcpAddConnection(props: McpAddProps) {
       return;
     }
     if (requireKey(current, focusKey)) return;
-    current.server = await resolveServer(current);
-    current.binding = await resolveBinding(current);
-    await applyConfiguration(current);
+    try {
+      current.server = await resolveServer(current);
+      current.binding = await resolveBinding(current);
+      current.progressId = current.binding.mcpServerId;
+      setSessionId(current.binding.mcpServerId);
+      props.onProgress?.(current.binding.mcpServerId, true);
+      await applyConfiguration(current);
+    } catch (cause) {
+      reportFailure(cause, m.mcp_add_failed());
+      return;
+    }
     await authorizeConnection(current);
   }
-  function reportFailure(cause: unknown) {
-    if (!alive.current) return;
+  function reportFailure(cause: unknown, fallback?: string) {
+    const label = connectionFailure(cause, attempt.current.kind, fallback);
+    if (!alive.current) {
+      const id = attempt.current.binding?.mcpServerId;
+      if (id) props.onFailure?.(id, label);
+      return;
+    }
     if (cause instanceof McpConnectionError && cause.reason === "key") setNeedsKey(true);
-    setError(connectionFailure(cause, attempt.current.kind));
+    setError(label);
+  }
+  function clearProgress() {
+    const id = attempt.current.progressId;
+    if (id) props.onProgress?.(id, false);
+    attempt.current.progressId = undefined;
   }
   async function connect(focusKey: () => void) {
     if (inFlight.current || !url.trim() || definitions.isPending || definitions.isError) return;
@@ -251,6 +275,7 @@ export function useMcpAddConnection(props: McpAddProps) {
       reportFailure(cause);
     } finally {
       closeMcpOAuthWindow(oauthWindow.current?.popup);
+      clearProgress();
       inFlight.current = false;
       if (alive.current) setPhase("idle");
     }
@@ -262,7 +287,7 @@ export function useMcpAddConnection(props: McpAddProps) {
   return {
     close,
     definitions,
-    oauth: operation.oauth,
+    oauth: (sessionId && props.oauthSessionFor?.(sessionId)) || operation.oauth,
     url,
     key,
     needsKey,

@@ -86,7 +86,7 @@ test("Add custom exposes explicit authentication and retries tools without anoth
   fixture.releaseProbe();
   await expect(dialog).toContainText("Couldn't load tools");
   fixture.failProbe(false);
-  await dialog.getByRole("button", { name: "Connect", exact: true }).click();
+  await dialog.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(dialog).toBeHidden();
   expect(fixture.servers).toHaveLength(1);
   expect(fixture.mounts.get(agentId)).toHaveLength(1);
@@ -222,7 +222,7 @@ for (const width of [1440, 320]) {
     await expectUnclipped(error);
     await expectAccessible(page);
     await page.screenshot({ path: test.info().outputPath(`mcp-sign-in-error-${width}.png`) });
-    await dialog.getByRole("button", { name: "Connect", exact: true }).click();
+    await dialog.getByRole("button", { name: "Retry", exact: true }).click();
     await expect(error).toBeVisible();
     expect(fixture.servers).toHaveLength(1);
     await dialog.getByLabel("Connector address", { exact: true }).fill("https://changed.example.com/mcp");

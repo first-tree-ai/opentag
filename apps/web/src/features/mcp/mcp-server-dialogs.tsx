@@ -54,7 +54,7 @@ export function McpConfirmDialog({
         </p>
       ) : null}
       <footer className="mcp-confirm-actions">
-        <Button ref={cancelRef} disabled={busy} variant="secondary" onClick={onClose}>
+        <Button ref={cancelRef} disabled={busy} variant="ghost" onClick={onClose}>
           {m.common_cancel()}
         </Button>
         <Button

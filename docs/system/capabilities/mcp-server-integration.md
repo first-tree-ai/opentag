@@ -1054,18 +1054,46 @@ commands, API paths, schema names, and the `/agents/{agentId}/mcp` page URL reta
 
 The page shows one Agent's installed connectors. The entire left side of each row opens Details,
 including the icon, name, description, and surrounding space. It uses the same hover and keyboard
-focus feedback as Skills, without an arrow beside the name. The enable switch and more-actions menu
-remain vertically centered on the right and operate independently. The more-actions button uses
-the same compact vertical-ellipsis control as Skills. The menu contains **Details**
-and **Delete**.
+focus feedback as Skills, without an arrow beside the name. A compact trash icon button is always
+visible on the right and operates independently.
+It uses the same compact ghost-button recipe as the Skill list: a 16px neutral gray trash icon,
+the shared neutral hover background, danger-colored hover/focus feedback, and the shared keyboard
+focus outline. It has a localized
+**Remove from this Agent** tooltip.
+Its accessible name includes the connector name; the existing confirmation dialog guards removal.
+Cancel is initially focused and returns focus to the removal trigger. After removal, focus moves to
+the next available removal control, the preceding one if needed, or the named Connectors page when
+none remains. Busy or removed controls are skipped.
+There is no enable switch or redundant
+Details menu. Adding a connector mounts it enabled; completing any required authorization and
+successful tool discovery makes it usable without another enable action.
 
 A normal row shows the connector description. When attention is needed, a short known reason replaces
-the description; recovery actions live in Details. An unauthenticated connector shows **Authorization
-required**. Successful tool snapshots have no aggregate Connected badge, success dot, or tool count.
+the description and one contextual text action appears before the trash icon: **Authorize**,
+**Reauthorize**, **Update credentials**, or **Retry**. OAuth and tool retries run directly; credential
+entry opens the existing management dialog. An unauthenticated connector shows **Authorization
+required**. The identity remains the single entry for full settings. Successful tool snapshots have
+no aggregate Connected badge, success dot, or tool count.
 A completed snapshot remains quiet while its background replacement is pending; first-time loading,
-explicit Retry, and confirmed failures still show feedback. Disabling a connector preserves its
-configuration and credential. Deleting requires confirmation and removes this Agent's installation
-and credential; an unused definition is also removed, while a definition still used elsewhere is kept.
+explicit Retry, and confirmed failures still show feedback. An existing disabled mount shows
+**Disabled** in the description position and a compact **Resume** text button beside Remove. Resume
+uses the existing binding update with `enabled: true`, preserves configuration and authorization, and
+returns keyboard focus to the identity after its button disappears. Failures remain inline and
+retryable; successful resumption exposes the actual authorization or probe feedback rather than
+assuming usability. Web does not offer another disable action. The database field, Server API, and
+CLI enable/disable commands remain supported, so disabled mounts created outside Web stay visible.
+During an actual authorization or initial connection check, the description position shows
+**Waiting for authorization…** or **Checking connection…**. The right side contains only the disabled
+trash button; recovery actions return after failure. Blocked authorization is explained in the row,
+with the existing Open window and Cancel controls inside management. A pending authorization record
+without a live browser session does not imply an ongoing flow. On narrow content widths, rows
+with a recovery action place that action and the trash icon together below the identity, aligned
+to the right. This preserves readable names and reasons in both languages; rows with only the
+trash icon retain the two-column layout.
+
+Removing requires confirmation and removes this Agent's installation and credential; an unused
+definition is also removed, while a definition still used elsewhere is kept. This does not promise
+revocation of the provider's own authorization grant.
 
 Preset Details places **Authentication** above the visible, copyable **Connector address**. A
 single supported authentication method is plain text; multiple configured methods use the shared
@@ -1081,8 +1109,12 @@ key editing, saving, and recovery feedback change. Primary form actions use the 
 control size; supporting text actions use the compact size, with the shared mobile touch targets.
 The method selector and key field share an input column, with actions aligned to the right in a
 reserved column. On narrow screens both fields fill the dialog and actions move below them.
-Closing Details or Discover does not cancel an ongoing OAuth attempt. Both views expose the same
+Closing Add custom, Details, or Discover does not cancel an ongoing OAuth attempt. All views expose the same
 attempt, prevent duplicate authorization for that connector, and provide explicit cancellation.
+Custom setup shares the page-owned OAuth session and reports connection work until the original
+request settles, including when its form has closed. Adding/configuration failures remain distinct
+from authorization failures; tool-read failures retain the existing credentials and offer Retry.
+Input stays in the custom form after a failed addition and its submit action becomes Retry.
 A successful recovery clears earlier local failure feedback. OAuth completion refreshes the saved
 Agent data immediately; a failed tool probe keeps the credential and offers **Retry**.
 If Retry needs OAuth, it uses the same connector session as Details so blocked-window recovery,

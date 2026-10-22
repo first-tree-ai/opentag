@@ -35,9 +35,9 @@ describe("MCP onboarding", () => {
     fireEvent.change(search, { target: { value: title } });
     fireEvent.click(await screen.findByRole("button", { name: `Add: ${title}` }));
     const dialog = within(await screen.findByRole("dialog"));
-    await dialog.findByText("Authorization failed");
+    await dialog.findByText("Couldn't add connector. Try again.");
     expect(create).toHaveBeenCalledTimes(1);
-    expect(dialog.getByRole("button", { name: `Authorize: ${title}` })).toBeTruthy();
+    expect(dialog.getByRole("button", { name: `Retry: ${title}` })).toBeTruthy();
     expect((search as HTMLInputElement).value).toBe(title);
     expect(dialog.queryByRole("button", { name: "Add: Linear" })).toBeNull();
   });

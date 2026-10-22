@@ -36,7 +36,7 @@ test("custom OAuth retries a failed tool probe without replacing the completed a
   const oauthPath = `/api/v1/agents/${agentId}/mcp-servers/${fixture.servers[0]?.id}/authorization/oauth`;
   expect(fixture.writes.filter((write) => write.path === oauthPath)).toHaveLength(1);
   fixture.failProbe(false);
-  await dialog.getByRole("button", { name: "Connect", exact: true }).click();
+  await dialog.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(dialog).toBeHidden();
   expect(fixture.writes.filter((write) => write.path === oauthPath)).toHaveLength(1);
   expect(opened).toHaveLength(1);
@@ -147,7 +147,7 @@ test("an existing OAuth endpoint keeps preset Details and can save an alternate 
 });
 
 for (const width of [1440, 320]) {
-  test(`preset failure stays with its action and deletion has one cancel entry at ${width}px`, async ({ page }) => {
+  test(`preset failure stays with its action and removal has one cancel entry at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 720 });
     const agentId = await createAgent(page, "MCP feedback review");
     const definition = { ...server("firecrawl", "oauth"), url: "https://mcp.firecrawl.dev/v2/mcp-oauth" };
@@ -172,9 +172,8 @@ for (const width of [1440, 320]) {
     await expectNoPageOverflow(page);
     await page.screenshot({ path: test.info().outputPath(`mcp-auth-failure-${width}.png`) });
     await details.getByRole("button", { name: "Close Firecrawl", exact: true }).click();
-    await page.getByRole("button", { name: "More actions for Firecrawl", exact: true }).click();
-    await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
-    const confirmation = page.getByRole("alertdialog", { name: "Delete Firecrawl?", exact: true });
+    await page.getByRole("button", { name: "Remove Firecrawl", exact: true }).click();
+    const confirmation = page.getByRole("alertdialog", { name: "Remove Firecrawl?", exact: true });
     await expect(confirmation.getByRole("button")).toHaveCount(2);
     await expect(confirmation.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
     await expectAccessible(page);
@@ -182,9 +181,8 @@ for (const width of [1440, 320]) {
     await page.keyboard.press("Escape");
     await expect(confirmation).toBeHidden();
     expect(fixture.writes).toHaveLength(writes);
-    await page.getByRole("button", { name: "More actions for Firecrawl", exact: true }).click();
-    await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
-    await confirmation.getByRole("button", { name: "Delete", exact: true }).click();
+    await page.getByRole("button", { name: "Remove Firecrawl", exact: true }).click();
+    await confirmation.getByRole("button", { name: "Remove", exact: true }).click();
     await expect(confirmation).toBeHidden();
     await expect.poll(() => fixture.servers.length).toBe(0);
     await expect(page.getByRole("heading", { name: "No connectors yet" })).toBeVisible();

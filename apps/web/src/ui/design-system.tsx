@@ -79,6 +79,7 @@ import {
   SquaresFour,
   TextB,
   TextH,
+  Trash,
   TreeStructure,
   TrendUp,
   UploadSimple,
@@ -610,6 +611,7 @@ export type IconName =
   | "soul"
   | "sign-out"
   | "tree"
+  | "trash"
   | "trend-up"
   | "tasks"
   | "text-bold"
@@ -655,6 +657,7 @@ const icons: Record<IconName, PhosphorIcon> = {
   soul: Fingerprint,
   "sign-out": ArrowRight,
   tree: TreeStructure,
+  trash: Trash,
   tasks: List,
   "trend-up": TrendUp,
   "text-bold": TextB,

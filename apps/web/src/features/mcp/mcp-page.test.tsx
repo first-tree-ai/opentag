@@ -7,32 +7,35 @@ import { AGENT_ID, authorization, detail, entry, openAdd, openDetails, stub, wra
 
 afterEach(() => vi.restoreAllMocks());
 describe("MCP connector list", () => {
-  it("keeps a normal row quiet and opens details from its identity or menu", async () => {
+  it("keeps a normal row quiet with one settings entry and a direct Remove action", async () => {
     stub([entry()]);
+    const update = vi.spyOn(browserApi, "updateAgentMcpServer");
     wrap(<McpPage agentId={AGENT_ID} />);
     const row = (await screen.findByRole("button", { name: "linear" })).closest("li") as HTMLElement;
     expect(within(row).queryByText(/Connected|3 tools|Disabled/)).toBeNull();
-    expect(within(row).queryByRole("button", { name: /Retry|Authorize|View error/ })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "More actions for linear" }));
-    expect((await screen.findAllByRole("menuitem")).map((item) => item.textContent)).toEqual(["Details", "Delete"]);
-    fireEvent.click(screen.getByRole("menuitem", { name: "Details" }));
-    await screen.findByRole("dialog", { name: "linear" });
-    expect(screen.queryByRole("button", { name: /Tools|Clear credentials|Delete/ })).toBeNull();
+    expect(within(row).queryByRole("button", { name: /Retry|Authorize|Resume|More actions/ })).toBeNull();
+    expect(within(row).queryByRole("switch")).toBeNull();
+    expect(within(row).getByRole("button", { name: "Remove linear" })).toBeTruthy();
+    expect(update).not.toHaveBeenCalled();
+    await openDetails();
+    const dialog = screen.getByRole("dialog", { name: "linear" });
+    expect(within(dialog).queryByRole("button", { name: /Tools|Clear credentials|Remove/ })).toBeNull();
   });
-  it("opens Details from the description and keeps the controls separate", async () => {
+  it("opens settings from the description and keeps Remove separate", async () => {
     stub([entry({ description: "Find team issues." })]);
-    vi.spyOn(browserApi, "updateAgentMcpServer").mockResolvedValue(entry({ enabled: false }));
+    const detach = vi.spyOn(browserApi, "detachMcpServer");
     wrap(<McpPage agentId={AGENT_ID} />);
     const identity = await screen.findByRole("button", { name: "linear" });
     expect(identity.getAttribute("aria-describedby")).toBe(`mcp-server-${entry().mcpServerId}-description`);
     expect(identity.contains(screen.getByText("Find team issues."))).toBe(true);
-    expect(identity.contains(screen.getByRole("switch"))).toBe(false);
+    expect(identity.contains(screen.getByRole("button", { name: "Remove linear" }))).toBe(false);
     fireEvent.click(screen.getByText("Find team issues."));
     await screen.findByRole("dialog", { name: "linear" });
     fireEvent.click(screen.getByRole("button", { name: "Close linear" }));
-    fireEvent.click(screen.getByRole("switch"));
-    await waitFor(() => expect(browserApi.updateAgentMcpServer).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: "Remove linear" }));
+    await screen.findByRole("alertdialog", { name: "Remove linear?" });
     expect(screen.queryByRole("dialog")).toBeNull();
+    expect(detach).not.toHaveBeenCalled();
   });
   it.each([
     ["expired", null, "Authorization expired"],
@@ -54,38 +57,109 @@ describe("MCP connector list", () => {
     expect(await screen.findByText("Authorization required")).toBeTruthy();
     expect(screen.queryByText(/revoked|Not connected/)).toBeNull();
   });
-  it("uses only the switch to show a disabled connector", async () => {
+  it("shows disabled mounts quietly without silently enabling them", async () => {
     stub([entry({ enabled: false, authorization: null })]);
+    const update = vi.spyOn(browserApi, "updateAgentMcpServer");
     wrap(<McpPage agentId={AGENT_ID} />);
-    const toggle = await screen.findByRole("switch");
-    expect(toggle.getAttribute("aria-checked")).toBe("false");
-    expect(screen.queryByText("Disabled")).toBeNull();
-    expect(screen.queryByRole("button", { name: /Authorize|Retry/ })).toBeNull();
+    expect(await screen.findByText("Disabled")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Resume" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Remove linear" })).toBeTruthy();
+    expect(screen.queryByRole("switch")).toBeNull();
+    expect(screen.queryByText("Authorization required")).toBeNull();
+    expect(update).not.toHaveBeenCalled();
     await openDetails();
+    expect(update).not.toHaveBeenCalled();
   });
-  it("guards duplicate toggles and shows an inline failure without an error popover", async () => {
-    stub([entry()]);
+  it.each(["active", "expired", "missing", "probe-failed"] as const)(
+    "resumes a mount and exposes its actual %s authorization result",
+    async (state) => {
+      const auth = authorization();
+      const resumed = entry({
+        authorization:
+          state === "missing"
+            ? null
+            : state === "probe-failed"
+              ? { ...auth, probeState: "failed", probeError: "MCP_UPSTREAM_UNAVAILABLE: timeout" }
+              : { ...auth, status: state },
+      });
+      stub([{ ...resumed, enabled: false }]);
+      const authorize = vi.spyOn(browserApi, "setMcpAuthorization");
+      const update = vi.spyOn(browserApi, "updateAgentMcpServer").mockImplementation(async () => {
+        vi.mocked(browserApi.agentMcpServers).mockResolvedValue({ servers: [resumed] });
+        return resumed;
+      });
+      wrap(<McpPage agentId={AGENT_ID} />);
+      const resume = await screen.findByRole("button", { name: "Resume" });
+      resume.focus();
+      fireEvent.click(resume);
+      await waitFor(() => expect(screen.queryByRole("button", { name: "Resume" })).toBeNull());
+      expect(update).toHaveBeenCalledExactlyOnceWith(AGENT_ID, resumed.mcpServerId, { enabled: true });
+      expect(authorize).not.toHaveBeenCalled();
+      expect(screen.queryByText("Disabled")).toBeNull();
+      expect(screen.queryByRole("switch")).toBeNull();
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "linear" })));
+      const label = {
+        active: null,
+        expired: "Authorization expired",
+        missing: "Authorization required",
+        "probe-failed": "Request timed out",
+      }[state];
+      if (label) expect(screen.getByText(label)).toBeTruthy();
+      else expect(screen.queryByRole("alert")).toBeNull();
+    },
+  );
+  it("guards duplicate resumes and retains the mount after failure, allowing retry", async () => {
+    stub([entry({ enabled: false })]);
     let reject: (error: Error) => void = () => {};
-    const update = vi.spyOn(browserApi, "updateAgentMcpServer").mockImplementation(
-      () =>
-        new Promise((_resolve, fail) => {
-          reject = fail;
-        }),
-    );
+    const update = vi
+      .spyOn(browserApi, "updateAgentMcpServer")
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, fail) => {
+            reject = fail;
+          }),
+      )
+      .mockImplementationOnce(async () => {
+        vi.mocked(browserApi.agentMcpServers).mockResolvedValue({ servers: [entry()] });
+        return entry();
+      });
     wrap(<McpPage agentId={AGENT_ID} />);
-    const toggle = await screen.findByRole("switch");
-    fireEvent.click(toggle);
-    await waitFor(() => expect(toggle.hasAttribute("disabled")).toBe(true));
-    fireEvent.click(toggle);
+    const resume = await screen.findByRole("button", { name: "Resume" });
+    fireEvent.click(resume);
+    await waitFor(() => expect(resume.hasAttribute("disabled")).toBe(true));
+    expect(screen.getByRole("button", { name: "Remove linear" }).hasAttribute("disabled")).toBe(true);
+    fireEvent.click(resume);
     expect(update).toHaveBeenCalledTimes(1);
     reject(new ApiError(503, "Cannot change this connection"));
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Cannot change this connection");
-    expect(screen.queryByRole("button", { name: /View error/ })).toBeNull();
+    await waitFor(() => expect(resume.hasAttribute("disabled")).toBe(false));
+    fireEvent.click(resume);
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Resume" })).toBeNull());
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(update).toHaveBeenCalledTimes(2);
+  });
+  it("does not steal focus when settings opens while Resume is pending", async () => {
+    stub([entry({ enabled: false })]);
+    let finish: (value: ReturnType<typeof entry>) => void = () => {};
+    vi.spyOn(browserApi, "updateAgentMcpServer").mockImplementation(() => new Promise((resolve) => (finish = resolve)));
+    wrap(<McpPage agentId={AGENT_ID} />);
+    const resume = await screen.findByRole("button", { name: "Resume" });
+    resume.focus();
+    fireEvent.click(resume);
+    await openDetails();
+    const dialog = screen.getByRole("dialog", { name: "linear" });
+    const close = within(dialog).getByRole("button", { name: "Close linear" });
+    close.focus();
+    vi.mocked(browserApi.agentMcpServers).mockResolvedValue({ servers: [entry()] });
+    finish(entry());
+    await waitFor(() => expect(resume.isConnected).toBe(false));
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    expect(document.activeElement).toBe(close);
   });
   it("shows loading only while a tool probe is pending", async () => {
     stub([entry({ authorization: { ...authorization(), probeState: "pending", probedAt: null } })]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    expect(await screen.findByText("Loading tools…")).toBeTruthy();
+    expect(await screen.findByText("Checking connection…")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
   it("keeps the list and Details quiet when saved tools are being refreshed", async () => {

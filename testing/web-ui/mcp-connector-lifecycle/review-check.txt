@@ -1,0 +1,9 @@
+pnpm check exited 0.
+Complexity ratchet passed: 126 warning(s), 49 improvement(s).
+
+> opentag-monorepo@0.0.0 check:docs-tree /Users/gandy/.codex/worktrees/bc0b/opentag
+> pnpm --filter @opentag/client exec context-tree verify --tree-path ../../docs
+
+Context Tree OK.
+  Root:    /Users/gandy/.codex/worktrees/bc0b/opentag/docs
+  Scanned: normal=57 member=0 repo-infra=0

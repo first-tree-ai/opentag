@@ -1,5 +1,5 @@
 /* MCP-specific geometry; controls, colors and typography retain the shared theme. */
-/* Recovery belongs in Details; the right-hand controls stay centered in every state. */
+/* Contextual recovery and removal stay separate from the identity's settings entry. */
 .mcp-server-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -11,9 +11,24 @@
   display: flex;
   align-items: center;
 }
+.mcp-server-actions {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+}
 @container content (max-width: 40rem) {
   .mcp-server-row {
     gap: 0.75rem;
+  }
+}
+@container content (max-width: 24rem) {
+  .mcp-server-row:has(.mcp-server-actions > button + button) {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.25rem;
+  }
+  .mcp-server-row:has(.mcp-server-actions > button + button) .mcp-server-controls {
+    justify-content: flex-end;
   }
 }
 .mcp-form-dialog,

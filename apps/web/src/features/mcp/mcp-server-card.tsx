@@ -1,21 +1,21 @@
 import { MCP_CATALOG_ENTRIES } from "@opentag/mcp-presets";
 import type { MCPAgentServer } from "@opentag/shared/browser";
 import * as m from "../../paraglide/messages.js";
-import { Button, DropdownMenu, Icon, Switch } from "../../ui/design-system.js";
+import { Button, Icon, Tooltip } from "../../ui/design-system.js";
 import { findCatalogEntryByUrl, localizedText } from "./catalog/mcp-catalog-model.js";
-import { connectorFeedback, type McpFeedback } from "./mcp-feedback.js";
+import { authorizationAction, connectorFeedback, type McpFeedback } from "./mcp-feedback.js";
 import type { McpOAuthSession } from "./mcp-oauth-session.js";
 import { McpServiceIcon } from "./mcp-service-icon.js";
 import { mcpTitle } from "./mcp-title.js";
+import { hasMcpToolSnapshot } from "./mcp-tool-snapshot.js";
 
-export type ServerAction = "authorize" | "edit" | "delete";
+export type ServerAction = "authorize" | "edit" | "delete" | "retry";
 
 type CardProps = {
   entry: MCPAgentServer;
-  agentName: string;
   onAction: (action: ServerAction) => void;
-  onToggle: () => void;
-  toggling: boolean;
+  onResume: () => void;
+  resuming: boolean;
   error?: string;
   connectionError?: string;
   highlighted?: boolean;
@@ -25,6 +25,14 @@ type CardProps = {
 
 export function McpServerCard(props: CardProps) {
   const { entry, highlighted } = props;
+  const connecting = Boolean(
+    props.connecting ||
+      props.oauthSession?.phase ||
+      (entry.enabled &&
+        entry.authorization?.status === "active" &&
+        entry.authorization.probeState === "pending" &&
+        !hasMcpToolSnapshot(entry)),
+  );
   return (
     <li
       id={`mcp-server-${entry.mcpServerId}`}
@@ -32,9 +40,9 @@ export function McpServerCard(props: CardProps) {
       className={`mcp-server-row min-w-0 p-4 outline-none focus-visible:outline-2 focus-visible:outline-kumo-focus outline-offset-[-2px] ${highlighted ? "bg-kumo-tint" : ""}`}
       data-ui="mcp-server-row"
     >
-      <McpIdentity {...props} />
+      <McpIdentity {...props} connecting={connecting} />
       <div className="mcp-server-controls">
-        <McpControls {...props} />
+        <McpControls {...props} connecting={connecting} />
       </div>
     </li>
   );
@@ -62,7 +70,9 @@ function McpIdentity(props: CardProps) {
         <McpServiceIcon src={catalogEntry?.iconIsOfficial ? catalogEntry.iconUrl : undefined} />
       </span>
       <span className="grid min-w-0 gap-1">
-        <span className="mcp-server-name truncate">{mcpTitle(entry)}</span>
+        <span id={`mcp-server-${entry.mcpServerId}-name`} className="mcp-server-name truncate">
+          {mcpTitle(entry)}
+        </span>
         <span
           id={descriptionId}
           className={`mcp-server-description line-clamp-2 whitespace-normal text-sm font-normal ${feedback.label && !feedback.neutral ? "text-kumo-danger" : "text-kumo-subtle"}`}
@@ -76,48 +86,76 @@ function McpIdentity(props: CardProps) {
   );
 }
 
-function McpControls({ entry, agentName, connecting, toggling, onToggle, onAction }: CardProps) {
+function McpControls(props: CardProps) {
+  const { entry, connecting, resuming, onResume, onAction } = props;
+  const feedback = rowFeedback(props);
   return (
-    <div className="mcp-server-toggles flex shrink-0 items-center gap-3">
-      <Switch
-        aria-label={m.mcp_toggle_label({ agent: agentName, name: mcpTitle(entry) })}
-        checked={entry.enabled}
-        disabled={toggling || connecting}
-        transitioning={toggling}
-        onCheckedChange={onToggle}
-      />
-      <DropdownMenu>
-        <DropdownMenu.Trigger
-          render={
-            <Button
-              variant="ghost"
-              shape="square"
-              size="compact"
-              disabled={connecting}
-              aria-label={m.mcp_more_actions({ name: mcpTitle(entry) })}
-            />
-          }
+    <div className="mcp-server-actions">
+      {!connecting && !entry.enabled ? (
+        <Button
+          variant="ghost"
+          size="compact"
+          aria-describedby={`mcp-server-${entry.mcpServerId}-name`}
+          disabled={resuming || connecting}
+          loading={resuming}
+          onClick={onResume}
         >
-          <Icon name="more-vertical" />
-        </DropdownMenu.Trigger>
-        <DropdownMenu.Content align="end">
-          <DropdownMenu.Item onClick={() => onAction("edit")}>{m.mcp_details_action()}</DropdownMenu.Item>
-          <DropdownMenu.Item onClick={() => onAction("delete")}>{m.mcp_remove_action()}</DropdownMenu.Item>
-        </DropdownMenu.Content>
-      </DropdownMenu>
+          {m.mcp_resume_action()}
+        </Button>
+      ) : null}
+      {!connecting && entry.enabled && feedback.action ? (
+        <Button
+          variant="ghost"
+          size="compact"
+          aria-describedby={`mcp-server-${entry.mcpServerId}-name`}
+          onClick={() => onAction(feedback.action === "retry" ? "retry" : "authorize")}
+        >
+          {feedback.action === "retry"
+            ? m.mcp_retry()
+            : entry.authorization?.kind === "bearer" && entry.authorization.hasCredential
+              ? m.mcp_update_credentials()
+              : authorizationAction(entry)}
+        </Button>
+      ) : null}
+      <Tooltip
+        content={m.mcp_detach_action()}
+        disabled={Boolean(resuming || connecting)}
+        render={
+          <Button
+            data-ui="mcp-remove"
+            variant="ghost"
+            size="compact"
+            shape="square"
+            className="text-kumo-subtle hover:text-kumo-danger focus-visible:text-kumo-danger"
+            aria-label={m.mcp_remove_connector({ server: mcpTitle(entry) })}
+            aria-haspopup="dialog"
+            disabled={resuming || connecting}
+            onClick={() => onAction("delete")}
+          />
+        }
+      >
+        <Icon name="trash" />
+      </Tooltip>
     </div>
   );
 }
 
 function rowFeedback({ entry, error, connecting, oauthSession, connectionError }: CardProps): McpFeedback {
-  if (error) return { label: error };
-  if (!entry.enabled) return {};
   if (connecting) {
-    const authorizing = Boolean(oauthSession?.phase && oauthSession.phase !== "checking");
-    return { label: authorizing ? m.mcp_oauth_preparing() : m.mcp_add_loading_tools(), neutral: true };
+    const phase = oauthSession?.phase;
+    const label = oauthSession?.blocked
+      ? m.mcp_catalog_page_blocked()
+      : phase === "waiting"
+        ? m.mcp_waiting_authorization()
+        : phase === "preparing"
+          ? m.mcp_oauth_preparing()
+          : m.mcp_checking_connection();
+    return { label, neutral: true };
   }
+  if (error) return { label: error };
+  if (!entry.enabled) return { label: m.mcp_disabled_label(), neutral: true };
   const feedback = connectorFeedback(entry, connectionError);
   if (!feedback.label && feedback.action === "authorize")
-    return { label: m.mcp_authorization_required(), neutral: true };
+    return { ...feedback, label: m.mcp_authorization_required(), neutral: true };
   return feedback;
 }

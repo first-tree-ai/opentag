@@ -5,6 +5,7 @@ import { useMcpAddConnection } from "./mcp-add-connection.js";
 import { McpConfigurationFields } from "./mcp-configuration-fields.js";
 import { McpAuthFields } from "./mcp-form.js";
 import { McpOAuthControls } from "./mcp-oauth-controls.js";
+import type { McpOAuthSession } from "./mcp-oauth-session.js";
 import "./mcp.css";
 
 export type McpAddProps = {
@@ -16,6 +17,9 @@ export type McpAddProps = {
   onClose: () => void;
   onAdded: (entry: MCPAgentServer) => void;
   onLocate: (id: string) => void;
+  oauthSessionFor?: (id: string) => McpOAuthSession;
+  onProgress?: (id: string, pending: boolean) => void;
+  onFailure?: (id: string, label: string) => void;
 };
 
 export function McpAddDialog(props: McpAddProps) {
@@ -93,7 +97,7 @@ export function McpAddDialog(props: McpAddProps) {
 
 function ConnectionFooter({ state }: { state: ReturnType<typeof useMcpAddConnection> }) {
   if (state.oauth.phase) return null;
-  const label = state.phase === "tools" ? m.mcp_add_loading_tools() : m.mcp_connect();
+  const label = state.phase === "tools" ? m.mcp_add_loading_tools() : state.error ? m.mcp_retry() : m.mcp_connect();
   return (
     <footer className="flex justify-end">
       <Button aria-label={label} type="submit" disabled={!state.canConnect} loading={state.busy}>

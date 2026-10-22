@@ -47,6 +47,16 @@ export function useMcpConnectionOperation(agentId: string) {
     const session = options.oauthSession ?? oauth;
     const alive = options.isAlive;
     if (!alive()) return "connected";
+    const checkConnection = async () => {
+      options.onTools?.();
+      try {
+        const checked = await probe.mutateAsync(attempt.binding.mcpServerId);
+        if (alive()) requireTools(attempt, checked);
+      } catch (cause) {
+        if (cause instanceof McpConnectionError) throw cause;
+        throw new McpConnectionError("tools", connectionFailure(cause, attempt.kind, m.mcp_add_connection_error()));
+      }
+    };
     const startOAuth = async () => {
       const result = await session.start(
         { ...options.returnContext, agentId, serverId: attempt.binding.mcpServerId, source: options.source },
@@ -55,9 +65,7 @@ export function useMcpConnectionOperation(agentId: string) {
       );
       if (result !== "authorized") return result;
       if (!alive()) return "cancelled" as const;
-      options.onTools?.();
-      const checked = await probe.mutateAsync(attempt.binding.mcpServerId);
-      requireTools(attempt, checked);
+      await checkConnection();
       return "connected" as const;
     };
     if (requiresOAuth(attempt, options.reauthorize)) return startOAuth();
@@ -66,10 +74,7 @@ export function useMcpConnectionOperation(agentId: string) {
       attempt.binding = await authorize.mutateAsync(authorizationInput(attempt, options.token));
     }
     if (!alive()) return "connected";
-    options.onTools?.();
-    const result = await probe.mutateAsync(attempt.binding.mcpServerId);
-    if (!alive()) return "connected";
-    requireTools(attempt, result);
+    await checkConnection();
     return "connected";
   };
   return { run, oauth };
@@ -104,17 +109,18 @@ function requireTools(
   );
 }
 
-export function connectionFailure(cause: unknown, kind?: MCPAuthKind): string {
+export function connectionFailure(cause: unknown, kind?: MCPAuthKind, fallback?: string): string {
   if (cause instanceof McpConnectionError) return cause.message;
   if (cause instanceof TypeError && /fetch|network|load failed/i.test(cause.message))
     return m.mcp_feedback_unreachable();
   if (cause instanceof ApiError) {
+    if (cause.code === MCP_ERROR_CODES.AUTHORIZATION_REQUIRED) return m.mcp_authorization_issue();
     if (cause.code === MCP_ERROR_CODES.OAUTH_FLOW_EXPIRED) return m.mcp_authorization_expired();
     if (cause.status === 0) return m.mcp_feedback_unreachable();
     if (cause.code === MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE)
       return probeFeedback(`${cause.code}: ${cause.message}`, kind).label ?? m.mcp_add_tools_failed();
   }
-  return kind === "oauth" ? m.mcp_authorization_issue() : m.mcp_add_tools_failed();
+  return fallback ?? (kind === "oauth" ? m.mcp_authorization_issue() : m.mcp_add_tools_failed());
 }
 export function isKeyFailure(cause: unknown): boolean {
   return cause instanceof McpConnectionError && cause.reason === "key";

@@ -1,7 +1,7 @@
 import type { MCPAgentServer, MCPServerDetail } from "@opentag/shared/browser";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
-import { fireEvent, type RenderResult, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { vi } from "vitest";
 import { browserApi } from "../../api.js";
@@ -162,8 +162,8 @@ export async function chooseAuthentication(name: string) {
   });
 }
 export async function openRemove() {
-  fireEvent.click(await screen.findByRole("button", { name: "More actions for linear" }));
-  fireEvent.click(await screen.findByRole("menuitem", { name: "Delete" }));
+  const identity = await screen.findByRole("button", { name: "linear" });
+  fireEvent.click(within(identity.closest("li") as HTMLElement).getByRole("button", { name: "Remove linear" }));
   await screen.findByRole("alertdialog");
 }
 export async function openAdd() {

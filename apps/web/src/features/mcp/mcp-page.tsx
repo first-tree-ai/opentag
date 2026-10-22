@@ -33,7 +33,7 @@ type Panel =
       outcome?: "cancelled" | "failed";
     }
   | {
-      kind: ServerAction | "tools";
+      kind: Exclude<ServerAction, "retry"> | "tools";
       entry: MCPAgentServer;
       context?: McpReturnContext;
       authenticationError?: string;
@@ -53,6 +53,7 @@ export function McpPage({ agentId }: { agentId: string }) {
   return <McpManagementPage agentId={agentId} />;
 }
 function McpManagementPage({ agentId }: { agentId: string }) {
+  const pageRef = useRef<HTMLElement>(null);
   const identity = useQuery({ queryKey: queryKeys.agents.detail(agentId), queryFn: () => browserApi.agent(agentId) });
   const agentName = identity.data?.displayName ?? agentId;
   const mounted = useAgentMcpServers(agentId);
@@ -61,7 +62,8 @@ function McpManagementPage({ agentId }: { agentId: string }) {
   const detailOAuth = useMcpOAuthSessions(agentId);
   const connection = useMcpCatalogConnection(agentId, detailOAuth);
   const [detailFailures, setDetailFailures] = useState<Record<string, string | undefined>>({});
-  const addDisabled = mounted.isPending || mounted.isError || Boolean(connection.connectingId);
+  const [addingId, setAddingId] = useState<string>();
+  const addDisabled = Boolean(mounted.isPending || mounted.isError || connection.connectingId || addingId);
   const [{ outcome, returnContext }] = useState(() => {
     const outcome = readMcpOAuthOutcome();
     return {
@@ -144,8 +146,13 @@ function McpManagementPage({ agentId }: { agentId: string }) {
     close();
     setRemoved(m.mcp_removed({ server: mcpTitle(entry) }));
     requestAnimationFrame(() => {
-      const next = neighbors.current.map((id) => document.getElementById(`mcp-server-${id}-details`)).find(Boolean);
-      (next ?? addTrigger.current)?.focus({ preventScroll: true });
+      const next = [...neighbors.current, ...servers.map((server) => server.mcpServerId)]
+        .filter((id) => id !== entry.mcpServerId)
+        .map((id) =>
+          document.getElementById(`mcp-server-${id}`)?.querySelector<HTMLButtonElement>('[data-ui="mcp-remove"]'),
+        )
+        .find((button) => button instanceof HTMLButtonElement && button.isConnected && !button.disabled);
+      (next ?? pageRef.current)?.focus({ preventScroll: true });
     });
   };
   const locate = (id: string) => {
@@ -154,7 +161,12 @@ function McpManagementPage({ agentId }: { agentId: string }) {
     setHighlight(id);
   };
   const connect = async (entry: MCPAgentServer, token?: string, definition?: MCPServer, reauthorize = false) => {
-    if (discover.connections[entry.mcpServerId]?.pending) return;
+    if (
+      discover.connections[entry.mcpServerId]?.pending ||
+      addingId === entry.mcpServerId ||
+      detailOAuth(entry.mcpServerId).phase
+    )
+      return;
     discover.clearFailure(entry.mcpServerId);
     setDetailFailures((all) => ({ ...all, [entry.mcpServerId]: undefined }));
     if (entry.mcpServerId === outcome?.mcpServerId) setReturnedFailure(false);
@@ -187,12 +199,22 @@ function McpManagementPage({ agentId }: { agentId: string }) {
     discover.connections[id]?.error ??
     connection.errorFor(id) ??
     returnedConnectionError(outcome, id, returnedFailure);
+  const addProgress = (id: string, pending: boolean) => {
+    setAddingId((current) => (pending ? id : current === id ? undefined : current));
+    if (pending) setDetailFailures((all) => ({ ...all, [id]: undefined }));
+  };
   useEffect(() => {
     if (!outcome?.mcpServerId || mounted.isPending) return;
     document.getElementById(`mcp-server-${outcome.mcpServerId}`)?.scrollIntoView({ block: "nearest" });
   }, [outcome, mounted.isPending]);
   return (
-    <section className="grid gap-6" aria-labelledby="mcp-page-title" data-ui="mcp-page">
+    <section
+      ref={pageRef}
+      tabIndex={-1}
+      className="grid gap-6 rounded-md outline-none focus-visible:outline-2 focus-visible:outline-kumo-focus"
+      aria-labelledby="mcp-page-title"
+      data-ui="mcp-page"
+    >
       <PageHeader title={m.mcp_heading()} titleId="mcp-page-title" description={m.mcp_intro()}>
         <Button disabled={addDisabled} onClick={() => setPanel({ kind: "discover" })}>
           <Icon name="integrations" />
@@ -225,9 +247,9 @@ function McpManagementPage({ agentId }: { agentId: string }) {
               key={entry.mcpServerId}
               entry={entry}
               agentId={agentId}
-              agentName={agentName}
               highlighted={highlight === entry.mcpServerId}
               connecting={
+                addingId === entry.mcpServerId ||
                 connection.connectingId === entry.mcpServerId ||
                 Boolean(discover.connections[entry.mcpServerId]?.pending) ||
                 Boolean(detailOAuth(entry.mcpServerId).phase)
@@ -235,8 +257,9 @@ function McpManagementPage({ agentId }: { agentId: string }) {
               connectionError={errorFor(entry.mcpServerId)}
               oauthSession={sessionFor(entry.mcpServerId)}
               onAction={(kind) => {
-                if (kind === "authorize" && entry.authorization?.kind === "oauth") {
-                  void connect(entry, undefined, undefined, true);
+                if (kind === "retry" || (kind === "authorize" && entry.authorization?.kind === "oauth")) {
+                  document.getElementById(`mcp-server-${entry.mcpServerId}-details`)?.focus({ preventScroll: true });
+                  void connect(entry, undefined, undefined, kind === "authorize");
                   return;
                 }
                 const index = servers.indexOf(entry);
@@ -284,8 +307,10 @@ function McpManagementPage({ agentId }: { agentId: string }) {
           discover.clearFailure(entry.mcpServerId);
           if (entry.mcpServerId === outcome?.mcpServerId) setReturnedFailure(false);
         }}
-        retryingId={connection.connectingId}
+        retryingId={connection.connectingId ?? addingId}
         onCompleted={(entry) => locate(entry.mcpServerId)}
+        onAddProgress={addProgress}
+        onAddFailure={(id, label) => setDetailFailures((all) => ({ ...all, [id]: label }))}
       />
     </section>
   );
@@ -336,6 +361,8 @@ function McpPanel({
   onRetry,
   onAuthenticationFeedback,
   retryingId,
+  onAddProgress,
+  onAddFailure,
 }: {
   panel: Panel;
   sessionFor: (id: string) => McpOAuthSession;
@@ -350,6 +377,8 @@ function McpPanel({
   onLocate: (id: string) => void;
   onCompleted: (entry: MCPAgentServer) => void;
   onRemoved: (entry: MCPAgentServer) => void;
+  onAddProgress: (id: string, pending: boolean) => void;
+  onAddFailure: (id: string, label: string) => void;
 }) {
   if (panel.kind === "none") return null;
   if (panel.kind === "discover") return null;
@@ -364,6 +393,9 @@ function McpPanel({
         onClose={onClose}
         onAdded={onCompleted}
         onLocate={onLocate}
+        oauthSessionFor={sessionFor}
+        onProgress={onAddProgress}
+        onFailure={onAddFailure}
       />
     );
   if (!("entry" in panel)) return null;
@@ -405,7 +437,6 @@ function McpPanel({
 }
 function McpRow({
   agentId,
-  agentName,
   entry,
   highlighted,
   onAction,
@@ -414,7 +445,6 @@ function McpRow({
   oauthSession,
 }: {
   agentId: string;
-  agentName: string;
   entry: MCPAgentServer;
   highlighted: boolean;
   onAction: (action: ServerAction) => void;
@@ -425,14 +455,19 @@ function McpRow({
   const update = useUpdateMcpBinding(agentId);
   const [error, setError] = useState<string>();
   const inFlight = useRef(false);
-  const run = async (operation: () => Promise<unknown>, fallback: string) => {
-    if (inFlight.current) return;
+  const resume = async () => {
+    if (inFlight.current || entry.enabled || connecting) return;
+    const trigger = document.activeElement;
     inFlight.current = true;
     setError(undefined);
     try {
-      await operation();
+      await update.mutateAsync({ mcpServerId: entry.mcpServerId, enabled: true });
+      requestAnimationFrame(() => {
+        if (trigger && !trigger.isConnected && document.activeElement === document.body)
+          document.getElementById(`mcp-server-${entry.mcpServerId}-details`)?.focus({ preventScroll: true });
+      });
     } catch (cause) {
-      setError(actionError(cause, fallback));
+      setError(actionError(cause, m.mcp_resume_failed()));
     } finally {
       inFlight.current = false;
     }
@@ -440,17 +475,11 @@ function McpRow({
   return (
     <McpServerCard
       entry={entry}
-      agentName={agentName}
       highlighted={highlighted}
       connecting={connecting}
       onAction={onAction}
-      onToggle={() =>
-        void run(
-          () => update.mutateAsync({ mcpServerId: entry.mcpServerId, enabled: !entry.enabled }),
-          m.mcp_edit_failed(),
-        )
-      }
-      toggling={update.isPending}
+      onResume={() => void resume()}
+      resuming={update.isPending}
       error={error}
       connectionError={connectionError}
       oauthSession={oauthSession}

@@ -7,7 +7,8 @@ import { McpPage } from "./mcp-page.js";
 import { AGENT_ID, authorization, detail, entry, newAddress, SERVER_ID, stub, wrap } from "./mcp-test-fixtures.js";
 
 afterEach(() => vi.restoreAllMocks());
-const connect = () => fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Connect" }));
+const connect = () =>
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /^(Connect|Retry)$/ }));
 const method = (name: string) => fireEvent.click(screen.getByRole("radio", { name }));
 const ready = {
   probeState: "succeeded" as const,
@@ -197,7 +198,8 @@ describe("MCP custom installation", () => {
     wrap(<McpPage agentId={AGENT_ID} />);
     await newAddress();
     connect();
-    await screen.findByText("Authorization failed");
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Couldn't add connector. Try again.");
+    expect(oauth).not.toHaveBeenCalled();
     connect();
     await waitFor(() => expect(oauth).toHaveBeenCalledTimes(1));
     expect(calls.create).toHaveBeenCalledTimes(1);

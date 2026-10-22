@@ -584,7 +584,7 @@ describe("Discover authorization lifecycle", () => {
       expect(screen.queryByRole("dialog")).toBeNull();
       expect(browser.popup.close).not.toHaveBeenCalled();
       const row = within(document.getElementById(`mcp-server-${ALPHA_ID}`) as HTMLElement);
-      await row.findByText("Authorizing…");
+      await row.findByText("Waiting for authorization…");
       expect(row.queryByRole("button", { name: "Cancel" })).toBeNull();
       expect(row.queryByRole("button", { name: /^(Reauthorize|Authorize)$/ })).toBeNull();
       await complete(browser, calls.mounts);
@@ -752,7 +752,7 @@ describe("Discover authorization lifecycle", () => {
     wrap(<McpPage agentId={AGENT_ID} />);
     await openDiscover();
     add("Alpha");
-    await screen.findByText("Authorization page did not open");
+    await card("Alpha").findByText("Authorization page did not open");
     expect(screen.getByRole("button", { name: "Open window" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Cancel: Alpha" }));
     await waitFor(() => expect(calls.detach).toHaveBeenCalledWith(AGENT_ID, ALPHA_ID));

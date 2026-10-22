@@ -142,7 +142,7 @@ Do not recolour vendor logos or demonstrations with the app palette.
 
 ## Typography, spacing, and geometry
 
-Use self-hosted Manrope for Latin text, system Chinese fallbacks, and monospace for code. Shared body sizes are 14/16px, labels 12/14px, and section headings 32/42px. Body line-height is 1.5; the heading role is 1.2. The marketing hero uses its responsive `clamp(38px, 4vw, 58px)` composition. Some existing section headings retain artwork-specific sizing.
+Use self-hosted Manrope for Latin text, system Chinese fallbacks, and monospace for code. Shared body sizes are 14/16px, labels 12/14px, and section headings 32/42px. Body line-height is 1.5; the heading role is 1.35, which is the smallest value that keeps both fonts' ink inside the line box — Manrope's glyphs span 1.2525em and PingFang SC lays out on a 1.4em content box, so tighter leading puts ascenders and descenders outside their own box where a truncating ancestor cuts them. The marketing hero uses its responsive `clamp(38px, 4vw, 58px)` composition. Some existing section headings retain artwork-specific sizing.
 
 Use short, concrete headings and explanatory copy. Kicker labels remain hidden in the current marketing direction. Keep English and Chinese information and hierarchy equivalent; allow translated text to wrap without clipping. Chinese headings omit terminal full stops. Homepage copy and metadata live in the single typed `src/i18n.ts` module. The retired original/optimized variants have been consolidated without changing approved visible copy.
 

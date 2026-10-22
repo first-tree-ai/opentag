@@ -1,4 +1,11 @@
-/* Shared OpenTag recipes. Only the semantic adapter attaches these classes. */
+/*
+ * Shared OpenTag recipes. Only the semantic adapter attaches these classes.
+ *
+ * Every line-height here must clear the fonts' own ink. Manrope's glyphs span 1.2525em of its 2000-unit em, and
+ * PingFang SC, the Chinese fallback, lays out on a 1.4em content box; a smaller line box puts ascenders and
+ * descenders outside the element, where a truncating or overflowing ancestor cuts them. `text-metrics.test.ts`
+ * pins that floor.
+ */
 .ui-text {
   font-family: var(--ui-font);
   line-height: 1.5;
@@ -24,7 +31,7 @@
 .ui-text[data-text-size]:is(h1),
 .ui-text[data-text-size][data-heading-size="page"] {
   font-size: var(--ui-page-title);
-  line-height: 1.2;
+  line-height: 1.35;
   letter-spacing: -0.025em;
 }
 .ui-text[data-text-size]:is(h2) {

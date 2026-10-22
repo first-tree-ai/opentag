@@ -520,6 +520,81 @@ describe("MCP probe era handling", () => {
   });
 
   /*
+   * Zoom's MCP Server rejects `server/discover` with `-32601` at HTTP 200 while listing the method as
+   * valid. A status-only gate read that as a modern peer and failed the probe without ever trying
+   * `initialize`.
+   */
+  it("downgrades to the legacy handshake when server/discover is rejected with -32601 at HTTP 200", async () => {
+    const methods: string[] = [];
+    const fetchImpl = vi.fn(async (_url: URL | string, init?: RequestInit) => {
+      const method = (JSON.parse(String(init?.body)) as { method?: string }).method ?? "";
+      methods.push(method);
+      if (method === "server/discover") {
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: "1",
+            error: { code: -32601, message: "Unknown protocol method: 'server/discover'. Valid methods: ping" },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (method === "initialize") {
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: "1", result: { protocolVersion: "2025-06-18", capabilities: {} } }),
+          { status: 200, headers: { "content-type": "application/json", "mcp-session-id": "session-1" } },
+        );
+      }
+      if (method === "notifications/initialized") return new Response("", { status: 202 });
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", result: { tools: [{ name: "zoom-tool" }] } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const probe = new McpProbe({
+      fetcher: new McpOutboundFetcher({ ...PUBLIC_RESOLVE, allowLoopback: false, fetch: fetchImpl }),
+      logger,
+    });
+    const result = await probe.probe(request());
+    expect(methods).toEqual(["server/discover", "initialize", "notifications/initialized", "tools/list"]);
+    expect(result.probeState).toBe("succeeded");
+    expect(result.protocolEra).toBe("legacy");
+    expect(result.tools.map((tool) => tool.name)).toEqual(["zoom-tool"]);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ upstreamStatus: 200, rpcCode: -32601 }),
+      "MCP probe falls back to the legacy handshake",
+    );
+  });
+
+  it("logs the upstream status and codes, never the upstream message, when the probe fails", async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: "1", error: { code: -32603, message: "secret-upstream-detail" } }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    ) as unknown as typeof globalThis.fetch;
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const probe = new McpProbe({
+      fetcher: new McpOutboundFetcher({ ...PUBLIC_RESOLVE, allowLoopback: false, fetch: fetchImpl }),
+      logger,
+    });
+    const result = await probe.probe(request());
+    expect(result.probeState).toBe("failed");
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accountId: ACCOUNT,
+        errorCode: MCP_ERROR_CODES.UPSTREAM_ERROR,
+        upstreamStatus: 200,
+        rpcCode: -32603,
+      }),
+      "MCP probe failed",
+    );
+    expect(JSON.stringify(logger.info.mock.calls)).not.toContain("secret-upstream-detail");
+  });
+
+  /*
    * The regression B7 names. A legacy Server answers `initialize` with a pre-modern version, and
    * every later request must speak that protocol rather than the modern one: no `Mcp-Method`, no
    * `_meta`, and `MCP-Protocol-Version` carrying the *negotiated* version. The modern version is what

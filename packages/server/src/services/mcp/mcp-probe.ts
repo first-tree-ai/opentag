@@ -90,7 +90,10 @@ export interface McpProbeOptions {
   now?: () => Date;
   probeBudgetMs?: number;
   clientInfo?: { name: string; version: string };
-  /** Receives one `warn` line per skipped tool; absent means skipped tools are counted silently. */
+  /**
+   * Receives one `warn` line per skipped tool, plus an `info` line for a failed probe and for a
+   * legacy fallback; absent means skipped tools are counted silently and nothing else is logged.
+   */
   logger?: ServiceLogger;
 }
 
@@ -116,6 +119,22 @@ export class McpProbe {
         ? await this.#probeLegacy(input, deadline)
         : await this.#probeModern(input, deadline);
     } catch (error) {
+      /*
+       * The probe API answers 200 whether or not the probe succeeded, and the upstream status never
+       * reaches the response, so this line is the only place that shows what the Server really sent.
+       * Only the status and codes are bound: the upstream message stays out of the log line.
+       */
+      this.#logger?.info(
+        {
+          accountId: input.accountId,
+          url: input.url,
+          cachedEra: input.cachedEra,
+          errorCode: error instanceof McpServiceError ? error.code : undefined,
+          upstreamStatus: error instanceof McpTransportError ? error.status : undefined,
+          rpcCode: error instanceof McpTransportError ? error.rpcError?.code : undefined,
+        },
+        "MCP probe failed",
+      );
       return failed(error, invalidatesProtocolEra(error));
     }
   }
@@ -163,7 +182,18 @@ export class McpProbe {
     } catch (error) {
       if (!(error instanceof McpTransportError) || error.status === undefined) throw error;
       const detection = detectEraFromRpcError(error.status, error.rpcError);
-      if (detection.era === "legacy") return { kind: "legacy" };
+      if (detection.era === "legacy") {
+        this.#logger?.info(
+          {
+            accountId: input.accountId,
+            url: input.url,
+            upstreamStatus: error.status,
+            rpcCode: error.rpcError?.code,
+          },
+          "MCP probe falls back to the legacy handshake",
+        );
+        return { kind: "legacy" };
+      }
       /*
        * Modern peer, wrong version. Retry once with a version it advertised; if it advertised none
        * this client speaks, `negotiateProtocolVersion` reports a protocol failure rather than

@@ -43,16 +43,15 @@ afterEach(() => {
 });
 
 describe("GitHub account settings", () => {
-  it("keeps repository configuration available independently of account authorization", async () => {
+  it("offers only account authorization before connecting", async () => {
     vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(null));
     const discover = vi.spyOn(browserApi, "githubRepositories");
     render(<GitHubIntegrationSettings />);
     expect(await screen.findByRole("button", { name: "Authorize GitHub account" })).toBeTruthy();
     expect(screen.getByText("Account authorization", { exact: true })).toBeTruthy();
-    expect(screen.getByText("Repository access", { exact: true })).toBeTruthy();
-    const configure = screen.getByRole("link", { name: "Configure on GitHub" });
-    expect(configure.getAttribute("href")).toBe("https://github.com/settings/applications");
-    expect(configure.getAttribute("target")).toBe("_blank");
+    expect(screen.queryByText("Repository access", { exact: true })).toBeNull();
+    expect(screen.queryByRole("button", { name: "View repositories" })).toBeNull();
+    expect(screen.queryByRole("link")).toBeNull();
     expect(discover).not.toHaveBeenCalled();
   });
 
@@ -60,7 +59,8 @@ describe("GitHub account settings", () => {
     vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection()));
     const discover = vi.spyOn(browserApi, "githubRepositories");
     render(<GitHubIntegrationSettings />);
-    const configure = await screen.findByRole("link", { name: "Configure on GitHub" });
+    fireEvent.click(await screen.findByRole("button", { name: "About GitHub authorization" }));
+    const configure = await screen.findByRole("link", { name: "GitHub authorization settings" });
     configure.addEventListener("click", (event) => event.preventDefault());
     fireEvent.click(configure);
     fireEvent.focus(window);
@@ -139,26 +139,23 @@ describe("GitHub account settings", () => {
     expect(screen.queryByText("Not configured")).toBeNull();
   });
 
-  it("shows the saved identity and server-owned repository management without discovery", async () => {
+  it("shows account actions and an inline read-only viewer without querying discovery", async () => {
     vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection()));
     const discover = vi.spyOn(browserApi, "githubRepositories").mockRejectedValue(new Error("GitHub outage"));
     render(<GitHubIntegrationSettings />);
     expect(await screen.findByText("@octocat")).toBeTruthy();
-    expect(
-      screen.getByText("Authorize your GitHub account and allow openTag to access the repositories you need."),
-    ).toBeTruthy();
-    const link = screen.getByRole("link", { name: "Configure on GitHub" });
-    expect(link.getAttribute("href")).toBe("https://github.com/settings/applications");
-    expect(link.getAttribute("target")).toBe("_blank");
-    expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(screen.getByText("Authorize your GitHub account for all your Agents.")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "GitHub authorization settings" })).toBeNull();
     expect(discover).not.toHaveBeenCalled();
     expect(screen.queryByText("Connected")).toBeNull();
     expect(screen.queryByRole("button", { name: "Refresh installations" })).toBeNull();
     expect(screen.getByRole("button", { name: "Change account" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Remove account" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Disconnect account authorization" })).toBeTruthy();
     expect(screen.queryByRole("menu")).toBeNull();
     expect(screen.queryByText("Account", { exact: true })).toBeNull();
-    expect(screen.getByText("View the repositories your Agents can access.")).toBeTruthy();
+    const identity = screen.getByText("@octocat").closest('[data-ui="github-account-identity"]');
+    expect(within(identity as HTMLElement).getByRole("button", { name: "View repositories" })).toBeTruthy();
+    expect(screen.queryByText("Repository access", { exact: true })).toBeNull();
   });
 
   it.each([null, "pending", "revoked", "superseded"] as const)(
@@ -210,24 +207,30 @@ describe("GitHub account settings", () => {
       }),
     );
     expect(screen.getByText("@octocat")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Configure on GitHub" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "View repositories" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "GitHub authorization settings" })).toBeNull();
   });
 
   it("confirms shared removal and lets cancellation leave the account untouched", async () => {
     vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection()));
     const disconnect = vi.spyOn(browserApi, "disconnectGitHub").mockResolvedValue(connection({ status: "revoked" }));
     render(<GitHubIntegrationSettings />);
-    fireEvent.click(await screen.findByRole("button", { name: "Remove account" }));
-    const dialog = await screen.findByRole("dialog", { name: "Remove GitHub account?" });
+    fireEvent.click(await screen.findByRole("button", { name: "Disconnect account authorization" }));
+    const dialog = await screen.findByRole("dialog", { name: "Disconnect GitHub account authorization?" });
     expect(within(dialog).getByText(/All your Agents will lose GitHub access through @octocat/)).toBeTruthy();
     expect(within(dialog).getByText(/You can revoke it in GitHub settings/)).toBeTruthy();
     expect(disconnect).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(disconnect).not.toHaveBeenCalled();
-    fireEvent.click(await screen.findByRole("button", { name: "Remove account" }));
-    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Remove account" }));
-    expect(await screen.findByText("GitHub account removed.")).toBeTruthy();
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Disconnect account authorization" })),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Disconnect account authorization" }));
+    fireEvent.click(
+      within(await screen.findByRole("dialog")).getByRole("button", { name: "Disconnect account authorization" }),
+    );
+    expect(await screen.findByText("GitHub account authorization disconnected.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Authorize GitHub account" })).toBeTruthy();
     expect(disconnect).toHaveBeenCalledTimes(1);
   });
@@ -244,9 +247,9 @@ describe("GitHub account settings", () => {
       )
       .mockResolvedValue(connection({ status: "revoked" }));
     render(<GitHubIntegrationSettings />);
-    fireEvent.click(await screen.findByRole("button", { name: "Remove account" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Disconnect account authorization" }));
     const dialog = await screen.findByRole("dialog");
-    const confirm = within(dialog).getByRole("button", { name: "Remove account" });
+    const confirm = within(dialog).getByRole("button", { name: "Disconnect account authorization" });
     fireEvent.click(confirm);
     fireEvent.click(confirm);
     expect(disconnect).toHaveBeenCalledTimes(1);
@@ -254,8 +257,8 @@ describe("GitHub account settings", () => {
     fail(new Error("Controlled removal failure"));
     expect(await within(dialog).findByRole("alert")).toHaveProperty("textContent", "Controlled removal failure");
     expect(screen.getByText("@octocat")).toBeTruthy();
-    fireEvent.click(within(dialog).getByRole("button", { name: "Remove account" }));
-    expect(await screen.findByText("GitHub account removed.")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Disconnect account authorization" }));
+    expect(await screen.findByText("GitHub account authorization disconnected.")).toBeTruthy();
     expect(disconnect).toHaveBeenCalledTimes(2);
   });
 
@@ -263,9 +266,9 @@ describe("GitHub account settings", () => {
     vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection()));
     const disconnect = vi.spyOn(browserApi, "disconnectGitHub").mockRejectedValue(new Error("Removal failed"));
     render(<GitHubIntegrationSettings />);
-    fireEvent.click(await screen.findByRole("button", { name: "Remove account" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Disconnect account authorization" }));
     const dialog = await screen.findByRole("dialog");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Remove account" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Disconnect account authorization" }));
     expect(await within(dialog).findByText("Removal failed")).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
@@ -297,18 +300,27 @@ describe("GitHub account settings", () => {
   it("opens repository access help in an accessible popover beside its trigger", async () => {
     vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection()));
     render(<GitHubIntegrationSettings />);
-    const help = await screen.findByRole("button", { name: "About GitHub repository access" });
+    const help = await screen.findByRole("button", { name: "About GitHub authorization" });
     expect(help.getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(help);
-    const popover = await screen.findByRole("dialog", { name: "About GitHub repository access" });
+    const popover = await screen.findByRole("dialog", { name: "About GitHub authorization" });
     expect(help.getAttribute("aria-expanded")).toBe("true");
     expect(within(popover).getByText(/OAuth repository access follows your GitHub account permissions/)).toBeTruthy();
-    expect(within(popover).getByText(/All your Agents share this repository access/)).toBeTruthy();
+    expect(
+      within(popover).getByText(/All your Agents share this account authorization and repository access/),
+    ).toBeTruthy();
     expect(
       within(popover).getByText(/Organization repositories may require organization approval or SSO authorization/),
     ).toBeTruthy();
+    const settings = within(popover).getByRole("link", { name: "GitHub authorization settings" });
+    expect(settings.getAttribute("href")).toBe("https://github.com/settings/applications");
+    expect(settings.getAttribute("target")).toBe("_blank");
+    expect(settings.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(
+      within(popover).getByText(/Disconnecting in openTag does not revoke your authorization on GitHub/),
+    ).toBeTruthy();
     fireEvent.click(help);
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "About GitHub repository access" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "About GitHub authorization" })).toBeNull());
     expect(help.getAttribute("aria-expanded")).toBe("false");
   });
 

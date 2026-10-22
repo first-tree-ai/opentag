@@ -51,7 +51,11 @@ describe("GitHub repository access", () => {
     expect(discover).not.toHaveBeenCalled();
     view.rerender(<GitHubRepositoryAccess busy={false} />);
     expect(screen.queryByRole("button", { name: "View repositories" })).toBeNull();
-    expect(screen.getByRole("link", { name: "Configure on GitHub" })).toBeTruthy();
+    expect(screen.queryByRole("link")).toBeNull();
+    view.rerender(
+      <GitHubRepositoryAccess connection={{ ...connection, status: "reauthorization_required" }} busy={false} />,
+    );
+    expect(screen.queryByRole("button", { name: "View repositories" })).toBeNull();
   });
 
   it("shows OAuth repository guidance and links to GitHub authorizations", async () => {
@@ -66,7 +70,10 @@ describe("GitHub repository access", () => {
     expect(within(dialog).queryByText("@octocat")).toBeNull();
     expect(within(dialog).queryByRole("searchbox")).toBeNull();
     expect(within(dialog).getByText(/If organization repositories are missing/)).toBeTruthy();
-    const configure = within(dialog).getByRole("link", { name: "Configure on GitHub" });
+    expect(within(dialog).queryByRole("link")).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: "About repository access" }));
+    const help = await screen.findByRole("dialog", { name: "About repository access" });
+    const configure = within(help).getByRole("link", { name: "GitHub authorization settings" });
     expect(configure.getAttribute("href")).toBe("https://github.com/settings/applications");
     expect(configure.getAttribute("rel")).toBe("noopener noreferrer");
   });
@@ -168,7 +175,10 @@ describe("GitHub repository access", () => {
       .mockResolvedValueOnce(page([2]));
     const dialog = await open();
     await within(dialog).findByText("acme/repo-1");
-    const configure = within(dialog).getByRole("link", { name: "Configure on GitHub" });
+    expect(within(dialog).queryByRole("link")).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: "About repository access" }));
+    const help = await screen.findByRole("dialog", { name: "About repository access" });
+    const configure = within(help).getByRole("link", { name: "GitHub authorization settings" });
     configure.addEventListener("click", (event) => event.preventDefault());
     fireEvent.click(configure);
     fireEvent.focus(window);

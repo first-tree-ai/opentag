@@ -1,9 +1,12 @@
 import {
   type AgentAdminConfig,
   CONTEXT_TREES_MAX,
+  type ContextTreeConnection,
+  ContextTreeConnectionSchema,
   type ContextTreeOperationRequest,
   ContextTreeOperationRequestSchema,
   type ContextTreeOperationResponse,
+  contextTreeIdentity,
 } from "@opentag/shared";
 import type { ContextTreeOperationOwner } from "../../runtime/context-tree-operation-owner.js";
 import type { AgentService } from "./agent-service.js";
@@ -34,8 +37,9 @@ export class ContextTreeOperationService {
         ? { status: "completed", repository: null }
         : await this.#dispatch(userId, agentId, config, input.action, input);
     if (result.status !== "completed") return result;
-    if (result.repository?.toLowerCase() !== input.repository?.toLowerCase())
-      return { status: "failed", code: "failed" };
+    const selection = updatedSelection(connections, input, result);
+    if (!selection) return { status: "failed", code: "failed" };
+    if (selection === connections) return result;
     try {
       await this.agents.updateContextTreeSelection(
         userId,
@@ -46,9 +50,7 @@ export class ContextTreeOperationService {
           computerId: config.computerId,
           status: config.status,
         },
-        input.action === "disconnect"
-          ? connections.filter((entry) => entry.alias !== input.alias)
-          : [...connections, { alias: input.alias, repository: input.repository as string }],
+        selection,
       );
     } catch (error) {
       if (error instanceof Error && "code" in error && error.code === "AGENT_REVISION_CONFLICT")
@@ -71,13 +73,14 @@ export class ContextTreeOperationService {
   ): Promise<ContextTreeOperationResponse> {
     if (config.computerId === null) return { status: "failed", code: "computer_unavailable" };
     const kind = await this.cloud?.computerKind(config.computerId);
-    if (this.cloud && kind && (action === "connect" || kind === "cloud")) {
+    if (this.cloud && kind) {
       return this.cloud.run({
         accountId: userId,
         agentId,
         action,
-        alias: input.alias,
-        repository: input.repository ?? "",
+        path: input.path,
+        ref: input.ref,
+        repository: input.repository,
       });
     }
     return this.owner.start({
@@ -95,15 +98,43 @@ function attachmentOutcome(
   input: ContextTreeOperationRequest,
 ): ContextTreeOperationResponse | undefined {
   const connections = config.runtimeConfig.contextTrees;
-  const existing = connections.find((entry) => entry.alias === input.alias);
+  const existing = connections.find(
+    (entry) =>
+      contextTreeIdentity(entry) === contextTreeIdentity(input) ||
+      (input.action === "create" &&
+        input.ref === "HEAD" &&
+        entry.repository.toLowerCase() === input.repository.toLowerCase() &&
+        entry.path === input.path),
+  );
   if (input.action !== "disconnect") {
     if (existing)
-      return existing.repository.toLowerCase() === input.repository?.toLowerCase()
-        ? { status: "completed", repository: existing.repository }
-        : { status: "failed", code: "alias_conflict" };
-    if (connections.some((entry) => entry.repository.toLowerCase() === input.repository?.toLowerCase()))
-      return { status: "failed", code: "repository_conflict" };
+      return {
+        status: "completed",
+        repository: existing.repository,
+        ...(input.ref === "HEAD" ? { ref: existing.ref } : {}),
+      };
     if (connections.length >= CONTEXT_TREES_MAX) return { status: "failed", code: "tree_limit_reached" };
   } else if (!existing) return { status: "completed", repository: null };
   return undefined;
+}
+
+function updatedSelection(
+  connections: ContextTreeConnection[],
+  input: ContextTreeOperationRequest,
+  result: Extract<ContextTreeOperationResponse, { status: "completed" }>,
+): ContextTreeConnection[] | undefined {
+  if (result.repository?.toLowerCase() !== (input.action === "disconnect" ? undefined : input.repository.toLowerCase()))
+    return undefined;
+  if (input.action === "disconnect")
+    return connections.filter((entry) => contextTreeIdentity(entry) !== contextTreeIdentity(input));
+  if (input.ref === "HEAD" && (!result.ref || result.ref === "HEAD")) return undefined;
+  const source = ContextTreeConnectionSchema.parse({
+    kind: input.kind,
+    repository: input.repository,
+    path: input.path,
+    ref: result.ref ?? input.ref,
+  });
+  return connections.some((entry) => contextTreeIdentity(entry) === contextTreeIdentity(source))
+    ? connections
+    : [...connections, source];
 }

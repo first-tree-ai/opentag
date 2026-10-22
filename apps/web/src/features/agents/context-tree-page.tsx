@@ -21,7 +21,6 @@ export function ContextTreePage({ agentId }: { agentId: string }) {
           {(config) => (
             <ContextTreeSettings
               config={config}
-              computerName={agent.computer?.displayName ?? ""}
               computerKind={agent.computerKind}
               online={agent.availability.dependencies.computer.state === "ready"}
               // A write can change the Agent and its config together, so both are dropped.

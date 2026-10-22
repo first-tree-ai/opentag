@@ -345,6 +345,44 @@ export class GitHubApiClient {
     return parseRepository(await this.#sendApi("GET", `/repos/${input.fullName}`, input.accessToken, input.signal));
   }
 
+  /** Creates an empty private repository; an existing repository is never reused or modified. */
+  async createPrivateRepository(input: {
+    accessToken: string;
+    fullName: string;
+    githubLogin: string;
+    signal?: AbortSignal;
+  }): Promise<GitHubRepository> {
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(input.fullName) || input.fullName.includes(".."))
+      throw requestError("Invalid repository name");
+    const [owner, name] = input.fullName.split("/");
+    const path = owner?.toLowerCase() === input.githubLogin.toLowerCase() ? "/user/repos" : `/orgs/${owner}/repos`;
+    const repository = parseRepository(
+      await this.#sendApi("POST", path, input.accessToken, input.signal, true, {
+        name,
+        private: true,
+        auto_init: false,
+      }),
+    );
+    if (!repository.private || repository.fullName.toLowerCase() !== input.fullName.toLowerCase())
+      throw invalidResponse("GitHub did not create the requested private repository");
+    return repository;
+  }
+
+  /** Omitting branch uses GitHub's default; omitting sha prevents replacing an existing file. */
+  async initializeContextTree(input: {
+    accessToken: string;
+    fullName: string;
+    content: string;
+    signal?: AbortSignal;
+  }): Promise<void> {
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(input.fullName) || input.fullName.includes(".."))
+      throw requestError("Invalid repository name");
+    await this.#sendApi("PUT", `/repos/${input.fullName}/contents/NODE.md`, input.accessToken, input.signal, true, {
+      message: "docs: initialize context tree",
+      content: Buffer.from(input.content).toString("base64"),
+    });
+  }
+
   async validateOAuthToken(input: { accessToken: string; signal?: AbortSignal }): Promise<GitHubAuthenticatedUser> {
     let payload: unknown;
     try {
@@ -486,11 +524,12 @@ export class GitHubApiClient {
   }
 
   async #sendApi(
-    method: "GET",
+    method: "GET" | "POST" | "PUT",
     path: string,
     accessToken: string,
     signal?: AbortSignal,
     requireRepositoryScope = false,
+    body?: unknown,
   ): Promise<unknown> {
     return this.#send({
       method,
@@ -500,14 +539,17 @@ export class GitHubApiClient {
         authorization: `Bearer ${parseToken(accessToken, "access token")}`,
         "user-agent": USER_AGENT,
         "x-github-api-version": GITHUB_API_VERSION,
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
       },
       signal,
       requireRepositoryScope,
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      ...(method === "GET" ? {} : { expectedStatus: 201 }),
     });
   }
 
   async #send(options: {
-    method: "GET" | "POST";
+    method: "GET" | "POST" | "PUT";
     url: string;
     headers: Record<string, string>;
     body?: string;

@@ -3,7 +3,7 @@
  *
  * The portable app ships the bundled CLI next to a physical `node_modules` tree so the runtime can
  * keep resolving `@first-tree-ai/context-tree` (its `package.json` through `createRequire`, its
- * bundled CLI, and its packaged skills and templates) on machines that have no package manager.
+ * bundled CLI, and its packaged skills and contracts) on machines that have no package manager.
  * The closure is copied from the frozen pnpm install only - no fetch, no install, no lifecycle
  * scripts - and the flat output layout stays deterministic and closed: one real directory per
  * package, no symlinks, no native addons, and never two versions of the same package name.
@@ -19,6 +19,7 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
@@ -36,14 +37,12 @@ export const DEPENDENCY_CLOSURE_SCHEMA_VERSION = 1;
 /** Packaged skill directories that the Context Tree CLI installs for agent hosts. */
 export const CONTEXT_TREE_SKILL_DIRECTORIES = Object.freeze([
   "context-tree-connect",
-  "context-tree-create",
-  "context-tree-publish",
+  "context-tree-init",
+  "context-tree-cleanup",
   "context-tree-read",
-  "context-tree-setup",
+  "context-tree-schedule-cleanup",
   "context-tree-write",
 ]);
-/** Templates, relative to `templates/`, that the Context Tree CLI scaffolds tree roots from. */
-export const CONTEXT_TREE_TEMPLATE_FILES = Object.freeze(["AGENTS.md", "root-node.md", "validate-context-tree.yml"]);
 /** The packaged CLI entry, relative to the installed package root. */
 const CONTEXT_TREE_CLI_RELATIVE_PATH = "dist/cli/index.mjs";
 
@@ -506,7 +505,8 @@ function assertContextTreeAssets(nodeModulesDir, directPins) {
   const assets = [
     CONTEXT_TREE_CLI_RELATIVE_PATH,
     ...CONTEXT_TREE_SKILL_DIRECTORIES.map((skill) => `skills/${skill}/SKILL.md`),
-    ...CONTEXT_TREE_TEMPLATE_FILES.map((template) => `templates/${template}`),
+    "dist/contracts/index.mjs",
+    "skills/context-tree-cleanup/references/editorial.md",
   ];
   for (const asset of assets) {
     if (!isRegularFile(join(packageDir, asset))) {
@@ -540,7 +540,7 @@ const DETACHED_RESOLUTION_SCRIPT = [
 /**
  * Exercises the embedded Context Tree CLI exactly as an installed user would, from a relocated app
  * with an isolated `HOME` and no `NODE_PATH`. Only safe commands run (`--version`, `--help`,
- * `list`); resolution must come from the app's own `node_modules`, never from the build checkout.
+ * `init`, `read`, `verify`); resolution must come from the app's own `node_modules`, never from the build checkout.
  */
 export function runContextTreeRuntimeProbe({ appDir, nodePath, homeDir, probeOpenTag = false }) {
   if (!existsSync(join(appDir, DEPENDENCY_CLOSURE_FILE))) return;
@@ -581,26 +581,21 @@ export function runContextTreeRuntimeProbe({ appDir, nodePath, homeDir, probeOpe
   if (!helpOutput.includes("Usage: context-tree")) {
     fail("embedded Context Tree help does not identify the context-tree CLI");
   }
-  let listing;
-  try {
-    listing = JSON.parse(runNode(nodePath, [cliPath, "list", "--json"], cleanEnv).stdout.trim());
-  } catch {
-    fail("embedded Context Tree list did not emit its JSON payload");
-  }
-  if (
-    !isRecord(listing) ||
-    listing.schemaVersion !== 1 ||
-    !Array.isArray(listing.trees) ||
-    listing.trees.length !== 0
-  ) {
-    fail("embedded Context Tree list did not report the expected empty tree listing");
-  }
+  const tree = join(homeDir, "tree");
+  const initialized = JSON.parse(
+    runNode(nodePath, [cliPath, "init", tree, "--project-path", homeDir, "--json"], cleanEnv).stdout,
+  );
+  if (initialized.treeRoot !== realpathSync(tree)) fail("Context Tree init returned the wrong root");
+  runNode(nodePath, [cliPath, "read", "--tree-path", tree, "--json"], cleanEnv);
+  runNode(nodePath, [cliPath, "verify", "--tree-path", tree, "--json"], cleanEnv);
   if (probeOpenTag) {
     const result = runNode(nodePath, [entryPath, "--help"], cleanEnv);
     if (!result.stdout.includes("openTag command-line interface") || result.stdout.includes("context-tree")) {
       fail(`openTag did not expose the expected Agent-managed CLI surface: ${result.stdout}\n${result.stderr}`);
     }
   }
-  const leftovers = readdirSync(homeDir).filter((name) => name !== "." && name !== "..");
+  rmSync(tree, { recursive: true });
+  rmSync(join(homeDir, ".context-tree.json"));
+  const leftovers = readdirSync(homeDir);
   if (leftovers.length > 0) fail(`embedded Context Tree wrote into its isolated home: ${leftovers.join(", ")}`);
 }

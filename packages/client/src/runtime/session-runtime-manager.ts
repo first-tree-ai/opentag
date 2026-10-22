@@ -1,4 +1,4 @@
-import { resolve, sep } from "node:path";
+import { delimiter, resolve } from "node:path";
 import type {
   AgentRuntimeProvider,
   EffectiveRuntimeSnapshot,
@@ -67,6 +67,8 @@ export interface SessionRuntimeManagerOptions {
   readonly cliCommand?: string;
   readonly cleanupProviderEnvironment?: (sessionId: string) => Promise<void>;
   readonly contextTree?: Pick<ContextTreeManager, "ensureAgent" | "skillPaths">;
+  /** Managed CLI directory applied after Provider discovery and execution environment overrides. */
+  readonly contextTreeBin?: string;
   /**
    * Optional. Materializes the Agent's enabled Skills before the provider starts; a failure only
    * changes what is on disk and never stops the runtime.
@@ -105,6 +107,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   readonly #cliCommand: string;
   readonly #cleanupProviderEnvironment?: SessionRuntimeManagerOptions["cleanupProviderEnvironment"];
   readonly #contextTree?: SessionRuntimeManagerOptions["contextTree"];
+  readonly #contextTreeBin?: string;
   readonly #skills?: SessionRuntimeManagerOptions["skills"];
   readonly #ensureProviderReady: SessionRuntimeManagerOptions["ensureProviderReady"];
   readonly #providers: AgentRuntimeProviderRegistry;
@@ -131,6 +134,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     this.#cleanupProviderEnvironment = options.cleanupProviderEnvironment;
     this.#environment = { ...(options.environment ?? process.env) };
     if (options.contextTree) this.#contextTree = options.contextTree;
+    this.#contextTreeBin = options.contextTreeBin;
     if (options.skills) this.#skills = options.skills;
     this.#ensureProviderReady = options.ensureProviderReady;
     this.#providers = options.providers;
@@ -341,11 +345,11 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
         sessionCliAvailable: Boolean(managed.proofPath),
         selfConfigurationEnabled: managed.snapshot.selfConfigurationEnabled === true,
         agentHome: managed.cwd,
-        ...contextTree.promptContext,
+        ...contextTree,
       }),
       workspace: {
         cwd: managed.cwd,
-        ...visibleProviderCliPath(managed, this.#providerCliLaunchPath),
+        ...providerLaunchPath(managed, this.#providerCliLaunchPath, this.#contextTreeBin),
         environment: {
           ...(this.#home ? { OPENTAG_HOME: this.#home } : {}),
           ...(managed.proofPath ? { OPENTAG_SESSION_PROOF_FILE: managed.proofPath } : {}),
@@ -366,7 +370,6 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
             this.#slackConfigWritableRoot,
           ),
           ...configurationRoots,
-          ...dropCoveredRoots(contextTree.writableRoots, configurationRoots),
         ],
       },
       policy: provider.policy(managed.snapshot),
@@ -550,22 +553,9 @@ async function prepareContextTree(
   provider: EffectiveRuntimeSnapshot["provider"],
   connections: EffectiveRuntimeSnapshot["contextTrees"],
   environment?: Readonly<Record<string, string | undefined>>,
-): Promise<{ promptContext: { contextTree?: ContextTreeStatus }; writableRoots: readonly string[] }> {
-  // Keep the legacy call shape when no managed environment exists so existing tests and prompts
-  // observe identical arguments.
-  const status = environment
-    ? await manager?.ensureAgent(cwd, provider, connections, environment)
-    : await manager?.ensureAgent(cwd, provider, connections);
-  if (!status) return { promptContext: {}, writableRoots: [] };
-  return {
-    promptContext: { contextTree: status },
-    writableRoots:
-      status.status === "configured"
-        ? status.connections.flatMap((entry) => (entry.status === "ready" ? [entry.treePath] : []))
-        : status.status === "ready"
-          ? [status.treePath]
-          : [],
-  };
+): Promise<{ contextTree?: ContextTreeStatus }> {
+  const status = await manager?.ensureAgent(cwd, provider, connections, environment);
+  return status ? { contextTree: status } : {};
 }
 
 async function addPackagedClaudeSkills(
@@ -601,14 +591,6 @@ async function prepareAgentSkills(
   }
 }
 
-/**
- * Drop a Context Tree root already covered by the shared account directory grant. A managed
- * checkout lives under `~/.context-tree`, so re-listing it would grant the same subtree twice.
- */
-function dropCoveredRoots(roots: readonly string[], parents: readonly string[]): string[] {
-  return roots.filter((root) => !parents.some((parent) => resolve(root).startsWith(`${resolve(parent)}${sep}`)));
-}
-
 function visibleSlackWritableRoots(
   sessionKind: "visible" | "internal",
   cwd: string,
@@ -639,11 +621,14 @@ async function waitForStart(start: Promise<AgentRuntime>, signal?: AbortSignal):
   }
 }
 
-function visibleProviderCliPath(
+function providerLaunchPath(
   managed: ManagedSessionRuntime,
   resolveLaunchPath: ((sessionId: string) => string | undefined) | undefined,
+  contextTreeBin: string | undefined,
 ): { pathPrepend?: string } {
-  return managed.sessionKind === "visible" ? { pathPrepend: resolveLaunchPath?.(managed.binding.sessionId) } : {};
+  const sessionPath = managed.sessionKind === "visible" ? resolveLaunchPath?.(managed.binding.sessionId) : undefined;
+  const pathPrepend = [sessionPath, contextTreeBin].filter(Boolean).join(delimiter);
+  return pathPrepend ? { pathPrepend } : {};
 }
 
 async function visibleReplyWritableRoots(

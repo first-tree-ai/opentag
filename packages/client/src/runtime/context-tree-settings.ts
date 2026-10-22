@@ -1,26 +1,30 @@
 import { createHash } from "node:crypto";
+import { lstat } from "node:fs/promises";
 import { join } from "node:path";
+import { resolvedTreeSchema, SCHEMA_VERSION } from "@first-tree-ai/context-tree/contracts";
 import {
   type ContextTreeOperationFrame,
   type ContextTreeOperationResponse,
   ContextTreeOperationResponseSchema,
+  contextTreeIdentity,
 } from "@opentag/shared";
 import { z } from "zod";
 import { ensurePrivateDirectory, readDurableJson, writeDurableFile } from "../storage/durable-file.js";
 import {
+  type ContextTreeExecFile,
   hasManagedGitHubTransport,
   mergeContextTreeEnvironment,
   resolveContextTreePackage,
   runContextTreeCli,
+  runContextTreeProcess,
 } from "./context-tree.js";
 
 const RecordSchema = z.object({ fingerprint: z.string(), result: ContextTreeOperationResponseSchema }).strict();
 type Result = ContextTreeOperationResponse;
 type Run = (args: readonly string[], signal?: AbortSignal) => Promise<{ payload: unknown; failureCode?: string }>;
-const TREE_PATH = z.object({ tree: z.object({ path: z.string().min(1) }) });
 
-/** Keep the hash inside the CLI's 40-character project-name limit. */
-export function contextTreeStagingName(repository: string): string {
+/** Stable staging location for interrupted repository creation. */
+function contextTreeStagingName(repository: string): string {
   const identity = repository.toLowerCase();
   const readable = identity.replace(/[^a-z0-9.-]+/g, "-").slice(0, 27);
   return `${readable}-${createHash("sha256").update(identity).digest("hex").slice(0, 12)}`;
@@ -31,8 +35,9 @@ function fingerprint(frame: ContextTreeOperationFrame): string {
   return JSON.stringify([
     frame.agentId,
     input.action,
-    input.alias,
-    input.repository?.toLowerCase() ?? null,
+    input.path,
+    input.ref,
+    input.repository.toLowerCase(),
     input.expectedRevision,
     input.expectedRuntimeConfigRevision,
   ]);
@@ -49,11 +54,12 @@ export class ContextTreeSettings {
       hasAgentSessions: (agentId: string) => boolean;
       exclusive: <T>(operation: () => Promise<T>) => Promise<T>;
       run?: Run;
+      process?: ContextTreeExecFile;
       budgetMs?: number;
       /**
        * Trusted credential mode. Settings operations never fall back to ambient host credentials:
        * network actions require `managedEnvironment` and otherwise fail with
-       * `authentication_required`. Legacy Local settings keep the existing behavior.
+       * `authentication_required`. Repository creation always requires managed GitHub transport.
        */
       managedCredentials?: boolean;
       /** Host-side execution environment for managed settings operations, when one is available. */
@@ -80,18 +86,11 @@ export class ContextTreeSettings {
   }
 
   async #run(frame: ContextTreeOperationFrame, controller: AbortController): Promise<Result> {
-    const budget = this.options.budgetMs ?? 240_000;
-    const work = new AbortController();
-    const totalTimer = setTimeout(() => controller.abort(), budget);
-    const workTimer = setTimeout(() => work.abort(), Math.max(1, budget - Math.min(10_000, budget / 10)));
-    const signal = AbortSignal.any([controller.signal, work.signal]);
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(this.options.budgetMs ?? 240_000)]);
     try {
-      return await this.#execute(frame, signal, controller.signal);
+      return await this.#execute(frame, signal);
     } catch {
       return failed("failed");
-    } finally {
-      clearTimeout(totalTimer);
-      clearTimeout(workTimer);
     }
   }
 
@@ -114,7 +113,7 @@ export class ContextTreeSettings {
         cancellation.throwIfAborted();
         if (frame.requireStopped && this.options.hasAgentSessions(frame.agentId))
           throw new Error("Agent runtime resumed");
-        return await abortable(run(args, cancellation), cancellation);
+        return await run(args, cancellation);
       };
       // The same queue protects runtime preparation and settings calls. Verification is read-only.
       if (args[0] === "verify") return execute();
@@ -125,7 +124,7 @@ export class ContextTreeSettings {
     };
   }
 
-  async #execute(frame: ContextTreeOperationFrame, signal: AbortSignal, cleanupSignal: AbortSignal): Promise<Result> {
+  async #execute(frame: ContextTreeOperationFrame, signal: AbortSignal): Promise<Result> {
     if (frame.requireStopped && this.options.hasAgentSessions(frame.agentId)) return failed("busy");
     const input = frame.input;
     const managedEnvironment = input.action === "disconnect" ? undefined : this.options.managedEnvironment?.();
@@ -134,36 +133,58 @@ export class ContextTreeSettings {
       // host credentials (`gh auth login`, user git config) in proxy mode.
       return failed("authentication_required");
     }
-    if (
-      managedEnvironment &&
-      input.action === "connect" &&
-      input.repository &&
-      !hasManagedGitHubTransport(managedEnvironment)
-    ) {
+    if (managedEnvironment && input.action === "connect" && !hasManagedGitHubTransport(managedEnvironment)) {
       // Require the execution transport; repository admission is authoritative on the Server.
       return failed("permission_denied");
     }
     const run = this.#runner(frame, signal, managedEnvironment);
     if (!run) return failed("capability_missing");
-    return this.#executeRecorded(frame, run, cleanupSignal);
+    return this.#executeRecorded(
+      frame,
+      run,
+      signal,
+      mergeContextTreeEnvironment(this.options.environment, managedEnvironment),
+    );
   }
 
-  async #executeRecorded(frame: ContextTreeOperationFrame, run: Run, cleanupSignal: AbortSignal): Promise<Result> {
+  async #executeRecorded(
+    frame: ContextTreeOperationFrame,
+    run: Run,
+    signal: AbortSignal,
+    environment: NodeJS.ProcessEnv,
+  ): Promise<Result> {
     const input = frame.input;
     const directory = join(this.options.home, "state", "context-tree-operations");
     await ensurePrivateDirectory(this.options.home, directory);
     const recordFile = join(directory, `${input.operationId}.json`);
     const previous = await readDurableJson(recordFile, RecordSchema.parse);
-    if (previous) return previous.fingerprint === fingerprint(frame) ? previous.result : failed("stale_configuration");
+    if (previous) {
+      if (previous.fingerprint !== fingerprint(frame)) return failed("stale_configuration");
+      if (previous.result.status !== "failed" || previous.result.code !== "publication_uncertain")
+        return previous.result;
+    }
     const identity = fingerprint(frame);
     if (input.action === "disconnect")
       return this.#save(recordFile, identity, { status: "completed", repository: null });
-    if (!input.repository) return failed("failed");
     const setup = join(directory, contextTreeStagingName(input.repository));
     await ensurePrivateDirectory(this.options.home, setup);
     const project = ["--project-path", setup, "--json"];
-    const result = await this.#runRepositoryOperation(input, directory, project, run);
-    return this.#save(recordFile, identity, await this.#cleanup(project, result, run, cleanupSignal));
+    const execute = this.#processRunner(frame, setup, signal, environment);
+    const publication =
+      input.action === "create" ? await this.#publish(frame, setup, run, execute, environment) : undefined;
+    if (publication && typeof publication !== "string") return this.#save(recordFile, identity, publication);
+    const ref =
+      typeof publication === "string"
+        ? publication
+        : input.ref === "HEAD"
+          ? await remoteDefaultBranch(input.repository, execute)
+          : input.ref;
+    const result = await verifyRepository({ ...input, ref }, project, run);
+    return this.#save(
+      recordFile,
+      identity,
+      result.status === "completed" && input.ref === "HEAD" ? { ...result, ref } : result,
+    );
   }
 
   async #save(recordFile: string, identity: string, result: Result): Promise<Result> {
@@ -171,68 +192,164 @@ export class ContextTreeSettings {
     return result;
   }
 
-  async #runRepositoryOperation(
-    input: ContextTreeOperationFrame["input"],
-    directory: string,
-    project: string[],
+  #processRunner(
+    frame: ContextTreeOperationFrame,
+    setup: string,
+    signal: AbortSignal,
+    environment: NodeJS.ProcessEnv,
+  ): ProcessRun {
+    const processRun = this.options.process ?? runContextTreeProcess;
+    const processEnvironment = { ...environment };
+    for (const key of [
+      "GIT_DIR",
+      "GIT_WORK_TREE",
+      "GIT_INDEX_FILE",
+      "GIT_COMMON_DIR",
+      "GIT_OBJECT_DIRECTORY",
+      "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+      "GIT_PREFIX",
+      "GIT_SHALLOW_FILE",
+      "GIT_NAMESPACE",
+      "GIT_CONFIG",
+    ])
+      delete processEnvironment[key];
+    const execute = async (file: string, args: string[], cwd = setup) => {
+      signal.throwIfAborted();
+      if (frame.requireStopped && this.options.hasAgentSessions(frame.agentId))
+        throw new Error("Agent runtime resumed");
+      return (
+        await processRun(file, args, {
+          cwd,
+          env: {
+            ...processEnvironment,
+            GIT_AUTHOR_NAME: "OpenTag",
+            GIT_AUTHOR_EMAIL: "opentag@localhost",
+            GIT_COMMITTER_NAME: "OpenTag",
+            GIT_COMMITTER_EMAIL: "opentag@localhost",
+          },
+          signal,
+          timeout: 120_000,
+          maxBuffer: 1024 * 1024,
+          windowsHide: true,
+        })
+      ).stdout.trim();
+    };
+    return execute;
+  }
+
+  async #publish(
+    frame: ContextTreeOperationFrame,
+    setup: string,
     run: Run,
-  ): Promise<Result> {
-    const publication =
-      input.action === "create" ? await this.#publish(directory, input.repository as string, project, run) : undefined;
-    return publication ?? verifyRepository(input.repository as string, project, run);
-  }
-
-  async #cleanup(project: string[], result: Result, run: Run, signal: AbortSignal): Promise<Result> {
+    execute: ProcessRun,
+    environment: NodeJS.ProcessEnv,
+  ): Promise<Result | string> {
+    const input = frame.input;
+    if (input.path !== ".") return failed("invalid_tree");
+    if (!hasManagedGitHubTransport(environment)) return failed("authentication_required");
+    const publicationFile = join(setup, "publication.json");
+    const tree = join(setup, "tree");
+    const previous = await readDurableJson(publicationFile, PublicationSchema.parse);
+    const remote = `https://github.com/${input.repository}.git`;
+    if (previous) return recoverPublication(previous, input.ref, remote, execute, publicationFile);
+    const sha = await stageTree(input, setup, run, execute);
+    if (typeof sha !== "string") return sha;
+    const ref = input.ref === "HEAD" ? await execute("git", ["symbolic-ref", "--short", "HEAD"], tree) : input.ref;
+    // Persist intent before the first remote mutation. Never blindly recreate after a lost response.
+    await writeDurableFile(publicationFile, JSON.stringify({ sha, ref, complete: false }));
     try {
-      const cleanup = await run(["disconnect", "--all", ...project], signal);
-      return cleanup.failureCode && result.status === "completed" ? failed("failed") : result;
+      await execute("gh", ["repo", "create", input.repository, "--private"]);
+      await execute("git", ["push", remote, `HEAD:refs/heads/${ref}`], tree);
+      await writeDurableFile(publicationFile, JSON.stringify({ sha, ref, complete: true }));
+      return ref;
     } catch {
-      return result.status === "completed" ? failed("failed") : result;
-    }
-  }
-
-  async #publish(directory: string, repository: string, project: string[], run: Run): Promise<Result | undefined> {
-    const publicationFile = join(
-      directory,
-      `publication-${createHash("sha256").update(repository.toLowerCase()).digest("hex")}.json`,
-    );
-    const previous = await readDurableJson(publicationFile, ContextTreeOperationResponseSchema.parse);
-    if (previous?.status === "completed") return undefined;
-    if (previous?.status === "failed" && previous.code === "publication_uncertain") return previous;
-    // A retry can reconnect the deterministic managed staging tree after the temporary connection was removed.
-    const staged = await run([
-      "connect",
-      `${contextTreeStagingName(repository)}-context-tree`,
-      "--as",
-      "settings",
-      ...project,
-    ]);
-    if (staged.failureCode) {
-      const created = await run(["create", "--as", "settings", ...project]);
-      if (created.failureCode) return classify(created.failureCode);
-    }
-    await writeDurableFile(publicationFile, JSON.stringify(failed("publication_uncertain")));
-    try {
-      const published = await run(["publish", repository, "--tree", "settings", ...project]);
-      const outcome: Result = published.failureCode
-        ? classify(published.failureCode, true)
-        : { status: "completed", repository };
-      await writeDurableFile(publicationFile, JSON.stringify(outcome));
-      return outcome.status === "failed" ? outcome : undefined;
-    } catch {
-      // Only failures after the durable publication fence can hide a remote publication.
       return failed("publication_uncertain");
     }
   }
 }
+type ProcessRun = (file: string, args: string[], cwd?: string) => Promise<string>;
+async function stageTree(
+  input: ContextTreeOperationFrame["input"],
+  setup: string,
+  run: Run,
+  execute: ProcessRun,
+): Promise<string | Result> {
+  const tree = join(setup, "tree");
+  const existing = await lstat(join(tree, "NODE.md")).catch((error: unknown) => {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
+    throw error;
+  });
+  const initialized = await run(
+    existing ? ["verify", "--tree-path", tree, "--json"] : ["init", tree, "--project-path", setup, "--json"],
+  );
+  if (initialized.failureCode) return classify(initialized.failureCode);
+  await execute("git", [
+    "-c",
+    "init.templateDir=",
+    "init",
+    ...(input.ref === "HEAD" ? [] : ["--initial-branch", input.ref]),
+    tree,
+  ]);
+  let sha: string;
+  try {
+    sha = await execute("git", ["rev-parse", "--verify", "HEAD"], tree);
+  } catch {
+    await execute("git", ["add", "--", "NODE.md"], tree);
+    await execute(
+      "git",
+      ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "commit", "-m", "docs: initialize context tree"],
+      tree,
+    );
+    sha = await execute("git", ["rev-parse", "HEAD"], tree);
+  }
+  return /^[a-f0-9]{40}$/.test(sha) ? sha : failed("failed");
+}
 
-async function verifyRepository(repository: string, project: string[], run: Run): Promise<Result> {
-  const connected = await run(["connect", repository, "--as", "settings", ...project]);
+async function remoteDefaultBranch(repository: string, execute: ProcessRun): Promise<string> {
+  const head = await execute("git", ["ls-remote", "--symref", `https://github.com/${repository}.git`, "HEAD"]);
+  const ref = /^ref: refs\/heads\/(.+)\s+HEAD$/mu.exec(head)?.[1];
+  if (!ref) throw new Error("Repository has no default branch");
+  return ref;
+}
+
+async function recoverPublication(
+  previous: z.infer<typeof PublicationSchema>,
+  requestedRef: string,
+  remote: string,
+  execute: ProcessRun,
+  publicationFile: string,
+): Promise<Result | string> {
+  if (requestedRef !== "HEAD" && previous.ref !== requestedRef) return failed("stale_configuration");
+  if (previous.complete) return previous.ref;
+  try {
+    const head = await execute("git", ["ls-remote", "--exit-code", remote, `refs/heads/${previous.ref}`]);
+    if (head.split(/\s/u)[0] !== previous.sha) return failed("publication_uncertain");
+    await writeDurableFile(publicationFile, JSON.stringify({ ...previous, complete: true }));
+    return previous.ref;
+  } catch {
+    return failed("publication_uncertain");
+  }
+}
+
+const PublicationSchema = z
+  .object({ sha: z.string().regex(/^[a-f0-9]{40}$/), ref: z.string(), complete: z.boolean() })
+  .strict();
+
+async function verifyRepository(
+  input: ContextTreeOperationFrame["input"],
+  project: string[],
+  run: Run,
+): Promise<Result> {
+  const connected = await run(["connect", input.repository, "--path", input.path, "--ref", input.ref, ...project]);
   if (connected.failureCode) return classify(connected.failureCode);
-  const payload = TREE_PATH.safeParse(connected.payload);
-  if (!payload.success) return failed("invalid_tree");
-  const verified = await run(["verify", "--tree-path", payload.data.tree.path, "--json"]);
-  return verified.failureCode ? failed("invalid_tree") : { status: "completed", repository };
+  const parsed = resolvedTreeSchema.extend({ schemaVersion: z.literal(SCHEMA_VERSION) }).safeParse(connected.payload);
+  if (
+    !parsed.success ||
+    parsed.data.connection.source.kind !== "git" ||
+    contextTreeIdentity(parsed.data.connection.source) !== contextTreeIdentity(input)
+  )
+    return failed("invalid_tree");
+  return { status: "completed", repository: input.repository };
 }
 
 function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -250,11 +367,8 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 function failed(code: Extract<Result, { status: "failed" }>["code"]): Result {
   return { status: "failed", code };
 }
-function classify(code: string, publishing = false): Result {
-  if (code === "GITHUB_AUTH") return failed("authentication_required");
-  if (code === "GITHUB_PERMISSION") return failed("permission_denied");
-  if (code === "REPOSITORY_EXISTS") return failed("repository_exists");
-  if (code === "PUBLISH_INCOMPLETE" || publishing) return failed("publication_uncertain");
+function classify(code: string): Result {
+  if (code === "BUSY") return failed("busy");
   if (["INVALID_TREE", "DIRTY_TREE", "NO_CONNECTION"].includes(code)) return failed("invalid_tree");
   return failed("failed");
 }

@@ -25,14 +25,19 @@ function fixture() {
     revision: 3,
     computerId,
     status: "suspended",
-    runtimeConfig: { revision: 7, contextTrees: [{ alias: "old", repository: "acme/old" }] },
+    runtimeConfig: {
+      revision: 7,
+      contextTrees: [{ kind: "git" as const, path: ".", ref: "main", repository: "acme/old" }],
+    },
   } as AgentAdminConfig;
   const agents = {
     getConfigById: vi.fn(async () => config),
     updateContextTreeSelection: vi.fn(async () => config),
   };
   const input: ContextTreeOperationRequest = {
-    alias: "memory",
+    kind: "git" as const,
+    path: ".",
+    ref: "main",
     operationId: randomUUID(),
     expectedRevision: 3,
     expectedRuntimeConfigRevision: 7,
@@ -61,7 +66,14 @@ it("disconnects offline and unbound without remote execution", async () => {
   const f = fixture();
   f.config.computerId = null;
   expect(
-    await f.service.run("user", f.config.id, { ...f.input, alias: "old", action: "disconnect", repository: null }),
+    await f.service.run("user", f.config.id, {
+      ...f.input,
+      kind: "git" as const,
+      path: ".",
+      ref: "main",
+      action: "disconnect",
+      repository: "acme/old",
+    }),
   ).toEqual({
     status: "completed",
     repository: null,
@@ -104,11 +116,32 @@ it("accepts case-insensitive repository identity and passes every fence to the t
     f.config.id,
     { revision: 3, runtimeConfigRevision: 7, computerId: f.config.computerId, status: "suspended" },
     [
-      { alias: "old", repository: "acme/old" },
-      { alias: "memory", repository: "Acme/Memory" },
+      { kind: "git" as const, path: ".", ref: "main", repository: "acme/old" },
+      { kind: "git" as const, path: ".", ref: "main", repository: "Acme/Memory" },
     ],
   );
 });
+it("saves the resolved default branch and does not duplicate an existing connection", async () => {
+  const f = fixture();
+  const start = vi
+    .spyOn(f.owner, "start")
+    .mockResolvedValue({ status: "completed", repository: "Acme/Memory", ref: "trunk" });
+  const input = { ...f.input, ref: "HEAD" };
+  await f.service.run("user", f.config.id, input);
+  expect(f.agents.updateContextTreeSelection).toHaveBeenCalledWith(
+    "user",
+    f.config.id,
+    expect.any(Object),
+    expect.arrayContaining([{ kind: "git", repository: "Acme/Memory", path: ".", ref: "trunk" }]),
+  );
+  f.config.runtimeConfig.contextTrees.push({ kind: "git", repository: "acme/memory", path: ".", ref: "trunk" });
+  f.agents.updateContextTreeSelection.mockClear();
+  await f.service.run("user", f.config.id, input);
+  expect(f.agents.updateContextTreeSelection).not.toHaveBeenCalled();
+  start.mockResolvedValue({ status: "completed", repository: "Acme/Memory" });
+  expect(await f.service.run("user", f.config.id, input)).toEqual({ status: "failed", code: "failed" });
+});
+
 it("rejects mismatched repository results", async () => {
   const f = fixture();
   const pending = f.service.run("user", f.config.id, f.input);
@@ -159,7 +192,7 @@ it.each(["create", "connect", "disconnect"] as const)("classifies shutdown durin
   const f = fixture();
   const pending = f.owner.start({
     ...f.start,
-    input: { ...f.input, action, repository: action === "disconnect" ? null : f.input.repository },
+    input: { ...f.input, action, repository: f.input.repository },
   });
   f.owner.close();
   expect(await pending).toEqual({
@@ -168,39 +201,35 @@ it.each(["create", "connect", "disconnect"] as const)("classifies shutdown durin
   });
 });
 
-it("rejects alias and repository collisions before remote work and treats identical attachments as idempotent", async () => {
+it("treats an identical source as idempotent", async () => {
   const f = fixture();
-  expect(await f.service.run("user", f.config.id, { ...f.input, alias: "old" })).toEqual({
-    status: "failed",
-    code: "alias_conflict",
-  });
-  expect(await f.service.run("user", f.config.id, { ...f.input, repository: "ACME/OLD" })).toEqual({
-    status: "failed",
-    code: "repository_conflict",
-  });
   f.config.status = "active";
-  expect(await f.service.run("user", f.config.id, { ...f.input, alias: "old", repository: "ACME/OLD" })).toEqual({
+  expect(await f.service.run("user", f.config.id, { ...f.input, repository: "ACME/OLD" })).toEqual({
     status: "completed",
     repository: "acme/old",
   });
   expect(f.registry.send).not.toHaveBeenCalled();
   expect(f.agents.updateContextTreeSelection).not.toHaveBeenCalled();
 });
-it("disconnects one alias while retaining the other connection", async () => {
+it("disconnects one source while retaining the other connection", async () => {
   const f = fixture();
-  f.config.runtimeConfig.contextTrees.push({ alias: "memory", repository: "acme/memory" });
-  expect(await f.service.run("user", f.config.id, { ...f.input, action: "disconnect", repository: null })).toEqual({
+  f.config.runtimeConfig.contextTrees.push({ kind: "git" as const, path: ".", ref: "main", repository: "acme/memory" });
+  expect(
+    await f.service.run("user", f.config.id, { ...f.input, action: "disconnect", repository: "acme/memory" }),
+  ).toEqual({
     status: "completed",
     repository: null,
   });
   expect(f.agents.updateContextTreeSelection).toHaveBeenCalledWith("user", f.config.id, expect.any(Object), [
-    { alias: "old", repository: "acme/old" },
+    { kind: "git" as const, path: ".", ref: "main", repository: "acme/old" },
   ]);
 });
 it("rejects a new connection at the tree limit before any remote work", async () => {
   const f = fixture();
   f.config.runtimeConfig.contextTrees = Array.from({ length: CONTEXT_TREES_MAX }, (_, index) => ({
-    alias: `tree-${index}`,
+    kind: "git" as const,
+    path: ".",
+    ref: "main",
     repository: `acme/tree-${index}`,
   }));
   const cloud = {
@@ -217,12 +246,21 @@ it("rejects a new connection at the tree limit before any remote work", async ()
 it("allows disconnect and idempotent requests at the tree limit", async () => {
   const f = fixture();
   const connections = Array.from({ length: CONTEXT_TREES_MAX }, (_, index) => ({
-    alias: `tree-${index}`,
+    kind: "git" as const,
+    path: ".",
+    ref: "main",
     repository: `acme/tree-${index}`,
   }));
   f.config.runtimeConfig.contextTrees = connections;
   expect(
-    await f.service.run("user", f.config.id, { ...f.input, alias: "tree-0", action: "disconnect", repository: null }),
+    await f.service.run("user", f.config.id, {
+      ...f.input,
+      kind: "git" as const,
+      path: ".",
+      ref: "main",
+      action: "disconnect",
+      repository: "acme/tree-0",
+    }),
   ).toEqual({ status: "completed", repository: null });
   expect(f.agents.updateContextTreeSelection).toHaveBeenCalledWith(
     "user",
@@ -231,7 +269,15 @@ it("allows disconnect and idempotent requests at the tree limit", async () => {
     connections.slice(1),
   );
   f.registry.send.mockClear();
-  expect(await f.service.run("user", f.config.id, { ...f.input, alias: "tree-0", repository: "ACME/TREE-0" })).toEqual({
+  expect(
+    await f.service.run("user", f.config.id, {
+      ...f.input,
+      kind: "git" as const,
+      path: ".",
+      ref: "main",
+      repository: "ACME/TREE-0",
+    }),
+  ).toEqual({
     status: "completed",
     repository: "acme/tree-0",
   });

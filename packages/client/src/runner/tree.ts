@@ -1,6 +1,6 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { resolveContextTreePackage, runContextTreeCli } from "../runtime/context-tree.js";
 import { type AssembledContextTreeSkills, assembleContextTreeSkills } from "./skills.js";
 
@@ -35,16 +35,19 @@ export async function prepareDisposableContextTree(options: {
     );
     const environment = { HOME: accountHome, PATH: process.env.PATH ?? "/usr/bin:/bin" };
     seed = await mkdtemp(join(tmpdir(), "opentag-runner-ct-seed-"));
-    const created = await runContextTreeCli(assembled.package, ["create", "--project-path", seed, "--json"], {
-      env: environment,
-    });
-    if (created.failureCode) throw new Error(`context-tree create failed: ${created.failureCode}`);
-    // The CLI reports a flat payload: { created, branch, commitSha, treePath, ... }.
-    const treePath = (created.payload as { treePath?: string } | undefined)?.treePath;
-    if (!treePath) throw new Error("context-tree create did not return a tree path");
+    const created = await runContextTreeCli(
+      assembled.package,
+      ["init", join(seed, "tree"), "--project-path", seed, "--json"],
+      {
+        env: environment,
+      },
+    );
+    if (created.failureCode) throw new Error(`context-tree init failed: ${created.failureCode}`);
+    const treePath = (created.payload as { treeRoot?: string } | undefined)?.treeRoot;
+    if (!treePath) throw new Error("context-tree init did not return a tree path");
     const connected = await runContextTreeCli(
       assembled.package,
-      ["connect", basename(treePath), "--as", "diagnostic", "--project-path", options.workspace, "--json"],
+      ["connect", "--path", treePath, "--project-path", options.workspace, "--json"],
       { env: environment },
     );
     if (connected.failureCode) throw new Error(`Context Tree connect failed: ${connected.failureCode}`);

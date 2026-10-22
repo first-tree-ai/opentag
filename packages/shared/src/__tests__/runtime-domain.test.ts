@@ -904,11 +904,14 @@ it("requires an explicit connection list and hashes normalized identity", () => 
   const off = computeRuntimeSnapshotHashes(current);
   const selected = computeRuntimeSnapshotHashes({
     ...current,
-    contextTrees: [{ alias: "memory", repository: "Acme/Memory" }],
+    contextTrees: [{ kind: "git" as const, path: ".", ref: "main", repository: "Acme/Memory" }],
   });
   expect(selected).not.toEqual(off);
   expect(selected).toEqual(
-    computeRuntimeSnapshotHashes({ ...current, contextTrees: [{ alias: "memory", repository: "acme/memory" }] }),
+    computeRuntimeSnapshotHashes({
+      ...current,
+      contextTrees: [{ kind: "git" as const, path: ".", ref: "main", repository: "acme/memory" }],
+    }),
   );
 });
 
@@ -1261,8 +1264,8 @@ describe("runtime domain rejection paths", () => {
 
 it("round-trips multiple connections and hashes them without order priority", () => {
   const connections = [
-    { alias: "team", repository: "acme/team" },
-    { alias: "product", repository: "acme/product" },
+    { kind: "git" as const, path: ".", ref: "main", repository: "acme/team" },
+    { kind: "git" as const, path: ".", ref: "main", repository: "acme/product" },
   ];
   const runtime = { ...snapshot(), contextTrees: connections };
   expect(EffectiveRuntimeSnapshotSchema.parse(JSON.parse(JSON.stringify(runtime)))).toEqual(runtime);
@@ -1273,8 +1276,8 @@ it("round-trips multiple connections and hashes them without order priority", ()
     computeRuntimeSnapshotHashes({
       ...runtime,
       contextTrees: [
-        { alias: "renamed", repository: "acme/team" },
-        { alias: "product", repository: "acme/product" },
+        { kind: "git" as const, path: "docs", ref: "main", repository: "acme/team" },
+        { kind: "git" as const, path: ".", ref: "main", repository: "acme/product" },
       ],
     }),
   );

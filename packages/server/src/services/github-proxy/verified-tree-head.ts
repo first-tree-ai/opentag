@@ -13,6 +13,7 @@ export class VerifiedTreeHead {
   async verify(input: {
     repositoryId: string;
     ref: string;
+    path: string;
     remote: PublicationRemote;
     signal: AbortSignal;
     recheck(): Promise<void>;
@@ -59,7 +60,7 @@ export class VerifiedTreeHead {
         .toString("utf8")
         .trim();
       if (!/^[a-f0-9]{40}$/.test(sha)) throw new GitPublicationError("tree_invalid");
-      await verifyPublishedContextTree(repository, sha, options);
+      await verifyPublishedContextTree(repository, sha, options, input.path);
       await input.recheck();
       const current = await input.remote.refs(repository, [input.ref], options);
       if (current.get(input.ref) !== sha) throw new GitPublicationError("remote_conflict");

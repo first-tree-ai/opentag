@@ -1,92 +1,41 @@
-import { isAbsolute } from "node:path";
-import type { ContextTreeConnection } from "@opentag/shared";
-import { ContextTreeAliasSchema, ContextTreeRepositorySchema } from "@opentag/shared";
-import { z } from "zod";
+import { mkdir, realpath } from "node:fs/promises";
+import { join } from "node:path";
+import { projectConfigSchema, SCHEMA_VERSION, syncResultSchema } from "@first-tree-ai/context-tree/contracts";
+import { type ContextTreeConnection, contextTreeIdentity } from "@opentag/shared";
+import { ensurePrivateDirectory, writeDurableFile } from "../storage/durable-file.js";
 
-const PathSchema = z
-  .string()
-  .min(1)
-  .refine((path) => isAbsolute(path) && !/[\r\n\0]/u.test(path));
-const TreeSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("github"), path: PathSchema, repository: ContextTreeRepositorySchema }).strict(),
-  z.object({ kind: z.literal("local"), path: PathSchema }).strict(),
-]);
-export const StoredConnectionsSchema = z
-  .object({
-    schemaVersion: z.literal(2),
-    connections: z.array(
-      z.object({ alias: ContextTreeAliasSchema, projectPath: PathSchema, tree: TreeSchema }).strict(),
-    ),
-  })
-  .strict();
-const DiscoverySchema = z.object({
-  schemaVersion: z.literal(2),
-  connections: z.array(
-    z.object({
-      alias: ContextTreeAliasSchema,
-      tree: TreeSchema,
-      ok: z.boolean(),
-      error: z.object({ code: z.string() }).optional(),
-      branch: z.string().optional(),
-      sha: z.string().optional(),
-    }),
-  ),
-});
-const ConnectedSchema = z.object({ schemaVersion: z.literal(2), alias: ContextTreeAliasSchema, tree: TreeSchema });
-export type ContextTreeRun = (
-  args: readonly string[],
-  network: boolean,
-) => Promise<{ payload: unknown; failureCode?: string }>;
+/** Runtime facts shared by Local preparation, Cloud preparation, and managed prompts. */
+export type ContextTreeStatus =
+  | { status: "configured"; connections: readonly ContextTreeResult[] }
+  | { status: "ready"; treePath: string; projectPath: string; branch?: string; sha?: string }
+  | { status: "stale"; treePath: string; projectPath: string; reason: string }
+  | { status: "unconfigured" }
+  | { status: "unavailable"; reason: string };
 
-export function connectedTree(payload: unknown, connection: ContextTreeConnection) {
-  const parsed = ConnectedSchema.safeParse(payload);
-  if (
-    !parsed.success ||
-    parsed.data.alias !== connection.alias ||
-    parsed.data.tree.kind !== "github" ||
-    parsed.data.tree.repository.toLowerCase() !== connection.repository.toLowerCase()
-  )
-    return undefined;
-  return parsed.data.tree;
+export type ContextTreeResult = ContextTreeConnection &
+  Exclude<ContextTreeStatus, { status: "configured" } | { status: "unconfigured" }>;
+
+/** This configuration belongs to the host, never to a checked-out repository. Save before fetching. */
+export async function configureContextTrees(
+  workspace: string,
+  wanted: readonly ContextTreeConnection[],
+): Promise<string> {
+  await mkdir(workspace, { recursive: true });
+  const root = await realpath(workspace);
+  const project = join(root, ".opentag", "context-tree", "project");
+  await ensurePrivateDirectory(root, project);
+  const config = projectConfigSchema.parse({ schemaVersion: SCHEMA_VERSION, trees: wanted });
+  await writeDurableFile(join(project, ".context-tree.json"), `${JSON.stringify(config)}\n`);
+  return project;
 }
 
-export function syncedTree(payload: unknown, connection: ContextTreeConnection) {
-  const parsed = DiscoverySchema.safeParse(payload);
+export function syncedTree(payload: unknown, source: ContextTreeConnection) {
+  const parsed = syncResultSchema.safeParse(payload);
   return parsed.success
     ? parsed.data.connections.find(
         (entry) =>
-          entry.alias === connection.alias &&
-          entry.tree.kind === "github" &&
-          entry.tree.repository.toLowerCase() === connection.repository.toLowerCase(),
+          entry.connection.source.kind === "git" &&
+          contextTreeIdentity(entry.connection.source) === contextTreeIdentity(source),
       )
     : undefined;
-}
-
-/** Remove linkage through the CLI only. Checkouts and unpublished work are never deleted. */
-export async function reconcileContextTreeConnections(
-  run: ContextTreeRun,
-  workspace: string,
-  wanted: readonly ContextTreeConnection[],
-): Promise<{ failureCode?: string; attachedAliases: Set<string> }> {
-  const attachedAliases = new Set<string>();
-  const discovered = await run(["resolve", "--project-path", workspace, "--json"], false);
-  if (discovered.failureCode === "NO_CONNECTION") return { attachedAliases };
-  const parsed = DiscoverySchema.safeParse(discovered.payload);
-  if (!parsed.success) return { failureCode: discovered.failureCode ?? "UNSUPPORTED_CONNECTIONS", attachedAliases };
-  for (const entry of parsed.data.connections) {
-    if (
-      wanted.some(
-        (connection) =>
-          connection.alias === entry.alias &&
-          entry.tree.kind === "github" &&
-          connection.repository.toLowerCase() === entry.tree.repository.toLowerCase(),
-      )
-    ) {
-      if (entry.ok) attachedAliases.add(entry.alias);
-      continue;
-    }
-    const removed = await run(["disconnect", "--tree", entry.alias, "--project-path", workspace, "--json"], false);
-    if (removed.failureCode) return { failureCode: removed.failureCode, attachedAliases };
-  }
-  return { attachedAliases };
 }

@@ -17,7 +17,6 @@ import { fileURLToPath } from "node:url";
 import { createAppTemplate, getPortableChannelConfig } from "../portable/build-portable.mjs";
 import {
   CONTEXT_TREE_SKILL_DIRECTORIES,
-  CONTEXT_TREE_TEMPLATE_FILES,
   collectRuntimeDependencyClosure,
   DEPENDENCY_CLOSURE_FILE,
   materializeRuntimeDependencyClosure,
@@ -78,9 +77,8 @@ function writeContextTreePackage(
     for (const skill of CONTEXT_TREE_SKILL_DIRECTORIES) {
       writeText(join(packageDir, "skills", skill, "SKILL.md"), `# ${skill}\n`);
     }
-    for (const template of CONTEXT_TREE_TEMPLATE_FILES) {
-      writeText(join(packageDir, "templates", template), `template ${template}\n`);
-    }
+    writeText(join(packageDir, "dist/contracts/index.mjs"), "export {};\n");
+    writeText(join(packageDir, "skills/context-tree-cleanup/references/editorial.md"), "Editorial policy\n");
   }
   return packageDir;
 }
@@ -179,7 +177,7 @@ test("the portable runtime dependency contract accepts only the supported exact 
 test("the checked-in apps/cli manifest is accepted under the portable shipping contract", () => {
   const cliManifest = JSON.parse(readFileSync(join(repoRoot, "apps", "cli", "package.json"), "utf8"));
   assert.deepEqual(readPortableDirectDependencyPins(cliManifest), [
-    { name: "@first-tree-ai/context-tree", version: "0.1.16" },
+    { name: "@first-tree-ai/context-tree", version: "1.0.0" },
   ]);
 });
 
@@ -531,13 +529,13 @@ test("the real frozen install closure assembles, verifies, and runs the embedded
   });
   assert.equal(closure.direct.length, 1);
   assert.equal(closure.packages[0].name, "@first-tree-ai/context-tree");
-  assert.equal(closure.packages[0].version, "0.1.16");
+  assert.equal(closure.packages[0].version, "1.0.0");
   assert.ok(closure.packages.length >= 20, `real closure is unexpectedly small: ${closure.packages.length}`);
   writeJson(join(appDir, "package.json"), {
     name: "open-tag",
     version: "0.0.2",
     type: "module",
-    dependencies: { "@first-tree-ai/context-tree": "0.1.16" },
+    dependencies: { "@first-tree-ai/context-tree": "1.0.0" },
   });
   writeDependencyClosureFile(appDir, closure);
   writeText(join(appDir, "cli", "index.mjs"), "export {};\n");

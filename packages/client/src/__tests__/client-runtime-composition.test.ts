@@ -51,7 +51,6 @@ import {
 import { ProviderCliTurnPlanManager } from "../runtime/provider-cli/turn-plan-manager.js";
 import { RuntimeConnection } from "../runtime/runtime-connection.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
-import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 import { completeAuth, heartbeatResult, registrationResult } from "./support/runtime-server.js";
 
@@ -281,7 +280,7 @@ describe("createClientRuntime production composition", () => {
       expect(ensureAgent).toHaveBeenCalledTimes(1);
       // Cloud keeps the Sandbox loopback out of Context Tree preparation until a trusted
       // Runner-side mapping exists, so no execution environment argument is passed.
-      expect(ensureAgent.mock.calls[0]).toHaveLength(3);
+      expect(ensureAgent.mock.calls[0]?.[3]).toBeUndefined();
       expect(executionEnvironment).not.toHaveBeenCalled();
     } finally {
       executionEnvironment.mockRestore();
@@ -470,7 +469,9 @@ describe("createClientRuntime production composition", () => {
         computerId: connection.installationId,
         requireStopped: false,
         input: {
-          alias: "memory",
+          kind: "git" as const,
+          path: ".",
+          ref: "main",
           operationId: randomUUID(),
           expectedRevision: 1,
           expectedRuntimeConfigRevision: 1,
@@ -1215,41 +1216,6 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     });
     runtime.stop();
     expect(capture).toBe(`set:${await realpath(claudeCodeHome)}`);
-  });
-
-  it("puts the Context Tree shim directory first on the Provider PATH", async () => {
-    const home = await temporaryDirectory("opentag-client-context-tree-path-");
-    const binDirectory = resolveOpenTagHomeLayout(home).contextTreeBin;
-    const { pathCapture, runtime } = await composeClaudeCodeRuntime({
-      environment: { HOME: home, PATH: "/usr/bin" },
-      home,
-    });
-    runtime.stop();
-    // The packaged skills invoke `context-tree` by name, so the shim has to win the lookup.
-    expect(pathCapture).toBe(`set:${binDirectory}${delimiter}/usr/bin`);
-  });
-
-  it("does not duplicate the Context Tree shim directory that already leads PATH", async () => {
-    const home = await temporaryDirectory("opentag-client-context-tree-path-idempotent-");
-    const binDirectory = resolveOpenTagHomeLayout(home).contextTreeBin;
-    const existing = `${binDirectory}${delimiter}/usr/bin`;
-    const { pathCapture, runtime } = await composeClaudeCodeRuntime({
-      environment: { HOME: home, PATH: existing },
-      home,
-    });
-    runtime.stop();
-    expect(pathCapture).toBe(`set:${existing}`);
-  });
-
-  it("supplies the Context Tree shim directory as the only PATH entry when the source has none", async () => {
-    const home = await temporaryDirectory("opentag-client-context-tree-path-absent-");
-    const binDirectory = resolveOpenTagHomeLayout(home).contextTreeBin;
-    const { pathCapture, runtime } = await composeClaudeCodeRuntime({
-      environment: { HOME: home },
-      home,
-    });
-    runtime.stop();
-    expect(pathCapture).toBe(`set:${binDirectory}`);
   });
 
   it("unit-tests composition delegates and every preflight outcome", async () => {

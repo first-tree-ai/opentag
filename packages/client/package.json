@@ -30,10 +30,10 @@
     "semver": "^7.8.5",
     "tar-stream": "3.2.0",
     "ws": "^8.21.3",
-    "zod": "^4.5.1"
+    "zod": "^4.5.1",
+    "@first-tree-ai/context-tree": "1.0.0"
   },
   "devDependencies": {
-    "@first-tree-ai/context-tree": "0.1.16",
     "@types/semver": "^7.8.0",
     "@types/tar-stream": "^3.1.4",
     "@types/ws": "^8.18.1",

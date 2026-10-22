@@ -42,10 +42,10 @@ export type SkillName = z.infer<typeof SkillNameSchema>;
  */
 export const SKILL_RESERVED_NAMES: readonly string[] = Object.freeze([
   "context-tree-connect",
-  "context-tree-create",
-  "context-tree-publish",
+  "context-tree-init",
+  "context-tree-cleanup",
   "context-tree-read",
-  "context-tree-setup",
+  "context-tree-schedule-cleanup",
   "context-tree-write",
   "git",
   "gh",

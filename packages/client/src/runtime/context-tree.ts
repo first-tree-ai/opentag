@@ -1,14 +1,25 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { readdir } from "node:fs/promises";
+import { readdir, realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
-import { type AgentRuntimeProvider, type ContextTreeConnection, normalizeContextTrees } from "@opentag/shared";
+import {
+  type AgentRuntimeProvider,
+  type ContextTreeConnection,
+  contextTreeIdentity,
+  contextTreeSelector,
+  normalizeContextTrees,
+} from "@opentag/shared";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { collectDescendantPids, waitForProcessTreeGone } from "../runner/processes.js";
 import { resolveAccountHome } from "../storage/context-tree-home.js";
 import { ensurePrivateDirectory, writeDurableFile } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
-import { connectedTree, reconcileContextTreeConnections } from "./context-tree-connections.js";
+import {
+  type ContextTreeResult,
+  type ContextTreeStatus,
+  configureContextTrees,
+  syncedTree,
+} from "./context-tree-connections.js";
 
 /** Context Tree commands are local and bounded; a hung CLI must not stall Session start. */
 const CLI_TIMEOUT_MS = 20_000;
@@ -26,19 +37,7 @@ export interface ContextTreePackage {
   skillsPath: string;
 }
 
-/**
- * Why a Session has no durable memory. `reason` is the Context Tree CLI's own error code where
- * there is one, so nothing is lost in translation, or one of OpenTag's own codes below.
- * `unconfigured` is a normal state, not a fault: nobody has run `context-tree connect` here yet.
- */
-export type ContextTreeStatus =
-  | { status: "configured"; connections: readonly ContextTreeResult[] }
-  | { status: "ready"; treePath: string; branch?: string; sha?: string }
-  | { status: "unconfigured" }
-  | { status: "unavailable"; reason: string };
-
-export type ContextTreeResult = ContextTreeConnection &
-  Exclude<ContextTreeStatus, { status: "configured" } | { status: "unconfigured" }>;
+export type { ContextTreeResult, ContextTreeStatus } from "./context-tree-connections.js";
 
 export type ContextTreeExecFile = (
   file: string,
@@ -129,7 +128,7 @@ function createOwnedTreeStopper(child: ChildProcess, detached: boolean): () => P
  * A timeout or abort therefore stops the whole owned tree and the returned promise settles only
  * after those processes are gone.
  */
-const defaultExecFile: ContextTreeExecFile = (file, args, options) =>
+export const runContextTreeProcess: ContextTreeExecFile = (file, args, options) =>
   new Promise<{ stdout: string }>((resolveRun, rejectRun) => {
     if (options.signal?.aborted) {
       rejectRun(cliAbortError("Context Tree CLI was aborted before it started"));
@@ -254,7 +253,7 @@ export async function runContextTreeCli(
     signal?: AbortSignal;
   } = {},
 ): Promise<{ payload: unknown; failureCode?: string }> {
-  const run = options.execFile ?? defaultExecFile;
+  const run = options.execFile ?? runContextTreeProcess;
   let stdout: string;
   try {
     ({ stdout } = await run(options.nodePath ?? process.execPath, [contextTreePackage.cliPath, ...args], {
@@ -304,7 +303,7 @@ export interface ContextTreeManagerOptions {
 /**
  * Owns each Agent's optional Context Tree wiring for Sessions.
  *
- * The repository comes from the Agent runtime snapshot; local legacy configuration is ignored.
+ * The repository comes from the Agent runtime snapshot; repository-owned configuration stays separate.
  *
  * Every operation here is optional memory, never a Session availability dependency: each failure
  * is reported through the managed prompt, and nothing in this class throws into Session start.
@@ -387,20 +386,22 @@ export class ContextTreeManager {
     environment?: Readonly<Record<string, string | undefined>>,
   ): Promise<ContextTreeStatus> {
     const ordered = normalizeContextTrees(connections);
-    const target = JSON.stringify([provider ?? "codex", ordered]);
+    const target = JSON.stringify([
+      provider ?? "codex",
+      ordered,
+      this.#managedCredentials ? (environment?.GH_TOKEN ?? null) : null,
+    ]);
     if (this.#observedTarget.get(cwd) !== target) {
       this.#observedTarget.set(cwd, target);
       this.#cache.delete(cwd);
     }
-    // Current authority is part of in-flight identity too: revoked grants cannot reuse work.
-    const identity = JSON.stringify([target, this.#managedCredentials ? (environment?.GH_TOKEN ?? null) : null]);
     let active = this.#inFlight.get(cwd);
-    if (active?.target !== identity) {
+    if (active?.target !== target) {
       const results = this.#initialResults(cwd, connections, environment);
       const promise = this.#serialize(() =>
         this.#prepareSafely(cwd, provider, connections, target, results, environment),
       );
-      active = { target: identity, results, promise };
+      active = { target, results, promise };
       this.#inFlight.set(cwd, active);
       void promise.finally(() => {
         if (this.#inFlight.get(cwd)?.promise === promise) this.#inFlight.delete(cwd);
@@ -434,9 +435,9 @@ export class ContextTreeManager {
   ): ContextTreeResult[] {
     const cache = this.#cache.get(cwd);
     return connections.map((connection) => {
-      const denied = this.#managedFailure(connection.repository, environment);
+      const denied = this.#managedFailure(environment);
       if (denied) return { ...connection, status: "unavailable", reason: denied };
-      const cached = cache?.results.get(connection.alias);
+      const cached = cache?.results.get(contextTreeIdentity(connection));
       if (cached?.result.status === "ready") return cached.result;
       if (cached && cached.retryAt > Date.now()) return cached.result;
       return { ...connection, status: "unavailable", reason: "PREPARING" };
@@ -451,8 +452,6 @@ export class ContextTreeManager {
     results: ContextTreeResult[],
     environment?: Readonly<Record<string, string | undefined>>,
   ): Promise<ContextTreeStatus> {
-    if (this.#managedCredentials && !environment)
-      return connections.length ? { status: "configured", connections: [...results] } : { status: "unconfigured" };
     try {
       return await this.#prepareConnections(cwd, provider, connections, target, results, environment);
     } catch (error) {
@@ -482,24 +481,9 @@ export class ContextTreeManager {
         ? { status: "configured", connections: [...results] }
         : { status: "unavailable", reason };
     };
-    const pack = this.#package;
-    if (!pack) return connections.length ? failAll("PACKAGE_MISSING") : { status: "unconfigured" };
-    const permitted = connections.filter((entry) => !this.#managedFailure(entry.repository, environment));
-    const run = (args: readonly string[], network: boolean) =>
-      runContextTreeCli(pack, args, {
-        cwd,
-        network,
-        nodePath: this.#nodePath,
-        env: mergeContextTreeEnvironment(this.#environment, environment),
-        ...(this.#execFile ? { execFile: this.#execFile } : {}),
-      });
-    const reconciliation = await reconcileContextTreeConnections(run, cwd, permitted);
-    if (reconciliation.failureCode) return failAll(reconciliation.failureCode);
-    const previousCache = this.#cache.get(cwd);
-    for (const [alias, cached] of previousCache?.results ?? []) {
-      if (cached.result.status === "ready" && !reconciliation.attachedAliases.has(alias))
-        previousCache?.results.delete(alias);
-    }
+    const permitted = this.#managedFailure(environment) ? [] : connections;
+    await configureContextTrees(cwd, permitted);
+    if (!this.#package) return connections.length ? failAll("PACKAGE_MISSING") : { status: "unconfigured" };
     const shimReady = await this.#prepareShim();
     if (!connections.length) return { status: "unconfigured" };
     if (!shimReady) return failAll("SHIM_UNAVAILABLE");
@@ -514,8 +498,8 @@ export class ContextTreeManager {
     environment?: Readonly<Record<string, string | undefined>>,
   ): Promise<string | undefined> {
     if (provider === "pi" || this.#skillsInstalled.has(cwd)) return undefined;
-    await this.#run(["install", "--host", "claude", "--project", cwd], cwd, false, environment);
-    const installed = await this.#run(["install", "--host", "codex"], cwd, false, {
+    await this.#run(["skills", "install", "--host", "claude", "--project", cwd], cwd, false, environment);
+    const installed = await this.#run(["skills", "install", "--host", "codex"], cwd, false, {
       ...this.#environment,
       HOME: resolveAccountHome(this.#environment),
       CODEX_HOME: this.#codexHome,
@@ -538,28 +522,25 @@ export class ContextTreeManager {
       if (this.#observedTarget.get(cwd) === target) this.#cache.set(cwd, cache);
     }
     for (const [index, connection] of connections.entries()) {
-      const denied = this.#managedFailure(connection.repository, environment);
+      const denied = this.#managedFailure(environment);
       if (denied) {
         results[index] = { ...connection, status: "unavailable", reason: denied };
-        cache.results.delete(connection.alias);
+        cache.results.delete(contextTreeIdentity(connection));
         continue;
       }
-      const cached = cache.results.get(connection.alias);
+      const cached = cache.results.get(contextTreeIdentity(connection));
       if (cached && (cached.result.status === "ready" || cached.retryAt > Date.now())) {
         results[index] = cached.result;
         continue;
       }
       const result = await this.#connect(cwd, connection, environment);
       results[index] = result;
-      cache.results.set(connection.alias, { result, retryAt: Date.now() + this.#failureCooldownMs });
+      cache.results.set(contextTreeIdentity(connection), { result, retryAt: Date.now() + this.#failureCooldownMs });
     }
     return { status: "configured", connections: [...results] };
   }
 
-  #managedFailure(
-    _repository: string,
-    environment: Readonly<Record<string, string | undefined>> | undefined,
-  ): string | undefined {
+  #managedFailure(environment: Readonly<Record<string, string | undefined>> | undefined): string | undefined {
     if (!this.#managedCredentials) return undefined;
     if (!environment) return "AUTHENTICATION_REQUIRED";
     return hasManagedGitHubTransport(environment) ? undefined : "GITHUB_PERMISSION";
@@ -570,24 +551,37 @@ export class ContextTreeManager {
     connection: ContextTreeConnection,
     environment?: Readonly<Record<string, string | undefined>>,
   ): Promise<ContextTreeResult> {
-    try {
-      const payload = await this.#run(
-        ["connect", connection.repository, "--as", connection.alias, "--project-path", cwd, "--json"],
+    const projectPath = join(await realpath(cwd), ".opentag", "context-tree", "project");
+    const args = ["sync", "--tree", contextTreeSelector(connection), "--project-path", projectPath];
+    const run = (offline: boolean) =>
+      runContextTreeCli(this.#package as ContextTreePackage, [...args, ...(offline ? ["--offline"] : [])], {
         cwd,
-        true,
-        environment,
-      );
-      const tree = connectedTree(payload, connection);
-      return tree
-        ? { ...connection, status: "ready", treePath: tree.path }
-        : { ...connection, status: "unavailable", reason: "CONNECT_FAILED" };
-    } catch (error) {
+        network: !offline,
+        nodePath: this.#nodePath,
+        env: {
+          ...mergeContextTreeEnvironment(this.#environment, environment),
+          HOME: resolveAccountHome(this.#environment),
+        },
+        ...(this.#execFile ? { execFile: this.#execFile } : {}),
+      });
+    const refreshed = await run(false);
+    const entry = syncedTree(refreshed.payload, connection);
+    if (entry?.ok && entry.connection.projectRoot === projectPath)
       return {
         ...connection,
-        status: "unavailable",
-        reason: error instanceof ContextTreeCliFailure ? error.reason : "CLI_FAILED",
+        status: "ready",
+        treePath: entry.treeRoot,
+        projectPath,
+        branch: connection.ref,
+        sha: entry.repository?.sha,
       };
+    const reason = entry && !entry.ok ? entry.error.code : (refreshed.failureCode ?? "SYNC_FAILED");
+    if (!["DIRTY_TREE", "INVALID_TREE"].includes(reason)) {
+      const cached = syncedTree((await run(true)).payload, connection);
+      if (cached?.ok && cached.connection.projectRoot === projectPath)
+        return { ...connection, status: "stale", treePath: cached.treeRoot, projectPath, reason };
     }
+    return { ...connection, status: "unavailable", reason };
   }
 
   /** OpenTag always invokes the packaged CLI directly, so a broken shim cannot redirect it. */
@@ -603,7 +597,10 @@ export class ContextTreeManager {
       cwd,
       network,
       nodePath: this.#nodePath,
-      env: mergeContextTreeEnvironment(this.#environment, environment),
+      env: {
+        ...mergeContextTreeEnvironment(this.#environment, environment),
+        HOME: resolveAccountHome(this.#environment),
+      },
       ...(this.#execFile ? { execFile: this.#execFile } : {}),
     });
     if (failureCode !== undefined) throw new ContextTreeCliFailure(failureCode);
@@ -644,7 +641,7 @@ export class ContextTreeManager {
     const quote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`;
     await writeDurableFile(
       join(bin, "context-tree"),
-      `#!/bin/sh\n# Generated by OpenTag; edits are overwritten.\nexec ${quote(this.#nodePath)} ${quote(this.#package.cliPath)} "$@"\n`,
+      `#!/bin/sh\n# Generated by OpenTag; edits are overwritten.\nexport HOME=${quote(resolveAccountHome(this.#environment))}\nexec ${quote(this.#nodePath)} ${quote(this.#package.cliPath)} "$@"\n`,
       0o700,
     );
     return true;

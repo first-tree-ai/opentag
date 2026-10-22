@@ -1,56 +1,38 @@
 import { expect, it } from "vitest";
 import {
-  ContextTreeAliasSchema,
-  ContextTreeRepositorySchema,
+  ContextTreeBranchSchema,
+  ContextTreeConnectionSchema,
+  ContextTreePathSchema,
   ContextTreesSchema,
+  contextTreeSelector,
   normalizeContextTrees,
 } from "../context-tree.js";
 
-it("preserves repository spelling and trims surrounding whitespace", () => {
-  expect(ContextTreeRepositorySchema.parse("  Acme/Team-Memory  ")).toBe("Acme/Team-Memory");
+const source = { kind: "git", repository: "acme/project", path: "docs", ref: "main" } as const;
+it("identifies trees by repository, directory, and branch", () => {
+  expect(
+    ContextTreesSchema.parse([source, { ...source, path: "notes" }, { ...source, ref: "feature/docs" }]),
+  ).toHaveLength(3);
+  expect(ContextTreesSchema.safeParse([source, { ...source, repository: "ACME/PROJECT" }]).success).toBe(false);
+  expect(contextTreeSelector({ ...source, ref: "feature/docs" })).toBe(
+    "https://github.com/acme/project/tree/feature%2Fdocs/docs",
+  );
 });
-it.each(["memory", "/tmp/memory", "acme/tree.git", "acme/tree.GIT", "https://github.com/acme/tree"])(
-  "rejects non-repository target %s",
-  (target) => {
-    expect(ContextTreeRepositorySchema.safeParse(target).success).toBe(false);
+it("requires the current source shape", () => {
+  expect(ContextTreeConnectionSchema.safeParse({ alias: "memory", repository: "acme/project" }).success).toBe(false);
+});
+it.each(["..", "/docs", "docs/../other", ".git", "docs//notes", "docs\\notes", "docs\n"])(
+  "rejects unsafe directory %j",
+  (path) => {
+    expect(ContextTreePathSchema.safeParse(path).success).toBe(false);
   },
 );
-
-it("rejects duplicate aliases and case-insensitive duplicate repositories", () => {
-  expect(
-    ContextTreesSchema.safeParse([
-      { alias: "team", repository: "acme/one" },
-      { alias: "team", repository: "acme/two" },
-    ]).success,
-  ).toBe(false);
-  expect(
-    ContextTreesSchema.safeParse([
-      { alias: "team", repository: "Acme/One" },
-      { alias: "other", repository: "acme/one" },
-    ]).success,
-  ).toBe(false);
-  expect(ContextTreesSchema.parse([])).toEqual([]);
+it.each(["", "-main", "HEAD~1", "refs/../main", "a.lock", "a\n"])("rejects unsafe branch %j", (ref) => {
+  expect(ContextTreeBranchSchema.safeParse(ref).success).toBe(false);
 });
-it.each(["", "../tree", "a/b", " tree", ".tree", "tree.git", "tree.GIT", "a".repeat(101)])(
-  "rejects unsafe alias %s",
-  (alias) => {
-    expect(ContextTreeAliasSchema.safeParse(alias).success).toBe(false);
-  },
-);
-it("normalizes identity without precedence or mutation", () => {
-  const trees = [
-    { alias: "z", repository: "Acme/Z" },
-    { alias: "a", repository: "Acme/A" },
-  ];
-  expect(normalizeContextTrees(trees)).toEqual(normalizeContextTrees([...trees].reverse()));
-  expect(trees[0]?.repository).toBe("Acme/Z");
-});
-
-it("accepts 32 trees and rejects a 33rd tree", () => {
-  const connections = Array.from({ length: 33 }, (_, index) => ({
-    alias: `tree-${index}`,
-    repository: `acme/tree-${index}`,
-  }));
-  expect(ContextTreesSchema.safeParse(connections.slice(0, 32)).success).toBe(true);
-  expect(ContextTreesSchema.safeParse(connections).success).toBe(false);
+it("normalizes ordering without mutation and bounds source count", () => {
+  const sources = Array.from({ length: 33 }, (_, index) => ({ ...source, path: `docs${index}` }));
+  expect(ContextTreesSchema.safeParse(sources.slice(0, 32)).success).toBe(true);
+  expect(ContextTreesSchema.safeParse(sources).success).toBe(false);
+  expect(normalizeContextTrees(sources)).toEqual(normalizeContextTrees([...sources].reverse()));
 });

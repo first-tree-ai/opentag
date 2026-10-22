@@ -1,46 +1,58 @@
 import {
   type AgentAdminConfig,
-  ContextTreeAliasSchema,
+  type ContextTreeConnection,
+  ContextTreeConnectionSchema,
   type ContextTreeOperationRequest,
   type ContextTreeOperationResponse,
   ContextTreeRepositorySchema,
+  contextTreeIdentity,
+  contextTreeName,
+  contextTreeSelector,
 } from "@opentag/shared/browser";
-import { useEffect, useRef, useState } from "react";
+import { type RefObject, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../../api.js";
 import * as m from "../../../paraglide/messages.js";
-import { Button, Field, KumoInputControl, SettingsList } from "../../../ui/design-system.js";
+import {
+  Badge,
+  Banner,
+  Button,
+  Dialog,
+  DropdownMenu,
+  Field,
+  Icon,
+  KumoInputControl,
+  Text,
+} from "../../../ui/design-system.js";
 import { AgentSettingsPageHeader } from "./settings-layout.js";
+
+type TreeAction = "connect" | "create";
 
 export function ContextTreeSettings(props: Parameters<typeof ContextTreeSettingsForm>[0]) {
   return <ContextTreeSettingsForm key={props.config.id} {...props} />;
 }
 
-function repositoryDrafts(repository: string | null) {
-  const [owner = "", name = ""] = (repository ?? "").split("/");
-  return { connect: { owner, name }, create: { owner: "", name: "" } };
-}
-
 function ContextTreeSettingsForm({
   config,
-  computerName,
   computerKind = "local",
   online,
   onChanged,
 }: {
   config: AgentAdminConfig;
-  computerName: string;
   computerKind?: "local" | "cloud";
   online: boolean;
   onChanged: () => void;
 }) {
-  const [mode, setMode] = useState<"connect" | "create">("connect");
-  const [drafts, setDrafts] = useState(() => repositoryDrafts(null));
-  const [alias, setAlias] = useState("");
-  const aliasInput = useRef<HTMLInputElement>(null);
-  const aliasValid = ContextTreeAliasSchema.safeParse(alias).success;
+  const [mode, setMode] = useState<TreeAction>();
+  const [draft, setDraft] = useState({ owner: "", name: "" });
+  const [repositoryUrl, setRepositoryUrl] = useState("");
+  const [path, setPath] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const ownerInput = useRef<HTMLInputElement>(null);
   const nameInput = useRef<HTMLInputElement>(null);
+  const repositoryInput = useRef<HTMLInputElement>(null);
+  const pathInput = useRef<HTMLInputElement>(null);
+  const addButton = useRef<HTMLButtonElement>(null);
+  const returnFocus = useRef<HTMLElement>(null);
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState<ContextTreeOperationResponse>();
   const attempt = useRef<ContextTreeOperationRequest | undefined>(undefined);
@@ -57,47 +69,43 @@ function ContextTreeSettingsForm({
   const selected = config.runtimeConfig.contextTrees;
   const cloud = computerKind === "cloud";
   const pauseRequired = selected.length > 0 && config.status !== "suspended";
-  const activeMode = cloud ? "connect" : mode;
-  const draft = drafts[activeMode];
-  const owner = draft.owner.trim();
-  const name = draft.name.trim();
-  const repository = `${owner}/${name}`;
-  // Validate each part through the shared schema, keeping its rules authoritative.
-  const ownerValid = ContextTreeRepositorySchema.safeParse(`${owner}/memory`).success;
-  const nameValid = ContextTreeRepositorySchema.safeParse(`acme/${name}`).success;
-  const valid = ContextTreeRepositorySchema.safeParse(repository);
+  const activeMode = mode ?? "connect";
+  const { source, valid, ownerValid, nameValid, linkedRepository } = parseForm(activeMode, draft, repositoryUrl, path);
   const fieldId = `context-tree-${config.id}`;
+  const disabled = pending || !online || pauseRequired;
+  const statusMessage = contextTreeStatusMessage(online, pauseRequired);
 
-  function switchMode(next: "connect" | "create") {
+  function openForm(next: TreeAction, trigger?: HTMLElement | null) {
+    returnFocus.current = trigger ?? addButton.current;
     setMode(next);
     setSubmitted(false);
     setResult(undefined);
   }
 
   function updateDraft(field: "owner" | "name", value: string) {
-    setDrafts((previous) => ({ ...previous, [activeMode]: { ...previous[activeMode], [field]: value } }));
+    setDraft((previous) => ({ ...previous, [field]: value }));
     setResult(undefined);
   }
-  const disabled = pending || !online || pauseRequired;
-  const statusMessage = contextTreeStatusMessage(online, pauseRequired);
+
+  function closeForm() {
+    if (pending) return;
+    setMode(undefined);
+    setResult(undefined);
+  }
 
   function validateSubmission() {
     setSubmitted(true);
-    if (!aliasValid) {
-      aliasInput.current?.focus();
-      return false;
-    }
     if (valid.success) return true;
-    (ownerValid ? nameInput : ownerInput).current?.focus();
+    const field =
+      activeMode === "connect" ? (linkedRepository ? pathInput : repositoryInput) : ownerValid ? nameInput : ownerInput;
+    field.current?.focus();
     return false;
   }
 
-  async function run(action: ContextTreeOperationRequest["action"], selectedAlias = alias) {
+  async function run(action: ContextTreeOperationRequest["action"], selectedSource: ContextTreeConnection = source) {
     if (pending || pauseRequired) return;
     if (action !== "disconnect" && (!online || !validateSubmission())) return;
-    const nextRepository = action === "disconnect" ? null : repository.trim();
-    // Keep the same ID after a lost response. The Computer owns publication deduplication.
-    const input = operationAttempt(config, action, selectedAlias, nextRepository, attempt.current);
+    const input = operationAttempt(config, action, selectedSource, attempt.current);
     attempt.current = input;
     setPending(true);
     setResult(undefined);
@@ -105,6 +113,7 @@ function ContextTreeSettingsForm({
       const response = await executeOperation(config.id, input);
       if (!mounted.current || latestRevision.current !== currentRevision) return;
       setResult(response);
+      if (response.status === "completed") setMode(undefined);
       if (response.status === "completed" || response.code === "stale_configuration") onChanged();
       if (response.status === "failed" && response.code !== "publication_uncertain") attempt.current = undefined;
     } finally {
@@ -114,61 +123,71 @@ function ContextTreeSettingsForm({
 
   return (
     <div className="grid gap-6">
-      <AgentSettingsPageHeader
-        title={m.agent_settings_context_tree_title()}
-        description={m.agent_settings_context_tree_description()}
+      <ContextTreeCollection
+        {...{ selected, cloud, pending, pauseRequired, fieldId, addButton, openForm, mode, statusMessage, result }}
+        onDisconnect={(entry) => void run("disconnect", entry)}
       />
-      {selected.length ? (
-        selected.map((entry) => (
-          <div key={entry.alias} className="flex flex-wrap items-center justify-between gap-2">
-            <p role="status" className="min-w-0 break-all">
-              {m.agent_settings_context_tree_connected_alias({ alias: entry.alias, repository: entry.repository })}
-            </p>
-            <Button
-              variant="ghost"
-              disabled={pending || pauseRequired}
-              onClick={() => void run("disconnect", entry.alias)}
-            >
-              {m.agent_settings_context_tree_disconnect()}
-            </Button>
-          </div>
-        ))
-      ) : (
-        <p role="status">{m.agent_settings_context_tree_disabled()}</p>
-      )}
-      <SettingsList>
+      <Dialog
+        open={mode !== undefined}
+        busy={pending}
+        title={
+          activeMode === "connect"
+            ? m.agent_settings_context_tree_connect_existing()
+            : m.agent_settings_context_tree_create_new()
+        }
+        description={
+          activeMode === "connect"
+            ? m.agent_settings_context_tree_connect_guidance()
+            : m.agent_settings_context_tree_create_guidance()
+        }
+        onClose={closeForm}
+        initialFocusRef={activeMode === "connect" ? repositoryInput : ownerInput}
+        returnFocusRef={returnFocus}
+      >
         <form
-          className="grid gap-4 p-4"
+          className="grid gap-4"
           noValidate
           onSubmit={(event) => {
             event.preventDefault();
             void run(activeMode);
           }}
         >
-          <RepositoryMode {...{ activeMode, cloud, pending, switchMode }} />
-          <p className="text-sm text-kumo-subtle">
-            {activeMode === "connect"
-              ? m.agent_settings_context_tree_connect_guidance()
-              : m.agent_settings_context_tree_create_guidance()}
-          </p>
-          <AliasField
-            fieldId={fieldId}
-            alias={alias}
-            inputRef={aliasInput}
-            pending={pending}
-            invalid={submitted && !aliasValid}
-            onChange={(value) => {
-              setAlias(value);
-              setResult(undefined);
-            }}
-          />
-          <RepositoryFields
-            {...{ fieldId, draft, pending, submitted, ownerValid, nameValid, ownerInput, nameInput, updateDraft }}
-          />
-          {owner && name ? <p className="break-all text-sm text-kumo-subtle">github.com/{repository}</p> : null}
-          {statusMessage ? <p role="status">{statusMessage}</p> : null}
+          {activeMode === "connect" ? (
+            <ConnectTreeFields
+              {...{
+                fieldId,
+                repositoryUrl,
+                path,
+                pending,
+                submitted,
+                linkedRepository,
+                valid,
+                repositoryInput,
+                pathInput,
+              }}
+              onRepositoryChange={(value) => {
+                setRepositoryUrl(value);
+                setResult(undefined);
+              }}
+              onPathChange={setPath}
+            />
+          ) : (
+            <RepositoryFields
+              {...{ fieldId, draft, pending, submitted, ownerValid, nameValid, ownerInput, nameInput, updateDraft }}
+            />
+          )}
           {cloud ? <p className="text-sm text-kumo-subtle">{m.agent_settings_context_tree_cloud_guidance()}</p> : null}
-          <div>
+          {statusMessage ? (
+            <p role="status" className="text-sm text-kumo-subtle">
+              {statusMessage}
+            </p>
+          ) : null}
+          {pending ? <p role="status">{m.agent_settings_context_tree_pending()}</p> : null}
+          {result ? <ContextTreeResult result={result} cloud={cloud} /> : null}
+          <div className="flex flex-wrap justify-end gap-3 border-t border-kumo-line pt-4">
+            <Button variant="secondary" disabled={pending} onClick={closeForm}>
+              {m.common_cancel()}
+            </Button>
             <Button type="submit" disabled={disabled}>
               {activeMode === "connect"
                 ? m.agent_settings_context_tree_connect()
@@ -176,84 +195,264 @@ function ContextTreeSettingsForm({
             </Button>
           </div>
         </form>
-      </SettingsList>
-      {pending ? <p role="status">{m.agent_settings_context_tree_pending()}</p> : null}
-      {result ? <ContextTreeResult result={result} computerName={computerName} cloud={cloud} /> : null}
+      </Dialog>
     </div>
   );
 }
 
-function AliasField({
-  fieldId,
-  alias,
-  inputRef,
-  pending,
-  invalid,
-  onChange,
-}: {
-  fieldId: string;
-  alias: string;
-  inputRef: React.RefObject<HTMLInputElement | null>;
-  pending: boolean;
-  invalid: boolean;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <Field
-      label={m.agent_settings_context_tree_alias()}
-      htmlFor={`${fieldId}-alias`}
-      error={invalid ? m.agent_settings_context_tree_alias_error() : undefined}
-      errorId={`${fieldId}-alias-error`}
-    >
-      <KumoInputControl
-        ref={inputRef}
-        id={`${fieldId}-alias`}
-        value={alias}
-        disabled={pending}
-        aria-invalid={invalid}
-        aria-describedby={invalid ? `${fieldId}-alias-error` : undefined}
-        onChange={(event) => onChange(event.target.value)}
-      />
-    </Field>
-  );
-}
-
-function RepositoryMode({
-  activeMode,
+function ContextTreeCollection({
+  selected,
   cloud,
   pending,
-  switchMode,
+  pauseRequired,
+  fieldId,
+  addButton,
+  openForm,
+  onDisconnect,
+  mode,
+  statusMessage,
+  result,
 }: {
-  activeMode: "connect" | "create";
+  selected: ContextTreeConnection[];
   cloud: boolean;
   pending: boolean;
-  switchMode: (mode: "connect" | "create") => void;
+  pauseRequired: boolean;
+  fieldId: string;
+  addButton: RefObject<HTMLButtonElement | null>;
+  openForm: (mode: TreeAction, trigger?: HTMLElement | null) => void;
+  onDisconnect: (source: ContextTreeConnection) => void;
+  mode: TreeAction | undefined;
+  statusMessage: string | undefined;
+  result: ContextTreeOperationResponse | undefined;
 }) {
   return (
-    <div className="flex flex-wrap gap-2">
-      <Button
-        type="button"
-        variant="ghost"
-        className={activeMode === "connect" ? "bg-(--brand-soft) text-kumo-link" : undefined}
-        aria-pressed={activeMode === "connect"}
-        disabled={pending}
-        onClick={() => switchMode("connect")}
-      >
-        {m.agent_settings_context_tree_connect_existing()}
-      </Button>
-      {cloud ? null : (
-        <Button
-          type="button"
-          variant="ghost"
-          className={activeMode === "create" ? "bg-(--brand-soft) text-kumo-link" : undefined}
-          aria-pressed={activeMode === "create"}
-          disabled={pending}
-          onClick={() => switchMode("create")}
-        >
-          {m.agent_settings_context_tree_create_new()}
-        </Button>
+    <>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <AgentSettingsPageHeader
+          title={m.agent_settings_context_tree_title()}
+          description={m.agent_settings_context_tree_description()}
+        />
+        {selected.length ? (
+          <DropdownMenu>
+            <DropdownMenu.Trigger render={<Button ref={addButton} disabled={pending || pauseRequired} />}>
+              <Icon name="plus" />
+              {m.agent_settings_context_tree_add()}
+              <Icon name="chevron-down" />
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Content align="end">
+              <DropdownMenu.Item onClick={() => openForm("connect")}>
+                <div className="flex items-start gap-3">
+                  <Icon name="link" className="mt-1 shrink-0" />
+                  <div>
+                    <div>{m.agent_settings_context_tree_connect_existing()}</div>
+                    <p className="text-sm text-kumo-subtle">{m.agent_settings_context_tree_connect_hint()}</p>
+                  </div>
+                </div>
+              </DropdownMenu.Item>
+              {cloud ? null : (
+                <DropdownMenu.Item onClick={() => openForm("create")}>
+                  <div className="flex items-start gap-3">
+                    <Icon name="folder-plus" className="mt-1 shrink-0" />
+                    <div>
+                      <div>{m.agent_settings_context_tree_create_new()}</div>
+                      <p className="text-sm text-kumo-subtle">{m.agent_settings_context_tree_create_hint()}</p>
+                    </div>
+                  </div>
+                </DropdownMenu.Item>
+              )}
+            </DropdownMenu.Content>
+          </DropdownMenu>
+        ) : null}
+      </div>
+      {selected.length ? (
+        <section aria-labelledby={`${fieldId}-connected`} className="grid gap-4">
+          <Text as="h2" id={`${fieldId}-connected`} size="lg" variant="heading">
+            {m.agent_settings_context_tree_connected_heading()}
+          </Text>
+          {selected.map((entry, index) => (
+            <ContextTreeCard
+              key={contextTreeIdentity(entry)}
+              source={entry}
+              id={`${fieldId}-tree-${index}`}
+              disabled={pending || pauseRequired}
+              onDisconnect={() => onDisconnect(entry)}
+            />
+          ))}
+        </section>
+      ) : (
+        <ContextTreeEmptyState cloud={cloud} pending={pending} onChoose={openForm} />
       )}
-    </div>
+      {statusMessage && !mode ? (
+        <p role="status" className="text-sm text-kumo-subtle">
+          {statusMessage}
+        </p>
+      ) : null}
+      {result && !mode ? (
+        result.status === "completed" ? (
+          <p role="status" className="sr-only">
+            {m.agent_settings_context_tree_completed()}
+          </p>
+        ) : (
+          <ContextTreeResult result={result} cloud={cloud} />
+        )
+      ) : null}
+    </>
+  );
+}
+
+function ContextTreeEmptyState({
+  cloud,
+  pending,
+  onChoose,
+}: {
+  cloud: boolean;
+  pending: boolean;
+  onChoose: (mode: TreeAction, trigger: HTMLElement) => void;
+}) {
+  return (
+    <section className="grid justify-items-start gap-3">
+      <Text as="h2" size="lg" variant="heading">
+        {m.agent_settings_context_tree_empty_title()}
+      </Text>
+      <div className="grid w-full max-w-lg items-start gap-4 sm:grid-cols-2">
+        <div className="grid gap-2">
+          <Button disabled={pending} onClick={(event) => onChoose("connect", event.currentTarget)}>
+            <Icon name="link" />
+            {m.agent_settings_context_tree_connect_existing()}
+          </Button>
+          <p className="text-sm text-kumo-subtle">{m.agent_settings_context_tree_connect_hint()}</p>
+        </div>
+        {cloud ? null : (
+          <div className="grid gap-2">
+            <Button variant="secondary" disabled={pending} onClick={(event) => onChoose("create", event.currentTarget)}>
+              <Icon name="folder-plus" />
+              {m.agent_settings_context_tree_create_new()}
+            </Button>
+            <p className="text-sm text-kumo-subtle">{m.agent_settings_context_tree_create_hint()}</p>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function ContextTreeCard({
+  source,
+  id,
+  disabled,
+  onDisconnect,
+}: {
+  source: ContextTreeConnection;
+  id: string;
+  disabled: boolean;
+  onDisconnect: () => void;
+}) {
+  const name = contextTreeName(source);
+  return (
+    <article aria-labelledby={id} className="max-w-2xl ui-surface bg-kumo-base p-5">
+      <div className="flex items-start gap-4">
+        <Icon name="folder" className="mt-1 size-7 shrink-0" />
+        <div className="grid min-w-0 flex-1 gap-2">
+          <div className="flex flex-wrap items-center gap-3">
+            <Text as="h3" id={id} size="lg" variant="heading">
+              <a
+                href={contextTreeSelector(source)}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label={m.agent_settings_context_tree_open_source({ name })}
+                className="inline-flex items-center gap-2 rounded-sm break-all hover:text-kumo-link focus-visible:outline-2 focus-visible:outline-kumo-focus"
+              >
+                {name}
+                <Icon name="external-link" className="size-4 shrink-0" />
+              </a>
+            </Text>
+            <Badge variant="secondary">{m.agent_settings_context_tree_connected_label()}</Badge>
+          </div>
+          <p className="break-all text-sm text-kumo-subtle">
+            {source.repository}
+            {source.path === "." ? "" : `/${source.path}`}
+          </p>
+          <p className="flex min-w-0 items-start gap-2 text-sm text-kumo-subtle">
+            <Icon name="branch" className="shrink-0" />
+            <span className="sr-only">{m.agent_settings_context_tree_branch()}: </span>
+            <span className="break-all">{source.ref}</span>
+          </p>
+        </div>
+        <DropdownMenu>
+          <DropdownMenu.Trigger
+            render={
+              <Button variant="ghost" shape="square" aria-label={m.agent_settings_context_tree_actions({ name })} />
+            }
+          >
+            <Icon name="more-vertical" />
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Content align="end">
+            <DropdownMenu.Item disabled={disabled} onClick={onDisconnect}>
+              {m.agent_settings_context_tree_disconnect()}
+            </DropdownMenu.Item>
+          </DropdownMenu.Content>
+        </DropdownMenu>
+      </div>
+    </article>
+  );
+}
+
+function ConnectTreeFields({
+  fieldId,
+  repositoryUrl,
+  path,
+  pending,
+  submitted,
+  linkedRepository,
+  valid,
+  repositoryInput,
+  pathInput,
+  onRepositoryChange,
+  onPathChange,
+}: {
+  fieldId: string;
+  repositoryUrl: string;
+  path: string;
+  pending: boolean;
+  submitted: boolean;
+  linkedRepository: string | undefined;
+  valid: ReturnType<typeof ContextTreeConnectionSchema.safeParse>;
+  repositoryInput: RefObject<HTMLInputElement | null>;
+  pathInput: RefObject<HTMLInputElement | null>;
+  onRepositoryChange: (value: string) => void;
+  onPathChange: (value: string) => void;
+}) {
+  return (
+    <>
+      <Field
+        label={m.agent_settings_context_tree_repository_link()}
+        htmlFor={`${fieldId}-repository`}
+        error={submitted && !linkedRepository ? m.agent_settings_context_tree_link_error() : undefined}
+      >
+        <KumoInputControl
+          ref={repositoryInput}
+          id={`${fieldId}-repository`}
+          value={repositoryUrl}
+          disabled={pending}
+          placeholder="https://github.com/owner/repository"
+          aria-invalid={submitted && !linkedRepository}
+          onChange={(event) => onRepositoryChange(event.target.value)}
+        />
+      </Field>
+      <Field label={m.agent_settings_context_tree_path()} htmlFor={`${fieldId}-path`}>
+        <KumoInputControl
+          ref={pathInput}
+          id={`${fieldId}-path`}
+          value={path}
+          disabled={pending}
+          onChange={(event) => onPathChange(event.target.value)}
+          placeholder="docs"
+        />
+      </Field>
+      {submitted && !valid.success && linkedRepository ? (
+        <p role="alert">{m.agent_settings_context_tree_source_error()}</p>
+      ) : null}
+    </>
   );
 }
 
@@ -279,7 +478,7 @@ function RepositoryFields({
   updateDraft: (field: "owner" | "name", value: string) => void;
 }) {
   return (
-    <div className="grid items-start gap-4 sm:grid-cols-2">
+    <div className="grid gap-4">
       <Field
         label={m.agent_settings_context_tree_owner()}
         htmlFor={`${fieldId}-owner`}
@@ -320,17 +519,46 @@ function RepositoryFields({
   );
 }
 
-function ContextTreeResult({
-  result,
-  computerName,
-  cloud,
-}: {
-  result: ContextTreeOperationResponse;
-  computerName: string;
-  cloud: boolean;
-}) {
+function parseForm(
+  activeMode: TreeAction,
+  draft: { owner: string; name: string },
+  repositoryUrl: string,
+  path: string,
+) {
+  const owner = draft.owner.trim();
+  const name = draft.name.trim();
+  const linkedRepository = repositoryFromUrl(repositoryUrl);
+  const repository = activeMode === "connect" ? (linkedRepository ?? "") : `${owner}/${name}`;
+  const ownerValid = ContextTreeRepositorySchema.safeParse(`${owner}/memory`).success;
+  const nameValid = ContextTreeRepositorySchema.safeParse(`acme/${name}`).success;
+  const source = {
+    kind: "git" as const,
+    repository,
+    path: activeMode === "create" ? "." : path.trim() || ".",
+    ref: "HEAD",
+  };
+  const valid = ContextTreeConnectionSchema.safeParse(source);
+  return { source, valid, ownerValid, nameValid, linkedRepository };
+}
+
+function repositoryFromUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== "https:" || url.hostname !== "github.com" || url.port || url.username || url.password) return;
+    const repository = url.pathname
+      .replace(/^\//u, "")
+      .replace(/\/$/u, "")
+      .replace(/\.git$/u, "");
+    const parsed = ContextTreeRepositorySchema.safeParse(repository);
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function ContextTreeResult({ result, cloud }: { result: ContextTreeOperationResponse; cloud: boolean }) {
   if (result.status === "completed") return <p role="status">{m.agent_settings_context_tree_completed()}</p>;
-  return <p role="alert">{failureMessage(result.code, computerName, cloud)}</p>;
+  return <Banner variant="error" role="alert" description={failureMessage(result.code, cloud)} />;
 }
 
 function contextTreeStatusMessage(online: boolean, pauseRequired: boolean): string | undefined {
@@ -340,26 +568,19 @@ function contextTreeStatusMessage(online: boolean, pauseRequired: boolean): stri
 
 function failureMessage(
   code: Extract<ContextTreeOperationResponse, { status: "failed" }>["code"],
-  computerName: string,
   cloud: boolean,
 ): string {
   switch (code) {
     case "authentication_required":
-      return cloud
-        ? m.agent_settings_context_tree_cloud_authentication_required()
-        : m.agent_settings_context_tree_authentication_required({ computerName });
+      return m.agent_settings_context_tree_authentication_required();
+    case "github_not_configured":
+      return m.agent_settings_context_tree_github_not_configured();
     case "permission_denied":
       return cloud
         ? m.agent_settings_context_tree_cloud_permission_denied()
         : m.agent_settings_context_tree_permission_denied();
-    case "alias_conflict":
-      return m.agent_settings_context_tree_alias_conflict();
-    case "repository_conflict":
-      return m.agent_settings_context_tree_repository_conflict();
     case "tree_limit_reached":
       return m.agent_settings_context_tree_limit_reached();
-    case "repository_exists":
-      return m.agent_settings_context_tree_repository_exists();
     case "invalid_tree":
       return m.agent_settings_context_tree_invalid_tree();
     case "publication_uncertain":
@@ -384,14 +605,12 @@ function failureMessage(
 function operationAttempt(
   config: AgentAdminConfig,
   action: ContextTreeOperationRequest["action"],
-  alias: string,
-  repository: string | null,
+  source: ContextTreeConnection,
   previous?: ContextTreeOperationRequest,
 ): ContextTreeOperationRequest {
   if (
     previous?.action === action &&
-    previous.alias === alias &&
-    previous.repository?.toLowerCase() === repository?.toLowerCase() &&
+    contextTreeIdentity(previous) === contextTreeIdentity(source) &&
     previous.expectedRevision === config.revision &&
     previous.expectedRuntimeConfigRevision === config.runtimeConfig.revision
   )
@@ -401,8 +620,7 @@ function operationAttempt(
     expectedRevision: config.revision,
     expectedRuntimeConfigRevision: config.runtimeConfig.revision,
     action,
-    alias,
-    repository,
+    ...source,
   };
 }
 

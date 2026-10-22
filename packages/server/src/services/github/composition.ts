@@ -20,6 +20,7 @@ export interface GitHubIntegrationConfig {
 }
 
 export interface GitHubIntegrationComposition {
+  api: GitHubApiClient;
   management: GitHubManagementService;
   worker: GitHubMaintenanceWorker;
 }
@@ -81,5 +82,5 @@ export function createGitHubIntegration(options: {
     ...(options.worker?.refreshWithinMs !== undefined ? { refreshWithinMs: options.worker.refreshWithinMs } : {}),
     ...(options.worker?.logger ? { logger: options.worker.logger } : {}),
   });
-  return { management, worker };
+  return { api, management, worker };
 }

@@ -393,6 +393,7 @@ function createContextTreeServices(
   const cloudContextTreeOperations = github
     ? new CloudContextTreeOperations({
         management: github.management,
+        api: github.api,
         computerKind,
         credentials: new GitHubExecutionCredentials(github.management),
       })
@@ -402,7 +403,7 @@ function createContextTreeServices(
     contextTreeOperationService: new ContextTreeOperationService(agents, owner, {
       computerKind,
       run: (input) =>
-        cloudContextTreeOperations?.run(input) ?? Promise.resolve({ status: "failed", code: "capability_missing" }),
+        cloudContextTreeOperations?.run(input) ?? Promise.resolve({ status: "failed", code: "github_not_configured" }),
     }),
   };
 }

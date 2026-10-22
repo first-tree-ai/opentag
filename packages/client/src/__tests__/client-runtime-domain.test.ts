@@ -28,7 +28,9 @@ describe("ClientRuntime domain dispatch", () => {
       requireStopped: false,
       input: {
         action: "create",
-        alias: "memory",
+        kind: "git" as const,
+        path: ".",
+        ref: "main",
         operationId: randomUUID(),
         repository: "acme/memory",
         expectedRevision: 1,

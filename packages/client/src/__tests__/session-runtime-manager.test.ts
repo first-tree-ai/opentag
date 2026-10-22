@@ -1,7 +1,9 @@
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { delimiter, resolve } from "node:path";
+import { promisify } from "node:util";
 import {
   computeLegacyRuntimeSnapshotHashes,
   computeRuntimeSnapshotHashes,
@@ -9,6 +11,7 @@ import {
   type SessionReconcileRequest,
 } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { composeRuntimeEnvironment } from "../agent-runtime/environment.js";
 import type {
   AgentAbortRequest,
   AgentInteractionResponse,
@@ -341,6 +344,51 @@ describe("SessionRuntimeManager", () => {
     await feishuManager.close();
   });
 
+  it.each(["visible", "internal"] as const)(
+    "selects the bundled Context Tree CLI in the actual %s shell",
+    async (sessionKind) => {
+      const home = await mkdtemp(resolve(tmpdir(), "opentag-context-tree-path-"));
+      homes.push(home);
+      const bundled = resolve(home, "context-tree", "bin");
+      const ambient = resolve(home, "global-bin");
+      await Promise.all([mkdir(bundled, { recursive: true }), mkdir(ambient)]);
+      await writeFile(resolve(bundled, "context-tree"), "#!/bin/sh\necho bundled\n", { mode: 0o700 });
+      await writeFile(resolve(ambient, "context-tree"), "#!/bin/sh\necho ambient\n", { mode: 0o700 });
+      const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+      const factory = new FakeFactory();
+      const manager = new SessionRuntimeManager({
+        bindingStore: store,
+        home,
+        providers: await providerRegistry(factory),
+        contextTreeBin: bundled,
+        providerCliLaunchPath: () => resolve(home, "session-tools"),
+        providerEnvironmentPath: () => "/tmp/provider-env.sh",
+        workspace: new AgentWorkspaceManager({ home, bindingStore: store }),
+      });
+      const computerId = randomUUID();
+      const request = {
+        ...reconcile(computerId, snapshot(1)),
+        ...(sessionKind === "internal" ? { sessionKind, creatorSessionId: randomUUID() } : {}),
+      };
+      await new SessionReconciler({ installationId: computerId, preparation: manager, localPolicy: manager }).reconcile(
+        request,
+      );
+      await manager.ensureRuntime(request.sessionId);
+      const created = factory.created[0];
+      if (!created) throw new Error("Provider was not created");
+      // Both discovery and per-execution overrides can put the ambient CLI first.
+      const result = await promisify(execFile)("/bin/sh", ["-c", "context-tree --version"], {
+        env: composeRuntimeEnvironment(
+          { PATH: `${ambient}${delimiter}/usr/bin` },
+          { PATH: `${ambient}${delimiter}/bin` },
+          created.workspace.pathPrepend,
+        ),
+      });
+      expect(result.stdout.trim()).toBe("bundled");
+      await manager.close();
+    },
+  );
+
   it("injects the active proxy execution environment into visible Sessions only", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-proxy-env-"));
     homes.push(home);
@@ -485,9 +533,32 @@ describe("SessionRuntimeManager", () => {
         ensureAgent: vi.fn(async () => ({
           status: "configured" as const,
           connections: [
-            { alias: "team", repository: "acme/team", status: "ready" as const, treePath },
-            { alias: "product", repository: "acme/product", status: "ready" as const, treePath: secondTreePath },
-            { alias: "offline", repository: "acme/offline", status: "unavailable" as const, reason: "GITHUB_AUTH" },
+            {
+              kind: "git" as const,
+              path: ".",
+              ref: "main",
+              repository: "acme/team",
+              status: "ready" as const,
+              projectPath: "/managed/project",
+              treePath,
+            },
+            {
+              kind: "git" as const,
+              path: ".",
+              ref: "main",
+              repository: "acme/product",
+              status: "ready" as const,
+              projectPath: "/managed/project",
+              treePath: secondTreePath,
+            },
+            {
+              kind: "git" as const,
+              path: ".",
+              ref: "main",
+              repository: "acme/offline",
+              status: "unavailable" as const,
+              reason: "GITHUB_AUTH",
+            },
           ],
         })),
       };
@@ -515,14 +586,12 @@ describe("SessionRuntimeManager", () => {
       const created = factory.created[0];
       const cwd = await workspace.cwd(request.agentId);
       expect(manager.cwd(request.sessionId)).toBe(cwd);
-      expect(contextTree.ensureAgent).toHaveBeenCalledWith(cwd, "codex", []);
+      expect(contextTree.ensureAgent).toHaveBeenCalledWith(cwd, "codex", [], undefined);
       // Codex is workspace-write, so the shared tree is unreachable unless it is named here.
       expect(created?.workspace.writableRoots).toEqual([
         cwd,
         resolve(home, "slack"),
         ...(configFailure ? [] : [resolve(process.env.HOME as string, ".context-tree")]),
-        treePath,
-        secondTreePath,
       ]);
       expect(created?.systemPrompt).toContain(`Context Tree: ${treePath}`);
       expect(created?.systemPrompt).toContain("members/<your Agent slug>/");
@@ -538,7 +607,11 @@ describe("SessionRuntimeManager", () => {
     const factory = new FakeFactory();
     const contextTree = {
       skillPaths: vi.fn(async () => []),
-      ensureAgent: vi.fn(async () => ({ status: "ready" as const, treePath: resolve(home, "tree") })),
+      ensureAgent: vi.fn(async () => ({
+        status: "ready" as const,
+        projectPath: "/managed/project",
+        treePath: resolve(home, "tree"),
+      })),
     };
     const environment = { GITHUB_TOKEN: undefined, HTTPS_PROXY: "http://127.0.0.1:43123" };
     const manager = new SessionRuntimeManager({
@@ -701,7 +774,11 @@ describe("SessionRuntimeManager", () => {
     const treePath = resolve(process.env.HOME as string, ".context-tree", "trees", "team");
     const contextTree = {
       skillPaths: vi.fn(async () => []),
-      ensureAgent: vi.fn(async () => ({ status: "ready" as const, treePath })),
+      ensureAgent: vi.fn(async () => ({
+        status: "ready" as const,
+        projectPath: "/managed/project",
+        treePath,
+      })),
     };
     const manager = new SessionRuntimeManager({
       bindingStore: store,

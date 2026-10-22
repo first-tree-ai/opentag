@@ -1,249 +1,210 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ContextTreeOperationFrame } from "@opentag/shared";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { ContextTreeSettings, contextTreeStagingName } from "../runtime/context-tree-settings.js";
+import { afterEach, expect, it, vi } from "vitest";
+import { type ContextTreeExecFile, runContextTreeProcess } from "../runtime/context-tree.js";
+import { ContextTreeSettings } from "../runtime/context-tree-settings.js";
 
 const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-const frame = (action: "connect" | "create" | "disconnect" = "create"): ContextTreeOperationFrame => ({
-  type: "context-tree:operation",
-  requestId: randomUUID(),
-  computerId: randomUUID(),
-  agentId: randomUUID(),
-  requireStopped: false,
-  input: {
-    alias: "memory",
-    operationId: randomUUID(),
-    expectedRevision: 1,
-    expectedRuntimeConfigRevision: 1,
-    action,
-    repository: action === "disconnect" ? null : "acme/memory",
-  },
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
-async function fixture(failureCode?: string) {
-  const home = await mkdtemp(join(tmpdir(), "opentag-ct-settings-"));
+function frame(action: "create" | "connect" | "disconnect" = "create"): ContextTreeOperationFrame {
+  return {
+    type: "context-tree:operation",
+    requestId: randomUUID(),
+    agentId: randomUUID(),
+    computerId: randomUUID(),
+    requireStopped: true,
+    input: {
+      kind: "git",
+      repository: "acme/memory",
+      path: ".",
+      ref: "main",
+      action,
+      operationId: randomUUID(),
+      expectedRevision: 1,
+      expectedRuntimeConfigRevision: 1,
+    },
+  };
+}
+async function fixture() {
+  const home = await mkdtemp(join(tmpdir(), "ct-settings-"));
   roots.push(home);
-  const run = vi.fn(async (args: readonly string[]) =>
-    args[0] === "connect" && args[1]?.endsWith("-context-tree")
-      ? { payload: {}, failureCode: "NOT_FOUND" }
-      : args[0] === "publish" && failureCode
-        ? { payload: {}, failureCode }
-        : { payload: { tree: { path: "/tree" } } },
-  );
-  const hasAgentSessions = vi.fn(() => false);
-  const settings = new ContextTreeSettings({
+  const run = vi.fn(async (_args: readonly string[]) => ({
+    payload: {
+      schemaVersion: 3,
+      connection: { projectRoot: home, source: { kind: "git", repository: "acme/memory", path: ".", ref: "main" } },
+      treeRoot: home,
+      repository: { root: home, directory: ".", sha: "a".repeat(40), branch: "main" },
+      dirty: false,
+    },
+  }));
+  const process = vi.fn<ContextTreeExecFile>(async (_file, args) => {
+    if (args.includes("--verify")) throw new Error("unborn");
+    return { stdout: args.includes("rev-parse") ? "a".repeat(40) : "" };
+  });
+  const options = {
     home,
     environment: {},
+    managedCredentials: true,
+    managedEnvironment: () => ({ GH_TOKEN: "handle", OPENTAG_PROVIDER_PROXY_URL: "http://localhost/proxy" }),
+    hasAgentSessions: () => false,
+    exclusive: async <T>(operation: () => Promise<T>) => operation(),
     run,
-    hasAgentSessions,
-    exclusive: async (operation) => operation(),
-  });
-  return { home, settings, run, hasAgentSessions };
+    process,
+  };
+  return { options, run, process, settings: new ContextTreeSettings(options) };
 }
-it("creates and publishes once, verifies the tree and removes the isolated project connection", async () => {
-  const { settings, run, home } = await fixture();
+it("checks an uncertain push against the staged commit instead of recreating the repository", async () => {
+  const f = await fixture();
   const request = frame();
-  expect(await settings.run(request)).toEqual({ status: "completed", repository: "acme/memory" });
-  expect(run.mock.calls.map(([args]) => args[0])).toEqual([
-    "connect",
-    "create",
-    "publish",
-    "connect",
-    "verify",
-    "disconnect",
-  ]);
-  expect(run.mock.calls[0]?.[0]).toContain(
-    join(home, "state", "context-tree-operations", contextTreeStagingName("acme/memory")),
-  );
-  await settings.run(request);
-  expect(run).toHaveBeenCalledTimes(6);
-  expect(
-    run.mock.calls
-      .filter(([args]) => args[0] === "connect" || args[0] === "create")
-      .every(([args]) => args.includes("--as") && args.includes("settings")),
-  ).toBe(true);
-  expect(run.mock.calls.find(([args]) => args[0] === "publish")?.[0]).toContain("--tree");
-  expect(run.mock.calls.find(([args]) => args[0] === "disconnect")?.[0]).toContain("--all");
-  expect(await settings.run({ ...request, input: { ...request.input, alias: "other" } })).toEqual({
-    status: "failed",
-    code: "stale_configuration",
-  });
-  await settings.run({ ...request, input: { ...request.input, operationId: randomUUID() } });
-  expect(run.mock.calls.filter(([args]) => args[0] === "publish")).toHaveLength(1);
-});
-it.each(["PUBLISH_INCOMPLETE", "TIMEOUT"])(
-  "never repeats uncertain publication after %s, including with another operation ID",
-  async (code) => {
-    const { settings, run, home } = await fixture(code);
-    const request = frame();
-    expect(await settings.run(request)).toEqual({ status: "failed", code: "publication_uncertain" });
-    const restarted = new ContextTreeSettings({ ...settings.options, home });
-    expect(await restarted.run({ ...request, input: { ...request.input, operationId: randomUUID() } })).toEqual({
-      status: "failed",
-      code: "publication_uncertain",
-    });
-    expect(run.mock.calls.filter(([args]) => args[0] === "publish")).toHaveLength(1);
-  },
-);
-it.each([
-  ["GITHUB_AUTH", "authentication_required"],
-  ["GITHUB_PERMISSION", "permission_denied"],
-  ["REPOSITORY_EXISTS", "repository_exists"],
-])("reports %s separately", async (code, expected) => {
-  const { settings } = await fixture(code);
-  expect(await settings.run(frame())).toEqual({ status: "failed", code: expected });
-});
-it("rejects reused operation identities and waits for stopped runtimes", async () => {
-  const { settings, hasAgentSessions, run } = await fixture();
-  const request = frame("connect");
-  hasAgentSessions.mockReturnValue(true);
-  expect(await settings.run({ ...request, requireStopped: true })).toEqual({ status: "failed", code: "busy" });
-  expect(run).not.toHaveBeenCalled();
-  hasAgentSessions.mockReturnValue(false);
-  await settings.run(request);
-  expect(await settings.run({ ...request, agentId: randomUUID() })).toEqual({
-    status: "failed",
-    code: "stale_configuration",
-  });
-});
-it("does not mutate the live project connection during disconnect validation", async () => {
-  const { settings, run } = await fixture();
-  expect(await settings.run(frame("disconnect"))).toEqual({ status: "completed", repository: null });
-  expect(run).not.toHaveBeenCalled();
-});
-
-it("uses a readable, case-insensitive staging identity inside the CLI naming limit", () => {
-  const name = contextTreeStagingName("Acme/Team-Memory");
-  expect(name).toMatch(/^acme-team-memory-[0-9a-f]{12}$/);
-  expect(name).toBe(contextTreeStagingName("acme/team-memory"));
-  expect(contextTreeStagingName(`acme/${"a".repeat(99)}`).length).toBeLessThanOrEqual(40);
-});
-it("preserves publication spelling and deduplicates concurrent identical work", async () => {
-  const { settings, run } = await fixture();
-  const request = frame();
-  request.input.repository = "Acme/Memory";
-  const first = settings.run(request);
-  expect(settings.run({ ...request, requestId: randomUUID() })).toBe(first);
-  expect(await settings.run({ ...request, agentId: randomUUID() })).toEqual({ status: "failed", code: "busy" });
-  expect(await first).toEqual({ status: "completed", repository: "Acme/Memory" });
-  expect(run.mock.calls.find(([args]) => args[0] === "publish")?.[0][1]).toBe("Acme/Memory");
-});
-it("never starts queued work after the total budget expires", async () => {
-  const { settings, run } = await fixture();
-  const queue: Array<() => Promise<unknown>> = [];
-  const blocked = new ContextTreeSettings({
-    ...settings.options,
-    budgetMs: 30,
-    exclusive: (operation) =>
-      new Promise((resolve, reject) => {
-        queue.push(() => operation().then(resolve, reject));
-      }),
-  });
-  expect(await blocked.run(frame("connect"))).toEqual({ status: "failed", code: "failed" });
-  for (const operation of queue) await operation().catch(() => undefined);
-  expect(run).not.toHaveBeenCalled();
-});
-it("retains publication protection when shutdown interrupts publishing", async () => {
-  const { settings, home } = await fixture();
-  let publishing = false;
-  const run = vi.fn(async (args: readonly string[]) => {
-    if (args[0] === "publish") {
-      publishing = true;
-      return new Promise<{ payload: unknown }>(() => undefined);
+  let pushed = false;
+  f.process.mockImplementation(async (_file, args) => {
+    if (args[0] === "push") {
+      pushed = true;
+      throw new Error("response lost");
     }
-    return { payload: { tree: { path: "/tree" } } };
+    return {
+      stdout: args.includes("rev-parse")
+        ? "a".repeat(40)
+        : args[0] === "ls-remote" && pushed
+          ? `${"a".repeat(40)}\trefs/heads/main`
+          : "",
+    };
   });
-  const interrupted = new ContextTreeSettings({ ...settings.options, run });
+  expect(await f.settings.run(request)).toEqual({ status: "failed", code: "publication_uncertain" });
+  const restarted = new ContextTreeSettings(f.options);
+  expect(await restarted.run(request)).toEqual({ status: "completed", repository: "acme/memory" });
+  expect(f.process.mock.calls.filter(([file]) => file === "gh")).toHaveLength(1);
+});
+it("keeps uncertainty when the remote does not contain our commit", async () => {
+  const f = await fixture();
   const request = frame();
-  const pending = interrupted.run(request);
-  await vi.waitFor(() => expect(publishing).toBe(true));
-  interrupted.close();
-  expect(await pending).toEqual({ status: "failed", code: "publication_uncertain" });
-  const restarted = new ContextTreeSettings({ ...settings.options, home, run });
-  expect(await restarted.run({ ...request, input: { ...request.input, operationId: randomUUID() } })).toEqual({
+  f.process.mockImplementation(async (_file, args) => {
+    if (args[0] === "push") throw new Error("network");
+    return { stdout: args.includes("rev-parse") ? "a".repeat(40) : "" };
+  });
+  await f.settings.run(request);
+  expect(await new ContextTreeSettings(f.options).run(request)).toEqual({
     status: "failed",
     code: "publication_uncertain",
   });
-  expect(run.mock.calls.filter(([args]) => args[0] === "publish")).toHaveLength(1);
+  expect(f.process.mock.calls.filter(([file]) => file === "gh")).toHaveLength(1);
 });
-it("fences operation replay by both revisions", async () => {
-  const { settings } = await fixture();
+it("resolves remote HEAD before passing the branch to the Context Tree CLI", async () => {
+  const f = await fixture();
   const request = frame("connect");
-  await settings.run(request);
-  expect(await settings.run({ ...request, input: { ...request.input, expectedRuntimeConfigRevision: 2 } })).toEqual({
+  request.input.ref = "HEAD";
+  f.process.mockResolvedValue({ stdout: "ref: refs/heads/main\tHEAD\n" + "a".repeat(40) + "\tHEAD" });
+  expect(await f.settings.run(request)).toEqual({ status: "completed", repository: "acme/memory", ref: "main" });
+  expect(f.run).toHaveBeenCalledWith(expect.arrayContaining(["--ref", "main"]), expect.any(AbortSignal));
+});
+
+it("requires managed credentials for creation and leaves disconnect local", async () => {
+  const f = await fixture();
+  const settings = new ContextTreeSettings({ ...f.options, managedEnvironment: () => undefined });
+  expect(await settings.run(frame())).toEqual({ status: "failed", code: "authentication_required" });
+  expect(await settings.run(frame("disconnect"))).toEqual({ status: "completed", repository: null });
+  expect(f.process).not.toHaveBeenCalled();
+  expect(f.run).not.toHaveBeenCalled();
+});
+it("fences replay by source and revisions and refuses work while the agent is running", async () => {
+  const f = await fixture();
+  const request = frame("connect");
+  await f.settings.run(request);
+  expect(await f.settings.run({ ...request, input: { ...request.input, ref: "other" } })).toEqual({
     status: "failed",
     code: "stale_configuration",
   });
-});
-
-it.each(["connect", "create"])("allows retry when %s throws before publication", async (command) => {
-  const { settings, run } = await fixture();
-  const original = run.getMockImplementation();
-  if (!original) throw new Error("Missing runner");
-  run.mockImplementationOnce(async (args) => {
-    if (command === "connect") throw new Error("staging failed");
-    return original(args);
-  });
-  if (command === "create") run.mockRejectedValueOnce(new Error("creation failed"));
-  const request = frame();
-  expect(await settings.run(request)).toEqual({ status: "failed", code: "failed" });
-  expect(run.mock.calls.some(([args]) => args[0] === "publish")).toBe(false);
-  expect(await settings.run(request)).toEqual({ status: "completed", repository: "acme/memory" });
-});
-it("reports a thrown publication failure as uncertain across restart", async () => {
-  const { settings, run } = await fixture();
-  const original = run.getMockImplementation();
-  if (!original) throw new Error("Missing runner");
-  run.mockImplementation(async (args) => {
-    if (args[0] === "publish") throw new Error("response lost");
-    return original(args);
-  });
-  const request = frame();
-  expect(await settings.run(request)).toEqual({ status: "failed", code: "publication_uncertain" });
-  const restarted = new ContextTreeSettings(settings.options);
-  expect(await restarted.run({ ...request, input: { ...request.input, operationId: randomUUID() } })).toEqual({
+  expect(await new ContextTreeSettings({ ...f.options, hasAgentSessions: () => true }).run(frame())).toEqual({
     status: "failed",
-    code: "publication_uncertain",
-  });
-  expect(run.mock.calls.filter(([args]) => args[0] === "publish")).toHaveLength(1);
-});
-
-describe("managed credential Context Tree settings", () => {
-  it("fails clearly without a host-side environment and keeps disconnect local", async () => {
-    const { settings, run } = await fixture();
-    const managed = new ContextTreeSettings({ ...settings.options, managedCredentials: true });
-    expect(await managed.run(frame("connect"))).toEqual({ status: "failed", code: "authentication_required" });
-    expect(await managed.run(frame("create"))).toEqual({ status: "failed", code: "authentication_required" });
-    expect(run).not.toHaveBeenCalled();
-    expect(await managed.run(frame("disconnect"))).toEqual({ status: "completed", repository: null });
-  });
-
-  it("refuses a legacy repository directory without an execution transport", async () => {
-    const { settings, run } = await fixture();
-    const managed = new ContextTreeSettings({
-      ...settings.options,
-      managedCredentials: true,
-      managedEnvironment: () => ({ OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: "other/memory" }]) }),
-    });
-    expect(await managed.run(frame("connect"))).toEqual({ status: "failed", code: "permission_denied" });
-    expect(run).not.toHaveBeenCalled();
-  });
-
-  it("runs managed connect and create with the host-side environment", async () => {
-    const { settings, run } = await fixture();
-    const managed = new ContextTreeSettings({
-      ...settings.options,
-      managedCredentials: true,
-      managedEnvironment: () => ({
-        GH_TOKEN: "execution-local-handle",
-        OPENTAG_PROVIDER_PROXY_URL: "http://127.0.0.1:1234",
-      }),
-    });
-    expect(await managed.run(frame("connect"))).toEqual({ status: "completed", repository: "acme/memory" });
-    expect(await managed.run(frame("create"))).toEqual({ status: "completed", repository: "acme/memory" });
-    expect(run).toHaveBeenCalled();
+    code: "busy",
   });
 });
+it("never starts queued work after cancellation", async () => {
+  const f = await fixture();
+  let onQueued!: (operation: () => Promise<unknown>) => void;
+  const queued = new Promise<() => Promise<unknown>>((resolve) => {
+    onQueued = resolve;
+  });
+  const settings = new ContextTreeSettings({
+    ...f.options,
+    exclusive: (operation) => {
+      onQueued(operation);
+      return new Promise(() => {});
+    },
+  });
+  const pending = settings.run(frame("connect"));
+  const operation = await queued;
+  settings.close();
+  expect(await pending).toEqual({ status: "failed", code: "failed" });
+  await expect(operation()).rejects.toThrow();
+  expect(f.run).not.toHaveBeenCalled();
+});
+
+it.each(["main", "HEAD"])(
+  "creates and verifies a repository with branch %s through real Git and the CLI",
+  async (ref) => {
+    const f = await fixture();
+    const root = f.options.home;
+    const remote = join(root, "remote.git");
+    const bin = join(root, "bin");
+    const gitConfig = join(root, "gitconfig");
+    await writeFile(gitConfig, "[init]\n defaultBranch = trunk\n");
+    await mkdir(bin);
+    await writeFile(
+      join(bin, "git"),
+      `#!/bin/sh\ncase " $* " in\n *" clone "*|*" fetch "*|*" push "*) exec /usr/bin/git -c protocol.file.allow=always -c 'url.file://${remote}.insteadOf=https://github.com/acme/memory.git' "$@";;\nesac\nexec /usr/bin/git "$@"\n`,
+      { mode: 0o700 },
+    );
+    const processRun = vi.fn<ContextTreeExecFile>(async (file, args, options) => {
+      if (file === "gh") {
+        expect(args).toEqual(["repo", "create", "acme/memory", "--private"]);
+        expect(options.env?.GH_TOKEN).toBe("handle");
+        return runContextTreeProcess(
+          "/usr/bin/git",
+          ["-c", "init.defaultBranch=" + (ref === "HEAD" ? "trunk" : "main"), "init", "--bare", remote],
+          options,
+        );
+      }
+      expect(options.env).not.toHaveProperty("GIT_DIR");
+      return runContextTreeProcess(file, args, options);
+    });
+    const settings = new ContextTreeSettings({
+      ...f.options,
+      run: undefined,
+      process: processRun,
+      environment: {
+        HOME: root,
+        PATH: `${bin}:${globalThis.process.env.PATH}`,
+        GIT_CONFIG_GLOBAL: gitConfig,
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_DIR: "/invalid/inherited-checkout",
+      },
+    });
+    const request = frame();
+    request.input.ref = ref;
+    const expected = { status: "completed", repository: "acme/memory", ...(ref === "HEAD" ? { ref: "trunk" } : {}) };
+    expect(await settings.run(request)).toEqual(expected);
+    const committed = await runContextTreeProcess(
+      "/usr/bin/git",
+      ["--git-dir", remote, "ls-tree", "--name-only", ref === "HEAD" ? "trunk" : "main"],
+      {
+        cwd: root,
+        env: { HOME: root, PATH: globalThis.process.env.PATH },
+        timeout: 5000,
+        maxBuffer: 1024,
+        windowsHide: true,
+      },
+    );
+    expect(committed.stdout.trim()).toBe("NODE.md");
+    expect(await new ContextTreeSettings({ ...f.options, run: undefined, process: processRun }).run(request)).toEqual(
+      expected,
+    );
+    expect(processRun.mock.calls.filter(([file]) => file === "gh")).toHaveLength(1);
+  },
+  30_000,
+);

@@ -32,14 +32,15 @@ beforeEach(async () => {
   };
   const project = join(root, "project");
   await mkdir(project);
-  await git(project, ["init"]);
   const cli = join(
     dirname(createRequire(import.meta.url).resolve("@first-tree-ai/context-tree/package.json")),
     "dist/cli/index.mjs",
   );
-  tree = JSON.parse(
-    (await exec(process.execPath, [cli, "create", "--project-path", project, "--json"], { env: environment })).stdout,
-  ).treePath;
+  tree = join(root, "tree");
+  await exec(process.execPath, [cli, "init", tree, "--project-path", project, "--json"], { env: environment });
+  await git(tree, ["init", "--initial-branch", "main"]);
+  await git(tree, ["add", "NODE.md"]);
+  await git(tree, ["commit", "-m", "initialize"]);
   bare = join(root, "trusted.git");
   await git(root, ["clone", "--bare", tree, bare]);
   options = { cwd: root, environment, signal: new AbortController().signal };
@@ -54,12 +55,12 @@ describe("pinned trusted Context Tree verifier", () => {
       verifyPublishedContextTree(bare, await git(tree, ["rev-parse", "HEAD"]), options),
     ).resolves.toBeUndefined();
   });
-  it("rejects an unindexed leaf even if the caller claims it is a valid Tree", async () => {
+  it("rejects a leaf without required frontmatter", async () => {
     await writeFile(join(tree, "unindexed.md"), "# Unindexed\n");
     await git(tree, ["add", "."]);
     await git(tree, ["commit", "-m", "invalid"]);
     const sha = await git(tree, ["rev-parse", "HEAD"]);
-    await git(bare, ["fetch", tree, "master"]);
+    await git(bare, ["fetch", tree, "main"]);
     await expect(verifyPublishedContextTree(bare, sha, options)).rejects.toThrow(/tree_invalid/);
   });
   it("rejects symlinks before running the verifier or reading their targets", async () => {
@@ -67,7 +68,7 @@ describe("pinned trusted Context Tree verifier", () => {
     await git(tree, ["add", "."]);
     await git(tree, ["commit", "-m", "symlink"]);
     const sha = await git(tree, ["rev-parse", "HEAD"]);
-    await git(bare, ["fetch", tree, "master"]);
+    await git(bare, ["fetch", tree, "main"]);
     await expect(verifyPublishedContextTree(bare, sha, options)).rejects.toThrow(/tree_invalid/);
   });
 });

@@ -45,6 +45,7 @@ import {
 import {
   ArrowLeft,
   ArrowRight,
+  ArrowSquareOut,
   CaretDown,
   CaretRight,
   CaretUp,
@@ -61,11 +62,15 @@ import {
   EyeSlash,
   FileText,
   Fingerprint,
+  Folder,
+  FolderPlus,
   Gear,
+  GitBranch,
   House,
   type IconWeight,
   Info,
   Laptop,
+  LinkSimple,
   List,
   ListBullets,
   ListChecks,
@@ -591,12 +596,17 @@ export type IconName =
   | "copy"
   | "eye"
   | "eye-slash"
+  | "external-link"
   | "file"
+  | "folder"
+  | "folder-plus"
+  | "branch"
   | "instructions"
   | "overview"
   | "home"
   | "integrations"
   | "laptop"
+  | "link"
   | "message"
   | "memory"
   | "model"
@@ -625,6 +635,11 @@ export type IconName =
 const icons: Record<IconName, PhosphorIcon> = {
   "arrow-left": ArrowLeft,
   "arrow-right": ArrowRight,
+  "external-link": ArrowSquareOut,
+  folder: Folder,
+  "folder-plus": FolderPlus,
+  branch: GitBranch,
+  link: LinkSimple,
   check: Check,
   code: Code,
   compass: Compass,

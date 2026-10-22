@@ -1,31 +1,39 @@
 /*
  * Account-authorized verification of existing Context Tree targets for Local and Cloud settings.
- * Live user/OAuth admission fixes the requested repository and default branch; the Server-held
- * OAuth token authenticates the pinned verifier's read-only operation. Connection and target fences are checked around
- * remote work. Cloud create remains unavailable; Local keeps its existing create capability boundary.
+ * Live user/OAuth admission fixes the requested repository and selected branch. Server target checks
+ * bound read-only verification with the Account's OAuth token; connection and credential versions
+ * are checked around remote work. Repository creation also stays on the Server.
  */
 
 import { randomUUID } from "node:crypto";
 import {
+  ContextTreeBranchSchema,
   type ContextTreeOperationResponse,
+  ContextTreePathSchema,
   ContextTreeRepositorySchema,
   type GitHubConnectionStatus,
 } from "@opentag/shared";
 import { GITHUB_CONNECTION_ERROR_CODES, GitHubConnectionServiceError } from "../github/errors.js";
-import { GITHUB_API_CLIENT_ERROR_CODES, GitHubApiClientError } from "../github/github-api-client.js";
+import {
+  GITHUB_API_CLIENT_ERROR_CODES,
+  type GitHubApiClient,
+  GitHubApiClientError,
+} from "../github/github-api-client.js";
 import type { GitHubManagementService } from "../github/github-management-service.js";
 import type { GitHubExecutionCredentials } from "../github-proxy/execution-credentials.js";
 import { GitPublicationError } from "../github-proxy/git-packets.js";
 import { GitHubPublicationRemote, type PublicationRemote } from "../github-proxy/git-remote.js";
 import { GitWorkspace } from "../github-proxy/git-workspace.js";
 import { VerifiedTreeHead } from "../github-proxy/verified-tree-head.js";
+import { contextTreeInitialContent } from "./context-tree-initial-content.js";
 
 export interface CloudContextTreeOperationInput {
   accountId: string;
   agentId: string;
   action: "connect" | "create";
   repository: string;
-  alias: string;
+  path: string;
+  ref: string;
 }
 
 /** The Cloud dispatch surface of the shared ContextTreeOperationService. */
@@ -35,10 +43,14 @@ export interface CloudContextTreeOperationRunner {
 }
 
 /** Exactly the GitHub management facade surface Cloud connect uses. Server-internal; never HTTP. */
-export type CloudContextTreeGitHubManagement = Pick<GitHubManagementService, "getOverview" | "resolveRepository">;
+export type CloudContextTreeGitHubManagement = Pick<
+  GitHubManagementService,
+  "getOverview" | "resolveRepository" | "getExecutionUserCredential"
+>;
 
 export interface CloudContextTreeOperationsOptions {
   management: CloudContextTreeGitHubManagement;
+  api: Pick<GitHubApiClient, "createPrivateRepository" | "initializeContextTree" | "getRepository">;
   credentials: Pick<GitHubExecutionCredentials, "acquire">;
   /** Exact Computer kind lookup; `undefined` for unknown rows so Cloud is never mistaken for Local. */
   computerKind: (computerId: string) => Promise<"local" | "cloud" | undefined>;
@@ -106,6 +118,7 @@ function parseRepository(raw: string): string {
 export class CloudContextTreeOperations implements CloudContextTreeOperationRunner {
   readonly #credentials: Pick<GitHubExecutionCredentials, "acquire">;
   readonly #management: CloudContextTreeGitHubManagement;
+  readonly #api: CloudContextTreeOperationsOptions["api"];
   readonly #computerKind: (computerId: string) => Promise<"local" | "cloud" | undefined>;
   readonly #treeHeads: Pick<VerifiedTreeHead, "verify">;
   readonly #remoteFactory: (fullName: string, accessToken: string) => PublicationRemote;
@@ -118,6 +131,7 @@ export class CloudContextTreeOperations implements CloudContextTreeOperationRunn
 
   constructor(options: CloudContextTreeOperationsOptions) {
     this.#management = options.management;
+    this.#api = options.api;
     this.#credentials = options.credentials;
     this.#computerKind = options.computerKind;
     this.#workspace = options.workspace ?? new GitWorkspace();
@@ -134,13 +148,18 @@ export class CloudContextTreeOperations implements CloudContextTreeOperationRunn
   }
 
   /**
-   * Runs one connect. `create` fails with `capability_missing` before any work. At most one
+   * Runs one settings operation. At most one
    * operation per Agent is in flight; an identical replay joins it and a different one is `busy`.
    */
   run(input: CloudContextTreeOperationInput): Promise<ContextTreeOperationResponse> {
-    if (input.action === "create") return Promise.resolve(failed("capability_missing"));
     if (this.#closed) return Promise.resolve(failed("failed"));
-    const identity = JSON.stringify([input.accountId, input.alias, input.repository.toLowerCase()]);
+    const identity = JSON.stringify([
+      input.accountId,
+      input.action,
+      input.repository.toLowerCase(),
+      input.path,
+      input.ref,
+    ]);
     const active = this.#inFlight.get(input.agentId);
     if (active) return active.identity === identity ? active.promise : Promise.resolve(failed("busy"));
     if (this.#inFlight.size >= this.#maxConcurrent) return Promise.resolve(failed("busy"));
@@ -162,9 +181,53 @@ export class CloudContextTreeOperations implements CloudContextTreeOperationRunn
 
   async #execute(input: CloudContextTreeOperationInput, signal: AbortSignal): Promise<ContextTreeOperationResponse> {
     try {
-      return await this.#connect(input, signal);
+      return input.action === "create" ? await this.#create(input, signal) : await this.#connect(input, signal);
     } catch (error) {
       return this.#classify(error, signal);
+    }
+  }
+
+  async #create(input: CloudContextTreeOperationInput, signal: AbortSignal): Promise<ContextTreeOperationResponse> {
+    const api = this.#api;
+    if (input.path !== "." || input.ref !== "HEAD") halt("invalid_tree");
+    const repository = parseRepository(input.repository);
+    const connection = await this.#activeConnection(input.accountId);
+    if (!connection.githubLogin) halt("authentication_required");
+    const fence = connectionFence(connection);
+    const credential = async () => {
+      await this.#assertFinalFence(input.accountId, connection.id, fence);
+      const current = await this.#management.getExecutionUserCredential({
+        accountId: input.accountId,
+        connectionId: connection.id,
+        authorizationRevision: `github:${connection.authorizationVersion}`,
+      });
+      if (!current) halt("authentication_required");
+      if (current.credentialGeneration !== fence.credentialGeneration) halt("stale_configuration");
+      signal.throwIfAborted();
+      return current.accessToken;
+    };
+    const content = await contextTreeInitialContent(this.#workspace, signal, repository.split("/")[1] as string);
+    const accessToken = await credential();
+    let created = false;
+    try {
+      await api.createPrivateRepository({
+        accessToken,
+        fullName: repository,
+        githubLogin: connection.githubLogin,
+        signal,
+      });
+      created = true;
+      await api.initializeContextTree({ accessToken: await credential(), fullName: repository, content, signal });
+      const target = await api.getRepository({ accessToken: await credential(), fullName: repository, signal });
+      if (!target.private || target.fullName.toLowerCase() !== repository.toLowerCase() || !target.defaultBranch)
+        halt("publication_uncertain");
+      await this.#assertFinalFence(input.accountId, connection.id, fence);
+      return { status: "completed", repository, ref: ContextTreeBranchSchema.parse(target.defaultBranch) };
+    } catch (error) {
+      // Never retry a write automatically or adopt an existing repository after an uncertain reply.
+      if (created || !(error instanceof GitHubApiClientError) || !error.status || error.status >= 500)
+        halt("publication_uncertain");
+      throw error;
     }
   }
 
@@ -181,7 +244,9 @@ export class CloudContextTreeOperations implements CloudContextTreeOperationRunn
       access: "read",
       signal,
     });
-    const branch = `refs/heads/${target.defaultBranch}`;
+    const ref = ContextTreeBranchSchema.parse(input.ref === "HEAD" ? target.defaultBranch : input.ref);
+    const branch = `refs/heads/${ref}`;
+    const path = ContextTreePathSchema.parse(input.path);
     const fence = connectionFence(connection);
     assertFence(target, fence);
     const recheck = async () => {
@@ -192,7 +257,10 @@ export class CloudContextTreeOperations implements CloudContextTreeOperationRunn
         signal,
       });
       assertFence(observed, fence);
-      if (observed.repositoryId !== target.repositoryId || observed.defaultBranch !== target.defaultBranch)
+      if (
+        observed.repositoryId !== target.repositoryId ||
+        (input.ref === "HEAD" && observed.defaultBranch !== target.defaultBranch)
+      )
         halt("stale_configuration");
     };
     signal.throwIfAborted();
@@ -206,13 +274,14 @@ export class CloudContextTreeOperations implements CloudContextTreeOperationRunn
       await this.#treeHeads.verify({
         repositoryId: target.repositoryId,
         ref: branch,
+        path,
         remote: this.#remoteFactory(repository, lease.token),
         signal,
         recheck,
       });
       await recheck();
       await this.#assertFinalFence(input.accountId, connection.id, fence);
-      return { status: "completed", repository };
+      return { status: "completed", repository, ...(input.ref === "HEAD" ? { ref } : {}) };
     } finally {
       await lease.release();
     }
@@ -252,9 +321,7 @@ export class CloudContextTreeOperations implements CloudContextTreeOperationRunn
       }
     }
     if (error instanceof GitHubApiClientError) {
-      return failed(
-        error.code === GITHUB_API_CLIENT_ERROR_CODES.CREDENTIAL_INVALID ? "authentication_required" : "failed",
-      );
+      return failed(gitHubApiFailureCode(error));
     }
     if (error instanceof GitPublicationError) {
       if (error.code === "tree_invalid") return failed("invalid_tree");
@@ -263,4 +330,10 @@ export class CloudContextTreeOperations implements CloudContextTreeOperationRunn
     }
     return failed("failed");
   }
+}
+
+function gitHubApiFailureCode(error: GitHubApiClientError): FailureCode {
+  if (error.code === GITHUB_API_CLIENT_ERROR_CODES.CREDENTIAL_INVALID) return "authentication_required";
+  if (error.code === GITHUB_API_CLIENT_ERROR_CODES.RATE_LIMITED) return "failed";
+  return [403, 404].includes(error.status ?? 0) ? "permission_denied" : "failed";
 }

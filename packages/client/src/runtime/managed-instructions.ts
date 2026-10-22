@@ -1,20 +1,11 @@
-import type { ContextTreeConnection, EffectiveRuntimeSnapshot } from "@opentag/shared";
+import type { EffectiveRuntimeSnapshot } from "@opentag/shared";
+import { contextTreeName, contextTreeSelector } from "@opentag/shared";
+import type { ContextTreeStatus as ManagedContextTreeStatus } from "./context-tree-connections.js";
 import { GITHUB_NATIVE_CLI_INSTRUCTIONS, renderProviderOutboxGuidance } from "./provider-outbox-instructions.js";
 
 export type ManagedEnvironment = "local" | "cloud";
 
-/**
- * Both runtime tree statuses are structurally assignable to this prompt context.
- */
-export type ManagedContextTreeStatus =
-  | { status: "configured"; connections: readonly ManagedContextTreeResult[] }
-  | { status: "ready"; treePath: string; branch?: string; sha?: string }
-  | { status: "stale"; treePath: string; reason: string }
-  | { status: "unconfigured" }
-  | { status: "unavailable"; reason: string };
-
-export type ManagedContextTreeResult = ContextTreeConnection &
-  Exclude<ManagedContextTreeStatus, { status: "configured" } | { status: "unconfigured" }>;
+export type { ContextTreeStatus as ManagedContextTreeStatus } from "./context-tree-connections.js";
 
 /** Runtime facts supplied by either the Local manager or the Cloud worker. */
 export interface ManagedSessionContext {
@@ -69,7 +60,7 @@ function renderAgentHome(agentHome?: string): readonly string[] {
     "- `files/<unique-task-key>/` — non-repository task artifacts, created only when needed.",
     "",
     "OpenTag provides the bundled `context-tree` command. If it cannot run, report a runtime setup problem; do not install it globally.",
-    'Context Tree stays the separately configured shared tree managed by its matching CLI and skills. When running Context Tree project commands from a task subdirectory, pass `--project-path "<Agent Home>"` to use the connected Home; do not create or reconnect a tree just because the task cwd changed. Follow the matching skill write protocol. Do not invent an independent Git policy for Tree writes.',
+    "Context Tree stays the separately configured shared tree managed by its matching CLI and skills. When running Context Tree project commands from a task subdirectory, pass the explicit `--project-path` shown with the selected tree; do not create or reconnect a tree just because the task cwd changed. Follow the matching skill write protocol. Do not invent an independent Git policy for Tree writes.",
     "",
   ];
 }
@@ -214,12 +205,13 @@ function renderContextTree(
       "Context Trees (no precedence is implied by their order):",
       "",
       ...status.connections.flatMap((entry) => [
-        `Alias ${entry.alias} — ${entry.repository}:`,
+        `${contextTreeName(entry)} — ${entry.repository}/${entry.path} (${entry.ref}):`,
+        `Tree selector: ${contextTreeSelector(entry)}`,
         ...renderContextTreeFacts(environment, entry),
         "",
       ]),
       ...new Set(status.connections.flatMap((entry) => renderContextTreeGuidance(environment, snapshot, entry))),
-      "Use the upstream Context Tree skills to select relevant trees, attribute disagreements to their aliases, and choose an explicit alias for every write.",
+      "Use the upstream Context Tree skills to select relevant trees, attribute disagreements to their sources, and use the exact tree selector for every write.",
       "",
     ];
   }
@@ -239,15 +231,20 @@ function renderContextTreeFacts(
   if (status.status === "ready") {
     if (environment === "cloud") {
       return [
+        `Use --project-path ${JSON.stringify(status.projectPath)} for managed tree commands.`,
         `Context Tree: ${status.treePath} — synchronized at the start of this Turn${
           status.branch && status.sha ? ` (branch ${status.branch}, commit ${status.sha.slice(0, 12)})` : ""
         }.`,
       ];
     }
-    return [`Context Tree: ${status.treePath}`];
+    return [
+      `Context Tree: ${status.treePath}`,
+      `Use --project-path ${JSON.stringify(status.projectPath)} for managed tree commands.`,
+    ];
   }
   if (status.status === "stale") {
     return [
+      `Use --project-path ${JSON.stringify(status.projectPath)} for managed tree commands.`,
       `Context Tree: ${status.treePath} — ${
         status.reason === "DIRTY_TREE"
           ? "the preserved checkout has unpublished changes"
@@ -275,7 +272,7 @@ function renderContextTreeGuidance(
   status: Exclude<ManagedContextTreeStatus, { status: "configured" }>,
 ): readonly string[] {
   if (status.status === "ready") return renderReadyTreeGuidance(environment, snapshot);
-  if (status.status === "stale") return renderStaleTreeGuidance(status);
+  if (status.status === "stale") return renderStaleTreeGuidance();
   if (status.status === "unconfigured") return renderUnconfiguredTreeGuidance(environment);
   return renderUnavailableTreeGuidance(environment, status.reason);
 }
@@ -286,24 +283,19 @@ function renderReadyTreeGuidance(
 ): readonly string[] {
   return [
     "Ready Context Trees are connected on this Agent's Context Tree page.",
-    environment === "cloud"
-      ? "Each checkout lives inside this Session's own workspace and is saved and restored with it, including unpublished drafts. Only the published tree is shared with other Agents that select the same repository; your files and Pi conversation stay private to this Session."
-      : "Other Agents share this memory only when they select the same repository.",
-    "Read the decisions that bear on a task before planning or changing code, and record durable decisions there.",
-    environment === "cloud"
-      ? "Use the context-tree-read and context-tree-write skills; the `context-tree` command is on PATH."
-      : "Use the context-tree-read and context-tree-write skills rather than editing the tree by hand.",
+    "Remote tree paths are read-only snapshots. Use context-tree write prepare for an isolated worktree, then write finish to commit and optionally publish. Never edit snapshots.",
+    "Agents share published memory only when they select the same repository, directory, and branch. Unpublished work remains in the prepared worktree.",
+    "Read relevant context before changing code, and record durable decisions using the context-tree-read and context-tree-write skills.",
+    "Repository-owned directory trees use their own project configuration and normal host Git workflow.",
+    ...(environment === "cloud" ? ["Do not install native cleanup schedules in this ephemeral sandbox."] : []),
     renderMemberDirectoryGuidance(environment, snapshot),
     "",
   ];
 }
 
-/** Stale checkouts exist only in Cloud: a Local connection reports connect failures as unavailable. */
-function renderStaleTreeGuidance(status: { treePath: string; reason: string }): readonly string[] {
+function renderStaleTreeGuidance(): readonly string[] {
   return [
-    status.reason === "DIRTY_TREE"
-      ? "For stale trees with unpublished changes: the changes were left untouched. Inspect them with the `context-tree` command (`context-tree read --tree-path <tree> …`, `context-tree verify --tree-path <tree>`) or with `git`, and continue any prepared write worktree. Synchronizing or publishing will keep failing until the changes are committed or otherwise resolved; do not reset or discard them silently."
-      : "For other stale trees, the on-disk copy may be outdated: it is not confirmed to be the newest published state. Unpublished drafts were left untouched. You may read the local copy as potentially stale context, and expect synchronizing or publishing to fail until a later Turn succeeds.",
+    "The cached snapshot may be outdated. Read it as stale context. Preserve existing write sessions and unpublished work; do not reset or discard them. Retry sync when available.",
     "",
   ];
 }

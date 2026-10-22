@@ -470,6 +470,13 @@
       "when": 1792658060350,
       "tag": "0066_self_configuration_runtime_revision",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1792658060351,
+      "tag": "0067_reset_context_tree_selections",
+      "breakpoints": true
     }
   ]
 }

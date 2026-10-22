@@ -5,10 +5,10 @@ import { type ContextTreePackage, resolveContextTreePackage } from "../runtime/c
 /** Packaged Context Tree skills OpenTag ships to Pi. Matches scripts/portable/runtime-dependencies.mjs. */
 export const CONTEXT_TREE_PACKAGED_SKILL_DIRECTORIES = Object.freeze([
   "context-tree-connect",
-  "context-tree-create",
-  "context-tree-publish",
+  "context-tree-init",
+  "context-tree-cleanup",
   "context-tree-read",
-  "context-tree-setup",
+  "context-tree-schedule-cleanup",
   "context-tree-write",
 ]);
 

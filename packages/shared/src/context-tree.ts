@@ -4,43 +4,74 @@ export const ContextTreeRepositorySchema = z
   .string()
   .trim()
   .max(140)
-  .regex(/^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}\/[a-zA-Z0-9_][a-zA-Z0-9._-]{0,99}$/)
+  .regex(/^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?\/[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/)
   .refine((value) => !value.toLowerCase().endsWith(".git"), "Use OWNER/REPO without .git");
-
-/** Matches the upstream CLI's project-local treeNameSchema (aliases are case-sensitive). */
-export const ContextTreeAliasSchema = z
+export const ContextTreePathSchema = z
   .string()
-  .regex(/^[A-Za-z\d][A-Za-z\d._-]{0,99}$/u)
-  .refine((value) => !/\.git$/iu.test(value), "Alias must not end with .git");
-
+  .refine(
+    (value) =>
+      value === "." ||
+      (value.length > 0 &&
+        !value.includes("\\") &&
+        !hasControl(value) &&
+        value.split("/").every((part) => part.length > 0 && part !== "." && part !== ".." && part !== ".git")),
+    "Use a relative directory path",
+  );
+export const ContextTreeBranchSchema = z
+  .string()
+  .min(1)
+  .refine(
+    (value) =>
+      !/[\s~^:?*[\\]/u.test(value) &&
+      !hasControl(value) &&
+      !value.includes("..") &&
+      !value.includes("@{") &&
+      !value.endsWith(".") &&
+      value !== "@" &&
+      !value.startsWith("-") &&
+      value.split("/").every((part) => part.length > 0 && !part.startsWith(".") && !part.endsWith(".lock")),
+    "Use a Git branch name",
+  );
 export const ContextTreeConnectionSchema = z
   .object({
-    alias: ContextTreeAliasSchema,
+    kind: z.literal("git"),
     repository: ContextTreeRepositorySchema,
+    path: ContextTreePathSchema,
+    ref: ContextTreeBranchSchema,
   })
   .strict();
-// Bound per-Agent preparation work and runtime prompt size.
+export type ContextTreeConnection = z.infer<typeof ContextTreeConnectionSchema>;
 export const CONTEXT_TREES_MAX = 32;
+export function contextTreeIdentity(source: ContextTreeConnection): string {
+  return JSON.stringify([source.repository.toLowerCase(), source.path, source.ref]);
+}
+export function contextTreeSelector(source: ContextTreeConnection): string {
+  const path = source.path === "." ? "" : `/${source.path.split("/").map(encodeURIComponent).join("/")}`;
+  return `https://github.com/${source.repository.toLowerCase()}/tree/${encodeURIComponent(source.ref)}${path}`;
+}
+export function contextTreeName(source: ContextTreeConnection): string {
+  return (source.path === "." ? source.repository : source.path).split("/").at(-1) ?? source.repository;
+}
 export const ContextTreesSchema = z
   .array(ContextTreeConnectionSchema)
   .max(CONTEXT_TREES_MAX)
-  .superRefine((connections, context) => {
-    const aliases = new Set<string>();
-    const repositories = new Set<string>();
-    connections.forEach((connection, index) => {
-      if (aliases.has(connection.alias))
-        context.addIssue({ code: "custom", path: [index, "alias"], message: "Aliases must be unique" });
-      if (repositories.has(connection.repository.toLowerCase()))
-        context.addIssue({ code: "custom", path: [index, "repository"], message: "Repositories must be unique" });
-      aliases.add(connection.alias);
-      repositories.add(connection.repository.toLowerCase());
+  .superRefine((sources, context) => {
+    const identities = new Set<string>();
+    sources.forEach((source, index) => {
+      const identity = contextTreeIdentity(source);
+      if (identities.has(identity))
+        context.addIssue({ code: "custom", path: [index], message: "Sources must be unique" });
+      identities.add(identity);
     });
   });
-export type ContextTreeConnection = z.infer<typeof ContextTreeConnectionSchema>;
+export function normalizeContextTrees(sources: readonly ContextTreeConnection[]): ContextTreeConnection[] {
+  return sources
+    .map((source) => ({ ...source, repository: source.repository.toLowerCase() }))
+    .sort((left, right) => contextTreeIdentity(left).localeCompare(contextTreeIdentity(right)));
+}
 
-/** Array order is presentation only; no tree takes precedence over another. */
-export function normalizeContextTrees(connections: readonly ContextTreeConnection[]): ContextTreeConnection[] {
-  return connections
-    .map(({ alias, repository }) => ({ alias, repository: repository.toLowerCase() }))
-    .sort((left, right) => (left.alias < right.alias ? -1 : left.alias > right.alias ? 1 : 0));
+function hasControl(value: string): boolean {
+  return [...value].some(
+    (char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127 || char === "\u2028" || char === "\u2029",
+  );
 }

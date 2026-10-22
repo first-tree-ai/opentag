@@ -62,8 +62,8 @@ importers:
   apps/cli:
     dependencies:
       '@first-tree-ai/context-tree':
-        specifier: 0.1.16
-        version: 0.1.16
+        specifier: 1.0.0
+        version: 1.0.0
     devDependencies:
       '@opentag/client':
         specifier: workspace:*
@@ -234,6 +234,9 @@ importers:
       '@earendil-works/pi-coding-agent':
         specifier: 0.84.2
         version: 0.84.2(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4)
+      '@first-tree-ai/context-tree':
+        specifier: 1.0.0
+        version: 1.0.0
       '@opentag/shared':
         specifier: workspace:*
         version: link:../shared
@@ -259,9 +262,6 @@ importers:
         specifier: ^4.5.1
         version: 4.5.4
     devDependencies:
-      '@first-tree-ai/context-tree':
-        specifier: 0.1.16
-        version: 0.1.16
       '@types/semver':
         specifier: ^7.8.0
         version: 7.8.0
@@ -297,8 +297,8 @@ importers:
         specifier: ^11.3.0
         version: 11.3.0
       '@first-tree-ai/context-tree':
-        specifier: 0.1.16
-        version: 0.1.16
+        specifier: 1.0.0
+        version: 1.0.0
       '@google-cloud/error-reporting':
         specifier: ^4.0.1
         version: 4.1.0
@@ -1339,8 +1339,8 @@ packages:
   '@fastify/websocket@11.3.0':
     resolution: {integrity: sha512-g89ag4BCcD9YP5wBZXixzoLnuf5j89p/sXFcfpCiv2pdEkYYukBEoK3heVzqsp0EAtszVDc2BBZG0KZqeAShIA==}
 
-  '@first-tree-ai/context-tree@0.1.16':
-    resolution: {integrity: sha512-52iwDcENtwyrKpCBj/k6XU3xOfO1iRK80AXOvjU8CMd3QGjFwJSwizsz1qcveIeO7/FGeYoHZxGmfgsp/niNXg==}
+  '@first-tree-ai/context-tree@1.0.0':
+    resolution: {tarball: https://registry.npmjs.org/@first-tree-ai/context-tree/-/context-tree-1.0.0.tgz}
     engines: {node: '>=22.13.0'}
     hasBin: true
 
@@ -7148,12 +7148,12 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@first-tree-ai/context-tree@0.1.16':
+  '@first-tree-ai/context-tree@1.0.0':
     dependencies:
       commander: 15.0.0
       mdast-util-from-markdown: 2.0.3
       yaml: 2.9.0
-      zod: 4.6.5
+      zod: 4.5.4
     transitivePeerDependencies:
       - supports-color
 

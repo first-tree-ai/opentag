@@ -335,6 +335,11 @@
       "idx": 66,
       "tag": "0066_self_configuration_runtime_revision",
       "sha256": "8c64fc95151d1cda7ef07eb973f364b2897c5d25edf99621d9825ac5d66a629d"
+    },
+    {
+      "idx": 67,
+      "tag": "0067_reset_context_tree_selections",
+      "sha256": "01a8b99ae8f83d8d66e80b180959bcc4a93ed9b477e1d3b1768428655d206461"
     }
   ]
 }

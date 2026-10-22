@@ -1,25 +1,28 @@
 import { z } from "zod";
-import { ContextTreeAliasSchema, ContextTreeRepositorySchema } from "./context-tree.js";
+import { ContextTreeBranchSchema, ContextTreeConnectionSchema, ContextTreeRepositorySchema } from "./context-tree.js";
 
 export const ContextTreeOperationRequestSchema = z
   .object({
-    alias: ContextTreeAliasSchema,
+    ...ContextTreeConnectionSchema.shape,
+    // Git HEAD requests the repository’s default branch; successful resolution returns its name.
     operationId: z.string().uuid(),
     expectedRevision: z.number().int().positive(),
     expectedRuntimeConfigRevision: z.number().int().positive(),
     action: z.enum(["connect", "create", "disconnect"]),
-    repository: ContextTreeRepositorySchema.nullable(),
   })
-  .strict()
-  .refine((input) => (input.action === "disconnect" ? input.repository === null : input.repository !== null));
+  .strict();
 export const ContextTreeOperationResponseSchema = z.discriminatedUnion("status", [
-  z.object({ status: z.literal("completed"), repository: ContextTreeRepositorySchema.nullable() }).strict(),
+  z
+    .object({
+      status: z.literal("completed"),
+      repository: ContextTreeRepositorySchema.nullable(),
+      ref: ContextTreeBranchSchema.optional(),
+    })
+    .strict(),
   z
     .object({
       status: z.literal("failed"),
       code: z.enum([
-        "alias_conflict",
-        "repository_conflict",
         "tree_limit_reached",
         "stale_configuration",
         "computer_unavailable",
@@ -27,8 +30,8 @@ export const ContextTreeOperationResponseSchema = z.discriminatedUnion("status",
         "busy",
         "pause_required",
         "authentication_required",
+        "github_not_configured",
         "permission_denied",
-        "repository_exists",
         "invalid_tree",
         "publication_uncertain",
         "failed",

@@ -1,148 +1,107 @@
 ---
 title: "Context Tree integration"
-description: "How Agents connect named Context Trees for durable memory, locally and in Cloud, and why memory stays optional."
+description: "How Agents use repository directories for durable memory on Local and Cloud Computers."
 ---
 
 # Context Tree integration
 
-## Decision
+Context Tree stores durable knowledge in Markdown. OpenTag supplies Agent settings,
+GitHub authorization, and runtime preparation. The packaged Context Tree CLI owns
+content validation, read snapshots, and isolated write sessions.
 
-Context Tree is openTag's durable memory, but its portable core stays a minimal
-standalone component: the upstream `@first-tree-ai/context-tree` CLI and its
-skills. People and agents can read and write a tree without openTag accounts,
-Sessions, runtimes, or IM integrations. openTag layers Agent configuration,
-preparation, and prompts on that contract instead of extending it.
+Memory is optional. An unavailable tree is reported to the Agent without stopping its task.
 
-Memory is chosen explicitly and is optional. openTag never creates a tree
-implicitly; an Agent with no connected tree is a normal state, and every
-preparation failure is reported to the Session without preventing it from
-starting.
+## Connections
 
-## Rationale
+Each Agent stores up to 32 Git sources in `contextTrees`:
 
-A small independent contract keeps trees portable, inspectable, and versioned
-through ordinary Git workflows, so durable context is not captive to openTag.
-Depending on the published package, rather than carrying a copy of it, lets the
-contract locate its own assets and avoids duplicating its release.
-
-Choosing which memory an Agent writes to is not a detail openTag can infer:
-a guessed tree would silently decide which Agents and machines share memory.
-An Agent that cannot reach a tree should know that and proceed; one that mistakes
-a broken connection for an empty tree will re-derive decisions already made.
-Memory that can delay or block a Turn is not optional memory.
-
-The Agent's member directory follows its name, which is carried in the managed
-prompt, so each Agent writes its private memory under `members/<agent>/` without
-colliding with another Agent's.
-
-## Named connections
-
-Each Agent stores `contextTrees: { alias: string; repository: string }[]` in its runtime
-configuration. The empty list disables memory. One JSONB column owns the list; there is no
-connection table or separate connection ID. APIs and effective runtime snapshots use the same
-shared Zod schema. Aliases follow the upstream CLI's safe single-segment rule (1–100 characters,
-starting with a letter or digit, no `.git` suffix). Aliases are case-sensitive; repository identity
-is case-insensitive. Duplicate aliases or repositories are rejected. Each Agent may connect at most
-32 trees to bound preparation work and runtime prompt size.
-
-Configuration hashes sort connections by alias and normalize repository identity. Array order
-conveys no priority. Agents may share repositories within that limit, and a repository's published
-knowledge is shared with other Agents that connect it.
-
-**The Agent's Context Tree page**, reached from the Agent navigation, shows alias/repository rows
-with individual Disconnect buttons.
-Connect/create requires an alias and `OWNER/REPO`. An identical attachment is idempotent. An
-occupied alias cannot silently change repositories; rename or replacement uses disconnect followed
-by connect. Local Computers support creating and publishing a private repository; Cloud Computers
-connect existing authorized repositories only. openTag never creates memory implicitly.
-
-## Settings operations and concurrency
-
-The existing settings operation carries the alias, operation ID, expected Agent revision and
-expected runtime configuration revision. The Server checks revisions before dispatch and under
-its Agent/runtime row locks after verification. A stale response cannot overwrite concurrent changes.
-Changing any nonempty configuration requires suspension, including adding another connection.
-An identical attachment or already absent disconnect is a no-op. Disconnect needs no online Computer
-and deletes only that alias from configuration.
-
-Local settings run through the bound Computer. CLI mutations share the runtime preparation queue.
-Create/connect/publish use an isolated project and a consistent explicit `settings` alias. Cleanup
-uses `disconnect --all`, leaving checkouts intact. Operation fingerprints include the requested alias;
-publication deduplication remains keyed by normalized repository identity. Durable publication intent
-prevents a lost response from causing a second publication. Uncertain publication requires resolution
-rather than an automatic retry.
-
-Local and Cloud connect settings verify the requested repository on the Server using the Account's current GitHub connection, live per-target admission, the repository default branch, and the pinned Tree verifier. They recheck connection/credential versions before committing. No Agent repository binding is consulted. The alias/repository selection is working-purpose configuration, not a GitHub allowlist. Local preparation and Cloud execution use only their execution-local proxy environment and never fall back to host GitHub credentials.
-
-## Local preparation
-
-`ContextTreeManager` prepares each Agent workspace using the complete connection set and provider.
-It discovers current attachments through the CLI, disconnects obsolete aliases, and runs:
-
-```text
-connect OWNER/REPO --as ALIAS --project-path WORKSPACE --json
+```json
+[
+  { "kind": "git", "repository": "acme/project", "path": "docs", "ref": "main" }
+]
 ```
 
-Reconciliation changes linkage only. It never deletes checkouts or unpublished work. Unsupported
-connection stores are reported and preserved; they are not silently rewritten or deleted.
+Repository, directory, and branch together identify a tree. Repository names are
+case-insensitive; directory and branch names are case-sensitive. Names shown in
+settings come from the directory or repository. Multiple directories or branches
+in one repository are allowed. Array order gives no tree precedence.
 
-CLI mutations are serialized because the upstream store has no cross-process lock. Concurrent
-Session starts join the same preparation. The five-second startup budget includes queued work and
-setup. Expiry returns completed results plus `PREPARING` for unfinished aliases; work continues in
-the background. Healthy results stay cached while failed aliases observe the one-minute retry
-cooldown. Changing the provider or complete connection set invalidates the cache. Managed executions
-recheck current repository grants before using cached results.
+Memory shows each connected tree in its own card, with its repository, directory,
+branch, and a direct link to the GitHub folder. Disconnect is in the card's action menu.
+With no trees connected, the page offers **Connect Context Tree** and
+**Create Context Tree**. After the first connection, **Add tree** offers those
+choices. Each choice opens a focused dialog; the collection does not show an inline form.
+Connect accepts a GitHub repository link and an optional relative directory; an empty
+directory means the repository root. GitHub’s default branch is resolved during verification
+and saved with the connection. Both Local and Cloud can connect existing trees.
+Create accepts an owner and repository name and uses GitHub's default branch.
+Neither dialog asks for a branch.
+Local Computers can also create private repositories: OpenTag creates the repository,
+generates the initial page with the pinned `context-tree init`, and commits it through
+GitHub's contents API. Creation runs on the Server with the Account's current GitHub
+credential; it does not require Computer-side GitHub credentials. The OAuth authorization must allow private repositories, and the connected user
+and organization policy must permit creation and content writes. Permission failures
+ask the user to check access; only missing or invalid authorization asks them to reconnect.
 
-Provider skills install once per preparation, not per tree. Claude Code discovers workspace skills
-under `--setting-sources project`; Codex uses the account HOME's `.agents/skills`, independently of
-custom `CODEX_HOME`; Pi receives explicit packaged `--skill` paths. Codex gets every ready tree path
-as a writable root. A generated shim pins the packaged CLI and openTag's Node runtime.
+Failed settings operations display an error banner. When the server has no GitHub OAuth App
+configured, the message asks the server administrator to configure it; this does not
+mean the bound Computer needs an update.
 
-Claude's project settings and instructions remain within the existing trusted Agent workspace
-boundary. Local Pi and Claude are not isolated from other host files by this feature. Member paths
-`members/<agent-slug>/` are a shared-memory convention, not an OS confidentiality boundary.
+Operations carry an operation ID and expected Agent/runtime revisions. Changing a
+nonempty selection requires a paused Agent. Disconnect only changes the selection;
+it preserves cached content and unpublished work. Identical requests are idempotent.
+Repository creation never adopts or overwrites an existing repository. Remote writes are
+not retried automatically. An uncertain creation asks the user to inspect GitHub and connect
+the repository if publication completed. Retrying an already connected tree is idempotent.
 
-## Cloud preparation
+## Preparation
 
-Each Session stores checkouts and upstream version-2 connection records under
-`.opentag/context-tree/home`, with prepared write worktrees under `.opentag/context-tree/tmp`.
-Both survive workspace save/restore. Credentials come only from the current execution environment.
-Restoring a workspace never restores authorization or selects an old configuration.
+OpenTag writes authorized selections to its own configuration at
+`WORKSPACE/.opentag/context-tree/project/.context-tree.json` **before fetching**.
+Repository-owned `.context-tree.json` files are left alone. Those files can describe
+local directory trees used through the normal repository workflow.
 
-Every Turn reconciles attachments against the current configured and authorized set before exposing
-the agent-facing CLI. Removed and revoked aliases are detached through local CLI operations, so an
-unqualified `sync` cannot reach them. Unauthorized repositories receive no network preparation.
-Checkouts and drafts remain on disk.
+Preparation uses `context-tree sync --project-path PROJECT`. Responses are parsed
+with the package's public contracts; OpenTag never reads the package's internal registry.
+The path returned by the current sync is the read snapshot. A failed refresh can use
+`sync --offline` to recover cached context, explicitly marked stale. Modified snapshots
+are unavailable and preserved for recovery.
 
-Preparation connects and synchronizes each alias using the version-2 CLI responses, including
-per-entry errors emitted with a nonzero exit. Results carry alias, repository, status, resolved path,
-and available branch/SHA. One failed tree does not hide healthy results. A thirty-second total
-budget bounds the operation; completed results survive expiry and unfinished entries report timeout.
-Shared setup failures apply to all affected entries.
+Local preparation is serialized. Concurrent starts join the same work; a five-second
+startup budget lets the Session proceed while preparation continues. Failed sources
+observe a one-minute retry cooldown. Changed selections or credentials invalidate cached
+results. Providers receive the bounded Context Tree state directory needed to create
+write sessions, not just the read snapshot path.
 
-A failed connect can recover a preserved checkout only when workspace, alias, and repository all
-match the current version-2 store, and the real path stays within the Session workspace. Failed
-connect/sync copies are explicitly `stale`. Nothing resets dirty checkouts, deletes incomplete clones,
-or discards prepared writes. Current grants still govern subsequent remote access and publication.
+Cloud preparation allows 25 seconds for refresh and reserves a separate five-second
+budget for offline recovery. Caller cancellation stops both. A failed source does not
+hide successful entries returned by the CLI. Configuration, repository caches, snapshots,
+and write sessions live below `.opentag/context-tree` and survive workspace save/restore.
+Credentials come from the current execution and are never stored there.
 
-## Prompts and writes
+## Authorization and writes
 
-Local and Cloud prompts report each alias independently without a primary tree or implied precedence.
-The upstream skills select relevant trees, attribute disagreements, and require an explicit destination
-for writes. Healthy trees remain usable when another is unavailable. Unconfigured memory is normal;
-optional memory never prevents the base task from starting. Tree contents and credentials are not logged.
+Server-side connection verification checks the selected directory and branch at an exact
+remote commit, using the Account's current GitHub authorization. It rechecks authorization
+and remote state before accepting the connection. Unrelated repository infrastructure does
+not affect subtree validation. Selected content cannot traverse symlinks or submodules.
 
-## Packaging and rollout
+Managed prompts identify each source, its exact selector, project path, and availability.
+Remote snapshots are for reading. Agents use `write prepare` to create an isolated worktree,
+then `write finish` to commit and optionally publish. Local directory trees use direct edits
+and their host repository's Git workflow. Agent member directories remain a convention,
+not a confidentiality boundary.
+Cache and publication identity checks use the stored origin URL, so the managed Git
+transport's URL rewrite does not change the selected repository's identity.
 
-`apps/cli`, `packages/client`, and `packages/server` pin `@first-tree-ai/context-tree` exactly to
-`0.1.16`. Package assets are resolved on disk; the CLI, package manifest, skills, and templates travel
-together in portable builds and Cloud runner images. No upstream source is vendored or used as a
-Git dependency.
+## Distribution
 
-Deploy Server, Clients, and Cloud runner images together. Migration `0049_multiple_context_trees`
-drops the former nullable repository column and adds an empty-list JSONB column without translating
-old selections. Existing Agents require fresh selection. Old snapshots, operation records, and CLI
-stores are not migrated. Unsupported stores must be handled explicitly while preserving unpublished work.
+OpenTag pins `@first-tree-ai/context-tree` to `1.0.0`. Portable builds and Cloud images
+include its CLI, public contracts, and six skills: init, connect, read, write, cleanup,
+and schedule-cleanup. Native cleanup schedules belong on persistent supported hosts,
+not ephemeral Cloud sandboxes. Server, Local runtimes, and Cloud images use the same
+connection contract and must be deployed together.
 
-`0.1.16` is published on npm. Install the pinned registry package with `pnpm install --frozen-lockfile`
-and run package smoke checks against that published package.
+Local Sessions prepend the bundled Context Tree CLI at the final Provider launch boundary,
+after executable discovery and per-execution environment composition. This applies to
+visible and internal Sessions, so an older global CLI cannot take precedence.

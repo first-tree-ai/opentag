@@ -79,7 +79,7 @@ describe("renderManagedSystemPrompt Agent Home", () => {
     expect(prompt).toContain("No two code tasks edit one checkout");
     expect(prompt).toContain("files/<unique-task-key>/");
     expect(prompt).toContain("created only when needed");
-    expect(prompt).toContain('--project-path "<Agent Home>"');
+    expect(prompt).toContain("explicit `--project-path`");
     expect(prompt).toContain("do not create or reconnect a tree just because the task cwd changed");
     expect(prompt).toContain("matching skill write protocol");
     const homeInstructions = prompt.slice(prompt.indexOf("## Agent Home"), prompt.indexOf("## Skills"));
@@ -129,7 +129,7 @@ describe("renderManagedSystemPrompt Agent Home", () => {
     const prompt = renderManagedSystemPrompt(snapshot, session);
     expect(prompt).toContain("## Agent Home");
     expect(prompt).toContain("source-repos/<unique-repo-key>/");
-    expect(prompt).toContain('--project-path "<Agent Home>"');
+    expect(prompt).toContain("explicit `--project-path`");
     expect(prompt).not.toContain("Your Agent Home is");
   });
 
@@ -161,21 +161,36 @@ describe("renderManagedSystemPrompt Agent Home", () => {
   });
 });
 
-it("attributes partial memory results to aliases without disabling healthy trees", () => {
+it("attributes partial memory results to sources without disabling healthy trees", () => {
   const prompt = renderManagedSystemPrompt(snapshot, {
     ...session,
     contextTree: {
       status: "configured",
       connections: [
-        { alias: "team", repository: "acme/team", status: "ready", treePath: "/trees/team" },
-        { alias: "product", repository: "acme/product", status: "unavailable", reason: "GITHUB_AUTH" },
+        {
+          kind: "git" as const,
+          path: ".",
+          ref: "main",
+          repository: "acme/team",
+          status: "ready",
+          projectPath: "/managed/project",
+          treePath: "/trees/team",
+        },
+        {
+          kind: "git" as const,
+          path: ".",
+          ref: "main",
+          repository: "acme/product",
+          status: "unavailable",
+          reason: "GITHUB_AUTH",
+        },
       ],
     },
   });
-  expect(prompt).toContain("Alias team — acme/team");
-  expect(prompt).toContain("Alias product — acme/product");
+  expect(prompt).toContain("team — acme/team");
+  expect(prompt).toContain("product — acme/product");
   expect(prompt).toContain("Other ready trees remain usable");
-  expect(prompt).toContain("explicit alias for every write");
+  expect(prompt).toContain("exact tree selector for every write");
   expect(prompt).not.toContain("Durable memory is not active for this Session");
 });
 
@@ -185,19 +200,49 @@ it("renders shared multi-tree instructions once while preserving each path and r
     contextTree: {
       status: "configured",
       connections: [
-        { alias: "team", repository: "acme/team", status: "ready", treePath: "/trees/team" },
-        { alias: "product", repository: "acme/product", status: "ready", treePath: "/trees/product" },
-        { alias: "pending", repository: "acme/pending", status: "unavailable", reason: "PREPARING" },
-        { alias: "denied", repository: "acme/denied", status: "unavailable", reason: "GITHUB_PERMISSION" },
+        {
+          kind: "git" as const,
+          path: ".",
+          ref: "main",
+          repository: "acme/team",
+          status: "ready",
+          projectPath: "/managed/project",
+          treePath: "/trees/team",
+        },
+        {
+          kind: "git" as const,
+          path: ".",
+          ref: "main",
+          repository: "acme/product",
+          status: "ready",
+          projectPath: "/managed/project",
+          treePath: "/trees/product",
+        },
+        {
+          kind: "git" as const,
+          path: ".",
+          ref: "main",
+          repository: "acme/pending",
+          status: "unavailable",
+          reason: "PREPARING",
+        },
+        {
+          kind: "git" as const,
+          path: ".",
+          ref: "main",
+          repository: "acme/denied",
+          status: "unavailable",
+          reason: "GITHUB_PERMISSION",
+        },
       ],
     },
   });
   expect(prompt).toContain("Context Tree: /trees/team");
   expect(prompt).toContain("Context Tree: /trees/product");
-  expect(prompt).toContain("Alias pending — acme/pending");
+  expect(prompt).toContain("pending — acme/pending");
   expect(prompt).toContain("preparation is continuing");
   expect(prompt).toContain("GITHUB_PERMISSION");
-  expect(prompt.match(/Use the context-tree-read and context-tree-write skills/g)).toHaveLength(1);
+  expect(prompt.match(/context-tree-read and context-tree-write skills/g)).toHaveLength(1);
   expect(prompt.match(/Do not write to another Agent's member directory/g)).toHaveLength(1);
   expect(prompt.match(/Other ready trees remain usable/g)).toHaveLength(1);
 });
@@ -208,8 +253,23 @@ it("keeps preparation guidance separate from failures in a configured tree list"
     contextTree: {
       status: "configured",
       connections: [
-        { alias: "team", repository: "acme/team", status: "ready", treePath: "/trees/team" },
-        { alias: "pending", repository: "acme/pending", status: "unavailable", reason: "PREPARING" },
+        {
+          kind: "git" as const,
+          path: ".",
+          ref: "main",
+          repository: "acme/team",
+          status: "ready",
+          projectPath: "/managed/project",
+          treePath: "/trees/team",
+        },
+        {
+          kind: "git" as const,
+          path: ".",
+          ref: "main",
+          repository: "acme/pending",
+          status: "unavailable",
+          reason: "PREPARING",
+        },
       ],
     },
   });
@@ -364,18 +424,24 @@ describe("renderManagedSystemPrompt Cloud environment", () => {
     };
     const ready = renderManagedSystemPrompt(slugSnapshot, {
       ...cloudSession,
-      contextTree: { status: "ready", treePath: "/ws/tree", branch: "master", sha: "a".repeat(40) },
+      contextTree: {
+        status: "ready",
+        projectPath: "/managed/project",
+        treePath: "/ws/tree",
+        branch: "master",
+        sha: "a".repeat(40),
+      },
     });
     expect(ready).toContain(
       "Context Tree: /ws/tree — synchronized at the start of this Turn (branch master, commit aaaaaaaaaaaa).",
     );
     expect(ready).toContain("tree-agent");
     expect(ready).toContain("members/tree-agent/");
-    expect(ready).toContain("saved and restored with it");
+    expect(ready).toContain("Unpublished work remains in the prepared worktree.");
 
     const dirty = renderManagedSystemPrompt(snapshot, {
       ...cloudSession,
-      contextTree: { status: "stale", treePath: "/ws/tree", reason: "DIRTY_TREE" },
+      contextTree: { status: "stale", projectPath: "/managed/project", treePath: "/ws/tree", reason: "DIRTY_TREE" },
     });
     expect(dirty).toContain("Context Tree: /ws/tree");
     expect(dirty).toContain("unpublished changes");
@@ -383,7 +449,7 @@ describe("renderManagedSystemPrompt Cloud environment", () => {
 
     const stale = renderManagedSystemPrompt(snapshot, {
       ...cloudSession,
-      contextTree: { status: "stale", treePath: "/ws/tree", reason: "TIMEOUT" },
+      contextTree: { status: "stale", projectPath: "/managed/project", treePath: "/ws/tree", reason: "TIMEOUT" },
     });
     expect(stale).toContain("may be outdated");
     expect(stale).toContain("TIMEOUT");
@@ -402,36 +468,70 @@ describe("renderManagedSystemPrompt Cloud environment", () => {
     expect(denied).toContain("does not grant this Session the selected repository");
   });
 
-  it("renders one Cloud tree section and shared guidance for multiple aliases", () => {
+  it("renders one Cloud tree section and shared guidance for multiple sources", () => {
     const prompt = renderManagedSystemPrompt(snapshot, {
       ...cloudSession,
       contextTree: {
         status: "configured",
         connections: [
           {
-            alias: "team",
+            kind: "git" as const,
+            path: ".",
+            ref: "main",
             repository: "acme/team",
             status: "ready",
+            projectPath: "/managed/project",
             treePath: "/trees/team",
             branch: "main",
             sha: "a".repeat(40),
           },
-          { alias: "product", repository: "acme/product", status: "ready", treePath: "/trees/product" },
-          { alias: "stale", repository: "acme/stale", status: "stale", treePath: "/trees/stale", reason: "DIRTY_TREE" },
-          { alias: "denied", repository: "acme/denied", status: "unavailable", reason: "GITHUB_PERMISSION" },
-          { alias: "timeout", repository: "acme/timeout", status: "unavailable", reason: "TIMEOUT" },
+          {
+            kind: "git" as const,
+            path: ".",
+            ref: "main",
+            repository: "acme/product",
+            status: "ready",
+            projectPath: "/managed/project",
+            treePath: "/trees/product",
+          },
+          {
+            kind: "git" as const,
+            path: ".",
+            ref: "main",
+            repository: "acme/stale",
+            status: "stale",
+            projectPath: "/managed/project",
+            treePath: "/trees/stale",
+            reason: "DIRTY_TREE",
+          },
+          {
+            kind: "git" as const,
+            path: ".",
+            ref: "main",
+            repository: "acme/denied",
+            status: "unavailable",
+            reason: "GITHUB_PERMISSION",
+          },
+          {
+            kind: "git" as const,
+            path: ".",
+            ref: "main",
+            repository: "acme/timeout",
+            status: "unavailable",
+            reason: "TIMEOUT",
+          },
         ],
       },
     });
     expect(prompt.match(/^## Context Trees$/gm)).toHaveLength(1);
     expect(prompt).not.toMatch(/^## Context Tree$/m);
-    expect(prompt).toContain("Alias team — acme/team");
+    expect(prompt).toContain("team — acme/team");
     expect(prompt).toContain("Context Tree: /trees/product");
     expect(prompt).toContain("branch main, commit aaaaaaaaaaaa");
     expect(prompt).toContain("Context Tree: /trees/stale");
     expect(prompt).toContain("do not reset or discard");
     expect(prompt).toContain("GITHUB_PERMISSION");
-    expect(prompt.match(/Use the context-tree-read and context-tree-write skills/g)).toHaveLength(1);
+    expect(prompt.match(/context-tree-read and context-tree-write skills/g)).toHaveLength(1);
     expect(prompt.match(/Do not write to another Agent's member directory/g)).toHaveLength(1);
     expect(prompt.match(/Continue the task without those trees/g)).toHaveLength(1);
   });

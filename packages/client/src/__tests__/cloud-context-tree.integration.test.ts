@@ -4,29 +4,25 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import { prepareCloudContextTree as prepareCloudContextTrees } from "../runner/cloud-context-tree.js";
+import { type CloudContextTreePreparation, prepareCloudContextTree } from "../runner/cloud-context-tree.js";
 import { createWorkspaceArchive, restoreWorkspaceArchive } from "../runner/workspace-archive.js";
 import { resolveContextTreePackage } from "../runtime/context-tree.js";
 
 /**
  * End-to-end Context Tree continuity for one Cloud Session with the REAL packaged CLI, real Git
  * and the real workspace archive: no public network (the disposable tree is reached through a
- * `git` shim that only rewrites transport), and the exact in-workspace HOME/TMPDIR layout the
+ * `git` shim that only rewrites transport), and the exact in-workspace HOME layout the
  * Cloud worker uses.
  */
 
 const execFileAsync = promisify(execFile);
 const contextTreePackage = resolveContextTreePackage();
-async function prepareCloudContextTree(...args: Parameters<typeof prepareCloudContextTrees>) {
-  const result = await prepareCloudContextTrees(...args);
-  if (result.status.status !== "configured")
-    return result as Omit<typeof result, "status"> & {
-      status: Exclude<typeof result.status, { status: "configured" }>;
-    };
+function treeResult(result: CloudContextTreePreparation) {
+  if (result.status.status !== "configured" || result.status.connections.length !== 1)
+    throw new Error("Expected one configured tree");
   const entry = result.status.connections[0];
-  if (!entry) throw new Error("Expected a configured tree result");
-  const { alias: _alias, repository: _repository, ...status } = entry;
-  return { ...result, status };
+  if (!entry) throw new Error("Missing tree result");
+  return entry;
 }
 
 const roots: string[] = [];
@@ -102,11 +98,15 @@ async function fixture(prefix: string): Promise<Fixture> {
   );
   const seed = join(root, "tree-seed");
   await mkdir(seed, { recursive: true });
-  const created = await runCli(["create", "--project-path", seed, "--json"], {
+  const created = await runCli(["init", join(root, "remote-tree"), "--project-path", seed, "--json"], {
     HOME: accountHome,
     PATH: process.env.PATH ?? "",
   });
-  const treePath = created.treePath as string;
+  const treePath = created.treeRoot as string;
+  const gitEnv = { HOME: accountHome, PATH: process.env.PATH };
+  await execFileAsync("/usr/bin/git", ["init", "--initial-branch=main", treePath], { env: gitEnv });
+  await execFileAsync("/usr/bin/git", ["-C", treePath, "add", "NODE.md"], { env: gitEnv });
+  await execFileAsync("/usr/bin/git", ["-C", treePath, "commit", "-m", "init"], { env: gitEnv });
   await execFileAsync("/usr/bin/git", ["-C", treePath, "config", "receive.denyCurrentBranch", "updateInstead"]);
 
   // Rewrite only transport: clone from the disposable tree, keep the GitHub origin identity, and
@@ -126,7 +126,7 @@ done
 case " $* " in
   *" clone "*)
     for argument in "$@"; do destination="$argument"; done
-    /usr/bin/git -C "$root" clone --quiet --origin origin -- "file://${treePath}" "$destination" || exit $?
+    /usr/bin/git -C "$root" clone --bare --quiet --origin origin -- "file://${treePath}" "$destination" || exit $?
     /usr/bin/git -C "$destination" remote set-url origin "https://github.com/acme/memory.git"
     exit $?
     ;;
@@ -162,7 +162,7 @@ exec /usr/bin/git "$@"
       agentSlug: "tree-agent",
       environment,
       path,
-      contextTrees: [{ alias: "memory", repository: "acme/memory" }],
+      contextTrees: [{ kind: "git" as const, path: ".", ref: "main", repository: "acme/memory" }],
       scratch: overrides.scratch ?? defaultScratch,
       workspace,
     }),
@@ -176,20 +176,23 @@ describe("Cloud Context Tree continuity (real CLI)", () => {
   it("publishes a prepared write after a real archive save and restore through the managed CLI", async () => {
     const fixtureValue = await fixture("cloud-ct-roundtrip-");
     const first = await prepareCloudContextTree(fixtureValue.input());
-    expect(first.status, JSON.stringify(first.status)).toMatchObject({ status: "ready" });
-    if (first.status.status !== "ready" || !first.binDirectory) throw new Error("expected a ready tree");
-    const treePath = first.status.treePath;
+    const firstTree = treeResult(first);
+    expect(firstTree).toMatchObject({ status: "ready" });
+    if (firstTree.status !== "ready" || !first.binDirectory) throw new Error("expected a ready tree");
+    const treePath = firstTree.treePath;
     expect(treePath.startsWith(`${fixtureValue.workspace}/`)).toBe(true);
 
     // The Agent prepares a write through the managed CLI; the worktree lands INSIDE the saved
-    // workspace because the shim pins TMPDIR there.
+    // workspace because the shim pins HOME there.
     const prepared = await runManaged(
       first.binDirectory,
-      ["prepare-write", "--project-path", fixtureValue.workspace],
+      ["write", "prepare", "--project-path", firstTree.projectPath],
       fixtureValue.environment,
     );
-    const worktreePath = prepared.worktreePath as string;
-    expect(worktreePath.startsWith(join(fixtureValue.workspace, ".opentag/context-tree/tmp"))).toBe(true);
+    const worktreePath = prepared.treeRoot as string;
+    expect(
+      worktreePath.startsWith(join(fixtureValue.workspace, ".opentag/context-tree/home/.context-tree/worktrees")),
+    ).toBe(true);
     await recordMemberMemory(worktreePath, "tree-agent", "Prefer short-lived branches.");
 
     // Real E5 save/restore: archive the whole workspace, replace it, restore at the same path.
@@ -210,19 +213,11 @@ describe("Cloud Context Tree continuity (real CLI)", () => {
     const scratch = join(fixtureValue.root, "scratch-next");
     await mkdir(scratch, { recursive: true });
     const second = await prepareCloudContextTree(fixtureValue.input({ scratch }));
-    expect(second.status.status).toBe("ready");
-    if (second.status.status !== "ready" || !second.binDirectory) throw new Error("expected a ready tree");
+    expect(treeResult(second)).toMatchObject({ status: "ready" });
+    if (treeResult(second).status !== "ready" || !second.binDirectory) throw new Error("expected a ready tree");
     const finished = await runManaged(
       second.binDirectory,
-      [
-        "finish-write",
-        "--worktree-path",
-        worktreePath,
-        "--message",
-        "docs(memory): restore prepared write",
-        "--project-path",
-        fixtureValue.workspace,
-      ],
+      ["write", "finish", prepared.id as string, "--message", "docs: restore prepared write", "--publish"],
       fixtureValue.environment,
     );
     expect(finished.sha).toMatch(/^[0-9a-f]{40}$/);
@@ -236,9 +231,10 @@ describe("Cloud Context Tree continuity (real CLI)", () => {
   it("keeps a dirty restored checkout inspectable without resetting it", async () => {
     const fixtureValue = await fixture("cloud-ct-dirty-");
     const first = await prepareCloudContextTree(fixtureValue.input());
-    expect(first.status, JSON.stringify(first.status)).toMatchObject({ status: "ready" });
-    if (first.status.status !== "ready") throw new Error("expected a ready tree");
-    const treePath = first.status.treePath;
+    const firstTree = treeResult(first);
+    expect(firstTree).toMatchObject({ status: "ready" });
+    if (firstTree.status !== "ready") throw new Error("expected a ready tree");
+    const treePath = firstTree.treePath;
 
     // An unpublished direct edit in the Session checkout: the CLI reports DIRTY_TREE on the next
     // Turn and nothing here may reset it.
@@ -254,22 +250,8 @@ describe("Cloud Context Tree continuity (real CLI)", () => {
     await mkdir(scratch, { recursive: true });
     const second = await prepareCloudContextTree(fixtureValue.input({ scratch }));
     // Dirty is reported truthfully, but the checkpoint stays addressable for inspection.
-    expect(second.status).toEqual({ status: "stale", treePath, reason: "DIRTY_TREE" });
-    if (!second.binDirectory) throw new Error("expected an addressable tree");
-    const verified = await runManaged(
-      second.binDirectory,
-      ["verify", "--tree-path", treePath, "--json"],
-      fixtureValue.environment,
-    );
-    expect(verified.ok).toBe(true);
-    const read = await runManaged(
-      second.binDirectory,
-      ["read", ".", "--tree-path", treePath, "--json"],
-      fixtureValue.environment,
-    );
-    expect(JSON.stringify(read)).toContain("Unpublished draft edit.");
-    const status = await execFileAsync("/usr/bin/git", ["-C", treePath, "status", "--porcelain"], { encoding: "utf8" });
-    expect(status.stdout).toContain(" M NODE.md");
+    expect(treeResult(second)).toMatchObject({ status: "unavailable", reason: "DIRTY_TREE" });
+    expect(second.binDirectory).toBeUndefined();
     expect(await readFile(join(treePath, "NODE.md"), "utf8")).toContain("Unpublished draft edit.");
   }, 60_000);
 });

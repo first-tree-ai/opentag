@@ -40,23 +40,21 @@ conversation ID is the Agent identity.
 
 ## Context Tree
 
-Named connections remain explicit and per Agent (`contextTrees`). An empty list is normal. Cloud settings connect an
-existing authorized repository or disconnect it; automatic repository creation is deferred. The settings path must
-validate Account ownership, the Agent's current GitHub `context_tree` scope, repository admission,
-and the actual Tree before updating the selection. A logical Cloud Computer being online does not
-substitute for these checks. Local settings keep their existing Computer transport.
+Connections explicitly select a repository, directory, and branch for each Agent. An empty
+selection is normal. Cloud settings connect existing authorized trees. Server verification
+checks Account ownership, repository admission, and the selected subtree at the requested
+branch before saving. Agent/runtime revisions guard the final update; changing a nonempty
+selection requires a paused Agent.
 
-The existing Agent/runtime revisions guard the final update after asynchronous validation. Changing a nonempty connection list requires a paused Agent. Each operation names an alias. Disconnect removes the
-selection, not the remote repository or previously saved unpublished work.
+Each Cloud Sandbox owns its cached snapshots and write sessions. Before fetching, preparation
+saves the current authorized selection in an OpenTag-owned project configuration. Removed
+selections do not delete cached content or unpublished work. One sync refreshes the selected
+sources; a separate recovery budget permits offline cached reads after a timeout. Modified
+snapshots are unavailable. Partial results remain independent and no tree takes precedence.
 
-Every Cloud Sandbox has its own checkouts. Before exposing the CLI, preparation detaches removed or
-unauthorized aliases without deleting their checkouts or drafts. Each repository needs its own current
-grant. Version-2 CLI responses report results per alias; partial failure or the thirty-second total
-budget preserves completed results and marks stale or unfinished trees explicitly. No tree has implied
-precedence. See [named Context Tree integration](../capabilities/context-tree-integration.md). The pinned Context Tree CLI and packaged skills own
-Tree reads, synchronization, prepared writes, verification and publication. Cloud preparation uses
-the current execution's managed GitHub environment and checks the repository grant; it never falls
-back to the host's Git configuration or `gh auth login`.
+The [Context Tree integration](../capabilities/context-tree-integration.md) uses the current
+execution's managed GitHub environment. It never falls back to ambient host credentials.
+The packaged CLI and skills own reads, validation, isolated writes, and publication.
 
 Only published changes become visible to another Session through its own synchronization. Uncommitted
 edits, prepared writes and unpublished commits remain private and participate in the existing

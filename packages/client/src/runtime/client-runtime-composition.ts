@@ -556,9 +556,6 @@ async function materializeProductionProviderLayout(
   const claudeCodeHome = await realpath(configuredClaudeCodeHome);
   const piHome = await realpath(configuredPiHome);
   const piSessionDirectory = await realpath(configuredPiSessionDirectory);
-  const contextTreeBin = resolveOpenTagHomeLayout(options.home).contextTreeBin;
-  const withContextTreeOnPath = (environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
-    prependPath(environment, contextTreeBin);
   const canonicalDefaultClaudeCodeHome = await realpath(defaultClaudeCodeHome).catch(() => defaultClaudeCodeHome);
   const loginShellDiscovery = createLoginShellDiscovery();
   const discovery = loginShellDiscovery.options;
@@ -584,26 +581,20 @@ async function materializeProductionProviderLayout(
         command: options.codexCommand ?? "codex",
         codexHome,
         discovery,
-        environment: withContextTreeOnPath(
-          codexAgentRuntimeEnvironment({ ...sourceEnvironment, CODEX_HOME: codexHome }),
-        ),
+        environment: codexAgentRuntimeEnvironment({ ...sourceEnvironment, CODEX_HOME: codexHome }),
         sourceEnvironment,
       }),
       resolvedClaudeCodeFactory({
         claudeCodeHome,
         command: options.claudeCodeCommand ?? "claude",
         discovery,
-        environment: withContextTreeOnPath(
-          claudeCodeProcessEnvironment(sourceEnvironment, claudeCodeHome, canonicalDefaultClaudeCodeHome),
-        ),
+        environment: claudeCodeProcessEnvironment(sourceEnvironment, claudeCodeHome, canonicalDefaultClaudeCodeHome),
         sourceEnvironment,
       }),
       resolvedPiFactory({
         command: options.piCommand ?? "pi",
         discovery,
-        environment: withContextTreeOnPath(
-          piAgentRuntimeEnvironment({ ...sourceEnvironment, PI_CODING_AGENT_DIR: piHome }),
-        ),
+        environment: piAgentRuntimeEnvironment({ ...sourceEnvironment, PI_CODING_AGENT_DIR: piHome }),
         piHome,
         sessionDirectory: piSessionDirectory,
         skillPaths: contextTreeSkillsPath ? [contextTreeSkillsPath] : [],
@@ -765,6 +756,7 @@ export async function createClientRuntime(
     cliCommand: options.cliCommand ?? "opentag",
     cleanupProviderEnvironment: (sessionId) => credentialEnvironment.cleanup(sessionId),
     contextTree,
+    contextTreeBin: contextTree.binDirectory(),
     contextTreeEnvironment: (sessionId) => {
       const hostSide = options.runtimeCredentials?.contextTreeEnvironment?.(sessionId);
       if (hostSide) return hostSide;
@@ -1017,17 +1009,6 @@ function productionProviderRegistration(
     return { ...common, policy: claudeCodeRuntimePolicy, validate: validateClaudeCodeRuntimePolicy };
   }
   return { ...common, policy: piRuntimePolicy, validate: validatePiRuntimePolicy };
-}
-
-function prependPath(
-  environment: NodeJS.ProcessEnv,
-  directory: string,
-  pathDelimiter: string = delimiter,
-): NodeJS.ProcessEnv {
-  const current = environment.PATH;
-  if (!current) return { ...environment, PATH: directory };
-  if (current === directory || current.startsWith(`${directory}${pathDelimiter}`)) return environment;
-  return { ...environment, PATH: `${directory}${pathDelimiter}${current}` };
 }
 
 function withSearchBinOnPath(

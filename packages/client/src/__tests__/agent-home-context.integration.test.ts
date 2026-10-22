@@ -56,11 +56,14 @@ describe("shared Agent Home and Context Tree", () => {
     await writeFile(join(agentHome, "AGENTS.md"), userInstructions);
     const treeSeed = join(runRoot, "tree-seed");
     await mkdir(treeSeed);
-    const created = await runCli(["create", "--project-path", treeSeed, "--json"]);
+    const created = await runCli(["init", join(fixture.accountHome, "tree"), "--project-path", treeSeed, "--json"]);
     expect(created.failureCode).toBeUndefined();
     let treePath = readTreePath(created.payload);
     expect(treePath.startsWith(`${fixture.accountHome}/`)).toBe(true);
 
+    await git(environment, treePath, "init", "--initial-branch=main");
+    await git(environment, treePath, "add", "NODE.md");
+    await git(environment, treePath, "commit", "-m", "init");
     await git(environment, treePath, "config", "receive.denyCurrentBranch", "updateInstead");
     // Rewrite transport operations only: remote get-url must retain the GitHub identity.
     const gitBin = join(runRoot, "git-bin");
@@ -86,7 +89,7 @@ exec /usr/bin/git "$@"
       windowsHide: true,
       env: environment,
     });
-    const connected = await runCli(["connect", "acme/memory", "--project-path", treeSeed, "--json"]);
+    const connected = await runCli(["connect", "acme/memory", "--ref", "main", "--project-path", treeSeed, "--json"]);
     expect(connected.failureCode).toBeUndefined();
     treePath = readTreePath(connected.payload);
     const treeManager = new ContextTreeManager({
@@ -98,28 +101,32 @@ exec /usr/bin/git "$@"
       execFile: isolatedExecFile,
     });
     const statuses = await Promise.all([
-      treeManager.ensureAgent(agentHome, "codex", [{ alias: "memory", repository: "acme/memory" }]),
-      treeManager.ensureAgent(agentHome, "codex", [{ alias: "memory", repository: "acme/memory" }]),
+      treeManager.ensureAgent(agentHome, "codex", [
+        { kind: "git" as const, path: ".", ref: "main", repository: "acme/memory" },
+      ]),
+      treeManager.ensureAgent(agentHome, "codex", [
+        { kind: "git" as const, path: ".", ref: "main", repository: "acme/memory" },
+      ]),
     ]);
     for (const status of statuses)
-      expect(status).toMatchObject({ connections: [{ alias: "memory", status: "ready", treePath }] });
+      expect(status).toMatchObject({ connections: [{ repository: "acme/memory", status: "ready", treePath }] });
     expect(await readFile(join(agentHome, "AGENTS.md"), "utf8")).toBe(userInstructions);
     await expect(
       readFile(join(agentHome, ".claude", "skills", "context-tree-read", "SKILL.md"), "utf8"),
     ).resolves.toContain("context-tree sync");
     await expect(
       readFile(join(fixture.accountHome, ".agents", "skills", "context-tree-write", "SKILL.md"), "utf8"),
-    ).resolves.toContain("context-tree prepare-write");
+    ).resolves.toContain("context-tree write prepare");
 
-    const unanchored = await runCli(["resolve", "--project-path", taskA, "--json"], taskA);
+    const unanchored = await runCli(["sync", "--offline", "--project-path", taskA], taskA);
     expect(unanchored.failureCode).toBe("NO_CONNECTION");
     expect(unanchored.payload).toMatchObject({ error: { code: "NO_CONNECTION" } });
     for (const cwd of [taskA, taskB]) {
-      const synced = await runCli(["sync", "--project-path", agentHome], cwd);
+      const synced = await runCli(["sync", "--project-path", join(agentHome, ".opentag/context-tree/project")], cwd);
       expect(synced.failureCode).toBeUndefined();
       expect(synced.payload).toMatchObject({
-        schemaVersion: 2,
-        connections: [{ alias: "memory", tree: { path: treePath } }],
+        schemaVersion: 3,
+        connections: [{ treeRoot: treePath }],
       });
     }
 
@@ -253,31 +260,37 @@ async function recordSequentialTreeWrites(options: {
     [taskA, markerA, "test: record shared Home decision"],
     [taskB, markerB, "test: record shared Home rationale"],
   ] as const) {
-    const prepared = await runCli(["prepare-write", "--project-path", agentHome], cwd);
+    const prepared = await runCli(
+      ["write", "prepare", "--project-path", join(agentHome, ".opentag/context-tree/project")],
+      cwd,
+    );
     expect(prepared.failureCode).toBeUndefined();
     const worktreePath = readWorktreePath(prepared.payload);
     expect(worktreePath.startsWith(`${runRoot}/`)).toBe(true);
     const nodePath = join(worktreePath, "NODE.md");
     await writeFile(nodePath, `${await readFile(nodePath, "utf8")}\n${marker}\n`);
     const finished = await runCli(
-      ["finish-write", "--project-path", agentHome, "--worktree-path", worktreePath, "--message", message],
+      ["write", "finish", (prepared.payload as { id: string }).id, "--message", message, "--publish"],
       cwd,
     );
     expect(finished.failureCode).toBeUndefined();
     const other = cwd === taskA ? taskB : taskA;
-    const synced = await runCli(["sync", "--project-path", agentHome], other);
+    const synced = await runCli(["sync", "--project-path", join(agentHome, ".opentag/context-tree/project")], other);
     expect(synced.failureCode).toBeUndefined();
     expect(synced.payload).toMatchObject({
-      schemaVersion: 2,
-      connections: [{ alias: "memory", tree: { path: treePath } }],
+      schemaVersion: 3,
+      connections: [{ ok: true }],
     });
-    const read = await runCli(["read", "--tree-path", treePath, "--json"], other);
+    const currentTree = (synced.payload as { connections: { treeRoot: string }[] }).connections[0]?.treeRoot;
+    if (!currentTree) throw new Error("Missing synced tree");
+    const read = await runCli(["read", "--tree-path", currentTree, "--json"], other);
     expect(read.failureCode).toBeUndefined();
     expect(readNodeBody(read.payload)).toContain(marker);
-    treeShas.push(await git(environment, treePath, "rev-parse", "HEAD"));
+    treeShas.push(await git(environment, currentTree, "rev-parse", "HEAD"));
+    options.treePath = currentTree;
   }
   expect(new Set(treeShas).size).toBe(3);
-  const finalRead = await runCli(["read", "--tree-path", treePath, "--json"], taskA);
+  const finalRead = await runCli(["read", "--tree-path", options.treePath, "--json"], taskA);
   expect(finalRead.failureCode).toBeUndefined();
   const finalBody = readNodeBody(finalRead.payload);
   expect(finalBody).toContain(markerA);
@@ -346,8 +359,8 @@ async function git(environment: NodeJS.ProcessEnv, cwd: string, ...args: string[
 
 function readTreePath(payload: unknown): string {
   if (typeof payload !== "object" || payload === null) throw new Error("Context Tree CLI payload is not an object");
-  const record = payload as { treePath?: unknown; tree?: { path?: unknown } };
-  const treePath = typeof record.treePath === "string" ? record.treePath : record.tree?.path;
+  const record = payload as { treeRoot?: unknown };
+  const treePath = record.treeRoot;
   if (typeof treePath !== "string" || treePath.length === 0) {
     throw new Error("Context Tree CLI payload is missing a tree path");
   }
@@ -356,7 +369,7 @@ function readTreePath(payload: unknown): string {
 
 function readWorktreePath(payload: unknown): string {
   if (typeof payload !== "object" || payload === null) throw new Error("Context Tree CLI payload is not an object");
-  const worktreePath = (payload as { worktreePath?: unknown }).worktreePath;
+  const worktreePath = (payload as { treeRoot?: unknown }).treeRoot;
   if (typeof worktreePath !== "string" || worktreePath.length === 0) {
     throw new Error("prepare-write payload is missing worktreePath");
   }

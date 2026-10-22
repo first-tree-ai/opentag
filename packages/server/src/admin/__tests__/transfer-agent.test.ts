@@ -679,7 +679,7 @@ describe("transferAgent", () => {
     await unitDatabase.database.insert(agentRuntimeConfigs).values({
       ...DEFAULT_AGENT_RUNTIME_CONFIG,
       agentId: created.id,
-      contextTrees: [{ alias: "product", repository: "example/product" }],
+      contextTrees: [{ kind: "git" as const, path: ".", ref: "main", repository: "example/product" }],
       model: "router-only-model",
       permissions: { approvalPolicy: "on-request", allowCommands: [] } satisfies AgentPermissions,
     });
@@ -701,7 +701,10 @@ describe("transferAgent", () => {
     const created = await suspendedAgent(source, computer.id);
     await unitDatabase.database
       .update(agentRuntimeConfigs)
-      .set({ contextTrees: [{ alias: "product", repository: "example/product" }], model: "gpt-5" })
+      .set({
+        contextTrees: [{ kind: "git" as const, path: ".", ref: "main", repository: "example/product" }],
+        model: "gpt-5",
+      })
       .where(eq(agentRuntimeConfigs.agentId, created.id));
 
     const result = await transfer({ agentId: created.id, targetAccountId });

@@ -1990,7 +1990,7 @@ it.each(["visible", "internal"])(
   "preserves bundled Context Tree in the actual %s process environment",
   async (kind) => {
     const paths: Array<string | undefined> = [];
-    const basePath = `/opentag/context-tree/bin${delimiter}/provider/bin${delimiter}/usr/bin`;
+    const basePath = `/provider/bin${delimiter}/usr/bin`;
     const runtime = await new CodexAgentRuntimeFactory({
       clientVersion: "0.0.1-test",
       process: {
@@ -2004,13 +2004,16 @@ it.each(["visible", "internal"])(
       ...createRequest(() => undefined),
       workspace: {
         cwd: process.cwd(),
-        environment: { OPENTAG_HOME: "/opentag" },
-        ...(kind === "visible" ? { pathPrepend: "/session/tools" } : {}),
+        environment: { OPENTAG_HOME: "/opentag", PATH: `/ambient/bin${delimiter}/usr/bin` },
+        pathPrepend:
+          kind === "visible" ? `/session/tools${delimiter}/opentag/context-tree/bin` : "/opentag/context-tree/bin",
       },
     });
     await runtime.prompt({ runId: "path-check", input: input("hello") });
     await runtime.close();
-    expect(paths).toEqual([kind === "visible" ? `/session/tools${delimiter}${basePath}` : basePath]);
+    expect(paths).toEqual([
+      `${kind === "visible" ? `/session/tools${delimiter}` : ""}/opentag/context-tree/bin${delimiter}/ambient/bin${delimiter}/usr/bin`,
+    ]);
   },
 );
 

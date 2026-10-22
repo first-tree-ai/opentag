@@ -968,9 +968,11 @@ function scriptRefusals(options: { logoutFails?: boolean; meStatus?: () => numbe
  * precedes it and from `click` otherwise, and dispatching both halves in jsdom toggles the menu
  * twice — open, then closed — so the sequence a real browser produces is not the one to imitate
  * here.
+ * The composed button can appear before Base UI publishes its menu interaction props. Waiting
+ * for its closed ARIA state avoids clicking before that binding is ready, without retrying a press.
  */
 export async function openAccountMenu(): Promise<{ menu: HTMLElement; trigger: HTMLElement }> {
-  const trigger = await screen.findByRole("button", { name: "Account menu" });
+  const trigger = await screen.findByRole("button", { name: "Account menu", expanded: false });
   fireEvent.click(trigger);
   // The menu this trigger owns, not whichever menu happens to be in the document: a menu the
   // previous press opened can still be leaving while this one opens, and reading that one is how an

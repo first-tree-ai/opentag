@@ -7,6 +7,7 @@ import {
   agentListItem,
   installApi,
   json,
+  openAccountMenu,
   resetWebAppState,
   secondAgentListItem,
 } from "./support/app-fixtures.js";
@@ -28,8 +29,10 @@ function region(selector: string): HTMLElement {
 
 async function signOutFrom(container: HTMLElement, fromMenu = false) {
   if (fromMenu) {
-    fireEvent.click(within(container).getByRole("button", { name: "Account menu" }));
-    container = await within(container).findByRole("menu");
+    const { menu, trigger } = await openAccountMenu();
+    expect(container.contains(trigger)).toBe(true);
+    expect(container.contains(menu)).toBe(true);
+    container = menu;
   }
   preserveProfileNavigationDraft("account", "Ada", "Unsaved name");
   fireEvent.click(within(container).getByRole(fromMenu ? "menuitem" : "button", { name: "Sign out" }));
@@ -118,8 +121,8 @@ describe("sign-out from full-screen states of an Account that has not finished s
       const controls = setupCompletedAt
         ? screen.getByRole("complementary", { name: "Account Agents" })
         : region('[data-ui="agent-create"] header');
-      fireEvent.click(within(controls).getByRole("button", { name: "Account menu" }));
-      const menu = await within(controls).findByRole("menu");
+      const { menu } = await openAccountMenu();
+      expect(controls.contains(menu)).toBe(true);
       await waitFor(() =>
         expect(
           within(menu)

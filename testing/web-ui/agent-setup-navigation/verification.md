@@ -74,6 +74,31 @@ The optional restored-tab hint behavior raised as P3 is documented explicitly: a
 setup through admission until its brand exit retires the hint. The setup rail intentionally remains account-level,
 so the corrected Agent Home tests use All Agents rather than introducing an Agent-specific Overview link.
 
+## CI menu-readiness follow-up
+
+At `81cb6277`, all nine Node unit-test shards and Browser Smoke pass, but Web coverage exposes one intermittent
+creation-header sign-out test failure: a single press never opens the menu. It is reproduced under four-worker Web
+coverage load: 4 failures among 400 repetitions of the target scenario (444 tests including surrounding cases).
+
+Mutation probes distinguish the cause from a replaced header, a misplaced portal, or a menu opening and closing:
+in failing cases the original header and trigger remain connected and unchanged, `aria-expanded` is absent at
+the press, and no menu appears. The same trigger receives `aria-expanded="false"` about 11ms later. The test has
+pressed a visible composed button before its menu interaction binding is ready.
+
+The shared account-menu helper now finds the button with `expanded: false` before its single press. Sign-out
+tests reuse that helper and additionally verify both trigger and menu belong to the original header or aside.
+Owned-menu, reachable-item, logout-call, navigation, and local-session cleanup assertions remain intact. No retry,
+fixed sleep, increased timeout, weakened assertion, or product change is introduced.
+
+The controlled readiness-only experiment passes 444/444 tests; the permanent-helper version also passes 444/444
+under the same parallel coverage stress. Independent read-only review confirms the fix and checks existing helper
+callers. Temporary stress files and mutation instrumentation are removed from the repository after validation.
+
+The complete Web coverage run after the permanent fix passes all 173 files / 2,176 tests, with zero retries and
+zero flaky tests. Line coverage is 94.61%, statement coverage 92.36%, function coverage 93.98%, and branch coverage
+88.64%. Web type checking passes. CI must still validate the next pushed head; this local result does not establish
+that its CI is green.
+
 ## Earlier real-backend browser acceptance
 
 The isolated stack uses port 8147, PostgreSQL port 55442, Compose project `opentag-navigation-e2e-f25b`, and disposable

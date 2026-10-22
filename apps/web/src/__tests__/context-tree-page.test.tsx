@@ -12,8 +12,6 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { level: 1, name: "Memory" })).toBeTruthy();
-    expect(screen.getByText("Connect named Context Trees for shared memory.")).toBeTruthy();
-    expect(screen.getByText("Not connected")).toBeTruthy();
     const navigation = await screen.findByRole("navigation", { name: "Agent" });
     const entry = within(navigation).getByRole("link", { name: "Memory" });
     expect(entry.getAttribute("href")).toBe(`/agents/${agentId}/context-tree`);

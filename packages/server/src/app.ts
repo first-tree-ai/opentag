@@ -397,16 +397,20 @@ function serializeError(error: unknown, depth = 0): SerializedError {
 /**
  * The bounded structured code a thrown error carries, when it has one.
  *
- * An omitted code is deliberate: only the established structured shape is safe to emit. `code` is
- * provider-controlled, so an arbitrary string such as `token=...` would bypass the redaction that
- * `message` and `stack` receive. A non-matching value is omitted rather than replaced, because a
- * fabricated code on a nested cause would point the reader at the wrong failure. Numeric SQLSTATE
- * codes such as `23505` are dropped by the shared pattern (it must start with a letter); accepted
- * because the diagnostic value is the query failure, not the SQLSTATE number.
+ * Two separate guards, because neither is sufficient alone. `code` is provider-controlled and does
+ * not pass through the redaction that `message` and `stack` receive: an arbitrary string such as
+ * `token=...` would be logged verbatim. The shape check rejects that, but the shared pattern admits
+ * `:`, so a structurally valid `token:...` is still credential-shaped; that is why the value must
+ * also survive `redactLogString` unchanged. A non-matching or redaction-sensitive value is omitted
+ * rather than replaced, because a fabricated or half-redacted code on a nested cause points the
+ * reader at the wrong failure. Numeric SQLSTATE codes such as `23505` are dropped by the shared
+ * pattern (it must start with a letter); accepted, because the diagnostic value is the query
+ * failure rather than the SQLSTATE number.
  */
 function serializedErrorCode(error: Error): string | undefined {
   const code = (error as { code?: unknown }).code;
-  return typeof code === "string" && StructuredErrorCodeSchema.safeParse(code).success ? code : undefined;
+  if (typeof code !== "string" || !StructuredErrorCodeSchema.safeParse(code).success) return undefined;
+  return redactLogString(code) === code ? code : undefined;
 }
 
 class DatabaseReadinessTimeoutError extends Error {

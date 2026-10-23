@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { SKILL_ERROR_CODES } from "@opentag/shared";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { skillSourceTooLarge, skillSourceUnreachable } from "../services/skills/index.js";
 import { SkillSourceFetcher } from "../services/skills/source/source-fetcher.js";
 import type { SkillSourceTransport } from "../services/skills/source/source-transport.js";
@@ -238,5 +238,110 @@ describe("SkillSourceFetcher", () => {
     for (const name of ["source-fetcher.ts", "source-tunnel.ts"]) {
       expect(readFileSync(`${directory}${name}`, "utf8"), name).toContain("classifyOutboundDestination");
     }
+  });
+});
+
+/**
+ * One fetch, one deadline. Resolving a name cannot be interrupted and does not belong to the
+ * transport's budget, so bounding only the transport let a held resolver outlast every configured
+ * limit and then still dial the request nobody was waiting for.
+ */
+describe("SkillSourceFetcher deadline", () => {
+  afterEach(() => vi.useRealTimers());
+
+  /** A resolver a test holds open, so nothing depends on a real lookup duration. */
+  function heldResolver() {
+    let answer!: (addresses: string[]) => void;
+    let fail!: (error: Error) => void;
+    const pending = new Promise<string[]>((resolve, reject) => {
+      answer = resolve;
+      fail = reject;
+    });
+    return { pending, answer, fail };
+  }
+
+  it("fails at the deadline while the resolver is held, without dialing", async () => {
+    vi.useFakeTimers();
+    const resolver = heldResolver();
+    const dials: string[] = [];
+    const source = fetcher({
+      timeoutMs: 20,
+      resolveAddresses: () => resolver.pending,
+      transport: async () => {
+        dials.push("dialed");
+        return { status: 200, bytes: PNG };
+      },
+    });
+    const pending = source.fetchBytes("https://held.example.com/skills.json");
+    const failed = expect(pending).rejects.toMatchObject({ code: SKILL_ERROR_CODES.SOURCE_UNREACHABLE });
+    await vi.advanceTimersByTimeAsync(20);
+    await failed;
+    // A resolver that answers afterwards must not produce the request it was resolved for.
+    resolver.answer(["93.184.216.34"]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(dials).toHaveLength(0);
+  });
+
+  it("keeps a resolver that fails after the deadline observed", async () => {
+    vi.useFakeTimers();
+    const resolver = heldResolver();
+    const source = fetcher({
+      timeoutMs: 20,
+      resolveAddresses: () => resolver.pending,
+      transport: async () => ({ status: 200, bytes: PNG }),
+    });
+    const pending = source.fetchBytes("https://held.example.com/skills.json");
+    const failed = expect(pending).rejects.toMatchObject({ code: SKILL_ERROR_CODES.SOURCE_UNREACHABLE });
+    await vi.advanceTimersByTimeAsync(20);
+    await failed;
+    // An unhandled rejection here would fail this test, which is the assertion.
+    resolver.fail(new Error("ENOTFOUND"));
+    await vi.advanceTimersByTimeAsync(0);
+  });
+
+  it("gives the transport what is left of the budget, and a signal that closes it", async () => {
+    vi.useFakeTimers();
+    let remaining: number | undefined;
+    let aborted: boolean | undefined;
+    const source = fetcher({
+      timeoutMs: 200,
+      resolveAddresses: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return ["93.184.216.34"];
+      },
+      transport: async (request) => {
+        remaining = request.timeoutMs;
+        aborted = request.signal?.aborted;
+        return { status: 200, bytes: PNG };
+      },
+    });
+    const pending = source.fetchBytes("https://example.com/skills.json");
+    await vi.advanceTimersByTimeAsync(20);
+    await expect(pending).resolves.toMatchObject({ status: 200 });
+    // 200 - 20, not a fresh 200: a slow lookup narrows the request budget instead of doubling it.
+    expect(remaining).toBe(180);
+    expect(aborted).toBe(false);
+  });
+
+  it("bounds a transport that keeps no timer of its own", async () => {
+    vi.useFakeTimers();
+    let closed = false;
+    const source = fetcher({
+      timeoutMs: 20,
+      resolveAddresses: async () => ["93.184.216.34"],
+      transport: (request) =>
+        new Promise((_resolve, reject) => {
+          request.signal?.addEventListener("abort", () => {
+            closed = true;
+            reject(skillSourceUnreachable());
+          });
+        }),
+    });
+    const pending = source.fetchBytes("https://example.com/skills.json");
+    const failed = expect(pending).rejects.toMatchObject({ code: SKILL_ERROR_CODES.SOURCE_UNREACHABLE });
+    await vi.advanceTimersByTimeAsync(20);
+    await failed;
+    // The fetcher's deadline, not the transport's cooperation, is what ends the fetch.
+    expect(closed).toBe(true);
   });
 });

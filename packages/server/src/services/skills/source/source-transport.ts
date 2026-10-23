@@ -28,7 +28,9 @@ export interface SkillSourceTransportRequest {
   /** The address to dial, from the address policy. Absent for a URL that names a literal. */
   pin?: OutboundDestinationPin;
   maxBytes: number;
+  /** What is left of the caller's deadline, not a fresh budget of its own. */
   timeoutMs?: number;
+  /** Aborted when the caller's deadline expires or the caller cancels; destroys the request. */
   signal?: AbortSignal;
 }
 
@@ -80,6 +82,11 @@ function merge(chunks: readonly Uint8Array[], total: number): Uint8Array {
 
 /** The production transport: `node:http`/`node:https` with the address pinned. */
 export const nodeSkillSourceTransport: SkillSourceTransport = (input) => {
+  /*
+   * An already-aborted signal never fires its listener, so a request built below would run to its
+   * own deadline while the caller had long since been told the fetch failed. Nothing is dialed.
+   */
+  if (input.signal?.aborted === true) return Promise.reject(skillSourceUnreachable());
   const secure = input.url.protocol === "https:";
   const port = input.url.port === "" ? (secure ? 443 : 80) : Number(input.url.port);
   const hostname = input.url.hostname.replace(/^\[|\]$/g, "");

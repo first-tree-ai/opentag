@@ -25,6 +25,8 @@ function origin(
     contentLength?: number;
     delayMs?: number;
     endless?: boolean;
+    /** Writes `body` and then keeps the socket open, so only the client can end the exchange. */
+    stall?: boolean;
     headers?: Record<string, string>;
   },
 ): Promise<{
@@ -32,17 +34,28 @@ function origin(
   seen: { host: string | undefined; url: string | undefined }[];
   /** How many response bytes left the origin, so "not drained" is observable. */
   written: () => number;
+  /** Whether the origin saw its connection closed by the client. */
+  closed: () => boolean;
 }> {
   const seen: { host: string | undefined; url: string | undefined }[] = [];
   let written = 0;
+  let closed = false;
   const server = createServer((request, response) => {
     seen.push({ host: request.headers.host, url: request.url });
+    response.on("close", () => {
+      closed = true;
+    });
     const answer = handler({ host: request.headers.host, url: request.url });
     const body = answer.body ?? "";
     const headers: Record<string, string> = { "content-type": "text/plain", ...answer.headers };
     if (answer.contentLength !== undefined) headers["content-length"] = String(answer.contentLength);
     const send = () => {
       response.writeHead(answer.status ?? 200, headers);
+      if (answer.stall === true) {
+        written += Buffer.byteLength(body);
+        response.write(body);
+        return;
+      }
       if (answer.endless === true) {
         // A peer that keeps writing until it is stopped. Nothing here cooperates with being drained.
         const chunk = Buffer.alloc(64 * 1024, 0x61);
@@ -69,6 +82,7 @@ function origin(
         port: typeof address === "object" && address !== null ? address.port : 0,
         seen,
         written: () => written,
+        closed: () => closed,
       });
     });
   });
@@ -185,6 +199,44 @@ describe("nodeSkillSourceTransport", () => {
         }),
       ),
     ).toBe(SKILL_ERROR_CODES.SOURCE_UNREACHABLE);
+  });
+
+  it("closes the connection when the deadline expires mid-body", async () => {
+    /*
+     * The response has started and then stalls, so the timer is the only thing left that can end
+     * this. Destroying the request has to take the socket with it: otherwise the peer holds an open
+     * connection to a fetch that already failed.
+     */
+    const server = await origin(() => ({ body: "partial", stall: true }));
+    expect(
+      await failureCode(
+        nodeSkillSourceTransport({
+          url: new URL(`http://127.0.0.1:${server.port}/stalled`),
+          maxBytes: 1024,
+          timeoutMs: 20,
+        }),
+      ),
+    ).toBe(SKILL_ERROR_CODES.SOURCE_UNREACHABLE);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(server.closed()).toBe(true);
+  });
+
+  it("refuses an already-aborted signal without dialing", async () => {
+    // A signal that is already aborted never fires its listener, so a request built here would run
+    // to its own deadline while the caller had long been told the fetch failed.
+    const server = await origin(() => ({ body: "never read" }));
+    const caller = new AbortController();
+    caller.abort();
+    expect(
+      await failureCode(
+        nodeSkillSourceTransport({
+          url: new URL(`http://127.0.0.1:${server.port}/skills.json`),
+          maxBytes: 1024,
+          signal: caller.signal,
+        }),
+      ),
+    ).toBe(SKILL_ERROR_CODES.SOURCE_UNREACHABLE);
+    expect(server.seen).toHaveLength(0);
   });
 });
 

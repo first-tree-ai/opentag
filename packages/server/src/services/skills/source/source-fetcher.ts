@@ -4,6 +4,7 @@ import {
   SKILL_SOURCE_DOWNLOAD_MAX_BYTES,
   SKILL_SOURCE_HTTP_TIMEOUT_MS,
 } from "@opentag/shared";
+import { withOutboundDeadline } from "../../outbound/deadline.js";
 import { classifyOutboundDestination, resolveAllAddresses } from "../../outbound/destination-policy.js";
 import type { SkillServiceError } from "../errors.js";
 import { skillSourceBlocked, skillSourceInvalid, skillSourceUnreachable } from "../errors.js";
@@ -22,6 +23,10 @@ import { nodeSkillSourceTransport, type SkillSourceTransport } from "./source-tr
  * their source could not be used, not where the address check happened to fail.
  *
  * `services/skills/source/**` must not dial anywhere else; a test scans the directory.
+ *
+ * Invariant of one fetch: it settles within `timeoutMs` of entry, covering the address check as well
+ * as the request. The check resolves a name, which cannot be interrupted, so the budget it leaves is
+ * what the transport is given — a source therefore cannot cost the sum of two deadlines.
  */
 
 export interface SkillSourceFetcherOptions {
@@ -86,17 +91,30 @@ export class SkillSourceFetcher {
     const policy = { allowLoopback: this.#options.allowLoopback };
     const target = checkOutboundUrl(url, policy);
     if ("failure" in target) throw sourceFailure(target.failure);
-    const destination = await classifyOutboundDestination(target.url, this.#resolveAddresses);
-    if (!destination.ok) {
-      throw destination.failure.kind === "blocked" ? skillSourceBlocked() : skillSourceUnreachable();
-    }
     if (maxBytes > this.#maxBytes) maxBytes = this.#maxBytes;
-    const response = await this.#transport({
-      url: target.url,
-      ...(destination.pin === undefined ? {} : { pin: destination.pin }),
-      maxBytes,
-      timeoutMs: this.#timeoutMs,
-    });
+    /*
+     * One deadline for the address check and the request. The transport gets what is left of it
+     * rather than a fresh one, so a slow resolver narrows the request budget instead of doubling the
+     * total. The deadline's signal is what closes the socket at the moment the caller is told the
+     * fetch failed, and `throwIfEnded` is what stops a request being dialed after that.
+     */
+    const response = await withOutboundDeadline(
+      { timeoutMs: this.#timeoutMs, failure: () => skillSourceUnreachable() },
+      async (deadline) => {
+        const destination = await classifyOutboundDestination(target.url, this.#resolveAddresses);
+        if (!destination.ok) {
+          throw destination.failure.kind === "blocked" ? skillSourceBlocked() : skillSourceUnreachable();
+        }
+        deadline.throwIfEnded();
+        return this.#transport({
+          url: target.url,
+          ...(destination.pin === undefined ? {} : { pin: destination.pin }),
+          maxBytes,
+          timeoutMs: Math.max(1, Math.ceil(deadline.remainingMs())),
+          signal: deadline.signal,
+        });
+      },
+    );
     if (response.status >= 300 && response.status < 400) {
       // The `Location` header is never read: the gate cannot approve a destination the peer chose.
       throw skillSourceBlocked("That source redirected to another address");

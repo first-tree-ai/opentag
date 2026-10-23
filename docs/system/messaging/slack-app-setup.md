@@ -322,7 +322,7 @@ Derived values are not new durable states:
 
 | State | Slack meaning after migration | Allowed transition source |
 | --- | --- | --- |
-| `provisioning` | Not a normal Slack state. An incomplete legacy Slack row is disabled by migration; new configuration writes `active` directly. | Feishu setup only. |
+| `provisioning` | Not a normal Slack state. An incomplete legacy Slack row is disabled by migration; new configuration writes `active` directly. | Feishu first-time setup, which disables the row when the attempt ends without activating. Rows earlier binaries left behind are released by `0068_release_terminal_setup_slots` and by Slack's own configuration write. |
 | `active` | A credential generation was committed. Slack readiness remains false until a matching signed event closes App/Team/Bot identity for that generation. Public state may still derive `reauthorization_required` when the current material is unreadable, structurally inconsistent, or missing a fixed scope. | Successful validated configuration or same-identity reauthorization. |
 | `reauthorization_required` | The current installation must be reauthorized. Existing material is never reported healthy when the scope contract or credential inspection fails. | Scope migration, `tokens_revoked`, or an explicit recovery write. |
 | `error` | Generic retained state for non-Slack setup/runtime failures; Slack configuration validation errors are returned without mutating the current row. | Non-Slack provider workflows or existing generic recovery code. |

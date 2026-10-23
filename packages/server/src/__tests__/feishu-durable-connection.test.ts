@@ -715,7 +715,9 @@ describe("Feishu durable connection lifecycle", () => {
     expect(fake.activations).toHaveLength(0);
     const row = await rowForAgent(value.agent.id);
     expect(row?.setupState).toBe("canceled");
-    expect(row?.status).toBe("provisioning");
+    // The attempt never activated, so its slot is released instead of blocking the next connection.
+    expect(row?.status).toBe("disabled");
+    expect(row?.disabledAt).not.toBeNull();
     expect(row?.encryptedSetupContext).toBeNull();
     await service.stop();
   });

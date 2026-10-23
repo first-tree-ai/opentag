@@ -7123,10 +7123,188 @@ describe("IM binding persistence", () => {
       });
       await new Promise((resolve) => setTimeout(resolve, 25));
       expect(activateAtomicAttempt).not.toHaveBeenCalled();
+      // The cancellation is the terminal outcome for a first-time attempt, so nothing is connected:
+      // the row releases the Agent's current-binding slot instead of holding it.
+      await expect(value.imBindingService.getForAgent(value.bootstrap.userId, value.agent.id)).resolves.toBeUndefined();
+      const [released] = await value.database
+        .select()
+        .from(imBindings)
+        .where(eq(imBindings.setupAttemptId, attempt.id));
+      expect(released).toMatchObject({ status: "disabled", setupState: "canceled" });
+      expect(released?.disabledAt).not.toBeNull();
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("admits a fresh Feishu attempt after the slot of a canceled one is released", async () => {
+    const value = await unboundFixture();
+    // Neither registration finishes authorizing: the Account cancels the first and starts again.
+    const openRegistration = () => ({
+      qrReady: Promise.resolve({ url: "https://open.feishu.cn/qr/release", expiresAt: new Date(Date.now() + 60_000) }),
+      result: new Promise<never>(() => undefined),
+      abort: vi.fn(),
+    });
+    const setup = new FeishuSetupService({
+      database: value.database,
+      cipher: value.cipher,
+      instanceId: crypto.randomUUID(),
+      imBindings: value.imBindingService,
+      registrations: { start: vi.fn(openRegistration) },
+      activation: { activateAtomicAttempt: vi.fn() },
+    });
+    try {
+      const first = await setup.createOrReuse(value.bootstrap.userId, value.agent.id, "create");
+      await expect(setup.cancel(value.bootstrap.userId, first.id)).resolves.toMatchObject({ state: "canceled" });
+      const second = await setup.createOrReuse(value.bootstrap.userId, value.agent.id, "create");
+      expect(second.id).not.toBe(first.id);
+      expect(second.state).toBe("awaiting_user");
+      const rows = await value.database.select().from(imBindings).where(eq(imBindings.agentId, value.agent.id));
+      expect(rows).toHaveLength(2);
+      expect(rows.filter((row) => row.status !== "disabled")).toHaveLength(1);
       await expect(value.imBindingService.getForAgent(value.bootstrap.userId, value.agent.id)).resolves.toMatchObject({
         bindingState: "provisioning",
       });
     } finally {
+      await setup.stop();
+      await value.sql.end();
+    }
+  });
+
+  it.each(["canceled", "expired", "failed"] as const)(
+    "admits Slack over a pre-upgrade terminal %s Feishu row",
+    async (setupState) => {
+      const value = await unboundFixture();
+      const agent = await new AgentService(value.database).createForAccount(value.bootstrap.userId, {
+        name: `legacy-${setupState}`,
+        displayName: `Legacy ${setupState}`,
+        runtimeProvider: "codex",
+        computerId: value.computer.id,
+      });
+      // The exact row the previous binaries left behind: a first-time attempt that ended terminal and
+      // kept the Agent's only slot. Seeded directly, never through a terminal transition.
+      const [legacy] = await value.database
+        .insert(imBindings)
+        .values({
+          agentId: agent.id,
+          provider: "feishu",
+          status: "provisioning",
+          setupAttemptId: crypto.randomUUID(),
+          setupIntent: "create",
+          setupState,
+          lastErrorCode: `FEISHU_SETUP_${setupState.toUpperCase()}`,
+        })
+        .returning();
+      if (!legacy) throw new Error("Legacy Feishu fixture was not created");
+      await expect(value.imBindingService.getForAgent(value.bootstrap.userId, agent.id)).resolves.toBeUndefined();
+
+      const slack = new SlackConfigurationService({
+        api: {
+          inspectInstallation: vi.fn().mockResolvedValue({
+            appId: null,
+            teamId: "T_LEGACY",
+            enterpriseId: null,
+            botUserId: "U_LEGACY",
+            botId: "B_LEGACY",
+            grantedBotScopes: [...SLACK_REQUIRED_BOT_SCOPES],
+          }),
+        } as never,
+        database: value.database,
+        imBindings: value.imBindingService,
+        now: () => new Date("2026-08-25T00:00:00.000Z"),
+      });
+      // No IM_BINDING_UNBIND_REQUIRED: the terminal first attempt is not a current binding for Slack.
+      await expect(slack.currentBinding(value.bootstrap.userId, agent.id)).resolves.toBeNull();
+      const configured = await slack.configure(value.bootstrap.userId, agent.id, {
+        intent: "create",
+        expectedBinding: null,
+        appId: "A_LEGACY",
+        botAccessToken: "{{API_KEY_legacyxoxb}}",
+        signingSecret: "legacy-signing-secret",
+      });
+      expect(configured).toMatchObject({ appId: "A_LEGACY", teamId: "T_LEGACY", credentialGeneration: 1 });
+
+      const rows = await value.database.select().from(imBindings).where(eq(imBindings.agentId, agent.id));
+      expect(rows.find((row) => row.id === legacy.id)).toMatchObject({ status: "disabled", setupState });
+      expect(rows.find((row) => row.id === configured.imBindingId)).toMatchObject({
+        provider: "slack",
+        status: "active",
+      });
+      await expect(value.imBindingService.getForAgent(value.bootstrap.userId, agent.id)).resolves.toMatchObject({
+        provider: "slack",
+        bindingState: "active",
+      });
+    },
+  );
+
+  it("lets Slack take the slot after a canceled first Feishu attempt", async () => {
+    const value = await unboundFixture();
+    const setup = new FeishuSetupService({
+      database: value.database,
+      cipher: value.cipher,
+      instanceId: crypto.randomUUID(),
+      imBindings: value.imBindingService,
+      registrations: {
+        start: vi.fn(() => ({
+          qrReady: Promise.resolve({
+            url: "https://open.feishu.cn/qr/cross-provider",
+            expiresAt: new Date(Date.now() + 60_000),
+          }),
+          result: new Promise<never>(() => undefined),
+          abort: vi.fn(),
+        })),
+      },
+      activation: { activateAtomicAttempt: vi.fn() },
+    });
+    const slack = new SlackConfigurationService({
+      api: {
+        inspectInstallation: vi.fn().mockResolvedValue({
+          appId: null,
+          teamId: "T_AFTER_CANCEL",
+          enterpriseId: null,
+          botUserId: "U_AFTER_CANCEL",
+          botId: "B_AFTER_CANCEL",
+          grantedBotScopes: [...SLACK_REQUIRED_BOT_SCOPES],
+        }),
+      } as never,
+      database: value.database,
+      imBindings: value.imBindingService,
+      now: () => new Date("2026-08-25T00:00:00.000Z"),
+    });
+    try {
+      const attempt = await setup.createOrReuse(value.bootstrap.userId, value.agent.id, "create");
+      // While the Lark attempt is live the other Provider stays fenced with the unbind-required identity.
+      await expect(slack.currentBinding(value.bootstrap.userId, value.agent.id)).rejects.toMatchObject({
+        code: "IM_BINDING_UNBIND_REQUIRED",
+      });
+      await expect(setup.cancel(value.bootstrap.userId, attempt.id)).resolves.toMatchObject({ state: "canceled" });
+
+      // The release frees the slot, so Slack reads no current binding and its create commits.
+      await expect(slack.currentBinding(value.bootstrap.userId, value.agent.id)).resolves.toBeNull();
+      const configured = await slack.configure(value.bootstrap.userId, value.agent.id, {
+        intent: "create",
+        expectedBinding: null,
+        appId: "A_AFTER_CANCEL",
+        botAccessToken: "{{API_KEY_xh3qmc0h}}",
+        signingSecret: "after-cancel-secret",
+      });
+      expect(configured).toMatchObject({
+        appId: "A_AFTER_CANCEL",
+        teamId: "T_AFTER_CANCEL",
+        credentialGeneration: 1,
+      });
+      const rows = await value.database.select().from(imBindings).where(eq(imBindings.agentId, value.agent.id));
+      expect(rows).toHaveLength(2);
+      expect(rows.find((row) => row.id === configured.imBindingId)).toMatchObject({
+        provider: "slack",
+        status: "active",
+      });
+      await expect(value.imBindingService.getForAgent(value.bootstrap.userId, value.agent.id)).resolves.toMatchObject({
+        provider: "slack",
+        bindingState: "active",
+      });
+    } finally {
+      await setup.stop();
       await value.sql.end();
     }
   });

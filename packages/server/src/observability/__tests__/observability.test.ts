@@ -383,6 +383,13 @@ describe("background and WebSocket tracing", () => {
               ]),
             })),
           })),
+          // The terminal write and its slot release commit in one transaction.
+          update: vi.fn(() => ({
+            set: vi.fn((values: Record<string, unknown>) => {
+              diagnosticWrites.push(values);
+              return { where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) })) };
+            }),
+          })),
         }),
       ),
       update: vi.fn(() => ({

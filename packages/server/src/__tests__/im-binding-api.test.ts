@@ -24,6 +24,7 @@ import { FeishuOperationError, type FeishuSetupService } from "../services/im-bi
 import {
   disableImBindingInTransaction,
   isImBindingUniqueViolation,
+  releaseNeverActivatedSlots,
 } from "../services/im-bindings/im-binding-service.js";
 import type { ImBindingService } from "../services/im-bindings/index.js";
 import {
@@ -31,6 +32,7 @@ import {
   ImBindingUnbindRequiredError,
   ImBindingService as RealImBindingService,
 } from "../services/im-bindings/index.js";
+import { SlackConfigurationService } from "../services/im-bindings/slack/index.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
@@ -864,6 +866,153 @@ describe("ImBindingService persistence", () => {
       value.service.assertCanManage("00000000-0000-0000-0000-000000000000", value.agent.id),
     ).rejects.toMatchObject({
       code: "IM_BINDING_NOT_FOUND",
+    });
+  });
+
+  it("reports a canceled first setup attempt as no connected channel and admits Slack over its residual row", async () => {
+    const value = await persistedFixture();
+    const [slot] = await unitDatabase.database
+      .insert(imBindings)
+      .values({
+        agentId: value.agent.id,
+        provider: "feishu",
+        status: "provisioning",
+        setupAttemptId: crypto.randomUUID(),
+        setupIntent: "create",
+        setupState: "awaiting_user",
+        setupOwnerInstanceId: crypto.randomUUID(),
+        setupOwnerHeartbeatAt: fixedNow,
+        encryptedSetupContext: "test-only",
+        setupExpiresAt: new Date(fixedNow.getTime() + 60_000),
+      })
+      .returning();
+    if (!slot) throw new Error("Setup slot fixture was not created");
+
+    // A QR challenge in flight is a legitimate provisioning state.
+    await expect(value.service.getForAgent(value.bootstrap.userId, value.agent.id)).resolves.toMatchObject({
+      id: slot.id,
+      bindingState: "provisioning",
+    });
+    await expect(value.service.getHandoffForAgent(value.bootstrap.userId, value.agent.id)).resolves.toMatchObject({
+      bindingState: "provisioning",
+    });
+
+    // The shape a settled first-time attempt leaves behind when its slot was not released first (a
+    // row written before the release existed, or a crash between the two statements).
+    await unitDatabase.database
+      .update(imBindings)
+      .set({
+        setupState: "canceled",
+        lastErrorCode: "FEISHU_SETUP_CANCELED",
+        setupOwnerInstanceId: null,
+        setupOwnerHeartbeatAt: null,
+        encryptedSetupContext: null,
+        setupExpiresAt: null,
+        updatedAt: fixedNow,
+      })
+      .where(eq(imBindings.id, slot.id));
+
+    // The row is still enabled, so the read guard alone must keep it out of the current binding.
+    await expect(value.service.getForAgent(value.bootstrap.userId, value.agent.id)).resolves.toBeUndefined();
+    await expect(value.service.getHandoffForAgent(value.bootstrap.userId, value.agent.id)).resolves.toBeUndefined();
+    await expect(
+      value.service.getSetupBindingForAgent(value.bootstrap.userId, value.agent.id),
+    ).resolves.toBeUndefined();
+
+    // A row whose attempt is open again is a live binding even without a release.
+    await unitDatabase.database
+      .update(imBindings)
+      .set({
+        setupAttemptId: crypto.randomUUID(),
+        setupState: "awaiting_user",
+        setupOwnerInstanceId: crypto.randomUUID(),
+        setupOwnerHeartbeatAt: fixedNow,
+        encryptedSetupContext: "test-only",
+        setupExpiresAt: new Date(fixedNow.getTime() + 60_000),
+        lastErrorCode: null,
+      })
+      .where(eq(imBindings.id, slot.id));
+    await expect(value.service.getForAgent(value.bootstrap.userId, value.agent.id)).resolves.toMatchObject({
+      id: slot.id,
+      bindingState: "provisioning",
+    });
+
+    // Back to the residual shape a previous binary leaves behind, then prove the other Provider is
+    // admitted: the Slack reads use the same current-binding answer, so no
+    // IM_BINDING_UNBIND_REQUIRED reaches the user, and the create releases the slot it needs.
+    await unitDatabase.database
+      .update(imBindings)
+      .set({
+        setupState: "canceled",
+        lastErrorCode: "FEISHU_SETUP_CANCELED",
+        setupOwnerInstanceId: null,
+        setupOwnerHeartbeatAt: null,
+        encryptedSetupContext: null,
+        setupExpiresAt: null,
+        updatedAt: fixedNow,
+      })
+      .where(eq(imBindings.id, slot.id));
+    const slack = new SlackConfigurationService({
+      api: {
+        inspectInstallation: vi.fn().mockResolvedValue({
+          appId: null,
+          teamId: "T_RESIDUAL",
+          enterpriseId: null,
+          botUserId: "U_RESIDUAL",
+          botId: "B_RESIDUAL",
+          grantedBotScopes: [...SLACK_REQUIRED_BOT_SCOPES],
+        }),
+      } as never,
+      database: unitDatabase.database,
+      imBindings: value.service,
+      now: () => fixedNow,
+    });
+    await expect(slack.currentBinding(value.bootstrap.userId, value.agent.id)).resolves.toBeNull();
+    const configured = await slack.configure(value.bootstrap.userId, value.agent.id, {
+      intent: "create",
+      expectedBinding: null,
+      appId: "A_RESIDUAL",
+      botAccessToken: "xoxb-residual-token",
+      signingSecret: "residual-signing-secret",
+    });
+    expect(configured).toMatchObject({ appId: "A_RESIDUAL", teamId: "T_RESIDUAL", credentialGeneration: 1 });
+    // The Slack insert took the slot, so the residual row released it under the configuration lock.
+    const [releasedResidual] = await unitDatabase.database.select().from(imBindings).where(eq(imBindings.id, slot.id));
+    expect(releasedResidual).toMatchObject({ status: "disabled", setupState: "canceled" });
+    await expect(value.service.getForAgent(value.bootstrap.userId, value.agent.id)).resolves.toMatchObject({
+      provider: "slack",
+      bindingState: "active",
+    });
+  });
+
+  it("keeps reporting a working binding whose reauthorization attempt was canceled", async () => {
+    const value = await persistedFixture();
+    const bindingId = await value.service.activateFeishu(feishuInput(value.agent.id));
+    await unitDatabase.database
+      .update(imBindings)
+      .set({
+        setupAttemptId: crypto.randomUUID(),
+        setupIntent: "reauthorize",
+        setupState: "canceled",
+        lastErrorCode: "FEISHU_SETUP_CANCELED",
+      })
+      .where(eq(imBindings.id, bindingId));
+    await expect(value.service.getForAgent(value.bootstrap.userId, value.agent.id)).resolves.toMatchObject({
+      id: bindingId,
+      bindingState: "active",
+    });
+  });
+  it("releases no slot it did not create: an activated binding survives a release request", async () => {
+    const value = await persistedFixture();
+    const bindingId = await value.service.activateFeishu(feishuInput(value.agent.id));
+    // The helper is the write half of "a terminal attempt is not a connection"; an activated row is a
+    // connection, so its guard must refuse even a direct call.
+    await releaseNeverActivatedSlots(unitDatabase.database, [bindingId], fixedNow);
+    const [after] = await unitDatabase.database.select().from(imBindings).where(eq(imBindings.id, bindingId));
+    expect(after).toMatchObject({ status: "active", setupState: null, disabledAt: null });
+    await expect(value.service.getForAgent(value.bootstrap.userId, value.agent.id)).resolves.toMatchObject({
+      id: bindingId,
+      bindingState: "active",
     });
   });
 

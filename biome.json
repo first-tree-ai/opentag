@@ -14,7 +14,8 @@
       "!apps/web/src/routeTree.gen.ts",
       "!apps/web/src/paraglide",
       "!apps/web/project.inlang/cache",
-      "!apps/web/project.inlang/.meta.json"
+      "!apps/web/project.inlang/.meta.json",
+      "!.pi/loops"
     ]
   },
   "vcs": {

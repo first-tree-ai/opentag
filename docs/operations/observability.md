@@ -316,6 +316,13 @@ window again. A callback that already failed on a query deadline rejects at once
 while the connection stays busy until TCP gives up, the same limit as a timed-out single query. A deadline during
 `commit` leaves the outcome unknown, not rolled back: the transaction may have committed on the server.
 
+The pinned postgres.js dependency patch invalidates a transaction when its connection closes. In-flight and queued
+queries reject, and later statements and savepoints from that callback reject even after the pool reconnects. Its
+commit or rollback cannot act on a replacement transaction. The driver clears the closed connection's buffered writes
+and protocol error state before reuse. Application callbacks still need to finish their own non-database work; the
+driver does not cancel arbitrary JavaScript or replay the transaction. Replace the patch only with an upstream version
+that passes the database disconnect process regressions.
+
 ### Server logs in Cloud Logging
 
 The Ops Agent on the production VM tails the Docker `json-file` logs under `/var/lib/docker/containers/` and writes the

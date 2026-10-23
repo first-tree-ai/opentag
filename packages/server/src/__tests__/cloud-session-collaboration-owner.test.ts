@@ -1968,18 +1968,21 @@ describe("CloudSessionCollaborationOwner", () => {
       socket,
     });
 
-    vi.useFakeTimers();
+    const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
     try {
-      const baseline = vi.getTimerCount();
       await expect(owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
         status: "accepted",
       });
-      // Close the grant service's own sweep interval so only a leaked dispatch/convergence timer
-      // could keep the count above baseline after the dispatch fully resolved.
-      grants.close();
-      expect(vi.getTimerCount()).toBe(baseline);
+      // Inspect the allocation deadline itself: PGlite can schedule unrelated timers during queries,
+      // so a process-wide timer count is not a reliable assertion about convergence cleanup.
+      const deadlineIndex = timeoutSpy.mock.calls.findIndex(([, delay]) => delay === 60_000);
+      expect(deadlineIndex).toBeGreaterThanOrEqual(0);
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(timeoutSpy.mock.results[deadlineIndex]?.value);
     } finally {
-      vi.useRealTimers();
+      timeoutSpy.mockRestore();
+      clearTimeoutSpy.mockRestore();
+      grants.close();
     }
     void sent;
   });

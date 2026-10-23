@@ -72,7 +72,7 @@ ENV OPENTAG_PORT=8000
 EXPOSE 8000
 # Deep check: also fails while the database is unreachable. The Server listens only after migrations finish, and a
 # restarting database can take a while, so poll slowly and allow a long start period before failures count.
-HEALTHCHECK --interval=60s --timeout=5s --start-period=120s --retries=3 \
+HEALTHCHECK --interval=60s --timeout=5s --start-period=120s --retries=10 \
   CMD wget -qO- 'http://127.0.0.1:8000/healthz?deep=1' >/dev/null || exit 1
 
 USER opentag

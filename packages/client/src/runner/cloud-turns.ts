@@ -6,6 +6,7 @@ import {
   computeTurnResultHash,
   type DirectImMessageDeliveryRequest,
   MCP_GATEWAY_PATH,
+  ProviderFailureReasonSchema,
   RUNTIME_DEFAULT_MAX_DURATION_MS,
   RUNTIME_FINAL_TEXT_MAX_BYTES,
   type RunnerClientFrame,
@@ -1344,6 +1345,10 @@ export class CloudTurnRunner {
     entry: CloudJournalDeliveryEntry,
     completion: TurnCompletion,
   ): TurnReportRequest {
+    // Cloud delivery v1 has no capability for the newer runtime failure vocabulary.
+    const errorReason = ProviderFailureReasonSchema.safeParse(completion.errorReason).success
+      ? "provider_failed"
+      : completion.errorReason;
     const base = {
       type: "turn:report" as const,
       agentId: delivery.agentId,
@@ -1355,7 +1360,7 @@ export class CloudTurnRunner {
       sessionId: delivery.sessionId,
       traceSummary: { droppedEvents: 0, lastSequence: 0 },
       turnId: entry.turnId,
-      ...(completion.errorReason ? { errorReason: completion.errorReason } : {}),
+      ...(errorReason ? { errorReason } : {}),
       ...(completion.finalText ? { finalText: completion.finalText } : {}),
       ...(completion.usage ? { usage: completion.usage } : {}),
     };

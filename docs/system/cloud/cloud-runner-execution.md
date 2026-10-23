@@ -255,6 +255,12 @@ a tracked UID is treated as transient and retried. Roll out Server support first
 E4 Runner image; a new E4 Runner is not claimed backward compatible with an older strict Server,
 while E3 Runners against the new Server remain supported.
 
+Cloud delivery v1 retains its original Turn failure vocabulary. The Runner converts newer
+provider failure categories to `provider_failed` before computing the report hash and writing
+the journal; reconnects replay that exact report. Runtime `turnReport` v3 negotiation does not
+extend this separate Cloud wire. Categorized Cloud reports require a future Cloud delivery
+version, so this classification change does not add a Server rollback constraint.
+
 E3 renewal and acceptance results still require the active authority chain. Only negotiated E4
 connections may retain a report-capable channel after that chain stops, while their exact
 allocation remains current; no new execution is authorized. Temporary database validation errors

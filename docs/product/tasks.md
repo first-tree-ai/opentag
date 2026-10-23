@@ -52,11 +52,13 @@ second Agent response or report.
 
 Execution summaries, when reported, remain visible as separate execution records in the conversation.
 They never substitute for captured sent replies. Execution failures, unavailable or incomplete reply
-history, and truncated content remain visible. Recognized provider failures explain authentication,
+history, and truncated content remain visible. On Local Computers supporting detailed reports,
+recognized provider failures explain authentication,
 model access, credit or quota, rate limits, service availability, connection loss, context limits,
 execution limits, rejected requests, or unexpected process exits. Unrecognized failures keep the
 generic Provider failed label. Only fixed, translated explanations are shown; raw provider error
-messages are not exposed.
+messages are not exposed. Cloud delivery retains the generic provider failure label for these
+newer categories so saved outcomes remain compatible with older Servers.
 
 Inbound attachments show their stored name, type, and any processing availability limitation. The
 Task API projects metadata from existing message resources, omitting provider resource keys. Older

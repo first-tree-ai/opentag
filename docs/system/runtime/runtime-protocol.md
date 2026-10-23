@@ -164,3 +164,8 @@ The Client freezes the negotiated report version when a Turn starts. New reports
 started on v3 retains its category even if it finishes during a disconnect. A durable
 v3 report waits for v3 support after reconnection; its reason and hash are never rewritten
 for replay. Reply snapshots remain supported on both v2 and v3.
+
+Cloud `delivery:report` uses the independently negotiated `cloudDeliveryVersion: 1` contract.
+It retains the legacy failure vocabulary: new provider categories become `provider_failed`
+before the Runner hashes or journals the report. Replay preserves that compatible reason and
+hash. Categorized Cloud delivery reports require a future Cloud protocol extension.

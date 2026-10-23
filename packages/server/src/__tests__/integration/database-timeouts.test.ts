@@ -1,3 +1,4 @@
+import { connect as connectSocket, createServer, type Server, type Socket } from "node:net";
 import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { sql as drizzleSql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -7,6 +8,59 @@ import { createDedicatedDatabaseReadinessProbe } from "../../db/readiness-probe.
 import { startPostgresTestContainer } from "./postgres-test-container.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const deadlineErrorOf = (error: unknown): unknown => {
+  let current = error;
+  for (let depth = 0; depth < 8 && current && typeof current === "object"; depth += 1) {
+    if (current instanceof DatabaseQueryTimeoutError) return current;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return current;
+};
+
+/**
+ * TCP proxy in front of PostgreSQL. `goDark()` stops forwarding without closing anything, so both
+ * peers stay open: the client can still write, and no answer ever comes back. That is the black hole
+ * the deadline exists for; a closed socket would unblock the client all by itself.
+ */
+async function startBlackholeProxy(target: string) {
+  const targetUrl = new URL(target);
+  const sockets = new Set<Socket>();
+  let dark = false;
+  const track = (socket: Socket) => {
+    sockets.add(socket);
+    socket.on("error", () => undefined);
+    socket.on("close", () => sockets.delete(socket));
+    return socket;
+  };
+  const server: Server = createServer((incoming) => {
+    const client = track(incoming);
+    const upstream = track(connectSocket({ host: targetUrl.hostname, port: Number(targetUrl.port) }));
+    if (dark) {
+      client.pause();
+      upstream.pause();
+      return;
+    }
+    client.pipe(upstream);
+    upstream.pipe(client);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as { port: number };
+  const url = new URL(target);
+  url.hostname = "127.0.0.1";
+  url.port = String(port);
+  return {
+    url: url.toString(),
+    goDark() {
+      dark = true;
+      for (const socket of sockets) socket.pause();
+    },
+    async stop() {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
 
 describe("database timeouts", () => {
   let container: StartedPostgreSqlContainer;
@@ -115,6 +169,62 @@ describe("database timeouts", () => {
       await expect(probe.run()).resolves.toBeUndefined();
     } finally {
       await probe.close();
+    }
+  });
+
+  it("unblocks a transaction whose rollback cannot reach the server", async () => {
+    const proxy = await startBlackholeProxy(url);
+    const { database, sql } = createDatabaseClient(proxy.url, {
+      max: 1,
+      statementTimeoutMs: 10_000,
+      queryTimeoutMs: 1_500,
+    });
+    try {
+      await database.execute(drizzleSql`select 1`);
+      const startedAt = performance.now();
+      const failure = await database
+        .transaction(async (tx) => {
+          await tx.execute(drizzleSql`select 1`);
+          proxy.goDark();
+          // The transaction is open when the connection goes silent, so the rollback postgres.js
+          // runs after this rejection is queued behind a socket that never answers.
+          await tx.execute(drizzleSql`select 1`);
+        })
+        .catch((error: unknown) => error);
+      const elapsedMs = performance.now() - startedAt;
+
+      expect(deadlineErrorOf(failure)).toBeInstanceOf(DatabaseQueryTimeoutError);
+      expect(elapsedMs).toBeLessThan(6_000);
+    } finally {
+      await sql.end({ timeout: 1 });
+      await proxy.stop();
+    }
+  });
+
+  it("unblocks a transaction whose commit cannot reach the server", async () => {
+    const proxy = await startBlackholeProxy(url);
+    const { database, sql } = createDatabaseClient(proxy.url, {
+      max: 1,
+      statementTimeoutMs: 10_000,
+      queryTimeoutMs: 1_500,
+    });
+    try {
+      await database.execute(drizzleSql`select 1`);
+      const startedAt = performance.now();
+      const failure = await database
+        .transaction(async (tx) => {
+          await tx.execute(drizzleSql`select 1`);
+          proxy.goDark();
+          return "committed";
+        })
+        .catch((error: unknown) => error);
+      const elapsedMs = performance.now() - startedAt;
+
+      expect(failure).toBeInstanceOf(DatabaseQueryTimeoutError);
+      expect(elapsedMs).toBeLessThan(6_000);
+    } finally {
+      await sql.end({ timeout: 1 });
+      await proxy.stop();
     }
   });
 });

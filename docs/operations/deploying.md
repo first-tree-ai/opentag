@@ -142,6 +142,11 @@ The two optional variables control how the Server learns the exact channel lates
 Clients for automatic upgrades: it polls the channel's published `latest.json` under the download base URL and keeps
 advertising the last known target through any outage. The dev channel never advertises a target.
 
+The statement and idle-in-transaction bounds reach PostgreSQL as startup parameters on every pool connection. A
+self-hosted connection pooler in front of PostgreSQL must therefore list `statement_timeout` and
+`idle_in_transaction_session_timeout` in its `ignore_startup_parameters`; otherwise it rejects the connection with
+`unsupported startup parameter`.
+
 Enable HTTPS and force HTTPS on the App before setting `OPENTAG_PUBLIC_URL`; the server refuses to start in a hosted
 environment whose public URL is not HTTPS. Staging secrets must not be shared with any other environment.
 

@@ -41,22 +41,50 @@ class FakeQuery extends Promise<unknown> {
   }
 }
 
-function fakeSql() {
+/** Mirrors postgres.js `begin`: run the callback, then `commit` on success or `rollback` on failure. */
+type ScopePhase = () => Promise<unknown>;
+
+function fakeSql(phases: { commit?: ScopePhase; rollback?: ScopePhase } = {}) {
   const created: FakeQuery[] = [];
   const unsafe = (text: string) => {
     const query = new FakeQuery(text);
     created.push(query);
     return query;
   };
+  const run = async (callback: (inner: unknown) => unknown, commit: ScopePhase, rollback: ScopePhase) => {
+    try {
+      const result = await callback(makeScope());
+      await commit();
+      return result;
+    } catch (error) {
+      await rollback();
+      throw error;
+    }
+  };
   const makeScope = (): Record<string, unknown> => {
     const scope = Object.assign(() => undefined, { unsafe }) as unknown as Record<string, unknown>;
-    scope.savepoint = (fn: (inner: unknown) => unknown) => fn(makeScope());
+    scope.savepoint = (...args: unknown[]) =>
+      run(
+        args.at(-1) as (inner: unknown) => unknown,
+        async () => undefined,
+        phases.rollback ?? (async () => undefined),
+      );
     return scope;
   };
   const root = makeScope();
-  root.begin = (...args: unknown[]) => (args.at(-1) as (tx: unknown) => unknown)(makeScope());
+  root.begin = (...args: unknown[]) =>
+    run(
+      args.at(-1) as (tx: unknown) => unknown,
+      phases.commit ?? (async () => undefined),
+      phases.rollback ?? (async () => undefined),
+    );
   return { root: root as unknown as Sql, created };
 }
+
+/** A wrapped `begin`/`savepoint`: it runs the callback and returns the transaction phase's promise. */
+type ScopeCall = (callback: (scope: Record<string, unknown>) => unknown) => Promise<unknown>;
+
+const asBegin = (root: Sql) => root.begin as unknown as ScopeCall;
 
 afterEach(() => {
   vi.useRealTimers();
@@ -163,6 +191,64 @@ describe("applyQueryDeadline", () => {
     const errors = await Promise.all(outcomes);
     expect(errors).toHaveLength(2);
     expect(errors.every((error) => error instanceof DatabaseQueryTimeoutError)).toBe(true);
+  });
+
+  it("rejects at once when the callback already hit a query deadline", async () => {
+    const deadline = new DatabaseQueryTimeoutError(1_000);
+    const rollback = vi.fn(() => new Promise<never>(() => undefined));
+    const { root } = fakeSql({ rollback });
+    applyQueryDeadline(root, { timeoutMs: 1_000 });
+
+    const outcome = asBegin(root)(async () => {
+      throw deadline;
+    }).then(
+      () => "resolved",
+      (error: unknown) => error,
+    );
+
+    // No timer at all: the caller learns the outcome without waiting for the wedged rollback.
+    expect(await outcome).toBe(deadline);
+    expect(rollback).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds a commit that never settles", async () => {
+    vi.useFakeTimers();
+    const onTimeout = vi.fn();
+    const { root } = fakeSql({ commit: () => new Promise<never>(() => undefined) });
+    applyQueryDeadline(root, { timeoutMs: 1_000, onTimeout });
+
+    const outcome = asBegin(root)(async () => "done").then(
+      () => "resolved",
+      (error: unknown) => error,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(await outcome).toBeInstanceOf(DatabaseQueryTimeoutError);
+    expect(onTimeout).toHaveBeenCalledWith({ timeoutMs: 1_000 });
+  });
+
+  it("bounds a savepoint rollback that never settles", async () => {
+    vi.useFakeTimers();
+    const { root } = fakeSql({ rollback: () => new Promise<never>(() => undefined) });
+    applyQueryDeadline(root, { timeoutMs: 1_000 });
+
+    const outcomes: Promise<unknown>[] = [];
+    asBegin(root)((scope) => {
+      const savepoint = scope.savepoint as ScopeCall;
+      outcomes.push(
+        savepoint(async () => {
+          throw new Error("inner failure");
+        }).then(
+          () => "resolved",
+          (error: unknown) => error,
+        ),
+      );
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(await outcomes[0]).toBeInstanceOf(DatabaseQueryTimeoutError);
   });
 
   it("wraps a scope only once", () => {

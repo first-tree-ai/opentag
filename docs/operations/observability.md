@@ -309,6 +309,11 @@ the Server rejects the query after `OPENTAG_DATABASE_QUERY_TIMEOUT_MS` and logs 
 parameters. Pool connections send TCP keepalive probes after 10 s idle. Startup logs the resolved values once as
 `Resolved database timeouts`.
 
+A transaction gets the same bound where the server cannot help. postgres.js sends `commit` and `rollback` itself, so the
+Server bounds them separately: once the transaction callback settles, the commit or rollback phase gets its own
+`OPENTAG_DATABASE_QUERY_TIMEOUT_MS`, and a callback that already failed on a query deadline rejects at once. Either way
+the caller stops waiting, while the connection stays busy until TCP gives up, the same limit as a timed-out single query.
+
 ### Server logs in Cloud Logging
 
 The Ops Agent on the production VM tails the Docker `json-file` logs under `/var/lib/docker/containers/` and writes the

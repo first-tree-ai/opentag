@@ -8,8 +8,12 @@
  * probe while data is unacknowledged, and Node cannot set TCP_USER_TIMEOUT.
  *
  * Boundary: drizzle's postgres-js session issues every query through `unsafe`, `begin`, and
- * `savepoint`. postgres.js's own `begin`/`commit`/`rollback` statements use its internal Sql and
- * tagged templates, so only the `begin` statement (sent through the root `unsafe`) is covered.
+ * `savepoint`. postgres.js sends its own `begin` through the root `unsafe`, so that statement is
+ * covered. It sends `commit`, `rollback`, and the savepoint statements as tagged templates on the
+ * scope Sql, which no wrapper can intercept. `begin` and `savepoint` are therefore bounded as a
+ * whole as well: once the callback settles, the remaining `commit`/`rollback` phase gets its own
+ * `timeoutMs`, and a callback that already failed on a query deadline rejects at once instead of
+ * waiting for a rollback that the wedged connection cannot answer.
  *
  * Depends on postgres.js 3.4.x internals: a Query instance has writable `resolve`/`reject` fields,
  * an `executed` flag, and `cancel()`. `assertQueryDeadlineSupport` fails fast when an upgrade
@@ -48,6 +52,11 @@ type WrappableSql = {
   savepoint?: (...args: unknown[]) => unknown;
 };
 
+/** Result of the caller's transaction callback; `error` is set when it rejected or threw. */
+type CallbackOutcome = { error?: unknown };
+/** `settled` is absent when the call carries no callback, so there is no phase boundary to watch. */
+type TrackedCallback = { args: unknown[]; settled?: Promise<CallbackOutcome> };
+
 const wrapped = new WeakSet<object>();
 
 export function assertQueryDeadlineSupport(sql: Sql): void {
@@ -81,26 +90,102 @@ function wrapScope(scope: WrappableSql, options: QueryDeadlineOptions): void {
 
   const begin = scope.begin;
   if (begin) {
-    scope.begin = (...args: unknown[]) => begin(...wrapCallbackArgument(args, options));
+    scope.begin = (...args: unknown[]) => boundScopeCall(begin, args, options);
   }
   const savepoint = scope.savepoint;
   if (savepoint) {
-    scope.savepoint = (...args: unknown[]) => savepoint(...wrapCallbackArgument(args, options));
+    scope.savepoint = (...args: unknown[]) => boundScopeCall(savepoint, args, options);
   }
 }
 
+function boundScopeCall(
+  call: (...args: unknown[]) => unknown,
+  args: unknown[],
+  options: QueryDeadlineOptions,
+): unknown {
+  const callback = trackCallback(args, options);
+  const pending = call(...callback.args);
+  if (!callback.settled) return pending;
+  return withScopeDeadline(pending as Promise<unknown>, callback.settled, options);
+}
+
 // begin(fn) / begin(mode, fn) / savepoint(fn) / savepoint(name, fn): the callback is always last.
-function wrapCallbackArgument(args: unknown[], options: QueryDeadlineOptions): unknown[] {
+function trackCallback(args: unknown[], options: QueryDeadlineOptions): TrackedCallback {
   const last = args.at(-1);
-  if (typeof last !== "function") return args;
+  if (typeof last !== "function") return { args };
   const callback = last as ScopeCallback;
-  return [
-    ...args.slice(0, -1),
-    (inner: unknown) => {
-      if (inner && typeof inner === "function") wrapScope(inner as unknown as WrappableSql, options);
-      return callback(inner);
-    },
-  ];
+  let settle!: (outcome: CallbackOutcome) => void;
+  const settled = new Promise<CallbackOutcome>((resolve) => {
+    settle = resolve;
+  });
+  return {
+    args: [
+      ...args.slice(0, -1),
+      (inner: unknown) => {
+        if (inner && typeof inner === "function") wrapScope(inner as unknown as WrappableSql, options);
+        let result: unknown;
+        try {
+          result = callback(inner);
+        } catch (error) {
+          settle({ error });
+          throw error;
+        }
+        // Observe settlement without changing the value postgres.js awaits; it awaits an array as Promise.all.
+        void Promise.resolve(Array.isArray(result) ? Promise.all(result) : result).then(
+          () => settle({}),
+          (error: unknown) => settle({ error }),
+        );
+        return result;
+      },
+    ],
+    settled,
+  };
+}
+
+const CAUSE_CHAIN_LIMIT = 8;
+
+/** Drizzle wraps driver errors, so the deadline error can sit behind one or more `cause` links. */
+function isQueryDeadline(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < CAUSE_CHAIN_LIMIT && current && typeof current === "object"; depth += 1) {
+    if (current instanceof DatabaseQueryTimeoutError) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/**
+ * Bounds the phase after the callback: `commit`, `rollback`, `rollback to <name>`.
+ *
+ * Boundary: rejecting here unblocks the caller; it cannot free the connection, which stays busy
+ * until TCP gives up, exactly like the `shortcut:` below.
+ */
+function withScopeDeadline<T>(
+  pending: Promise<T>,
+  settled: Promise<CallbackOutcome>,
+  options: QueryDeadlineOptions,
+): Promise<T> {
+  const { timeoutMs } = options;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let done = false;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    void settled.then(({ error }) => {
+      if (done) return;
+      if (isQueryDeadline(error)) {
+        reject(error);
+        return;
+      }
+      timer = setTimeout(() => {
+        options.onTimeout?.({ timeoutMs });
+        reject(new DatabaseQueryTimeoutError(timeoutMs));
+      }, timeoutMs);
+      timer.unref?.();
+    });
+  });
+  return Promise.race([pending, deadline]).finally(() => {
+    done = true;
+    if (timer !== undefined) clearTimeout(timer);
+  });
 }
 
 function withDeadline(query: DeadlineQuery, options: QueryDeadlineOptions): DeadlineQuery {

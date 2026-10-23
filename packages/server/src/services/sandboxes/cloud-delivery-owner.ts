@@ -52,10 +52,12 @@ import type { SandboxAllocationReconciliation } from "./sandbox-runner-service.j
  *   handleReport       -> recordTurn (turn_report/result_hash/reported_at) + `delivery:report:ack`
  * A receipt or report replay is idempotent. Accepted work is recovered from the PERSISTED
  * allocation identity (`reportOwnerInstanceId` vs `cloudInstanceIdFor`) — never from the presence
- * of an in-memory socket: a Server restart or transient disconnect keeps the turn pending, and
- * only a proven retired/superseded allocation (durable stop state or a verified physical absence),
- * or the exhaustion of every window in which that report could still be truthful, may settle it
- * as unknown without replay.
+ * of an in-memory socket: a Server restart or transient disconnect keeps the turn pending, and only
+ * a proven retired/superseded allocation (durable stop state or a verified physical absence), or the
+ * end of the window in which the Server still accepts a report for it, may settle it as unknown
+ * without replay. That end is a report ACCEPTANCE cutoff, not proof that no authentic report exists:
+ * a late authentic report is answered `conflict`, the recorded `unknown` stays terminal, and steered
+ * children returned to the queue by that settlement are not re-absorbed into the turn.
  */
 
 export type CloudDispatchFailure =
@@ -152,8 +154,8 @@ function requireDispatchableConnection(
 const CLOUD_MODEL_GRANT_TRANSPORT_MS = 30_000;
 
 /**
- * Slack added to the execution window before an unreported accepted turn is settled as unknown, so a
- * report written exactly as the window closes still counts.
+ * Slack added to the execution window before the Server stops accepting a report as this turn's
+ * outcome, so a report written exactly as the window closes still counts.
  */
 const ACCEPTED_REPORT_GRACE_MS = 60 * 60 * 1_000;
 
@@ -801,15 +803,16 @@ export class CloudDeliveryOwner {
    * - a superseded generation or a durably stopped/released allocation settles exactly once as
    *   unknown/turn_state_unknown and is never replayed;
    * - a live allocation with a live exact connection queries the Runner's journal (`received`
-   *   re-verifies, `started` stays pending — it is a live phase, not a crash — `reported` awaits
-   *   the Runner's replayed report inside the report window, and only an explicit `none` settles
-   *   unknown);
+   *   re-verifies, `started` stays pending — it is a live phase, not a crash — and `reported` stays
+   *   pending because the Runner replays that report on the same socket; only an explicit `none`
+   *   settles unknown);
    * - a live allocation with no connection stays pending while the allocation is physically
    *   present or its create outcome is still unverified, so a Server restart or transient
    *   disconnect can never destroy a genuine result;
-   * - a report that cannot arrive any more — a proven absence, or the exhaustion of the frozen
+   * - a report the Server can no longer accept — a proven absence, or the end of the frozen
    *   execution window (and, without one, the maximum runtime from acceptance) plus its grace —
-   *   settles unknown exactly once.
+   *   settles unknown exactly once. This is a report acceptance cutoff, not proof that no authentic
+   *   report exists: the late report is answered `conflict` and cannot replace the terminal hash.
    */
   async recoverAccepted(deliveryId: string): Promise<"pending" | "resolved" | "noop"> {
     const [row] = await this.#database
@@ -840,9 +843,10 @@ export class CloudDeliveryOwner {
   }
 
   /**
-   * The last instant a report for this accepted turn can still be truthful. The dispatch freezes the
-   * execution window into `deadlineAt`; without one, the platform maximum runtime bounds the turn
-   * from acceptance. The grace covers a report that is written as the window closes.
+   * The last instant at which the Server still accepts a report as this turn's outcome. The dispatch
+   * freezes the execution window into `deadlineAt`; without one, the platform maximum runtime bounds
+   * the turn from acceptance. The grace covers a report that is written as the window closes. This is
+   * an acceptance cutoff, not evidence that no authentic report exists.
    */
   #acceptedReportDeadlineMs(delivery: typeof imMessageDeliveries.$inferSelect): number {
     const parsed = DirectImMessageDeliveryRequestSchema.safeParse(delivery.dispatchPayload);
@@ -906,12 +910,7 @@ export class CloudDeliveryOwner {
       deliveryId: delivery.id,
       turnId: delivery.turnId as string,
     });
-    if (!answer || answer === "reported") {
-      // A journaled report the Server never recorded can only be replayed while the turn's window is
-      // open; afterwards no report can still be truthful, so the same bound as the no-connection
-      // branch applies instead of retrying forever.
-      return Date.now() >= this.#acceptedReportDeadlineMs(delivery) ? this.#settleUnknown(delivery.id) : "pending";
-    }
+    if (!answer || answer === "reported") return this.#awaitReplayedReport(record, delivery, answer);
     if (answer === "none") return this.#settleUnknown(delivery.id);
 
     // Re-check after the query await: a replaced connection, superseded allocation, or terminal
@@ -937,6 +936,34 @@ export class CloudDeliveryOwner {
     // normal durable report path). Started work is never discarded as unknown here; a
     // disconnected/replaced socket simply stays pending.
     this.#sendCancellation(record, delivery.id);
+    return "pending";
+  }
+
+  /**
+   * The Runner answered that its journal still holds a report for this turn — or the query went
+   * unanswered. The real Client sends the answer and then replays that report on the same socket
+   * (`cloud-turns.ts:handleQuery`), so an answer is evidence a report is imminent, never that one is
+   * missing: settling here would make the replay fail with `conflict`. Past the acceptance cutoff the
+   * replay can no longer be recorded, which is a defect in the report path, so the overdue replay is
+   * logged for that path instead of being covered by a terminal settlement.
+   */
+  #awaitReplayedReport(
+    record: CloudConnectionRecord,
+    delivery: typeof imMessageDeliveries.$inferSelect,
+    answer: "none" | "received" | "started" | "reported" | undefined,
+  ): "pending" {
+    if (Date.now() >= this.#acceptedReportDeadlineMs(delivery)) {
+      this.#logger?.warn(
+        {
+          code: "CLOUD_DELIVERY_REPORT_REPLAY_OVERDUE",
+          computerId: record.computerId,
+          deliveryId: delivery.id,
+          phase: answer ?? "no_answer",
+          turnId: delivery.turnId,
+        },
+        "Cloud Runner still holds a report the Server has not recorded past the acceptance cutoff",
+      );
+    }
     return "pending";
   }
 

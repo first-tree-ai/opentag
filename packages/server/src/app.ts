@@ -7,6 +7,7 @@ import {
   redactForLog,
   ServerDeepHealthSchema,
   ServerHealthSchema,
+  StructuredErrorCodeSchema,
 } from "@opentag/shared";
 import { DrizzleQueryError, sql } from "drizzle-orm";
 import Fastify, { type FastifyInstance, type FastifyLoggerOptions, type FastifyRequest, LogController } from "fastify";
@@ -393,10 +394,19 @@ function serializeError(error: unknown, depth = 0): SerializedError {
   };
 }
 
-/** The bounded structured code a thrown error carries, when it has one. */
+/**
+ * The bounded structured code a thrown error carries, when it has one.
+ *
+ * An omitted code is deliberate: only the established structured shape is safe to emit. `code` is
+ * provider-controlled, so an arbitrary string such as `token=...` would bypass the redaction that
+ * `message` and `stack` receive. A non-matching value is omitted rather than replaced, because a
+ * fabricated code on a nested cause would point the reader at the wrong failure. Numeric SQLSTATE
+ * codes such as `23505` are dropped by the shared pattern (it must start with a letter); accepted
+ * because the diagnostic value is the query failure, not the SQLSTATE number.
+ */
 function serializedErrorCode(error: Error): string | undefined {
   const code = (error as { code?: unknown }).code;
-  return typeof code === "string" && code.length > 0 && code.length <= 128 ? code : undefined;
+  return typeof code === "string" && StructuredErrorCodeSchema.safeParse(code).success ? code : undefined;
 }
 
 class DatabaseReadinessTimeoutError extends Error {

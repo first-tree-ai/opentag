@@ -889,7 +889,7 @@ describe("resolved provider factories candidate fallback", () => {
       // The recording executable exits after capturing argv; it never runs a model.
       await expect(
         runtime.prompt({ runId: "packaged-skills", input: { items: [{ type: "text", text: "hello" }] } }),
-      ).resolves.toMatchObject({ status: "failed", error: { code: "provider_error" } });
+      ).resolves.toMatchObject({ status: "failed", error: { code: "provider_process_exited" } });
       await runtime.close();
       expect(rpcLaunchArgs(await readJsonlArgs(logPath))?.slice(0, 2)).toEqual(["--skill", skillPath]);
     },
@@ -920,7 +920,7 @@ describe("resolved provider factories candidate fallback", () => {
       // The recording executable exits after capturing argv; it never runs a model.
       await expect(
         runtime.prompt({ runId: "no-skills", input: { items: [{ type: "text", text: "hello" }] } }),
-      ).resolves.toMatchObject({ status: "failed", error: { code: "provider_error" } });
+      ).resolves.toMatchObject({ status: "failed", error: { code: "provider_process_exited" } });
       await runtime.close();
       const rpcArgs = rpcLaunchArgs(await readJsonlArgs(logPath));
       expect(rpcArgs).toEqual(expect.arrayContaining(["--mode", "rpc"]));

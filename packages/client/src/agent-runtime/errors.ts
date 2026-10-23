@@ -1,3 +1,5 @@
+import type { ProviderFailureReason } from "@opentag/shared";
+
 export type AgentRuntimeErrorCode =
   | "binding_incompatible"
   | "busy"
@@ -26,7 +28,7 @@ export class AgentRuntimeError extends Error {
 
 export class AgentProviderError extends Error {
   constructor(
-    readonly code: "provider_error" | "provider_protocol_error" | "provider_start_failed",
+    readonly code: ProviderFailureReason | "provider_error" | "provider_protocol_error" | "provider_start_failed",
     message: string,
     options?: ErrorOptions,
   ) {

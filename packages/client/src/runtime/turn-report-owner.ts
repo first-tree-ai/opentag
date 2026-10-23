@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import {
   computeTurnResultHash,
+  ProviderFailureReasonSchema,
   RUNTIME_CAPABILITY,
+  requiredTurnReportVersion,
   type TurnReportHashInput,
   type TurnReportRequest,
   TurnReportRequestSchema,
@@ -133,6 +135,12 @@ export class TurnReportOwner {
   }
 
   create(input: TurnReportHashInput): TurnReportRequest {
+    if (
+      ProviderFailureReasonSchema.safeParse(input.errorReason).success &&
+      (this.#connection.capabilityVersion?.(RUNTIME_CAPABILITY.turnReport) ?? 1) < 3
+    ) {
+      input = { ...input, errorReason: "provider_failed" };
+    }
     const report = {
       type: "turn:report" as const,
       requestId: this.#id(),
@@ -553,8 +561,8 @@ export class TurnReportOwner {
   #canSendReport(pending: PendingReport): boolean {
     return (
       !pending.capabilityRejected &&
-      (pending.report.outgoingReplies === undefined ||
-        this.#connection.capabilityVersion?.(RUNTIME_CAPABILITY.turnReport) === 2)
+      (this.#connection.capabilityVersion?.(RUNTIME_CAPABILITY.turnReport) ?? 1) >=
+        requiredTurnReportVersion(pending.report)
     );
   }
 

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   ClientRuntimeBusinessFrameSchema,
   type DirectImMessageDeliveryRequest,
+  ProviderFailureReasonSchema,
   RUNTIME_DEFAULT_MAX_DURATION_MS,
   RUNTIME_DIRECT_TEXT_MAX_BYTES,
   RUNTIME_FINAL_TEXT_MAX_BYTES,
@@ -481,6 +482,31 @@ describe("AgentTurnRunner", () => {
     const feishuContext = buildAgentInput(feishuRequest).items[0]?.text;
     expect(feishuContext).toContain(JSON.stringify(feishuRequest.content.providerRef));
     expect(feishuContext).not.toMatch(/Feishu.*(?:must|always|default).*(?:thread|reply)/i);
+  });
+
+  it.each(ProviderFailureReasonSchema.options)("preserves %s in returned and thrown failures", (code) => {
+    expect(
+      completionForResult(
+        {
+          runId: "turn-1",
+          status: "failed",
+          output: [],
+          error: { code, message: "private provider text" },
+          usage: { inputTokens: 2 },
+        },
+        undefined,
+      ),
+    ).toEqual({
+      outcome: "failed",
+      executionEffects: "may_have_occurred",
+      errorReason: code,
+      usage: { inputTokens: 2 },
+    });
+    expect(completionForError(new AgentProviderError(code, "private provider text"), undefined)).toEqual({
+      outcome: "failed",
+      executionEffects: "may_have_occurred",
+      errorReason: code,
+    });
   });
 
   it("maps every typed Agent result and abort reason to the stable Turn taxonomy", () => {

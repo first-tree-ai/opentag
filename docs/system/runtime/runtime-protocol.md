@@ -151,3 +151,15 @@ The implementation and tests cover downgrade attempts with unmatched errors, mis
 Release gates are the v1/v2 compatibility matrix, package tests, build, typecheck, lint/format checks, and the Client Agent Runtime coverage gate. Deploy the dual-stack Server with v2 capabilities at their existing behavior versions, then canary the v2 Client.
 
 Before a new capability changes durable data or semantics, rollback is a Server image rollback and Client v1 fallback. After such a capability is activated, its own expand/contract and rollback plan is required; protocol negotiation is not a database rollback mechanism. Keep v1 until fleet telemetry and an explicit deprecation decision justify removal.
+
+## Provider failure categories
+
+`runtime.turnReport` v3 extends `errorReason` with provider authentication, access, quota,
+rate limit, availability, connection, context limit, execution limit, request rejection,
+and process exit categories. Adapters classify declared provider codes and HTTP statuses,
+not arbitrary error prose. Unknown errors retain `provider_failed`.
+
+New reports use `provider_failed` when the connected Server supports only v1 or v2, before
+computing the report hash. A durable v3 report waits for v3 support after reconnection;
+its reason and hash are never rewritten for replay. Reply snapshots remain supported on
+both v2 and v3.

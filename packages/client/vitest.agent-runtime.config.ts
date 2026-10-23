@@ -43,6 +43,7 @@ export default defineConfig({
       "src/__tests__/client-turn.integration.test.ts",
       "src/__tests__/client-runtime-composition.test.ts",
       "src/__tests__/probe-failure.test.ts",
+      "src/__tests__/provider-failure.test.ts",
       "src/__tests__/resolved-runtime-factory.test.ts",
       "src/__tests__/runtime-durability.test.ts",
       "src/__tests__/runtime-tool-host.test.ts",

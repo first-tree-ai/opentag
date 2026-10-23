@@ -140,6 +140,30 @@ it("keeps incomplete capture, truncation and execution failure visible beside th
   expect(screen.getByText("Reply history is incomplete. Some messages or content could not be included.")).toBeTruthy();
 });
 
+it.each([
+  [
+    "provider_authentication_failed",
+    "The model provider rejected authentication. Check the provider sign-in or API key.",
+  ],
+  ["provider_access_denied", "Access to the selected model was denied. Check model permissions."],
+  ["provider_quota_exceeded", "The model request reached a credit or quota limit. Check billing and usage limits."],
+  ["provider_rate_limited", "The model provider rate limit was reached. Try again shortly."],
+  ["provider_unavailable", "The model service is temporarily unavailable. Try again shortly."],
+  ["provider_connection_failed", "The connection to the agent provider was interrupted."],
+  ["provider_context_limit", "The conversation exceeds the model context limit."],
+  ["provider_execution_limit", "The agent reached an output, step, or budget limit before finishing."],
+  ["provider_request_rejected", "The model provider rejected the request. Check the model configuration."],
+  ["provider_process_exited", "The agent process exited unexpectedly before finishing."],
+])("explains %s beside the execution summary", (reason, explanation) => {
+  const current = turn();
+  if (!current.report) throw new Error("Expected report fixture");
+  current.report.outcome = "failed";
+  current.report.errorReason = reason;
+  render(<TaskActivity task={task} turns={[current]} pagination={null} />);
+  expect(screen.getByText(explanation)).toBeTruthy();
+  expect(screen.queryByText(reason)).toBeNull();
+});
+
 it("explains a rejected restore in the work record without exposing resource controls", () => {
   const current = turn();
   current.report = null;

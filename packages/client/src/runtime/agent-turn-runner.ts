@@ -3,6 +3,7 @@ import {
   computeRuntimeImMessageSemanticHash,
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
+  ProviderFailureReasonSchema,
   RUNTIME_CAPABILITY,
   RUNTIME_DIRECT_TEXT_MAX_BYTES,
   RUNTIME_FINAL_TEXT_MAX_BYTES,
@@ -192,7 +193,7 @@ export class AgentTurnRunner {
       owner,
       // Negotiation is cleared on disconnect. Keep this Turn's report contract
       // until its durable report can be replayed after reconnection.
-      captureInReport: this.#connection.capabilityVersion?.(RUNTIME_CAPABILITY.turnReport) === 2,
+      captureInReport: (this.#connection.capabilityVersion?.(RUNTIME_CAPABILITY.turnReport) ?? 1) >= 2,
       phase: "starting",
       promise: Promise.resolve(),
     };
@@ -819,7 +820,7 @@ export function completionForResult(result: AgentRunResult, abortReason: unknown
   return {
     outcome: result.error?.code === "provider_protocol_error" ? "unknown" : "failed",
     executionEffects: "may_have_occurred",
-    errorReason: result.error?.code === "provider_protocol_error" ? "provider_protocol_error" : "provider_failed",
+    errorReason: providerTurnFailureReason(result.error?.code),
     ...(result.usage ? { usage: result.usage } : {}),
   };
 }
@@ -940,7 +941,11 @@ function completionForProviderError(error: AgentProviderError): TurnCompletion {
   if (error.code === "provider_protocol_error") {
     return { outcome: "unknown", executionEffects: "may_have_occurred", errorReason: "provider_protocol_error" };
   }
-  return { outcome: "failed", executionEffects: "may_have_occurred", errorReason: "provider_failed" };
+  return {
+    outcome: "failed",
+    executionEffects: "may_have_occurred",
+    errorReason: providerTurnFailureReason(error.code),
+  };
 }
 
 function steerResult(
@@ -959,4 +964,9 @@ function steerResult(
   };
   if (status === "steered") return { ...base, status };
   return { ...base, status, reason: reason as never } as RuntimeImSteerResult;
+}
+
+function providerTurnFailureReason(code: unknown): TurnFailureReason {
+  if (code === "provider_protocol_error") return "provider_protocol_error";
+  return ProviderFailureReasonSchema.safeParse(code).data ?? "provider_failed";
 }

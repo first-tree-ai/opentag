@@ -110,7 +110,7 @@ The existing credential cipher supports both v1 ciphertext and v2 with context A
 candidate's embedded identity checks remain necessary with v1. This feature does not change
 the global encryption write version or re-encrypt existing credentials.
 
-### Minimal database migration
+### Minimal database migration for `pending_activation`
 
 - Append `pending_activation` to `feishu_setup_state`.
 - Extend `im_bindings_setup_owner_shape` for an ownerless, non-disabled Feishu candidate
@@ -120,6 +120,20 @@ the global encryption write version or re-encrypt existing credentials.
 
 The encrypted JSON extension is still a data-contract change. PostgreSQL cannot validate
 the decrypted shape; service-level schema and identity checks are required.
+
+### Data migration `0068_release_terminal_setup_slots`
+
+This one does rewrite existing rows, so the "no customer-data backfill" statement above applies
+only to the `pending_activation` migration. `0068` adds no table, column or index and runs a single
+`UPDATE` that disables the rows described above: `provisioning`, terminal setup state, no
+`activated_at`, no issued credential. It clears the setup owner, context and expiry and the
+connection lease, and keeps each row's `setup_state`, `last_error_code` and
+`credential_generation`. An upgraded deployment needs no operator action for an Agent that issue
+#504 already stranded.
+
+For a rollback, the update is data rather than schema: reversing the migration file does not
+re-enable the rows, and a deployment that reverts the release behaviour while keeping this
+migration applied still reports those Agents as disconnected, with both channel choices offered.
 
 ## Recovery and concurrency
 

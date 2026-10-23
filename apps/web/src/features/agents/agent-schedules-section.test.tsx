@@ -79,13 +79,13 @@ describe("AgentSchedulesSection", () => {
       "accepted",
       "The runtime received this occurrence. This does not confirm task completion; check Tasks for progress and results.",
     ],
-    [
-      "unreachable",
-      "This occurrence could not reach the runtime. Check the Agent’s Computer status before the next scheduled time.",
-    ],
+    ["unreachable", "This occurrence could not reach the runtime. Check the Agent’s Computer status."],
     ["rejected", "The runtime did not accept this occurrence. Check the reason code and the Agent’s Computer status."],
-    ["unknown", "The handoff could not be confirmed. The task may have started; check Tasks before starting it again."],
-    ["skipped", "This occurrence was skipped. Check the reason code below."],
+    [
+      "unknown",
+      "The handoff has not been confirmed yet. The task may have started; check Tasks before starting it again.",
+    ],
+    ["skipped", "This occurrence was skipped. See the reason code."],
   ] as const)("explains %s without claiming the business task completed", async (outcome, explanation) => {
     const item = schedule({
       lastDispatch: { scheduledFor: TIME, attemptedAt: TIME, messageId: null, outcome, code: "runtime_not_ready" },
@@ -98,12 +98,34 @@ describe("AgentSchedulesSection", () => {
     expect(await screen.findByText(explanation)).toBeTruthy();
     expect(screen.getByText("runtime_not_ready")).toBeTruthy();
     expect(screen.getByText("Next scheduled time", { exact: true })).toBeTruthy();
-    expect(
-      screen.queryByText(
-        "The schedule will not retry this occurrence. Future occurrences follow the schedule’s current settings.",
-      ) !== null,
-    ).toBe(outcome !== "accepted");
+    expect(screen.queryByText("The schedule will not retry this occurrence.") !== null).toBe(outcome !== "accepted");
   });
+
+  it.each(["unreachable", "rejected"] as const)(
+    "explains an exhausted one-time %s handoff without implying another occurrence",
+    async (outcome) => {
+      const item = schedule({
+        schedule: { kind: "at", at: TIME },
+        nextTriggerAt: null,
+        lastDispatch: { scheduledFor: TIME, attemptedAt: TIME, messageId: null, outcome, code: "runtime_not_ready" },
+      });
+      vi.spyOn(browserApi, "agentSchedules").mockResolvedValue({ items: [summaryOf(item)], nextCursor: null });
+      vi.spyOn(browserApi, "agentSchedule").mockResolvedValue(item);
+
+      mount();
+      expect(await screen.findByText("One-time schedule exhausted")).toBeTruthy();
+      expect(
+        screen.getByText(
+          `Latest handoff: ${outcome === "unreachable" ? "Runtime unreachable" : "Rejected by the runtime"}`,
+        ),
+      ).toBeTruthy();
+      expect(screen.queryByText("Enabled")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Show details" }));
+      expect(await screen.findByText("The schedule will not retry this occurrence.")).toBeTruthy();
+      expect(screen.getByText("runtime_not_ready")).toBeTruthy();
+      expect(screen.queryByText(/before the next scheduled time|Future occurrences/)).toBeNull();
+    },
+  );
 
   it("keeps a past failed handoff visible when the schedule is paused", async () => {
     const item = schedule({

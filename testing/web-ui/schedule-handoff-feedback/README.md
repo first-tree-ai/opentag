@@ -10,7 +10,8 @@ line is illustrative, not evidence about a real Computer or Messaging connection
 - Collapsed rows expose the latest handoff outcome and its scheduled time independently of Enabled/Paused.
 - Details retain the reason code and next scheduled time and explain the recorded handoff.
 - Accepted means runtime receipt, not business completion. Unknown warns that work may already have started.
-- Failed/unknown/skipped occurrences explain that the schedule will not retry them; future occurrences follow current settings.
+- Failed/unknown/skipped occurrences explain that the schedule will not retry them without implying a future occurrence.
+- Unknown also covers a handoff still in flight; its explanation uses neutral "not confirmed yet" wording.
 - Paused schedules retain the historical outcome and omit a nonexistent next trigger.
 - Schedules without a handoff retain their existing empty-history behavior.
 - The full task stays behind the detail read; the list does not request it.
@@ -19,7 +20,8 @@ line is illustrative, not evidence about a real Computer or Messaging connection
 
 Both English and Chinese passed at 320, 390, 768, and 1440 CSS pixels (1000px viewport height).
 For every locale/width combination, details were opened for unreachable, unknown, accepted,
-rejected, skipped, no-history, and paused fixtures.
+rejected, skipped, no-history, paused, and exhausted one-time fixtures. The exhausted fixture remains enabled,
+has no next trigger, and retains the latest unreachable handoff without promising another occurrence.
 
 | Check | Result |
 | --- | --- |
@@ -27,7 +29,7 @@ rejected, skipped, no-history, and paused fixtures.
 | Tab then Enter expands the first schedule | Passed at all eight locale/width combinations |
 | Space collapses it and updates `aria-expanded` | Passed at all eight combinations |
 | Keyboard focus remains on the trigger with visible focus | Passed at all eight combinations |
-| axe-core 4.13.0: wcag2a, wcag2aa, wcag21aa, wcag22aa | Zero violations in each of the seven expanded states at all eight combinations |
+| axe-core 4.13.0: wcag2a, wcag2aa, wcag21aa, wcag22aa | Zero violations in each of the eight expanded states at all eight combinations |
 | State interpretation | Text labels and timestamps remain available without relying on color |
 | Chinese terminology correction | Regenerated, rebuilt, and rechecked all four Chinese widths and seven states |
 
@@ -37,17 +39,19 @@ Screenshots:
 - [Desktop failed handoff details](en-1440-expanded.png)
 - [Unknown handoff details](en-unknown-expanded.png)
 - [Accepted handoff details](en-accepted-expanded.png)
+- [Exhausted one-time handoff details](en-exhausted-expanded.png)
+- [Chinese exhausted one-time handoff, 390px](zh-390-exhausted.png)
 - [Chinese mobile details, 390px](zh-390-expanded.png)
 - [Chinese minimum width with keyboard focus, 320px](zh-320-keyboard.png)
 
 ## Local checks and limits
 
-Reused the completed 15-test component run, Web type check, and repository checks from the same
-worktree; the recovered command outputs confirmed successful exits. The new assertions first
-failed against the original component (11 failures), then all 15 tests passed with the change.
-The subsequent edit only aligned two Chinese messages with the repository glossary.
-Paraglide compilation and the production Web build passed after that edit. Repository checks
-run again before committing the acceptance artifacts. Existing Biome warnings and Vite
+The focused component suite passes all 17 tests, including exhausted one-time unreachable/rejected
+handoffs. The original assertions first failed against the original component (11 failures), then
+passed with the implementation. Review feedback corrected the skipped direction word, neutralized
+unknown wording, and removed references to nonexistent future triggers.
+Web type checking, Paraglide compilation, and the production Web build passed after those edits.
+Repository checks run before committing the acceptance artifacts. Existing Biome warnings and Vite
 shared-package browser-externalization/chunk-size warnings remain non-blocking.
 
 The affected behavior is confined to one Web component and its messages. Server/database,

@@ -282,10 +282,11 @@ without opening the full task. The list uses its existing summary fields and doe
 until details are opened.
 
 Details explain the recorded outcome and retain its reason code and next scheduled time. An accepted handoff
-confirms runtime receipt, never task completion. An unknown handoff may already have started work; users check
+confirms runtime receipt, never task completion. An unknown handoff may still be in flight or may already have started work; users check
 Tasks before starting it again. Unreachable and rejected handoffs direct users to the Agent's Computer status,
 without diagnosing the cause from current presence. Skipped occurrences retain their reason code. The schedule
-does not retry an occurrence; future occurrences follow the current enabled state and time rule. These messages
+does not retry an occurrence. Explanations do not imply a future occurrence when the next trigger is absent;
+future occurrences, when present, follow the current enabled state and time rule. These messages
 do not introduce retries, execution history, or a separate task lifecycle.
 
 ## Internationalization and copy

@@ -340,6 +340,11 @@
       "idx": 67,
       "tag": "0067_reset_context_tree_selections",
       "sha256": "01a8b99ae8f83d8d66e80b180959bcc4a93ed9b477e1d3b1768428655d206461"
+    },
+    {
+      "idx": 68,
+      "tag": "0068_release_terminal_setup_slots",
+      "sha256": "5d406bebedc543bf120c7fe3334406894f6b3b3ae672e8c0d10d6cf2fbcaf32a"
     }
   ]
 }

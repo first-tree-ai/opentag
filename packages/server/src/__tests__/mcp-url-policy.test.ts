@@ -1,4 +1,5 @@
 import { readdirSync, readFileSync } from "node:fs";
+import { createServer, type Server } from "node:http";
 import { fileURLToPath } from "node:url";
 import { MCP_ERROR_CODES } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -32,7 +33,61 @@ function blockedBy(url: string, policy = hosted): McpServiceError | undefined {
   }
 }
 
-afterEach(() => vi.restoreAllMocks());
+const openServers: Server[] = [];
+/** A loopback origin that flushes its headers and never finishes its body. */
+function endlessOrigin(answer: { status: number; headers?: Record<string, string>; pump?: boolean }) {
+  const state = { closed: false, written: 0 };
+  const server = createServer((_request, response) => {
+    response.writeHead(answer.status, { "content-type": "text/plain", ...answer.headers });
+    response.on("close", () => {
+      state.closed = true;
+    });
+    if (answer.pump === false) {
+      // Headers only, then silence: no body byte ever arrives, so only the client can end this.
+      response.flushHeaders();
+      return;
+    }
+    const chunk = Buffer.alloc(64 * 1024, 0x61);
+    const pump = () => {
+      if (response.destroyed) return;
+      state.written += chunk.byteLength;
+      if (response.write(chunk)) setImmediate(pump);
+      else response.once("drain", pump);
+    };
+    pump();
+  });
+  openServers.push(server);
+  return new Promise<{ port: number; state: typeof state }>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      resolve({ port: typeof address === "object" && address !== null ? address.port : 0, state });
+    });
+  });
+}
+
+/** Wait for the peer to notice the close, then confirm it stopped writing. */
+async function assertPeerClosed(state: { closed: boolean; written: number }): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(state.closed).toBe(true);
+  const settled = state.written;
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  // Nothing was drained: the peer stopped because the socket closed, not because this side read it.
+  expect(state.written).toBe(settled);
+}
+
+afterEach(async () => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+  await Promise.all(
+    openServers.splice(0).map(
+      (server) =>
+        new Promise<void>((resolve) => {
+          server.closeAllConnections();
+          server.close(() => resolve());
+        }),
+    ),
+  );
+});
 
 describe("assertOutboundUrl", () => {
   it("admits a public HTTPS endpoint", () => {
@@ -262,6 +317,279 @@ describe("McpOutboundFetcher DNS policy", () => {
     expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(2);
     expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
     expect(peak).toBeLessThanOrEqual(2);
+  });
+});
+
+/**
+ * One operation, one lifecycle. Every case here was broken: the deadline started only after the
+ * address check, an already-cancelled call still reached `fetch`, and a refused response body was
+ * left open for the peer to keep writing into.
+ */
+describe("McpOutboundFetcher request lifecycle", () => {
+  /** A resolver a test holds open, so nothing depends on a network or a real lookup duration. */
+  /**
+   * A resolver keyed by hostname: the named host stays unresolved until the test answers it, and
+   * every other host answers at once. A resolver that always hung could not show whether a slot was
+   * released while a lookup was still outstanding — the second request would have nowhere to go.
+   */
+  function selectiveResolver(heldHost: string) {
+    const asked: string[] = [];
+    let answer!: (addresses: string[]) => void;
+    let fail!: (error: Error) => void;
+    const held = new Promise<string[]>((resolve, reject) => {
+      answer = resolve;
+      fail = reject;
+    });
+    const resolveAddresses = (hostname: string): Promise<string[]> => {
+      asked.push(hostname);
+      return hostname === heldHost ? held : Promise.resolve(["93.184.216.34"]);
+    };
+    return { resolveAddresses, asked, answer, fail };
+  }
+
+  function okFetch() {
+    return vi.fn(async () => new Response("{}", { status: 200 })) as unknown as typeof globalThis.fetch;
+  }
+
+  it("releases the slot at the deadline while the resolver is still held, then never dials", async () => {
+    vi.useFakeTimers();
+    const resolver = selectiveResolver("held.example.com");
+    const fetchImpl = okFetch();
+    const fetcher = new McpOutboundFetcher({
+      allowLoopback: false,
+      timeoutMs: 20,
+      maxConcurrentPerAccount: 1,
+      fetch: fetchImpl,
+      resolveAddresses: resolver.resolveAddresses,
+    });
+    const startedAt = Date.now();
+    const heldCall = fetcher.fetchOutbound(ACCOUNT, "https://held.example.com/mcp", { method: "POST", body: "{}" });
+    const failed = expect(heldCall).rejects.toMatchObject({
+      code: MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE,
+      detail: { cause: "deadline" },
+    });
+    await vi.advanceTimersByTimeAsync(20);
+    await failed;
+    // Promptly: at the configured deadline, not whenever the resolver decides to answer.
+    expect(Date.now() - startedAt).toBe(20);
+
+    /*
+     * The first lookup is still unresolved at this point, so the Account's only slot must already be
+     * free. That is the difference between "released at the deadline" and "released once the
+     * resolver answers", which a check made after the answer cannot tell apart.
+     */
+    await expect(fetcher.fetchOutbound(ACCOUNT, "https://mcp.example.com/mcp")).resolves.toMatchObject({ status: 200 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(resolver.asked).toEqual(["held.example.com", "mcp.example.com"]);
+
+    // Only now does the held lookup answer, and the request it was resolved for must not be sent.
+    resolver.answer(["93.184.216.34"]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(resolver.asked).toEqual(["held.example.com", "mcp.example.com"]);
+  });
+
+  it("does not dial a request the caller cancelled before entry", async () => {
+    const caller = new AbortController();
+    caller.abort();
+    const fetchImpl = okFetch();
+    const fetcher = new McpOutboundFetcher({
+      ...PUBLIC_RESOLVER,
+      allowLoopback: false,
+      maxConcurrentPerAccount: 1,
+      fetch: fetchImpl,
+    });
+    await expect(
+      fetcher.fetchOutbound(ACCOUNT, "https://mcp.example.com/mcp", {
+        method: "POST",
+        body: "{}",
+        signal: caller.signal,
+      }),
+    ).rejects.toMatchObject({ code: MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE, detail: { cause: "aborted" } });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    // Nothing was admitted, so nothing was left held either.
+    await expect(fetcher.fetchOutbound(ACCOUNT, "https://mcp.example.com/mcp")).resolves.toMatchObject({ status: 200 });
+  });
+
+  it("ends a call cancelled during the address check, without dialing the POST", async () => {
+    const caller = new AbortController();
+    const resolver = selectiveResolver("mcp.example.com");
+    let entered!: () => void;
+    const resolving = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const fetchImpl = okFetch();
+    const fetcher = new McpOutboundFetcher({
+      allowLoopback: false,
+      fetch: fetchImpl,
+      resolveAddresses: (hostname) => {
+        entered();
+        return resolver.resolveAddresses(hostname);
+      },
+    });
+    const pending = fetcher.fetchOutbound(ACCOUNT, "https://mcp.example.com/mcp", {
+      method: "POST",
+      body: "{}",
+      signal: caller.signal,
+    });
+    await resolving;
+    caller.abort();
+    await expect(pending).rejects.toMatchObject({
+      code: MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE,
+      detail: { cause: "aborted" },
+    });
+    // The lookup cannot be interrupted; it is observed instead, and it must not turn into a request.
+    resolver.answer(["93.184.216.34"]);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("keeps a resolver that fails after cancellation observed", async () => {
+    const caller = new AbortController();
+    const resolver = selectiveResolver("mcp.example.com");
+    let entered!: () => void;
+    const resolving = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const fetchImpl = okFetch();
+    const fetcher = new McpOutboundFetcher({
+      allowLoopback: false,
+      fetch: fetchImpl,
+      resolveAddresses: (hostname) => {
+        entered();
+        return resolver.resolveAddresses(hostname);
+      },
+    });
+    const pending = fetcher.fetchOutbound(ACCOUNT, "https://mcp.example.com/mcp", {
+      method: "POST",
+      body: "{}",
+      signal: caller.signal,
+    });
+    await resolving;
+    caller.abort();
+    await expect(pending).rejects.toMatchObject({ code: MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE });
+    // An unhandled rejection here would fail this test, which is the assertion.
+    resolver.fail(new Error("ENOTFOUND"));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("closes an in-flight request when the caller cancels", async () => {
+    const caller = new AbortController();
+    const fetchImpl = vi.fn(
+      async (_url: unknown, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(Object.assign(new Error("aborted"), { name: "AbortError" })),
+          );
+        }),
+    ) as unknown as typeof globalThis.fetch;
+    const fetcher = new McpOutboundFetcher({ ...PUBLIC_RESOLVER, allowLoopback: false, fetch: fetchImpl });
+    const pending = fetcher.fetchOutbound(ACCOUNT, "https://mcp.example.com/mcp", {
+      method: "POST",
+      body: "{}",
+      signal: caller.signal,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    caller.abort();
+    // The signal the caller's cancellation reaches is the one `fetch` was given.
+    await expect(pending).rejects.toMatchObject({
+      code: MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE,
+      detail: { cause: "aborted" },
+    });
+  });
+
+  it("cancels the body of a redirect it refuses", async () => {
+    let cancelled = 0;
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("moved"));
+      },
+      cancel() {
+        cancelled += 1;
+      },
+    });
+    const fetchImpl = vi.fn(
+      async () => new Response(body, { status: 302, headers: { location: "http://169.254.169.254/latest/" } }),
+    ) as unknown as typeof globalThis.fetch;
+    const fetcher = new McpOutboundFetcher({ ...PUBLIC_RESOLVER, allowLoopback: false, fetch: fetchImpl });
+    await expect(fetcher.fetchOutbound(ACCOUNT, "https://mcp.example.com/mcp")).rejects.toMatchObject({
+      code: MCP_ERROR_CODES.URL_BLOCKED,
+    });
+    expect(cancelled).toBe(1);
+  });
+
+  it("cancels a body refused for its declared length, and one refused while it arrives", async () => {
+    for (const label of ["declared", "delivered"] as const) {
+      let cancelled = 0;
+      const body = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array(label === "declared" ? 8 : 4096));
+        },
+        cancel() {
+          cancelled += 1;
+        },
+      });
+      const headers = label === "declared" ? { "content-length": "4096" } : {};
+      const fetchImpl = vi.fn(
+        async () => new Response(body, { status: 200, headers }),
+      ) as unknown as typeof globalThis.fetch;
+      const fetcher = new McpOutboundFetcher({
+        ...PUBLIC_RESOLVER,
+        allowLoopback: false,
+        fetch: fetchImpl,
+        maxResponseBytes: 1024,
+      });
+      await expect(fetcher.fetchOutbound(ACCOUNT, "https://mcp.example.com/mcp"), label).rejects.toMatchObject({
+        code: MCP_ERROR_CODES.UPSTREAM_ERROR,
+      });
+      expect(cancelled, label).toBe(1);
+    }
+  });
+});
+
+/**
+ * The socket half of the same invariant: a refusal must close the connection, not leave it for the
+ * peer to keep writing into. These use a loopback origin, because whether a stream was cancelled is
+ * only observable as a closed socket.
+ */
+describe("McpOutboundFetcher connection cleanup", () => {
+  it("closes the connection when it refuses a redirect", async () => {
+    const { port, state } = await endlessOrigin({
+      status: 302,
+      headers: { location: "http://127.0.0.1:9/elsewhere" },
+    });
+    const fetcher = new McpOutboundFetcher({ allowLoopback: true });
+    await expect(fetcher.fetchOutbound(ACCOUNT, `http://127.0.0.1:${port}/mcp`)).rejects.toMatchObject({
+      code: MCP_ERROR_CODES.URL_BLOCKED,
+    });
+    await assertPeerClosed(state);
+  });
+
+  it("closes the connection when it refuses a declared-oversized body", async () => {
+    // Headers only: a peer that sends nothing more would hold this connection open indefinitely if
+    // the refusal left the body alone, and no byte-count mismatch would close it for us.
+    const { port, state } = await endlessOrigin({
+      status: 200,
+      headers: { "content-length": "4096" },
+      pump: false,
+    });
+    const fetcher = new McpOutboundFetcher({ allowLoopback: true, maxResponseBytes: 1024 });
+    await expect(fetcher.fetchOutbound(ACCOUNT, `http://127.0.0.1:${port}/mcp`)).rejects.toMatchObject({
+      code: MCP_ERROR_CODES.UPSTREAM_ERROR,
+    });
+    await assertPeerClosed(state);
+  });
+
+  it("closes the connection when the deadline expires before the body starts", async () => {
+    const { port, state } = await endlessOrigin({ status: 200, pump: false });
+    const fetcher = new McpOutboundFetcher({ allowLoopback: true, timeoutMs: 20 });
+    await expect(fetcher.fetchOutbound(ACCOUNT, `http://127.0.0.1:${port}/mcp`)).rejects.toMatchObject({
+      code: MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE,
+      detail: { cause: "deadline" },
+    });
+    await assertPeerClosed(state);
   });
 });
 

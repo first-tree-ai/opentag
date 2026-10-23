@@ -292,6 +292,10 @@ console. Cloud Monitoring watches the Server from outside and through the platfo
 | Server log at `CRITICAL` (Pino `fatal`); no server code emits it yet, see Known gaps | Fatal log | Any entry; at most one notice per 10 minutes | Email and SMS |
 | Server log at `ERROR` or above, other than `IM_DELIVERY_RUNTIME_UNAVAILABLE` | New error type | Any entry; at most one notice per 30 minutes | Email |
 
+The independent [production alert relay](alert-relay.md) can add Feishu group messages and SMS urgency to selected
+production policies while preserving their existing channels. Server log policy enablement is an operational setting;
+adding the relay must not re-enable a policy that operators have disabled.
+
 `/readyz` is the probe target because it answers `503` until bootstrap readiness has completed all four stages
 (`configuration`, `migration`, `application`, `listen`), and again whenever the database probe fails. `/healthz` only
 proves that the process is up. The check needs no credential.

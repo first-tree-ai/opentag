@@ -21,6 +21,8 @@ environments, and observing and diagnosing failures.
   onboarding on a staging Account.
 - **[Server observability](observability.md)** — tracing and the logging
   vocabulary.
+- **[Production alert relay](alert-relay.md)** — independent Cloud Run delivery
+  of Monitoring incidents to Feishu with SMS urgency.
 - **[Client error reporting](error-reporting.md)** — relaying Web and CLI
   failures to Error Reporting.
 - **[Error taxonomy and background supervision](error-taxonomy.md)** — the

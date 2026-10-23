@@ -1,0 +1,6 @@
+*
+!Dockerfile
+!.dockerignore
+!package.json
+!src
+!src/**

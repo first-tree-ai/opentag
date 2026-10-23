@@ -175,6 +175,7 @@ export type ScheduledDispatchAdmissionFailure =
   | "schedule_deleted"
   | "schedule_disabled"
   | "schedule_changed"
+  | "dispatch_not_marked"
   | ScheduledTargetPermanentCode
   | ScheduledTargetTemporaryCode;
 
@@ -988,7 +989,11 @@ export class SessionService {
         throw error;
       }
       void result.catch(() => markDispatched());
-      await dispatched;
+      if (!(await waitForSendMark(dispatched, SCHEDULED_SEND_MARK_TIMEOUT_MS))) {
+        // The send never confirmed the frame inside the admission window: refuse it and commit, so
+        // the authority locks are released instead of being held for the whole stall.
+        return this.#rejectScheduledAdmission(route, fence, "dispatch_not_marked");
+      }
       return { admitted: true, result } as const;
     });
   }
@@ -1585,6 +1590,28 @@ interface ScheduledAdmissionRows {
   placement: { computerId: string; generation: number } | undefined;
   computer: { ownerAccountId: string } | undefined;
   scheduleRow: { id: string; enabled: boolean; nextTriggerAt: Date | null; revision: number } | undefined;
+}
+
+/**
+ * How long the admission waits for the transport to mark its send before it refuses the dispatch.
+ * The admission holds the Agent, IM binding, Session, placement, and Computer row locks until that
+ * mark, so a stalled send blocks every other writer of the same placement; a CLI-proof mint was
+ * already cancelled by `statement_timeout` behind one. A send normally marks in milliseconds.
+ */
+const SCHEDULED_SEND_MARK_TIMEOUT_MS = 5_000;
+
+/** True once the transport marks its send; false when the admission deadline expires first. */
+export async function waitForSendMark(marked: Promise<void>, timeoutMs: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), timeoutMs);
+    timer.unref();
+  });
+  try {
+    return await Promise.race([marked.then(() => true), expired]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /**

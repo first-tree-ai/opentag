@@ -185,7 +185,7 @@ async function raceWithAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<
 /** One admission-wrapped transport stage (reconcile or business delivery) for a scheduled dispatch. */
 type ScheduledStageResult<T> =
   | { kind: "completed"; result: T }
-  | { kind: "rejected"; reason: ScheduledDispatchAdmissionFailure }
+  | { kind: "rejected"; reason: ScheduledDispatchAdmissionFailure; sent: boolean }
   | { kind: "aborted"; sent: boolean }
   | { kind: "failed"; error: unknown; sent: boolean };
 
@@ -429,7 +429,9 @@ export class SessionCollaborationService {
     if (delivery.kind === "aborted") {
       return record(delivery.sent ? "unknown" : "unreachable", "delivery_timeout");
     }
-    if (delivery.kind === "rejected") return this.#recordScheduledAdmissionFailure(delivery.reason, record);
+    if (delivery.kind === "rejected") {
+      return this.#recordScheduledAdmissionFailure(delivery.reason, record, delivery.sent);
+    }
     if (delivery.kind === "failed") {
       if (!delivery.sent) return record("unreachable", "runtime_unavailable");
       const timeout = delivery.error instanceof RuntimeDomainRequestError && delivery.error.code === "timeout";
@@ -477,7 +479,9 @@ export class SessionCollaborationService {
       },
     );
     const settled = await raceWithAbort(work, signal);
-    if (admissionFailure !== undefined) return this.#recordScheduledAdmissionFailure(admissionFailure, record);
+    if (admissionFailure !== undefined) {
+      return this.#recordScheduledAdmissionFailure(admissionFailure, record, sent);
+    }
     return this.#finishScheduledCloudDelivery(settled, sent, snapshot, route, record);
   }
 
@@ -551,7 +555,7 @@ export class SessionCollaborationService {
       }
       return { kind: "failed", error: admitted.error, sent };
     }
-    if (!admitted.value.admitted) return { kind: "rejected", reason: admitted.value.reason };
+    if (!admitted.value.admitted) return { kind: "rejected", reason: admitted.value.reason, sent };
     const receipt = await raceWithAbort(admitted.value.result, signal);
     if (receipt.kind === "aborted") return { kind: "aborted", sent };
     if (receipt.kind === "error") {
@@ -567,6 +571,7 @@ export class SessionCollaborationService {
   #recordScheduledAdmissionFailure(
     reason: ScheduledDispatchAdmissionFailure,
     record: (outcome: SessionMessageOutcome, code?: string) => Promise<ScheduledMessageDispatchOutcome>,
+    sent = false,
   ): Promise<ScheduledMessageDispatchOutcome> {
     switch (reason) {
       case "schedule_deleted":
@@ -579,6 +584,10 @@ export class SessionCollaborationService {
       case "agent_suspended":
       case "authority_unavailable":
         return record("unreachable", reason);
+      case "dispatch_not_marked":
+        // The transport never confirmed the frame inside the admission window. A send it did mark is
+        // already past proof of non-delivery, so only the unmarked case is provably unreachable.
+        return record(sent ? "unknown" : "unreachable", "delivery_timeout");
     }
   }
 

@@ -1266,6 +1266,90 @@ describe("CloudDeliveryOwner", () => {
     expect((await deliveryRow(child.deliveryId)).state).toBe("pending");
   });
 
+  it("queries an exact Runner that reconnects while the absent probe is pending", async () => {
+    const { scope, agent, cloud } = await cloudScope();
+    let releaseProbe: () => void = () => undefined;
+    let probePending: () => void = () => undefined;
+    const probeGate = new Promise<void>((resolve) => (releaseProbe = resolve));
+    const probeEntered = new Promise<void>((resolve) => (probePending = resolve));
+    const { hub, fence, owner } = makeOwner({
+      allocationStatus: async () => {
+        probePending();
+        await probeGate;
+        return {
+          scope,
+          lifecycle: "ready" as const,
+          resourceUid: `unit-uid-${scope.sandboxId.slice(0, 8)}`,
+          physical: "present" as const,
+        };
+      },
+    });
+    const sent: RunnerServerFrame[] = [];
+    const first = attachReady(hub, fence, scope, sent, cloud.computerId);
+    const { deliveryId, request, turnId } = await dispatchAndAccept({
+      owner,
+      fence,
+      scope,
+      agentId: agent.id,
+      computerId: cloud.computerId,
+    });
+    // A child steered into the turn while it was live: a genuine completion must not requeue it.
+    const child = await pendingDelivery({ sessionId: scope.sessionId });
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        state: "steered",
+        steerTargetDeliveryId: deliveryId,
+        inputHash: "steered-child-input-hash",
+        steeredAt: new Date(),
+      })
+      .where(eq(imMessageDeliveries.id, child.deliveryId));
+
+    const frozen = request as DirectImMessageDeliveryRequest;
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ dispatchPayload: { ...frozen, deadlineAt: new Date(Date.now() - 2 * 60 * 60 * 1_000).toISOString() } })
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    // Disconnect first, so recovery reaches the absent probe with no live owner.
+    owner.detachConnection(first.connection.connectionId);
+    const recovering = owner.recoverAccepted(deliveryId);
+    await probeEntered;
+
+    // The same allocation reconnects while the probe is pending, and answers like the real Client:
+    // the query answer first, then the journaled report on the same socket.
+    let finishReplay: () => void = () => undefined;
+    const replayed = new Promise<void>((resolve) => (finishReplay = resolve));
+    const reattached = attachReady(hub, fence, scope, sent, cloud.computerId);
+    const send = reattached.socket.send.bind(reattached.socket);
+    reattached.socket.send = (frame) => {
+      send(frame);
+      if (frame.type !== "delivery:query") return;
+      setImmediate(() => {
+        owner.handleQueryResult(reattached.connection, { requestId: frame.requestId, phase: "reported" });
+        setImmediate(() => {
+          void owner
+            .handleDeliveryReport(reattached.connection, {
+              requestId: randomUUID(),
+              report: turnReport(frozen, turnId),
+            })
+            .then(finishReplay, finishReplay);
+        });
+      });
+    };
+    releaseProbe();
+
+    // The probe's `present` answer plus the reconnected exact owner fence the offline timeout: the
+    // turn stays pending, the now-current Runner is queried, and its real report is recorded.
+    await expect(recovering).resolves.toBe("pending");
+    expect(sent.some((frame) => frame.type === "delivery:query")).toBe(true);
+    await replayed;
+    const recorded = await deliveryRow(deliveryId);
+    expect(recorded.turnReport).toMatchObject({ outcome: "completed", executionEffects: "completed" });
+    expect(sent.filter((frame) => frame.type === "delivery:report:ack").at(-1)).toMatchObject({ status: "recorded" });
+    expect(sent.some((frame) => (frame as { status?: string }).status === "conflict")).toBe(false);
+    expect((await deliveryRow(child.deliveryId)).state).toBe("steered");
+  });
+
   it("keeps a releasing allocation recoverable and records the real report instead of unknown", async () => {
     const { scope, agent, cloud } = await cloudScope();
     const { hub, fence, owner } = makeOwner();

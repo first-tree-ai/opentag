@@ -811,8 +811,10 @@ export class CloudDeliveryOwner {
    *   disconnect can never destroy a genuine result;
    * - a report the Server can no longer accept — a proven absence, or the end of the frozen
    *   execution window (and, without one, the maximum runtime from acceptance) plus its grace —
-   *   settles unknown exactly once. This is a report acceptance cutoff, not proof that no authentic
-   *   report exists: the late report is answered `conflict` and cannot replace the terminal hash.
+   *   settles unknown exactly once, but only while no exact Runner owns the turn: the absent-probe
+   *   await can outlive a reconnect, so the owner is re-read after it. This is a report acceptance
+   *   cutoff, not proof that no authentic report exists: the late report is answered `conflict` and
+   *   cannot replace the terminal hash.
    */
   async recoverAccepted(deliveryId: string): Promise<"pending" | "resolved" | "noop"> {
     const [row] = await this.#database
@@ -828,18 +830,32 @@ export class CloudDeliveryOwner {
     if (allocation.kind === "settle") return this.#settleUnknown(deliveryId);
     if (allocation.kind === "pending") return "pending";
 
-    const record = this.#fence.connectionForSandbox(allocation.sandboxId);
-    if (record && record.instanceId === delivery.reportOwnerInstanceId && this.#isExactConnection(record)) {
-      return this.#recoverLive(record, delivery);
-    }
+    const live = this.#exactLiveOwner(allocation.sandboxId, delivery);
+    if (live) return this.#recoverLive(live, delivery);
     // No exact live connection. A physically verified absence of the tracked resource is the only
     // additional proof that no report can ever arrive; anything else stays pending for the replay.
     const reconciliation = await this.#allocationStatus?.(allocation.sandboxId);
     if (reconciliation?.physical === "absent") return this.#settleUnknown(deliveryId);
+    // The probe awaited: this overdue allocation can reconnect while it is pending, and an exact
+    // current Runner would then be the only owner that can still replay the report. Settling it here
+    // would overwrite a genuine in-flight result, so re-read the owner and query it instead.
+    const reconnected = this.#exactLiveOwner(allocation.sandboxId, delivery);
+    if (reconnected) return this.#recoverLive(reconnected, delivery);
     // An inconclusive probe must not retry forever: once every window in which this report could
     // still be truthful has passed, the outcome is unknown, exactly as a proven absence settles it.
     if (Date.now() >= this.#acceptedReportDeadlineMs(delivery)) return this.#settleUnknown(deliveryId);
     return "pending";
+  }
+
+  /** The exact current Runner connection that owns this accepted turn, if one is attached now. */
+  #exactLiveOwner(
+    sandboxId: string,
+    delivery: typeof imMessageDeliveries.$inferSelect,
+  ): CloudConnectionRecord | undefined {
+    const record = this.#fence.connectionForSandbox(sandboxId);
+    return record && record.instanceId === delivery.reportOwnerInstanceId && this.#isExactConnection(record)
+      ? record
+      : undefined;
   }
 
   /**

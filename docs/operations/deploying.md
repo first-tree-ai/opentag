@@ -125,6 +125,9 @@ server container.
 | `OPENTAG_PUBLIC_URL` | The App's HTTPS URL; hosted environments reject plain HTTP |
 | `OPENTAG_WEBSITE_ORIGINS` | Optional; comma-separated website origins added to the built-in official origins for the public catalog APIs; loopback HTTP is allowed for local website development |
 | `OPENTAG_DATABASE_URL` | `postgresql://…` for the Staging database |
+| `OPENTAG_DATABASE_STATEMENT_TIMEOUT_MS` | Optional; defaults to `30000`; PostgreSQL `statement_timeout` for every pool connection |
+| `OPENTAG_DATABASE_QUERY_TIMEOUT_MS` | Optional; defaults to `35000`; client-side deadline per query, must be greater than the statement timeout |
+| `OPENTAG_DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS` | Optional; defaults to `60000`; PostgreSQL `idle_in_transaction_session_timeout` |
 | `BETTER_AUTH_SECRET` | At least 32 random characters, unique to Staging; signs every Account session |
 | `OPENTAG_JWT_SECRET` | At least 32 random characters, unique to Staging and distinct from `BETTER_AUTH_SECRET`; signs Slack OAuth state only |
 | `OPENTAG_ENCRYPTION_KEY` | Base64 32-byte key, unique to Staging |

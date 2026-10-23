@@ -17,6 +17,12 @@ import { CloudRunnerVersionSchema, parseCloudStorageBase } from "./cloud-identit
 import { type CloudModelConfig, resolveCloudModelConfig } from "./cloud-model-config.js";
 import { type CloudRunnerConfig, resolveCloudRunnerConfig } from "./cloud-runner-config.js";
 import {
+  type DatabaseTimeouts,
+  DEFAULT_IDLE_IN_TRANSACTION_TIMEOUT_MS,
+  DEFAULT_QUERY_TIMEOUT_MS,
+  DEFAULT_STATEMENT_TIMEOUT_MS,
+} from "./db/timeouts.js";
+import {
   type ErrorReportingConfig,
   ErrorReportingCredentialsJsonSchema,
   resolveErrorReportingConfig,
@@ -334,6 +340,13 @@ const ServerEnvironmentSchema = z
       .regex(/^[0-9a-f]{40}$/)
       .optional(),
     OPENTAG_DATABASE_URL: DatabaseUrlSchema,
+    OPENTAG_DATABASE_STATEMENT_TIMEOUT_MS: z.coerce.number().int().min(1_000).default(DEFAULT_STATEMENT_TIMEOUT_MS),
+    OPENTAG_DATABASE_QUERY_TIMEOUT_MS: z.coerce.number().int().min(1_000).default(DEFAULT_QUERY_TIMEOUT_MS),
+    OPENTAG_DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS: z.coerce
+      .number()
+      .int()
+      .min(1_000)
+      .default(DEFAULT_IDLE_IN_TRANSACTION_TIMEOUT_MS),
     OPENTAG_ENCRYPTION_KEY: EncryptionKeySchema,
     OPENTAG_ENCRYPTION_KEY_RING: EncryptionKeyRingSchema,
     OPENTAG_ENCRYPTION_ACTIVE_KEY_ID: z.string().trim().min(1).optional(),
@@ -480,6 +493,15 @@ const ServerEnvironmentSchema = z
       .default(60 * 60 * 24 * 30),
   })
   .strict()
+  .superRefine((value, context) => {
+    // The server must get the first chance to cancel; the client deadline is only the backstop.
+    if (value.OPENTAG_DATABASE_QUERY_TIMEOUT_MS <= value.OPENTAG_DATABASE_STATEMENT_TIMEOUT_MS) {
+      context.addIssue({
+        code: "custom",
+        message: "OPENTAG_DATABASE_QUERY_TIMEOUT_MS must be greater than OPENTAG_DATABASE_STATEMENT_TIMEOUT_MS",
+      });
+    }
+  })
   .superRefine((value, context) => {
     if (!value.OPENTAG_DEV_INTERNAL_TOOLS_ENABLED) return;
     if (!value.OPENTAG_ENV_EXPLICIT || value.OPENTAG_ENV !== "dev") {
@@ -767,6 +789,8 @@ export interface ServerConfig {
   /** Where the Server reads the channel's exact latest Client target, and how often. */
   channelTarget: { downloadBaseUrl: string; pollIntervalMs: number };
   databaseUrl: string;
+  /** Server-side and client-side bounds for every pool query; see db/timeouts.ts. */
+  databaseTimeouts: DatabaseTimeouts;
   encryptionKey: Uint8Array;
   /**
    * Authenticated v2 envelope key ring for credential material, with the active write key. Absent
@@ -952,6 +976,11 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_AUTO_MIGRATE: environment.OPENTAG_AUTO_MIGRATE,
     OPENTAG_BUILD_REVISION: emptyToUndefined(environment.OPENTAG_BUILD_REVISION),
     OPENTAG_DATABASE_URL: environment.OPENTAG_DATABASE_URL,
+    OPENTAG_DATABASE_STATEMENT_TIMEOUT_MS: emptyToUndefined(environment.OPENTAG_DATABASE_STATEMENT_TIMEOUT_MS),
+    OPENTAG_DATABASE_QUERY_TIMEOUT_MS: emptyToUndefined(environment.OPENTAG_DATABASE_QUERY_TIMEOUT_MS),
+    OPENTAG_DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS: emptyToUndefined(
+      environment.OPENTAG_DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS,
+    ),
     OPENTAG_ENCRYPTION_KEY: environment.OPENTAG_ENCRYPTION_KEY,
     OPENTAG_ENCRYPTION_KEY_RING: emptyToUndefined(environment.OPENTAG_ENCRYPTION_KEY_RING),
     OPENTAG_ENCRYPTION_ACTIVE_KEY_ID: emptyToUndefined(environment.OPENTAG_ENCRYPTION_ACTIVE_KEY_ID),
@@ -1029,6 +1058,11 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     },
     channel: getChannelConfig(parsed.OPENTAG_ENV),
     databaseUrl: parsed.OPENTAG_DATABASE_URL,
+    databaseTimeouts: {
+      statementTimeoutMs: parsed.OPENTAG_DATABASE_STATEMENT_TIMEOUT_MS,
+      queryTimeoutMs: parsed.OPENTAG_DATABASE_QUERY_TIMEOUT_MS,
+      idleInTransactionTimeoutMs: parsed.OPENTAG_DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS,
+    },
     encryptionKey: parsed.OPENTAG_ENCRYPTION_KEY,
     ...(parsed.OPENTAG_ENCRYPTION_KEY_RING && parsed.OPENTAG_ENCRYPTION_ACTIVE_KEY_ID
       ? {

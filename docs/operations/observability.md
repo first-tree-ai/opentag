@@ -296,6 +296,19 @@ console. Cloud Monitoring watches the Server from outside and through the platfo
 (`configuration`, `migration`, `application`, `listen`), and again whenever the database probe fails. `/healthz` only
 proves that the process is up. The check needs no credential.
 
+The database probe runs `select 1` on its own single connection, not on the application pool, and fails after 1 s.
+On that deadline the Server destroys the probe connection and opens a new one on the next probe. At most two probe
+attempts younger than 10 s count as live; an older attempt no longer holds a slot. A database outage therefore turns
+`/readyz` to `503`, and `/readyz` returns to `200` within about 10 s after the database answers again.
+
+Application queries have two bounds. PostgreSQL cancels a statement after `OPENTAG_DATABASE_STATEMENT_TIMEOUT_MS`
+(SQLSTATE `57014`) and ends a session that stays idle inside a transaction after
+`OPENTAG_DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS`. When the server does not answer, for example on a lost network path,
+the Server rejects the query after `OPENTAG_DATABASE_QUERY_TIMEOUT_MS` and logs the warning
+`Database query exceeded client deadline` with `check: "database"` and `timeoutMs`. The log has no SQL text or
+parameters. Pool connections send TCP keepalive probes after 10 s idle. Startup logs the resolved values once as
+`Resolved database timeouts`.
+
 ### Server logs in Cloud Logging
 
 The Ops Agent on the production VM tails the Docker `json-file` logs under `/var/lib/docker/containers/` and writes the

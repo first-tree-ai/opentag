@@ -171,7 +171,7 @@ describe("GET /healthz", () => {
     }
   });
 
-  it("pins live probes across three aged-out windows", async () => {
+  it("starts a fresh probe after each aged-out window instead of pinning", async () => {
     vi.useFakeTimers({ now: 0 });
     const execute = vi.fn(() => new Promise<never>(() => undefined));
     const readiness = new BootstrapReadiness();
@@ -180,25 +180,64 @@ describe("GET /healthz", () => {
     apps.push(app);
 
     try {
-      const firstRequest = app.inject({ method: "GET", url: "/readyz" });
-      await vi.advanceTimersByTimeAsync(1_000);
-      const firstResponse = await firstRequest;
-
-      await vi.advanceTimersByTimeAsync(9_001);
-      const secondRequest = app.inject({ method: "GET", url: "/readyz" });
-      await vi.advanceTimersByTimeAsync(1_000);
-      const secondResponse = await secondRequest;
-
-      await vi.advanceTimersByTimeAsync(9_001);
-      const thirdResponse = await app.inject({ method: "GET", url: "/readyz" });
-
-      expect([firstResponse, secondResponse, thirdResponse].every((response) => response.statusCode === 503)).toBe(
-        true,
-      );
-      expect(execute).toHaveBeenCalledTimes(2);
+      for (let window = 1; window <= 4; window += 1) {
+        const inWindow = Promise.all([
+          app.inject({ method: "GET", url: "/readyz" }),
+          app.inject({ method: "GET", url: "/readyz" }),
+        ]);
+        await vi.advanceTimersByTimeAsync(1_000);
+        const responses = await inWindow;
+        expect(responses.every((response) => response.statusCode === 503)).toBe(true);
+        // One new attempt per window: aged-out attempts free their slot, fresh ones never fan out.
+        expect(execute).toHaveBeenCalledTimes(window);
+        await vi.advanceTimersByTimeAsync(9_001);
+      }
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("recovers once the database answers again after several stuck windows", async () => {
+    vi.useFakeTimers({ now: 0 });
+    const execute = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<never>(() => undefined))
+      .mockImplementationOnce(() => new Promise<never>(() => undefined))
+      .mockImplementationOnce(() => new Promise<never>(() => undefined))
+      .mockResolvedValue([]);
+    const readiness = new BootstrapReadiness();
+    completeReadiness(readiness);
+    const app = createApp({ database: { execute } as never, readiness });
+    apps.push(app);
+
+    try {
+      for (let window = 0; window < 3; window += 1) {
+        const stuck = app.inject({ method: "GET", url: "/readyz" });
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect((await stuck).statusCode).toBe(503);
+        await vi.advanceTimersByTimeAsync(9_001);
+      }
+      const recovered = await app.inject({ method: "GET", url: "/readyz" });
+      expect(recovered.statusCode).toBe(200);
+      expect(execute).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("uses an explicit readiness probe instead of the database client", async () => {
+    const execute = vi.fn().mockResolvedValue([]);
+    const databaseReadinessProbe = vi.fn().mockRejectedValue(new Error("probe connection refused"));
+    const readiness = new BootstrapReadiness();
+    completeReadiness(readiness);
+    const app = createApp({ database: { execute } as never, databaseReadinessProbe, readiness });
+    apps.push(app);
+
+    const response = await app.inject({ method: "GET", url: "/readyz" });
+
+    expect(response.statusCode).toBe(503);
+    expect(databaseReadinessProbe).toHaveBeenCalledTimes(1);
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("frees a live-attempt slot when a replacement probe settles", async () => {

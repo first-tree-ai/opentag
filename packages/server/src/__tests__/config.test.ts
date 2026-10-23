@@ -38,6 +38,37 @@ const required = {
 };
 
 describe("parseServerConfig", () => {
+  it("defaults the database timeouts and accepts overrides", () => {
+    expect(parseServerConfig(required).databaseTimeouts).toEqual({
+      statementTimeoutMs: 30_000,
+      queryTimeoutMs: 35_000,
+      idleInTransactionTimeoutMs: 60_000,
+    });
+    expect(
+      parseServerConfig({
+        ...required,
+        OPENTAG_DATABASE_STATEMENT_TIMEOUT_MS: "10000",
+        OPENTAG_DATABASE_QUERY_TIMEOUT_MS: "12000",
+        OPENTAG_DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS: "20000",
+      }).databaseTimeouts,
+    ).toEqual({ statementTimeoutMs: 10_000, queryTimeoutMs: 12_000, idleInTransactionTimeoutMs: 20_000 });
+    expect(
+      parseServerConfig({ ...required, OPENTAG_DATABASE_STATEMENT_TIMEOUT_MS: "" }).databaseTimeouts.statementTimeoutMs,
+    ).toBe(30_000);
+  });
+
+  it("rejects a client query deadline that does not exceed the server statement timeout", () => {
+    expect(() =>
+      parseServerConfig({
+        ...required,
+        OPENTAG_DATABASE_STATEMENT_TIMEOUT_MS: "30000",
+        OPENTAG_DATABASE_QUERY_TIMEOUT_MS: "30000",
+      }),
+    ).toThrow(/OPENTAG_DATABASE_QUERY_TIMEOUT_MS must be greater/);
+    expect(() => parseServerConfig({ ...required, OPENTAG_DATABASE_STATEMENT_TIMEOUT_MS: "500" })).toThrow();
+    expect(() => parseServerConfig({ ...required, OPENTAG_DATABASE_QUERY_TIMEOUT_MS: "soon" })).toThrow();
+  });
+
   it("accepts an image source revision and rejects a malformed deployment proof", () => {
     expect(parseServerConfig({ ...required, OPENTAG_BUILD_REVISION: "a".repeat(40) }).buildRevision).toBe(
       "a".repeat(40),
@@ -916,17 +947,58 @@ function mockSql(handler: (query: string, values: readonly unknown[]) => unknown
 }
 
 describe("database migration helpers", () => {
-  it("creates a PostgreSQL Drizzle client with the configured pool size", async () => {
+  function mockDeadlineCapableSql() {
     const sql = mockSql(() => []);
+    const unsafe = vi.fn(() => ({ resolve: vi.fn(), reject: vi.fn(), cancel: vi.fn(), executed: false }));
+    Object.assign(sql, { unsafe });
+    return { sql, unsafe };
+  }
+
+  it("creates a PostgreSQL Drizzle client with the configured pool size and default timeouts", async () => {
+    const { sql } = mockDeadlineCapableSql();
     const client = createDatabaseClient("postgresql://localhost/opentag", { max: 3 });
 
     expect(postgres).toHaveBeenLastCalledWith("postgresql://localhost/opentag", {
       max: 3,
+      connect_timeout: 10,
+      keep_alive: 10,
+      connection: { statement_timeout: 30_000, idle_in_transaction_session_timeout: 60_000 },
       onnotice: expect.any(Function),
+    });
+    expect(client.timeouts).toEqual({
+      statementTimeoutMs: 30_000,
+      queryTimeoutMs: 35_000,
+      idleInTransactionTimeoutMs: 60_000,
     });
     expect(client.database).toBeDefined();
     expect(client.sql).toBe(sql);
     await client.sql.end();
+  });
+
+  it("passes configured timeouts to PostgreSQL and installs the client deadline", async () => {
+    const { sql, unsafe } = mockDeadlineCapableSql();
+    const client = createDatabaseClient("postgresql://localhost/opentag", {
+      statementTimeoutMs: 5_000,
+      queryTimeoutMs: 6_000,
+      idleInTransactionTimeoutMs: 7_000,
+    });
+
+    expect(postgres).toHaveBeenLastCalledWith(
+      "postgresql://localhost/opentag",
+      expect.objectContaining({
+        max: 10,
+        connection: { statement_timeout: 5_000, idle_in_transaction_session_timeout: 7_000 },
+      }),
+    );
+    expect(client.timeouts.queryTimeoutMs).toBe(6_000);
+    expect((sql as unknown as { unsafe: unknown }).unsafe).not.toBe(unsafe);
+    await client.sql.end();
+  });
+
+  it("refuses a postgres.js build whose Query lacks the deadline internals", () => {
+    mockSql(() => []);
+
+    expect(() => createDatabaseClient("postgresql://localhost/opentag")).toThrow(/query deadline needs updating/);
   });
 
   it("preserves non-Zod parser failures and returns no unauthenticated identity", async () => {

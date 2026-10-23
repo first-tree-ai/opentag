@@ -25,6 +25,7 @@ import {
 import { isHostedEnvironment, parseServerConfig, type ServerConfig, serverEnvironmentSummary } from "./config.js";
 import { createDatabaseClient, type DatabaseClient } from "./db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "./db/migrate.js";
+import { createDedicatedDatabaseReadinessProbe, DATABASE_READINESS_TIMEOUT_MS } from "./db/readiness-probe.js";
 import { agents, computers } from "./db/schema/index.js";
 import {
   createBackgroundFailureSupervisor,
@@ -530,7 +531,15 @@ export async function startServer(): Promise<void> {
     }
     readiness.complete("migration");
 
-    const { database, sql } = createDatabaseClient(config.databaseUrl);
+    const { database, sql } = createDatabaseClient(config.databaseUrl, {
+      ...config.databaseTimeouts,
+      onQueryTimeout: ({ timeoutMs }) =>
+        app?.log.warn({ check: "database", timeoutMs }, "Database query exceeded client deadline"),
+    });
+    const databaseReadinessProbe = createDedicatedDatabaseReadinessProbe(config.databaseUrl, {
+      deadlineMs: DATABASE_READINESS_TIMEOUT_MS,
+      log: { debug: (fields, message) => app?.log.debug(fields, message) },
+    });
     const postAuthentication = new PostAuthenticationService(database);
     const imCallPolicy = new ExternalCallPolicy({
       allowedHosts: ["slack.com", "files.slack.com", "open.feishu.cn", "open.larksuite.com"],
@@ -1096,6 +1105,7 @@ export async function startServer(): Promise<void> {
       sessions: sessionService,
     });
     app = createApp({
+      databaseReadinessProbe: databaseReadinessProbe.run,
       deployment: deploymentProof(config),
       loggerLevel: config.logLevel,
       trustProxy: config.trustProxy,
@@ -1308,10 +1318,12 @@ export async function startServer(): Promise<void> {
       await feishuSetupService.stop();
       await feishuConnections.stop();
       await imagePrewarmStopped;
+      await databaseReadinessProbe.close();
       await sql.end();
       await shutdownTelemetry();
     });
     app.log.info(serverEnvironmentSummary(config), "Resolved OpenTag environment");
+    app.log.info({ databaseTimeouts: config.databaseTimeouts }, "Resolved database timeouts");
     reportIgnoredCloudBilling(config, app.log);
     reportIgnoredGitHubAppConfiguration(app.log);
     readiness.complete("application");

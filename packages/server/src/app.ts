@@ -64,6 +64,7 @@ import { registerBetterAuthRoutes } from "./auth/fastify-handler.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import type { CloudBilling } from "./cloud-billing.js";
 import type { DatabaseClient } from "./db/client.js";
+import { DATABASE_READINESS_TIMEOUT_MS } from "./db/readiness-probe.js";
 import { currentTraceId } from "./observability/index.js";
 import type { AgentRuntimeOptionsService } from "./services/agents/agent-runtime-options-service.js";
 import type { ContextTreeOperationService } from "./services/agents/context-tree-operation-service.js";
@@ -108,6 +109,8 @@ import { registerWebApp } from "./web-app.js";
 export interface CreateAppOptions {
   /** Drizzle client used by the readiness probe. The production bootstrap also exposes it through TaskService. */
   database?: DatabaseClient;
+  /** Replaces the `select 1` on `database`; production passes a probe on its own connection. */
+  databaseReadinessProbe?: () => Promise<void>;
   authService?: UserAuthService;
   /** Publishes Better Auth's allowlisted endpoints and lets every authenticated route resolve its sessions. */
   betterAuth?: { instance: OpenTagBetterAuth; publicUrl: string };
@@ -329,7 +332,8 @@ function disableProbeRequestLogging(request: FastifyRequest): boolean {
 }
 
 const MAX_ERROR_STACK_LENGTH = 8_192;
-const DATABASE_READINESS_TIMEOUT_MS = 1_000;
+// At most READINESS_MAX_LIVE_ATTEMPTS attempts younger than this age count as live. An older attempt is
+// abandoned and frees its slot, so the probe always starts fresh work within one window and never pins at 503.
 const READINESS_ATTEMPT_MAX_AGE_MS = 10_000;
 const READINESS_MAX_LIVE_ATTEMPTS = 2;
 
@@ -403,36 +407,45 @@ type DatabaseReadinessAttempt = {
   startedAt: number;
 };
 
-function createDatabaseReadinessProbe(database: DatabaseClient | undefined): (() => Promise<void>) | undefined {
-  if (!database) return undefined;
+function createDatabaseReadinessProbe(run: (() => Promise<unknown>) | undefined): (() => Promise<void>) | undefined {
+  if (!run) return undefined;
 
   let inFlight: DatabaseReadinessAttempt | undefined;
-  let liveAttempts = 0;
-  return async () => {
-    const now = Date.now();
-    const current = inFlight;
-    if (!current || now - current.startedAt >= READINESS_ATTEMPT_MAX_AGE_MS) {
-      if (liveAttempts >= READINESS_MAX_LIVE_ATTEMPTS) {
-        throw new DatabaseReadinessAttemptLimitError(READINESS_MAX_LIVE_ATTEMPTS);
-      }
-      if (current) {
-        void current.promise.catch(() => undefined);
-      }
-      liveAttempts += 1;
-      const execution = Promise.resolve()
-        .then(() => database.execute(sql`select 1`))
-        .then(() => undefined);
-      let attempt: DatabaseReadinessAttempt;
-      const settled = execution.finally(() => {
-        liveAttempts -= 1;
+  const liveAttempts = new Set<DatabaseReadinessAttempt>();
+  const isAged = (attempt: DatabaseReadinessAttempt, now: number) =>
+    now - attempt.startedAt >= READINESS_ATTEMPT_MAX_AGE_MS;
+
+  const startAttempt = (now: number): DatabaseReadinessAttempt => {
+    for (const attempt of liveAttempts) {
+      if (isAged(attempt, now)) liveAttempts.delete(attempt);
+    }
+    if (liveAttempts.size >= READINESS_MAX_LIVE_ATTEMPTS) {
+      throw new DatabaseReadinessAttemptLimitError(READINESS_MAX_LIVE_ATTEMPTS);
+    }
+    let attempt: DatabaseReadinessAttempt;
+    const settled = Promise.resolve()
+      .then(run)
+      .then(() => undefined)
+      .finally(() => {
+        liveAttempts.delete(attempt);
         if (inFlight === attempt) inFlight = undefined;
       });
-      attempt = { promise: settled, startedAt: now };
+    attempt = { promise: settled, startedAt: now };
+    liveAttempts.add(attempt);
+    return attempt;
+  };
+
+  return async () => {
+    const now = Date.now();
+    let attempt = inFlight;
+    if (!attempt || isAged(attempt, now)) {
+      const abandoned = attempt;
+      attempt = startAttempt(now);
+      // The abandoned attempt may still reject later; nobody awaits it any more.
+      if (abandoned) void abandoned.promise.catch(() => undefined);
       inFlight = attempt;
     }
-    const running = inFlight;
-    if (!running) return;
-    await withDeadline(running.promise, DATABASE_READINESS_TIMEOUT_MS);
+    await withDeadline(attempt.promise, DATABASE_READINESS_TIMEOUT_MS);
   };
 }
 
@@ -571,7 +584,9 @@ export function createApp(options: CreateAppOptions = {}) {
   });
   const readiness = options.readiness ?? new BootstrapReadiness();
   const healthDatabase = options.database ?? options.taskService?.database;
-  const databaseReadinessProbe = createDatabaseReadinessProbe(healthDatabase);
+  const databaseReadinessProbe = createDatabaseReadinessProbe(
+    options.databaseReadinessProbe ?? (healthDatabase ? () => healthDatabase.execute(sql`select 1`) : undefined),
+  );
 
   registerSessionProofRoutes(app, options);
   registerPublicCatalog(app, options);

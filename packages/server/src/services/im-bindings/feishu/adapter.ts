@@ -668,8 +668,15 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
 const FEISHU_SENDER_NAME_TTL_MS = 60 * 60 * 1000;
 const FEISHU_MISSING_SENDER_NAME_TTL_MS = 5 * 60 * 1000;
 const FEISHU_SENDER_NAME_CACHE_MAX_ENTRIES = 10_000;
-const FEISHU_SENDER_NAME_LOOKUP_TIMEOUT_MS = 1_000;
-const FEISHU_SENDER_NAME_POLICY_TIMEOUT_MS = 1_500;
+/**
+ * The lookup is a paginated HTTPS scan of `chatMembers.get` at 100 members per page, so the budget
+ * must cover several provider round trips: at about 300 ms per page a 1 s budget reached only the
+ * first three pages and left every sender beyond them without a display name. The lookup runs
+ * detached from inbound processing, so this budget never delays message persistence.
+ */
+const FEISHU_SENDER_NAME_LOOKUP_TIMEOUT_MS = 4_000;
+/** Invariant: the policy deadline outlives the lookup deadline, so the lookup reports its own timeout. */
+const FEISHU_SENDER_NAME_POLICY_TIMEOUT_MS = 5_000;
 
 export function feishuSenderOpenId(message: NormalizedMessage): string | null {
   const raw = message.raw as FeishuRawEnvelope | undefined;

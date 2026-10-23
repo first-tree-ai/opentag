@@ -19,6 +19,9 @@ describe("Agent avatar SSRF regression", () => {
       code: "IM_BINDING_TEMPORARILY_UNAVAILABLE",
       statusCode: 503,
     });
+    const failure = await service.openAvatar("owner", "agent").catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).cause).toMatchObject({ message: "blocked destination" });
     expect(fetch).toHaveBeenCalledWith(
       "https://avatar.example.test/image.png",
       { headers: { accept: "image/*" } },

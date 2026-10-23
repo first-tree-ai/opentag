@@ -172,8 +172,9 @@ export class ImBindingServiceError extends Error {
     readonly statusCode: number,
     message: string,
     readonly category: ErrorCategory = "deterministic",
+    options: { cause?: unknown } = {},
   ) {
-    super(message);
+    super(message, options.cause === undefined ? undefined : { cause: options.cause });
   }
 }
 

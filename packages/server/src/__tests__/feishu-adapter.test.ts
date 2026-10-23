@@ -598,10 +598,50 @@ describe("Feishu adapter", () => {
         "FEISHU_SENDER_NAME_LOOKUP_TIMEOUT",
       );
 
-      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(4_000);
       await timedOut;
       await expect(http.resolveSenderName?.({ chatId: "oc_1", senderOpenId: "ou_sender" })).resolves.toBe("Mia Zhang");
       expect(getChatMembers).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("scans past the third member page before the sender-name lookup expires", async () => {
+    vi.useFakeTimers();
+    try {
+      let page = 0;
+      const getChatMembers = vi.fn(async () => {
+        page += 1;
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        if (page < 5) {
+          return {
+            code: 0,
+            data: {
+              items: [{ member_id: `ou_page_${page}`, name: `Member ${page}` }],
+              has_more: true,
+              page_token: `token_${page}`,
+            },
+          };
+        }
+        return { code: 0, data: { items: [{ member_id: "ou_sender", name: "Late Sender" }], has_more: false } };
+      });
+      const http = createFeishuHttpCapability({
+        im: {
+          v1: {
+            chatMembers: { get: getChatMembers },
+            messageResource: {
+              get: vi.fn().mockResolvedValue({ getReadableStream: () => Readable.from(Buffer.alloc(0)) }),
+            },
+          },
+        },
+      });
+
+      const resolved = http.resolveSenderName?.({ chatId: "oc_large", senderOpenId: "ou_sender" });
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      await expect(resolved).resolves.toBe("Late Sender");
+      expect(getChatMembers).toHaveBeenCalledTimes(5);
     } finally {
       vi.useRealTimers();
     }

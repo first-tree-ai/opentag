@@ -406,6 +406,7 @@ export class AgentService {
   readonly #cloudIdentitiesEnabled: boolean;
   readonly #cloudModelCatalog?: CloudModelCatalog;
   readonly #cloudUsage?: CloudUsageService;
+  readonly #supportsContextTrees?: (computerId: string) => boolean;
 
   constructor(
     database: DatabaseClient,
@@ -420,6 +421,8 @@ export class AgentService {
        */
       cloudModelCatalog?: CloudModelCatalog;
       cloudUsage?: CloudUsageService;
+      /** Whether the destination Local runtime understands source-shaped Context Trees. */
+      supportsContextTrees?: (computerId: string) => boolean;
       now?: () => Date;
       onDiagnostic?: (code: string) => void;
       onProviderCliPlacementChanged?: (input: {
@@ -436,6 +439,7 @@ export class AgentService {
     this.#cloudIdentitiesEnabled = options.cloudIdentitiesEnabled ?? false;
     this.#cloudModelCatalog = options.cloudModelCatalog;
     this.#cloudUsage = options.cloudUsage;
+    this.#supportsContextTrees = options.supportsContextTrees;
     this.#database = database;
     this.#now = options.now ?? (() => new Date());
     this.#onDiagnostic = options.onDiagnostic ?? (() => undefined);
@@ -1169,6 +1173,18 @@ export class AgentService {
         };
       }
       await this.#assertSessionsCanRebind(transaction, active);
+      if (
+        target.kind === "local" &&
+        runtimeConfig.contextTrees.length > 0 &&
+        !this.#supportsContextTrees?.(target.id)
+      ) {
+        throw new AgentServiceError(
+          "AGENT_LIFECYCLE_CONFLICT",
+          "deterministic",
+          "Update OpenTag on the destination Computer and bring it online before moving an Agent with Context Trees.",
+          409,
+        );
+      }
       const now = this.#now();
       let updated = scope.agent;
       if (changesAgent) {

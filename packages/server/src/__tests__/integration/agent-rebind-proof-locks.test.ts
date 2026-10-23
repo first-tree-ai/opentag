@@ -1,7 +1,16 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
-import { computers, imBindings, sessionCliProofs, sessionPlacements, sessions, users } from "../../db/schema/index.js";
+import {
+  agentRuntimeConfigs,
+  computers,
+  imBindings,
+  sessionCliProofs,
+  sessionPlacements,
+  sessions,
+  users,
+} from "../../db/schema/index.js";
 import { AgentService } from "../../services/agents/index.js";
 import { SessionCliProofService } from "../../services/sessions/index.js";
 import { deferred } from "../support/deferred.js";
@@ -259,6 +268,49 @@ it("retains real cross-Computer movement and rejects the old proof and placement
       sessionId: f.input.sessionId,
       agentId: f.agent.id,
     });
+  } finally {
+    await f.close();
+  }
+});
+
+it.each([
+  { name: "rejects a destination without Context Tree support", selected: true, supported: false },
+  { name: "moves selected trees to a capable destination", selected: true, supported: true },
+  { name: "keeps no-tree moves independent of Context Tree support", selected: false, supported: false },
+])("$name", async ({ selected, supported }) => {
+  const f = await fixture();
+  try {
+    const target = await createComputer(f.observer.database, f.accountId);
+    const trees = selected ? [{ kind: "git" as const, repository: "acme/memory", path: ".", ref: "main" }] : [];
+    await f.observer.database
+      .update(agentRuntimeConfigs)
+      .set({ contextTrees: trees })
+      .where(eq(agentRuntimeConfigs.agentId, f.agent.id));
+    const supportsContextTrees = vi.fn(() => supported);
+    const service = new AgentService(f.observer.database, { supportsContextTrees });
+    const before = await service.getConfigById(f.accountId, f.agent.id);
+    const placements = await f.observer.database.select().from(sessionPlacements);
+    const move = service.rebindById(f.accountId, f.agent.id, target.computerId);
+    if (selected && !supported) {
+      await expect(move).rejects.toMatchObject({
+        code: "AGENT_LIFECYCLE_CONFLICT",
+        statusCode: 409,
+        message:
+          "Update OpenTag on the destination Computer and bring it online before moving an Agent with Context Trees.",
+      });
+      expect(await service.getConfigById(f.accountId, f.agent.id)).toEqual(before);
+      expect(await f.observer.database.select().from(sessionPlacements)).toEqual(placements);
+    } else {
+      await expect(move).resolves.toMatchObject({
+        computerId: target.computerId,
+        runtimeConfig: { contextTrees: trees },
+      });
+      expect(await f.observer.database.select().from(sessionPlacements)).toMatchObject([
+        { sessionId: f.input.sessionId, computerId: target.computerId, generation: 2 },
+      ]);
+    }
+    if (selected) expect(supportsContextTrees).toHaveBeenCalledWith(target.computerId);
+    else expect(supportsContextTrees).not.toHaveBeenCalled();
   } finally {
     await f.close();
   }

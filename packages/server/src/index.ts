@@ -5,6 +5,7 @@ import type {
   ProviderReadinessStatus,
   RuntimeCredentialServerFrame,
 } from "@opentag/shared";
+import { RUNTIME_CAPABILITY } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { createApp } from "./app.js";
 import { createBetterAuth } from "./auth/better-auth.js";
@@ -833,6 +834,12 @@ export async function startServer(): Promise<void> {
       cloudIdentitiesEnabled: cloudIdentities.enabled,
       ...modelCatalogOptions,
       onDiagnostic: (code) => app?.log.error({ code }, "Agent lifecycle diagnostic"),
+      supportsContextTrees: (computerId) => {
+        const instanceId = registry.currentInstanceId(computerId);
+        return Boolean(
+          instanceId && registry.supportsCapability(computerId, instanceId, RUNTIME_CAPABILITY.contextTreeSettings),
+        );
+      },
       onProviderCliPlacementChanged: (input) => providerCliReconcileOwner?.onAgentPlacementChanged(input),
       stopSessions: (targets) =>
         stopCloudThenLocalAgentSessions(

@@ -112,7 +112,10 @@ not ephemeral Cloud sandboxes. Server, Local runtimes, and Cloud images use the 
 connection contract. Local connect/create operations require the connected Computer to advertise
 `runtime.contextTreeSettings` version 2, before the Server runs GitHub work. An older
 runtime receives an upgrade message before remote work or selection persistence. Cloud images
-must include the pinned CLI before accepting these selections.
+must include the pinned CLI before accepting these selections. Moving an Agent with selected
+trees to another Local Computer requires the destination to be online and advertise the same
+capability. If it cannot, the move is rejected with an upgrade message and the existing placement
+is preserved. Agents without selected trees retain the normal move behavior.
 
 Saved Session snapshots are verified using their original tree shape and hash layout. New
 snapshots use the strict source format. Removing or replacing a saved tree starts a fresh Provider

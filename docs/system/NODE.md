@@ -18,9 +18,8 @@ and the contracts each subsystem implements.
   control-plane authority, the Client connection, readiness, and
   authentication constraints.
 
-- **[Database read/write standards](database-read-write-standards.md)** —
-  atomicity, authorization, read consistency, lock order, external effects,
-  idempotency, failure handling, and verification requirements for persistence changes.
+- **[Database read/write index](database-read-write.md)** — relevant model,
+  query, transaction, recovery, and validation context.
 
 ## Domains
 

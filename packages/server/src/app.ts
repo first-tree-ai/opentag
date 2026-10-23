@@ -343,8 +343,10 @@ const MAX_ERROR_STACK_LENGTH = 8_192;
 const READINESS_ATTEMPT_MAX_AGE_MS = 10_000;
 const READINESS_MAX_LIVE_ATTEMPTS = 2;
 
-type SerializedError = { type: string; message: string; stack: string };
+type SerializedError = { type: string; message: string; stack: string; code?: string; cause?: SerializedError };
 type DrizzleQueryErrorLike = { params?: unknown; query?: unknown };
+/** Bounds the deserialized cause chain so a cyclic or deep wrap cannot grow one log line without limit. */
+const SERIALIZED_ERROR_CAUSE_DEPTH = 3;
 
 function hasOwnField(value: object, key: string): boolean {
   return Object.hasOwn(value, key);
@@ -361,7 +363,7 @@ function redactLogString(value: string): string {
   return (typeof redacted === "string" ? redacted : String(redacted)).slice(0, MAX_ERROR_STACK_LENGTH);
 }
 
-function serializeError(error: unknown): SerializedError {
+function serializeError(error: unknown, depth = 0): SerializedError {
   if (isDrizzleQueryError(error)) {
     const parameterCount = Array.isArray(error.params) ? error.params.length : undefined;
     const summary = redactLogString(
@@ -377,11 +379,24 @@ function serializeError(error: unknown): SerializedError {
     const summary = redactLogString(String(error));
     return { type: typeof error, message: summary, stack: summary };
   }
+  const code = serializedErrorCode(error);
+  const cause =
+    error.cause !== undefined && depth < SERIALIZED_ERROR_CAUSE_DEPTH
+      ? serializeError(error.cause, depth + 1)
+      : undefined;
   return {
     type: error.name,
     message: redactLogString(error.message),
     stack: redactLogString(error.stack ?? `${error.name}: ${error.message}`),
+    ...(code ? { code } : {}),
+    ...(cause ? { cause } : {}),
   };
+}
+
+/** The bounded structured code a thrown error carries, when it has one. */
+function serializedErrorCode(error: Error): string | undefined {
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" && code.length > 0 && code.length <= 128 ? code : undefined;
 }
 
 class DatabaseReadinessTimeoutError extends Error {

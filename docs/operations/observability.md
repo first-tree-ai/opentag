@@ -33,6 +33,11 @@ synonyms:
 Level has an operational meaning: `error` is terminal or unrecoverable, `warn` is handled or degraded, `info` is a
 state transition, and `debug` is per-request detail. Keep messages short and put queryable values in the fields above.
 
+A failed request emits one `Request failed` record. Its `err` field carries `type`, `message`, the redacted `stack`,
+the structured `code` when the thrown error has one, and a redacted `cause` chain up to three levels deep. Attach the
+provider, database, or transport failure as `cause` instead of folding it into the message: the cause chain is what
+makes a wrapped status such as `IM_BINDING_TEMPORARILY_UNAVAILABLE` diagnosable from the log alone.
+
 The client logger follows this `OPENTAG_LOG_LEVEL` matrix:
 
 | Environment | OPENTAG_LOG_LEVEL | Effective level |

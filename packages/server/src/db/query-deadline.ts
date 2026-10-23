@@ -13,7 +13,8 @@
  * it enters a nested callback. `begin` and `savepoint` are therefore bounded as a whole too: the
  * scope gets `timeoutMs` until the callback starts, and then again for the `commit`/`rollback` phase
  * after it settles. A callback that already failed on a query deadline rejects at once instead of
- * waiting for a rollback that the wedged connection cannot answer.
+ * waiting for a rollback that the wedged connection cannot answer, and a scope whose pre-callback
+ * deadline fired never enters its callback, even if the connection recovers afterwards.
  *
  * Depends on postgres.js 3.4.x internals: a Query instance has writable `resolve`/`reject` fields,
  * an `executed` flag, and `cancel()`. `assertQueryDeadlineSupport` fails fast when an upgrade
@@ -105,23 +106,33 @@ function wrapScope(scope: WrappableSql, options: QueryDeadlineOptions): void {
   }
 }
 
+/**
+ * Shared between the scope deadline and the callback wrapper: set when the pre-entry deadline fired.
+ * A connection that heals before TCP gives up resumes `savepoint <name>` and would then enter a
+ * callback whose caller was already rejected and whose statements autocommit outside the rolled-back
+ * transaction. The wrapper refuses to run user code once this is set.
+ */
+type ScopeExpiry = { expired: boolean };
+
 function boundScopeCall(
   call: (...args: unknown[]) => unknown,
   args: unknown[],
   options: QueryDeadlineOptions,
 ): unknown {
-  const callback = trackCallback(args, options);
+  const expiry: ScopeExpiry = { expired: false };
+  const callback = trackCallback(args, expiry, options);
   const pending = call(...callback.args);
   if (!callback.settled || !callback.entered) return pending;
   return withScopeDeadline(
     pending as Promise<unknown>,
     { entered: callback.entered, settled: callback.settled },
+    expiry,
     options,
   );
 }
 
 // begin(fn) / begin(mode, fn) / savepoint(fn) / savepoint(name, fn): the callback is always last.
-function trackCallback(args: unknown[], options: QueryDeadlineOptions): TrackedCallback {
+function trackCallback(args: unknown[], expiry: ScopeExpiry, options: QueryDeadlineOptions): TrackedCallback {
   const last = args.at(-1);
   if (typeof last !== "function") return { args };
   const callback = last as ScopeCallback;
@@ -138,6 +149,9 @@ function trackCallback(args: unknown[], options: QueryDeadlineOptions): TrackedC
       ...args.slice(0, -1),
       (inner: unknown) => {
         enter();
+        // postgres.js resumes this scope after a healed connection, long after the caller gave up.
+        // Throwing here makes it send `rollback`/`rollback to <name>` and rethrow to its caller.
+        if (expiry.expired) throw new DatabaseQueryTimeoutError(options.timeoutMs);
         if (inner && typeof inner === "function") wrapScope(inner as unknown as WrappableSql, options);
         let result: unknown;
         try {
@@ -175,12 +189,16 @@ function isQueryDeadline(error: unknown): boolean {
  * Bounds both scope phases the wrapped `unsafe` cannot see: the statement postgres.js sends before it
  * calls the callback (`BEGIN`, `SAVEPOINT <name>`), and the `commit`/`rollback` it sends after.
  *
+ * Invariant: the pre-entry phase marks `expiry` before it rejects, so a connection that heals later
+ * cannot enter the callback of a scope whose caller already gave up.
+ *
  * Boundary: rejecting here unblocks the caller; it cannot free the connection, which stays busy
  * until TCP gives up, exactly like the `shortcut:` below.
  */
 function withScopeDeadline<T>(
   pending: Promise<T>,
   { entered, settled }: { entered: Promise<void>; settled: Promise<CallbackOutcome> },
+  expiry: ScopeExpiry,
   options: QueryDeadlineOptions,
 ): Promise<T> {
   const { timeoutMs } = options;
@@ -192,8 +210,9 @@ function withScopeDeadline<T>(
     clearTimeout(timer);
     timer = undefined;
   };
-  const armTimer = () => {
+  const armTimer = (phase: "before-callback" | "after-callback") => {
     timer = setTimeout(() => {
+      if (phase === "before-callback") expiry.expired = true;
       options.onTimeout?.({ timeoutMs });
       reject(new DatabaseQueryTimeoutError(timeoutMs));
     }, timeoutMs);
@@ -203,7 +222,7 @@ function withScopeDeadline<T>(
     reject = onReject;
     // Phase one: postgres.js sends `SAVEPOINT <name>` before it enters a nested callback. If the
     // connection goes silent there, the callback never runs and no other bound exists.
-    armTimer();
+    armTimer("before-callback");
     void entered.then(() => {
       if (!done) clearTimer();
     });
@@ -214,7 +233,7 @@ function withScopeDeadline<T>(
         return;
       }
       // Phase two: the commit or rollback that follows the callback.
-      armTimer();
+      armTimer("after-callback");
     });
   });
   return Promise.race([pending, deadline]).finally(() => {
@@ -253,6 +272,6 @@ function withDeadline(query: DeadlineQuery, options: QueryDeadlineOptions): Dead
     clearTimeout(timer);
     return reject(timedOut ? new DatabaseQueryTimeoutError(timeoutMs) : reason);
   };
-  // shortcut: after the deadline a black-holed connection stays busy until TCP gives up, because postgres.js has no public per-connection destroy; replace with a native per-query timeout or socket destroy when postgres.js offers one.
+  // shortcut: after the deadline a black-holed connection stays busy until TCP gives up, and one that recovers instead stays reserved inside the open transaction until idle_in_transaction_session_timeout ends it, because postgres.js has no public per-connection destroy; replace with a native per-query timeout or socket destroy when postgres.js offers one.
   return query;
 }

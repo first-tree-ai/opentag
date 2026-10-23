@@ -55,6 +55,11 @@ async function startBlackholeProxy(target: string) {
       dark = true;
       for (const socket of sockets) socket.pause();
     },
+    /** Stops forwarding and comes back, like a network blip that heals after the deadline fired. */
+    heal() {
+      dark = false;
+      for (const socket of sockets) socket.resume();
+    },
     async stop() {
       for (const socket of sockets) socket.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -258,4 +263,49 @@ describe("database timeouts", () => {
       await proxy.stop();
     }
   });
+
+  it("never runs a nested callback that a healed connection delivers after the deadline", async () => {
+    const proxy = await startBlackholeProxy(url);
+    const { database, sql } = createDatabaseClient(proxy.url, {
+      max: 1,
+      statementTimeoutMs: 10_000,
+      queryTimeoutMs: 1_500,
+    });
+    const observer = createDatabaseClient(url, { max: 1 });
+    try {
+      await observer.database.execute(drizzleSql`drop table if exists pr999_ghost`);
+      await observer.database.execute(drizzleSql`create table pr999_ghost (v text)`);
+      await database.execute(drizzleSql`select 1`);
+
+      let innerRan = false;
+      const failure = await database
+        .transaction(async (tx) => {
+          await tx.execute(drizzleSql`select 1`);
+          proxy.goDark();
+          await tx.transaction(async (inner) => {
+            innerRan = true;
+            await inner.execute(drizzleSql`insert into pr999_ghost values ('ghost')`);
+          });
+        })
+        .catch((error: unknown) => error);
+
+      expect(deadlineErrorOf(failure)).toBeInstanceOf(DatabaseQueryTimeoutError);
+      expect(innerRan).toBe(false);
+
+      // The caller already gave up. Resuming the socket must not let postgres.js enter the nested
+      // callback, whose insert would autocommit after the outer rollback was queued.
+      proxy.heal();
+      await sleep(2_500);
+      const [row] = await observer.database.execute<{ count: number }>(
+        drizzleSql`select count(*)::int as count from pr999_ghost`,
+      );
+
+      expect(innerRan).toBe(false);
+      expect(row?.count).toBe(0);
+    } finally {
+      await sql.end({ timeout: 1 });
+      await observer.sql.end({ timeout: 1 });
+      await proxy.stop();
+    }
+  }, 30_000);
 });

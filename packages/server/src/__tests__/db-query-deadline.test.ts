@@ -274,6 +274,36 @@ describe("applyQueryDeadline", () => {
     expect(await outcomes[0]).toBeInstanceOf(DatabaseQueryTimeoutError);
   });
 
+  it("leaves the callback uncalled when the connection heals after the savepoint deadline", async () => {
+    vi.useFakeTimers();
+    let heal!: () => void;
+    const opening = new Promise<void>((resolve) => {
+      heal = resolve;
+    });
+    const { root } = fakeSql({ openSavepoint: () => opening });
+    applyQueryDeadline(root, { timeoutMs: 1_000 });
+
+    const inner = vi.fn(async () => "inner");
+    const outcomes: Promise<unknown>[] = [];
+    asBegin(root)((scope) => {
+      outcomes.push(
+        (scope.savepoint as ScopeCall)(inner).then(
+          () => "resolved",
+          (error: unknown) => error,
+        ),
+      );
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(await outcomes[0]).toBeInstanceOf(DatabaseQueryTimeoutError);
+
+    // The network heals: postgres.js resumes `savepoint s0` and would now enter the callback.
+    heal();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(inner).not.toHaveBeenCalled();
+  });
+
   it("wraps a scope only once", () => {
     const { root } = fakeSql();
     applyQueryDeadline(root, { timeoutMs: 1_000 });

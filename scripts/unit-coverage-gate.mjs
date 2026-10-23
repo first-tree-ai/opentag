@@ -65,6 +65,8 @@ function isToolingConfigPath(path) {
 
 export function isSupportedSourcePath(value) {
   const path = normalizePath(value);
+  // The required Alert Relay CI job enforces native Node coverage for this independent service.
+  if (path.startsWith("ops/alert-relay/")) return false;
   const segments = path.split("/");
   if (EXCLUDED_ROOT_NAMES.has(segments[0])) return false;
   if (segments.some((segment) => EXCLUDED_DIRECTORY_NAMES.has(segment))) return false;

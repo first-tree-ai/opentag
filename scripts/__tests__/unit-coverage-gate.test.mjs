@@ -2,6 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { evaluatePatchCoverage, isSupportedSourcePath, SUPPORTED_SOURCE_EXTENSIONS } from "../unit-coverage-gate.mjs";
 
+test("the independent relay uses its required native coverage gate without exempting other ops code", () => {
+  assert.equal(isSupportedSourcePath("ops/alert-relay/src/server.ts"), false);
+  assert.equal(isSupportedSourcePath("ops/alert-relay/test/support.ts"), false);
+  const diff = [
+    "--- /dev/null",
+    "+++ b/ops/other-service/src/server.ts",
+    "@@ -0,0 +1 @@",
+    "+export const value = 1;",
+  ].join("\n");
+  const result = evaluatePatchCoverage({ diff, coverage: {}, repositoryRoot: "/repo" });
+  assert.equal(result.passed, false);
+  assert.equal(result.total, 1);
+});
+
 function statementCoverage(file, line, hits) {
   return {
     path: file,

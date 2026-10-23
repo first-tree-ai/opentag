@@ -9,6 +9,7 @@
   "scripts": {
     "start": "node src/main.ts",
     "test": "node --test test/*.test.ts",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include='**/src/*.ts' --test-coverage-lines=90 --test-coverage-branches=80 test/*.test.ts",
     "typecheck": "tsc --project tsconfig.json"
   },
   "devDependencies": {

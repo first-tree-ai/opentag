@@ -75,7 +75,7 @@ container build context. Record the source commit, image digest, and pinned secr
 
 ## Rollout and rollback
 
-1. Run this directory's type check and tests, and build its Dockerfile. The separate Alert Relay workflow owns these
+1. Run this directory's type check and tests, and build its Dockerfile. The required Alert Relay job in CI owns these
    checks. No Server, PostgreSQL, or frontend behavior changes.
 2. Create the dedicated runtime identity and secrets, deploy the standalone service, and verify authentication, payload
    rejection, readiness, and deadline handling. No database API or database resources are required.

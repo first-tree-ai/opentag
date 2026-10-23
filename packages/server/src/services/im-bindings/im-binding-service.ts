@@ -60,6 +60,7 @@ import {
   slackInstallationCredentialContext,
   slackInstallationInspectionInput,
 } from "./credential-material.js";
+import { currentBindingOf } from "./current-binding.js";
 import { disableImBindingInTransaction } from "./disable-im-binding.js";
 import {
   ImBindingProviderCli,
@@ -70,7 +71,7 @@ import {
 type QueryExecutor = Pick<DatabaseClient, "select">;
 type CredentialMaterialWithId = CredentialMaterialInput & { id?: string };
 
-export { disableImBindingInTransaction } from "./disable-im-binding.js";
+export { disableImBindingInTransaction, releaseNeverActivatedSlots } from "./disable-im-binding.js";
 
 export interface VerifiedFeishuBinding {
   profile?: BotProfile;
@@ -753,7 +754,7 @@ export class ImBindingService {
       .from(imBindings)
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
       .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
-      .where(and(eq(imBindings.agentId, agentId), ne(imBindings.status, "disabled")))
+      .where(currentBindingOf(agentId))
       .limit(1);
     if (!row) return undefined;
     const activity = await this.#activity(row.id);
@@ -827,7 +828,7 @@ export class ImBindingService {
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
       .leftJoin(computers, eq(computers.id, agents.computerId))
       .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
-      .where(and(eq(imBindings.agentId, agentId), ne(imBindings.status, "disabled")))
+      .where(currentBindingOf(agentId))
       .limit(1);
     if (!row) return undefined;
     const credential = this.#inspectBindingCredentials(row, row.slackInstallation);

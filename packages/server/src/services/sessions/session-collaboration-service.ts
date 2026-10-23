@@ -11,6 +11,7 @@ import {
   type SessionMessageDeliveryRequestV3,
   type SessionMessageDeliveryResult,
   type SessionMessageScheduledOrigin,
+  type SessionReconcileRequest,
   type SessionReconcileResult,
 } from "@opentag/shared";
 import type { ServiceLogger } from "../../observability/service-logger.js";
@@ -191,7 +192,17 @@ type ScheduledStageResult<T> =
 
 export interface SessionCollaborationServiceOptions {
   assembler: Pick<EffectiveRuntimeSnapshotAssembler, "assembleForSession">;
-  domain: Pick<RuntimeDomainOwner, "requestReconcile" | "requestSessionMessageDelivery">;
+  /**
+   * The transport surface. `prepareReconcile` mints the reconcile proof the plan must carry: a
+   * composition that wires CLI proofs provides it, and its absence means nothing is prepared.
+   */
+  domain: Pick<RuntimeDomainOwner, "requestReconcile" | "requestSessionMessageDelivery"> & {
+    prepareReconcile?(
+      computerId: string,
+      instanceId: string,
+      request: SessionReconcileRequest,
+    ): Promise<SessionReconcileRequest>;
+  };
   registry: Pick<ConnectionRegistry, "capabilityVersion" | "currentInstanceId" | "supportsCapability">;
   sessions: Pick<
     SessionService,
@@ -325,21 +336,14 @@ export class SessionCollaborationService {
     const gate = this.#scheduledLocalGate(route);
     if ("code" in gate) return record("unreachable", gate.code);
     const fence = { scheduleId: snapshot.scheduleId, revision: snapshot.revision };
+    const prepared = await this.#prepareScheduledReconcile(route, gate.instanceId, runtime, signal);
+    if (prepared.kind === "aborted") return record("unreachable", "delivery_timeout");
+    if (prepared.kind === "failed") return record("unreachable", "runtime_not_ready");
     const reconcile = await this.#admitScheduled(route, fence, signal, (onDispatched) =>
       this.#domain.requestReconcile(
         route.targetComputerId,
         gate.instanceId,
-        {
-          type: "session:reconcile",
-          requestId: randomUUID(),
-          installationId: route.targetInstallationId,
-          sessionId: route.targetSessionId,
-          agentId: route.agentId,
-          placementGeneration: route.targetPlacementGeneration,
-          ...(route.targetSessionKind === "internal" ? { sessionKind: "internal" as const } : {}),
-          desired: "ready",
-          runtime,
-        },
+        prepared.request,
         onDispatched,
         undefined,
         signal,
@@ -379,6 +383,46 @@ export class SessionCollaborationService {
       );
     });
     return this.#finishScheduledDelivery(delivery, record);
+  }
+
+  /**
+   * Mint the reconcile's proof BEFORE the admission takes the placement row. Minting inside the
+   * admission runs a second transaction that locks that row, and the send whose mark releases the
+   * admission is exactly what the mint gates, so neither side can move. The admission re-checks the
+   * placement generation the proof was minted for while it holds the row, so a move in between still
+   * rejects the dispatch.
+   */
+  async #prepareScheduledReconcile(
+    route: AuthorizedScheduledMessageRoute,
+    instanceId: string,
+    runtime: EffectiveRuntimeSnapshot,
+    signal: AbortSignal,
+  ): Promise<{ kind: "ok"; request: SessionReconcileRequest } | { kind: "failed" } | { kind: "aborted" }> {
+    const request: SessionReconcileRequest = {
+      type: "session:reconcile",
+      requestId: randomUUID(),
+      installationId: route.targetInstallationId,
+      sessionId: route.targetSessionId,
+      agentId: route.agentId,
+      placementGeneration: route.targetPlacementGeneration,
+      ...(route.targetSessionKind === "internal" ? { sessionKind: "internal" as const } : {}),
+      desired: "ready",
+      runtime,
+    };
+    const domain = this.#domain;
+    if (!domain.prepareReconcile) return { kind: "ok", request };
+    const prepared = await raceWithAbort(domain.prepareReconcile(route.targetComputerId, instanceId, request), signal);
+    if (prepared.kind === "aborted") return { kind: "aborted" };
+    if (prepared.kind === "error") {
+      // No frame exists yet: a proof that cannot be minted for this placement is a dead runtime.
+      this.#logInternalFailure("SESSION_COLLABORATION_RECONCILE_PREPARE_FAILED", {
+        agentId: route.agentId,
+        targetComputerId: route.targetComputerId,
+        targetSessionId: route.targetSessionId,
+      });
+      return { kind: "failed" };
+    }
+    return { kind: "ok", request: prepared.value };
   }
 
   /**

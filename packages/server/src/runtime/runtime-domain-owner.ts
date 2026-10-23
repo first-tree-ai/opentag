@@ -216,6 +216,19 @@ function createPendingRequest(
   return { ...base, kind, request: base.request as AnySessionMessageDeliveryRequest } as PendingSessionMessage;
 }
 
+/**
+ * The preparation to run for one reconcile request. A request returned by `prepareReconcile` was
+ * prepared BEFORE the caller took its admission locks; preparing it again would mint inside that
+ * admission, in a second transaction on rows the admission already holds.
+ */
+function reconcilePreparation(
+  request: SessionReconcileRequest,
+  prepared: WeakSet<SessionReconcileRequest>,
+  preparation: RuntimeDomainOwnerOptions["prepareReconcile"],
+): RuntimeDomainOwnerOptions["prepareReconcile"] {
+  return prepared.has(request) ? undefined : preparation;
+}
+
 interface StartingDelivery {
   computerId: string;
   hash: string;
@@ -238,6 +251,8 @@ export class RuntimeDomainOwner {
     string,
     { hash: string; instanceId: string; computerId: string; promise: Promise<SessionReconcileResult> }
   >();
+  /** Requests already prepared outside an admission; `requestReconcile` sends them as prepared. */
+  readonly #preparedReconciles = new WeakSet<SessionReconcileRequest>();
 
   constructor(registry: ConnectionRegistry, custody: RuntimeCustodyStore, options: RuntimeDomainOwnerOptions = {}) {
     this.#registry = registry;
@@ -286,6 +301,35 @@ export class RuntimeDomainOwner {
     this.#preparingReconciles.clear();
   }
 
+  /**
+   * Prepare one reconcile outside any caller admission: mint the Session CLI proof its frame must
+   * carry. A caller that locks rows around the send has to prepare first. The scheduled dispatch
+   * admission holds the placement row the mint's own transaction locks `FOR UPDATE`, and it holds
+   * that lock until the transport marks the send the mint gates, so a mint run inside that admission
+   * waits for an admission that waits for the mint. The admission re-checks the placement generation
+   * this proof was minted for while it holds the row, so a move between the mint and the admission
+   * still rejects the dispatch. `requestReconcile` sends the returned request without preparing it
+   * again.
+   *
+   * Only a reconcile that needs no result callback may prepare this way: the revoke a `stopped`
+   * reconcile runs on its result belongs to `requestReconcile`, which owns the receipt.
+   */
+  async prepareReconcile(
+    computerId: string,
+    instanceId: string,
+    request: SessionReconcileRequest,
+  ): Promise<SessionReconcileRequest> {
+    this.#registry.assertSnapshotCompatible(computerId, instanceId, request);
+    const preparation = this.#options.prepareReconcile;
+    if (!preparation) return request;
+    const prepared = await preparation(computerId, instanceId, request);
+    if (prepared.onResult) {
+      throw new Error("A reconcile that runs a result callback cannot prepare outside its admission");
+    }
+    this.#preparedReconciles.add(prepared.request);
+    return prepared.request;
+  }
+
   requestReconcile(
     computerId: string,
     instanceId: string,
@@ -307,7 +351,7 @@ export class RuntimeDomainOwner {
     try {
       this.#registry.assertSnapshotCompatible(computerId, instanceId, request);
       const hash = computeReconcilePayloadHash(request);
-      const preparation = this.#options.prepareReconcile;
+      const preparation = reconcilePreparation(request, this.#preparedReconciles, this.#options.prepareReconcile);
       if (!preparation) {
         operation = this.#withDispatchAdmission(
           admission,

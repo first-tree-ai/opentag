@@ -82,6 +82,13 @@ proof is first inserted. Rebind keeps Agent → target Computer → Session plac
 proof minting keeps its placement lock and existing connection/generation checks. A rebind
 to the current Computer retains its no-op semantics and does not rotate an existing proof.
 
+Scheduled dispatch admission locks the same Agent → binding → Session → placement → Computer chain
+and the schedule row last, and holds it only until the transport marks its send. A Local reconcile
+mints its Session CLI proof before that admission takes the placement lock: the mint locks the same
+placement row in its own transaction, so minting inside the admission would wait for an admission
+that waits for the send the mint gates. The admission re-checks the placement generation the proof
+was minted for while it holds the row.
+
 The staging/development reset uses the same weaker guard during Computer access
 revocation. Its separate final cleanup verification keeps its existing lock.
 Agent creation, placement changes, and credential exchange retain their small

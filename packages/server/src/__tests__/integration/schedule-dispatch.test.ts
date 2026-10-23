@@ -1,24 +1,34 @@
 import { randomUUID } from "node:crypto";
-import type { SessionMessageDeliveryRequestV3, SessionMessageDeliveryResult } from "@opentag/shared";
+import type {
+  SessionMessageDeliveryRequestV3,
+  SessionMessageDeliveryResult,
+  SessionReconcileRequest,
+  SessionReconcileResult,
+} from "@opentag/shared";
 import { eq, sql as sqlTag } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import WebSocket from "ws";
 import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
 import {
   agentSchedules,
   agents,
   computers,
   imBindings,
+  sessionCliProofs,
   sessionMessages,
   sessionPlacements,
   sessions,
   users,
 } from "../../db/schema/index.js";
+import { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { PostgresRuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
+import { RuntimeDomainOwner } from "../../runtime/runtime-domain-owner.js";
+import type { RuntimeBusinessContext } from "../../runtime/runtime-session.js";
 import { PostgresRuntimeExecutionAuthority } from "../../runtime-credentials/execution-authority.js";
 import { RuntimeValidationRunRegistry } from "../../runtime-credentials/validation-runs.js";
 import { DatabaseAgentOwnerResolver } from "../../services/agents/index.js";
 import { ScheduleScheduler, ScheduleService, scheduledMessageId } from "../../services/schedules/index.js";
-import { SessionCollaborationService, SessionService } from "../../services/sessions/index.js";
+import { SessionCliProofService, SessionCollaborationService, SessionService } from "../../services/sessions/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 /*
@@ -562,6 +572,137 @@ describe("dispatch admission races against management mutations", () => {
     expect(claimResult).toMatchObject({ status: "fulfilled", value: { kind: "claimed" } });
     expect(stack.deliveryFrames).toHaveLength(1);
   }, 20_000);
+});
+
+describe("scheduled dispatch admission against the Session CLI proof mint", () => {
+  /*
+   * The reconcile's CLI proof is minted in its OWN transaction, which locks the placement row the
+   * scheduled admission holds `FOR UPDATE`. A mint issued inside that admission waits for an
+   * admission that waits for a send mark the mint itself gates. This drives the real proof service
+   * and the real admission against PostgreSQL: with the mint inside the admission the dispatch is
+   * refused with `dispatch_not_marked` after the send-mark window and no frame ever leaves.
+   */
+  it("mints the reconcile proof before the admission and delivers the scheduled message", async () => {
+    const seedValue = await seed(clientA.database);
+    const frames: Array<SessionReconcileRequest | SessionMessageDeliveryRequestV3> = [];
+    const registry = new ConnectionRegistry();
+    const custody = new PostgresRuntimeCustodyStore(clientA.database);
+    const context: RuntimeBusinessContext = {
+      computerId: seedValue.computerId,
+      installationId: seedValue.installationId,
+      instanceId: seedValue.instanceId,
+      signal: new AbortController().signal,
+    };
+    let owner: RuntimeDomainOwner;
+    // Answer every frame the way the Client runtime does, one macrotask after it is written.
+    const answer = (frame: SessionReconcileRequest | SessionMessageDeliveryRequestV3) => {
+      setImmediate(() => {
+        if (frame.type === "session:reconcile") {
+          const result: SessionReconcileResult = {
+            type: "session:reconcile:result",
+            requestId: frame.requestId,
+            sessionId: frame.sessionId,
+            placementGeneration: frame.placementGeneration,
+            status: "ready",
+          };
+          void owner.handle(result, context);
+          return;
+        }
+        const result: SessionMessageDeliveryResult = {
+          type: "session:message:deliver:result",
+          requestId: frame.requestId,
+          messageId: frame.messageId,
+          targetSessionId: frame.targetSessionId,
+          placementGeneration: frame.placementGeneration,
+          status: "accepted",
+        };
+        void owner.handle(result, context);
+      });
+    };
+    await registry.register(
+      {
+        clientVersion: "0.1.1",
+        computerId: seedValue.computerId,
+        installationId: seedValue.installationId,
+        instanceId: seedValue.instanceId,
+        lastHeartbeatAt: 1,
+        negotiatedCapabilities: {
+          "runtime.sessionReconcile": 1,
+          "runtime.sessionCollaboration": 3,
+          "runtime.imCredentialGrant": 2,
+        },
+        socket: {
+          readyState: WebSocket.OPEN,
+          close: vi.fn(),
+          terminate: vi.fn(),
+          send: (serialized: string, callback: (error?: Error) => void) => {
+            const frame = JSON.parse(serialized) as SessionReconcileRequest | SessionMessageDeliveryRequestV3;
+            frames.push(frame);
+            answer(frame);
+            callback();
+          },
+        } as unknown as WebSocket,
+      },
+      async () => undefined,
+    );
+    const sessions = new SessionService(clientA.database);
+    const proofs = new SessionCliProofService(clientA.database, registry, Buffer.alloc(32, 7));
+    owner = new RuntimeDomainOwner(registry, custody, {
+      prepareReconcile: (computerId, instanceId, request) => proofs.prepareReconcile(computerId, instanceId, request),
+    });
+    const collaboration = new SessionCollaborationService({
+      assembler: { assembleForSession: async () => runtimeSnapshot(seedValue.agentId) },
+      domain: owner,
+      registry,
+      sessions,
+      logger: { error: vi.fn() },
+    });
+    const scheduler = new ScheduleScheduler({
+      database: clientA.database,
+      dispatch: collaboration,
+      sessions,
+      publicUrl: PUBLIC_URL,
+    });
+    const [nowRow] = await clientA.database.execute<{ at: Date }>(sqlTag`select clock_timestamp() as at`);
+    if (!nowRow) throw new Error("database clock missing");
+    const scheduledFor = new Date(nowRow.at);
+    const [row] = await clientA.database
+      .insert(agentSchedules)
+      .values({
+        agentId: seedValue.agentId,
+        targetSessionId: seedValue.targetSessionId,
+        name: "Daily check",
+        prompt: "Check the build.",
+        schedule: { kind: "every", intervalSeconds: 60, anchorAt: scheduledFor.toISOString() },
+        timezone: "UTC",
+        enabled: true,
+        nextTriggerAt: scheduledFor,
+        revision: 1,
+      })
+      .returning();
+    if (!row) throw new Error("schedule fixture missing");
+    const claimed = await scheduler.claimOccurrence(row.id, { allowDispatch: true });
+    if (claimed.kind !== "claimed") throw new Error("expected a claim");
+
+    await expect(collaboration.dispatchScheduledMessage(claimed.snapshot)).resolves.toEqual({
+      outcome: "accepted",
+      code: null,
+    });
+    const [reconcileFrame, deliveryFrame] = frames;
+    expect(reconcileFrame?.type).toBe("session:reconcile");
+    expect(deliveryFrame?.type).toBe("session:message:deliver");
+    // The proof was minted (and committed) before the admission, so the frame can carry it.
+    expect((reconcileFrame as SessionReconcileRequest).sessionCliProof).toBeDefined();
+    const [proof] = await clientA.database
+      .select()
+      .from(sessionCliProofs)
+      .where(eq(sessionCliProofs.sessionId, seedValue.targetSessionId));
+    expect(proof).toMatchObject({
+      computerId: seedValue.computerId,
+      connectionInstanceId: seedValue.instanceId,
+      placementGeneration: 1,
+    });
+  }, 30_000);
 });
 
 describe("execution authority for scheduled messages (P13, P14)", () => {

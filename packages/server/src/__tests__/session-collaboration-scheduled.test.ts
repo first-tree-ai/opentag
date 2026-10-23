@@ -72,6 +72,7 @@ interface Fixture {
     withScheduledDispatchAdmission: ReturnType<typeof vi.fn>;
   };
   domain: {
+    prepareReconcile: ReturnType<typeof vi.fn>;
     requestReconcile: ReturnType<typeof vi.fn>;
     requestSessionMessageDelivery: ReturnType<typeof vi.fn>;
   };
@@ -111,6 +112,10 @@ function makeFixture(
     ),
   };
   const domain = {
+    prepareReconcile: vi.fn(async (_c: string, _i: string, request: Record<string, unknown>) => ({
+      ...request,
+      sessionCliProof: { proofId: "proof", token: "token" },
+    })),
     requestReconcile: vi.fn(
       async (_c: string, _i: string, request: { requestId: string }, onDispatched?: () => void) => {
         onDispatched?.();
@@ -349,6 +354,58 @@ describe("SessionCollaborationService.dispatchScheduledMessage", () => {
     );
     const outcome = await fixture.service.dispatchScheduledMessage(snapshot);
     expect(outcome).toEqual({ outcome: "unknown", code: "delivery_timeout" });
+  });
+
+  it("mints the reconcile proof before the admission and sends that exact request", async () => {
+    const { snapshot, route } = snapshotFixture();
+    const fixture = makeFixture(route);
+    let prepared = false;
+    fixture.domain.prepareReconcile.mockImplementation(
+      async (_c: string, _i: string, request: Record<string, unknown>) => {
+        await Promise.resolve();
+        prepared = true;
+        return { ...request, sessionCliProof: { proofId: "proof", token: "token" } };
+      },
+    );
+    fixture.domain.requestReconcile.mockImplementation(
+      async (
+        _c: string,
+        _i: string,
+        request: { requestId: string; sessionCliProof?: unknown },
+        onDispatched?: () => void,
+      ) => {
+        // The admission holds the placement row the mint locks, so the proof must already exist.
+        expect(prepared).toBe(true);
+        expect(request.sessionCliProof).toEqual({ proofId: "proof", token: "token" });
+        onDispatched?.();
+        return {
+          type: "session:reconcile:result",
+          requestId: request.requestId,
+          sessionId: route.targetSessionId,
+          placementGeneration: 1,
+          status: "ready",
+        };
+      },
+    );
+    await expect(fixture.service.dispatchScheduledMessage(snapshot)).resolves.toEqual({
+      outcome: "accepted",
+      code: null,
+    });
+  });
+
+  it("records a failed proof mint as unreachable without entering an admission", async () => {
+    const { snapshot, route } = snapshotFixture();
+    const fixture = makeFixture(route);
+    fixture.domain.prepareReconcile.mockRejectedValue(new Error("the Session placement is unavailable"));
+    await expect(fixture.service.dispatchScheduledMessage(snapshot)).resolves.toEqual({
+      outcome: "unreachable",
+      code: "runtime_not_ready",
+    });
+    expect(fixture.sessions.withScheduledDispatchAdmission).not.toHaveBeenCalled();
+    expect(fixture.domain.requestReconcile).not.toHaveBeenCalled();
+    expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: "unreachable", errorCode: "runtime_not_ready" }),
+    );
   });
 
   it("answers a negotiated Cloud v1 scheduled dispatch with unsupported origin", async () => {

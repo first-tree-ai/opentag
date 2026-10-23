@@ -22,7 +22,9 @@ export function createDatabaseClient(databaseUrl: string, options: DatabaseClien
       options.idleInTransactionTimeoutMs ?? DEFAULT_DATABASE_TIMEOUTS.idleInTransactionTimeoutMs,
   };
   const sql = postgres(databaseUrl, {
-    max: options.max ?? 10,
+    // Per-process ceiling, not a cluster-wide one: every replica holds up to this many connections
+    // plus one for the dedicated readiness probe, so size it against max_connections / replicas.
+    max: options.max ?? 20,
     connect_timeout: DATABASE_CONNECT_TIMEOUT_SECONDS,
     keep_alive: DATABASE_KEEP_ALIVE_SECONDS,
     connection: {

@@ -702,7 +702,7 @@ describe("PiAgentRuntime exhaustive behavior", () => {
         stopReason: "length",
         status: "failed",
         event: "run_failed",
-        error: { code: "provider_error", message: "Pi stopped because the model reached its output limit" },
+        error: { code: "provider_execution_limit", message: "Pi stopped because the model reached its output limit" },
       },
       {
         stopReason: "toolUse",
@@ -802,7 +802,7 @@ describe("PiAgentRuntime exhaustive behavior", () => {
     await expect(run).resolves.toMatchObject({
       status: "failed",
       output: [{ type: "text", text: "partial answer" }],
-      error: { code: "provider_error", message: "Pi stopped because the model reached its output limit" },
+      error: { code: "provider_execution_limit", message: "Pi stopped because the model reached its output limit" },
       providerDiagnostics: { stopReason: "length" },
     });
     expect(events.some((event) => event.type === "run_completed")).toBe(false);
@@ -838,7 +838,7 @@ describe("PiAgentRuntime exhaustive behavior", () => {
     );
     await expect(runtime.prompt({ runId: "spawn-failure", input: input("work") })).resolves.toMatchObject({
       status: "failed",
-      error: { code: "provider_error", message: "fixture process could not start" },
+      error: { code: "provider_start_failed", message: "fixture process could not start" },
     });
     expect(events.some((event) => event.type === "run_completed")).toBe(false);
     await runtime.close();

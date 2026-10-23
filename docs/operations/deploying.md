@@ -285,5 +285,5 @@ The job summary records the deployed revision, the image tag, and the image dige
 CapRover side afterwards:
 
 - The App's Deployment tab shows the new image reference and a successful build log.
-- `https://<app>/healthz` returns success.
+- `https://<app>/healthz` returns success. `https://<app>/healthz?deep=1` also confirms that the Server reaches the database.
 - The App logs show the migration and listen lines for the expected revision.

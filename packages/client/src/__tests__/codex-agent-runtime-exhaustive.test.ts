@@ -41,6 +41,30 @@ afterEach(async () => {
 });
 
 describe("CodexAgentRuntime exhaustive behavior", () => {
+  it("reports a native process exit while starting a Codex turn", async () => {
+    const client = new ManualCodexClient({
+      beforeTurnStartResponse: () => {
+        throw new CodexAppServerError("exited", "Codex process exited before accepting the turn");
+      },
+    });
+    const runtime = await factory(client).create(createRequest(() => undefined));
+    await expect(runtime.prompt({ runId: "run-1", input: input("work") })).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_process_exited" },
+    });
+    await runtime.close();
+  });
+
+  it("preserves Codex's structured turn failure", async () => {
+    const client = new ManualCodexClient();
+    const runtime = await factory(client).create(createRequest(() => undefined));
+    const run = runtime.prompt({ runId: "run-1", input: input("fail") });
+    await client.called("turn/start");
+    client.complete({ status: "failed", error: { message: "private error", codexErrorInfo: "contextWindowExceeded" } });
+    await expect(run).resolves.toMatchObject({ status: "failed", error: { code: "provider_context_limit" } });
+    await runtime.close();
+  });
+
   it("bridges only canonical hosted tools for the active Run and settles each call once", async () => {
     const client = new ManualCodexClient();
     const handler = vi.fn(async (request: { input: unknown }) => {

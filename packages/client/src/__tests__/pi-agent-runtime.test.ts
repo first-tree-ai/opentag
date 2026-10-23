@@ -14,6 +14,26 @@ const SESSION_FILE = `/sessions/${SESSION_ID}.jsonl`;
 const SESSION_FILE_HASH = createHash("sha256").update(SESSION_FILE).digest("hex");
 
 describe("PiAgentRuntime", () => {
+  it.each([
+    ["length", undefined, "provider_execution_limit"],
+    ["error", '429: {"code":"rate_limit_exceeded"}', "provider_rate_limited"],
+  ])("preserves Pi failure %s", async (stopReason, errorMessage, code) => {
+    const client = new ScriptedPiClient("hold");
+    const runtime = await piFactory(client).create(createRequest(() => undefined));
+    const run = runtime.prompt({ runId: "run-1", input: input("fail") });
+    await vi.waitFor(() => expect(client.commands.some((command) => command.type === "prompt")).toBe(true));
+    client.emit({ type: "agent_start" });
+    client.emit({ type: "turn_start" });
+    const message = { role: "assistant", content: [], stopReason, ...(errorMessage ? { errorMessage } : {}) };
+    client.emit({ type: "message_start", message });
+    client.emit({ type: "message_end", message });
+    client.emit({ type: "turn_end", message, toolResults: [] });
+    client.emit({ type: "agent_end", messages: [message], willRetry: false });
+    client.emit({ type: "agent_settled" });
+    await expect(run).resolves.toMatchObject({ status: "failed", error: { code } });
+    await runtime.close();
+  });
+
   it("creates a persistent session and translates a complete Pi RPC run", async () => {
     const client = new ScriptedPiClient("complete");
     const events: AgentRuntimeEvent[] = [];
@@ -470,7 +490,7 @@ describe("PiAgentRuntime", () => {
       const first = await piFactory(interrupted).create(createRequest(() => undefined));
       await expect(first.prompt({ runId: "run-after-assistant", input: input("hello") })).resolves.toMatchObject({
         status: "failed",
-        error: { code: "provider_error", message: "killed after assistant" },
+        error: { code: "provider_process_exited", message: "killed after assistant" },
       });
       expect(first.binding).toEqual(unmaterializedBinding());
       expect(existsSync(sessionFile)).toBe(true);
@@ -971,7 +991,7 @@ describe("PiAgentRuntime", () => {
     await expect(failedRun).resolves.toMatchObject({
       status: "failed",
       error: {
-        code: "provider_error",
+        code: "provider_context_limit",
         message: '400: {"code":"context_length_exceeded","message":"The request exceeds the model context window"}',
       },
     });

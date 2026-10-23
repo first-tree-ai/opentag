@@ -3,6 +3,7 @@ import {
   computeRuntimeImMessageSemanticHash,
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
+  ProviderFailureReasonSchema,
   RUNTIME_CAPABILITY,
   RUNTIME_DIRECT_TEXT_MAX_BYTES,
   RUNTIME_FINAL_TEXT_MAX_BYTES,
@@ -121,7 +122,7 @@ interface RunningTurn {
   readonly abort: AbortController;
   readonly approvals: Map<string, string>;
   readonly owner: LiveTurnOwner;
-  readonly captureInReport: boolean;
+  readonly reportVersion: number;
   phase: "starting" | "running" | "reporting";
   promise: Promise<void>;
   runtime?: AgentRuntime;
@@ -192,7 +193,7 @@ export class AgentTurnRunner {
       owner,
       // Negotiation is cleared on disconnect. Keep this Turn's report contract
       // until its durable report can be replayed after reconnection.
-      captureInReport: this.#connection.capabilityVersion?.(RUNTIME_CAPABILITY.turnReport) === 2,
+      reportVersion: this.#connection.capabilityVersion?.(RUNTIME_CAPABILITY.turnReport) ?? 1,
       phase: "starting",
       promise: Promise.resolve(),
     };
@@ -470,7 +471,7 @@ export class AgentTurnRunner {
         "Turn completed",
       );
     }
-    const outgoingReplies = await this.#collectOutgoingReplies(turnPlanInput, owner, turn.captureInReport);
+    const outgoingReplies = await this.#collectOutgoingReplies(turnPlanInput, owner, turn.reportVersion >= 2);
     const reportInput = budgetTurnReportHashInput({
       deliveryId: owner.request.deliveryId,
       turnId: owner.turnId,
@@ -487,7 +488,7 @@ export class AgentTurnRunner {
     });
     let report: TurnReportRequest;
     try {
-      report = this.#reportOwner.create(reportInput);
+      report = this.#reportOwner.create(reportInput, turn.reportVersion);
       await this.#custody.markReporting(owner.turnId, report);
     } catch {
       this.#logger.warn(fields, "Turn could not enter the reporting phase");
@@ -598,7 +599,7 @@ export class AgentTurnRunner {
       provider: credentials.provider,
       sessionId: owner.request.sessionId,
       runId: owner.turnId,
-      ...outgoingReplyCapturePlan(credentials.provider, turn.captureInReport),
+      ...outgoingReplyCapturePlan(credentials.provider, turn.reportVersion >= 2),
       ...(credentials.slackConfigDir ? { configDir: credentials.slackConfigDir } : {}),
       ...(credentials.environmentManifest ? { environmentManifest: credentials.environmentManifest } : {}),
       ...(credentials.slackApiHost ? { slackApiHost: credentials.slackApiHost } : {}),
@@ -819,7 +820,7 @@ export function completionForResult(result: AgentRunResult, abortReason: unknown
   return {
     outcome: result.error?.code === "provider_protocol_error" ? "unknown" : "failed",
     executionEffects: "may_have_occurred",
-    errorReason: result.error?.code === "provider_protocol_error" ? "provider_protocol_error" : "provider_failed",
+    errorReason: providerTurnFailureReason(result.error?.code),
     ...(result.usage ? { usage: result.usage } : {}),
   };
 }
@@ -940,7 +941,11 @@ function completionForProviderError(error: AgentProviderError): TurnCompletion {
   if (error.code === "provider_protocol_error") {
     return { outcome: "unknown", executionEffects: "may_have_occurred", errorReason: "provider_protocol_error" };
   }
-  return { outcome: "failed", executionEffects: "may_have_occurred", errorReason: "provider_failed" };
+  return {
+    outcome: "failed",
+    executionEffects: "may_have_occurred",
+    errorReason: providerTurnFailureReason(error.code),
+  };
 }
 
 function steerResult(
@@ -959,4 +964,9 @@ function steerResult(
   };
   if (status === "steered") return { ...base, status };
   return { ...base, status, reason: reason as never } as RuntimeImSteerResult;
+}
+
+function providerTurnFailureReason(code: unknown): TurnFailureReason {
+  if (code === "provider_protocol_error") return "provider_protocol_error";
+  return ProviderFailureReasonSchema.safeParse(code).data ?? "provider_failed";
 }

@@ -1930,7 +1930,7 @@ describe("CloudSessionCollaborationOwner", () => {
       assembler: new EffectiveRuntimeSnapshotAssembler(db.database),
       database: db.database,
       durableWork: new PostgresRuntimeDurableWorkStore(db.database),
-      ensureTimeoutMs: 60_000,
+      ensureTimeoutMs: 61_234,
       fence,
       hub,
       modelBaseUrl: "https://server.example.test/api/v1/cloud-model",
@@ -1968,21 +1968,22 @@ describe("CloudSessionCollaborationOwner", () => {
       socket,
     });
 
-    const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
-    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+    const scheduled = vi.spyOn(globalThis, "setTimeout");
+    const cleared = vi.spyOn(globalThis, "clearTimeout");
     try {
       await expect(owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
         status: "accepted",
       });
-      // Inspect the allocation deadline itself: PGlite can schedule unrelated timers during queries,
-      // so a process-wide timer count is not a reliable assertion about convergence cleanup.
-      const deadlineIndex = timeoutSpy.mock.calls.findIndex(([, delay]) => delay === 60_000);
+      // Track the allocation deadline itself; embedded database housekeeping also creates timers.
+      const deadlineIndex = scheduled.mock.calls.findIndex(([, timeout]) => timeout === 61_234);
       expect(deadlineIndex).toBeGreaterThanOrEqual(0);
-      expect(clearTimeoutSpy).toHaveBeenCalledWith(timeoutSpy.mock.results[deadlineIndex]?.value);
+      const deadline = scheduled.mock.results[deadlineIndex]?.value;
+      expect(deadline).toBeDefined();
+      expect(cleared).toHaveBeenCalledWith(deadline);
     } finally {
-      timeoutSpy.mockRestore();
-      clearTimeoutSpy.mockRestore();
       grants.close();
+      scheduled.mockRestore();
+      cleared.mockRestore();
     }
     void sent;
   });

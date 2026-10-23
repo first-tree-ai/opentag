@@ -32,7 +32,7 @@ const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => Promise.all(cleanup.splice(0).map((close) => close())));
 
 describe("RuntimeConnection", () => {
-  it.each([1, 2])(
+  it.each([1, 2, 3])(
     "checks the current negotiated report version %s before queueing a reply snapshot",
     async (version) => {
       const socket = new ControlledWebSocket();
@@ -62,6 +62,12 @@ describe("RuntimeConnection", () => {
         expect(socket.frame("turn:report")).toMatchObject(report);
       }
       await connection.send({ type: "turn:report", requestId: randomUUID(), outgoingReplies: undefined });
+      const failure = { type: "turn:report", requestId: randomUUID(), errorReason: "provider_rate_limited" };
+      if (version < 3) {
+        await expect(connection.send(failure)).rejects.toMatchObject({ code: "capability_unavailable" });
+      } else {
+        await expect(connection.send(failure)).resolves.toBeUndefined();
+      }
       expect(connection.state).toBe("registered");
       connection.stop();
       await running;

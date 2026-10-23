@@ -204,7 +204,22 @@ export const InputRejectReasonSchema = z.enum([
   "configuration_unsupported",
 ]);
 
+export const ProviderFailureReasonSchema = z.enum([
+  "provider_authentication_failed",
+  "provider_access_denied",
+  "provider_quota_exceeded",
+  "provider_rate_limited",
+  "provider_unavailable",
+  "provider_connection_failed",
+  "provider_context_limit",
+  "provider_execution_limit",
+  "provider_request_rejected",
+  "provider_process_exited",
+]);
+export type ProviderFailureReason = z.infer<typeof ProviderFailureReasonSchema>;
+
 export const TurnFailureReasonSchema = z.enum([
+  ...ProviderFailureReasonSchema.options,
   "workspace_failed",
   "configuration_conflict",
   "credential_unavailable",
@@ -220,6 +235,13 @@ export const TurnFailureReasonSchema = z.enum([
   "turn_timeout",
   "client_shutdown",
 ]);
+
+/** Minimum negotiated capability needed to send this immutable report. */
+export function requiredTurnReportVersion(report: object): 1 | 2 | 3 {
+  if ("errorReason" in report && ProviderFailureReasonSchema.safeParse(report.errorReason).success) return 3;
+  if ("outgoingReplies" in report && report.outgoingReplies !== undefined) return 2;
+  return 1;
+}
 
 export const SessionReconcileRequestSchema = z
   .object({

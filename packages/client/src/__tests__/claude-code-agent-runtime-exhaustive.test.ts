@@ -30,6 +30,54 @@ afterEach(async () => {
 });
 
 describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
+  it.each([
+    ["error_max_turns", undefined, "provider_execution_limit"],
+    ["error_max_structured_output_retries", undefined, "provider_execution_limit"],
+    ["error_during_execution", "overloaded", "provider_unavailable"],
+    ["error_during_execution", "invalid_request", "provider_request_rejected"],
+    ["error_during_execution", "oauth_org_not_allowed", "provider_access_denied"],
+    ["error_during_execution", "model_not_found", "provider_access_denied"],
+    ["error_during_execution", "max_output_tokens", "provider_execution_limit"],
+    ["error_during_execution", "authentication_failed", "provider_authentication_failed"],
+  ])("preserves Claude Code failure %s / %s", async (subtype, assistantError, code) => {
+    const process = new ManualClaudeCodeProcess([
+      ...(assistantError
+        ? [
+            {
+              type: "assistant",
+              uuid: "22222222-2222-4222-8222-222222222222",
+              message: { id: "message-1", content: [] },
+              error: assistantError,
+            },
+          ]
+        : []),
+      successResult({ subtype, is_error: true }),
+    ]);
+    const runtime = await factory(process).create(createRequest(() => undefined));
+    await expect(runtime.prompt({ runId: "run-1", input: input("fail") })).resolves.toMatchObject({
+      status: "failed",
+      error: { code },
+    });
+    await runtime.close();
+  });
+
+  it.each([
+    [401, "provider_authentication_failed"],
+    [402, "provider_quota_exceeded"],
+    [403, "provider_access_denied"],
+    [429, "provider_rate_limited"],
+    [503, "provider_unavailable"],
+    [null, "provider_error"],
+  ])("uses a failed success result's API status %s", async (apiErrorStatus, code) => {
+    const process = new ManualClaudeCodeProcess([successResult({ is_error: true, api_error_status: apiErrorStatus })]);
+    const runtime = await factory(process).create(createRequest(() => undefined));
+    await expect(runtime.prompt({ runId: "run-1", input: input("fail") })).resolves.toMatchObject({
+      status: "failed",
+      error: { code },
+    });
+    await runtime.close();
+  });
+
   it("translates complete and fallback stream shapes without duplicating lifecycle events", async () => {
     const events: AgentRuntimeEvent[] = [];
     const process = new ManualClaudeCodeProcess(comprehensiveMessages());
@@ -598,7 +646,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       code: "provider_protocol_error",
       message: "Claude Code emitted malformed JSONL",
     },
-    { scenario: "exit", code: "provider_error", message: "Claude Code exited: fixture failure" },
+    { scenario: "exit", code: "provider_process_exited", message: "Claude Code exited: fixture failure" },
   ])(
     "classifies the real JSONL $scenario failure without losing protocol errors",
     async ({ scenario, code, message }) => {

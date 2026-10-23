@@ -19,6 +19,7 @@ import {
   isBinaryShapedProviderProbeFailure,
   isTransientProviderProbeFailure,
 } from "../../agent-runtime/probe-failure.js";
+import { providerFailureCode, providerProcessFailureCode } from "../../agent-runtime/provider-failure.js";
 import {
   AGENT_RUNTIME_CONTRACT_VERSION,
   type AgentAbortRequest,
@@ -213,6 +214,7 @@ type CodexEnvelope =
 
 interface ParsedTurn {
   readonly error?: string;
+  readonly errorCode?: unknown;
   readonly id: string;
   readonly items: readonly Record<string, unknown>[];
   readonly status: "completed" | "failed" | "inProgress" | "interrupted";
@@ -340,7 +342,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       const failure = error instanceof Error ? error : new Error("Codex run failed");
       logger.debug({ code: "provider_run_failed", error: failure.message }, "Codex provider run failed");
       this.#turnIdReady.reject(failure);
-      throw failure;
+      throw codexRunFailure(failure);
       /* v8 ignore next -- finally is mandatory cleanup; V8 reports a synthetic branch for its closing token. */
     } finally {
       this.#preTurnAbort = undefined;
@@ -870,7 +872,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       status: "failed",
       output,
       ...(this.#latestUsage ? { usage: this.#latestUsage } : {}),
-      error: { code: "provider_error", message: turn.error ?? "Codex turn failed" },
+      error: { code: providerFailureCode(turn.errorCode), message: turn.error ?? "Codex turn failed" },
       diagnostics,
     };
   }
@@ -1742,6 +1744,7 @@ function parseTurn(value: unknown, source: string): ParsedTurn {
     status,
     items,
     ...(typeof error?.message === "string" ? { error: error.message } : {}),
+    errorCode: error?.codexErrorInfo,
   };
 }
 
@@ -1837,4 +1840,10 @@ function requireString(value: unknown, message: string, allowEmpty = false): str
 
 function isNonNegativeNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function codexRunFailure(error: Error): Error {
+  return error instanceof CodexAppServerError
+    ? new AgentProviderError(providerProcessFailureCode(error.code), error.message, { cause: error })
+    : error;
 }

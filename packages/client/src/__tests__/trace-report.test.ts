@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
-import type {
-  AgentTraceBatch,
-  RuntimeDurableFailure,
-  RuntimeDurableWorkRecord,
-  TurnReportHashInput,
-  TurnReportRequest,
+import {
+  type AgentTraceBatch,
+  computeTurnResultHash,
+  type RuntimeDurableFailure,
+  type RuntimeDurableWorkRecord,
+  type TurnReportHashInput,
+  type TurnReportRequest,
 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { type RuntimeConnectionState, RuntimeSendError } from "../runtime/runtime-connection.js";
@@ -72,6 +73,57 @@ describe("TurnTraceBuffer", () => {
 });
 
 describe("TurnReportOwner", () => {
+  it.each([undefined, 1, 2, 3])("creates a compatible provider failure on report capability %s", (version) => {
+    const connection = new FakeConnection("registered");
+    connection.turnReportVersion = version;
+    const owner = new TurnReportOwner({ connection });
+    const report = owner.create(reportInput({ outcome: "failed", errorReason: "provider_rate_limited" }));
+    expect(report.errorReason).toBe(version === 3 ? "provider_rate_limited" : "provider_failed");
+    expect(report.resultHash).toBe(computeTurnResultHash(report));
+    owner.stop();
+  });
+
+  it("keeps a durable v3 failure unchanged while reconnecting through an older Server", async () => {
+    const connection = new FakeConnection("registered");
+    connection.turnReportVersion = 3;
+    const owner = new TurnReportOwner({ connection });
+    const reportVersion = connection.capabilityVersion();
+    connection.setState("stopped");
+    connection.turnReportVersion = undefined;
+    const report = owner.create(
+      reportInput({
+        outcome: "failed",
+        errorReason: "provider_context_limit",
+        outgoingReplies: { status: "complete", replies: [] },
+      }),
+      reportVersion,
+    );
+    expect(report.errorReason).toBe("provider_context_limit");
+    expect(report.resultHash).toBe(computeTurnResultHash(report));
+    const pending = owner.submit(report, () => undefined);
+    await owner.settled();
+    expect(connection.sent).toHaveLength(0);
+    connection.setState("stopped");
+    connection.turnReportVersion = 2;
+    connection.setState("registered");
+    await owner.settled();
+    expect(connection.sent).toHaveLength(0);
+    connection.setState("stopped");
+    connection.turnReportVersion = 3;
+    connection.setState("registered");
+    await owner.settled();
+    expect(connection.sent.map(({ frame }) => frame)).toEqual([report]);
+    await owner.handleResult({
+      type: "turn:report:result",
+      requestId: report.requestId,
+      turnId: report.turnId,
+      resultHash: report.resultHash,
+      status: "recorded",
+    });
+    await pending;
+    owner.stop();
+  });
+
   it("retains the immutable v2 report through a cap1 reconnect and sends it on cap2", async () => {
     const store = new MemoryRuntimeDurabilityStore();
     const connection = new FakeConnection("registered");

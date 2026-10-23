@@ -173,6 +173,7 @@ describe("provider CLI product Turn gate", () => {
         executionEffects: "not_started",
         errorReason: "credential_unavailable",
       }),
+      1,
     );
 
     const callbackEnsure = vi.fn();

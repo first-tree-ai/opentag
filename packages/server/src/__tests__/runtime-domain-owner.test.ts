@@ -91,6 +91,27 @@ describe("RuntimeDomainOwner", () => {
     }
   });
 
+  it.each([undefined, 1, 2, 3])("gates provider failure categories on report capability %s", async (version) => {
+    const fixture = await ownerFixture();
+    try {
+      const request = deliveryRequest();
+      const delivery = fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, request);
+      await waitForDeliveryFrame(fixture.frames, request.requestId);
+      await fixture.owner.handle(acceptedResult(request), fixture.context);
+      await delivery;
+      const report = { ...turnReport(), outcome: "failed" as const, errorReason: "provider_rate_limited" as const };
+      report.resultHash = computeTurnResultHash(report);
+      expect(fixture.owner.businessOptions().parse(report)).toEqual(report);
+      const result = await fixture.owner.handle(report, {
+        ...fixture.context,
+        negotiatedCapabilities: version ? { [RUNTIME_CAPABILITY.turnReport]: version } : {},
+      });
+      expect(result?.status).toBe(version === 3 ? "recorded" : "unsupported_capability");
+    } finally {
+      fixture.owner.close();
+    }
+  });
+
   it.each([undefined, 1])(
     "rejects v2 report content nonfatally on capability %s and accepts a later cap2 report",
     async (version) => {

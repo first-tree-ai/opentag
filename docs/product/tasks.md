@@ -52,7 +52,13 @@ second Agent response or report.
 
 Execution summaries, when reported, remain visible as separate execution records in the conversation.
 They never substitute for captured sent replies. Execution failures, unavailable or incomplete reply
-history, and truncated content remain visible.
+history, and truncated content remain visible. On Local Computers supporting detailed reports,
+recognized provider failures explain authentication,
+model access, credit or quota, rate limits, service availability, connection loss, context limits,
+execution limits, rejected requests, or unexpected process exits. Unrecognized failures keep the
+generic Provider failed label. Only fixed, translated explanations are shown; raw provider error
+messages are not exposed. Cloud delivery retains the generic provider failure label for these
+newer categories so saved outcomes remain compatible with older Servers.
 
 Inbound attachments show their stored name, type, and any processing availability limitation. The
 Task API projects metadata from existing message resources, omitting provider resource keys. Older
@@ -158,8 +164,8 @@ messages are those exchanged by the topic's own Sessions and its internal Sessio
   report and are not backfilled from old runtime transcripts.
 - The unavailable Lark-reply notice is limited to Feishu/Lark Tasks. Slack Tasks retain their execution
   summaries without a permanent notice about a capture feature they do not support.
-- Reply snapshots require `runtime.turnReport` v2 on the current connection. A report created on v2
-  remains durable during a v1 reconnect and resumes unchanged after v2 is negotiated again. A v2
+- Reply snapshots require `runtime.turnReport` v2 or later on the current connection. A report created on v2
+  remains durable during a v1 reconnect and resumes unchanged after v2 or later is negotiated again. The
   server rejects an unnegotiated snapshot with a nonfatal `unsupported_capability` report result.
 - A crashed Turn on a group's channel Session stays `running` until that Session accepts another
   delivery or the delivery deadline passes.

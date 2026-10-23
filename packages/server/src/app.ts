@@ -1,7 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import fastifyOpenTelemetry from "@autotelic/fastify-opentelemetry";
 import type { ChannelName } from "@opentag/shared";
-import { ErrorEnvelopeSchema, HTTP_PATHS, redactForLog, ServerHealthSchema } from "@opentag/shared";
+import {
+  ErrorEnvelopeSchema,
+  HTTP_PATHS,
+  redactForLog,
+  ServerDeepHealthSchema,
+  ServerHealthSchema,
+} from "@opentag/shared";
 import { DrizzleQueryError, sql } from "drizzle-orm";
 import Fastify, { type FastifyInstance, type FastifyLoggerOptions, type FastifyRequest, LogController } from "fastify";
 import {
@@ -627,13 +633,32 @@ export function createApp(options: CreateAppOptions = {}) {
   // Anonymous by design: a failure before sign-in is still a failure worth seeing.
   registerErrorReportRoutes(app, options.errorReporting);
 
-  app.get("/healthz", async (_request, reply) => {
-    const health = ServerHealthSchema.parse({
-      status: "ok",
-      service: "opentag-server",
-    });
+  // Plain /healthz stays liveness-only: doctor, the image HEALTHCHECK and the e2e fixtures rely on it being
+  // DB-independent, because a container restart cannot repair a database outage. Uptime monitors opt in with ?deep=1.
+  app.get("/healthz", async (request, reply) => {
+    const deep = (request.query as { deep?: unknown } | undefined)?.deep;
+    if (deep !== "1" && deep !== "true") {
+      return reply.code(200).send(ServerHealthSchema.parse({ status: "ok", service: "opentag-server" }));
+    }
 
-    return reply.code(200).send(health);
+    reply.header("cache-control", "no-store");
+    let database: "ok" | "fail" | "unconfigured" = "unconfigured";
+    if (databaseReadinessProbe) {
+      try {
+        await databaseReadinessProbe();
+        database = "ok";
+      } catch (error) {
+        database = "fail";
+        request.log.warn({ check: "database", err: error }, "Deep health check failed");
+      }
+    }
+    const healthy = database !== "fail";
+    const body = ServerDeepHealthSchema.parse({
+      status: healthy ? "ok" : "degraded",
+      service: "opentag-server",
+      checks: { database },
+    });
+    return reply.code(healthy ? 200 : 503).send(body);
   });
 
   const readinessHeaders = deploymentHeaders(options.deployment);

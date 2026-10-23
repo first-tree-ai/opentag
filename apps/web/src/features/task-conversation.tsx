@@ -321,6 +321,17 @@ function deliveryStateLabel(delivery: TaskTurn["delivery"]): string {
  * for it. A reason this build does not know yet is still shown, humanized, rather than hidden.
  */
 const turnFailureLabels: Record<TurnFailureReason, () => string> = {
+  provider_authentication_failed: m.tasks_failure_provider_authentication_failed,
+  provider_access_denied: m.tasks_failure_provider_access_denied,
+  provider_quota_exceeded: m.tasks_failure_provider_quota_exceeded,
+  provider_rate_limited: m.tasks_failure_provider_rate_limited,
+  provider_unavailable: m.tasks_failure_provider_unavailable,
+  provider_connection_failed: m.tasks_failure_provider_connection_failed,
+  provider_context_limit: m.tasks_failure_provider_context_limit,
+  provider_execution_limit: m.tasks_failure_provider_execution_limit,
+  provider_request_rejected: m.tasks_failure_provider_request_rejected,
+  provider_process_exited: m.tasks_failure_provider_process_exited,
+
   workspace_failed: m.tasks_failure_workspace_failed,
   configuration_conflict: m.tasks_failure_configuration_conflict,
   credential_unavailable: m.tasks_failure_credential_unavailable,

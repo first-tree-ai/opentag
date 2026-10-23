@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   ClientRuntimeBusinessFrameSchema,
   type DirectImMessageDeliveryRequest,
+  ProviderFailureReasonSchema,
   RUNTIME_DEFAULT_MAX_DURATION_MS,
   RUNTIME_DIRECT_TEXT_MAX_BYTES,
   RUNTIME_FINAL_TEXT_MAX_BYTES,
@@ -483,6 +484,31 @@ describe("AgentTurnRunner", () => {
     expect(feishuContext).not.toMatch(/Feishu.*(?:must|always|default).*(?:thread|reply)/i);
   });
 
+  it.each(ProviderFailureReasonSchema.options)("preserves %s in returned and thrown failures", (code) => {
+    expect(
+      completionForResult(
+        {
+          runId: "turn-1",
+          status: "failed",
+          output: [],
+          error: { code, message: "private provider text" },
+          usage: { inputTokens: 2 },
+        },
+        undefined,
+      ),
+    ).toEqual({
+      outcome: "failed",
+      executionEffects: "may_have_occurred",
+      errorReason: code,
+      usage: { inputTokens: 2 },
+    });
+    expect(completionForError(new AgentProviderError(code, "private provider text"), undefined)).toEqual({
+      outcome: "failed",
+      executionEffects: "may_have_occurred",
+      errorReason: code,
+    });
+  });
+
   it("maps every typed Agent result and abort reason to the stable Turn taxonomy", () => {
     const result = (status: AgentRunResult["status"], overrides: Partial<AgentRunResult> = {}): AgentRunResult => ({
       runId: "turn-1",
@@ -629,6 +655,7 @@ describe("AgentTurnRunner", () => {
           executionEffects: "may_have_occurred",
           errorReason: "turn_timeout",
         }),
+        2,
       );
       expect(h.markReporting).toHaveBeenCalledOnce();
       expect(h.submit).toHaveBeenCalledOnce();
@@ -648,6 +675,7 @@ describe("AgentTurnRunner", () => {
     expect(h.prepare).not.toHaveBeenCalled();
     expect(h.create).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ outcome: "failed", executionEffects: "not_started", errorReason: "turn_timeout" }),
+      2,
     );
     expect(h.markReporting).toHaveBeenCalledOnce();
     expect(h.submit).toHaveBeenCalledOnce();
@@ -696,6 +724,7 @@ describe("AgentTurnRunner", () => {
     expect(runner.activeCount).toBe(0);
     expect(create).toHaveBeenCalledWith(
       expect.objectContaining({ outcome: "unknown", errorReason: "turn_state_unknown" }),
+      expect.any(Number),
     );
     expect(markReporting).toHaveBeenCalledOnce();
     expect(submit).toHaveBeenCalledOnce();
@@ -747,6 +776,7 @@ describe("AgentTurnRunner", () => {
 
     expect(create).toHaveBeenCalledWith(
       expect.objectContaining({ outcome: "unknown", errorReason: "provider_protocol_error" }),
+      expect.any(Number),
     );
     expect(agentErrorReporter).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
@@ -1131,6 +1161,7 @@ describe("AgentTurnRunner", () => {
         executionEffects: "not_started",
         errorReason: "credential_unavailable",
       }),
+      expect.any(Number),
     );
   });
 
@@ -1221,6 +1252,7 @@ describe("AgentTurnRunner", () => {
           executionEffects: "not_started",
           errorReason: "provider_start_failed",
         }),
+        expect.any(Number),
       );
       expect(submit).toHaveBeenCalledOnce();
       expect(turnPlan.prepare).not.toHaveBeenCalled();
@@ -1357,6 +1389,7 @@ describe("AgentTurnRunner", () => {
         executionEffects: "not_started",
         errorReason: "credential_unavailable",
       }),
+      expect.any(Number),
     );
   });
 
@@ -1397,6 +1430,7 @@ describe("AgentTurnRunner", () => {
         executionEffects: "not_started",
         errorReason: "credential_unavailable",
       }),
+      expect.any(Number),
     );
   });
 
@@ -1579,6 +1613,29 @@ describe("AgentTurnRunner", () => {
     expect(h.markReporting).toHaveBeenCalledBefore(h.cleanup);
   });
 
+  it("keeps a v3 failure category when the connection clears negotiation mid-Turn", async () => {
+    const h = outgoingHarness();
+    h.capabilityVersion.mockReturnValue(3);
+    h.prompt.mockImplementationOnce(async () => {
+      h.capabilityVersion.mockReturnValue(undefined);
+      return {
+        runId: "turn-1",
+        status: "failed",
+        output: [],
+        error: { code: "provider_connection_failed", message: "connection lost" },
+      };
+    });
+    h.runner.start(liveOwner(h.request));
+    await h.runner.settled();
+    expect(h.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errorReason: "provider_connection_failed",
+      }),
+      3,
+    );
+    expect(h.capabilityVersion).toHaveBeenCalledTimes(1);
+  });
+
   it.each(["create", "markReporting"] as const)("keeps receipt evidence when %s fails", async (stage) => {
     const h = outgoingHarness();
     if (stage === "create")
@@ -1720,6 +1777,7 @@ describe("AgentTurnRunner", () => {
           ],
         }),
       }),
+      expect.any(Number),
     );
     expect(create.mock.calls[0]?.[0]?.finalText).toBeUndefined();
     expect(cleanup).toHaveBeenCalledWith({ sessionId: "session-1", runId: "turn-1" });

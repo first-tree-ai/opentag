@@ -69,6 +69,67 @@ describe("GET /healthz", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it.each(["?deep=0", "?deep=foo", "?deep"])("stays liveness-only for %s", async (query) => {
+    const execute = vi.fn();
+    const app = createApp({ database: { execute } as never });
+    apps.push(app);
+
+    const response = await app.inject({ method: "GET", url: `/healthz${query}` });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ status: "ok", service: "opentag-server" });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each(["?deep=1", "?deep=true"])("reports a healthy database for %s", async (query) => {
+    const execute = vi.fn().mockResolvedValue([]);
+    const app = createApp({ database: { execute } as never });
+    apps.push(app);
+
+    const response = await app.inject({ method: "GET", url: `/healthz${query}` });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ status: "ok", service: "opentag-server", checks: { database: "ok" } });
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns 503 on deep health when the database is down while plain healthz stays 200", async () => {
+    const execute = vi.fn().mockRejectedValue(new Error("database connection refused"));
+    const app = createApp({ database: { execute } as never });
+    apps.push(app);
+
+    const deep = await app.inject({ method: "GET", url: "/healthz?deep=1" });
+    const plain = await app.inject({ method: "GET", url: "/healthz" });
+
+    expect(deep.statusCode).toBe(503);
+    expect(deep.json()).toEqual({ status: "degraded", service: "opentag-server", checks: { database: "fail" } });
+    expect(deep.body).not.toContain("database connection refused");
+    expect(plain.statusCode).toBe(200);
+  });
+
+  it("abandons a never-settling database probe on deep health at the server deadline", async () => {
+    const execute = vi.fn(() => new Promise<never>(() => undefined));
+    const app = createApp({ database: { execute } as never });
+    apps.push(app);
+
+    const startedAt = performance.now();
+    const response = await app.inject({ method: "GET", url: "/healthz?deep=1" });
+
+    expect(response.statusCode).toBe(503);
+    expect(performance.now() - startedAt).toBeLessThan(2_000);
+  });
+
+  it("reports an unconfigured database on deep health without failing", async () => {
+    const app = createApp({});
+    apps.push(app);
+
+    const response = await app.inject({ method: "GET", url: "/healthz?deep=1" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ status: "ok", service: "opentag-server", checks: { database: "unconfigured" } });
+  });
+
   it("probes the configured database before reporting ready", async () => {
     const execute = vi.fn().mockResolvedValue([]);
     const readiness = new BootstrapReadiness();

@@ -8,6 +8,7 @@ import { runtimeUtf8Length } from "./runtime-config.js";
 import { RuntimeCredentialClientFrameSchema, RuntimeCredentialServerFrameSchema } from "./runtime-credentials.js";
 import {
   DirectImMessageDeliveryRequestSchema,
+  ProviderFailureReasonSchema,
   RuntimeImOutboxContextSchema,
   RuntimeModelSchema,
   RuntimeOpaqueIdSchema,
@@ -761,7 +762,10 @@ export const RunnerCloudDeliveryReportFrameSchema = z
   .object({
     type: z.literal("delivery:report"),
     requestId: RequestIdSchema,
-    report: TurnReportRequestSchema,
+    report: TurnReportRequestSchema.refine(
+      (report) => !ProviderFailureReasonSchema.safeParse(report.errorReason).success,
+      { path: ["errorReason"], message: "Cloud delivery v1 requires a legacy failure reason" },
+    ),
   })
   .strict();
 export type RunnerCloudDeliveryReportFrame = z.infer<typeof RunnerCloudDeliveryReportFrameSchema>;

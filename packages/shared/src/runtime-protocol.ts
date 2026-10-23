@@ -91,7 +91,7 @@ export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
     max: RUNTIME_SESSION_COLLABORATION_SCHEDULED_VERSION,
   },
   [RUNTIME_CAPABILITY.sessionReconcile]: { min: 1, max: 1 },
-  [RUNTIME_CAPABILITY.turnReport]: { min: 1, max: 2 },
+  [RUNTIME_CAPABILITY.turnReport]: { min: 1, max: 3 },
   [RUNTIME_CAPABILITY.turnActivity]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.webTools]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.mcpGateway]: { min: 1, max: 1 },

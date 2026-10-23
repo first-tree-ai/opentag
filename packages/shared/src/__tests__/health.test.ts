@@ -15,6 +15,9 @@ describe("ServerDeepHealthSchema", () => {
     { status: "ok", service: "opentag-server", checks: { database: "down" } },
     { status: "ok", service: "opentag-server", checks: { database: "ok", cache: "ok" } },
     { status: "ok", service: "opentag-server", checks: { database: "ok" }, unexpected: true },
+    { status: "ok", service: "opentag-server", checks: { database: "fail" } },
+    { status: "degraded", service: "opentag-server", checks: { database: "ok" } },
+    { status: "degraded", service: "opentag-server", checks: { database: "unconfigured" } },
   ])("rejects an invalid deep response: %o", (value) => {
     expect(ServerDeepHealthSchema.safeParse(value).success).toBe(false);
   });

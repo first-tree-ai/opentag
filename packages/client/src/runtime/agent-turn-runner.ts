@@ -122,7 +122,7 @@ interface RunningTurn {
   readonly abort: AbortController;
   readonly approvals: Map<string, string>;
   readonly owner: LiveTurnOwner;
-  readonly captureInReport: boolean;
+  readonly reportVersion: number;
   phase: "starting" | "running" | "reporting";
   promise: Promise<void>;
   runtime?: AgentRuntime;
@@ -193,7 +193,7 @@ export class AgentTurnRunner {
       owner,
       // Negotiation is cleared on disconnect. Keep this Turn's report contract
       // until its durable report can be replayed after reconnection.
-      captureInReport: (this.#connection.capabilityVersion?.(RUNTIME_CAPABILITY.turnReport) ?? 1) >= 2,
+      reportVersion: this.#connection.capabilityVersion?.(RUNTIME_CAPABILITY.turnReport) ?? 1,
       phase: "starting",
       promise: Promise.resolve(),
     };
@@ -471,7 +471,7 @@ export class AgentTurnRunner {
         "Turn completed",
       );
     }
-    const outgoingReplies = await this.#collectOutgoingReplies(turnPlanInput, owner, turn.captureInReport);
+    const outgoingReplies = await this.#collectOutgoingReplies(turnPlanInput, owner, turn.reportVersion >= 2);
     const reportInput = budgetTurnReportHashInput({
       deliveryId: owner.request.deliveryId,
       turnId: owner.turnId,
@@ -488,7 +488,7 @@ export class AgentTurnRunner {
     });
     let report: TurnReportRequest;
     try {
-      report = this.#reportOwner.create(reportInput);
+      report = this.#reportOwner.create(reportInput, turn.reportVersion);
       await this.#custody.markReporting(owner.turnId, report);
     } catch {
       this.#logger.warn(fields, "Turn could not enter the reporting phase");
@@ -599,7 +599,7 @@ export class AgentTurnRunner {
       provider: credentials.provider,
       sessionId: owner.request.sessionId,
       runId: owner.turnId,
-      ...outgoingReplyCapturePlan(credentials.provider, turn.captureInReport),
+      ...outgoingReplyCapturePlan(credentials.provider, turn.reportVersion >= 2),
       ...(credentials.slackConfigDir ? { configDir: credentials.slackConfigDir } : {}),
       ...(credentials.environmentManifest ? { environmentManifest: credentials.environmentManifest } : {}),
       ...(credentials.slackApiHost ? { slackApiHost: credentials.slackApiHost } : {}),

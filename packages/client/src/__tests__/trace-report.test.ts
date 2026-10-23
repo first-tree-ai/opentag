@@ -87,26 +87,32 @@ describe("TurnReportOwner", () => {
     const connection = new FakeConnection("registered");
     connection.turnReportVersion = 3;
     const owner = new TurnReportOwner({ connection });
+    const reportVersion = connection.capabilityVersion();
+    connection.setState("stopped");
+    connection.turnReportVersion = undefined;
     const report = owner.create(
       reportInput({
         outcome: "failed",
         errorReason: "provider_context_limit",
         outgoingReplies: { status: "complete", replies: [] },
       }),
+      reportVersion,
     );
+    expect(report.errorReason).toBe("provider_context_limit");
+    expect(report.resultHash).toBe(computeTurnResultHash(report));
     const pending = owner.submit(report, () => undefined);
     await owner.settled();
-    expect(connection.sent.map(({ frame }) => frame)).toEqual([report]);
+    expect(connection.sent).toHaveLength(0);
     connection.setState("stopped");
     connection.turnReportVersion = 2;
     connection.setState("registered");
     await owner.settled();
-    expect(connection.sent).toHaveLength(1);
+    expect(connection.sent).toHaveLength(0);
     connection.setState("stopped");
     connection.turnReportVersion = 3;
     connection.setState("registered");
     await owner.settled();
-    expect(connection.sent.map(({ frame }) => frame)).toEqual([report, report]);
+    expect(connection.sent.map(({ frame }) => frame)).toEqual([report]);
     await owner.handleResult({
       type: "turn:report:result",
       requestId: report.requestId,

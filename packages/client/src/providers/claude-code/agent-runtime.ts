@@ -135,6 +135,7 @@ export interface ClaudeCodeAgentRuntimeFactoryOptions {
 }
 
 interface ClaudeCodeTerminal {
+  readonly apiErrorStatus?: number;
   readonly errors: readonly string[];
   readonly isError: boolean;
   readonly numTurns?: number;
@@ -1214,6 +1215,7 @@ function parseTerminal(message: Readonly<Record<string, unknown>>, expectedSessi
     isError,
     errors,
     permissionDenials,
+    ...(typeof message.api_error_status === "number" ? { apiErrorStatus: message.api_error_status } : {}),
     ...(typeof message.result === "string" ? { result: message.result } : {}),
     ...(typeof message.stop_reason === "string" ? { stopReason: message.stop_reason } : {}),
     ...(isNonNegativeNumber(message.num_turns) ? { numTurns: message.num_turns } : {}),
@@ -1248,7 +1250,7 @@ function claudeCodeRunResult(terminal: ClaudeCodeTerminal, assistantError: strin
       code:
         providerFailureCode(terminal.subtype) !== "provider_error"
           ? providerFailureCode(terminal.subtype)
-          : providerFailureCode(assistantError),
+          : providerFailureCode(assistantError, terminal.apiErrorStatus),
       message: terminal.errors[0] ?? terminal.result ?? `Claude Code failed: ${terminal.subtype}`,
     },
     diagnostics,

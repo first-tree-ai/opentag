@@ -134,11 +134,11 @@ export class TurnReportOwner {
     return this.#metrics?.snapshot();
   }
 
-  create(input: TurnReportHashInput): TurnReportRequest {
-    if (
-      ProviderFailureReasonSchema.safeParse(input.errorReason).success &&
-      (this.#connection.capabilityVersion?.(RUNTIME_CAPABILITY.turnReport) ?? 1) < 3
-    ) {
+  create(
+    input: TurnReportHashInput,
+    reportVersion = this.#connection.capabilityVersion?.(RUNTIME_CAPABILITY.turnReport) ?? 1,
+  ): TurnReportRequest {
+    if (ProviderFailureReasonSchema.safeParse(input.errorReason).success && reportVersion < 3) {
       input = { ...input, errorReason: "provider_failed" };
     }
     const report = {

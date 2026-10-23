@@ -1595,8 +1595,9 @@ interface ScheduledAdmissionRows {
 /**
  * How long the admission waits for the transport to mark its send before it refuses the dispatch.
  * The admission holds the Agent, IM binding, Session, placement, and Computer row locks until that
- * mark, so a stalled send blocks every other writer of the same placement; a CLI-proof mint was
- * already cancelled by `statement_timeout` behind one. A send normally marks in milliseconds.
+ * mark, so a stalled send blocks every other writer of those rows: a management pause or delete, a
+ * placement move, and an inbound IM transaction all wait behind it. A send normally marks in
+ * milliseconds.
  */
 const SCHEDULED_SEND_MARK_TIMEOUT_MS = 5_000;
 

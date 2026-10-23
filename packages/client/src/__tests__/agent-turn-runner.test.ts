@@ -108,6 +108,30 @@ describe("AgentTurnRunner", () => {
         expect(approval.description).toContain("read_probe");
         expect(approval.description).toContain("constant");
         expect(approval.description).not.toContain("synthetic-probe-secret");
+        expect(approval.description).not.toContain("nested-synthetic-secret");
+        expect(approval.description).not.toContain("thread-1");
+        expect(approval.description).not.toContain("turn-1");
+        expect(approval.commandPresentation).toBeUndefined();
+        expect(JSON.parse(approval.description.split("\narguments: ")[1] ?? "null")).toEqual({
+          api_key: "[REDACTED]",
+          query: "constant",
+          cwd: "/synthetic/tool-directory",
+          reason: "tool reason",
+          itemId: "tool-item",
+          threadId: "tool-thread",
+          turnId: "tool-turn",
+          approvalId: "tool-approval",
+          environmentId: "tool-environment",
+          commandActions: [{ command: "synthetic command" }],
+          availableDecisions: ["tool-option"],
+          proposedExecpolicyAmendment: ["tool-policy"],
+          nested: {
+            serverName: "argument-server",
+            cwd: "/synthetic/nested-directory",
+            api_key: "[REDACTED]",
+            values: [1, true, null, { reason: "nested reason" }],
+          },
+        });
         const reply = {
           type: "approval:decision" as const,
           requestId: approval.requestId,

@@ -859,6 +859,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
       false,
       { questions: [{ id: "legacy", options: [{ label: "Accept" }, { label: "Decline" }, { label: "Cancel" }] }] },
     );
+    // Keep the historical question-array response unchanged; native forms use elicitation actions.
     expect(client.serverResponses.map((response) => response.result)).toEqual([
       { action: "accept", content: {} },
       { decision: "decline" },

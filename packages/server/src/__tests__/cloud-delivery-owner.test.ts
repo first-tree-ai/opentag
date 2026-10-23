@@ -156,6 +156,21 @@ function attachReady(
   return { socket, connection };
 }
 
+/** Answer every journal query like a Client that keeps replaying an unrecorded report. */
+function answerReported(
+  owner: CloudDeliveryOwner,
+  socket: ReturnType<typeof fakeSocket>,
+  connection: ReturnType<typeof attachReady>["connection"],
+): void {
+  const send = socket.send.bind(socket);
+  socket.send = (frame) => {
+    send(frame);
+    if (frame.type === "delivery:query") {
+      setImmediate(() => owner.handleQueryResult(connection, { requestId: frame.requestId, phase: "reported" }));
+    }
+  };
+}
+
 async function pendingDelivery(input: { sessionId: string; expiresAt?: Date }) {
   const messageId = randomUUID();
   const deliveryId = randomUUID();
@@ -1158,6 +1173,60 @@ describe("CloudDeliveryOwner", () => {
       .where(eq(imMessageDeliveries.id, unboundedDelivery.deliveryId));
 
     expect(await unboundedOwner.owner.recoverAccepted(unboundedDelivery.deliveryId)).toBe("resolved");
+  });
+
+  it("bounds a live Runner that keeps replaying `reported` by the same report window", async () => {
+    const fresh = await cloudScope();
+    const freshOwner = makeOwner();
+    const freshSent: RunnerServerFrame[] = [];
+    const freshConnected = attachReady(
+      freshOwner.hub,
+      freshOwner.fence,
+      fresh.scope,
+      freshSent,
+      fresh.cloud.computerId,
+    );
+    const freshDelivery = await dispatchAndAccept({
+      owner: freshOwner.owner,
+      fence: freshOwner.fence,
+      scope: fresh.scope,
+      agentId: fresh.agent.id,
+      computerId: fresh.cloud.computerId,
+    });
+    answerReported(freshOwner.owner, freshConnected.socket, freshDelivery.connection);
+    // Inside the window: the journaled report can still land, so the turn stays pending.
+    expect(await freshOwner.owner.recoverAccepted(freshDelivery.deliveryId)).toBe("pending");
+    expect((await deliveryRow(freshDelivery.deliveryId)).reportedAt).toBeNull();
+
+    const expired = await cloudScope();
+    const expiredOwner = makeOwner();
+    const expiredSent: RunnerServerFrame[] = [];
+    const expiredConnected = attachReady(
+      expiredOwner.hub,
+      expiredOwner.fence,
+      expired.scope,
+      expiredSent,
+      expired.cloud.computerId,
+    );
+    const expiredDelivery = await dispatchAndAccept({
+      owner: expiredOwner.owner,
+      fence: expiredOwner.fence,
+      scope: expired.scope,
+      agentId: expired.agent.id,
+      computerId: expired.cloud.computerId,
+    });
+    answerReported(expiredOwner.owner, expiredConnected.socket, expiredDelivery.connection);
+    const frozen = expiredDelivery.request as DirectImMessageDeliveryRequest;
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ dispatchPayload: { ...frozen, deadlineAt: new Date(Date.now() - 2 * 60 * 60 * 1_000).toISOString() } })
+      .where(eq(imMessageDeliveries.id, expiredDelivery.deliveryId));
+    // Past the window no report can still be truthful, so the endless `reported` answer settles once.
+    expect(await expiredOwner.owner.recoverAccepted(expiredDelivery.deliveryId)).toBe("resolved");
+    expect((await deliveryRow(expiredDelivery.deliveryId)).turnReport).toMatchObject({
+      outcome: "unknown",
+      errorReason: "turn_state_unknown",
+    });
   });
 
   it("keeps a releasing allocation recoverable and records the real report instead of unknown", async () => {

@@ -802,10 +802,14 @@ export class CloudDeliveryOwner {
    *   unknown/turn_state_unknown and is never replayed;
    * - a live allocation with a live exact connection queries the Runner's journal (`received`
    *   re-verifies, `started` stays pending — it is a live phase, not a crash — `reported` awaits
-   *   the Runner's replayed report, and only an explicit `none` settles unknown);
+   *   the Runner's replayed report inside the report window, and only an explicit `none` settles
+   *   unknown);
    * - a live allocation with no connection stays pending while the allocation is physically
    *   present or its create outcome is still unverified, so a Server restart or transient
-   *   disconnect can never destroy a genuine result.
+   *   disconnect can never destroy a genuine result;
+   * - a report that cannot arrive any more — a proven absence, or the exhaustion of the frozen
+   *   execution window (and, without one, the maximum runtime from acceptance) plus its grace —
+   *   settles unknown exactly once.
    */
   async recoverAccepted(deliveryId: string): Promise<"pending" | "resolved" | "noop"> {
     const [row] = await this.#database
@@ -902,7 +906,12 @@ export class CloudDeliveryOwner {
       deliveryId: delivery.id,
       turnId: delivery.turnId as string,
     });
-    if (!answer || answer === "reported") return "pending";
+    if (!answer || answer === "reported") {
+      // A journaled report the Server never recorded can only be replayed while the turn's window is
+      // open; afterwards no report can still be truthful, so the same bound as the no-connection
+      // branch applies instead of retrying forever.
+      return Date.now() >= this.#acceptedReportDeadlineMs(delivery) ? this.#settleUnknown(delivery.id) : "pending";
+    }
     if (answer === "none") return this.#settleUnknown(delivery.id);
 
     // Re-check after the query await: a replaced connection, superseded allocation, or terminal

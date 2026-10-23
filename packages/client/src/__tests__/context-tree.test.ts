@@ -83,6 +83,16 @@ it("bounds startup while retaining and joining background work", async () => {
   expect(await f.manager.ensureAgent(f.cwd, "pi", [sources[0]])).toMatchObject({ connections: [{ status: "ready" }] });
   expect(f.execFile).toHaveBeenCalledTimes(1);
 });
+it("keeps a ready snapshot when the managed execution token rotates", async () => {
+  const f = await fixture({ denied: true });
+  const environment = { GH_TOKEN: "first-execution", OPENTAG_PROVIDER_PROXY_URL: "http://localhost/proxy" };
+  const first = await f.manager.ensureAgent(f.cwd, "pi", sources, environment);
+  expect(first).toMatchObject({ connections: [{ status: "ready" }, { status: "ready" }] });
+  expect(await f.manager.ensureAgent(f.cwd, "pi", sources, { ...environment, GH_TOKEN: "next-execution" })).toEqual(
+    first,
+  );
+  expect(f.execFile.mock.calls.filter(([, args]) => args[1] === "sync")).toHaveLength(2);
+});
 it("does not expose cached selections after authorization is removed", async () => {
   const f = await fixture({ denied: true });
   const auth = { GH_TOKEN: "execution", OPENTAG_PROVIDER_PROXY_URL: "http://localhost/proxy" };

@@ -51,8 +51,10 @@ Operations carry an operation ID and expected Agent/runtime revisions. Changing 
 nonempty selection requires a paused Agent. Disconnect only changes the selection;
 it preserves cached content and unpublished work. Identical requests are idempotent.
 Repository creation never adopts or overwrites an existing repository. Remote writes are
-not retried automatically. An uncertain creation asks the user to inspect GitHub and connect
-the repository if publication completed. Retrying an already connected tree is idempotent.
+not retried automatically. Rejected repository names prompt the user to choose another name or
+connect an existing tree. An uncertain creation asks the user to inspect GitHub: connect a valid
+tree, initialize and push the files if the repository is empty, or delete the empty repository
+before retrying creation. Retrying an already connected tree is idempotent.
 
 ## Preparation
 
@@ -69,8 +71,9 @@ are unavailable and preserved for recovery.
 
 Local preparation is serialized. Concurrent starts join the same work; a five-second
 startup budget lets the Session proceed while preparation continues. Failed sources
-observe a one-minute retry cooldown. Changed selections or credentials invalidate cached
-results. Providers receive the bounded Context Tree state directory needed to create
+observe a one-minute retry cooldown. Changed selections or missing managed authorization invalidate
+cached results. Rotating execution tokens preserve ready read snapshots; in-flight work remains
+bound to its original token. Providers receive the bounded Context Tree state directory needed to create
 write sessions, not just the read snapshot path.
 
 Cloud preparation allows 25 seconds for refresh and reserves a separate five-second
@@ -86,6 +89,11 @@ remote commit, using the Account's current GitHub authorization. It rechecks aut
 and remote state before accepting the connection. Unrelated repository infrastructure does
 not affect subtree validation. Selected content cannot traverse symlinks or submodules.
 
+Before reconnecting, run `context-tree verify --tree-path DIRECTORY` in the selected tree.
+Remove symlink entries such as `CLAUDE.md` or `README.md` links, keeping any ordinary target files,
+and remove submodules from the selected directory. Commit and push the repairs before connecting
+again. A failed connection names the symlink repair and the verification command.
+
 Managed prompts identify each source, its exact selector, project path, and availability.
 Remote snapshots are for reading. Agents use `write prepare` to create an isolated worktree,
 then `write finish` to commit and optionally publish. Local directory trees use direct edits
@@ -100,7 +108,15 @@ OpenTag pins `@first-tree-ai/context-tree` to `1.0.1`. Portable builds and Cloud
 include its CLI, public contracts, and six skills: init, connect, read, write, cleanup,
 and schedule-cleanup. Native cleanup schedules belong on persistent supported hosts,
 not ephemeral Cloud sandboxes. Server, Local runtimes, and Cloud images use the same
-connection contract and must be deployed together.
+connection contract. Local connect/create operations require the connected Computer to advertise
+`runtime.contextTreeSettings` version 2, including when GitHub work runs on the Server. An older
+runtime receives an upgrade message before remote work or selection persistence. Cloud images
+must include the pinned CLI before accepting these selections.
+
+Saved Session snapshots are verified using their original tree shape and hash layout. New
+snapshots use the strict source format. Removing or replacing a saved tree starts a fresh Provider
+conversation within the same Session while preserving historical snapshots and delivery receipts;
+an unresolved Turn must settle first.
 
 Local Sessions prepend the bundled Context Tree CLI at the final Provider launch boundary,
 after executable discovery and per-execution environment composition. This applies to

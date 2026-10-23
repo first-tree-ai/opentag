@@ -34,6 +34,7 @@ export const ContextTreeOperationResponseSchema = z.discriminatedUnion("status",
         "permission_denied",
         "invalid_tree",
         "publication_uncertain",
+        "repository_rejected",
         "failed",
       ]),
     })

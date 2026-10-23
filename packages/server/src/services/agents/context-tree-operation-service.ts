@@ -17,7 +17,7 @@ export class ContextTreeOperationService {
   constructor(
     readonly agents: Pick<AgentService, "getConfigById" | "updateContextTreeSelection">,
     readonly owner: ContextTreeOperationOwner,
-    /** Server-side Cloud connect for Cloud Computers, which have no Runtime owner WebSocket. */
+    /** Server-side GitHub operations; Cloud Computers have no Runtime owner WebSocket. */
     readonly cloud?: CloudContextTreeOperationRunner,
   ) {}
   async run(userId: string, agentId: string, raw: ContextTreeOperationRequest): Promise<ContextTreeOperationResponse> {
@@ -74,7 +74,11 @@ export class ContextTreeOperationService {
     if (config.computerId === null) return { status: "failed", code: "computer_unavailable" };
     const kind = await this.cloud?.computerKind(config.computerId);
     if (this.cloud && kind) {
-      return this.cloud.run({
+      if (kind === "local") {
+        const failure = this.owner.checkComputer(config.computerId);
+        if (failure) return failure;
+      }
+      const result = await this.cloud.run({
         accountId: userId,
         agentId,
         action,
@@ -82,6 +86,10 @@ export class ContextTreeOperationService {
         ref: input.ref,
         repository: input.repository,
       });
+      // A reconnect during remote verification must not persist a selection for an older peer.
+      return kind === "local" && result.status === "completed"
+        ? (this.owner.checkComputer(config.computerId) ?? result)
+        : result;
     }
     return this.owner.start({
       agentId,

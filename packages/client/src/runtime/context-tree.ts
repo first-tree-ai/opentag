@@ -389,19 +389,22 @@ export class ContextTreeManager {
     const target = JSON.stringify([
       provider ?? "codex",
       ordered,
-      this.#managedCredentials ? (environment?.GH_TOKEN ?? null) : null,
+      this.#managedCredentials ? hasManagedGitHubTransport(environment ?? {}) : null,
     ]);
     if (this.#observedTarget.get(cwd) !== target) {
       this.#observedTarget.set(cwd, target);
       this.#cache.delete(cwd);
     }
+    // Execution handles rotate independently of the cached read snapshot. Only in-flight work
+    // is tied to the exact handle; every caller still needs an authorized managed transport.
+    const executionTarget = JSON.stringify([target, this.#managedCredentials ? environment?.GH_TOKEN : null]);
     let active = this.#inFlight.get(cwd);
-    if (active?.target !== target) {
+    if (active?.target !== executionTarget) {
       const results = this.#initialResults(cwd, connections, environment);
       const promise = this.#serialize(() =>
         this.#prepareSafely(cwd, provider, connections, target, results, environment),
       );
-      active = { target, results, promise };
+      active = { target: executionTarget, results, promise };
       this.#inFlight.set(cwd, active);
       void promise.finally(() => {
         if (this.#inFlight.get(cwd)?.promise === promise) this.#inFlight.delete(cwd);

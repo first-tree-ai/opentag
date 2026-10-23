@@ -229,6 +229,9 @@ it.each([
   ["capability_missing", /Update openTag on the bound computer/],
   ["github_not_configured", /GitHub isn't configured on this openTag server/],
   ["tree_limit_reached", /maximum number of Context Trees/],
+  ["invalid_tree", /Remove symlinks such as CLAUDE.md or README.md/],
+  ["repository_rejected", /may already exist/],
+  ["publication_uncertain", /If it is empty, initialize it/],
 ] as const)("explains %s in the form's error banner", async (code, message) => {
   vi.spyOn(browserApi, "contextTreeOperation").mockResolvedValue({ status: "failed", code });
   render(<ContextTreeSettings config={config()} online onChanged={vi.fn()} />);

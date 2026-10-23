@@ -227,6 +227,7 @@ export class CloudContextTreeOperations implements CloudContextTreeOperationRunn
       // Never retry a write automatically or adopt an existing repository after an uncertain reply.
       if (created || !(error instanceof GitHubApiClientError) || !error.status || error.status >= 500)
         halt("publication_uncertain");
+      if (error.status === 422) halt("repository_rejected");
       throw error;
     }
   }

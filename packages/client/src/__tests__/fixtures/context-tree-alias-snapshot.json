@@ -1,0 +1,58 @@
+{
+  "sourceCommit": "d70d270abb7e36a85c4ce16240f0f78d6007b85b",
+  "snapshot": {
+    "contextTrees": [
+      {
+        "alias": "team",
+        "repository": "Acme/Memory"
+      },
+      {
+        "alias": "notes",
+        "repository": "Acme/Notes"
+      }
+    ],
+    "revision": {
+      "agent": {
+        "sequence": 1,
+        "id": "agent-revision-1"
+      },
+      "session": {
+        "sequence": 1,
+        "id": "session-revision-1"
+      }
+    },
+    "agentId": "agent-1",
+    "provider": "codex",
+    "instructions": {
+      "platform": "platform",
+      "agent": "agent",
+      "session": "session"
+    },
+    "execution": {
+      "approvalPolicy": "never",
+      "networkAccess": false
+    },
+    "workspace": {
+      "workspaceId": "workspace-1",
+      "mode": "empty_on_create",
+      "sharing": "agent"
+    }
+  },
+  "hashes": {
+    "current": {
+      "agentConfigHash": "bc85c54f36d1c3402b2f3c79dac4d6c8e72765ac1067dc800e1e167bc9f7795c",
+      "sessionConfigHash": "df8e18887b5143d2dc5dffce75f2aefe9af4e9176714d863ff48b2aa4dd96911",
+      "effectiveSnapshotHash": "f675758e63ec6bd4a81d28764a49718a88cf6f3fe7c4e684e37163cd75235ff8"
+    },
+    "0.1.0": {
+      "agentConfigHash": "a5ff5024fca89fcb09b1a59d16e615a73497a7a351f9a6277602dbf999204e36",
+      "sessionConfigHash": "49e85c993c3b80ef59391d3ccb907e081c1ede4f8c84aab40c49ff2f0e91c8d4",
+      "effectiveSnapshotHash": "66f7eabfbf545df8462151c69d7455ea0093cd45db30a158a8d22269668b11aa"
+    },
+    "self-configuration": {
+      "agentConfigHash": "bc85c54f36d1c3402b2f3c79dac4d6c8e72765ac1067dc800e1e167bc9f7795c",
+      "sessionConfigHash": "49e85c993c3b80ef59391d3ccb907e081c1ede4f8c84aab40c49ff2f0e91c8d4",
+      "effectiveSnapshotHash": "016bdcbd8179781ab118a412feef2eed235dc62ac64029abf7be1a01cd3d52ac"
+    }
+  }
+}

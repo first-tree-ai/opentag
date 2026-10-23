@@ -583,6 +583,8 @@ function failureMessage(
       return m.agent_settings_context_tree_limit_reached();
     case "invalid_tree":
       return m.agent_settings_context_tree_invalid_tree();
+    case "repository_rejected":
+      return m.agent_settings_context_tree_repository_rejected();
     case "publication_uncertain":
       return m.agent_settings_context_tree_publication_uncertain();
     case "stale_configuration":

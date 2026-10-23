@@ -76,7 +76,7 @@ function fixture(repository = "acme/memory") {
     getConfigById: vi.fn(async () => config),
     updateContextTreeSelection: vi.fn(async () => config),
   };
-  const owner = { start: vi.fn() };
+  const owner = { start: vi.fn(), checkComputer: vi.fn(() => undefined) };
   const service = new ContextTreeOperationService(agents, owner as unknown as ContextTreeOperationOwner, runner);
   const input: ContextTreeOperationRequest = {
     kind: "git",
@@ -148,7 +148,7 @@ it("reports denied repository-creation permissions without asking to reconnect",
 it("never initializes or adopts a repository when creation is rejected", async () => {
   const f = fixture();
   f.fetch.mockResolvedValue(Response.json({ message: "already exists" }, { status: 422 }));
-  expect(await f.run()).toEqual({ status: "failed", code: "failed" });
+  expect(await f.run()).toEqual({ status: "failed", code: "repository_rejected" });
   expect(f.fetch).toHaveBeenCalledTimes(1);
   expect(f.agents.updateContextTreeSelection).not.toHaveBeenCalled();
 });
@@ -158,6 +158,27 @@ it("preserves an uncertain publication and never retries a remote write automati
   f.fetch.mockRejectedValueOnce(new Error("response lost"));
   expect(await f.run()).toEqual({ status: "failed", code: "publication_uncertain" });
   expect(f.fetch).toHaveBeenCalledTimes(1);
+  expect(f.agents.updateContextTreeSelection).not.toHaveBeenCalled();
+});
+
+it("reports uncertain publication if creating the repository succeeds but initialization fails", async () => {
+  const f = fixture();
+  f.fetch
+    .mockResolvedValueOnce(
+      Response.json(
+        {
+          id: 123,
+          full_name: "acme/memory",
+          private: true,
+          default_branch: "main",
+          permissions: { admin: true, pull: true, push: true },
+        },
+        { status: 201, headers: { "x-oauth-scopes": "repo" } },
+      ),
+    )
+    .mockRejectedValueOnce(new Error("initialization failed"));
+  expect(await f.run()).toEqual({ status: "failed", code: "publication_uncertain" });
+  expect(f.fetch).toHaveBeenCalledTimes(2);
   expect(f.agents.updateContextTreeSelection).not.toHaveBeenCalled();
 });
 

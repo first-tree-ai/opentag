@@ -365,7 +365,7 @@ function request(overrides: Partial<ContextTreeOperationRequest> = {}): ContextT
 
 function dispatchFixture(kind: "local" | "cloud" | undefined, config = agentConfig()) {
   const registry = {
-    currentInstanceId: vi.fn(() => randomUUID()),
+    currentInstanceId: vi.fn<() => string | undefined>(() => randomUUID()),
     supportsCapability: vi.fn(() => true),
     send: vi.fn(async () => undefined),
   };
@@ -380,10 +380,43 @@ function dispatchFixture(kind: "local" | "cloud" | undefined, config = agentConf
     run: vi.fn(async () => ({ status: "completed", repository: "acme/memory" }) as const),
   };
   const service = new ContextTreeOperationService(agents, owner, cloud);
-  return { agents, cloud, owner, ownerStart, service };
+  return { agents, cloud, owner, ownerStart, registry, service };
 }
 
 describe("ContextTreeOperationService Cloud dispatch", () => {
+  it.each(["connect", "create"] as const)(
+    "rejects Server-backed Local %s before remote work on an unsupported runtime",
+    async (action) => {
+      const f = dispatchFixture("local");
+      f.registry.supportsCapability.mockReturnValue(false);
+      expect(await f.service.run(ACCOUNT, AGENT, request({ action }))).toEqual({
+        status: "failed",
+        code: "capability_missing",
+      });
+      expect(f.cloud.run).not.toHaveBeenCalled();
+      expect(f.ownerStart).not.toHaveBeenCalled();
+      expect(f.agents.updateContextTreeSelection).not.toHaveBeenCalled();
+    },
+  );
+
+  it("requires an online Local runtime before Server-side verification", async () => {
+    const f = dispatchFixture("local");
+    f.registry.currentInstanceId.mockReturnValue(undefined);
+    expect(await f.service.run(ACCOUNT, AGENT, request())).toEqual({ status: "failed", code: "computer_unavailable" });
+    expect(f.cloud.run).not.toHaveBeenCalled();
+    expect(f.agents.updateContextTreeSelection).not.toHaveBeenCalled();
+  });
+
+  it("rechecks Local capabilities after remote verification before persisting a selection", async () => {
+    const f = dispatchFixture("local");
+    f.cloud.run.mockImplementationOnce(async () => {
+      f.registry.supportsCapability.mockReturnValue(false);
+      return { status: "completed", repository: "acme/memory" };
+    });
+    expect(await f.service.run(ACCOUNT, AGENT, request())).toEqual({ status: "failed", code: "capability_missing" });
+    expect(f.agents.updateContextTreeSelection).not.toHaveBeenCalled();
+  });
+
   it("runs Cloud connect Server-side and never through the Local WebSocket owner", async () => {
     const f = dispatchFixture("cloud");
     expect(await f.service.run(ACCOUNT, AGENT, request())).toEqual({

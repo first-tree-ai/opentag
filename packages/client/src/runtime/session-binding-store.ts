@@ -26,6 +26,11 @@ import {
   writeDurableJson,
 } from "../storage/durable-file.js";
 import { agentRuntimePaths, sessionBindingPath, snapshotPath } from "./runtime-paths.js";
+import {
+  computeStoredRuntimeSnapshotHashes,
+  type StoredRuntimeSnapshot,
+  StoredRuntimeSnapshotSchema,
+} from "./stored-runtime-snapshot.js";
 
 export const SESSION_BINDING_SCHEMA_VERSION = 3 as const;
 export const SESSION_RECORDED_INPUT_LIMIT = 64;
@@ -432,7 +437,7 @@ export class SessionBindingStore {
     }
     const path = snapshotPath(this.#home, request.agentId, current.lastEffectiveSnapshotHash);
     let old = (await validatePrivateDirectory(this.#home, dirname(path)))
-      ? await readDurableJson(path, EffectiveRuntimeSnapshotSchema.parse)
+      ? await readDurableJson(path, StoredRuntimeSnapshotSchema.parse)
       : undefined;
     if (!old) {
       if (!unchanged) {
@@ -440,7 +445,7 @@ export class SessionBindingStore {
       }
       old = EffectiveRuntimeSnapshotSchema.parse(runtime);
     }
-    const currentHashes = computeRuntimeSnapshotHashes(old);
+    const currentHashes = computeStoredRuntimeSnapshotHashes(old);
     const layout =
       currentHashes.effectiveSnapshotHash === current.lastEffectiveSnapshotHash
         ? undefined
@@ -448,7 +453,7 @@ export class SessionBindingStore {
     let oldHashes = currentHashes;
     let nextHashes = computeRuntimeSnapshotHashes(runtime);
     if (layout) {
-      oldHashes = computeLegacyRuntimeSnapshotHashes(old, layout);
+      oldHashes = computeStoredRuntimeSnapshotHashes(old, layout);
       nextHashes = compareLegacySnapshot(runtime, old, layout);
     }
     validateStoredSnapshot(current, old, oldHashes);
@@ -823,9 +828,9 @@ function hasOnlyKeys(value: Record<string, unknown>, allowed: string[]): boolean
   return Object.keys(value).every((key) => accepted.has(key));
 }
 
-function legacySnapshotLayout(snapshot: EffectiveRuntimeSnapshot, hash: string): "0.1.0" | "self-configuration" {
-  const original = LegacyRuntimeSnapshotSchema.safeParse(snapshot);
-  if (original.success && computeLegacyRuntimeSnapshotHashes(original.data).effectiveSnapshotHash === hash)
+function legacySnapshotLayout(snapshot: StoredRuntimeSnapshot, hash: string): "0.1.0" | "self-configuration" {
+  const original = LegacyRuntimeSnapshotSchema.safeParse({ ...snapshot, contextTrees: [] });
+  if (original.success && computeStoredRuntimeSnapshotHashes(snapshot, "0.1.0").effectiveSnapshotHash === hash)
     return "0.1.0";
   if (!LegacyRuntimeSnapshotSchema.shape.execution.safeParse(snapshot.execution).success) {
     throw new SessionBindingConflictError("conflict", "The original Session snapshot identity cannot be verified");
@@ -835,7 +840,7 @@ function legacySnapshotLayout(snapshot: EffectiveRuntimeSnapshot, hash: string):
 
 function validateStoredSnapshot(
   current: LocalSessionBinding,
-  snapshot: EffectiveRuntimeSnapshot,
+  snapshot: StoredRuntimeSnapshot,
   hashes: RuntimeSnapshotHashes,
 ): void {
   if (
@@ -852,7 +857,7 @@ function validateStoredSnapshot(
 }
 
 function assertSnapshotRevisions(
-  old: EffectiveRuntimeSnapshot,
+  old: StoredRuntimeSnapshot,
   runtime: EffectiveRuntimeSnapshot,
   oldHashes: RuntimeSnapshotHashes,
   nextHashes: RuntimeSnapshotHashes,
@@ -876,7 +881,7 @@ function assertSnapshotRevisions(
 
 function compareLegacySnapshot(
   runtime: EffectiveRuntimeSnapshot,
-  old: EffectiveRuntimeSnapshot,
+  old: StoredRuntimeSnapshot,
   layout: "0.1.0" | "self-configuration",
 ): RuntimeSnapshotHashes {
   // Compare published content across 0058/0059; preparation still uses the requested current policy.

@@ -145,6 +145,13 @@ holds the half that needs a resolver: a public destination only, judged on every
 returning the address to dial. No redirect is followed, because a redirect names a destination the
 policy never saw.
 
+One deadline covers a fetch as a whole, the address check included. The transport is given what is
+left of that budget — so a slow lookup narrows the time left for the request rather than adding to
+it — together with the deadline's own signal, which is what destroys the request when the budget
+expires or the caller cancels. A lookup that outlasts the budget fails the fetch without dialing
+anything, and a signal that is already aborted before the request is built is refused without
+dialing too.
+
 The address rules produce the address to dial, and the two transports bind that address to the
 connection rather than resolving again:
 

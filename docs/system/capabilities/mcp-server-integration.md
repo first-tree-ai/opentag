@@ -378,6 +378,14 @@ The rules are applied uniformly to all of them:
   **These are the management-plane numbers.** A runtime tool call uses a second fetcher instance with
   its own deadline (120 s) and its own per-Account counter (8) — see [the gateway](#the-mcp-gateway)
   for why sharing them was wrong.
+- The deadline is one budget per call. It starts before the hostname is resolved and covers the
+  request that follows, so a resolver that never answers ends the call instead of outliving every
+  bound; the call settles at the deadline and releases its Account slot there. A name lookup cannot
+  be aborted, so its result is only ever used after a further check: a lookup that answers too late
+  never turns into the request it was resolved for.
+- A cancelled call is not dialed. A signal that is already aborted when the call starts, or that
+  fires while the name is being resolved, ends the call before anything leaves the process; one that
+  fires after the request was sent closes it.
 
 `mcp-transport.ts`, `mcp-oauth.ts`, `mcp-probe.ts`, and `mcp-oauth-flow-service.ts` must not call
 `fetch` themselves; they take `fetchOutbound` from the policy module. A regression test scans those
@@ -394,6 +402,12 @@ Not attempted: **DNS rebinding**, where a name resolves publicly during this loo
 connect time. Closing it needs the connection pinned to the validated address, which Node's `fetch`
 cannot express without an undici `Agent` with a custom `connect.lookup`; that is the upgrade path if
 a deployment faces a hostile resolver rather than a hostile Server.
+
+A response the gate refuses is **closed, not read**. That covers a `3xx`, a body whose declared
+`Content-Length` exceeds the bound, and one that exceeds it while it arrives: cancelling the body
+closes the socket, so the peer stops writing. Draining it instead would keep the connection open for
+as long as the peer chose to send, for an answer this deployment had already rejected. An expired
+deadline closes the body the same way.
 
 ## OAuth
 

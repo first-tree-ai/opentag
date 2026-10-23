@@ -316,16 +316,18 @@ window again. A callback that already failed on a query deadline rejects at once
 while the connection stays busy until TCP gives up, the same limit as a timed-out single query. A deadline during
 `commit` leaves the outcome unknown, not rolled back: the transaction may have committed on the server.
 
-For an external uptime monitor that should not depend on bootstrap stages or deployment headers, use
-`/healthz?deep=1`. It returns `200` with `{"status":"ok","service":"opentag-server","checks":{"database":"ok"}}` when
-the database probe passes, and `503` with `"status":"degraded"` and `"database":"fail"` when it fails or exceeds the
-one-second deadline. It reuses the `/readyz` database probe, never includes error text in the body, and logs the
-redacted error at `warn`. Only `deep=1` and `deep=true` enable it.
+The Cloud Monitoring uptime check stays on `/readyz`. `/healthz?deep=1` is an additional probe for an external uptime
+monitor that should not depend on bootstrap stages or deployment headers; it does not replace the `/readyz` check, which
+still owns the bootstrap and application-stage signal. The deep probe returns `200` with
+`{"status":"ok","service":"opentag-server","checks":{"database":"ok"}}` when the database probe passes, and `503`
+with `"status":"degraded"` and `"database":"fail"` when it fails or exceeds the one-second deadline. It reuses the
+`/readyz` database probe, never includes error text in the body, and logs the redacted error at `warn`. Only `deep=1`
+and `deep=true` enable it.
 
-The image `HEALTHCHECK` also uses `/healthz?deep=1`. It polls every 60 s, allows a 120 s start period, and needs 10
-consecutive failures, so a database outage of about ten minutes marks the container `unhealthy`. Plain Docker only
-reports that state. Docker Swarm (which CapRover uses) replaces an unhealthy task, so a long database outage restarts the
-Server there. `opentag doctor` keeps the plain, database-independent `/healthz`.
+The image `HEALTHCHECK` and `opentag doctor` keep the plain, database-independent `/healthz`. A health-triggered
+container restart cannot repair a database outage: the `postgres` client reconnects on the next query, while the
+replacement boots into migrations against the same unavailable database. It would also drop live Computer and Runner
+connections, so the deep probe stays a monitoring signal only.
 
 ### Server logs in Cloud Logging
 

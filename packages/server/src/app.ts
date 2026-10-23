@@ -633,8 +633,8 @@ export function createApp(options: CreateAppOptions = {}) {
   // Anonymous by design: a failure before sign-in is still a failure worth seeing.
   registerErrorReportRoutes(app, options.errorReporting);
 
-  // Plain /healthz stays liveness-only: doctor and the e2e fixtures rely on it being DB-independent.
-  // The Docker HEALTHCHECK and uptime monitors opt in to the database check with ?deep=1.
+  // Plain /healthz stays liveness-only: doctor, the image HEALTHCHECK and the e2e fixtures rely on it being
+  // DB-independent, because a container restart cannot repair a database outage. Uptime monitors opt in with ?deep=1.
   app.get("/healthz", async (request, reply) => {
     const deep = (request.query as { deep?: unknown } | undefined)?.deep;
     if (deep !== "1" && deep !== "true") {

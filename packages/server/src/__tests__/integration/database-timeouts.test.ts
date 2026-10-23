@@ -227,4 +227,35 @@ describe("database timeouts", () => {
       await proxy.stop();
     }
   });
+
+  it("unblocks a nested transaction whose opening savepoint cannot reach the server", async () => {
+    const proxy = await startBlackholeProxy(url);
+    const { database, sql } = createDatabaseClient(proxy.url, {
+      max: 1,
+      statementTimeoutMs: 10_000,
+      queryTimeoutMs: 1_500,
+    });
+    try {
+      await database.execute(drizzleSql`select 1`);
+      const startedAt = performance.now();
+      const failure = await database
+        .transaction(async (tx) => {
+          await tx.execute(drizzleSql`select 1`);
+          proxy.goDark();
+          // drizzle opens the nested transaction with `savepoint <name>` before it enters the
+          // callback, so a silent connection there holds the whole chain open.
+          await tx.transaction(async (inner) => {
+            await inner.execute(drizzleSql`select 1`);
+          });
+        })
+        .catch((error: unknown) => error);
+      const elapsedMs = performance.now() - startedAt;
+
+      expect(deadlineErrorOf(failure)).toBeInstanceOf(DatabaseQueryTimeoutError);
+      expect(elapsedMs).toBeLessThan(6_000);
+    } finally {
+      await sql.end({ timeout: 1 });
+      await proxy.stop();
+    }
+  });
 });

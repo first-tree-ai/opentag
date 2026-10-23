@@ -8,11 +8,11 @@
  * probe while data is unacknowledged, and Node cannot set TCP_USER_TIMEOUT.
  *
  * Boundary: drizzle's postgres-js session issues every query through `unsafe`, `begin`, and
- * `savepoint`. postgres.js sends its own `begin` through the root `unsafe`, so that statement is
- * covered. It sends `commit`, `rollback`, and the savepoint statements as tagged templates on the
- * scope Sql, which no wrapper can intercept. `begin` and `savepoint` are therefore bounded as a
- * whole as well: once the callback settles, the remaining `commit`/`rollback` phase gets its own
- * `timeoutMs`, and a callback that already failed on a query deadline rejects at once instead of
+ * `savepoint`. postgres.js sends `begin` and `commit`/`rollback` and `savepoint <name>` as tagged
+ * templates on the scope Sql, which no wrapper can intercept, and it sends `SAVEPOINT <name>` before
+ * it enters a nested callback. `begin` and `savepoint` are therefore bounded as a whole too: the
+ * scope gets `timeoutMs` until the callback starts, and then again for the `commit`/`rollback` phase
+ * after it settles. A callback that already failed on a query deadline rejects at once instead of
  * waiting for a rollback that the wedged connection cannot answer.
  *
  * Depends on postgres.js 3.4.x internals: a Query instance has writable `resolve`/`reject` fields,
@@ -54,8 +54,15 @@ type WrappableSql = {
 
 /** Result of the caller's transaction callback; `error` is set when it rejected or threw. */
 type CallbackOutcome = { error?: unknown };
-/** `settled` is absent when the call carries no callback, so there is no phase boundary to watch. */
-type TrackedCallback = { args: unknown[]; settled?: Promise<CallbackOutcome> };
+/**
+ * `entered` resolves when postgres.js calls the callback; `settled` when it finishes. Both are absent
+ * when the call carries no callback, so there is no phase boundary to watch.
+ */
+type TrackedCallback = {
+  args: unknown[];
+  entered?: Promise<void>;
+  settled?: Promise<CallbackOutcome>;
+};
 
 const wrapped = new WeakSet<object>();
 
@@ -105,8 +112,12 @@ function boundScopeCall(
 ): unknown {
   const callback = trackCallback(args, options);
   const pending = call(...callback.args);
-  if (!callback.settled) return pending;
-  return withScopeDeadline(pending as Promise<unknown>, callback.settled, options);
+  if (!callback.settled || !callback.entered) return pending;
+  return withScopeDeadline(
+    pending as Promise<unknown>,
+    { entered: callback.entered, settled: callback.settled },
+    options,
+  );
 }
 
 // begin(fn) / begin(mode, fn) / savepoint(fn) / savepoint(name, fn): the callback is always last.
@@ -114,6 +125,10 @@ function trackCallback(args: unknown[], options: QueryDeadlineOptions): TrackedC
   const last = args.at(-1);
   if (typeof last !== "function") return { args };
   const callback = last as ScopeCallback;
+  let enter!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    enter = resolve;
+  });
   let settle!: (outcome: CallbackOutcome) => void;
   const settled = new Promise<CallbackOutcome>((resolve) => {
     settle = resolve;
@@ -122,6 +137,7 @@ function trackCallback(args: unknown[], options: QueryDeadlineOptions): TrackedC
     args: [
       ...args.slice(0, -1),
       (inner: unknown) => {
+        enter();
         if (inner && typeof inner === "function") wrapScope(inner as unknown as WrappableSql, options);
         let result: unknown;
         try {
@@ -138,6 +154,7 @@ function trackCallback(args: unknown[], options: QueryDeadlineOptions): TrackedC
         return result;
       },
     ],
+    entered,
     settled,
   };
 }
@@ -155,36 +172,54 @@ function isQueryDeadline(error: unknown): boolean {
 }
 
 /**
- * Bounds the phase after the callback: `commit`, `rollback`, `rollback to <name>`.
+ * Bounds both scope phases the wrapped `unsafe` cannot see: the statement postgres.js sends before it
+ * calls the callback (`BEGIN`, `SAVEPOINT <name>`), and the `commit`/`rollback` it sends after.
  *
  * Boundary: rejecting here unblocks the caller; it cannot free the connection, which stays busy
  * until TCP gives up, exactly like the `shortcut:` below.
  */
 function withScopeDeadline<T>(
   pending: Promise<T>,
-  settled: Promise<CallbackOutcome>,
+  { entered, settled }: { entered: Promise<void>; settled: Promise<CallbackOutcome> },
   options: QueryDeadlineOptions,
 ): Promise<T> {
   const { timeoutMs } = options;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let reject!: (error: unknown) => void;
   let done = false;
-  const deadline = new Promise<never>((_resolve, reject) => {
+  const clearTimer = () => {
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    timer = undefined;
+  };
+  const armTimer = () => {
+    timer = setTimeout(() => {
+      options.onTimeout?.({ timeoutMs });
+      reject(new DatabaseQueryTimeoutError(timeoutMs));
+    }, timeoutMs);
+    timer.unref?.();
+  };
+  const deadline = new Promise<never>((_resolve, onReject) => {
+    reject = onReject;
+    // Phase one: postgres.js sends `SAVEPOINT <name>` before it enters a nested callback. If the
+    // connection goes silent there, the callback never runs and no other bound exists.
+    armTimer();
+    void entered.then(() => {
+      if (!done) clearTimer();
+    });
     void settled.then(({ error }) => {
       if (done) return;
       if (isQueryDeadline(error)) {
         reject(error);
         return;
       }
-      timer = setTimeout(() => {
-        options.onTimeout?.({ timeoutMs });
-        reject(new DatabaseQueryTimeoutError(timeoutMs));
-      }, timeoutMs);
-      timer.unref?.();
+      // Phase two: the commit or rollback that follows the callback.
+      armTimer();
     });
   });
   return Promise.race([pending, deadline]).finally(() => {
     done = true;
-    if (timer !== undefined) clearTimeout(timer);
+    clearTimer();
   });
 }
 

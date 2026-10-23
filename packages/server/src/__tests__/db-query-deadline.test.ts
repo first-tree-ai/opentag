@@ -44,7 +44,7 @@ class FakeQuery extends Promise<unknown> {
 /** Mirrors postgres.js `begin`: run the callback, then `commit` on success or `rollback` on failure. */
 type ScopePhase = () => Promise<unknown>;
 
-function fakeSql(phases: { commit?: ScopePhase; rollback?: ScopePhase } = {}) {
+function fakeSql(phases: { commit?: ScopePhase; rollback?: ScopePhase; openSavepoint?: ScopePhase } = {}) {
   const created: FakeQuery[] = [];
   const unsafe = (text: string) => {
     const query = new FakeQuery(text);
@@ -63,12 +63,15 @@ function fakeSql(phases: { commit?: ScopePhase; rollback?: ScopePhase } = {}) {
   };
   const makeScope = (): Record<string, unknown> => {
     const scope = Object.assign(() => undefined, { unsafe }) as unknown as Record<string, unknown>;
-    scope.savepoint = (...args: unknown[]) =>
-      run(
+    // postgres.js sends `savepoint <name>` before it calls the nested callback.
+    scope.savepoint = async (...args: unknown[]) => {
+      await (phases.openSavepoint ?? (async () => undefined))();
+      return run(
         args.at(-1) as (inner: unknown) => unknown,
         async () => undefined,
         phases.rollback ?? (async () => undefined),
       );
+    };
     return scope;
   };
   const root = makeScope();
@@ -240,6 +243,26 @@ describe("applyQueryDeadline", () => {
         savepoint(async () => {
           throw new Error("inner failure");
         }).then(
+          () => "resolved",
+          (error: unknown) => error,
+        ),
+      );
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(await outcomes[0]).toBeInstanceOf(DatabaseQueryTimeoutError);
+  });
+
+  it("bounds a savepoint whose opening statement never returns", async () => {
+    vi.useFakeTimers();
+    const { root } = fakeSql({ openSavepoint: () => new Promise<never>(() => undefined) });
+    applyQueryDeadline(root, { timeoutMs: 1_000 });
+
+    const outcomes: Promise<unknown>[] = [];
+    asBegin(root)((scope) => {
+      outcomes.push(
+        (scope.savepoint as ScopeCall)(async () => "inner").then(
           () => "resolved",
           (error: unknown) => error,
         ),

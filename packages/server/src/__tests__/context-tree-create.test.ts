@@ -2,16 +2,15 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import type { AgentAdminConfig, ContextTreeOperationRequest, GitHubConnectionStatus } from "@opentag/shared";
 import { afterEach, expect, it, vi } from "vitest";
-import type { ContextTreeOperationOwner } from "../runtime/context-tree-operation-owner.js";
-import {
-  type CloudContextTreeGitHubManagement,
-  CloudContextTreeOperations,
-} from "../services/agents/cloud-context-tree-operations.js";
 import { ContextTreeOperationService } from "../services/agents/context-tree-operation-service.js";
+import {
+  type ContextTreeGitHubManagement,
+  GitHubContextTreeOperations,
+} from "../services/agents/github-context-tree-operations.js";
 import { GitHubApiClient } from "../services/github/github-api-client.js";
 import { GitWorkspace } from "../services/github-proxy/git-workspace.js";
 
-const operations: CloudContextTreeOperations[] = [];
+const operations: GitHubContextTreeOperations[] = [];
 afterEach(async () => {
   await Promise.all(operations.splice(0).map((operation) => operation.close()));
 });
@@ -31,7 +30,7 @@ function fixture(repository = "acme/memory") {
       availability: { available: true as const, githubHost: "github.com" as const, oauthClientId: "1" },
       connection,
     })),
-    getExecutionUserCredential: vi.fn<CloudContextTreeGitHubManagement["getExecutionUserCredential"]>(async () => ({
+    getExecutionUserCredential: vi.fn<ContextTreeGitHubManagement["getExecutionUserCredential"]>(async () => ({
       accessToken: "ghu_server_only",
       githubUserId: "42",
       accessExpiresAt: new Date(Date.now() + 3_600_000),
@@ -57,7 +56,7 @@ function fixture(repository = "acme/memory") {
   });
   const workspace = new GitWorkspace();
   const credentials = { acquire: vi.fn() };
-  const runner = new CloudContextTreeOperations({
+  const runner = new GitHubContextTreeOperations({
     management,
     api,
     workspace,
@@ -76,20 +75,19 @@ function fixture(repository = "acme/memory") {
     getConfigById: vi.fn(async () => config),
     updateContextTreeSelection: vi.fn(async () => config),
   };
-  const owner = { start: vi.fn(), checkComputer: vi.fn(() => undefined) };
-  const service = new ContextTreeOperationService(agents, owner as unknown as ContextTreeOperationOwner, runner);
+  const registry = { currentInstanceId: vi.fn(() => "instance"), supportsCapability: vi.fn(() => true) };
+  const service = new ContextTreeOperationService(agents, registry, runner);
   const input: ContextTreeOperationRequest = {
     kind: "git",
     repository,
     path: ".",
     ref: "HEAD",
     action: "create",
-    operationId: randomUUID(),
     expectedRevision: 1,
     expectedRuntimeConfigRevision: 1,
   };
   const run = () => service.run(accountId, config.id, input);
-  return { accountId, management, fetch, workspace, runner, credentials, config, agents, owner, input, run };
+  return { accountId, management, fetch, workspace, runner, credentials, config, agents, input, run };
 }
 
 it.each(["acme/memory", "Alice/memory"])(
@@ -120,7 +118,6 @@ it.each(["acme/memory", "Alice/memory"])(
     expect(f.agents.updateContextTreeSelection).toHaveBeenCalledWith(f.accountId, f.config.id, expect.any(Object), [
       { kind: "git", repository, path: ".", ref: "trunk" },
     ]);
-    expect(f.owner.start).not.toHaveBeenCalled();
     expect(f.credentials.acquire).not.toHaveBeenCalled();
     const root = f.workspace.root;
     await f.runner.close();

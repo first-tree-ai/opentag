@@ -4,7 +4,6 @@ import { createServiceLoggerPort } from "../observability/index.js";
 import type { AgentRuntimeOptionsOwner } from "../runtime/agent-runtime-options-owner.js";
 import type { AgentRuntimeTestOwner } from "../runtime/agent-runtime-test-owner.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
-import type { ContextTreeOperationOwner } from "../runtime/context-tree-operation-owner.js";
 import type { ProviderCliReconcileOwner } from "../runtime/provider-cli-reconcile-owner.js";
 import type { RuntimeDomainOwner } from "../runtime/runtime-domain-owner.js";
 import { type RuntimeBusinessOptions, RuntimeSession, type RuntimeSessionOptions } from "../runtime/runtime-session.js";
@@ -20,7 +19,6 @@ export interface RuntimeRoutesOptions extends RuntimeSessionOptions {
   agentRuntimeOptionsOwner?: AgentRuntimeOptionsOwner;
   agentRuntimeTestOwner?: AgentRuntimeTestOwner;
   slackAutoSetupOwner?: SlackAutoSetupOwner;
-  contextTreeOperationOwner?: ContextTreeOperationOwner;
   domainOwner?: RuntimeDomainOwner;
   providerCliReconcileOwner?: ProviderCliReconcileOwner;
   registry?: ConnectionRegistry;
@@ -93,7 +91,6 @@ export function registerRuntimeRoutes(
         agentRuntimeTestOwner?.businessOptions(),
         options.slackAutoSetupOwner?.businessOptions(),
         options.agentRuntimeOptionsOwner?.businessOptions(),
-        options.contextTreeOperationOwner?.businessOptions(),
         domainOwner?.businessOptions(),
         options.runtimeCredentialOwner?.businessOptions(),
       ),
@@ -133,7 +130,6 @@ export function registerRuntimeRoutes(
     agentRuntimeTestOwner?.close();
     options.slackAutoSetupOwner?.close();
     options.agentRuntimeOptionsOwner?.close();
-    options.contextTreeOperationOwner?.close();
     providerCliReconcileOwner?.close();
     domainOwner?.close();
     registry.closeAll();

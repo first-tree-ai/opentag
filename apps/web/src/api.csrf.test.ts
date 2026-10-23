@@ -111,7 +111,15 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   testAgentRuntime: [ID, { provider: "codex" }],
   contextTreeOperation: [
     ID,
-    { action: "disconnect", operationId: ID, expectedRevision: 1, expectedRuntimeConfigRevision: 1, repository: null },
+    {
+      action: "disconnect",
+      kind: "git",
+      repository: "acme/memory",
+      path: ".",
+      ref: "main",
+      expectedRevision: 1,
+      expectedRuntimeConfigRevision: 1,
+    },
   ],
   internalToolsOffered: [],
   githubIntegration: [],

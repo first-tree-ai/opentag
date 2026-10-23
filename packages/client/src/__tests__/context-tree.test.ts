@@ -79,8 +79,11 @@ it("bounds startup while retaining and joining background work", async () => {
     connections: [{ reason: "PREPARING" }],
   });
   release();
-  await f.manager.runExclusive(async () => undefined);
-  expect(await f.manager.ensureAgent(f.cwd, "pi", [sources[0]])).toMatchObject({ connections: [{ status: "ready" }] });
+  await vi.waitFor(async () => {
+    expect(await f.manager.ensureAgent(f.cwd, "pi", [sources[0]])).toMatchObject({
+      connections: [{ status: "ready" }],
+    });
+  });
   expect(f.execFile).toHaveBeenCalledTimes(1);
 });
 it("keeps a ready snapshot when the managed execution token rotates", async () => {

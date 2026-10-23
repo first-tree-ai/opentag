@@ -43,7 +43,6 @@ import { loadApprovalAuthority } from "./runtime/approval-authority.js";
 import { ApprovalMessenger } from "./runtime/approval-messenger.js";
 import { PostgresApprovalStore } from "./runtime/approval-store.js";
 import { COMPUTER_DELETED_CLOSE, ConnectionRegistry } from "./runtime/connection-registry.js";
-import { ContextTreeOperationOwner } from "./runtime/context-tree-operation-owner.js";
 import { handleFeishuApprovalAction } from "./runtime/feishu-approval-action.js";
 import { ImDeliveryWorker } from "./runtime/im-delivery-worker.js";
 import type { CloudSessionAllocationPort } from "./runtime/im-delivery-worker.types.js";
@@ -55,8 +54,8 @@ import { PostgresRuntimeDurableWorkStore } from "./runtime/runtime-durable-work-
 import { SlackAutoSetupOwner } from "./runtime/slack-auto-setup-owner.js";
 import { AgentRuntimeOptionsService } from "./services/agents/agent-runtime-options-service.js";
 import { AgentSlackProvisionService } from "./services/agents/agent-slack-provision-service.js";
-import { CloudContextTreeOperations } from "./services/agents/cloud-context-tree-operations.js";
 import { ContextTreeOperationService } from "./services/agents/context-tree-operation-service.js";
+import { GitHubContextTreeOperations } from "./services/agents/github-context-tree-operations.js";
 import {
   AgentRuntimeTestService,
   AgentSelfService,
@@ -387,11 +386,11 @@ function createContextTreeServices(
   github: ReturnType<typeof createGitHubIntegration> | undefined,
   imBindings: ImBindingService,
   agents: AgentService,
-  owner: ContextTreeOperationOwner,
+  registry: ConnectionRegistry,
 ) {
   const computerKind = (computerId: string) => imBindings.computerKind(computerId);
-  const cloudContextTreeOperations = github
-    ? new CloudContextTreeOperations({
+  const githubContextTreeOperations = github
+    ? new GitHubContextTreeOperations({
         management: github.management,
         api: github.api,
         computerKind,
@@ -399,11 +398,11 @@ function createContextTreeServices(
       })
     : undefined;
   return {
-    cloudContextTreeOperations,
-    contextTreeOperationService: new ContextTreeOperationService(agents, owner, {
+    githubContextTreeOperations,
+    contextTreeOperationService: new ContextTreeOperationService(agents, registry, {
       computerKind,
       run: (input) =>
-        cloudContextTreeOperations?.run(input) ?? Promise.resolve({ status: "failed", code: "github_not_configured" }),
+        githubContextTreeOperations?.run(input) ?? Promise.resolve({ status: "failed", code: "github_not_configured" }),
     }),
   };
 }
@@ -826,7 +825,6 @@ export async function startServer(): Promise<void> {
       shouldPrewarmOfficialProviderClis: (computerId) =>
         computerService.hasActiveAgentWithoutMessagingSetup(computerId),
     });
-    const contextTreeOperationOwner = new ContextTreeOperationOwner(registry);
     const agentRuntimeOptionsOwner = new AgentRuntimeOptionsOwner(registry);
     const agentRuntimeTestOwner = new AgentRuntimeTestOwner(registry);
     const slackAutoSetupOwner = new SlackAutoSetupOwner(registry);
@@ -850,11 +848,11 @@ export async function startServer(): Promise<void> {
           cloudSessionOwner,
         ),
     });
-    const { cloudContextTreeOperations, contextTreeOperationService } = createContextTreeServices(
+    const { githubContextTreeOperations, contextTreeOperationService } = createContextTreeServices(
       github,
       imBindingService,
       agentService,
-      contextTreeOperationOwner,
+      registry,
     );
     const agentRuntimeOptionsService = new AgentRuntimeOptionsService(
       agentService,
@@ -1210,7 +1208,6 @@ export async function startServer(): Promise<void> {
         agentRuntimeTestOwner,
         slackAutoSetupOwner,
         agentRuntimeOptionsOwner,
-        contextTreeOperationOwner,
         providerCliReconcileOwner,
         channelTarget: () => channelTargetPoller.get(),
       },
@@ -1304,7 +1301,7 @@ export async function startServer(): Promise<void> {
       mcpRefreshWorker.stop();
       skillRuntime.gc?.stop();
       if (github) await github.worker.stop();
-      await cloudContextTreeOperations?.close();
+      await githubContextTreeOperations?.close();
       await platformRuntime.close();
       await feishuSetupService.stop();
       await feishuConnections.stop();

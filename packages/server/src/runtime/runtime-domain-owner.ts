@@ -31,10 +31,7 @@ import type { RuntimeBusinessContext, RuntimeBusinessOptions } from "./runtime-s
 
 export type { AcceptedDeliveryRecord, RecordedTurnRecord } from "./runtime-custody-store.js";
 
-type DomainBusinessFrame = Exclude<
-  ClientRuntimeBusinessFrame,
-  { type: "context-tree:operation:result" | "approval:request" | "approval:result" }
->;
+type DomainBusinessFrame = Exclude<ClientRuntimeBusinessFrame, { type: "approval:request" | "approval:result" }>;
 
 /**
  * The Session-message delivery request on the wire: the frozen v2 ordinary shape or the v3 shape
@@ -637,10 +634,7 @@ export class RuntimeDomainOwner {
     return {
       parse: (input) => {
         const parsed = ClientRuntimeBusinessFrameSchema.safeParse(input);
-        return parsed.success &&
-          parsed.data.type !== "context-tree:operation:result" &&
-          parsed.data.type !== "approval:request" &&
-          parsed.data.type !== "approval:result"
+        return parsed.success && parsed.data.type !== "approval:request" && parsed.data.type !== "approval:result"
           ? parsed.data
           : undefined;
       },
@@ -1213,7 +1207,6 @@ function businessFailureResult(frame: unknown): RuntimeImCredentialGrantResult |
 }
 
 function domainLaneKey(frame: ClientRuntimeBusinessFrame): string {
-  if (frame.type === "context-tree:operation:result") return `request:${frame.requestId}`;
   if (frame.type === "session:reconcile:result") return `request:${frame.requestId}`;
   if (frame.type === "im:deliver:result" || frame.type === "turn:report" || frame.type === "turn:activity")
     return `delivery:${frame.deliveryId}`;

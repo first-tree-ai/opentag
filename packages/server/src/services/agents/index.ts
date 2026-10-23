@@ -32,11 +32,11 @@ export {
   CloudAgentRuntimeTester,
   type CloudAgentRuntimeTesterOptions,
 } from "./cloud-agent-runtime-tester.js";
-export {
-  type CloudContextTreeGitHubManagement,
-  type CloudContextTreeOperationInput,
-  type CloudContextTreeOperationRunner,
-  CloudContextTreeOperations,
-  type CloudContextTreeOperationsOptions,
-} from "./cloud-context-tree-operations.js";
 export { AgentServiceError } from "./errors.js";
+export {
+  type ContextTreeGitHubManagement,
+  type GitHubContextTreeOperationInput,
+  type GitHubContextTreeOperationRunner,
+  GitHubContextTreeOperations,
+  type GitHubContextTreeOperationsOptions,
+} from "./github-context-tree-operations.js";

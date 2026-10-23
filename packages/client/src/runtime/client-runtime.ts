@@ -7,9 +7,6 @@ import {
   type AgentRuntimeTestRequestFrame,
   type AgentRuntimeTestResultFrame,
   AgentRuntimeTestResultFrameSchema,
-  type ContextTreeOperationFrame,
-  type ContextTreeOperationResponse,
-  ContextTreeOperationResultFrameSchema,
   type DirectImMessageDeliveryRequest,
   type ImMessageDeliveryResult,
   ImMessageDeliveryResultSchema,
@@ -44,7 +41,6 @@ type ResidualBusinessFrame = Extract<
       | "provider-cli:validation:run"
       | "provider-cli:cancel"
       | "slack:auto-setup"
-      | "context-tree:operation"
       | "agent-runtime:options"
       | "agent-runtime:options:cancel"
       | "agent-runtime:test"
@@ -64,10 +60,6 @@ export interface ClientRuntimeOptions {
   handleApproval?(request: RuntimeApprovalDecision): Promise<RuntimeApprovalResult>;
   slackAutoSetup?: {
     run(request: SlackAutoSetupRuntimeRequest, signal?: AbortSignal): Promise<SlackAutoSetupRuntimeResult["result"]>;
-  };
-  contextTreeSettings?: {
-    run(frame: ContextTreeOperationFrame): Promise<ContextTreeOperationResponse>;
-    close?(): void;
   };
   logger?: ClientLogger;
   handleDelivery?(request: DirectImMessageDeliveryRequest): Promise<DeliveryDecision> | DeliveryDecision;
@@ -125,7 +117,6 @@ export class ClientRuntime {
   }
 
   stop(): void {
-    this.#options.contextTreeSettings?.close?.();
     this.#abort.abort();
     this.#connection.stop();
   }
@@ -250,26 +241,6 @@ export class ClientRuntime {
     if (frame.type.startsWith("provider-cli:")) return;
     if (frame.type === "slack:auto-setup") {
       await this.#setupSlack(frame);
-      return;
-    }
-    if (frame.type === "context-tree:operation") {
-      let result: ContextTreeOperationResponse;
-      try {
-        result = (await this.#options.contextTreeSettings?.run(frame)) ?? {
-          status: "failed",
-          code: "capability_missing",
-        };
-      } catch {
-        result = { status: "failed", code: "failed" };
-      }
-      await this.#connection.send(
-        ContextTreeOperationResultFrameSchema.parse({
-          type: "context-tree:operation:result",
-          requestId: frame.requestId,
-          result,
-        }),
-        { priority: "result", signal: this.#abort.signal },
-      );
       return;
     }
     if (frame.type === "agent-runtime:test") {

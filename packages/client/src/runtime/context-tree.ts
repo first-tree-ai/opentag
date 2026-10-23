@@ -650,10 +650,6 @@ export class ContextTreeManager {
     return true;
   }
 
-  runExclusive<T>(operation: () => Promise<T>): Promise<T> {
-    return this.#serialize(operation);
-  }
-
   #serialize<T>(operation: () => Promise<T>): Promise<T> {
     const next = this.#pending.then(operation, operation);
     this.#pending = next.then(

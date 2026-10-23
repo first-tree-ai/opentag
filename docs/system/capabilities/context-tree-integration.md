@@ -38,7 +38,7 @@ Create accepts an owner and repository name and uses GitHub's default branch.
 Neither dialog asks for a branch.
 Local Computers can also create private repositories: OpenTag creates the repository,
 generates the initial page with the pinned `context-tree init`, and commits it through
-GitHub's contents API. Creation runs on the Server with the Account's current GitHub
+GitHub's contents API. Connection verification and creation run exclusively on the Server with the Account's current GitHub
 credential; it does not require Computer-side GitHub credentials. The OAuth authorization must allow private repositories, and the connected user
 and organization policy must permit creation and content writes. Permission failures
 ask the user to check access; only missing or invalid authorization asks them to reconnect.
@@ -47,9 +47,10 @@ Failed settings operations display an error banner. When the server has no GitHu
 configured, the message asks the server administrator to configure it; this does not
 mean the bound Computer needs an update.
 
-Operations carry an operation ID and expected Agent/runtime revisions. Changing a
+Operations carry expected Agent/runtime revisions. Changing a
 nonempty selection requires a paused Agent. Disconnect only changes the selection;
-it preserves cached content and unpublished work. Identical requests are idempotent.
+it preserves cached content and unpublished work. Connecting an already selected source
+and disconnecting an absent source are idempotent.
 Repository creation never adopts or overwrites an existing repository. Remote writes are
 not retried automatically. Rejected repository names prompt the user to choose another name or
 connect an existing tree. An uncertain creation asks the user to inspect GitHub: connect a valid
@@ -109,7 +110,7 @@ include its CLI, public contracts, and six skills: init, connect, read, write, c
 and schedule-cleanup. Native cleanup schedules belong on persistent supported hosts,
 not ephemeral Cloud sandboxes. Server, Local runtimes, and Cloud images use the same
 connection contract. Local connect/create operations require the connected Computer to advertise
-`runtime.contextTreeSettings` version 2, including when GitHub work runs on the Server. An older
+`runtime.contextTreeSettings` version 2, before the Server runs GitHub work. An older
 runtime receives an upgrade message before remote work or selection persistence. Cloud images
 must include the pinned CLI before accepting these selections.
 

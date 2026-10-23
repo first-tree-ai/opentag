@@ -55,7 +55,6 @@ function ContextTreeSettingsForm({
   const returnFocus = useRef<HTMLElement>(null);
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState<ContextTreeOperationResponse>();
-  const attempt = useRef<ContextTreeOperationRequest | undefined>(undefined);
   const mounted = useRef(true);
   const currentRevision = `${config.revision}:${config.runtimeConfig.revision}`;
   const latestRevision = useRef(currentRevision);
@@ -105,8 +104,12 @@ function ContextTreeSettingsForm({
   async function run(action: ContextTreeOperationRequest["action"], selectedSource: ContextTreeConnection = source) {
     if (pending || pauseRequired) return;
     if (action !== "disconnect" && (!online || !validateSubmission())) return;
-    const input = operationAttempt(config, action, selectedSource, attempt.current);
-    attempt.current = input;
+    const input: ContextTreeOperationRequest = {
+      ...selectedSource,
+      action,
+      expectedRevision: config.revision,
+      expectedRuntimeConfigRevision: config.runtimeConfig.revision,
+    };
     setPending(true);
     setResult(undefined);
     try {
@@ -115,7 +118,6 @@ function ContextTreeSettingsForm({
       setResult(response);
       if (response.status === "completed") setMode(undefined);
       if (response.status === "completed" || response.code === "stale_configuration") onChanged();
-      if (response.status === "failed" && response.code !== "publication_uncertain") attempt.current = undefined;
     } finally {
       if (mounted.current) setPending(false);
     }
@@ -602,28 +604,6 @@ function failureMessage(
     default:
       return cloud ? m.agent_settings_context_tree_cloud_failed() : m.agent_settings_context_tree_failed();
   }
-}
-
-function operationAttempt(
-  config: AgentAdminConfig,
-  action: ContextTreeOperationRequest["action"],
-  source: ContextTreeConnection,
-  previous?: ContextTreeOperationRequest,
-): ContextTreeOperationRequest {
-  if (
-    previous?.action === action &&
-    contextTreeIdentity(previous) === contextTreeIdentity(source) &&
-    previous.expectedRevision === config.revision &&
-    previous.expectedRuntimeConfigRevision === config.runtimeConfig.revision
-  )
-    return previous;
-  return {
-    operationId: crypto.randomUUID(),
-    expectedRevision: config.revision,
-    expectedRuntimeConfigRevision: config.runtimeConfig.revision,
-    action,
-    ...source,
-  };
 }
 
 async function executeOperation(

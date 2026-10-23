@@ -6,7 +6,6 @@ import { homedir, tmpdir } from "node:os";
 import { delimiter, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  type ContextTreeOperationFrame,
   computeRuntimeSnapshotHashes,
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
@@ -433,70 +432,6 @@ describe("createClientRuntime production composition", () => {
       }
     },
   );
-
-  it("dispatches the caller-supplied managed environment to Context Tree settings operations", async () => {
-    const home = await temporaryDirectory("opentag-context-tree-management-environment-");
-    const connection = runtimeConnection();
-    const listeners: Array<Parameters<RuntimeConnection["subscribeBusinessFrames"]>[0]> = [];
-    const subscribe = connection.subscribeBusinessFrames.bind(connection);
-    const businessFrames = vi.spyOn(connection, "subscribeBusinessFrames").mockImplementation((listener) => {
-      listeners.push(listener);
-      return subscribe(listener);
-    });
-    const sent: Array<Record<string, unknown>> = [];
-    const send = vi.spyOn(connection, "send").mockImplementation(async (frame) => {
-      sent.push(frame as Record<string, unknown>);
-    });
-    const managementEnvironments = vi.fn(() => ({
-      GH_TOKEN: "execution-local-handle",
-      HTTPS_PROXY: "http://127.0.0.1:43119",
-    }));
-    const runtime = await createClientRuntime(connection, {
-      clientVersion: "0.0.1",
-      credentialMode: "proxy",
-      environment: { HOME: home, PATH: process.env.PATH },
-      factory: readyFactory(),
-      home,
-      runtimeCredentials: { contextTreeManagementEnvironment: managementEnvironments },
-    });
-    let running: Promise<void> | undefined;
-    try {
-      running = runtime.run().catch(() => undefined);
-      const frame: ContextTreeOperationFrame = {
-        type: "context-tree:operation",
-        requestId: randomUUID(),
-        agentId: randomUUID(),
-        computerId: connection.installationId,
-        requireStopped: false,
-        input: {
-          kind: "git" as const,
-          path: ".",
-          ref: "main",
-          operationId: randomUUID(),
-          expectedRevision: 1,
-          expectedRuntimeConfigRevision: 1,
-          action: "connect",
-          repository: "acme/trusted",
-        },
-      };
-      for (const listener of listeners) await listener(frame);
-      // `permission_denied` proves the managed environment reached the settings gate: without the
-      // composition injection the managed operation would fail `authentication_required` instead.
-      expect(managementEnvironments).toHaveBeenCalled();
-      expect(sent).toContainEqual({
-        type: "context-tree:operation:result",
-        requestId: frame.requestId,
-        result: { status: "failed", code: "permission_denied" },
-      });
-      runtime.stop();
-      await running;
-    } finally {
-      runtime.stop();
-      await running;
-      send.mockRestore();
-      businessFrames.mockRestore();
-    }
-  });
 
   it.skipIf(process.platform === "win32")(
     "forwards packaged Context Tree skills onto the default Pi RPC spawn",

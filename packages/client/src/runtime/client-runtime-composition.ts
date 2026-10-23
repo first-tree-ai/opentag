@@ -66,7 +66,6 @@ import {
 import { AgentWorkspaceManager } from "./agent-workspace.js";
 import { ClientRuntime, type ClientRuntimeOptions } from "./client-runtime.js";
 import { ContextTreeManager, resolveContextTreePackage } from "./context-tree.js";
-import { ContextTreeSettings } from "./context-tree-settings.js";
 import { MvpTurnReportRecovery } from "./mvp-turn-report-recovery.js";
 import { resolveAccountHome } from "./provider-cli/account-layout.js";
 import { ProviderCliManager } from "./provider-cli/manager.js";
@@ -302,8 +301,6 @@ export interface CreateClientRuntimeOptions {
      * Runner-side mapping because the execution environment targets the Sandbox loopback.
      */
     readonly contextTreeEnvironment?: (sessionId: string) => Readonly<Record<string, string | undefined>> | undefined;
-    /** Trusted host-side environment for Context Tree settings operations, when one exists. */
-    readonly contextTreeManagementEnvironment?: () => NodeJS.ProcessEnv | undefined;
   };
   /**
    * Proxy mode only: opens the Server-issued validation execution for CLI readiness.
@@ -846,16 +843,6 @@ export async function createClientRuntime(
     slackAutoSetup: new SlackAutoSetup({
       environment: { ...sourceEnvironment, OPENTAG_HOME: resolveOpenTagHomeLayout(options.home).home },
       cliEntry: options.slackAutoSetupCliEntry,
-    }),
-    contextTreeSettings: new ContextTreeSettings({
-      home: options.home,
-      environment: sourceEnvironment,
-      hasAgentSessions: runtimeManager.hasAgentSessions.bind(runtimeManager),
-      exclusive: contextTree.runExclusive.bind(contextTree),
-      managedCredentials: credentialMode === "proxy",
-      ...(options.runtimeCredentials?.contextTreeManagementEnvironment
-        ? { managedEnvironment: options.runtimeCredentials.contextTreeManagementEnvironment }
-        : {}),
     }),
     logger: moduleLogger("client-runtime"),
     reconciler,

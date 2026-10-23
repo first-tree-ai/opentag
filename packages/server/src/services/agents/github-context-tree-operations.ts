@@ -27,7 +27,7 @@ import { GitWorkspace } from "../github-proxy/git-workspace.js";
 import { VerifiedTreeHead } from "../github-proxy/verified-tree-head.js";
 import { contextTreeInitialContent } from "./context-tree-initial-content.js";
 
-export interface CloudContextTreeOperationInput {
+export interface GitHubContextTreeOperationInput {
   accountId: string;
   agentId: string;
   action: "connect" | "create";
@@ -36,20 +36,20 @@ export interface CloudContextTreeOperationInput {
   ref: string;
 }
 
-/** The Cloud dispatch surface of the shared ContextTreeOperationService. */
-export interface CloudContextTreeOperationRunner {
+/** Server-side GitHub operations used by the settings service. */
+export interface GitHubContextTreeOperationRunner {
   computerKind(computerId: string): Promise<"local" | "cloud" | undefined>;
-  run(input: CloudContextTreeOperationInput): Promise<ContextTreeOperationResponse>;
+  run(input: GitHubContextTreeOperationInput): Promise<ContextTreeOperationResponse>;
 }
 
-/** Exactly the GitHub management facade surface Cloud connect uses. Server-internal; never HTTP. */
-export type CloudContextTreeGitHubManagement = Pick<
+/** Exactly the GitHub management facade surface settings operations use. Server-internal; never HTTP. */
+export type ContextTreeGitHubManagement = Pick<
   GitHubManagementService,
   "getOverview" | "resolveRepository" | "getExecutionUserCredential"
 >;
 
-export interface CloudContextTreeOperationsOptions {
-  management: CloudContextTreeGitHubManagement;
+export interface GitHubContextTreeOperationsOptions {
+  management: ContextTreeGitHubManagement;
   api: Pick<GitHubApiClient, "createPrivateRepository" | "initializeContextTree" | "getRepository">;
   credentials: Pick<GitHubExecutionCredentials, "acquire">;
   /** Exact Computer kind lookup; `undefined` for unknown rows so Cloud is never mistaken for Local. */
@@ -77,10 +77,10 @@ const DEFAULT_BUDGET_MS = 120_000;
 const DEFAULT_MAX_CONCURRENT = 8;
 
 /** A deliberate, already-classified operation failure; the code is the public response code. */
-class CloudOperationFailure extends Error {
+class GitHubOperationFailure extends Error {
   constructor(readonly code: FailureCode) {
-    super(`Cloud Context Tree operation failed: ${code}`);
-    this.name = "CloudOperationFailure";
+    super(`GitHub Context Tree operation failed: ${code}`);
+    this.name = "GitHubOperationFailure";
   }
 }
 
@@ -89,7 +89,7 @@ function failed(code: FailureCode): ContextTreeOperationResponse {
 }
 
 function halt(code: FailureCode): never {
-  throw new CloudOperationFailure(code);
+  throw new GitHubOperationFailure(code);
 }
 
 function connectionFence(connection: GitHubConnectionStatus): Fencing {
@@ -115,10 +115,10 @@ function parseRepository(raw: string): string {
   return parsed.data;
 }
 
-export class CloudContextTreeOperations implements CloudContextTreeOperationRunner {
+export class GitHubContextTreeOperations implements GitHubContextTreeOperationRunner {
   readonly #credentials: Pick<GitHubExecutionCredentials, "acquire">;
-  readonly #management: CloudContextTreeGitHubManagement;
-  readonly #api: CloudContextTreeOperationsOptions["api"];
+  readonly #management: ContextTreeGitHubManagement;
+  readonly #api: GitHubContextTreeOperationsOptions["api"];
   readonly #computerKind: (computerId: string) => Promise<"local" | "cloud" | undefined>;
   readonly #treeHeads: Pick<VerifiedTreeHead, "verify">;
   readonly #remoteFactory: (fullName: string, accessToken: string) => PublicationRemote;
@@ -129,7 +129,7 @@ export class CloudContextTreeOperations implements CloudContextTreeOperationRunn
   readonly #closer = new AbortController();
   #closed = false;
 
-  constructor(options: CloudContextTreeOperationsOptions) {
+  constructor(options: GitHubContextTreeOperationsOptions) {
     this.#management = options.management;
     this.#api = options.api;
     this.#credentials = options.credentials;
@@ -151,7 +151,7 @@ export class CloudContextTreeOperations implements CloudContextTreeOperationRunn
    * Runs one settings operation. At most one
    * operation per Agent is in flight; an identical replay joins it and a different one is `busy`.
    */
-  run(input: CloudContextTreeOperationInput): Promise<ContextTreeOperationResponse> {
+  run(input: GitHubContextTreeOperationInput): Promise<ContextTreeOperationResponse> {
     if (this.#closed) return Promise.resolve(failed("failed"));
     const identity = JSON.stringify([
       input.accountId,
@@ -179,7 +179,7 @@ export class CloudContextTreeOperations implements CloudContextTreeOperationRunn
     await this.#workspace.close();
   }
 
-  async #execute(input: CloudContextTreeOperationInput, signal: AbortSignal): Promise<ContextTreeOperationResponse> {
+  async #execute(input: GitHubContextTreeOperationInput, signal: AbortSignal): Promise<ContextTreeOperationResponse> {
     try {
       return input.action === "create" ? await this.#create(input, signal) : await this.#connect(input, signal);
     } catch (error) {
@@ -187,7 +187,7 @@ export class CloudContextTreeOperations implements CloudContextTreeOperationRunn
     }
   }
 
-  async #create(input: CloudContextTreeOperationInput, signal: AbortSignal): Promise<ContextTreeOperationResponse> {
+  async #create(input: GitHubContextTreeOperationInput, signal: AbortSignal): Promise<ContextTreeOperationResponse> {
     const api = this.#api;
     if (input.path !== "." || input.ref !== "HEAD") halt("invalid_tree");
     const repository = parseRepository(input.repository);
@@ -236,7 +236,7 @@ export class CloudContextTreeOperations implements CloudContextTreeOperationRunn
    * Resolves the requested working target, then verifies the live remote head with the canonical CLI;
    * `recheck` re-proves admission and the fencing versions around the remote read.
    */
-  async #connect(input: CloudContextTreeOperationInput, signal: AbortSignal): Promise<ContextTreeOperationResponse> {
+  async #connect(input: GitHubContextTreeOperationInput, signal: AbortSignal): Promise<ContextTreeOperationResponse> {
     const repository = parseRepository(input.repository);
     const connection = await this.#activeConnection(input.accountId);
     const target = await this.#management.resolveRepository({
@@ -305,7 +305,7 @@ export class CloudContextTreeOperations implements CloudContextTreeOperationRunn
   }
 
   #classify(error: unknown, signal: AbortSignal): ContextTreeOperationResponse {
-    if (error instanceof CloudOperationFailure) return failed(error.code);
+    if (error instanceof GitHubOperationFailure) return failed(error.code);
     if (signal.aborted) return failed("failed");
     if (error instanceof GitHubConnectionServiceError) {
       switch (error.code) {

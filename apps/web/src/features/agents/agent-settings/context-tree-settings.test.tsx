@@ -198,7 +198,7 @@ it("validates the fields and focuses the first invalid input without contacting 
   expect(operation).not.toHaveBeenCalled();
 });
 
-it("keeps an uncertain creation open, preserves its retry identity, and creates at the repository root", async () => {
+it("keeps an uncertain creation open and creates at the repository root", async () => {
   const operation = vi
     .spyOn(browserApi, "contextTreeOperation")
     .mockResolvedValue({ status: "failed", code: "publication_uncertain" });
@@ -208,19 +208,12 @@ it("keeps an uncertain creation open, preserves its retry identity, and creates 
   submit("create");
   await screen.findByRole("alert");
   expect(screen.getByRole("dialog")).toBeTruthy();
-  submit("create");
-  await waitFor(() => expect(operation).toHaveBeenCalledTimes(2));
-  expect(operation.mock.calls[1]?.[1]).toEqual(operation.mock.calls[0]?.[1]);
   expect(operation.mock.calls[0]?.[1]).toMatchObject({
     action: "create",
     repository: "Acme/New-Memory",
     path: ".",
     ref: "HEAD",
   });
-  enter("acme/different");
-  submit("create");
-  await waitFor(() => expect(operation).toHaveBeenCalledTimes(3));
-  expect(operation.mock.calls[2]?.[1].operationId).not.toBe(operation.mock.calls[0]?.[1].operationId);
 });
 
 it.each([

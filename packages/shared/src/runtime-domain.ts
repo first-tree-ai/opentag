@@ -11,7 +11,6 @@ import {
   ProviderReadinessStatusSchema,
 } from "./computer.js";
 import { ContextTreesSchema, normalizeContextTrees } from "./context-tree.js";
-import { ContextTreeOperationFrameSchema, ContextTreeOperationResultFrameSchema } from "./context-tree-operation.js";
 import {
   runtimeByteString as byteString,
   RUNTIME_ID_MAX_BYTES,
@@ -1215,7 +1214,6 @@ export type RuntimeApprovalResult = z.infer<typeof RuntimeApprovalResultSchema>;
 
 export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   RuntimeApprovalDecisionSchema,
-  ContextTreeOperationFrameSchema,
   SlackAutoSetupRuntimeRequestSchema,
   SessionReconcileRequestSchema,
   DirectImMessageDeliveryRequestSchema,
@@ -1244,7 +1242,6 @@ export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
 export const ClientRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   RuntimeApprovalRequestSchema,
   RuntimeApprovalResultSchema,
-  ContextTreeOperationResultFrameSchema,
   SessionReconcileResultSchema,
   ImMessageDeliveryResultSchema,
   RuntimeImSteerResultSchema,

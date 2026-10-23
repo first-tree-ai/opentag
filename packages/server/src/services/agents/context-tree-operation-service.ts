@@ -7,18 +7,18 @@ import {
   ContextTreeOperationRequestSchema,
   type ContextTreeOperationResponse,
   contextTreeIdentity,
+  RUNTIME_CAPABILITY,
 } from "@opentag/shared";
-import type { ContextTreeOperationOwner } from "../../runtime/context-tree-operation-owner.js";
+import type { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import type { AgentService } from "./agent-service.js";
-import type { CloudContextTreeOperationRunner } from "./cloud-context-tree-operations.js";
+import type { GitHubContextTreeOperationRunner } from "./github-context-tree-operations.js";
 
 /** Validate remotely first, then compare revisions again inside the Agent update transaction. */
 export class ContextTreeOperationService {
   constructor(
     readonly agents: Pick<AgentService, "getConfigById" | "updateContextTreeSelection">,
-    readonly owner: ContextTreeOperationOwner,
-    /** Server-side GitHub operations; Cloud Computers have no Runtime owner WebSocket. */
-    readonly cloud?: CloudContextTreeOperationRunner,
+    readonly registry: Pick<ConnectionRegistry, "currentInstanceId" | "supportsCapability">,
+    readonly github: GitHubContextTreeOperationRunner,
   ) {}
   async run(userId: string, agentId: string, raw: ContextTreeOperationRequest): Promise<ContextTreeOperationResponse> {
     const input = ContextTreeOperationRequestSchema.parse(raw);
@@ -60,10 +60,7 @@ export class ContextTreeOperationService {
     return result;
   }
 
-  /**
-   * Both paths share the revision/pause gates and the CAS commit above; only the execution venue
-   * differs. Disconnect needs neither. The schema refinement guarantees a repository here.
-   */
+  /** GitHub settings operations always run on the Server. */
   async #dispatch(
     userId: string,
     agentId: string,
@@ -72,31 +69,32 @@ export class ContextTreeOperationService {
     input: ContextTreeOperationRequest,
   ): Promise<ContextTreeOperationResponse> {
     if (config.computerId === null) return { status: "failed", code: "computer_unavailable" };
-    const kind = await this.cloud?.computerKind(config.computerId);
-    if (this.cloud && kind) {
-      if (kind === "local") {
-        const failure = this.owner.checkComputer(config.computerId);
-        if (failure) return failure;
-      }
-      const result = await this.cloud.run({
-        accountId: userId,
-        agentId,
-        action,
-        path: input.path,
-        ref: input.ref,
-        repository: input.repository,
-      });
-      // A reconnect during remote verification must not persist a selection for an older peer.
-      return kind === "local" && result.status === "completed"
-        ? (this.owner.checkComputer(config.computerId) ?? result)
-        : result;
+    const kind = await this.github.computerKind(config.computerId);
+    if (!kind) return { status: "failed", code: "computer_unavailable" };
+    if (kind === "local") {
+      const failure = this.#checkComputer(config.computerId);
+      if (failure) return failure;
     }
-    return this.owner.start({
+    const result = await this.github.run({
+      accountId: userId,
       agentId,
-      computerId: config.computerId,
-      requireStopped: config.runtimeConfig.contextTrees.length > 0,
-      input,
+      action,
+      path: input.path,
+      ref: input.ref,
+      repository: input.repository,
     });
+    // A reconnect during remote verification must not persist a selection for an older peer.
+    return kind === "local" && result.status === "completed"
+      ? (this.#checkComputer(config.computerId) ?? result)
+      : result;
+  }
+
+  #checkComputer(computerId: string): Extract<ContextTreeOperationResponse, { status: "failed" }> | undefined {
+    const instanceId = this.registry.currentInstanceId(computerId);
+    if (!instanceId) return { status: "failed", code: "computer_unavailable" };
+    if (!this.registry.supportsCapability(computerId, instanceId, RUNTIME_CAPABILITY.contextTreeSettings))
+      return { status: "failed", code: "capability_missing" };
+    return undefined;
   }
 }
 

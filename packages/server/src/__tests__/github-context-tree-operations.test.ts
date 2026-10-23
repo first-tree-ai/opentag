@@ -13,14 +13,12 @@ import type {
 } from "@opentag/shared";
 import { GITHUB_CONNECTION_ERROR_CODES } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ConnectionRegistry } from "../runtime/connection-registry.js";
-import { ContextTreeOperationOwner } from "../runtime/context-tree-operation-owner.js";
-import {
-  type CloudContextTreeGitHubManagement,
-  CloudContextTreeOperations,
-  type CloudContextTreeOperationsOptions,
-} from "../services/agents/cloud-context-tree-operations.js";
 import { ContextTreeOperationService } from "../services/agents/context-tree-operation-service.js";
+import {
+  type ContextTreeGitHubManagement,
+  GitHubContextTreeOperations,
+  type GitHubContextTreeOperationsOptions,
+} from "../services/agents/github-context-tree-operations.js";
 import { GitHubConnectionServiceError } from "../services/github/errors.js";
 import { GitPublicationError } from "../services/github-proxy/git-packets.js";
 import { type GitProcessOptions, runTrustedProcess } from "../services/github-proxy/git-process.js";
@@ -118,7 +116,7 @@ function management(row: GitHubConnectionStatus | null | (() => GitHubConnection
       };
     }),
   };
-  return stub as unknown as CloudContextTreeGitHubManagement & typeof stub;
+  return stub as unknown as ContextTreeGitHubManagement & typeof stub;
 }
 
 /** A verifier stub that mirrors the real verifier's recheck before and after the remote read. */
@@ -133,10 +131,10 @@ function verifier(
 }
 
 function operations(
-  managementStub: CloudContextTreeGitHubManagement,
-  options: Partial<CloudContextTreeOperationsOptions> = {},
+  managementStub: ContextTreeGitHubManagement,
+  options: Partial<GitHubContextTreeOperationsOptions> = {},
 ) {
-  return new CloudContextTreeOperations({
+  return new GitHubContextTreeOperations({
     management: managementStub,
     api: { createPrivateRepository: vi.fn(), initializeContextTree: vi.fn(), getRepository: vi.fn() },
     credentials: {
@@ -150,7 +148,7 @@ function operations(
   });
 }
 
-function runInput(overrides: Partial<Parameters<CloudContextTreeOperations["run"]>[0]> = {}) {
+function runInput(overrides: Partial<Parameters<GitHubContextTreeOperations["run"]>[0]> = {}) {
   return {
     kind: "git" as const,
     path: ".",
@@ -334,7 +332,7 @@ describe("Cloud Context Tree connect", () => {
 });
 
 /* ------------------------------------------------------------------ *
- * Dispatch through the shared operation service (Local path unchanged).
+ * Dispatch through the shared operation service.
  * ------------------------------------------------------------------ */
 
 function agentConfig(overrides: Partial<AgentAdminConfig> = {}): AgentAdminConfig {
@@ -354,7 +352,6 @@ function request(overrides: Partial<ContextTreeOperationRequest> = {}): ContextT
     kind: "git" as const,
     path: ".",
     ref: "main",
-    operationId: randomUUID(),
     expectedRevision: 3,
     expectedRuntimeConfigRevision: 7,
     action: "connect",
@@ -367,10 +364,7 @@ function dispatchFixture(kind: "local" | "cloud" | undefined, config = agentConf
   const registry = {
     currentInstanceId: vi.fn<() => string | undefined>(() => randomUUID()),
     supportsCapability: vi.fn(() => true),
-    send: vi.fn(async () => undefined),
   };
-  const owner = new ContextTreeOperationOwner(registry as unknown as ConnectionRegistry);
-  const ownerStart = vi.spyOn(owner, "start").mockResolvedValue({ status: "completed", repository: "acme/memory" });
   const agents = {
     getConfigById: vi.fn(async () => config),
     updateContextTreeSelection: vi.fn(async () => config),
@@ -379,11 +373,11 @@ function dispatchFixture(kind: "local" | "cloud" | undefined, config = agentConf
     computerKind: vi.fn(async () => kind),
     run: vi.fn(async () => ({ status: "completed", repository: "acme/memory" }) as const),
   };
-  const service = new ContextTreeOperationService(agents, owner, cloud);
-  return { agents, cloud, owner, ownerStart, registry, service };
+  const service = new ContextTreeOperationService(agents, registry, cloud);
+  return { agents, cloud, registry, service };
 }
 
-describe("ContextTreeOperationService Cloud dispatch", () => {
+describe("ContextTreeOperationService dispatch", () => {
   it.each(["connect", "create"] as const)(
     "rejects Server-backed Local %s before remote work on an unsupported runtime",
     async (action) => {
@@ -394,7 +388,6 @@ describe("ContextTreeOperationService Cloud dispatch", () => {
         code: "capability_missing",
       });
       expect(f.cloud.run).not.toHaveBeenCalled();
-      expect(f.ownerStart).not.toHaveBeenCalled();
       expect(f.agents.updateContextTreeSelection).not.toHaveBeenCalled();
     },
   );
@@ -431,7 +424,6 @@ describe("ContextTreeOperationService Cloud dispatch", () => {
       ref: "main",
       repository: "Acme/Memory",
     });
-    expect(f.ownerStart).not.toHaveBeenCalled();
     // The Agent revision CAS commits the exact pre-dispatch fences.
     expect(f.agents.updateContextTreeSelection).toHaveBeenCalledWith(
       ACCOUNT,
@@ -447,13 +439,12 @@ describe("ContextTreeOperationService Cloud dispatch", () => {
     expect(f.cloud.run).toHaveBeenCalledWith(
       expect.objectContaining({ accountId: ACCOUNT, agentId: AGENT, action: "connect" }),
     );
-    expect(f.ownerStart).not.toHaveBeenCalled();
   });
 
-  it("falls back to the Local path when the Computer kind is unknown", async () => {
+  it("rejects an unknown Computer before remote work", async () => {
     const f = dispatchFixture(undefined);
-    await f.service.run(ACCOUNT, AGENT, request());
-    expect(f.ownerStart).toHaveBeenCalledTimes(1);
+    expect(await f.service.run(ACCOUNT, AGENT, request())).toEqual({ status: "failed", code: "computer_unavailable" });
+    expect(f.agents.updateContextTreeSelection).not.toHaveBeenCalled();
     expect(f.cloud.run).not.toHaveBeenCalled();
   });
 
@@ -472,7 +463,6 @@ describe("ContextTreeOperationService Cloud dispatch", () => {
       repository: null,
     });
     expect(f.cloud.run).not.toHaveBeenCalled();
-    expect(f.ownerStart).not.toHaveBeenCalled();
     expect(f.agents.updateContextTreeSelection).toHaveBeenCalledWith(
       ACCOUNT,
       AGENT,
@@ -510,7 +500,6 @@ describe("ContextTreeOperationService Cloud dispatch", () => {
     const result = { status: "completed", repository: "acme/memory", ref: "trunk" } as const;
     f.cloud.run.mockResolvedValue(result);
     expect(await f.service.run(ACCOUNT, AGENT, request({ action: "create", ref: "HEAD" }))).toEqual(result);
-    expect(f.ownerStart).not.toHaveBeenCalled();
     expect(f.cloud.run).toHaveBeenCalledWith(
       expect.objectContaining({ accountId: ACCOUNT, action: "create", ref: "HEAD" }),
     );
@@ -565,7 +554,7 @@ describe("Cloud Context Tree verification with the pinned CLI", () => {
   function connected(origin: string, name = "memory") {
     const workspace = new GitWorkspace();
     const github = management(connection({ bindings: [binding({ fullNameDisplay: `acme/${name}` })] }));
-    const cloud = new CloudContextTreeOperations({
+    const cloud = new GitHubContextTreeOperations({
       management: github,
       api: { createPrivateRepository: vi.fn(), initializeContextTree: vi.fn(), getRepository: vi.fn() },
       credentials: {

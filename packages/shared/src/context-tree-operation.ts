@@ -5,7 +5,6 @@ export const ContextTreeOperationRequestSchema = z
   .object({
     ...ContextTreeConnectionSchema.shape,
     // Git HEAD requests the repository’s default branch; successful resolution returns its name.
-    operationId: z.string().uuid(),
     expectedRevision: z.number().int().positive(),
     expectedRuntimeConfigRevision: z.number().int().positive(),
     action: z.enum(["connect", "create", "disconnect"]),
@@ -40,24 +39,5 @@ export const ContextTreeOperationResponseSchema = z.discriminatedUnion("status",
     })
     .strict(),
 ]);
-export const ContextTreeOperationFrameSchema = z
-  .object({
-    type: z.literal("context-tree:operation"),
-    requestId: z.string().uuid(),
-    agentId: z.string().uuid(),
-    computerId: z.string().uuid(),
-    requireStopped: z.boolean(),
-    input: ContextTreeOperationRequestSchema,
-  })
-  .strict();
-export const ContextTreeOperationResultFrameSchema = z
-  .object({
-    type: z.literal("context-tree:operation:result"),
-    requestId: z.string().uuid(),
-    result: ContextTreeOperationResponseSchema,
-  })
-  .strict();
 export type ContextTreeOperationRequest = z.infer<typeof ContextTreeOperationRequestSchema>;
 export type ContextTreeOperationResponse = z.infer<typeof ContextTreeOperationResponseSchema>;
-export type ContextTreeOperationFrame = z.infer<typeof ContextTreeOperationFrameSchema>;
-export type ContextTreeOperationResultFrame = z.infer<typeof ContextTreeOperationResultFrameSchema>;

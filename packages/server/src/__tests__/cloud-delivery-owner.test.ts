@@ -1097,6 +1097,69 @@ describe("CloudDeliveryOwner", () => {
     expect((await deliveryRow(presentDelivery.deliveryId)).reportedAt).toBeNull();
   });
 
+  it("settles an unreported accepted turn once no report can still be truthful", async () => {
+    const expiredWindow = await cloudScope();
+    const expiredOwner = makeOwner({
+      allocationStatus: async () => ({
+        scope: expiredWindow.scope,
+        lifecycle: "ready",
+        resourceUid: `unit-uid-${expiredWindow.sandbox.sandboxId.slice(0, 8)}`,
+        physical: "present",
+      }),
+    });
+    const expiredSent: RunnerServerFrame[] = [];
+    attachReady(expiredOwner.hub, expiredOwner.fence, expiredWindow.scope, expiredSent, expiredWindow.cloud.computerId);
+    const expiredDelivery = await dispatchAndAccept({
+      owner: expiredOwner.owner,
+      fence: expiredOwner.fence,
+      scope: expiredWindow.scope,
+      agentId: expiredWindow.agent.id,
+      computerId: expiredWindow.cloud.computerId,
+    });
+    expiredOwner.owner.detachConnection(expiredDelivery.connection.connectionId);
+    const frozen = expiredDelivery.request as DirectImMessageDeliveryRequest;
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ dispatchPayload: { ...frozen, deadlineAt: new Date(Date.now() - 2 * 60 * 60 * 1_000).toISOString() } })
+      .where(eq(imMessageDeliveries.id, expiredDelivery.deliveryId));
+
+    expect(await expiredOwner.owner.recoverAccepted(expiredDelivery.deliveryId)).toBe("resolved");
+    expect((await deliveryRow(expiredDelivery.deliveryId)).turnReport).toMatchObject({
+      outcome: "unknown",
+      errorReason: "turn_state_unknown",
+    });
+
+    // A dispatch without a frozen deadline is bounded by the platform maximum runtime instead.
+    const unbounded = await cloudScope();
+    const unboundedOwner = makeOwner({
+      allocationStatus: async () => ({
+        scope: unbounded.scope,
+        lifecycle: "ready",
+        resourceUid: `unit-uid-${unbounded.sandbox.sandboxId.slice(0, 8)}`,
+        physical: "present",
+      }),
+    });
+    const unboundedSent: RunnerServerFrame[] = [];
+    attachReady(unboundedOwner.hub, unboundedOwner.fence, unbounded.scope, unboundedSent, unbounded.cloud.computerId);
+    const unboundedDelivery = await dispatchAndAccept({
+      owner: unboundedOwner.owner,
+      fence: unboundedOwner.fence,
+      scope: unbounded.scope,
+      agentId: unbounded.agent.id,
+      computerId: unbounded.cloud.computerId,
+    });
+    unboundedOwner.owner.detachConnection(unboundedDelivery.connection.connectionId);
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        dispatchPayload: null,
+        acceptedAt: new Date(Date.now() - 26 * 60 * 60 * 1_000),
+      })
+      .where(eq(imMessageDeliveries.id, unboundedDelivery.deliveryId));
+
+    expect(await unboundedOwner.owner.recoverAccepted(unboundedDelivery.deliveryId)).toBe("resolved");
+  });
+
   it("keeps a releasing allocation recoverable and records the real report instead of unknown", async () => {
     const { scope, agent, cloud } = await cloudScope();
     const { hub, fence, owner } = makeOwner();

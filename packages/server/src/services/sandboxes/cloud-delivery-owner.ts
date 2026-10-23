@@ -7,6 +7,7 @@ import {
   DirectImMessageDeliveryRequestSchema,
   type EffectiveRuntimeSnapshot,
   RUNTIME_CAPABILITY,
+  RUNTIME_MAX_DURATION_MS,
   RUNTIME_SERVER_CAPABILITY_OFFERS,
   type RunnerCloudModelGrant,
   type RuntimeCredentialClientFrame,
@@ -52,8 +53,9 @@ import type { SandboxAllocationReconciliation } from "./sandbox-runner-service.j
  * A receipt or report replay is idempotent. Accepted work is recovered from the PERSISTED
  * allocation identity (`reportOwnerInstanceId` vs `cloudInstanceIdFor`) — never from the presence
  * of an in-memory socket: a Server restart or transient disconnect keeps the turn pending, and
- * only a proven retired/superseded allocation (durable stop state or a verified physical absence)
- * may settle it as unknown without replay.
+ * only a proven retired/superseded allocation (durable stop state or a verified physical absence),
+ * or the exhaustion of every window in which that report could still be truthful, may settle it
+ * as unknown without replay.
  */
 
 export type CloudDispatchFailure =
@@ -148,6 +150,12 @@ function requireDispatchableConnection(
 
 /** Transport allowance added to the dispatch deadline when minting an execution-scoped grant. */
 const CLOUD_MODEL_GRANT_TRANSPORT_MS = 30_000;
+
+/**
+ * Slack added to the execution window before an unreported accepted turn is settled as unknown, so a
+ * report written exactly as the window closes still counts.
+ */
+const ACCEPTED_REPORT_GRACE_MS = 60 * 60 * 1_000;
 
 export type CloudSessionCancelOutcome = {
   deliveryId: string;
@@ -820,7 +828,26 @@ export class CloudDeliveryOwner {
     // No exact live connection. A physically verified absence of the tracked resource is the only
     // additional proof that no report can ever arrive; anything else stays pending for the replay.
     const reconciliation = await this.#allocationStatus?.(allocation.sandboxId);
-    return reconciliation?.physical === "absent" ? this.#settleUnknown(deliveryId) : "pending";
+    if (reconciliation?.physical === "absent") return this.#settleUnknown(deliveryId);
+    // An inconclusive probe must not retry forever: once every window in which this report could
+    // still be truthful has passed, the outcome is unknown, exactly as a proven absence settles it.
+    if (Date.now() >= this.#acceptedReportDeadlineMs(delivery)) return this.#settleUnknown(deliveryId);
+    return "pending";
+  }
+
+  /**
+   * The last instant a report for this accepted turn can still be truthful. The dispatch freezes the
+   * execution window into `deadlineAt`; without one, the platform maximum runtime bounds the turn
+   * from acceptance. The grace covers a report that is written as the window closes.
+   */
+  #acceptedReportDeadlineMs(delivery: typeof imMessageDeliveries.$inferSelect): number {
+    const parsed = DirectImMessageDeliveryRequestSchema.safeParse(delivery.dispatchPayload);
+    const frozenDeadlineMs = parsed.success && parsed.data.deadlineAt ? Date.parse(parsed.data.deadlineAt) : Number.NaN;
+    if (Number.isFinite(frozenDeadlineMs)) return frozenDeadlineMs + ACCEPTED_REPORT_GRACE_MS;
+    const acceptedAtMs = delivery.acceptedAt?.getTime();
+    return Number.isFinite(acceptedAtMs)
+      ? (acceptedAtMs as number) + RUNTIME_MAX_DURATION_MS + ACCEPTED_REPORT_GRACE_MS
+      : Number.POSITIVE_INFINITY;
   }
 
   /**

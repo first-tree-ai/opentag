@@ -145,7 +145,9 @@ remaining FIFO queue; it does not require a new message or availability signal.
 Undispatched Cloud inputs use the existing ingress TTL and per-Session queue capacities (100
 direct, 500 ambient). Expiry/overflow records an explicit terminal reason. Dispatched Cloud
 inputs retain their frozen dispatch window; accepted-but-unreported custody is never pruned as
-pending input. Without E5 persistence, `restore_required` rejects replacement explicitly. With E5,
+pending input. Accepted work whose report cannot arrive any more — a superseded allocation, or a
+frozen execution window (and, without one, the maximum runtime from acceptance) that passed with
+no exact live connection — settles once as `unknown` instead of retrying forever. Without E5 persistence, `restore_required` rejects replacement explicitly. With E5,
 replacement allocation is permitted but cannot execute before verified restoration. A stopped
 environment rejects input explicitly. Transient model/Runner unavailability remains retryable within the input
 deadline, with exponential delays from two seconds to a thirty-second cap using the existing

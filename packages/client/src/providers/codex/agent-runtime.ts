@@ -1624,12 +1624,31 @@ function codexHostedToolResult(result: AgentHostedToolResult): CodexDynamicToolR
   return { success: result.success, text: text.join("\n") };
 }
 
+const mcpToolApprovalFormSchema = z.object({
+  mode: z.literal("form"),
+  serverName: z.string().trim().min(1),
+  message: z.string().trim().min(1),
+  _meta: z.object({
+    codex_approval_kind: z.literal("mcp_tool_call"),
+    tool_params: z.record(z.string(), z.unknown()),
+  }),
+  requestedSchema: z
+    .object({
+      type: z.literal("object"),
+      properties: z.object({}).strict(),
+      required: z.array(z.never()).optional(),
+      additionalProperties: z.literal(false).optional(),
+    })
+    .strict(),
+});
+
 function codexInteractionRequest(
   request: CodexAppServerRequest,
   params: Record<string, unknown>,
 ): AgentInteractionRequest | undefined {
   const requestId = wireInteractionId(request.id);
   const details = toJsonValue(params);
+  if (request.method === "mcpServer/elicitation/request") return codexMcpElicitationRequest(requestId, params);
   if (
     request.method === "item/commandExecution/requestApproval" ||
     request.method === "item/fileChange/requestApproval" ||
@@ -1647,11 +1666,7 @@ function codexInteractionRequest(
       details,
     };
   }
-  if (
-    request.method === "item/tool/requestUserInput" ||
-    request.method === "tool/requestUserInput" ||
-    request.method === "mcpServer/elicitation/request"
-  ) {
+  if (request.method === "item/tool/requestUserInput" || request.method === "tool/requestUserInput") {
     if (mcpApprovalQuestion(params)) return { requestId, kind: "approval", title: "Approve MCP tool action", details };
     const message = typeof params.message === "string" ? params.message : undefined;
     return {
@@ -1663,6 +1678,25 @@ function codexInteractionRequest(
     };
   }
   return undefined;
+}
+
+function codexMcpElicitationRequest(requestId: string, params: Record<string, unknown>): AgentInteractionRequest {
+  const approval = mcpToolApprovalFormSchema.safeParse(params);
+  if (approval.success) {
+    return {
+      requestId,
+      kind: "approval",
+      title: "Approve MCP tool action",
+      message: approval.data.message,
+      details: toJsonValue({ serverName: approval.data.serverName, arguments: approval.data._meta.tool_params }),
+    };
+  }
+  const details = toJsonValue(params);
+  if (params.mode !== "form" && mcpApprovalQuestion(params)) {
+    return { requestId, kind: "approval", title: "Approve MCP tool action", details };
+  }
+  const message = typeof params.message === "string" ? params.message : undefined;
+  return { requestId, kind: "question", title: "Codex needs input", ...(message ? { message } : {}), details };
 }
 
 function mcpApprovalQuestion(params: Record<string, unknown>): { id: string } | undefined {
@@ -1693,6 +1727,9 @@ function codexApprovalResult(
   response: AgentApprovalResponse,
   params: Record<string, unknown>,
 ): unknown {
+  if (method === "mcpServer/elicitation/request" && mcpToolApprovalFormSchema.safeParse(params).success) {
+    return { action: response.decision, content: response.decision === "accept" ? {} : null };
+  }
   if (method === "item/tool/requestUserInput" || method === "tool/requestUserInput") {
     const question = mcpApprovalQuestion(params);
     return {

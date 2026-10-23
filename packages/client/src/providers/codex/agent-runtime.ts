@@ -19,6 +19,7 @@ import {
   isBinaryShapedProviderProbeFailure,
   isTransientProviderProbeFailure,
 } from "../../agent-runtime/probe-failure.js";
+import { providerFailureCode, providerProcessFailureCode } from "../../agent-runtime/provider-failure.js";
 import {
   AGENT_RUNTIME_CONTRACT_VERSION,
   type AgentAbortRequest,
@@ -213,6 +214,7 @@ type CodexEnvelope =
 
 interface ParsedTurn {
   readonly error?: string;
+  readonly errorCode?: unknown;
   readonly id: string;
   readonly items: readonly Record<string, unknown>[];
   readonly status: "completed" | "failed" | "inProgress" | "interrupted";
@@ -340,7 +342,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       const failure = error instanceof Error ? error : new Error("Codex run failed");
       logger.debug({ code: "provider_run_failed", error: failure.message }, "Codex provider run failed");
       this.#turnIdReady.reject(failure);
-      throw failure;
+      throw codexRunFailure(failure);
       /* v8 ignore next -- finally is mandatory cleanup; V8 reports a synthetic branch for its closing token. */
     } finally {
       this.#preTurnAbort = undefined;
@@ -870,7 +872,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       status: "failed",
       output,
       ...(this.#latestUsage ? { usage: this.#latestUsage } : {}),
-      error: { code: "provider_error", message: turn.error ?? "Codex turn failed" },
+      error: { code: providerFailureCode(turn.errorCode), message: turn.error ?? "Codex turn failed" },
       diagnostics,
     };
   }
@@ -1622,12 +1624,31 @@ function codexHostedToolResult(result: AgentHostedToolResult): CodexDynamicToolR
   return { success: result.success, text: text.join("\n") };
 }
 
+const mcpToolApprovalFormSchema = z.object({
+  mode: z.literal("form"),
+  serverName: z.string().trim().min(1),
+  message: z.string().trim().min(1),
+  _meta: z.object({
+    codex_approval_kind: z.literal("mcp_tool_call"),
+    tool_params: z.record(z.string(), z.unknown()),
+  }),
+  requestedSchema: z
+    .object({
+      type: z.literal("object"),
+      properties: z.object({}).strict(),
+      required: z.array(z.never()).optional(),
+      additionalProperties: z.literal(false).optional(),
+    })
+    .strict(),
+});
+
 function codexInteractionRequest(
   request: CodexAppServerRequest,
   params: Record<string, unknown>,
 ): AgentInteractionRequest | undefined {
   const requestId = wireInteractionId(request.id);
   const details = toJsonValue(params);
+  if (request.method === "mcpServer/elicitation/request") return codexMcpElicitationRequest(requestId, params);
   if (
     request.method === "item/commandExecution/requestApproval" ||
     request.method === "item/fileChange/requestApproval" ||
@@ -1645,11 +1666,7 @@ function codexInteractionRequest(
       details,
     };
   }
-  if (
-    request.method === "item/tool/requestUserInput" ||
-    request.method === "tool/requestUserInput" ||
-    request.method === "mcpServer/elicitation/request"
-  ) {
+  if (request.method === "item/tool/requestUserInput" || request.method === "tool/requestUserInput") {
     if (mcpApprovalQuestion(params)) return { requestId, kind: "approval", title: "Approve MCP tool action", details };
     const message = typeof params.message === "string" ? params.message : undefined;
     return {
@@ -1661,6 +1678,25 @@ function codexInteractionRequest(
     };
   }
   return undefined;
+}
+
+function codexMcpElicitationRequest(requestId: string, params: Record<string, unknown>): AgentInteractionRequest {
+  const approval = mcpToolApprovalFormSchema.safeParse(params);
+  if (approval.success) {
+    return {
+      requestId,
+      kind: "approval",
+      title: "Approve MCP tool action",
+      message: approval.data.message,
+      details: toJsonValue({ serverName: approval.data.serverName, arguments: approval.data._meta.tool_params }),
+    };
+  }
+  const details = toJsonValue(params);
+  if (params.mode !== "form" && mcpApprovalQuestion(params)) {
+    return { requestId, kind: "approval", title: "Approve MCP tool action", details };
+  }
+  const message = typeof params.message === "string" ? params.message : undefined;
+  return { requestId, kind: "question", title: "Codex needs input", ...(message ? { message } : {}), details };
 }
 
 function mcpApprovalQuestion(params: Record<string, unknown>): { id: string } | undefined {
@@ -1691,6 +1727,9 @@ function codexApprovalResult(
   response: AgentApprovalResponse,
   params: Record<string, unknown>,
 ): unknown {
+  if (method === "mcpServer/elicitation/request" && mcpToolApprovalFormSchema.safeParse(params).success) {
+    return { action: response.decision, content: response.decision === "accept" ? {} : null };
+  }
   if (method === "item/tool/requestUserInput" || method === "tool/requestUserInput") {
     const question = mcpApprovalQuestion(params);
     return {
@@ -1742,6 +1781,7 @@ function parseTurn(value: unknown, source: string): ParsedTurn {
     status,
     items,
     ...(typeof error?.message === "string" ? { error: error.message } : {}),
+    errorCode: error?.codexErrorInfo,
   };
 }
 
@@ -1837,4 +1877,10 @@ function requireString(value: unknown, message: string, allowEmpty = false): str
 
 function isNonNegativeNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function codexRunFailure(error: Error): Error {
+  return error instanceof CodexAppServerError
+    ? new AgentProviderError(providerProcessFailureCode(error.code), error.message, { cause: error })
+    : error;
 }

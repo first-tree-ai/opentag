@@ -1930,7 +1930,7 @@ describe("CloudSessionCollaborationOwner", () => {
       assembler: new EffectiveRuntimeSnapshotAssembler(db.database),
       database: db.database,
       durableWork: new PostgresRuntimeDurableWorkStore(db.database),
-      ensureTimeoutMs: 60_000,
+      ensureTimeoutMs: 61_234,
       fence,
       hub,
       modelBaseUrl: "https://server.example.test/api/v1/cloud-model",
@@ -1968,18 +1968,22 @@ describe("CloudSessionCollaborationOwner", () => {
       socket,
     });
 
-    vi.useFakeTimers();
+    const scheduled = vi.spyOn(globalThis, "setTimeout");
+    const cleared = vi.spyOn(globalThis, "clearTimeout");
     try {
-      const baseline = vi.getTimerCount();
       await expect(owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
         status: "accepted",
       });
-      // Close the grant service's own sweep interval so only a leaked dispatch/convergence timer
-      // could keep the count above baseline after the dispatch fully resolved.
-      grants.close();
-      expect(vi.getTimerCount()).toBe(baseline);
+      // Track the allocation deadline itself; embedded database housekeeping also creates timers.
+      const deadlineIndex = scheduled.mock.calls.findIndex(([, timeout]) => timeout === 61_234);
+      expect(deadlineIndex).toBeGreaterThanOrEqual(0);
+      const deadline = scheduled.mock.results[deadlineIndex]?.value;
+      expect(deadline).toBeDefined();
+      expect(cleared).toHaveBeenCalledWith(deadline);
     } finally {
-      vi.useRealTimers();
+      grants.close();
+      scheduled.mockRestore();
+      cleared.mockRestore();
     }
     void sent;
   });

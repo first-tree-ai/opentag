@@ -1,4 +1,4 @@
-import type { AgentRuntimeOptions } from "@opentag/shared";
+import type { AgentRuntimeOptions, ProviderFailureReason } from "@opentag/shared";
 
 export const AGENT_RUNTIME_CONTRACT_VERSION = 2;
 export const AGENT_RUNTIME_BINDING_MAX_BYTES = 64 * 1024;
@@ -107,6 +107,7 @@ export type AgentOutputItem = AgentTextOutputItem;
 export type AgentRunStatus = "completed" | "failed" | "aborted" | "cancelled";
 
 export type AgentRunErrorCode =
+  | ProviderFailureReason
   | "event_delivery_failed"
   | "provider_error"
   | "provider_protocol_error"

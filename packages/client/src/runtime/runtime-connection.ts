@@ -24,6 +24,7 @@ import {
   type RuntimeProtocolVersion,
   type RuntimeProviderReadinessCollection,
   type RuntimeProviderReadinessObservation,
+  requiredTurnReportVersion,
   runtimeFrameByteLength,
   runtimeNegotiatedCapabilitiesEqual,
   runtimeWebSocketUrl,
@@ -456,12 +457,10 @@ export class RuntimeConnection {
       frame !== null &&
       "type" in frame &&
       frame.type === "turn:report" &&
-      "outgoingReplies" in frame &&
-      frame.outgoingReplies !== undefined &&
-      this.capabilityVersion(RUNTIME_CAPABILITY.turnReport) !== 2
+      (this.capabilityVersion(RUNTIME_CAPABILITY.turnReport) ?? 1) < requiredTurnReportVersion(frame)
     ) {
       return Promise.reject(
-        new RuntimeSendError("capability_unavailable", "Turn reply snapshots require runtime.turnReport v2"),
+        new RuntimeSendError("capability_unavailable", "Turn report requires a newer runtime.turnReport capability"),
       );
     }
     let serialized: string;

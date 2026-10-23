@@ -8,6 +8,7 @@ import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
 import { composeRuntimeEnvironment } from "../../agent-runtime/environment.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
 import { classifiedProviderProbeIssue } from "../../agent-runtime/probe-failure.js";
+import { providerFailureCode, providerProcessFailureCode } from "../../agent-runtime/provider-failure.js";
 import {
   AGENT_RUNTIME_CONTRACT_VERSION,
   type AgentAbortRequest,
@@ -134,6 +135,7 @@ export interface ClaudeCodeAgentRuntimeFactoryOptions {
 }
 
 interface ClaudeCodeTerminal {
+  readonly apiErrorStatus?: number;
   readonly errors: readonly string[];
   readonly isError: boolean;
   readonly numTurns?: number;
@@ -182,6 +184,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   #eventTail: Promise<void> = Promise.resolve();
   #terminal?: ClaudeCodeTerminal;
   #providerFailure?: Error;
+  #assistantError?: string;
   #currentMessageId?: string;
   #sessionExists: boolean;
   #terminalClaimed = false;
@@ -212,6 +215,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     this.#context = context;
     this.#terminal = undefined;
     this.#providerFailure = undefined;
+    this.#assistantError = undefined;
     this.#currentMessageId = undefined;
     this.#terminalClaimed = false;
     this.#textBlocks.clear();
@@ -252,23 +256,15 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       await this.#eventTail;
       if (this.#providerFailure) throw this.#providerFailure;
       if (!this.#terminal) throw protocolError("Claude Code exited without a result message");
-      return claudeCodeRunResult(this.#terminal);
+      return claudeCodeRunResult(this.#terminal, this.#assistantError);
     } catch (error) {
       if (context.signal.aborted) throw error;
       logger.debug({ code: "provider_run_failed", error: String(error) }, "Claude Code provider run failed");
       this.closeForProviderFailure();
       if (this.#providerFailure) throw this.#providerFailure;
       if (error instanceof AgentProviderError) throw error;
-      if (error instanceof ClaudeCodeProcessError) {
-        if (error.code === "spawn") {
-          throw new AgentProviderError("provider_start_failed", error.message, { cause: error });
-        }
-        if (error.code === "protocol") {
-          throw new AgentProviderError("provider_protocol_error", error.message, { cause: error });
-        }
-      }
       throw new AgentProviderError(
-        "provider_error",
+        error instanceof ClaudeCodeProcessError ? providerProcessFailureCode(error.code) : "provider_error",
         error instanceof Error ? error.message : "Claude Code run failed",
         {
           cause: error,
@@ -526,6 +522,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       await this.#requireContext().emit({ type: "model_turn_completed", modelTurnId: id });
     }
     if (typeof envelope.error === "string") {
+      this.#assistantError = envelope.error;
       await this.#requireContext().emit({
         type: "provider_warning",
         code: "claude_code_assistant_error",
@@ -1218,6 +1215,7 @@ function parseTerminal(message: Readonly<Record<string, unknown>>, expectedSessi
     isError,
     errors,
     permissionDenials,
+    ...(typeof message.api_error_status === "number" ? { apiErrorStatus: message.api_error_status } : {}),
     ...(typeof message.result === "string" ? { result: message.result } : {}),
     ...(typeof message.stop_reason === "string" ? { stopReason: message.stop_reason } : {}),
     ...(isNonNegativeNumber(message.num_turns) ? { numTurns: message.num_turns } : {}),
@@ -1226,7 +1224,7 @@ function parseTerminal(message: Readonly<Record<string, unknown>>, expectedSessi
   };
 }
 
-function claudeCodeRunResult(terminal: ClaudeCodeTerminal): AgentProviderRunResult {
+function claudeCodeRunResult(terminal: ClaudeCodeTerminal, assistantError: string | undefined): AgentProviderRunResult {
   const output = terminal.result === undefined ? [] : [{ type: "text" as const, text: terminal.result }];
   const diagnostics: JsonValue = {
     providerSessionId: terminal.sessionId,
@@ -1249,7 +1247,10 @@ function claudeCodeRunResult(terminal: ClaudeCodeTerminal): AgentProviderRunResu
     output,
     ...(terminal.usage ? { usage: terminal.usage } : {}),
     error: {
-      code: "provider_error",
+      code:
+        providerFailureCode(terminal.subtype) !== "provider_error"
+          ? providerFailureCode(terminal.subtype)
+          : providerFailureCode(assistantError, terminal.apiErrorStatus),
       message: terminal.errors[0] ?? terminal.result ?? `Claude Code failed: ${terminal.subtype}`,
     },
     diagnostics,

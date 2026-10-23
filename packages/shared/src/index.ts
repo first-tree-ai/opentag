@@ -236,7 +236,7 @@ export * from "./execution-services.js";
 export * from "./github-integration.js";
 export * from "./github-management.js";
 export * from "./github-proxy-http.js";
-export { type ServerHealth, ServerHealthSchema } from "./health.js";
+export { type ServerDeepHealth, ServerDeepHealthSchema, type ServerHealth, ServerHealthSchema } from "./health.js";
 export {
   ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE,
   ACCOUNT_AGENTS_PATH,
@@ -491,6 +491,8 @@ export {
   ProviderCliValidationResultFrameSchema,
   type ProviderCliValidationRunFrame,
   ProviderCliValidationRunFrameSchema,
+  type ProviderFailureReason,
+  ProviderFailureReasonSchema,
   type RetainedTurnReportClaim,
   RetainedTurnReportClaimSchema,
   RUNTIME_DEFAULT_MAX_DURATION_MS,
@@ -555,6 +557,7 @@ export {
   type RuntimeUsage,
   RuntimeUsageSchema,
   renderPlatformInstructions,
+  requiredTurnReportVersion,
   runtimeUsageTotalTokens,
   type ServerRuntimeBusinessFrame,
   ServerRuntimeBusinessFrameSchema,

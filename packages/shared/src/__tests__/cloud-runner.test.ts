@@ -24,7 +24,12 @@ import {
   serializeRunnerCloudSessionWorkerStdin,
   serializeRunnerCloudTurnWorkerStdin,
 } from "../cloud-runner.js";
-import { SessionMessageDeliveryRequestV3Schema } from "../runtime-domain.js";
+import {
+  computeTurnResultHash,
+  ProviderFailureReasonSchema,
+  SessionMessageDeliveryRequestV3Schema,
+  TurnReportRequestSchema,
+} from "../runtime-domain.js";
 
 const utf8Bytes = (value: string): number => new TextEncoder().encode(value).byteLength;
 
@@ -38,6 +43,40 @@ function runFrame(piConfig: { authJson: string; modelsJson?: string; settingsJso
     piConfig,
   };
 }
+
+describe("Cloud delivery v1 failure vocabulary", () => {
+  it.each(ProviderFailureReasonSchema.options)(
+    "rejects runtime-v3 reason %s on the frozen Cloud v1 wire",
+    (errorReason) => {
+      const report = {
+        type: "turn:report" as const,
+        requestId: "0b12b3c0-0000-4000-8000-000000000001",
+        deliveryId: "delivery",
+        turnId: "turn",
+        sessionId: "session",
+        agentId: "agent",
+        placementGeneration: 1,
+        outcome: "failed" as const,
+        executionEffects: "may_have_occurred" as const,
+        errorReason,
+        traceSummary: { droppedEvents: 0, lastSequence: 0 },
+      };
+      const categorized = { ...report, resultHash: computeTurnResultHash(report) };
+      expect(TurnReportRequestSchema.safeParse(categorized).success).toBe(true);
+      const frame = { type: "delivery:report", requestId: "request", report: categorized };
+      expect(RunnerClientFrameSchema.safeParse(frame).error?.issues).toContainEqual(
+        expect.objectContaining({ path: ["report", "errorReason"] }),
+      );
+      const legacy = { ...report, errorReason: "provider_failed" as const };
+      expect(
+        RunnerClientFrameSchema.safeParse({
+          ...frame,
+          report: { ...legacy, resultHash: computeTurnResultHash(legacy) },
+        }).success,
+      ).toBe(true);
+    },
+  );
+});
 
 describe("Runner Pi config wire bounds", () => {
   it("bounds each document by UTF-8 bytes even when the character limit would pass", () => {

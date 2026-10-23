@@ -15,6 +15,7 @@ import {
   type RuntimeImCredentialGrantResult,
   type RuntimeImSteerRequest,
   type RuntimeImSteerResult,
+  requiredTurnReportVersion,
   type SessionMessageDeliveryRequest,
   type SessionMessageDeliveryRequestV3,
   type SessionMessageDeliveryResult,
@@ -668,8 +669,7 @@ export class RuntimeDomainOwner {
     if (frame.type === "turn:activity") return this.#handleActivity(frame, context);
     if (
       frame.type === "turn:report" &&
-      frame.outgoingReplies !== undefined &&
-      context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.turnReport] !== 2
+      (context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.turnReport] ?? 1) < requiredTurnReportVersion(frame)
     ) {
       return {
         type: "turn:report:result",

@@ -158,6 +158,9 @@ For UI translations, see [Web i18n](./docs/system/web/i18n.md).
 
 ## Checks
 
+For database and read/write changes, start with the [Database read/write standards](./docs/system/database-read-write-standards.md).
+Identify the applicable rule IDs, any exceptions, and the verification scope in the change proposal and review.
+
 ### Local validation
 
 Choose checks from the changed behavior and its consumers. Use the same scope during development and before opening

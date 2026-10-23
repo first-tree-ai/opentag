@@ -23,6 +23,9 @@ changes, and use the appropriate repository's code and tokens for exact values.
 
 The app currently supports light mode. The retained violet dark palette is compatibility-only,
 not a supported alternative brand theme; a dark release requires its own reviewed specification.
+Application branding uses the supplied teal `@` mark and openTag lockup. Browser favicons and the
+Apple touch icon derive from that mark, and dark compatibility uses the same mark. Deprecated cat
+logos are not shipped; the approved cat Agent avatars remain separate from product branding.
 The app strengthens supporting text to `#696c73` so it remains readable on selected grey surfaces.
 Orange `#e5502e` is a warning indicator; warning body text uses `#a63f22`, and danger uses
 `#b42318`. Selection outlines and progress markers use the slate focus token; links use blue.

@@ -2,14 +2,19 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type {
-  RunnerClientFrame,
-  RunnerCloudDeliveryRunFrame,
-  RunnerCloudDeliveryVerifiedFrame,
-  RunnerCloudModelGrant,
-  SessionMessageDeliveryRequest,
+import {
+  computeTurnResultHash,
+  ProviderFailureReasonSchema,
+  type RunnerClientFrame,
+  RunnerClientFrameSchema,
+  type RunnerCloudDeliveryRunFrame,
+  type RunnerCloudDeliveryVerifiedFrame,
+  type RunnerCloudModelGrant,
+  type SessionMessageDeliveryRequest,
+  TurnReportRequestSchema,
 } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import { createPiDiagnosticWriter } from "../observability/pi-diagnostics.js";
 import { PiRpcError } from "../providers/pi/rpc-wire.js";
 import {
@@ -21,6 +26,34 @@ import {
 import { CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS, CloudTurnRunner, type CloudTurnScope } from "../runner/cloud-turns.js";
 import { NativeSandboxError } from "../runner/native-sandbox.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
+
+// The delivery:report failure vocabulary from d70d270a, before runtime report v3.
+const frozenCloudV1ReportSchema = z
+  .object({
+    type: z.literal("delivery:report"),
+    requestId: z.string().uuid(),
+    report: TurnReportRequestSchema.safeExtend({
+      errorReason: z
+        .enum([
+          "workspace_failed",
+          "configuration_conflict",
+          "credential_unavailable",
+          "sandbox_unavailable",
+          "provider_start_failed",
+          "session_resume_failed",
+          "provider_protocol_error",
+          "provider_failed",
+          "provider_empty_result",
+          "output_too_large",
+          "provider_teardown_failed",
+          "turn_state_unknown",
+          "turn_timeout",
+          "client_shutdown",
+        ])
+        .optional(),
+    }),
+  })
+  .strict();
 
 const MODEL_GRANT: RunnerCloudModelGrant = {
   baseUrl: "https://server.example.com/api/v1/cloud-model",
@@ -309,6 +342,49 @@ describe("CloudTurnRunner", () => {
       workerInputs,
     };
   }
+
+  it.each(ProviderFailureReasonSchema.options)(
+    "keeps %s compatible with the frozen Cloud v1 parser",
+    async (errorReason) => {
+      const h = harness({
+        worker: async () => ({
+          code: 1,
+          stderr: "",
+          stdout: `${JSON.stringify({
+            kind: "result",
+            completion: { outcome: "failed", executionEffects: "may_have_occurred", errorReason },
+          })}\n`,
+        }),
+      });
+      await h.runner.handleDeliveryRun(runFrame(h.delivery));
+      await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+      await h.runner.waitForActive();
+      const frame = reportsOf(h.sent)[0];
+      if (!frame) throw new Error("missing delivery report");
+      expect(frame.report.errorReason).toBe("provider_failed");
+      expect(frame.report.resultHash).toBe(computeTurnResultHash(frame.report));
+      expect(frozenCloudV1ReportSchema.parse(frame)).toEqual(frame);
+      const unsafeReport = { ...frame.report, errorReason };
+      unsafeReport.resultHash = computeTurnResultHash(unsafeReport);
+      expect(frozenCloudV1ReportSchema.safeParse({ ...frame, report: unsafeReport }).success).toBe(false);
+      expect(RunnerClientFrameSchema.safeParse({ ...frame, report: unsafeReport }).success).toBe(false);
+      const entry = await h.journal.read(h.delivery.deliveryId);
+      expect(entry?.kind === "delivery" ? entry.report : undefined).toEqual(frame.report);
+      h.sent.length = 0;
+      await h.runner.reconcile();
+      expect(reportsOf(h.sent).map(({ report }) => report)).toEqual([frame.report]);
+      expect(frozenCloudV1ReportSchema.parse(reportsOf(h.sent)[0])).toMatchObject({ report: frame.report });
+      await h.runner.handleReportAck({
+        type: "delivery:report:ack",
+        requestId: randomUUID(),
+        turnId: frame.report.turnId,
+        resultHash: frame.report.resultHash,
+        status: "recorded",
+      });
+      expect(await h.journal.read(h.delivery.deliveryId)).toBeUndefined();
+      await h.runner.close();
+    },
+  );
 
   it("wires native exec stderr to diagnostics without changing the failed completion", async () => {
     const diagnostics: Readonly<Record<string, unknown>>[] = [];

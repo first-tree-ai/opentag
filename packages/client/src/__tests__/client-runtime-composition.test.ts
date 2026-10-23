@@ -450,7 +450,7 @@ describe("createClientRuntime production composition", () => {
         // The recording executable exits after capturing argv; it never runs a model.
         await expect(
           agent.prompt({ runId: "packaged-skills", input: { items: [{ type: "text", text: "hello" }] } }),
-        ).resolves.toMatchObject({ status: "failed", error: { code: "provider_error" } });
+        ).resolves.toMatchObject({ status: "failed", error: { code: "provider_process_exited" } });
         expect(rpcLaunchArgs(await readJsonlArgs(logPath))?.slice(0, 2)).toEqual(["--skill", skillsPath]);
       } finally {
         runtime.stop();
@@ -472,7 +472,7 @@ describe("createClientRuntime production composition", () => {
         // The recording executable exits after capturing argv; it never runs a model.
         await expect(
           agent.prompt({ runId: "absent-skills", input: { items: [{ type: "text", text: "hello" }] } }),
-        ).resolves.toMatchObject({ status: "failed", error: { code: "provider_error" } });
+        ).resolves.toMatchObject({ status: "failed", error: { code: "provider_process_exited" } });
         const rpcArgs = rpcLaunchArgs(await readJsonlArgs(logPath));
         expect(rpcArgs).toEqual(expect.arrayContaining(["--mode", "rpc"]));
         expect(rpcArgs?.includes("--skill")).toBe(false);

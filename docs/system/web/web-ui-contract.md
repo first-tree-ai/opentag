@@ -274,6 +274,21 @@ Every module-owned stylesheet must:
 - avoid styling unrelated pages or Kumo internals globally; and
 - be added to the static stylesheet seam allowlist in `src/ui/kumo-contract.test.ts`.
 
+## Schedule handoff feedback
+
+Schedule rows keep configuration state (Enabled, Paused, or an exhausted one-time schedule) separate from the
+latest handoff result. When a handoff summary exists, its recorded outcome and scheduled time remain visible
+without opening the full task. The list uses its existing summary fields and does not fetch the private prompt
+until details are opened.
+
+Details explain the recorded outcome and retain its reason code and next scheduled time. An accepted handoff
+confirms runtime receipt, never task completion. An unknown handoff may still be in flight or may already have started work; users check
+Tasks before starting it again. Unreachable and rejected handoffs direct users to the Agent's Computer status,
+without diagnosing the cause from current presence. Skipped occurrences retain their reason code. The schedule
+does not retry an occurrence. Explanations do not imply a future occurrence when the next trigger is absent;
+future occurrences, when present, follow the current enabled state and time rule. These messages
+do not introduce retries, execution history, or a separate task lifecycle.
+
 ## Internationalization and copy
 
 User-facing copy goes through Paraglide messages. English and Simplified Chinese message catalogues must remain complete

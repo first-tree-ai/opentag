@@ -18,6 +18,10 @@ and the contracts each subsystem implements.
   control-plane authority, the Client connection, readiness, and
   authentication constraints.
 
+- **[Database read/write standards](database-read-write-standards.md)** —
+  atomicity, authorization, read consistency, lock order, external effects,
+  idempotency, failure handling, and verification requirements for persistence changes.
+
 ## Domains
 
 - **[runtime/](runtime/NODE.md)** — the Agent Runtime contract, runtime

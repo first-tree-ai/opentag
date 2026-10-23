@@ -8,6 +8,7 @@ import { z } from "zod";
 import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
 import { composeRuntimeEnvironment } from "../../agent-runtime/environment.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
+import { piProviderFailureCode, providerProcessFailureCode } from "../../agent-runtime/provider-failure.js";
 import {
   AGENT_RUNTIME_CONTRACT_VERSION,
   AGENT_RUNTIME_ID_MAX_BYTES,
@@ -308,9 +309,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       if (!context.signal.aborted && isIrrecoverablePiFailure(causalFailure)) this.closeForProviderFailure();
       if (causalFailure instanceof AgentProviderError) throw causalFailure;
       throw new AgentProviderError(
-        causalFailure instanceof PiRpcError && causalFailure.code === "protocol"
-          ? "provider_protocol_error"
-          : "provider_error",
+        causalFailure instanceof PiRpcError ? providerProcessFailureCode(causalFailure.code) : "provider_error",
         causalFailure.message,
         { cause: causalFailure },
       );
@@ -872,7 +871,10 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       status: "failed",
       output,
       ...(usage ? { usage } : {}),
-      error: { code: "provider_error", message: terminal.error ?? piFailedStopMessage(terminal.stopReason) },
+      error: {
+        code: terminal.stopReason === "length" ? "provider_execution_limit" : piProviderFailureCode(terminal.error),
+        message: terminal.error ?? piFailedStopMessage(terminal.stopReason),
+      },
       diagnostics,
     };
   }

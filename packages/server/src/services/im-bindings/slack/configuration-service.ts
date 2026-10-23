@@ -14,6 +14,8 @@ import { and, eq, ne } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../../db/client.js";
 import { agents, imBindings } from "../../../db/schema/index.js";
 import type { ApplicationCipher } from "../../crypto.js";
+import { currentBindingOf } from "../current-binding.js";
+import { releaseTerminalNeverActivatedSlotForAgent } from "../disable-im-binding.js";
 import {
   type ImBindingService,
   ImBindingUnbindRequiredError,
@@ -266,6 +268,10 @@ export class SlackConfigurationService {
       // binding immediately before committing the inspected credential snapshot.
       await this.#imBindings.assertCanManageForMutation(callerUserId, agentId, transaction);
       await this.#agent(agentId, transaction);
+      // A terminal first-time Feishu attempt is not a connection, but its row still holds the Agent's
+      // slot and the Provider/App uniqueness entries. Release it under this transaction's lock so the
+      // insert below can take the slot; the fence leaves a working binding alone.
+      await releaseTerminalNeverActivatedSlotForAgent(transaction, agentId, this.#now());
       const current = await this.#current(agentId, transaction, true);
       if (current && current.provider !== "slack") {
         throw new ImBindingUnbindRequiredError({
@@ -418,11 +424,10 @@ export class SlackConfigurationService {
     executor: QueryExecutor,
     forUpdate: boolean,
   ): Promise<typeof imBindings.$inferSelect | undefined> {
-    const query = executor
-      .select()
-      .from(imBindings)
-      .where(and(eq(imBindings.agentId, agentId), ne(imBindings.status, "disabled")))
-      .limit(1);
+    // The same current-binding answer the binding reads give: a Feishu row whose first attempt ended
+    // without activating is not a connection to fence Slack with, whether the release already ran or
+    // the row is one an older binary left (or wrote) behind.
+    const query = executor.select().from(imBindings).where(currentBindingOf(agentId)).limit(1);
     if (forUpdate) {
       const [row] = await query.for("update");
       return row;

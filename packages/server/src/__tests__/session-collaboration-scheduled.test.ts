@@ -72,7 +72,6 @@ interface Fixture {
     withScheduledDispatchAdmission: ReturnType<typeof vi.fn>;
   };
   domain: {
-    prepareReconcile: ReturnType<typeof vi.fn>;
     requestReconcile: ReturnType<typeof vi.fn>;
     requestSessionMessageDelivery: ReturnType<typeof vi.fn>;
   };
@@ -105,8 +104,8 @@ function makeFixture(
   route: AuthorizedScheduledMessageRoute,
   options: {
     budgets?: { localMs?: number; cloudMs?: number };
-    /** Refuse the admission with `dispatch_not_marked` after this many admitted stages. */
-    refuseAfter?: number;
+    /** Refuse the admission with `dispatch_not_marked` from this stage number onwards. */
+    refuseFrom?: number;
   } = {},
 ): Fixture {
   let admissionCalls = 0;
@@ -119,22 +118,21 @@ function makeFixture(
       async (
         _route: AuthorizedScheduledMessageRoute,
         _fence: unknown,
-        operation: (onDispatched: () => void, refusalSignal: AbortSignal) => Promise<unknown>,
+        operation: (onDispatched: () => void) => Promise<unknown>,
       ) => {
         // Mirror the real admission: the operation runs under the "locks" and the outer promise
         // resolves once the send is marked, while the result promise carries the receipt wait.
         admissionCalls += 1;
-        const refusal = new AbortController();
-        if (options.refuseAfter !== undefined && admissionCalls > options.refuseAfter) {
-          // Mirror the real refusal: abort the abandoned operation, then refuse before the commit.
-          const abandoned = operation(() => undefined, refusal.signal);
+        if (options.refuseFrom !== undefined && admissionCalls >= options.refuseFrom) {
+          // The real refusal happens after the transport was already asked to send, and the mark
+          // never arrives inside the window.
+          const abandoned = operation(() => undefined);
           void abandoned.catch(() => undefined);
-          refusal.abort();
           return { admitted: false as const, reason: "dispatch_not_marked" as const };
         }
         let mark: () => void = () => undefined;
         const dispatched = new Promise<void>((resolve) => (mark = resolve));
-        const result = operation(mark, refusal.signal);
+        const result = operation(mark);
         void result.catch(() => mark());
         await dispatched;
         return { admitted: true as const, result };
@@ -142,10 +140,6 @@ function makeFixture(
     ),
   };
   const domain = {
-    prepareReconcile: vi.fn(async (_c: string, _i: string, request: Record<string, unknown>) => ({
-      ...request,
-      sessionCliProof: { proofId: "proof", token: "token" },
-    })),
     requestReconcile: vi.fn(
       (
         _c: string,
@@ -395,61 +389,9 @@ describe("SessionCollaborationService.dispatchScheduledMessage", () => {
     expect(outcome).toEqual({ outcome: "unknown", code: "delivery_timeout" });
   });
 
-  it("mints the reconcile proof before the admission and sends that exact request", async () => {
-    const { snapshot, route } = snapshotFixture();
-    const fixture = makeFixture(route);
-    let prepared = false;
-    fixture.domain.prepareReconcile.mockImplementation(
-      async (_c: string, _i: string, request: Record<string, unknown>) => {
-        await Promise.resolve();
-        prepared = true;
-        return { ...request, sessionCliProof: { proofId: "proof", token: "token" } };
-      },
-    );
-    fixture.domain.requestReconcile.mockImplementation(
-      async (
-        _c: string,
-        _i: string,
-        request: { requestId: string; sessionCliProof?: unknown },
-        onDispatched?: () => void,
-      ) => {
-        // The admission holds the placement row the mint locks, so the proof must already exist.
-        expect(prepared).toBe(true);
-        expect(request.sessionCliProof).toEqual({ proofId: "proof", token: "token" });
-        onDispatched?.();
-        return {
-          type: "session:reconcile:result",
-          requestId: request.requestId,
-          sessionId: route.targetSessionId,
-          placementGeneration: 1,
-          status: "ready",
-        };
-      },
-    );
-    await expect(fixture.service.dispatchScheduledMessage(snapshot)).resolves.toEqual({
-      outcome: "accepted",
-      code: null,
-    });
-  });
-
-  it("records a failed proof mint as unreachable without entering an admission", async () => {
-    const { snapshot, route } = snapshotFixture();
-    const fixture = makeFixture(route);
-    fixture.domain.prepareReconcile.mockRejectedValue(new Error("the Session placement is unavailable"));
-    await expect(fixture.service.dispatchScheduledMessage(snapshot)).resolves.toEqual({
-      outcome: "unreachable",
-      code: "runtime_not_ready",
-    });
-    expect(fixture.sessions.withScheduledDispatchAdmission).not.toHaveBeenCalled();
-    expect(fixture.domain.requestReconcile).not.toHaveBeenCalled();
-    expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledWith(
-      expect.objectContaining({ outcome: "unreachable", errorCode: "runtime_not_ready" }),
-    );
-  });
-
   it("records a refused reconcile frame as unreachable: the message provably never left", async () => {
     const { snapshot, route } = snapshotFixture();
-    const fixture = makeFixture(route, { refuseAfter: 0 });
+    const fixture = makeFixture(route, { refuseFrom: 1 });
     await expect(fixture.service.dispatchScheduledMessage(snapshot)).resolves.toEqual({
       outcome: "unreachable",
       code: "delivery_timeout",
@@ -462,7 +404,7 @@ describe("SessionCollaborationService.dispatchScheduledMessage", () => {
 
   it("never records a refused business frame as unreachable: its fate is unprovable", async () => {
     const { snapshot, route } = snapshotFixture();
-    const fixture = makeFixture(route, { refuseAfter: 1 });
+    const fixture = makeFixture(route, { refuseFrom: 2 });
     await expect(fixture.service.dispatchScheduledMessage(snapshot)).resolves.toEqual({
       outcome: "unknown",
       code: "delivery_timeout",
@@ -470,36 +412,6 @@ describe("SessionCollaborationService.dispatchScheduledMessage", () => {
     expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledWith(
       expect.objectContaining({ outcome: "unknown", errorCode: "delivery_timeout" }),
     );
-  });
-
-  it("stops a send whose admission gave up before it reaches the send boundary", async () => {
-    const { snapshot, route } = snapshotFixture();
-    const fixture = makeFixture(route, { refuseAfter: 1 });
-    const sent = vi.fn();
-    fixture.domain.requestSessionMessageDelivery.mockImplementation(
-      async (
-        _c: string,
-        _i: string,
-        _request: unknown,
-        _onDispatched: () => void,
-        _admission: unknown,
-        signal: AbortSignal,
-      ) => {
-        // Deferred work that reaches the send boundary only after the admission gave up.
-        await Promise.resolve();
-        await Promise.resolve();
-        if (signal.aborted) {
-          throw new RuntimeDomainRequestError("aborted", "The runtime request was aborted before it was sent");
-        }
-        sent();
-        return { type: "session:message:deliver:result" };
-      },
-    );
-    await expect(fixture.service.dispatchScheduledMessage(snapshot)).resolves.toEqual({
-      outcome: "unknown",
-      code: "delivery_timeout",
-    });
-    expect(sent).not.toHaveBeenCalled();
   });
 
   it("answers a negotiated Cloud v1 scheduled dispatch with unsupported origin", async () => {

@@ -949,16 +949,11 @@ export class SessionService {
    * concurrent pause/delete waits only through the send mark and a committed pause/delete makes
    * the admission reject with zero frames sent. Permanent target failures auto-disable the
    * schedule in place.
-   *
-   * `operation` receives the signal of a refusal abort: the admission fires it when the send mark
-   * never arrives, BEFORE the refusal commits, so a transport that has not reached its own send
-   * boundary yet never writes the frame. A frame already handed to a transport cannot be recalled by
-   * it, so a late mark after the refusal is still possible on that path.
    */
   async withScheduledDispatchAdmission<T>(
     route: AuthorizedScheduledMessageRoute,
     fence: { scheduleId: string; revision: number },
-    operation: (onDispatched: () => void, refusalSignal: AbortSignal) => Promise<T>,
+    operation: (onDispatched: () => void) => Promise<T>,
   ): Promise<{ admitted: true; result: Promise<T> } | { admitted: false; reason: ScheduledDispatchAdmissionFailure }> {
     return this.#database.transaction(async (transaction) => {
       const rows = await lockScheduledAdmissionRows(transaction, route, fence.scheduleId, this.#afterPlacementLock);
@@ -986,10 +981,9 @@ export class SessionService {
       const dispatched = new Promise<void>((resolve) => {
         markDispatched = resolve;
       });
-      const refusal = new AbortController();
       let result: Promise<T>;
       try {
-        result = operation(markDispatched, refusal.signal);
+        result = operation(markDispatched);
       } catch (error) {
         markDispatched();
         throw error;
@@ -997,9 +991,7 @@ export class SessionService {
       void result.catch(() => markDispatched());
       if (!(await waitForSendMark(dispatched, SCHEDULED_SEND_MARK_TIMEOUT_MS))) {
         // The send never confirmed the frame inside the admission window: refuse it and commit, so
-        // the authority locks are released instead of being held for the whole stall. The abort is
-        // fired first, so the abandoned operation cannot reach a send boundary after the refusal.
-        refusal.abort();
+        // the authority locks are released instead of being held for the whole stall.
         return this.#rejectScheduledAdmission(route, fence, "dispatch_not_marked");
       }
       return { admitted: true, result } as const;

@@ -11,7 +11,6 @@ import {
   type SessionMessageDeliveryRequestV3,
   type SessionMessageDeliveryResult,
   type SessionMessageScheduledOrigin,
-  type SessionReconcileRequest,
   type SessionReconcileResult,
 } from "@opentag/shared";
 import type { ServiceLogger } from "../../observability/service-logger.js";
@@ -192,17 +191,7 @@ type ScheduledStageResult<T> =
 
 export interface SessionCollaborationServiceOptions {
   assembler: Pick<EffectiveRuntimeSnapshotAssembler, "assembleForSession">;
-  /**
-   * The transport surface. `prepareReconcile` mints the reconcile proof the plan must carry: a
-   * composition that wires CLI proofs provides it, and its absence means nothing is prepared.
-   */
-  domain: Pick<RuntimeDomainOwner, "requestReconcile" | "requestSessionMessageDelivery"> & {
-    prepareReconcile?(
-      computerId: string,
-      instanceId: string,
-      request: SessionReconcileRequest,
-    ): Promise<SessionReconcileRequest>;
-  };
+  domain: Pick<RuntimeDomainOwner, "requestReconcile" | "requestSessionMessageDelivery">;
   registry: Pick<ConnectionRegistry, "capabilityVersion" | "currentInstanceId" | "supportsCapability">;
   sessions: Pick<
     SessionService,
@@ -480,17 +469,13 @@ export class SessionCollaborationService {
         attemptCount: 1,
       },
       async (operation) => {
-        const admitted = await this.#sessions.withScheduledDispatchAdmission(
-          route,
-          fence,
-          (markDispatched, refusalSignal) => {
-            if (signal.aborted || refusalSignal.aborted) throw new ScheduledDispatchAbortError();
-            return operation(() => {
-              sent = true;
-              markDispatched();
-            });
-          },
-        );
+        const admitted = await this.#sessions.withScheduledDispatchAdmission(route, fence, (markDispatched) => {
+          if (signal.aborted) throw new ScheduledDispatchAbortError();
+          return operation(() => {
+            sent = true;
+            markDispatched();
+          });
+        });
         if (!admitted.admitted) admissionFailure = admitted.reason;
         return admitted;
       },

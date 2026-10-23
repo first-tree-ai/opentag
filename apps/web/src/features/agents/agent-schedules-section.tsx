@@ -206,6 +206,17 @@ function ScheduleRow({
               {m.agents_schedules_next()}: {formatScheduleTime(item.nextTriggerAt, item.timezone)}
             </span>
           ) : null}
+          {item.lastDispatch ? (
+            <p className="wrap-anywhere text-sm text-kumo-subtle">
+              <span>
+                {m.agents_schedules_last_dispatch()}: {handoffOutcome(item.lastDispatch.outcome)}
+              </span>
+              {" · "}
+              <time dateTime={item.lastDispatch.scheduledFor}>
+                {formatScheduleTime(item.lastDispatch.scheduledFor, item.timezone)}
+              </time>
+            </p>
+          ) : null}
         </div>
         <div className="flex flex-wrap gap-2">
           <Button aria-expanded={expanded} onClick={() => onToggle(item.id)} size="compact" variant="secondary">
@@ -309,15 +320,7 @@ function ScheduleDetail({ schedule }: { schedule: AgentSchedule }) {
           thread: target.threadKey,
         })
       : m.agents_schedules_target_channel({ provider: target.provider, channel: target.channelId });
-  const outcome = last
-    ? {
-        accepted: m.agents_schedules_accepted,
-        unreachable: m.agents_schedules_unreachable,
-        rejected: m.agents_schedules_rejected,
-        unknown: m.agents_schedules_unknown,
-        skipped: m.agents_schedules_skipped,
-      }[last.outcome]()
-    : m.agents_schedules_no_dispatch();
+  const outcome = last ? handoffOutcome(last.outcome) : m.agents_schedules_no_dispatch();
   return (
     <div className="grid gap-3 rounded-md bg-kumo-recessed p-4 text-sm">
       <dl className="grid gap-2">
@@ -345,6 +348,12 @@ function ScheduleDetail({ schedule }: { schedule: AgentSchedule }) {
           </>
         ) : null}
       </dl>
+      {last ? (
+        <div className="grid gap-2 text-kumo-subtle">
+          <p>{handoffExplanation(last.outcome)}</p>
+          {last.outcome !== "accepted" ? <p>{m.agents_schedules_no_retry()}</p> : null}
+        </div>
+      ) : null}
       <div className="grid gap-1">
         <strong className="text-kumo-strong">{m.agents_schedules_prompt()}</strong>
         <pre className="overflow-x-auto whitespace-pre-wrap wrap-anywhere font-sans text-kumo-default">
@@ -353,6 +362,28 @@ function ScheduleDetail({ schedule }: { schedule: AgentSchedule }) {
       </div>
     </div>
   );
+}
+
+type HandoffOutcome = NonNullable<AgentScheduleListItem["lastDispatch"]>["outcome"];
+
+function handoffOutcome(outcome: HandoffOutcome): string {
+  return {
+    accepted: m.agents_schedules_accepted,
+    unreachable: m.agents_schedules_unreachable,
+    rejected: m.agents_schedules_rejected,
+    unknown: m.agents_schedules_unknown,
+    skipped: m.agents_schedules_skipped,
+  }[outcome]();
+}
+
+function handoffExplanation(outcome: HandoffOutcome): string {
+  return {
+    accepted: m.agents_schedules_accepted_explanation,
+    unreachable: m.agents_schedules_unreachable_explanation,
+    rejected: m.agents_schedules_rejected_explanation,
+    unknown: m.agents_schedules_unknown_explanation,
+    skipped: m.agents_schedules_skipped_explanation,
+  }[outcome]();
 }
 
 function DetailRow({ label, value }: { label: string; value: string }) {

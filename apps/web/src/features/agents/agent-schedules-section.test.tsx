@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../../api.js";
-import { AgentSchedulesSection } from "./agent-schedules-section.js";
+import { AgentSchedulesSection, formatScheduleTime } from "./agent-schedules-section.js";
 
 const AGENT_ID = "10c4a3b9-1631-4e4b-8922-23932ea36237";
 const SCHEDULE_ID = "5238c0ee-a939-4bc0-8772-66d46c9df934";
@@ -53,6 +53,71 @@ function mount(scheduleId?: string) {
 afterEach(() => vi.restoreAllMocks());
 
 describe("AgentSchedulesSection", () => {
+  it.each([
+    ["accepted", "Received by the runtime"],
+    ["unreachable", "Runtime unreachable"],
+    ["rejected", "Rejected by the runtime"],
+    ["unknown", "Handoff result unknown"],
+    ["skipped", "Skipped"],
+  ] as const)("shows the latest %s handoff before details are opened", async (outcome, label) => {
+    const item = schedule({
+      lastDispatch: { scheduledFor: TIME, attemptedAt: null, messageId: null, outcome, code: null },
+    });
+    vi.spyOn(browserApi, "agentSchedules").mockResolvedValue({ items: [summaryOf(item)], nextCursor: null });
+    const detail = vi.spyOn(browserApi, "agentSchedule").mockResolvedValue(item);
+
+    mount();
+    expect(await screen.findByText(`Latest handoff: ${label}`)).toBeTruthy();
+    expect(screen.getByText(formatScheduleTime(TIME, item.timezone))).toBeTruthy();
+    expect(screen.getByText("Enabled")).toBeTruthy();
+    expect(screen.queryByText(item.prompt)).toBeNull();
+    expect(detail).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "accepted",
+      "The runtime received this occurrence. This does not confirm task completion; check Tasks for progress and results.",
+    ],
+    [
+      "unreachable",
+      "This occurrence could not reach the runtime. Check the Agent’s Computer status before the next scheduled time.",
+    ],
+    ["rejected", "The runtime did not accept this occurrence. Check the reason code and the Agent’s Computer status."],
+    ["unknown", "The handoff could not be confirmed. The task may have started; check Tasks before starting it again."],
+    ["skipped", "This occurrence was skipped. Check the reason code below."],
+  ] as const)("explains %s without claiming the business task completed", async (outcome, explanation) => {
+    const item = schedule({
+      lastDispatch: { scheduledFor: TIME, attemptedAt: TIME, messageId: null, outcome, code: "runtime_not_ready" },
+    });
+    vi.spyOn(browserApi, "agentSchedules").mockResolvedValue({ items: [summaryOf(item)], nextCursor: null });
+    vi.spyOn(browserApi, "agentSchedule").mockResolvedValue(item);
+
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: "Show details" }));
+    expect(await screen.findByText(explanation)).toBeTruthy();
+    expect(screen.getByText("runtime_not_ready")).toBeTruthy();
+    expect(screen.getByText("Next scheduled time", { exact: true })).toBeTruthy();
+    expect(
+      screen.queryByText(
+        "The schedule will not retry this occurrence. Future occurrences follow the schedule’s current settings.",
+      ) !== null,
+    ).toBe(outcome !== "accepted");
+  });
+
+  it("keeps a past failed handoff visible when the schedule is paused", async () => {
+    const item = schedule({
+      enabled: false,
+      nextTriggerAt: null,
+      lastDispatch: { scheduledFor: TIME, attemptedAt: null, messageId: null, outcome: "unreachable", code: null },
+    });
+    vi.spyOn(browserApi, "agentSchedules").mockResolvedValue({ items: [summaryOf(item)], nextCursor: null });
+    mount();
+    expect(await screen.findByText("Paused")).toBeTruthy();
+    expect(screen.getByText("Latest handoff: Runtime unreachable")).toBeTruthy();
+    expect(screen.queryByText(/Next scheduled time/)).toBeNull();
+  });
+
   it("keeps the full task behind the Account detail read", async () => {
     const item = schedule();
     vi.spyOn(browserApi, "agentSchedules").mockResolvedValue({ items: [summaryOf(item)], nextCursor: null });
@@ -62,6 +127,7 @@ describe("AgentSchedulesSection", () => {
     expect(await screen.findByText("Daily check")).toBeTruthy();
     expect(screen.queryByText(item.prompt)).toBeNull();
     expect(detail).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Latest handoff:/)).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Show details" }));
     expect(await screen.findByText(item.prompt)).toBeTruthy();

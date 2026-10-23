@@ -32,6 +32,7 @@ import type {
   InteractiveCodexAppServerClient,
 } from "../providers/codex/app-server-wire.js";
 import { CodexAppServerError } from "../providers/codex/app-server-wire.js";
+import { nativeMcpApprovalParams } from "./support/codex-mcp-approval-client.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/codex-app-server.mjs", import.meta.url));
 const directories: string[] = [];
@@ -724,6 +725,144 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
       { action: "accept", content: { field: "value" } },
       { action: "accept", content: null },
       { action: "cancel", content: null },
+    ]);
+    client.complete();
+    await run;
+    await runtime.close();
+  });
+
+  it.each(["accept", "decline", "cancel"] as const)(
+    "adapts native MCP approval forms to elicitation actions (%s)",
+    async (decision) => {
+      const client = new ManualCodexClient();
+      const events: AgentRuntimeEvent[] = [];
+      const runtime = await factory(client).create(
+        createRequest((event) => {
+          events.push(event);
+        }),
+      );
+      const run = runtime.prompt({ runId: "interactions", input: input("probe") });
+      await client.called("turn/start");
+      await interact(
+        runtime,
+        client,
+        events,
+        1,
+        "mcpServer/elicitation/request",
+        { kind: "approval", decision, scope: "runtime" },
+        false,
+        nativeMcpApprovalParams(),
+      );
+      expect(events.find((event) => event.type === "interaction_requested")).toMatchObject({
+        request: {
+          kind: "approval",
+          title: "Approve MCP tool action",
+          message: 'Allow the probe MCP server to run tool "read_probe"?',
+          details: { serverName: "probe", arguments: { api_key: "synthetic-probe-secret", query: "constant" } },
+        },
+      });
+      expect(client.serverResponses[0]?.result).toEqual({
+        action: decision,
+        content: decision === "accept" ? {} : null,
+      });
+      client.complete();
+      await run;
+      await runtime.close();
+    },
+  );
+
+  it.each([
+    { mode: undefined },
+    { mode: "url" },
+    { _meta: undefined },
+    { _meta: { codex_approval_kind: "other", tool_params: {} } },
+    { _meta: { codex_approval_kind: "mcp_tool_call" } },
+    { _meta: { codex_approval_kind: "mcp_tool_call", tool_params: [] } },
+    { serverName: undefined },
+    { serverName: " " },
+    { message: undefined },
+    { message: " " },
+    { requestedSchema: undefined },
+    { requestedSchema: { type: "array", properties: {} } },
+    { requestedSchema: { type: "object" } },
+    { requestedSchema: { type: "object", properties: { secret: { type: "string" } } } },
+    { requestedSchema: { type: "object", properties: {}, required: ["secret"] } },
+    { requestedSchema: { type: "object", properties: {}, additionalProperties: true } },
+    { requestedSchema: { type: "object", properties: {}, minProperties: 1 } },
+  ])("keeps unsupported or malformed MCP forms as questions: %j", async (override) => {
+    const client = new ManualCodexClient();
+    const events: AgentRuntimeEvent[] = [];
+    const runtime = await factory(client).create(
+      createRequest((event) => {
+        events.push(event);
+      }),
+    );
+    const run = runtime.prompt({ runId: "interactions", input: input("probe") });
+    await client.called("turn/start");
+    const params: Record<string, unknown> = JSON.parse(
+      JSON.stringify({
+        ...nativeMcpApprovalParams(),
+        ...override,
+        questions: [{ id: "approval", options: [{ label: "Accept" }, { label: "Decline" }, { label: "Cancel" }] }],
+      }),
+    );
+    if (params.mode !== "form") delete params.questions;
+    await interact(
+      runtime,
+      client,
+      events,
+      1,
+      "mcpServer/elicitation/request",
+      { kind: "question", decision: "cancel" },
+      false,
+      params,
+    );
+    expect(events.find((event) => event.type === "interaction_requested")).toMatchObject({
+      request: { kind: "question" },
+    });
+    expect(client.serverResponses[0]?.result).toEqual({ action: "cancel", content: null });
+    client.complete();
+    await run;
+    await runtime.close();
+  });
+
+  it("accepts the empty approval schema with explicit empty requirements and preserves legacy elicitation choices", async () => {
+    const client = new ManualCodexClient();
+    const events: AgentRuntimeEvent[] = [];
+    const runtime = await factory(client).create(
+      createRequest((event) => {
+        events.push(event);
+      }),
+    );
+    const run = runtime.prompt({ runId: "interactions", input: input("probe") });
+    await client.called("turn/start");
+    await interact(
+      runtime,
+      client,
+      events,
+      1,
+      "mcpServer/elicitation/request",
+      { kind: "approval", decision: "accept" },
+      false,
+      {
+        ...nativeMcpApprovalParams(),
+        requestedSchema: { type: "object", properties: {}, required: [], additionalProperties: false },
+      },
+    );
+    await interact(
+      runtime,
+      client,
+      events,
+      2,
+      "mcpServer/elicitation/request",
+      { kind: "approval", decision: "decline" },
+      false,
+      { questions: [{ id: "legacy", options: [{ label: "Accept" }, { label: "Decline" }, { label: "Cancel" }] }] },
+    );
+    // Keep the historical question-array response unchanged; native forms use elicitation actions.
+    expect(client.serverResponses.map((response) => response.result)).toEqual([
+      { action: "accept", content: {} },
+      { decision: "decline" },
     ]);
     client.complete();
     await run;

@@ -7,6 +7,7 @@ import {
   redactForLog,
   ServerDeepHealthSchema,
   ServerHealthSchema,
+  StructuredErrorCodeSchema,
 } from "@opentag/shared";
 import { DrizzleQueryError, sql } from "drizzle-orm";
 import Fastify, { type FastifyInstance, type FastifyLoggerOptions, type FastifyRequest, LogController } from "fastify";
@@ -343,8 +344,10 @@ const MAX_ERROR_STACK_LENGTH = 8_192;
 const READINESS_ATTEMPT_MAX_AGE_MS = 10_000;
 const READINESS_MAX_LIVE_ATTEMPTS = 2;
 
-type SerializedError = { type: string; message: string; stack: string };
+type SerializedError = { type: string; message: string; stack: string; code?: string; cause?: SerializedError };
 type DrizzleQueryErrorLike = { params?: unknown; query?: unknown };
+/** Bounds the deserialized cause chain so a cyclic or deep wrap cannot grow one log line without limit. */
+const SERIALIZED_ERROR_CAUSE_DEPTH = 3;
 
 function hasOwnField(value: object, key: string): boolean {
   return Object.hasOwn(value, key);
@@ -361,7 +364,7 @@ function redactLogString(value: string): string {
   return (typeof redacted === "string" ? redacted : String(redacted)).slice(0, MAX_ERROR_STACK_LENGTH);
 }
 
-function serializeError(error: unknown): SerializedError {
+function serializeError(error: unknown, depth = 0): SerializedError {
   if (isDrizzleQueryError(error)) {
     const parameterCount = Array.isArray(error.params) ? error.params.length : undefined;
     const summary = redactLogString(
@@ -377,11 +380,37 @@ function serializeError(error: unknown): SerializedError {
     const summary = redactLogString(String(error));
     return { type: typeof error, message: summary, stack: summary };
   }
+  const code = serializedErrorCode(error);
+  const cause =
+    error.cause !== undefined && depth < SERIALIZED_ERROR_CAUSE_DEPTH
+      ? serializeError(error.cause, depth + 1)
+      : undefined;
   return {
     type: error.name,
     message: redactLogString(error.message),
     stack: redactLogString(error.stack ?? `${error.name}: ${error.message}`),
+    ...(code ? { code } : {}),
+    ...(cause ? { cause } : {}),
   };
+}
+
+/**
+ * The bounded structured code a thrown error carries, when it has one.
+ *
+ * Two separate guards, because neither is sufficient alone. `code` is provider-controlled and does
+ * not pass through the redaction that `message` and `stack` receive: an arbitrary string such as
+ * `token=...` would be logged verbatim. The shape check rejects that, but the shared pattern admits
+ * `:`, so a structurally valid `token:...` is still credential-shaped; that is why the value must
+ * also survive `redactLogString` unchanged. A non-matching or redaction-sensitive value is omitted
+ * rather than replaced, because a fabricated or half-redacted code on a nested cause points the
+ * reader at the wrong failure. Numeric SQLSTATE codes such as `23505` are dropped by the shared
+ * pattern (it must start with a letter); accepted, because the diagnostic value is the query
+ * failure rather than the SQLSTATE number.
+ */
+function serializedErrorCode(error: Error): string | undefined {
+  const code = (error as { code?: unknown }).code;
+  if (typeof code !== "string" || !StructuredErrorCodeSchema.safeParse(code).success) return undefined;
+  return redactLogString(code) === code ? code : undefined;
 }
 
 class DatabaseReadinessTimeoutError extends Error {

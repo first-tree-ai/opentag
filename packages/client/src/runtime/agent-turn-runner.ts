@@ -919,7 +919,7 @@ function describeApprovalAction(value: JsonValue): string {
       )
       .map(
         ([key, entry]) =>
-          `${key.replaceAll(/([a-z])([A-Z])/g, "$1 $2").replaceAll("_", " ")}: ${describeApprovalAction(entry)}`,
+          `${key.replaceAll(/([a-z])([A-Z])/g, "$1 $2").replaceAll("_", " ")}: ${key === "arguments" ? JSON.stringify(entry, null, 2) : describeApprovalAction(entry)}`,
       )
       .join("\n");
   }

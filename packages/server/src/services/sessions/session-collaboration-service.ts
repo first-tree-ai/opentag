@@ -336,17 +336,24 @@ export class SessionCollaborationService {
     const gate = this.#scheduledLocalGate(route);
     if ("code" in gate) return record("unreachable", gate.code);
     const fence = { scheduleId: snapshot.scheduleId, revision: snapshot.revision };
-    const prepared = await this.#prepareScheduledReconcile(route, gate.instanceId, runtime, signal);
-    if (prepared.kind === "aborted") return record("unreachable", "delivery_timeout");
-    if (prepared.kind === "failed") return record("unreachable", "runtime_not_ready");
-    const reconcile = await this.#admitScheduled(route, fence, signal, (onDispatched, sendSignal) =>
+    const reconcile = await this.#admitScheduled<SessionReconcileResult>(route, fence, signal, (admission) =>
       this.#domain.requestReconcile(
         route.targetComputerId,
         gate.instanceId,
-        prepared.request,
-        onDispatched,
+        {
+          type: "session:reconcile",
+          requestId: randomUUID(),
+          installationId: route.targetInstallationId,
+          sessionId: route.targetSessionId,
+          agentId: route.agentId,
+          placementGeneration: route.targetPlacementGeneration,
+          ...(route.targetSessionKind === "internal" ? { sessionKind: "internal" as const } : {}),
+          desired: "ready",
+          runtime,
+        },
         undefined,
-        sendSignal,
+        admission,
+        signal,
       ),
     );
     // The reconcile frame is preparation, never the business message: any pre-delivery failure
@@ -359,7 +366,7 @@ export class SessionCollaborationService {
     if (!new Set(["ready", "running", "reporting"]).has(reconcile.result.status)) {
       return record("unreachable", "runtime_not_ready");
     }
-    const delivery = await this.#admitScheduled(route, fence, signal, (onDispatched, sendSignal) => {
+    const delivery = await this.#admitScheduled<SessionMessageDeliveryResult>(route, fence, signal, (admission) => {
       const request: SessionMessageDeliveryRequestV3 = {
         type: "session:message:deliver",
         requestId: randomUUID(),
@@ -379,52 +386,12 @@ export class SessionCollaborationService {
         route.targetComputerId,
         gate.instanceId,
         request,
-        onDispatched,
         undefined,
-        sendSignal,
+        admission,
+        signal,
       );
     });
     return this.#finishScheduledDelivery(delivery, record);
-  }
-
-  /**
-   * Mint the reconcile's proof BEFORE the admission takes the placement row. Minting inside the
-   * admission runs a second transaction that locks that row, and the send whose mark releases the
-   * admission is exactly what the mint gates, so neither side can move. The admission re-checks the
-   * placement generation the proof was minted for while it holds the row, so a move in between still
-   * rejects the dispatch.
-   */
-  async #prepareScheduledReconcile(
-    route: AuthorizedScheduledMessageRoute,
-    instanceId: string,
-    runtime: EffectiveRuntimeSnapshot,
-    signal: AbortSignal,
-  ): Promise<{ kind: "ok"; request: SessionReconcileRequest } | { kind: "failed" } | { kind: "aborted" }> {
-    const request: SessionReconcileRequest = {
-      type: "session:reconcile",
-      requestId: randomUUID(),
-      installationId: route.targetInstallationId,
-      sessionId: route.targetSessionId,
-      agentId: route.agentId,
-      placementGeneration: route.targetPlacementGeneration,
-      ...(route.targetSessionKind === "internal" ? { sessionKind: "internal" as const } : {}),
-      desired: "ready",
-      runtime,
-    };
-    const domain = this.#domain;
-    if (!domain.prepareReconcile) return { kind: "ok", request };
-    const prepared = await raceWithAbort(domain.prepareReconcile(route.targetComputerId, instanceId, request), signal);
-    if (prepared.kind === "aborted") return { kind: "aborted" };
-    if (prepared.kind === "error") {
-      // No frame exists yet: a proof that cannot be minted for this placement is a dead runtime.
-      this.#logInternalFailure("SESSION_COLLABORATION_RECONCILE_PREPARE_FAILED", {
-        agentId: route.agentId,
-        targetComputerId: route.targetComputerId,
-        targetSessionId: route.targetSessionId,
-      });
-      return { kind: "failed" };
-    }
-    return { kind: "ok", request: prepared.value };
   }
 
   /**
@@ -576,42 +543,38 @@ export class SessionCollaborationService {
   }
 
   /**
-   * One transport stage under the schedule-gated admission and the total budget. The admission's
-   * row locks are held only until the send is marked; the budget abort and the admission's own
-   * refusal abort are both re-checked at the send boundary, so a frame whose send the admission
-   * gave up on cannot leave afterwards.
+   * Domain preparation runs before admission: proof minting locks the placement in its own
+   * transaction. Final admission rechecks authority and holds its locks only until the send mark.
    */
   async #admitScheduled<T>(
     route: AuthorizedScheduledMessageRoute,
     fence: { scheduleId: string; revision: number },
     signal: AbortSignal,
-    operation: (onDispatched: () => void, sendSignal: AbortSignal) => Promise<T>,
+    operation: (admission: RuntimeDispatchAdmission<T>) => Promise<T>,
   ): Promise<ScheduledStageResult<T>> {
     if (signal.aborted) return { kind: "aborted", sent: false };
     let sent = false;
-    const work = this.#sessions.withScheduledDispatchAdmission(route, fence, (markDispatched, refusalSignal) => {
-      const sendSignal = AbortSignal.any([signal, refusalSignal]);
-      if (sendSignal.aborted) throw new ScheduledDispatchAbortError();
-      return operation(() => {
-        sent = true;
-        markDispatched();
-      }, sendSignal);
-    });
-    const admitted = await raceWithAbort(work, signal);
-    if (admitted.kind === "aborted") return { kind: "aborted", sent };
-    if (admitted.kind === "error") {
-      if (admitted.error instanceof ScheduledDispatchAbortError) return { kind: "aborted", sent };
-      // The domain owner's send boundary refused a cancelled request without sending a frame.
-      if (admitted.error instanceof RuntimeDomainRequestError && admitted.error.code === "aborted") {
-        return { kind: "aborted", sent };
-      }
-      return { kind: "failed", error: admitted.error, sent };
-    }
-    if (!admitted.value.admitted) return { kind: "rejected", reason: admitted.value.reason };
-    const receipt = await raceWithAbort(admitted.value.result, signal);
+    let rejected: ScheduledDispatchAdmissionFailure | undefined;
+    const admission: RuntimeDispatchAdmission<T> = async (send) => {
+      const admitted = await this.#sessions.withScheduledDispatchAdmission(route, fence, (markDispatched) => {
+        if (signal.aborted) throw new ScheduledDispatchAbortError();
+        return send(() => {
+          sent = true;
+          markDispatched();
+        });
+      });
+      if (!admitted.admitted) rejected = admitted.reason;
+      return admitted;
+    };
+    const receipt = await raceWithAbort(
+      Promise.resolve().then(() => operation(admission)),
+      signal,
+    );
     if (receipt.kind === "aborted") return { kind: "aborted", sent };
     if (receipt.kind === "error") {
-      // The domain send boundary refused a cancelled request without ever sending a frame.
+      if (rejected) return { kind: "rejected", reason: rejected };
+      if (receipt.error instanceof ScheduledDispatchAbortError) return { kind: "aborted", sent };
+      // The domain owner's send boundary refused a cancelled request without sending a frame.
       if (receipt.error instanceof RuntimeDomainRequestError && receipt.error.code === "aborted") {
         return { kind: "aborted", sent };
       }

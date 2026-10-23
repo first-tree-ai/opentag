@@ -69,3 +69,14 @@ replica can expire orphaned requests and retry resolved card updates after a ser
 are never replayed onto a new connection. Request records are removed after seven days.
 This first version supports one-action decisions, with no session-wide approval button or arbitrary
 provider question dialogs. Requests too large to display in full are denied.
+
+Codex MCP tool approvals include native form-mode elicitation requests explicitly marked
+`mcp_tool_call`. The adapter accepts only the empty-object approval schema and a valid server,
+message, and tool-argument object. The card shows the provider's action message and redacted
+server/arguments, without thread or turn transport metadata. Tool arguments are rendered as
+structured JSON after redaction, preserving nested keys even when their names match transport
+metadata. Acceptance answers only that invocation with an empty object; decline and cancel retain
+their native elicitation actions.
+Legacy question-array approvals remain supported. Ordinary or malformed forms remain unsupported
+questions and are cancelled by the existing Turn guard, including forms carrying approval-like
+choices. No session-wide MCP grant is created.

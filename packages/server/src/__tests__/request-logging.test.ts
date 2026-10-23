@@ -154,6 +154,94 @@ describe("request logging", () => {
     expect(JSON.stringify(failure)).not.toContain("complete-database-internal-context");
   });
 
+  it("serializes the bounded, redacted cause chain of a wrapped failure", async () => {
+    const chunks: string[] = [];
+    const root = Object.assign(new Error("Provider request failed"), { code: "IM_PROVIDER_UNAVAILABLE" });
+    const middle = new Error("Avatar fetch failed", { cause: root });
+    const app = createApp({
+      loggerLevel: "error",
+      loggerStream: { write: (chunk) => chunks.push(String(chunk)) },
+    });
+    app.get("/test/wrapped-error", async () => {
+      throw new Error("The Agent avatar is temporarily unavailable", { cause: middle });
+    });
+
+    try {
+      const response = await app.inject({ method: "GET", url: "/test/wrapped-error" });
+      expect(response.statusCode).toBe(500);
+    } finally {
+      await app.close();
+    }
+
+    const failure = chunks
+      .flatMap((chunk) => chunk.trim().split("\n"))
+      .map((line) => JSON.parse(line) as { err?: { cause?: Record<string, unknown> }; msg?: string })
+      .find((record) => record.msg === "Request failed");
+    expect(failure?.err?.cause).toMatchObject({
+      message: "Avatar fetch failed",
+      cause: { type: "Error", message: "Provider request failed", code: "IM_PROVIDER_UNAVAILABLE" },
+    });
+  });
+
+  it("omits a credential-shaped error code at the top level and inside a cause", async () => {
+    const chunks: string[] = [];
+    const secret = "token=pipeline-only-fixture-secret";
+    const app = createApp({
+      loggerLevel: "error",
+      loggerStream: { write: (chunk) => chunks.push(String(chunk)) },
+    });
+    app.get("/test/credential-error-code", async () => {
+      const upstream = Object.assign(new Error("upstream failed"), { code: secret });
+      throw Object.assign(new Error("wrapper", { cause: upstream }), { code: secret });
+    });
+
+    try {
+      const response = await app.inject({ method: "GET", url: "/test/credential-error-code" });
+      expect(response.statusCode).toBe(500);
+    } finally {
+      await app.close();
+    }
+
+    const logs = chunks.join("");
+    expect(logs).not.toContain(secret);
+    const failure = chunks
+      .flatMap((chunk) => chunk.trim().split("\n"))
+      .map((line) => JSON.parse(line) as { err?: { code?: string; cause?: { code?: string } }; msg?: string })
+      .find((record) => record.msg === "Request failed");
+    expect(failure?.err?.code).toBeUndefined();
+    expect(failure?.err?.cause?.code).toBeUndefined();
+  });
+
+  it("omits a schema-valid credential-shaped error code at the top level and inside a cause", async () => {
+    const chunks: string[] = [];
+    // `:` is inside the structured character set, so the shape check alone admits this value.
+    const secret = "token:pipeline-only-fixture-secret";
+    const app = createApp({
+      loggerLevel: "error",
+      loggerStream: { write: (chunk) => chunks.push(String(chunk)) },
+    });
+    app.get("/test/schema-valid-credential-error-code", async () => {
+      const upstream = Object.assign(new Error("upstream failed"), { code: secret });
+      throw Object.assign(new Error("wrapper", { cause: upstream }), { code: secret });
+    });
+
+    try {
+      const response = await app.inject({ method: "GET", url: "/test/schema-valid-credential-error-code" });
+      expect(response.statusCode).toBe(500);
+    } finally {
+      await app.close();
+    }
+
+    const logs = chunks.join("");
+    expect(logs).not.toContain(secret);
+    const failure = chunks
+      .flatMap((chunk) => chunk.trim().split("\n"))
+      .map((line) => JSON.parse(line) as { err?: { code?: string; cause?: { code?: string } }; msg?: string })
+      .find((record) => record.msg === "Request failed");
+    expect(failure?.err?.code).toBeUndefined();
+    expect(failure?.err?.cause?.code).toBeUndefined();
+  });
+
   it("never emits bound parameters from a real DrizzleQueryError", async () => {
     const chunks: string[] = [];
     const error = new DrizzleQueryError("select * from accounts where email = $1 and password = $2", [

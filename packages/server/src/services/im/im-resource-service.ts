@@ -70,12 +70,13 @@ export class ImResourceService {
           transport: getAvatarTransport(),
         },
       );
-    } catch {
+    } catch (error) {
       throw new ImBindingServiceError(
         "IM_BINDING_TEMPORARILY_UNAVAILABLE",
         503,
         "The Agent avatar is temporarily unavailable",
         "transient",
+        { cause: error },
       );
     }
 
@@ -86,6 +87,7 @@ export class ImResourceService {
         503,
         "The Agent avatar is temporarily unavailable",
         "transient",
+        { cause: new Error(`Avatar upstream answered ${response.status}`) },
       );
     }
 

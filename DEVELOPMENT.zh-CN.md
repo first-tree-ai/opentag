@@ -152,6 +152,9 @@ pnpm --filter @opentag/server start
 
 ## 检查
 
+数据库及读写改动先遵循[数据库读写规范](./docs/system/database-read-write-standards.md)。
+在变更方案和评审中说明适用的规范编号、例外及验证范围。
+
 ### 本地验证
 
 根据变更行为及其使用方选择检查范围。开发过程中与创建 pull request 前使用同一套标准；无需仅为创建 PR

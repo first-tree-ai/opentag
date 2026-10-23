@@ -17,6 +17,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { AgentProviderError } from "../agent-runtime/errors.js";
 import type { AgentRunResult, AgentRuntimeEventSink, JsonValue } from "../agent-runtime/types.js";
+import { CodexAgentRuntimeFactory } from "../providers/codex/agent-runtime.js";
 import { AgentRuntimeProviderUnavailableError } from "../runtime/agent-runtime-provider-registry.js";
 import {
   AgentTurnRunner,
@@ -40,8 +41,136 @@ import {
 import type { LiveTurnOwner, TurnCustodyOwner } from "../runtime/turn-custody-owner.js";
 import type { TurnReportOwner } from "../runtime/turn-report-owner.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
+import { McpApprovalCodexClient } from "./support/codex-mcp-approval-client.js";
 
 describe("AgentTurnRunner", () => {
+  it.each(["accept", "decline", "expire", "cancel-turn"] as const)(
+    "bridges a native MCP approval form through the real Codex adapter (%s)",
+    async (decision) => {
+      const client = new McpApprovalCodexClient();
+      let observer: AgentRuntimeEventSink | undefined;
+      const runtime = await new CodexAgentRuntimeFactory({ clientVersion: "0.1.4", createClient: () => client }).create(
+        {
+          eventSink: (event) => observer?.(event),
+          systemPrompt: "Synthetic MCP probe",
+          workspace: { cwd: "/workspace" },
+          policy: {
+            fileSystem: "workspace-write",
+            network: "disabled",
+            approvals: "on-request",
+            tools: { mode: "provider-default" },
+          },
+        },
+      );
+      let now = Date.now();
+      const request = delivery();
+      request.runtime.execution.approvalPolicy = "on-request";
+      const send = vi.fn(async (_frame: unknown) => undefined);
+      const create = vi.fn((input: Parameters<TurnReportOwner["create"]>[0]) => ({
+        ...input,
+        type: "turn:report" as const,
+        requestId: randomUUID(),
+        resultHash: "c".repeat(64),
+      }));
+      const runner = new AgentTurnRunner({
+        now: () => now,
+        bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
+        connection: { send },
+        custody: { markReporting: vi.fn(async () => undefined), recordResult: vi.fn() } as unknown as TurnCustodyOwner,
+        reportOwner: { create, submit: vi.fn(async () => undefined) } as unknown as TurnReportOwner,
+        runtimeManager: {
+          sessionKind: () => "visible",
+          ensureRuntime: async () => runtime,
+          cwd: () => "/workspace",
+          observe: (_id: string, listener: AgentRuntimeEventSink) => {
+            observer = listener;
+            return () => {
+              observer = undefined;
+            };
+          },
+        } as unknown as SessionRuntimeManager,
+        credentialEnvironment: credentialEnvironment(),
+        logger: recordingLogger([]),
+      });
+      try {
+        runner.start(liveOwner(request));
+        await vi.waitFor(() =>
+          expect(
+            send.mock.calls.some(([frame]) => (frame as { type?: string }).type === "approval:request") ||
+              client.responses.length > 0,
+          ).toBe(true),
+        );
+        expect(client.responses).toEqual([]);
+        expect(client.toolCalls).toBe(0);
+        const approval = RuntimeApprovalRequestSchema.parse(
+          send.mock.calls.find(([frame]) => (frame as { type?: string }).type === "approval:request")?.[0],
+        );
+        expect(approval.description).toContain("read_probe");
+        expect(approval.description).toContain("constant");
+        expect(approval.description).not.toContain("synthetic-probe-secret");
+        expect(approval.description).not.toContain("nested-synthetic-secret");
+        expect(approval.description).not.toContain("thread-1");
+        expect(approval.description).not.toContain("turn-1");
+        expect(approval.commandPresentation).toBeUndefined();
+        expect(JSON.parse(approval.description.split("\narguments: ")[1] ?? "null")).toEqual({
+          api_key: "[REDACTED]",
+          query: "constant",
+          cwd: "/synthetic/tool-directory",
+          reason: "tool reason",
+          itemId: "tool-item",
+          threadId: "tool-thread",
+          turnId: "tool-turn",
+          approvalId: "tool-approval",
+          environmentId: "tool-environment",
+          commandActions: [{ command: "synthetic command" }],
+          availableDecisions: ["tool-option"],
+          proposedExecpolicyAmendment: ["tool-policy"],
+          nested: {
+            serverName: "argument-server",
+            cwd: "/synthetic/nested-directory",
+            api_key: "[REDACTED]",
+            values: [1, true, null, { reason: "nested reason" }],
+          },
+        });
+        const reply = {
+          type: "approval:decision" as const,
+          requestId: approval.requestId,
+          turnId: "turn-1",
+          sessionId: request.sessionId,
+          deliveryId: request.deliveryId,
+          placementGeneration: 1,
+          decision: decision === "decline" ? ("decline" as const) : ("accept" as const),
+        };
+        if (decision === "expire" || decision === "cancel-turn") {
+          if (decision === "expire") now = Date.parse(approval.expiresAt);
+          else {
+            runner.stop();
+            await runner.settled();
+          }
+          await expect(runner.respondToApproval(reply)).resolves.toMatchObject({ status: "stale" });
+          expect(client.responses).toEqual([]);
+          expect(client.toolCalls).toBe(0);
+          return;
+        }
+        await expect(runner.respondToApproval({ ...reply, sessionId: "wrong" })).resolves.toMatchObject({
+          status: "stale",
+        });
+        expect(client.responses).toEqual([]);
+        await expect(runner.respondToApproval(reply)).resolves.toMatchObject({ status: "applied" });
+        client.complete();
+        await runner.settled();
+        expect(client.responses).toEqual([{ action: decision, content: decision === "accept" ? {} : null }]);
+        expect(client.toolCalls).toBe(decision === "accept" ? 1 : 0);
+        await expect(runner.respondToApproval(reply)).resolves.toMatchObject({ status: "stale" });
+        expect(client.responses).toHaveLength(1);
+      } finally {
+        runner.stop();
+        await runner.settled();
+        await runtime.close();
+      }
+    },
+  );
+
   it.each(["slack", "feishu"] as const)("keeps %s per-Turn context below 3 KiB without static manuals", (provider) => {
     const request = delivery();
     if (provider === "feishu") {

@@ -986,7 +986,7 @@ describe("database migration helpers", () => {
     expect(postgres).toHaveBeenLastCalledWith(
       "postgresql://localhost/opentag",
       expect.objectContaining({
-        max: 10,
+        max: 20,
         connection: { statement_timeout: 5_000, idle_in_transaction_session_timeout: 7_000 },
       }),
     );

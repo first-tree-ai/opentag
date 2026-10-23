@@ -91,6 +91,12 @@ The scheduled `Unit Coverage` workflow owns the recurring full coverage baseline
 
 Test plans, acceptance runs, UI screenshots, and validation evidence belong in `testing/`, never in `docs/`.
 
+## Database read/write design
+
+Follow [Database read/write standards](docs/system/database-read-write-standards.md) when changing or reviewing persistence.
+Before implementing or approving a database or read/write design, present the concrete proposal for human confirmation,
+including schema, query paths, authorization, consistency, and retention semantics. Investigation may proceed first.
+
 ## Database migrations
 
 Adding a migration under `packages/server/drizzle` requires two extra steps, or CI fails even when

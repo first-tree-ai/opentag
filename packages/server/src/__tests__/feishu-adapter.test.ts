@@ -14,6 +14,7 @@ import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstra
 import { agents, computers, imBindings, imMessages } from "../db/schema/index.js";
 import { AgentService } from "../services/agents/index.js";
 import { ApplicationCipher } from "../services/crypto.js";
+import { ExternalCallPolicy } from "../services/im/external-call-policy.js";
 import {
   createFeishuHttpCapability,
   createReliableFeishuDispatcher,
@@ -642,6 +643,40 @@ describe("Feishu adapter", () => {
 
       await expect(resolved).resolves.toBe("Late Sender");
       expect(getChatMembers).toHaveBeenCalledTimes(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports the lookup timeout before the adapter policy deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const http = createFeishuHttpCapability({
+        im: {
+          v1: {
+            chatMembers: { get: vi.fn().mockReturnValue(new Promise(() => undefined)) },
+            messageResource: {
+              get: vi.fn().mockResolvedValue({ getReadableStream: () => Readable.from(Buffer.alloc(0)) }),
+            },
+          },
+        },
+      });
+      const adapter = new FeishuAdapter({
+        appId: "cli_sender_name_budget",
+        appSecret: "secret",
+        teamId: null,
+        channel: null,
+        http,
+        policy: new ExternalCallPolicy(),
+      });
+
+      const outcome = adapter.resolveSenderName({ chatId: "oc_1", senderOpenId: "ou_sender" }).then(
+        () => "resolved",
+        (error: unknown) => (error instanceof Error ? error.message : String(error)),
+      );
+      await vi.advanceTimersByTimeAsync(4_000);
+
+      await expect(outcome).resolves.toBe("FEISHU_SENDER_NAME_LOOKUP_TIMEOUT");
     } finally {
       vi.useRealTimers();
     }

@@ -34,4 +34,20 @@ describe("Agent avatar SSRF regression", () => {
     expect(init).not.toHaveProperty("authorization");
     expect(options.transport).toEqual(expect.any(Function));
   });
+
+  it("keeps a rejected upstream status as the cause of the 503", async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 502 }));
+    const query = {
+      from: vi.fn().mockReturnThis(),
+      innerJoin: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockResolvedValue([{ providerUrl: "https://avatar.example.test/image.png" }]),
+    };
+    const database = { select: vi.fn().mockReturnValue(query) } as unknown as DatabaseClient;
+    const service = new ImResourceService(database, vi.fn(), { fetch } as unknown as ExternalCallPolicy);
+
+    const failure = await service.openAvatar("owner", "agent").catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: "IM_BINDING_TEMPORARILY_UNAVAILABLE", statusCode: 503 });
+    expect((failure as Error).cause).toMatchObject({ message: "Avatar upstream answered 502" });
+  });
 });

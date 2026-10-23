@@ -54,7 +54,7 @@ async function forward(
 export function relayServer(config: Config, feishu: Feishu, log: Log) {
   return createServer({ requestTimeout: 10_000, headersTimeout: 10_000 }, async (request, response) => {
     const route = `${request.method} ${request.url}`;
-    if (route === "GET /healthz") return reply(response, 200, "ok");
+    if (route === "GET /health") return reply(response, 200, "ok");
     if (!authorized(request.headers.authorization, config)) {
       response.setHeader("WWW-Authenticate", 'Basic realm="monitoring"');
       return reply(response, 401, "unauthorized");

@@ -64,7 +64,7 @@ can resolve the two group members without granting chat-history or phone-number 
 limit application availability to the intended members. Confirm SMS availability and quota without buying quota or
 switching to calls.
 
-Cloud Run accepts public HTTPS traffic so Monitoring can reach it. Every request except `GET /healthz` requires Basic
+Cloud Run accepts public HTTPS traffic so Monitoring can reach it. Every request except `GET /health` requires Basic
 Auth; failures return `401` with `WWW-Authenticate`. Authenticated `GET /readyz` obtains a Feishu token without sending
 messages. Credentials must not appear in URLs, logs, or source code. Configure matching Basic Auth in the Monitoring
 notification channel.

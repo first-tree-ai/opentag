@@ -32,7 +32,7 @@ test("HTTP rejects unauthorized, malformed, oversized and unlisted notifications
       415,
     );
     assert.deepEqual(feishu.calls, { messages: 0, sms: 0 });
-    assert.equal((await fetch(`${url}/healthz`)).status, 200);
+    assert.equal((await fetch(`${url}/health`)).status, 200);
     assert.equal((await fetch(`${url}/readyz`, { headers })).status, 200);
     assert.equal(
       (await fetch(`${url}/monitoring`, { method: "POST", headers, body: JSON.stringify(payload()) })).status,

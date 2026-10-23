@@ -1,8 +1,20 @@
 import type { KeyedTaskSchedulerOptions, TaskLane } from "./keyed-task-scheduler.types.js";
 
+/**
+ * Per-key FIFO lanes behind one global concurrency budget.
+ *
+ * Invariant: a key holds at most one unconsumed ready-queue entry, so live entries never exceed the
+ * lane count. Consumed entries stay in the array until `#compactReady` drops them, so total length is
+ * bounded by the lane count plus compaction slack, not by the lane count itself. A lane re-enters at
+ * the back after each run, so admission is round-robin and a key that keeps refilling its lane cannot
+ * delay a key that became ready earlier.
+ */
 export class KeyedTaskScheduler {
   readonly #options: KeyedTaskSchedulerOptions;
   readonly #lanes = new Map<string, TaskLane>();
+  readonly #ready: string[] = [];
+  readonly #readySet = new Set<string>();
+  #readyHead = 0;
   #active = 0;
   #closed = false;
   #queued = 0;
@@ -27,6 +39,7 @@ export class KeyedTaskScheduler {
     if (!this.#lanes.has(key)) this.#lanes.set(key, lane);
     lane.queue.push({ run: task, onDrop, enqueuedAt: this.#now() });
     this.#queued += 1;
+    if (!lane.running) this.#markReady(key);
     this.#pump();
     return true;
   }
@@ -60,16 +73,54 @@ export class KeyedTaskScheduler {
     for (const [key, lane] of this.#lanes) {
       if (!lane.running) this.#lanes.delete(key);
     }
+    this.#ready.length = 0;
+    this.#readySet.clear();
+    this.#readyHead = 0;
+  }
+
+  #markReady(key: string): void {
+    if (this.#readySet.has(key)) return;
+    this.#readySet.add(key);
+    this.#ready.push(key);
+  }
+
+  #takeReady(): string | undefined {
+    let key: string | undefined;
+    while (this.#readyHead < this.#ready.length) {
+      const candidate = this.#ready[this.#readyHead] as string;
+      this.#readyHead += 1;
+      this.#readySet.delete(candidate);
+      const lane = this.#lanes.get(candidate);
+      if (lane && !lane.running && lane.queue.length > 0) {
+        key = candidate;
+        break;
+      }
+    }
+    this.#compactReady();
+    return key;
+  }
+
+  #compactReady(): void {
+    if (this.#readyHead === this.#ready.length) {
+      this.#ready.length = 0;
+      this.#readyHead = 0;
+      return;
+    }
+    // Consumed head entries would otherwise pin memory while the queue keeps growing.
+    if (this.#readyHead >= 64 && this.#readyHead * 2 >= this.#ready.length) {
+      this.#ready.splice(0, this.#readyHead);
+      this.#readyHead = 0;
+    }
   }
 
   #pump(): void {
     if (this.#closed) return;
     while (this.#active < this.#options.maxConcurrent) {
-      const next = [...this.#lanes.entries()].find(([, lane]) => !lane.running && lane.queue.length > 0);
-      if (!next) return;
-      const [key, lane] = next;
-      const task = lane.queue.shift();
-      if (!task) return;
+      const key = this.#takeReady();
+      if (key === undefined) return;
+      const lane = this.#lanes.get(key);
+      const task = lane?.queue.shift();
+      if (!(lane && task)) return;
       this.#queued -= 1;
       lane.running = true;
       this.#active += 1;
@@ -94,6 +145,7 @@ export class KeyedTaskScheduler {
           lane.running = false;
           this.#active -= 1;
           if (lane.queue.length === 0) this.#lanes.delete(key);
+          else this.#markReady(key);
           this.#pump();
         });
     }

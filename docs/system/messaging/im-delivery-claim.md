@@ -16,7 +16,9 @@ This keeps blocked input from repeatedly probing reported or cancelled history.
 The global cursor advances over blocked rows and survives polling rounds. Each sweep fixes its due
 boundary, then wraps to discover newly due inputs behind the cursor. Ready notifications use a
 separate Session-scoped scan. A worker serializes claim scans and coalesces timer ticks while one
-is pending. Runtime execution in different lanes remains concurrent.
+is pending. Runtime execution in different lanes remains concurrent, and a lane that becomes ready
+again re-enters delivery admission behind lanes that were already waiting, so sustained work on one
+lane cannot starve another.
 
 Session, placement, binding, Agent, and Computer metadata is fetched in batches through existing
 keys, then joined in memory. The hint cache holds at most 2,048 Sessions for five seconds. Ready

@@ -1,8 +1,7 @@
-import markDark from "../assets/opentag/logo-dark-transparent.svg";
-import markLight from "../assets/opentag/site-brand-mark.png";
+import mark from "../assets/opentag/site-brand-mark.png";
 import lockup from "../assets/opentag/site-lockup.svg";
 
-const MARK = { light: markLight, dark: markDark, width: 1254, height: 1254 };
+const MARK = { src: mark, width: 300, height: 300 };
 
 /** Official website artwork; cat avatars are owned separately. */
 export function OpenTagLogo({
@@ -16,8 +15,8 @@ export function OpenTagLogo({
 }) {
   return (
     <span aria-hidden={label ? undefined : true} className={`opentag-logo opentag-logo--${variant} ${className}`}>
-      <img alt="" className="opentag-logo__light" src={variant === "mark" ? MARK.light : lockup} />
-      <img alt="" className="opentag-logo__dark" height={MARK.height} src={MARK.dark} width={MARK.width} />
+      <img alt="" className="opentag-logo__light" src={variant === "mark" ? MARK.src : lockup} />
+      <img alt="" className="opentag-logo__dark" height={MARK.height} src={MARK.src} width={MARK.width} />
 
       {label ? <span className="sr-only">{label}</span> : null}
     </span>

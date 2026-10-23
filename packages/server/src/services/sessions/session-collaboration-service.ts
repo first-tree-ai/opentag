@@ -186,7 +186,7 @@ async function raceWithAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<
 /** One admission-wrapped transport stage (reconcile or business delivery) for a scheduled dispatch. */
 type ScheduledStageResult<T> =
   | { kind: "completed"; result: T }
-  | { kind: "rejected"; reason: ScheduledDispatchAdmissionFailure; sent: boolean }
+  | { kind: "rejected"; reason: ScheduledDispatchAdmissionFailure }
   | { kind: "aborted"; sent: boolean }
   | { kind: "failed"; error: unknown; sent: boolean };
 
@@ -339,25 +339,27 @@ export class SessionCollaborationService {
     const prepared = await this.#prepareScheduledReconcile(route, gate.instanceId, runtime, signal);
     if (prepared.kind === "aborted") return record("unreachable", "delivery_timeout");
     if (prepared.kind === "failed") return record("unreachable", "runtime_not_ready");
-    const reconcile = await this.#admitScheduled(route, fence, signal, (onDispatched) =>
+    const reconcile = await this.#admitScheduled(route, fence, signal, (onDispatched, sendSignal) =>
       this.#domain.requestReconcile(
         route.targetComputerId,
         gate.instanceId,
         prepared.request,
         onDispatched,
         undefined,
-        signal,
+        sendSignal,
       ),
     );
     // The reconcile frame is preparation, never the business message: any pre-delivery failure
     // means the scheduled message provably never left, so the honest outcome is unreachable.
     if (reconcile.kind === "aborted") return record("unreachable", "delivery_timeout");
-    if (reconcile.kind === "rejected") return this.#recordScheduledAdmissionFailure(reconcile.reason, record);
+    if (reconcile.kind === "rejected") {
+      return this.#recordScheduledAdmissionFailure(reconcile.reason, record, false);
+    }
     if (reconcile.kind === "failed") return record("unreachable", "runtime_not_ready");
     if (!new Set(["ready", "running", "reporting"]).has(reconcile.result.status)) {
       return record("unreachable", "runtime_not_ready");
     }
-    const delivery = await this.#admitScheduled(route, fence, signal, (onDispatched) => {
+    const delivery = await this.#admitScheduled(route, fence, signal, (onDispatched, sendSignal) => {
       const request: SessionMessageDeliveryRequestV3 = {
         type: "session:message:deliver",
         requestId: randomUUID(),
@@ -379,7 +381,7 @@ export class SessionCollaborationService {
         request,
         onDispatched,
         undefined,
-        signal,
+        sendSignal,
       );
     });
     return this.#finishScheduledDelivery(delivery, record);
@@ -474,7 +476,7 @@ export class SessionCollaborationService {
       return record(delivery.sent ? "unknown" : "unreachable", "delivery_timeout");
     }
     if (delivery.kind === "rejected") {
-      return this.#recordScheduledAdmissionFailure(delivery.reason, record, delivery.sent);
+      return this.#recordScheduledAdmissionFailure(delivery.reason, record, true);
     }
     if (delivery.kind === "failed") {
       if (!delivery.sent) return record("unreachable", "runtime_unavailable");
@@ -511,20 +513,24 @@ export class SessionCollaborationService {
         attemptCount: 1,
       },
       async (operation) => {
-        const admitted = await this.#sessions.withScheduledDispatchAdmission(route, fence, (markDispatched) => {
-          if (signal.aborted) throw new ScheduledDispatchAbortError();
-          return operation(() => {
-            sent = true;
-            markDispatched();
-          });
-        });
+        const admitted = await this.#sessions.withScheduledDispatchAdmission(
+          route,
+          fence,
+          (markDispatched, refusalSignal) => {
+            if (signal.aborted || refusalSignal.aborted) throw new ScheduledDispatchAbortError();
+            return operation(() => {
+              sent = true;
+              markDispatched();
+            });
+          },
+        );
         if (!admitted.admitted) admissionFailure = admitted.reason;
         return admitted;
       },
     );
     const settled = await raceWithAbort(work, signal);
     if (admissionFailure !== undefined) {
-      return this.#recordScheduledAdmissionFailure(admissionFailure, record, sent);
+      return this.#recordScheduledAdmissionFailure(admissionFailure, record, true);
     }
     return this.#finishScheduledCloudDelivery(settled, sent, snapshot, route, record);
   }
@@ -571,23 +577,25 @@ export class SessionCollaborationService {
 
   /**
    * One transport stage under the schedule-gated admission and the total budget. The admission's
-   * row locks are held only until the send is marked; the budget abort is re-checked at the send
-   * boundary so no frame can leave after it fires.
+   * row locks are held only until the send is marked; the budget abort and the admission's own
+   * refusal abort are both re-checked at the send boundary, so a frame whose send the admission
+   * gave up on cannot leave afterwards.
    */
   async #admitScheduled<T>(
     route: AuthorizedScheduledMessageRoute,
     fence: { scheduleId: string; revision: number },
     signal: AbortSignal,
-    operation: (onDispatched: () => void) => Promise<T>,
+    operation: (onDispatched: () => void, sendSignal: AbortSignal) => Promise<T>,
   ): Promise<ScheduledStageResult<T>> {
     if (signal.aborted) return { kind: "aborted", sent: false };
     let sent = false;
-    const work = this.#sessions.withScheduledDispatchAdmission(route, fence, (markDispatched) => {
-      if (signal.aborted) throw new ScheduledDispatchAbortError();
+    const work = this.#sessions.withScheduledDispatchAdmission(route, fence, (markDispatched, refusalSignal) => {
+      const sendSignal = AbortSignal.any([signal, refusalSignal]);
+      if (sendSignal.aborted) throw new ScheduledDispatchAbortError();
       return operation(() => {
         sent = true;
         markDispatched();
-      });
+      }, sendSignal);
     });
     const admitted = await raceWithAbort(work, signal);
     if (admitted.kind === "aborted") return { kind: "aborted", sent };
@@ -599,7 +607,7 @@ export class SessionCollaborationService {
       }
       return { kind: "failed", error: admitted.error, sent };
     }
-    if (!admitted.value.admitted) return { kind: "rejected", reason: admitted.value.reason, sent };
+    if (!admitted.value.admitted) return { kind: "rejected", reason: admitted.value.reason };
     const receipt = await raceWithAbort(admitted.value.result, signal);
     if (receipt.kind === "aborted") return { kind: "aborted", sent };
     if (receipt.kind === "error") {
@@ -612,10 +620,15 @@ export class SessionCollaborationService {
     return { kind: "completed", result: receipt.value };
   }
 
+  /**
+   * The recorded outcome of a refused admission. `carriedMessage` says whether the refused frame was
+   * the scheduled message itself or only its preparation: a refused reconcile leaves the message
+   * provably unsent, a refused business frame may already be at the transport.
+   */
   #recordScheduledAdmissionFailure(
     reason: ScheduledDispatchAdmissionFailure,
     record: (outcome: SessionMessageOutcome, code?: string) => Promise<ScheduledMessageDispatchOutcome>,
-    sent = false,
+    carriedMessage: boolean,
   ): Promise<ScheduledMessageDispatchOutcome> {
     switch (reason) {
       case "schedule_deleted":
@@ -629,9 +642,10 @@ export class SessionCollaborationService {
       case "authority_unavailable":
         return record("unreachable", reason);
       case "dispatch_not_marked":
-        // The transport never confirmed the frame inside the admission window. A send it did mark is
-        // already past proof of non-delivery, so only the unmarked case is provably unreachable.
-        return record(sent ? "unknown" : "unreachable", "delivery_timeout");
+        // The admission gave up waiting for the send mark and refused the dispatch. The transport had
+        // already been asked to send by then, so a business frame's fate is unprovable: never claim it
+        // as unreachable. A refused reconcile frame still leaves the message provably unsent.
+        return record(carriedMessage ? "unknown" : "unreachable", "delivery_timeout");
     }
   }
 

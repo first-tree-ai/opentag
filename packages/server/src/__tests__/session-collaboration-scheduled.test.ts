@@ -87,8 +87,13 @@ interface Fixture {
 
 function makeFixture(
   route: AuthorizedScheduledMessageRoute,
-  options: { budgets?: { localMs?: number; cloudMs?: number } } = {},
+  options: {
+    budgets?: { localMs?: number; cloudMs?: number };
+    /** Refuse the admission with `dispatch_not_marked` after this many admitted stages. */
+    refuseAfter?: number;
+  } = {},
 ): Fixture {
+  let admissionCalls = 0;
   const sessions = {
     beginScheduledMessageAttempt: vi.fn(async () => ({ id: "fenced" })),
     resolveScheduledMessageRoute: vi.fn(async () => ({ kind: "route" as const, route })),
@@ -98,13 +103,22 @@ function makeFixture(
       async (
         _route: AuthorizedScheduledMessageRoute,
         _fence: unknown,
-        operation: (onDispatched: () => void) => Promise<unknown>,
+        operation: (onDispatched: () => void, refusalSignal: AbortSignal) => Promise<unknown>,
       ) => {
         // Mirror the real admission: the operation runs under the "locks" and the outer promise
         // resolves once the send is marked, while the result promise carries the receipt wait.
+        admissionCalls += 1;
+        const refusal = new AbortController();
+        if (options.refuseAfter !== undefined && admissionCalls > options.refuseAfter) {
+          // Mirror the real refusal: abort the abandoned operation, then refuse before the commit.
+          const abandoned = operation(() => undefined, refusal.signal);
+          void abandoned.catch(() => undefined);
+          refusal.abort();
+          return { admitted: false as const, reason: "dispatch_not_marked" as const };
+        }
         let mark: () => void = () => undefined;
         const dispatched = new Promise<void>((resolve) => (mark = resolve));
-        const result = operation(mark);
+        const result = operation(mark, refusal.signal);
         void result.catch(() => mark());
         await dispatched;
         return { admitted: true as const, result };
@@ -406,6 +420,61 @@ describe("SessionCollaborationService.dispatchScheduledMessage", () => {
     expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledWith(
       expect.objectContaining({ outcome: "unreachable", errorCode: "runtime_not_ready" }),
     );
+  });
+
+  it("records a refused reconcile frame as unreachable: the message provably never left", async () => {
+    const { snapshot, route } = snapshotFixture();
+    const fixture = makeFixture(route, { refuseAfter: 0 });
+    await expect(fixture.service.dispatchScheduledMessage(snapshot)).resolves.toEqual({
+      outcome: "unreachable",
+      code: "delivery_timeout",
+    });
+    expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
+    expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: "unreachable", errorCode: "delivery_timeout" }),
+    );
+  });
+
+  it("never records a refused business frame as unreachable: its fate is unprovable", async () => {
+    const { snapshot, route } = snapshotFixture();
+    const fixture = makeFixture(route, { refuseAfter: 1 });
+    await expect(fixture.service.dispatchScheduledMessage(snapshot)).resolves.toEqual({
+      outcome: "unknown",
+      code: "delivery_timeout",
+    });
+    expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: "unknown", errorCode: "delivery_timeout" }),
+    );
+  });
+
+  it("stops a send whose admission gave up before it reaches the send boundary", async () => {
+    const { snapshot, route } = snapshotFixture();
+    const fixture = makeFixture(route, { refuseAfter: 1 });
+    const sent = vi.fn();
+    fixture.domain.requestSessionMessageDelivery.mockImplementation(
+      async (
+        _c: string,
+        _i: string,
+        _request: unknown,
+        _onDispatched: () => void,
+        _admission: unknown,
+        signal: AbortSignal,
+      ) => {
+        // Deferred work that reaches the send boundary only after the admission gave up.
+        await Promise.resolve();
+        await Promise.resolve();
+        if (signal.aborted) {
+          throw new RuntimeDomainRequestError("aborted", "The runtime request was aborted before it was sent");
+        }
+        sent();
+        return { type: "session:message:deliver:result" };
+      },
+    );
+    await expect(fixture.service.dispatchScheduledMessage(snapshot)).resolves.toEqual({
+      outcome: "unknown",
+      code: "delivery_timeout",
+    });
+    expect(sent).not.toHaveBeenCalled();
   });
 
   it("answers a negotiated Cloud v1 scheduled dispatch with unsupported origin", async () => {

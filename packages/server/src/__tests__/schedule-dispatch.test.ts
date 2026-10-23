@@ -3,6 +3,7 @@ import {
   RUNTIME_CAPABILITY,
   type SessionMessageDeliveryRequestV3,
   type SessionMessageDeliveryResult,
+  type SessionReconcileResult,
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,7 +17,7 @@ import {
   sessions,
   users,
 } from "../db/schema/index.js";
-import { RuntimeDomainRequestError } from "../runtime/runtime-domain-owner.js";
+import { type RuntimeDispatchAdmission, RuntimeDomainRequestError } from "../runtime/runtime-domain-owner.js";
 import { DatabaseAgentOwnerResolver } from "../services/agents/index.js";
 import { disableImBindingInTransaction } from "../services/im-bindings/disable-im-binding.js";
 import {
@@ -180,6 +181,22 @@ function runtimeSnapshot(agentId: string) {
   };
 }
 
+async function dispatchWithAdmission<T>(
+  operation: () => Promise<T>,
+  admission?: RuntimeDispatchAdmission<T>,
+  onDispatched?: () => void,
+): Promise<T> {
+  const send = (mark?: () => void) => {
+    mark?.();
+    onDispatched?.();
+    return operation();
+  };
+  if (!admission) return send();
+  const admitted = await admission(send);
+  if (!admitted.admitted) throw new RuntimeDomainRequestError("authority_unavailable", "Admission rejected");
+  return admitted.result;
+}
+
 function makeStack(
   seed: Seed,
   options: {
@@ -195,37 +212,52 @@ function makeStack(
   const reconcileFrames: unknown[] = [];
   const domain = {
     requestReconcile: vi.fn(
-      async (_computerId: string, _instanceId: string, request: { requestId: string }, onDispatched?: () => void) => {
-        reconcileFrames.push(request);
-        onDispatched?.();
-        return {
-          type: "session:reconcile:result",
-          requestId: request.requestId,
-          sessionId: seed.targetSessionId,
-          placementGeneration: 1,
-          status: "ready",
-        };
-      },
+      (
+        _computerId: string,
+        _instanceId: string,
+        request: { requestId: string },
+        onDispatched?: () => void,
+        admission?: RuntimeDispatchAdmission<SessionReconcileResult>,
+      ) =>
+        dispatchWithAdmission<SessionReconcileResult>(
+          async () => {
+            reconcileFrames.push(request);
+            return {
+              type: "session:reconcile:result",
+              requestId: request.requestId,
+              sessionId: seed.targetSessionId,
+              placementGeneration: 1,
+              status: "ready",
+            };
+          },
+          admission,
+          onDispatched,
+        ),
     ),
     requestSessionMessageDelivery: vi.fn(
-      async (
+      (
         _computerId: string,
         _instanceId: string,
         request: SessionMessageDeliveryRequestV3,
         onDispatched?: () => void,
-      ) => {
-        deliveryFrames.push(request);
-        onDispatched?.();
-        const result: SessionMessageDeliveryResult = {
-          type: "session:message:deliver:result",
-          requestId: request.requestId,
-          messageId: request.messageId,
-          targetSessionId: request.targetSessionId,
-          placementGeneration: request.placementGeneration,
-          status: "accepted",
-        };
-        return result;
-      },
+        admission?: RuntimeDispatchAdmission<SessionMessageDeliveryResult>,
+      ) =>
+        dispatchWithAdmission(
+          async () => {
+            deliveryFrames.push(request);
+            const result: SessionMessageDeliveryResult = {
+              type: "session:message:deliver:result",
+              requestId: request.requestId,
+              messageId: request.messageId,
+              targetSessionId: request.targetSessionId,
+              placementGeneration: request.placementGeneration,
+              status: "accepted",
+            };
+            return result;
+          },
+          admission,
+          onDispatched,
+        ),
     ),
   };
   const registry = {
@@ -667,11 +699,21 @@ describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => 
     const seed = await seedStack();
     const stack = makeStack(seed);
     stack.domain.requestSessionMessageDelivery.mockImplementation(
-      async (_c: string, _i: string, request: SessionMessageDeliveryRequestV3, onDispatched?: () => void) => {
-        stack.deliveryFrames.push(request);
-        onDispatched?.();
-        throw new RuntimeDomainRequestError("timeout", "confirmation was lost");
-      },
+      (
+        _c: string,
+        _i: string,
+        request: SessionMessageDeliveryRequestV3,
+        onDispatched?: () => void,
+        admission?: RuntimeDispatchAdmission<SessionMessageDeliveryResult>,
+      ) =>
+        dispatchWithAdmission(
+          async () => {
+            stack.deliveryFrames.push(request);
+            throw new RuntimeDomainRequestError("timeout", "confirmation was lost");
+          },
+          admission,
+          onDispatched,
+        ),
     );
     const row = await insertSchedule(seed, {
       schedule: { kind: "every", intervalSeconds: 60, anchorAt: T0.toISOString() },
@@ -703,20 +745,30 @@ describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => 
 
     // Rejected by the receiver: the reason code is preserved.
     stack.domain.requestSessionMessageDelivery.mockImplementationOnce(
-      async (_c: string, _i: string, request: SessionMessageDeliveryRequestV3, onDispatched?: () => void) => {
-        stack.deliveryFrames.push(request);
-        onDispatched?.();
-        const result: SessionMessageDeliveryResult = {
-          type: "session:message:deliver:result",
-          requestId: request.requestId,
-          messageId: request.messageId,
-          targetSessionId: request.targetSessionId,
-          placementGeneration: request.placementGeneration,
-          status: "rejected",
-          reason: "target_mismatch",
-        };
-        return result;
-      },
+      (
+        _c: string,
+        _i: string,
+        request: SessionMessageDeliveryRequestV3,
+        onDispatched?: () => void,
+        admission?: RuntimeDispatchAdmission<SessionMessageDeliveryResult>,
+      ) =>
+        dispatchWithAdmission(
+          async () => {
+            stack.deliveryFrames.push(request);
+            const result: SessionMessageDeliveryResult = {
+              type: "session:message:deliver:result",
+              requestId: request.requestId,
+              messageId: request.messageId,
+              targetSessionId: request.targetSessionId,
+              placementGeneration: request.placementGeneration,
+              status: "rejected",
+              reason: "target_mismatch",
+            };
+            return result;
+          },
+          admission,
+          onDispatched,
+        ),
     );
     currentTime = new Date(T0.getTime() + 60_000);
     const first = await claimOf(stack, row.id);
@@ -728,20 +780,30 @@ describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => 
 
     // Busy receiver: unreachable capacity; the next occurrence still claims and delivers.
     stack.domain.requestSessionMessageDelivery.mockImplementationOnce(
-      async (_c: string, _i: string, request: SessionMessageDeliveryRequestV3, onDispatched?: () => void) => {
-        stack.deliveryFrames.push(request);
-        onDispatched?.();
-        const result: SessionMessageDeliveryResult = {
-          type: "session:message:deliver:result",
-          requestId: request.requestId,
-          messageId: request.messageId,
-          targetSessionId: request.targetSessionId,
-          placementGeneration: request.placementGeneration,
-          status: "rejected",
-          reason: "session_busy",
-        };
-        return result;
-      },
+      (
+        _c: string,
+        _i: string,
+        request: SessionMessageDeliveryRequestV3,
+        onDispatched?: () => void,
+        admission?: RuntimeDispatchAdmission<SessionMessageDeliveryResult>,
+      ) =>
+        dispatchWithAdmission(
+          async () => {
+            stack.deliveryFrames.push(request);
+            const result: SessionMessageDeliveryResult = {
+              type: "session:message:deliver:result",
+              requestId: request.requestId,
+              messageId: request.messageId,
+              targetSessionId: request.targetSessionId,
+              placementGeneration: request.placementGeneration,
+              status: "rejected",
+              reason: "session_busy",
+            };
+            return result;
+          },
+          admission,
+          onDispatched,
+        ),
     );
     currentTime = new Date(T0.getTime() + 120_000);
     const second = await claimOf(stack, row.id);
@@ -799,11 +861,21 @@ describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => 
     // First occurrence: the receipt hangs until the test releases it.
     let releaseFirst: (result: SessionMessageDeliveryResult) => void = () => undefined;
     stack.domain.requestSessionMessageDelivery.mockImplementationOnce(
-      (_c: string, _i: string, request: SessionMessageDeliveryRequestV3, onDispatched?: () => void) => {
-        stack.deliveryFrames.push(request);
-        onDispatched?.();
-        return new Promise<SessionMessageDeliveryResult>((resolve) => (releaseFirst = resolve));
-      },
+      (
+        _c: string,
+        _i: string,
+        request: SessionMessageDeliveryRequestV3,
+        onDispatched?: () => void,
+        admission?: RuntimeDispatchAdmission<SessionMessageDeliveryResult>,
+      ) =>
+        dispatchWithAdmission(
+          () => {
+            stack.deliveryFrames.push(request);
+            return new Promise<SessionMessageDeliveryResult>((resolve) => (releaseFirst = resolve));
+          },
+          admission,
+          onDispatched,
+        ),
     );
     currentTime = new Date(T0.getTime() + 60_000);
     const first = await claimOf(stack, row.id);
@@ -1066,12 +1138,22 @@ describe("management race boundaries (P08, P10, P11)", () => {
     let markSent: () => void = () => undefined;
     const sentMarked = new Promise<void>((resolve) => (markSent = resolve));
     stack.domain.requestSessionMessageDelivery.mockImplementationOnce(
-      (_c: string, _i: string, request: SessionMessageDeliveryRequestV3, onDispatched?: () => void) => {
-        stack.deliveryFrames.push(request);
-        onDispatched?.();
-        markSent();
-        return new Promise<SessionMessageDeliveryResult>((resolve) => (releaseReceipt = resolve));
-      },
+      (
+        _c: string,
+        _i: string,
+        request: SessionMessageDeliveryRequestV3,
+        onDispatched?: () => void,
+        admission?: RuntimeDispatchAdmission<SessionMessageDeliveryResult>,
+      ) =>
+        dispatchWithAdmission(
+          () => {
+            stack.deliveryFrames.push(request);
+            markSent();
+            return new Promise<SessionMessageDeliveryResult>((resolve) => (releaseReceipt = resolve));
+          },
+          admission,
+          onDispatched,
+        ),
     );
     currentTime = new Date(T0.getTime() + 120_000);
     const secondClaim = await claimOf(stack, row.id);

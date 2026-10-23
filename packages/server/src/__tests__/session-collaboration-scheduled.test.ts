@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import type { SessionMessageDeliveryResult } from "@opentag/shared";
+import type { SessionMessageDeliveryResult, SessionReconcileResult } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { RuntimeDomainRequestError } from "../runtime/runtime-domain-owner.js";
+import { type RuntimeDispatchAdmission, RuntimeDomainRequestError } from "../runtime/runtime-domain-owner.js";
 import {
   type ScheduledMessageSnapshot,
   SessionCollaborationService,
@@ -84,6 +84,22 @@ interface Fixture {
   logger: { error: ReturnType<typeof vi.fn> };
 }
 
+async function dispatchWithAdmission<T>(
+  operation: () => Promise<T>,
+  admission?: RuntimeDispatchAdmission<T>,
+  onDispatched?: () => void,
+): Promise<T> {
+  const send = (mark?: () => void) => {
+    mark?.();
+    onDispatched?.();
+    return operation();
+  };
+  if (!admission) return send();
+  const admitted = await admission(send);
+  if (!admitted.admitted) throw new RuntimeDomainRequestError("authority_unavailable", "Admission rejected");
+  return admitted.result;
+}
+
 function makeFixture(
   route: AuthorizedScheduledMessageRoute,
   options: { budgets?: { localMs?: number; cloudMs?: number } } = {},
@@ -112,20 +128,33 @@ function makeFixture(
   };
   const domain = {
     requestReconcile: vi.fn(
-      async (_c: string, _i: string, request: { requestId: string }, onDispatched?: () => void) => {
-        onDispatched?.();
-        return {
-          type: "session:reconcile:result",
-          requestId: request.requestId,
-          sessionId: route.targetSessionId,
-          placementGeneration: 1,
-          status: "ready",
-        };
-      },
+      (
+        _c: string,
+        _i: string,
+        request: { requestId: string },
+        onDispatched?: () => void,
+        admission?: RuntimeDispatchAdmission<SessionReconcileResult>,
+      ) =>
+        dispatchWithAdmission<SessionReconcileResult>(
+          async () => ({
+            type: "session:reconcile:result",
+            requestId: request.requestId,
+            sessionId: route.targetSessionId,
+            placementGeneration: 1,
+            status: "ready",
+          }),
+          admission,
+          onDispatched,
+        ),
     ),
     requestSessionMessageDelivery: vi.fn(
-      async (_c: string, _i: string, request: { requestId: string; messageId: string }, onDispatched?: () => void) => {
-        onDispatched?.();
+      (
+        _c: string,
+        _i: string,
+        request: { requestId: string; messageId: string },
+        onDispatched?: () => void,
+        admission?: RuntimeDispatchAdmission<SessionMessageDeliveryResult>,
+      ) => {
         const result: SessionMessageDeliveryResult = {
           type: "session:message:deliver:result",
           requestId: request.requestId,
@@ -134,7 +163,7 @@ function makeFixture(
           placementGeneration: 1,
           status: "accepted",
         };
-        return result;
+        return dispatchWithAdmission(async () => result, admission, onDispatched);
       },
     ),
   };
@@ -274,7 +303,8 @@ describe("SessionCollaborationService.dispatchScheduledMessage", () => {
     const dispatch = fixture.service.dispatchScheduledMessage(snapshot);
     await vi.advanceTimersByTimeAsync(1_000);
     await expect(dispatch).resolves.toEqual({ outcome: "unreachable", code: "delivery_timeout" });
-    expect(fixture.domain.requestReconcile).not.toHaveBeenCalled();
+    expect(fixture.domain.requestReconcile).toHaveBeenCalledOnce();
+    expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
     expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledWith(
       expect.objectContaining({ outcome: "unreachable", errorCode: "delivery_timeout" }),
     );
@@ -283,11 +313,8 @@ describe("SessionCollaborationService.dispatchScheduledMessage", () => {
   it("converges a hung receipt wait as unknown once the send was marked", async () => {
     const { snapshot, route } = snapshotFixture();
     const fixture = makeFixture(route, { budgets: { localMs: 1_000 } });
-    fixture.domain.requestSessionMessageDelivery.mockImplementation(
-      (_c: string, _i: string, _request: unknown, onDispatched?: () => void) => {
-        onDispatched?.();
-        return new Promise(() => undefined);
-      },
+    fixture.domain.requestSessionMessageDelivery.mockImplementation((_c, _i, _request, onDispatched, admission) =>
+      dispatchWithAdmission(() => new Promise(() => undefined), admission, onDispatched),
     );
     const dispatch = fixture.service.dispatchScheduledMessage(snapshot);
     await vi.advanceTimersByTimeAsync(1_000);
@@ -312,11 +339,8 @@ describe("SessionCollaborationService.dispatchScheduledMessage", () => {
   it("treats a transport failure after the send mark as unknown, never unreachable", async () => {
     const { snapshot, route } = snapshotFixture();
     const fixture = makeFixture(route);
-    fixture.domain.requestSessionMessageDelivery.mockImplementation(
-      (_c: string, _i: string, _request: unknown, onDispatched?: () => void) => {
-        onDispatched?.();
-        return Promise.reject(new Error("socket collapsed"));
-      },
+    fixture.domain.requestSessionMessageDelivery.mockImplementation((_c, _i, _request, onDispatched, admission) =>
+      dispatchWithAdmission(() => Promise.reject(new Error("socket collapsed")), admission, onDispatched),
     );
     const outcome = await fixture.service.dispatchScheduledMessage(snapshot);
     expect(outcome).toEqual({ outcome: "unknown", code: "delivery_uncertain" });
@@ -341,11 +365,12 @@ describe("SessionCollaborationService.dispatchScheduledMessage", () => {
   it("maps a rejected domain timeout during the receipt wait to unknown", async () => {
     const { snapshot, route } = snapshotFixture();
     const fixture = makeFixture(route);
-    fixture.domain.requestSessionMessageDelivery.mockImplementation(
-      (_c: string, _i: string, _request: unknown, onDispatched?: () => void) => {
-        onDispatched?.();
-        return Promise.reject(new RuntimeDomainRequestError("timeout", "confirmation was lost"));
-      },
+    fixture.domain.requestSessionMessageDelivery.mockImplementation((_c, _i, _request, onDispatched, admission) =>
+      dispatchWithAdmission(
+        () => Promise.reject(new RuntimeDomainRequestError("timeout", "confirmation was lost")),
+        admission,
+        onDispatched,
+      ),
     );
     const outcome = await fixture.service.dispatchScheduledMessage(snapshot);
     expect(outcome).toEqual({ outcome: "unknown", code: "delivery_timeout" });

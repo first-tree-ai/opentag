@@ -82,6 +82,14 @@ proof is first inserted. Rebind keeps Agent → target Computer → Session plac
 proof minting keeps its placement lock and existing connection/generation checks. A rebind
 to the current Computer retains its no-op semantics and does not rotate an existing proof.
 
+Local scheduled dispatch prepares its Session CLI proof before entering final dispatch admission.
+Proof preparation commits its own placement transaction first. Before each reconcile or message
+send, admission locks Agent → IM binding → Session → placement → Computer → Schedule and rechecks
+authority, placement, schedule enablement, and the claimed schedule revision. It releases these
+locks when the send is marked, without waiting for the Runtime receipt. The transport boundary
+also checks the current connection and cancellation signal, so delayed preparation cannot bypass
+a committed management change or send after the dispatch deadline.
+
 The staging/development reset uses the same weaker guard during Computer access
 revocation. Its separate final cleanup verification keeps its existing lock.
 Agent creation, placement changes, and credential exchange retain their small

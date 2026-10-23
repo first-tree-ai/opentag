@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
-import type { SessionMessageDeliveryRequestV3, SessionMessageDeliveryResult } from "@opentag/shared";
+import type {
+  SessionMessageDeliveryRequestV3,
+  SessionMessageDeliveryResult,
+  SessionReconcileRequest,
+  SessionReconcileResult,
+} from "@opentag/shared";
 import { eq, sql as sqlTag } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { WebSocket } from "ws";
 import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
 import {
   agentSchedules,
@@ -13,12 +19,19 @@ import {
   sessions,
   users,
 } from "../../db/schema/index.js";
+import { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { PostgresRuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
+import {
+  type RuntimeDispatchAdmission,
+  RuntimeDomainOwner,
+  RuntimeDomainRequestError,
+} from "../../runtime/runtime-domain-owner.js";
 import { PostgresRuntimeExecutionAuthority } from "../../runtime-credentials/execution-authority.js";
 import { RuntimeValidationRunRegistry } from "../../runtime-credentials/validation-runs.js";
 import { DatabaseAgentOwnerResolver } from "../../services/agents/index.js";
 import { ScheduleScheduler, ScheduleService, scheduledMessageId } from "../../services/schedules/index.js";
 import { SessionCollaborationService, SessionService } from "../../services/sessions/index.js";
+import { SessionCliProofService } from "../../services/sessions/session-cli-proof-service.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 /*
@@ -33,6 +46,7 @@ const PUBLIC_URL = "https://opentag.example.com";
 let testDatabase: MigratedTestDatabase;
 let clientA: { database: DatabaseClient; sql: ReturnType<typeof createDatabaseClient>["sql"] };
 let clientB: { database: DatabaseClient; sql: ReturnType<typeof createDatabaseClient>["sql"] };
+const proofClients: ReturnType<typeof createDatabaseClient>[] = [];
 
 beforeAll(async () => {
   testDatabase = await startMigratedTestDatabase();
@@ -49,6 +63,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  await Promise.all(proofClients.splice(0).map((client) => client.sql.end()));
   await clientA.sql.end();
   await clientB.sql.end();
 });
@@ -141,6 +156,22 @@ interface DispatchStack {
   };
 }
 
+async function dispatchWithAdmission<T>(
+  operation: () => Promise<T>,
+  admission?: RuntimeDispatchAdmission<T>,
+  onDispatched?: () => void,
+): Promise<T> {
+  const send = (mark?: () => void) => {
+    mark?.();
+    onDispatched?.();
+    return operation();
+  };
+  if (!admission) return send();
+  const admitted = await admission(send);
+  if (!admitted.admitted) throw new RuntimeDomainRequestError("authority_unavailable", "Admission rejected");
+  return admitted.result;
+}
+
 function makeDispatchStack(
   database: DatabaseClient,
   seedValue: Seed,
@@ -172,33 +203,53 @@ function makeDispatchStack(
     },
     domain: {
       requestReconcile: vi.fn(
-        async (_c: string, _i: string, request: { requestId: string }, onDispatched?: () => void) => {
-          onDispatched?.();
-          return {
-            type: "session:reconcile:result",
-            requestId: request.requestId,
-            sessionId: seedValue.targetSessionId,
-            placementGeneration: 1,
-            status: "ready",
-          };
-        },
+        (
+          _c: string,
+          _i: string,
+          request: { requestId: string },
+          onDispatched?: () => void,
+          admission?: RuntimeDispatchAdmission<SessionReconcileResult>,
+        ) =>
+          dispatchWithAdmission<SessionReconcileResult>(
+            async () => ({
+              type: "session:reconcile:result",
+              requestId: request.requestId,
+              sessionId: seedValue.targetSessionId,
+              placementGeneration: 1,
+              status: "ready",
+            }),
+            admission,
+            onDispatched,
+          ),
       ),
       requestSessionMessageDelivery: vi.fn(
-        (_c: string, _i: string, request: SessionMessageDeliveryRequestV3, onDispatched?: () => void) => {
-          deliveryFrames.push(request);
-          onDispatched?.();
-          for (const mark of sendMarks.splice(0)) mark();
-          const accept = {
-            type: "session:message:deliver:result" as const,
-            requestId: request.requestId,
-            messageId: request.messageId,
-            targetSessionId: request.targetSessionId,
-            placementGeneration: request.placementGeneration,
-            status: "accepted" as const,
-          };
-          if (!stack.holdReceipts) return Promise.resolve(accept);
-          return new Promise<SessionMessageDeliveryResult>((resolve) => pendingReceipts.push(() => resolve(accept)));
-        },
+        (
+          _c: string,
+          _i: string,
+          request: SessionMessageDeliveryRequestV3,
+          onDispatched?: () => void,
+          admission?: RuntimeDispatchAdmission<SessionMessageDeliveryResult>,
+        ) =>
+          dispatchWithAdmission(
+            () => {
+              deliveryFrames.push(request);
+              for (const mark of sendMarks.splice(0)) mark();
+              const accept = {
+                type: "session:message:deliver:result" as const,
+                requestId: request.requestId,
+                messageId: request.messageId,
+                targetSessionId: request.targetSessionId,
+                placementGeneration: request.placementGeneration,
+                status: "accepted" as const,
+              };
+              if (!stack.holdReceipts) return Promise.resolve(accept);
+              return new Promise<SessionMessageDeliveryResult>((resolve) =>
+                pendingReceipts.push(() => resolve(accept)),
+              );
+            },
+            admission,
+            onDispatched,
+          ),
       ),
     },
   };
@@ -219,6 +270,289 @@ function makeDispatchStack(
   });
   return stack;
 }
+
+async function makeRuntimeDispatchStack(
+  seedValue: Seed,
+  options: {
+    afterPreparation?: () => Promise<void>;
+    beforeReconcileResult?: () => Promise<void>;
+    localBudgetMs?: number;
+  } = {},
+) {
+  const proofClient = createDatabaseClient(testDatabase.databaseUrl, {
+    max: 1,
+    statementTimeoutMs: 1_000,
+    queryTimeoutMs: 2_000,
+  });
+  proofClients.push(proofClient);
+  const registry = new ConnectionRegistry();
+  const proofs = new SessionCliProofService(proofClient.database, registry, new Uint8Array(32).fill(7));
+  const frames: Array<SessionReconcileRequest | SessionMessageDeliveryRequestV3> = [];
+  const preparationErrors: unknown[] = [];
+  const domain = new RuntimeDomainOwner(registry, new PostgresRuntimeCustodyStore(clientA.database), {
+    requestTimeoutMs: 2_000,
+    prepareReconcile: async (computerId, instanceId, request) => {
+      try {
+        const prepared = await proofs.prepareReconcile(computerId, instanceId, request);
+        await options.afterPreparation?.();
+        return prepared;
+      } catch (error) {
+        preparationErrors.push(error);
+        throw error;
+      }
+    },
+  });
+  const context = {
+    computerId: seedValue.computerId,
+    installationId: seedValue.installationId,
+    instanceId: seedValue.instanceId,
+    signal: new AbortController().signal,
+  };
+  const responses: Promise<unknown>[] = [];
+  await registry.register(
+    {
+      ...context,
+      clientVersion: "0.1.4",
+      lastHeartbeatAt: Date.now(),
+      negotiatedCapabilities: {
+        "runtime.sessionReconcile": 1,
+        "runtime.sessionCollaboration": 3,
+        "runtime.imCredentialGrant": 2,
+      },
+      socket: {
+        readyState: WebSocket.OPEN,
+        close: vi.fn(),
+        send: (serialized: string, callback: (error?: Error) => void) => {
+          const frame = JSON.parse(serialized) as (typeof frames)[number];
+          frames.push(frame);
+          callback();
+          responses.push(
+            (async () => {
+              if (frame.type === "session:reconcile") await options.beforeReconcileResult?.();
+              return domain.handle(
+                frame.type === "session:reconcile"
+                  ? {
+                      type: "session:reconcile:result",
+                      requestId: frame.requestId,
+                      sessionId: frame.sessionId,
+                      placementGeneration: frame.placementGeneration,
+                      status: "ready",
+                    }
+                  : {
+                      type: "session:message:deliver:result",
+                      requestId: frame.requestId,
+                      messageId: frame.messageId,
+                      targetSessionId: frame.targetSessionId,
+                      placementGeneration: frame.placementGeneration,
+                      status: "accepted",
+                    },
+                context,
+              );
+            })(),
+          );
+        },
+      } as unknown as WebSocket,
+    },
+    async () => undefined,
+  );
+  const sessionsService = new SessionService(clientA.database);
+  const collaboration = new SessionCollaborationService({
+    assembler: { assembleForSession: vi.fn(async () => runtimeSnapshot(seedValue.agentId)) },
+    domain,
+    registry,
+    sessions: sessionsService,
+    logger: { error: vi.fn() },
+    scheduledBudgets: { localMs: options.localBudgetMs },
+  });
+  const scheduler = new ScheduleScheduler({
+    database: clientA.database,
+    dispatch: collaboration,
+    sessions: sessionsService,
+    publicUrl: PUBLIC_URL,
+  });
+  const scheduledFor = new Date();
+  const [row] = await clientA.database
+    .insert(agentSchedules)
+    .values({
+      agentId: seedValue.agentId,
+      targetSessionId: seedValue.targetSessionId,
+      name: "Daily check",
+      prompt: "Check the build.",
+      schedule: { kind: "every", intervalSeconds: 60, anchorAt: scheduledFor.toISOString() },
+      timezone: "UTC",
+      enabled: true,
+      nextTriggerAt: scheduledFor,
+    })
+    .returning();
+  if (!row) throw new Error("schedule fixture missing");
+  const claimed = await scheduler.claimOccurrence(row.id, { allowDispatch: true });
+  if (claimed.kind !== "claimed") throw new Error("expected a claim");
+  return { collaboration, domain, registry, frames, preparationErrors, responses, snapshot: claimed.snapshot };
+}
+
+describe("scheduled reconcile with real Session CLI proof preparation", () => {
+  it("mints the proof before final admission without waiting on its own placement lock", async () => {
+    const stack = await makeRuntimeDispatchStack(await seed(clientA.database));
+    const outcome = await stack.collaboration.dispatchScheduledMessage(stack.snapshot);
+    await Promise.all(stack.responses);
+    expect(stack.preparationErrors).toEqual([]);
+    expect(outcome).toEqual({ outcome: "accepted", code: null });
+    expect(stack.frames).toHaveLength(2);
+    expect(stack.frames[0]).toMatchObject({
+      type: "session:reconcile",
+      sessionCliProof: { token: expect.any(String) },
+    });
+    expect(stack.frames[1]).toMatchObject({ type: "session:message:deliver", messageId: stack.snapshot.messageId });
+    await expect(stack.collaboration.dispatchScheduledMessage(stack.snapshot)).resolves.toEqual({
+      outcome: "unknown",
+      code: null,
+    });
+    expect(stack.frames).toHaveLength(2);
+  }, 10_000);
+
+  it.each(["preparation", "reconcile send"] as const)(
+    "rechecks pause, deletion and revision changes after %s",
+    async (stage) => {
+      for (const mutation of ["pause", "delete", "edit"] as const) {
+        const seedValue = await seed(clientA.database);
+        const management = new ScheduleService({
+          database: clientB.database,
+          owners: new DatabaseAgentOwnerResolver(clientB.database),
+          proofs: { authenticate: () => Promise.reject(new Error("no external proofs")) },
+          publicUrl: PUBLIC_URL,
+        });
+        const mutate = async () => {
+          const scope = {
+            accountId: seedValue.accountId,
+            agentId: seedValue.agentId,
+            sessionId: seedValue.targetSessionId,
+            sessionKind: "channel" as const,
+          };
+          if (mutation === "pause") await management.pauseForAgent(scope, stack.snapshot.scheduleId, 1);
+          else if (mutation === "delete") await management.deleteForAgent(scope, stack.snapshot.scheduleId, 1);
+          else
+            await management.updateForAgent(scope, stack.snapshot.scheduleId, {
+              expectedRevision: 1,
+              prompt: "New prompt",
+            });
+        };
+        const stack = await makeRuntimeDispatchStack(seedValue, {
+          ...(stage === "preparation" ? { afterPreparation: mutate } : { beforeReconcileResult: mutate }),
+        });
+        const outcome = await stack.collaboration.dispatchScheduledMessage(stack.snapshot);
+        await Promise.all(stack.responses);
+        expect(stack.preparationErrors).toEqual([]);
+        expect(outcome).toEqual({
+          outcome: "rejected",
+          code:
+            mutation === "pause"
+              ? "schedule_disabled"
+              : mutation === "delete"
+                ? "schedule_deleted"
+                : "schedule_changed",
+        });
+        expect(stack.frames.map((frame) => frame.type)).toEqual(stage === "preparation" ? [] : ["session:reconcile"]);
+        const [message] = await clientA.database
+          .select()
+          .from(sessionMessages)
+          .where(eq(sessionMessages.id, stack.snapshot.messageId));
+        expect(message).toMatchObject({ attemptCount: 1, lastOutcome: "rejected", lastErrorCode: outcome.code });
+      }
+    },
+    15_000,
+  );
+
+  it.each(["placement", "agent", "binding"] as const)(
+    "rechecks %s authority after proof preparation",
+    async (mutation) => {
+      const seedValue = await seed(clientA.database);
+      const stack = await makeRuntimeDispatchStack(seedValue, {
+        afterPreparation: async () => {
+          if (mutation === "placement")
+            await clientB.database
+              .update(sessionPlacements)
+              .set({ generation: 2 })
+              .where(eq(sessionPlacements.sessionId, seedValue.targetSessionId));
+          else if (mutation === "agent")
+            await clientB.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, seedValue.agentId));
+          else
+            await clientB.database
+              .update(imBindings)
+              .set({ status: "disabled", disabledAt: new Date(), encryptedCredential: null })
+              .where(eq(imBindings.id, seedValue.bindingId));
+        },
+      });
+      await expect(stack.collaboration.dispatchScheduledMessage(stack.snapshot)).resolves.toEqual({
+        outcome: mutation === "binding" ? "rejected" : "unreachable",
+        code:
+          mutation === "placement"
+            ? "authority_unavailable"
+            : mutation === "agent"
+              ? "agent_suspended"
+              : "binding_invalid",
+      });
+      expect(stack.preparationErrors).toEqual([]);
+      expect(stack.frames).toEqual([]);
+    },
+    10_000,
+  );
+
+  it.each(["preparation", "reconcile send"] as const)(
+    "refuses a disconnected runtime after %s",
+    async (stage) => {
+      const seedValue = await seed(clientA.database);
+      const disconnect = async () => {
+        await stack.registry.closeComputer(seedValue.computerId);
+      };
+      const stack = await makeRuntimeDispatchStack(seedValue, {
+        ...(stage === "preparation" ? { afterPreparation: disconnect } : { beforeReconcileResult: disconnect }),
+      });
+      await expect(stack.collaboration.dispatchScheduledMessage(stack.snapshot)).resolves.toEqual({
+        outcome: "unreachable",
+        code: "runtime_not_ready",
+      });
+      await Promise.all(stack.responses);
+      expect(stack.preparationErrors).toEqual([]);
+      expect(stack.frames.map((frame) => frame.type)).toEqual(stage === "preparation" ? [] : ["session:reconcile"]);
+    },
+    10_000,
+  );
+
+  it.each(["cancel", "deadline"] as const)(
+    "never sends late when %s interrupts proof preparation",
+    async (reason) => {
+      let markPrepared: () => void = () => undefined;
+      const prepared = new Promise<void>((resolve) => {
+        markPrepared = resolve;
+      });
+      let releasePreparation: () => void = () => undefined;
+      const release = new Promise<void>((resolve) => {
+        releasePreparation = resolve;
+      });
+      const stack = await makeRuntimeDispatchStack(await seed(clientA.database), {
+        afterPreparation: async () => {
+          markPrepared();
+          await release;
+        },
+        localBudgetMs: reason === "deadline" ? 500 : undefined,
+      });
+      const reconcile = vi.spyOn(stack.domain, "requestReconcile");
+      const controller = new AbortController();
+      const dispatching = stack.collaboration.dispatchScheduledMessage(stack.snapshot, controller.signal);
+      try {
+        await prepared;
+        if (reason === "cancel") controller.abort();
+        await expect(dispatching).resolves.toEqual({ outcome: "unreachable", code: "delivery_timeout" });
+      } finally {
+        releasePreparation();
+      }
+      await expect(reconcile.mock.results[0]?.value).rejects.toMatchObject({ name: "ScheduledDispatchAbortError" });
+      expect(stack.frames).toEqual([]);
+      expect(stack.preparationErrors).toEqual([]);
+    },
+    10_000,
+  );
+});
 
 describe("schedule claim against the real database clock", () => {
   it("samples the production database clock inside the locked claim (D03 production half)", async () => {
@@ -382,12 +716,13 @@ describe("dispatch admission races against management mutations", () => {
     const pausing = management.pauseForAgent(scope, row.id, 1).then(() => {
       pauseSettled = true;
     });
-    // The mutation waits through the send marking only: settle the receipt, then both finish.
-    expect(pauseSettled).toBe(false);
-    stack.releaseReceipts();
+    try {
+      await vi.waitFor(() => expect(pauseSettled).toBe(true), { timeout: 2_000 });
+    } finally {
+      stack.releaseReceipts();
+    }
     await expect(dispatching).resolves.toEqual({ outcome: "accepted", code: null });
     await pausing;
-    expect(pauseSettled).toBe(true);
     expect(stack.deliveryFrames).toHaveLength(1);
     const [message] = await clientA.database
       .select()

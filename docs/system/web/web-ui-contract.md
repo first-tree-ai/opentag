@@ -255,6 +255,10 @@ owns this rule for both standalone and grouped switches; feature pages do not ch
 uses the shared slate focus token rather than the checked-state brand color. Kumo continues to own their size, shape,
 motion, and interaction behavior.
 
+Page navigation replaces the content as soon as the route is ready, without fades, outgoing page snapshots, or
+artificial animation delays, including navigation between workspace and Agent pages. The shell preserves
+per-page scroll position and restores keyboard focus to the remembered link or the new page heading.
+
 Motion must communicate a state change or spatial relationship. Prefer transform and opacity, avoid perpetual animation
 outside an active progress state, and provide a reduced-motion result that communicates the same information without
 movement.

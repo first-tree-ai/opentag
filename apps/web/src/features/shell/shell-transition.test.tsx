@@ -1,6 +1,6 @@
 /**
  * The content-track transition: which element takes focus after a route change, how a remembered
- * visit is restored once its page has rendered, and how the outgoing snapshot is animated away.
+ * visit is restored once its page has rendered, and immediate page changes without visual overlap.
  * A minimal route tree stands in for the application's so each page can shape its own DOM.
  */
 
@@ -21,26 +21,22 @@ import { ShellMain } from "./shell-main.js";
 import { ShellMemoryProvider } from "./shell-memory.js";
 import { useShellTransition } from "./shell-transition.js";
 
-function scopeFor(pathname: string): "agent" | "workspace" {
-  return pathname.startsWith("/agents/") ? "agent" : "workspace";
-}
-
 function Layout() {
   // As the application shell does: the pathname follows the committed matches, not the pending URL.
   const pathname = useRouterState({ select: (state) => state.resolvedLocation?.pathname ?? state.location.pathname });
   return (
     <ShellMemoryProvider>
-      <ShellMain pathname={pathname} scope={scopeFor(pathname)}>
+      <ShellMain pathname={pathname}>
         <Outlet />
       </ShellMain>
     </ShellMemoryProvider>
   );
 }
 
-/** The hook without a mounted track: nothing to capture, restore, or animate. */
+/** The hook without a mounted track: nothing to capture or restore. */
 function BareLayout() {
   const pathname = useRouterState({ select: (state) => state.resolvedLocation?.pathname ?? state.location.pathname });
-  useShellTransition({ main: useRef(null), outgoing: useRef(null), pathname, scope: scopeFor(pathname) });
+  useShellTransition({ main: useRef(null), pathname });
   return <Outlet />;
 }
 
@@ -127,35 +123,6 @@ function content(): HTMLElement {
   const node = document.querySelector<HTMLElement>('[data-ui="content"]');
   if (!node) throw new Error("Missing content track");
   return node;
-}
-
-function outgoing(): HTMLElement {
-  const node = document.querySelector<HTMLElement>('main[data-ui="content"] + div');
-  if (!node) throw new Error("Missing outgoing snapshot host");
-  return node;
-}
-
-interface FakeAnimation {
-  cancel: ReturnType<typeof vi.fn>;
-  onfinish: (() => void) | null;
-}
-
-function installAnimate() {
-  const animations: FakeAnimation[] = [];
-  const animate = vi.fn<(keyframes: Keyframe[], options?: KeyframeAnimationOptions) => Animation>(() => {
-    const animation: FakeAnimation = { cancel: vi.fn(), onfinish: null };
-    animations.push(animation);
-    return animation as unknown as Animation;
-  });
-  Object.defineProperty(Element.prototype, "animate", { configurable: true, value: animate });
-  return {
-    animate,
-    animations,
-    restore: () => {
-      // @ts-expect-error jsdom has no Web Animations API; the polyfill above is the only definition.
-      delete Element.prototype.animate;
-    },
-  };
 }
 
 afterEach(() => {
@@ -304,83 +271,34 @@ describe("useShellTransition focus restoration", () => {
   });
 });
 
-describe("useShellTransition animation", () => {
-  it("fades the incoming frame and the outgoing snapshot, with cross-scope timing", async () => {
-    const { animate, animations, restore } = installAnimate();
-    try {
-      const { router, view } = await renderShell();
-      const homeHeading = screen.getByRole("heading", { name: "Home" });
-      expect(homeHeading.closest('[data-ui="content-page-frame"]')).toBeTruthy();
-
-      await navigate(router, "/agents/a1");
-      await screen.findByRole("heading", { name: "Agent" });
-
-      // The outgoing page is a short-lived clone that keeps no IDs or test landmarks.
-      const snapshot = outgoing().firstElementChild as HTMLElement | null;
-      expect(snapshot).not.toBeNull();
-      expect(snapshot?.textContent).toContain("Home");
-      expect(snapshot?.hasAttribute("data-ui")).toBe(false);
-      expect(snapshot?.querySelector("[data-ui], [id]")).toBeNull();
-      expect(snapshot?.style.overflow).toBe("hidden");
-
-      expect(animate).toHaveBeenCalledTimes(2);
-      expect(animate.mock.calls[0]?.[1]).toEqual({
-        duration: 150,
-        delay: 90,
-        fill: "backwards",
-        easing: "cubic-bezier(0.2, 0, 0, 1)",
-      });
-      expect(animate.mock.calls[1]?.[1]).toEqual({ duration: 80, fill: "forwards" });
-      const exit = animations[1];
-      expect(exit?.onfinish).toEqual(expect.any(Function));
-      exit?.onfinish?.();
-      expect(outgoing().childElementCount).toBe(0);
-
-      await navigate(router, "/");
-      await screen.findByRole("heading", { name: "Home" });
-      // Leaving the Agent scope: the earlier animations are cancelled before the next pair starts.
-      expect(animations[0]?.cancel).toHaveBeenCalled();
-      expect(animate.mock.calls[2]?.[1]).toMatchObject({ duration: 150, delay: 60 });
-
-      await navigate(router, "/other");
-      await screen.findByText("No heading here");
-      // Same scope: shorter and immediate.
-      expect(animate.mock.calls[4]?.[1]).toMatchObject({ duration: 120, delay: 0 });
-
-      view.unmount();
-      for (const animation of animations.slice(4)) expect(animation.cancel).toHaveBeenCalled();
-    } finally {
-      restore();
-    }
-  });
-
-  it("skips the snapshot and shortens the fade under reduced motion", async () => {
-    const { animate, restore } = installAnimate();
-    const matchMedia = vi.spyOn(window, "matchMedia").mockImplementation(
-      (query: string) =>
-        ({
-          matches: query === "(prefers-reduced-motion: reduce)",
-          media: query,
-          onchange: null,
-          addEventListener: () => undefined,
-          removeEventListener: () => undefined,
-          addListener: () => undefined,
-          removeListener: () => undefined,
-          dispatchEvent: () => false,
-        }) as MediaQueryList,
+describe("useShellTransition navigation", () => {
+  it.each([false, true])("switches pages without fades or snapshots (reduced motion: %s)", async (reduced) => {
+    const animate = vi.fn(() => ({ cancel: vi.fn(), onfinish: null }));
+    Object.defineProperty(Element.prototype, "animate", { configurable: true, value: animate });
+    vi.spyOn(window, "matchMedia").mockImplementation(
+      (query: string) => ({ matches: reduced, media: query }) as MediaQueryList,
     );
     try {
       const { router } = await renderShell();
+      content().scrollTop = 240;
 
       await navigate(router, "/agents/a1");
-      await screen.findByRole("heading", { name: "Agent" });
+      expect(screen.getByRole("heading", { name: "Agent" })).toBeTruthy();
+      expect(document.querySelector("main")?.parentElement?.textContent).not.toContain("Home");
+      expect(content().scrollTop).toBe(0);
 
-      expect(matchMedia).toHaveBeenCalledWith("(prefers-reduced-motion: reduce)");
-      expect(outgoing().childElementCount).toBe(0);
-      expect(animate).toHaveBeenCalledTimes(1);
-      expect(animate.mock.calls[0]?.[1]).toEqual({ duration: 0 });
+      await navigate(router, "/");
+      expect(screen.getByRole("heading", { name: "Home" })).toBeTruthy();
+      expect(content().scrollTop).toBe(240);
+
+      await navigate(router, "/other");
+      expect(screen.getByText("No heading here")).toBeTruthy();
+      expect(document.querySelector("main")?.parentElement?.textContent).not.toContain("Home");
+      expect(content().scrollTop).toBe(0);
+      expect(animate).not.toHaveBeenCalled();
     } finally {
-      restore();
+      // @ts-expect-error jsdom has no Web Animations API; remove the test stub.
+      delete Element.prototype.animate;
     }
   });
 });

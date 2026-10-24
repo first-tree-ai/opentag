@@ -2,25 +2,12 @@ import { useRouter } from "@tanstack/react-router";
 import { type RefObject, useEffect, useLayoutEffect, useRef } from "react";
 import { useShellMemory } from "./shell-memory.js";
 
-type Scope = "agent" | "workspace";
-
-export function useShellTransition({
-  main,
-  outgoing,
-  pathname,
-  scope,
-}: {
-  main: RefObject<HTMLElement | null>;
-  outgoing: RefObject<HTMLDivElement | null>;
-  pathname: string;
-  scope: Scope;
-}) {
+export function useShellTransition({ main, pathname }: { main: RefObject<HTMLElement | null>; pathname: string }) {
   const router = useRouter();
   const memory = useShellMemory();
-  const previous = useRef({ pathname, scope });
+  const previous = useRef(pathname);
   const keyboard = useRef(false);
   const pendingNavigation = useRef<{ from: string } | undefined>(undefined);
-  const animations = useRef<Animation[]>([]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -43,7 +30,7 @@ export function useShellTransition({
         const node = main.current;
         if (!node) return;
         if (!event.pathChanged) {
-          const path = previous.current.pathname;
+          const path = previous.current;
           if (keyboard.current && pendingNavigation.current?.from === path && event.toLocation.pathname === path) {
             restorePage(node, memory?.pages.get(path), true);
           }
@@ -51,32 +38,20 @@ export function useShellTransition({
           return;
         }
         const visit = captureVisit(node);
-        pendingNavigation.current = { from: previous.current.pathname };
-        memory?.pages.set(previous.current.pathname, visit);
-        captureSnapshot(node, outgoing.current);
+        pendingNavigation.current = { from: previous.current };
+        memory?.pages.set(previous.current, visit);
       }),
-    [router, main, outgoing, memory],
+    [router, main, memory],
   );
 
   useLayoutEffect(() => {
-    if (previous.current.pathname === pathname) return;
-    const crossScope = previous.current.scope !== scope;
-    previous.current = { pathname, scope };
+    if (previous.current === pathname) return;
+    previous.current = pathname;
     pendingNavigation.current = undefined;
-    for (const animation of animations.current) animation.cancel();
-    animations.current = [];
     const node = main.current;
     if (!node) return;
-    animations.current = animateContent(node, outgoing.current, crossScope, scope);
     return restorePage(node, memory?.pages.get(pathname), keyboard.current);
-  }, [pathname, scope, main, outgoing, memory]);
-
-  useEffect(
-    () => () => {
-      for (const animation of animations.current) animation.cancel();
-    },
-    [],
-  );
+  }, [pathname, main, memory]);
 }
 
 function restorePage(
@@ -132,44 +107,4 @@ function captureVisit(node: HTMLElement) {
       ? (active.getAttribute("href") ?? undefined)
       : undefined;
   return { scrollTop: node.scrollTop, focusHref };
-}
-
-function captureSnapshot(node: HTMLElement, outgoing: HTMLDivElement | null) {
-  if (!node.animate || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  // A short-lived visual snapshot avoids mounting a second route and duplicating its queries.
-  // Its parent is inert and hidden from assistive technology; no IDs or test landmarks survive.
-  const clone = node.cloneNode(true) as HTMLElement;
-  for (const element of [clone, ...clone.querySelectorAll("*")]) {
-    element.removeAttribute("id");
-    element.removeAttribute("data-ui");
-  }
-  clone.style.height = "100%";
-  clone.style.overflow = "hidden";
-  outgoing?.replaceChildren(clone);
-  clone.scrollTop = node.scrollTop;
-}
-
-function animateContent(node: HTMLElement, outgoing: HTMLDivElement | null, crossScope: boolean, scope: Scope) {
-  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const frame = node.firstElementChild as HTMLElement | null;
-  const animations: Animation[] = [];
-  if (frame?.animate)
-    animations.push(frame.animate([{ opacity: 0 }, { opacity: 1 }], contentTiming(reduced, crossScope, scope)));
-  const snapshot = outgoing?.firstElementChild as HTMLElement | null;
-  if (snapshot?.animate) {
-    const exit = snapshot.animate([{ opacity: 1 }, { opacity: 0 }], { duration: reduced ? 0 : 80, fill: "forwards" });
-    exit.onfinish = () => snapshot.remove();
-    animations.push(exit);
-  } else outgoing?.replaceChildren();
-  return animations;
-}
-
-function contentTiming(reduced: boolean, crossScope: boolean, scope: Scope): KeyframeAnimationOptions {
-  if (reduced) return { duration: 0 };
-  return {
-    duration: crossScope ? 150 : 120,
-    delay: crossScope ? (scope === "agent" ? 90 : 60) : 0,
-    fill: "backwards",
-    easing: "cubic-bezier(0.2, 0, 0, 1)",
-  };
 }

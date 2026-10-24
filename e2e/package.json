@@ -10,8 +10,8 @@
     "test:e2e:smoke": "playwright test --project=smoke --workers=4"
   },
   "devDependencies": {
-    "@axe-core/playwright": "4.13.0",
+    "@axe-core/playwright": "4.14.0",
     "@opentag/shared": "workspace:*",
-    "@playwright/test": "1.63.0"
+    "@playwright/test": "1.64.1"
   }
 }

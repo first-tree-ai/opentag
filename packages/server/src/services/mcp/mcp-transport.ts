@@ -21,6 +21,9 @@ import type { McpFetchResponse, McpOutboundFetcher } from "./mcp-url-policy.js";
  * a Server's supported versions, capabilities, identity, and instructions in one round trip.
  *
  * A response is either a single JSON object or a request-scoped SSE stream; both are supported.
+ * Anything a reader cannot take as an answer to the request — an empty body, an HTML page, a JSON
+ * value that is not an object, a stream that never carried the response — is a protocol failure,
+ * never an empty result.
  */
 
 export interface McpJsonRpcRequest {
@@ -138,6 +141,14 @@ export class McpTransport {
   readonly #clientInfo: { name: string; version: string };
   readonly #fetcher: McpOutboundFetcher;
   readonly #protocolVersion: string;
+  /**
+   * The legacy revision this transport's `initialize` negotiated, if any.
+   *
+   * Resolved when the handshake returns, which is before any notification can be sent, so
+   * `notifyLegacy` speaks the same revision as the request that follows it without either caller
+   * having to resolve it early and pass it.
+   */
+  #negotiatedLegacyVersion: string | undefined;
 
   constructor(options: McpTransportOptions) {
     this.#clientInfo = options.clientInfo ?? { name: "opentag", version: "1" };
@@ -273,6 +284,14 @@ export class McpTransport {
     });
     const result = await this.#interpret(accountId, url, "initialize", id, response);
     const sessionId = response.headers.get("mcp-session-id") ?? undefined;
+    /*
+     * Only a version from the legacy list may be spoken on the legacy path: the supported set
+     * includes the modern revision, and stamping it on a handshake-based session is the confusion
+     * `#probeLegacy` and `#callLegacy` guard against.
+     */
+    const named = isRecord(result) ? result.protocolVersion : undefined;
+    this.#negotiatedLegacyVersion =
+      typeof named === "string" && MCP_LEGACY_PROTOCOL_VERSIONS.includes(named as never) ? named : undefined;
     return { ...(sessionId ? { sessionId } : {}), result };
   }
 
@@ -306,9 +325,9 @@ export class McpTransport {
         ...authHeaders,
         accept: MCP_ACCEPT_HEADER,
         "content-type": "application/json",
-        /* The notification speaks the revision the handshake negotiated; `callLegacy` and
-         * `legacyVersionHeaders` hold the why, including the `2025-03-26` omission. */
-        ...legacyVersionHeaders(options.negotiatedVersion),
+        /* The notification speaks the revision the handshake negotiated, resolved by `initialize`:
+         * `callLegacy` and `legacyVersionHeaders` hold the why, including the `2025-03-26` omission. */
+        ...legacyVersionHeaders(options.negotiatedVersion ?? this.#negotiatedLegacyVersion),
         ...(sessionId ? { "mcp-session-id": sessionId } : {}),
         ...(options.headers ?? {}),
       },
@@ -326,7 +345,16 @@ export class McpTransport {
     response: McpFetchResponse,
   ): Promise<unknown> {
     const contentType = response.headers.get("content-type") ?? "";
-    if (response.status === NOTIFICATION_STATUS || response.status === NO_CONTENT_STATUS) return undefined;
+    if (response.status === NOTIFICATION_STATUS || response.status === NO_CONTENT_STATUS) {
+      /*
+       * `202` and `204` mean "acknowledged, nothing to answer", which the protocol defines for a
+       * notification only. A request method answered this way delivered no result at all: `tools/call`,
+       * `tools/list`, and `initialize` each require one, and accepting the acknowledgement reported a
+       * Server that answered nothing as a success.
+       */
+      if (isNotificationMethod(method)) return undefined;
+      throw invalidResponse(method, response.status, "an acknowledgement instead of a response");
+    }
 
     if (contentType.includes("text/event-stream")) {
       return interpretSseResponse(response, method, parseSseResponse(response.text, id));
@@ -340,24 +368,25 @@ export class McpTransport {
       );
     }
     const parsed = tryParseJson(response.text);
-    if (parsed === undefined) {
-      if (response.status >= 200 && response.status < 300) return undefined;
-      throw upstreamFailure(response.status);
+    /*
+     * A 2xx response that carries no JSON at all — an empty body, an HTML error page from a CDN or
+     * a proxy, a truncated object — is a broken answer, not an empty result. Returning `undefined`
+     * here made a probe report `probeState: "succeeded"` with zero tools and no error, and let a
+     * gateway `tools/call` answer with a JSON-RPC envelope carrying no `result` at all, which
+     * strands the client waiting for one. A JSON value that is not an object (an array, a string, a
+     * number, `null`) is neither a JSON-RPC response nor a bare result object, so it fails the same
+     * way.
+     */
+    if (parsed === undefined || !isRecord(parsed)) {
+      throw unreadableBody(response, method, parsed === undefined);
     }
-    const { payload, error } = splitEnvelope(parsed);
+    const split = splitEnvelope(parsed);
     /*
      * A JSON-RPC error body is preserved as-is: it is how a modern Server reports an unsupported
-     * protocol version, and the caller branches on its code to retry rather than downgrade.
+     * protocol version, and the caller branches on its code to retry rather than downgrade. A member
+     * that cannot be read is a protocol failure instead, so no caller has to defend against a body.
      */
-    if (error) {
-      throw new McpTransportError(
-        MCP_ERROR_CODES.UPSTREAM_ERROR,
-        boundedMcpSummary(error.message || "The MCP Server returned a JSON-RPC error"),
-        response.status,
-        error,
-        { method },
-      );
-    }
+    throwErrorMember(split.member, response.status, method);
     /*
      * A non-2xx status with a JSON body that is *not* a JSON-RPC envelope is a failure, not a result.
      * Without this, a gateway answering `401 {"message":"Unauthorized"}` or `500 {"detail":"…"}`
@@ -366,32 +395,69 @@ export class McpTransport {
      * to be evidence that the credential and the Server agree, so reporting a rejected credential as
      * a healthy empty Server is the one answer it must never give.
      */
-    if (response.status < 200 || response.status >= 300) throw upstreamFailure(response.status);
+    if (!isSuccess(response.status)) throw upstreamFailure(response.status);
     void accountId;
     void url;
-    return unwrap(payload, response.status);
+    return unwrap(split.payload, response.status, method);
   }
 }
 
-function unwrap(payload: McpJsonRpcResult, status: number): unknown {
-  if (payload.error !== undefined) {
-    throw new McpTransportError(
-      MCP_ERROR_CODES.UPSTREAM_ERROR,
-      boundedMcpSummary(payload.error.message || "The MCP Server returned a JSON-RPC error"),
-      status,
-      payload.error,
-      { status },
-    );
+/**
+ * The result of a payload that already passed {@link throwErrorMember}.
+ *
+ * An envelope with neither `result` nor `error` is not an answer: an absent `result` key is not the
+ * same as a present one — `"result": null` is a legitimate answer, and a body that omits the key is
+ * indistinguishable from a truncated one.
+ */
+function unwrap(payload: McpJsonRpcResult, status: number, method: string): unknown {
+  if (!("result" in payload)) {
+    throw invalidResponse(method, status, "a response that is not a JSON-RPC response");
   }
   return payload.result;
+}
+
+function isSuccess(status: number): boolean {
+  return status >= 200 && status < 300;
+}
+
+function isBlank(text: string): boolean {
+  return text.trim().length === 0;
+}
+
+/**
+ * The failure for a body that is neither a JSON-RPC response nor a bare result object. A non-2xx
+ * status keeps the plain upstream failure it already had; every other case is a protocol failure
+ * that names the shape, because the body itself may carry an upstream stack trace or a credential.
+ */
+function unreadableBody(response: McpFetchResponse, method: string, unparsed: boolean): McpTransportError {
+  if (!isSuccess(response.status)) return upstreamFailure(response.status);
+  if (unparsed && isBlank(response.text)) return invalidResponse(method, response.status, "an empty response");
+  return invalidResponse(
+    method,
+    response.status,
+    unparsed ? "a response that is not valid JSON" : "a response that is not a JSON-RPC response",
+  );
+}
+
+/**
+ * A body the client cannot read as an answer. The HTTP status is the real one, so a caller that
+ * classifies failures still reports what the peer sent rather than inventing a status; the reason
+ * is a fixed phrase, so no upstream text — an HTML error page, a stack trace — reaches a message.
+ */
+function invalidResponse(method: string, status: number, reason: string): McpTransportError {
+  return new McpTransportError(MCP_ERROR_CODES.UPSTREAM_ERROR, `The MCP Server returned ${reason}`, status, undefined, {
+    method,
+    status,
+  });
 }
 
 /**
  * Interpret a `text/event-stream` response.
  *
- * Extracted from `#interpret` so the two rules it shares with the JSON branch stay readable there:
- * a JSON-RPC error is preserved so the caller can branch on its code, and any other non-2xx status
- * is a failure rather than a result — otherwise a rejected credential reads as a healthy empty Server.
+ * Extracted from `#interpret` so the three rules it shares with the JSON branch stay readable
+ * there: a JSON-RPC error is preserved so the caller can branch on its code, a stream that carried
+ * no answer to the request is a protocol failure, and any other non-2xx status is a failure rather
+ * than a result — otherwise a rejected credential reads as a healthy empty Server.
  */
 function interpretSseResponse(
   response: McpFetchResponse,
@@ -399,21 +465,27 @@ function interpretSseResponse(
   payload: McpJsonRpcResult | undefined,
 ): unknown {
   if (payload === undefined) {
-    // A stream that ended without a result is only a success if the status said so.
-    if (response.status >= 200 && response.status < 300) return undefined;
-    throw upstreamFailure(response.status);
+    /*
+     * A stream that ended without an answer to this request is a broken answer at any status. A
+     * request-scoped stream exists to carry the response for the request that opened it, so
+     * accepting an empty stream — no frames, only notifications, or only other ids — reported a
+     * Server that answered nothing as a successful empty result.
+     */
+    if (!isSuccess(response.status)) throw upstreamFailure(response.status);
+    throw invalidResponse(method, response.status, "a response stream with no answer to this request");
   }
-  if (payload.error !== undefined) {
-    throw new McpTransportError(
-      MCP_ERROR_CODES.UPSTREAM_ERROR,
-      boundedMcpSummary(payload.error.message || "The MCP Server returned a JSON-RPC error"),
-      response.status,
-      payload.error,
-      { method },
-    );
-  }
-  if (response.status < 200 || response.status >= 300) throw upstreamFailure(response.status);
-  return unwrap(payload, response.status);
+  /*
+   * Validate the error member before reading it. A stream carrying `"error": null` used to throw a
+   * raw `TypeError` out of the transport instead of a controlled failure.
+   */
+  throwErrorMember(errorMemberOf(payload), response.status, method);
+  if (!isSuccess(response.status)) throw upstreamFailure(response.status);
+  return unwrap(payload, response.status, method);
+}
+
+/** The protocol defines any method under `notifications/` as needing no response at all. */
+function isNotificationMethod(method: string): boolean {
+  return method.startsWith("notifications/");
 }
 
 function upstreamFailure(status: number): McpTransportError {
@@ -443,23 +515,63 @@ function tryParseJson(text: string): unknown {
 
 function rpcErrorOf(parsed: unknown): McpJsonRpcError | undefined {
   if (!isRecord(parsed)) return undefined;
-  return splitEnvelope(parsed).error;
+  const { member } = splitEnvelope(parsed);
+  return member.kind === "error" ? member.error : undefined;
+}
+
+/** How a response's `error` member reads: absent, a usable error, or a present but unreadable one. */
+type ErrorMember = { kind: "absent" } | { kind: "error"; error: McpJsonRpcError } | { kind: "malformed" };
+
+/**
+ * Read a response's `error` member.
+ *
+ * A present `error` must be an object with a numeric `code` and, when it carries one, a string
+ * `message`. The body used to be trusted member by member, which threw a raw `TypeError` out of
+ * `.message` for `"error": null` and silently rewrote a `code` of the wrong type to `-32602` — a
+ * verdict the downgrade rules then read as the Server's own. An omitted `message` keeps the fixed
+ * summary, because nothing branches on it; `code` is what a caller branches on, so it is required.
+ */
+function errorMemberOf(payload: McpJsonRpcResult): ErrorMember {
+  if (!("error" in payload)) return { kind: "absent" };
+  const raw: unknown = payload.error;
+  if (!isRecord(raw)) return { kind: "malformed" };
+  const { code, message, data } = raw;
+  if (typeof code !== "number") return { kind: "malformed" };
+  if (message !== undefined && typeof message !== "string") return { kind: "malformed" };
+  return { kind: "error", error: { code, message: message ?? "", data } };
+}
+
+/**
+ * Throw for an `error` member. A usable error keeps its own code and message so a caller can branch
+ * on it — that is how a modern Server reports an unsupported protocol version — while a malformed
+ * one is a protocol failure with a fixed message, never a `TypeError` and never a result.
+ */
+function throwErrorMember(member: ErrorMember, status: number, method: string): void {
+  if (member.kind === "malformed") throw invalidResponse(method, status, "a malformed JSON-RPC error");
+  if (member.kind === "absent") return;
+  throw new McpTransportError(
+    MCP_ERROR_CODES.UPSTREAM_ERROR,
+    boundedMcpSummary(member.error.message || "The MCP Server returned a JSON-RPC error"),
+    status,
+    member.error,
+    { method },
+  );
+}
+
+/** A response body read into the shape the interpretation rules share. */
+interface McpSplitEnvelope {
+  payload: McpJsonRpcResult;
+  member: ErrorMember;
 }
 
 /** Accept both a bare result object and a JSON-RPC envelope; the specification allows either shape. */
-function splitEnvelope(parsed: unknown): { payload: McpJsonRpcResult; error?: McpJsonRpcError } {
-  if (!isRecord(parsed)) return { payload: { result: parsed } };
+function splitEnvelope(parsed: unknown): McpSplitEnvelope {
+  if (!isRecord(parsed)) return { payload: { result: parsed }, member: { kind: "absent" } };
   if (!("jsonrpc" in parsed) && !("result" in parsed) && !("error" in parsed)) {
-    return { payload: { result: parsed } };
+    return { payload: { result: parsed }, member: { kind: "absent" } };
   }
-  const error = isRecord(parsed.error)
-    ? {
-        code: typeof parsed.error.code === "number" ? parsed.error.code : MCP_RPC_INVALID_PARAMS,
-        message: typeof parsed.error.message === "string" ? parsed.error.message : "",
-        data: parsed.error.data,
-      }
-    : undefined;
-  return { payload: parsed as McpJsonRpcResult, ...(error ? { error } : {}) };
+  const payload = parsed as McpJsonRpcResult;
+  return { payload, member: errorMemberOf(payload) };
 }
 
 /**

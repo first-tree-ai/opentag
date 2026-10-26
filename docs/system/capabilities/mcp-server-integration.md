@@ -113,6 +113,20 @@ Every request body carries `_meta` with `io.modelcontextprotocol/protocolVersion
 (should). A response is a single JSON object or a request-scoped SSE stream; a notification is
 `202` with no body; an unknown method is `404` with `-32601`.
 
+**A 2xx status alone is not an answer.** A successful response is a JSON-RPC response or a bare
+result object; a request-scoped SSE stream must carry the response for the request that opened it. An
+unreadable successful body — an HTML error page from a proxy, an empty body, a truncated object, a
+JSON value that is not an object, or an envelope with no `result` — and a stream that ends without
+that answer are protocol failures reported as `MCP_UPSTREAM_ERROR`, never as an empty result. The
+probe would otherwise record a Server that answered nothing as a healthy one with zero tools, and a
+gateway `tools/call` would answer with an envelope that carries no `result`. A `202` or `204` answers
+a notification only: `tools/call`, `tools/list`, and `initialize` each require a result, so an
+acknowledgement of one is `MCP_UPSTREAM_ERROR` as well. A present but unreadable `error` member —
+`null`, a scalar, an array, or a wrong-typed `code` or `message` — is also `MCP_UPSTREAM_ERROR`, with
+the real HTTP status and a fixed message, never a raw type error. Valid answers still pass: an
+explicit `"result": null`, a `202`/`204` notification acknowledgement, and a JSON-RPC error whose
+`code` the caller branches on.
+
 Because there is no session, **a Server must not rely on prior requests**. This is also why the probe
 snapshot is per authorization row rather than per Server: two credentials are two independent clients.
 
@@ -129,18 +143,18 @@ The MCP-registered codes `-32020`, `-32021`, and `-32022` are the modern signals
 `-32601` is deliberately *not* one: an older Server also answers `-32601` for a method it does not
 know, so treating it as a modern signal would retry forever instead of falling back once.
 
-The same `-32601` decides the era **at any status**, not only on `400`, `404`, or `405`. Zoom's MCP
-Server rejects `server/discover` with `-32601` at HTTP `200` while listing the method as valid; a
-status-only gate read that as a modern peer and failed the probe with `MCP_UPSTREAM_ERROR` before
-`initialize` was ever tried. This applies to the probe's `server/discover` only. The gateway never
-replays on `-32601`, because a `tools/call` can raise it from inside the tool.
-
 The handshake's `notifications/initialized` speaks the revision that `initialize` negotiated,
 exactly as the request after it does. `2025-06-18` and `2025-11-25` expect `MCP-Protocol-Version` on
 every request after the handshake, so the notification carries the negotiated value. `2025-03-26`
 predates that header, so its notification omits it. Omission is not a neutral default: the
 specification reads a missing header as `2025-03-26`, so a strict `2025-06-18` or `2025-11-25`
 Server refuses a notification that a permissive Server accepted.
+
+The same `-32601` decides the era **at any status**, not only on `400`, `404`, or `405`. Zoom's MCP
+Server rejects `server/discover` with `-32601` at HTTP `200` while listing the method as valid; a
+status-only gate read that as a modern peer and failed the probe with `MCP_UPSTREAM_ERROR` before
+`initialize` was ever tried. This applies to the probe's `server/discover` only. The gateway never
+replays on `-32601`, because a `tools/call` can raise it from inside the tool.
 
 A legacy handshake is three requests: `initialize`, `notifications/initialized`, then whatever the
 caller actually wanted. The notification is sent **unconditionally**: it is the message that closes

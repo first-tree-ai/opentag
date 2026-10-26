@@ -52,12 +52,16 @@ export default defineConfig({
     coverage: {
       enabled: true,
       exclude: [...coverageConfigDefaults.exclude, "**/src/__tests__/**", "**/src/smoke/**", "**/src/paraglide/**"],
-      // Resolved against each project's own `root`, not against this file's directory, so the pattern
+      // Resolved against each project's own `root`, not against this file's directory, so each pattern
       // is workspace-relative and covers every project at once. A repository-relative pattern such
       // as `packages/shared/src/**` would be looked up under `packages/shared/packages/shared/src/**`
       // and silently measure nothing. `scripts/unit-coverage.mjs` applies the same rule per project;
       // its own repository-relative list there is the source-tree ownership manifest, not this include.
-      include: ["src/**/*.{ts,tsx}"],
+      // `scripts` is listed because a package's own verification scripts are executable source too:
+      // `unit-coverage-gate.mjs` already treats `packages/server/scripts/*.ts` as coverable, so leaving
+      // them uninstrumented reported every changed line there as "missing coverage entry". A project
+      // without a `scripts` directory simply matches nothing.
+      include: ["src/**/*.{ts,tsx}", "scripts/**/*.{ts,tsx}"],
       provider: "v8",
       reporter: ["text", "json", "json-summary", "html"],
       reportOnFailure: true,

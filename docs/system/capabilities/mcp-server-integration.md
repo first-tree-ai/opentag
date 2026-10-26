@@ -592,7 +592,7 @@ of the entry and continue working through their own client. A new Web installati
 preferred endpoint and creates an independent definition, with name-conflict handling if an older
 installation already holds the catalog name.
 
-#### The deployment HubSpot, Asana, and Zoom clients
+#### The deployment HubSpot, Asana, Zoom, and GitHub clients
 
 These providers offer neither dynamic registration nor a client metadata document, so a deployment
 that wants its Agents to use them registers its own OAuth app with each provider and configures
@@ -608,6 +608,7 @@ also derives the variable names; the Canva client above is a row of the same tab
 | HubSpot | `OPENTAG_MCP_HUBSPOT_CLIENT_*` | `https://mcp.hubspot.com` | `https://mcp.hubspot.com` | `client_secret_post` |
 | Asana | `OPENTAG_MCP_ASANA_CLIENT_*` | `https://mcp.asana.com` | `https://app.asana.com` | `client_secret_basic` |
 | Zoom | `OPENTAG_MCP_ZOOM_CLIENT_*` | `https://mcp.zoom.us` | `https://zoom.us` | `client_secret_basic` |
+| GitHub | `OPENTAG_MCP_GITHUB_CLIENT_*` | `https://api.githubcopilot.com` | `https://github.com/login/oauth` | `client_secret_post` |
 
 Operator setup, for every brand: register `<OPENTAG_PUBLIC_URL>/api/v1/mcp-servers/oauth/callback` as
 the redirect URL. Create a HubSpot **MCP Auth App** (Development > MCP Auth Apps), an Asana app of
@@ -615,6 +616,15 @@ type **MCP app**, and a Zoom **General app** with user-level OAuth. HubSpot assi
 installation and advertises none in its metadata. Zoom's challenge carries no `scope`, so the flow
 requests every `scopes_supported` entry its protected resource metadata advertises; a Zoom app grants
 only the scopes listed on its **Scopes** page, so add the full advertised list there.
+
+GitHub uses the [official remote MCP server](https://github.com/github/github-mcp-server/blob/main/docs/host-integration.md).
+An existing GitHub OAuth App can supply the MCP client pair: add the MCP callback alongside its
+existing callbacks and keep the same Client ID. The GitHub catalog entry requests `repo offline_access`
+and selects the `context,repos,issues,pull_requests,users` toolsets. Each Agent completes its own MCP
+OAuth flow and stores its own encrypted access/refresh credential. Reusing the App does not reuse the
+Account integration's token, connect other Agents, or add GitHub sign-in. Native Git/gh and Context
+Tree keep their existing integration. GitHub limits tokens per user/App/scope combination; see
+[GitHub's OAuth token limits](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#creating-multiple-tokens-for-oauth-apps).
 
 Each client follows the same rules as the Google and Canva clients: it is resolved from configuration
 and never stored, and it is offered only when the Server's effective origin is one of the provider's

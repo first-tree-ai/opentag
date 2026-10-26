@@ -116,6 +116,17 @@ describe("mcp preset catalog shape", () => {
     expect(validateMcpCatalog(MCP_CATALOG_CATEGORIES, MCP_CATALOG_ENTRIES)).toEqual([]);
   });
 
+  it("limits GitHub OAuth scopes and advertises the code, issue, and pull request toolsets", () => {
+    const github = MCP_CATALOG_ENTRIES.find((entry) => entry.id === "github");
+    expect(github).toMatchObject({
+      installable: true,
+      url: "https://api.githubcopilot.com/mcp/",
+      defaultAuthKind: "oauth",
+      oauthScopes: ["repo", "offline_access"],
+      extraHeaders: { "X-MCP-Toolsets": "context,repos,issues,pull_requests,users" },
+    });
+  });
+
   it("points every entry at an endpoint the outbound gate would dial", () => {
     for (const entry of MCP_CATALOG_ENTRIES) {
       if (!entry.installable || entry.url === undefined) continue;

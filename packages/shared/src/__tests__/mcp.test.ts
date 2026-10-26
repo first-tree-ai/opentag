@@ -256,6 +256,10 @@ describe("MCP static OAuth providers", () => {
     expect(isMcpStaticOAuthEndpoint(provider("zoom"), "https://mcp.zoom.us/mcp/zoom/streamable")).toBe(true);
     expect(isMcpStaticOAuthEndpoint(provider("hubspot"), "https://mcp.hubspot.com")).toBe(true);
     expect(isMcpStaticOAuthEndpoint(provider("asana"), "https://mcp.asana.com/v2/mcp")).toBe(true);
+    expect(isMcpStaticOAuthEndpoint(provider("github"), "https://api.githubcopilot.com/mcp/")).toBe(true);
+    expect(isMcpStaticOAuthEndpoint(provider("github"), "https://api.github.com/mcp/")).toBe(false);
+    expect(isMcpStaticOAuthEndpoint(provider("github"), "https://api.githubcopilot.com.evil.example/mcp/")).toBe(false);
+    expect(isMcpStaticOAuthEndpoint(provider("github"), "https://user:secret@api.githubcopilot.com/mcp/")).toBe(false);
     for (const url of [
       "https://mcp.zoom.us.evil.example/mcp",
       "https://evil.example/mcp.zoom.us",

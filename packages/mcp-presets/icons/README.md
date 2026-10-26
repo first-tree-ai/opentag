@@ -33,6 +33,12 @@ Retrieved on 2026-10-09:
 | `stripe.svg` | [Stripe website](https://stripe.com/) | [Official website SVG product mark](https://images.stripeassets.com/fzn2n1nzq965/1hgcBNd12BfT9VLgbId7By/01d91920114b124fb4cf6d448f9f06eb/favicon.svg) |
 | `zoom.png` | [Zoom website](https://www.zoom.com/) | [Official website 96px favicon](https://st1.zoom.us/zoom.ico); the response is already PNG, retained without conversion |
 
+Retrieved on 2026-10-26:
+
+| Asset | Official source | Download |
+| --- | --- | --- |
+| `github.png` | [GitHub logos](https://github.com/logos) | [Official GitHub Mark](https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png), retained without modification |
+
 The People API documentation does not identify a separate product mark. Its catalog entry keeps the neutral connection icon instead of borrowing the Google Contacts logo.
 
 Only catalog endpoints with `iconIsOfficial: true` receive a product mark. Leave this flag absent until the asset is verified against an official source. Unknown services and unavailable images use the shared neutral connection icon. Do not infer a brand from a user-defined Server name or fetch arbitrary favicons.

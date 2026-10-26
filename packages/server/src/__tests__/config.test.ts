@@ -769,22 +769,41 @@ describe("parseServerConfig", () => {
     }
   });
 
-  it.each(["HUBSPOT", "ASANA", "ZOOM"])("requires the MCP %s client pair to be configured together", (brand) => {
-    const id = `OPENTAG_MCP_${brand}_CLIENT_ID`;
-    const secret = `OPENTAG_MCP_${brand}_CLIENT_SECRET`;
-    const key = brand.toLowerCase();
-    expect(parseServerConfig(required).mcpStaticOAuth).toBeUndefined();
-    expect(parseServerConfig({ ...required, [id]: "", [secret]: "   " }).mcpStaticOAuth).toBeUndefined();
-    expect(parseServerConfig({ ...required, [id]: "client", [secret]: "shh" }).mcpStaticOAuth).toEqual({
-      [key]: { clientId: "client", clientSecret: "shh" },
+  it.each(["HUBSPOT", "ASANA", "ZOOM", "GITHUB"])(
+    "requires the MCP %s client pair to be configured together",
+    (brand) => {
+      const id = `OPENTAG_MCP_${brand}_CLIENT_ID`;
+      const secret = `OPENTAG_MCP_${brand}_CLIENT_SECRET`;
+      const key = brand.toLowerCase();
+      expect(parseServerConfig(required).mcpStaticOAuth).toBeUndefined();
+      expect(parseServerConfig({ ...required, [id]: "", [secret]: "   " }).mcpStaticOAuth).toBeUndefined();
+      expect(parseServerConfig({ ...required, [id]: "client", [secret]: "shh" }).mcpStaticOAuth).toEqual({
+        [key]: { clientId: "client", clientSecret: "shh" },
+      });
+      expect(() => parseServerConfig({ ...required, [id]: "client" })).toThrow(new RegExp(`${id} and ${secret}`));
+      try {
+        parseServerConfig({ ...required, [secret]: "shh" });
+        expect.unreachable("partial MCP client configuration must fail");
+      } catch (error) {
+        expect(error instanceof Error ? error.message : String(error)).not.toContain("shh");
+      }
+    },
+  );
+
+  it("keeps GitHub MCP credentials separate from the Account GitHub integration", () => {
+    const config = parseServerConfig({
+      ...required,
+      OPENTAG_GITHUB_OAUTH_CLIENT_ID: "account-client",
+      OPENTAG_GITHUB_OAUTH_CLIENT_SECRET: "account-secret",
     });
-    expect(() => parseServerConfig({ ...required, [id]: "client" })).toThrow(new RegExp(`${id} and ${secret}`));
-    try {
-      parseServerConfig({ ...required, [secret]: "shh" });
-      expect.unreachable("partial MCP client configuration must fail");
-    } catch (error) {
-      expect(error instanceof Error ? error.message : String(error)).not.toContain("shh");
-    }
+    expect(config.mcpStaticOAuth).toBeUndefined();
+    expect(
+      parseServerConfig({
+        ...required,
+        OPENTAG_MCP_GITHUB_CLIENT_ID: "mcp-client",
+        OPENTAG_MCP_GITHUB_CLIENT_SECRET: "mcp-secret",
+      }).mcpStaticOAuth,
+    ).toEqual({ github: { clientId: "mcp-client", clientSecret: "mcp-secret" } });
   });
 
   it("uses OPENTAG_ENV as the channel source without interpreting the hostname", () => {

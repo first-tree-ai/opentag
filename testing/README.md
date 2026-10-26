@@ -29,6 +29,7 @@ contents, and machine-specific operational logs outside the repository.
 - [Database disconnect recovery](verification/database-disconnect.md)
 - [Feishu user MCP authorization](verification/feishu-user-mcp-authorization.md)
 - [GitHub platform integration](verification/github-platform-integration.md)
+- [GitHub MCP connector](verification/github-mcp.md)
 - [GitHub OAuth cutover](verification/github-oauth-cutover.md)
 - [IM delivery claim queries](im-delivery-claim/README.md)
 - [IM Turn budget and recovery](im-turn-budget-recovery/README.md)

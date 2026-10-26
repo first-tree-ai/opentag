@@ -179,6 +179,43 @@
   homepage: https://sentry.io
 
 - schema_version: 1
+  id: mcp/github
+  kind: mcp
+  name:
+    en: "GitHub"
+    zh: "GitHub"
+  summary:
+    en: "Read and update repositories, issues, and pull requests."
+    zh: "读写代码仓库、Issue 和 Pull Request。"
+  when_to_use:
+    en: "Use when the task needs GitHub code changes, issues, or pull requests."
+    zh: "当任务需要修改 GitHub 代码、处理 Issue 或 Pull Request 时使用。"
+  keywords: ["git", "code", "issues", "pull requests"]
+  capabilities: ["read-code", "edit-code", "read-issues", "edit-issues", "read-pull-requests", "edit-pull-requests"]
+  status: active
+  auth:
+    methods: [oauth]
+    default_kind: oauth
+    oauth:
+      scopes: [repo, offline_access]
+  risk:
+    side_effects: destructive
+    data_access: private
+  remotes:
+    - type: streamable-http
+      url: https://api.githubcopilot.com/mcp/
+      headers:
+        - name: X-MCP-Toolsets
+          role: extra
+          value: context,repos,issues,pull_requests,users
+  catalog:
+    category: development
+    order: 40
+    icon: github.png
+    icon_is_official: true
+  homepage: https://github.com
+
+- schema_version: 1
   id: mcp/atlassian
   kind: mcp
   name:

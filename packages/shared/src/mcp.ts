@@ -834,7 +834,7 @@ export function isCanvaDeveloperPortalMcpEndpoint(url: string): boolean {
  * `tokenEndpointAuthMethod` is what the provider's authorization server accepts; presenting the
  * other method is rejected by it, so it is data here, not a default.
  */
-export const MCP_STATIC_OAUTH_BRANDS = ["canva", "hubspot", "asana", "zoom"] as const;
+export const MCP_STATIC_OAUTH_BRANDS = ["canva", "hubspot", "asana", "zoom", "github"] as const;
 
 export type McpStaticOAuthBrand = (typeof MCP_STATIC_OAUTH_BRANDS)[number];
 
@@ -873,6 +873,12 @@ export const MCP_STATIC_OAUTH_PROVIDERS: readonly McpStaticOAuthProvider[] = [
     origins: ["https://mcp.zoom.us"],
     issuer: "https://zoom.us",
     tokenEndpointAuthMethod: "client_secret_basic",
+  },
+  {
+    brand: "github",
+    origins: ["https://api.githubcopilot.com"],
+    issuer: "https://github.com/login/oauth",
+    tokenEndpointAuthMethod: "client_secret_post",
   },
 ];
 

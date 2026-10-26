@@ -640,6 +640,14 @@ describe("McpOAuthFlowService.start", () => {
 
   describe.each([
     {
+      brand: "github" as const,
+      mcpUrl: "https://api.githubcopilot.com/mcp/",
+      prmUrl: "https://api.githubcopilot.com/.well-known/oauth-protected-resource/mcp",
+      issuer: "https://github.com/login/oauth",
+      tokenUrl: "https://github.com/login/oauth/access_token",
+      method: "post",
+    },
+    {
       brand: "hubspot" as const,
       mcpUrl: "https://mcp.hubspot.com",
       prmUrl: "https://mcp.hubspot.com/.well-known/oauth-protected-resource",
@@ -667,13 +675,14 @@ describe("McpOAuthFlowService.start", () => {
     const client = { clientId: `${brand}-client-id`, clientSecret: `${brand}-client-secret` };
     const routes = (): RouteMap => ({
       [prmUrl]: doc({ resource: mcpUrl, authorization_servers: [issuer] }),
-      [`${issuer}/.well-known/oauth-authorization-server`]: doc({
-        issuer,
-        authorization_endpoint: `${issuer}/oauth/authorize`,
-        token_endpoint: tokenUrl,
-        response_types_supported: ["code"],
-        code_challenge_methods_supported: ["S256"],
-      }),
+      [new URL(`/.well-known/oauth-authorization-server${new URL(issuer).pathname.replace(/\/$/, "")}`, issuer).href]:
+        doc({
+          issuer,
+          authorization_endpoint: brand === "github" ? `${issuer}/authorize` : `${issuer}/oauth/authorize`,
+          token_endpoint: tokenUrl,
+          response_types_supported: ["code"],
+          code_challenge_methods_supported: ["S256"],
+        }),
       [tokenUrl]: doc({ access_token: "at_1", refresh_token: "rt_1", expires_in: 600 }),
     });
 

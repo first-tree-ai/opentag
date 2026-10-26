@@ -61,7 +61,7 @@ export interface McpOAuthFlowServiceOptions {
    */
   googleMcpClient?: { clientId: string; clientSecret: string };
   /**
-   * The deployment's static clients for providers without DCR or CIMD (Canva, HubSpot, Asana, Zoom),
+   * The deployment's static clients for providers without DCR or CIMD,
    * keyed by brand and present only for a brand whose `OPENTAG_MCP_<BRAND>_CLIENT_*` pair is
    * configured. Each is offered only to that provider's own MCP origins and exact issuer. Canva's is
    * Developer Portal only: the waitlist endpoint at `mcp.canva.com` keeps its automatic resolution.

@@ -172,7 +172,7 @@ every commit. CI runs the complete regression matrix and must pass before merge.
 | Documentation only | `pnpm check`; no application build or tests. Keep root Chinese mirrors synchronized. Markdown shipped as runtime input, such as bundled Skills, follows the affected package's validation scope. |
 | Behavior within one package | Relevant test files and the package's type check. Expand to the package suite when the impact spans the package or is unclear. |
 | Shared schemas, public exports, or cross-package contracts | Producer tests and affected consumer tests/type checks. Build changed exports before testing consumers. |
-| Database queries, transactions, locking, or persistence | Relevant server unit and PostgreSQL integration tests. A new migration requires the full integration suite and migration-count update in `AGENTS.md`. |
+| Database queries, transactions, locking, or persistence | Relevant server unit and PostgreSQL integration tests. New migrations follow the [migration requirements](./docs/system/database-read-write-standards.md#migrations). |
 | Agent Runtime implementation or tests covered by `vitest.agent-runtime.config.ts`, or that configuration | Focused tests, then `pnpm --filter @opentag/client test:agent-runtime:coverage`. Its 100% gate is authoritative on CI's Ubuntu host; report host-specific failures. |
 | Repository scripts or workflows | Relevant `scripts/__tests__/*.test.mjs` files and any build/package smoke checks exercised by the change. |
 | Build, exports, generated code, or packaging | Affected builds plus relevant tests and type checks. |

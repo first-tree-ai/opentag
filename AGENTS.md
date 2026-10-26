@@ -66,8 +66,8 @@ These commands are available checks, not a checklist to run for every change. Fo
 - Documentation-only changes need `pnpm check`, not application builds or tests. For code changes, run affected
   package type checks and build when the change affects bundling, exports, generated code, or packaging.
   Markdown shipped as runtime input (such as bundled Skills) follows the affected package's validation scope.
-- Run relevant PostgreSQL integration tests for database behavior changes. New migrations still require the full
-  server integration suite as specified below.
+- Run relevant PostgreSQL integration tests for database behavior changes. New migrations require the full
+  server integration suite; follow the [migration requirements](docs/system/database-read-write-standards.md#migrations).
 - Run Agent Runtime coverage for changes to its covered implementation, tests, or coverage configuration;
   run `pnpm test:coverage` for root coverage configuration changes or repository-wide coverage investigations.
 - Do not repeat successful checks on unchanged code just to finish a task or open a pull request. Rerun when later
@@ -96,20 +96,6 @@ Test plans, acceptance runs, UI screenshots, and validation evidence belong in `
 Follow [Database read/write standards](docs/system/database-read-write-standards.md) when changing or reviewing persistence.
 Before implementing or approving a database or read/write design, present the concrete proposal for human confirmation,
 including schema, query paths, authorization, consistency, and retention semantics. Investigation may proceed first.
-
-## Database migrations
-
-Adding a migration under `packages/server/drizzle` requires two extra steps, or CI fails even when
-`pnpm check` passes locally:
-
-- Bump `CURRENT_MIGRATION_COUNT` in `packages/server/src/__tests__/integration/setup-completion-backfill.test.ts`
-  by one. The constant is a deliberate ratchet over the migration journal; the migration drift check
-  in `pnpm check` does not cover it, only the PostgreSQL integration suite does.
-- Run `pnpm --filter @opentag/server test:integration` (Docker with testcontainers) before opening
-  the pull request.
-
-Two concurrent pull requests that each add a migration also collide on the migration number itself:
-whichever merges second must renumber its migration and journal entry, then bump the count again.
 
 ## Code and Git conventions
 

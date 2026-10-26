@@ -251,17 +251,15 @@ function ContextTreeCollection({
                   </div>
                 </div>
               </DropdownMenu.Item>
-              {cloud ? null : (
-                <DropdownMenu.Item onClick={() => openForm("create")}>
-                  <div className="flex items-start gap-3">
-                    <Icon name="folder-plus" className="mt-1 shrink-0" />
-                    <div>
-                      <div>{m.agent_settings_context_tree_create_new()}</div>
-                      <p className="text-sm text-kumo-subtle">{m.agent_settings_context_tree_create_hint()}</p>
-                    </div>
+              <DropdownMenu.Item onClick={() => openForm("create")}>
+                <div className="flex items-start gap-3">
+                  <Icon name="folder-plus" className="mt-1 shrink-0" />
+                  <div>
+                    <div>{m.agent_settings_context_tree_create_new()}</div>
+                    <p className="text-sm text-kumo-subtle">{m.agent_settings_context_tree_create_hint()}</p>
                   </div>
-                </DropdownMenu.Item>
-              )}
+                </div>
+              </DropdownMenu.Item>
             </DropdownMenu.Content>
           </DropdownMenu>
         ) : null}
@@ -282,7 +280,7 @@ function ContextTreeCollection({
           ))}
         </section>
       ) : (
-        <ContextTreeEmptyState cloud={cloud} pending={pending} onChoose={openForm} />
+        <ContextTreeEmptyState pending={pending} onChoose={openForm} />
       )}
       {statusMessage && !mode ? (
         <p role="status" className="text-sm text-kumo-subtle">
@@ -303,11 +301,9 @@ function ContextTreeCollection({
 }
 
 function ContextTreeEmptyState({
-  cloud,
   pending,
   onChoose,
 }: {
-  cloud: boolean;
   pending: boolean;
   onChoose: (mode: TreeAction, trigger: HTMLElement) => void;
 }) {
@@ -324,15 +320,13 @@ function ContextTreeEmptyState({
           </Button>
           <p className="text-sm text-kumo-subtle">{m.agent_settings_context_tree_connect_hint()}</p>
         </div>
-        {cloud ? null : (
-          <div className="grid gap-2">
-            <Button variant="secondary" disabled={pending} onClick={(event) => onChoose("create", event.currentTarget)}>
-              <Icon name="folder-plus" />
-              {m.agent_settings_context_tree_create_new()}
-            </Button>
-            <p className="text-sm text-kumo-subtle">{m.agent_settings_context_tree_create_hint()}</p>
-          </div>
-        )}
+        <div className="grid gap-2">
+          <Button variant="secondary" disabled={pending} onClick={(event) => onChoose("create", event.currentTarget)}>
+            <Icon name="folder-plus" />
+            {m.agent_settings_context_tree_create_new()}
+          </Button>
+          <p className="text-sm text-kumo-subtle">{m.agent_settings_context_tree_create_hint()}</p>
+        </div>
       </div>
     </section>
   );

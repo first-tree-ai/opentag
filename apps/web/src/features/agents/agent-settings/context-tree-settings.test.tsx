@@ -75,12 +75,12 @@ it("starts with two clear choices and opens only the chosen form, returning focu
   await waitFor(() => expect(document.activeElement).toBe(trigger));
 });
 
-it("connects a repository link and directory using the default branch, then refreshes the selection", async () => {
+it.each(["local", "cloud"] as const)("connects a %s tree directory using the default branch", async (computerKind) => {
   const operation = vi
     .spyOn(browserApi, "contextTreeOperation")
     .mockResolvedValue({ status: "completed", repository: "acme/memory" });
   const changed = vi.fn();
-  render(<ContextTreeSettings config={config()} online onChanged={changed} />);
+  render(<ContextTreeSettings config={config()} computerKind={computerKind} online onChanged={changed} />);
   await openForm();
   enter();
   expect(screen.queryByRole("textbox", { name: "Branch" })).toBeNull();
@@ -149,18 +149,30 @@ it("renders source cards with exact GitHub links and disconnects only the chosen
   );
 });
 
-it("offers Add tree for connected sources and keeps Cloud limited to existing trees", async () => {
-  const view = render(
-    <ContextTreeSettings config={config("agent-a", "acme/memory")} computerKind="cloud" online onChanged={vi.fn()} />,
+it.each([null, "acme/existing"])("creates a Cloud tree with existing selection %s", async (repository) => {
+  const operation = vi
+    .spyOn(browserApi, "contextTreeOperation")
+    .mockResolvedValue({ status: "completed", repository: "acme/memory", ref: "trunk" });
+  const changed = vi.fn();
+  render(
+    <ContextTreeSettings config={config("agent-a", repository)} computerKind="cloud" online onChanged={changed} />,
   );
-  const dialog = await openForm();
-  expect(within(dialog).getByText(/Account settings/)).toBeTruthy();
-  expect(screen.queryByRole("menuitem", { name: /Create Context Tree/ })).toBeNull();
-  fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  const dialog = await openForm("create");
+  expect(within(dialog).getByText(/new private repository/)).toBeTruthy();
+  expect(within(dialog).getByText("Manage GitHub authorization in Account settings.")).toBeTruthy();
+  enter();
+  submit("create");
+  await waitFor(() => expect(changed).toHaveBeenCalledOnce());
+  expect(operation).toHaveBeenCalledExactlyOnceWith("agent-a", {
+    action: "create",
+    kind: "git",
+    repository: "acme/memory",
+    path: ".",
+    ref: "HEAD",
+    expectedRevision: 2,
+    expectedRuntimeConfigRevision: 3,
+  });
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-  view.rerender(<ContextTreeSettings config={config("agent-b")} computerKind="cloud" online onChanged={vi.fn()} />);
-  expect(screen.queryByRole("button", { name: "Create Context Tree" })).toBeNull();
-  expect(screen.getByRole("button", { name: "Connect Context Tree" })).toBeTruthy();
 });
 
 it("explains offline and pause restrictions without blocking source browsing", async () => {
@@ -198,23 +210,26 @@ it("validates the fields and focuses the first invalid input without contacting 
   expect(operation).not.toHaveBeenCalled();
 });
 
-it("keeps an uncertain creation open and creates at the repository root", async () => {
-  const operation = vi
-    .spyOn(browserApi, "contextTreeOperation")
-    .mockResolvedValue({ status: "failed", code: "publication_uncertain" });
-  render(<ContextTreeSettings config={config()} online onChanged={vi.fn()} />);
-  await openForm("create");
-  enter("  Acme  /  New-Memory  ");
-  submit("create");
-  await screen.findByRole("alert");
-  expect(screen.getByRole("dialog")).toBeTruthy();
-  expect(operation.mock.calls[0]?.[1]).toMatchObject({
-    action: "create",
-    repository: "Acme/New-Memory",
-    path: ".",
-    ref: "HEAD",
-  });
-});
+it.each(["local", "cloud"] as const)(
+  "keeps an uncertain %s creation open at the repository root",
+  async (computerKind) => {
+    const operation = vi
+      .spyOn(browserApi, "contextTreeOperation")
+      .mockResolvedValue({ status: "failed", code: "publication_uncertain" });
+    render(<ContextTreeSettings config={config()} computerKind={computerKind} online onChanged={vi.fn()} />);
+    await openForm("create");
+    enter("  Acme  /  New-Memory  ");
+    submit("create");
+    await screen.findByRole("alert");
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(operation.mock.calls[0]?.[1]).toMatchObject({
+      action: "create",
+      repository: "Acme/New-Memory",
+      path: ".",
+      ref: "HEAD",
+    });
+  },
+);
 
 it.each([
   ["authentication_required", /Connect or reconnect GitHub/],

@@ -36,7 +36,7 @@ directory means the repository root. GitHub’s default branch is resolved durin
 and saved with the connection. Both Local and Cloud can connect existing trees.
 Create accepts an owner and repository name and uses GitHub's default branch.
 Neither dialog asks for a branch.
-Local Computers can also create private repositories: OpenTag creates the repository,
+Both Local and Cloud Computers can create private repositories: OpenTag creates the repository,
 generates the initial page with the pinned `context-tree init`, and commits it through
 GitHub's contents API. Connection verification and creation run exclusively on the Server with the Account's current GitHub
 credential; it does not require Computer-side GitHub credentials. The OAuth authorization must allow private repositories, and the connected user

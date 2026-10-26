@@ -231,29 +231,34 @@ export class McpProbe {
     const { sessionId, result } = await transport.initialize(input.accountId, input.url, input.authHeaders);
     const payload = asRecord(result);
     /*
-     * Sent unconditionally, because it is the notification that closes the handshake rather than a
-     * session-scoped message: a peer may answer `initialize` without issuing `Mcp-Session-Id` and
-     * still wait for it. `notifyLegacy` adds the session header only when there is a session, so one
-     * call covers both peers, and no `tools/list` is dispatched if it fails.
-     */
-    await transport.notifyLegacy(input.accountId, input.url, "notifications/initialized", input.authHeaders, sessionId);
-    /*
      * The version the peer negotiated, checked against the *legacy* list.
      *
      * `MCP_SUPPORTED_PROTOCOL_VERSIONS` includes the modern `2026-07-28`, so a legacy-era Server naming
      * it was accepted and then had the modern `MCP-Protocol-Version` stamped on its `tools/list` — the
      * exact failure this check exists to prevent — while the row recorded `era: legacy` with a modern
      * version. Only a legacy version can be spoken on the legacy path.
+     *
+     * Resolved before the notification, not after it, because `notifications/initialized` closes the
+     * handshake and must carry the same revision as the `tools/list` that follows.
      */
     const negotiated = typeof payload.protocolVersion === "string" ? payload.protocolVersion : undefined;
     const supported = negotiated !== undefined && MCP_LEGACY_PROTOCOL_VERSIONS.includes(negotiated as never);
-    const tools = await this.#collectLegacyTools(
-      input,
-      transport,
+    const negotiatedVersion = supported ? negotiated : undefined;
+    /*
+     * Sent unconditionally, because it is the notification that closes the handshake rather than a
+     * session-scoped message: a peer may answer `initialize` without issuing `Mcp-Session-Id` and
+     * still wait for it. `notifyLegacy` adds the session header only when there is a session, so one
+     * call covers both peers, and no `tools/list` is dispatched if it fails.
+     */
+    await transport.notifyLegacy(
+      input.accountId,
+      input.url,
+      "notifications/initialized",
+      input.authHeaders,
       sessionId,
-      supported ? negotiated : undefined,
-      deadline,
+      { ...(negotiatedVersion === undefined ? {} : { negotiatedVersion }) },
     );
+    const tools = await this.#collectLegacyTools(input, transport, sessionId, negotiatedVersion, deadline);
     return {
       probeState: "succeeded",
       protocolEra: "legacy",

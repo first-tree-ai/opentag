@@ -222,10 +222,17 @@ describe("a failed call is never replayed", () => {
   });
 
   it("dispatches once on the legacy path too", async () => {
+    /*
+     * The notification succeeds here so that the failure under test is the tool call's: a rejected
+     * notification is covered by its own case below, and would otherwise source this failure before
+     * the call is dispatched at all.
+     */
     const { fetcher, sent } = scriptedFetcher((body) =>
       body.method === "initialize"
         ? rpcOk(body, { protocolVersion: "2025-06-18" })
-        : rpcFail(body, 500, { code: -32603, message: "boom" }),
+        : body.method === "notifications/initialized"
+          ? { status: 202, headers: new Headers(), text: "" }
+          : rpcFail(body, 500, { code: -32603, message: "boom" }),
     );
     await expect(call(fetcher, { cachedEra: "legacy" })).rejects.toThrow();
     expect(sent.filter((exchange) => exchange.method === "tools/call")).toHaveLength(1);

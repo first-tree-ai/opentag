@@ -276,24 +276,43 @@ export class McpTransport {
     return { ...(sessionId ? { sessionId } : {}), result };
   }
 
-  /** A legacy session-scoped notification (`notifications/initialized`). */
+  /**
+   * A legacy session-scoped notification (`notifications/initialized`).
+   *
+   * It closes the handshake, so it speaks the revision the handshake negotiated, by the same rule as
+   * {@link callLegacy}: `2025-03-26` predates `MCP-Protocol-Version` and gets none, every later
+   * legacy version gets the negotiated value. Omitting it is not a harmless default — the
+   * specification reads a missing header as `2025-03-26`, so a strict `2025-06-18` or `2025-11-25`
+   * Server refused the notification while a lenient one made the omission invisible.
+   *
+   * A notification carries no `id`, so it never reaches the response interpreter, and the status is
+   * checked here: a rejected notification is a transport failure the caller must see, because
+   * continuing the handshake only hides a Server that already refused this client's protocol. The
+   * body is never read, so the failure reason stays bounded and credential-free.
+   */
   async notifyLegacy(
     accountId: string,
     url: string,
     method: string,
     authHeaders: Record<string, string>,
     sessionId?: string,
+    options: McpCallOptions = {},
   ): Promise<void> {
-    await this.#fetcher.fetchOutbound(accountId, url, {
+    const headers: Record<string, string> = {
+      ...authHeaders,
+      accept: MCP_ACCEPT_HEADER,
+      "content-type": "application/json",
+      ...legacyVersionHeaders(options.negotiatedVersion),
+    };
+    if (sessionId) headers["mcp-session-id"] = sessionId;
+    for (const [key, value] of Object.entries(options.headers ?? {})) headers[key] = value;
+    const response = await this.#fetcher.fetchOutbound(accountId, url, {
       method: "POST",
-      headers: {
-        ...authHeaders,
-        accept: MCP_ACCEPT_HEADER,
-        "content-type": "application/json",
-        ...(sessionId ? { "mcp-session-id": sessionId } : {}),
-      },
+      headers,
       body: JSON.stringify({ jsonrpc: "2.0", method }),
+      ...(options.signal ? { signal: options.signal } : {}),
     });
+    if (response.status < 200 || response.status >= 300) throw upstreamFailure(response.status);
   }
 
   async #interpret(

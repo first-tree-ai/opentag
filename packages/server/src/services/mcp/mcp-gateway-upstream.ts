@@ -120,21 +120,34 @@ export class McpUpstreamCaller {
     const transport = new McpTransport({ clientInfo: this.#clientInfo, fetcher: this.#fetcher });
     const { sessionId, result: handshake } = await transport.initialize(input.accountId, input.url, input.authHeaders);
     /*
-     * Sent unconditionally, because it is the notification that closes the handshake rather than a
-     * session-scoped message: a peer may answer `initialize` without issuing `Mcp-Session-Id` and
-     * still wait for it. `notifyLegacy` adds the session header only when there is a session, so one
-     * call covers both peers, and no tool is dispatched if it fails.
-     */
-    await transport.notifyLegacy(input.accountId, input.url, "notifications/initialized", input.authHeaders, sessionId);
-    /*
      * The negotiated version is checked against the *legacy* list before it is spoken, for the same
      * reason the probe does it: the supported set includes the modern version, so a legacy peer that
      * names it would otherwise get the modern header stamped on a handshake-based session.
+     *
+     * Resolved before the notification rather than after it, because `notifications/initialized`
+     * closes the handshake and must carry the same revision as the call that follows.
      */
     const named =
       isRecord(handshake) && typeof handshake.protocolVersion === "string" ? handshake.protocolVersion : undefined;
     const negotiatedVersion =
       named !== undefined && MCP_LEGACY_PROTOCOL_VERSIONS.includes(named as never) ? named : undefined;
+    /*
+     * Sent unconditionally, because it is the notification that closes the handshake rather than a
+     * session-scoped message: a peer may answer `initialize` without issuing `Mcp-Session-Id` and
+     * still wait for it. `notifyLegacy` adds the session header only when there is a session, so one
+     * call covers both peers, and no tool is dispatched if it fails.
+     */
+    await transport.notifyLegacy(
+      input.accountId,
+      input.url,
+      "notifications/initialized",
+      input.authHeaders,
+      sessionId,
+      {
+        ...(negotiatedVersion ? { negotiatedVersion } : {}),
+        ...(input.signal ? { signal: input.signal } : {}),
+      },
+    );
     const result = await transport.callLegacy(
       input.accountId,
       input.url,

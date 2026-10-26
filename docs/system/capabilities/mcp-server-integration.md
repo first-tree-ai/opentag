@@ -135,30 +135,28 @@ status-only gate read that as a modern peer and failed the probe with `MCP_UPSTR
 `initialize` was ever tried. This applies to the probe's `server/discover` only. The gateway never
 replays on `-32601`, because a `tools/call` can raise it from inside the tool.
 
+The handshake's `notifications/initialized` speaks the revision that `initialize` negotiated,
+exactly as the request after it does. `2025-06-18` and `2025-11-25` expect `MCP-Protocol-Version` on
+every request after the handshake, so the notification carries the negotiated value. `2025-03-26`
+predates that header, so its notification omits it. Omission is not a neutral default: the
+specification reads a missing header as `2025-03-26`, so a strict `2025-06-18` or `2025-11-25`
+Server refuses a notification that a permissive Server accepted.
+
 A legacy handshake is three requests: `initialize`, `notifications/initialized`, then whatever the
 caller actually wanted. The notification is sent **unconditionally**: it is the message that closes
 the handshake, not a message scoped to a session. A Server may answer `initialize` without issuing
 `Mcp-Session-Id`, and such a peer still waits for `notifications/initialized` before it accepts
 anything else, so sending it only when a session came back left a session-less Server talking to a
 client that had never introduced itself. `Mcp-Session-Id` is attached to the notification only when
-the handshake issued one.
-
-The notification speaks the revision that `initialize` negotiated, exactly as the request after it
-does. `2025-06-18` and `2025-11-25` expect `MCP-Protocol-Version` on every request after the
-handshake, so the notification carries the negotiated value. `2025-03-26` predates that header, so
-its notification omits it. Omission is not a neutral default: the specification reads a missing
-header as `2025-03-26`, so a strict `2025-06-18` or `2025-11-25` Server refuses a notification that
-a permissive Server accepted.
-
-A notification carries no `id` and returns no result, so no response interpreter runs on it and
-its status is checked on its own. That check applies to a response the fetcher returns: a redirect
-and an oversized body both fail inside the fetcher, so no status from those reaches this point.
-A non-2xx answer to `notifications/initialized` stops the handshake before anything is dispatched:
-the gateway never sends its `tools/call`, and a probe records `probe_state = failed` with no
-`tools/list`. The error is bounded and credential-free: its `HTTP <status>` summary, or the shared
-`MCP_AUTH_REJECTION_SUMMARY` for `401` and `403`. Bounding the body is the fetcher's job, and the
-notification path never interprets or exposes that text, so an upstream message cannot reach a
-probe error, a log line, or a model. A failed `initialize` stops the handshake the same way.
+the handshake issued one. A failure of either handshake request fails the operation before anything
+is dispatched: a gateway `tools/call` is never sent, and a probe records `probe_state = failed` with
+no `tools/list`. The notification carries no `id` and returns no result, so its HTTP status is checked
+on its own: a non-2xx answer is the transport's bounded failure — `The MCP Server returned HTTP
+<status>`, or the shared `MCP_AUTH_REJECTION_SUMMARY` for `401` and `403`. That summary is built from
+the status alone; the notification's response body is never interpreted or exposed, so an upstream
+message cannot reach a probe error, a log line, or a model. The outbound fetcher reads and bounds the
+body before it returns, so a redirect or an oversized body fails inside the fetcher first, as its own
+bounded error, rather than as one of these status summaries.
 
 The probe API answers `200` whether or not the probe succeeded and never returns the upstream
 status. A failed probe and a legacy fallback each write one `info` line carrying `upstreamStatus`,

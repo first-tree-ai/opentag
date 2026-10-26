@@ -134,17 +134,30 @@ describe("the legacy path", () => {
     );
     await call(fetcher, { cachedEra: "legacy", cachedVersion: "2025-06-18" });
     expect(sent.map((exchange) => exchange.method)).toEqual(["initialize", "notifications/initialized", "tools/call"]);
+    expect(sent[1]?.headers["mcp-session-id"]).toBe("sess-1");
     expect(sent[2]?.headers["MCP-Protocol-Version"]).toBe("2025-06-18");
     // The session the handshake opened rides every subsequent request.
     expect(sent[2]?.headers["mcp-session-id"]).toBe("sess-1");
   });
 
-  it("skips the initialized notification when the peer opened no session", async () => {
+  /*
+   * The notification is what closes the handshake, so it cannot be conditional on the session
+   * header. A legacy Server may answer `initialize` without issuing `Mcp-Session-Id`, and such a
+   * peer still waits for `notifications/initialized` before it accepts anything else.
+   */
+  it("sends the initialized notification when the peer opened no session", async () => {
     const { fetcher, sent } = scriptedFetcher((body) =>
       rpcOk(body, body.method === "initialize" ? { protocolVersion: "2025-06-18" } : { content: [] }),
     );
     await call(fetcher, { cachedEra: "legacy" });
-    expect(sent.map((exchange) => exchange.method)).toEqual(["initialize", "tools/call"]);
+    expect(sent.map((exchange) => exchange.method)).toEqual(["initialize", "notifications/initialized", "tools/call"]);
+    const notification = sent[1];
+    // A notification carries no `id`: the peer must not mistake it for a call it has to answer.
+    expect(notification?.body).toEqual({ jsonrpc: "2.0", method: "notifications/initialized" });
+    expect(notification?.headers.authorization).toBe("Bearer upstream");
+    expect(notification?.headers["mcp-session-id"]).toBeUndefined();
+    // Nothing was issued, so the call rides without a session too.
+    expect(sent[2]?.headers["mcp-session-id"]).toBeUndefined();
   });
 
   /*
@@ -216,6 +229,25 @@ describe("a failed call is never replayed", () => {
     );
     await expect(call(fetcher, { cachedEra: "legacy" })).rejects.toThrow();
     expect(sent.filter((exchange) => exchange.method === "tools/call")).toHaveLength(1);
+  });
+
+  /*
+   * A failed `notifications/initialized` means the handshake never completed, so the call must not
+   * be dispatched at all — the same rule as any other pre-dispatch failure, applied to the step the
+   * session guard used to skip.
+   */
+  it("propagates a failed initialized notification without dispatching the call", async () => {
+    const methods: string[] = [];
+    const fetcher = {
+      fetchOutbound: async (_accountId: string, _url: string, init: McpFetchInit = {}): Promise<McpFetchResponse> => {
+        const body = JSON.parse(String(init.body ?? "{}")) as Record<string, unknown>;
+        methods.push(String(body.method));
+        if (body.method === "initialize") return rpcOk(body, { protocolVersion: "2025-06-18" });
+        throw new Error("upstream dropped the notification");
+      },
+    } as unknown as McpOutboundFetcher;
+    await expect(call(fetcher, { cachedEra: "legacy" })).rejects.toThrow(/upstream dropped the notification/);
+    expect(methods).toEqual(["initialize", "notifications/initialized"]);
   });
 
   it("still reports the upstream failure rather than swallowing it", async () => {

@@ -712,6 +712,83 @@ describe("MCP probe era handling", () => {
     }
   });
 
+  /*
+   * A legacy Server may answer `initialize` without issuing `Mcp-Session-Id`. The notification is
+   * still required: it is what closes the handshake, and it is the request the session header is
+   * not needed for.
+   */
+  it("sends the initialized notification to a session-less legacy Server", async () => {
+    const legacyCalls: { method: string; body: Record<string, unknown>; headers: Record<string, string> }[] = [];
+    const fetchImpl = vi.fn(async (_url: URL | string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const headers: Record<string, string> = {};
+      new Headers(init?.headers).forEach((value, key) => {
+        headers[key] = value;
+      });
+      const method = String(body.method ?? "");
+      legacyCalls.push({ method, body, headers });
+      if (method === "initialize") {
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: "1", result: { protocolVersion: "2025-06-18", capabilities: {} } }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (method === "notifications/initialized") return new Response("", { status: 202 });
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", result: { tools: [{ name: "sessionless" }] } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const probe = new McpProbe({
+      fetcher: new McpOutboundFetcher({ ...PUBLIC_RESOLVE, allowLoopback: false, fetch: fetchImpl }),
+    });
+    const result = await probe.probe({ ...request(), cachedEra: "legacy", cachedVersion: "2025-06-18" });
+
+    expect(legacyCalls.map((call) => call.method)).toEqual(["initialize", "notifications/initialized", "tools/list"]);
+    const notification = legacyCalls[1];
+    // A notification carries no `id` and needs no session: nothing issued one.
+    expect(notification?.body).toEqual({ jsonrpc: "2.0", method: "notifications/initialized" });
+    expect(notification?.headers["mcp-session-id"]).toBeUndefined();
+    expect(legacyCalls[2]?.headers["mcp-session-id"]).toBeUndefined();
+    expect(result.probeState).toBe("succeeded");
+    expect(result.tools.map((tool) => tool.name)).toEqual(["sessionless"]);
+  });
+
+  /*
+   * The handshake is not complete until the notification is accepted, so a failure there fails the
+   * probe and dispatches nothing after it. A transient transport failure is also not evidence that
+   * the origin changed its protocol, so the cached era must survive it.
+   */
+  it("fails the probe when the initialized notification fails, without listing tools", async () => {
+    const methods: string[] = [];
+    const fetchImpl = vi.fn(async (_url: URL | string, init?: RequestInit) => {
+      const method = (JSON.parse(String(init?.body)) as { method?: string }).method ?? "";
+      methods.push(method);
+      if (method === "initialize") {
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: "1", result: { protocolVersion: "2025-06-18", capabilities: {} } }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      throw new Error("upstream closed the connection");
+    }) as unknown as typeof globalThis.fetch;
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const probe = new McpProbe({
+      fetcher: new McpOutboundFetcher({ ...PUBLIC_RESOLVE, allowLoopback: false, fetch: fetchImpl }),
+      logger,
+    });
+    const result = await probe.probe({ ...request(), cachedEra: "legacy", cachedVersion: "2025-06-18" });
+
+    expect(methods).toEqual(["initialize", "notifications/initialized"]);
+    expect(result.probeState).toBe("failed");
+    expect(result.tools).toEqual([]);
+    expect(result.eraInvalidated).toBe(false);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ cachedEra: "legacy", errorCode: MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE }),
+      "MCP probe failed",
+    );
+  });
+
   it("omits the version header for the legacy version that predates it", async () => {
     /*
      * `2025-03-26` has no `MCP-Protocol-Version` at all, so sending one would be wrong in the other

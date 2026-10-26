@@ -135,6 +135,16 @@ status-only gate read that as a modern peer and failed the probe with `MCP_UPSTR
 `initialize` was ever tried. This applies to the probe's `server/discover` only. The gateway never
 replays on `-32601`, because a `tools/call` can raise it from inside the tool.
 
+A legacy handshake is three requests: `initialize`, `notifications/initialized`, then whatever the
+caller actually wanted. The notification is sent **unconditionally**: it is the message that closes
+the handshake, not a message scoped to a session. A Server may answer `initialize` without issuing
+`Mcp-Session-Id`, and such a peer still waits for `notifications/initialized` before it accepts
+anything else, so sending it only when a session came back left a session-less Server talking to a
+client that had never introduced itself. `Mcp-Session-Id` is attached to the notification only when
+the handshake issued one. A failure of either handshake request fails the operation before anything
+is dispatched: a gateway `tools/call` is never sent, and a probe records `probe_state = failed` with
+no `tools/list`.
+
 The probe API answers `200` whether or not the probe succeeded and never returns the upstream
 status. A failed probe and a legacy fallback each write one `info` line carrying `upstreamStatus`,
 `rpcCode`, and `errorCode` — never the upstream message — so the status the Server really sent is

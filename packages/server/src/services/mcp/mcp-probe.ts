@@ -230,15 +230,13 @@ export class McpProbe {
     const transport = new McpTransport({ clientInfo: this.#clientInfo, fetcher: this.#fetcher });
     const { sessionId, result } = await transport.initialize(input.accountId, input.url, input.authHeaders);
     const payload = asRecord(result);
-    if (sessionId) {
-      await transport.notifyLegacy(
-        input.accountId,
-        input.url,
-        "notifications/initialized",
-        input.authHeaders,
-        sessionId,
-      );
-    }
+    /*
+     * Sent unconditionally, because it is the notification that closes the handshake rather than a
+     * session-scoped message: a peer may answer `initialize` without issuing `Mcp-Session-Id` and
+     * still wait for it. `notifyLegacy` adds the session header only when there is a session, so one
+     * call covers both peers, and no `tools/list` is dispatched if it fails.
+     */
+    await transport.notifyLegacy(input.accountId, input.url, "notifications/initialized", input.authHeaders, sessionId);
     /*
      * The version the peer negotiated, checked against the *legacy* list.
      *

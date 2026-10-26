@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { TaskService } from "../../src/services/tasks/index.js";
+import { parseBenchmarkArgs } from "./args.js";
 import { startBenchmarkContainer, waitForDatabase } from "./container.js";
 import {
   type BenchmarkDatabase,
@@ -615,5 +616,38 @@ describe("benchmark run", () => {
     expect(written.results[0]?.error).toMatchObject({ message: "measurement failed" });
     expect(written.containerRemoved).toBe(true);
     expect(fixture.closed).toEqual(["explain", "service", "admin", "container"]);
+  });
+});
+
+describe("benchmark arguments", () => {
+  const options = { defaultOutput: "/evidence/task-queries", resolvePath: (path: string) => path };
+
+  it("reads the phase and an optional output directory", () => {
+    expect(parseBenchmarkArgs(["node", "entry", "--phase", "after"], options)).toEqual({
+      phase: "after",
+      output: "/evidence/task-queries",
+    });
+    expect(parseBenchmarkArgs(["node", "entry", "--phase", "verify", "--output", "tmp/run"], options)).toEqual({
+      phase: "verify",
+      output: "tmp/run",
+    });
+    // The caller resolves a relative directory, so the run never depends on the working directory.
+    expect(
+      parseBenchmarkArgs(["node", "entry", "--phase", "after", "--output", "tmp/run"], {
+        defaultOutput: "/evidence/task-queries",
+        resolvePath: (path) => `/cwd/${path}`,
+      }).output,
+    ).toBe("/cwd/tmp/run");
+  });
+
+  it("refuses a missing phase, a malformed phase and a flag without a value", () => {
+    expect(() => parseBenchmarkArgs(["node", "entry"], options)).toThrow("Pass --phase <label>");
+    expect(() => parseBenchmarkArgs(["node", "entry", "--phase", "After 1"], options)).toThrow("must match");
+    expect(() => parseBenchmarkArgs(["node", "entry", "--phase", "after", "--output"], options)).toThrow(
+      "--output requires a value",
+    );
+    expect(() => parseBenchmarkArgs(["node", "entry", "--phase", "after", "--dir", "x"], options)).toThrow(
+      'Unknown argument "--dir"',
+    );
   });
 });

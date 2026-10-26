@@ -26,14 +26,13 @@ import { createDatabaseClient } from "../src/db/client.js";
 import { migrateDatabase } from "../src/db/migrate.js";
 import * as schema from "../src/db/schema/index.js";
 import { TaskService } from "../src/services/tasks/index.js";
+import { parseBenchmarkArgs } from "./benchmark/args.js";
 import { runBenchmark } from "./benchmark/run.js";
 
-const phaseIndex = process.argv.indexOf("--phase");
-const phase = process.argv[phaseIndex + 1] ?? "";
-if (!/^[a-z0-9-]+$/.test(phase)) throw new Error("Pass --phase <label>");
-const outputIndex = process.argv.indexOf("--output");
-const defaultOutput = fileURLToPath(new URL("../../../testing/performance/task-queries/", import.meta.url));
-const output = resolve(process.argv[outputIndex + 1] ?? defaultOutput);
+const { phase, output } = parseBenchmarkArgs(process.argv, {
+  defaultOutput: fileURLToPath(new URL("../../../testing/performance/task-queries/", import.meta.url)),
+  resolvePath: resolve,
+});
 const containerName = `opentag-task-bench-${process.pid}`;
 const docker = (args: string[]) => execFileSync("docker", args, { encoding: "utf8" }).trim();
 

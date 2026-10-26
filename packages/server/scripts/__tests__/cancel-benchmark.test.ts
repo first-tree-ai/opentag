@@ -8,7 +8,9 @@
  * it answers the harness's statements the way the real seed does - because a unit test must not start
  * a container.
  */
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   assertStopOutcomes,
@@ -634,6 +636,30 @@ describe("cancellation benchmark production ports", () => {
         loadModule: async () => ({}),
       }),
     ).rejects.toThrow(/does not export CloudDeliveryOwner/);
+  });
+
+  it("keeps the production file, clock and log ports usable on a local path", () => {
+    const deps = defaultCancelBenchmarkDeps({});
+    const directory = mkdtempSync(join(tmpdir(), "opentag-cancel-benchmark-"));
+    const file = join(directory, "results.json");
+    try {
+      deps.file.ensureDirectory(directory);
+      deps.file.write(file, "{}\n");
+      expect(deps.file.read(file)).toBe("{}\n");
+      deps.file.remove(file);
+      expect(existsSync(file)).toBe(false);
+      // Removing an already absent file is a no-op: the cleanup path never fails on a fresh run.
+      deps.file.remove(file);
+      expect(deps.clock.nowIso()).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      expect(deps.clock.elapsedMs()).toBeGreaterThanOrEqual(0);
+      expect(deps.clock.elapsedMs()).toBeGreaterThan(0);
+      const logged = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      deps.log("benchmark line");
+      expect(logged).toHaveBeenCalledWith("benchmark line");
+      logged.mockRestore();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
   });
 
   it("wires the production ports to the tracked fixture and evidence without running anything", () => {

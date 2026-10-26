@@ -461,6 +461,60 @@ describe("AgentService", () => {
     });
   });
 
+  it("buckets the usage window by UTC day and recomputes non-canonical reports exactly", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id, "bucketed-agent", "pi");
+    const binding = await createBinding(created.id);
+    const session = await createSession(binding.id);
+    const firstDay = new Date("2026-08-20T23:30:00.000Z");
+    const secondDay = new Date("2026-08-22T00:30:00.000Z");
+    await createDelivery(binding.id, session.id, {
+      acceptedAt: firstDay,
+      reportedAt: firstDay,
+      usage: { inputTokens: 10, cachedInputTokens: 4, outputTokens: 1 },
+    });
+    await createDelivery(binding.id, session.id, {
+      acceptedAt: secondDay,
+      reportedAt: secondDay,
+      outcome: "failed",
+      usage: { inputTokens: 2, cachedInputTokens: 0, outputTokens: 3 },
+    });
+    // `Number("1e3")` is a safe integer, so this report must count even though SQL cannot prove it;
+    // the per-row parser stays authoritative for every value the aggregate skips.
+    const nonCanonical = await createDelivery(binding.id, session.id, {
+      acceptedAt: secondDay,
+      reportedAt: secondDay,
+      usage: {},
+    });
+    await unitDatabase.engine.query(
+      `update im_message_deliveries set turn_report = '{"usage":{"inputTokens":"1e3"},"outcome":"completed"}'::jsonb where id = $1`,
+      [nonCanonical.id],
+    );
+
+    const usage = await service.getUsageById(bootstrap.userId, created.id, 30);
+    expect(usage).toMatchObject({
+      tasks: 3,
+      failed: 1,
+      measuredTasks: 3,
+      inputTokens: 1016,
+      cachedInputTokens: 4,
+      outputTokens: 4,
+      tokens: 1020,
+    });
+    expect(usage.daily).toHaveLength(31);
+    expect(usage.daily.filter((point) => point.tasks > 0)).toEqual([
+      expect.objectContaining({ date: "2026-08-20", tasks: 1, tokens: 15 }),
+      expect.objectContaining({ date: "2026-08-22", tasks: 2, tokens: 1005 }),
+    ]);
+    expect(usage.daily.filter((point) => point.tasks === 0).every((point) => point.tokens === 0)).toBe(true);
+
+    await unitDatabase.engine.query(
+      `update im_message_deliveries set turn_report = '{"usage":{"inputTokens":"not-a-number"}}'::jsonb where id = $1`,
+      [nonCanonical.id],
+    );
+    await expect(service.getUsageById(bootstrap.userId, created.id, 30)).rejects.toThrow("invalid token count");
+  });
+
   it("counts cloud ledger tokens once while preserving local reports and task counts", async () => {
     const { bootstrap, computer, service: original } = await fixture();
     const created = await createAgent(original, bootstrap.userId, computer.id, "mixed-agent", "pi");

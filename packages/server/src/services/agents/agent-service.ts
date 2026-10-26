@@ -20,7 +20,6 @@ import {
   type ListAgentsResponse,
   normalizeContextTrees,
   RUNTIME_MAX_DURATION_MS,
-  runtimeUsageTotalTokens,
   type UpdateAgentRequest,
   UpdateAgentRequestSchema,
 } from "@opentag/shared";
@@ -47,6 +46,12 @@ import { lockMcpBindings } from "../mcp/index.js";
 import { resolveAgentRuntimeConfig } from "../runtime-config/index.js";
 import type { CloudModelCatalog } from "../sandboxes/cloud-model-catalog.js";
 import { AgentTransferError, type AgentTransferInput, type AgentTransferResult } from "./agent-transfer.js";
+import {
+  deliveryUsageTokenCounts,
+  parseAggregateCount,
+  parseAggregateTokenTotal,
+  readAgentUsageDaily,
+} from "./agent-usage.js";
 import { AgentServiceError, resourceNotFound } from "./errors.js";
 
 type AgentRow = typeof agents.$inferSelect;
@@ -218,72 +223,6 @@ function toAgentSummary(row: AgentSafeRow): AgentSummary {
     updatedAt: row.updatedAt.toISOString(),
     ...(row.computer && row.computer.ownerAccountId !== row.createdByUserId ? { requiresComputerRebind: true } : {}),
   };
-}
-
-interface UsageTokenCounts {
-  cachedInputTokens: number;
-  inputTokens: number;
-  measured: boolean;
-  outputTokens: number;
-  tokens: number;
-}
-
-function deliveryUsageTokenCounts(
-  provider: AgentRuntimeProvider,
-  inputTokens: string | null,
-  cachedInputTokens: string | null,
-  outputTokens: string | null,
-): UsageTokenCounts {
-  const parse = (value: string | null): number | undefined => {
-    if (value === null) return undefined;
-    const result = Number(value);
-    if (!Number.isSafeInteger(result) || result < 0) {
-      throw new Error("Agent usage contains an invalid token count");
-    }
-    return result;
-  };
-  const usage = {
-    inputTokens: parse(inputTokens),
-    cachedInputTokens: parse(cachedInputTokens),
-    outputTokens: parse(outputTokens),
-  };
-  const normalizedInputTokens = (usage.inputTokens ?? 0) + (provider === "codex" ? 0 : (usage.cachedInputTokens ?? 0));
-  return {
-    inputTokens: normalizedInputTokens,
-    cachedInputTokens: usage.cachedInputTokens ?? 0,
-    outputTokens: usage.outputTokens ?? 0,
-    tokens: runtimeUsageTotalTokens(provider, usage),
-    measured: Object.values(usage).some((value) => value !== undefined),
-  };
-}
-
-function parseAggregateCount(value: string | number | null, field: string): number {
-  const result = Number(value ?? 0);
-  if (!Number.isSafeInteger(result) || result < 0) {
-    throw new Error(`Agent usage ${field} total exceeds the safe integer range`);
-  }
-  return result;
-}
-
-function parseAggregateTokenTotal(value: string | number | null): number {
-  const result = Number(value ?? 0);
-  if (!Number.isSafeInteger(result) || result < 0) {
-    throw new Error("Agent usage token total exceeds the safe integer range");
-  }
-  return result;
-}
-
-function addUsageTokenCounts(
-  target: Pick<AgentUsageDetail, "cachedInputTokens" | "inputTokens" | "outputTokens" | "tokens">,
-  value: UsageTokenCounts,
-): void {
-  target.inputTokens += value.inputTokens;
-  target.cachedInputTokens += value.cachedInputTokens;
-  target.outputTokens += value.outputTokens;
-  target.tokens += value.tokens;
-  if (![target.inputTokens, target.cachedInputTokens, target.outputTokens, target.tokens].every(Number.isSafeInteger)) {
-    throw new Error("Agent usage token total exceeds the safe integer range");
-  }
 }
 
 function assertLocalPermissions(kind: "local" | "cloud" | undefined, provider: string, permissions: unknown) {
@@ -839,86 +778,23 @@ export class AgentService {
     const { agent } = await this.#resolveAgentScope(this.#database, callerUserId, agentId);
     const usageEndedAt = this.#now();
     const usageStartedAt = new Date(usageEndedAt.getTime() - windowDays * 24 * 60 * 60 * 1_000);
-    const rows = await this.#database
-      .select({
-        acceptedAt: imMessageDeliveries.acceptedAt,
-        executionOrigin: imMessageDeliveries.executionOrigin,
-        cachedInputTokens: sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,cachedInputTokens}'`,
-        inputTokens: sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,inputTokens}'`,
-        outcome: sql<string | null>`${imMessageDeliveries.turnReport} ->> 'outcome'`,
-        outputTokens: sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,outputTokens}'`,
-      })
-      .from(imMessageDeliveries)
-      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
-      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
-      .where(
-        and(
-          eq(imBindings.agentId, agentId),
-          gte(imMessageDeliveries.acceptedAt, usageStartedAt),
-          lte(imMessageDeliveries.acceptedAt, usageEndedAt),
-        ),
-      )
-      .orderBy(asc(imMessageDeliveries.acceptedAt), asc(imMessageDeliveries.id));
-
+    // One read-only snapshot so the aggregate and its bounded fallback describe the same deliveries.
+    const usage = await this.#database.transaction(
+      async (transaction) =>
+        readAgentUsageDaily(transaction, {
+          agentId,
+          provider: agent.runtimeProvider,
+          startedAt: usageStartedAt,
+          endedAt: usageEndedAt,
+        }),
+      { isolationLevel: "repeatable read", accessMode: "read only" },
+    );
     const result: AgentUsageDetail = {
       windowDays,
       startedAt: usageStartedAt.toISOString(),
       endedAt: usageEndedAt.toISOString(),
-      tasks: 0,
-      measuredTasks: 0,
-      failed: 0,
-      inputTokens: 0,
-      cachedInputTokens: 0,
-      outputTokens: 0,
-      tokens: 0,
-      daily: [],
+      ...usage,
     };
-    const daily = new Map<string, AgentUsageDetail["daily"][number]>();
-    const firstDate = Date.UTC(
-      usageStartedAt.getUTCFullYear(),
-      usageStartedAt.getUTCMonth(),
-      usageStartedAt.getUTCDate(),
-    );
-    const lastDate = Date.UTC(usageEndedAt.getUTCFullYear(), usageEndedAt.getUTCMonth(), usageEndedAt.getUTCDate());
-    for (let timestamp = firstDate; timestamp <= lastDate; timestamp += 24 * 60 * 60 * 1_000) {
-      const date = new Date(timestamp).toISOString().slice(0, 10);
-      daily.set(date, {
-        date,
-        tasks: 0,
-        measuredTasks: 0,
-        inputTokens: 0,
-        cachedInputTokens: 0,
-        outputTokens: 0,
-        tokens: 0,
-      });
-    }
-    for (const row of rows) {
-      if (!row.acceptedAt) continue;
-      result.tasks += 1;
-      if (row.outcome === "failed") result.failed += 1;
-      const tokenCounts =
-        row.executionOrigin === "cloud"
-          ? {
-              // The ledger measures model calls, not tasks; Runner reports cannot prove cloud coverage.
-              measured: false,
-              inputTokens: 0,
-              cachedInputTokens: 0,
-              outputTokens: 0,
-              tokens: 0,
-            }
-          : deliveryUsageTokenCounts(agent.runtimeProvider, row.inputTokens, row.cachedInputTokens, row.outputTokens);
-      if (tokenCounts.measured) result.measuredTasks += 1;
-      addUsageTokenCounts(result, tokenCounts);
-
-      const date = row.acceptedAt.toISOString().slice(0, 10);
-      const point = daily.get(date);
-      if (!point) throw new Error("Agent usage date falls outside the requested window");
-      point.tasks += 1;
-      if (tokenCounts.measured) point.measuredTasks += 1;
-      addUsageTokenCounts(point, tokenCounts);
-      daily.set(date, point);
-    }
-    result.daily = [...daily.values()];
     const cloud = await this.#cloudUsage?.readDetail(callerUserId, windowDays, agentId, usageEndedAt);
     mergeCloudUsage(result, cloud);
     return result;

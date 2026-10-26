@@ -8,6 +8,7 @@ import { z } from "zod";
 import { MCP_ERROR_CODES, McpServiceError } from "./errors.js";
 import type { McpAuthorizationService } from "./mcp-authorization-service.js";
 import type { McpUpstreamCaller } from "./mcp-gateway-upstream.js";
+import { parseMcpParameterHeaders } from "./mcp-parameter-headers.js";
 import { type McpJoinedBinding, McpServerService } from "./mcp-server-service.js";
 
 /**
@@ -188,11 +189,26 @@ function usableMounts(bindings: readonly McpJoinedBinding[], notes: string[]): U
       );
       continue;
     }
-    const tools = readToolSnapshot(authorization.tools);
+    const tools = usableToolSnapshot(authorization, serverName, notes);
     if (tools.length === 0) continue;
     usable.push({ joined, serverName, tools });
   }
   return usable;
+}
+
+function usableToolSnapshot(
+  authorization: NonNullable<McpJoinedBinding["authorization"]>,
+  serverName: string,
+  notes: string[],
+): MCPToolSnapshot[] {
+  const tools = readToolSnapshot(authorization.tools);
+  if (authorization.protocolEra === "legacy") return tools;
+  return tools.filter((tool) => {
+    const parsed = parseMcpParameterHeaders(tool.inputSchema);
+    if (parsed.valid) return true;
+    notes.push(`MCP tool "${composeGatewayToolName(serverName, tool.name)}" was excluded: ${parsed.reason}.`);
+    return false;
+  });
 }
 
 interface ToolCandidate {

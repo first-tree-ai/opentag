@@ -126,6 +126,20 @@ describe("MCP transport headers", () => {
     expect(decodeHeaderValue(encoded as string)).toBe("=?base64?odd?=");
   });
 
+  it("preserves a whitespace-padded tool name on the wire", async () => {
+    const { calls, fetcher } = stubFetch([{ status: 200, body: JSON.stringify({ result: {} }) }]);
+    await new McpTransport({ fetcher }).call(
+      ACCOUNT,
+      "https://mcp.example.com/mcp",
+      "tools/call",
+      { name: " padded " },
+      {},
+    );
+    const header = headersOf(calls[0] as { init: RequestInit })["mcp-name"];
+    expect(header).toBe("=?base64?IHBhZGRlZCA=?=");
+    expect(decodeHeaderValue(header as string)).toBe(" padded ");
+  });
+
   it("mirrors only annotated primitive arguments at their exact property paths", async () => {
     const { calls, fetcher } = stubFetch([{ status: 200, body: JSON.stringify({ result: {} }) }]);
     const inputSchema = {
@@ -184,6 +198,9 @@ describe("MCP transport headers", () => {
   );
 
   it.each([
+    { type: "string", "x-mcp-header": "Owner" },
+    { properties: { owners: { items: { type: "string", "x-mcp-header": "Owner" } } } },
+    { $defs: { owner: { type: "string", "x-mcp-header": "Owner" } } },
     { properties: { owner: { type: "string", "x-mcp-header": "bad\r\nheader" } } },
     { properties: { owner: { type: "string", "x-mcp-header": "" } } },
     { properties: { owner: { type: "string", "x-mcp-header": true } } },

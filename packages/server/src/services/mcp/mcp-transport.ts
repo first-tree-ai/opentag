@@ -8,6 +8,7 @@ import {
   type MCPProtocolEra,
 } from "@opentag/shared";
 import { boundedMcpSummary, MCP_ERROR_CODES, McpServiceError } from "./errors.js";
+import { type McpHeaderParameter, parseMcpParameterHeaders } from "./mcp-parameter-headers.js";
 import type { McpFetchResponse, McpOutboundFetcher } from "./mcp-url-policy.js";
 
 /**
@@ -139,50 +140,33 @@ export function decodeHeaderValue(value: string): string {
 }
 
 function parameterHeaders(inputSchema: unknown, args: unknown): Record<string, string> {
+  const parsed = parseMcpParameterHeaders(inputSchema);
+  if (!parsed.valid) {
+    throw new McpTransportError(
+      MCP_ERROR_CODES.UPSTREAM_ERROR,
+      `The MCP tool has invalid parameter header metadata: ${parsed.reason}`,
+    );
+  }
   const headers: Record<string, string> = {};
-  const names = new Set<string>();
-  const pending = [{ schema: inputSchema, value: args }];
-  while (pending.length > 0) {
-    const current = pending.pop();
-    if (!current) break;
-    for (const [key, schema] of parameterProperties(current.schema)) {
-      const value = isRecord(current.value) && Object.hasOwn(current.value, key) ? current.value[key] : undefined;
-      appendParameterHeader(headers, names, schema, value);
-      pending.push({ schema, value });
-    }
+  for (const parameter of parsed.parameters) {
+    const value = parameterValue(args, parameter.path);
+    if (value === undefined || value === null) continue;
+    headers[`Mcp-Param-${parameter.name}`] = parameterHeaderValue(parameter, value);
   }
   return headers;
 }
 
-function parameterProperties(schema: unknown): [string, Record<string, unknown>][] {
-  if (!isRecord(schema) || !isRecord(schema.properties)) return [];
-  return Object.entries(schema.properties).filter((entry): entry is [string, Record<string, unknown>] =>
-    isRecord(entry[1]),
-  );
-}
-
-function appendParameterHeader(
-  headers: Record<string, string>,
-  names: Set<string>,
-  schema: Record<string, unknown>,
-  value: unknown,
-): void {
-  const name = schema["x-mcp-header"];
-  if (name === undefined) return;
-  if (
-    typeof name !== "string" ||
-    !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) ||
-    names.has(name.toLowerCase()) ||
-    typeof schema.type !== "string" ||
-    !["string", "integer", "boolean"].includes(schema.type)
-  ) {
-    throw new McpTransportError(MCP_ERROR_CODES.UPSTREAM_ERROR, "The MCP tool has invalid parameter header metadata");
+function parameterValue(args: unknown, path: readonly string[]): unknown {
+  let value = args;
+  for (const key of path) {
+    if (!isRecord(value) || !Object.hasOwn(value, key)) return undefined;
+    value = value[key];
   }
-  names.add(name.toLowerCase());
-  if (value !== undefined && value !== null) headers[`Mcp-Param-${name}`] = parameterHeaderValue(schema.type, value);
+  return value;
 }
 
-function parameterHeaderValue(type: string, value: unknown): string {
+function parameterHeaderValue(parameter: McpHeaderParameter, value: unknown): string {
+  const { type, path } = parameter;
   const valid =
     (type === "string" && typeof value === "string") ||
     (type === "boolean" && typeof value === "boolean") ||
@@ -190,7 +174,7 @@ function parameterHeaderValue(type: string, value: unknown): string {
   if (!valid) {
     throw new McpTransportError(
       MCP_ERROR_CODES.UPSTREAM_ERROR,
-      "An MCP parameter header requires its declared primitive type",
+      `An MCP parameter header at ${JSON.stringify(path).slice(0, 160)} requires its declared primitive type`,
     );
   }
   return encodeHeaderValue(String(value));

@@ -14,6 +14,8 @@ does not copy the Account integration's token or share a credential across Agent
 - Existing MCP lifecycle, gateway, and Web directory suites cover the unchanged consumers.
 - Transport and gateway tests cover `x-mcp-header` parameter mirroring against a strict upstream,
   including exact nested paths, primitive values, unsafe header encoding, and refusal without replay.
+- Catalog tests exclude invalid modern annotation definitions from both stored-snapshot listing
+  and call resolution, retain valid siblings, and preserve the legacy catalog.
 
 ## Staging acceptance
 

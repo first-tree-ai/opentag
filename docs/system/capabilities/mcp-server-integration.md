@@ -119,6 +119,14 @@ names, case-insensitive duplicates, and mismatched primitive values before dispa
 are not generated for legacy calls. A `HeaderMismatch` does not automatically replay a tool call;
 reconcile the outcome and re-probe when a remote schema changes.
 
+The modern gateway catalog validates annotation names, primitive types, uniqueness and placement
+before publishing tools. An annotation at the root, in a reference definition, or behind any keyword
+other than a static `properties` chain excludes that tool from both listing and call resolution,
+with a note explaining the exclusion. Valid siblings remain available. The same check applies to
+already-stored snapshots on read, so a re-probe is not needed to remove an invalid tool. Literal
+schema data such as defaults and examples are not annotations. Legacy mounts keep their existing
+tool catalog and ignore this modern extension.
+
 A `Mcp-Method`, `Mcp-Name`, or `Mcp-Param-*` value containing non-ASCII, control characters, or
 leading/trailing whitespace — and any ASCII value that
 merely *looks like* the Base64 sentinel — must be encoded as `=?base64?<base64>?=`. Both halves

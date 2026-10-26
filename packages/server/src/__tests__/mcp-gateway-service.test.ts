@@ -89,6 +89,76 @@ function build(
 }
 
 describe("catalog", () => {
+  it.each([
+    { label: "root", schema: { type: "string", "x-mcp-header": "Owner" } },
+    { label: "items", schema: { properties: { owners: { items: { type: "string", "x-mcp-header": "Owner" } } } } },
+    ...["oneOf", "anyOf", "allOf", "prefixItems"].map((keyword) => ({
+      label: keyword,
+      schema: { [keyword]: [{ properties: { owner: { type: "string", "x-mcp-header": "Owner" } } }] },
+    })),
+    ...["if", "then", "else", "not", "$ref"].map((keyword) => ({
+      label: keyword,
+      schema: { [keyword]: { properties: { owner: { type: "string", "x-mcp-header": "Owner" } } } },
+    })),
+    {
+      label: "referenced definition",
+      schema: {
+        properties: { owner: { $ref: "#/$defs/owner" } },
+        $defs: { owner: { type: "string", "x-mcp-header": "Owner" } },
+      },
+    },
+    { label: "empty name", schema: { properties: { owner: { type: "string", "x-mcp-header": "" } } } },
+    { label: "unsafe name", schema: { properties: { owner: { type: "string", "x-mcp-header": "Owner\r\n" } } } },
+    {
+      label: "duplicate name",
+      schema: {
+        properties: {
+          owner: { type: "string", "x-mcp-header": "Owner" },
+          repo: { type: "string", "x-mcp-header": "owner" },
+        },
+      },
+    },
+    ...["object", "array", "number", "null"].map((type) => ({
+      label: type,
+      schema: { properties: { owner: { type, "x-mcp-header": "Owner" } } },
+    })),
+  ])("withholds an invalid modern tool from stored snapshots and call resolution: $label", async ({ schema }) => {
+    const { service, upstreamCall } = build([
+      mount({ name: "github", tools: [{ name: "valid" }, { name: "invalid", inputSchema: schema }] }),
+    ]);
+    const catalog = await service.catalog(ACCOUNT, AGENT);
+    expect(catalog.tools.map((tool) => tool.name)).toEqual(["github__valid"]);
+    expect(catalog.notes).toEqual([expect.stringContaining('"github__invalid" was excluded')]);
+    await expect(service.callTool({ accountId: ACCOUNT, agentId: AGENT, name: "github__invalid" })).rejects.toThrow(
+      /No MCP tool named/,
+    );
+    expect(upstreamCall).not.toHaveBeenCalled();
+  });
+
+  it("ignores literal annotation data and schema-map keys with the annotation's name", async () => {
+    const inputSchema = {
+      properties: { "x-mcp-header": { type: "string" }, value: { type: "string", "x-mcp-header": "Value" } },
+      $defs: { "x-mcp-header": { type: "string" } },
+      default: { "x-mcp-header": "literal" },
+      examples: [{ "x-mcp-header": "literal" }],
+      dependentRequired: { "x-mcp-header": ["value"] },
+    };
+    const { service } = build([mount({ name: "example", tools: [{ name: "valid", inputSchema }] })]);
+    expect(await service.catalog(ACCOUNT, AGENT)).toMatchObject({ tools: [{ name: "example__valid" }], notes: [] });
+  });
+
+  it("retains legacy tools whose unused header annotations are invalid", async () => {
+    const row = mount({
+      name: "legacy",
+      tools: [{ name: "tool", inputSchema: { "x-mcp-header": "Owner", type: "string" } }],
+    });
+    if (row.authorization) row.authorization.protocolEra = "legacy";
+    const { service, upstreamCall } = build([row]);
+    expect(await service.catalog(ACCOUNT, AGENT)).toMatchObject({ tools: [{ name: "legacy__tool" }], notes: [] });
+    await service.callTool({ accountId: ACCOUNT, agentId: AGENT, name: "legacy__tool" });
+    expect(upstreamCall).toHaveBeenCalledWith(expect.objectContaining({ cachedEra: "legacy" }));
+  });
+
   it("namespaces every upstream tool with its Server name", async () => {
     const { service } = build([
       mount({ name: "linear", tools: [{ name: "create_issue" }] }),

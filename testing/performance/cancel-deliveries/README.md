@@ -21,7 +21,11 @@ retention semantics are untouched: this path opens no transaction, so no transac
 `packages/server/scripts/benchmark-cancel-deliveries.ts` owns a disposable loopback
 PostgreSQL 17 container, applies the checked-in migrations, seeds at least 100000 rows into every
 `public` and `billing` table with constraints and indexes enabled, and measures the same call on the
-same seeded data with two owners:
+same seeded data with two owners. The orchestration lives in `packages/server/scripts/cancel-benchmark.ts`
+and its production ports in `packages/server/scripts/cancel-benchmark-runtime.ts`, so
+`packages/server/scripts/__tests__/cancel-benchmark.test.ts` covers the fixture contract, the
+before/after accounting and the cleanup paths with injected ports - no Docker, database, or network.
+The pair under measurement is:
 
 - `before`: `cloud-delivery-owner.ts` from `d2fc9e8aa045dc1a214ab3f0a953cbdcde088c92` (the audit base,
   read inside the loop; it is on `main`, and `OPENTAG_BENCHMARK_BEFORE_REF` overrides the ref),
@@ -134,16 +138,19 @@ The unit suite `packages/server/src/__tests__/cloud-delivery-owner.test.ts` cove
 
 ```sh
 pnpm --filter @opentag/server exec vitest run src/__tests__/cloud-delivery-owner.test.ts --maxWorkers=2
+pnpm --filter @opentag/server exec vitest run scripts/__tests__/cancel-benchmark.test.ts --maxWorkers=1
 pnpm --filter @opentag/server exec vitest run src/__tests__/integration/cloud-session-concurrency.test.ts \
   src/__tests__/integration/cloud-dispatch-custody.test.ts --maxWorkers=2
 pnpm --filter @opentag/server typecheck
 pnpm check
 ```
 
-Results: the focused unit file passes 56 tests; reverting only `cloud-delivery-owner.ts` to the base
-commit fails the cancellation statement-count tests with `expected 11 to be 2` / `expected 101 to be
-2`, and caching the per-delivery fence read fails the mid-sweep replacement test, so the regressions
-have teeth. Both PostgreSQL integration files pass 13 tests (real PostgreSQL 17, real
+Results: the focused cancellation unit file passes 56 tests, and the benchmark harness passes 25
+tests with no Docker, database or network (measured at 87.5% lines / 84% branches by
+`vitest --coverage` over the three harness files; the harness had no coverage entry before, see the
+shared measurement fix). Reverting only `cloud-delivery-owner.ts` to the base commit fails the
+cancellation statement-count tests with `expected 11 to be 2` / `expected 101 to be 2`, and caching the
+per-delivery fence read fails the mid-sweep replacement test, so the regressions have teeth. Both PostgreSQL integration files pass 13 tests (real PostgreSQL 17, real
 local WebSockets, synthetic Runner responses; the cancellation case cancels one Session without
 touching another Session's authority or completion). Server typecheck and `pnpm check` exit 0.
 No migration was added, so the full server integration suite is not required by this change; the two

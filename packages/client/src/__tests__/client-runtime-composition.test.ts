@@ -228,8 +228,9 @@ describe("createClientRuntime production composition", () => {
       await expect(
         runtime.reconciler.reconcile(reconcileRequest(connection.installationId, { ...snapshot(), provider: "pi" })),
       ).resolves.toMatchObject({ status: "ready" });
-      await runtime.runtimeManager.ensureRuntime("session-1");
-      expect(requestedSessions).toEqual(["session-1"]);
+      const firstRuntime = await runtime.runtimeManager.ensureRuntime("session-1");
+      expect(await runtime.runtimeManager.ensureRuntime("session-1")).toBe(firstRuntime);
+      expect(requestedSessions).toEqual(["session-1", "session-1"]);
       expect(ensureAgent).toHaveBeenCalledTimes(1);
       const [cwd, provider, connections, environment] = ensureAgent.mock.calls[0] ?? [];
       expect(cwd).toBe(await runtime.workspace.cwd("agent-1"));

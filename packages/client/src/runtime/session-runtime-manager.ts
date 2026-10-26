@@ -272,10 +272,14 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     if (!managed) throw new SessionRuntimeNotPreparedError();
     await this.#ensureProviderReady(managed.providerId, signal);
     this.#assertOpen();
+    const contextTreeEnvironment = this.#contextTreeEnvironment?.(sessionId, {
+      cwd: managed.cwd,
+      sources: managed.snapshot.contextTrees,
+    });
     if (managed.runtime && managed.runtime.state.phase !== "closed") return managed.runtime;
     if (managed.start) return waitForStart(managed.start, signal);
 
-    const start = this.#startRuntime(managed).finally(() => {
+    const start = this.#startRuntime(managed, contextTreeEnvironment).finally(() => {
       /* v8 ignore else -- only the owning start clears its own slot. */
       if (managed.start === start) managed.start = undefined;
       this.#starts.delete(start);
@@ -299,7 +303,10 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     return this.#sessions.get(sessionId)?.providerId;
   }
 
-  async #startRuntime(managed: ManagedSessionRuntime): Promise<AgentRuntime> {
+  async #startRuntime(
+    managed: ManagedSessionRuntime,
+    contextTreeEnvironment: Readonly<Record<string, string | undefined>> | undefined,
+  ): Promise<AgentRuntime> {
     const provider = this.#providers.registration(managed.providerId);
     /* v8 ignore next -- registrations are immutable for the lifetime of a managed Session. */
     if (!provider) throw new Error(`Agent Runtime provider is not registered: ${managed.providerId}`);
@@ -324,10 +331,6 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     // runs on every Turn admission, and this runs once per Provider Runtime start. The manager
     // caches connections per workspace, configured tree set, and Provider while rechecking grants
     // and attachments. It never throws, so a failure only changes what the prompt reports.
-    const contextTreeEnvironment = this.#contextTreeEnvironment?.(managed.binding.sessionId, {
-      cwd: managed.cwd,
-      sources: managed.snapshot.contextTrees,
-    });
     const contextTree = await prepareContextTree(
       this.#contextTree,
       managed.cwd,

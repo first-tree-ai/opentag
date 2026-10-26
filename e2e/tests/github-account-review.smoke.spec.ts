@@ -177,6 +177,7 @@ test("active GitHub management exposes the exact account and OAuth authorization
   await expect(settings).toHaveAttribute("href", "https://github.com/settings/applications");
   await expect(settings).toHaveAttribute("target", "_blank");
   await expect(settings).toHaveAttribute("rel", "noopener noreferrer");
+  await expect(help).toHaveCSS("opacity", "1");
   await expectAccessible(page);
   await page.keyboard.press("Escape");
   await expect(help).toBeHidden();
@@ -282,6 +283,7 @@ test("repository read failure retries into a compact OAuth authorization empty r
   await expect(settings).toHaveAttribute("href", "https://github.com/settings/applications");
   await expect(settings).toHaveAttribute("target", "_blank");
   await expect(settings).toHaveAttribute("rel", "noopener noreferrer");
+  await expect(help).toHaveCSS("opacity", "1");
   await expectAccessible(page);
 });
 
@@ -436,7 +438,7 @@ test("repository discovery failure preserves identity and account management", a
   await page.screenshot({ path: test.info().outputPath("discovery-independent.png"), fullPage: true });
 });
 
-test("disconnecting a shared GitHub account requires confirmation before the mutation", async ({ page }) => {
+test("disconnecting the Context Tree GitHub account requires confirmation before the mutation", async ({ page }) => {
   const fixture = await githubFixture(page);
   await page.goto("/account", { waitUntil: "networkidle" });
   const github = page.locator('[data-ui="account-github"]');
@@ -444,7 +446,7 @@ test("disconnecting a shared GitHub account requires confirmation before the mut
   await removeButton.click();
   const dialog = page.getByRole("dialog", { name: "Disconnect GitHub account authorization?" });
   await expect(dialog).toBeVisible();
-  await expect(dialog).toContainText("All your Agents will lose GitHub access through @octocat");
+  await expect(dialog).toContainText("Context Tree will lose access through @octocat");
   await expect(dialog).toContainText("You can revoke it in GitHub settings");
   await expect(dialog.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
   expect(fixture.disconnectCalls, "No shared authorization should be disconnected before confirmation").toBe(0);
@@ -512,8 +514,8 @@ test("GitHub help and cancelled disconnection preserve the unsaved display-name 
   await displayName.fill(draft);
   await page.getByRole("button", { name: "About GitHub authorization" }).click();
   const help = page.getByRole("dialog", { name: "About GitHub authorization" });
-  await expect(help.getByText(/OAuth repository access follows your GitHub account permissions/)).toBeVisible();
-  await expect(help.getByText(/All your Agents share this account authorization and repository access/)).toBeVisible();
+  await expect(help.getByText(/This account authorization is used by Context Tree/)).toBeVisible();
+  await expect(help.getByText(/Each Agent uses its own GitHub MCP connector for GitHub tasks/)).toBeVisible();
   await expect(
     help.getByText(/Organization repositories may require organization approval or SSO authorization/),
   ).toBeVisible();
@@ -558,7 +560,11 @@ test("Chinese GitHub management keeps identity, help and confirmation usable at 
   await page.addInitScript(() => localStorage.setItem("PARAGLIDE_LOCALE", "zh"));
   await page.goto("/account", { waitUntil: "networkidle" });
   const github = page.locator('[data-ui="account-github"]');
-  await expect(github.getByText("授权 GitHub 账户，供你的所有 Agent 共享使用。", { exact: true })).toBeVisible();
+  await expect(
+    github.getByText("为 Context Tree 授权 GitHub。Agent 的 GitHub 操作请在各自的 Connector 中连接 GitHub MCP。", {
+      exact: true,
+    }),
+  ).toBeVisible();
   for (const width of [1440, 320]) {
     await page.setViewportSize({ width, height: 900 });
     await expect(github.getByText("@octocat", { exact: true })).toBeVisible();

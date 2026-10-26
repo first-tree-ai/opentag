@@ -437,10 +437,17 @@ export function requestContextTreeCommand(
 export const CONTEXT_TREE_COMMAND_CLIENT_SOURCE = `
 import http from 'node:http';
 import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 const [cli, ...args] = process.argv.slice(2);
 const managed = args[0] === 'sync' || args[0] === 'write';
-const socketPath = process.env.OPENTAG_CONTEXT_TREE_SOCKET;
-const url = process.env.OPENTAG_CONTEXT_TREE_URL;
+const manifest = process.env.OPENTAG_CONTEXT_TREE_MANIFEST;
+let environment = process.env;
+if (manifest) {
+  try { environment = JSON.parse(readFileSync(manifest, 'utf8')).environment ?? {}; }
+  catch { environment = {}; }
+}
+const socketPath = environment.OPENTAG_CONTEXT_TREE_SOCKET;
+const url = environment.OPENTAG_CONTEXT_TREE_URL;
 if (managed && (socketPath || url)) {
   const target = url ? new URL(url) : undefined;
   if (target && (target.protocol !== 'http:' || target.hostname !== '127.0.0.1')) throw new Error('Invalid Context Tree endpoint');
@@ -452,6 +459,8 @@ if (managed && (socketPath || url)) {
   });
   request.on('error', () => { console.error('Context Tree execution unavailable; do not fall back to GitHub CLI.'); process.exitCode = 1; });
   request.on('timeout', () => request.destroy()); request.end(JSON.stringify({ args }));
+} else if (managed && manifest) {
+  console.error('Context Tree execution unavailable; retain unpublished work.'); process.exitCode = 1;
 } else {
   const child = spawn(process.execPath, [cli, ...args], { stdio: 'inherit' });
   child.on('error', () => { process.exitCode = 1; }); child.on('exit', code => { process.exitCode = code ?? 1; });

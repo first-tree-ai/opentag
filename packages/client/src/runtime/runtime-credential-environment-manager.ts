@@ -614,6 +614,7 @@ export class RuntimeCredentialEnvironmentManager {
       layout,
       slackApiHost: adapter.slackApiHost,
     });
+    Object.assign(environment, { OPENTAG_CONTEXT_TREE_MANIFEST: store.manifestPath(sessionId) });
     if (contextTreeGateway?.socketPath)
       Object.assign(environment, { OPENTAG_CONTEXT_TREE_SOCKET: contextTreeGateway.socketPath });
     await store.publish({

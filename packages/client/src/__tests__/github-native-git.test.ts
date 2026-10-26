@@ -236,6 +236,7 @@ describe.skipIf(process.platform !== "linux")("native Git Cloud published transp
     });
     const relay = {
       executionId,
+      contextTreeExecution: true,
       providers: [{ provider: "github" }],
       localHandleFor: () => "otrh_fixture",
       cliMetadataFor: () => undefined,

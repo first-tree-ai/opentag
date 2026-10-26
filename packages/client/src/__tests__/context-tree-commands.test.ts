@@ -6,7 +6,11 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CONTEXT_TREE_COMMAND_WORKER_SOURCE } from "../runner/context-tree-command-worker.js";
 import { resolveContextTreePackage, runContextTreeCli } from "../runtime/context-tree.js";
-import { ContextTreeCommandGateway, requestContextTreeCommand } from "../runtime/context-tree-commands.js";
+import {
+  CONTEXT_TREE_COMMAND_CLIENT_SOURCE,
+  ContextTreeCommandGateway,
+  requestContextTreeCommand,
+} from "../runtime/context-tree-commands.js";
 import { configureContextTrees } from "../runtime/context-tree-connections.js";
 import type { RuntimeCredentialRelay } from "../runtime/runtime-credential-relay.js";
 
@@ -228,9 +232,27 @@ describe("Context Tree command boundary", () => {
       await gateway.close();
       const later = makeGateway();
       cleanups.push(() => later.close());
-      const finished = await later.run(["write", "finish", session.id, "--message", "docs: decision", "--publish"]);
-      expect(finished.code, finished.stdout).toBe(0);
+      await later.listen("socket");
+      const manifest = join(root, "current.json"),
+        client = join(root, "context-tree-client.mjs");
+      await writeFile(client, CONTEXT_TREE_COMMAND_CLIENT_SOURCE);
+      await writeFile(manifest, JSON.stringify({ environment: { OPENTAG_CONTEXT_TREE_SOCKET: later.socketPath } }));
+      const providerEnvironment = {
+        ...environment,
+        OPENTAG_CONTEXT_TREE_SOCKET: gateway.socketPath,
+        OPENTAG_CONTEXT_TREE_MANIFEST: manifest,
+      };
+      const finished = await executeFile(
+        process.execPath,
+        [client, pack.cliPath, "write", "finish", session.id, "--message", "docs: decision", "--publish"],
+        { env: providerEnvironment },
+      );
       expect(JSON.parse(finished.stdout).outcome).toBe("published");
+      await later.close();
+      await rm(manifest);
+      await expect(
+        executeFile(process.execPath, [client, pack.cliPath, "sync"], { env: providerEnvironment }),
+      ).rejects.toMatchObject({ stderr: expect.stringContaining("Context Tree execution unavailable") });
       expect(await git("--git-dir", remote, "show", "main:docs/decision.md")).toContain("Use MCP for GitHub.");
       await expect(readFile(join(root, "routing", `${session.id}.json`))).rejects.toMatchObject({ code: "ENOENT" });
       expect(owner.openContextTree).toHaveBeenCalledTimes(3);

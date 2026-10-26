@@ -50,6 +50,7 @@ const allowedUntranslatedValues = new Set([
   "Token",
   "Tokens",
   "Context Tree",
+  "Context Tree GitHub",
   "Soul",
   "MCP",
   "refs/heads/master",

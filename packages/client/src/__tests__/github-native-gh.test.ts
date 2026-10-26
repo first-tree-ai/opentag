@@ -302,6 +302,7 @@ describe.skipIf(!binary || process.platform !== "linux")("native gh Cloud publis
     });
     const relay = {
       executionId,
+      contextTreeExecution: true,
       providers: [{ provider: "github" }],
       localHandleFor: () => "otrh_cloud_fixture",
       cliMetadataFor: () => undefined,

@@ -14,6 +14,7 @@ import {
   evaluateCoverageFloors,
   formatTestFailureLines,
   projectCoverageIncludes,
+  projectWorkerArgs,
   ratchetCoverageFloors,
   sourceFilesUnder,
   summarizeTestResults,
@@ -498,4 +499,26 @@ test("manifest validation fails closed when a declared source root holds no meas
     assert.ok(result.root.unmatchedPatterns.includes("apps/cli/src/**/*.{ts,tsx}"));
     assert.deepEqual(result.root.missing, []);
   });
+});
+
+test("the spawned-CLI suites run on the worker count their own test script uses", () => {
+  const byName = Object.fromEntries(COVERAGE_PROJECTS.map((project) => [project.name, project]));
+  assert.deepEqual(projectWorkerArgs(byName.cli), ["--maxWorkers=1"]);
+  assert.deepEqual(projectWorkerArgs(byName.client), ["--maxWorkers=1"]);
+  // Everything else keeps the config default: only the two suites that assert on fixed windows around
+  // spawned child processes are narrowed, and their includes, assertions and timeouts are untouched.
+  for (const project of COVERAGE_PROJECTS.filter((entry) => !["cli", "client"].includes(entry.name))) {
+    assert.equal(project.workers, undefined, `${project.name} must keep the config default worker count`);
+    assert.deepEqual(projectWorkerArgs(project), []);
+  }
+  // A project may not declare a nonsensical override.
+  assert.deepEqual(projectWorkerArgs({ name: "x", root: "x", sources: ["x/src"], workers: 0 }), []);
+  assert.deepEqual(projectWorkerArgs({ name: "x", root: "x", sources: ["x/src"], workers: 2 }), ["--maxWorkers=2"]);
+});
+
+test("the runner forwards the per-project worker override to Vitest", async () => {
+  const source = await readFile(join(repoRoot, "scripts/unit-coverage.mjs"), "utf8");
+  assert.match(source, /\.\.\.projectWorkerArgs\(project\)/);
+  // The narrowing must not touch how the project's files are selected.
+  assert.match(source, /\.\.\.includes\.map\(\(pattern\) => `--coverage\.include=\$\{pattern\}`\)/);
 });

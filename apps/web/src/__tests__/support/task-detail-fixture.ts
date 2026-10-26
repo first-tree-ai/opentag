@@ -3,18 +3,22 @@ import { vi } from "vitest";
 import { browserApi } from "../../api.js";
 
 /**
- * The Web reads the bounded Task detail: the first page from `taskDetail`, and every later
- * conversation page from `taskTurns`. These fixtures are written as whole detail pages, exactly as
- * the views assert on them, so `detailPage` splits one into the two section pages the Server sends
- * and `mockDetail` queues the pages in request order and answers each call in the shape it expects.
- * An `Error` in the queue stands for a refused request.
+ * The Web reads the bounded Task detail: the first page from `taskDetail` with only the sections it
+ * renders, and every later conversation page from `taskTurns`. These fixtures are written as whole
+ * detail pages, exactly as the views assert on them, so `detailPage` splits one into the section
+ * pages the Server sends — honouring the requested sections, as the Server does — and `mockDetail`
+ * queues the pages in request order and answers each call in the shape it expects. An `Error` in the
+ * queue stands for a refused request.
  */
-export function detailPage(detail: TaskDetail): TaskDetailPage {
+export function detailPage(detail: TaskDetail, sections?: readonly string[]): TaskDetailPage {
+  const wants = (section: string) => sections === undefined || sections.includes(section);
   return {
     task: detail.task,
-    turns: { items: detail.turns, nextCursor: detail.nextCursor },
-    internalSessions: { items: detail.internalSessions, nextCursor: null },
-    collaborationMessages: { items: detail.collaborationMessages, nextCursor: null },
+    ...(wants("turns") ? { turns: { items: detail.turns, nextCursor: detail.nextCursor } } : {}),
+    ...(wants("internal-sessions") ? { internalSessions: { items: detail.internalSessions, nextCursor: null } } : {}),
+    ...(wants("collaboration-messages")
+      ? { collaborationMessages: { items: detail.collaborationMessages, nextCursor: null } }
+      : {}),
   };
 }
 
@@ -29,7 +33,9 @@ export function mockDetail(...responses: (TaskDetail | Error)[]) {
     if (next instanceof Error) throw next;
     return next;
   }
-  const detail = vi.spyOn(browserApi, "taskDetail").mockImplementation(async () => detailPage(take()));
+  const detail = vi
+    .spyOn(browserApi, "taskDetail")
+    .mockImplementation(async (_sessionId, sections) => detailPage(take(), sections));
   const turns = vi.spyOn(browserApi, "taskTurns").mockImplementation(async () => {
     const page = take();
     return { items: page.turns, nextCursor: page.nextCursor };

@@ -251,12 +251,24 @@ export const TASK_SECTION_MAX_LIMIT = 100;
  * The bounded Task detail: one page of each section, the first page when no cursor is given. It is
  * the contract new readers use; `TaskDetailSchema` remains the legacy complete answer.
  */
+/**
+ * The sections of a bounded Task detail. A reader names the ones it renders, and the Server reads
+ * only those: a conversation view never pays for the Internal Session or collaboration history it
+ * would discard.
+ */
+export const TASK_DETAIL_SECTIONS = ["turns", "internal-sessions", "collaboration-messages"] as const;
+export const TaskDetailSectionSchema = z.enum(TASK_DETAIL_SECTIONS);
+export type TaskDetailSection = z.infer<typeof TaskDetailSectionSchema>;
+/** Every section, which is what the first page returns when the caller names none. */
+export const TASK_DETAIL_ALL_SECTIONS = TASK_DETAIL_SECTIONS;
+
 export const TaskDetailPageSchema = z
   .object({
     task: TaskSummarySchema,
-    turns: TaskTurnPageSchema,
-    internalSessions: TaskInternalSessionPageSchema,
-    collaborationMessages: TaskCollaborationMessagePageSchema,
+    // Present exactly when the caller asked for the section; the request decides, not a missing value.
+    turns: TaskTurnPageSchema.optional(),
+    internalSessions: TaskInternalSessionPageSchema.optional(),
+    collaborationMessages: TaskCollaborationMessagePageSchema.optional(),
   })
   .strict();
 

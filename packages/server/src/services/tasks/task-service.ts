@@ -4,12 +4,14 @@ import type {
   TaskCollaborationMessage,
   TaskDetail,
   TaskDetailPage,
+  TaskDetailSection,
   TaskInternalSession,
   TaskSummary,
   TaskTurn,
 } from "@opentag/shared";
 import {
   TASK_CANCELLED_DELIVERY_REASON,
+  TASK_DETAIL_ALL_SECTIONS,
   TASK_SECTION_DEFAULT_LIMIT,
   TASK_SECTION_MAX_LIMIT,
   TaskTitleSchema,
@@ -19,7 +21,7 @@ import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { imMessageDeliveries, sessions } from "../../db/schema/index.js";
 import { DISPATCH_CLAIM_PREFIX } from "../../runtime/im-delivery-claim.js";
 import { AuthServiceError } from "../auth/index.js";
-import { cursorTimestamp, encodeCursor, parseCursor, type TaskCursor } from "./task-cursor.js";
+import { cursorText, cursorTimestamp, encodeCursor, parseCursor, type TaskCursor } from "./task-cursor.js";
 import {
   type CollaborationMessageRow,
   type InternalSessionRow,
@@ -63,6 +65,14 @@ export interface GetTaskOptions {
 export interface TaskSectionOptions {
   cursor?: string;
   limit?: number;
+}
+
+/**
+ * A first page request names the sections it will render. The Server reads only those, so a
+ * conversation view never pays for the Internal Session or collaboration history it discards.
+ */
+export interface TaskDetailOptions extends TaskSectionOptions {
+  sections?: readonly TaskDetailSection[];
 }
 
 export interface TaskServiceOptions {
@@ -116,7 +126,7 @@ export class TaskService {
     const last = page.at(-1);
     return {
       tasks: page.map(toSummary),
-      nextCursor: rows.length > options.limit && last ? encodeCursor(last.lastActivityAt, last.id) : null,
+      nextCursor: rows.length > options.limit && last ? encodeCursor(last.cursorAt, last.id) : null,
     };
   }
 
@@ -143,29 +153,37 @@ export class TaskService {
       turns: page.map(toTurn),
       internalSessions: internalSessions.map(toInternalSession),
       collaborationMessages: collaboration.map(toCollaborationMessage),
-      nextCursor: turns.length > options.limit && last ? encodeCursor(last.occurredAt, last.deliveryId) : null,
+      nextCursor: turns.length > options.limit && last ? encodeCursor(last.cursorAt, last.deliveryId) : null,
     };
   }
 
   /**
-   * The bounded detail: one page of Turns, Internal Sessions and collaboration messages, each with
+   * The bounded detail: one page of the sections the caller names — all three by default — each with
    * its own cursor. A reader that needs more of a section follows that section's cursor instead of
-   * re-reading a conversation, so the cost of each answer is set by the page size and not by the
-   * size of the topic's history. Authorization and all three sections come from one read snapshot.
+   * re-reading a conversation, and a reader that renders only the conversation asks for the Turns
+   * alone, so it never reads history it would discard. Authorization and every requested section
+   * come from one read snapshot.
    */
-  async detail(accountId: string, taskId: string, options: TaskSectionOptions = {}): Promise<TaskDetailPage> {
+  async detail(accountId: string, taskId: string, options: TaskDetailOptions = {}): Promise<TaskDetailPage> {
     const limit = sectionLimit(options.limit);
+    const sections = options.sections ?? TASK_DETAIL_ALL_SECTIONS;
+    const wanted = (section: TaskDetailSection) => sections.includes(section);
     return this.#readSnapshot(accountId, taskId, async (executor, scope) => {
       const [row] = await this.#summaryRows(executor, accountId, { scope, limit: 1 });
-      const turns = await this.#turnRows(executor, accountId, scope, undefined, limit + 1);
-      const internalSessions = await this.#internalSessionRows(executor, accountId, scope, { limit: limit + 1 });
-      const collaboration = await this.#collaborationRows(executor, accountId, scope, { limit: limit + 1 });
-      return {
-        task: toSummary(requireRow(row)),
-        turns: turnPage(turns, limit),
-        internalSessions: internalSessionPage(internalSessions, limit),
-        collaborationMessages: collaborationPage(collaboration, limit),
-      };
+      const page: TaskDetailPage = { task: toSummary(requireRow(row)) };
+      if (wanted("turns"))
+        page.turns = turnPage(await this.#turnRows(executor, accountId, scope, undefined, limit + 1), limit);
+      if (wanted("internal-sessions"))
+        page.internalSessions = internalSessionPage(
+          await this.#internalSessionRows(executor, accountId, scope, { limit: limit + 1 }),
+          limit,
+        );
+      if (wanted("collaboration-messages"))
+        page.collaborationMessages = collaborationPage(
+          await this.#collaborationRows(executor, accountId, scope, { limit: limit + 1 }),
+          limit,
+        );
+      return page;
     });
   }
 
@@ -324,7 +342,7 @@ export class TaskService {
     const last = page.at(-1);
     return {
       items: page.map(toReply),
-      nextCursor: rows.length > options.limit && last ? encodeCursor(last.occurredAt, last.id) : null,
+      nextCursor: rows.length > options.limit && last ? encodeCursor(last.cursorAt, last.id) : null,
     };
   }
 
@@ -560,11 +578,12 @@ export class TaskService {
         m.author_kind as "authorKind",
         m.author_display_name as "authorDisplayName",
         m.content,
-        m.occurred_at as "occurredAt"
+        m.occurred_at as "occurredAt",
+        ${cursorText(sql`m.occurred_at`)} as "cursorAt"
       from executions e
       inner join im_messages m on m.id = e.message_id
       where true
-        ${cursor ? sql`and (m.occurred_at, e.id) < (${cursorTimestamp(cursor)}::timestamptz, ${cursor.id}::uuid)` : sql``}
+        ${cursor ? sql`and (m.occurred_at, e.id) < (${cursorTimestamp(cursor)}, ${cursor.id}::uuid)` : sql``}
       order by m.occurred_at desc, e.id desc
       limit ${limit}
     `);
@@ -604,7 +623,8 @@ export class TaskService {
         m.author_kind as "authorKind",
         m.author_display_name as "authorDisplayName",
         m.content,
-        m.occurred_at as "occurredAt"
+        m.occurred_at as "occurredAt",
+        ${cursorText(sql`m.occurred_at`)} as "cursorAt"
       from im_messages m
       inner join im_bindings b on b.id = m.im_binding_id
       left join thread_roots tr
@@ -616,7 +636,7 @@ export class TaskService {
         and m.direction = 'outbound'
         and m.operation = 'created'
         ${scope.topicKey === null ? sql`` : sql`and ${topicKeyExpression("m", "tr")} = ${scope.topicKey}`}
-        ${cursor ? sql`and (m.occurred_at, m.id) < (${cursorTimestamp(cursor)}::timestamptz, ${cursor.id}::uuid)` : sql``}
+        ${cursor ? sql`and (m.occurred_at, m.id) < (${cursorTimestamp(cursor)}, ${cursor.id}::uuid)` : sql``}
       order by m.occurred_at desc, m.id desc
       limit ${limit}
     `);
@@ -652,14 +672,15 @@ export class TaskService {
         s.runtime_model as "runtimeModel",
         s.runtime_reasoning_effort as "runtimeReasoningEffort",
         s.ended_at as "endedAt",
-        s.created_at as "createdAt"
+        s.created_at as "createdAt",
+        ${cursorText(sql`s.created_at`)} as "cursorAt"
       from (
         -- The keyset order and the page are decided on the related identities alone; only the rows
         -- that survive resolve their Session, so the page never joins the whole related set.
         select r.id
         from internal_related r
         where true
-          ${page.cursor ? sql`and (r.created_at, r.id) > (${cursorTimestamp(page.cursor)}::timestamptz, ${page.cursor.id}::uuid)` : sql``}
+          ${page.cursor ? sql`and (r.created_at, r.id) > (${cursorTimestamp(page.cursor)}, ${page.cursor.id}::uuid)` : sql``}
         order by r.created_at asc, r.id asc
         ${page.limit === undefined ? sql`` : sql`limit ${page.limit}`}
       ) p
@@ -696,7 +717,8 @@ export class TaskService {
         sm.attempt_count as "attemptCount",
         sm.last_error_code as "lastErrorCode",
         sm.created_at as "createdAt",
-        sm.updated_at as "updatedAt"
+        sm.updated_at as "updatedAt",
+        ${cursorText(sql`sm.created_at`)} as "cursorAt"
       from (
         -- The page is cut on the message identity alone, so it reads an ordered index rather than
         -- every message body; only the rows that survive resolve their stored content.
@@ -706,7 +728,7 @@ export class TaskService {
             m.source_session_id = any (array(select id from related_sessions))
             or m.target_session_id = any (array(select id from related_sessions))
           )
-          ${page.cursor ? sql`and (m.created_at, m.id) > (${cursorTimestamp(page.cursor)}::timestamptz, ${page.cursor.id}::uuid)` : sql``}
+          ${page.cursor ? sql`and (m.created_at, m.id) > (${cursorTimestamp(page.cursor)}, ${page.cursor.id}::uuid)` : sql``}
         order by m.created_at asc, m.id asc
         ${page.limit === undefined ? sql`` : sql`limit ${page.limit}`}
       ) p
@@ -766,7 +788,8 @@ export class TaskService {
         p.latest_reason as "deliveryReason",
         p.latest_running as "latestRunning",
         p.latest_reported_at as "reportedAt",
-        p.latest_turn_report as "turnReport"
+        p.latest_turn_report as "turnReport",
+        ${cursorText(sql`p.last_activity_at`)} as "cursorAt"
       from page p
       inner join scoped_bindings sb on sb.binding_id = p.im_binding_id
       left join channels ch on ch.im_binding_id = p.im_binding_id and ch.channel_id = p.channel_id
@@ -806,7 +829,7 @@ function turnPage(rows: TaskTurnRow[], limit: number): { items: TaskTurn[]; next
   const last = page.at(-1);
   return {
     items: page.map(toTurn),
-    nextCursor: rows.length > limit && last ? encodeCursor(last.occurredAt, last.deliveryId) : null,
+    nextCursor: rows.length > limit && last ? encodeCursor(last.cursorAt, last.deliveryId) : null,
   };
 }
 
@@ -818,7 +841,7 @@ function internalSessionPage(
   const last = page.at(-1);
   return {
     items: page.map(toInternalSession),
-    nextCursor: rows.length > limit && last ? encodeCursor(last.createdAt, last.id) : null,
+    nextCursor: rows.length > limit && last ? encodeCursor(last.cursorAt, last.id) : null,
   };
 }
 
@@ -830,7 +853,7 @@ function collaborationPage(
   const last = page.at(-1);
   return {
     items: page.map(toCollaborationMessage),
-    nextCursor: rows.length > limit && last ? encodeCursor(last.createdAt, last.id) : null,
+    nextCursor: rows.length > limit && last ? encodeCursor(last.cursorAt, last.id) : null,
   };
 }
 

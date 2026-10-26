@@ -939,15 +939,15 @@ async function readTaskDetail(
   }
   if (cursor) {
     const turns = await browserApi.taskTurns(taskId, cursor);
-    return { turns: turns.items, internalSessions: [], collaborationMessages: [], nextCursor: turns.nextCursor };
+    return { turns: turns.items, nextCursor: turns.nextCursor };
   }
-  const page = await browserApi.taskDetail(taskId);
+  // The conversation renders the summary and the Turns; the other two sections are not asked for,
+  // and the Server does not read them.
+  const page = await browserApi.taskDetail(taskId, ["turns"]);
   return {
     task: page.task,
-    turns: page.turns.items,
-    internalSessions: page.internalSessions.items,
-    collaborationMessages: page.collaborationMessages.items,
-    nextCursor: page.turns.nextCursor,
+    turns: page.turns?.items ?? [],
+    nextCursor: page.turns?.nextCursor ?? null,
   };
 }
 

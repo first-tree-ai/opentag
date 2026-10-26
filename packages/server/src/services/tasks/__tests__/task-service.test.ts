@@ -1322,6 +1322,12 @@ describe("TaskService", () => {
   });
 });
 
+/** A section the request named; a missing one is a contract failure, not an empty page. */
+function present<T>(value: T | undefined): T {
+  if (value === undefined) throw new Error("The requested Task section was not returned");
+  return value;
+}
+
 describe("TaskService bounded detail", () => {
   /** One private chat with one Turn per message, all accepted and reported, in its channel Session. */
   async function turnsFor(bindingId: string, channelId: string, count: number) {
@@ -1349,17 +1355,20 @@ describe("TaskService bounded detail", () => {
     const taskId = root[0]?.id;
     if (!taskId) throw new Error("The bounded fixture lost its Task");
 
-    const first = await service.detail(bootstrap.userId, taskId);
+    const first = await service.detail(bootstrap.userId, taskId, { sections: ["turns"] });
     expect(first.task.id).toBe(taskId);
-    expect(first.turns.items).toHaveLength(TASK_SECTION_DEFAULT_LIMIT);
-    expect(first.turns.nextCursor).toEqual(expect.any(String));
+    expect(present(first.turns).items).toHaveLength(TASK_SECTION_DEFAULT_LIMIT);
+    expect(present(first.turns).nextCursor).toEqual(expect.any(String));
+    // A selective read returns the sections it named and nothing else.
+    expect(first.internalSessions).toBeUndefined();
+    expect(first.collaborationMessages).toBeUndefined();
     // The default page is 20 because that is what one screen of a conversation needs.
     expect(TASK_SECTION_DEFAULT_LIMIT).toBe(20);
 
     const secondTurns = await service.listTurns(bootstrap.userId, taskId, {
-      cursor: first.turns.nextCursor ?? undefined,
+      cursor: present(first.turns).nextCursor ?? undefined,
     });
-    const firstIds = new Set(first.turns.items.map((turn) => turn.message.id));
+    const firstIds = new Set(present(first.turns).items.map((turn) => turn.message.id));
     expect(secondTurns.items).toHaveLength(TASK_SECTION_DEFAULT_LIMIT);
     expect(secondTurns.items.every((turn) => !firstIds.has(turn.message.id))).toBe(true);
     expect(secondTurns.items[0]?.message.occurredAt).toBe(minutes(24).toISOString());
@@ -1517,9 +1526,9 @@ describe("TaskService bounded detail", () => {
     await turnsFor(binding.id, DM, 3);
     const taskId = (await unitDatabase.database.select().from(imMessages))[0]?.id;
     if (!taskId) throw new Error("The bounded fixture lost its Task");
-    const page = await service.detail(bootstrap.userId, taskId, { limit: 10_000 });
+    const page = await service.detail(bootstrap.userId, taskId, { limit: 10_000, sections: ["turns"] });
     expect(TASK_SECTION_MAX_LIMIT).toBe(100);
-    expect(page.turns.items).toHaveLength(3);
+    expect(present(page.turns).items).toHaveLength(3);
     const clamped = await service.listTurns(bootstrap.userId, taskId, { limit: 10_000 });
     expect(clamped.items).toHaveLength(3);
   });
@@ -1542,8 +1551,8 @@ describe("TaskService bounded detail", () => {
     expect(listed.tasks).toHaveLength(1);
     // The ambient copy is not an execution of a topic the thread owns, so the direct one decides.
     expect(listed.tasks[0]?.status).toBe("completed");
-    const detail = await service.detail(bootstrap.userId, root.id);
-    expect(detail.turns.items.map((turn) => turn.deliveryId)).toEqual([direct.id]);
+    const detail = await service.detail(bootstrap.userId, root.id, { sections: ["turns"] });
+    expect(present(detail.turns).items.map((turn) => turn.deliveryId)).toEqual([direct.id]);
     expect(detail.task.status).toBe("completed");
     expect(ambient.id).toEqual(expect.any(String));
   });
@@ -1595,26 +1604,28 @@ describe("TaskService bounded detail at topic scale", () => {
     const elapsedMs = Date.now() - startedAt;
     // The page is the page size whatever the history holds; nothing here reads 5,000 rows into memory.
     expect(first.task.id).toBe(root.id);
-    expect(first.internalSessions.items).toHaveLength(TASK_SECTION_DEFAULT_LIMIT);
-    expect(first.collaborationMessages.items).toHaveLength(TASK_SECTION_DEFAULT_LIMIT);
-    expect(first.internalSessions.nextCursor).toEqual(expect.any(String));
-    expect(first.collaborationMessages.nextCursor).toEqual(expect.any(String));
+    expect(present(first.internalSessions).items).toHaveLength(TASK_SECTION_DEFAULT_LIMIT);
+    expect(present(first.collaborationMessages).items).toHaveLength(TASK_SECTION_DEFAULT_LIMIT);
+    expect(present(first.internalSessions).nextCursor).toEqual(expect.any(String));
+    expect(present(first.collaborationMessages).nextCursor).toEqual(expect.any(String));
     // The seed itself takes seconds in the embedded engine; the read must stay far below it.
     expect(elapsedMs).toBeLessThan(10_000);
 
     const secondPage = await service.listInternalSessions(bootstrap.userId, root.id, {
-      cursor: first.internalSessions.nextCursor ?? undefined,
+      cursor: present(first.internalSessions).nextCursor ?? undefined,
     });
-    const firstIds = new Set(first.internalSessions.items.map((session) => session.id));
+    const firstIds = new Set(present(first.internalSessions).items.map((session) => session.id));
     expect(secondPage.items).toHaveLength(TASK_SECTION_DEFAULT_LIMIT);
     expect(secondPage.items.every((session) => !firstIds.has(session.id))).toBe(true);
     // The cursor continues strictly after the last Session of the previous page.
-    expect((secondPage.items[0]?.createdAt ?? "") > (first.internalSessions.items.at(-1)?.createdAt ?? "")).toBe(true);
+    expect(
+      (secondPage.items[0]?.createdAt ?? "") > (present(first.internalSessions).items.at(-1)?.createdAt ?? ""),
+    ).toBe(true);
 
     const secondMessages = await service.listCollaborationMessages(bootstrap.userId, root.id, {
-      cursor: first.collaborationMessages.nextCursor ?? undefined,
+      cursor: present(first.collaborationMessages).nextCursor ?? undefined,
     });
-    const firstMessageIds = new Set(first.collaborationMessages.items.map((message) => message.id));
+    const firstMessageIds = new Set(present(first.collaborationMessages).items.map((message) => message.id));
     expect(secondMessages.items).toHaveLength(TASK_SECTION_DEFAULT_LIMIT);
     expect(secondMessages.items.every((message) => !firstMessageIds.has(message.id))).toBe(true);
 

@@ -163,12 +163,20 @@ function services() {
         collaborationMessages: [],
         nextCursor: null,
       }),
-      detail: vi.fn().mockResolvedValue({
-        task: taskSummary,
-        turns: { items: [], nextCursor: null },
-        internalSessions: { items: [], nextCursor: null },
-        collaborationMessages: { items: [], nextCursor: null },
-      }),
+      detail: vi
+        .fn()
+        .mockImplementation(async (_accountId: string, _taskId: string, options: { sections?: string[] }) => ({
+          task: taskSummary,
+          ...(options.sections === undefined || options.sections.includes("turns")
+            ? { turns: { items: [], nextCursor: null } }
+            : {}),
+          ...(options.sections === undefined || options.sections.includes("internal-sessions")
+            ? { internalSessions: { items: [], nextCursor: null } }
+            : {}),
+          ...(options.sections === undefined || options.sections.includes("collaboration-messages")
+            ? { collaborationMessages: { items: [], nextCursor: null } }
+            : {}),
+        })),
       listTurns: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
       listInternalSessions: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
       listCollaborationMessages: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
@@ -509,8 +517,41 @@ describe("Account-native management collections", () => {
       internalSessions: { items: [], nextCursor: null },
       collaborationMessages: { items: [], nextCursor: null },
     });
-    // The first section page is twenty rows unless the caller asks for another size.
+    // The first section page is twenty rows unless the caller asks for another size, and names no
+    // sections, so the Server answers with every section.
     expect(service.taskService.detail).toHaveBeenCalledWith(userId, taskSummary.id, { limit: 20 });
+
+    // A reader that renders only the conversation names the Turns, and is answered with those alone.
+    const selective = await app.inject({
+      method: "GET",
+      url: `${taskDetailPath(taskSummary.id)}?sections=turns`,
+      headers: authorization,
+    });
+    expect(selective.statusCode).toBe(200);
+    expect(selective.json()).toEqual({ task: taskSummary, turns: { items: [], nextCursor: null } });
+    expect(service.taskService.detail).toHaveBeenLastCalledWith(userId, taskSummary.id, {
+      limit: 20,
+      sections: ["turns"],
+    });
+
+    const twoSections = await app.inject({
+      method: "GET",
+      url: `${taskDetailPath(taskSummary.id)}?sections=turns,internal-sessions`,
+      headers: authorization,
+    });
+    expect(twoSections.statusCode).toBe(200);
+    expect(service.taskService.detail).toHaveBeenLastCalledWith(userId, taskSummary.id, {
+      limit: 20,
+      sections: ["turns", "internal-sessions"],
+    });
+
+    // An unknown section name is a rejected request, not a silently smaller page.
+    const unknownSection = await app.inject({
+      method: "GET",
+      url: `${taskDetailPath(taskSummary.id)}?sections=turns,replies`,
+      headers: authorization,
+    });
+    expect(unknownSection.statusCode).toBe(400);
 
     for (const [section, read] of [
       ["turns", service.taskService.listTurns],
@@ -547,7 +588,8 @@ describe("Account-native management collections", () => {
       headers: authorization,
     });
     expect(cursorOnFirstPage.statusCode).toBe(400);
-    expect(service.taskService.detail).toHaveBeenCalledTimes(1);
+    // Every accepted read above went through the service once; the rejected ones never did.
+    expect(service.taskService.detail).toHaveBeenCalledTimes(3);
   });
 
   it("reads the Task's captured replies with the authenticated scope and bounded paging", async () => {

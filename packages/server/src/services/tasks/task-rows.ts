@@ -42,6 +42,11 @@ export interface TaskSummaryRow extends Record<string, unknown> {
   latestRunning: boolean | null;
   reportedAt: Date | string | null;
   turnReport: TurnReportRequest | null;
+  /**
+   * The exact `(last_activity_at)` key of this row as UTC text with microseconds. The keyset cursor
+   * is built from it, never from the millisecond `Date` next to it.
+   */
+  cursorAt: string;
 }
 
 export interface TaskTurnRow extends Record<string, unknown> {
@@ -72,6 +77,8 @@ export interface TaskTurnRow extends Record<string, unknown> {
     resources?: ImContentV1["resources"];
   };
   occurredAt: Date | string;
+  /** The exact `occurred_at` key of this row, at the precision the page was ordered by. */
+  cursorAt: string;
 }
 
 export interface InternalSessionRow extends Record<string, unknown> {
@@ -81,6 +88,8 @@ export interface InternalSessionRow extends Record<string, unknown> {
   runtimeReasoningEffort: string | null;
   endedAt: Date | string | null;
   createdAt: Date | string;
+  /** The exact `created_at` key of this row, at the precision the page was ordered by. */
+  cursorAt: string;
 }
 
 export interface TaskReplyRow extends Record<string, unknown> {
@@ -102,6 +111,8 @@ export interface TaskReplyRow extends Record<string, unknown> {
     };
   };
   occurredAt: Date | string;
+  /** The exact `occurred_at` key of this row, at the precision the page was ordered by. */
+  cursorAt: string;
 }
 
 export interface CollaborationMessageRow extends Record<string, unknown> {
@@ -115,6 +126,8 @@ export interface CollaborationMessageRow extends Record<string, unknown> {
   lastErrorCode: string | null;
   createdAt: Date | string;
   updatedAt: Date | string;
+  /** The exact `created_at` key of this row, at the precision the page was ordered by. */
+  cursorAt: string;
 }
 
 export function toIso(value: Date | string): string {

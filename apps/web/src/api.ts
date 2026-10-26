@@ -202,6 +202,7 @@ import {
   type TaskDetail,
   type TaskDetailPage,
   TaskDetailPageSchema,
+  type TaskDetailSection,
   type TaskInternalSessionPage,
   TaskInternalSessionPageSchema,
   type TaskTitleUpdateRequest,
@@ -376,12 +377,14 @@ export class BrowserApi {
   }
 
   /**
-   * The bounded Task detail: one page of Turns, Internal Sessions and collaboration messages, each
-   * with its own cursor. The legacy complete answer at `taskByIdPath` is not read here, so no view
-   * can depend on an unbounded section.
+   * The bounded Task detail: one page of the named sections — all of them when none is named — each
+   * with its own cursor. Naming a subset is what keeps a view from paying for a section it discards;
+   * the legacy complete answer at `taskByIdPath` is not read here, so no view can depend on an
+   * unbounded section.
    */
-  taskDetail(sessionId: string): Promise<TaskDetailPage> {
-    return this.request(taskDetailPath(sessionId), TaskDetailPageSchema);
+  taskDetail(sessionId: string, sections?: readonly TaskDetailSection[]): Promise<TaskDetailPage> {
+    const query = sections ? `?${new URLSearchParams({ sections: sections.join(",") }).toString()}` : "";
+    return this.request(`${taskDetailPath(sessionId)}${query}`, TaskDetailPageSchema);
   }
 
   taskTurns(sessionId: string, cursor?: string): Promise<TaskTurnPage> {

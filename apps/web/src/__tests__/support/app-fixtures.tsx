@@ -642,57 +642,61 @@ export function installApi(
     if (path === "/api/v1/sessions" || path.startsWith("/api/v1/sessions?")) {
       return json({ tasks: [taskSummary], nextCursor: null });
     }
-    // The bounded detail: one page per section, each with its own cursor.
+    // The bounded detail: one page per section, each with its own cursor. A caller that names
+    // sections gets only those, exactly as the Server answers.
+    const storedTaskTurns = [
+      {
+        deliveryId: "33333333-3333-4333-8333-333333333333",
+        attention: "direct",
+        delivery: {
+          state: "accepted",
+          attemptCount: 1,
+          acceptedAt: "2026-08-20T00:01:00.000Z",
+          steeredAt: null,
+          expiresAt: "2026-08-21T00:00:00.000Z",
+          reason: null,
+          lastErrorCode: null,
+        },
+        message: {
+          id: "44444444-4444-4444-8444-444444444444",
+          externalMessageId: "om_debug",
+          operation: "created",
+          authorKind: "human",
+          authorDisplayName: "Mia",
+          fallbackText: "Please investigate the failed deployment.",
+          truncated: false,
+          occurredAt: "2026-08-20T00:00:00.000Z",
+        },
+        absorbedBy: null,
+        report: {
+          turnId: "turn-debug",
+          outcome: "completed",
+          executionEffects: "completed",
+          finalText: "Stored runtime output",
+          errorReason: null,
+          usage: null,
+          traceSummary: { lastSequence: 2, droppedEvents: 0 },
+          outgoingReplies: null,
+          reportedAt: "2026-08-20T00:02:00.000Z",
+        },
+      },
+    ];
     if (path === `/api/v1/sessions/${taskSessionId}/detail`) {
       return json({
         task: taskSummary,
-        turns: {
-          items: [
-            {
-              deliveryId: "33333333-3333-4333-8333-333333333333",
-              attention: "direct",
-              delivery: {
-                state: "accepted",
-                attemptCount: 1,
-                acceptedAt: "2026-08-20T00:01:00.000Z",
-                steeredAt: null,
-                expiresAt: "2026-08-21T00:00:00.000Z",
-                reason: null,
-                lastErrorCode: null,
-              },
-              message: {
-                id: "44444444-4444-4444-8444-444444444444",
-                externalMessageId: "om_debug",
-                operation: "created",
-                authorKind: "human",
-                authorDisplayName: "Mia",
-                fallbackText: "Please investigate the failed deployment.",
-                truncated: false,
-                occurredAt: "2026-08-20T00:00:00.000Z",
-              },
-              absorbedBy: null,
-              report: {
-                turnId: "turn-debug",
-                outcome: "completed",
-                executionEffects: "completed",
-                finalText: "Stored runtime output",
-                errorReason: null,
-                usage: null,
-                traceSummary: { lastSequence: 2, droppedEvents: 0 },
-                outgoingReplies: null,
-                reportedAt: "2026-08-20T00:02:00.000Z",
-              },
-            },
-          ],
-          nextCursor: null,
-        },
+        turns: { items: storedTaskTurns, nextCursor: null },
         internalSessions: { items: [], nextCursor: null },
         collaborationMessages: { items: [], nextCursor: null },
       });
     }
+    // The conversation's first page names the Turns alone; a later page continues that section.
+    if (path === `/api/v1/sessions/${taskSessionId}/detail?sections=turns`) {
+      return json({ task: taskSummary, turns: { items: storedTaskTurns, nextCursor: null } });
+    }
     if (path === `/api/v1/sessions/${taskSessionId}/detail/turns`) {
       return json({ items: [], nextCursor: null });
     }
+
     if (path === "/api/v1/agents" && init?.method === "POST") {
       if (options.agentCreateError) {
         if (options.agentCreateError === "conflict") {

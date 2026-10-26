@@ -56,6 +56,7 @@ import {
   TaskCollaborationMessagePageSchema,
   TaskDetailPageSchema,
   TaskDetailSchema,
+  TaskDetailSectionSchema,
   TaskInternalSessionPageSchema,
   TaskTitleUpdateRequestSchema,
   TaskTitleUpdateResponseSchema,
@@ -103,10 +104,21 @@ const TaskSectionQuerySchema = z
     limit: z.coerce.number().int().min(1).max(TASK_SECTION_MAX_LIMIT).default(TASK_SECTION_DEFAULT_LIMIT),
   })
   .strict();
-/** The first page of every section. It takes no cursor: each section's own cursor continues it. */
+/**
+ * The first page of the named sections, every section when none is named. It takes no cursor: each
+ * section's own cursor continues it. Naming a subset is what keeps a reader from paying for a
+ * section it discards.
+ */
 const TaskDetailPageQuerySchema = z
   .object({
     limit: z.coerce.number().int().min(1).max(TASK_SECTION_MAX_LIMIT).default(TASK_SECTION_DEFAULT_LIMIT),
+    sections: z
+      .string()
+      .min(1)
+      .max(120)
+      .transform((value) => value.split(","))
+      .pipe(z.array(TaskDetailSectionSchema).min(1))
+      .optional(),
   })
   .strict();
 const TaskRepliesQuerySchema = z
@@ -280,7 +292,10 @@ export function registerAccountRoutes(
       const { sessionId } = parseRequest(TaskParamsSchema, request.params);
       const query = parseRequest(TaskDetailPageQuerySchema, request.query);
       const response = TaskDetailPageSchema.parse(
-        await taskService.detail(accountId(request), sessionId, { limit: query.limit }),
+        await taskService.detail(accountId(request), sessionId, {
+          limit: query.limit,
+          ...(query.sections ? { sections: query.sections } : {}),
+        }),
       );
       return reply.header("Cache-Control", "no-store").code(200).send(response);
     });

@@ -320,7 +320,7 @@ export function topicCtes(input: TopicQueryInput): SQL {
  */
 export function topicPageCtes(input: {
   kind?: "channel" | "thread";
-  cursor?: { at: Date; id: string };
+  cursor?: { at: string; id: string };
   limit: number;
 }): SQL {
   const kindFilter = sql`
@@ -363,7 +363,7 @@ export function topicPageCtes(input: {
       select *
       from topic_page
       where true
-        ${input.cursor ? sql`and (last_activity_at, anchor_id) < (${input.cursor.at.toISOString()}::timestamptz, ${input.cursor.id}::uuid)` : sql``}
+        ${input.cursor ? sql`and (last_activity_at, anchor_id) < (${input.cursor.at}::timestamptz, ${input.cursor.id}::uuid)` : sql``}
       order by last_activity_at desc, anchor_id desc
       limit ${input.limit}
     )

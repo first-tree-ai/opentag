@@ -1,15 +1,13 @@
-import type { TaskCollaborationMessage, TaskInternalSession, TaskSummary, TaskTurn } from "@opentag/shared/browser";
+import type { TaskSummary, TaskTurn } from "@opentag/shared/browser";
 
 /**
- * One page of the Task detail as the Web reads it. The Server sends each section with its own
- * cursor; the view keeps the first page's section rows and the Turn cursor the conversation
- * continues with, so "Load earlier activity" pages the Turns and nothing else.
+ * One page of the Task detail as the Web reads it: the summary, the Turns, and the cursor the
+ * conversation continues with. The summary is present on the first page only; a later Turn page has
+ * none to repeat. The Server's other two sections — Internal Sessions and collaboration messages —
+ * are not read here because no view renders them.
  */
 export interface TaskDetailView {
-  /** Present on the first page only; a later Turn page has no summary to repeat. */
   task?: TaskSummary;
   turns: TaskTurn[];
-  internalSessions: TaskInternalSession[];
-  collaborationMessages: TaskCollaborationMessage[];
   nextCursor: string | null;
 }

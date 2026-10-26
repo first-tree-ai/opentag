@@ -115,10 +115,21 @@ export class McpUpstreamCaller {
    * peer may drop at any time, and a stale session id fails the call it was meant to serve; paying
    * one extra round trip on the rarer era is the cheaper mistake. Both requests come out of the same
    * per-Account concurrency budget, so this cannot be used to double an Account's outbound spend.
+   *
+   * All three requests carry the caller's `signal`, not just the `tools/call` the turn asked for. A
+   * cancelled turn must not open a session and then close it by disappearing: that spends the
+   * Account's outbound budget and leaves the peer mid-handshake for an answer nobody will read. So
+   * a pre-aborted signal dials nothing at all, and one that fires mid-handshake ends the call at the
+   * hop in flight rather than at the tool call.
    */
   async #callLegacy(input: McpUpstreamCallInput): Promise<McpUpstreamCallResult> {
     const transport = new McpTransport({ clientInfo: this.#clientInfo, fetcher: this.#fetcher });
-    const { sessionId, result: handshake } = await transport.initialize(input.accountId, input.url, input.authHeaders);
+    const { sessionId, result: handshake } = await transport.initialize(
+      input.accountId,
+      input.url,
+      input.authHeaders,
+      input.signal ? { signal: input.signal } : {},
+    );
     /*
      * The negotiated version is checked against the *legacy* list before it is spoken, for the same
      * reason the probe does it: the supported set includes the modern version, so a legacy peer that

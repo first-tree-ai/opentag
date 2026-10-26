@@ -151,6 +151,33 @@ function call(
   });
 }
 
+/**
+ * Abort the controller once the notification's own request has been answered.
+ *
+ * The wrapper waits for the notification hop to settle before aborting, so the abort lands after the
+ * handshake step completed and before the next hop starts — the only externally reachable version of
+ * "the caller cancelled between the handshake and the call". It also records every hop that reached
+ * the gate, which is how the between-hop test tells "the call was refused before dialing" apart from
+ * "the notification failed first".
+ */
+function abortAfterNotification(
+  fetcher: McpOutboundFetcher,
+  controller: AbortController,
+): { fetcher: McpOutboundFetcher; attempted: string[] } {
+  const attempted: string[] = [];
+  const wrapper: Pick<McpOutboundFetcher, "fetchOutbound"> = {
+    fetchOutbound: async (accountId, url, init = {}) => {
+      const body = JSON.parse(String(init.body ?? "{}")) as Record<string, unknown>;
+      const method = String(body.method ?? "");
+      attempted.push(method);
+      const response = await fetcher.fetchOutbound(accountId, url, init);
+      if (method === "notifications/initialized") controller.abort();
+      return response;
+    },
+  };
+  return { fetcher: wrapper as McpOutboundFetcher, attempted };
+}
+
 describe("a handshake the caller already cancelled", () => {
   it("issues no outbound request at all on the legacy path", async () => {
     const gate = scriptedGate();
@@ -176,7 +203,7 @@ describe("a handshake the caller already cancelled", () => {
   });
 });
 
-describe("a handshake cancelled in flight", () => {
+describe("a handshake cancelled while it is under way", () => {
   it("ends `initialize` promptly and never sends the notification or the tool call", async () => {
     const gate = scriptedGate({ hang: ["initialize"] });
     const controller = new AbortController();
@@ -210,10 +237,11 @@ describe("a handshake cancelled in flight", () => {
   });
 
   /*
-   * A signal that fires after the notification has already been answered is still in time: the tool
-   * call is the request that matters, and the gate refuses it before dialing rather than after.
+   * A signal that fires while the tool call is already on the wire cancels that call. The
+   * version-refusal retry rule is about protocol eras, never about a caller that left, so the only
+   * guarantee left at that point is that the call is not dispatched a second time.
    */
-  it("refuses the tool call when the abort lands between the handshake and the call", async () => {
+  it("cancels an in-flight `tools/call` and never dispatches it again", async () => {
     const gate = scriptedGate({ hang: ["tools/call"] });
     const controller = new AbortController();
     const pending = call(gate.fetcher(), { signal: controller.signal });
@@ -221,11 +249,31 @@ describe("a handshake cancelled in flight", () => {
       await gate.reached("tools/call");
       controller.abort();
       expectAborted(await outcomeWithin(pending, 1_000));
+      // The call had already left. Nothing followed it: no second `tools/call`, no other hop.
       expect(gate.methods()).toEqual(["initialize", "notifications/initialized", "tools/call"]);
     } finally {
       gate.release();
       await outcomeWithin(pending, 100);
     }
+  });
+
+  /*
+   * The window between the notification's answer and the call's dispatch is where an abort still
+   * has to prevent the call. Production code has no hook inside that window, so the test opens it at
+   * the fetcher boundary: the abort fires after the notification's own `fetchOutbound` has already
+   * resolved, which is strictly before `notifyLegacy` returns and the call hop begins.
+   */
+  it("refuses the tool call when the abort lands between the handshake and the call", async () => {
+    const gate = scriptedGate();
+    const controller = new AbortController();
+    const wrapped = abortAfterNotification(gate.fetcher(), controller);
+    await expect(call(wrapped.fetcher, { signal: controller.signal })).rejects.toMatchObject({
+      code: MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE,
+      detail: { cause: "aborted" },
+    });
+    // The call hop was reached and the gate refused it before dialing, so nothing left the process.
+    expect(wrapped.attempted).toEqual(["initialize", "notifications/initialized", "tools/call"]);
+    expect(gate.methods()).toEqual(["initialize", "notifications/initialized"]);
   });
 });
 

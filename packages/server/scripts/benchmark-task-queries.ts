@@ -1,11 +1,11 @@
 /**
  * Task-scoped query benchmark: the Task list, the legacy complete detail, and the bounded detail
- * sections, measured on the tracked 100,000-rows-per-table fixture.
+ * first pages and section continuations, measured on the tracked 100,000-rows-per-table fixture.
  *
- * This file is the composition root only — arguments, Docker, PostgreSQL, migrations and the service.
- * The measurement and container logic live in `scripts/benchmark/`, beside this file, where unit
- * tests drive them through injected ports; importing those modules never starts a container, and
- * importing this file is never done by a test.
+ * This file is only the wiring: arguments, Docker, PostgreSQL, migrations and file output. The run
+ * itself, the measurement and the container checks live in `scripts/benchmark/`, beside this file,
+ * where unit tests drive them through injected ports. Importing those modules never starts a
+ * container, and no test imports this file.
  *
  * It owns one disposable loopback container, never reads `DATABASE_URL` or a `.env` file, applies the
  * real migrations, keeps constraints and indexes enabled, and uses the service client's default query
@@ -18,7 +18,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
@@ -26,128 +26,73 @@ import { createDatabaseClient } from "../src/db/client.js";
 import { migrateDatabase } from "../src/db/migrate.js";
 import * as schema from "../src/db/schema/index.js";
 import { TaskService } from "../src/services/tasks/index.js";
-import { startBenchmarkContainer, waitForDatabase } from "./benchmark/container.js";
-import {
-  type BenchmarkReport,
-  runTaskQueriesBenchmark,
-  type Statement,
-  seedDatabase,
-  splitSeed,
-  verifyRowCounts,
-} from "./benchmark/measure.js";
+import { runBenchmark } from "./benchmark/run.js";
 
-function argument(name: string, fallback?: string): string {
-  const index = process.argv.indexOf(name);
-  const value = index >= 0 ? process.argv[index + 1] : undefined;
-  return value ?? fallback ?? "";
-}
-
-const phase = argument("--phase");
+const phaseIndex = process.argv.indexOf("--phase");
+const phase = process.argv[phaseIndex + 1] ?? "";
 if (!/^[a-z0-9-]+$/.test(phase)) throw new Error("Pass --phase <label>");
-const output = resolve(
-  argument("--output", fileURLToPath(new URL("../../../testing/performance/task-queries/", import.meta.url))),
-);
-const explainDir = join(output, "explain", phase);
+const outputIndex = process.argv.indexOf("--output");
+const defaultOutput = fileURLToPath(new URL("../../../testing/performance/task-queries/", import.meta.url));
+const output = resolve(process.argv[outputIndex + 1] ?? defaultOutput);
+const containerName = `opentag-task-bench-${process.pid}`;
 const docker = (args: string[]) => execFileSync("docker", args, { encoding: "utf8" }).trim();
 
-mkdirSync(explainDir, { recursive: true });
-const container = startBenchmarkContainer({
+/** One single-connection client, used for the fixture and for `EXPLAIN`. */
+function openConnection(url: string) {
+  const sql = postgres(url, { max: 1, onnotice: () => undefined });
+  return {
+    database: { unsafe: (query: string, params?: readonly unknown[]) => sql.unsafe(query, params as never[]) },
+    end: () => sql.end(),
+  };
+}
+
+await runBenchmark({
+  phase,
+  output,
   docker,
-  name: `opentag-task-bench-${process.pid}`,
-  labelKey: "opentag.benchmark",
+  containerName,
   labelValue: `task-queries-${phase}`,
-  log: (line) => console.log(line),
-});
-const report: BenchmarkReport = { phase, results: [] };
-const resultsPath = join(output, `results-${phase}.json`);
-const save = () => writeFileSync(resultsPath, `${JSON.stringify(report, null, 2)}\n`);
-const admin = postgres(container.url, { max: 1, onnotice: () => undefined });
-let client: ReturnType<typeof createDatabaseClient> | undefined;
-try {
-  await waitForDatabase(() => admin`select 1`);
-  const migratedAt = performance.now();
-  await migrateDatabase(container.url, fileURLToPath(new URL("../drizzle/", import.meta.url)));
-  report.environment = {
-    commit: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
-    // Source cleanliness only: the evidence directory is not a code change, so verifying a committed
-    // tree records `dirty: false` however often the run repeats.
-    dirty:
-      execFileSync("git", ["status", "--porcelain", "--", ".", ":!testing/performance"], {
-        encoding: "utf8",
-      }).trim() !== "",
+  openAdmin: openConnection,
+  openExplain: openConnection,
+  openService(url) {
+    const client = createDatabaseClient(url);
+    const statements: { query: string; params: unknown[] }[] = [];
+    const database = drizzle(client.sql, {
+      schema,
+      logger: {
+        logQuery(query, params) {
+          statements.push({ query, params });
+        },
+      },
+    });
+    const drain = () => statements.splice(0, statements.length);
+    return {
+      service: new TaskService(database, { now: () => new Date("2026-10-26T08:00:00Z") }),
+      sink: { take: drain, reset: drain },
+      timeouts: client.timeouts,
+      end: () => client.sql.end(),
+    };
+  },
+  migrate: (url) => migrateDatabase(url, fileURLToPath(new URL("../drizzle/", import.meta.url))),
+  readSeed: () => readFileSync(new URL("./task-queries-fixture.sql", import.meta.url), "utf8"),
+  environment: () => ({
     node: process.version,
     platform: process.platform,
     arch: process.arch,
-    ...container.environment,
-    postgres: (
-      await admin`select version(), current_setting('shared_buffers') as shared_buffers, current_setting('work_mem') as work_mem, current_setting('max_connections') as max_connections`
-    )[0],
-    migrationCount: (await admin`select count(*)::int as n from drizzle.__drizzle_migrations`)[0]?.n,
-    migrationMs: performance.now() - migratedAt,
-    startedAt: new Date().toISOString(),
-    method:
-      "One warm-up and five sequential samples per case unless stated. Single sequential local Docker microbenchmark, not production capacity. Default service query deadlines and connection pool. SQL counts come from the service query logger. EXPLAIN (ANALYZE, BUFFERS, SETTINGS, FORMAT JSON) runs once per distinct SELECT outside the timed samples. Values include Node mapping and loopback transport; responseBytes exclude HTTP encoding. No external providers.",
-  };
-  const adminPort = { unsafe: (query: string, params?: readonly unknown[]) => admin.unsafe(query, params as never[]) };
-  report.seedTimings = await seedDatabase(
-    adminPort,
-    splitSeed(readFileSync(new URL("./task-queries-fixture.sql", import.meta.url), "utf8")),
-    () => performance.now(),
-    (line) => console.log(line),
-  );
-  await admin`analyze`;
-  report.rowCounts = await verifyRowCounts(adminPort);
-  report.databaseBytes = (await admin`select pg_database_size(current_database())::text as bytes`)[0]?.bytes;
-
-  client = createDatabaseClient(container.url);
-  report.timeouts = client.timeouts;
-  let statements: Statement[] = [];
-  const database = drizzle(client.sql, {
-    schema,
-    logger: {
-      logQuery(query, params) {
-        statements.push({ query, params });
-      },
-    },
-  });
-  const now = () => new Date("2026-10-26T08:00:00Z");
-  const id = (kind: number, number: number) =>
-    `${String(kind).padStart(8, "0")}-0000-4000-8000-${String(number).padStart(12, "0")}`;
-  const explainSql = postgres(container.url, { max: 1, onnotice: () => undefined });
-  try {
-    await runTaskQueriesBenchmark(
-      {
-        admin: adminPort,
-        explainSql: { unsafe: (query, params) => explainSql.unsafe(query, params as never[]) },
-        service: new TaskService(database, { now }),
-        sink: {
-          take: () => statements,
-          reset: () => {
-            statements = [];
-          },
-        },
-        output: { dir: explainDir, mkdir: mkdirSync, write: writeFileSync },
-        report,
-        clock: () => performance.now(),
-        log: (line) => console.log(line),
-        save,
-      },
-      { hotAccountId: id(1, 1), tenAgentAccountId: id(1, 2) },
-    );
-    report.finishedAt = new Date().toISOString();
-  } finally {
-    await explainSql.end();
-  }
-} finally {
-  try {
-    await client?.sql.end();
-  } finally {
-    try {
-      await admin.end();
-    } finally {
-      container.stop();
-      report.containerRemoved = true;
-      save();
-    }
-  }
-}
+    dockerImage: docker(["inspect", "--format", "{{.Image}}", containerName]),
+    dockerResources: JSON.parse(docker(["info", "--format", '{"cpus":{{.NCPU}},"memoryBytes":{{.MemTotal}}}'])),
+  }),
+  mkdir: (path) => mkdirSync(path, { recursive: true }),
+  write: (path, contents) => writeFileSync(path, contents),
+  gitHead: () => execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+  // Source cleanliness only: the evidence directory is not a code change.
+  gitDirty: () =>
+    execFileSync("git", ["status", "--porcelain", "--", ".", ":!testing/performance"], { encoding: "utf8" }).trim() !==
+    "",
+  clock: () => performance.now(),
+  log: (line) => console.log(line),
+  ids: {
+    hotAccountId: "00000001-0000-4000-8000-000000000001",
+    tenAgentAccountId: "00000001-0000-4000-8000-000000000002",
+  },
+});

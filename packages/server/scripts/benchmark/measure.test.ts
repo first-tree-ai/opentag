@@ -14,6 +14,7 @@ import {
   splitSeed,
   verifyRowCounts,
 } from "./measure.js";
+import { runBenchmark } from "./run.js";
 
 /**
  * The benchmark is evidence, so its own arithmetic is tested rather than trusted: a wrong median, a
@@ -451,5 +452,168 @@ describe("benchmark container", () => {
         { attempts: 2, sleep: async () => undefined },
       ),
     ).rejects.toThrow("connection refused");
+  });
+});
+
+/** The docker CLI answers the run needs, keyed by the command it asks for. */
+function fakeDockerCommand(args: string[], closed: string[]): string {
+  const answers: Record<string, string> = {
+    port: "127.0.0.1:54321",
+    info: '{"cpus":4,"memoryBytes":8}',
+  };
+  if (args[0] === "rm") closed.push("container");
+  if (args[0] === "inspect") return args[2]?.includes(".Image") ? "sha256:image" : "task-queries-test";
+  return answers[args[0] ?? ""] ?? "";
+}
+
+describe("benchmark run", () => {
+  const TASK = { id: TASK_ID, title: "Task" };
+
+  /** A wiring stub: every port answers without Docker, PostgreSQL or the filesystem. */
+  function wiring(options: { failVerification?: boolean; failMeasurement?: boolean } = {}) {
+    const writes: { path: string; contents: string }[] = [];
+    const logs: string[] = [];
+    const closed: string[] = [];
+    const adminCalls: string[] = [];
+    // A table rather than a branch chain: each statement the run issues, matched by a fragment.
+    const adminResponses: [string, Record<string, unknown>[]][] = [
+      ["from pg_class", [{ schema: "public", name: "im_messages" }]],
+      ['from "public"."im_messages"', [{ n: options.failVerification ? 1 : 100_000 }]],
+      ["select version()", [{ version: "PostgreSQL 17" }]],
+      ["drizzle.__drizzle_migrations", [{ n: 69 }]],
+      ["pg_database_size", [{ bytes: "1262" }]],
+    ];
+    const admin = {
+      database: {
+        async unsafe(query: string) {
+          adminCalls.push(query);
+          const match = adminResponses.find(([fragment]) => query.includes(fragment));
+          return match?.[1] ?? [];
+        },
+      },
+      end: async () => {
+        closed.push("admin");
+      },
+    };
+    const service = {
+      async list() {
+        if (options.failMeasurement) throw new Error("measurement failed");
+        return { tasks: [TASK], nextCursor: null };
+      },
+      async get(_account: string, id: string) {
+        return { task: { id }, turns: [], internalSessions: [], collaborationMessages: [], nextCursor: null };
+      },
+      async listReplies() {
+        return { items: [], nextCursor: null };
+      },
+      async detail(_account: string, id: string, input: { sections?: string[] }) {
+        return {
+          task: { id },
+          ...(input.sections === undefined
+            ? {
+                turns: { items: [], nextCursor: null },
+                internalSessions: { items: [], nextCursor: null },
+                collaborationMessages: { items: [], nextCursor: null },
+              }
+            : {}),
+        };
+      },
+      async listTurns() {
+        return { items: [], nextCursor: null };
+      },
+      async listInternalSessions() {
+        return { items: [], nextCursor: null };
+      },
+      async listCollaborationMessages() {
+        return { items: [], nextCursor: null };
+      },
+    };
+    const ports = {
+      phase: "test",
+      output: "/evidence",
+      docker: (args: string[]) => fakeDockerCommand(args, closed),
+      containerName: "opentag-task-queries-test",
+      labelValue: "task-queries-test",
+      openAdmin: () => admin,
+      openExplain: () => ({
+        database: {
+          unsafe: async () => [
+            { "QUERY PLAN": [{ Plan: { "Node Type": "Result", "Actual Rows": 1 }, "Execution Time": 0.1 }] },
+          ],
+        },
+        end: async () => {
+          closed.push("explain");
+        },
+      }),
+      openService: () => ({
+        service: service as never,
+        sink: { take: () => [], reset: () => undefined },
+        timeouts: { statementTimeoutMs: 30_000 },
+        end: async () => {
+          closed.push("service");
+        },
+      }),
+      migrate: async () => undefined,
+      readSeed: () => "insert into public.a values (1);\n--> statement-breakpoint\ninsert into public.b values (2);",
+      environment: () => ({ node: "v24", dockerImage: "sha256:image" }),
+      mkdir: () => undefined,
+      write: (path: string, contents: string) => writes.push({ path, contents }),
+      gitHead: () => "abcdef0",
+      gitDirty: () => false,
+      clock: () => 0,
+      log: (line: string) => logs.push(line),
+      ids: { hotAccountId: HOT_ACCOUNT, tenAgentAccountId: TEN_AGENT_ACCOUNT },
+    };
+    return { ports, writes, logs, closed, adminCalls, service };
+  }
+
+  it("writes one evidence file per phase, describing the environment it measured", async () => {
+    const fixture = wiring();
+    const report = await runBenchmark(fixture.ports as never);
+    expect(report.environment).toMatchObject({
+      commit: "abcdef0",
+      dirty: false,
+      node: "v24",
+      migrationCount: 69,
+      postgres: { version: "PostgreSQL 17" },
+      method: expect.stringContaining("microbenchmark"),
+    });
+    expect(report.rowCounts).toEqual([{ table: "public.im_messages", rows: 100_000 }]);
+    expect(report.databaseBytes).toBe("1262");
+    expect(report.seedTimings).toEqual([
+      { table: "public.a", elapsedMs: 0 },
+      { table: "public.b", elapsedMs: 0 },
+    ]);
+    expect(report.containerRemoved).toBe(true);
+    // The results file is written as the run progresses and once at the end.
+    expect(fixture.writes.at(-1)?.path).toBe("/evidence/results-test.json");
+    expect(JSON.parse(fixture.writes.at(-1)?.contents ?? "{}")).toMatchObject({ phase: "test" });
+    // Every client is closed and the container removed, in the order that keeps the container last.
+    expect(fixture.closed).toEqual(["explain", "service", "admin", "container"]);
+  });
+
+  it("stops before measuring when the fixture lost rows, and still cleans up", async () => {
+    const fixture = wiring({ failVerification: true });
+    await expect(runBenchmark(fixture.ports as never)).rejects.toThrow("public.im_messages holds 1, below 100000");
+    // The service is never opened: the fixture is checked first, so a broken seed costs no measurement.
+    expect(fixture.closed).toEqual(["admin", "container"]);
+    expect(fixture.writes.at(-1)?.path).toBe("/evidence/results-test.json");
+  });
+
+  it("records a failed case and stops when the failure leaves nothing to measure", async () => {
+    const fixture = wiring({ failMeasurement: true });
+    // A list case that fails leaves no Task id, so the detail cases cannot run: the run stops rather
+    // than reporting numbers taken on a different code path.
+    await expect(runBenchmark(fixture.ports as never)).rejects.toThrow(
+      "The fixture produced no Task for the hot private chat",
+    );
+    const written = JSON.parse(fixture.writes.at(-1)?.contents ?? "{}") as {
+      results: { name: string; error?: { message: string } }[];
+      containerRemoved?: boolean;
+    };
+    expect(written.results).toHaveLength(2);
+    expect(written.results[0]?.error).toMatchObject({ message: "measurement failed" });
+    expect(written.containerRemoved).toBe(true);
+    expect(fixture.closed).toEqual(["explain", "service", "admin", "container"]);
   });
 });

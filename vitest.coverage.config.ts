@@ -2,6 +2,9 @@ import { configDefaults, coverageConfigDefaults, defineConfig, defineProject } f
 
 export default defineConfig({
   test: {
+    // Default worker count. `scripts/unit-coverage.mjs` narrows `cli` and `client` to one worker because
+    // their suites assert on fixed windows around spawned child processes and their own test scripts
+    // already run with `--maxWorkers=1`; every other project keeps this default.
     maxWorkers: 4,
     projects: [
       defineProject({

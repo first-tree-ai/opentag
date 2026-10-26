@@ -266,6 +266,148 @@ describe("answers the protocol does allow", () => {
     expect(error.isModernJsonRpcError).toBe(true);
     expect(error.supportedVersions).toEqual(["2025-11-25"]);
   });
+
+  it("keeps a valid JSON-RPC error and the real status when the failure is not a 2xx", async () => {
+    const { transport } = transportFor([
+      { status: 500, body: (id) => JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32603, message: "boom" } }) },
+    ]);
+    const error = await rejectionOf(transport.call(ACCOUNT, ENDPOINT, "tools/list", {}, {}));
+    // The code still reaches the caller, which is what the downgrade rules branch on.
+    expect(error.rpcError?.code).toBe(-32603);
+    expect(error.status).toBe(500);
+  });
+});
+
+/**
+ * A request method needs a result. `202` and `204` say "acknowledged, nothing to answer", which the
+ * protocol defines for a notification and for nothing else, so an acknowledgement of `tools/call`,
+ * `tools/list`, or `initialize` is an answer that never arrived — the shape that let a probe record
+ * a Server which did nothing as a healthy empty one.
+ */
+describe("an acknowledgement is not an answer to a request", () => {
+  it.each([202, 204])("refuses a %i answer to tools/call, with the headers it sent", async (status) => {
+    const { transport, sent } = transportFor([{ status, body: "" }]);
+    const error = await rejectionOf(transport.call(ACCOUNT, ENDPOINT, "tools/call", { name: "create_issue" }, {}));
+
+    expect(error.name).toBe("McpTransportError");
+    expect(error.code).toBe(MCP_ERROR_CODES.UPSTREAM_ERROR);
+    expect(error.status).toBe(status);
+    expect(error.message).toBe("The MCP Server returned an acknowledgement instead of a response");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.headers["mcp-method"]).toBe("tools/call");
+    expect(sent[0]?.headers["mcp-name"]).toBe("create_issue");
+    expect(sent[0]?.headers.accept).toBe(MCP_ACCEPT_HEADER);
+  });
+
+  it.each([202, 204])("refuses a %i answer to tools/list and to initialize", async (status) => {
+    const list = transportFor([{ status, body: "" }]);
+    const listError = await rejectionOf(list.transport.call(ACCOUNT, ENDPOINT, "tools/list", {}, {}));
+    expect(listError.code).toBe(MCP_ERROR_CODES.UPSTREAM_ERROR);
+    expect(listError.status).toBe(status);
+    expect(listError.message).toMatch(/acknowledgement instead of a response/);
+
+    // The handshake is a request too: an acknowledged one opened no session and negotiated nothing.
+    const handshake = transportFor([{ status, body: "" }]);
+    const handshakeError = await rejectionOf(handshake.transport.initialize(ACCOUNT, ENDPOINT, {}));
+    expect(handshakeError.code).toBe(MCP_ERROR_CODES.UPSTREAM_ERROR);
+    expect(handshakeError.status).toBe(status);
+  });
+
+  it("still accepts an acknowledgement of a notification on the modern and legacy paths", async () => {
+    for (const status of [202, 204]) {
+      const modern = transportFor([{ status, body: "" }]);
+      await expect(
+        modern.transport.call(ACCOUNT, ENDPOINT, "notifications/progress", { progressToken: "t" }, {}),
+      ).resolves.toBeUndefined();
+
+      const legacy = transportFor([{ status, body: "" }]);
+      await expect(
+        legacy.transport.callLegacy(ACCOUNT, ENDPOINT, "notifications/cancelled", { requestId: "r" }, {}),
+      ).resolves.toBeUndefined();
+    }
+  });
+});
+
+/**
+ * The `error` member has to be read, not trusted.
+ *
+ * Reading `payload.error.message` off whatever the Server sent threw a raw `TypeError` for
+ * `"error": null`, and a `code` of the wrong type was silently rewritten to `-32602` — a verdict
+ * the downgrade rules then treat as the Server's own. A present but unreadable member is a protocol
+ * failure with a fixed message and the real HTTP status; a readable one is still preserved.
+ */
+describe("a malformed JSON-RPC error member", () => {
+  const MALFORMED = [
+    { label: "null", member: null },
+    { label: "a string", member: "boom" },
+    { label: "a number", member: 42 },
+    { label: "a boolean", member: false },
+    { label: "an array", member: [{ code: -32603, message: "boom" }] },
+    { label: "an object with no code", member: { message: "boom" } },
+    { label: "a code that is not a number", member: { code: "-32603", message: "boom" } },
+    { label: "a message that is not a string", member: { code: -32603, message: 42 } },
+    { label: "a code that is an object", member: { code: { value: -32603 }, message: "boom" } },
+  ];
+
+  for (const { label, member } of MALFORMED) {
+    it(`reports ${label} as a protocol failure instead of a TypeError`, async () => {
+      const { transport, sent } = transportFor([
+        { status: 200, body: (id) => JSON.stringify({ jsonrpc: "2.0", id, error: member }) },
+      ]);
+      const error = await rejectionOf(transport.call(ACCOUNT, ENDPOINT, "tools/list", {}, {}));
+
+      expect(error.name).toBe("McpTransportError");
+      expect(error).not.toBeInstanceOf(TypeError);
+      expect(error.code).toBe(MCP_ERROR_CODES.UPSTREAM_ERROR);
+      expect(error.status).toBe(200);
+      expect(error.message).toBe("The MCP Server returned a malformed JSON-RPC error");
+      // The member's own text never becomes part of the message, and no code is invented for it.
+      expect(error.message).not.toContain("boom");
+      expect(error.rpcError).toBeUndefined();
+      expect(sent).toHaveLength(1);
+    });
+  }
+
+  it("keeps the real status when a malformed member arrives with a failure status", async () => {
+    const { transport } = transportFor([
+      { status: 400, body: (id) => JSON.stringify({ jsonrpc: "2.0", id, error: { code: "-32022" } }) },
+    ]);
+    const error = await rejectionOf(transport.call(ACCOUNT, ENDPOINT, "server/discover", {}, {}));
+    expect(error.code).toBe(MCP_ERROR_CODES.UPSTREAM_ERROR);
+    expect(error.status).toBe(400);
+    // No invented `-32602` for the downgrade rules to read as a Server verdict.
+    expect(error.rpcError).toBeUndefined();
+  });
+
+  it("reads a malformed member inside a stream the same way", async () => {
+    const SSE = "text/event-stream";
+    for (const member of [null, "boom", { code: [] }, { code: -32603, message: 7 }]) {
+      const { transport } = transportFor([
+        {
+          status: 200,
+          contentType: SSE,
+          body: (id) => `data: ${JSON.stringify({ jsonrpc: "2.0", id, error: member })}\n\n`,
+        },
+      ]);
+      const error = await rejectionOf(transport.call(ACCOUNT, ENDPOINT, "tools/list", {}, {}));
+      expect(error.name).toBe("McpTransportError");
+      expect(error.code).toBe(MCP_ERROR_CODES.UPSTREAM_ERROR);
+      expect(error.message).toBe("The MCP Server returned a malformed JSON-RPC error");
+    }
+  });
+
+  it("still preserves a readable error delivered inside a stream", async () => {
+    const { transport } = transportFor([
+      {
+        status: 200,
+        contentType: "text/event-stream",
+        body: (id) => `data: ${JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32602, message: "bad" } })}\n\n`,
+      },
+    ]);
+    const error = await rejectionOf(transport.call(ACCOUNT, ENDPOINT, "tools/list", {}, {}));
+    expect(error.rpcError?.code).toBe(-32602);
+    expect(error.message).toContain("bad");
+  });
 });
 
 /** A runtime tool call, which is the one path where a second dispatch would run a tool twice. */
@@ -319,6 +461,15 @@ describe("the gateway never replays a side-effecting tool call after an unreadab
     expect(sent[0]?.headers["mcp-method"]).toBe("tools/call");
     expect(sent[0]?.headers["mcp-name"]).toBe("create_issue");
     expect(sent[0]?.headers.accept).toBe(MCP_ACCEPT_HEADER);
+  });
+
+  it.each([202, 204])("dispatches once when tools/call is only acknowledged with %i", async (status) => {
+    const { sent, call } = callerFor(() => ({ status, body: "" }));
+    const error = await rejectionOf(call());
+
+    expect(error.code).toBe(MCP_ERROR_CODES.UPSTREAM_ERROR);
+    expect(error.status).toBe(status);
+    expect(sent.map((exchange) => exchange.method)).toEqual(["tools/call"]);
   });
 
   it("dispatches once on the legacy path too, through a real session", async () => {
@@ -411,5 +562,40 @@ describe("the probe fails instead of storing an empty healthy snapshot", () => {
     expect(result.probeError).toContain(MCP_ERROR_CODES.UPSTREAM_ERROR);
     // No `notifications/initialized` and no `tools/list` ride a session that was never opened.
     expect(sent).toEqual(["initialize"]);
+  });
+
+  it.each([202, 204])("fails the modern probe when discovery is only acknowledged with %i", async (status) => {
+    const { sent, probe } = probeFor(() => ({ status, body: "" }));
+    const result = await probe.probe(request);
+
+    expect(result.probeState).toBe("failed");
+    expect(result.probeError).toContain(MCP_ERROR_CODES.UPSTREAM_ERROR);
+    // An acknowledged discovery is not a discovery: nothing may be listed from it.
+    expect(sent).not.toContain("tools/list");
+    expect(sent).not.toContain("initialize");
+  });
+
+  it.each([202, 204])("fails a legacy probe whose initialize is only acknowledged with %i", async (status) => {
+    const { sent, probe } = probeFor(() => ({ status, body: "" }));
+    const result = await probe.probe({ ...request, cachedEra: "legacy", cachedVersion: "2025-06-18" });
+
+    expect(result.probeState).toBe("failed");
+    expect(result.probeError).toContain(MCP_ERROR_CODES.UPSTREAM_ERROR);
+    // No handshake completed, so no notification and no tool listing may follow it.
+    expect(sent).toEqual(["initialize"]);
+  });
+
+  it("fails the modern probe on a malformed discovery error member", async () => {
+    const { sent, probe } = probeFor(() => ({
+      status: 200,
+      body: (id) => JSON.stringify({ jsonrpc: "2.0", id, error: null }),
+    }));
+    const result = await probe.probe(request);
+
+    // A raw TypeError here used to escape every probe error contract and reach the caller.
+    expect(result.probeState).toBe("failed");
+    expect(result.probeError).toContain(MCP_ERROR_CODES.UPSTREAM_ERROR);
+    expect(result.probeError).not.toContain("TypeError");
+    expect(sent).not.toContain("tools/list");
   });
 });

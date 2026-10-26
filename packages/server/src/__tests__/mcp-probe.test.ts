@@ -25,7 +25,8 @@ const PUBLIC_RESOLVE = { resolveAddresses: async (): Promise<string[]> => ["93.1
 interface Response {
   status: number;
   body?: unknown;
-  raw?: string;
+  /** A raw body, or a function of the parsed request so a fixture can echo the request's own id. */
+  raw?: string | ((request: Record<string, unknown>) => string);
   contentType?: string;
 }
 
@@ -49,10 +50,13 @@ function node(body: Response, pageTools?: (params: Record<string, unknown>) => R
     const next =
       (method === "tools/list" ? pageTools?.(params) : undefined) ??
       (method === "server/discover" ? body : { status: 404 });
-    return new Response(next.raw ?? JSON.stringify(next.body ?? {}), {
-      status: next.status,
-      headers: { "content-type": next.contentType ?? "application/json" },
-    });
+    return new Response(
+      (typeof next.raw === "function" ? next.raw(request) : next.raw) ?? JSON.stringify(next.body ?? {}),
+      {
+        status: next.status,
+        headers: { "content-type": next.contentType ?? "application/json" },
+      },
+    );
   }) as unknown as typeof globalThis.fetch;
   const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   return {
@@ -448,7 +452,10 @@ describe("MCP probe success path", () => {
       {
         status: 200,
         contentType: "text/event-stream",
-        raw: 'data: {"jsonrpc":"2.0","id":"1","result":{"capabilities":{"tools":{}}}}\n\n',
+        // A request-scoped stream must answer the request that opened it: the id is the one the
+        // transport just generated, not a constant.
+        raw: (request) =>
+          `data: ${JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { capabilities: { tools: {} } } })}\n\n`,
       },
       () => toolsPage([{ name: "from-sse" }]),
     );

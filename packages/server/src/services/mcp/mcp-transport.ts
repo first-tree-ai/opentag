@@ -21,6 +21,9 @@ import type { McpFetchResponse, McpOutboundFetcher } from "./mcp-url-policy.js";
  * a Server's supported versions, capabilities, identity, and instructions in one round trip.
  *
  * A response is either a single JSON object or a request-scoped SSE stream; both are supported.
+ * Anything a reader cannot take as an answer to the request — an empty body, an HTML page, a JSON
+ * value that is not an object, a stream that never carried the response — is a protocol failure,
+ * never an empty result.
  */
 
 export interface McpJsonRpcRequest {
@@ -318,9 +321,17 @@ export class McpTransport {
       );
     }
     const parsed = tryParseJson(response.text);
-    if (parsed === undefined) {
-      if (response.status >= 200 && response.status < 300) return undefined;
-      throw upstreamFailure(response.status);
+    /*
+     * A 2xx response that carries no JSON at all — an empty body, an HTML error page from a CDN or
+     * a proxy, a truncated object — is a broken answer, not an empty result. Returning `undefined`
+     * here made a probe report `probeState: "succeeded"` with zero tools and no error, and let a
+     * gateway `tools/call` answer with a JSON-RPC envelope carrying no `result` at all, which
+     * strands the client waiting for one. A JSON value that is not an object (an array, a string, a
+     * number, `null`) is neither a JSON-RPC response nor a bare result object, so it fails the same
+     * way.
+     */
+    if (parsed === undefined || !isRecord(parsed)) {
+      throw unreadableBody(response, method, parsed === undefined);
     }
     const { payload, error } = splitEnvelope(parsed);
     /*
@@ -344,14 +355,14 @@ export class McpTransport {
      * to be evidence that the credential and the Server agree, so reporting a rejected credential as
      * a healthy empty Server is the one answer it must never give.
      */
-    if (response.status < 200 || response.status >= 300) throw upstreamFailure(response.status);
+    if (!isSuccess(response.status)) throw upstreamFailure(response.status);
     void accountId;
     void url;
-    return unwrap(payload, response.status);
+    return unwrap(payload, response.status, method);
   }
 }
 
-function unwrap(payload: McpJsonRpcResult, status: number): unknown {
+function unwrap(payload: McpJsonRpcResult, status: number, method: string): unknown {
   if (payload.error !== undefined) {
     throw new McpTransportError(
       MCP_ERROR_CODES.UPSTREAM_ERROR,
@@ -361,15 +372,59 @@ function unwrap(payload: McpJsonRpcResult, status: number): unknown {
       { status },
     );
   }
+  /*
+   * An envelope with neither `result` nor `error` is not an answer. An absent `result` key is not
+   * the same as a present one: `"result": null` is a legitimate answer, while a body that omits
+   * the key is indistinguishable from a truncated one.
+   */
+  if (!("result" in payload)) {
+    throw invalidResponse(method, status, "a response that is not a JSON-RPC response");
+  }
   return payload.result;
+}
+
+function isSuccess(status: number): boolean {
+  return status >= 200 && status < 300;
+}
+
+function isBlank(text: string): boolean {
+  return text.trim().length === 0;
+}
+
+/**
+ * The failure for a body that is neither a JSON-RPC response nor a bare result object. A non-2xx
+ * status keeps the plain upstream failure it already had; every other case is a protocol failure
+ * that names the shape, because the body itself may carry an upstream stack trace or a credential.
+ */
+function unreadableBody(response: McpFetchResponse, method: string, unparsed: boolean): McpTransportError {
+  if (!isSuccess(response.status)) return upstreamFailure(response.status);
+  if (unparsed && isBlank(response.text)) return invalidResponse(method, response.status, "an empty response");
+  return invalidResponse(
+    method,
+    response.status,
+    unparsed ? "a response that is not valid JSON" : "a response that is not a JSON-RPC response",
+  );
+}
+
+/**
+ * A body the client cannot read as an answer. The HTTP status is the real one, so a caller that
+ * classifies failures still reports what the peer sent rather than inventing a status; the reason
+ * is a fixed phrase, so no upstream text — an HTML error page, a stack trace — reaches a message.
+ */
+function invalidResponse(method: string, status: number, reason: string): McpTransportError {
+  return new McpTransportError(MCP_ERROR_CODES.UPSTREAM_ERROR, `The MCP Server returned ${reason}`, status, undefined, {
+    method,
+    status,
+  });
 }
 
 /**
  * Interpret a `text/event-stream` response.
  *
- * Extracted from `#interpret` so the two rules it shares with the JSON branch stay readable there:
- * a JSON-RPC error is preserved so the caller can branch on its code, and any other non-2xx status
- * is a failure rather than a result — otherwise a rejected credential reads as a healthy empty Server.
+ * Extracted from `#interpret` so the three rules it shares with the JSON branch stay readable
+ * there: a JSON-RPC error is preserved so the caller can branch on its code, a stream that carried
+ * no answer to the request is a protocol failure, and any other non-2xx status is a failure rather
+ * than a result — otherwise a rejected credential reads as a healthy empty Server.
  */
 function interpretSseResponse(
   response: McpFetchResponse,
@@ -377,9 +432,14 @@ function interpretSseResponse(
   payload: McpJsonRpcResult | undefined,
 ): unknown {
   if (payload === undefined) {
-    // A stream that ended without a result is only a success if the status said so.
-    if (response.status >= 200 && response.status < 300) return undefined;
-    throw upstreamFailure(response.status);
+    /*
+     * A stream that ended without an answer to this request is a broken answer at any status. A
+     * request-scoped stream exists to carry the response for the request that opened it, so
+     * accepting an empty stream — no frames, only notifications, or only other ids — reported a
+     * Server that answered nothing as a successful empty result.
+     */
+    if (!isSuccess(response.status)) throw upstreamFailure(response.status);
+    throw invalidResponse(method, response.status, "a response stream with no answer to this request");
   }
   if (payload.error !== undefined) {
     throw new McpTransportError(
@@ -390,8 +450,8 @@ function interpretSseResponse(
       { method },
     );
   }
-  if (response.status < 200 || response.status >= 300) throw upstreamFailure(response.status);
-  return unwrap(payload, response.status);
+  if (!isSuccess(response.status)) throw upstreamFailure(response.status);
+  return unwrap(payload, response.status, method);
 }
 
 function upstreamFailure(status: number): McpTransportError {

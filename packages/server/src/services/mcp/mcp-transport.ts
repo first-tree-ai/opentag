@@ -279,16 +279,18 @@ export class McpTransport {
   /**
    * A legacy session-scoped notification (`notifications/initialized`).
    *
-   * It closes the handshake, so it speaks the revision the handshake negotiated, by the same rule as
-   * {@link callLegacy}: `2025-03-26` predates `MCP-Protocol-Version` and gets none, every later
-   * legacy version gets the negotiated value. Omitting it is not a harmless default — the
-   * specification reads a missing header as `2025-03-26`, so a strict `2025-06-18` or `2025-11-25`
-   * Server refused the notification while a lenient one made the omission invisible.
+   * It closes the handshake, so a refusal is not ignorable: a notification carries no `id` and never
+   * reaches {@link #interpret}, which leaves this status check as the only one it gets. Without it a
+   * peer that answered `400`, `401` or `500` to the notification was still sent the `tools/call` or
+   * `tools/list` that followed, and the refusal surfaced later as a confusing tool failure or as a
+   * healthy-looking empty probe.
    *
-   * A notification carries no `id`, so it never reaches the response interpreter, and the status is
-   * checked here: a rejected notification is a transport failure the caller must see, because
-   * continuing the handshake only hides a Server that already refused this client's protocol. The
-   * body is never read, so the failure reason stays bounded and credential-free.
+   * The status maps through the same {@link upstreamFailure} as every other failed response, so the
+   * reason stays bounded and credential-free: that summary is built from the status alone, never
+   * from the peer's body. The fetcher has already read and bounded that body before returning, and
+   * this method never interprets or exposes it. Status summaries therefore describe responses the
+   * fetcher returned; a redirect or an oversized body fails inside the fetcher first, as its own
+   * bounded error.
    */
   async notifyLegacy(
     accountId: string,
@@ -298,17 +300,18 @@ export class McpTransport {
     sessionId?: string,
     options: McpCallOptions = {},
   ): Promise<void> {
-    const headers: Record<string, string> = {
-      ...authHeaders,
-      accept: MCP_ACCEPT_HEADER,
-      "content-type": "application/json",
-      ...legacyVersionHeaders(options.negotiatedVersion),
-    };
-    if (sessionId) headers["mcp-session-id"] = sessionId;
-    for (const [key, value] of Object.entries(options.headers ?? {})) headers[key] = value;
     const response = await this.#fetcher.fetchOutbound(accountId, url, {
       method: "POST",
-      headers,
+      headers: {
+        ...authHeaders,
+        accept: MCP_ACCEPT_HEADER,
+        "content-type": "application/json",
+        /* The notification speaks the revision the handshake negotiated; `callLegacy` and
+         * `legacyVersionHeaders` hold the why, including the `2025-03-26` omission. */
+        ...legacyVersionHeaders(options.negotiatedVersion),
+        ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+        ...(options.headers ?? {}),
+      },
       body: JSON.stringify({ jsonrpc: "2.0", method }),
       ...(options.signal ? { signal: options.signal } : {}),
     });

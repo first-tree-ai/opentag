@@ -40,8 +40,9 @@ const LOCAL_PASSWORD = "benchmark-local-only";
  * A container whose `docker run` succeeded is this run's container even when the follow-up inspection
  * fails: a failed inspect command, an unexpected label or a non-loopback binding must remove it before
  * the error propagates, or every aborted acquisition leaks a running database. Removal is attempted only
- * after `docker run` returned, so a name this run never created is never removed, and a failing removal
- * never replaces the acquisition error the operator needs to see.
+ * after `docker run` returned, so a name this run never created is never removed. When the removal itself
+ * fails, both causes are thrown together as an `AggregateError`: the acquisition failure stays the primary
+ * error and the cleanup failure is surfaced instead of being swallowed.
  */
 export function startDatabaseContainer(docker: (args: readonly string[]) => string, containerName: string): string {
   docker([
@@ -66,19 +67,28 @@ export function startDatabaseContainer(docker: (args: readonly string[]) => stri
     if (!/^127\.0\.0\.1:\d+$/.test(binding)) throw new Error(`unexpected container port binding: ${binding}`);
     return `postgres://postgres:${LOCAL_PASSWORD}@${binding}/opentag_benchmark`;
   } catch (error) {
-    removeOwnedContainer(docker, containerName);
-    throw error;
+    let cleanupError: unknown;
+    try {
+      docker(["rm", "--force", "--volumes", containerName]);
+    } catch (caught) {
+      cleanupError = caught;
+    }
+    throw aggregateAcquisitionFailure(
+      error,
+      cleanupError,
+      "benchmark container acquisition failed and its removal also failed",
+    );
   }
 }
 
-/** Best-effort removal of the container this run created; the acquisition error stays the report. */
-function removeOwnedContainer(docker: (args: readonly string[]) => string, containerName: string): void {
-  try {
-    docker(["rm", "--force", "--volumes", containerName]);
-  } catch {
-    // Nothing to add: the acquisition failure is already on its way out, and this container is owned by
-    // this run, so a later cleanup pass finds it by its label.
-  }
+/**
+ * The error to throw after a failed acquisition whose cleanup also ran: the primary failure alone when the
+ * cleanup succeeded, or an `AggregateError` holding `[primary, cleanup]` when it failed too. Swallowing the
+ * cleanup failure would hide a container that may still be running or a driver that may still hold a
+ * connection; replacing the primary with it would hide why the run stopped.
+ */
+export function aggregateAcquisitionFailure(primary: unknown, cleanupError: unknown, message: string): unknown {
+  return cleanupError === undefined ? primary : new AggregateError([primary, cleanupError], message);
 }
 
 /** Poll a fresh container until it answers; the attempt bound keeps a broken image from hanging. */
@@ -147,13 +157,18 @@ export async function openAdmin(
     await waitForDatabase(() => admin.probe(), sleep);
   } catch (error) {
     // A driver whose readiness never arrives must not outlive the failure: close the connection this call
-    // created, then rethrow the readiness error, so the operator sees the cause and not a cleanup error.
+    // created. A failing close joins the readiness error instead of replacing or hiding it.
+    let cleanupError: unknown;
     try {
       await admin.end();
-    } catch {
-      // Same rule as the container: the readiness failure is the report.
+    } catch (caught) {
+      cleanupError = caught;
     }
-    throw error;
+    throw aggregateAcquisitionFailure(
+      error,
+      cleanupError,
+      "administrative driver readiness failed and closing it also failed",
+    );
   }
   return {
     end: () => admin.end(),

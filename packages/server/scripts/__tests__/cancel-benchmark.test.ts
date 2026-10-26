@@ -238,6 +238,25 @@ function parsedReports(reports: Recorded): BenchmarkReport[] {
   return reports.map((entry) => JSON.parse(entry.value) as BenchmarkReport);
 }
 
+/** Run a throwing call and return what it threw, so the test can assert on the error itself. */
+function catcher(run: () => unknown): unknown {
+  try {
+    run();
+    return undefined;
+  } catch (error) {
+    return error;
+  }
+}
+
+async function catcherAsync(run: () => Promise<unknown>): Promise<unknown> {
+  try {
+    await run();
+    return undefined;
+  } catch (error) {
+    return error;
+  }
+}
+
 describe("cancellation benchmark orchestration", () => {
   it("measures every case with both owners and records the statement counts and plans", async () => {
     const { deps, logs, removed, reports, seams } = benchmarkDeps();
@@ -569,17 +588,39 @@ describe("cancellation benchmark production ports", () => {
     expect(calls.map((args) => args[0])).toEqual(["run"]);
   });
 
-  it("keeps the original acquisition error when the cleanup removal also fails", () => {
+  it("surfaces the acquisition error and a failing cleanup removal together", () => {
     const calls: (readonly string[])[] = [];
-    expect(() =>
+    const failure = catcher(() =>
       startDatabaseContainer((args) => {
         calls.push(args);
         if (args[0] === "inspect") throw new Error("inspect failed");
         if (args[0] === "rm") throw new Error("cannot remove a running container");
         return "";
       }, CONTAINER),
-    ).toThrow(/inspect failed/);
+    );
     expect(calls.map((args) => args[0])).toEqual(["run", "inspect", "rm"]);
+    // Both causes survive: the acquisition failure stays first, the cleanup failure is not swallowed.
+    expect(failure).toBeInstanceOf(AggregateError);
+    const aggregate = failure as AggregateError;
+    expect(aggregate.message).toBe("benchmark container acquisition failed and its removal also failed");
+    expect((aggregate.errors[0] as Error).message).toBe("inspect failed");
+    expect((aggregate.errors[1] as Error).message).toBe("cannot remove a running container");
+  });
+
+  it("throws the bare acquisition error when the cleanup removal succeeds", () => {
+    const calls: (readonly string[])[] = [];
+    const failure = catcher(() =>
+      startDatabaseContainer((args) => {
+        calls.push(args);
+        if (args[0] === "inspect") throw new Error("inspect failed");
+        return "";
+      }, CONTAINER),
+    );
+    expect(calls.map((args) => args[0])).toEqual(["run", "inspect", "rm"]);
+    // A successful cleanup must not wrap a single real cause in an AggregateError.
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(AggregateError);
+    expect((failure as Error).message).toBe("inspect failed");
   });
 
   it("closes the administrative driver when readiness polling exhausts", async () => {
@@ -604,8 +645,8 @@ describe("cancellation benchmark production ports", () => {
     expect(end).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the readiness error when closing an exhausted driver also fails", async () => {
-    await expect(
+  it("surfaces the readiness error and a failing driver close together", async () => {
+    const failure = await catcherAsync(() =>
       openAdmin(
         "postgres://unit",
         () => ({
@@ -619,7 +660,12 @@ describe("cancellation benchmark production ports", () => {
         }),
         async () => undefined,
       ),
-    ).rejects.toThrow(/connection refused/);
+    );
+    expect(failure).toBeInstanceOf(AggregateError);
+    const aggregate = failure as AggregateError;
+    expect(aggregate.message).toBe("administrative driver readiness failed and closing it also failed");
+    expect((aggregate.errors[0] as Error).message).toBe("connection refused");
+    expect((aggregate.errors[1] as Error).message).toBe("socket already closed");
   });
 
   it("leaves a ready driver open and does not close it on the success path", async () => {

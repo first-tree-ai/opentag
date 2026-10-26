@@ -768,7 +768,7 @@ export class TaskService {
         from topic_sessions ts
         where ts.im_binding_id = p.im_binding_id
           and ts.channel_id = p.channel_id
-          and (${sql.raw("ts")}.topic_key = p.topic_key or (${sql.raw("ts")}.topic_key is null and p.topic_key is null))
+          and (ts.topic_key = p.topic_key or (ts.topic_key is null and p.topic_key is null))
         limit 1
       ) ts on true
       left join lateral (

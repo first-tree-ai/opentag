@@ -11,6 +11,7 @@ RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json LICENSE ./
 COPY patches patches
 COPY packages/shared/package.json packages/shared/package.json
+COPY packages/mcp-presets/package.json packages/mcp-presets/package.json
 COPY packages/client/package.json packages/client/package.json
 COPY packages/server/package.json packages/server/package.json
 COPY apps/cli/package.json apps/cli/package.json
@@ -19,6 +20,7 @@ COPY e2e/package.json e2e/package.json
 RUN pnpm install --frozen-lockfile --config.engine-strict=true --ignore-scripts
 
 COPY packages/shared packages/shared
+COPY packages/mcp-presets packages/mcp-presets
 COPY packages/client packages/client
 COPY apps/cli apps/cli
 COPY scripts scripts
@@ -29,6 +31,7 @@ RUN if [ "${RUNNER_CHANNEL}" != "dev" ]; then \
         --manifest apps/cli/package.json --build-info apps/cli/src/build-info.ts; \
     fi \
  && pnpm --filter @opentag/shared build \
+ && pnpm --filter @opentag/mcp-presets build \
  && pnpm --filter @opentag/client build \
  && pnpm --filter ./apps/cli build \
  && mkdir -p /out \

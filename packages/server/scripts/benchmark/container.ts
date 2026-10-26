@@ -44,15 +44,26 @@ const DEFAULT_PASSWORD = "benchmark-local-only";
 /**
  * Start the container, prove it is ours by its label, and report the loopback binding.
  *
- * The label check is not ceremony: a container started by another run or another lane carries a
- * different value, so a name collision fails here instead of migrating and seeding somebody else's
- * database.
+ * Two failure rules make this safe to run beside another lane's container:
+ *
+ * - A failed `docker run` removes nothing. The name may already belong to a container this run did not
+ *   create, so a cleanup here would delete somebody else's database.
+ * - Once `docker run` succeeds, the container is ours, and every later read — label, port, image,
+ *   resources, progress line — is guarded: if any of them throws, the container is removed before the
+ *   failure is rethrown. A partial start would otherwise occupy the port and the name until someone
+ *   noticed it by hand.
+ *
+ * When the start fails *and* the cleanup fails, both failures are reported: the start error is the
+ * reason the caller sees, and the cleanup error is attached as the aggregate's second member, because
+ * dropping either one hides a leak or the reason for it.
  */
 export function startBenchmarkContainer(options: StartContainerOptions): BenchmarkContainer {
   const { docker } = options;
   const image = options.image ?? DEFAULT_IMAGE;
   const database = options.database ?? DEFAULT_DATABASE;
   const password = options.password ?? DEFAULT_PASSWORD;
+  const remove = () => docker(["rm", "--force", "--volumes", options.name]);
+  // Only after this returns is the container provably ours to remove.
   docker([
     "run",
     "--detach",
@@ -68,21 +79,38 @@ export function startBenchmarkContainer(options: StartContainerOptions): Benchma
     `POSTGRES_DB=${database}`,
     image,
   ]);
-  const label = docker(["inspect", "--format", `{{index .Config.Labels "${options.labelKey}"}}`, options.name]);
-  if (label !== options.labelValue) throw new Error(`The container is not this benchmark's own: label ${label}`);
-  const binding = docker(["port", options.name, "5432/tcp"]);
-  if (!/^127\.0\.0\.1:\d+$/.test(binding)) throw new Error(`The container is not on a loopback port: ${binding}`);
-  options.log(JSON.stringify({ phase: "container", state: "started", binding }));
-  return {
-    url: `postgres://postgres:${password}@${binding}/${database}`,
-    environment: {
+  try {
+    const label = docker(["inspect", "--format", `{{index .Config.Labels "${options.labelKey}"}}`, options.name]);
+    if (label !== options.labelValue) throw new Error(`The container is not this benchmark's own: label ${label}`);
+    const binding = docker(["port", options.name, "5432/tcp"]);
+    if (!/^127\.0\.0\.1:\d+$/.test(binding)) throw new Error(`The container is not on a loopback port: ${binding}`);
+    const environment = {
       dockerImage: docker(["inspect", "--format", "{{.Image}}", options.name]),
       dockerResources: JSON.parse(docker(["info", "--format", '{"cpus":{{.NCPU}},"memoryBytes":{{.MemTotal}}}'])),
-    },
-    stop() {
-      docker(["rm", "--force", "--volumes", options.name]);
-    },
-  };
+    };
+    options.log(JSON.stringify({ phase: "container", state: "started", binding }));
+    return {
+      url: `postgres://postgres:${password}@${binding}/${database}`,
+      environment,
+      stop: remove,
+    };
+  } catch (error) {
+    throw withCleanupFailure(error, remove);
+  }
+}
+
+/**
+ * Rethrow `primary` unchanged when the container is gone, or as an `AggregateError` whose first member
+ * is that same error when the cleanup also failed. The caller must never see a cleanup error in place
+ * of the failure that caused it.
+ */
+export function withCleanupFailure(primary: unknown, cleanup: () => void): unknown {
+  try {
+    cleanup();
+  } catch (cleanupError) {
+    return new AggregateError([primary, cleanupError], "The benchmark failed and its container was not removed");
+  }
+  return primary;
 }
 
 /** Wait until the container accepts a query, without assuming how long its first start takes. */

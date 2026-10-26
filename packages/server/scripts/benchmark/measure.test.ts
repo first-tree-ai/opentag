@@ -373,19 +373,51 @@ describe("benchmark case list", () => {
   });
 });
 
+/** Which docker command an argument vector is, for failure injection and answer lookup. */
+function dockerCommand(args: string[]): string {
+  if (args[0] !== "inspect") return args[0] ?? "";
+  return args[2]?.includes(".Image") ? "inspect:image" : "inspect";
+}
+
+/** A docker CLI whose only special behaviour is a failing `rm`; everything else answers normally. */
+function dockerWithFailingRemoval(closed: string[]) {
+  return (args: string[]) => {
+    if (args[0] === "rm") {
+      closed.push("container");
+      throw new Error("container is in use");
+    }
+    const answers: Record<string, string> = {
+      port: "127.0.0.1:54321",
+      info: '{"cpus":4,"memoryBytes":8}',
+    };
+    const command = dockerCommand(args);
+    if (command === "inspect:image") return "sha256:image";
+    if (command === "inspect") return "task-queries-test";
+    return answers[command] ?? "";
+  };
+}
+
 describe("benchmark container", () => {
-  /** A docker CLI stand-in that answers the three commands this benchmark issues. */
-  function fakeDocker(options: { label?: string; binding?: string } = {}) {
+  /**
+   * A docker CLI stand-in. `fail` names the commands that throw, so a test can fail a start at any
+   * step and observe exactly which container commands followed.
+   */
+  function fakeDocker(options: { label?: string; binding?: string; fail?: string[] } = {}) {
     const calls: string[][] = [];
+    const answers: Record<string, string> = {
+      port: options.binding ?? "127.0.0.1:54321",
+      info: '{"cpus":8,"memoryBytes":17179869184}',
+    };
     const docker = (args: string[]) => {
       calls.push(args);
-      if (args[0] === "inspect" && args[2]?.includes(".Image")) return "sha256:image";
-      if (args[0] === "inspect") return options.label ?? "task-queries";
-      if (args[0] === "port") return options.binding ?? "127.0.0.1:54321";
-      if (args[0] === "info") return '{"cpus":8,"memoryBytes":17179869184}';
-      return "";
+      const command = dockerCommand(args);
+      if (options.fail?.includes(command)) throw new Error(`docker ${command} failed`);
+      if (command === "inspect:image") return "sha256:image";
+      if (command === "inspect") return options.label ?? "task-queries";
+      return answers[command] ?? "";
     };
-    return { calls, docker };
+    const removals = () => calls.filter((args) => args[0] === "rm");
+    return { calls, docker, removals };
   }
 
   it("starts an own, loopback-only container and reports what it found", () => {
@@ -431,6 +463,98 @@ describe("benchmark container", () => {
         log: () => undefined,
       }),
     ).toThrow("The container is not on a loopback port");
+  });
+
+  it("removes the owned container when a read after a successful run fails", () => {
+    for (const step of ["inspect:image", "info"]) {
+      const { calls, docker, removals } = fakeDocker({ fail: [step] });
+      expect(() =>
+        startBenchmarkContainer({
+          docker,
+          name: "opentag-task-bench-123",
+          labelKey: "opentag.benchmark",
+          labelValue: "task-queries",
+          log: () => undefined,
+        }),
+      ).toThrow(`docker ${step} failed`);
+      // The run succeeded, so the container is ours: a failed image or host read must not leak it.
+      expect(removals()).toEqual([["rm", "--force", "--volumes", "opentag-task-bench-123"]]);
+      expect(calls.at(-1)).toEqual(["rm", "--force", "--volumes", "opentag-task-bench-123"]);
+    }
+  });
+
+  it("removes the owned container when the ownership or loopback check fails", () => {
+    for (const options of [{ label: "another-lane" }, { binding: "0.0.0.0:54321" }]) {
+      const { docker, removals } = fakeDocker(options);
+      expect(() =>
+        startBenchmarkContainer({
+          docker,
+          name: "opentag-task-bench-123",
+          labelKey: "opentag.benchmark",
+          labelValue: "task-queries",
+          log: () => undefined,
+        }),
+      ).toThrow(/not this benchmark's own|not on a loopback port/);
+      // The container was created by this call even though it turned out to be the wrong one, so it is
+      // removed rather than left behind.
+      expect(removals()).toHaveLength(1);
+    }
+  });
+
+  it("never removes a name when the run itself failed", () => {
+    const { calls, docker, removals } = fakeDocker({ fail: ["run"] });
+    expect(() =>
+      startBenchmarkContainer({
+        docker,
+        name: "opentag-task-bench-123",
+        labelKey: "opentag.benchmark",
+        labelValue: "task-queries",
+        log: () => undefined,
+      }),
+    ).toThrow("docker run failed");
+    // The name may belong to a container this run did not create; removing it would delete a stranger.
+    expect(removals()).toEqual([]);
+    expect(calls.map((args) => args[0])).toEqual(["run"]);
+  });
+
+  it("keeps the start failure first when the cleanup also fails", () => {
+    const { docker } = fakeDocker({ fail: ["port", "rm"] });
+    let caught: unknown;
+    try {
+      startBenchmarkContainer({
+        docker,
+        name: "opentag-task-bench-123",
+        labelKey: "opentag.benchmark",
+        labelValue: "task-queries",
+        log: () => undefined,
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(AggregateError);
+    const aggregate = caught as AggregateError;
+    expect(aggregate.errors).toHaveLength(2);
+    expect(aggregate.errors[0]).toMatchObject({ message: "docker port failed" });
+    expect(aggregate.errors[1]).toMatchObject({ message: "docker rm failed" });
+  });
+
+  it("rethrows the bare start failure when the cleanup succeeds", () => {
+    const { docker } = fakeDocker({ fail: ["port"] });
+    let caught: unknown;
+    try {
+      startBenchmarkContainer({
+        docker,
+        name: "opentag-task-bench-123",
+        labelKey: "opentag.benchmark",
+        labelValue: "task-queries",
+        log: () => undefined,
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).not.toBeInstanceOf(AggregateError);
+    expect(caught).toMatchObject({ message: "docker port failed" });
   });
 
   it("waits for the database to accept a query and gives up after the last attempt", async () => {
@@ -599,6 +723,73 @@ describe("benchmark run", () => {
     // The service is never opened: the fixture is checked first, so a broken seed costs no measurement.
     expect(fixture.closed).toEqual(["admin", "container"]);
     expect(fixture.writes.at(-1)?.path).toBe("/evidence/results-test.json");
+  });
+
+  it("stops the owned container when the admin client cannot even be constructed", async () => {
+    const fixture = wiring();
+    const broken = {
+      ...fixture.ports,
+      openAdmin: () => {
+        throw new Error("could not parse connection string");
+      },
+    };
+    await expect(runBenchmark(broken as never)).rejects.toThrow("could not parse connection string");
+    // The container existed from the moment `docker run` succeeded, so a synchronous failure while
+    // opening the client must still remove it.
+    expect(fixture.closed).toEqual(["container"]);
+    expect(fixture.writes.at(-1)?.path).toBe("/evidence/results-test.json");
+    const written = JSON.parse(fixture.writes.at(-1)?.contents ?? "{}") as { containerRemoved?: boolean };
+    expect(written.containerRemoved).toBe(true);
+  });
+
+  it("keeps the primary failure first when the container cannot be removed", async () => {
+    const fixture = wiring();
+    const broken = {
+      ...fixture.ports,
+      openAdmin: () => {
+        throw new Error("could not parse connection string");
+      },
+      docker: dockerWithFailingRemoval(fixture.closed),
+    };
+    let caught: unknown;
+    try {
+      await runBenchmark(broken as never);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(AggregateError);
+    const aggregate = caught as AggregateError;
+    expect(aggregate.errors[0]).toMatchObject({ message: "could not parse connection string" });
+    expect(aggregate.errors[1]).toMatchObject({ message: "container is in use" });
+  });
+
+  it("keeps the primary failure first when a client refuses to close", async () => {
+    const fixture = wiring();
+    const ports = {
+      ...fixture.ports,
+      migrate: async () => {
+        throw new Error("migration failed");
+      },
+      openAdmin: () => ({
+        database: { unsafe: async () => [] },
+        end: async () => {
+          throw new Error("connection already gone");
+        },
+      }),
+    };
+    let caught: unknown;
+    try {
+      await runBenchmark(ports as never);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(AggregateError);
+    const aggregate = caught as AggregateError;
+    // The migration failure is the reason; the close failure is attached, never substituted.
+    expect(aggregate.errors[0]).toMatchObject({ message: "migration failed" });
+    expect(aggregate.errors[1]).toMatchObject({ message: "connection already gone" });
+    // The container is still removed, so the close failure cannot leak the database either.
+    expect(fixture.closed).toEqual(["container"]);
   });
 
   it("records a failed case and stops when the failure leaves nothing to measure", async () => {

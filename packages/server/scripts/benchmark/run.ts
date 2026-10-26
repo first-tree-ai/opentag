@@ -54,7 +54,15 @@ export interface BenchmarkRunPorts {
 const METHOD =
   "One warm-up and five sequential samples per case unless stated. Single sequential local Docker microbenchmark, not production capacity. Default service query deadlines and connection pool. SQL counts come from the service query logger. EXPLAIN (ANALYZE, BUFFERS, SETTINGS, FORMAT JSON) runs once per distinct SELECT outside the timed samples. Values include Node mapping and loopback transport; responseBytes exclude HTTP encoding. No external providers.";
 
-/** Run one phase and return the report it wrote, including the container cleanup either way. */
+/**
+ * Run one phase and return the report it wrote.
+ *
+ * The container exists from the moment `docker run` succeeded, so it is stopped on every path,
+ * including a synchronous failure while opening the admin connection: the clients are constructed
+ * inside this function's guarded region, not before it. Cleanup runs once, in reverse order, and it
+ * never replaces the failure that caused it — when both fail, the aggregate keeps the primary error
+ * first and the cleanup failure second.
+ */
 export async function runBenchmark(ports: BenchmarkRunPorts): Promise<BenchmarkReport> {
   const explainDir = `${ports.output}/explain/${ports.phase}`;
   ports.mkdir(explainDir);
@@ -68,11 +76,14 @@ export async function runBenchmark(ports: BenchmarkRunPorts): Promise<BenchmarkR
     labelValue: ports.labelValue,
     log: ports.log,
   });
-  const admin = ports.openAdmin(container.url);
+  let admin: ReturnType<BenchmarkRunPorts["openAdmin"]> | undefined;
   let service: ReturnType<BenchmarkRunPorts["openService"]> | undefined;
   let explain: ReturnType<BenchmarkRunPorts["openExplain"]> | undefined;
+  let primary: unknown;
+
   try {
-    await waitForDatabase(() => admin.database.unsafe("select 1"));
+    admin = ports.openAdmin(container.url);
+    await waitForDatabase(() => admin?.database.unsafe("select 1"));
     const migratedAt = ports.clock();
     await ports.migrate(container.url);
     report.environment = {
@@ -99,9 +110,9 @@ export async function runBenchmark(ports: BenchmarkRunPorts): Promise<BenchmarkR
       await admin.database.unsafe("select pg_database_size(current_database())::text as bytes")
     )[0]?.bytes;
 
+    // The measurement clients open only once the fixture is proven; a broken seed costs no connection.
     service = ports.openService(container.url);
     explain = ports.openExplain(container.url);
-    report.timeouts = service.timeouts;
     await runTaskQueriesBenchmark(
       {
         admin: admin.database,
@@ -117,22 +128,56 @@ export async function runBenchmark(ports: BenchmarkRunPorts): Promise<BenchmarkR
       ports.ids,
     );
     report.finishedAt = new Date().toISOString();
-    return report;
-  } finally {
+  } catch (error) {
+    primary = error;
+  }
+
+  // One cleanup on every path: the clients, then the container that was ours the moment it started.
+  const cleanupFailure = await releaseContainer({ explain, service, admin, container, report, save });
+  if (primary !== undefined) {
+    if (cleanupFailure !== undefined) {
+      throw new AggregateError(
+        [primary, cleanupFailure],
+        "The benchmark failed and its container or a client connection was not released cleanly",
+      );
+    }
+    throw primary;
+  }
+  if (cleanupFailure !== undefined) throw cleanupFailure;
+  return report;
+}
+
+/**
+ * Close every client and remove the container, collecting the first failure instead of throwing
+ * part-way: a client that refuses to close must not keep the container alive, and a container that
+ * refuses to be removed must not hide which step failed first.
+ */
+async function releaseContainer(clients: {
+  explain?: { end(): Promise<void> };
+  service?: { end(): Promise<void> };
+  admin?: { end(): Promise<void> };
+  container: { stop(): void };
+  report: BenchmarkReport;
+  save(): void;
+}): Promise<unknown> {
+  let failure: unknown;
+  for (const client of [clients.explain, clients.service, clients.admin]) {
     try {
-      await explain?.end();
-    } finally {
-      try {
-        await service?.end();
-      } finally {
-        try {
-          await admin.end();
-        } finally {
-          container.stop();
-          report.containerRemoved = true;
-          save();
-        }
-      }
+      await client?.end();
+    } catch (error) {
+      failure ??= error;
     }
   }
+  try {
+    clients.container.stop();
+    clients.report.containerRemoved = true;
+  } catch (error) {
+    failure ??= error;
+  }
+  try {
+    clients.save();
+  } catch (error) {
+    failure ??= error;
+  }
+  return failure;
 }

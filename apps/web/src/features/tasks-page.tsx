@@ -359,8 +359,9 @@ export function TaskDetailPage({
   taskId?: string;
 }) {
   /*
-   * The Task itself, its internal Sessions and its collaboration messages come from the first page
-   * only, exactly as the hand-rolled append kept them; each further page contributes Turns.
+   * The first page carries the Task summary and its Turns, and nothing else: the conversation asks for
+   * the Turns section alone, so the Server does not read the Internal Session or collaboration history
+   * this view never renders. Each further page contributes Turns and no summary.
    */
   const detailKey = taskDetailQueryKey(taskId, showExamples);
   const taskQuery = useInfiniteQuery({

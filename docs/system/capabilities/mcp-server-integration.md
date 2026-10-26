@@ -113,6 +113,15 @@ Every request body carries `_meta` with `io.modelcontextprotocol/protocolVersion
 (should). A response is a single JSON object or a request-scoped SSE stream; a notification is
 `202` with no body; an unknown method is `404` with `-32601`.
 
+**A 2xx status alone is not an answer.** A successful response is a JSON-RPC response or a bare
+result object; a request-scoped SSE stream must carry the response for the request that opened it. An
+unreadable successful body — an HTML error page from a proxy, an empty body, a truncated object, a
+JSON value that is not an object, or an envelope with no `result` — and a stream that ends without
+that answer are protocol failures reported as `MCP_UPSTREAM_ERROR`, never as an empty result. The
+probe would otherwise record a Server that answered nothing as a healthy one with zero tools, and a
+gateway `tools/call` would answer with an envelope that carries no `result`. An explicit
+`"result": null` and a `202`/`204` notification acknowledgement stay valid.
+
 Because there is no session, **a Server must not rely on prior requests**. This is also why the probe
 snapshot is per authorization row rather than per Server: two credentials are two independent clients.
 

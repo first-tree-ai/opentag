@@ -23,9 +23,11 @@ import {
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type WebSocket from "ws";
+import { deferred, pausedBindingRead } from "../../../__tests__/support/paused-binding-read.js";
 import { createUnitDatabase, type UnitDatabase } from "../../../__tests__/support/unit-database.js";
 import { bootstrapInitialAdmin as bootstrapTestAccount } from "../../../admin/bootstrap.js";
-import { computers, imBindings, sandboxes, slackInstallations, users } from "../../../db/schema/index.js";
+import type { DatabaseClient } from "../../../db/client.js";
+import { agents, computers, imBindings, sandboxes, slackInstallations, users } from "../../../db/schema/index.js";
 import { ConnectionRegistry } from "../../../runtime/connection-registry.js";
 import type { ProviderReadinessSource } from "../../computers/index.js";
 import { ApplicationCipher } from "../../crypto.js";
@@ -113,6 +115,7 @@ function imCliReportsSource(
 }
 
 interface HarnessOptions {
+  database?: DatabaseClient;
   runtimeReadiness?: ProviderReadinessSource;
   imCliReports?: Partial<Record<ImCliProvider, ImCliReadinessStatus>>;
   providerReadiness?: ProviderReadinessSource;
@@ -127,15 +130,16 @@ interface HarnessOptions {
 }
 
 function harness(options: HarnessOptions = {}) {
+  const database = options.database ?? unitDatabase.database;
   const cipher = new ApplicationCipher(Buffer.alloc(32, 7));
-  const imBindingService = new ImBindingService(unitDatabase.database, cipher, {
+  const imBindingService = new ImBindingService(database, cipher, {
     now: () => NOW,
     agentRuntimeReadiness: () => options.agentRuntimeReadiness ?? "ready",
     imCliReadiness: () => options.imCliReadiness ?? "checking",
     credentialExecutionReadiness: () => options.credentialExecutionReadiness ?? { status: "unconfirmed" },
   });
   const feishuSetup = new FeishuSetupService({
-    database: unitDatabase.database,
+    database,
     cipher,
     instanceId: FEISHU_INSTANCE_ID,
     imBindings: imBindingService,
@@ -146,7 +150,7 @@ function harness(options: HarnessOptions = {}) {
     },
     activation: options.activation ?? { activateAtomicAttempt: vi.fn() },
   });
-  const agentService = new AgentService(unitDatabase.database, { now: () => NOW });
+  const agentService = new AgentService(database, { now: () => NOW });
   const setupReadiness: ProviderReadinessSource | undefined =
     (options.runtimeReadiness ?? options.imCliReports)
       ? {
@@ -156,7 +160,7 @@ function harness(options: HarnessOptions = {}) {
           ...(options.imCliReports ? { imCliReadiness: imCliReportsSource(options.imCliReports).imCliReadiness } : {}),
         }
       : undefined;
-  const service = new AgentSetupService(unitDatabase.database, agentService, imBindingService, feishuSetup, {
+  const service = new AgentSetupService(database, agentService, feishuSetup, {
     now: () => NOW,
     prepareComputer: options.prepareComputer,
     providerReadiness: options.providerReadiness ?? setupReadiness,
@@ -164,6 +168,36 @@ function harness(options: HarnessOptions = {}) {
     cloudAvailability: options.cloudAvailability,
   });
   return { agentService, feishuSetup, imBindingService, service };
+}
+
+async function settleQrReadFixture(input: {
+  outcome: "validating" | "cancel" | "disable" | "replace";
+  setup: FeishuSetupService;
+  bindings: ImBindingService;
+  caller: string;
+  agentId: string;
+  attemptId: string;
+}): Promise<{ service?: FeishuSetupService; attemptId?: string }> {
+  if (input.outcome === "cancel" || input.outcome === "replace")
+    await input.setup.cancel(input.caller, input.attemptId);
+  if (input.outcome === "disable") {
+    const [binding] = await unitDatabase.database
+      .select({ id: imBindings.id })
+      .from(imBindings)
+      .where(eq(imBindings.setupAttemptId, input.attemptId));
+    if (!binding) throw new Error("The captured attempt's binding is missing");
+    await input.bindings.unbindForAgent(input.caller, input.agentId, { provider: "feishu", bindingId: binding.id });
+  }
+  if (input.outcome !== "replace") return {};
+  const service = new FeishuSetupService({
+    database: unitDatabase.database,
+    cipher: new ApplicationCipher(Buffer.alloc(32, 7)),
+    instanceId: crypto.randomUUID(),
+    imBindings: input.bindings,
+    registrations: registrationGateway(new Date(Date.now() + 60_000)),
+    activation: { activateAtomicAttempt: vi.fn() },
+  });
+  return { service, attemptId: (await service.createOrReuse(input.caller, input.agentId, "create")).id };
 }
 
 function registrationGateway(qrExpiresAt: Date): FeishuRegistrationGateway {
@@ -348,18 +382,17 @@ describe("Agent setup projection ownership", () => {
 
   it("fails closed when the exact Agent is suspended during snapshot observation", async () => {
     const bootstrap = await account();
-    const { agentService, feishuSetup } = harness();
+    const { agentService } = harness();
     const { agentId } = await boundAgent(bootstrap.userId, { online: true });
     const service = new AgentSetupService(
       unitDatabase.database,
       agentService,
       {
-        getSetupBindingForAgent: async () => {
+        observeMessagingForAgent: async () => {
           await agentService.suspendById(bootstrap.userId, agentId);
           return undefined;
         },
       },
-      feishuSetup,
       { now: () => NOW, providerReadiness: runtimeReadiness("ready") },
     );
 
@@ -556,6 +589,304 @@ describe("Agent setup projection runtime readiness", () => {
 });
 
 describe("Agent setup projection Messaging states", () => {
+  it.each(["ready", "unconfirmed"] as const)(
+    "keeps a coherent authorization observation when activation advances a %s handoff",
+    async (credentialStatus) => {
+      const bootstrap = await account();
+      const { agentId } = await messagingReadyAgent(bootstrap.userId);
+      const pause = pausedBindingRead(unitDatabase.database);
+      const { imBindingService, feishuSetup, service } = harness({
+        database: pause.database,
+        runtimeReadiness: runtimeReadiness("ready"),
+        imCliReadiness: "ready",
+        credentialExecutionReadiness: { status: credentialStatus },
+        registrations: registrationGateway(new Date(Date.now() + 60_000)),
+      });
+      try {
+        await feishuSetup.createOrReuse(bootstrap.userId, agentId, "create");
+        pause.arm();
+        const pending = service.getSetupById(bootstrap.userId, agentId);
+        await pause.captured;
+        await unitDatabase.database.transaction(async (transaction) => {
+          const id = await imBindingService.activateFeishu(
+            {
+              agentId,
+              appId: "cli_app",
+              appSecret: "synthetic",
+              teamId: "T_TEAM",
+              botOpenId: "ou_bot",
+              grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
+            },
+            transaction,
+          );
+          await transaction
+            .update(imBindings)
+            .set({
+              setupState: "succeeded",
+              encryptedSetupContext: null,
+              setupOwnerInstanceId: null,
+              setupOwnerHeartbeatAt: null,
+              setupExpiresAt: null,
+              connectionOwnerInstanceId: crypto.randomUUID(),
+              connectionLeaseExpiresAt: new Date(NOW.getTime() + 60_000),
+              observedConnectedAt: NOW,
+              observedAt: NOW,
+            })
+            .where(eq(imBindings.id, id));
+        });
+        pause.release();
+        const stale = await pending;
+        const fresh = await service.getSetupById(bootstrap.userId, agentId);
+        expectContractValid(stale);
+        expect(["authorizing", credentialStatus === "ready" ? "ready" : "waiting-handoff"]).toContain(
+          stale.messaging.kind,
+        );
+        expect(
+          stale.actions.some((action) => action.kind === "unbind-messaging" || action.kind === "start-messaging"),
+        ).toBe(false);
+        expect(fresh.messaging).toMatchObject({
+          kind: credentialStatus === "ready" ? "ready" : "waiting-handoff",
+          credentialGeneration: 1,
+        });
+      } finally {
+        pause.release();
+        await feishuSetup.stop();
+      }
+    },
+  );
+
+  it.each([
+    { reader: "agent", outcome: "validating" },
+    { reader: "attempt", outcome: "validating" },
+    { reader: "agent", outcome: "cancel" },
+    { reader: "attempt", outcome: "cancel" },
+    { reader: "agent", outcome: "disable" },
+    { reader: "attempt", outcome: "disable" },
+    { reader: "agent", outcome: "replace" },
+    { reader: "attempt", outcome: "replace" },
+  ] as const)(
+    "rechecks a captured QR $reader read after registration cleanup and $outcome",
+    async ({ reader, outcome }) => {
+      const bootstrap = await account();
+      const { agentId } = await messagingReadyAgent(bootstrap.userId);
+      const { imBindingService } = harness();
+      const result = deferred<{ appId: string; appSecret: string; teamBrand: "feishu" }>();
+      const probeEntered = deferred<void>();
+      const probeResult = deferred<FeishuCandidateCheckOutcome>();
+      const pause = pausedBindingRead(unitDatabase.database);
+      const feishuSetup = new FeishuSetupService({
+        database: pause.database,
+        cipher: new ApplicationCipher(Buffer.alloc(32, 7)),
+        instanceId: FEISHU_INSTANCE_ID,
+        imBindings: imBindingService,
+        registrations: {
+          start: () => ({
+            qrReady: Promise.resolve({
+              url: "https://accounts.feishu.cn/device",
+              expiresAt: new Date(Date.now() + 60_000),
+            }),
+            result: result.promise,
+            abort: vi.fn(),
+          }),
+        },
+        activation: {
+          checkCandidate: async () => {
+            probeEntered.resolve();
+            return probeResult.promise;
+          },
+          activateAtomicAttempt: vi.fn(),
+        },
+      });
+      let replacement: FeishuSetupService | undefined;
+      try {
+        const attempt = await feishuSetup.createOrReuse(bootstrap.userId, agentId, "create");
+        pause.arm();
+        const pending =
+          reader === "agent" ? feishuSetup.observeForAgent(agentId) : feishuSetup.get(bootstrap.userId, attempt.id);
+        await pause.captured;
+        result.resolve({ appId: "cli_app", appSecret: "synthetic", teamBrand: "feishu" });
+        await probeEntered.promise;
+        const fresh = await feishuSetup.observeForAgent(agentId);
+        expect(fresh).toMatchObject({ id: attempt.id, state: "validating", activation: { reason: "checking" } });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        const followup = await settleQrReadFixture({
+          outcome,
+          setup: feishuSetup,
+          bindings: imBindingService,
+          caller: bootstrap.userId,
+          agentId,
+          attemptId: attempt.id,
+        });
+        replacement = followup.service;
+        pause.release();
+        const stale = await pending;
+        if (outcome === "validating")
+          expect(stale).toMatchObject({ id: attempt.id, state: "validating", activation: { reason: "checking" } });
+        else if (reader === "attempt") expect(stale).toMatchObject({ id: attempt.id, state: "canceled" });
+        else if (outcome === "replace") expect(stale).toMatchObject({ id: followup.attemptId, state: "awaiting_user" });
+        else expect(stale).toBeUndefined();
+        const [persisted] = await unitDatabase.database
+          .select({ setupState: imBindings.setupState })
+          .from(imBindings)
+          .where(eq(imBindings.setupAttemptId, attempt.id));
+        expect(persisted?.setupState).toBe(outcome === "validating" ? "validating" : "canceled");
+      } finally {
+        pause.release();
+        await replacement?.stop();
+        await feishuSetup.stop();
+        probeResult.resolve({ status: "waiting", reason: "temporary_failure", missingScopes: [] });
+      }
+    },
+  );
+
+  it("keeps a healthy active route ready when its reauthorization context cannot be read", async () => {
+    const bootstrap = await account();
+    const { agentId } = await messagingReadyAgent(bootstrap.userId);
+    const { imBindingService, feishuSetup, service } = harness({
+      runtimeReadiness: runtimeReadiness("ready"),
+      imCliReadiness: "ready",
+      credentialExecutionReadiness: { status: "ready" },
+      registrations: registrationGateway(new Date(Date.now() + 60_000)),
+    });
+    try {
+      const { imBindingId } = await activateFeishuBinding(imBindingService, agentId);
+      await observeFeishuConnection(imBindingId);
+      const attempt = await feishuSetup.createOrReuse(bootstrap.userId, agentId, "reauthorize", {
+        kind: "bound",
+        provider: "feishu",
+        bindingId: imBindingId,
+        credentialGeneration: 1,
+      });
+      await unitDatabase.database
+        .update(imBindings)
+        .set({ encryptedSetupContext: "unreadable" })
+        .where(eq(imBindings.id, imBindingId));
+      expect((await service.getSetupById(bootstrap.userId, agentId)).messaging).toMatchObject({
+        kind: "ready",
+        bindingId: imBindingId,
+        credentialGeneration: 1,
+      });
+      await expect(feishuSetup.get(bootstrap.userId, attempt.id)).rejects.toBeDefined();
+    } finally {
+      await feishuSetup.stop();
+    }
+  });
+
+  it.each(["owner", "expiry"] as const)(
+    "confirms genuine %s loss before projecting a terminal attempt",
+    async (reason) => {
+      const bootstrap = await account();
+      const { agentId } = await messagingReadyAgent(bootstrap.userId);
+      const { imBindingService, feishuSetup, service } = harness({
+        runtimeReadiness: runtimeReadiness("ready"),
+        registrations: registrationGateway(new Date(Date.now() + 60_000)),
+      });
+      try {
+        await feishuSetup.createOrReuse(bootstrap.userId, agentId, "create");
+        await unitDatabase.database
+          .update(imBindings)
+          .set(reason === "owner" ? { setupOwnerHeartbeatAt: new Date(0) } : { setupExpiresAt: new Date(0) })
+          .where(eq(imBindings.agentId, agentId));
+        const reads = vi.spyOn(imBindingService, "readSetupForAgent");
+        const snapshot = await service.getSetupById(bootstrap.userId, agentId);
+        expect(snapshot.messaging).toMatchObject({
+          kind: "blocked",
+          code: "authorization-failed",
+          errorCode: reason === "owner" ? "FEISHU_SETUP_OWNER_RESTARTED" : "FEISHU_SETUP_EXPIRED",
+        });
+        expect(reads).toHaveBeenCalledTimes(2);
+      } finally {
+        await feishuSetup.stop();
+      }
+    },
+  );
+
+  it("bounds an advancing terminal observation to two complete reads and exposes only refresh", async () => {
+    const bootstrap = await account();
+    const { agentId } = await messagingReadyAgent(bootstrap.userId);
+    const { imBindingService, feishuSetup, service } = harness({
+      runtimeReadiness: runtimeReadiness("ready"),
+      registrations: registrationGateway(new Date(Date.now() + 60_000)),
+    });
+    try {
+      await feishuSetup.createOrReuse(bootstrap.userId, agentId, "create");
+      await unitDatabase.database
+        .update(imBindings)
+        .set({ setupExpiresAt: new Date(0) })
+        .where(eq(imBindings.agentId, agentId));
+      const read = imBindingService.readSetupForAgent.bind(imBindingService);
+      const spy = vi.spyOn(imBindingService, "readSetupForAgent").mockImplementation(async (...args) => {
+        const value = await read(...args);
+        if (spy.mock.calls.length === 1)
+          await unitDatabase.database
+            .update(imBindings)
+            .set({ setupExpiresAt: new Date(1) })
+            .where(eq(imBindings.agentId, agentId));
+        return value;
+      });
+      const snapshot = await service.getSetupById(bootstrap.userId, agentId);
+      expect(snapshot.messaging).toEqual({ kind: "observation-failed" });
+      expect(snapshot.actions).toEqual([{ kind: "refresh" }]);
+      expect(spy).toHaveBeenCalledTimes(2);
+    } finally {
+      await feishuSetup.stop();
+    }
+  });
+
+  it.each(["feishu", "slack"] as const)(
+    "keeps an unexplained %s provisioning row recoverable without destructive controls",
+    async (provider) => {
+      const bootstrap = await account();
+      const { agentId } = await messagingReadyAgent(bootstrap.userId);
+      await unitDatabase.database.insert(imBindings).values({ agentId, provider, status: "provisioning" });
+      const { service } = harness({ runtimeReadiness: runtimeReadiness("ready") });
+      const snapshot = await service.getSetupById(bootstrap.userId, agentId);
+      expect(snapshot.messaging).toEqual({ kind: "observation-failed" });
+      expect(snapshot.actions).toEqual([{ kind: "refresh" }]);
+    },
+  );
+
+  it.each(["attempt", "agent"] as const)(
+    "rechecks Account authority after a captured public %s read",
+    async (reader) => {
+      const bootstrap = await account();
+      const other = await otherAccount();
+      const { agentId } = await messagingReadyAgent(bootstrap.userId);
+      const pause = pausedBindingRead(unitDatabase.database);
+      const { imBindingService, feishuSetup } = harness({
+        database: pause.database,
+        registrations: registrationGateway(new Date(Date.now() + 60_000)),
+      });
+      try {
+        const attempt = await feishuSetup.createOrReuse(bootstrap.userId, agentId, "create");
+        if (reader === "attempt")
+          await unitDatabase.database
+            .update(imBindings)
+            .set({ setupOwnerHeartbeatAt: new Date(0) })
+            .where(eq(imBindings.agentId, agentId));
+        const check = imBindingService.assertCanManage.bind(imBindingService);
+        vi.spyOn(imBindingService, "assertCanManage").mockImplementationOnce(async (...args) => {
+          await check(...args);
+          pause.arm();
+        });
+        const pending =
+          reader === "attempt"
+            ? feishuSetup.get(bootstrap.userId, attempt.id)
+            : feishuSetup.getForAgent(bootstrap.userId, agentId);
+        await pause.captured;
+        await unitDatabase.database
+          .update(agents)
+          .set({ createdByUserId: other.userId, computerId: null })
+          .where(eq(agents.id, agentId));
+        pause.release();
+        await expect(pending).rejects.toMatchObject({ code: "IM_BINDING_NOT_FOUND", statusCode: 404 });
+      } finally {
+        pause.release();
+        await feishuSetup.stop();
+      }
+    },
+  );
+
   async function messagingReadyAgent(userId: string) {
     const { agentId, computerId } = await boundAgent(userId, { online: true });
     return { agentId, computerId };
@@ -569,11 +900,10 @@ describe("Agent setup projection Messaging states", () => {
       unitDatabase.database,
       agentService,
       {
-        getSetupBindingForAgent: async () => {
+        observeMessagingForAgent: async () => {
           throw new Error("Messaging observer unavailable");
         },
       },
-      { observeForAgent: async () => undefined },
       { now: () => NOW, providerReadiness: runtimeReadiness("ready") },
     );
 

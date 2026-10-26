@@ -110,6 +110,31 @@ The existing credential cipher supports both v1 ciphertext and v2 with context A
 candidate's embedded identity checks remain necessary with v1. This feature does not change
 the global encryption write version or re-encrypt existing credentials.
 
+### Setup observations and recovery
+
+Agent setup reads the current binding and its setup fields from one captured binding-row snapshot.
+The IM-binding/Feishu services produce the public binding, credential generation, attempt and
+handoff view together; the Agent setup layer does not combine a binding read with an independent
+attempt read or decode credential material. Existing Account authorization, current-binding
+selection, and final Agent revalidation still apply. Public attempt reads recheck Account authority
+after a confirmation read; public Agent-scoped attempt reads also recheck before returning.
+
+An inferred terminal projection, such as QR owner loss or expiry, is confirmed by at most one
+fresh complete read. Confirmation compares the binding, generation, attempt, state, owner,
+heartbeat, deadline and saved context. An advanced row is projected as it now stands. If it needs
+another unconfirmed terminal decision, the read is temporarily unavailable instead of reporting
+a fabricated authorization failure. This adds no write, row lock, or long-running transaction.
+Stored terminal outcomes remain explicit, and a healthy active route remains ready even if its
+reauthorization context is temporarily unreadable.
+
+An unexplained provisioning observation is recoverable; it does not authorize retrying registration
+or disconnecting a binding. Agent setup exposes the existing observation-failed state with a
+read-only refresh action. On an online Computer, the page observes that state with the existing
+2-second GET cadence, bounded by 45 attempts and 90 seconds. A failed background GET keeps the
+last trustworthy snapshot. At exhaustion, Check again starts a fresh read window without preparing
+a Computer, checking an upstream candidate, creating another authorization, or disconnecting.
+Actual authorizing, waiting-handoff and offline observations retain their existing waiting behavior.
+
 ### Minimal database migration for `pending_activation`
 
 - Append `pending_activation` to `feishu_setup_state`.

@@ -16,7 +16,6 @@ export {
   type AgentSessionStopTarget,
 } from "./agent-service.js";
 export {
-  type AgentSetupAttemptSource,
   type AgentSetupMessagingSource,
   AgentSetupService,
   type AgentSetupServiceOptions,

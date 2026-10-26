@@ -284,7 +284,7 @@ async function runScenario(scenario: Scenario): Promise<{
   }
 
   const agentService = new AgentService(unitDatabase.database, { now: () => NOW });
-  const service = new AgentSetupService(unitDatabase.database, agentService, imBindingService, feishuSetup, {
+  const service = new AgentSetupService(unitDatabase.database, agentService, feishuSetup, {
     now: () => NOW,
     providerReadiness: registry,
   });

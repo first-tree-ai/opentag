@@ -15,6 +15,7 @@ import type { ApplicationCipher } from "../../crypto.js";
 import type { TERMINAL_SETUP_STATES } from "../current-binding.js";
 import { releaseNeverActivatedSlots } from "../disable-im-binding.js";
 import {
+  type AgentSetupBindingState,
   type ImBindingService,
   ImBindingServiceError,
   ImBindingUnbindRequiredError,
@@ -45,6 +46,26 @@ import {
 } from "./setup-context.js";
 
 type SetupRow = typeof imBindings.$inferSelect;
+
+export interface AgentSetupMessagingObservation {
+  binding: AgentSetupBindingState;
+  attempt: FeishuSetupAttempt | undefined;
+}
+
+function sameSetupObservation(left: SetupRow, right: SetupRow): boolean {
+  return (
+    left.id === right.id &&
+    left.status === right.status &&
+    left.credentialGeneration === right.credentialGeneration &&
+    left.setupAttemptId === right.setupAttemptId &&
+    left.setupIntent === right.setupIntent &&
+    left.setupState === right.setupState &&
+    left.setupOwnerInstanceId === right.setupOwnerInstanceId &&
+    left.setupOwnerHeartbeatAt?.getTime() === right.setupOwnerHeartbeatAt?.getTime() &&
+    left.setupExpiresAt?.getTime() === right.setupExpiresAt?.getTime() &&
+    left.encryptedSetupContext === right.encryptedSetupContext
+  );
+}
 
 export interface FeishuBindingActivation {
   /**
@@ -549,13 +570,20 @@ export class FeishuSetupService {
     const row = await this.#load(attemptId);
     if (!row) throw new Error("FEISHU_SETUP_NOT_FOUND");
     await this.#imBindings.assertCanManage(callerUserId, row.agentId);
-    return this.#projectAttempt(row);
+    const current = await this.#observeRead({ row }, async () => {
+      const current = await this.#load(attemptId);
+      if (current) await this.#imBindings.assertCanManage(callerUserId, current.agentId);
+      return current ? { row: current } : undefined;
+    });
+    if (!current?.attempt) throw new Error("FEISHU_SETUP_NOT_FOUND");
+    return current.attempt;
   }
 
   /** Settings observes the open attempt independently of the currently active connection. */
   async getForAgent(callerUserId: string, agentId: string): Promise<FeishuSetupAttempt | undefined> {
     await this.#imBindings.assertCanManage(callerUserId, agentId);
     const attempt = await this.observeForAgent(agentId);
+    await this.#imBindings.assertCanManage(callerUserId, agentId);
     return attempt && isOpenSetupState(attempt.state) ? attempt : undefined;
   }
 
@@ -565,9 +593,54 @@ export class FeishuSetupService {
    * the Agent (the setup snapshot) use this so the attempt's liveness rules stay in one place.
    */
   async observeForAgent(agentId: string): Promise<FeishuSetupAttempt | undefined> {
-    const row = await this.#currentForAgent(agentId);
-    if (!row?.setupAttemptId || !row.setupIntent || !row.setupState) return undefined;
-    return this.#projectAttempt(row);
+    const read = async () => {
+      const row = await this.#currentForAgent(agentId);
+      return row ? { row } : undefined;
+    };
+    return (await this.#observeRead(await read(), read))?.attempt;
+  }
+
+  async observeMessagingForAgent(
+    callerUserId: string,
+    agentId: string,
+  ): Promise<AgentSetupMessagingObservation | undefined> {
+    const read = () => this.#imBindings.readSetupForAgent(callerUserId, agentId);
+    const observed = await this.#observeRead(await read(), read);
+    return observed ? { binding: observed.binding, attempt: observed.attempt } : undefined;
+  }
+
+  async #observeRead<T extends { row: SetupRow; binding?: AgentSetupBindingState }>(
+    initial: T | undefined,
+    read: () => Promise<T | undefined>,
+  ): Promise<(T & { attempt: FeishuSetupAttempt | undefined }) | undefined> {
+    if (!initial) return undefined;
+    const attempt = this.#readAttempt(initial);
+    if (!this.#inferredTerminal(initial.row, attempt)) return { ...initial, attempt };
+    const current = await read();
+    if (!current) return undefined;
+    const confirmed = this.#readAttempt(current);
+    if (this.#inferredTerminal(current.row, confirmed) && !sameSetupObservation(initial.row, current.row)) {
+      throw new ImBindingServiceError(
+        "FEISHU_SETUP_OBSERVATION_UNAVAILABLE",
+        503,
+        "Lark setup changed while its status was read; check again",
+        "transient",
+      );
+    }
+    return { ...current, attempt: confirmed };
+  }
+
+  #readAttempt(observed: { row: SetupRow; binding?: AgentSetupBindingState }): FeishuSetupAttempt | undefined {
+    const handoff = observed.binding?.handoff;
+    if (handoff?.bindingState === "active" && handoff.handoffReady) return undefined;
+    const { row } = observed;
+    return row.provider === "feishu" && row.setupAttemptId && row.setupIntent && row.setupState
+      ? this.#projectAttempt(row)
+      : undefined;
+  }
+
+  #inferredTerminal(row: SetupRow, attempt: FeishuSetupAttempt | undefined): boolean {
+    return isOpenSetupState(row.setupState) && attempt !== undefined && !isOpenSetupState(attempt.state);
   }
 
   /**

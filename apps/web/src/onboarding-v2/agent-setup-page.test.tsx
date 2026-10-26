@@ -858,6 +858,72 @@ describe("AgentSetupPage blockers", () => {
 });
 
 describe("AgentSetupPage transitions", () => {
+  it.each([false, true])(
+    "bounds messaging observation recovery and manual retry to GET requests (runtime missing: %s)",
+    async (runtimeMissing) => {
+      const memory = createMemorySetupAdapter({ agent: setupAgent(), runtimeMissing });
+      const snapshot = await memory.adapter.readSnapshot(SETUP_AGENT_ID);
+      const unavailable: AgentSetupSnapshot = {
+        ...snapshot,
+        stage: runtimeMissing ? "needs-runtime" : "needs-messaging",
+        messaging: { kind: "observation-failed" },
+        blockers: [{ code: "resource-observation-failed", resource: "messaging" }],
+        actions: [{ kind: "refresh" }],
+      };
+      const adapter = scriptedAdapter(async () => unavailable);
+      renderSetup(adapter);
+      await settle();
+      await advance(BOUNDED_POLL_WINDOW_MS + 10);
+      const stopped = vi.mocked(adapter.readSnapshot).mock.calls.length;
+      expect(stopped).toBeGreaterThan(1);
+      expect(stopped).toBeLessThanOrEqual(1 + BOUNDED_POLL_ATTEMPTS);
+      await advance(POLL_MS * 4);
+      expect(adapter.readSnapshot).toHaveBeenCalledTimes(stopped);
+      expect(screen.queryByRole("button", { name: "Disconnect Lark" })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+      await settle();
+      expect(adapter.readSnapshot).toHaveBeenCalledTimes(stopped + 1);
+      await advance(POLL_MS + 10);
+      expect(adapter.readSnapshot).toHaveBeenCalledTimes(stopped + 2);
+      for (const method of [
+        adapter.refreshPreparation,
+        adapter.startFeishuAttempt,
+        adapter.cancelFeishuAttempt,
+        adapter.checkFeishuAttempt,
+        adapter.unbindMessaging,
+        adapter.startSlackInstall,
+      ]) {
+        expect(method).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("recovers a messaging observation without hiding the last good view on a failed GET", async () => {
+    const memory = createMemorySetupAdapter({ agent: setupAgent() });
+    const snapshot = await memory.adapter.readSnapshot(SETUP_AGENT_ID);
+    const unavailable: AgentSetupSnapshot = {
+      ...snapshot,
+      stage: "needs-messaging",
+      messaging: { kind: "observation-failed" },
+      blockers: [{ code: "resource-observation-failed", resource: "messaging" }],
+      actions: [{ kind: "refresh" }],
+    };
+    const adapter = scriptedAdapter(async () => unavailable);
+    vi.mocked(adapter.readSnapshot)
+      .mockResolvedValueOnce(unavailable)
+      .mockRejectedValueOnce(new Error("temporary read failure"))
+      .mockResolvedValue(snapshot);
+    renderSetup(adapter);
+    await settle();
+    await advance(POLL_MS + 10);
+    expect(screen.getByText("We couldn't read the latest state from the server. Check again.")).toBeTruthy();
+    await advance(POLL_MS + 10);
+    expect(adapter.readSnapshot).toHaveBeenCalledTimes(3);
+    expect(screen.queryByText("We couldn't read the latest state from the server. Check again.")).toBeNull();
+    expect(adapter.refreshPreparation).not.toHaveBeenCalled();
+    expect(adapter.startFeishuAttempt).not.toHaveBeenCalled();
+  });
+
   it("polls needs-provider-clis within a finite budget and then stops", async () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent(), imCliReadiness: {} });
     const reads = vi.spyOn(memory.adapter, "readSnapshot");

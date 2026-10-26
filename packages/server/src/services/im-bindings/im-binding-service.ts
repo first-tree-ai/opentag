@@ -152,6 +152,7 @@ export interface AgentSetupBindingState {
   handoff: ImBindingHandoffStatus;
 }
 interface ObservedAgentBinding {
+  row: typeof imBindings.$inferSelect;
   id: string;
   provider: "feishu" | "slack";
   status: ImBindingState;
@@ -789,53 +790,48 @@ export class ImBindingService {
   }
 
   async getSetupBindingForAgent(callerUserId: string, agentId: string): Promise<AgentSetupBindingState | undefined> {
+    return (await this.readSetupForAgent(callerUserId, agentId))?.binding;
+  }
+
+  /** Internal captured row for Feishu projection; only the public binding view may be serialized. */
+  async readSetupForAgent(callerUserId: string, agentId: string) {
     const observed = await this.#observeForAgent(callerUserId, agentId);
     if (!observed) return undefined;
     return {
-      bindingId: observed.id,
-      provider: observed.provider,
-      credentialGeneration: observed.credentialGeneration,
-      errorCode: projectedErrorCode({
-        credentialStatus: observed.credential.status,
-        lastErrorCode: observed.lastErrorCode,
-        missingCapabilities: observed.credential.missingCapabilities,
+      row: observed.row,
+      binding: {
+        bindingId: observed.id,
         provider: observed.provider,
-        reauthorizationRequired: observed.readiness.reauthorizationRequired,
-        status: observed.status,
-      }),
-      handoff: observed.readiness.handoff,
+        credentialGeneration: observed.credentialGeneration,
+        errorCode: projectedErrorCode({
+          credentialStatus: observed.credential.status,
+          lastErrorCode: observed.lastErrorCode,
+          missingCapabilities: observed.credential.missingCapabilities,
+          provider: observed.provider,
+          reauthorizationRequired: observed.readiness.reauthorizationRequired,
+          status: observed.status,
+        }),
+        handoff: observed.readiness.handoff,
+      },
     };
   }
 
   async #observeForAgent(callerUserId: string, agentId: string): Promise<ObservedAgentBinding | undefined> {
     await this.#assertCanRead(callerUserId, agentId);
-    const [row] = await this.#database
-      .select({
-        id: imBindings.id,
-        agentId: imBindings.agentId,
-        provider: imBindings.provider,
-        status: imBindings.status,
-        lastErrorCode: imBindings.lastErrorCode,
-        connectionLeaseExpiresAt: imBindings.connectionLeaseExpiresAt,
-        observedConnectedAt: imBindings.observedConnectedAt,
-        observedAt: imBindings.observedAt,
-        grantedCapabilities: imBindings.grantedCapabilities,
-        encryptedCredential: imBindings.encryptedCredential,
-        externalAppId: imBindings.externalAppId,
-        externalBotId: imBindings.externalBotId,
-        externalTeamId: imBindings.externalTeamId,
-        credentialSchemaVersion: imBindings.credentialSchemaVersion,
-        credentialGeneration: imBindings.credentialGeneration,
-        slackInstallation: slackInstallations,
-        computerKind: computers.kind,
-      })
+    const [selected] = await this.#database
+      .select({ binding: imBindings, slackInstallation: slackInstallations, computerKind: computers.kind })
       .from(imBindings)
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
       .leftJoin(computers, eq(computers.id, agents.computerId))
       .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
       .where(currentBindingOf(agentId))
       .limit(1);
-    if (!row) return undefined;
+    if (!selected) return undefined;
+    const row = {
+      ...selected.binding,
+      slackInstallation: selected.slackInstallation,
+      computerKind: selected.computerKind,
+    };
     const credential = this.#inspectBindingCredentials(row, row.slackInstallation);
     const observedConnectedAt =
       row.provider === "slack" ? (row.slackInstallation?.observedConnectedAt ?? null) : row.observedConnectedAt;
@@ -865,6 +861,7 @@ export class ImBindingService {
       row.computerKind,
     );
     return {
+      row: selected.binding,
       id: row.id,
       provider: row.provider,
       status,

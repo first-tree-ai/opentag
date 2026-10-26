@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
 import { computers, imBindings } from "../../db/schema/index.js";
+import { AgentSetupService } from "../../services/agents/agent-setup-service.js";
 import { AgentService } from "../../services/agents/index.js";
 import { ApplicationCipher } from "../../services/crypto.js";
 import type { FeishuAdapter } from "../../services/im-bindings/feishu/adapter.js";
@@ -13,6 +14,7 @@ import type { FeishuChannel } from "../../services/im-bindings/feishu/index.js";
 import { encodeFeishuSetupCandidate } from "../../services/im-bindings/feishu/setup-context.js";
 import { FeishuSetupService } from "../../services/im-bindings/feishu/setup-service.js";
 import { ImBindingService } from "../../services/im-bindings/index.js";
+import { deferred, pausedBindingRead } from "../support/paused-binding-read.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 /**
@@ -448,5 +450,138 @@ describe("Feishu durable connection lifecycle (PostgreSQL)", () => {
     });
     await service.stop();
     await manager.stop();
+  });
+});
+
+async function setupObservationFixture(credentialStatus: "ready" | "unconfirmed" = "ready") {
+  const value = await fixture();
+  const writer = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
+  openClients.push(writer);
+  await value.client.database
+    .update(computers)
+    .set({ currentInstanceId: randomUUID(), lastSeenAt: clock.now })
+    .where(eq(computers.id, value.agent.computerId as string));
+  const pause = pausedBindingRead(value.client.database);
+  const bindings = new ImBindingService(pause.database, value.cipher, {
+    now: () => clock.now,
+    agentRuntimeReadiness: () => "ready",
+    imCliReadiness: () => "ready",
+    credentialExecutionReadiness: () => ({ status: credentialStatus }),
+  });
+  const registration = deferred<{ appId: string; appSecret: string; teamBrand: "feishu" }>();
+  const entered = deferred<void>();
+  const probe = deferred<import("../../services/im-bindings/feishu/setup-check.js").FeishuCandidateCheckOutcome>();
+  const setup = new FeishuSetupService({
+    database: pause.database,
+    cipher: value.cipher,
+    instanceId: randomUUID(),
+    imBindings: bindings,
+    now: () => clock.now,
+    registrations: {
+      start: () => ({
+        qrReady: Promise.resolve({ url: "https://example.com/qr", expiresAt: new Date(clock.now.getTime() + 60_000) }),
+        result: registration.promise,
+        abort: vi.fn(),
+      }),
+    },
+    activation: {
+      checkCandidate: async () => {
+        entered.resolve();
+        return probe.promise;
+      },
+      activateAtomicAttempt: vi.fn(),
+    },
+  });
+  const service = new AgentSetupService(
+    pause.database,
+    new AgentService(pause.database, { now: () => clock.now }),
+    setup,
+    {
+      now: () => clock.now,
+      providerReadiness: {
+        providerReadiness: () => [
+          { observation: { provider: "codex", status: "ready" }, observedAt: clock.now.getTime() },
+        ],
+      },
+    },
+  );
+  return { ...value, writer, pause, setup, service, registration, entered, probe };
+}
+
+describe("Feishu setup observation consistency", () => {
+  it.each(["ready", "unconfirmed"] as const)(
+    "keeps a coherent snapshot across activation on another PostgreSQL connection (%s)",
+    async (credentialStatus) => {
+      const value = await setupObservationFixture(credentialStatus);
+      try {
+        await value.setup.createOrReuse(value.bootstrap.userId, value.agent.id, "create");
+        value.pause.arm();
+        const pending = value.service.getSetupById(value.bootstrap.userId, value.agent.id);
+        await value.pause.captured;
+        const writerBindings = new ImBindingService(value.writer.database, value.cipher, { now: () => clock.now });
+        await value.writer.database.transaction(async (transaction) => {
+          const id = await writerBindings.activateFeishu(
+            {
+              agentId: value.agent.id,
+              appId: "cli_observation",
+              appSecret: "synthetic",
+              teamId: "T",
+              botOpenId: "ou_bot",
+              grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
+            },
+            transaction,
+          );
+          await transaction
+            .update(imBindings)
+            .set({
+              setupState: "succeeded",
+              encryptedSetupContext: null,
+              setupOwnerInstanceId: null,
+              setupOwnerHeartbeatAt: null,
+              setupExpiresAt: null,
+              connectionOwnerInstanceId: randomUUID(),
+              connectionLeaseExpiresAt: new Date(clock.now.getTime() + 60_000),
+              observedConnectedAt: clock.now,
+              observedAt: clock.now,
+            })
+            .where(eq(imBindings.id, id));
+        });
+        value.pause.release();
+        const observed = await pending;
+        expect(["authorizing", credentialStatus === "ready" ? "ready" : "waiting-handoff"]).toContain(
+          observed.messaging.kind,
+        );
+        expect(
+          observed.actions.some((action) => action.kind === "start-messaging" || action.kind === "unbind-messaging"),
+        ).toBe(false);
+        expect((await value.service.getSetupById(value.bootstrap.userId, value.agent.id)).messaging).toMatchObject({
+          kind: credentialStatus === "ready" ? "ready" : "waiting-handoff",
+          credentialGeneration: 1,
+        });
+      } finally {
+        value.pause.release();
+        await value.setup.stop();
+      }
+    },
+  );
+
+  it("revalidates a QR row after normal durable registration completion on PostgreSQL", async () => {
+    const value = await setupObservationFixture();
+    try {
+      const attempt = await value.setup.createOrReuse(value.bootstrap.userId, value.agent.id, "create");
+      value.pause.arm();
+      const pending = value.setup.observeForAgent(value.agent.id);
+      await value.pause.captured;
+      value.registration.resolve({ appId: "cli_observation", appSecret: "synthetic", teamBrand: "feishu" });
+      await value.entered.promise;
+      expect(await value.setup.get(value.bootstrap.userId, attempt.id)).toMatchObject({ state: "validating" });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      value.pause.release();
+      expect(await pending).toMatchObject({ state: "validating", activation: { reason: "checking" } });
+    } finally {
+      value.pause.release();
+      await value.setup.stop();
+      value.probe.resolve({ status: "waiting", reason: "temporary_failure", missingScopes: [] });
+    }
   });
 });

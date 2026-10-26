@@ -28,6 +28,7 @@ contents, and machine-specific operational logs outside the repository.
 - [Context Tree integration](verification/context-tree-integration.md)
 - [Custom Slack Apps](verification/custom-slack-apps.md)
 - [Database disconnect recovery](verification/database-disconnect.md)
+- [Feishu setup observation consistency](verification/feishu-setup-observation.md)
 - [Feishu user MCP authorization](verification/feishu-user-mcp-authorization.md)
 - [GitHub platform integration](verification/github-platform-integration.md)
 - [GitHub MCP connector](verification/github-mcp.md)

@@ -21,20 +21,16 @@ import {
   projectComputerImCliReadiness,
   projectComputerProviderReadiness,
 } from "../computers/index.js";
+import type { AgentSetupMessagingObservation } from "../im-bindings/feishu/index.js";
 import type { AgentSetupBindingState } from "../im-bindings/index.js";
 import type { AgentService } from "./agent-service.js";
 import { AgentServiceError } from "./errors.js";
 
 class AgentSetupObservationError extends Error {}
 
-/** Reads the Agent's exact current Messaging binding together with its live handoff readiness. */
+/** Observes the binding and Feishu attempt from the same captured row. */
 export interface AgentSetupMessagingSource {
-  getSetupBindingForAgent(callerUserId: string, agentId: string): Promise<AgentSetupBindingState | undefined>;
-}
-
-/** Observes the Agent-owned Feishu setup attempt with its expiry and owner-liveness projection. */
-export interface AgentSetupAttemptSource {
-  observeForAgent(agentId: string): Promise<FeishuSetupAttempt | undefined>;
+  observeMessagingForAgent(callerUserId: string, agentId: string): Promise<AgentSetupMessagingObservation | undefined>;
 }
 
 export interface AgentSetupServiceOptions {
@@ -64,7 +60,6 @@ export interface AgentSetupServiceOptions {
  */
 export class AgentSetupService {
   readonly #agents: Pick<AgentService, "getById">;
-  readonly #attempts: AgentSetupAttemptSource;
   readonly #database: DatabaseClient;
   readonly #messaging: AgentSetupMessagingSource;
   readonly #now: () => Date;
@@ -78,13 +73,11 @@ export class AgentSetupService {
     database: DatabaseClient,
     agents: Pick<AgentService, "getById">,
     messaging: AgentSetupMessagingSource,
-    attempts: AgentSetupAttemptSource,
     options: AgentSetupServiceOptions = {},
   ) {
     this.#database = database;
     this.#agents = agents;
     this.#messaging = messaging;
-    this.#attempts = attempts;
     this.#now = options.now ?? (() => new Date());
     this.#presenceTimeoutMs = options.presenceTimeoutMs ?? 90_000;
     this.#prepareComputer = options.prepareComputer;
@@ -293,14 +286,16 @@ export class AgentSetupService {
   }
 
   async #messagingState(callerUserId: string, agentId: string): Promise<AgentSetupMessagingState> {
-    const binding = await this.#messaging.getSetupBindingForAgent(callerUserId, agentId).catch((cause: unknown) => {
-      throw new AgentSetupObservationError("Messaging observation failed", { cause });
-    });
-    if (!binding) return { kind: "not-configured" };
+    const observation = await this.#messaging
+      .observeMessagingForAgent(callerUserId, agentId)
+      .catch((cause: unknown) => {
+        throw new AgentSetupObservationError("Messaging observation failed", { cause });
+      });
+    if (!observation) return { kind: "not-configured" };
+    const { binding, attempt } = observation;
     if (binding.handoff.bindingState === "active" && binding.handoff.handoffReady) {
       return activeMessagingState(binding, binding.handoff);
     }
-    const attempt = binding.provider === "feishu" ? await this.#observeAttempt(agentId) : undefined;
     if (
       attempt &&
       (attempt.state === "awaiting_user" || attempt.state === "pending_activation" || attempt.state === "validating")
@@ -328,19 +323,13 @@ export class AgentSetupService {
         throw new Error(`The Messaging binding handoff state cannot be projected: ${handoff.bindingState}`);
     }
   }
-
-  async #observeAttempt(agentId: string): Promise<FeishuSetupAttempt | undefined> {
-    return this.#attempts.observeForAgent(agentId).catch((cause: unknown) => {
-      throw new AgentSetupObservationError("Messaging attempt observation failed", { cause });
-    });
-  }
 }
 
 function provisioningMessagingState(
   binding: AgentSetupBindingState,
   attempt: FeishuSetupAttempt | undefined,
 ): AgentSetupMessagingState {
-  // Terminal first authorization retains its exact slot for a same-Provider retry.
+  if (!attempt || !["failed", "expired", "canceled"].includes(attempt.state)) return { kind: "observation-failed" };
   return {
     kind: "blocked",
     provider: binding.provider,

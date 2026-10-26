@@ -204,6 +204,7 @@ type SetupPollClass = "bounded" | "unbounded" | undefined;
 function snapshotPollClass(snapshot: AgentSetupSnapshot): SetupPollClass {
   if (snapshot.messaging.kind === "authorizing" || snapshot.messaging.kind === "waiting-handoff") return "unbounded";
   if (snapshot.computer.kind === "bound" && snapshot.computer.connectionStatus === "offline") return "unbounded";
+  if (snapshot.messaging.kind === "observation-failed") return "bounded";
   if (snapshot.stage === "needs-runtime" || snapshot.stage === "needs-provider-clis") return "bounded";
   if (snapshot.runtime.kind === "waiting") return "bounded";
   if (snapshot.runtime.kind === "observed" && snapshot.runtime.status === "checking") return "bounded";
@@ -278,6 +279,19 @@ function slackSetupErrorMessage(code: string): string {
   return spaceScriptBoundary(slackConfigurationMessage(code));
 }
 
+async function performSetupRefresh(
+  adapter: AgentSetupAdapter,
+  agentId: string,
+  messaging?: AgentSetupSnapshot["messaging"],
+): Promise<void> {
+  if (messaging?.kind === "observation-failed") return;
+  if (messaging?.kind === "authorizing" && messaging.provider === "feishu" && messaging.activation) {
+    await adapter.checkFeishuAttempt(messaging.attemptId);
+    return;
+  }
+  await adapter.refreshPreparation(agentId);
+}
+
 /**
  * Performs the write side of an action. `bind-computer` and `repair-computer` are absent: they
  * gate the surfaces that do the work, and those surfaces report back on their own. A Slack answer
@@ -291,11 +305,7 @@ async function performSetupAction(
 ): Promise<string | undefined> {
   switch (action.kind) {
     case "refresh":
-      if (messaging?.kind === "authorizing" && messaging.provider === "feishu" && messaging.activation) {
-        await adapter.checkFeishuAttempt(messaging.attemptId);
-      } else {
-        await adapter.refreshPreparation(agentId);
-      }
+      await performSetupRefresh(adapter, agentId, messaging);
       return undefined;
     case "start-messaging":
       if (action.provider === "feishu") {
@@ -531,7 +541,9 @@ function useAgentSetup(
     lifecycle,
     reader.read,
     onExternalNavigation,
-    snapshot?.stage === "needs-messaging" ? snapshot.messaging : undefined,
+    snapshot?.stage === "needs-messaging" || snapshot?.messaging.kind === "observation-failed"
+      ? snapshot.messaging
+      : undefined,
   );
   const pollClass = snapshot === undefined ? undefined : snapshotPollClass(snapshot);
   const pollBudget = useRef(BOUNDED_POLL_ATTEMPTS);

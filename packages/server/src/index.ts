@@ -920,7 +920,7 @@ export async function startServer(): Promise<void> {
       onDiagnostic: reportDiagnostic,
       supervisor: backgroundFailureSupervisor,
     });
-    const agentSetupService = new AgentSetupService(database, agentService, imBindingService, feishuSetupService, {
+    const agentSetupService = new AgentSetupService(database, agentService, feishuSetupService, {
       prepareComputer: async (input) => {
         const owner = providerCliReconcileOwner;
         if (!owner) throw new Error("Provider CLI preparation owner is unavailable");

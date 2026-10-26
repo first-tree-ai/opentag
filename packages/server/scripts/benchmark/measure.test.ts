@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { startBenchmarkContainer, waitForDatabase } from "../benchmark/benchmark-container.js";
+import type { TaskService } from "../../src/services/tasks/index.js";
+import { startBenchmarkContainer, waitForDatabase } from "./container.js";
 import {
   type BenchmarkDatabase,
   type BenchmarkPorts,
@@ -12,13 +13,15 @@ import {
   seedDatabase,
   splitSeed,
   verifyRowCounts,
-} from "../benchmark/benchmark-task-queries.js";
-import type { TaskService } from "../services/tasks/index.js";
+} from "./measure.js";
 
 /**
  * The benchmark is evidence, so its own arithmetic is tested rather than trusted: a wrong median, a
  * dropped statement or a misread row count would change what the committed report says without
  * failing anything. Docker and the service are ports, which is what makes that testable here.
+ *
+ * The suite lives beside the modules rather than under `src/__tests__`: the benchmark is tooling, and
+ * the package's own test root already collects it.
  */
 
 const TASK_ID = "11111111-1111-4111-8111-111111111111";

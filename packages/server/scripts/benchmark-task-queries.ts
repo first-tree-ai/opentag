@@ -3,9 +3,9 @@
  * sections, measured on the tracked 100,000-rows-per-table fixture.
  *
  * This file is the composition root only — arguments, Docker, PostgreSQL, migrations and the service.
- * The measurement and container logic live in `src/benchmark/`, where unit tests drive them through
- * injected ports; importing that code never starts a container, and importing this file is never done
- * by a test.
+ * The measurement and container logic live in `scripts/benchmark/`, beside this file, where unit
+ * tests drive them through injected ports; importing those modules never starts a container, and
+ * importing this file is never done by a test.
  *
  * It owns one disposable loopback container, never reads `DATABASE_URL` or a `.env` file, applies the
  * real migrations, keeps constraints and indexes enabled, and uses the service client's default query
@@ -22,7 +22,11 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
-import { startBenchmarkContainer, waitForDatabase } from "../src/benchmark/benchmark-container.js";
+import { createDatabaseClient } from "../src/db/client.js";
+import { migrateDatabase } from "../src/db/migrate.js";
+import * as schema from "../src/db/schema/index.js";
+import { TaskService } from "../src/services/tasks/index.js";
+import { startBenchmarkContainer, waitForDatabase } from "./benchmark/container.js";
 import {
   type BenchmarkReport,
   runTaskQueriesBenchmark,
@@ -30,11 +34,7 @@ import {
   seedDatabase,
   splitSeed,
   verifyRowCounts,
-} from "../src/benchmark/benchmark-task-queries.js";
-import { createDatabaseClient } from "../src/db/client.js";
-import { migrateDatabase } from "../src/db/migrate.js";
-import * as schema from "../src/db/schema/index.js";
-import { TaskService } from "../src/services/tasks/index.js";
+} from "./benchmark/measure.js";
 
 function argument(name: string, fallback?: string): string {
   const index = process.argv.indexOf(name);

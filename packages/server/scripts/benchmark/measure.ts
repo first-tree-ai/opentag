@@ -1,8 +1,10 @@
 import type { TaskSummary } from "@opentag/shared";
-import type { TaskService } from "../services/tasks/index.js";
+import type { TaskService } from "../../src/services/tasks/index.js";
 
 /**
  * The measurement half of the Task query benchmark, kept apart from the process that starts Docker.
+ * It lives beside the entry point rather than in `src`: it is benchmark tooling, not product code,
+ * and the package's unit measurement is not widened for it.
  *
  * Everything here talks to injected ports: SQL, the service, the clock, the output directory and the
  * result writer. That is what lets the committed benchmark be covered by unit tests without a Docker

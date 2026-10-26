@@ -100,7 +100,8 @@ function benchmarkDependencies(): BenchmarkDeps {
             endedAt: usageEndedAt,
           });
           legacyRows = legacy.rowsRead;
-          return { daily: legacy.detail.daily as unknown[] };
+          // The complete public body, so the harness can prove both reads answered the same question.
+          return legacy.detail;
         },
         legacyRowsRead: () => legacyRows,
       };

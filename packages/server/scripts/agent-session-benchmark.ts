@@ -66,19 +66,68 @@ export interface BenchmarkFixture {
   endedDescendants: number;
 }
 
+/** The public usage body both implementations must produce, whatever their query shape. */
+export type UsagePublicBody = Record<string, unknown> & { daily: unknown[] };
+
 /**
  * The measured service reads plus the removed usage implementation they are compared with.
  *
- * `legacyUsage` must return the same public projection the service returns — not a private row count — or the
- * two timings and response sizes would describe different outputs and could not be compared.
+ * `legacyUsage` must return the complete public body the service returns — not a row count and not just the
+ * day series — or the two timings and response sizes would describe different outputs and could not be
+ * compared. The harness asserts that equality itself (see `assertEquivalentUsage`).
  */
 export interface BenchmarkCases {
   listAgents(accountId: string): Promise<{ agents: unknown[] }>;
-  usage(accountId: string, agentId: string, windowDays: number): Promise<{ daily: unknown[] }>;
+  usage(accountId: string, agentId: string, windowDays: number): Promise<UsagePublicBody>;
   internalPage(rootSessionId: string): Promise<{ items: unknown[] }>;
-  legacyUsage(): Promise<{ daily: unknown[] }>;
+  legacyUsage(): Promise<UsagePublicBody>;
   /** Rows the last `legacyUsage` call read from the database, for the bounded-read note. */
   legacyRowsRead(): number;
+}
+
+/** A stable text form: two bodies are equivalent when they serialize identically after key sorting. */
+export function canonicalJson(value: unknown): string {
+  const sort = (input: unknown): unknown => {
+    if (Array.isArray(input)) return input.map(sort);
+    if (input === null || typeof input !== "object") return input;
+    return Object.fromEntries(
+      Object.entries(input as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, sort(entry)]),
+    );
+  };
+  return JSON.stringify(sort(value));
+}
+
+/**
+ * Proves the removed read and the submitted read returned the same public body.
+ *
+ * A timing comparison is only meaningful for identical output: an implementation that quietly returns fewer
+ * fields would look faster while answering a different question. This throws instead of recording the run as
+ * evidence, and the message names the fields that differ rather than the whole body.
+ */
+export function assertEquivalentUsage(
+  before: UsagePublicBody | undefined,
+  after: UsagePublicBody | undefined,
+): {
+  equal: true;
+  comparedKeys: string[];
+} {
+  if (!before || !after) throw new Error("The usage comparison is missing one of its two results");
+  const beforeKeys = Object.keys(before).sort();
+  const afterKeys = Object.keys(after).sort();
+  const missing = afterKeys.filter((key) => !beforeKeys.includes(key));
+  const extra = beforeKeys.filter((key) => !afterKeys.includes(key));
+  if (missing.length > 0 || extra.length > 0) {
+    throw new Error(
+      `The removed usage read is not equivalent: missing ${JSON.stringify(missing)}, unexpected ${JSON.stringify(extra)}`,
+    );
+  }
+  if (canonicalJson(before) !== canonicalJson(after)) {
+    const differing = afterKeys.filter((key) => canonicalJson(before[key]) !== canonicalJson(after[key]));
+    throw new Error(`The removed usage read returned different values for ${JSON.stringify(differing)}`);
+  }
+  return { equal: true, comparedKeys: afterKeys };
 }
 
 export interface BenchmarkDeps {
@@ -379,7 +428,7 @@ export async function readLegacyUsage(
     addUsageTokenCounts(point as never, counts);
   }
   totals.daily = [...daily.values()];
-  return { detail: totals, rowsRead: rows.length };
+  return { detail: totals as UsagePublicBody, rowsRead: rows.length };
 }
 
 /** The removed internal-Session page: the activity index, then `sessions` for every candidate it walked. */
@@ -543,7 +592,7 @@ async function measureCases(
       (await admin.unsafe(`select pg_relation_size('${SHIPPED_UNREPORTED_INDEX}')::text as bytes`))[0]?.bytes ?? 0,
     ),
   };
-  await measure(
+  const submittedUsage = await measure(
     "agents.usage.50000-deliveries",
     () => cases.usage(deps.fixture.accountId, deps.fixture.agentId, 30),
     (value) => ({ bounded: { dailyBuckets: value?.daily.length ?? 0 } }),
@@ -584,11 +633,19 @@ async function measureCases(
   await admin.query`analyze session_descendants`;
   storage.final = await closureStorage(admin);
 
-  await measure(
+  const removedUsage = await measure(
     "agents.usage.50000-deliveries.before",
     () => cases.legacyUsage(),
     (value) => ({ bounded: { rowsRead: cases.legacyRowsRead(), dailyBuckets: value?.daily.length ?? 0 } }),
   );
+  /*
+   * The two timings describe the same public body only if this holds. When a case failed there is nothing to
+   * compare, and `assertCompleteReport` reports that failure by name; a run that produced both bodies but not
+   * their equivalence is rejected there as well.
+   */
+  if (removedUsage && submittedUsage) {
+    report.equivalence = assertEquivalentUsage(removedUsage, submittedUsage);
+  }
 }
 
 /**
@@ -616,6 +673,9 @@ export function assertCompleteReport(report: Record<string, unknown>): void {
     }
   }
   if (report.containerRemoved !== true) problems.push("the container was not removed");
+  if (problems.length === 0 && (report.equivalence as { equal?: boolean } | undefined)?.equal !== true) {
+    problems.push("the removed and submitted usage reads were not proven equivalent");
+  }
   if (problems.length > 0) throw new Error(`The benchmark run is not usable evidence:\n${problems.join("\n")}`);
 }
 

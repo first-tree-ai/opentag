@@ -11,10 +11,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { createUnitDatabase, type UnitDatabase } from "../../src/__tests__/support/unit-database.js";
 import { imBindings, sessionDescendants } from "../../src/db/schema/index.js";
 import {
+  assertEquivalentUsage,
   assertRowCounts,
   type BenchmarkAdmin,
   type BenchmarkCases,
   type BenchmarkDeps,
+  canonicalJson,
   closureStorage,
   countOccurrences,
   describeError,
@@ -196,6 +198,48 @@ describe("readiness wait", () => {
     await expect(openReadyAdmin(deps, "postgres://fixture", 2, async () => undefined)).rejects.toThrow(
       'did not become ready: {"name":"Error","message":"starting up","code":"57P03"}',
     );
+  });
+});
+
+describe("usage output equivalence", () => {
+  const body = {
+    windowDays: 30,
+    startedAt: "2026-09-26T08:00:00.000Z",
+    endedAt: "2026-10-26T08:00:00.000Z",
+    tasks: 2,
+    measuredTasks: 2,
+    failed: 0,
+    inputTokens: 15,
+    cachedInputTokens: 0,
+    outputTokens: 4,
+    tokens: 19,
+    daily: [{ date: "2026-10-01", tasks: 2, tokens: 19 }],
+  };
+
+  it("accepts identical bodies regardless of key order", () => {
+    const reordered = Object.fromEntries(Object.entries(body).reverse());
+    expect(assertEquivalentUsage(reordered, body)).toEqual({ equal: true, comparedKeys: Object.keys(body).sort() });
+    expect(canonicalJson(reordered)).toBe(canonicalJson(body));
+  });
+
+  it("rejects a partial body such as a day series without the totals", () => {
+    expect(() => assertEquivalentUsage({ daily: body.daily }, body)).toThrow(
+      'missing ["cachedInputTokens","endedAt","failed","inputTokens","measuredTasks","outputTokens","startedAt","tasks","tokens","windowDays"]',
+    );
+  });
+
+  it("rejects the same keys with a different value and names the field", () => {
+    expect(() => assertEquivalentUsage({ ...body, inputTokens: 14, tokens: 18 }, body)).toThrow(
+      'different values for ["inputTokens","tokens"]',
+    );
+  });
+
+  it("rejects an extra field the removed read did not return", () => {
+    expect(() => assertEquivalentUsage({ ...body, rowsRead: 1 }, body)).toThrow('unexpected ["rowsRead"]');
+  });
+
+  it("rejects a missing result instead of treating it as equal", () => {
+    expect(() => assertEquivalentUsage(undefined, body)).toThrow("missing one of its two results");
   });
 });
 
@@ -517,15 +561,42 @@ describe("closure lifecycle and storage helpers", () => {
   });
 });
 
+/** The public usage body both cases return in the dependency-injected flow. */
+function usageBody() {
+  return {
+    windowDays: 30,
+    startedAt: NOW.toISOString(),
+    endedAt: NOW.toISOString(),
+    tasks: 1,
+    measuredTasks: 1,
+    failed: 0,
+    inputTokens: 10,
+    cachedInputTokens: 0,
+    outputTokens: 5,
+    tokens: 15,
+    daily: [
+      {
+        date: "2026-10-26",
+        tasks: 1,
+        measuredTasks: 1,
+        inputTokens: 10,
+        cachedInputTokens: 0,
+        outputTokens: 5,
+        tokens: 15,
+      },
+    ],
+  };
+}
+
 describe("full benchmark flow", () => {
   function fakeDeps(overrides: Partial<BenchmarkDeps> = {}) {
     const written: { directory: string; content: string }[] = [];
     const dockerCalls: string[][] = [];
     const cases: BenchmarkCases = {
       listAgents: vi.fn(async () => ({ agents: [{}] })),
-      usage: vi.fn(async () => ({ daily: [1, 2, 3] })),
+      usage: vi.fn(async () => usageBody()),
       internalPage: vi.fn(async () => ({ items: [1, 2] })),
-      legacyUsage: vi.fn(async () => ({ daily: [1, 2, 3] })),
+      legacyUsage: vi.fn(async () => usageBody()),
       legacyRowsRead: vi.fn(() => 4),
     };
     const logged: Record<string, unknown>[] = [];
@@ -591,10 +662,11 @@ describe("full benchmark flow", () => {
     ]);
     expect(results.every((entry) => entry.queryCounts.length === 5)).toBe(true);
     expect(results[0]?.detail).toEqual({ bounded: { agents: 1 } });
-    expect(results[2]?.detail).toEqual({ bounded: { dailyBuckets: 3 } });
-    expect(results[6]?.detail).toEqual({ bounded: { rowsRead: 4, dailyBuckets: 3 } });
+    expect(results[2]?.detail).toEqual({ bounded: { dailyBuckets: 1 } });
+    expect(results[6]?.detail).toEqual({ bounded: { rowsRead: 4, dailyBuckets: 1 } });
     // The before case returns the same public body as the after case, so the two are comparable.
-    expect(results[2]?.detail).toEqual({ bounded: { dailyBuckets: 3 } });
+    expect(results[2]?.detail).toEqual({ bounded: { dailyBuckets: 1 } });
+    expect(report.equivalence).toEqual({ equal: true, comparedKeys: Object.keys(usageBody()).sort() });
     expect(report.containerRemoved).toBe(true);
     expect(report.unreportedIndex).toMatchObject({
       name: "im_message_deliveries_unreported_accepted_idx",
@@ -615,15 +687,32 @@ describe("full benchmark flow", () => {
     expect(indexStatements).toBe(1);
   }, 60_000);
 
+  it("fails the run when the removed read returns a different body", async () => {
+    const { deps, written } = fakeDeps({
+      createCases: () => ({
+        listAgents: async () => ({ agents: [{}] }),
+        usage: async () => usageBody(),
+        internalPage: async () => ({ items: [1, 2] }),
+        // The day series alone is what an under-specified comparison used to accept.
+        legacyUsage: async () => ({ daily: usageBody().daily }),
+        legacyRowsRead: () => 4,
+      }),
+    });
+    await expect(runBenchmark(deps)).rejects.toThrow(
+      'The removed usage read is not equivalent: missing ["cachedInputTokens","endedAt","failed","inputTokens","measuredTasks","outputTokens","startedAt","tasks","tokens","windowDays"]',
+    );
+    expect(JSON.parse(written.at(-1)?.content ?? "{}")).toMatchObject({ containerRemoved: true });
+  }, 60_000);
+
   it("fails the run when a required case records an error, after cleaning up", async () => {
     const { deps, written, dockerCalls } = fakeDeps({
       createCases: () => ({
         listAgents: async () => {
           throw new Error("service exploded");
         },
-        usage: async () => ({ daily: [] }),
+        usage: async () => usageBody(),
         internalPage: async () => ({ items: [] }),
-        legacyUsage: async () => ({ daily: [] }),
+        legacyUsage: async () => usageBody(),
         legacyRowsRead: () => 0,
       }),
     });

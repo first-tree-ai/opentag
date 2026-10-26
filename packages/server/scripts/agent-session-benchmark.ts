@@ -510,27 +510,58 @@ export async function openReadyAdmin(
   attempts = 120,
   pause: () => Promise<void> = () => new Promise((resolve) => setTimeout(resolve, 250)),
 ): Promise<BenchmarkAdmin> {
-  let lastError: unknown;
+  let primary: unknown;
   for (let attempt = 0; attempt < attempts; attempt++) {
     const admin = await deps.openAdmin(databaseUrl);
     try {
       await admin.query`select 1`;
       return admin;
     } catch (error) {
-      lastError = error;
-      await admin.end().catch(() => undefined);
+      primary = error;
+      try {
+        await admin.end();
+      } catch (closeError) {
+        /*
+         * The failed attempt's client still cannot be closed, so every further attempt would add another
+         * unclosed pool. Stop here and report both causes, the readiness failure first: it is what the
+         * operator needs to read, and the close failure is what made the run give up.
+         */
+        throw new AggregateError(
+          [primary, closeError],
+          "The benchmark database did not become ready and its admin client could not be closed",
+        );
+      }
       await pause();
     }
   }
-  throw new Error(`The benchmark database did not become ready: ${JSON.stringify(describeError(lastError))}`);
+  // Retrying is over and the client was closed cleanly, so the readiness error is reported as it happened.
+  throw primary;
 }
 
-/**
- * Measures every case in order and records the index, lifecycle and storage facts the report needs.
- *
- * Split out of `runBenchmark` so the container and cleanup flow stays readable and its own complexity stays
- * low; everything here is measurement, and the caller owns the lifecycle.
- */
+export function assertCompleteReport(report: Record<string, unknown>): void {
+  const results = (report.results ?? []) as MeasuredCase[];
+  const byName = new Map(results.map((measurement) => [measurement.name, measurement]));
+  const problems: string[] = [];
+  for (const name of REQUIRED_CASES) {
+    const measurement = byName.get(name);
+    if (!measurement) {
+      problems.push(`${name}: did not run`);
+      continue;
+    }
+    if (measurement.error !== undefined) {
+      problems.push(`${name}: ${JSON.stringify(measurement.error)}`);
+    }
+    if (measurement.samplesMs.length !== SAMPLES_PER_CASE) {
+      problems.push(`${name}: ${measurement.samplesMs.length} samples instead of ${SAMPLES_PER_CASE}`);
+    }
+  }
+  if (report.containerRemoved !== true) problems.push("the container was not removed");
+  if (problems.length === 0 && (report.equivalence as { equal?: boolean } | undefined)?.equal !== true) {
+    problems.push("the removed and submitted usage reads were not proven equivalent");
+  }
+  if (problems.length > 0) throw new Error(`The benchmark run is not usable evidence:\n${problems.join("\n")}`);
+}
+
 async function measureCases(
   context: {
     deps: BenchmarkDeps;
@@ -649,49 +680,13 @@ async function measureCases(
 }
 
 /**
- * Rejects a report that cannot serve as evidence.
+ * Creates this run's container.
  *
- * A measured case can fail without failing the process — the harness records the error and continues so the rest
- * of the run and its cleanup still happen — so the report itself is checked before it is offered as a result. A
- * missing required case, a recorded error, or a sample count that does not match means the run is invalid.
+ * `docker run` is the ownership boundary: the caller marks the container ours as soon as it returns, so a run that
+ * fails to create one never removes a name it does not own, and a container that was created but fails validation is
+ * still removed.
  */
-export function assertCompleteReport(report: Record<string, unknown>): void {
-  const results = (report.results ?? []) as MeasuredCase[];
-  const byName = new Map(results.map((measurement) => [measurement.name, measurement]));
-  const problems: string[] = [];
-  for (const name of REQUIRED_CASES) {
-    const measurement = byName.get(name);
-    if (!measurement) {
-      problems.push(`${name}: did not run`);
-      continue;
-    }
-    if (measurement.error !== undefined) {
-      problems.push(`${name}: ${JSON.stringify(measurement.error)}`);
-    }
-    if (measurement.samplesMs.length !== SAMPLES_PER_CASE) {
-      problems.push(`${name}: ${measurement.samplesMs.length} samples instead of ${SAMPLES_PER_CASE}`);
-    }
-  }
-  if (report.containerRemoved !== true) problems.push("the container was not removed");
-  if (problems.length === 0 && (report.equivalence as { equal?: boolean } | undefined)?.equal !== true) {
-    problems.push("the removed and submitted usage reads were not proven equivalent");
-  }
-  if (problems.length > 0) throw new Error(`The benchmark run is not usable evidence:\n${problems.join("\n")}`);
-}
-
-/**
- * Runs the whole benchmark against the injected environment and returns the report it wrote.
- *
- * Cleanup is part of the contract: the container and volume are removed even when a case throws, because a
- * failed run must not leave resources another lane could mistake for its own.
- */
-export async function runBenchmark(deps: BenchmarkDeps): Promise<Record<string, unknown>> {
-  const now = deps.now();
-  const outputDirectory = deps.resolveOutputDirectory();
-  const results: MeasuredCase[] = [];
-  const report: Record<string, unknown> = { results };
-  const save = () => deps.writeResults(outputDirectory, `${JSON.stringify(report, null, 2)}\n`);
-  const container = `opentag-benchmark-agent-session-${process.pid}`;
+function runContainer(deps: BenchmarkDeps, container: string): void {
   deps.docker([
     "run",
     "--detach",
@@ -707,15 +702,122 @@ export async function runBenchmark(deps: BenchmarkDeps): Promise<Record<string, 
     "POSTGRES_DB=opentag_benchmark",
     "postgres:17-alpine",
   ]);
+}
+
+/** Validates the container this run created and derives the connection URL from its published port. */
+function validateOwnedContainer(deps: BenchmarkDeps, container: string): string {
   const label = deps.docker(["inspect", "--format", '{{index .Config.Labels "opentag.benchmark"}}', container]);
   if (label !== BENCHMARK_LABEL) throw new Error("The benchmark container is missing its label");
   const binding = deps.docker(["port", container, "5432/tcp"]);
   if (!/^127\.0\.0\.1:\d+$/.test(binding)) throw new Error(`Unexpected container binding ${binding}`);
-  const databaseUrl = `postgres://postgres:${"benchmark-only"}@${binding}/opentag_benchmark`;
-  // Inside the try: a container that never becomes ready must still be removed here.
+  return `postgres://postgres:${"benchmark-only"}@${binding}/opentag_benchmark`;
+}
+
+/** Seeds the fixture, verifies every table met its row budget, and records the database facts. */
+async function seedAndVerifyDatabase(
+  deps: BenchmarkDeps,
+  admin: BenchmarkAdmin,
+  report: Record<string, unknown>,
+): Promise<void> {
+  const seedTimings: Record<string, unknown>[] = [];
+  for (const seed of splitSeedStatements(deps.readSeed())) {
+    const started = deps.elapsed();
+    await admin.unsafe(seed.statement);
+    const timing = { table: seed.table, elapsedMs: deps.elapsed() - started };
+    seedTimings.push(timing);
+    deps.log({ phase: "seed", ...timing });
+  }
+  report.seedTimings = seedTimings;
+  await admin.query`analyze`;
+  const tables = (await admin.query`
+    select n.nspname as schema, c.relname as name
+    from pg_class c join pg_namespace n on n.oid = c.relnamespace
+    where c.relkind = 'r' and n.nspname in ('public', 'billing')
+    order by 1, 2`) as unknown as { schema: string; name: string }[];
+  const rowCounts: RowCount[] = [];
+  for (const table of tables) {
+    const [row] = await admin.unsafe(`select count(*)::int as n from "${table.schema}"."${table.name}"`);
+    rowCounts.push({ table: `${table.schema}.${table.name}`, rows: Number(row?.n ?? -1) });
+  }
+  assertRowCounts(rowCounts, deps.minimumRows ?? MINIMUM_TABLE_ROWS);
+  report.rowCounts = rowCounts;
+  report.databaseBytes = (await admin.query`select pg_database_size(current_database())::text as bytes`)[0]?.bytes;
+}
+
+/**
+ * Runs every cleanup step for the resources this run owns and returns the failures in order.
+ *
+ * Each step is attempted even when an earlier one failed, and nothing is thrown from here: the caller decides how
+ * to combine these with the run's own failure.
+ */
+async function releaseOwnedResources(input: {
+  deps: BenchmarkDeps;
+  container: string;
+  owned: boolean;
+  admin: BenchmarkAdmin | undefined;
+  closeDatabase: (() => Promise<void>) | undefined;
+  report: Record<string, unknown>;
+}): Promise<unknown[]> {
+  const failures: unknown[] = [];
+  try {
+    await input.closeDatabase?.();
+  } catch (error) {
+    failures.push(error);
+  }
+  try {
+    await input.admin?.end();
+  } catch (error) {
+    failures.push(error);
+  }
+  if (input.owned) {
+    input.report.containerRemoved = false;
+    try {
+      input.deps.docker(["rm", "--force", "--volumes", input.container]);
+      input.report.containerRemoved = true;
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  return failures;
+}
+
+/** Preserves the run's own failure: cleanup failures follow it, and never replace it. */
+function rethrowWithCleanup(primary: unknown, cleanupFailures: readonly unknown[]): never {
+  if (cleanupFailures.length > 0) {
+    throw new AggregateError([primary, ...cleanupFailures], "The benchmark run failed and its cleanup also failed");
+  }
+  throw primary;
+}
+
+/** Raises a cleanup failure that happened after an otherwise successful run. */
+function rethrowCleanupOnly(cleanupFailures: readonly unknown[]): never {
+  const [first, ...rest] = cleanupFailures;
+  throw rest.length > 0 ? new AggregateError(cleanupFailures, "The benchmark cleanup failed") : first;
+}
+
+/**
+ * Runs the whole benchmark against the injected environment and returns the report it wrote.
+ *
+ * Cleanup is part of the contract: the container and volume are removed even when a case throws, because a
+ * failed run must not leave resources another lane could mistake for its own. A cleanup failure never hides the
+ * failure that caused it.
+ */
+export async function runBenchmark(deps: BenchmarkDeps): Promise<Record<string, unknown>> {
+  const now = deps.now();
+  const outputDirectory = deps.resolveOutputDirectory();
+  const results: MeasuredCase[] = [];
+  const report: Record<string, unknown> = { results };
+  const save = () => deps.writeResults(outputDirectory, `${JSON.stringify(report, null, 2)}\n`);
+  const container = `opentag-benchmark-agent-session-${process.pid}`;
+  let owned = false;
   let admin: BenchmarkAdmin | undefined;
   let closeDatabase: (() => Promise<void>) | undefined;
+  let primaryFailure: unknown;
+  let primaryFailed = false;
   try {
+    runContainer(deps, container);
+    owned = true;
+    const databaseUrl = validateOwnedContainer(deps, container);
     admin = await openReadyAdmin(deps, databaseUrl, deps.readiness?.attempts ?? 120, deps.readiness?.pause);
     await deps.migrate(databaseUrl);
     const database = deps.createDatabase(databaseUrl);
@@ -730,47 +832,23 @@ export async function runBenchmark(deps: BenchmarkDeps): Promise<Record<string, 
       method:
         "One warm-up and five sequential samples per case. Local Docker microbenchmark, not production capacity. Default service query deadlines and connection pool. EXPLAIN uses one additional untimed call per distinct SELECT. Values include Node mapping and loopback transport. The `.before` cases reproduce the removed implementations in this process.",
     };
-    const seedTimings: Record<string, unknown>[] = [];
-    for (const seed of splitSeedStatements(deps.readSeed())) {
-      const started = deps.elapsed();
-      await admin.unsafe(seed.statement);
-      const timing = { table: seed.table, elapsedMs: deps.elapsed() - started };
-      seedTimings.push(timing);
-      deps.log({ phase: "seed", ...timing });
-    }
-    report.seedTimings = seedTimings;
-    await admin.query`analyze`;
-    const tables = (await admin.query`
-      select n.nspname as schema, c.relname as name
-      from pg_class c join pg_namespace n on n.oid = c.relnamespace
-      where c.relkind = 'r' and n.nspname in ('public', 'billing')
-      order by 1, 2`) as unknown as { schema: string; name: string }[];
-    const rowCounts: RowCount[] = [];
-    for (const table of tables) {
-      const [row] = await admin.unsafe(`select count(*)::int as n from "${table.schema}"."${table.name}"`);
-      rowCounts.push({ table: `${table.schema}.${table.name}`, rows: Number(row?.n ?? -1) });
-    }
-    assertRowCounts(rowCounts, deps.minimumRows ?? MINIMUM_TABLE_ROWS);
-    report.rowCounts = rowCounts;
-    report.databaseBytes = (await admin.query`select pg_database_size(current_database())::text as bytes`)[0]?.bytes;
-
+    await seedAndVerifyDatabase(deps, admin, report);
     await measureCases({ deps, admin, database, cases, results, save }, report);
-    const httpFree = results.filter((measurement) => measurement.error !== undefined).map(({ name }) => name);
-    if (httpFree.length > 0) report.casesWithErrors = httpFree;
+    const casesWithErrors = results.filter((measurement) => measurement.error !== undefined).map(({ name }) => name);
+    if (casesWithErrors.length > 0) report.casesWithErrors = casesWithErrors;
     report.finishedAt = new Date().toISOString();
-  } finally {
-    try {
-      await closeDatabase?.();
-    } finally {
-      try {
-        await admin?.end();
-      } finally {
-        deps.docker(["rm", "--force", "--volumes", container]);
-        report.containerRemoved = true;
-        save();
-      }
-    }
+  } catch (error) {
+    primaryFailure = error;
+    primaryFailed = true;
   }
+  const cleanupFailures = await releaseOwnedResources({ deps, container, owned, admin, closeDatabase, report });
+  try {
+    save();
+  } catch (error) {
+    cleanupFailures.push(error);
+  }
+  if (primaryFailed) rethrowWithCleanup(primaryFailure, cleanupFailures);
+  if (cleanupFailures.length > 0) rethrowCleanupOnly(cleanupFailures);
   assertCompleteReport(report);
   return report;
 }

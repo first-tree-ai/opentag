@@ -185,7 +185,7 @@ describe("readiness wait", () => {
     await expect(admin.query`select 1`).resolves.toEqual([{ "?column?": 1 }]);
   });
 
-  it("fails the run with the last cause when the container never answers", async () => {
+  it("retains the bare readiness error when the failed client closed cleanly", async () => {
     const deps = {
       openAdmin: async (): Promise<BenchmarkAdmin> => ({
         query: async () => {
@@ -195,9 +195,37 @@ describe("readiness wait", () => {
         end: async () => undefined,
       }),
     };
-    await expect(openReadyAdmin(deps, "postgres://fixture", 2, async () => undefined)).rejects.toThrow(
-      'did not become ready: {"name":"Error","message":"starting up","code":"57P03"}',
+    const error = await openReadyAdmin(deps, "postgres://fixture", 2, async () => undefined).then(
+      () => undefined,
+      (caught: unknown) => caught,
     );
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(AggregateError);
+    expect((error as Error).message).toBe("starting up");
+  });
+
+  it("reports the readiness failure and the close failure, primary first", async () => {
+    const deps = {
+      openAdmin: async (): Promise<BenchmarkAdmin> => ({
+        query: async () => {
+          throw Object.assign(new Error("starting up"), { code: "57P03" });
+        },
+        unsafe: async () => [],
+        end: async () => {
+          throw new Error("connection pool already closed");
+        },
+      }),
+    };
+    const error = await openReadyAdmin(deps, "postgres://fixture", 3, async () => undefined).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(AggregateError);
+    const aggregate = error as AggregateError;
+    expect(aggregate.errors).toHaveLength(2);
+    expect((aggregate.errors[0] as Error).message).toBe("starting up");
+    expect((aggregate.errors[1] as Error).message).toBe("connection pool already closed");
+    expect(aggregate.message).toContain("could not be closed");
   });
 });
 
@@ -224,7 +252,7 @@ describe("usage output equivalence", () => {
 
   it("rejects a partial body such as a day series without the totals", () => {
     expect(() => assertEquivalentUsage({ daily: body.daily }, body)).toThrow(
-      'missing ["cachedInputTokens","endedAt","failed","inputTokens","measuredTasks","outputTokens","startedAt","tasks","tokens","windowDays"]',
+      "The removed usage read is not equivalent",
     );
   });
 
@@ -734,26 +762,68 @@ describe("full benchmark flow", () => {
         end: async () => undefined,
       }),
     });
+    // The readiness failure itself is the primary cause, so it is what the run reports.
     await expect(
       runBenchmark({ ...deps, minimumRows: 0, readiness: { attempts: 2, pause: async () => undefined } }),
-    ).rejects.toThrow("did not become ready");
+    ).rejects.toThrow("starting up");
     expect(dockerCalls.some((call) => call[0] === "rm")).toBe(true);
     expect(JSON.parse(written.at(-1)?.content ?? "{}")).toMatchObject({ containerRemoved: true });
   });
 
-  it("refuses to run when the container label does not match", async () => {
-    const { deps } = fakeDeps({
+  it("does not remove a container name when docker run itself failed", async () => {
+    const { deps, dockerCalls } = fakeDeps({
       docker: (args) => {
+        dockerCalls.push(args);
+        if (args[0] === "run") throw new Error("name already in use");
+        return "";
+      },
+    });
+    await expect(runBenchmark(deps)).rejects.toThrow("name already in use");
+    // A name this run never created might belong to another process, so it must not be removed.
+    expect(dockerCalls.some((call) => call[0] === "rm")).toBe(false);
+  });
+
+  it("removes its container when the label inspection fails", async () => {
+    const { deps, dockerCalls } = fakeDeps({
+      docker: (args) => {
+        dockerCalls.push(args);
+        if (args[0] === "inspect") throw new Error("no such object");
+        return "";
+      },
+    });
+    await expect(runBenchmark(deps)).rejects.toThrow("no such object");
+    expect(dockerCalls.filter((call) => call[0] === "rm")).toHaveLength(1);
+  });
+
+  it("removes its container when the published port command fails", async () => {
+    const { deps, dockerCalls } = fakeDeps({
+      docker: (args) => {
+        dockerCalls.push(args);
+        if (args[0] === "inspect" && args[2]?.includes("Labels")) return "agent-session";
+        if (args[0] === "port") throw new Error("port is not published");
+        return "";
+      },
+    });
+    await expect(runBenchmark(deps)).rejects.toThrow("port is not published");
+    expect(dockerCalls.filter((call) => call[0] === "rm")).toHaveLength(1);
+  });
+
+  it("refuses to run when the container label does not match and still removes it", async () => {
+    const { deps, dockerCalls } = fakeDeps({
+      docker: (args) => {
+        dockerCalls.push(args);
         if (args[0] === "inspect") return "something-else";
         return "";
       },
     });
     await expect(runBenchmark(deps)).rejects.toThrow("missing its label");
+    expect(dockerCalls.filter((call) => call[0] === "rm")).toHaveLength(1);
   });
 
-  it("refuses to run when the published port is not loopback", async () => {
-    const { deps } = fakeDeps({
+  it("refuses to run when the published port is not loopback and still removes it", async () => {
+    const { deps, dockerCalls } = fakeDeps({
       docker: (args) => {
+        dockerCalls.push(args);
         if (args[0] === "inspect" && args[2]?.includes("Labels")) return "agent-session";
         if (args[0] === "inspect") return "sha256:image";
         if (args[0] === "port") return "0.0.0.0:5432";
@@ -761,7 +831,61 @@ describe("full benchmark flow", () => {
       },
     });
     await expect(runBenchmark(deps)).rejects.toThrow("Unexpected container binding");
+    expect(dockerCalls.filter((call) => call[0] === "rm")).toHaveLength(1);
   });
+
+  it("reports the primary failure and both cleanup failures, primary first", async () => {
+    const { deps, dockerCalls, written } = fakeDeps({
+      createDatabase: () => ({
+        database: unit.database,
+        queryLog: { reset: () => undefined, snapshot: () => [] },
+        close: async () => {
+          throw new Error("database close failed");
+        },
+      }),
+      docker: (args) => {
+        dockerCalls.push(args);
+        if (args[0] === "inspect" && args[2]?.includes("Labels")) return "agent-session";
+        if (args[0] === "inspect") return "sha256:image";
+        if (args[0] === "port") return "127.0.0.1:54321";
+        if (args[0] === "rm") throw new Error("remove failed");
+        return "";
+      },
+      readSeed: () => "insert into agents (id) values ('broken');",
+    });
+    const error = await runBenchmark(deps).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(AggregateError);
+    const aggregate = error as AggregateError;
+    // The seeding failure is the primary cause; the close and remove failures follow it.
+    expect((aggregate.errors[0] as Error).message).toContain("broken");
+    expect((aggregate.errors[1] as Error).message).toBe("database close failed");
+    expect((aggregate.errors[2] as Error).message).toBe("remove failed");
+    expect(aggregate.message).toContain("cleanup also failed");
+    // The container was never confirmed removed, so the report must not claim it.
+    expect(JSON.parse(written.at(-1)?.content ?? "{}")).toMatchObject({ containerRemoved: false });
+  }, 60_000);
+
+  it("reports a cleanup failure on its own when the run itself succeeded", async () => {
+    const { deps } = fakeDeps({
+      createDatabase: () => ({
+        database: unit.database,
+        queryLog: { reset: () => undefined, snapshot: () => [] },
+        close: async () => {
+          throw new Error("database close failed");
+        },
+      }),
+    });
+    const error = await runBenchmark(deps).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(AggregateError);
+    expect((error as Error).message).toBe("database close failed");
+  }, 60_000);
 
   it("names every case that recorded an error before rejecting the run", async () => {
     const { deps, written } = fakeDeps({

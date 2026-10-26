@@ -18,8 +18,8 @@ Supports [Agent usage accounting](../../../docs/system/agent-usage.md) and
 - The before case runs the removed implementation in the same process — one row select of every Delivery in the
   window plus the JavaScript token loop and the same zero-filled day projection — and must return a body equal to
   the submitted read's body. The harness compares both bodies after key sorting and fails the run otherwise.
-- Node.js v24.19.0, macOS arm64. Other lanes were running Docker on this machine during these runs, so absolute
-  times are higher than in earlier, isolated runs; only same-run comparisons are used below.
+- Node.js v24.19.0, macOS arm64. Absolute times varied noticeably between runs of the same code, so only
+  same-run comparisons are used below; no single figure is offered as a machine-independent number.
 
 ## Final results (run `final5`)
 
@@ -47,9 +47,19 @@ Target status, stated plainly:
 | Active internal page < 10 ms without 90k ended-session probes | 1.48 ms | met |
 
 The submitted usage read is 31% faster than the removed one with identical output (206.59 → 142.27 ms), and the
-hot list is 43% faster with the shipped partial index (278.93 → 158.23 ms). Both still miss their targets. Run to
-run spread on this shared machine has been large: the same code measured 95–142 ms for the usage detail and
-99–158 ms for the hot list across runs.
+hot list is 43% faster with the shipped partial index (278.93 → 158.23 ms). Both still miss their targets. Run-to-run
+spread was large: the same code measured 95–142 ms for the usage detail and 99–158 ms for the hot list across runs,
+so only these same-run ratios are claimed.
+
+### Reports the aggregate cannot sum
+
+The SQL aggregate sums values stored in canonical decimal form. Any other report — a valid `1000.00` or `1e3` as
+well as a malformed one — is recomputed row by row in keyset batches of at most 1,000 ordered by
+`(accepted_at, id)`, folded into the per-day totals as each page arrives, with the exact UTC text of the cursor so
+microseconds are not truncated. There is **no cap on the total number of such reports**: the batch size bounds each
+statement and the memory, not the compatibility of the data. The fixture writes canonical values, so this path does
+not appear in the timings above; its correctness is covered by unit cases over more than two batches and by a
+PostgreSQL boundary suite with 1,205 such reports packed into one millisecond.
 
 ## EXPLAIN attribution of the remaining latency
 
@@ -89,7 +99,7 @@ Options measured and deliberately not adopted:
 | `jsonb_to_record` in a lateral | Reported 147.69 ms once the record fields matched the JSON keys | Slower; an earlier "34% faster" reading was measuring NULLs from mismatched field names |
 | Index on `(accepted_at, session_id)` | No plan change, 3,976 kB of index | Built, measured and dropped |
 | Statistics / extended statistics | The bad estimate comes from a generic join condition, not a stale column statistic | Not a fix |
-| Pre-aggregated daily usage table | Would reach the target | New table, write amplification on every report, retention and backfill — rejected as out of scope |
+| Pre-aggregated daily usage table | Not measured; it would change the cost profile by trading read work for write work | New table, write amplification on every report, retention and backfill — rejected as out of scope, and no latency claim is made about it |
 
 ## Hot Agent list
 

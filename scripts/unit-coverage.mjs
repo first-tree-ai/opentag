@@ -48,16 +48,29 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
  * source root of the workspace, not only `src`: verification scripts under a package's `scripts`
  * directory are executable code too, and `unit-coverage-gate.mjs` already treats them as coverable, so
  * leaving them unmeasured used to report their patched lines as "missing coverage entry" forever.
+ *
+ * `workers` overrides the config's default worker count for a project whose suite owns spawned-CLI
+ * timing tests. `cli` and `client` assert on fixed windows around child processes - a 1000ms
+ * `vi.waitFor` for a shell shim to write its marker, a 5000-15000ms test timeout - and both packages'
+ * own `test` scripts already run with `--maxWorkers=1`. Measuring them at the config default while v8
+ * instrumentation slows every process start failed those unchanged tests intermittently, so the runner
+ * now reproduces each package's own condition. Includes, assertions, timeouts, floors and the patch
+ * threshold stay exactly as they are.
  */
 export const COVERAGE_PROJECTS = [
-  { name: "cli", root: "apps/cli", sources: ["apps/cli/src"] },
+  { name: "cli", root: "apps/cli", sources: ["apps/cli/src"], workers: 1 },
   { name: "web", root: "apps/web", sources: ["apps/web/src"] },
   { name: "shared", root: "packages/shared", sources: ["packages/shared/src"] },
   { name: "skill-presets", root: "packages/skill-presets", sources: ["packages/skill-presets/src"] },
   { name: "mcp-presets", root: "packages/mcp-presets", sources: ["packages/mcp-presets/src"] },
-  { name: "client", root: "packages/client", sources: ["packages/client/src"] },
+  { name: "client", root: "packages/client", sources: ["packages/client/src"], workers: 1 },
   { name: "server", root: "packages/server", sources: ["packages/server/src", "packages/server/scripts"] },
 ];
+
+/** The Vitest worker override of a project; an empty list keeps the config default. */
+export function projectWorkerArgs(project) {
+  return Number.isInteger(project.workers) && project.workers > 0 ? [`--maxWorkers=${project.workers}`] : [];
+}
 
 /**
  * Translate a repository-relative coverage glob into the project-relative form Vitest expects.
@@ -510,6 +523,7 @@ function runProject(project, scope) {
       "--project",
       project.name,
       ...includes.map((pattern) => `--coverage.include=${pattern}`),
+      ...projectWorkerArgs(project),
       ...COVERAGE_REPORTER_FLAGS,
       `--coverage.reportsDirectory=${reportsDirectory}`,
       ...TEST_REPORTER_FLAGS(testResultsPath),

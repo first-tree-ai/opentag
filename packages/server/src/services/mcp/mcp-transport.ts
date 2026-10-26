@@ -285,10 +285,17 @@ export class McpTransport {
    * specification reads a missing header as `2025-03-26`, so a strict `2025-06-18` or `2025-11-25`
    * Server refused the notification while a lenient one made the omission invisible.
    *
-   * A notification carries no `id`, so it never reaches the response interpreter, and the status is
-   * checked here: a rejected notification is a transport failure the caller must see, because
-   * continuing the handshake only hides a Server that already refused this client's protocol. The
-   * body is never read, so the failure reason stays bounded and credential-free.
+   * A notification carries no `id`, so it never reaches {@link #interpret}, which leaves this status
+   * check as the only one it gets: a rejected notification is a transport failure the caller must
+   * see, because continuing the handshake only hides a Server that already refused this client's
+   * protocol.
+   *
+   * The status maps through the same {@link upstreamFailure} as every other failed response, so the
+   * reason stays bounded and credential-free: that summary is built from the status alone, never
+   * from the peer's body. The fetcher has already read and bounded that body before returning, and
+   * this method never interprets or exposes it. Status summaries therefore describe responses the
+   * fetcher returned; a redirect or an oversized body fails inside the fetcher first, as its own
+   * bounded error.
    */
   async notifyLegacy(
     accountId: string,

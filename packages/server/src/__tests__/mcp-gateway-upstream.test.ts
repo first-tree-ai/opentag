@@ -1,6 +1,7 @@
-import { MCP_MODERN_PROTOCOL_VERSION } from "@opentag/shared";
+import { MCP_AUTH_REJECTION_SUMMARY, MCP_ERROR_CODES, MCP_MODERN_PROTOCOL_VERSION } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { McpUpstreamCaller } from "../services/mcp/mcp-gateway-upstream.js";
+import { McpTransportError } from "../services/mcp/mcp-transport.js";
 import {
   MCP_DEFAULT_TIMEOUT_MS,
   MCP_RUNTIME_TIMEOUT_MS,
@@ -223,9 +224,9 @@ describe("a failed call is never replayed", () => {
 
   it("dispatches once on the legacy path too", async () => {
     /*
-     * The notification succeeds here so that the failure under test is the tool call's: a rejected
-     * notification is covered by its own case below, and would otherwise source this failure before
-     * the call is dispatched at all.
+     * The notification succeeds here so the failure under test is the tool call's: a rejected
+     * notification has its own cases below, and would otherwise source this failure before the call
+     * is dispatched at all.
      */
     const { fetcher, sent } = scriptedFetcher((body) =>
       body.method === "initialize"
@@ -260,6 +261,74 @@ describe("a failed call is never replayed", () => {
   it("still reports the upstream failure rather than swallowing it", async () => {
     const { fetcher } = scriptedFetcher((body) => rpcFail(body, 200, { code: -32602, message: "bad arguments" }));
     await expect(call(fetcher)).rejects.toThrow(/bad arguments/);
+  });
+});
+
+/*
+ * A refused `notifications/initialized` is a half-finished handshake, and the reviewer reproduced it
+ * being ignored: the notification carries no `id`, so it never reached the response interpreter and
+ * its status was discarded, and the peer that had just refused the handshake was then sent the
+ * `tools/call` anyway.
+ *
+ * These drive the real `McpOutboundFetcher` — the SSRF gate, redirect refusal, deadline and body
+ * bound are part of the path — with a network-free `fetch` and resolver, and a session-less
+ * `initialize`, because the session guard is what used to skip the notification entirely. The tool
+ * call is scripted to *succeed*, so a passing assertion cannot come from the tool's own error.
+ */
+describe("a refused initialized notification", () => {
+  const MARKER = "notification-body-marker-7d4e";
+
+  function legacyNode(notifyStatus: number) {
+    const methods: string[] = [];
+    const json = { "content-type": "application/json" };
+    const fetchImpl = (async (_url: URL | string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string; id?: string };
+      const method = String(body.method ?? "");
+      methods.push(method);
+      if (method === "initialize") {
+        // No `mcp-session-id`: a legacy peer that is not issuing sessions still needs the notification.
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { protocolVersion: "2025-06-18", capabilities: {} } }),
+          { status: 200, headers: json },
+        );
+      }
+      if (method === "notifications/initialized") {
+        return new Response(JSON.stringify({ message: MARKER }), { status: notifyStatus, headers: json });
+      }
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { content: [] } }), {
+        status: 200,
+        headers: json,
+      });
+    }) as unknown as typeof globalThis.fetch;
+    return {
+      methods,
+      fetcher: new McpOutboundFetcher({
+        allowLoopback: false,
+        fetch: fetchImpl,
+        resolveAddresses: async () => ["93.184.216.34"],
+      }),
+    };
+  }
+
+  it.each([
+    [400, "The MCP Server returned HTTP 400"],
+    [401, MCP_AUTH_REJECTION_SUMMARY],
+    [500, "The MCP Server returned HTTP 500"],
+  ])("fails the call on HTTP %i and dispatches no tool call", async (status, expected) => {
+    const { fetcher, methods } = legacyNode(status);
+    const error = await call(fetcher, { cachedEra: "legacy", cachedVersion: "2025-06-18" }).catch(
+      (caught: unknown) => caught,
+    );
+
+    // The handshake ended at the notification: no tool call, and no second attempt at one.
+    expect(methods).toEqual(["initialize", "notifications/initialized"]);
+    expect(error).toBeInstanceOf(McpTransportError);
+    expect((error as McpTransportError).code).toBe(MCP_ERROR_CODES.UPSTREAM_ERROR);
+    expect((error as McpTransportError).status).toBe(status);
+    // The transport's own bounded summary: the peer's body never becomes the message.
+    expect((error as McpTransportError).message).toBe(expected);
+    expect((error as McpTransportError).message).not.toContain(MARKER);
+    expect((error as McpTransportError).message.length).toBeLessThanOrEqual(200);
   });
 });
 

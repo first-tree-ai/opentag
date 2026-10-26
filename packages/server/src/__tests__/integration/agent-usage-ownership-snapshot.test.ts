@@ -25,6 +25,7 @@ import {
   users,
 } from "../../db/schema/index.js";
 import { type AgentReadStage, AgentService } from "../../services/agents/index.js";
+import { rethrowGateFailure, settle, whilePaused } from "../support/barrier.js";
 import { deferred } from "../support/deferred.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
@@ -254,17 +255,22 @@ describe("Agent read authorization snapshots", () => {
     const writer = actor();
     const { entered, release, service } = await pausedReader("usage");
 
-    const reading = service.getUsageById(fixture.owner.userId, fixture.agentId, 30);
-    await entered.promise;
-    await transferAndAppendDelivery(fixture, writer);
-    release.resolve();
+    const reading = settle(service.getUsageById(fixture.owner.userId, fixture.agentId, 30));
+    const gate = await whilePaused({
+      release,
+      settled: [reading],
+      gate: async () => {
+        await entered.promise;
+        await transferAndAppendDelivery(fixture, writer);
+      },
+    });
+    const outcome = await reading;
+    rethrowGateFailure(gate);
 
     // The Delivery the new owner wrote after the transfer must not appear: same snapshot as authorization.
-    await expect(reading).resolves.toMatchObject({
-      tasks: 1,
-      measuredTasks: 1,
-      inputTokens: 15,
-      tokens: 15,
+    expect(outcome).toMatchObject({
+      status: "fulfilled",
+      value: { tasks: 1, measuredTasks: 1, inputTokens: 15, tokens: 15 },
     });
     // The next read starts its own snapshot, so the previous owner is refused rather than served.
     await expect(service.getUsageById(fixture.owner.userId, fixture.agentId, 30)).rejects.toMatchObject({
@@ -282,12 +288,20 @@ describe("Agent read authorization snapshots", () => {
     const writer = actor();
     const { entered, release, service } = await pausedReader("list");
 
-    const reading = service.listForAccount(fixture.owner.userId);
-    await entered.promise;
-    await transferAndAppendDelivery(fixture, writer);
-    release.resolve();
-
-    const listed = await reading;
+    const reading = settle(service.listForAccount(fixture.owner.userId));
+    const gate = await whilePaused({
+      release,
+      settled: [reading],
+      gate: async () => {
+        await entered.promise;
+        await transferAndAppendDelivery(fixture, writer);
+      },
+    });
+    const outcome = await reading;
+    rethrowGateFailure(gate);
+    expect(outcome.status).toBe("fulfilled");
+    if (outcome.status !== "fulfilled") throw outcome.reason;
+    const listed = outcome.value;
     expect(listed.agents.map((agent) => agent.id)).toEqual([fixture.agentId]);
     expect(listed.agents[0]?.usage).toEqual({ windowDays: 30, tasks: 1, failed: 0, tokens: 15 });
     // A later call takes a fresh snapshot and the transferred Agent is gone from the previous owner's list.
@@ -303,29 +317,105 @@ describe("Agent read authorization snapshots", () => {
     const mover = actor();
     const locked = deferred();
     const release = deferred();
-    const moving = new AgentService(mover.database, {
-      now: () => NOW,
-      afterAgentLocked: async () => {
-        locked.resolve();
-        await release.promise;
-      },
-    }).suspendById(fixture.owner.userId, fixture.agentId);
-
-    await locked.promise;
+    const moving = settle(
+      new AgentService(mover.database, {
+        now: () => NOW,
+        afterAgentLocked: async () => {
+          locked.resolve();
+          await release.promise;
+        },
+      }).suspendById(fixture.owner.userId, fixture.agentId),
+    );
     const reader = actor();
     const service = new AgentService(reader.database, { now: () => NOW });
-    // A transfer that has not committed has not happened: the reader sees the committed owner and is not
-    // blocked behind the row lock, which is what makes this a snapshot question rather than a lock one.
-    await expect(service.listForAccount(fixture.owner.userId)).resolves.toMatchObject({
-      agents: [{ id: fixture.agentId }],
+    const gate = await whilePaused({
+      release,
+      settled: [moving],
+      gate: async () => {
+        await locked.promise;
+        // A transfer that has not committed has not happened: the reader sees the committed owner and is not
+        // blocked behind the row lock, which is what makes this a snapshot question rather than a lock one.
+        await expect(service.listForAccount(fixture.owner.userId)).resolves.toMatchObject({
+          agents: [{ id: fixture.agentId }],
+        });
+      },
     });
-    release.resolve();
-    await moving;
+    const moved = await moving;
+    rethrowGateFailure(gate);
+    expect(moved).toMatchObject({ status: "fulfilled" });
     await new AgentService(mover.database, { now: () => NOW }).transferToAccount({
       agentId: fixture.agentId,
       slack: "disable",
       targetAccountId: fixture.target.id,
     });
     await expect(service.listForAccount(fixture.owner.userId)).resolves.toEqual({ agents: [] });
+  }, 60_000);
+
+  it("releases the barrier and settles the read when the paused assertion fails", async () => {
+    const seedConnection = actor();
+    const fixture = await seed(seedConnection.database);
+    const { entered, release, service } = await pausedReader("list");
+    const reading = settle(service.listForAccount(fixture.owner.userId));
+
+    const gate = await whilePaused({
+      release,
+      settled: [reading],
+      gate: async () => {
+        await entered.promise;
+        // A failure between the barrier and its release is the case that used to hang the file's cleanup.
+        throw new Error("simulated assertion failure");
+      },
+    });
+
+    const outcome = await reading;
+    expect(gate.failed).toBe(true);
+    if (!gate.failed) throw new Error("expected the gated work to fail");
+    expect((gate.error as Error).message).toBe("simulated assertion failure");
+    // The release ran, so the paused transaction finished instead of pinning its pooled connection.
+    expect(outcome.status).toBe("fulfilled");
+    // The same pool is usable again, which is what `afterEach` closing it depends on.
+    await expect(service.listForAccount(fixture.owner.userId)).resolves.toMatchObject({
+      agents: [{ id: fixture.agentId }],
+    });
+  }, 60_000);
+
+  it("releases the transfer barrier and settles the move when the paused assertion fails", async () => {
+    const seedConnection = actor();
+    const fixture = await seed(seedConnection.database);
+    const mover = actor();
+    const locked = deferred();
+    const release = deferred();
+    const moving = settle(
+      new AgentService(mover.database, {
+        now: () => NOW,
+        afterAgentLocked: async () => {
+          locked.resolve();
+          await release.promise;
+        },
+      }).suspendById(fixture.owner.userId, fixture.agentId),
+    );
+
+    const gate = await whilePaused({
+      release,
+      settled: [moving],
+      gate: async () => {
+        await locked.promise;
+        throw new Error("simulated transfer assertion failure");
+      },
+    });
+
+    const moved = await moving;
+    expect(gate.failed).toBe(true);
+    if (!gate.failed) throw new Error("expected the gated work to fail");
+    expect((gate.error as Error).message).toBe("simulated transfer assertion failure");
+    expect(moved.status).toBe("fulfilled");
+    // The mover's connection is free again: the suspended transaction committed and the transfer can proceed.
+    await expect(
+      new AgentService(mover.database, { now: () => NOW }).transferToAccount({
+        agentId: fixture.agentId,
+        slack: "disable",
+        targetAccountId: fixture.target.id,
+      }),
+    ).resolves.toMatchObject({ agentId: fixture.agentId });
   }, 60_000);
 });

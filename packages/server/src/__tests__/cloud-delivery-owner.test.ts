@@ -9,6 +9,7 @@ import {
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { DatabaseClient } from "../db/client.js";
 import {
   imBindings,
   imMessageDeliveries,
@@ -274,6 +275,7 @@ function makeOwner(
     logger?: import("../observability/service-logger.js").ServiceLogger;
     sessionProofs?: import("../services/sandboxes/index.js").CloudDeliveryOwnerOptions["sessionProofs"];
     credentialsOwner?: unknown;
+    database?: DatabaseClient;
     allocationStatus?: (
       sandboxId: string,
     ) => Promise<import("../services/sandboxes/index.js").SandboxAllocationReconciliation | undefined>;
@@ -289,7 +291,7 @@ function makeOwner(
   });
   const owner = new CloudDeliveryOwner({
     custody,
-    database: unit.database,
+    database: options.database ?? unit.database,
     fence,
     hub,
     modelBaseUrl: "https://server.example.com/api/v1/cloud-model",
@@ -354,6 +356,79 @@ async function dispatchAndAccept(input: {
   const turnId = randomUUID();
   await input.owner.handleDeliveryReceived(connection, { deliveryId, requestId: request.requestId, turnId });
   return { deliveryId, request, turnId, connection };
+}
+
+/**
+ * Counts the statements a service issues through the unit database. Drizzle builds exactly one
+ * statement per `select()` call, so this is the statement count the production query logger reports
+ * for a read-only path, without a second driver inside the test.
+ */
+function countedDatabase(): { database: DatabaseClient; selects: () => number; reset: () => void } {
+  let selects = 0;
+  const database = new Proxy(unit.database, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver) as unknown;
+      if (property !== "select" || typeof value !== "function") return value;
+      return (...args: unknown[]) => {
+        selects += 1;
+        return (value as (...callArgs: unknown[]) => unknown).apply(target, args);
+      };
+    },
+  });
+  return {
+    database: database as unknown as DatabaseClient,
+    selects: () => selects,
+    reset() {
+      selects = 0;
+    },
+  };
+}
+
+/** Accepted, unreported Cloud deliveries as one persisted Runner instance owns them. */
+async function acceptedUnreportedDeliveries(input: {
+  sessionId: string;
+  count: number;
+  reportOwnerInstanceId: string;
+}): Promise<string[]> {
+  const [binding] = await unit.database.select().from(imBindings).limit(1);
+  if (!binding) throw new Error("fixture binding missing");
+  const [placement] = await unit.database
+    .select()
+    .from(sessionPlacements)
+    .where(eq(sessionPlacements.sessionId, input.sessionId))
+    .limit(1);
+  if (!placement) throw new Error("fixture placement missing");
+  const rows = Array.from({ length: input.count }, () => ({ messageId: randomUUID(), deliveryId: randomUUID() }));
+  const messages: (typeof imMessages.$inferInsert)[] = rows.map((row) => ({
+    id: row.messageId,
+    imBindingId: binding.id,
+    channelId: "unit-channel",
+    externalMessageId: `ext-${row.messageId.slice(0, 8)}`,
+    providerRevisionKey: "1",
+    operation: "created",
+    direction: "inbound",
+    authorKind: "human",
+    authorExternalId: "unit-user",
+    content: { version: 1, fallbackText: "hello", blocks: [], truncated: false },
+    providerContext: { provider: "feishu" },
+    occurredAt: new Date(),
+  }));
+  const deliveries: (typeof imMessageDeliveries.$inferInsert)[] = rows.map((row) => ({
+    id: row.deliveryId,
+    messageId: row.messageId,
+    sessionId: input.sessionId,
+    attention: "direct",
+    state: "accepted",
+    placementGeneration: placement.generation,
+    turnId: `turn-${row.deliveryId}`,
+    inputHash: `synthetic-input-${row.deliveryId}`,
+    reportOwnerInstanceId: input.reportOwnerInstanceId,
+    acceptedAt: new Date(),
+    expiresAt: new Date(Date.now() + 3_600_000),
+  }));
+  await unit.database.insert(imMessages).values(messages);
+  await unit.database.insert(imMessageDeliveries).values(deliveries);
+  return rows.map((row) => row.deliveryId);
 }
 
 describe("CloudDeliveryOwner", () => {
@@ -1438,6 +1513,129 @@ describe("CloudDeliveryOwner", () => {
     // With no owning socket the stop outcome is still reconcilable later, and the grant is dead.
     expect(await grants.verify(verified.model?.token as string)).toBeUndefined();
     expect(await owner.recoverAccepted(deliveryId)).toBe("pending");
+  });
+
+  it("reads the Sandbox once for an empty backlog and once for any nonempty backlog", async () => {
+    const counter = countedDatabase();
+    const closeSessionExecutions = vi.fn(() => []);
+    const empty = await cloudScope();
+    const emptyOwner = makeOwner({
+      database: counter.database,
+      credentialsOwner: { closeSessionExecutions },
+    }).owner;
+    counter.reset();
+    expect(await emptyOwner.cancelSessionDeliveries(empty.scope.sessionId)).toEqual([]);
+    // Nothing to cancel: the eligible-delivery read is the whole stop path, and the credential
+    // executions are still closed.
+    expect(counter.selects()).toBe(1);
+    expect(closeSessionExecutions).toHaveBeenCalledWith(empty.scope.sessionId, "execution_closed");
+
+    for (const count of [1, 10, 100]) {
+      const { scope, cloud } = await cloudScope();
+      const sent: RunnerServerFrame[] = [];
+      const { hub, fence, owner } = makeOwner({ database: counter.database });
+      const { connection } = attachReady(hub, fence, scope, sent, cloud.computerId);
+      const deliveryIds = await acceptedUnreportedDeliveries({
+        count,
+        reportOwnerInstanceId: connection.instanceId,
+        sessionId: scope.sessionId,
+      });
+      counter.reset();
+      const outcomes = await owner.cancelSessionDeliveries(scope.sessionId);
+      // The delivery read plus the Session's single Sandbox row, independent of the backlog size.
+      expect(counter.selects()).toBe(2);
+      expect(outcomes.map((outcome) => outcome.status)).toEqual(Array.from({ length: count }, () => "cancelled"));
+      expect(outcomes.map((outcome) => outcome.deliveryId).sort()).toEqual([...deliveryIds].sort());
+      expect(sent.filter((frame) => frame.type === "delivery:cancel")).toHaveLength(count);
+      // A delivered cancel frame is not a terminal outcome: custody stays accepted and unreported
+      // until the Runner's report lands through the durable report path.
+      for (const deliveryId of deliveryIds) {
+        const stored = await deliveryRow(deliveryId);
+        expect(stored.state).toBe("accepted");
+        expect(stored.reportedAt).toBeNull();
+      }
+    }
+  });
+
+  it("revokes the accepted turn's grant while reading the Sandbox once for the backlog", async () => {
+    const counter = countedDatabase();
+    const { scope, agent, cloud } = await cloudScope();
+    const sent: RunnerServerFrame[] = [];
+    const { hub, fence, owner, grants } = makeOwner({ database: counter.database });
+    const { connection } = attachReady(hub, fence, scope, sent, cloud.computerId);
+    await dispatchAndAccept({ owner, fence, scope, agentId: agent.id, computerId: cloud.computerId });
+    const token = (sent.find((frame) => frame.type === "delivery:verified") as { model?: { token: string } }).model
+      ?.token as string;
+    expect(await grants.verify(token)).toBeDefined();
+    await acceptedUnreportedDeliveries({
+      count: 9,
+      reportOwnerInstanceId: connection.instanceId,
+      sessionId: scope.sessionId,
+    });
+    counter.reset();
+    const outcomes = await owner.cancelSessionDeliveries(scope.sessionId);
+    expect(counter.selects()).toBe(2);
+    expect(outcomes).toHaveLength(10);
+    expect(outcomes.every((outcome) => outcome.status === "cancelled")).toBe(true);
+    expect(await grants.verify(token)).toBeUndefined();
+  });
+
+  it("keeps no_connection for a stale owner instance, a replaced connection and a missing Sandbox", async () => {
+    const counter = countedDatabase();
+    const { scope, cloud } = await cloudScope();
+    const sent: RunnerServerFrame[] = [];
+    const { hub, fence, owner } = makeOwner({ database: counter.database });
+    attachReady(hub, fence, scope, sent, cloud.computerId);
+    const staleIds = await acceptedUnreportedDeliveries({
+      count: 2,
+      reportOwnerInstanceId: randomUUID(),
+      sessionId: scope.sessionId,
+    });
+    counter.reset();
+    expect(await owner.cancelSessionDeliveries(scope.sessionId)).toEqual(
+      staleIds.map((deliveryId) => ({ deliveryId, status: "no_connection" })),
+    );
+    expect(counter.selects()).toBe(2);
+
+    // A replacement on the same Sandbox owns its own work only: the superseded instance's rows stay
+    // unreachable while the replacement's own delivery is cancelled on the replacement socket.
+    const replacementSent: RunnerServerFrame[] = [];
+    const replacementSocket = fakeSocket(replacementSent);
+    hub.attach(scope, replacementSocket);
+    hub.markReady(scope, READINESS, replacementSocket);
+    const replacement = owner.attachConnection({
+      computerId: cloud.computerId,
+      installationId: randomUUID(),
+      scope,
+      socket: replacementSocket,
+    });
+    expect(fence.connectionForSandbox(scope.sandboxId)?.connectionId).toBe(replacement.connectionId);
+    const ownedByReplacement = await acceptedUnreportedDeliveries({
+      count: 1,
+      reportOwnerInstanceId: replacement.instanceId,
+      sessionId: scope.sessionId,
+    });
+    counter.reset();
+    const outcomes = await owner.cancelSessionDeliveries(scope.sessionId);
+    expect(counter.selects()).toBe(2);
+    expect(outcomes.filter((outcome) => outcome.status === "cancelled").map((outcome) => outcome.deliveryId)).toEqual(
+      ownedByReplacement,
+    );
+    expect(
+      outcomes
+        .filter((outcome) => outcome.status === "no_connection")
+        .map((outcome) => outcome.deliveryId)
+        .sort(),
+    ).toEqual([...staleIds].sort());
+    expect(replacementSent.filter((frame) => frame.type === "delivery:cancel")).toHaveLength(1);
+
+    // No allocation at all: every remaining eligible delivery is no_connection, none is dropped.
+    await unit.database.delete(sandboxes).where(eq(sandboxes.id, scope.sandboxId));
+    counter.reset();
+    const withoutSandbox = await owner.cancelSessionDeliveries(scope.sessionId);
+    expect(counter.selects()).toBe(2);
+    expect(withoutSandbox).toHaveLength(3);
+    expect(withoutSandbox.every((outcome) => outcome.status === "no_connection")).toBe(true);
   });
 
   it("revokes the superseded connection's grant on replacement, even after the fence entry is gone", async () => {

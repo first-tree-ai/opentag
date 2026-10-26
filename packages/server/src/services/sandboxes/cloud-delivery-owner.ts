@@ -759,6 +759,8 @@ export class CloudDeliveryOwner {
    * and credential executions) and best-effort cancel the owning turn on the exact allocation that
    * accepted it. Returns one meaningful outcome per delivery; a lost socket is `no_connection` and
    * stays reconcilable through `recoverAccepted`'s durable stopped-state route, never silent.
+   * Two statements regardless of the backlog: the eligible deliveries, then (only when the list is
+   * nonempty) the one Sandbox row `sandboxes_session_id_unique` guarantees for the Session.
    */
   async cancelSessionDeliveries(sessionId: string): Promise<CloudSessionCancelOutcome[]> {
     const rows = await this.#database
@@ -779,9 +781,12 @@ export class CloudDeliveryOwner {
       if (row.turnId) this.#revokeTurnGrants(row.turnId);
     }
     this.#credentials?.owner.closeSessionExecutions(sessionId, "execution_closed");
+    if (rows.length === 0) return [];
+    // The Session's single Sandbox row is read once for the whole backlog. The connection fence
+    // itself stays a per-delivery read, so a replacement attached mid-loop is still observed.
+    const sandbox = await loadSandboxRecordBySessionId(this.#database, sessionId);
     const outcomes: CloudSessionCancelOutcome[] = [];
     for (const row of rows) {
-      const sandbox = await loadSandboxRecordBySessionId(this.#database, sessionId);
       const record = sandbox ? this.#fence.connectionForSandbox(sandbox.id) : undefined;
       if (!record || record.instanceId !== row.reportOwnerInstanceId || !this.#isExactConnection(record)) {
         outcomes.push({ deliveryId: row.id, status: "no_connection" });

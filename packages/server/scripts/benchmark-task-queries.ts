@@ -105,7 +105,12 @@ try {
   const migrationMs = performance.now() - migratedAt;
   report.environment = {
     commit: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
-    dirty: execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" }).trim() !== "",
+    // Source cleanliness only: the evidence directory this script writes is not a code change, so a
+    // verification run against committed code records `dirty: false` however often it is repeated.
+    dirty:
+      execFileSync("git", ["status", "--porcelain", "--", ".", ":!testing/performance"], {
+        encoding: "utf8",
+      }).trim() !== "",
     node: process.version,
     platform: process.platform,
     arch: process.arch,

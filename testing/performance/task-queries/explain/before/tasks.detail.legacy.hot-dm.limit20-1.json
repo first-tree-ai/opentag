@@ -1,0 +1,52 @@
+{
+  "sql": "\n      select m.im_binding_id as \"bindingId\", m.channel_id as \"channelId\"\n      from im_messages m\n      where m.id = $1::uuid\n    ",
+  "plan": [
+    {
+      "Plan": {
+        "Node Type": "Index Scan",
+        "Parallel Aware": false,
+        "Async Capable": false,
+        "Scan Direction": "Forward",
+        "Index Name": "im_messages_pkey",
+        "Relation Name": "im_messages",
+        "Alias": "m",
+        "Startup Cost": 0.42,
+        "Total Cost": 8.44,
+        "Plan Rows": 1,
+        "Plan Width": 26,
+        "Actual Startup Time": 0.027,
+        "Actual Total Time": 0.027,
+        "Actual Rows": 1,
+        "Actual Loops": 1,
+        "Index Cond": "(id = '00000009-0000-4000-8000-000000100000'::uuid)",
+        "Rows Removed by Index Recheck": 0,
+        "Shared Hit Blocks": 2,
+        "Shared Read Blocks": 2,
+        "Shared Dirtied Blocks": 0,
+        "Shared Written Blocks": 0,
+        "Local Hit Blocks": 0,
+        "Local Read Blocks": 0,
+        "Local Dirtied Blocks": 0,
+        "Local Written Blocks": 0,
+        "Temp Read Blocks": 0,
+        "Temp Written Blocks": 0
+      },
+      "Settings": {},
+      "Planning": {
+        "Shared Hit Blocks": 1,
+        "Shared Read Blocks": 0,
+        "Shared Dirtied Blocks": 0,
+        "Shared Written Blocks": 0,
+        "Local Hit Blocks": 0,
+        "Local Read Blocks": 0,
+        "Local Dirtied Blocks": 0,
+        "Local Written Blocks": 0,
+        "Temp Read Blocks": 0,
+        "Temp Written Blocks": 0
+      },
+      "Planning Time": 0.05,
+      "Triggers": [],
+      "Execution Time": 0.036
+    }
+  ]
+}

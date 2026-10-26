@@ -191,6 +191,28 @@ Assistant history preserves Pi's `reasoning_content`, `reasoning`, and `reasonin
 plus bounded encrypted `reasoning_details` for signed tool calls. These history fields do not
 relax the top-level routing or credential allowlist.
 
+### Model retry ownership
+
+The Pi provider request helper is the sole automatic retry owner for each Cloud model call,
+including a compaction summary call. It permits three retries after the initial attempt, for
+at most four completion requests. Pi session and summarization retry loops are disabled; the
+underlying OpenAI SDK also performs no retries. OpenTag forwards each HTTP request once.
+The Router deployment configuration must likewise keep LiteLLM Router retries and provider
+SDK retries at zero so forwarding never multiplies the Pi budget.
+
+Only a confirmed transient rate-limit response exposes a validated `Retry-After` hint. The
+model service preserves integer seconds or normalizes a canonical HTTP-date to integer
+seconds, and the public proxy removes the hint from permanent quota errors. Arbitrary
+upstream headers and error text remain hidden. Pi honors the hint up to a 60-second wait;
+a longer requested delay fails rather than retrying early. Without a usable hint, Pi uses
+its native exponential backoff with jitter. Cancellation and the existing absolute Turn
+deadline interrupt both requests and waits; retries do not extend either grant lifetime.
+
+Compaction remains enabled, but a model stream that has already started is not automatically
+replayed after a stream failure. A failed model request never triggers a whole-Turn, delivery,
+or scheduled-occurrence replay. The model proxy records the bounded `CLOUD_MODEL_RATE_LIMIT`
+diagnostic for rate-limit responses without logging upstream content or credentials.
+
 The grant registry's 4,096-entry bound protects Server state, including concurrent issuance. It
 is not a per-Account execution quota or a model-spend budget. Account-level admission and fairness
 remain resource-policy follow-ups; the current global limit can be consumed by one Account.

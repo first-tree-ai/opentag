@@ -23,7 +23,7 @@ export type FixtureHandler =
   | { kind: "overflow"; totalBytes?: number; chunkBytes?: number }
   | { kind: "backpressure"; totalBytes?: number; chunkBytes?: number }
   | { kind: "redirect"; location: string }
-  | { kind: "error"; status: number; body?: unknown; rawBody?: string }
+  | { kind: "error"; status: number; body?: unknown; rawBody?: string; retryAfter?: string }
   | { kind: "empty" }
   | { kind: "bad-content-type" };
 
@@ -147,6 +147,7 @@ async function respond(
       response.writeHead(handler.status, {
         "content-type": "application/json",
         [FIXTURE_RESPONSE_HEADER]: FIXTURE_MASTER_KEY,
+        ...(handler.retryAfter === undefined ? {} : { "retry-after": handler.retryAfter }),
       });
       response.write(payload);
       response.end();

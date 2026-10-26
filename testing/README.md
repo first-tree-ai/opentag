@@ -20,6 +20,7 @@ contents, and machine-specific operational logs outside the repository.
 - [Agent Skills](verification/agent-skills.md)
 - [Cloud billing](verification/cloud-billing.md)
 - [Cloud Computer](verification/cloud-computer.md)
+- [Cloud model retry ownership](verification/cloud-model-retry.md)
 - [Cloud Context Tree and Session collaboration](verification/cloud-context.md)
 - [Cloud Pi image input](verification/cloud-pi-image-input.md)
 - [Cloud Runner execution](verification/cloud-runner-execution.md)

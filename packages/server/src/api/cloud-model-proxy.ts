@@ -9,6 +9,7 @@ import {
   CLOUD_MODEL_ERROR_BODY_MAX_BYTES,
   CloudModelRequestSchema,
 } from "../cloud-model-request.js";
+import { cloudModelRetryAfter } from "../cloud-model-retry.js";
 import type { CloudModelService } from "../services/cloud-model-service.js";
 import { readBoundedResponseText } from "../services/sandboxes/cloud-model-catalog.js";
 import type { CloudModelGrantService } from "../services/sandboxes/cloud-model-grants.js";
@@ -69,9 +70,11 @@ async function fail(
   code: string,
   message: string,
   upstreamStatus?: number,
+  retryAfter?: string,
 ): Promise<FastifyReply> {
   if (reply.raw.destroyed || reply.raw.writableEnded || reply.raw.headersSent) return reply;
   reply.header("cache-control", "no-store");
+  if (retryAfter !== undefined) reply.header("retry-after", retryAfter);
   return reply.code(statusCode).send({
     error: {
       code,
@@ -245,6 +248,7 @@ interface UpstreamRejection {
   message: string;
   status: number;
   upstreamStatus?: number;
+  retryAfter?: string;
 }
 
 /**
@@ -324,7 +328,7 @@ function classifyUpstreamError(status: number, bodyText: string | undefined): Up
 }
 
 /** The fixed client-facing rejection for one confirmed class; the upstream body never crosses. */
-function classifiedRejection(kind: UpstreamErrorClass, upstreamStatus: number): UpstreamRejection {
+function classifiedRejection(kind: UpstreamErrorClass, upstreamStatus: number, retryAfter?: string): UpstreamRejection {
   switch (kind) {
     case "context_overflow":
       return {
@@ -346,6 +350,7 @@ function classifiedRejection(kind: UpstreamErrorClass, upstreamStatus: number): 
         message: "The model upstream rate limit was reached",
         status: 429,
         upstreamStatus,
+        ...(retryAfter === undefined ? {} : { retryAfter }),
       };
     case "authentication":
       return {
@@ -379,7 +384,12 @@ async function rejectUnusableUpstream(
       upstream.status,
       await readBoundedResponseText(upstream, UPSTREAM_ERROR_BODY_MAX_BYTES),
     );
-    if (classified) return classifiedRejection(classified, upstream.status);
+    if (classified)
+      return classifiedRejection(
+        classified,
+        upstream.status,
+        cloudModelRetryAfter(upstream.headers.get("retry-after")),
+      );
     return {
       code: "CLOUD_MODEL_UPSTREAM_ERROR",
       message: "The model upstream rejected the request",
@@ -477,7 +487,20 @@ async function forwardChatCompletions(
   const rejection = await rejectUnusableUpstream(upstream, body, options.config.maxResponseBytes);
   if (rejection) {
     if (isResponseClosed(reply)) return reply;
-    return fail(reply, rejection.status, rejection.code, rejection.message, rejection.upstreamStatus);
+    if (rejection.code === UPSTREAM_RATE_LIMIT_CODE) {
+      reply.log.info(
+        { code: "CLOUD_MODEL_RATE_LIMIT", retryAfterSeconds: rejection.retryAfter },
+        "Cloud model request rate limited; retries belong to the Pi request layer",
+      );
+    }
+    return fail(
+      reply,
+      rejection.status,
+      rejection.code,
+      rejection.message,
+      rejection.upstreamStatus,
+      rejection.retryAfter,
+    );
   }
   const outcome = await pipeUpstreamBody(reply, upstream, options, signal);
   return finalizePipedOutcome(reply, outcome, signal, timedOut);

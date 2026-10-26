@@ -6,6 +6,7 @@ import {
   CloudModelRequestSchema,
   type CloudModelTransportLimits,
 } from "../cloud-model-request.js";
+import { cloudModelRetryAfter } from "../cloud-model-retry.js";
 import { CLOUD_USAGE_FAST_RETRY_SECONDS, type CloudCall, type CloudCallStore } from "./cloud-call-store.js";
 import { RouterClient } from "./router-client.js";
 
@@ -139,6 +140,8 @@ export class CloudModelService {
       }
       reader = response.body.getReader();
       const type = response.headers.get("content-type") ?? "";
+      const retryAfter =
+        response.status === 429 ? cloudModelRetryAfter(response.headers.get("retry-after")) : undefined;
       let total = 0;
       let streamController: ReadableStreamDefaultController<Uint8Array>;
       const cancelAndSettle = async () => {
@@ -188,6 +191,7 @@ export class CloudModelService {
         status: response.status,
         headers: {
           "content-type": type,
+          ...(retryAfter === undefined ? {} : { "retry-after": retryAfter }),
           ...(response.headers.has("content-length")
             ? { "content-length": response.headers.get("content-length") ?? "" }
             : {}),

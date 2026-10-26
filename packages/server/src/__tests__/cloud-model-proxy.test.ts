@@ -1025,6 +1025,64 @@ describe("Cloud model proxy upstream error classification", () => {
     });
   });
 
+  it.each([
+    ["30", "30"],
+    ["0", "0"],
+    ["120", "120"],
+    ["-1", null],
+    ["1.5", null],
+    ["not-a-delay", null],
+    [FIXTURE_MASTER_KEY, null],
+  ])("validates the rate-limit Retry-After hint %s without retrying upstream", async (retryAfter, expected) => {
+    const upstream = await startFixture({
+      kind: "error",
+      status: 429,
+      body: { error: { code: "rate_limit_exceeded" } },
+      retryAfter,
+    });
+    const stack = await makeStack({ upstream });
+    const issued = await issueToken(stack.grants);
+    const response = await postModel(stack.port, { messages: CHAT_MESSAGES, model: "model-a" }, issued.token);
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe(expected);
+    expect(await errorCode(response)).toBe("rate_limit_exceeded");
+    expect(upstream.stats.hits).toBe(1);
+  });
+
+  it("does not expose a retry hint for a permanent quota rejection", async () => {
+    const upstream = await startFixture({
+      kind: "error",
+      status: 429,
+      body: { error: { code: "insufficient_quota" } },
+      retryAfter: "30",
+    });
+    const stack = await makeStack({ upstream });
+    const issued = await issueToken(stack.grants);
+    const response = await postModel(stack.port, { messages: CHAT_MESSAGES, model: "model-a" }, issued.token);
+    expect(response.status).toBe(402);
+    expect(response.headers.get("retry-after")).toBeNull();
+    expect(await errorCode(response)).toBe("billing_error");
+    expect(upstream.stats.hits).toBe(1);
+  });
+
+  it("normalizes an HTTP-date rate-limit hint into a bounded numeric response", async () => {
+    const upstream = await startFixture({
+      kind: "error",
+      status: 429,
+      body: { error: { code: "rate_limit_exceeded" } },
+      retryAfter: new Date(Date.now() + 30_000).toUTCString(),
+    });
+    const stack = await makeStack({ upstream });
+    const issued = await issueToken(stack.grants);
+    const response = await postModel(stack.port, { messages: CHAT_MESSAGES, model: "model-a" }, issued.token);
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toMatch(/^\d+$/);
+    expect(Number(response.headers.get("retry-after"))).toBeGreaterThanOrEqual(28);
+    expect(Number(response.headers.get("retry-after"))).toBeLessThanOrEqual(30);
+    expect(upstream.stats.hits).toBe(1);
+    await response.body?.cancel();
+  });
+
   it("does not retry the upstream: one client request produces at most one upstream call", async () => {
     const upstream = await startFixture({
       kind: "error",

@@ -426,6 +426,13 @@ describe("cloud-turn-worker", () => {
     expect(settings.defaultModel).toBe("opentag/deepseek-v4.1-flash-expires-on-0910");
     // Native auto-compaction is explicitly enabled; Pi's pinned reserve/keep defaults stay untouched.
     expect(settings.compaction).toEqual({ enabled: true });
+    expect(settings).toMatchObject({
+      retry: {
+        enabled: false,
+        maxRetries: 0,
+        provider: { maxRetries: 3, maxRetryDelayMs: 60_000 },
+      },
+    });
   });
 
   it("resumes the SAME Pi binding/history across two Turns of one allocation", async () => {

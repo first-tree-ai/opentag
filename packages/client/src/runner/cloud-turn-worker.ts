@@ -233,6 +233,8 @@ export function cloudTurnPiDocuments(request: RunnerCloudWorkerRequest): {
       // Pi native auto-compaction is explicitly enabled with its pinned defaults
       // (reserveTokens 16,384 / keepRecentTokens 20,000 stay untouched).
       compaction: { enabled: true },
+      // The provider request owns retries; session and summary loops must not multiply its budget.
+      retry: { enabled: false, maxRetries: 0, provider: { maxRetries: 3, maxRetryDelayMs: 60_000 } },
       defaultModel: `${CLOUD_MODEL_PI_PROVIDER}/${model.model}`,
       defaultProvider: CLOUD_MODEL_PI_PROVIDER,
     },

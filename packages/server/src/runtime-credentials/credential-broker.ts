@@ -6,6 +6,7 @@ import type {
 } from "@opentag/shared";
 import type { RuntimeControlIdentity } from "../runtime/connection-registry.js";
 import type { RuntimeCapabilityRecord, RuntimeCapabilityStore } from "./capability-store.js";
+import { contextTreeExecutionIsCurrent } from "./context-tree-execution.js";
 import type { RuntimeExecutionAuthority } from "./execution-authority.js";
 import type { RuntimeExecutionRegistry } from "./execution-registry.js";
 import type { RuntimeGitHubAdmission, RuntimeGitHubAdmissionResult } from "./github-admission.js";
@@ -48,6 +49,7 @@ export interface RuntimeProxyAuthorization {
   accountId: string;
   agentId: string;
   cli: RuntimeCliMetadata;
+  contextTree?: RuntimeExecutionRecord["contextTree"];
   /** Resolves real upstream material in memory; callers must `recheck()` after this async step. */
   resolveMaterial(signal?: AbortSignal): Promise<RuntimeProviderMaterial>;
   /** Fresh DB fence revalidation, required after any async material/cipher boundary. */
@@ -218,6 +220,7 @@ export class RuntimeCredentialBroker {
       accountId: execution.accountId,
       agentId: execution.agentId,
       cli: material.cli,
+      ...(execution.contextTree ? { contextTree: execution.contextTree } : {}),
       resolveMaterial: async (signal) => {
         const resolver = this.#options.materialResolvers[grant.provider];
         if (!resolver) throw new RuntimeCredentialError("credential_stale");
@@ -283,7 +286,21 @@ export class RuntimeCredentialBroker {
     this.#assertCurrentConnection(execution);
     await this.#assertCloudControl(execution);
     await this.#assertAdmission(execution);
-    return execution.purpose === "validation" ? this.#validationFence(execution) : this.#sessionFence(execution);
+    const fence = await (execution.purpose === "validation"
+      ? this.#validationFence(execution)
+      : this.#sessionFence(execution));
+    if (
+      execution.purpose === "context-tree" &&
+      (fence.kind !== "session" ||
+        !execution.contextTree ||
+        !contextTreeExecutionIsCurrent(
+          execution,
+          this.#options.executions.get(execution.contextTree.parentExecutionId),
+          fence.snapshot,
+        ))
+    )
+      throw new RuntimeCredentialError("credential_scope_denied");
+    return fence;
   }
 
   #assertCurrentConnection(execution: RuntimeExecutionRecord): void {
@@ -344,6 +361,8 @@ export class RuntimeCredentialBroker {
     bindingId: string,
     signal?: AbortSignal,
   ): Promise<RuntimeScopeMaterial> {
+    if (provider === "github" && execution.purpose !== "context-tree")
+      throw new RuntimeCredentialError("credential_scope_denied");
     const fence = await this.#fence(execution, signal);
     const permitted = await this.#options.policy.authorize({
       accountId: execution.accountId,
@@ -484,5 +503,5 @@ function imOutboxContext(
 }
 
 function gitHubCliMetadata(admission: RuntimeGitHubAdmissionResult): RuntimeCliMetadata {
-  return { provider: "github", connectionId: admission.connectionId, authority: "user-task" };
+  return { provider: "github", connectionId: admission.connectionId, authority: "context-tree" };
 }

@@ -68,6 +68,7 @@ async function start(input: Input) {
     const published = join(input.root, `public-${input.executionId}`);
     const relay = {
       executionId: input.executionId,
+      contextTreeExecution: true,
       providers: [{ provider: "github" }],
       localHandleFor: () => "otrh_fixture",
       cliMetadataFor: () => undefined,

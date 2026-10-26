@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ContextTreeConnectionSchema } from "./context-tree.js";
 import { RuntimeExecutionServiceRequestSchema, RuntimeExecutionServiceSchema } from "./execution-services.js";
 import { MCP_GATEWAY_PATH } from "./mcp-gateway.js";
 import { runtimeByteString as byteString } from "./runtime-config.js";
@@ -98,6 +99,11 @@ export const RuntimeExecutionSandboxSchema = z
   .strict();
 export type RuntimeExecutionSandbox = z.infer<typeof RuntimeExecutionSandboxSchema>;
 
+export const RuntimeContextTreeExecutionSchema = ContextTreeConnectionSchema.extend({
+  parentExecutionId: z.string().uuid(),
+}).strict();
+export type RuntimeContextTreeExecution = z.infer<typeof RuntimeContextTreeExecutionSchema>;
+
 export const RuntimeExecutionOpenRequestSchema = z
   .object({
     type: z.literal("runtime:execution:open"),
@@ -108,6 +114,7 @@ export const RuntimeExecutionOpenRequestSchema = z
     runId: z.string().uuid(),
     source: RuntimeExecutionSourceSchema,
     sandbox: RuntimeExecutionSandboxSchema.optional(),
+    contextTree: RuntimeContextTreeExecutionSchema.optional(),
     /**
      * Optional platform services the Client opts into (currently only `web`). Sent only when the
      * `runtime.webTools` capability was negotiated; older peers never see or accept this field.
@@ -144,7 +151,7 @@ export const RuntimeGitHubCliMetadataSchema = z
   .object({
     provider: z.literal("github"),
     connectionId: bindingId,
-    authority: z.literal("user-task"),
+    authority: z.enum(["user-task", "context-tree"]),
   })
   .strict();
 export type RuntimeGitHubCliMetadata = z.infer<typeof RuntimeGitHubCliMetadataSchema>;

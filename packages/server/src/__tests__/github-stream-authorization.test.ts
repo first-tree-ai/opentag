@@ -80,9 +80,12 @@ describe.each(["local", "cloud"] as const)("%s GitHub stream execution authority
     async (stage) => {
       const executions = new RuntimeExecutionRegistry();
       const capabilities = new RuntimeCapabilityStore();
-      const snapshot = scopeSnapshot();
+      const snapshot = {
+        ...scopeSnapshot(),
+        contextTrees: [{ kind: "git" as const, repository: "owner/repo", path: ".", ref: "main" }],
+      };
       const connectionId = randomUUID();
-      const record = executions.open({
+      const parent = executions.open({
         runId: randomUUID(),
         accountId: snapshot.computer.ownerAccountId,
         agentId: AGENT,
@@ -108,6 +111,13 @@ describe.each(["local", "cloud"] as const)("%s GitHub stream execution authority
             }),
           ],
         ]),
+      });
+      const target = { kind: "git" as const, repository: "owner/repo", path: ".", ref: "main" };
+      parent.services = [{ service: "context-tree", scopes: ["context-tree:git"] }];
+      const record = executions.open({
+        ...parent,
+        purpose: "context-tree",
+        contextTree: { ...target, parentExecutionId: parent.executionId },
       });
       const connection = {
         id: connectionId,

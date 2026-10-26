@@ -60,6 +60,7 @@ export const RUNTIME_CAPABILITY = {
   providerProxy: "runtime.providerProxy",
   runtimeCredential: "runtime.runtimeCredential",
   githubUserTask: "runtime.githubUserTask",
+  contextTreeExecution: "runtime.contextTreeExecution",
   sessionCollaboration: "runtime.sessionCollaboration",
   sessionReconcile: "runtime.sessionReconcile",
   turnReport: "runtime.turnReport",
@@ -86,6 +87,7 @@ export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
   [RUNTIME_CAPABILITY.providerProxy]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.runtimeCredential]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.githubUserTask]: { min: 1, max: 1 },
+  [RUNTIME_CAPABILITY.contextTreeExecution]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.sessionCollaboration]: {
     min: RUNTIME_SESSION_COLLABORATION_MESSAGE_VERSION,
     max: RUNTIME_SESSION_COLLABORATION_SCHEDULED_VERSION,

@@ -64,7 +64,9 @@ OpenTag writes authorized selections to its own configuration at
 Repository-owned `.context-tree.json` files are left alone. Those files can describe
 local directory trees used through the normal repository workflow.
 
-Preparation uses `context-tree sync --project-path PROJECT`. Responses are parsed
+Managed synchronization and write commands route through a per-execution Context Tree command gateway in the trusted Local Daemon or Cloud Runner. Only its pinned CLI child receives a GitHub handle; the Agent receives a Unix socket or fixed Cloud loopback endpoint. The Server separately admits each command against the live parent, current Account authorization and exact selected tree. See [GitHub platform integration](github-platform-integration.md#context-tree-command-boundary).
+
+Preparation uses `context-tree sync --project-path PROJECT` through this gateway. Responses are parsed
 with the package's public contracts; OpenTag never reads the package's internal registry.
 The path returned by the current sync is the read snapshot. A failed refresh can use
 `sync --offline` to recover cached context, explicitly marked stale. Modified snapshots

@@ -992,7 +992,7 @@ async function serveOnce(
         token: state.token,
         cloudDeliveryVersion: RUNNER_CLOUD_DELIVERY_VERSION,
         turnActivityVersion: 1,
-        githubUserTaskVersion: 1,
+        contextTreeExecutionVersion: 1,
         /*
          * This build speaks Session collaboration v2 (scheduled origin). An older Server whose
          * auth schema only admits v1 fails the strict handshake; a foundation Server that parses

@@ -651,6 +651,8 @@
   "RuntimeChannelTargetSchema",
   "RuntimeClientCapabilitiesSchema",
   "RuntimeConnectionIdSchema",
+  "RuntimeContextTreeExecutionSchema",
+  "RuntimeContextTreeExecutionServiceSchema",
   "RuntimeCredentialAcquireRequestSchema",
   "RuntimeCredentialClientFrameSchema",
   "RuntimeCredentialProviderSchema",

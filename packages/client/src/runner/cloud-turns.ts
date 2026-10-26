@@ -29,13 +29,22 @@ import {
 } from "@opentag/shared";
 import { z } from "zod";
 import { publishExecutionMaterial } from "../cloud-runtime/bridge-material.js";
-import { CLOUD_EXECUTION_MOUNT } from "../cloud-runtime/sandbox-entry.js";
+import {
+  CLOUD_CONNECT_PROXY_PORT,
+  CLOUD_CONTEXT_TREE_PORT,
+  CLOUD_EXECUTION_MOUNT,
+  CLOUD_SANDBOX_CA_FILE,
+} from "../cloud-runtime/sandbox-entry.js";
 import { createPiDiagnosticReader, type PiDiagnosticContext } from "../observability/pi-diagnostics.js";
 import type { TurnCompletion } from "../runtime/agent-turn-runner.js";
 import { turnTimeoutMs } from "../runtime/agent-turn-runner.js";
+import { resolveContextTreePackage } from "../runtime/context-tree.js";
+import { ContextTreeCommandGateway } from "../runtime/context-tree-commands.js";
+import { managedAgentSlug } from "../runtime/managed-instructions.js";
 import { truncateUtf8 } from "../runtime/provider-cli/outgoing-reply-process.js";
 import { RuntimeCredentialRelay, type RuntimeCredentialRelayOptions } from "../runtime/runtime-credential-relay.js";
 import { RuntimeProxyLoopbackAdapter } from "../runtime/runtime-proxy-loopback-adapter.js";
+import { providerRoutingEnvironment } from "../runtime/runtime-proxy-material.js";
 import { TurnActivityReporter } from "../runtime/turn-activity-reporter.js";
 import { WebToolsServerClient } from "../runtime/web-tools-client.js";
 import { createExecutionWebDispatch } from "../runtime/web-tools-dispatch.js";
@@ -53,6 +62,7 @@ import {
   computeCloudSessionInputHash,
 } from "./cloud-journal.js";
 import { CloudWorkspaceError } from "./cloud-workspace.js";
+import { CONTEXT_TREE_COMMAND_WORKER_SOURCE } from "./context-tree-command-worker.js";
 import { NativeProviderBridge } from "./native-provider-bridge.js";
 import { type NativeSandbox, NativeSandboxError, SANDBOX_NODE, SANDBOX_WORKER_ENTRY } from "./native-sandbox.js";
 import type { NativeSandboxWebGateway, NativeWebExecutionChannel } from "./web-gateway.js";
@@ -285,6 +295,17 @@ const UNKNOWN_COMPLETION: TurnCompletion = {
   executionEffects: "may_have_occurred",
   outcome: "unknown",
 };
+
+interface CloudRelayExecutionInput {
+  agentId: string;
+  contextTrees: readonly import("@opentag/shared").ContextTreeConnection[];
+  agentSlug?: string;
+  placementGeneration: number;
+  sessionId: string;
+  signal: AbortSignal;
+  scope: CloudTurnScope;
+  source: { kind: "delivery"; deliveryId: string; turnId: string } | { kind: "session-message"; messageId: string };
+}
 
 export class CloudTurnRunner {
   readonly #options: CloudTurnRunnerOptions;
@@ -1661,6 +1682,8 @@ export class CloudTurnRunner {
       signal: input.signal,
       source: { kind: "delivery", deliveryId: input.delivery.deliveryId, turnId: input.turnId },
       scope: input.scope,
+      contextTrees: input.delivery.runtime.contextTrees,
+      agentSlug: managedAgentSlug(input.delivery.runtime.instructions.platform),
     });
   }
 
@@ -1672,23 +1695,75 @@ export class CloudTurnRunner {
       signal: input.signal,
       source: { kind: "session-message", messageId: input.message.messageId },
       scope: input.scope,
+      contextTrees: input.message.runtime.contextTrees,
+      agentSlug: managedAgentSlug(input.message.runtime.instructions.platform),
     });
   }
 
-  async #openRelayExecution(input: {
-    agentId: string;
-    placementGeneration: number;
-    sessionId: string;
-    signal: AbortSignal;
-    scope: CloudTurnScope;
-    source: { kind: "delivery"; deliveryId: string; turnId: string } | { kind: "session-message"; messageId: string };
-  }): Promise<CloudTurnExecutionHandle> {
+  async #openContextTreeGateway(
+    input: CloudRelayExecutionInput,
+    openRelay: RuntimeCredentialRelay,
+    inSandboxExecutionDir: string,
+  ): Promise<ContextTreeCommandGateway | undefined> {
+    if (!input.contextTrees.length || !openRelay.services?.some((service) => service.service === "context-tree"))
+      return undefined;
+    const pack = resolveContextTreePackage();
+    if (!pack) throw new Error("Context Tree package is unavailable");
+    const treeHome = "/workspace/.opentag/context-tree/home";
+    const contextTreeGateway = new ContextTreeCommandGateway({
+      parent: openRelay,
+      workspace: "/workspace",
+      sources: input.contextTrees,
+      stateDirectory: join(this.#options.stateDirectory, "context-tree-command-sessions", input.agentId),
+      environment: () => {
+        const routing = {
+          OPENTAG_PROVIDER_PROXY_URL: `http://127.0.0.1:${CLOUD_CONNECT_PROXY_PORT}`,
+          OPENTAG_PROVIDER_CA_PATH: `${inSandboxExecutionDir}/${CLOUD_SANDBOX_CA_FILE}`,
+        };
+        return {
+          ...routing,
+          ...providerRoutingEnvironment(routing),
+          HOME: treeHome,
+          GIT_AUTHOR_NAME: input.agentSlug ?? "opentag-cloud-agent",
+          GIT_AUTHOR_EMAIL: `${input.agentSlug ?? "opentag-cloud-agent"}@localhost`,
+          GIT_COMMITTER_NAME: input.agentSlug ?? "opentag-cloud-agent",
+          GIT_COMMITTER_EMAIL: `${input.agentSlug ?? "opentag-cloud-agent"}@localhost`,
+        };
+      },
+      execute: async (args, environment, commandSignal) => {
+        const result = await this.#options.sandbox.exec(
+          SANDBOX_NODE,
+          ["--input-type=module", "-e", CONTEXT_TREE_COMMAND_WORKER_SOURCE],
+          {
+            timeoutMs: 122_000,
+            signal: commandSignal,
+            stdin: JSON.stringify({ cli: pack.cliPath, args, environment, cwd: "/workspace" }),
+          },
+        );
+        const parsed = z
+          .object({ code: z.number().int(), stdout: z.string(), stderr: z.string() })
+          .strict()
+          .parse(JSON.parse(result.stdout));
+        return parsed;
+      },
+    });
+    try {
+      await contextTreeGateway.listen("tcp");
+      return contextTreeGateway;
+    } catch (error) {
+      await contextTreeGateway.close();
+      throw error;
+    }
+  }
+
+  async #openRelayExecution(input: CloudRelayExecutionInput): Promise<CloudTurnExecutionHandle> {
     const scope = input.scope;
     if (!scope.resourceUid) throw new Error("The Sandbox allocation UID is not tracked yet");
     const connection = new CloudCredentialConnection(this.#options.credentialChannel());
     let relay: Awaited<ReturnType<typeof RuntimeCredentialRelay.open>> | undefined;
     let adapter: Awaited<ReturnType<typeof RuntimeProxyLoopbackAdapter.start>> | undefined;
     let bridge: NativeProviderBridge | undefined;
+    let contextTreeGateway: ContextTreeCommandGateway | undefined;
     let webChannel: NativeWebExecutionChannel | undefined;
     let privateDirectory: string | undefined;
     let publicDirectory: string | undefined;
@@ -1709,6 +1784,7 @@ export class CloudTurnRunner {
           failures.push(error);
         }
       };
+      await step(() => contextTreeGateway?.close());
       await releaseRelayExecutionResources({
         step,
         connection,
@@ -1752,7 +1828,7 @@ export class CloudTurnRunner {
            * Agent's mounts — and withholds silently when it does not. A request is not an
            * authorization: without a grant on the open result neither channel below is opened.
            */
-          services: ["mcp", "web"],
+          services: ["mcp", "web", "context-tree"],
         },
         input.signal,
       );
@@ -1767,20 +1843,29 @@ export class CloudTurnRunner {
       publicDirectory = await mkdtemp(join(publicRoot, "turn-"));
       adapter = await RuntimeProxyLoopbackAdapter.start({
         executionId: openRelay.executionId,
-        localHandleFor: (provider) =>
-          openRelay.providers.some((entryPoint) => entryPoint.provider === provider)
-            ? openRelay.localHandleFor(provider)
-            : undefined,
+        localHandleFor: (provider) => {
+          const owner = provider === "github" ? contextTreeGateway?.relay : openRelay;
+          return owner?.providers.some((entryPoint) => entryPoint.provider === provider)
+            ? owner.localHandleFor(provider)
+            : undefined;
+        },
         materialDir: join(privateDirectory, "adapter"),
-        openStream: (request) => openRelay.openProviderStream(request),
-        verifyHandle: (provider, handle) => openRelay.verifyLocalHandle(provider, handle),
+        openStream: (request) => {
+          const owner = request.provider === "github" ? contextTreeGateway?.relay : openRelay;
+          if (!owner) throw new Error("Provider unavailable");
+          return owner.openProviderStream(request);
+        },
+        verifyHandle: (provider, handle) =>
+          (provider === "github" ? contextTreeGateway?.relay : openRelay)?.verifyLocalHandle(provider, handle) ?? false,
       });
       const inSandboxExecutionDir = `${CLOUD_EXECUTION_MOUNT}/${basename(publicDirectory)}`;
+      contextTreeGateway = await this.#openContextTreeGateway(input, openRelay, inSandboxExecutionDir);
       // Public files only: the native Sandbox never receives a parent socket. The HTTP/2 bridge
       // helper opened next owns the two loopback entry ports the published environment names.
       await publishExecutionMaterial({ adapter, relay: openRelay }, publicDirectory, {
         includeEntryPrograms: false,
         publicMountPath: inSandboxExecutionDir,
+        ...(contextTreeGateway ? { contextTreeUrl: `http://127.0.0.1:${CLOUD_CONTEXT_TREE_PORT}` } : {}),
       });
       const openAdapter = adapter;
       bridge = await NativeProviderBridge.open({
@@ -1789,6 +1874,7 @@ export class CloudTurnRunner {
         targets: {
           connect: loopbackPortOf(openAdapter.connectProxyUrl),
           slack: loopbackPortOf(openAdapter.slackApiHost),
+          ...(contextTreeGateway?.port ? { contextTree: contextTreeGateway.port } : {}),
         },
       });
       const openBridge = bridge;

@@ -1069,7 +1069,7 @@ describe("SessionRuntimeManager", () => {
     expect(restartedFactory.resumed).toEqual([binding("thread-2")]);
     expect(restartedFactory.resumedRequests[0]?.systemPrompt).toContain("slack api chat.postMessage --json");
     expect(restartedFactory.resumedRequests[0]?.systemPrompt).toContain("messages-resources-download");
-    expect(restartedFactory.resumedRequests[0]?.systemPrompt).toContain("GitHub integration, when enabled");
+    expect(restartedFactory.resumedRequests[0]?.systemPrompt).toContain("GitHub MCP");
 
     await expect(
       restarted.reconcile({ ...upgraded, requestId: randomUUID(), desired: "stopped", runtime: undefined }),

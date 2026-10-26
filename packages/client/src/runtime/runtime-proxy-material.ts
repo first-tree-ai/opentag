@@ -72,13 +72,13 @@ export function buildRuntimeProxyEnvironment(input: RuntimeProxyEnvironmentInput
     GITHUB_ENTERPRISE_TOKEN: undefined,
     GITHUB_TOKEN: undefined,
     GH_TOKEN: undefined,
-    GH_CONFIG_DIR: join(input.layout.executionDir, "gh-config"),
+    GH_CONFIG_DIR: undefined,
     GIT_CONFIG_PARAMETERS: undefined,
     GIT_ASKPASS: undefined,
     GIT_CONFIG_COUNT: "1",
     GIT_CONFIG_KEY_0: "credential.helper",
     GIT_CONFIG_VALUE_0: "",
-    GIT_CONFIG_GLOBAL: input.layout.gitConfigPath,
+    GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_TERMINAL_PROMPT: "0",
     GIT_SSH: undefined,
@@ -91,6 +91,7 @@ export function buildRuntimeProxyEnvironment(input: RuntimeProxyEnvironmentInput
     Object.assign(environment, {
       GH_HOST: "github.com",
       GH_TOKEN: github,
+      GH_CONFIG_DIR: join(input.layout.executionDir, "gh-config"),
       GH_PROMPT_DISABLED: "1",
       GIT_CONFIG_COUNT: "2",
       GIT_CONFIG_KEY_0: "credential.helper",
@@ -403,17 +404,19 @@ export class RuntimeProxyMaterialStore {
     // gh officially supports HTTP over a Unix socket. A private execution socket avoids
     // changing the macOS trust store (Go <=1.26 ignores SSL_CERT_FILE there). Every request
     // still authenticates its local handle and crosses the same Server policy/Relay boundary.
-    const configDir = join(layout.executionDir, "gh-config");
-    await mkdir(configDir, { mode: 0o700, recursive: true });
-    await writeDurableFile(
-      join(configDir, "config.yml"),
-      renderRuntimeProxyGhConfig(github !== undefined ? input.githubApiSocketPath : undefined),
-      0o600,
-    );
+    if (github !== undefined) {
+      const configDir = join(layout.executionDir, "gh-config");
+      await mkdir(configDir, { mode: 0o700, recursive: true });
+      await writeDurableFile(
+        join(configDir, "config.yml"),
+        renderRuntimeProxyGhConfig(input.githubApiSocketPath),
+        0o600,
+      );
+    }
     // Provider CLIs opened from the stable env file get the standard routing variables there; the
     // manifest stays scoped so the Agent runtime environment never turns them global.
     const routing = providerRoutingEnvironment(input.environment);
-    if (routing.HTTPS_PROXY !== undefined && routing.SSL_CERT_FILE !== undefined) {
+    if (github !== undefined && routing.HTTPS_PROXY !== undefined && routing.SSL_CERT_FILE !== undefined) {
       await writeDurableFile(
         layout.gitConfigPath,
         renderRuntimeProxyGitConfig({
@@ -425,8 +428,6 @@ export class RuntimeProxyMaterialStore {
         }),
         0o600,
       );
-    } else {
-      await writeDurableFile(layout.gitConfigPath, "", 0o600);
     }
     if (github !== undefined) {
       await writeDurableFile(
@@ -465,6 +466,10 @@ export class RuntimeProxyMaterialStore {
     const environmentFilePath = this.environmentFilePath(input.sessionId);
     for (const binary of ["git", "gh"] as const) {
       const shimPath = join(shimDir, binary);
+      if (github === undefined) {
+        await rm(shimPath, { force: true });
+        continue;
+      }
       await writeDurableFile(shimPath, renderRuntimeProxyShim(binary, environmentFilePath), 0o700);
       await chmod(shimPath, 0o700);
     }

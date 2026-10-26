@@ -89,7 +89,10 @@ export interface SessionRuntimeManagerOptions {
    * Optional. Managed Context Tree environment for the trusted CLI child. `undefined` entries
    * unset inherited variables; legacy mode leaves it undefined and keeps ambient Local behavior.
    */
-  readonly contextTreeEnvironment?: (sessionId: string) => Readonly<Record<string, string | undefined>> | undefined;
+  readonly contextTreeEnvironment?: (
+    sessionId: string,
+    configuration: { cwd: string; sources: EffectiveRuntimeSnapshot["contextTrees"] },
+  ) => Readonly<Record<string, string | undefined>> | undefined;
   readonly proofManager?: Pick<SessionCliProofManager, "cleanup" | "materialize">;
   /**
    * Optional. Visible Sessions may receive the currently active Slack config leaf as one extra
@@ -321,7 +324,10 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     // runs on every Turn admission, and this runs once per Provider Runtime start. The manager
     // caches connections per workspace, configured tree set, and Provider while rechecking grants
     // and attachments. It never throws, so a failure only changes what the prompt reports.
-    const contextTreeEnvironment = this.#contextTreeEnvironment?.(managed.binding.sessionId);
+    const contextTreeEnvironment = this.#contextTreeEnvironment?.(managed.binding.sessionId, {
+      cwd: managed.cwd,
+      sources: managed.snapshot.contextTrees,
+    });
     const contextTree = await prepareContextTree(
       this.#contextTree,
       managed.cwd,

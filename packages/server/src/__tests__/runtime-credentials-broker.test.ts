@@ -77,6 +77,7 @@ class FakeAuthority implements RuntimeExecutionAuthority {
 
 function sessionSnapshot(overrides: Partial<RuntimeScopeSnapshot> = {}): RuntimeScopeSnapshot {
   return {
+    contextTrees: [{ kind: "git", repository: "acme/repo", path: ".", ref: "main" }],
     sessionId: SESSION,
     sessionKind: "thread",
     sessionEnded: false,
@@ -144,7 +145,7 @@ function execution(
   overrides: Partial<Omit<RuntimeExecutionRecord, "executionId" | "createdAt" | "expiresAt" | "providers">> = {},
 ): RuntimeExecutionRecord {
   const map = new Map(providers.map((provider) => [`${provider.provider}:${provider.bindingId}`, provider]));
-  return registry.open({
+  const fields: Omit<RuntimeExecutionRecord, "executionId" | "createdAt" | "expiresAt"> = {
     runId: randomUUID(),
     accountId: "00000000-0000-4000-8000-0000000000e1",
     agentId: AGENT,
@@ -159,7 +160,27 @@ function execution(
     computerKind: "local",
     providers: map,
     ...overrides,
-  });
+  };
+  if (providers.some((provider) => provider.provider === "github") && overrides.purpose === undefined) {
+    const parent = registry.open({
+      ...fields,
+      providers: new Map(),
+      purpose: "execution",
+      services: [{ service: "context-tree", scopes: ["context-tree:git"] }],
+    });
+    return registry.open({
+      ...fields,
+      purpose: "context-tree",
+      contextTree: {
+        kind: "git",
+        repository: "acme/repo",
+        path: ".",
+        ref: "main",
+        parentExecutionId: parent.executionId,
+      },
+    });
+  }
+  return registry.open(fields);
 }
 
 function slackProvider(): RuntimeExecutionProviderBinding {
@@ -228,6 +249,38 @@ describe("RuntimeCredentialBroker.acquire", () => {
     expect(outcome).toEqual({ status: "rejected", code: "provider_mismatch" });
   });
 
+  it("refuses ordinary Agent GitHub acquire and previously issued handles even under a permissive policy", async () => {
+    const { broker, executions, capabilities, admission } = createBroker();
+    admission.result = { connectionId: "connection-live", authorizationVersion: "1", credentialGeneration: "1" };
+    const record = execution(
+      executions,
+      [
+        runtimeExecutionProviderBinding("github", "connection-live", {
+          provider: "github",
+          connectionId: "connection-live",
+          authority: "user-task",
+        }),
+      ],
+      { purpose: "execution" },
+    );
+    expect(await broker.acquire({ execution: record, provider: "github", bindingId: "connection-live" })).toMatchObject(
+      { status: "rejected", code: "credential_scope_denied" },
+    );
+    const old = capabilities.issue({
+      executionId: record.executionId,
+      provider: "github",
+      bindingId: "connection-live",
+      purpose: "execution",
+      scopeHash: "a".repeat(64),
+      authorizationRevision: "github:1",
+      credentialGeneration: "1",
+    });
+    await expect(
+      broker.beginRequest({ capability: old.token, provider: "github", bindingId: "connection-live" }),
+    ).rejects.toMatchObject({ code: "credential_scope_denied" });
+    expect(admission.calls).toBe(0);
+  });
+
   it("fails closed when the default scope policy denies GitHub", async () => {
     const { broker, executions, admission } = createBroker({ policy: new DefaultRuntimeTaskPolicy() });
     admission.result = {
@@ -240,7 +293,7 @@ describe("RuntimeCredentialBroker.acquire", () => {
       runtimeExecutionProviderBinding("github", "connection-live", {
         provider: "github",
         connectionId: "connection-live",
-        authority: "user-task",
+        authority: "context-tree",
       }),
     ]);
     const denied = await broker.acquire({ execution: record, provider: "github", bindingId: "connection-live" });
@@ -260,7 +313,7 @@ describe("RuntimeCredentialBroker.acquire", () => {
       runtimeExecutionProviderBinding("github", "connection-live", {
         provider: "github",
         connectionId: "connection-live",
-        authority: "user-task",
+        authority: "context-tree",
       }),
     ]);
     const outcome = await broker.acquire({ execution: record, provider: "github", bindingId: "connection-live" });
@@ -269,7 +322,7 @@ describe("RuntimeCredentialBroker.acquire", () => {
     expect(outcome.cli).toEqual({
       provider: "github",
       connectionId: "connection-live",
-      authority: "user-task",
+      authority: "context-tree",
     });
   });
 
@@ -469,7 +522,7 @@ describe("RuntimeCredentialBroker GitHub scope hash", () => {
       runtimeExecutionProviderBinding("github", "connection-live", {
         provider: "github",
         connectionId: "connection-live",
-        authority: "user-task",
+        authority: "context-tree",
       }),
     ]);
     return async (result: TestGitHubAdmissionResult) => {
@@ -608,7 +661,7 @@ describe("RuntimeCredentialBroker GitHub admission (source + full scope)", () =>
       runtimeExecutionProviderBinding("github", "connection-live", {
         provider: "github",
         connectionId: "connection-live",
-        authority: "user-task",
+        authority: "context-tree",
       }),
     ]);
     return { admissionMock, broker, record };
@@ -632,7 +685,7 @@ describe("RuntimeCredentialBroker GitHub admission (source + full scope)", () =>
         runtimeExecutionProviderBinding("github", "connection-live", {
           provider: "github",
           connectionId: "connection-live",
-          authority: "user-task",
+          authority: "context-tree",
         }),
       ],
       { sessionId },
@@ -659,7 +712,7 @@ describe("RuntimeCredentialBroker GitHub admission (source + full scope)", () =>
     const expectedCli = {
       provider: "github",
       connectionId: "connection-live",
-      authority: "user-task",
+      authority: "context-tree",
     };
     const described = await broker.describeProvider({
       execution: record,
@@ -690,7 +743,7 @@ describe("RuntimeCredentialBroker GitHub admission (source + full scope)", () =>
     expect(compact.cli).toEqual({
       provider: "github",
       connectionId: "connection-live",
-      authority: "user-task",
+      authority: "context-tree",
     });
   });
 
@@ -702,7 +755,7 @@ describe("RuntimeCredentialBroker GitHub admission (source + full scope)", () =>
       runtimeExecutionProviderBinding("github", "connection-live", {
         provider: "github",
         connectionId: "connection-live",
-        authority: "user-task",
+        authority: "context-tree",
       }),
     ]);
     const describeScope = async (next: GitHubAgentScope) => {
@@ -726,7 +779,7 @@ describe("RuntimeCredentialBroker GitHub admission (source + full scope)", () =>
       runtimeExecutionProviderBinding("github", "connection-live", {
         provider: "github",
         connectionId: "connection-live",
-        authority: "user-task",
+        authority: "context-tree",
       }),
     ]);
     const first = { agentId: AGENT, role: "code", access: "read" } as GitHubAgentScope;

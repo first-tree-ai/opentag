@@ -1,6 +1,10 @@
 import { constants, createServer, type ServerHttp2Stream } from "node:http2";
 import { connect, type Socket } from "node:net";
-import { CLOUD_CONNECT_PROXY_PORT, CLOUD_SLACK_API_PORT } from "../cloud-runtime/sandbox-entry.js";
+import {
+  CLOUD_CONNECT_PROXY_PORT,
+  CLOUD_CONTEXT_TREE_PORT,
+  CLOUD_SLACK_API_PORT,
+} from "../cloud-runtime/sandbox-entry.js";
 import { type NativeSandbox, NativeSandboxError, SANDBOX_NODE, type SandboxExecDuplex } from "./native-sandbox.js";
 
 /** Fixed limits, per execution. Node's HTTP/2 streams supply framing, flow control and resets. */
@@ -19,7 +23,7 @@ const http2 = require("node:http2");
 const net = require("node:net");
 const { Duplex } = require("node:stream");
 const ports = process.argv.slice(1).map(Number);
-if (ports.length !== 2 || ports.some(p => !Number.isInteger(p) || p < 1 || p > 65535)) process.exit(2);
+if (![2, 3].includes(ports.length) || ports.some(p => !Number.isInteger(p) || p < 1 || p > 65535)) process.exit(2);
 const clients = new Set();
 const servers = [];
 let closing = false;
@@ -68,7 +72,7 @@ const listen = (port, target) => new Promise((resolve, reject) => {
     resolve();
   });
 });
-Promise.all([listen(ports[0], "connect"), listen(ports[1], "slack")]).then(() => {
+Promise.all([listen(ports[0], "connect"), listen(ports[1], "slack"), ...(ports[2] ? [listen(ports[2], "contextTree")] : [])]).then(() => {
   const ready = session.request({ ":path": "/ready" });
   ready.on("error", () => shutdown(3));
   ready.on("response", headers => { if (headers[":status"] !== 204) shutdown(3); });
@@ -79,14 +83,28 @@ Promise.all([listen(ports[0], "connect"), listen(ports[1], "slack")]).then(() =>
 
 export interface NativeProviderBridgeOpenInput {
   readonly sandbox: Pick<NativeSandbox, "openDuplex">;
-  readonly targets: { readonly connect: number; readonly slack: number };
+  readonly targets: { readonly connect: number; readonly slack: number; readonly contextTree?: number };
   /** Tests may relocate Sandbox entry ports; production uses the published fixed pair. */
-  readonly entryPorts?: { readonly connect: number; readonly slack: number };
+  readonly entryPorts?: { readonly connect: number; readonly slack: number; readonly contextTree?: number };
   readonly startupTimeoutMs?: number;
   readonly signal?: AbortSignal;
 }
 
 /** One execution owns the child, its HTTP/2 session and all adapter connections. No replay. */
+function validateBridgePorts(input: NativeProviderBridgeOpenInput, ports: { connect: number; slack: number }): void {
+  for (const port of [
+    input.targets.connect,
+    input.targets.slack,
+    ports.connect,
+    ports.slack,
+    ...(input.targets.contextTree
+      ? [input.targets.contextTree, input.entryPorts?.contextTree ?? CLOUD_CONTEXT_TREE_PORT]
+      : []),
+  ]) {
+    if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error("Invalid native provider bridge port");
+  }
+}
+
 export class NativeProviderBridge {
   readonly #duplex: SandboxExecDuplex;
   readonly #targets: NativeProviderBridgeOpenInput["targets"];
@@ -150,13 +168,20 @@ export class NativeProviderBridge {
       if (
         !this.#readySeen ||
         headers[":method"] !== "CONNECT" ||
-        (target !== "connect" && target !== "slack") ||
+        (target !== "connect" && target !== "slack" && !(target === "contextTree" && this.#targets.contextTree)) ||
         this.#sockets.size >= NATIVE_BRIDGE_MAX_STREAMS
       ) {
         stream.close(constants.NGHTTP2_REFUSED_STREAM);
         return;
       }
-      this.#connect(stream, this.#targets[target]);
+      this.#connect(
+        stream,
+        (target === "connect"
+          ? this.#targets.connect
+          : target === "slack"
+            ? this.#targets.slack
+            : this.#targets.contextTree) as number,
+      );
     });
     server.emit("connection", duplex.asStream());
   }
@@ -164,14 +189,13 @@ export class NativeProviderBridge {
   static async open(input: NativeProviderBridgeOpenInput): Promise<NativeProviderBridge> {
     input.signal?.throwIfAborted();
     const ports = input.entryPorts ?? { connect: CLOUD_CONNECT_PROXY_PORT, slack: CLOUD_SLACK_API_PORT };
-    for (const port of [input.targets.connect, input.targets.slack, ports.connect, ports.slack]) {
-      if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error("Invalid native provider bridge port");
-    }
+    validateBridgePorts(input, ports);
     const duplex = input.sandbox.openDuplex(SANDBOX_NODE, [
       "-e",
       NATIVE_PROVIDER_BRIDGE_SOURCE,
       String(ports.connect),
       String(ports.slack),
+      ...(input.targets.contextTree ? [String(input.entryPorts?.contextTree ?? CLOUD_CONTEXT_TREE_PORT)] : []),
     ]);
     const bridge = new NativeProviderBridge(duplex, input.targets);
     const abort = () => {

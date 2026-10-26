@@ -664,14 +664,13 @@ An existing GitHub OAuth App can supply the MCP client pair: add the MCP callbac
 existing callbacks and keep the same Client ID. The GitHub catalog entry requests `repo offline_access`
 and selects the `context,repos,issues,pull_requests,users` toolsets. Each Agent completes its own MCP
 OAuth flow and stores its own encrypted access/refresh credential. Reusing the App does not reuse the
-Account integration's token, connect other Agents, or add GitHub sign-in. Native Git/gh and Context
-Tree keep their existing integration code and credential path.
+Account integration's token, connect other Agents, or add GitHub sign-in. Context Tree retains its Account credential path through a restricted command gateway. Ordinary Agent GitHub operations use the MCP connector.
 
 App reuse does couple credential availability. The Account integration and GitHub MCP both request
 `repo offline_access`, so the same GitHub user's Account and Agent tokens share GitHub's limit of ten
 tokens per user/App/scope combination. An additional authorization beyond that limit revokes an
 existing token, preferring an unused token and otherwise the least recently used one. That token can
-belong to the Account integration, breaking its native Git/gh and Context Tree access, or to another
+belong to the Account integration, breaking its Context Tree access, or to another
 Agent. Independent encrypted rows do not isolate this upstream revocation. Historical authorizations
 also consume the limit, so ten tokens does not guarantee ten Agents can connect. GitHub additionally
 limits creation to ten tokens per hour; exceeding that rate prompts reauthorization.
@@ -1591,3 +1590,5 @@ record provenance for maintainers without adding links or explanatory copy to th
 | Supabase | [Supabase MCP tools](https://supabase.com/docs/guides/ai-tools/mcp) |
 | Amplitude | [Amplitude MCP server](https://amplitude.com/docs/amplitude-ai/amplitude-mcp) |
 | Stripe | [Stripe MCP tools](https://docs.stripe.com/mcp) |
+
+GitHub business operations in ordinary Agents use this MCP path. Account-level GitHub OAuth remains dedicated to Context Tree; it does not supply a native Git/gh credential to the Agent or replace its MCP authorization.

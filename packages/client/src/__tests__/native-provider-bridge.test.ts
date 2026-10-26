@@ -129,6 +129,23 @@ describe("native provider transport over exec stdio", () => {
     expect(bridge.failure).toBeUndefined();
   });
 
+  it("routes the optional Context Tree entry only to its enumerated target and removes it on close", async () => {
+    const ordinary = await listen((socket) => socket.end("ordinary"));
+    const contextTree = await listen((socket) => socket.end("context-tree"));
+    const local = localSandbox();
+    const entries = { ...(await freeEntryPorts()), contextTree: await freePort() };
+    const bridge = await NativeProviderBridge.open({
+      sandbox: local.sandbox,
+      targets: { connect: ordinary.port, slack: ordinary.port, contextTree: contextTree.port },
+      entryPorts: entries,
+    });
+    teardowns.push(() => bridge.close());
+    expect((await exchange(entries.contextTree)).toString()).toBe("context-tree");
+    expect((await exchange(entries.connect)).toString()).toBe("ordinary");
+    await bridge.close();
+    await expect(exchange(entries.contextTree)).rejects.toBeDefined();
+  });
+
   it("drains a large upload before propagating FIN and receiving its result", async () => {
     const payload = randomBytes(2 * 1024 * 1024 + 37);
     const upstream = await listen((socket) => {

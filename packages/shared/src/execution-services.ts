@@ -17,7 +17,7 @@ import { RUNTIME_WEB_SERVICE, RuntimeWebServiceScopeSchema } from "./web-tools.j
  */
 
 /** Services a Client may request at execution open. Each is gated by its own negotiated capability. */
-export const RuntimeExecutionServiceRequestSchema = z.enum([RUNTIME_WEB_SERVICE, RUNTIME_MCP_SERVICE]);
+export const RuntimeExecutionServiceRequestSchema = z.enum([RUNTIME_WEB_SERVICE, RUNTIME_MCP_SERVICE, "context-tree"]);
 export type RuntimeExecutionServiceRequest = z.infer<typeof RuntimeExecutionServiceRequestSchema>;
 
 export const RuntimeWebExecutionServiceSchema = z
@@ -36,6 +36,13 @@ export const RuntimeMcpExecutionServiceSchema = z
   .strict();
 export type RuntimeMcpExecutionService = z.infer<typeof RuntimeMcpExecutionServiceSchema>;
 
+export const RuntimeContextTreeExecutionServiceSchema = z
+  .object({
+    service: z.literal("context-tree"),
+    scopes: z.tuple([z.literal("context-tree:git")]),
+  })
+  .strict();
+
 /**
  * One service grant attached to an opened execution.
  *
@@ -45,5 +52,6 @@ export type RuntimeMcpExecutionService = z.infer<typeof RuntimeMcpExecutionServi
 export const RuntimeExecutionServiceSchema = z.discriminatedUnion("service", [
   RuntimeWebExecutionServiceSchema,
   RuntimeMcpExecutionServiceSchema,
+  RuntimeContextTreeExecutionServiceSchema,
 ]);
 export type RuntimeExecutionService = z.infer<typeof RuntimeExecutionServiceSchema>;

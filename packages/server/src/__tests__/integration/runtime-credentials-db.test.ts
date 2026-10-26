@@ -13,6 +13,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import {
+  agentRuntimeConfigs,
   agents,
   computerCredentials,
   computers,
@@ -281,6 +282,23 @@ describe("PostgresRuntimeScopeResolver", () => {
       .where(eq(imBindings.id, state.imBindingId));
     const disabled = await resolver.load(state.session.id);
     expect(disabled && resolver.assertExecutionFence(updated, disabled)).toBe("binding_inactive");
+  });
+
+  it("reads only the current Agent Context Tree selection and tolerates missing runtime configuration", async () => {
+    const state = await fixture();
+    const resolver = new RuntimeScopeResolver(state.database);
+    expect((await resolver.load(state.session.id))?.contextTrees).toEqual([]);
+    const target = { kind: "git" as const, repository: "team/memory", path: "docs", ref: "main" };
+    await state.database
+      .insert(agentRuntimeConfigs)
+      .values({ agentId: state.agent.id, instructions: "", contextTrees: [target] })
+      .onConflictDoUpdate({ target: agentRuntimeConfigs.agentId, set: { contextTrees: [target] } });
+    expect((await resolver.load(state.session.id))?.contextTrees).toEqual([target]);
+    await state.database
+      .update(agentRuntimeConfigs)
+      .set({ contextTrees: [] })
+      .where(eq(agentRuntimeConfigs.agentId, state.agent.id));
+    expect((await resolver.load(state.session.id))?.contextTrees).toEqual([]);
   });
 
   it("loads a validation fence without requiring a Session", async () => {
@@ -1042,7 +1060,7 @@ describe("Cloud internal collaboration execution at the production credential bo
     stack.owner.close();
   });
 
-  it("uses explicitly authorized GitHub and web scope while still denying IM, then stops on settlement", async () => {
+  it("uses granted web scope without native GitHub or IM credentials, then stops on settlement", async () => {
     const state = await internalCloudFixture();
     const admission: RuntimeGitHubAdmission = {
       admit: async (): Promise<RuntimeGitHubAdmissionResult> => ({
@@ -1067,14 +1085,13 @@ describe("Cloud internal collaboration execution at the production credential bo
     if (opened?.type !== "runtime:execution:result" || opened.status !== "succeeded") {
       throw new Error(`internal Cloud open was rejected: ${JSON.stringify(opened)}`);
     }
-    expect(opened.providers).toHaveLength(1);
-    expect(opened.providers[0]).toMatchObject({ provider: "github", bindingId: "connection-github" });
+    expect(opened.providers).toHaveLength(0);
     expect(opened.providers.some((provider) => provider.provider === "slack" || provider.provider === "feishu")).toBe(
       false,
     );
     expect(opened.services).toEqual([{ service: "web", scopes: ["web:fetch"] }]);
 
-    // The real broker fence issues the GitHub capability for the internal execution...
+    // Account admission cannot give an ordinary collaboration execution a GitHub capability.
     const acquire = await ownerHandle(
       stack,
       {
@@ -1086,9 +1103,9 @@ describe("Cloud internal collaboration execution at the production credential bo
       },
       webContext,
     );
-    expect(acquire).toMatchObject({ status: "succeeded", provider: "github", cli: { provider: "github" } });
+    expect(acquire).toMatchObject({ status: "rejected", code: "provider_mismatch" });
 
-    // ...and the real web authorizer accepts its granted scope.
+    // The independent web authorizer still accepts its granted scope.
     const webAuthorizer = new RuntimeWebExecutionAuthorizer({
       executions: stack.executions,
       scopeResolver: new RuntimeScopeResolver(state.database),
@@ -1121,7 +1138,7 @@ describe("Cloud internal collaboration execution at the production credential bo
       },
       webContext,
     );
-    expect(afterSettlement).toMatchObject({ status: "rejected", code: "execution_closed" });
+    expect(afterSettlement).toMatchObject({ status: "rejected", code: "provider_mismatch" });
     await expect(
       webAuthorizer.authorize({
         executionId: opened.executionId,

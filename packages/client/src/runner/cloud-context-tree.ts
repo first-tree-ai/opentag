@@ -8,6 +8,7 @@ import {
   resolveContextTreePackage,
   runContextTreeCli,
 } from "../runtime/context-tree.js";
+import { CONTEXT_TREE_COMMAND_CLIENT_SOURCE } from "../runtime/context-tree-commands.js";
 import {
   type ContextTreeResult as CloudContextTreeResult,
   type ContextTreeStatus as CloudContextTreeStatus,
@@ -153,6 +154,7 @@ async function writeContextTreeShim(input: {
   await mkdir(bin, { mode: 0o700, recursive: true });
   const quote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`;
   const shim = join(bin, "context-tree");
+  await writeFile(join(bin, "context-tree-client.mjs"), CONTEXT_TREE_COMMAND_CLIENT_SOURCE, { mode: 0o600 });
   await writeFile(
     shim,
     `${[
@@ -164,7 +166,7 @@ async function writeContextTreeShim(input: {
       `GIT_COMMITTER_NAME=${quote(input.agentSlug)}`,
       `GIT_COMMITTER_EMAIL=${quote(`${input.agentSlug}@localhost`)}`,
       "export HOME GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL",
-      `exec ${quote(input.nodePath)} ${quote(input.cliPath)} "$@"`,
+      `exec ${quote(input.nodePath)} ${quote(join(bin, "context-tree-client.mjs"))} ${quote(input.cliPath)} "$@"`,
     ].join("\n")}\n`,
     { mode: 0o700 },
   );

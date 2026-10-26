@@ -1,6 +1,8 @@
+import type { ContextTreeConnection } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
 import {
+  agentRuntimeConfigs,
   agents,
   computers,
   imBindings,
@@ -46,6 +48,7 @@ export interface RuntimeValidationScopeSnapshot {
 }
 
 export interface RuntimeScopeSnapshot {
+  contextTrees?: readonly ContextTreeConnection[];
   sessionId: string;
   sessionKind: "channel" | "thread" | "internal";
   sessionEnded: boolean;
@@ -108,6 +111,7 @@ export class RuntimeScopeResolver {
   async load(sessionId: string): Promise<RuntimeScopeSnapshot | undefined> {
     const [row] = await this.#database
       .select({
+        contextTrees: agentRuntimeConfigs.contextTrees,
         sessionId: sessions.id,
         sessionKind: sessions.kind,
         sessionEndedAt: sessions.endedAt,
@@ -129,6 +133,7 @@ export class RuntimeScopeResolver {
       .from(sessions)
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .leftJoin(agentRuntimeConfigs, eq(agentRuntimeConfigs.agentId, agents.id))
       .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
       .leftJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
       .leftJoin(computers, eq(computers.id, sessionPlacements.computerId))
@@ -147,6 +152,7 @@ export class RuntimeScopeResolver {
       .limit(1);
     const sandbox = sandboxRows[0];
     return {
+      contextTrees: row.contextTrees ?? [],
       sessionId: row.sessionId,
       sessionKind: row.sessionKind,
       sessionEnded: row.sessionEndedAt !== null,

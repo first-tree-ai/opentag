@@ -76,8 +76,8 @@ function providerBodyInstructions(provider: ProviderOutboxProvider): readonly st
 }
 
 /** Non-secret execution metadata is discovered without changing native CLI authentication. */
-export const GITHUB_NATIVE_CLI_INSTRUCTIONS =
-  "GitHub integration, when enabled, preconfigures native git and gh. Use the repository requested by the user; GitHub enforces the connected account user and App permissions. Manage branches, PRs, commits, and existing work according to the user request and repository rules, across Sessions when useful. Context Tree content and publication use the same Git/gh channel; use the configured target and Tree verification tools. Authentication and renewal are automatic; do not run interactive login or replace managed credentials.";
+export const GITHUB_MCP_INSTRUCTIONS =
+  "Use this Agent's connected GitHub MCP tools for GitHub repository, issue, pull request, and code operations. If no GitHub connector is available, ask the user to connect one for this Agent. OpenTag does not provide native git/gh authorization for ordinary Agent work. Do not use the Account's Context Tree authorization as a fallback, run interactive GitHub login, or replace managed credentials. Context Tree operations use the bundled context-tree command and their configured targets.";
 
 /** On-demand reads support both default Local credentials and the Cloud credential proxy. */
 function providerAttachmentInstructions(provider: ProviderOutboxProvider): readonly string[] {

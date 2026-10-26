@@ -1,7 +1,7 @@
 import type { EffectiveRuntimeSnapshot } from "@opentag/shared";
 import { contextTreeName, contextTreeSelector } from "@opentag/shared";
 import type { ContextTreeStatus as ManagedContextTreeStatus } from "./context-tree-connections.js";
-import { GITHUB_NATIVE_CLI_INSTRUCTIONS, renderProviderOutboxGuidance } from "./provider-outbox-instructions.js";
+import { GITHUB_MCP_INSTRUCTIONS, renderProviderOutboxGuidance } from "./provider-outbox-instructions.js";
 
 export type ManagedEnvironment = "local" | "cloud";
 
@@ -39,7 +39,7 @@ function renderCloudExecutionContext(): readonly string[] {
     "- You run inside a Session-scoped Cloud Sandbox. The workspace is this Session's own; it is not shared with other Sessions.",
     "- The workspace and Pi conversation for this Session recover from the last successful save when the environment is replaced. Unsaved changes can be lost; running processes and background services do not survive Turn cleanup or replacement.",
     "- Saved workspaces are limited to 256 MiB of file content, 50,000 entries and a 128 MiB compressed archive. Hard links, sockets, FIFOs and links outside the workspace cannot be saved. Keep dependency caches, large installs and disposable build output outside the workspace (for example /tmp); recreate them on later Turns. Exceeding these limits blocks further execution and requires recovery or explicit discard of unsaved changes.",
-    "- Credentials are execution-scoped and short-lived; the managed IM/Git CLIs reach providers through the platform proxy. Never ask the user for tokens. Never persist execution-scoped handles or Session proof. Explicitly requested Slack App management uses a separate native login and private files as described below.",
+    "- Credentials are execution-scoped and short-lived; the managed IM CLIs reach providers through the platform proxy. Never ask the user for tokens. Never persist execution-scoped handles or Session proof. Explicitly requested Slack App management uses a separate native login and private files as described below.",
     "",
   ];
 }
@@ -364,9 +364,9 @@ export function renderManagedSystemPrompt(snapshot: EffectiveRuntimeSnapshot, co
     "",
     `Agent ID: ${snapshot.agentId}`,
     "",
-    "## Git and GitHub",
+    "## GitHub MCP",
     "",
-    GITHUB_NATIVE_CLI_INSTRUCTIONS,
+    GITHUB_MCP_INSTRUCTIONS,
     "",
     ...(context?.sessionKind === "visible" ? ["## IM outbox", "", ...renderProviderOutboxGuidance(), ""] : []),
     ...(context ? renderSession(context) : []),

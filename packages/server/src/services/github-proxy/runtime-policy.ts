@@ -32,7 +32,7 @@ export class GitHubRuntimePolicy implements RuntimeGitHubAdmission, RuntimeTaskP
 
   async authorize(input: RuntimeTaskPolicyInput): Promise<"permit" | "deny"> {
     if (input.provider !== "github") return input.bindingId === input.sessionBindingId ? "permit" : "deny";
-    if (input.purpose !== "execution") return "deny";
+    if (input.purpose !== "context-tree") return "deny";
     return (await this.#load(input))?.id === input.bindingId ? "permit" : "deny";
   }
 

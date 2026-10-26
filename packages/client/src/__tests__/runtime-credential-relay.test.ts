@@ -278,6 +278,7 @@ function closeResultFrame(requestId: unknown): Record<string, unknown> {
 
 function relayHarness(options: {
   providers?: Array<"github" | "slack" | "feishu">;
+  capabilities?: Record<string, number>;
   scheduler?: ManualScheduler;
   grants?: Record<string, Record<string, unknown>>;
   dataConnection?: FakeDataConnection;
@@ -290,6 +291,7 @@ function relayHarness(options: {
   const dataInputs: RuntimeProxyDataConnectInput[] = [];
   const queuedOpenResults = options.openResults ? [...options.openResults] : undefined;
   const connection = new FakeControlConnection({
+    capabilities: options.capabilities,
     respond(frame) {
       if (frame.type === "runtime:execution:open") {
         const queued = queuedOpenResults?.shift();
@@ -654,6 +656,51 @@ describe("RuntimeCredentialEnvironmentManager", () => {
     await strict.close();
   });
 
+  it.each([false, true])("exposes a nonsecret Context Tree socket only after a service grant (%s)", async (granted) => {
+    const home = await temporaryHome();
+    const harness = relayHarness({
+      providers: ["feishu"],
+      capabilities: { "runtime.runtimeCredential": 1, "runtime.providerProxy": 1, "runtime.contextTreeExecution": 1 },
+      openResults: [
+        {
+          ...openResultFrame("placeholder", ["feishu"], Date.now()),
+          services: granted ? [{ service: "context-tree", scopes: ["context-tree:git"] }] : [],
+        },
+      ],
+    });
+    const manager = new RuntimeCredentialEnvironmentManager({
+      connection: harness.connection,
+      dataConnectionFactory: harness.relayOptions.dataConnectionFactory,
+      home,
+      mode: "proxy",
+      serverUrl: "https://runtime.example",
+      logger: { debug() {}, warn() {} },
+    });
+    try {
+      const prepared = await manager.prepare({
+        sessionId: "tree-session",
+        agentId: "agent-1",
+        placementGeneration: 1,
+        run: { runId: randomUUID(), source: { kind: "delivery", deliveryId: "delivery", turnId: randomUUID() } },
+      });
+      const environment = manager.environmentForSession("tree-session") ?? {};
+      expect(environment.GH_TOKEN).toBeUndefined();
+      expect(environment.GITHUB_TOKEN).toBeUndefined();
+      if (granted) {
+        expect(environment.OPENTAG_CONTEXT_TREE_SOCKET).toMatch(/tree\.sock$/);
+        expect(prepared.allowedUnixSockets).toEqual([environment.OPENTAG_CONTEXT_TREE_SOCKET]);
+      } else {
+        expect(environment.OPENTAG_CONTEXT_TREE_SOCKET).toBeUndefined();
+        expect(prepared.allowedUnixSockets).toBeUndefined();
+      }
+      expect(harness.connection.requests.find((frame) => frame.type === "runtime:execution:open")).toMatchObject({
+        services: ["context-tree"],
+      });
+    } finally {
+      await manager.close();
+    }
+  });
+
   it.each(["local", "cloud"] as const)(
     "materializes provider-scoped handles and cleans up exactly in %s",
     async (placement) => {
@@ -689,13 +736,8 @@ describe("RuntimeCredentialEnvironmentManager", () => {
       });
       try {
         expect(prepared.executionId).toBe(EXECUTION_ID);
-        expect(prepared.providers).toEqual(["feishu", "github"]);
-        if (placement === "local")
-          expect(prepared.allowedUnixSockets).toEqual([
-            expect.stringMatching(/\/g\.sock$/),
-            expect.stringMatching(/\/git\.sock$/),
-          ]);
-        else expect(prepared.allowedUnixSockets).toBeUndefined();
+        expect(prepared.providers).toEqual(["feishu"]);
+        expect(prepared.allowedUnixSockets).toBeUndefined();
         expect(prepared.provider).toBe("feishu");
         expect(prepared.slackApiHost).toBeUndefined();
         expect(prepared.slackConfigDir).toBeUndefined();
@@ -713,15 +755,15 @@ describe("RuntimeCredentialEnvironmentManager", () => {
         expect(frozen.plan.provider).toBe("feishu");
         expect(frozen.plan).not.toHaveProperty("slackApiHost");
         const environment = manager.environmentForSession("session-1") ?? {};
-        const gitConfig = await readFile(environment.GIT_CONFIG_GLOBAL as string, "utf8");
-        if (placement === "local") expect(gitConfig).toContain("socks5h://localhost/");
-        else {
-          expect(gitConfig).not.toContain("socks5h:");
-          expect(gitConfig).toContain("http://127.0.0.1:");
-        }
+        expect(environment.GIT_CONFIG_GLOBAL).toBe("/dev/null");
+        expect(environment.GH_TOKEN).toBeUndefined();
         const envFile = await readFile(prepared.path, "utf8");
-        expect(environment.GH_TOKEN).toMatch(/^otrh_/);
-        expect(envFile).toContain(environment.GH_TOKEN as string);
+        await expect(stat(join(manager.shimDirForSession("session-1") as string, "git"))).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+        await expect(stat(join(manager.shimDirForSession("session-1") as string, "gh"))).rejects.toMatchObject({
+          code: "ENOENT",
+        });
         expect(envFile).toContain("# opentag-execution: ");
         expect(envFile).not.toContain(CAPABILITY_1);
         expect(envFile).not.toContain("export GITHUB_TOKEN=");
@@ -879,20 +921,30 @@ describe("RuntimeCredentialEnvironmentManager", () => {
     };
     const firstPrepared = await manager.prepare(subject);
     expect(firstPrepared.executionId).toBe(EXECUTION_ID);
-    const firstCache = join(dirname(firstPrepared.allowedUnixSockets?.[0] as string), "cache", "gh");
+    const firstCache = join(
+      new RuntimeProxyMaterialStore({ home }).executionLayout("session-1", firstPrepared.executionId as string)
+        .executionDir,
+      "cache",
+      "gh",
+    );
     await mkdir(firstCache, { recursive: true });
     await writeFile(join(firstCache, "run-log.zip"), "old cache");
     const secondPrepared = await manager.prepare(subject);
     expect(secondPrepared.executionId).toBe("99999999-9999-4999-8999-999999999999");
     await expect(stat(firstCache)).rejects.toMatchObject({ code: "ENOENT" });
-    const secondCache = join(dirname(secondPrepared.allowedUnixSockets?.[0] as string), "cache", "gh");
+    const secondCache = join(
+      new RuntimeProxyMaterialStore({ home }).executionLayout("session-1", secondPrepared.executionId as string)
+        .executionDir,
+      "cache",
+      "gh",
+    );
     await mkdir(secondCache, { recursive: true });
     await writeFile(join(secondCache, "run-log.zip"), "new cache");
 
     // A stale cleanup for the replaced execution must leave the successor material alone.
     await manager.cleanup("session-1", EXECUTION_ID);
     const successorEnv = await readFile(secondPrepared.path, "utf8");
-    expect(successorEnv).toContain("otrh_");
+    expect(successorEnv).toContain(secondPrepared.executionId as string);
     expect(manager.executionIdForSession("session-1")).toBe(secondPrepared.executionId);
     expect(await readFile(join(secondCache, "run-log.zip"), "utf8")).toBe("new cache");
 
@@ -922,7 +974,12 @@ describe("RuntimeCredentialEnvironmentManager", () => {
         placementGeneration: 1,
         run: { runId: randomUUID(), source: { kind: "delivery", deliveryId: "d", turnId: randomUUID() } },
       });
-      const cache = join(dirname(prepared.allowedUnixSockets?.[0] as string), "cache", "gh");
+      const cache = join(
+        new RuntimeProxyMaterialStore({ home }).executionLayout("cache-session", prepared.executionId as string)
+          .executionDir,
+        "cache",
+        "gh",
+      );
       await mkdir(cache, { recursive: true });
       await writeFile(join(cache, "run-log.zip"), "fixture cache");
       if (reason === "revocation")
@@ -1043,9 +1100,9 @@ describe("runtime proxy material", () => {
       slackApiHost: "https://127.0.0.1:5678",
     });
     expect(denied.GH_TOKEN).toBeUndefined();
-    expect(denied.GH_CONFIG_DIR).toBe("/exec/gh-config");
+    expect(denied.GH_CONFIG_DIR).toBeUndefined();
     expect(denied.GIT_CONFIG_VALUE_0).toBe("");
-    expect(denied.GIT_CONFIG_GLOBAL).toBe("/exec/gitconfig");
+    expect(denied.GIT_CONFIG_GLOBAL).toBe("/dev/null");
     expect(denied[RUNTIME_PROXY_PROVIDER_URL_KEY]).toBe("http://127.0.0.1:1234");
     expect(environment.LARKSUITE_CLI_TENANT_ACCESS_TOKEN).toBe("otrh_feishu");
     expect(environment.SLACK_BOT_TOKEN).toBe("otrh_slack");

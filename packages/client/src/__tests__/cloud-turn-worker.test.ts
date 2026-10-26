@@ -503,7 +503,7 @@ describe("cloud-turn-worker", () => {
       const systemPrompt = entry.args[entry.args.indexOf("--append-system-prompt") + 1];
       expect(systemPrompt).toContain("slack api chat.postMessage --json");
       expect(systemPrompt).toContain("messages-resources-download");
-      expect(systemPrompt).toContain("GitHub integration, when enabled");
+      expect(systemPrompt).toContain("Use this Agent's connected GitHub MCP tools");
       expect(entry.environment.HOME).not.toBe(process.env.HOME);
       expect(entry.environment.OPENTAG_RUNNER_BOOTSTRAP_TOKEN).toBeUndefined();
       expect(entry.environment.GITHUB_TOKEN).toBeUndefined();

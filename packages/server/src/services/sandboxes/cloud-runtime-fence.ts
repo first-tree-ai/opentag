@@ -34,6 +34,7 @@ export interface CloudConnectionRecord {
   readonly sessionCollaborationEligible: boolean;
   /** Exact negotiated Runner collaboration version; 0 means the capability was not negotiated. */
   readonly githubUserTaskVersion?: 1;
+  contextTreeExecutionVersion?: 1;
   readonly sessionCollaborationVersion: 0 | 1 | 2;
   /**
    * Whether this connection may receive execution permission. A report-only reconnect (the active
@@ -73,6 +74,7 @@ export class CloudRuntimeFence {
     executionEligible?: boolean;
     turnActivityVersion?: 1;
     githubUserTaskVersion?: 1;
+    contextTreeExecutionVersion?: 1;
     sessionCollaborationEligible?: boolean;
     sessionCollaborationVersion?: 1 | 2;
   }): CloudConnectionRecord {
@@ -92,6 +94,7 @@ export class CloudRuntimeFence {
       sessionCollaborationEligible: sessionCollaborationVersion > 0,
       sessionCollaborationVersion,
       ...(input.githubUserTaskVersion ? { githubUserTaskVersion: input.githubUserTaskVersion } : {}),
+      ...(input.contextTreeExecutionVersion ? { contextTreeExecutionVersion: input.contextTreeExecutionVersion } : {}),
     };
     this.#byConnection.set(record.connectionId, record);
     this.#bySandbox.set(input.scope.sandboxId, record.connectionId);

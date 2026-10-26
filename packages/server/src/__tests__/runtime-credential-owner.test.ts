@@ -11,7 +11,7 @@ import type {
   RuntimeExecutionAuthorityDecision,
 } from "../runtime-credentials/execution-authority.js";
 import { RuntimeExecutionRegistry } from "../runtime-credentials/execution-registry.js";
-import type { RuntimeGitHubAdmission, RuntimeGitHubAdmissionResult } from "../runtime-credentials/github-admission.js";
+import type { RuntimeGitHubAdmission } from "../runtime-credentials/github-admission.js";
 import { UnavailableRuntimeGitHubAdmission } from "../runtime-credentials/github-admission.js";
 import { RuntimeCredentialOwner } from "../runtime-credentials/runtime-credential-owner.js";
 import type {
@@ -646,65 +646,91 @@ describe("RuntimeCredentialOwner GitHub source and Cloud control", () => {
     expect(admit).not.toHaveBeenCalled();
   });
 
-  it("passes the exact frame source to GitHub admission at candidate discovery", async () => {
-    const inputs: Array<{ source?: unknown }> = [];
-    const admission: RuntimeGitHubAdmission = {
-      admit: async (input: { source?: unknown }): Promise<RuntimeGitHubAdmissionResult> => {
-        inputs.push(input);
-        return {
-          connectionId: "connection-live",
-          authorizationVersion: "v1",
-          credentialGeneration: "1",
-        };
-      },
-    };
-    const state = await fixture({
-      gitHubAdmission: admission,
-      taskPolicy: { authorize: (input) => (input.provider === "github" ? "permit" : "deny") },
-    });
+  it("does not offer native GitHub authority to an ordinary Agent even with an admitted account", async () => {
+    const admit = vi.fn(async () => ({
+      connectionId: "connection-live",
+      authorizationVersion: "v1",
+      credentialGeneration: "1",
+    }));
+    const state = await fixture({ gitHubAdmission: { admit }, taskPolicy: { authorize: () => "permit" } });
     cleanup.push(() => state.owner.close());
-    const source = { kind: "delivery" as const, deliveryId: "d1", turnId: "t1" };
-    const result = await state.owner.handle(openFrame({ source }), state.context);
-    expect(result).toMatchObject({
-      status: "succeeded",
-      providers: expect.arrayContaining([expect.objectContaining({ provider: "github" })]),
-    });
-    expect(inputs.length).toBeGreaterThanOrEqual(1);
-    for (const input of inputs) expect(input.source).toEqual(source);
+    const result = await state.owner.handle(openFrame(), state.context);
+    expect(result).toMatchObject({ status: "succeeded", providers: [expect.objectContaining({ provider: "slack" })] });
+    expect(admit).not.toHaveBeenCalled();
   });
 
-  it("exposes only user-task authority without a repository directory", async () => {
-    const sessionId = "00000000-0000-4000-8000-0000000000a2";
-    const admission: RuntimeGitHubAdmission = {
-      admit: async (): Promise<RuntimeGitHubAdmissionResult> => ({
-        connectionId: "connection-live",
-        authorizationVersion: "v1",
-        credentialGeneration: "1",
-      }),
-    };
+  it.each([false, true])(
+    "requires current Account admission for the nonsecret Context Tree service (admitted=%s)",
+    async (admitted) => {
+      const target = { kind: "git" as const, repository: "acme/memory", path: "docs", ref: "main" };
+      const scopeResolver = new FakeScopeResolver();
+      scopeResolver.session = { ...sessionSnapshot(), contextTrees: [target] };
+      const state = await fixture({
+        scopeResolver,
+        gitHubAdmission: {
+          admit: async () =>
+            admitted
+              ? { connectionId: "connection-live", authorizationVersion: "v1", credentialGeneration: "1" }
+              : undefined,
+        },
+      });
+      cleanup.push(() => state.owner.close());
+      const context = {
+        ...state.context,
+        negotiatedCapabilities: { ...state.context.negotiatedCapabilities, "runtime.contextTreeExecution": 1 },
+      };
+      const opened = await state.owner.handle(openFrame({ services: ["context-tree"] }), context);
+      expect(opened).toMatchObject({
+        status: "succeeded",
+        providers: [expect.objectContaining({ provider: "slack" })],
+      });
+      expect(opened && "services" in opened ? (opened.services ?? []) : []).toEqual(
+        admitted ? [{ service: "context-tree", scopes: ["context-tree:git"] }] : [],
+      );
+      if (!opened || !("executionId" in opened)) throw new Error("Expected parent execution");
+      if (!admitted)
+        expect(
+          await state.owner.handle(
+            openFrame({ contextTree: { ...target, parentExecutionId: opened.executionId } }),
+            context,
+          ),
+        ).toMatchObject({ status: "rejected" });
+    },
+  );
+
+  it("grants only a parent-fenced Context Tree execution access to its account credential", async () => {
+    const target = { kind: "git" as const, repository: "acme/memory", path: "docs", ref: "main" };
     const scopeResolver = new FakeScopeResolver();
-    scopeResolver.session = { ...sessionSnapshot(), sessionId };
+    scopeResolver.session = { ...sessionSnapshot(), contextTrees: [target] };
     const state = await fixture({
       scopeResolver,
-      gitHubAdmission: admission,
-      taskPolicy: { authorize: (input) => (input.provider === "github" ? "permit" : "deny") },
+      gitHubAdmission: {
+        admit: async () => ({ connectionId: "connection-live", authorizationVersion: "v1", credentialGeneration: "1" }),
+      },
+      taskPolicy: { authorize: () => "permit" },
     });
     cleanup.push(() => state.owner.close());
-    const result = await state.owner.handle(openFrame({ sessionId }), state.context);
+    const context = {
+      ...state.context,
+      negotiatedCapabilities: { ...state.context.negotiatedCapabilities, "runtime.contextTreeExecution": 1 },
+    };
+    const parent = (await state.owner.handle(openFrame({ services: ["context-tree"] }), context)) as {
+      executionId: string;
+    };
+    const result = await state.owner.handle(
+      openFrame({ contextTree: { ...target, parentExecutionId: parent.executionId } }),
+      context,
+    );
     expect(result).toMatchObject({
       status: "succeeded",
-      providers: [
-        {
-          provider: "github",
-          bindingId: "connection-live",
-          cli: {
-            provider: "github",
-            connectionId: "connection-live",
-            authority: "user-task",
-          },
-        },
-      ],
+      providers: [{ provider: "github", cli: { authority: "context-tree" } }],
     });
+    state.executions.close(parent.executionId, "execution_closed");
+    expect(
+      state.executions
+        .executions()
+        .every((execution) => execution.contextTree?.parentExecutionId !== parent.executionId),
+    ).toBe(true);
   });
 
   it("re-checks the live Cloud control credential before admitting a Cloud open", async () => {

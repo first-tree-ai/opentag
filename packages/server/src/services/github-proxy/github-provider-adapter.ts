@@ -6,7 +6,7 @@ import type {
   ProviderProxyResponse,
 } from "../../runtime-credentials/provider-proxy-adapter.js";
 import type { GitHubManagementService } from "../github/github-management-service.js";
-import { GitPublicationError } from "./git-packets.js";
+import { contextTreePushBody, GitPublicationError } from "./git-packets.js";
 import { githubRequestTarget } from "./http-target.js";
 import { GitHubHttpTransport, GitHubProxyError } from "./http-transport.js";
 
@@ -29,13 +29,14 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
     if (
       request.provider !== "github" ||
       authorization.provider !== "github" ||
-      authorization.purpose !== "execution" ||
+      (authorization.purpose !== "context-tree" && authorization.purpose !== "execution") ||
       request.executionId !== authorization.executionId ||
       request.sessionId !== authorization.sessionId ||
       request.bindingId !== authorization.bindingId
     )
       throw new GitPublicationError("scope_denied");
     const url = githubRequestTarget(request.headers[RUNTIME_PROVIDER_ORIGIN_HEADER], request.path, request.method);
+    request = await scopedContextTreeRequest(request, authorization, url);
     const credential = await this.options.management
       .getExecutionUserCredential({
         accountId: authorization.accountId,
@@ -50,4 +51,29 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
     if (!credential) throw new GitHubProxyError("github_credential_unavailable");
     return this.#transport.request({ ...request, url, token: credential.accessToken });
   }
+}
+
+async function scopedContextTreeRequest(
+  request: ProviderProxyRequest,
+  authorization: RuntimeProxyAuthorization,
+  url: URL,
+): Promise<ProviderProxyRequest> {
+  if (authorization.purpose === "context-tree") {
+    const repositoryPath = authorization.contextTree
+      ? `/${authorization.contextTree.repository.toLowerCase()}.git/`
+      : undefined;
+    if (
+      !repositoryPath ||
+      url.hostname !== "github.com" ||
+      url.pathname.includes("%") ||
+      !url.pathname.toLowerCase().startsWith(repositoryPath)
+    )
+      throw new GitPublicationError("scope_denied");
+  }
+  if (authorization.purpose === "context-tree" && url.pathname.endsWith("/git-receive-pack")) {
+    if (request.headers["content-encoding"] && request.headers["content-encoding"] !== "identity")
+      throw new GitPublicationError("scope_denied");
+    request = { ...request, body: await contextTreePushBody(request.body, authorization.contextTree?.ref ?? "") };
+  }
+  return request;
 }

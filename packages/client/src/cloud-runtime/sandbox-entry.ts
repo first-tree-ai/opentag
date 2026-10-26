@@ -3,6 +3,7 @@ export const CLOUD_EXECUTION_MOUNT = "/run/opentag-execution";
 
 /** Loopback CONNECT proxy the Sandbox CLI subprocesses use inside the container. */
 export const CLOUD_CONNECT_PROXY_PORT = 18_080;
+export const CLOUD_CONTEXT_TREE_PORT = 18_081;
 
 /** Loopback HTTPS endpoint the Slack launcher pins through `--apihost` inside the container. */
 export const CLOUD_SLACK_API_PORT = 18_443;

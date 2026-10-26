@@ -756,7 +756,8 @@ export async function createClientRuntime(
     cleanupProviderEnvironment: (sessionId) => credentialEnvironment.cleanup(sessionId),
     contextTree,
     contextTreeBin: contextTree.binDirectory(),
-    contextTreeEnvironment: (sessionId) => {
+    contextTreeEnvironment: (sessionId, configuration) => {
+      credentialEnvironment.configureContextTree(sessionId, configuration.cwd, configuration.sources);
       const hostSide = options.runtimeCredentials?.contextTreeEnvironment?.(sessionId);
       if (hostSide) return hostSide;
       // Cloud: the session execution environment targets the Sandbox-side loopback, so only a

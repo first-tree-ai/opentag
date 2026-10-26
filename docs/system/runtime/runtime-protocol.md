@@ -169,3 +169,9 @@ Cloud `delivery:report` uses the independently negotiated `cloudDeliveryVersion:
 It retains the legacy failure vocabulary: new provider categories become `provider_failed`
 before the Runner hashes or journals the report. Replay preserves that compatible reason and
 hash. Categorized Cloud delivery reports require a future Cloud protocol extension.
+
+## Context Tree command executions
+
+`runtime.contextTreeExecution` version 1 gates both the `context-tree` service request/grant and the optional execution-open `contextTree` selector with `parentExecutionId`. A parent receives only the pure `context-tree:git` service. A separate short-lived child receives the GitHub provider binding after exact parent and authoritative tree checks. Ordinary executions never receive GitHub bindings or acquire GitHub credentials.
+
+Runner authentication advertises `contextTreeExecutionVersion: 1`; the Server echoes the supported version and includes it in the Cloud runtime fence. Local capability negotiation follows the ordinary runtime offer. Emit the new service or selector only after Server support is established. Deploy the Server before updated Clients and Runner images. Old peers retain IM/MCP behavior but require an upgrade for managed Context Tree commands.

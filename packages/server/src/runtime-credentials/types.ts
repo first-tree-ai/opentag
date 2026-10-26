@@ -1,4 +1,5 @@
 import type {
+  RuntimeContextTreeExecution,
   RuntimeCredentialProvider,
   RuntimeCredentialRevokedCode,
   RuntimeExecutionProvider,
@@ -13,7 +14,7 @@ export type RuntimeCredentialClock = () => Date;
 /** Non-secret CLI metadata surfaced to the trusted Runner. Never tokens or signed URLs. */
 export type RuntimeCliMetadata = RuntimeProviderCliMetadata;
 
-export type RuntimeExecutionPurpose = "execution" | "validation";
+export type RuntimeExecutionPurpose = "execution" | "validation" | "context-tree";
 
 export type RuntimeExecutionProviderBinding = RuntimeExecutionProvider;
 
@@ -45,6 +46,7 @@ export interface RuntimeExecutionRecord {
   placementGeneration: number;
   source: RuntimeExecutionSource;
   purpose: RuntimeExecutionPurpose;
+  contextTree?: RuntimeContextTreeExecution;
   computerKind: "local" | "cloud";
   /** Server-owned admission for a negotiated Cloud internal Session; never supplies an IM provider. */
   internalAuthority?: "cloud-session-collaboration";

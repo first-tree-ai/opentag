@@ -365,27 +365,14 @@ describe("CloudSandboxCredentialBridge trust boundary", () => {
     const publicDir = harness.bridge.publicMountPath;
     const entries = await readdir(publicDir);
     expect(entries.sort()).toEqual(
-      [
-        "bin",
-        "ca.pem",
-        "connect.sock",
-        "entry.mjs",
-        "environment.json",
-        "gh-config",
-        "git-credential-helper",
-        "gitconfig",
-        "sandbox-ca.mjs",
-        "slack.sock",
-      ].sort(),
+      ["bin", "ca.pem", "connect.sock", "entry.mjs", "environment.json", "sandbox-ca.mjs", "slack.sock"].sort(),
     );
     const environmentFile = JSON.parse(await readFile(join(publicDir, "environment.json"), "utf8")) as {
       executionId: string;
       environment: Record<string, string>;
     };
     expect(environmentFile.executionId).toBe(EXECUTION_ID);
-    expect(await readFile(join(publicDir, "gh-config", "config.yml"), "utf8")).toBe('version: "1"\n');
-    expect((await stat(join(publicDir, "gh-config", "config.yml"))).mode & 0o777).toBe(0o444);
-    expect(environmentFile.environment.GH_TOKEN).toMatch(/^otrh_/);
+    expect(environmentFile.environment.GH_TOKEN).toBeUndefined();
     expect(environmentFile.environment.SLACK_BOT_TOKEN).toMatch(/^otrh_/);
     // The manifest publishes only the execution-scoped routing inputs; the Agent runtime
     // environment never receives a global proxy or the execution CA.
@@ -415,16 +402,11 @@ describe("CloudSandboxCredentialBridge trust boundary", () => {
     expect(entry).toContain("18443");
     expect(entry).toContain("/run/opentag-execution");
 
-    // Provider launchers scope routing/trust to their own process; Git reads the host-scoped
-    // configuration instead of any ambient proxy.
-    const gitConfig = await readFile(join(publicDir, "gitconfig"), "utf8");
-    expect(gitConfig).toContain('[http "https://github.com"]');
-    expect(gitConfig).toContain("proxy = http://127.0.0.1:18080");
-    expect(gitConfig).toContain("sslCAInfo = /run/opentag-execution/ca.pem");
-    const gh = await readFile(join(publicDir, "bin", "gh"), "utf8");
+    await expect(stat(join(publicDir, "gitconfig"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(join(publicDir, "bin", "gh"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(join(publicDir, "bin", "git"))).rejects.toMatchObject({ code: "ENOENT" });
     const slack = await readFile(join(publicDir, "bin", "slack"), "utf8");
-    expect(gh).toContain("opentag-runtime-proxy-launcher");
-    for (const launcher of [gh, slack]) {
+    for (const launcher of [slack]) {
       expect(launcher).toContain("OPENTAG_PROVIDER_PROXY_URL");
       expect(launcher).toContain("OPENTAG_PROVIDER_CA_PATH");
     }

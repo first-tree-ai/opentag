@@ -41,7 +41,7 @@ describe("renderManagedSystemPrompt Agent Home", () => {
     (context) => {
       const prompt = renderManagedSystemPrompt(snapshot, context);
       expect(prompt).toContain("Agent ID: agent-1");
-      expect(prompt).toContain("GitHub integration, when enabled");
+      expect(prompt).toContain("Use this Agent's connected GitHub MCP tools");
       expect(prompt).toContain("slack api chat.postMessage --json");
       expect(prompt).toContain("lark-cli im +messages-reply");
       expect(prompt).toContain("files.getUploadURLExternal");
@@ -53,7 +53,7 @@ describe("renderManagedSystemPrompt Agent Home", () => {
 
   it("keeps internal Session prompts free of IM outbox manuals", () => {
     const prompt = renderManagedSystemPrompt(snapshot, { ...session, sessionKind: "internal" });
-    expect(prompt).toContain("GitHub integration, when enabled");
+    expect(prompt).toContain("Use this Agent's connected GitHub MCP tools");
     expect(prompt).not.toContain("slack api chat.postMessage");
     expect(prompt).not.toContain("messages-resources-download");
   });

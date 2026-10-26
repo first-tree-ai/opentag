@@ -1126,6 +1126,7 @@ export class CloudDeliveryOwner {
     executionEligible?: boolean;
     turnActivityVersion?: 1;
     githubUserTaskVersion?: 1;
+    contextTreeExecutionVersion?: 1;
     /** E8: only when the Runner negotiated the collaboration capability at the same handshake. */
     sessionCollaborationEligible?: boolean;
     /** Exact E8 collaboration version; required to authorize a scheduled-origin frame. */
@@ -1216,6 +1217,7 @@ export class CloudDeliveryOwner {
         [RUNTIME_CAPABILITY.providerProxy]: 1,
         [RUNTIME_CAPABILITY.runtimeCredential]: 1,
         ...(connection.githubUserTaskVersion === 1 ? { [RUNTIME_CAPABILITY.githubUserTask]: 1 } : {}),
+        ...(connection.contextTreeExecutionVersion === 1 ? { [RUNTIME_CAPABILITY.contextTreeExecution]: 1 } : {}),
         /*
          * Platform web tools are a default Cloud capability on the Runner channel, exactly like the
          * controlled model path: the execution still only receives the `web` service when the

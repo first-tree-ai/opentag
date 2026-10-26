@@ -12,7 +12,9 @@ import { type SQL, sql } from "drizzle-orm";
  *
  * `executions` is one topic delivery that counts as an execution: the channel Session's ambient
  * observer copy of a message a thread Session owns is left out, as is a delivery a newer revision of
- * its message superseded. Its `activity_at` is the latest instant the delivery contributed — the
+ * its message superseded. A Turn counts as running only while it is the Session's latest
+ * acceptance: the successor lookup runs for the few live deliveries that satisfy the cheap
+ * predicates first, never for the whole history. Its `activity_at` is the latest instant the delivery contributed — the
  * message itself, an acceptance or a steering, a report, or a withdrawal — and orders the topic's
  * latest execution, so the status read is by precedence and not by arrival.
  *
@@ -252,17 +254,6 @@ export function topicCtes(input: TopicQueryInput): SQL {
       inner join sessions s on s.id = d.session_id
       where s.kind = 'thread'
     ),
-    accepted_windows as (
-      select
-        d.id,
-        lead(d.accepted_at) over (partition by d.session_id order by d.accepted_at, d.id) as next_accepted_at,
-        lead(d.id) over (partition by d.session_id order by d.accepted_at, d.id) as next_accepted_id
-      from im_message_deliveries d
-      inner join sessions ds on ds.id = d.session_id
-      inner join scoped_bindings sb on sb.binding_id = ds.im_binding_id
-      where d.state = 'accepted'
-        ${channelFilter("ds")}
-    ),
     executions as (
       select
         d.id,
@@ -277,8 +268,6 @@ export function topicCtes(input: TopicQueryInput): SQL {
         d.turn_id,
         d.reason,
         d.last_error_code,
-        aw.next_accepted_at,
-        aw.next_accepted_id,
         tm.im_binding_id,
         tm.channel_id,
         tm.topic_key,
@@ -286,13 +275,20 @@ export function topicCtes(input: TopicQueryInput): SQL {
         root.turn_id as steer_target_turn_id,
         case when d.state = 'steered' then root.reported_at else d.reported_at end as reported_at,
         case when d.state = 'steered' then root.turn_report else d.turn_report end as turn_report,
-        (
-          d.state = 'accepted'
-          and d.reported_at is null
-          and d.expires_at > ${input.now.toISOString()}::timestamptz
-          and ds.ended_at is null
-          and aw.next_accepted_at is null
-        ) as is_running,
+        case
+          when d.state = 'accepted'
+            and d.reported_at is null
+            and d.expires_at > ${input.now.toISOString()}::timestamptz
+            and ds.ended_at is null
+          then not exists (
+            select 1
+            from im_message_deliveries later
+            where later.session_id = d.session_id
+              and later.state = 'accepted'
+              and (later.accepted_at, later.id) > (d.accepted_at, d.id)
+          )
+          else false
+        end as is_running,
         greatest(
           tm.occurred_at,
           coalesce(d.accepted_at, tm.occurred_at),
@@ -308,7 +304,6 @@ export function topicCtes(input: TopicQueryInput): SQL {
       inner join sessions ds on ds.id = d.session_id
       left join im_message_deliveries root on root.id = d.steer_target_delivery_id
       left join thread_owned tw on tw.message_id = d.message_id
-      left join accepted_windows aw on aw.id = d.id
       where not (d.state = 'expired' and d.reason = 'superseded_revision')
         and not (d.attention = 'ambient' and ds.kind = 'channel' and tw.message_id is not null)
     )
@@ -380,15 +375,19 @@ export function topicPageCtes(input: {
  * carry the topic's title and replies. Each identity is produced once, so a message that names two
  * related Sessions is read once.
  *
- * `spawned_roots` walks from the Turn window to its candidates through the sessions creator index.
- * The reverse direction — every internal Session joined to every execution — is what made the hot
- * detail pair a whole history with itself before discarding it.
+ * `spawned_roots` walks from the Turn window to its candidates through the sessions creator index,
+ * and only for the windows that can hold one: the reverse direction — every internal Session joined
+ * to every execution — is what made the hot detail pair a whole history with itself before
+ * discarding it. Internal Sessions carry their creator's channel, so the earliest child per creator
+ * is read from the topic's channel alone. The window closes at the next
+ * acceptance of that Session, compared as the exact `(accepted_at, id)` pair, so a Turn whose
+ * successor was accepted at the same instant still ends there.
  */
 export function relatedSessionCtes(scope: TopicScope): SQL {
   const ownerTopic = scope.topicKey === null ? sql`ts.topic_key is null` : sql`ts.topic_key = ${scope.topicKey}`;
   return sql`
     inherited as (
-      select s.id
+      select s.id, s.created_at
       from sessions s
       left join thread_roots tr
         on tr.im_binding_id = s.im_binding_id
@@ -403,32 +402,51 @@ export function relatedSessionCtes(scope: TopicScope): SQL {
             : sql`coalesce(tr.root_external_id, s.thread_key) = ${scope.topicKey}`
         }
     ),
+    creator_children as (
+      select s.created_by_session_id as session_id, min(s.created_at) as first_created_at
+      from sessions s
+      where s.kind = 'internal'
+        and s.im_binding_id = ${scope.bindingId}::uuid
+        and s.channel_id = ${scope.channelId}
+      group by s.created_by_session_id
+    ),
     spawned_roots as (
-      select s.id
+      select s.id, s.created_at
       from executions e
       inner join sessions creator on creator.id = e.session_id and creator.kind = 'channel'
+      inner join creator_children cc on cc.session_id = e.session_id
       cross join lateral (
-        select s.id
+        select s.id, s.created_at
         from sessions s
         where s.kind = 'internal'
           and s.created_by_session_id = e.session_id
-          and s.created_at >= e.accepted_at
-          and (e.reported_at is null or s.created_at <= e.reported_at)
-          and (e.next_accepted_at is null or s.created_at < e.next_accepted_at)
+          and s.created_at between e.accepted_at and coalesce(e.reported_at, 'infinity'::timestamptz)
+          and not exists (
+            select 1
+            from im_message_deliveries later
+            where later.session_id = e.session_id
+              and later.state = 'accepted'
+              and (later.accepted_at, later.id) > (e.accepted_at, e.id)
+              and later.accepted_at <= s.created_at
+          )
       ) s
       where e.accepted_at is not null
+        -- A window that ends before the creator's earliest child cannot hold one. Dropping those
+        -- executions here keeps the successor lookup off the history: the fixture's 50,000 windows
+        -- all end before the Sessions they would have spawned, so nothing is probed at all.
+        and coalesce(e.reported_at, 'infinity'::timestamptz) >= cc.first_created_at
     ),
     spawned as (
-      select id from spawned_roots
+      select id, created_at from spawned_roots
       union all
-      select child.id
+      select child.id, child.created_at
       from sessions child
       inner join spawned parent on child.created_by_session_id = parent.id
     ),
     internal_related as (
-      select id from inherited
+      select id, created_at from inherited
       union
-      select id from spawned
+      select id, created_at from spawned
     ),
     owner_sessions as (
       select ts.id

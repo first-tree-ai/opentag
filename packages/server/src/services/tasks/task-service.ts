@@ -628,6 +628,8 @@ export class TaskService {
    * inherited the topic's scope from a thread or private chat Session, plus those a group's channel
    * Session spawned while it was running one of the topic's Turns, with their descendants. A channel
    * Session runs one Turn at a time, so the creation instant falls inside exactly one Turn's window.
+   * The page is cut on the related identities, so a topic with a hundred thousand related Sessions
+   * resolves only the page's rows.
    *
    * The spawn window is read from the delivery that owns it: each Turn's `(accepted_at, id)` window
    * is the period between its acceptance and the next acceptance in that Session, and the candidates
@@ -651,12 +653,19 @@ export class TaskService {
         s.runtime_reasoning_effort as "runtimeReasoningEffort",
         s.ended_at as "endedAt",
         s.created_at as "createdAt"
-      from sessions s
-      inner join internal_related r on r.id = s.id
+      from (
+        -- The keyset order and the page are decided on the related identities alone; only the rows
+        -- that survive resolve their Session, so the page never joins the whole related set.
+        select r.id
+        from internal_related r
+        where true
+          ${page.cursor ? sql`and (r.created_at, r.id) > (${cursorTimestamp(page.cursor)}::timestamptz, ${page.cursor.id}::uuid)` : sql``}
+        order by r.created_at asc, r.id asc
+        ${page.limit === undefined ? sql`` : sql`limit ${page.limit}`}
+      ) p
+      inner join sessions s on s.id = p.id
       where s.kind = 'internal'
-        ${page.cursor ? sql`and (s.created_at, s.id) > (${cursorTimestamp(page.cursor)}::timestamptz, ${page.cursor.id}::uuid)` : sql``}
       order by s.created_at asc, s.id asc
-      ${page.limit === undefined ? sql`` : sql`limit ${page.limit}`}
     `);
     return [...rows];
   }
@@ -664,9 +673,9 @@ export class TaskService {
   /**
    * Collaboration messages exchanged by the topic's own Sessions and its Internal Sessions, oldest
    * first with an `(created_at, id)` keyset cursor. A message names its source Session, or a
-   * Server-scheduled origin instead of one, so both directions are matched inside SQL. A message
-   * whose source and target are both related appears once: the two directions are deduplicated
-   * before the page is cut, so duplicate identities can never consume a page slot.
+   * Server-scheduled origin instead of one, so both directions are matched inside SQL. Both matches
+   * are one predicate on the same row rather than two joined branches, so a message whose source and
+   * target are both related is read once and can never consume two page slots.
    */
   async #collaborationRows(
     executor: QueryExecutor,
@@ -674,36 +683,35 @@ export class TaskService {
     scope: TopicScope,
     page: { cursor?: TaskCursor; limit?: number },
   ): Promise<CollaborationMessageRow[]> {
-    const columns = sql`sm.id, sm.source_session_id, sm.scheduled_origin, sm.target_session_id, sm.content,
-      sm.last_outcome, sm.attempt_count, sm.last_error_code, sm.created_at, sm.updated_at`;
     const rows = await executor.execute<CollaborationMessageRow>(sql`
       with recursive ${topicCtes({ accountId, scope, now: this.#now() })},
-      ${relatedSessionCtes(scope)},
-      collaboration as (
-        select ${columns}
-        from session_messages sm
-        inner join related_sessions r on r.id = sm.source_session_id
-        union
-        select ${columns}
-        from session_messages sm
-        inner join related_sessions r on r.id = sm.target_session_id
-      )
+      ${relatedSessionCtes(scope)}
       select
-        c.id,
-        c.source_session_id as "sourceSessionId",
-        c.scheduled_origin as "scheduledOrigin",
-        c.target_session_id as "targetSessionId",
-        c.content,
-        c.last_outcome as "outcome",
-        c.attempt_count as "attemptCount",
-        c.last_error_code as "lastErrorCode",
-        c.created_at as "createdAt",
-        c.updated_at as "updatedAt"
-      from collaboration c
-      where true
-        ${page.cursor ? sql`and (c.created_at, c.id) > (${cursorTimestamp(page.cursor)}::timestamptz, ${page.cursor.id}::uuid)` : sql``}
-      order by c.created_at asc, c.id asc
-      ${page.limit === undefined ? sql`` : sql`limit ${page.limit}`}
+        sm.id,
+        sm.source_session_id as "sourceSessionId",
+        sm.scheduled_origin as "scheduledOrigin",
+        sm.target_session_id as "targetSessionId",
+        sm.content,
+        sm.last_outcome as "outcome",
+        sm.attempt_count as "attemptCount",
+        sm.last_error_code as "lastErrorCode",
+        sm.created_at as "createdAt",
+        sm.updated_at as "updatedAt"
+      from (
+        -- The page is cut on the message identity alone, so it reads an ordered index rather than
+        -- every message body; only the rows that survive resolve their stored content.
+        select m.id
+        from session_messages m
+        where (
+            m.source_session_id = any (array(select id from related_sessions))
+            or m.target_session_id = any (array(select id from related_sessions))
+          )
+          ${page.cursor ? sql`and (m.created_at, m.id) > (${cursorTimestamp(page.cursor)}::timestamptz, ${page.cursor.id}::uuid)` : sql``}
+        order by m.created_at asc, m.id asc
+        ${page.limit === undefined ? sql`` : sql`limit ${page.limit}`}
+      ) p
+      inner join session_messages sm on sm.id = p.id
+      order by sm.created_at asc, sm.id asc
     `);
     return [...rows];
   }

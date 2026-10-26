@@ -66,6 +66,7 @@
   "skills_install_result_installed": "Installed",
   "skills_install_result_skipped": "Skipped — a Skill with this name already exists",
   "skills_install_results_aria": "Install results",
+  "skills_install_review_failed": "Review failed skills",
   "skills_install_selection_title": "Skills found at this URL",
   "skills_install_source_label": "URL",
   "skills_install_source_placeholder": "Paste a repository or skill URL",

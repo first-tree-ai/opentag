@@ -1,0 +1,131 @@
+{
+  "scope": "Production App fixture, synthetic source and per-item installation results; no external writes",
+  "productBase": "125b691d (Skill source unchanged from 80e30163)",
+  "cases": [
+    {
+      "lang": "en",
+      "width": 390,
+      "sourceRetained": "https://github.com/example/work-skills",
+      "sourceDisabled": true,
+      "buttons": ["", "Done"],
+      "operations": [
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "release-notes",
+                "fingerprint": "preview-v1-release-notes"
+              },
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v1-incident-brief"
+              }
+            ]
+          }
+        }
+      ],
+      "unexpected": [],
+      "sourceOnReopen": ""
+    },
+    {
+      "lang": "en",
+      "width": 1440,
+      "sourceRetained": "https://github.com/example/work-skills",
+      "sourceDisabled": true,
+      "buttons": ["", "Done"],
+      "operations": [
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "release-notes",
+                "fingerprint": "preview-v1-release-notes"
+              },
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v1-incident-brief"
+              }
+            ]
+          }
+        }
+      ],
+      "unexpected": [],
+      "sourceOnReopen": ""
+    },
+    {
+      "lang": "zh",
+      "width": 390,
+      "sourceRetained": "https://github.com/example/work-skills",
+      "sourceDisabled": true,
+      "buttons": ["", "完成"],
+      "operations": [
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "release-notes",
+                "fingerprint": "preview-v1-release-notes"
+              },
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v1-incident-brief"
+              }
+            ]
+          }
+        }
+      ],
+      "unexpected": [],
+      "sourceOnReopen": ""
+    },
+    {
+      "lang": "zh",
+      "width": 1440,
+      "sourceRetained": "https://github.com/example/work-skills",
+      "sourceDisabled": true,
+      "buttons": ["", "完成"],
+      "operations": [
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "release-notes",
+                "fingerprint": "preview-v1-release-notes"
+              },
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v1-incident-brief"
+              }
+            ]
+          }
+        }
+      ],
+      "unexpected": [],
+      "sourceOnReopen": ""
+    }
+  ],
+  "driverRecovery": "First attempt stopped on wrong accessible-name lookup for installed row; corrected to actual row locator. No product failure inferred from that driver timeout."
+}

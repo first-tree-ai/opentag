@@ -205,6 +205,16 @@ and abandonment alike. A staging directory that cannot be called private fails c
 
 ## Installing a selection
 
+The Web result report focuses the per-item outcome list after a partial or failed installation.
+When any item failed, **Review failed skills** retains the source and explicitly requests a new
+preview. Only previously failed names that remain installable are selected. Already installed,
+unavailable or missing names are excluded, and the next install uses the new preview's fingerprints.
+Reviewing never automatically installs or replaces a Skill: the user confirms the refreshed selection.
+
+A failed preview retains the source and offers its existing read retry. Editing the source clears
+the previous selection. All-installed responses still close the dialog; skipped name conflicts remain
+reported without offering an overwrite.
+
 The install request carries the source and the selected names, never file content. For each name:
 
 1. the name is looked up among the freshly discovered candidates; a name that is gone fails with

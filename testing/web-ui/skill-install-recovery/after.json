@@ -1,0 +1,505 @@
+{
+  "scope": "Production App, router, shell and Skill components with synthetic API; no real installation",
+  "cases": [
+    {
+      "lang": "en",
+      "width": 320,
+      "fitResult": {
+        "width": 288,
+        "scroll": 288,
+        "viewport": 320,
+        "document": 320
+      },
+      "fitPreview": {
+        "width": 288,
+        "scroll": 288,
+        "viewport": 320,
+        "document": 320
+      },
+      "reviewed": {
+        "source": "https://github.com/example/work-skills",
+        "focused": true,
+        "failedSelected": true,
+        "successDisabled": true,
+        "installCalls": 1
+      },
+      "operations": [
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "release-notes",
+                "fingerprint": "preview-v1-release-notes"
+              },
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v1-incident-brief"
+              }
+            ]
+          }
+        },
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v2-incident-brief"
+              }
+            ]
+          }
+        }
+      ],
+      "unexpected": []
+    },
+    {
+      "lang": "en",
+      "width": 390,
+      "fitResult": {
+        "width": 358,
+        "scroll": 358,
+        "viewport": 390,
+        "document": 390
+      },
+      "fitPreview": {
+        "width": 358,
+        "scroll": 358,
+        "viewport": 390,
+        "document": 390
+      },
+      "reviewed": {
+        "source": "https://github.com/example/work-skills",
+        "focused": true,
+        "failedSelected": true,
+        "successDisabled": true,
+        "installCalls": 1
+      },
+      "operations": [
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "release-notes",
+                "fingerprint": "preview-v1-release-notes"
+              },
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v1-incident-brief"
+              }
+            ]
+          }
+        },
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v2-incident-brief"
+              }
+            ]
+          }
+        }
+      ],
+      "unexpected": []
+    },
+    {
+      "lang": "en",
+      "width": 768,
+      "fitResult": {
+        "width": 560,
+        "scroll": 560,
+        "viewport": 768,
+        "document": 768
+      },
+      "fitPreview": {
+        "width": 560,
+        "scroll": 560,
+        "viewport": 768,
+        "document": 768
+      },
+      "reviewed": {
+        "source": "https://github.com/example/work-skills",
+        "focused": true,
+        "failedSelected": true,
+        "successDisabled": true,
+        "installCalls": 1
+      },
+      "operations": [
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "release-notes",
+                "fingerprint": "preview-v1-release-notes"
+              },
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v1-incident-brief"
+              }
+            ]
+          }
+        },
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v2-incident-brief"
+              }
+            ]
+          }
+        }
+      ],
+      "unexpected": []
+    },
+    {
+      "lang": "en",
+      "width": 1440,
+      "fitResult": {
+        "width": 560,
+        "scroll": 560,
+        "viewport": 1440,
+        "document": 1440
+      },
+      "fitPreview": {
+        "width": 560,
+        "scroll": 560,
+        "viewport": 1440,
+        "document": 1440
+      },
+      "reviewed": {
+        "source": "https://github.com/example/work-skills",
+        "focused": true,
+        "failedSelected": true,
+        "successDisabled": true,
+        "installCalls": 1
+      },
+      "operations": [
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "release-notes",
+                "fingerprint": "preview-v1-release-notes"
+              },
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v1-incident-brief"
+              }
+            ]
+          }
+        },
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v2-incident-brief"
+              }
+            ]
+          }
+        }
+      ],
+      "unexpected": []
+    },
+    {
+      "lang": "zh",
+      "width": 320,
+      "fitResult": {
+        "width": 288,
+        "scroll": 288,
+        "viewport": 320,
+        "document": 320
+      },
+      "fitPreview": {
+        "width": 288,
+        "scroll": 288,
+        "viewport": 320,
+        "document": 320
+      },
+      "reviewed": {
+        "source": "https://github.com/example/work-skills",
+        "focused": true,
+        "failedSelected": true,
+        "successDisabled": true,
+        "installCalls": 1
+      },
+      "operations": [
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "release-notes",
+                "fingerprint": "preview-v1-release-notes"
+              },
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v1-incident-brief"
+              }
+            ]
+          }
+        },
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v2-incident-brief"
+              }
+            ]
+          }
+        }
+      ],
+      "unexpected": []
+    },
+    {
+      "lang": "zh",
+      "width": 390,
+      "fitResult": {
+        "width": 358,
+        "scroll": 358,
+        "viewport": 390,
+        "document": 390
+      },
+      "fitPreview": {
+        "width": 358,
+        "scroll": 358,
+        "viewport": 390,
+        "document": 390
+      },
+      "reviewed": {
+        "source": "https://github.com/example/work-skills",
+        "focused": true,
+        "failedSelected": true,
+        "successDisabled": true,
+        "installCalls": 1
+      },
+      "operations": [
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "release-notes",
+                "fingerprint": "preview-v1-release-notes"
+              },
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v1-incident-brief"
+              }
+            ]
+          }
+        },
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v2-incident-brief"
+              }
+            ]
+          }
+        }
+      ],
+      "unexpected": []
+    },
+    {
+      "lang": "zh",
+      "width": 768,
+      "fitResult": {
+        "width": 560,
+        "scroll": 560,
+        "viewport": 768,
+        "document": 768
+      },
+      "fitPreview": {
+        "width": 560,
+        "scroll": 560,
+        "viewport": 768,
+        "document": 768
+      },
+      "reviewed": {
+        "source": "https://github.com/example/work-skills",
+        "focused": true,
+        "failedSelected": true,
+        "successDisabled": true,
+        "installCalls": 1
+      },
+      "operations": [
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "release-notes",
+                "fingerprint": "preview-v1-release-notes"
+              },
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v1-incident-brief"
+              }
+            ]
+          }
+        },
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v2-incident-brief"
+              }
+            ]
+          }
+        }
+      ],
+      "unexpected": []
+    },
+    {
+      "lang": "zh",
+      "width": 1440,
+      "fitResult": {
+        "width": 560,
+        "scroll": 560,
+        "viewport": 1440,
+        "document": 1440
+      },
+      "fitPreview": {
+        "width": 560,
+        "scroll": 560,
+        "viewport": 1440,
+        "document": 1440
+      },
+      "reviewed": {
+        "source": "https://github.com/example/work-skills",
+        "focused": true,
+        "failedSelected": true,
+        "successDisabled": true,
+        "installCalls": 1
+      },
+      "operations": [
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "release-notes",
+                "fingerprint": "preview-v1-release-notes"
+              },
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v1-incident-brief"
+              }
+            ]
+          }
+        },
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v2-incident-brief"
+              }
+            ]
+          }
+        }
+      ],
+      "unexpected": []
+    }
+  ],
+  "axe": {
+    "partialReport": [],
+    "refreshedSelection": []
+  }
+}

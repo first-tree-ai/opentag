@@ -57,6 +57,7 @@
   "skills_install_result_installed": "已安装",
   "skills_install_result_skipped": "已跳过——已存在同名技能",
   "skills_install_results_aria": "安装结果",
+  "skills_install_review_failed": "复查失败的技能",
   "skills_install_selection_title": "从此链接找到的技能",
   "skills_install_source_label": "链接",
   "skills_install_source_placeholder": "粘贴仓库或技能链接",

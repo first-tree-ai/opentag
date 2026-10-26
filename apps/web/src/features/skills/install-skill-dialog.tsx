@@ -1,5 +1,5 @@
 import type { RemoteSkillCandidate, RemoteSkillInstallResult } from "@opentag/shared/browser";
-import { useEffect, useId, useRef, useState } from "react";
+import { type RefObject, useEffect, useId, useRef, useState } from "react";
 import { ApiError } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
 import { Badge, Banner, Button, Checkbox, Dialog, Input, Loader, Text } from "../../ui/design-system.js";
@@ -20,6 +20,8 @@ export function InstallSkillDialog({
   const source = useSkillSourcePreview(agentId);
   const install = useInstallRemoteSkills();
   const inputRef = useRef<HTMLInputElement>(null);
+  const resultsRef = useRef<HTMLUListElement>(null);
+  const recovering = useRef(false);
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -32,11 +34,34 @@ export function InstallSkillDialog({
   const [error, setError] = useState<string>();
   const candidates = source.preview?.skills ?? [];
   const selectable = candidates.filter(isSelectable);
-  const selected = selection?.source === source.preview?.source ? (selection?.names ?? []) : [];
+  const selected =
+    selection?.source === source.preview?.source
+      ? (selection?.names.filter((name) => selectable.some((entry) => entry.name === name)) ?? [])
+      : [];
   const single = candidates.length === 1;
   const only = single ? selectable[0] : undefined;
   const names = only ? [only.name] : selected;
   const busy = install.isPending;
+
+  useEffect(() => {
+    if (results !== undefined) resultsRef.current?.focus();
+    else if (recovering.current) {
+      inputRef.current?.focus();
+      recovering.current = false;
+    }
+  }, [results]);
+
+  const reviewFailed = () => {
+    if (!results || busy) return;
+    setSelection({
+      source: source.preview?.source ?? source.source.trim(),
+      names: results.filter((result) => result.status === "failed").map((result) => result.name),
+    });
+    recovering.current = true;
+    setResults(undefined);
+    setError(undefined);
+    void source.load(undefined, true);
+  };
 
   const change = (value: string) => {
     source.change(value);
@@ -134,12 +159,14 @@ export function InstallSkillDialog({
         {candidates.length > 0 && results === undefined ? (
           <CandidateList candidates={candidates} selected={names} busy={busy} error={error} onToggle={toggle} />
         ) : null}
-        {results === undefined ? null : <ResultList results={results} />}
+        {results === undefined ? null : <ResultList results={results} listRef={resultsRef} />}
         <InstallActions
           busy={busy}
           loading={source.loading}
           count={names.length}
           done={results !== undefined}
+          canRecover={results?.some((result) => result.status === "failed") ?? false}
+          onRecover={reviewFailed}
           onClose={onClose}
           onConfirm={() => void confirm()}
         />
@@ -153,6 +180,8 @@ function InstallActions({
   loading,
   count,
   done,
+  canRecover,
+  onRecover,
   onClose,
   onConfirm,
 }: {
@@ -160,15 +189,24 @@ function InstallActions({
   loading: boolean;
   count: number;
   done: boolean;
+  canRecover: boolean;
+  onRecover: () => void;
   onClose: () => void;
   onConfirm: () => void;
 }) {
   return (
     <div className="skill-install-actions flex justify-end gap-3 border-t border-kumo-line pt-4">
       {done ? (
-        <Button onClick={onClose} variant="primary">
-          {m.common_done()}
-        </Button>
+        <>
+          <Button onClick={onClose} variant={canRecover ? "secondary" : "primary"}>
+            {m.common_done()}
+          </Button>
+          {canRecover ? (
+            <Button onClick={onRecover} variant="primary">
+              {m.skills_install_review_failed()}
+            </Button>
+          ) : null}
+        </>
       ) : (
         <>
           <Button data-skip-preview disabled={busy} onClick={onClose} variant="secondary">
@@ -272,7 +310,13 @@ function CandidateList({
   );
 }
 
-function ResultList({ results }: { results: readonly RemoteSkillInstallResult[] }) {
+function ResultList({
+  results,
+  listRef,
+}: {
+  results: readonly RemoteSkillInstallResult[];
+  listRef: RefObject<HTMLUListElement | null>;
+}) {
   const occurrences = new Map<string, number>();
   const rows = results.map((result) => {
     const base = `${result.name}-${result.status}`;
@@ -283,6 +327,7 @@ function ResultList({ results }: { results: readonly RemoteSkillInstallResult[] 
   return (
     <ul
       aria-label={m.skills_install_results_aria()}
+      ref={listRef}
       className="skill-install-results grid gap-3"
       data-ui="install-skill-results"
       // biome-ignore lint/a11y/noNoninteractiveTabindex: A scrollable report without controls must support keyboard scrolling.

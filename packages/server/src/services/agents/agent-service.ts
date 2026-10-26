@@ -45,6 +45,7 @@ import { disableImBindingInTransaction } from "../im-bindings/index.js";
 import { lockMcpBindings } from "../mcp/index.js";
 import { resolveAgentRuntimeConfig } from "../runtime-config/index.js";
 import type { CloudModelCatalog } from "../sandboxes/cloud-model-catalog.js";
+import { markEndedDescendantsInactive } from "../sessions/session-closure.js";
 import { AgentTransferError, type AgentTransferInput, type AgentTransferResult } from "./agent-transfer.js";
 import {
   deliveryUsageTokenCounts,
@@ -1435,6 +1436,7 @@ export class AgentService {
           isNull(sessions.endedAt),
         ),
       );
+    await markEndedDescendantsInactive(transaction, { agentId });
   }
 
   async #lockAgentScopeForMutation(

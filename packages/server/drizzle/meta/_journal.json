@@ -484,6 +484,13 @@
       "when": 1792739031119,
       "tag": "0068_release_terminal_setup_slots",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1793003668615,
+      "tag": "0069_session_descendant_active",
+      "breakpoints": true
     }
   ]
 }

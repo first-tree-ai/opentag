@@ -39,7 +39,9 @@ the later message lock and input-conflict checks remain authoritative. There is 
 
 `session list` returns direct children by default, ordered by recent message activity. Pages default to 20 items and
 are capped at 100; `--cursor` continues a page, `--recursive` includes descendants, `--since` filters recent activity,
-and `--json` returns `{ items, nextCursor }`. There is no unbounded `--all` mode.
+and `--json` returns `{ items, nextCursor }`. There is no unbounded `--all` mode. The page returns active children
+only: the closure row carries `descendant_active`, which mirrors the descendant's `ended_at`, and the activity indexes
+are partial on it, so a page never reads the ordering index to discover ended descendants and discard them.
 
 Recent activity is the latest message in which the listed Session is the source or target. Creating
 an internal child therefore also updates the creator's activity projection. It does not raise the
@@ -78,7 +80,8 @@ The Server stores authorized logical messages and their latest observed delivery
 detection. The managed Local Runtime uses its existing bounded inbox and durable-work store, including its recovery and
 retry policy; acceptance does not mean completion or exactly-once external side effects. Cloud uses the allocation and
 execution boundaries described in [Cloud Context](../cloud/cloud-context.md). Agent-facing Session operations intentionally
-provide no `end`; administrative lifecycle invalidation may still set the existing `sessions.ended_at` field.
+provide no `end`; administrative lifecycle invalidation may still set the existing `sessions.ended_at` field, and it
+marks the matching closure rows inactive in the same transaction through `services/sessions/session-closure.ts`.
 
 The Local CLI transport requires `runtime.sessionCollaboration` capability version 2. Visible callback delivery also requires
 `runtime.imCredentialGrant` version 2. A new Server reports `outbox_unavailable` before delivery when the target Client is

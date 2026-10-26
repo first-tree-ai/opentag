@@ -232,10 +232,11 @@ describe("Session collaboration authority", () => {
         select descendant_session_id
         from session_descendants
         where ancestor_session_id = ${root.session.id}::uuid
+          and descendant_active
         order by last_message_created_at desc, last_message_id desc, descendant_session_id desc
         limit 11
       `;
-      expect(JSON.stringify(plan)).toContain("session_descendants_ancestor_activity_idx");
+      expect(JSON.stringify(plan)).toContain("session_descendants_ancestor_activity_active_idx");
 
       const ancestorCopyPlan = await fixture.sql`
         explain (format json)

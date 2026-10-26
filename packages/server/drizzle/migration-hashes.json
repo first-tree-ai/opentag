@@ -345,6 +345,11 @@
       "idx": 68,
       "tag": "0068_release_terminal_setup_slots",
       "sha256": "5d406bebedc543bf120c7fe3334406894f6b3b3ae672e8c0d10d6cf2fbcaf32a"
+    },
+    {
+      "idx": 69,
+      "tag": "0069_session_descendant_active",
+      "sha256": "59bd8c6d45cfd166488361febf5d51d291edc33d7e84954f3e948aa0b76d1e06"
     }
   ]
 }

@@ -445,6 +445,7 @@ export class SessionService {
         lastMessageId: message.id,
         lastDeliveryOutcome: attempt.message.lastOutcome,
         taskPreview,
+        descendantActive: true,
       });
       await transaction.execute(sql`
         insert into session_descendants (
@@ -454,7 +455,8 @@ export class SessionService {
           last_message_created_at,
           last_message_id,
           last_delivery_outcome,
-          task_preview
+          task_preview,
+          descendant_active
         )
         select
           ancestor_session_id,
@@ -463,7 +465,8 @@ export class SessionService {
           ${message.createdAt.toISOString()}::timestamptz,
           ${message.id}::uuid,
           ${attempt.message.lastOutcome},
-          ${taskPreview}
+          ${taskPreview},
+          true
         from session_descendants
         where descendant_session_id = ${input.creatorSessionId}::uuid
       `);
@@ -1040,6 +1043,9 @@ export class SessionService {
       from session_descendants link
       inner join sessions child on child.id = link.descendant_session_id
       where link.ancestor_session_id = ${sourceSessionId}::uuid
+        and link.descendant_active
+        -- An older binary ends a Session without maintaining the closure flag. The derived predicate
+        -- keeps that row out of the page and bounds the extra work to the drift, not to the history.
         and child.ended_at is null
         ${query.recursive ? sql`` : sql`and link.depth = 1`}
         ${since ? sql`and link.last_message_created_at >= ${since.toISOString()}::timestamptz` : sql``}

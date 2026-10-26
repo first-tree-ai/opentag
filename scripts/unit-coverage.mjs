@@ -41,19 +41,22 @@ export {
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
- * Each Vitest project alongside the workspace whose sources it is the only suite able to execute.
+ * Each Vitest project alongside the workspace source roots its suite is the only one able to execute.
  *
  * `root` mirrors that project's own `root` in `vitest.coverage.config.ts`, because a `coverage.include`
- * glob is resolved against it -- see `projectCoverageInclude` below.
+ * glob is resolved against it -- see `projectCoverageIncludes` below. `sources` lists every measured
+ * source root of the workspace, not only `src`: verification scripts under a package's `scripts`
+ * directory are executable code too, and `unit-coverage-gate.mjs` already treats them as coverable, so
+ * leaving them unmeasured used to report their patched lines as "missing coverage entry" forever.
  */
 export const COVERAGE_PROJECTS = [
-  { name: "cli", root: "apps/cli", sources: "apps/cli/src" },
-  { name: "web", root: "apps/web", sources: "apps/web/src" },
-  { name: "shared", root: "packages/shared", sources: "packages/shared/src" },
-  { name: "skill-presets", root: "packages/skill-presets", sources: "packages/skill-presets/src" },
-  { name: "mcp-presets", root: "packages/mcp-presets", sources: "packages/mcp-presets/src" },
-  { name: "client", root: "packages/client", sources: "packages/client/src" },
-  { name: "server", root: "packages/server", sources: "packages/server/src" },
+  { name: "cli", root: "apps/cli", sources: ["apps/cli/src"] },
+  { name: "web", root: "apps/web", sources: ["apps/web/src"] },
+  { name: "shared", root: "packages/shared", sources: ["packages/shared/src"] },
+  { name: "skill-presets", root: "packages/skill-presets", sources: ["packages/skill-presets/src"] },
+  { name: "mcp-presets", root: "packages/mcp-presets", sources: ["packages/mcp-presets/src"] },
+  { name: "client", root: "packages/client", sources: ["packages/client/src"] },
+  { name: "server", root: "packages/server", sources: ["packages/server/src", "packages/server/scripts"] },
 ];
 
 /**
@@ -69,27 +72,38 @@ export const COVERAGE_PROJECTS = [
  * test:coverage`, and it is why the fix belongs here rather than in the floors.
  *
  * A pattern that does not start with the workspace prefix is passed through untouched, so an already
- * project-relative `--scope` keeps working alongside the documented repository-relative form.
+ * project-relative `--scope` keeps working alongside the documented repository-relative form. The
+ * result is always a list so a workspace can measure more than one root; Vitest accepts one
+ * `--coverage.include` flag per pattern.
  */
-export function projectCoverageInclude(project, scope) {
-  const pattern = scope ?? `${project.sources}/**/*.{ts,tsx}`;
+export function projectCoverageIncludes(project, scope) {
+  const roots = scope ? [scope] : project.sources.map((source) => `${source}/**/*.{ts,tsx}`);
   const prefix = `${project.root}/`;
-  return pattern.startsWith(prefix) ? pattern.slice(prefix.length) : pattern;
+  return roots.map((pattern) => (pattern.startsWith(prefix) ? pattern.slice(prefix.length) : pattern));
 }
 
 const COVERAGE_ROOT = resolve(repositoryRoot, "coverage/unit");
 export const COVERAGE_FLOORS_PATH = resolve(repositoryRoot, "scripts/coverage-floors.json");
 export const COVERAGE_METRICS = ["lines", "statements", "functions", "branches"];
 
-const ROOT_COVERAGE_INCLUDE_PATTERNS = [
-  "apps/cli/src/**/*.{ts,tsx}",
-  "apps/web/src/**/*.{ts,tsx}",
-  "packages/shared/src/**/*.{ts,tsx}",
-  "packages/skill-presets/src/**/*.{ts,tsx}",
-  "packages/mcp-presets/src/**/*.{ts,tsx}",
-  "packages/client/src/**/*.{ts,tsx}",
-  "packages/server/src/**/*.{ts,tsx}",
+/**
+ * Every measured source root of the repository. A root here is a promise: each of its files must have
+ * an owner pattern, and every pattern must match at least one file (see `validateRepositoryCoverageManifest`).
+ * `packages/server/scripts` is listed explicitly so verification scripts are measured like any other
+ * executable source instead of being reported as "missing coverage entry" by the patch gate.
+ */
+const ROOT_COVERAGE_SOURCE_ROOTS = [
+  "apps/cli/src",
+  "apps/web/src",
+  "packages/shared/src",
+  "packages/skill-presets/src",
+  "packages/mcp-presets/src",
+  "packages/client/src",
+  "packages/server/src",
+  "packages/server/scripts",
 ];
+
+const ROOT_COVERAGE_INCLUDE_PATTERNS = ROOT_COVERAGE_SOURCE_ROOTS.map((root) => `${root}/**/*.{ts,tsx}`);
 
 const ROOT_COVERAGE_EXCLUDE_PATTERNS = ["**/src/__tests__/**", "**/src/smoke/**", "**/src/paraglide/**"];
 
@@ -301,11 +315,16 @@ export function validateCoverageManifest({ sourceFiles, includePatterns, exclude
   return { missing, unmatchedPatterns };
 }
 
-function sourceFilesUnder(directory, relativeTo = directory) {
+/** Source files under one declared root: TypeScript only, tests and ignored scratch directories excluded. */
+export function sourceFilesUnder(directory, relativeTo = directory) {
   const files = [];
+  // A declared root may legitimately hold no file (a workspace without verification scripts); the
+  // manifest still fails closed on it, because an unused include pattern is reported as unmatched.
   const visit = (current) => {
+    if (!existsSync(current)) return;
     for (const entry of readdirSync(current, { withFileTypes: true })) {
-      if (["node_modules", "dist", "coverage"].includes(entry.name)) continue;
+      // Dot directories are ignored scratch state (for example `.dispatch/` fixture copies), not source.
+      if (entry.name.startsWith(".") || ["node_modules", "dist", "coverage"].includes(entry.name)) continue;
       const absolute = resolve(current, entry.name);
       if (entry.isDirectory()) visit(absolute);
       else if (/\.(?:ts|tsx)$/.test(entry.name) && !/\.(?:test|spec)\.(?:ts|tsx)$/.test(entry.name)) {
@@ -318,10 +337,9 @@ function sourceFilesUnder(directory, relativeTo = directory) {
 }
 
 export function validateRepositoryCoverageManifest(root = repositoryRoot) {
-  const projectSources = ROOT_COVERAGE_INCLUDE_PATTERNS.flatMap((pattern) => {
-    const prefix = pattern.split("/src/")[0];
-    return sourceFilesUnder(resolve(root, `${prefix}/src`), root);
-  });
+  const projectSources = ROOT_COVERAGE_SOURCE_ROOTS.flatMap((sourceRoot) =>
+    sourceFilesUnder(resolve(root, sourceRoot), root),
+  );
   const rootResult = validateCoverageManifest({
     excludePatterns: ROOT_COVERAGE_EXCLUDE_PATTERNS,
     includePatterns: ROOT_COVERAGE_INCLUDE_PATTERNS,
@@ -479,7 +497,7 @@ function runProject(project, scope) {
   mkdirSync(reportsDirectory, { recursive: true });
   const testResultsPath = resolve(reportsDirectory, "test-results.json");
 
-  const include = projectCoverageInclude(project, scope);
+  const includes = projectCoverageIncludes(project, scope);
   const startedAt = performance.now();
   const result = spawnSync(
     "pnpm",
@@ -491,7 +509,7 @@ function runProject(project, scope) {
       "vitest.coverage.config.ts",
       "--project",
       project.name,
-      `--coverage.include=${include}`,
+      ...includes.map((pattern) => `--coverage.include=${pattern}`),
       ...COVERAGE_REPORTER_FLAGS,
       `--coverage.reportsDirectory=${reportsDirectory}`,
       ...TEST_REPORTER_FLAGS(testResultsPath),

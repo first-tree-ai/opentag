@@ -4,8 +4,8 @@
       "name": "cloud.cancel.0-unreported",
       "eligibleDeliveries": 0,
       "before": {
-        "medianMs": 6.117750000004889,
-        "samplesMs": [6.428041000006488, 6.440207999999984, 6.08283400000073, 6.1142909999980475, 6.117750000004889],
+        "medianMs": 5.929167000002053,
+        "samplesMs": [5.929167000002053, 5.654082999993989, 5.908332999999402, 5.9366250000020955, 5.932874999998603],
         "statementCounts": [1, 1, 1, 1, 1],
         "selectCount": 1,
         "outcomeStatuses": [],
@@ -26,8 +26,8 @@
                   "Total Cost": 6046,
                   "Plan Rows": 1,
                   "Plan Width": 42,
-                  "Actual Startup Time": 5.548,
-                  "Actual Total Time": 5.548,
+                  "Actual Startup Time": 5.113,
+                  "Actual Total Time": 5.113,
                   "Actual Rows": 0,
                   "Actual Loops": 1,
                   "Filter": "((reported_at IS NULL) AND (session_id = '00000007-0000-4000-8000-000000000001'::uuid) AND (state = 'accepted'::im_delivery_state))",
@@ -56,17 +56,17 @@
                   "Temp Read Blocks": 0,
                   "Temp Written Blocks": 0
                 },
-                "Planning Time": 0.032,
+                "Planning Time": 0.03,
                 "Triggers": [],
-                "Execution Time": 5.551
+                "Execution Time": 5.116
               }
             ]
           }
         ]
       },
       "after": {
-        "medianMs": 6.419457999996666,
-        "samplesMs": [6.419457999996666, 6.284791999998561, 6.434625000001688, 6.656208000000333, 6.38875000000553],
+        "medianMs": 5.684750000000349,
+        "samplesMs": [5.663042000000132, 5.492084000004979, 5.853374999998778, 5.735000000000582, 5.684750000000349],
         "statementCounts": [1, 1, 1, 1, 1],
         "selectCount": 1,
         "outcomeStatuses": [],
@@ -87,8 +87,8 @@
                   "Total Cost": 6046,
                   "Plan Rows": 1,
                   "Plan Width": 42,
-                  "Actual Startup Time": 5.992,
-                  "Actual Total Time": 5.992,
+                  "Actual Startup Time": 5.285,
+                  "Actual Total Time": 5.285,
                   "Actual Rows": 0,
                   "Actual Loops": 1,
                   "Filter": "((reported_at IS NULL) AND (session_id = '00000007-0000-4000-8000-000000000001'::uuid) AND (state = 'accepted'::im_delivery_state))",
@@ -117,9 +117,9 @@
                   "Temp Read Blocks": 0,
                   "Temp Written Blocks": 0
                 },
-                "Planning Time": 0.036,
+                "Planning Time": 0.041,
                 "Triggers": [],
-                "Execution Time": 5.997
+                "Execution Time": 5.289
               }
             ]
           }
@@ -130,8 +130,8 @@
       "name": "cloud.cancel.1-unreported",
       "eligibleDeliveries": 1,
       "before": {
-        "medianMs": 7.028875000003609,
-        "samplesMs": [7.028875000003609, 6.733040999999503, 6.629166999999143, 7.430916999997862, 7.040708999993512],
+        "medianMs": 6.411999999996624,
+        "samplesMs": [6.334666000002471, 6.237958999998227, 6.662917000001471, 6.411999999996624, 6.475957999995444],
         "statementCounts": [2, 2, 2, 2, 2],
         "selectCount": 2,
         "outcomeStatuses": ["no_connection"],
@@ -152,8 +152,8 @@
                   "Total Cost": 6046,
                   "Plan Rows": 1,
                   "Plan Width": 42,
-                  "Actual Startup Time": 5.465,
-                  "Actual Total Time": 5.465,
+                  "Actual Startup Time": 5.469,
+                  "Actual Total Time": 5.469,
                   "Actual Rows": 1,
                   "Actual Loops": 1,
                   "Filter": "((reported_at IS NULL) AND (session_id = '00000007-0000-4000-8000-000000000001'::uuid) AND (state = 'accepted'::im_delivery_state))",
@@ -182,9 +182,9 @@
                   "Temp Read Blocks": 0,
                   "Temp Written Blocks": 0
                 },
-                "Planning Time": 0.024,
+                "Planning Time": 0.036,
                 "Triggers": [],
-                "Execution Time": 5.468
+                "Execution Time": 5.473
               }
             ]
           },
@@ -202,7 +202,7 @@
                   "Total Cost": 8.44,
                   "Plan Rows": 1,
                   "Plan Width": 250,
-                  "Actual Startup Time": 0.008,
+                  "Actual Startup Time": 0.009,
                   "Actual Total Time": 0.009,
                   "Actual Rows": 1,
                   "Actual Loops": 1,
@@ -262,17 +262,17 @@
                   "Temp Read Blocks": 0,
                   "Temp Written Blocks": 0
                 },
-                "Planning Time": 0.029,
+                "Planning Time": 0.022,
                 "Triggers": [],
-                "Execution Time": 0.014
+                "Execution Time": 0.015
               }
             ]
           }
         ]
       },
       "after": {
-        "medianMs": 6.731625000000349,
-        "samplesMs": [6.876624999997148, 7.0471249999973224, 6.654875000000175, 6.731625000000349, 6.710874999997031],
+        "medianMs": 6.078041000000667,
+        "samplesMs": [6.269292000004498, 6.023041000000376, 6.078041000000667, 5.940375000005588, 6.371125000005122],
         "statementCounts": [2, 2, 2, 2, 2],
         "selectCount": 2,
         "outcomeStatuses": ["no_connection"],
@@ -293,8 +293,8 @@
                   "Total Cost": 6046,
                   "Plan Rows": 1,
                   "Plan Width": 42,
-                  "Actual Startup Time": 5.591,
-                  "Actual Total Time": 5.591,
+                  "Actual Startup Time": 5.078,
+                  "Actual Total Time": 5.078,
                   "Actual Rows": 1,
                   "Actual Loops": 1,
                   "Filter": "((reported_at IS NULL) AND (session_id = '00000007-0000-4000-8000-000000000001'::uuid) AND (state = 'accepted'::im_delivery_state))",
@@ -323,9 +323,9 @@
                   "Temp Read Blocks": 0,
                   "Temp Written Blocks": 0
                 },
-                "Planning Time": 0.023,
+                "Planning Time": 0.028,
                 "Triggers": [],
-                "Execution Time": 5.593
+                "Execution Time": 5.081
               }
             ]
           },
@@ -343,8 +343,439 @@
                   "Total Cost": 8.44,
                   "Plan Rows": 1,
                   "Plan Width": 250,
-                  "Actual Startup Time": 0.008,
-                  "Actual Total Time": 0.008,
+                  "Actual Startup Time": 0.01,
+                  "Actual Total Time": 0.01,
+                  "Actual Rows": 1,
+                  "Actual Loops": 1,
+                  "Shared Hit Blocks": 4,
+                  "Shared Read Blocks": 0,
+                  "Shared Dirtied Blocks": 0,
+                  "Shared Written Blocks": 0,
+                  "Local Hit Blocks": 0,
+                  "Local Read Blocks": 0,
+                  "Local Dirtied Blocks": 0,
+                  "Local Written Blocks": 0,
+                  "Temp Read Blocks": 0,
+                  "Temp Written Blocks": 0,
+                  "Plans": [
+                    {
+                      "Node Type": "Index Scan",
+                      "Parent Relationship": "Outer",
+                      "Parallel Aware": false,
+                      "Async Capable": false,
+                      "Scan Direction": "Forward",
+                      "Index Name": "sandboxes_session_id_unique",
+                      "Relation Name": "sandboxes",
+                      "Alias": "sandboxes",
+                      "Startup Cost": 0.42,
+                      "Total Cost": 8.44,
+                      "Plan Rows": 1,
+                      "Plan Width": 250,
+                      "Actual Startup Time": 0.01,
+                      "Actual Total Time": 0.01,
+                      "Actual Rows": 1,
+                      "Actual Loops": 1,
+                      "Index Cond": "(session_id = '00000007-0000-4000-8000-000000000001'::uuid)",
+                      "Rows Removed by Index Recheck": 0,
+                      "Shared Hit Blocks": 4,
+                      "Shared Read Blocks": 0,
+                      "Shared Dirtied Blocks": 0,
+                      "Shared Written Blocks": 0,
+                      "Local Hit Blocks": 0,
+                      "Local Read Blocks": 0,
+                      "Local Dirtied Blocks": 0,
+                      "Local Written Blocks": 0,
+                      "Temp Read Blocks": 0,
+                      "Temp Written Blocks": 0
+                    }
+                  ]
+                },
+                "Settings": {},
+                "Planning": {
+                  "Shared Hit Blocks": 3,
+                  "Shared Read Blocks": 0,
+                  "Shared Dirtied Blocks": 0,
+                  "Shared Written Blocks": 0,
+                  "Local Hit Blocks": 0,
+                  "Local Read Blocks": 0,
+                  "Local Dirtied Blocks": 0,
+                  "Local Written Blocks": 0,
+                  "Temp Read Blocks": 0,
+                  "Temp Written Blocks": 0
+                },
+                "Planning Time": 0.033,
+                "Triggers": [],
+                "Execution Time": 0.017
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "cloud.cancel.10-unreported",
+      "eligibleDeliveries": 10,
+      "before": {
+        "medianMs": 9.549082999998063,
+        "samplesMs": [10.003250000001572, 9.549082999998063, 9.82733300000109, 9.444292000000132, 9.34337499999674],
+        "statementCounts": [11, 11, 11, 11, 11],
+        "selectCount": 11,
+        "outcomeStatuses": ["no_connection"],
+        "statements": [
+          {
+            "sql": "select \"id\", \"turn_id\", \"report_owner_instance_id\" from \"im_message_deliveries\" where (\"im_message_deliveries\".\"session_id\" = $1 and \"im_message_deliveries\".\"state\" = $2 and \"im_message_deliveries\".\"reported_at\" is null)",
+            "parameterCount": 2,
+            "occurrences": 1,
+            "plan": [
+              {
+                "Plan": {
+                  "Node Type": "Seq Scan",
+                  "Parallel Aware": false,
+                  "Async Capable": false,
+                  "Relation Name": "im_message_deliveries",
+                  "Alias": "im_message_deliveries",
+                  "Startup Cost": 0,
+                  "Total Cost": 6046,
+                  "Plan Rows": 3,
+                  "Plan Width": 42,
+                  "Actual Startup Time": 0.005,
+                  "Actual Total Time": 5.582,
+                  "Actual Rows": 10,
+                  "Actual Loops": 1,
+                  "Filter": "((reported_at IS NULL) AND (session_id = '00000007-0000-4000-8000-000000000001'::uuid) AND (state = 'accepted'::im_delivery_state))",
+                  "Rows Removed by Filter": 99990,
+                  "Shared Hit Blocks": 1953,
+                  "Shared Read Blocks": 2593,
+                  "Shared Dirtied Blocks": 0,
+                  "Shared Written Blocks": 0,
+                  "Local Hit Blocks": 0,
+                  "Local Read Blocks": 0,
+                  "Local Dirtied Blocks": 0,
+                  "Local Written Blocks": 0,
+                  "Temp Read Blocks": 0,
+                  "Temp Written Blocks": 0
+                },
+                "Settings": {},
+                "Planning": {
+                  "Shared Hit Blocks": 2,
+                  "Shared Read Blocks": 0,
+                  "Shared Dirtied Blocks": 0,
+                  "Shared Written Blocks": 0,
+                  "Local Hit Blocks": 0,
+                  "Local Read Blocks": 0,
+                  "Local Dirtied Blocks": 0,
+                  "Local Written Blocks": 0,
+                  "Temp Read Blocks": 0,
+                  "Temp Written Blocks": 0
+                },
+                "Planning Time": 0.038,
+                "Triggers": [],
+                "Execution Time": 5.586
+              }
+            ]
+          },
+          {
+            "sql": "select \"id\", \"session_id\", \"storage_uri\", \"lifecycle\", \"current_resource_name\", \"current_resource_uid\", \"current_operation_name\", \"environment_generation\", \"idle_reclaim_at\", \"last_error_code\", \"last_error_at\", \"last_activity_at\", \"created_at\", \"updated_at\" from \"sandboxes\" where \"sandboxes\".\"session_id\" = $1 limit $2",
+            "parameterCount": 2,
+            "occurrences": 10,
+            "plan": [
+              {
+                "Plan": {
+                  "Node Type": "Limit",
+                  "Parallel Aware": false,
+                  "Async Capable": false,
+                  "Startup Cost": 0.42,
+                  "Total Cost": 8.44,
+                  "Plan Rows": 1,
+                  "Plan Width": 250,
+                  "Actual Startup Time": 0.012,
+                  "Actual Total Time": 0.012,
+                  "Actual Rows": 1,
+                  "Actual Loops": 1,
+                  "Shared Hit Blocks": 4,
+                  "Shared Read Blocks": 0,
+                  "Shared Dirtied Blocks": 0,
+                  "Shared Written Blocks": 0,
+                  "Local Hit Blocks": 0,
+                  "Local Read Blocks": 0,
+                  "Local Dirtied Blocks": 0,
+                  "Local Written Blocks": 0,
+                  "Temp Read Blocks": 0,
+                  "Temp Written Blocks": 0,
+                  "Plans": [
+                    {
+                      "Node Type": "Index Scan",
+                      "Parent Relationship": "Outer",
+                      "Parallel Aware": false,
+                      "Async Capable": false,
+                      "Scan Direction": "Forward",
+                      "Index Name": "sandboxes_session_id_unique",
+                      "Relation Name": "sandboxes",
+                      "Alias": "sandboxes",
+                      "Startup Cost": 0.42,
+                      "Total Cost": 8.44,
+                      "Plan Rows": 1,
+                      "Plan Width": 250,
+                      "Actual Startup Time": 0.011,
+                      "Actual Total Time": 0.011,
+                      "Actual Rows": 1,
+                      "Actual Loops": 1,
+                      "Index Cond": "(session_id = '00000007-0000-4000-8000-000000000001'::uuid)",
+                      "Rows Removed by Index Recheck": 0,
+                      "Shared Hit Blocks": 4,
+                      "Shared Read Blocks": 0,
+                      "Shared Dirtied Blocks": 0,
+                      "Shared Written Blocks": 0,
+                      "Local Hit Blocks": 0,
+                      "Local Read Blocks": 0,
+                      "Local Dirtied Blocks": 0,
+                      "Local Written Blocks": 0,
+                      "Temp Read Blocks": 0,
+                      "Temp Written Blocks": 0
+                    }
+                  ]
+                },
+                "Settings": {},
+                "Planning": {
+                  "Shared Hit Blocks": 3,
+                  "Shared Read Blocks": 0,
+                  "Shared Dirtied Blocks": 0,
+                  "Shared Written Blocks": 0,
+                  "Local Hit Blocks": 0,
+                  "Local Read Blocks": 0,
+                  "Local Dirtied Blocks": 0,
+                  "Local Written Blocks": 0,
+                  "Temp Read Blocks": 0,
+                  "Temp Written Blocks": 0
+                },
+                "Planning Time": 0.031,
+                "Triggers": [],
+                "Execution Time": 0.019
+              }
+            ]
+          }
+        ]
+      },
+      "after": {
+        "medianMs": 6.322124999998778,
+        "samplesMs": [6.459666999995534, 6.322124999998778, 5.958999999995285, 6.467666999997164, 6.011083999997936],
+        "statementCounts": [2, 2, 2, 2, 2],
+        "selectCount": 2,
+        "outcomeStatuses": ["no_connection"],
+        "statements": [
+          {
+            "sql": "select \"id\", \"turn_id\", \"report_owner_instance_id\" from \"im_message_deliveries\" where (\"im_message_deliveries\".\"session_id\" = $1 and \"im_message_deliveries\".\"state\" = $2 and \"im_message_deliveries\".\"reported_at\" is null)",
+            "parameterCount": 2,
+            "occurrences": 1,
+            "plan": [
+              {
+                "Plan": {
+                  "Node Type": "Seq Scan",
+                  "Parallel Aware": false,
+                  "Async Capable": false,
+                  "Relation Name": "im_message_deliveries",
+                  "Alias": "im_message_deliveries",
+                  "Startup Cost": 0,
+                  "Total Cost": 6046,
+                  "Plan Rows": 3,
+                  "Plan Width": 42,
+                  "Actual Startup Time": 0.004,
+                  "Actual Total Time": 4.939,
+                  "Actual Rows": 10,
+                  "Actual Loops": 1,
+                  "Filter": "((reported_at IS NULL) AND (session_id = '00000007-0000-4000-8000-000000000001'::uuid) AND (state = 'accepted'::im_delivery_state))",
+                  "Rows Removed by Filter": 99990,
+                  "Shared Hit Blocks": 2177,
+                  "Shared Read Blocks": 2369,
+                  "Shared Dirtied Blocks": 0,
+                  "Shared Written Blocks": 0,
+                  "Local Hit Blocks": 0,
+                  "Local Read Blocks": 0,
+                  "Local Dirtied Blocks": 0,
+                  "Local Written Blocks": 0,
+                  "Temp Read Blocks": 0,
+                  "Temp Written Blocks": 0
+                },
+                "Settings": {},
+                "Planning": {
+                  "Shared Hit Blocks": 2,
+                  "Shared Read Blocks": 0,
+                  "Shared Dirtied Blocks": 0,
+                  "Shared Written Blocks": 0,
+                  "Local Hit Blocks": 0,
+                  "Local Read Blocks": 0,
+                  "Local Dirtied Blocks": 0,
+                  "Local Written Blocks": 0,
+                  "Temp Read Blocks": 0,
+                  "Temp Written Blocks": 0
+                },
+                "Planning Time": 0.029,
+                "Triggers": [],
+                "Execution Time": 4.942
+              }
+            ]
+          },
+          {
+            "sql": "select \"id\", \"session_id\", \"storage_uri\", \"lifecycle\", \"current_resource_name\", \"current_resource_uid\", \"current_operation_name\", \"environment_generation\", \"idle_reclaim_at\", \"last_error_code\", \"last_error_at\", \"last_activity_at\", \"created_at\", \"updated_at\" from \"sandboxes\" where \"sandboxes\".\"session_id\" = $1 limit $2",
+            "parameterCount": 2,
+            "occurrences": 1,
+            "plan": [
+              {
+                "Plan": {
+                  "Node Type": "Limit",
+                  "Parallel Aware": false,
+                  "Async Capable": false,
+                  "Startup Cost": 0.42,
+                  "Total Cost": 8.44,
+                  "Plan Rows": 1,
+                  "Plan Width": 250,
+                  "Actual Startup Time": 0.009,
+                  "Actual Total Time": 0.009,
+                  "Actual Rows": 1,
+                  "Actual Loops": 1,
+                  "Shared Hit Blocks": 4,
+                  "Shared Read Blocks": 0,
+                  "Shared Dirtied Blocks": 0,
+                  "Shared Written Blocks": 0,
+                  "Local Hit Blocks": 0,
+                  "Local Read Blocks": 0,
+                  "Local Dirtied Blocks": 0,
+                  "Local Written Blocks": 0,
+                  "Temp Read Blocks": 0,
+                  "Temp Written Blocks": 0,
+                  "Plans": [
+                    {
+                      "Node Type": "Index Scan",
+                      "Parent Relationship": "Outer",
+                      "Parallel Aware": false,
+                      "Async Capable": false,
+                      "Scan Direction": "Forward",
+                      "Index Name": "sandboxes_session_id_unique",
+                      "Relation Name": "sandboxes",
+                      "Alias": "sandboxes",
+                      "Startup Cost": 0.42,
+                      "Total Cost": 8.44,
+                      "Plan Rows": 1,
+                      "Plan Width": 250,
+                      "Actual Startup Time": 0.008,
+                      "Actual Total Time": 0.008,
+                      "Actual Rows": 1,
+                      "Actual Loops": 1,
+                      "Index Cond": "(session_id = '00000007-0000-4000-8000-000000000001'::uuid)",
+                      "Rows Removed by Index Recheck": 0,
+                      "Shared Hit Blocks": 4,
+                      "Shared Read Blocks": 0,
+                      "Shared Dirtied Blocks": 0,
+                      "Shared Written Blocks": 0,
+                      "Local Hit Blocks": 0,
+                      "Local Read Blocks": 0,
+                      "Local Dirtied Blocks": 0,
+                      "Local Written Blocks": 0,
+                      "Temp Read Blocks": 0,
+                      "Temp Written Blocks": 0
+                    }
+                  ]
+                },
+                "Settings": {},
+                "Planning": {
+                  "Shared Hit Blocks": 3,
+                  "Shared Read Blocks": 0,
+                  "Shared Dirtied Blocks": 0,
+                  "Shared Written Blocks": 0,
+                  "Local Hit Blocks": 0,
+                  "Local Read Blocks": 0,
+                  "Local Dirtied Blocks": 0,
+                  "Local Written Blocks": 0,
+                  "Temp Read Blocks": 0,
+                  "Temp Written Blocks": 0
+                },
+                "Planning Time": 0.023,
+                "Triggers": [],
+                "Execution Time": 0.014
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "cloud.cancel.100-unreported",
+      "eligibleDeliveries": 100,
+      "before": {
+        "medianMs": 32.764541999997164,
+        "samplesMs": [34.128334000000905, 34.88362500000221, 31.47637499999837, 32.764541999997164, 28.466749999999593],
+        "statementCounts": [101, 101, 101, 101, 101],
+        "selectCount": 101,
+        "outcomeStatuses": ["no_connection"],
+        "statements": [
+          {
+            "sql": "select \"id\", \"turn_id\", \"report_owner_instance_id\" from \"im_message_deliveries\" where (\"im_message_deliveries\".\"session_id\" = $1 and \"im_message_deliveries\".\"state\" = $2 and \"im_message_deliveries\".\"reported_at\" is null)",
+            "parameterCount": 2,
+            "occurrences": 1,
+            "plan": [
+              {
+                "Plan": {
+                  "Node Type": "Seq Scan",
+                  "Parallel Aware": false,
+                  "Async Capable": false,
+                  "Relation Name": "im_message_deliveries",
+                  "Alias": "im_message_deliveries",
+                  "Startup Cost": 0,
+                  "Total Cost": 6048,
+                  "Plan Rows": 33,
+                  "Plan Width": 42,
+                  "Actual Startup Time": 0.005,
+                  "Actual Total Time": 5.56,
+                  "Actual Rows": 100,
+                  "Actual Loops": 1,
+                  "Filter": "((reported_at IS NULL) AND (session_id = '00000007-0000-4000-8000-000000000001'::uuid) AND (state = 'accepted'::im_delivery_state))",
+                  "Rows Removed by Filter": 99900,
+                  "Shared Hit Blocks": 2701,
+                  "Shared Read Blocks": 1847,
+                  "Shared Dirtied Blocks": 0,
+                  "Shared Written Blocks": 0,
+                  "Local Hit Blocks": 0,
+                  "Local Read Blocks": 0,
+                  "Local Dirtied Blocks": 0,
+                  "Local Written Blocks": 0,
+                  "Temp Read Blocks": 0,
+                  "Temp Written Blocks": 0
+                },
+                "Settings": {},
+                "Planning": {
+                  "Shared Hit Blocks": 2,
+                  "Shared Read Blocks": 0,
+                  "Shared Dirtied Blocks": 0,
+                  "Shared Written Blocks": 0,
+                  "Local Hit Blocks": 0,
+                  "Local Read Blocks": 0,
+                  "Local Dirtied Blocks": 0,
+                  "Local Written Blocks": 0,
+                  "Temp Read Blocks": 0,
+                  "Temp Written Blocks": 0
+                },
+                "Planning Time": 0.034,
+                "Triggers": [],
+                "Execution Time": 5.565
+              }
+            ]
+          },
+          {
+            "sql": "select \"id\", \"session_id\", \"storage_uri\", \"lifecycle\", \"current_resource_name\", \"current_resource_uid\", \"current_operation_name\", \"environment_generation\", \"idle_reclaim_at\", \"last_error_code\", \"last_error_at\", \"last_activity_at\", \"created_at\", \"updated_at\" from \"sandboxes\" where \"sandboxes\".\"session_id\" = $1 limit $2",
+            "parameterCount": 2,
+            "occurrences": 100,
+            "plan": [
+              {
+                "Plan": {
+                  "Node Type": "Limit",
+                  "Parallel Aware": false,
+                  "Async Capable": false,
+                  "Startup Cost": 0.42,
+                  "Total Cost": 8.44,
+                  "Plan Rows": 1,
+                  "Plan Width": 250,
+                  "Actual Startup Time": 0.007,
+                  "Actual Total Time": 0.007,
                   "Actual Rows": 1,
                   "Actual Loops": 1,
                   "Shared Hit Blocks": 4,
@@ -403,23 +834,19 @@
                   "Temp Read Blocks": 0,
                   "Temp Written Blocks": 0
                 },
-                "Planning Time": 0.023,
+                "Planning Time": 0.02,
                 "Triggers": [],
-                "Execution Time": 0.013
+                "Execution Time": 0.012
               }
             ]
           }
         ]
-      }
-    },
-    {
-      "name": "cloud.cancel.10-unreported",
-      "eligibleDeliveries": 10,
-      "before": {
-        "medianMs": 9.523208999999042,
-        "samplesMs": [10.273667000001296, 10.43037500000355, 9.523208999999042, 9.15333400000236, 8.211167000001296],
-        "statementCounts": [11, 11, 11, 11, 11],
-        "selectCount": 11,
+      },
+      "after": {
+        "medianMs": 5.739542000002984,
+        "samplesMs": [5.739542000002984, 5.674249999996391, 5.803458000002138, 5.7068750000034925, 5.844665999997233],
+        "statementCounts": [2, 2, 2, 2, 2],
+        "selectCount": 2,
         "outcomeStatuses": ["no_connection"],
         "statements": [
           {
@@ -429,377 +856,23 @@
             "plan": [
               {
                 "Plan": {
-                  "Node Type": "Bitmap Heap Scan",
+                  "Node Type": "Seq Scan",
                   "Parallel Aware": false,
                   "Async Capable": false,
                   "Relation Name": "im_message_deliveries",
                   "Alias": "im_message_deliveries",
-                  "Startup Cost": 688.87,
-                  "Total Cost": 5980.03,
-                  "Plan Rows": 5,
+                  "Startup Cost": 0,
+                  "Total Cost": 6048,
+                  "Plan Rows": 33,
                   "Plan Width": 42,
-                  "Actual Startup Time": 0.731,
-                  "Actual Total Time": 4.294,
-                  "Actual Rows": 10,
-                  "Actual Loops": 1,
-                  "Recheck Cond": "(session_id = '00000007-0000-4000-8000-000000000001'::uuid)",
-                  "Rows Removed by Index Recheck": 0,
-                  "Filter": "((reported_at IS NULL) AND (state = 'accepted'::im_delivery_state))",
-                  "Rows Removed by Filter": 49990,
-                  "Exact Heap Blocks": 4546,
-                  "Lossy Heap Blocks": 0,
-                  "Shared Hit Blocks": 4587,
-                  "Shared Read Blocks": 0,
-                  "Shared Dirtied Blocks": 0,
-                  "Shared Written Blocks": 0,
-                  "Local Hit Blocks": 0,
-                  "Local Read Blocks": 0,
-                  "Local Dirtied Blocks": 0,
-                  "Local Written Blocks": 0,
-                  "Temp Read Blocks": 0,
-                  "Temp Written Blocks": 0,
-                  "Plans": [
-                    {
-                      "Node Type": "Bitmap Index Scan",
-                      "Parent Relationship": "Outer",
-                      "Parallel Aware": false,
-                      "Async Capable": false,
-                      "Index Name": "im_message_deliveries_session_id_idx",
-                      "Startup Cost": 0,
-                      "Total Cost": 688.87,
-                      "Plan Rows": 49677,
-                      "Plan Width": 0,
-                      "Actual Startup Time": 0.505,
-                      "Actual Total Time": 0.505,
-                      "Actual Rows": 50010,
-                      "Actual Loops": 1,
-                      "Index Cond": "(session_id = '00000007-0000-4000-8000-000000000001'::uuid)",
-                      "Shared Hit Blocks": 41,
-                      "Shared Read Blocks": 0,
-                      "Shared Dirtied Blocks": 0,
-                      "Shared Written Blocks": 0,
-                      "Local Hit Blocks": 0,
-                      "Local Read Blocks": 0,
-                      "Local Dirtied Blocks": 0,
-                      "Local Written Blocks": 0,
-                      "Temp Read Blocks": 0,
-                      "Temp Written Blocks": 0
-                    }
-                  ]
-                },
-                "Settings": {},
-                "Planning": {
-                  "Shared Hit Blocks": 2,
-                  "Shared Read Blocks": 0,
-                  "Shared Dirtied Blocks": 0,
-                  "Shared Written Blocks": 0,
-                  "Local Hit Blocks": 0,
-                  "Local Read Blocks": 0,
-                  "Local Dirtied Blocks": 0,
-                  "Local Written Blocks": 0,
-                  "Temp Read Blocks": 0,
-                  "Temp Written Blocks": 0
-                },
-                "Planning Time": 0.024,
-                "Triggers": [],
-                "Execution Time": 4.307
-              }
-            ]
-          },
-          {
-            "sql": "select \"id\", \"session_id\", \"storage_uri\", \"lifecycle\", \"current_resource_name\", \"current_resource_uid\", \"current_operation_name\", \"environment_generation\", \"idle_reclaim_at\", \"last_error_code\", \"last_error_at\", \"last_activity_at\", \"created_at\", \"updated_at\" from \"sandboxes\" where \"sandboxes\".\"session_id\" = $1 limit $2",
-            "parameterCount": 2,
-            "occurrences": 10,
-            "plan": [
-              {
-                "Plan": {
-                  "Node Type": "Limit",
-                  "Parallel Aware": false,
-                  "Async Capable": false,
-                  "Startup Cost": 0.42,
-                  "Total Cost": 8.44,
-                  "Plan Rows": 1,
-                  "Plan Width": 250,
                   "Actual Startup Time": 0.004,
-                  "Actual Total Time": 0.005,
-                  "Actual Rows": 1,
-                  "Actual Loops": 1,
-                  "Shared Hit Blocks": 4,
-                  "Shared Read Blocks": 0,
-                  "Shared Dirtied Blocks": 0,
-                  "Shared Written Blocks": 0,
-                  "Local Hit Blocks": 0,
-                  "Local Read Blocks": 0,
-                  "Local Dirtied Blocks": 0,
-                  "Local Written Blocks": 0,
-                  "Temp Read Blocks": 0,
-                  "Temp Written Blocks": 0,
-                  "Plans": [
-                    {
-                      "Node Type": "Index Scan",
-                      "Parent Relationship": "Outer",
-                      "Parallel Aware": false,
-                      "Async Capable": false,
-                      "Scan Direction": "Forward",
-                      "Index Name": "sandboxes_session_id_unique",
-                      "Relation Name": "sandboxes",
-                      "Alias": "sandboxes",
-                      "Startup Cost": 0.42,
-                      "Total Cost": 8.44,
-                      "Plan Rows": 1,
-                      "Plan Width": 250,
-                      "Actual Startup Time": 0.004,
-                      "Actual Total Time": 0.004,
-                      "Actual Rows": 1,
-                      "Actual Loops": 1,
-                      "Index Cond": "(session_id = '00000007-0000-4000-8000-000000000001'::uuid)",
-                      "Rows Removed by Index Recheck": 0,
-                      "Shared Hit Blocks": 4,
-                      "Shared Read Blocks": 0,
-                      "Shared Dirtied Blocks": 0,
-                      "Shared Written Blocks": 0,
-                      "Local Hit Blocks": 0,
-                      "Local Read Blocks": 0,
-                      "Local Dirtied Blocks": 0,
-                      "Local Written Blocks": 0,
-                      "Temp Read Blocks": 0,
-                      "Temp Written Blocks": 0
-                    }
-                  ]
-                },
-                "Settings": {},
-                "Planning": {
-                  "Shared Hit Blocks": 3,
-                  "Shared Read Blocks": 0,
-                  "Shared Dirtied Blocks": 0,
-                  "Shared Written Blocks": 0,
-                  "Local Hit Blocks": 0,
-                  "Local Read Blocks": 0,
-                  "Local Dirtied Blocks": 0,
-                  "Local Written Blocks": 0,
-                  "Temp Read Blocks": 0,
-                  "Temp Written Blocks": 0
-                },
-                "Planning Time": 0.018,
-                "Triggers": [],
-                "Execution Time": 0.009
-              }
-            ]
-          }
-        ]
-      },
-      "after": {
-        "medianMs": 5.065666999995301,
-        "samplesMs": [5.284208999997645, 5.065666999995301, 5.059709000001021, 5.285250000000815, 5.04854200000409],
-        "statementCounts": [2, 2, 2, 2, 2],
-        "selectCount": 2,
-        "outcomeStatuses": ["no_connection"],
-        "statements": [
-          {
-            "sql": "select \"id\", \"turn_id\", \"report_owner_instance_id\" from \"im_message_deliveries\" where (\"im_message_deliveries\".\"session_id\" = $1 and \"im_message_deliveries\".\"state\" = $2 and \"im_message_deliveries\".\"reported_at\" is null)",
-            "parameterCount": 2,
-            "occurrences": 1,
-            "plan": [
-              {
-                "Plan": {
-                  "Node Type": "Bitmap Heap Scan",
-                  "Parallel Aware": false,
-                  "Async Capable": false,
-                  "Relation Name": "im_message_deliveries",
-                  "Alias": "im_message_deliveries",
-                  "Startup Cost": 688.87,
-                  "Total Cost": 5980.03,
-                  "Plan Rows": 5,
-                  "Plan Width": 42,
-                  "Actual Startup Time": 0.696,
-                  "Actual Total Time": 4.159,
-                  "Actual Rows": 10,
-                  "Actual Loops": 1,
-                  "Recheck Cond": "(session_id = '00000007-0000-4000-8000-000000000001'::uuid)",
-                  "Rows Removed by Index Recheck": 0,
-                  "Filter": "((reported_at IS NULL) AND (state = 'accepted'::im_delivery_state))",
-                  "Rows Removed by Filter": 49990,
-                  "Exact Heap Blocks": 4546,
-                  "Lossy Heap Blocks": 0,
-                  "Shared Hit Blocks": 4587,
-                  "Shared Read Blocks": 0,
-                  "Shared Dirtied Blocks": 0,
-                  "Shared Written Blocks": 0,
-                  "Local Hit Blocks": 0,
-                  "Local Read Blocks": 0,
-                  "Local Dirtied Blocks": 0,
-                  "Local Written Blocks": 0,
-                  "Temp Read Blocks": 0,
-                  "Temp Written Blocks": 0,
-                  "Plans": [
-                    {
-                      "Node Type": "Bitmap Index Scan",
-                      "Parent Relationship": "Outer",
-                      "Parallel Aware": false,
-                      "Async Capable": false,
-                      "Index Name": "im_message_deliveries_session_id_idx",
-                      "Startup Cost": 0,
-                      "Total Cost": 688.87,
-                      "Plan Rows": 49677,
-                      "Plan Width": 0,
-                      "Actual Startup Time": 0.479,
-                      "Actual Total Time": 0.479,
-                      "Actual Rows": 50010,
-                      "Actual Loops": 1,
-                      "Index Cond": "(session_id = '00000007-0000-4000-8000-000000000001'::uuid)",
-                      "Shared Hit Blocks": 41,
-                      "Shared Read Blocks": 0,
-                      "Shared Dirtied Blocks": 0,
-                      "Shared Written Blocks": 0,
-                      "Local Hit Blocks": 0,
-                      "Local Read Blocks": 0,
-                      "Local Dirtied Blocks": 0,
-                      "Local Written Blocks": 0,
-                      "Temp Read Blocks": 0,
-                      "Temp Written Blocks": 0
-                    }
-                  ]
-                },
-                "Settings": {},
-                "Planning": {
-                  "Shared Hit Blocks": 2,
-                  "Shared Read Blocks": 0,
-                  "Shared Dirtied Blocks": 0,
-                  "Shared Written Blocks": 0,
-                  "Local Hit Blocks": 0,
-                  "Local Read Blocks": 0,
-                  "Local Dirtied Blocks": 0,
-                  "Local Written Blocks": 0,
-                  "Temp Read Blocks": 0,
-                  "Temp Written Blocks": 0
-                },
-                "Planning Time": 0.031,
-                "Triggers": [],
-                "Execution Time": 4.174
-              }
-            ]
-          },
-          {
-            "sql": "select \"id\", \"session_id\", \"storage_uri\", \"lifecycle\", \"current_resource_name\", \"current_resource_uid\", \"current_operation_name\", \"environment_generation\", \"idle_reclaim_at\", \"last_error_code\", \"last_error_at\", \"last_activity_at\", \"created_at\", \"updated_at\" from \"sandboxes\" where \"sandboxes\".\"session_id\" = $1 limit $2",
-            "parameterCount": 2,
-            "occurrences": 1,
-            "plan": [
-              {
-                "Plan": {
-                  "Node Type": "Limit",
-                  "Parallel Aware": false,
-                  "Async Capable": false,
-                  "Startup Cost": 0.42,
-                  "Total Cost": 8.44,
-                  "Plan Rows": 1,
-                  "Plan Width": 250,
-                  "Actual Startup Time": 0.006,
-                  "Actual Total Time": 0.006,
-                  "Actual Rows": 1,
-                  "Actual Loops": 1,
-                  "Shared Hit Blocks": 4,
-                  "Shared Read Blocks": 0,
-                  "Shared Dirtied Blocks": 0,
-                  "Shared Written Blocks": 0,
-                  "Local Hit Blocks": 0,
-                  "Local Read Blocks": 0,
-                  "Local Dirtied Blocks": 0,
-                  "Local Written Blocks": 0,
-                  "Temp Read Blocks": 0,
-                  "Temp Written Blocks": 0,
-                  "Plans": [
-                    {
-                      "Node Type": "Index Scan",
-                      "Parent Relationship": "Outer",
-                      "Parallel Aware": false,
-                      "Async Capable": false,
-                      "Scan Direction": "Forward",
-                      "Index Name": "sandboxes_session_id_unique",
-                      "Relation Name": "sandboxes",
-                      "Alias": "sandboxes",
-                      "Startup Cost": 0.42,
-                      "Total Cost": 8.44,
-                      "Plan Rows": 1,
-                      "Plan Width": 250,
-                      "Actual Startup Time": 0.006,
-                      "Actual Total Time": 0.006,
-                      "Actual Rows": 1,
-                      "Actual Loops": 1,
-                      "Index Cond": "(session_id = '00000007-0000-4000-8000-000000000001'::uuid)",
-                      "Rows Removed by Index Recheck": 0,
-                      "Shared Hit Blocks": 4,
-                      "Shared Read Blocks": 0,
-                      "Shared Dirtied Blocks": 0,
-                      "Shared Written Blocks": 0,
-                      "Local Hit Blocks": 0,
-                      "Local Read Blocks": 0,
-                      "Local Dirtied Blocks": 0,
-                      "Local Written Blocks": 0,
-                      "Temp Read Blocks": 0,
-                      "Temp Written Blocks": 0
-                    }
-                  ]
-                },
-                "Settings": {},
-                "Planning": {
-                  "Shared Hit Blocks": 3,
-                  "Shared Read Blocks": 0,
-                  "Shared Dirtied Blocks": 0,
-                  "Shared Written Blocks": 0,
-                  "Local Hit Blocks": 0,
-                  "Local Read Blocks": 0,
-                  "Local Dirtied Blocks": 0,
-                  "Local Written Blocks": 0,
-                  "Temp Read Blocks": 0,
-                  "Temp Written Blocks": 0
-                },
-                "Planning Time": 0.021,
-                "Triggers": [],
-                "Execution Time": 0.011
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "name": "cloud.cancel.100-unreported",
-      "eligibleDeliveries": 100,
-      "before": {
-        "medianMs": 28.734833000002254,
-        "samplesMs": [32.23374999999942, 28.85216699999728, 28.734749999995984, 28.734833000002254, 28.73408300000301],
-        "statementCounts": [101, 101, 101, 101, 101],
-        "selectCount": 101,
-        "outcomeStatuses": ["no_connection"],
-        "statements": [
-          {
-            "sql": "select \"id\", \"turn_id\", \"report_owner_instance_id\" from \"im_message_deliveries\" where (\"im_message_deliveries\".\"session_id\" = $1 and \"im_message_deliveries\".\"state\" = $2 and \"im_message_deliveries\".\"reported_at\" is null)",
-            "parameterCount": 2,
-            "occurrences": 1,
-            "plan": [
-              {
-                "Plan": {
-                  "Node Type": "Bitmap Heap Scan",
-                  "Parallel Aware": false,
-                  "Async Capable": false,
-                  "Relation Name": "im_message_deliveries",
-                  "Alias": "im_message_deliveries",
-                  "Startup Cost": 687.83,
-                  "Total Cost": 5978.89,
-                  "Plan Rows": 59,
-                  "Plan Width": 42,
-                  "Actual Startup Time": 0.803,
-                  "Actual Total Time": 5.392,
+                  "Actual Total Time": 4.916,
                   "Actual Rows": 100,
                   "Actual Loops": 1,
-                  "Recheck Cond": "(session_id = '00000007-0000-4000-8000-000000000001'::uuid)",
-                  "Rows Removed by Index Recheck": 0,
-                  "Filter": "((reported_at IS NULL) AND (state = 'accepted'::im_delivery_state))",
-                  "Rows Removed by Filter": 49900,
-                  "Exact Heap Blocks": 4548,
-                  "Lossy Heap Blocks": 0,
-                  "Shared Hit Blocks": 4589,
-                  "Shared Read Blocks": 0,
+                  "Filter": "((reported_at IS NULL) AND (session_id = '00000007-0000-4000-8000-000000000001'::uuid) AND (state = 'accepted'::im_delivery_state))",
+                  "Rows Removed by Filter": 99900,
+                  "Shared Hit Blocks": 2925,
+                  "Shared Read Blocks": 1623,
                   "Shared Dirtied Blocks": 0,
                   "Shared Written Blocks": 0,
                   "Local Hit Blocks": 0,
@@ -807,35 +880,7 @@
                   "Local Dirtied Blocks": 0,
                   "Local Written Blocks": 0,
                   "Temp Read Blocks": 0,
-                  "Temp Written Blocks": 0,
-                  "Plans": [
-                    {
-                      "Node Type": "Bitmap Index Scan",
-                      "Parent Relationship": "Outer",
-                      "Parallel Aware": false,
-                      "Async Capable": false,
-                      "Index Name": "im_message_deliveries_session_id_idx",
-                      "Startup Cost": 0,
-                      "Total Cost": 687.82,
-                      "Plan Rows": 49537,
-                      "Plan Width": 0,
-                      "Actual Startup Time": 0.53,
-                      "Actual Total Time": 0.531,
-                      "Actual Rows": 50104,
-                      "Actual Loops": 1,
-                      "Index Cond": "(session_id = '00000007-0000-4000-8000-000000000001'::uuid)",
-                      "Shared Hit Blocks": 41,
-                      "Shared Read Blocks": 0,
-                      "Shared Dirtied Blocks": 0,
-                      "Shared Written Blocks": 0,
-                      "Local Hit Blocks": 0,
-                      "Local Read Blocks": 0,
-                      "Local Dirtied Blocks": 0,
-                      "Local Written Blocks": 0,
-                      "Temp Read Blocks": 0,
-                      "Temp Written Blocks": 0
-                    }
-                  ]
+                  "Temp Written Blocks": 0
                 },
                 "Settings": {},
                 "Planning": {
@@ -850,16 +895,16 @@
                   "Temp Read Blocks": 0,
                   "Temp Written Blocks": 0
                 },
-                "Planning Time": 0.03,
+                "Planning Time": 0.032,
                 "Triggers": [],
-                "Execution Time": 5.409
+                "Execution Time": 4.921
               }
             ]
           },
           {
             "sql": "select \"id\", \"session_id\", \"storage_uri\", \"lifecycle\", \"current_resource_name\", \"current_resource_uid\", \"current_operation_name\", \"environment_generation\", \"idle_reclaim_at\", \"last_error_code\", \"last_error_at\", \"last_activity_at\", \"created_at\", \"updated_at\" from \"sandboxes\" where \"sandboxes\".\"session_id\" = $1 limit $2",
             "parameterCount": 2,
-            "occurrences": 100,
+            "occurrences": 1,
             "plan": [
               {
                 "Plan": {
@@ -870,8 +915,8 @@
                   "Total Cost": 8.44,
                   "Plan Rows": 1,
                   "Plan Width": 250,
-                  "Actual Startup Time": 0.005,
-                  "Actual Total Time": 0.005,
+                  "Actual Startup Time": 0.018,
+                  "Actual Total Time": 0.018,
                   "Actual Rows": 1,
                   "Actual Loops": 1,
                   "Shared Hit Blocks": 4,
@@ -898,8 +943,8 @@
                       "Total Cost": 8.44,
                       "Plan Rows": 1,
                       "Plan Width": 250,
-                      "Actual Startup Time": 0.005,
-                      "Actual Total Time": 0.005,
+                      "Actual Startup Time": 0.018,
+                      "Actual Total Time": 0.018,
                       "Actual Rows": 1,
                       "Actual Loops": 1,
                       "Index Cond": "(session_id = '00000007-0000-4000-8000-000000000001'::uuid)",
@@ -930,182 +975,9 @@
                   "Temp Read Blocks": 0,
                   "Temp Written Blocks": 0
                 },
-                "Planning Time": 0.018,
+                "Planning Time": 0.029,
                 "Triggers": [],
-                "Execution Time": 0.009
-              }
-            ]
-          }
-        ]
-      },
-      "after": {
-        "medianMs": 5.519874999998137,
-        "samplesMs": [5.366915999999037, 7.3336660000059055, 5.974042000001646, 5.519874999998137, 5.461042000002635],
-        "statementCounts": [2, 2, 2, 2, 2],
-        "selectCount": 2,
-        "outcomeStatuses": ["no_connection"],
-        "statements": [
-          {
-            "sql": "select \"id\", \"turn_id\", \"report_owner_instance_id\" from \"im_message_deliveries\" where (\"im_message_deliveries\".\"session_id\" = $1 and \"im_message_deliveries\".\"state\" = $2 and \"im_message_deliveries\".\"reported_at\" is null)",
-            "parameterCount": 2,
-            "occurrences": 1,
-            "plan": [
-              {
-                "Plan": {
-                  "Node Type": "Bitmap Heap Scan",
-                  "Parallel Aware": false,
-                  "Async Capable": false,
-                  "Relation Name": "im_message_deliveries",
-                  "Alias": "im_message_deliveries",
-                  "Startup Cost": 687.83,
-                  "Total Cost": 5978.89,
-                  "Plan Rows": 59,
-                  "Plan Width": 42,
-                  "Actual Startup Time": 0.724,
-                  "Actual Total Time": 4.402,
-                  "Actual Rows": 100,
-                  "Actual Loops": 1,
-                  "Recheck Cond": "(session_id = '00000007-0000-4000-8000-000000000001'::uuid)",
-                  "Rows Removed by Index Recheck": 0,
-                  "Filter": "((reported_at IS NULL) AND (state = 'accepted'::im_delivery_state))",
-                  "Rows Removed by Filter": 49900,
-                  "Exact Heap Blocks": 4548,
-                  "Lossy Heap Blocks": 0,
-                  "Shared Hit Blocks": 4589,
-                  "Shared Read Blocks": 0,
-                  "Shared Dirtied Blocks": 0,
-                  "Shared Written Blocks": 0,
-                  "Local Hit Blocks": 0,
-                  "Local Read Blocks": 0,
-                  "Local Dirtied Blocks": 0,
-                  "Local Written Blocks": 0,
-                  "Temp Read Blocks": 0,
-                  "Temp Written Blocks": 0,
-                  "Plans": [
-                    {
-                      "Node Type": "Bitmap Index Scan",
-                      "Parent Relationship": "Outer",
-                      "Parallel Aware": false,
-                      "Async Capable": false,
-                      "Index Name": "im_message_deliveries_session_id_idx",
-                      "Startup Cost": 0,
-                      "Total Cost": 687.82,
-                      "Plan Rows": 49537,
-                      "Plan Width": 0,
-                      "Actual Startup Time": 0.507,
-                      "Actual Total Time": 0.507,
-                      "Actual Rows": 50104,
-                      "Actual Loops": 1,
-                      "Index Cond": "(session_id = '00000007-0000-4000-8000-000000000001'::uuid)",
-                      "Shared Hit Blocks": 41,
-                      "Shared Read Blocks": 0,
-                      "Shared Dirtied Blocks": 0,
-                      "Shared Written Blocks": 0,
-                      "Local Hit Blocks": 0,
-                      "Local Read Blocks": 0,
-                      "Local Dirtied Blocks": 0,
-                      "Local Written Blocks": 0,
-                      "Temp Read Blocks": 0,
-                      "Temp Written Blocks": 0
-                    }
-                  ]
-                },
-                "Settings": {},
-                "Planning": {
-                  "Shared Hit Blocks": 2,
-                  "Shared Read Blocks": 0,
-                  "Shared Dirtied Blocks": 0,
-                  "Shared Written Blocks": 0,
-                  "Local Hit Blocks": 0,
-                  "Local Read Blocks": 0,
-                  "Local Dirtied Blocks": 0,
-                  "Local Written Blocks": 0,
-                  "Temp Read Blocks": 0,
-                  "Temp Written Blocks": 0
-                },
-                "Planning Time": 0.023,
-                "Triggers": [],
-                "Execution Time": 4.42
-              }
-            ]
-          },
-          {
-            "sql": "select \"id\", \"session_id\", \"storage_uri\", \"lifecycle\", \"current_resource_name\", \"current_resource_uid\", \"current_operation_name\", \"environment_generation\", \"idle_reclaim_at\", \"last_error_code\", \"last_error_at\", \"last_activity_at\", \"created_at\", \"updated_at\" from \"sandboxes\" where \"sandboxes\".\"session_id\" = $1 limit $2",
-            "parameterCount": 2,
-            "occurrences": 1,
-            "plan": [
-              {
-                "Plan": {
-                  "Node Type": "Limit",
-                  "Parallel Aware": false,
-                  "Async Capable": false,
-                  "Startup Cost": 0.42,
-                  "Total Cost": 8.44,
-                  "Plan Rows": 1,
-                  "Plan Width": 250,
-                  "Actual Startup Time": 0.005,
-                  "Actual Total Time": 0.005,
-                  "Actual Rows": 1,
-                  "Actual Loops": 1,
-                  "Shared Hit Blocks": 4,
-                  "Shared Read Blocks": 0,
-                  "Shared Dirtied Blocks": 0,
-                  "Shared Written Blocks": 0,
-                  "Local Hit Blocks": 0,
-                  "Local Read Blocks": 0,
-                  "Local Dirtied Blocks": 0,
-                  "Local Written Blocks": 0,
-                  "Temp Read Blocks": 0,
-                  "Temp Written Blocks": 0,
-                  "Plans": [
-                    {
-                      "Node Type": "Index Scan",
-                      "Parent Relationship": "Outer",
-                      "Parallel Aware": false,
-                      "Async Capable": false,
-                      "Scan Direction": "Forward",
-                      "Index Name": "sandboxes_session_id_unique",
-                      "Relation Name": "sandboxes",
-                      "Alias": "sandboxes",
-                      "Startup Cost": 0.42,
-                      "Total Cost": 8.44,
-                      "Plan Rows": 1,
-                      "Plan Width": 250,
-                      "Actual Startup Time": 0.004,
-                      "Actual Total Time": 0.004,
-                      "Actual Rows": 1,
-                      "Actual Loops": 1,
-                      "Index Cond": "(session_id = '00000007-0000-4000-8000-000000000001'::uuid)",
-                      "Rows Removed by Index Recheck": 0,
-                      "Shared Hit Blocks": 4,
-                      "Shared Read Blocks": 0,
-                      "Shared Dirtied Blocks": 0,
-                      "Shared Written Blocks": 0,
-                      "Local Hit Blocks": 0,
-                      "Local Read Blocks": 0,
-                      "Local Dirtied Blocks": 0,
-                      "Local Written Blocks": 0,
-                      "Temp Read Blocks": 0,
-                      "Temp Written Blocks": 0
-                    }
-                  ]
-                },
-                "Settings": {},
-                "Planning": {
-                  "Shared Hit Blocks": 3,
-                  "Shared Read Blocks": 0,
-                  "Shared Dirtied Blocks": 0,
-                  "Shared Written Blocks": 0,
-                  "Local Hit Blocks": 0,
-                  "Local Read Blocks": 0,
-                  "Local Dirtied Blocks": 0,
-                  "Local Written Blocks": 0,
-                  "Temp Read Blocks": 0,
-                  "Temp Written Blocks": 0
-                },
-                "Planning Time": 0.017,
-                "Triggers": [],
-                "Execution Time": 0.008
+                "Execution Time": 0.025
               }
             ]
           }
@@ -1114,8 +986,11 @@
     }
   ],
   "environment": {
-    "workingTreeCommit": "9c745963c2352a28ff293cbf618dbfd037b08d41",
+    "workingTreeCommit": "0eeaf917761a1ae33e99857bc0f0734c7bd83d95",
     "beforeRef": "d2fc9e8aa045dc1a214ab3f0a953cbdcde088c92",
+    "seedFixture": "packages/server/scripts/database-performance-seed.sql",
+    "resultsPath": "/Users/bestony/.herdr/worktrees/opentag/fix-db-cancel-n-plus-one/testing/performance/cancel-deliveries/results.json",
+    "resultsPathOverridden": false,
     "node": "v24.19.0",
     "platform": "darwin",
     "arch": "arm64",
@@ -1132,174 +1007,174 @@
     },
     "migrationCount": 69,
     "tableCount": 39,
-    "databaseBytes": "1262576143",
-    "runStartedAt": "2026-10-26T08:37:50.688Z",
+    "databaseBytes": "1262551567",
+    "runStartedAt": "2026-10-26T09:25:05.380Z",
     "method": "One warm-up and five sequential samples per case and owner, both owners measured on the same seeded database so the pair shares data and cache state. Statement counts come from the Drizzle query logger. Plans come from one additional untimed EXPLAIN (ANALYZE, BUFFERS, SETTINGS, FORMAT JSON) per distinct statement of the last sample. The fixture has no live Runner connection, so every outcome is no_connection, exactly as in the audit. Local Docker microbenchmark with default service query deadlines; not production capacity."
   },
   "seedTimings": [
     {
       "table": "fixture functions",
-      "elapsedMs": 1.9643329999998969
+      "elapsedMs": 2.1893339999996897
     },
     {
       "table": "users",
-      "elapsedMs": 220.7365420000001
+      "elapsedMs": 219.03383399999984
     },
     {
       "table": "computers",
-      "elapsedMs": 757.0020410000002
+      "elapsedMs": 718.5383330000004
     },
     {
       "table": "agents",
-      "elapsedMs": 1243.8104589999998
+      "elapsedMs": 1186.1595839999995
     },
     {
       "table": "slack_installations",
-      "elapsedMs": 877.2875839999997
+      "elapsedMs": 857.7992079999995
     },
     {
       "table": "im_bindings",
-      "elapsedMs": 844.1862089999995
+      "elapsedMs": 872.3937080000005
     },
     {
       "table": "sessions",
-      "elapsedMs": 721.868375
+      "elapsedMs": 698.9909580000003
     },
     {
       "table": "sessions",
-      "elapsedMs": 1086.339832999999
+      "elapsedMs": 1100.370958999999
     },
     {
       "table": "session_placements",
-      "elapsedMs": 950.060042000001
+      "elapsedMs": 1051.0446250000005
     },
     {
       "table": "im_messages",
-      "elapsedMs": 1322.0849999999991
+      "elapsedMs": 1332.0920830000014
     },
     {
       "table": "im_message_deliveries",
-      "elapsedMs": 1710.6342089999998
+      "elapsedMs": 1707.320749999999
     },
     {
       "table": "session_messages",
-      "elapsedMs": 1462.645708
+      "elapsedMs": 1409.566999999999
     },
     {
       "table": "session_descendants",
-      "elapsedMs": 1276.3274579999998
+      "elapsedMs": 1217.4073750000007
     },
     {
       "table": "sandboxes",
-      "elapsedMs": 780.1594169999989
+      "elapsedMs": 820.0030420000003
     },
     {
       "table": "computer_credentials",
-      "elapsedMs": 1346.9937910000008
+      "elapsedMs": 1278.2647920000018
     },
     {
       "table": "account_cli_login_codes",
-      "elapsedMs": 1071.257125
+      "elapsedMs": 1134.4412909999992
     },
     {
       "table": "auth_identities",
-      "elapsedMs": 938.1286250000012
+      "elapsedMs": 976.6515419999996
     },
     {
       "table": "auth_sessions",
-      "elapsedMs": 742.923958000003
+      "elapsedMs": 700.0002090000016
     },
     {
       "table": "auth_verifications",
-      "elapsedMs": 244.539084
+      "elapsedMs": 241.35341699999844
     },
     {
       "table": "computer_connect_codes",
-      "elapsedMs": 828.0721669999984
+      "elapsedMs": 809.7795420000002
     },
     {
       "table": "agent_runtime_configs",
-      "elapsedMs": 564.2126669999998
+      "elapsedMs": 537.5063330000012
     },
     {
       "table": "agent_schedules",
-      "elapsedMs": 1202.396084
+      "elapsedMs": 1301.0012910000005
     },
     {
       "table": "agent_skills",
-      "elapsedMs": 1009.6832500000019
+      "elapsedMs": 979.3547090000029
     },
     {
       "table": "feishu_inbound_receipts",
-      "elapsedMs": 730.9130000000005
+      "elapsedMs": 685.3655419999996
     },
     {
       "table": "github_connections",
-      "elapsedMs": 756.9939169999998
+      "elapsedMs": 731.9609579999997
     },
     {
       "table": "mcp_servers",
-      "elapsedMs": 843.5617090000014
+      "elapsedMs": 766.1013330000023
     },
     {
       "table": "agent_mcp_servers",
-      "elapsedMs": 948.5564589999994
+      "elapsedMs": 1058.1302499999983
     },
     {
       "table": "mcp_client_registrations",
-      "elapsedMs": 676.1781659999979
+      "elapsedMs": 623.2285419999971
     },
     {
       "table": "mcp_server_authorizations",
-      "elapsedMs": 1154.9963329999991
+      "elapsedMs": 1061.4411250000012
     },
     {
       "table": "runtime_approvals",
-      "elapsedMs": 1134.0151670000014
+      "elapsedMs": 1104.7444579999974
     },
     {
       "table": "runtime_durable_work",
-      "elapsedMs": 1584.1495409999989
+      "elapsedMs": 1554.3499159999992
     },
     {
       "table": "session_cli_proofs",
-      "elapsedMs": 1608.9390000000021
+      "elapsedMs": 1677.7504999999983
     },
     {
       "table": "slack_oauth_nonces",
-      "elapsedMs": 1262.1039999999994
+      "elapsedMs": 1209.783209000001
     },
     {
       "table": "slack_webhook_receipts",
-      "elapsedMs": 738.244458000001
+      "elapsedMs": 734.0317080000023
     },
     {
       "table": "slack_working_targets",
-      "elapsedMs": 1165.7872080000016
+      "elapsedMs": 1182.4398749999964
     },
     {
       "table": "slack_working_turns",
-      "elapsedMs": 1177.614625000002
+      "elapsedMs": 1162.6854999999996
     },
     {
       "table": "billing.accounts",
-      "elapsedMs": 538.5501249999943
+      "elapsedMs": 746.4964999999938
     },
     {
       "table": "billing.grants",
-      "elapsedMs": 616.6747500000056
+      "elapsedMs": 638.7037909999999
     },
     {
       "table": "billing.checkouts",
-      "elapsedMs": 809.0903749999998
+      "elapsedMs": 765.6467090000006
     },
     {
       "table": "billing.payment_changes",
-      "elapsedMs": 112.87833300000057
+      "elapsedMs": 112.91712499999994
     },
     {
       "table": "billing.attempts",
-      "elapsedMs": 1094.545834000004
+      "elapsedMs": 1106.9637499999953
     }
   ],
   "rowCounts": [
@@ -1466,8 +1341,8 @@
     "idleInTransactionTimeoutMs": 60000
   },
   "runInterval": {
-    "startedAt": "2026-10-26T08:37:50.688Z",
-    "finishedAt": "2026-10-26T08:38:45.599Z"
+    "startedAt": "2026-10-26T09:25:05.380Z",
+    "finishedAt": "2026-10-26T09:25:59.830Z"
   },
   "containerRemoved": true
 }

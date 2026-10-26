@@ -1515,7 +1515,7 @@ describe("CloudDeliveryOwner", () => {
     expect(await owner.recoverAccepted(deliveryId)).toBe("pending");
   });
 
-  it("reads the Sandbox once for an empty backlog and once for any nonempty backlog", async () => {
+  it("reads the Sandbox only for a nonempty backlog: one SELECT in total for an empty one, two otherwise", async () => {
     const counter = countedDatabase();
     const closeSessionExecutions = vi.fn(() => []);
     const empty = await cloudScope();
@@ -1592,9 +1592,10 @@ describe("CloudDeliveryOwner", () => {
       sessionId: scope.sessionId,
     });
     counter.reset();
-    expect(await owner.cancelSessionDeliveries(scope.sessionId)).toEqual(
-      staleIds.map((deliveryId) => ({ deliveryId, status: "no_connection" })),
-    );
+    const staleOutcomes = await owner.cancelSessionDeliveries(scope.sessionId);
+    // Row order from the eligible-delivery read is not part of the contract.
+    expect(staleOutcomes.map((outcome) => outcome.deliveryId).sort()).toEqual([...staleIds].sort());
+    expect(staleOutcomes.map((outcome) => outcome.status)).toEqual(["no_connection", "no_connection"]);
     expect(counter.selects()).toBe(2);
 
     // A replacement on the same Sandbox owns its own work only: the superseded instance's rows stay
@@ -1636,6 +1637,81 @@ describe("CloudDeliveryOwner", () => {
     expect(counter.selects()).toBe(2);
     expect(withoutSandbox).toHaveLength(3);
     expect(withoutSandbox.every((outcome) => outcome.status === "no_connection")).toBe(true);
+  });
+
+  it("re-reads the connection fence after a replacement installed mid-sweep", async () => {
+    const counter = countedDatabase();
+    const { scope, cloud } = await cloudScope();
+    const sent: RunnerServerFrame[] = [];
+    const { hub, fence, owner } = makeOwner({ database: counter.database });
+    const { socket, connection } = attachReady(hub, fence, scope, sent, cloud.computerId);
+    await acceptedUnreportedDeliveries({
+      count: 3,
+      reportOwnerInstanceId: connection.instanceId,
+      sessionId: scope.sessionId,
+    });
+
+    // The Runner reconnects while the stop is already sweeping: the first delivered cancel frame
+    // installs a fresh connection on the same allocation, exactly like a reconnect mid-sweep.
+    const replacementSent: RunnerServerFrame[] = [];
+    const replacementSocket = fakeSocket(replacementSent);
+    const onSupersededSocket = socket.send.bind(socket);
+    let replacementConnectionId: string | undefined;
+    socket.send = (frame) => {
+      onSupersededSocket(frame);
+      if (frame.type !== "delivery:cancel" || replacementConnectionId) return;
+      hub.attach(scope, replacementSocket);
+      hub.markReady(scope, READINESS, replacementSocket);
+      replacementConnectionId = owner.attachConnection({
+        computerId: cloud.computerId,
+        installationId: randomUUID(),
+        scope,
+        socket: replacementSocket,
+      }).connectionId;
+    };
+
+    counter.reset();
+    const outcomes = await owner.cancelSessionDeliveries(scope.sessionId);
+
+    // The fence is read per delivery, so the rest of the sweep follows the current connection while
+    // the backlog still costs a single Sandbox read.
+    expect(counter.selects()).toBe(2);
+    expect(fence.connectionForSandbox(scope.sandboxId)?.connectionId).toBe(replacementConnectionId);
+    expect(sent.filter((frame) => frame.type === "delivery:cancel")).toHaveLength(1);
+    expect(replacementSent.filter((frame) => frame.type === "delivery:cancel")).toHaveLength(2);
+    expect(outcomes.every((outcome) => outcome.status === "cancelled")).toBe(true);
+  });
+
+  it("reports no_connection for the rest of the sweep when the fence is invalidated mid-sweep", async () => {
+    const counter = countedDatabase();
+    const { scope, cloud } = await cloudScope();
+    const sent: RunnerServerFrame[] = [];
+    const { hub, fence, owner } = makeOwner({ database: counter.database });
+    const { socket, connection } = attachReady(hub, fence, scope, sent, cloud.computerId);
+    await acceptedUnreportedDeliveries({
+      count: 3,
+      reportOwnerInstanceId: connection.instanceId,
+      sessionId: scope.sessionId,
+    });
+
+    // The owning connection disappears after the first frame: a cached fence entry would keep
+    // trying the dead socket and report send_failed, while the live fence reports no_connection.
+    const onSupersededSocket = socket.send.bind(socket);
+    let detached = false;
+    socket.send = (frame) => {
+      onSupersededSocket(frame);
+      if (frame.type !== "delivery:cancel" || detached) return;
+      detached = true;
+      owner.detachConnection(connection.connectionId);
+    };
+
+    counter.reset();
+    const outcomes = await owner.cancelSessionDeliveries(scope.sessionId);
+
+    expect(counter.selects()).toBe(2);
+    expect(sent.filter((frame) => frame.type === "delivery:cancel")).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome.status === "cancelled")).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome.status === "no_connection")).toHaveLength(2);
   });
 
   it("revokes the superseded connection's grant on replacement, even after the fence entry is gone", async () => {

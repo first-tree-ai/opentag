@@ -10,6 +10,7 @@ contents, and machine-specific operational logs outside the repository.
 - [Agent Runtime Provider test plan](agent-runtime-test-plan.md)
 - [Cloud Computer acceptance harness](cloud-computer.md)
 - [Slack local live acceptance](slack-live-acceptance.md)
+- [Agent usage and internal Session page benchmark](performance/agent-session/REPORT.md)
 
 ## Verification by feature
 

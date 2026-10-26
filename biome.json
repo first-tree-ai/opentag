@@ -15,6 +15,7 @@
       "!apps/web/src/paraglide",
       "!apps/web/project.inlang/cache",
       "!apps/web/project.inlang/.meta.json",
+      "!testing/performance/**/results*.json",
       "!.pi/loops"
     ]
   },

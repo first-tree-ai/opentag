@@ -25,26 +25,34 @@ rows are topics, not Sessions.
 - The Task id is the id of the topic's earliest stored message. The detail endpoint accepts the id
   of any message in the topic and reports the canonical id. `createdAt` is the root message's time.
 
-## Reading a Task
-
-`GET /api/v1/sessions/:id` is the legacy complete detail: a Turn page bounded by `limit`, plus every
-related Internal Session and collaboration message. It stays for readers written against that
-contract and is not the contract new readers use, because its section arrays are not bounded.
-
-`GET /api/v1/sessions/:id/detail` is the bounded detail: one page of Turns, one page of Internal
-Sessions and one page of collaboration messages, each with its own `nextCursor`. The three sections
-page independently at `/detail/turns`, `/detail/internal-sessions` and
-`/detail/collaboration-messages`, so a reader that needs more of one section asks for that section
-alone. Each section returns at most 100 rows and 20 by default. Reading any of them resolves the
-topic and then serves every section from one read-only Repeatable Read transaction, so an authorized
-topic is read from a single snapshot and no wait spans external I/O.
-
 The Account's channel Session for a group is therefore never listed as a Task; a top-level request
 that nobody replied to is a topic of one message. A Task reports `sessionKind: "thread"` and its
 thread key once a message in its topic carries a thread key, which is the first reply for Slack
 and an ordinary Feishu group, and the root itself in a Feishu topic group; a private chat and a
 request nobody replied to report `sessionKind: "channel"` with no thread key, so the Web labels
 them by the conversation they came from.
+
+## Reading a Task
+
+`GET /api/v1/sessions/:id` is the legacy complete detail: a Turn page bounded by `limit`, plus every
+related Internal Session and collaboration message. It stays for readers written against that
+contract and is not the contract new readers use, because its section arrays are not bounded.
+
+`GET /api/v1/sessions/:id/detail` is the bounded detail: one page of the sections the caller names
+in `sections` — all three when it names none — each with its own `nextCursor`. The three sections
+also page independently at `/detail/turns`, `/detail/internal-sessions` and
+`/detail/collaboration-messages`, so a reader that needs more of one section asks for that section
+alone. Each section returns at most 100 rows and 20 by default. Naming a subset is the point of the
+contract: the Web conversation renders the summary and the Turns, asks for `sections=turns`, and
+never reads the Internal Session or collaboration history it would discard. Reading any of them
+resolves the topic and serves the requested sections from one read-only Repeatable Read transaction,
+so an authorized topic is read from a single snapshot and no wait spans external I/O.
+
+Every section cursor is the exact ordering key of the last row it returned: the timestamp at the
+microsecond precision PostgreSQL compares, not the millisecond a browser `Date` would keep, plus the
+row id. An ascending page therefore never re-reads the row it just returned and a descending page
+never steps over one; equal timestamps are ordered by id alone. The cursor is opaque and validated
+strictly, and a cursor that does not match the expected shape is a `400`.
 
 ## Executions and status
 

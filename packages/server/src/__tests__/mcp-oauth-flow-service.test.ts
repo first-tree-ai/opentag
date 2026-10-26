@@ -3,6 +3,7 @@ import {
   CANVA_DEVELOPER_PORTAL_AUTHORIZATION_SERVER,
   CANVA_DEVELOPER_PORTAL_MCP_URL,
   GOOGLE_WORKSPACE_MCP_AUTHORIZATION_SERVER,
+  type McpStaticOAuthBrand,
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -118,9 +119,7 @@ function build(
   options: {
     now?: () => Date;
     googleMcpClient?: { clientId: string; clientSecret: string };
-    staticMcpClients?: Partial<
-      Record<"canva" | "hubspot" | "asana" | "zoom", { clientId: string; clientSecret: string }>
-    >;
+    staticMcpClients?: Partial<Record<McpStaticOAuthBrand, { clientId: string; clientSecret: string }>>;
   } = {},
 ) {
   const { calls, fetchImpl } = oauthNode(routes);
@@ -682,6 +681,9 @@ describe("McpOAuthFlowService.start", () => {
           token_endpoint: tokenUrl,
           response_types_supported: ["code"],
           code_challenge_methods_supported: ["S256"],
+          ...(brand === "github"
+            ? { scopes_supported: ["offline_access"], authorization_response_iss_parameter_supported: true }
+            : {}),
         }),
       [tokenUrl]: doc({ access_token: "at_1", refresh_token: "rt_1", expires_in: 600 }),
     });
@@ -689,10 +691,14 @@ describe("McpOAuthFlowService.start", () => {
     it("is presented at start, the callback and refresh, and registers nothing", async () => {
       const ids = await seed(mcpUrl);
       const { calls, flows } = build(routes(), { staticMcpClients: { [brand]: client } });
-      const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+      const scopes = brand === "github" ? ["repo", "offline_access"] : [];
+      const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, scopes, FLOW_SECRET);
       expect(new URL(started.authorizationUrl).searchParams.get("client_id")).toBe(client.clientId);
       expect(started.authorizationUrl).not.toContain(client.clientSecret);
-      await flows.callback({ code: "code-1", state: stateOf(started.authorizationUrl) }, FLOW_SECRET);
+      if (brand === "github") {
+        expect(new URL(started.authorizationUrl).searchParams.get("scope")).toBe("repo offline_access");
+      }
+      await flows.callback({ code: "code-1", state: stateOf(started.authorizationUrl), iss: issuer }, FLOW_SECRET);
       const row = await readAuthorization(ids);
       expect(row?.status).toBe("active");
       await flows.refreshAuthorization(row?.id as string);

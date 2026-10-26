@@ -140,8 +140,7 @@ export class CloudModelService {
       }
       reader = response.body.getReader();
       const type = response.headers.get("content-type") ?? "";
-      const retryAfter =
-        response.status === 429 ? cloudModelRetryAfter(response.headers.get("retry-after")) : undefined;
+      const retryAfter = cloudModelRetryAfter(response.headers.get("retry-after"));
       let total = 0;
       let streamController: ReadableStreamDefaultController<Uint8Array>;
       const cancelAndSettle = async () => {

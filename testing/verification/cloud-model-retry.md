@@ -7,7 +7,7 @@ Supports [Cloud Runner execution](../../docs/system/cloud/cloud-runner-execution
 Issue #827: one automatic retry owner for each logical Cloud model or summary call. The Pi
 provider request helper owns three retries after the initial attempt; session and summary
 retry loops have zero retries. OpenTag forwards each model request once. Context compaction
-remains enabled. A stream that has started is not automatically replayed after failure.
+remains enabled. Transient stream failures are not replayed by session/summary retry loops. Native context-overflow recovery remains a bounded, changed-context operation.
 
 No schema, query, accounting, schedule, delivery-custody, Local runtime, or dependency changes
 are involved.
@@ -19,7 +19,12 @@ The initial run had 10 expected failures: missing response hints, the absent exp
 retry configuration, premature retry before the hint, outer session/summary retries,
 over-budget hints being retried, and partial-stream replay.
 
-The fixed code passed 313 tests across these 10 files:
+The initial fix passed 313 tests across 10 files. Independent review then found that the real
+Router wraps pre-output Provider 429 rejections inside HTTP 200 SSE. Those envelopes were
+indistinguishable from uncertain in-band errors, so the companion Router patch marks only
+observed HTTP 429 rejections. The corrected implementation adds bounded initial-SSE
+normalization, heartbeat/cancellation tests, and an explicit native overflow recovery regression.
+The complete affected test command is:
 
 ```sh
 pnpm exec vitest run \
@@ -29,12 +34,15 @@ pnpm exec vitest run \
   packages/client/src/__tests__/pi-agent-runtime.test.ts \
   packages/client/src/__tests__/pi-agent-runtime-exhaustive.test.ts \
   packages/server/src/__tests__/cloud-model-proxy.test.ts \
+  packages/server/src/__tests__/cloud-model-initial-stream.test.ts \
   packages/server/src/__tests__/cloud-model-retry.test.ts \
   packages/server/src/__tests__/cloud-model-service.test.ts \
   packages/server/src/__tests__/cloud-model-boundaries.test.ts \
   packages/server/src/__tests__/cloud-model-grants.test.ts \
   --maxWorkers=1
 ```
+
+The corrected run passed all 336 tests across these 11 files.
 
 The Client retry tests use the installed Pi SDK, its real session/compaction logic, and its
 real OpenAI-compatible provider request helper. Only HTTP responses and the clock are
@@ -50,11 +58,15 @@ Covered outcomes:
 - Permanent HTTP 400/401/402/403 responses are not retried.
 - A requested wait above 60 seconds fails after one request without retrying early.
 - Cancellation and deadline interruption stop waits without later requests.
-- A partial model stream fails without automatic replay.
+- A transient partial model stream fails without a generic retry. Native context-overflow recovery makes a changed-context request, executes no partial tool call, and stops after one unsuccessful overflow recovery.
 - Summary exhaustion has four requests, without another summary retry budget; a transiently
   limited summary can also recover and complete normally.
 - Integer and canonical HTTP-date hints are validated; malformed or arbitrary header text is
   discarded. Permanent quota errors expose no hint.
+- A Router-shaped HTTP 200 SSE rate-limit rejection with the boolean
+  `error.pre_stream_rejection: true` is normalized before any model data, including fragmented
+  frames and heartbeat comments. Unmarked or uncertain errors, model data and oversized
+  prefixes are preserved byte for byte. Prelude timeout and shutdown remain bounded.
 - The Server sends at most one upstream completion request per received request and retains
   its existing usage-settlement and grant-revocation behavior.
 
@@ -73,16 +85,28 @@ fixture-only usage store. No public model, real credentials, or deployed databas
 | --- | ---: | ---: | ---: | --- |
 | Persistent transient 429, zero-second hint | 4 | 4 | 0 | Terminal model error |
 | 429 with a one-second hint, then success | 2 | 2 | 0 | Successful completion after the requested wait |
+| Marked Router HTTP 200 SSE rate limit, persistent | 4 | 4 | 0 | Terminal model error |
+| Marked Router HTTP 200 SSE rate limit, then success | 2 | 2 | 0 | Successful completion after the requested wait |
+| Unmarked Router HTTP 200 SSE rate limit | 1 | 1 | 0 | Terminal model error |
+| Model data followed by a marked rate limit | 1 | 1 | 0 | Terminal model error |
 
-Both cases included a conflicting project retry configuration and verified that it did not
+All cases included a conflicting project retry configuration and verified that it did not
 override the managed settings.
 
 ## Router and deployment boundary
 
-Read-only source inspection of LLM Router main at
+Source inspection of LLM Router main at
 `3a1fa09f2f1ecd4094c11dd67788031e116ba103` confirmed zero Router retries, zero LiteLLM retries,
 and zero provider SDK retries in deployment/model configuration. Its gateway transport forwards
-once. No Router source or deployed configuration was changed.
+once. The companion Router patch adds `error.pre_stream_rejection: true` only for observed
+upstream HTTP 429 `rate_limit_exceeded` rejections and carries a validated optional
+`error.retry_after` value. These fields are added to a fresh client response after the existing
+ledger handling; stored errors, accounting transitions and in-band error handling are unchanged.
+Provider-supplied markers are stripped. Router tests cover those boundaries, including a ledger
+release failure. No additional retry layer or deployed configuration change is introduced.
+
+Deploy the companion Router change before accepting recovery of streamed Provider 429s.
+Without the marker, OpenTag conservatively preserves the SSE error and does not retry it.
 
 Actual deployed settings, native Linux Sandbox execution, and live-provider TPM recovery were
 not exercised. Source checks, loopback CLI acceptance, merging, and deployment remain separate

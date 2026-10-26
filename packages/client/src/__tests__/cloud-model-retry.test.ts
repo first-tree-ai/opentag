@@ -118,18 +118,20 @@ async function fixture(response: (attempt: number) => Response) {
     session.dispose();
   });
   const requests: number[] = [];
+  const bodies: { messages: unknown[] }[] = [];
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (input: string | URL | Request) => {
+    vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       expect(String(input instanceof Request ? input.url : input)).toBe("https://model.invalid/v1/chat/completions");
       requests.push(Date.now());
+      bodies.push(JSON.parse(String(init?.body)));
       return response(requests.length);
     }),
   );
   const events: string[] = [];
   session.subscribe((event) => events.push(event.type));
   vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
-  return { session, requests, events };
+  return { session, requests, bodies, events };
 }
 
 async function exhaust(session: AgentSession, requests: readonly number[]): Promise<void> {
@@ -248,5 +250,31 @@ describe("Cloud model retry through the pinned Pi session and provider", () => {
     expect((await summary).summary).toContain("Completed.");
     expect(f.requests).toHaveLength(3);
     expect(f.events).not.toContain("summarization_retry_scheduled");
+  });
+
+  it("keeps one changed-context overflow recovery separate from identical-call retries", async () => {
+    let recovered = false;
+    const overflow = () =>
+      new Response(
+        'data: {"choices":[{"index":0,"delta":{"content":"partial","tool_calls":[{"index":0,"id":"never-run","type":"function","function":{"name":"read","arguments":"{\\"path\\":\\"never-read\\"}"}}]},"finish_reason":null}]}\n\n' +
+          'data: {"error":{"code":"context_length_exceeded","message":"context_length_exceeded"}}\n\n',
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    const f = await fixture((attempt) => (attempt === 2 || recovered ? overflow() : answer()));
+    f.session.subscribe((event) => {
+      if (event.type === "compaction_end") recovered = true;
+    });
+    await f.session.prompt("Prepare the task.");
+    const work = f.session.prompt("Continue the task.");
+    await until(() => f.requests.length >= 2);
+    await vi.runAllTimersAsync();
+    await work;
+    expect(f.events.filter((event) => event === "compaction_start")).toHaveLength(1);
+    expect(f.events).not.toContain("auto_retry_start");
+    expect(f.events).not.toContain("summarization_retry_scheduled");
+    expect(f.events).not.toContain("tool_execution_start");
+    expect(f.bodies.at(-1)?.messages).not.toEqual(f.bodies[1]?.messages);
+    expect(f.requests.length).toBeLessThanOrEqual(5);
+    expect(f.session.messages.at(-1)).toMatchObject({ stopReason: "error" });
   });
 });

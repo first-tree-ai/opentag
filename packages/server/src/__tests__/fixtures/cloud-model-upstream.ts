@@ -17,8 +17,9 @@ export const FIXTURE_RESPONSE_HEADER = "x-fixture-upstream-secret";
 
 export type FixtureHandler =
   | { kind: "json"; payload?: unknown }
-  | { kind: "sse"; chunks?: string[] }
+  | { kind: "sse"; chunks?: string[]; retryAfter?: string }
   | { kind: "slow-sse"; chunkIntervalMs?: number }
+  | { kind: "heartbeat"; chunkIntervalMs?: number }
   | { kind: "stall"; declaredLength?: number }
   | { kind: "overflow"; totalBytes?: number; chunkBytes?: number }
   | { kind: "backpressure"; totalBytes?: number; chunkBytes?: number }
@@ -79,18 +80,11 @@ async function respond(
       return;
     }
     case "sse": {
-      response.writeHead(200, { "content-type": "text/event-stream" });
-      for (const chunk of handler.chunks ?? ["fixture-chunk-0", "fixture-chunk-1", "fixture-chunk-2"]) {
-        const payload = `data: ${chunk}\n\n`;
-        stats.responseBytesSent += Buffer.byteLength(payload);
-        response.write(payload);
-      }
-      const done = "data: [DONE]\n\n";
-      stats.responseBytesSent += Buffer.byteLength(done);
-      response.end(done);
+      respondSse(handler, response, stats);
       return;
     }
-    case "slow-sse": {
+    case "slow-sse":
+    case "heartbeat": {
       response.writeHead(200, { "content-type": "text/event-stream" });
       let index = 0;
       const timer = setInterval(() => {
@@ -98,7 +92,7 @@ async function respond(
           clearInterval(timer);
           return;
         }
-        const payload = `data: fixture-chunk-${index}\n\n`;
+        const payload = handler.kind === "heartbeat" ? ": heartbeat\n\n" : `data: fixture-chunk-${index}\n\n`;
         index += 1;
         stats.responseBytesSent += Buffer.byteLength(payload);
         response.write(payload);
@@ -164,6 +158,25 @@ async function respond(
       return;
     }
   }
+}
+
+function respondSse(
+  handler: Extract<FixtureHandler, { kind: "sse" }>,
+  response: ServerResponse,
+  stats: CloudModelUpstreamStats,
+): void {
+  response.writeHead(200, {
+    "content-type": "text/event-stream",
+    ...(handler.retryAfter === undefined ? {} : { "retry-after": handler.retryAfter }),
+  });
+  for (const chunk of handler.chunks ?? ["fixture-chunk-0", "fixture-chunk-1", "fixture-chunk-2"]) {
+    const payload = `data: ${chunk}\n\n`;
+    stats.responseBytesSent += Buffer.byteLength(payload);
+    response.write(payload);
+  }
+  const done = "data: [DONE]\n\n";
+  stats.responseBytesSent += Buffer.byteLength(done);
+  response.end(done);
 }
 
 export async function startCloudModelUpstream(handler: FixtureHandler): Promise<CloudModelUpstream> {

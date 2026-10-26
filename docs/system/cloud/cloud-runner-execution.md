@@ -209,9 +209,21 @@ its native exponential backoff with jitter. Cancellation and the existing absolu
 deadline interrupt both requests and waits; retries do not extend either grant lifetime.
 
 Compaction remains enabled, but a model stream that has already started is not automatically
-replayed after a stream failure. A failed model request never triggers a whole-Turn, delivery,
-or scheduled-occurrence replay. The model proxy records the bounded `CLOUD_MODEL_RATE_LIMIT`
+replayed by a transient session or summary retry loop. Native context-overflow recovery remains
+enabled: Pi can compact the history and make one bounded recovery with changed context; partial
+tool calls from a failed response are not executed. A failed model request never triggers a
+whole-Turn, delivery, or scheduled-occurrence replay. The model proxy records the `CLOUD_MODEL_RATE_LIMIT`
 diagnostic for rate-limit responses without logging upstream content or credentials.
+
+The Router can report a definite pre-output Provider rate limit inside HTTP 200 SSE. The model
+proxy inspects at most 8 KiB before the first complete data event, including heartbeat comments,
+and normalizes an initial `rate_limit_exceeded` envelope into HTTP 429 only when the Router
+sets `error.pre_stream_rejection` to `true`. The Router emits that marker only after observing
+an upstream HTTP 429 rejection; it does not imply that a ledger release committed. A validated
+`error.retry_after` supplies the wait hint. This lets the same Pi request owner apply bounded
+retries. Unmarked or uncertain errors, and events after model data, retain their original
+stream behavior without automatic replay. The existing request timeout and cancellation still
+bound the prelude. A marked rejection without a usable hint uses Pi's default backoff.
 
 The grant registry's 4,096-entry bound protects Server state, including concurrent issuance. It
 is not a per-Account execution quota or a model-spend budget. Account-level admission and fairness

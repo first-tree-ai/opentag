@@ -4,6 +4,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { z } from "zod";
 import type { CloudCallContext } from "../cloud-call-contracts.js";
 import type { CloudModelConfig } from "../cloud-model-config.js";
+import { normalizeInitialModelStream } from "../cloud-model-initial-stream.js";
 import {
   applyCloudModelOutputBudget,
   CLOUD_MODEL_ERROR_BODY_MAX_BYTES,
@@ -478,6 +479,7 @@ async function forwardChatCompletions(
   let upstream: Response | undefined;
   try {
     upstream = await callUpstream(options, claims.model, body, signal, claims);
+    if (upstream) upstream = await normalizeInitialModelStream(upstream);
   } catch (error) {
     const billingRejection = billingFailure(error);
     if (billingRejection) return fail(reply, billingRejection.status, billingRejection.code, billingRejection.message);

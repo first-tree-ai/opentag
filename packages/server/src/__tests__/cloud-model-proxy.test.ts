@@ -854,6 +854,83 @@ describe("Cloud model proxy route", () => {
 });
 
 describe("Cloud model proxy upstream error classification", () => {
+  it("normalizes the Router's initial HTTP 200 SSE rate-limit rejection before committing a stream", async () => {
+    const upstream = await startFixture({
+      kind: "sse",
+      chunks: [
+        JSON.stringify({
+          error: {
+            code: "rate_limit_exceeded",
+            type: "rate_limit_error",
+            pre_stream_rejection: true,
+            param: null,
+            message: "Upstream rate limit exceeded.",
+            request_id: "fixture-router-request",
+          },
+        }),
+      ],
+    });
+    const stack = await makeStack({ upstream });
+    const issued = await issueToken(stack.grants);
+    const response = await postModel(
+      stack.port,
+      { messages: CHAT_MESSAGES, model: "model-a", stream: true },
+      issued.token,
+    );
+    expect(response.status).toBe(429);
+    expect(await errorCode(response)).toBe("rate_limit_exceeded");
+    expect(upstream.stats.hits).toBe(1);
+  });
+
+  it("preserves an available validated hint when normalizing a streaming rate limit", async () => {
+    const upstream = await startFixture({
+      kind: "sse",
+      retryAfter: "30",
+      chunks: [
+        JSON.stringify({
+          error: { code: "rate_limit_exceeded", type: "rate_limit_error", pre_stream_rejection: true },
+        }),
+      ],
+    });
+    const stack = await makeStack({ upstream });
+    const issued = await issueToken(stack.grants);
+    const response = await postModel(
+      stack.port,
+      { messages: CHAT_MESSAGES, model: "model-a", stream: true },
+      issued.token,
+    );
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("30");
+    expect(await errorCode(response)).toBe("rate_limit_exceeded");
+    expect(upstream.stats.hits).toBe(1);
+  });
+
+  it("times out a heartbeat-only prelude without committing an HTTP 200 stream", async () => {
+    const upstream = await startFixture({ kind: "heartbeat", chunkIntervalMs: 10 });
+    const stack = await makeStack({ upstream, configOverrides: { requestTimeoutMs: 200 } });
+    const issued = await issueToken(stack.grants);
+    const response = await postModel(
+      stack.port,
+      { messages: CHAT_MESSAGES, model: "model-a", stream: true },
+      issued.token,
+    );
+    expect(response.status).toBe(504);
+    expect(await errorCode(response)).toBe("CLOUD_MODEL_UPSTREAM_TIMEOUT");
+    expect(upstream.stats.hits).toBe(1);
+  });
+
+  it("closes a heartbeat-only prelude and releases its grant on server shutdown", async () => {
+    const upstream = await startFixture({ kind: "heartbeat", chunkIntervalMs: 10 });
+    const stack = await makeStack({ upstream });
+    const issued = await issueToken(stack.grants);
+    const pending = postModel(stack.port, { messages: CHAT_MESSAGES, model: "model-a", stream: true }, issued.token);
+    await vi.waitFor(() => expect(upstream.stats.responseBytesSent).toBeGreaterThan(0));
+    await stack.app.close();
+    const response = await pending;
+    expect(response.status).toBe(401);
+    expect(await errorCode(response)).toBe("CLOUD_MODEL_TOKEN_INVALID");
+    expect(upstream.stats.hits).toBe(1);
+  });
   async function classifiedResponse(status: number, body: unknown) {
     const upstream = await startFixture({ kind: "error", status, body });
     const { grants, port } = await makeStack({ upstream });

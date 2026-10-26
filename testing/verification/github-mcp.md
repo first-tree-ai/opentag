@@ -28,6 +28,15 @@ The authorized target is `first-tree-ai/opentag`, a public repository. Prefix te
 Draft PR titles with `[MCP staging test]`, use a unique `test/github-mcp-<run-id>` branch, and
 change only a disposable fixture on that branch. Do not merge the test PR.
 
+Record the operator's App choice before authorizing. If the existing Account App is reused, both
+flows request `repo offline_access` and share the same user's ten-token bucket; exceeding it can
+invalidate the Account credential or another Agent. Historical tokens also count. A dedicated MCP
+App isolates the Account bucket but retains the per-user limit for its own Agents. Do not deliberately
+issue an eleventh token or provoke revocation during this acceptance. Use one test Agent, avoid
+repeated authorization, and treat any unrelated credential rejection as a stop condition. Closing test
+Issues and PRs does not revoke OAuth credentials. The browser consent step must follow the confirmed
+App choice; no MCP OAuth token should be issued while that choice is unresolved.
+
 | Scenario | Required evidence |
 | --- | --- |
 | Identity | MCP `get_me` matches the GitHub user selected for this Agent's OAuth flow. |

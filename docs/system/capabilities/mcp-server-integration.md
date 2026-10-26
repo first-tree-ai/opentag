@@ -623,7 +623,20 @@ existing callbacks and keep the same Client ID. The GitHub catalog entry request
 and selects the `context,repos,issues,pull_requests,users` toolsets. Each Agent completes its own MCP
 OAuth flow and stores its own encrypted access/refresh credential. Reusing the App does not reuse the
 Account integration's token, connect other Agents, or add GitHub sign-in. Native Git/gh and Context
-Tree keep their existing integration. GitHub limits tokens per user/App/scope combination; see
+Tree keep their existing integration code and credential path.
+
+App reuse does couple credential availability. The Account integration and GitHub MCP both request
+`repo offline_access`, so the same GitHub user's Account and Agent tokens share GitHub's limit of ten
+tokens per user/App/scope combination. An additional authorization beyond that limit revokes an
+existing token, preferring an unused token and otherwise the least recently used one. That token can
+belong to the Account integration, breaking its native Git/gh and Context Tree access, or to another
+Agent. Independent encrypted rows do not isolate this upstream revocation. Historical authorizations
+also consume the limit, so ten tokens does not guarantee ten Agents can connect. GitHub additionally
+limits creation to ten tokens per hour; exceeding that rate prompts reauthorization.
+
+A dedicated MCP OAuth App isolates this bucket from the Account integration; Agent credentials still
+share the dedicated App's per-user limit. Choose the deployment's App with this constraint in mind;
+there is no automatic App separation, token-budget enforcement, or cross-Agent token sharing. See
 [GitHub's OAuth token limits](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#creating-multiple-tokens-for-oauth-apps).
 
 Each client follows the same rules as the Google and Canva clients: it is resolved from configuration

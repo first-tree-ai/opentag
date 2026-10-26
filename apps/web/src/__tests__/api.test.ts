@@ -405,7 +405,7 @@ describe("BrowserApi", () => {
       api.completeSetup(userId),
       api.agents(),
       api.tasks({ cursor: "next", agentId: userId, kind: "thread" }),
-      api.task(userId, "older"),
+      api.taskDetail(userId),
       api.agent(userId),
       api.agentUsage(userId, 7),
       api.agentConfig(userId),
@@ -432,7 +432,7 @@ describe("BrowserApi", () => {
       expect.arrayContaining([
         { path: "/api/v1/me/setup/complete", method: "POST" },
         { path: `/api/v1/sessions?cursor=next&agentId=${userId}&kind=thread`, method: undefined },
-        { path: `/api/v1/sessions/${userId}?cursor=older`, method: undefined },
+        { path: `/api/v1/sessions/${userId}/detail`, method: undefined },
         { path: `/api/v1/agents/${userId}/config`, method: undefined },
         { path: `/api/v1/agents/${userId}`, method: "DELETE" },
         { path: `/api/v1/im-bindings/feishu/setup-attempts/${userId}/cancel`, method: "POST" },

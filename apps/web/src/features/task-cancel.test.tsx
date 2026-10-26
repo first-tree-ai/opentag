@@ -2,6 +2,7 @@ import type { TaskDetail, TaskSummary } from "@opentag/shared/browser";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../__tests__/support/router.js";
+import { mockDetail } from "../__tests__/support/task-detail-fixture.js";
 import { ApiError, browserApi } from "../api.js";
 import { TaskDetailPage } from "./tasks-page.js";
 
@@ -71,9 +72,7 @@ beforeEach(() => {
 describe("Cancelling a queued Task", () => {
   it("cancels from the detail page and shows the refreshed status without a reload", async () => {
     const cancelled = { ...queuedTask, status: "cancelled" as const };
-    vi.spyOn(browserApi, "task")
-      .mockResolvedValueOnce(detailFor(queuedTask))
-      .mockResolvedValue(detailFor(cancelled, { state: "expired", reason: "cancelled" }));
+    mockDetail(detailFor(queuedTask), detailFor(cancelled, { state: "expired", reason: "cancelled" }));
     const cancel = vi.spyOn(browserApi, "cancelTask").mockResolvedValue(cancelled);
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
@@ -96,9 +95,10 @@ describe("Cancelling a queued Task", () => {
 
   it("refreshes the Task instead of failing when it is no longer queued", async () => {
     const running = { ...queuedTask, status: "running" as const };
-    vi.spyOn(browserApi, "task")
-      .mockResolvedValueOnce(detailFor(queuedTask))
-      .mockResolvedValue(detailFor(running, { state: "accepted", isRunning: true, acceptedAt: running.createdAt }));
+    mockDetail(
+      detailFor(queuedTask),
+      detailFor(running, { state: "accepted", isRunning: true, acceptedAt: running.createdAt }),
+    );
     vi.spyOn(browserApi, "cancelTask").mockRejectedValue(new ApiError(409, "The Task is running", "TASK_NOT_QUEUED"));
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
@@ -116,7 +116,7 @@ describe("Cancelling a queued Task", () => {
 
   it("does not announce a cancel the Server's answer says still reads as queued", async () => {
     // A Server that withdrew part of the queue and answered 200 with the rest still pending.
-    vi.spyOn(browserApi, "task").mockResolvedValue(detailFor(queuedTask));
+    mockDetail(detailFor(queuedTask));
     vi.spyOn(browserApi, "cancelTask").mockResolvedValue({ ...queuedTask, status: "queued" });
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
@@ -134,9 +134,7 @@ describe("Cancelling a queued Task", () => {
 
   it("says the cancel did not happen when the queued message is already being delivered", async () => {
     // The Task stays queued: the worker holds its only pending delivery, which the Server left alone.
-    vi.spyOn(browserApi, "task").mockResolvedValue(
-      detailFor(queuedTask, { attemptCount: 1, lastErrorCode: "IM_DELIVERY_CLAIM_0123456789ABCDEF" }),
-    );
+    mockDetail(detailFor(queuedTask, { attemptCount: 1, lastErrorCode: "IM_DELIVERY_CLAIM_0123456789ABCDEF" }));
     vi.spyOn(browserApi, "cancelTask").mockRejectedValue(
       new ApiError(409, "The Task's queued message is already being delivered", "TASK_NOT_QUEUED"),
     );
@@ -156,7 +154,7 @@ describe("Cancelling a queued Task", () => {
   });
 
   it("keeps the confirmation open with the failure and lets the reader keep the Task queued", async () => {
-    vi.spyOn(browserApi, "task").mockResolvedValue(detailFor(queuedTask));
+    mockDetail(detailFor(queuedTask));
     const cancel = vi
       .spyOn(browserApi, "cancelTask")
       .mockRejectedValue(new ApiError(503, "The Server is unavailable", "SERVICE_UNAVAILABLE"));
@@ -177,7 +175,7 @@ describe("Cancelling a queued Task", () => {
   });
 
   it.each(["running", "completed", "cancelled"] as const)("offers no cancel control to a %s Task", async (status) => {
-    vi.spyOn(browserApi, "task").mockResolvedValue(detailFor({ ...queuedTask, status }));
+    mockDetail(detailFor({ ...queuedTask, status }));
     const cancel = vi.spyOn(browserApi, "cancelTask");
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });

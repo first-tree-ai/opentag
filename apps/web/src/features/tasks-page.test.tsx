@@ -1,8 +1,15 @@
-import type { TaskDetail, TaskReply, TaskSummary } from "@opentag/shared/browser";
+import type {
+  TaskDetail,
+  TaskDetailPage as TaskDetailResponse,
+  TaskReply,
+  TaskSummary,
+  TaskTurnPage,
+} from "@opentag/shared/browser";
 import { useQueryClient } from "@tanstack/react-query";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../__tests__/support/router.js";
+import { detailPage, mockDetail } from "../__tests__/support/task-detail-fixture.js";
 import { ApiError, browserApi } from "../api.js";
 import { queryKeys } from "../query/keys.js";
 import { AgentTasksSection, TaskDetailPage, TasksPage } from "./tasks-page.js";
@@ -161,7 +168,7 @@ describe("Tasks view", () => {
       task: { ...task, source: { ...task.source, provider, conversationKind } },
       turns: [timelineTurn(3), timelineTurn(2), timelineTurn(1)],
     };
-    vi.spyOn(browserApi, "task").mockResolvedValue(page);
+    mockDetail(page);
     await renderInRouter(<TaskDetailPage taskId={sessionId} />);
     await screen.findByText("Request 3");
 
@@ -186,12 +193,12 @@ describe("Tasks view", () => {
     "prepends complete older pages and keeps a failed page retryable above the %s conversation",
     async (conversationKind) => {
       const page = { ...detail, task: { ...task, source: { ...task.source, conversationKind } } };
-      const request = vi
-        .spyOn(browserApi, "task")
-        .mockResolvedValueOnce({ ...page, turns: [timelineTurn(4), timelineTurn(3)], nextCursor: "older" })
-        .mockRejectedValueOnce(new Error("Temporary history failure"))
-        .mockResolvedValueOnce({ ...page, turns: [timelineTurn(2), timelineTurn(1)], nextCursor: "oldest" })
-        .mockResolvedValueOnce({ ...page, turns: [timelineTurn(0)], nextCursor: null });
+      const { turns: request } = mockDetail(
+        { ...page, turns: [timelineTurn(4), timelineTurn(3)], nextCursor: "older" },
+        new Error("Temporary history failure"),
+        { ...page, turns: [timelineTurn(2), timelineTurn(1)], nextCursor: "oldest" },
+        { ...page, turns: [timelineTurn(0)], nextCursor: null },
+      );
       await renderInRouter(<TaskDetailPage taskId={sessionId} />);
       const earlier = await screen.findByRole("button", { name: "Load earlier activity" });
       expect(
@@ -226,9 +233,10 @@ describe("Tasks view", () => {
     "places newly refreshed %s exchanges at the bottom",
     async (conversationKind) => {
       const page = { ...detail, task: { ...task, source: { ...task.source, conversationKind } } };
-      vi.spyOn(browserApi, "task")
-        .mockResolvedValueOnce({ ...page, turns: [timelineTurn(2), timelineTurn(1)] })
-        .mockResolvedValueOnce({ ...page, turns: [timelineTurn(3), timelineTurn(2), timelineTurn(1)] });
+      mockDetail(
+        { ...page, turns: [timelineTurn(2), timelineTurn(1)] },
+        { ...page, turns: [timelineTurn(3), timelineTurn(2), timelineTurn(1)] },
+      );
       await renderInRouter(
         <>
           <TaskDetailPage taskId={sessionId} />
@@ -460,7 +468,7 @@ describe("Tasks view", () => {
   );
 
   it("renders a read-only activity record without exposing diagnostics", async () => {
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 
     const activity = await screen.findByRole("region", { name: "Activity" });
@@ -476,7 +484,7 @@ describe("Tasks view", () => {
   it("stays an IM work-record view: no Cloud environment read, section, or controls", async () => {
     // A Task is a work-record view organized by IM topic; it never queries or manages the runtime
     // Cloud environments underneath, whatever the Agent's Computer kind.
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
     const overview = vi.spyOn(browserApi, "agentCloudOverview");
     const agent = vi.spyOn(browserApi, "agent");
     const computers = vi.spyOn(browserApi, "computers");
@@ -523,7 +531,7 @@ describe("Tasks view", () => {
 
   it("shows the agent logo in the chat header and falls back if it cannot load", async () => {
     const avatarPath = `/api/v1/agents/${agentId}/avatar`;
-    vi.spyOn(browserApi, "task").mockResolvedValue({
+    mockDetail({
       ...detail,
       task: { ...task, agent: { ...task.agent, avatarPath } },
     });
@@ -580,7 +588,7 @@ describe("Tasks view", () => {
   });
 
   it("uses the local preview detail route without entering a synthetic Agent shell", async () => {
-    const taskRequest = vi.spyOn(browserApi, "task");
+    const { detail: taskRequest } = mockDetail();
 
     await renderInRouter(<TaskDetailPage showExamples taskId="10000000-0000-4000-8000-000000000001" />, {
       path: "/tasks/10000000-0000-4000-8000-000000000001?examples=true",
@@ -625,7 +633,7 @@ describe("Tasks view", () => {
   it("uses a user-facing author role when a sender name is unavailable", async () => {
     const root = detail.turns[0];
     if (!root) throw new Error("Expected the Task fixture to include a root Turn");
-    vi.spyOn(browserApi, "task").mockResolvedValue({
+    mockDetail({
       ...detail,
       turns: [{ ...root, message: { ...root.message, authorDisplayName: null } }],
     });
@@ -638,7 +646,7 @@ describe("Tasks view", () => {
   });
 
   it("keeps the title alone and lists the status last among the Task details", async () => {
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 
@@ -656,7 +664,7 @@ describe("Tasks view", () => {
   it("names a Turn failure for the reader instead of printing its reason code", async () => {
     const root = detail.turns[0];
     if (!root) throw new Error("Expected the Task fixture to include a root Turn");
-    vi.spyOn(browserApi, "task").mockResolvedValue({
+    mockDetail({
       ...detail,
       turns: [
         {
@@ -679,7 +687,7 @@ describe("Tasks view", () => {
   });
 
   it("announces Task status separately from the last activity time", async () => {
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 
@@ -689,10 +697,7 @@ describe("Tasks view", () => {
   });
 
   it("surfaces a terminal detail refetch error instead of showing cached Task data", async () => {
-    const taskRequest = vi
-      .spyOn(browserApi, "task")
-      .mockResolvedValueOnce(detail)
-      .mockRejectedValueOnce(new ApiError(404, "Task not found"));
+    const { detail: taskRequest } = mockDetail(detail, new ApiError(404, "Task not found"));
 
     await renderInRouter(
       <>
@@ -730,7 +735,7 @@ describe("Tasks view", () => {
       absorbedBy: { deliveryId: root.deliveryId, turnId: root.report?.turnId ?? "turn-debug" },
       report: null,
     } satisfies TaskDetail["turns"][number];
-    vi.spyOn(browserApi, "task").mockResolvedValue({ ...detail, turns: [steered, root] });
+    mockDetail({ ...detail, turns: [steered, root] });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 
     const activity = await screen.findByRole("region", { name: "Activity" });
@@ -758,10 +763,7 @@ describe("Tasks view", () => {
         fallbackText: "This is an older inbound message.",
       },
     } satisfies TaskDetail["turns"][number];
-    const taskRequest = vi
-      .spyOn(browserApi, "task")
-      .mockResolvedValueOnce(firstPage)
-      .mockResolvedValueOnce({ ...detail, turns: [olderTurn], nextCursor: null });
+    const { turns: taskRequest } = mockDetail(firstPage, { ...detail, turns: [olderTurn], nextCursor: null });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 
     fireEvent.click(await screen.findByRole("button", { name: "Load earlier activity" }));
@@ -857,19 +859,20 @@ describe("Tasks view", () => {
           fallbackText: "Stale Task A Turn",
         },
       } satisfies TaskDetail["turns"][number];
-      let resolveTaskA: (value: TaskDetail) => void = () => undefined;
+      let resolveTaskA: (value: TaskTurnPage) => void = () => undefined;
       let rejectTaskA: (reason: Error) => void = () => undefined;
-      vi.spyOn(browserApi, "task").mockImplementation((requestedTaskId, cursor) => {
-        if (requestedTaskId === sessionId && !cursor) return Promise.resolve(firstPage);
-        if (requestedTaskId === sessionId && cursor === "older-turns") {
-          return new Promise((resolve, reject) => {
+      vi.spyOn(browserApi, "taskDetail").mockImplementation(async (requestedTaskId) => {
+        if (requestedTaskId === sessionId) return detailPage(firstPage);
+        if (requestedTaskId === secondTaskId) return detailPage(secondDetail);
+        throw new Error("Unexpected Task request");
+      });
+      vi.spyOn(browserApi, "taskTurns").mockImplementation(
+        () =>
+          new Promise((resolve, reject) => {
             resolveTaskA = resolve;
             rejectTaskA = reject;
-          });
-        }
-        if (requestedTaskId === secondTaskId && !cursor) return Promise.resolve(secondDetail);
-        return Promise.reject(new Error("Unexpected Task request"));
-      });
+          }),
+      );
 
       const view = await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
       fireEvent.click(await screen.findByRole("button", { name: "Load earlier activity" }));
@@ -880,7 +883,7 @@ describe("Tasks view", () => {
 
       await act(async () => {
         if (outcome === "success") {
-          resolveTaskA({ ...detail, turns: [staleTurn], nextCursor: null });
+          resolveTaskA({ items: [staleTurn], nextCursor: null });
         } else {
           rejectTaskA(new Error("Stale Task A pagination failure"));
         }
@@ -894,9 +897,7 @@ describe("Tasks view", () => {
 
   it.each([401, 403, 404, 410])("withdraws the conversation when a Turn append is refused (%d)", async (status) => {
     const firstPage = { ...detail, nextCursor: "older-turns" } satisfies TaskDetail;
-    vi.spyOn(browserApi, "task")
-      .mockResolvedValueOnce(firstPage)
-      .mockRejectedValueOnce(new ApiError(status, `Task refused (${status})`));
+    mockDetail(firstPage, new ApiError(status, `Task refused (${status})`));
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     fireEvent.click(await screen.findByRole("button", { name: "Load earlier activity" }));
@@ -918,10 +919,7 @@ describe("Tasks view", () => {
       task: { ...detail.task, id: secondTaskId, title: "Task B" },
       nextCursor: null,
     } satisfies TaskDetail;
-    vi.spyOn(browserApi, "task")
-      .mockResolvedValueOnce(firstPage)
-      .mockRejectedValueOnce(new Error("Task A pagination failure"))
-      .mockResolvedValueOnce(secondDetail);
+    mockDetail(firstPage, new Error("Task A pagination failure"), secondDetail);
 
     const view = await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     fireEvent.click(await screen.findByRole("button", { name: "Load earlier activity" }));
@@ -1001,21 +999,16 @@ describe("Tasks view", () => {
     expect(await screen.findByRole("heading", { name: "Task not found" })).toBeTruthy();
     expect(screen.getByText("Task not found")).toBeTruthy();
 
-    vi.spyOn(browserApi, "task").mockRejectedValueOnce(new ApiError(404, "not found"));
+    mockDetail(new ApiError(404, "not found"));
     view.rerender(<TaskDetailPage taskId={sessionId} />);
     expect(await screen.findByText("This Task does not exist or is outside your Account.")).toBeTruthy();
 
-    vi.mocked(browserApi.task).mockRejectedValueOnce(new Error("database unavailable"));
+    mockDetail(new Error("database unavailable"));
     view.rerender(<TaskDetailPage taskId="66666666-6666-4666-8666-666666666666" />);
     expect(await screen.findByRole("heading", { name: "Task unavailable" })).toBeTruthy();
     expect(screen.getByText("database unavailable")).toBeTruthy();
 
-    vi.mocked(browserApi.task).mockResolvedValueOnce({
-      ...detail,
-      turns: [],
-      internalSessions: [],
-      collaborationMessages: [],
-    });
+    mockDetail({ ...detail, turns: [], internalSessions: [], collaborationMessages: [] });
     view.rerender(<TaskDetailPage taskId="77777777-7777-4777-8777-777777777777" />);
     expect(await screen.findByRole("heading", { name: "No activity recorded" })).toBeTruthy();
   });
@@ -1076,7 +1069,7 @@ describe("Tasks view", () => {
     };
     const firstSession = detail.internalSessions[0];
     if (!firstSession) throw new Error("Expected an internal session");
-    vi.spyOn(browserApi, "task").mockResolvedValue({
+    mockDetail({
       ...detail,
       turns: [pending, failed],
       internalSessions: [{ ...firstSession, endedAt: "2026-08-27T01:30:00.000Z", runtimeModel: null }],
@@ -1098,7 +1091,7 @@ describe("Tasks view", () => {
     async (isRunning) => {
       const root = detail.turns[0];
       if (!root) throw new Error("Expected the Task fixture to include a root Turn");
-      vi.spyOn(browserApi, "task").mockResolvedValue({
+      mockDetail({
         ...detail,
         task: { ...task, status: "expired" },
         turns: [{ ...root, delivery: { ...root.delivery, isRunning }, report: null }],
@@ -1112,7 +1105,7 @@ describe("Tasks view", () => {
   );
 
   it("keeps Slack execution summaries without a permanent unsupported reply-history notice", async () => {
-    vi.spyOn(browserApi, "task").mockResolvedValue({
+    mockDetail({
       ...detail,
       task: { ...task, source: { ...task.source, provider: "slack" } },
     });
@@ -1129,7 +1122,7 @@ describe("Tasks view", () => {
   it("renders captured Lark replies separately from an execution summary", async () => {
     const root = detail.turns[0];
     if (!root?.report) throw new Error("Expected the Task fixture to include a root Turn");
-    vi.spyOn(browserApi, "task").mockResolvedValue({
+    mockDetail({
       ...detail,
       turns: [
         {
@@ -1169,7 +1162,7 @@ describe("Tasks view", () => {
   it("does not invent a reply from finalText and keeps completed empty from rendering as running", async () => {
     const root = detail.turns[0];
     if (!root?.report) throw new Error("Expected the Task fixture to include a root Turn");
-    vi.spyOn(browserApi, "task").mockResolvedValue({
+    mockDetail({
       ...detail,
       turns: [
         {
@@ -1194,7 +1187,7 @@ describe("Tasks view", () => {
   it("keeps successful outbound messages on a failed Turn and labels unavailable legacy data", async () => {
     const root = detail.turns[0];
     if (!root?.report) throw new Error("Expected the Task fixture to include a root Turn");
-    vi.spyOn(browserApi, "task").mockResolvedValue({
+    mockDetail({
       ...detail,
       turns: [
         {
@@ -1246,7 +1239,7 @@ describe("Tasks view", () => {
           },
         ],
       };
-      vi.spyOn(browserApi, "task").mockResolvedValue(data);
+      mockDetail(data);
       const { container } = await renderInRouter(<TaskDetailPage taskId={sessionId} />, {
         path: `/tasks/${sessionId}`,
       });
@@ -1270,7 +1263,7 @@ describe("Tasks view", () => {
       const report = data.turns[0]?.report;
       if (!report) throw new Error("Expected report fixture");
       report.outgoingReplies = status === "legacy" ? null : { status, replies: [] };
-      vi.spyOn(browserApi, "task").mockResolvedValue(data);
+      mockDetail(data);
       await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
       /*
        * The captured feed owns the empty state. The report's own incomplete-history note stays,
@@ -1305,7 +1298,7 @@ describe("Tasks view", () => {
   });
 
   it("names the channel of a Task's source instead of printing its provider id", async () => {
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 
@@ -1357,7 +1350,7 @@ function sentReplies(): HTMLElement[] {
 
 describe("Task captured replies", () => {
   it("shows a confirmed reply even when its Turn has no report", async () => {
-    vi.spyOn(browserApi, "task").mockResolvedValue(detailWithTurn({ report: null }));
+    mockDetail(detailWithTurn({ report: null }));
     vi.spyOn(browserApi, "taskReplies").mockResolvedValue({ items: [capturedReply()], nextCursor: null });
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
@@ -1375,7 +1368,7 @@ describe("Task captured replies", () => {
       errorReason: "provider_failed",
       finalText: null,
     };
-    vi.spyOn(browserApi, "task").mockResolvedValue(detailWithTurn({ report: failedReport }));
+    mockDetail(detailWithTurn({ report: failedReport }));
     vi.spyOn(browserApi, "taskReplies").mockResolvedValue({ items: [capturedReply()], nextCursor: null });
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
@@ -1397,7 +1390,7 @@ describe("Task captured replies", () => {
       ...baseReport(),
       outgoingReplies: { status: "complete" as const, replies: [receipt] },
     };
-    vi.spyOn(browserApi, "task").mockResolvedValue(detailWithTurn({ report }));
+    mockDetail(detailWithTurn({ report }));
     vi.spyOn(browserApi, "taskReplies").mockResolvedValue({ items: [capturedReply()], nextCursor: null });
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
@@ -1419,7 +1412,7 @@ describe("Task captured replies", () => {
       ...baseReport(),
       outgoingReplies: { status: "complete" as const, replies: [receipt] },
     };
-    vi.spyOn(browserApi, "task").mockResolvedValue(detailWithTurn({ report }));
+    mockDetail(detailWithTurn({ report }));
     vi.spyOn(browserApi, "taskReplies").mockResolvedValue({
       items: [capturedReply({ contentAvailable: false, fallbackText: "" })],
       nextCursor: null,
@@ -1433,7 +1426,7 @@ describe("Task captured replies", () => {
   });
 
   it("marks a confirmed reply with unavailable content honestly", async () => {
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
     vi.spyOn(browserApi, "taskReplies").mockResolvedValue({
       items: [capturedReply({ contentAvailable: false, fallbackText: "", timeSource: "observed" })],
       nextCursor: null,
@@ -1446,7 +1439,7 @@ describe("Task captured replies", () => {
   });
 
   it("keeps a truncated captured body distinguishable from an unavailable one", async () => {
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
     vi.spyOn(browserApi, "taskReplies").mockResolvedValue({
       items: [capturedReply({ truncated: true, fallbackText: "Only part of this confirmed reply" })],
       nextCursor: null,
@@ -1471,7 +1464,7 @@ describe("Task captured replies", () => {
       .spyOn(browserApi, "taskReplies")
       .mockResolvedValueOnce({ items: [capturedReply()], nextCursor: "older-replies" })
       .mockResolvedValueOnce({ items: [older], nextCursor: null });
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     await screen.findByText("Confirmed reply from the platform");
@@ -1489,7 +1482,7 @@ describe("Task captured replies", () => {
   });
 
   it("reports replies loading while the conversation is already readable", async () => {
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
     vi.spyOn(browserApi, "taskReplies").mockReturnValue(new Promise<never>(() => undefined));
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
@@ -1505,7 +1498,7 @@ describe("Task captured replies", () => {
       .spyOn(browserApi, "taskReplies")
       .mockRejectedValueOnce(new Error("Temporary replies failure"))
       .mockResolvedValueOnce({ items: [capturedReply()], nextCursor: null });
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     const error = await screen.findByRole("alert");
@@ -1520,7 +1513,7 @@ describe("Task captured replies", () => {
   });
 
   it("keeps the conversation visible without an empty reply notice", async () => {
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 
@@ -1532,9 +1525,9 @@ describe("Task captured replies", () => {
 
   it("waits for the detail's canonical Task id before reading replies", async () => {
     const canonicalId = "99999999-9999-4999-8999-999999999999";
-    let resolveDetail: (value: TaskDetail) => void = () => undefined;
-    vi.spyOn(browserApi, "task").mockReturnValue(
-      new Promise<TaskDetail>((resolve) => {
+    let resolveDetail: (value: TaskDetailResponse) => void = () => undefined;
+    vi.spyOn(browserApi, "taskDetail").mockReturnValue(
+      new Promise<TaskDetailResponse>((resolve) => {
         resolveDetail = resolve;
       }),
     );
@@ -1549,7 +1542,7 @@ describe("Task captured replies", () => {
 
     // The route id is a Session alias; replies belong to the Task id the detail resolved.
     await act(async () => {
-      resolveDetail({ ...detail, task: { ...task, id: canonicalId } });
+      resolveDetail(detailPage({ ...detail, task: { ...task, id: canonicalId } }));
     });
     await screen.findByText("Confirmed reply from the platform");
     expect(request).toHaveBeenCalledWith(canonicalId, undefined);
@@ -1567,7 +1560,7 @@ describe("Task captured replies", () => {
       ...baseReport(),
       outgoingReplies: { status: "complete" as const, replies: [receipt] },
     };
-    vi.spyOn(browserApi, "task").mockResolvedValue(detailWithTurn({ report }));
+    mockDetail(detailWithTurn({ report }));
     vi.spyOn(browserApi, "taskReplies").mockResolvedValue({
       items: [capturedReply({ messageType: "file", contentAvailable: false, fallbackText: "" })],
       nextCursor: null,
@@ -1581,7 +1574,7 @@ describe("Task captured replies", () => {
   });
 
   it("lets the captured feed replace the old per-report missing-reply notice", async () => {
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
     vi.spyOn(browserApi, "taskReplies").mockResolvedValue({ items: [capturedReply()], nextCursor: null });
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
@@ -1603,7 +1596,7 @@ describe("Task captured replies", () => {
       .mockResolvedValueOnce({ items: [capturedReply()], nextCursor: "older-replies" })
       .mockRejectedValueOnce(new Error("Older replies failure"))
       .mockResolvedValueOnce({ items: [older], nextCursor: null });
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     await screen.findByText("Confirmed reply from the platform");
@@ -1631,7 +1624,7 @@ describe("Task captured replies", () => {
       .mockResolvedValueOnce({ items: [capturedReply()], nextCursor: "older-replies" })
       .mockRejectedValueOnce(new Error("Replies refresh failure"))
       .mockResolvedValueOnce({ items: [refreshed], nextCursor: "older-replies" });
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
 
     await renderInRouter(
       <>
@@ -1673,7 +1666,7 @@ describe("Task captured replies", () => {
     const request = vi
       .spyOn(browserApi, "taskReplies")
       .mockRejectedValue(new ApiError(404, "The requested resource was not found"));
-    vi.spyOn(browserApi, "task").mockResolvedValue(detailWithTurn({ report }));
+    mockDetail(detailWithTurn({ report }));
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 

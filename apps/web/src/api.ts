@@ -197,12 +197,21 @@ import {
   type StartSlackOAuthResponse,
   StartSlackOAuthResponseSchema,
   TaskCancelResponseSchema,
+  type TaskCollaborationMessagePage,
+  TaskCollaborationMessagePageSchema,
   type TaskDetail,
-  TaskDetailSchema,
+  type TaskDetailPage,
+  TaskDetailPageSchema,
+  type TaskInternalSessionPage,
+  TaskInternalSessionPageSchema,
   type TaskTitleUpdateRequest,
   TaskTitleUpdateResponseSchema,
+  type TaskTurnPage,
+  TaskTurnPageSchema,
   taskByIdPath,
   taskCancelPath,
+  taskDetailPath,
+  taskDetailSectionPath,
   taskRepliesPath,
   type UnbindAgentMessagingRequest,
   type UpdateAgentRequest,
@@ -366,9 +375,35 @@ export class BrowserApi {
     return this.request(`${HTTP_PATHS.accountTasks}${suffix}`, ListTasksResponseSchema);
   }
 
-  task(sessionId: string, cursor?: string): Promise<TaskDetail> {
+  /**
+   * The bounded Task detail: one page of Turns, Internal Sessions and collaboration messages, each
+   * with its own cursor. The legacy complete answer at `taskByIdPath` is not read here, so no view
+   * can depend on an unbounded section.
+   */
+  taskDetail(sessionId: string): Promise<TaskDetailPage> {
+    return this.request(taskDetailPath(sessionId), TaskDetailPageSchema);
+  }
+
+  taskTurns(sessionId: string, cursor?: string): Promise<TaskTurnPage> {
+    return this.#taskSection(sessionId, "turns", cursor, TaskTurnPageSchema);
+  }
+
+  taskInternalSessions(sessionId: string, cursor?: string): Promise<TaskInternalSessionPage> {
+    return this.#taskSection(sessionId, "internal-sessions", cursor, TaskInternalSessionPageSchema);
+  }
+
+  taskCollaborationMessages(sessionId: string, cursor?: string): Promise<TaskCollaborationMessagePage> {
+    return this.#taskSection(sessionId, "collaboration-messages", cursor, TaskCollaborationMessagePageSchema);
+  }
+
+  #taskSection<T>(
+    sessionId: string,
+    section: "turns" | "internal-sessions" | "collaboration-messages",
+    cursor: string | undefined,
+    schema: RuntimeSchema<T>,
+  ): Promise<T> {
     const query = cursor ? `?${new URLSearchParams({ cursor }).toString()}` : "";
-    return this.request(`${taskByIdPath(sessionId)}${query}`, TaskDetailSchema);
+    return this.request(`${taskDetailSectionPath(sessionId, section)}${query}`, schema);
   }
 
   /** The Task's platform-confirmed outbound replies, paged independently of its Turns. */

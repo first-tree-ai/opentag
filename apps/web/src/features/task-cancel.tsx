@@ -1,10 +1,11 @@
-import type { TaskDetail, TaskSummary } from "@opentag/shared/browser";
+import type { TaskSummary } from "@opentag/shared/browser";
 import { type InfiniteData, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import * as m from "../paraglide/messages.js";
 import { queryKeys } from "../query/keys.js";
 import { Banner, Button, Dialog } from "../ui/design-system.js";
+import type { TaskDetailView } from "./task-detail-view.js";
 
 /**
  * Withdraws a Task that is still waiting in the queue. Only a `queued` Task offers the control:
@@ -68,7 +69,7 @@ export function TaskCancelControl({
   async function settleRefused() {
     close();
     await queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all() });
-    setNotice(noticeFor(queryClient.getQueryData<InfiniteData<TaskDetail>>(detailKey)?.pages[0]?.task.status));
+    setNotice(noticeFor(queryClient.getQueryData<InfiniteData<TaskDetailView>>(detailKey)?.pages[0]?.task?.status));
   }
 
   async function cancel() {
@@ -77,7 +78,7 @@ export function TaskCancelControl({
     try {
       const cancelled = await browserApi.cancelTask(task.id);
       // The summary answers at once; the Turns it withdrew arrive with the revalidation.
-      queryClient.setQueryData<InfiniteData<TaskDetail>>(detailKey, (data) =>
+      queryClient.setQueryData<InfiniteData<TaskDetailView>>(detailKey, (data) =>
         data
           ? { ...data, pages: data.pages.map((page, index) => (index === 0 ? { ...page, task: cancelled } : page)) }
           : data,

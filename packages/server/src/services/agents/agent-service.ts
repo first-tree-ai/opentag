@@ -23,7 +23,7 @@ import {
   type UpdateAgentRequest,
   UpdateAgentRequestSchema,
 } from "@opentag/shared";
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
@@ -51,6 +51,7 @@ import {
   parseAggregateCount,
   parseAggregateTokenTotal,
   readAgentUsageDaily,
+  readAgentUsageSummaries,
 } from "./agent-usage.js";
 import { AgentServiceError, resourceNotFound } from "./errors.js";
 
@@ -129,16 +130,6 @@ interface AgentActivityEvidence {
   agentId: string;
   reportedAt: Date | null;
   state: string;
-}
-
-interface AgentUsageAggregate {
-  agentId: string;
-  failed: string;
-  inputTokens: string;
-  cachedInputTokens: string;
-  outputTokens: string;
-  tasks: string;
-  invalidTokenCount: boolean | null;
 }
 
 function projectActivityByAgent(rows: readonly AgentActivityEvidence[]): Map<string, AgentListActivity> {
@@ -642,49 +633,11 @@ export class AgentService {
       recoveryStartedAt,
     );
 
-    const inputTokensText = sql<
-      string | null
-    >`case when ${imMessageDeliveries.executionOrigin} = 'cloud' then null else ${imMessageDeliveries.turnReport} #>> '{usage,inputTokens}' end`;
-    const cachedInputTokensText = sql<
-      string | null
-    >`case when ${imMessageDeliveries.executionOrigin} = 'cloud' then null else ${imMessageDeliveries.turnReport} #>> '{usage,cachedInputTokens}' end`;
-    const outputTokensText = sql<
-      string | null
-    >`case when ${imMessageDeliveries.executionOrigin} = 'cloud' then null else ${imMessageDeliveries.turnReport} #>> '{usage,outputTokens}' end`;
-    const usageRows = (await this.#database
-      .select({
-        agentId: imBindings.agentId,
-        failed: sql<string>`count(*) filter (where ${imMessageDeliveries.turnReport} ->> 'outcome' = 'failed')::text`,
-        inputTokens: sql<string>`coalesce(sum(case when ${inputTokensText} ~ '^[0-9]+$' then (${inputTokensText})::numeric else 0::numeric end), 0)::text`,
-        cachedInputTokens: sql<string>`coalesce(sum(case when ${cachedInputTokensText} ~ '^[0-9]+$' then (${cachedInputTokensText})::numeric else 0::numeric end), 0)::text`,
-        outputTokens: sql<string>`coalesce(sum(case when ${outputTokensText} ~ '^[0-9]+$' then (${outputTokensText})::numeric else 0::numeric end), 0)::text`,
-        tasks: sql<string>`count(*)::text`,
-        invalidTokenCount: sql<boolean>`bool_or(
-          case when ${inputTokensText} is null then false
-            when ${inputTokensText} ~ '^[0-9]+$' then (${inputTokensText})::numeric > 9007199254740991
-            else true end or
-          case when ${cachedInputTokensText} is null then false
-            when ${cachedInputTokensText} ~ '^[0-9]+$' then (${cachedInputTokensText})::numeric > 9007199254740991
-            else true end or
-          case when ${outputTokensText} is null then false
-            when ${outputTokensText} ~ '^[0-9]+$' then (${outputTokensText})::numeric > 9007199254740991
-            else true end
-        )`,
-      })
-      .from(imMessageDeliveries)
-      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
-      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
-      .where(
-        and(
-          inArray(
-            imBindings.agentId,
-            summaries.map((agent) => agent.id),
-          ),
-          gte(imMessageDeliveries.acceptedAt, usageStartedAt),
-          lte(imMessageDeliveries.acceptedAt, now),
-        ),
-      )
-      .groupBy(imBindings.agentId)) as AgentUsageAggregate[];
+    const usageRows = await readAgentUsageSummaries(this.#database, {
+      agentIds: summaries.map((agent) => agent.id),
+      startedAt: usageStartedAt,
+      endedAt: now,
+    });
 
     const cloudTokens = await this.#cloudUsage?.totalsByAgent(callerUserId, AGENT_USAGE_WINDOW_DAYS, now);
     const usageByAgent = new Map<string, { failed: number; tasks: number; tokens: number }>();

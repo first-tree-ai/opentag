@@ -21,6 +21,7 @@ import { CloudCallStore } from "../../cloud-call-store.js";
 import { CloudUsageService } from "../../cloud-usage.js";
 import { EffectiveRuntimeSnapshotAssembler } from "../../runtime-config/effective-runtime-snapshot-assembler.js";
 import { DEFAULT_AGENT_RUNTIME_CONFIG } from "../../runtime-config/index.js";
+import { AGENT_USAGE_EXCEPTION_ROW_LIMIT } from "../agent-usage.js";
 import { AGENT_ACTIVITY_READ_LIMIT, AGENT_ACTIVITY_RECOVERY_WINDOW_HOURS, AgentService } from "../index.js";
 
 const NOW = new Date("2026-08-24T12:00:00.000Z");
@@ -513,6 +514,76 @@ describe("AgentService", () => {
       [nonCanonical.id],
     );
     await expect(service.getUsageById(bootstrap.userId, created.id, 30)).rejects.toThrow("invalid token count");
+  });
+
+  it("classifies unusual report text without relying on cast order", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id, "unusual-agent", "pi");
+    const binding = await createBinding(created.id);
+    const session = await createSession(binding.id);
+    // `1000.00` is a valid `Number()` and not a canonical integer text; `"1.5"`, `"true"` and an object
+    // are not safe integers at all. A plan that reached `::numeric` before the digit test would raise
+    // 22P02 here instead of reporting the parser's own verdict.
+    const valid = await createDelivery(binding.id, session.id, { acceptedAt: NOW, reportedAt: NOW, usage: {} });
+    await unitDatabase.engine.query(
+      `update im_message_deliveries set turn_report = '{"usage":{"inputTokens":1000.00}}'::jsonb where id = $1`,
+      [valid.id],
+    );
+    await expect(service.getUsageById(bootstrap.userId, created.id, 30)).resolves.toMatchObject({
+      tasks: 1,
+      measuredTasks: 1,
+      inputTokens: 1000,
+      tokens: 1000,
+    });
+
+    for (const text of ["1.5", "-5", "not-a-number", "true", '{"a": 1}', "9007199254740992"]) {
+      await unitDatabase.engine.query(`update im_message_deliveries set turn_report = $2::jsonb where id = $1`, [
+        valid.id,
+        JSON.stringify({ usage: { inputTokens: text }, outcome: "completed" }),
+      ]);
+      await expect(service.getUsageById(bootstrap.userId, created.id, 30)).rejects.toThrow("invalid token count");
+    }
+  });
+
+  it("bounds the per-row fallback when a window holds too many unusual reports", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id, "bounded-agent", "pi");
+    const binding = await createBinding(created.id);
+    const session = await createSession(binding.id);
+    const reports = AGENT_USAGE_EXCEPTION_ROW_LIMIT + 1;
+    await unitDatabase.engine.exec(`
+      insert into im_messages (
+        im_binding_id, channel_id, external_message_id, provider_revision_key, operation, direction,
+        author_kind, author_external_id, content, occurred_at, provider_context
+      )
+      select '${binding.id}', 'bulk', 'bulk-' || n, '1', 'created', 'inbound', 'human', 'h',
+        '{"version":1,"fallbackText":"x","blocks":[],"truncated":false}'::jsonb, '${NOW.toISOString()}', '{}'::jsonb
+      from generate_series(1, ${reports}) n
+    `);
+    await unitDatabase.engine.exec(`
+      insert into im_message_deliveries (
+        message_id, session_id, attention, state, placement_generation, input_hash, turn_id,
+        report_owner_instance_id, turn_report, reported_at, accepted_at, expires_at, result_hash
+      )
+      select m.id, '${session.id}', 'direct', 'accepted', 1, 'i-' || m.external_message_id,
+        't-' || m.external_message_id, '${REPORT_OWNER}', '{"usage":{"inputTokens":1000.00}}'::jsonb,
+        '${NOW.toISOString()}', '${NOW.toISOString()}', '${new Date(NOW.getTime() + 86_400_000).toISOString()}', 'r-' || m.external_message_id
+      from im_messages m where m.channel_id = 'bulk'
+    `);
+    await expect(service.getUsageById(bootstrap.userId, created.id, 30)).rejects.toThrow(
+      `more than ${AGENT_USAGE_EXCEPTION_ROW_LIMIT} reports that need per-row parsing`,
+    );
+    // One fewer unusual report stays inside the bound and is still summed exactly.
+    await unitDatabase.engine.exec(`
+      delete from im_message_deliveries where message_id = (
+        select id from im_messages where channel_id = 'bulk' order by external_message_id limit 1
+      )
+    `);
+    await expect(service.getUsageById(bootstrap.userId, created.id, 30)).resolves.toMatchObject({
+      tasks: AGENT_USAGE_EXCEPTION_ROW_LIMIT,
+      measuredTasks: AGENT_USAGE_EXCEPTION_ROW_LIMIT,
+      inputTokens: AGENT_USAGE_EXCEPTION_ROW_LIMIT * 1000,
+    });
   });
 
   it("counts cloud ledger tokens once while preserving local reports and task counts", async () => {

@@ -16,21 +16,31 @@
  *   precision.
  */
 import { type AgentRuntimeProvider, type AgentUsageDetail, runtimeUsageTotalTokens } from "@opentag/shared";
-import { and, asc, eq, gte, lte, type SQL, sql } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
+
 import type { DatabaseClient } from "../../db/client.js";
-import { imBindings, imMessageDeliveries, sessions } from "../../db/schema/index.js";
 
 /** The largest value `Number.isSafeInteger` accepts, used as the SQL bound for a canonical count. */
 const MAX_SAFE_INTEGER = 9007199254740991;
 
-type UsageField = "inputTokens" | "cachedInputTokens" | "outputTokens";
-type QueryExecutor = Pick<DatabaseClient, "select">;
+/**
+ * How many reports one read may correct row by row.
+ *
+ * The aggregate covers values in canonical decimal form, which is what a JSON number always produces, so
+ * this bound is never reached by ordinary data. It exists because the correction path is a second read:
+ * without a limit, a window holding nothing but unusual report formats would be unbounded work again. Past
+ * the limit the read fails instead of silently approximating.
+ */
+export const AGENT_USAGE_EXCEPTION_ROW_LIMIT = 1000;
+
+type QueryExecutor = Pick<DatabaseClient, "execute">;
 
 type UsageDayAggregateRow = {
   day: string;
   tasks: string;
   failed: string;
   measuredTasks: string;
+  approximatedTasks: string;
   inputTokens: string;
   cachedInputTokens: string;
   outputTokens: string;
@@ -62,40 +72,55 @@ export interface AgentUsageDailyRead {
   daily: AgentUsageDetail["daily"];
 }
 
-function usageText(field: UsageField): SQL<string | null> {
-  // Cloud reports are the billing ledger's evidence, not the local token breakdown, so they never reach
-  // the token arithmetic. Reading them as absent keeps that rule inside the aggregate instead of the
-  // row loop, and a malformed Cloud report can never fail the read.
-  return sql<
-    string | null
-  >`case when ${imMessageDeliveries.executionOrigin} = 'cloud' then null else ${imMessageDeliveries.turnReport} #>> ${sql.raw(`'{usage,${field}}'`)} end`;
+/**
+ * `true` when the stored text is a value the per-row `Number()` parser accepts without rounding.
+ *
+ * The cast sits inside a `CASE` whose condition already proved the text is decimal digits: SQL does not
+ * promise to evaluate `a ~ '^[0-9]+$' and a::numeric > b` left to right, so a bare `AND` could reach the
+ * cast with arbitrary text and raise `22P02` instead of classifying the row.
+ */
+function canonicalSql(column: string): SQL {
+  return sql`(case when ${sql.raw(column)} ~ '^[0-9]+$' then ${sql.raw(column)}::numeric <= ${MAX_SAFE_INTEGER} when ${sql.raw(column)} is null then true else false end)`;
 }
 
 /**
- * `true` when the stored text is what the per-row `Number()` parser accepts without rounding: SQL NULL,
- * or the canonical decimal form of a value the parser proves safe. A JSON number's text is always
- * canonical, so this predicate is only false for a hand-written or pathological report.
+ * The window's Deliveries with every JSON usage value extracted exactly once, plus the row-level verdict
+ * the aggregate needs.
+ *
+ * The shape is measured, not stylistic. `materialized` stops PostgreSQL from inlining the CTE and
+ * re-evaluating `#>>` once per reference. The second level exists because a `SELECT` cannot reference its
+ * own output columns: `canonical` must be computed from the extracted text, not from the projection, and
+ * computing it inside each aggregate instead made this query several times slower — every `FILTER` and
+ * every `sum` re-ran three regex tests per row. The projected rows stay narrow, so both tuplestores stay
+ * inside `work_mem`.
  */
-function canonicalUsageValue(field: UsageField): SQL<boolean> {
-  const text = usageText(field);
-  return sql<boolean>`(${text} is null or (${text} ~ '^[0-9]+$' and (${text})::numeric <= ${MAX_SAFE_INTEGER}))`;
+function usageWindowSql(where: SQL, extraColumns: SQL = sql``): SQL {
+  return sql`
+    with usage_window as materialized (
+      select
+        ${extraColumns}
+        d.accepted_at as accepted_at,
+        d.turn_report ->> 'outcome' = 'failed' as failed,
+        case when d.execution_origin = 'cloud' then null else d.turn_report #>> '{usage,inputTokens}' end as input_text,
+        case when d.execution_origin = 'cloud' then null else d.turn_report #>> '{usage,cachedInputTokens}' end as cached_text,
+        case when d.execution_origin = 'cloud' then null else d.turn_report #>> '{usage,outputTokens}' end as output_text
+      from im_message_deliveries d
+      inner join sessions s on s.id = d.session_id
+      inner join im_bindings b on b.id = s.im_binding_id
+      where ${where}
+    ),
+    flagged_window as materialized (
+      select
+        *,
+        (${canonicalSql("input_text")} and ${canonicalSql("cached_text")} and ${canonicalSql("output_text")}) as canonical
+      from usage_window
+    )
+  `;
 }
 
-const canonicalUsageRow = sql<boolean>`(${canonicalUsageValue("inputTokens")} and ${canonicalUsageValue(
-  "cachedInputTokens",
-)} and ${canonicalUsageValue("outputTokens")})`;
-
-/**
- * Sums one usage field over canonical rows only. A row with any non-canonical field is excluded here and
- * recomputed in JavaScript, so no row is counted twice.
- */
-function canonicalUsageSum(field: UsageField): SQL<string> {
-  const text = usageText(field);
-  return sql<string>`coalesce(sum(case when ${canonicalUsageRow} and ${text} is not null then (${text})::numeric else 0 end), 0)::text`;
-}
-
-function usageDay(): SQL<string> {
-  return sql<string>`to_char(${imMessageDeliveries.acceptedAt} at time zone 'UTC', 'YYYY-MM-DD')`;
+/** Sums one extracted usage field over canonical rows only; the fallback reads the others in JavaScript. */
+function canonicalSumSql(column: string): SQL {
+  return sql`coalesce(sum(case when canonical then coalesce(${sql.raw(column)}::numeric, 0) else 0 end), 0)::text`;
 }
 
 /**
@@ -177,44 +202,56 @@ export async function readAgentUsageDaily(
   executor: QueryExecutor,
   input: AgentUsageDailyReadInput,
 ): Promise<AgentUsageDailyRead> {
-  const window = and(
-    eq(imBindings.agentId, input.agentId),
-    gte(imMessageDeliveries.acceptedAt, input.startedAt),
-    lte(imMessageDeliveries.acceptedAt, input.endedAt),
-  );
+  const window = sql`b.agent_id = ${input.agentId}::uuid
+    and d.accepted_at >= ${input.startedAt.toISOString()}::timestamptz
+    and d.accepted_at <= ${input.endedAt.toISOString()}::timestamptz`;
   // Sequential on purpose: both statements must observe one snapshot on one connection, and the
   // fallback stays cheap because canonical rows are the entire production population.
-  const dayRows = (await executor
-    .select({
-      day: usageDay(),
-      tasks: sql<string>`count(*)::text`,
-      failed: sql<string>`count(*) filter (where ${imMessageDeliveries.turnReport} ->> 'outcome' = 'failed')::text`,
-      measuredTasks: sql<string>`count(*) filter (where ${canonicalUsageRow}
-        and (${usageText("inputTokens")} is not null
-          or ${usageText("cachedInputTokens")} is not null
-          or ${usageText("outputTokens")} is not null))::text`,
-      inputTokens: canonicalUsageSum("inputTokens"),
-      cachedInputTokens: canonicalUsageSum("cachedInputTokens"),
-      outputTokens: canonicalUsageSum("outputTokens"),
-    })
-    .from(imMessageDeliveries)
-    .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
-    .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
-    .where(window)
-    .groupBy(usageDay())) as UsageDayAggregateRow[];
-  const abnormalRows = await executor
-    .select({
-      acceptedAt: imMessageDeliveries.acceptedAt,
-      inputTokens: usageText("inputTokens"),
-      cachedInputTokens: usageText("cachedInputTokens"),
-      outputTokens: usageText("outputTokens"),
-    })
-    .from(imMessageDeliveries)
-    .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
-    .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
-    .where(and(window, sql`not ${canonicalUsageRow}`))
-    .orderBy(asc(imMessageDeliveries.acceptedAt), asc(imMessageDeliveries.id));
-
+  const dayRows = (await executor.execute(sql`
+    ${usageWindowSql(window)}
+    select
+      to_char(accepted_at at time zone 'UTC', 'YYYY-MM-DD') as "day",
+      count(*)::text as "tasks",
+      count(*) filter (where failed)::text as "failed",
+      count(*) filter (where canonical
+        and (input_text is not null or cached_text is not null or output_text is not null))::text as "measuredTasks",
+      count(*) filter (where not canonical)::text as "approximatedTasks",
+      ${canonicalSumSql("input_text")} as "inputTokens",
+      ${canonicalSumSql("cached_text")} as "cachedInputTokens",
+      ${canonicalSumSql("output_text")} as "outputTokens"
+    from flagged_window
+    group by 1
+  `)) as unknown as UsageDayAggregateRow[];
+  // Rows the aggregate excluded. Their detection rides the aggregate itself, so the fallback query only
+  // runs when there is something to correct; a window of ordinary JSON numbers never pays for it.
+  const approximatedTasks = dayRows.reduce(
+    (total, row) => total + parseAggregateCount(row.approximatedTasks, "approximated task"),
+    0,
+  );
+  if (approximatedTasks > AGENT_USAGE_EXCEPTION_ROW_LIMIT) {
+    throw new Error(`Agent usage has more than ${AGENT_USAGE_EXCEPTION_ROW_LIMIT} reports that need per-row parsing`);
+  }
+  // Doubles as the bound: the query cannot return more rows than the limit allowed just above.
+  const abnormalRows =
+    approximatedTasks === 0
+      ? []
+      : ((await executor.execute(sql`
+    ${usageWindowSql(window, sql`d.id as delivery_id,`)}
+    select
+      to_char(accepted_at at time zone 'UTC', 'YYYY-MM-DD') as "day",
+      input_text as "inputTokens",
+      cached_text as "cachedInputTokens",
+      output_text as "outputTokens"
+    from flagged_window
+    where not canonical
+    order by accepted_at asc, delivery_id asc
+    limit ${AGENT_USAGE_EXCEPTION_ROW_LIMIT + 1}
+  `)) as unknown as {
+          day: string;
+          inputTokens: string | null;
+          cachedInputTokens: string | null;
+          outputTokens: string | null;
+        }[]);
   const result: AgentUsageDailyRead = {
     tasks: 0,
     measuredTasks: 0,
@@ -266,9 +303,8 @@ export async function readAgentUsageDaily(
   }
 
   for (const row of abnormalRows) {
-    if (!row.acceptedAt) continue;
     const counts = deliveryUsageTokenCounts(input.provider, row.inputTokens, row.cachedInputTokens, row.outputTokens);
-    const point = daily.get(row.acceptedAt.toISOString().slice(0, 10));
+    const point = daily.get(row.day);
     if (!point) throw new Error("Agent usage date falls outside the requested window");
     if (counts.measured) {
       point.measuredTasks += 1;
@@ -280,4 +316,53 @@ export async function readAgentUsageDaily(
 
   result.daily = [...daily.values()];
   return result;
+}
+
+/** One Agent's 30-day totals, still as aggregate text the caller parses. */
+export interface AgentUsageSummaryRow {
+  agentId: string;
+  failed: string;
+  inputTokens: string;
+  cachedInputTokens: string;
+  outputTokens: string;
+  tasks: string;
+  invalidTokenCount: boolean | null;
+}
+
+/**
+ * The list's per-Agent totals over the window, in one statement.
+ *
+ * The list keeps its own validity rule: a value that is not the canonical decimal form of a number is
+ * flagged here rather than parsed per row, so the list reports an unusable history instead of failing on
+ * it. `getUsageById` deliberately differs, and both behaviors are part of the contract.
+ */
+export async function readAgentUsageSummaries(
+  executor: QueryExecutor,
+  input: { agentIds: readonly string[]; startedAt: Date; endedAt: Date },
+): Promise<AgentUsageSummaryRow[]> {
+  const agentIds = sql.join(
+    input.agentIds.map((agentId) => sql`${agentId}::uuid`),
+    sql`, `,
+  );
+  const window = sql`b.agent_id in (${agentIds})
+    and d.accepted_at >= ${input.startedAt.toISOString()}::timestamptz
+    and d.accepted_at <= ${input.endedAt.toISOString()}::timestamptz`;
+  const invalidValueSql = (column: string): SQL =>
+    sql`case when ${sql.raw(column)} is null then false
+      when ${sql.raw(column)} ~ '^[0-9]+$' then ${sql.raw(column)}::numeric > ${MAX_SAFE_INTEGER}
+      else true end`;
+  return (await executor.execute(sql`
+    ${usageWindowSql(window, sql`b.agent_id as agent_id,`)}
+    select
+      agent_id as "agentId",
+      count(*)::text as "tasks",
+      count(*) filter (where failed)::text as "failed",
+      coalesce(sum(case when input_text ~ '^[0-9]+$' then input_text::numeric else 0 end), 0)::text as "inputTokens",
+      coalesce(sum(case when cached_text ~ '^[0-9]+$' then cached_text::numeric else 0 end), 0)::text as "cachedInputTokens",
+      coalesce(sum(case when output_text ~ '^[0-9]+$' then output_text::numeric else 0 end), 0)::text as "outputTokens",
+      bool_or(${invalidValueSql("input_text")} or ${invalidValueSql("cached_text")} or ${invalidValueSql("output_text")})
+        as "invalidTokenCount"
+    from flagged_window
+    group by agent_id
+  `)) as unknown as AgentUsageSummaryRow[];
 }

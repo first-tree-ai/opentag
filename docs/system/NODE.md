@@ -14,6 +14,9 @@ and the contracts each subsystem implements.
 
 - **[Agent, Session, and Computer model](agent-session-computer-model.md)** —
   durable identity, conversation scope, placement, and execution resources.
+- **[Agent usage accounting](agent-usage.md)** — where task and token counts come
+  from, the Provider token rules, the safe-integer bounds, and the bounded
+  UTC-day read shape.
 - **[Server and Client Runtime boundary](server-client-boundary.md)** —
   control-plane authority, the Client connection, readiness, and
   authentication constraints.

@@ -110,6 +110,7 @@ export interface SlackIngressBinding extends SlackInstallationIngress {
 
 export interface FeishuConnectionMaterial {
   imBindingId: string;
+  agentId: string;
   generation: number;
   appId: string;
   teamId: string | null;
@@ -121,6 +122,7 @@ export interface FeishuConnectionMaterial {
 
 export interface SlackConnectionMaterial {
   imBindingId: string;
+  agentId: string;
   installationId: string;
   generation: number;
   appId: string;
@@ -672,6 +674,7 @@ export class ImBindingService {
     if (!credential) return undefined;
     return {
       imBindingId,
+      agentId: row.imBinding.agentId,
       installationId: ingress.installationId,
       generation: ingress.generation,
       appId: ingress.appId,
@@ -712,6 +715,7 @@ export class ImBindingService {
     if (!credential) return undefined;
     return {
       imBindingId,
+      agentId: imBinding.agentId,
       generation: imBinding.credentialGeneration,
       appId: imBinding.externalAppId,
       teamId: imBinding.externalTeamId,

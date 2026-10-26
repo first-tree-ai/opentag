@@ -10,6 +10,7 @@ export class ApprovalMessenger {
   constructor(
     private readonly bindings: ImBindingService,
     private readonly policy: ExternalCallPolicy,
+    private readonly publicUrl: string,
   ) {}
 
   async post(approval: Approval): Promise<{ messageId: string; channelId: string }> {
@@ -27,23 +28,27 @@ export class ApprovalMessenger {
       if (!channelId) throw new Error("APPROVAL_DM_UNAVAILABLE");
       const result = await this.policy.run(
         "slack.approval.post",
-        () => client.chat.postMessage({ channel: channelId, ...slackCard(approval) }),
+        () =>
+          client.chat.postMessage({
+            channel: channelId,
+            ...slackCard(approval, this.modelSettingsUrl(material.agentId)),
+          }),
         { maxAttempts: 1 },
       );
       if (!result.ts) throw new Error("APPROVAL_MESSAGE_MISSING");
       return { messageId: result.ts, channelId };
     }
-    const client = await this.feishuClient(approval);
-    if (!client) throw new Error("APPROVAL_BINDING_STALE");
+    const connection = await this.feishuConnection(approval);
+    if (!connection) throw new Error("APPROVAL_BINDING_STALE");
     const result = await this.policy.run(
       "feishu.approval.post",
       () =>
-        client.im.v1.message.create({
+        connection.client.im.v1.message.create({
           params: { receive_id_type: "open_id" },
           data: {
             receive_id: authority.senderExternalId,
             msg_type: "interactive",
-            content: feishuCard(approval),
+            content: feishuCard(approval, connection.modelSettingsUrl),
           },
         }),
       { maxAttempts: 1 },
@@ -66,36 +71,43 @@ export class ApprovalMessenger {
           new WebClient(material.botAccessToken, { retryConfig: { retries: 0 } }).chat.update({
             channel: messageChannelId,
             ts: messageId,
-            ...slackCard(approval),
+            ...slackCard(approval, this.modelSettingsUrl(material.agentId)),
           }),
         { maxAttempts: 1 },
       );
       return;
     }
-    const client = await this.feishuClient(approval);
+    const connection = await this.feishuConnection(approval);
     // Replaced credentials cannot update the old card; finish without retrying.
-    if (!client) return;
+    if (!connection) return;
     const result = await this.policy.run(
       "feishu.approval.update",
       () =>
-        client.im.v1.message.patch({
+        connection.client.im.v1.message.patch({
           path: { message_id: messageId },
-          data: { content: feishuCard(approval) },
+          data: { content: feishuCard(approval, connection.modelSettingsUrl) },
         }),
       { maxAttempts: 1 },
     );
     if (result.code !== 0) throw new Error("APPROVAL_UPDATE_FAILED");
   }
 
-  private async feishuClient(approval: Approval) {
+  private modelSettingsUrl(agentId: string): string {
+    return new URL(`/agents/${encodeURIComponent(agentId)}/settings/execution`, this.publicUrl).href;
+  }
+
+  private async feishuConnection(approval: Approval) {
     const material = await this.bindings.getFeishuConnectionMaterial(approval.imBindingId);
     if (!material || material.generation !== approval.authority.generation) return undefined;
-    return new Client({
-      appId: material.appId,
-      appSecret: material.appSecret,
-      domain: feishuDomainForWorkspaceBrand(material.teamBrand),
-      loggerLevel: LoggerLevel.error,
-    });
+    return {
+      client: new Client({
+        appId: material.appId,
+        appSecret: material.appSecret,
+        domain: feishuDomainForWorkspaceBrand(material.teamBrand),
+        loggerLevel: LoggerLevel.error,
+      }),
+      modelSettingsUrl: this.modelSettingsUrl(material.agentId),
+    };
   }
 }
 
@@ -106,7 +118,7 @@ function statusText(status: Approval["status"]): string | undefined {
   return undefined;
 }
 
-function slackCard(approval: Approval) {
+function slackCard(approval: Approval, modelSettingsUrl: string) {
   const { commandPresentation } = approval.request;
   const title = commandPresentation ? "Command approval" : approval.request.title;
   const summary = `${title}\n\n${approval.request.description}`;
@@ -167,11 +179,20 @@ function slackCard(approval: Approval) {
               ],
             },
           ]),
+      {
+        type: "context" as const,
+        elements: [
+          {
+            type: "mrkdwn" as const,
+            text: `Whitelist command or disable approvals in <${modelSettingsUrl}|Agent Model Settings>`,
+          },
+        ],
+      },
     ],
   };
 }
 
-function feishuCard(approval: Approval): string {
+function feishuCard(approval: Approval, modelSettingsUrl: string): string {
   const text = statusText(approval.status);
   const buttonType =
     approval.status === "approved" ? "primary_filled" : approval.status === "denied" ? "danger_filled" : undefined;
@@ -208,6 +229,15 @@ function feishuCard(approval: Approval): string {
               ],
             },
           ]),
+      {
+        tag: "note",
+        elements: [
+          {
+            tag: "lark_md",
+            content: `Whitelist command or disable approvals in [Agent Model Settings](${modelSettingsUrl})`,
+          },
+        ],
+      },
     ],
   });
 }

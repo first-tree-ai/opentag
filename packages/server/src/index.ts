@@ -826,7 +826,7 @@ export async function startServer(): Promise<void> {
       registry,
       serverInstanceId: instanceId,
       authority: (request, context) => loadApprovalAuthority(database, request, context),
-      messenger: new ApprovalMessenger(imBindingService, imCallPolicy),
+      messenger: new ApprovalMessenger(imBindingService, imCallPolicy, config.publicUrl),
       onError: () => reportDiagnostic("RUNTIME_APPROVAL_FAILED"),
     });
     const durableWorkStore = new PostgresRuntimeDurableWorkStore(database);

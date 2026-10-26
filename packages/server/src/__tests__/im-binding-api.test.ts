@@ -607,6 +607,7 @@ describe("ImBindingService persistence", () => {
     const material = await value.service.getFeishuConnectionMaterial(bindingId);
     expect(material).toMatchObject({
       imBindingId: bindingId,
+      agentId: value.agent.id,
       generation: 1,
       appId: "cli_1",
       teamId: "tenant_1",
@@ -704,6 +705,7 @@ describe("ImBindingService persistence", () => {
     const connection = await value.service.getSlackConnectionMaterial(activated.imBindingId);
     expect(connection).toMatchObject({
       imBindingId: activated.imBindingId,
+      agentId: value.agent.id,
       generation: 1,
       botId: "B1",
       botAccessToken: "xoxb-secret",

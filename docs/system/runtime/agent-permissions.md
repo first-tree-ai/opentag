@@ -49,6 +49,8 @@ New QR registrations include this callback; existing Apps need it enabled in the
 
 Approval requests appear in a private message to the task sender with **Approve** and **Deny** buttons.
 Cards show the reason and action, without provider transport metadata or user IDs.
+Both cards include a small footer: "Whitelist command or disable approvals in Agent Model Settings".
+Only "Agent Model Settings" is linked, opening that Agent's Model settings directly.
 Slack cards use a bold title at the same size as the body text and a separate explanation.
 When the Client supplies structured command presentation, the full redacted command appears
 in a native code block, preserving line breaks and literal formatting characters. The reason and

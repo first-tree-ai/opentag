@@ -1548,3 +1548,79 @@ describe("TaskService bounded detail", () => {
     expect(ambient.id).toEqual(expect.any(String));
   });
 });
+
+describe("TaskService bounded detail at topic scale", () => {
+  it("answers one page of a topic with thousands of Internal Sessions and collaboration messages", async () => {
+    const { binding, bootstrap, service } = await fixture();
+    const channel = await createSession(binding.id, { channelId: DM, conversationKind: "dm" });
+    const root = await createMessage(binding.id, { channelId: DM, occurredAt: minutes(0) });
+    await createDelivery(channel.id, root.id, { at: minutes(0), reported: true });
+
+    const count = 5_000;
+    for (let start = 0; start < count; start += 500) {
+      const batch = Array.from({ length: 500 }, (_, offset) => {
+        const index = start + offset;
+        return {
+          id: crypto.randomUUID(),
+          imBindingId: binding.id,
+          channelId: DM,
+          conversationKind: "dm" as const,
+          kind: "internal" as const,
+          createdBySessionId: channel.id,
+          runtimeModel: "claude-sonnet",
+          runtimeReasoningEffort: "medium",
+          runtimeMaxDurationMs: 20_000,
+          createdAt: new Date(minutes(index).getTime() + 1_000),
+        };
+      });
+      await unitDatabase.database.insert(sessions).values(batch);
+      await unitDatabase.database.insert(sessionMessages).values(
+        batch.map((session, offset) => ({
+          id: crypto.randomUUID(),
+          sourceSessionId: channel.id,
+          targetSessionId: session.id,
+          content: `Collaboration message ${start + offset}`,
+          contentHash: "d".repeat(64),
+          lastOutcome: "accepted" as const,
+          attemptCount: 1,
+          lastAttemptAt: BASE_TIME,
+          createdAt: new Date(minutes(start + offset).getTime() + 2_000),
+          updatedAt: new Date(minutes(start + offset).getTime() + 2_000),
+        })),
+      );
+    }
+
+    const startedAt = Date.now();
+    const first = await service.detail(bootstrap.userId, root.id);
+    const elapsedMs = Date.now() - startedAt;
+    // The page is the page size whatever the history holds; nothing here reads 5,000 rows into memory.
+    expect(first.task.id).toBe(root.id);
+    expect(first.internalSessions.items).toHaveLength(TASK_SECTION_DEFAULT_LIMIT);
+    expect(first.collaborationMessages.items).toHaveLength(TASK_SECTION_DEFAULT_LIMIT);
+    expect(first.internalSessions.nextCursor).toEqual(expect.any(String));
+    expect(first.collaborationMessages.nextCursor).toEqual(expect.any(String));
+    // The seed itself takes seconds in the embedded engine; the read must stay far below it.
+    expect(elapsedMs).toBeLessThan(10_000);
+
+    const secondPage = await service.listInternalSessions(bootstrap.userId, root.id, {
+      cursor: first.internalSessions.nextCursor ?? undefined,
+    });
+    const firstIds = new Set(first.internalSessions.items.map((session) => session.id));
+    expect(secondPage.items).toHaveLength(TASK_SECTION_DEFAULT_LIMIT);
+    expect(secondPage.items.every((session) => !firstIds.has(session.id))).toBe(true);
+    // The cursor continues strictly after the last Session of the previous page.
+    expect((secondPage.items[0]?.createdAt ?? "") > (first.internalSessions.items.at(-1)?.createdAt ?? "")).toBe(true);
+
+    const secondMessages = await service.listCollaborationMessages(bootstrap.userId, root.id, {
+      cursor: first.collaborationMessages.nextCursor ?? undefined,
+    });
+    const firstMessageIds = new Set(first.collaborationMessages.items.map((message) => message.id));
+    expect(secondMessages.items).toHaveLength(TASK_SECTION_DEFAULT_LIMIT);
+    expect(secondMessages.items.every((message) => !firstMessageIds.has(message.id))).toBe(true);
+
+    // The legacy complete detail still answers with every related Session.
+    const legacy = await service.get(bootstrap.userId, root.id, { limit: 5 });
+    expect(legacy.internalSessions).toHaveLength(count);
+    expect(legacy.collaborationMessages).toHaveLength(count);
+  }, 180_000);
+});

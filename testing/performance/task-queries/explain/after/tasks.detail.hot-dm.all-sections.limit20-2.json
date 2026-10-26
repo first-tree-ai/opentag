@@ -14,8 +14,8 @@
         "Total Cost": 8.44,
         "Plan Rows": 1,
         "Plan Width": 26,
-        "Actual Startup Time": 0.012,
-        "Actual Total Time": 0.012,
+        "Actual Startup Time": 0.014,
+        "Actual Total Time": 0.015,
         "Actual Rows": 1,
         "Actual Loops": 1,
         "Index Cond": "(id = '00000009-0000-4000-8000-000000100000'::uuid)",
@@ -44,9 +44,9 @@
         "Temp Read Blocks": 0,
         "Temp Written Blocks": 0
       },
-      "Planning Time": 0.039,
+      "Planning Time": 0.054,
       "Triggers": [],
-      "Execution Time": 0.017
+      "Execution Time": 0.021
     }
   ]
 }

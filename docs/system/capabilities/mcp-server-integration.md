@@ -158,6 +158,12 @@ message cannot reach a probe error, a log line, or a model. The outbound fetcher
 body before it returns, so a redirect or an oversized body fails inside the fetcher first, as its own
 bounded error, rather than as one of these status summaries.
 
+The probe API answers `200` whether or not the probe succeeded and never returns the upstream
+status. A failed probe and a legacy fallback each write one `info` line carrying `upstreamStatus`,
+`rpcCode`, and `errorCode` — never the upstream message — so the status the Server really sent is
+readable in the service log. Every probe log line identifies the Server by `endpoint`, the URL origin only,
+because an endpoint path or query can carry a credential that the logger's key-name redaction does not catch.
+
 A caller's cancellation reaches all three hops. The gateway forwards the `AbortSignal` it was given
 to `initialize`, to `notifications/initialized`, and to the `tools/call`, so a cancelled turn cannot
 leave a legacy peer part-way through a handshake opened for an answer nobody will read. A signal
@@ -167,12 +173,6 @@ flight, and the hops after it are never sent — in particular the `tools/call`,
 that can have a side effect. This is the outbound policy's cancellation rule ("a cancelled call is
 not dialed") applied per hop rather than only to the request the caller named. A probe is bounded by
 its own deadline and takes no caller signal, so none of this makes a probe cancellable.
-
-The probe API answers `200` whether or not the probe succeeded and never returns the upstream
-status. A failed probe and a legacy fallback each write one `info` line carrying `upstreamStatus`,
-`rpcCode`, and `errorCode` — never the upstream message — so the status the Server really sent is
-readable in the service log. Every probe log line identifies the Server by `endpoint`, the URL origin only,
-because an endpoint path or query can carry a credential that the logger's key-name redaction does not catch.
 
 A dual-endpoint HTTP+SSE Server (2024-11-05) is reported as `MCP_TRANSPORT_UNSUPPORTED` rather than
 being half-supported.

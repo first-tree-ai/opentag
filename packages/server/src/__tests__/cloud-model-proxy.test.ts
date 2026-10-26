@@ -905,7 +905,7 @@ describe("Cloud model proxy upstream error classification", () => {
     expect(upstream.stats.hits).toBe(1);
   });
 
-  it("times out a heartbeat-only prelude without committing an HTTP 200 stream", async () => {
+  it("terminates a heartbeat-only prelude timeout without making an uncertain call retryable", async () => {
     const upstream = await startFixture({ kind: "heartbeat", chunkIntervalMs: 10 });
     const stack = await makeStack({ upstream, configOverrides: { requestTimeoutMs: 200 } });
     const issued = await issueToken(stack.grants);
@@ -914,9 +914,24 @@ describe("Cloud model proxy upstream error classification", () => {
       { messages: CHAT_MESSAGES, model: "model-a", stream: true },
       issued.token,
     );
-    expect(response.status).toBe(504);
-    expect(await errorCode(response)).toBe("CLOUD_MODEL_UPSTREAM_TIMEOUT");
+    expect(response.status).toBe(400);
+    expect(await errorCode(response)).toBe("CLOUD_MODEL_UPSTREAM_UNCERTAIN");
     expect(upstream.stats.hits).toBe(1);
+    expect(slotIsFree(stack.grants, issued.claims.jti)).toBe(true);
+  });
+
+  it("terminates a disconnected heartbeat-only prelude without making an uncertain call retryable", async () => {
+    const upstream = await startFixture({ kind: "heartbeat", chunkIntervalMs: 10 });
+    const stack = await makeStack({ upstream });
+    const issued = await issueToken(stack.grants);
+    const pending = postModel(stack.port, { messages: CHAT_MESSAGES, model: "model-a", stream: true }, issued.token);
+    await vi.waitFor(() => expect(upstream.stats.responseBytesSent).toBeGreaterThan(0));
+    await upstream.close();
+    const response = await pending;
+    expect(response.status).toBe(400);
+    expect(await errorCode(response)).toBe("CLOUD_MODEL_UPSTREAM_UNCERTAIN");
+    expect(upstream.stats.hits).toBe(1);
+    expect(slotIsFree(stack.grants, issued.claims.jti)).toBe(true);
   });
 
   it("closes a heartbeat-only prelude and releases its grant on server shutdown", async () => {

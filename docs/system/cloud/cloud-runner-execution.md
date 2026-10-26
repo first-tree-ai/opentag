@@ -224,6 +224,10 @@ an upstream HTTP 429 rejection; it does not imply that a ledger release committe
 retries. Unmarked or uncertain errors, and events after model data, retain their original
 stream behavior without automatic replay. The existing request timeout and cancellation still
 bound the prelude. A marked rejection without a usable hint uses Pi's default backoff.
+If an accepted HTTP 200 stream fails or times out during this prelude, the proxy returns the
+terminal HTTP 400 `CLOUD_MODEL_UPSTREAM_UNCERTAIN` error. A missing result does not prove the
+request was rejected; it must not become a retryable transport error. Explicit permission
+revocation and shutdown still return HTTP 401.
 
 The grant registry's 4,096-entry bound protects Server state, including concurrent issuance. It
 is not a per-Account execution quota or a model-spend budget. Account-level admission and fairness

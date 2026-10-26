@@ -483,6 +483,15 @@ async function forwardChatCompletions(
   } catch (error) {
     const billingRejection = billingFailure(error);
     if (billingRejection) return fail(reply, billingRejection.status, billingRejection.code, billingRejection.message);
+    // An accepted stream's missing outcome does not prove that replay is safe.
+    if (upstream && (!signal.aborted || timedOut())) {
+      return fail(
+        reply,
+        400,
+        "CLOUD_MODEL_UPSTREAM_UNCERTAIN",
+        "The model upstream stream failed with an uncertain outcome",
+      );
+    }
     return finalizeUpstreamUnavailable(reply, signal, timedOut);
   }
   if (!upstream) return finalizeUpstreamUnavailable(reply, signal, timedOut);

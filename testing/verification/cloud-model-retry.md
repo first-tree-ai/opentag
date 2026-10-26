@@ -42,7 +42,7 @@ pnpm exec vitest run \
   --maxWorkers=1
 ```
 
-The corrected run passed all 336 tests across these 11 files.
+The corrected run passed all 337 tests across these 11 files.
 
 The Client retry tests use the installed Pi SDK, its real session/compaction logic, and its
 real OpenAI-compatible provider request helper. Only HTTP responses and the clock are
@@ -67,6 +67,9 @@ Covered outcomes:
   `error.pre_stream_rejection: true` is normalized before any model data, including fragmented
   frames and heartbeat comments. Unmarked or uncertain errors, model data and oversized
   prefixes are preserved byte for byte. Prelude timeout and shutdown remain bounded.
+- A failed or timed-out accepted HTTP 200 prelude returns terminal HTTP 400
+  `CLOUD_MODEL_UPSTREAM_UNCERTAIN`, without making that uncertain outcome retryable.
+  Explicit revocation/shutdown still returns HTTP 401. Admission is released in either case.
 - The Server sends at most one upstream completion request per received request and retains
   its existing usage-settlement and grant-revocation behavior.
 
@@ -89,6 +92,7 @@ fixture-only usage store. No public model, real credentials, or deployed databas
 | Marked Router HTTP 200 SSE rate limit, then success | 2 | 2 | 0 | Successful completion after the requested wait |
 | Unmarked Router HTTP 200 SSE rate limit | 1 | 1 | 0 | Terminal model error |
 | Model data followed by a marked rate limit | 1 | 1 | 0 | Terminal model error |
+| Accepted HTTP 200 heartbeat prelude, then timeout | 1 | 1 | 0 | Terminal uncertain-outcome error |
 
 All cases included a conflicting project retry configuration and verified that it did not
 override the managed settings.

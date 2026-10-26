@@ -21,7 +21,7 @@ import { CloudCallStore } from "../../cloud-call-store.js";
 import { CloudUsageService } from "../../cloud-usage.js";
 import { EffectiveRuntimeSnapshotAssembler } from "../../runtime-config/effective-runtime-snapshot-assembler.js";
 import { DEFAULT_AGENT_RUNTIME_CONFIG } from "../../runtime-config/index.js";
-import { AGENT_USAGE_EXCEPTION_ROW_LIMIT } from "../agent-usage.js";
+import { AGENT_USAGE_EXCEPTION_BATCH_SIZE } from "../agent-usage.js";
 import { AGENT_ACTIVITY_READ_LIMIT, AGENT_ACTIVITY_RECOVERY_WINDOW_HOURS, AgentService } from "../index.js";
 
 const NOW = new Date("2026-08-24T12:00:00.000Z");
@@ -545,12 +545,13 @@ describe("AgentService", () => {
     }
   });
 
-  it("bounds the per-row fallback when a window holds too many unusual reports", async () => {
+  it("sums more than one batch of non-canonical reports through the service", async () => {
     const { bootstrap, computer, service } = await fixture();
-    const created = await createAgent(service, bootstrap.userId, computer.id, "bounded-agent", "pi");
+    const created = await createAgent(service, bootstrap.userId, computer.id, "batched-agent", "pi");
     const binding = await createBinding(created.id);
     const session = await createSession(binding.id);
-    const reports = AGENT_USAGE_EXCEPTION_ROW_LIMIT + 1;
+    const reports = AGENT_USAGE_EXCEPTION_BATCH_SIZE * 2 + 1;
+    // Every report shares one `accepted_at`, so the batch cursor can only advance on the ID tiebreak.
     await unitDatabase.engine.exec(`
       insert into im_messages (
         im_binding_id, channel_id, external_message_id, provider_revision_key, operation, direction,
@@ -566,25 +567,17 @@ describe("AgentService", () => {
         report_owner_instance_id, turn_report, reported_at, accepted_at, expires_at, result_hash
       )
       select m.id, '${session.id}', 'direct', 'accepted', 1, 'i-' || m.external_message_id,
-        't-' || m.external_message_id, '${REPORT_OWNER}', '{"usage":{"inputTokens":1000.00}}'::jsonb,
+        't-' || m.external_message_id, '${REPORT_OWNER}', '{"usage":{"inputTokens":"1000.00"}}'::jsonb,
         '${NOW.toISOString()}', '${NOW.toISOString()}', '${new Date(NOW.getTime() + 86_400_000).toISOString()}', 'r-' || m.external_message_id
       from im_messages m where m.channel_id = 'bulk'
     `);
-    await expect(service.getUsageById(bootstrap.userId, created.id, 30)).rejects.toThrow(
-      `more than ${AGENT_USAGE_EXCEPTION_ROW_LIMIT} reports that need per-row parsing`,
-    );
-    // One fewer unusual report stays inside the bound and is still summed exactly.
-    await unitDatabase.engine.exec(`
-      delete from im_message_deliveries where message_id = (
-        select id from im_messages where channel_id = 'bulk' order by external_message_id limit 1
-      )
-    `);
     await expect(service.getUsageById(bootstrap.userId, created.id, 30)).resolves.toMatchObject({
-      tasks: AGENT_USAGE_EXCEPTION_ROW_LIMIT,
-      measuredTasks: AGENT_USAGE_EXCEPTION_ROW_LIMIT,
-      inputTokens: AGENT_USAGE_EXCEPTION_ROW_LIMIT * 1000,
+      tasks: reports,
+      measuredTasks: reports,
+      inputTokens: reports * 1_000,
+      tokens: reports * 1_000,
     });
-  });
+  }, 120_000);
 
   it("counts cloud ledger tokens once while preserving local reports and task counts", async () => {
     const { bootstrap, computer, service: original } = await fixture();

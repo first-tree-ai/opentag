@@ -24,14 +24,15 @@ import type { DatabaseClient } from "../../db/client.js";
 const MAX_SAFE_INTEGER = 9007199254740991;
 
 /**
- * How many reports one read may correct row by row.
+ * How many reports one correction statement may return.
  *
- * The aggregate covers values in canonical decimal form, which is what a JSON number always produces, so
- * this bound is never reached by ordinary data. It exists because the correction path is a second read:
- * without a limit, a window holding nothing but unusual report formats would be unbounded work again. Past
- * the limit the read fails instead of silently approximating.
+ * The aggregate sums only values stored in canonical decimal form. A value that `Number()` still reads exactly —
+ * `1000.00`, `1e3`, `" 12"` — has to be recomputed row by row, and a window can legitimately hold any number of
+ * them, so the correction is a bounded keyset walk over them instead of one unbounded read: each statement takes
+ * at most this many rows and the totals are folded as they arrive, so memory stays constant however many
+ * reports need it. This is a page size, not a compatibility limit.
  */
-export const AGENT_USAGE_EXCEPTION_ROW_LIMIT = 1000;
+export const AGENT_USAGE_EXCEPTION_BATCH_SIZE = 1000;
 
 type QueryExecutor = Pick<DatabaseClient, "execute">;
 
@@ -194,6 +195,79 @@ function emptyUsageDay(date: string): AgentUsageDetail["daily"][number] {
 }
 
 /**
+ * Recomputes the reports the aggregate could not sum, one bounded keyset page at a time.
+ *
+ * The aggregate counted these rows inside the same snapshot, so the walk stops exactly when the counts agree;
+ * a mismatch is an internal inconsistency, not a data condition. Each page is folded into the per-day totals and
+ * then dropped, so memory does not depend on how many reports need it.
+ */
+async function foldApproximatedReports(
+  executor: QueryExecutor,
+  input: AgentUsageDailyReadInput,
+  window: SQL,
+  daily: Map<string, AgentUsageDetail["daily"][number]>,
+  result: AgentUsageDailyRead,
+  approximatedTasks: number,
+): Promise<void> {
+  // Every report the aggregate excluded, in keyset order. The aggregate already counted them inside the same
+  // snapshot, so the walk is bounded by that count: it stops exactly when the counts agree, and a mismatch is an
+  // internal inconsistency rather than a data condition.
+  let processed = 0;
+  // The cursor is the exact UTC text PostgreSQL printed, not a JavaScript Date: a `timestamptz` carries
+  // microseconds, a `Date` truncates to milliseconds, and a truncated cursor would repeat every row that shares
+  // the current millisecond — double-counting it — or skip one. The text is bound back as `timestamptz`, so the
+  // comparison is exact.
+  let cursor: { acceptedAtText: string; deliveryId: string } | undefined;
+  while (processed < approximatedTasks) {
+    const remaining = approximatedTasks - processed;
+    const batch = (await executor.execute(sql`
+        ${usageWindowSql(window, sql`d.id as delivery_id,`)}
+        select
+          to_char(accepted_at at time zone 'UTC', 'YYYY-MM-DD') as "day",
+          delivery_id as "deliveryId",
+          to_char(accepted_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "acceptedAtText",
+          input_text as "inputTokens",
+          cached_text as "cachedInputTokens",
+          output_text as "outputTokens"
+        from flagged_window
+        where not canonical
+          ${
+            cursor
+              ? sql`and (accepted_at, delivery_id) > (${cursor.acceptedAtText}::timestamptz, ${cursor.deliveryId}::uuid)`
+              : sql``
+          }
+        order by accepted_at asc, delivery_id asc
+        limit ${Math.min(AGENT_USAGE_EXCEPTION_BATCH_SIZE, remaining)}
+      `)) as unknown as {
+      day: string;
+      deliveryId: string;
+      acceptedAtText: string;
+      inputTokens: string | null;
+      cachedInputTokens: string | null;
+      outputTokens: string | null;
+    }[];
+    if (batch.length === 0) {
+      throw new Error("Agent usage reports need per-row parsing but the window returned none");
+    }
+    for (const row of batch) {
+      const counts = deliveryUsageTokenCounts(input.provider, row.inputTokens, row.cachedInputTokens, row.outputTokens);
+      const point = daily.get(row.day);
+      if (!point) throw new Error("Agent usage date falls outside the requested window");
+      if (counts.measured) {
+        point.measuredTasks += 1;
+        result.measuredTasks += 1;
+      }
+      addUsageTokenCounts(point, counts);
+      addUsageTokenCounts(result, counts);
+    }
+    processed += batch.length;
+    const last = batch.at(-1);
+    if (!last) throw new Error("Agent usage reports need per-row parsing but the window returned none");
+    cursor = { acceptedAtText: last.acceptedAtText, deliveryId: last.deliveryId };
+  }
+}
+
+/**
  * Reads the window as UTC day buckets. Callers must pass one authorized, fixed read snapshot so the
  * aggregate and the fallback rows describe the same set of deliveries (see
  * `docs/system/database-read-write-standards.md`, RD1).
@@ -228,30 +302,6 @@ export async function readAgentUsageDaily(
     (total, row) => total + parseAggregateCount(row.approximatedTasks, "approximated task"),
     0,
   );
-  if (approximatedTasks > AGENT_USAGE_EXCEPTION_ROW_LIMIT) {
-    throw new Error(`Agent usage has more than ${AGENT_USAGE_EXCEPTION_ROW_LIMIT} reports that need per-row parsing`);
-  }
-  // Doubles as the bound: the query cannot return more rows than the limit allowed just above.
-  const abnormalRows =
-    approximatedTasks === 0
-      ? []
-      : ((await executor.execute(sql`
-    ${usageWindowSql(window, sql`d.id as delivery_id,`)}
-    select
-      to_char(accepted_at at time zone 'UTC', 'YYYY-MM-DD') as "day",
-      input_text as "inputTokens",
-      cached_text as "cachedInputTokens",
-      output_text as "outputTokens"
-    from flagged_window
-    where not canonical
-    order by accepted_at asc, delivery_id asc
-    limit ${AGENT_USAGE_EXCEPTION_ROW_LIMIT + 1}
-  `)) as unknown as {
-          day: string;
-          inputTokens: string | null;
-          cachedInputTokens: string | null;
-          outputTokens: string | null;
-        }[]);
   const result: AgentUsageDailyRead = {
     tasks: 0,
     measuredTasks: 0,
@@ -302,17 +352,7 @@ export async function readAgentUsageDaily(
     addUsageTokenCounts(result, { inputTokens: normalizedInputTokens, cachedInputTokens, outputTokens, tokens });
   }
 
-  for (const row of abnormalRows) {
-    const counts = deliveryUsageTokenCounts(input.provider, row.inputTokens, row.cachedInputTokens, row.outputTokens);
-    const point = daily.get(row.day);
-    if (!point) throw new Error("Agent usage date falls outside the requested window");
-    if (counts.measured) {
-      point.measuredTasks += 1;
-      result.measuredTasks += 1;
-    }
-    addUsageTokenCounts(point, counts);
-    addUsageTokenCounts(result, counts);
-  }
+  await foldApproximatedReports(executor, input, window, daily, result, approximatedTasks);
 
   result.daily = [...daily.values()];
   return result;

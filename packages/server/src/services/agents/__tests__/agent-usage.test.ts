@@ -10,7 +10,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createUnitDatabase, type UnitDatabase } from "../../../__tests__/support/unit-database.js";
 import { agents, imBindings, imMessageDeliveries, imMessages, sessions, users } from "../../../db/schema/index.js";
 import {
-  AGENT_USAGE_EXCEPTION_ROW_LIMIT,
+  AGENT_USAGE_EXCEPTION_BATCH_SIZE,
   addUsageTokenCounts,
   deliveryUsageTokenCounts,
   parseAggregateCount,
@@ -261,9 +261,11 @@ describe("readAgentUsageDaily", () => {
     await expect(read(fixture, "pi")).rejects.toThrow("invalid token count");
   });
 
-  it("bounds the per-row correction read and fails closed past the bound", async () => {
+  it("recomputes more than one batch of valid non-canonical reports", async () => {
     const fixture = await seed("pi");
-    const reports = AGENT_USAGE_EXCEPTION_ROW_LIMIT + 1;
+    const reports = AGENT_USAGE_EXCEPTION_BATCH_SIZE * 2 + 7;
+    // `1000.00` is a valid `Number()` and a valid safe integer; it is only non-canonical text, so every one of
+    // these reports must be summed instead of rejected.
     for (let index = 0; index < reports; index += 1) {
       const deliveryId = await addDelivery(fixture, {
         acceptedAt: new Date("2026-08-20T00:00:00Z"),
@@ -271,13 +273,77 @@ describe("readAgentUsageDaily", () => {
       });
       await unit.engine.query(`update im_message_deliveries set turn_report = $2::jsonb where id = $1`, [
         deliveryId,
-        JSON.stringify({ outcome: "completed", usage: { inputTokens: "1.0" } }),
+        JSON.stringify({ outcome: "completed", usage: { inputTokens: "1000.00", outputTokens: "0.00" } }),
       ]);
     }
-    await expect(read(fixture, "pi")).rejects.toThrow(
-      `more than ${AGENT_USAGE_EXCEPTION_ROW_LIMIT} reports that need per-row parsing`,
-    );
-  }, 120_000);
+    const usage = await read(fixture, "pi");
+    expect(usage).toMatchObject({
+      tasks: reports,
+      measuredTasks: reports,
+      inputTokens: reports * 1_000,
+      outputTokens: 0,
+      tokens: reports * 1_000,
+    });
+    expect(usage.daily.find((point) => point.date === "2026-08-20")).toMatchObject({
+      tasks: reports,
+      inputTokens: reports * 1_000,
+    });
+  }, 240_000);
+
+  it("fails a batch walk that meets invalid text, and keeps provider and safe-integer semantics", async () => {
+    const fixture = await seed("pi");
+    // One invalid report arrives in a later batch than the first: it must still fail the whole read.
+    const reports = AGENT_USAGE_EXCEPTION_BATCH_SIZE + 3;
+    let lastDeliveryId = "";
+    for (let index = 0; index < reports; index += 1) {
+      lastDeliveryId = await addDelivery(fixture, {
+        acceptedAt: new Date("2026-08-21T00:00:00Z"),
+        turnReport: { outcome: "completed", usage: {} },
+      });
+      await unit.engine.query(`update im_message_deliveries set turn_report = $2::jsonb where id = $1`, [
+        lastDeliveryId,
+        JSON.stringify({ outcome: "completed", usage: { inputTokens: "1000.00" } }),
+      ]);
+    }
+    await expect(read(fixture, "pi")).resolves.toMatchObject({ tasks: reports, inputTokens: reports * 1_000 });
+    await unit.engine.query(`update im_message_deliveries set turn_report = $2::jsonb where id = $1`, [
+      lastDeliveryId,
+      JSON.stringify({ outcome: "completed", usage: { inputTokens: "not-a-number" } }),
+    ]);
+    await expect(read(fixture, "pi")).rejects.toThrow("invalid token count");
+    // A per-row total beyond the safe integer range fails the same way, wherever it sits in the walk.
+    await unit.engine.query(`update im_message_deliveries set turn_report = $2::jsonb where id = $1`, [
+      lastDeliveryId,
+      JSON.stringify({ outcome: "completed", usage: { inputTokens: 9_007_199_254_740_992 } }),
+    ]);
+    await expect(read(fixture, "pi")).rejects.toThrow("invalid token count");
+  }, 240_000);
+
+  it("applies the Codex rule across a batch boundary", async () => {
+    const fixture = await seed("codex");
+    const reports = AGENT_USAGE_EXCEPTION_BATCH_SIZE + 1;
+    for (let index = 0; index < reports; index += 1) {
+      const deliveryId = await addDelivery(fixture, {
+        acceptedAt: new Date("2026-08-22T00:00:00Z"),
+        turnReport: { outcome: "completed", usage: {} },
+      });
+      await unit.engine.query(`update im_message_deliveries set turn_report = $2::jsonb where id = $1`, [
+        deliveryId,
+        JSON.stringify({
+          outcome: "completed",
+          usage: { inputTokens: "10.00", cachedInputTokens: "20.00", outputTokens: "5.00" },
+        }),
+      ]);
+    }
+    // Codex reports cached tokens inside its input count, so a batch of such reports still adds input+output.
+    await expect(read(fixture, "codex")).resolves.toMatchObject({
+      tasks: reports,
+      inputTokens: reports * 10,
+      cachedInputTokens: reports * 20,
+      outputTokens: reports * 5,
+      tokens: reports * 15,
+    });
+  }, 240_000);
 
   it("sums two deliveries on the same UTC day into one bucket", async () => {
     const fixture = await seed("pi");

@@ -66,9 +66,12 @@ never depends on how much history the Agent has. Two details keep the aggregatio
   parser, so those rows keep the per-value rules above. The aggregate itself counts them, and the second query runs only
   when that count is not zero, so an ordinary window pays for one statement. No row is counted twice: the aggregate
   excludes any row the fallback reads.
-- That correction read is bounded at 1,000 reports per window. The aggregate's own count decides whether to run it, and
-  a window above the bound fails with `Agent usage has more than 1000 reports that need per-row parsing` instead of
-  becoming unbounded work. Ordinary reports never approach it, because a JSON number always renders in canonical form.
+- That correction walk is bounded by paging, not by a compatibility limit: the aggregate's own count of excluded rows
+  decides how many there are, and they are read in keyset batches of at most 1,000 ordered by `(accepted_at, id)`, so
+  memory stays constant however many reports need recomputation. The cursor is the exact UTC text PostgreSQL printed
+  rather than a JavaScript `Date`, because a `timestamptz` carries microseconds and a millisecond-truncated cursor
+  would re-read or skip every row in the current millisecond. A valid report written as `1000.00` or `1e3` is summed,
+  not rejected; only a value the per-row parser refuses fails the read.
 - The aggregate and the correction read run in one read-only `repeatable read` transaction, so they describe the same
   set of Deliveries even while new Turns are reported.
 

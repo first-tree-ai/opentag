@@ -503,6 +503,137 @@ describe("cancellation benchmark production ports", () => {
     ).toThrow(/unexpected container port binding: 0\.0\.0\.0:5432/);
   });
 
+  it("removes the container it started when inspect or port validation fails", () => {
+    const calls: (readonly string[])[] = [];
+    const docker =
+      (afterRun: (args: readonly string[]) => string) =>
+      (args: readonly string[]): string => {
+        calls.push(args);
+        if (args[0] === "run") return "";
+        if (args[0] === "rm") return "";
+        return afterRun(args);
+      };
+
+    // A failing inspect command: the container exists, so it is removed before the error propagates.
+    calls.length = 0;
+    expect(() =>
+      startDatabaseContainer(
+        docker((args) => {
+          if (args[0] === "inspect") throw new Error("Error response from daemon: no such object");
+          return "127.0.0.1:54321";
+        }),
+        CONTAINER,
+      ),
+    ).toThrow(/no such object/);
+    expect(calls.map((args) => args[0])).toEqual(["run", "inspect", "rm"]);
+    expect(calls.at(-1)).toEqual(["rm", "--force", "--volumes", CONTAINER]);
+
+    // An unexpected label: same removal, and the label is still the reported cause.
+    calls.length = 0;
+    expect(() =>
+      startDatabaseContainer(
+        docker((args) => (args[0] === "inspect" ? "another-benchmark" : "127.0.0.1:54321")),
+        CONTAINER,
+      ),
+    ).toThrow(/unexpected container label: another-benchmark/);
+    expect(calls.map((args) => args[0])).toEqual(["run", "inspect", "rm"]);
+
+    // A failing port command and a non-loopback binding both remove the container too.
+    for (const port of [
+      () => {
+        throw new Error("Error: No public port '5432/tcp' published");
+      },
+      () => "0.0.0.0:5432",
+      () => "127.0.0.1:not-a-port",
+    ]) {
+      calls.length = 0;
+      expect(() =>
+        startDatabaseContainer(
+          docker((args) => (args[0] === "inspect" ? "cancel-deliveries" : port())),
+          CONTAINER,
+        ),
+      ).toThrow(/No public port|unexpected container port binding/);
+      expect(calls.map((args) => args[0])).toEqual(["run", "inspect", "port", "rm"]);
+    }
+  });
+
+  it("never removes a container when docker run itself fails", () => {
+    const calls: (readonly string[])[] = [];
+    expect(() =>
+      startDatabaseContainer((args) => {
+        calls.push(args);
+        throw new Error("docker: Cannot connect to the Docker daemon");
+      }, CONTAINER),
+    ).toThrow(/Cannot connect to the Docker daemon/);
+    // A failed `docker run` may not have created the container, so no removal is attempted for that name.
+    expect(calls.map((args) => args[0])).toEqual(["run"]);
+  });
+
+  it("keeps the original acquisition error when the cleanup removal also fails", () => {
+    const calls: (readonly string[])[] = [];
+    expect(() =>
+      startDatabaseContainer((args) => {
+        calls.push(args);
+        if (args[0] === "inspect") throw new Error("inspect failed");
+        if (args[0] === "rm") throw new Error("cannot remove a running container");
+        return "";
+      }, CONTAINER),
+    ).toThrow(/inspect failed/);
+    expect(calls.map((args) => args[0])).toEqual(["run", "inspect", "rm"]);
+  });
+
+  it("closes the administrative driver when readiness polling exhausts", async () => {
+    const probes: string[] = [];
+    const end = vi.fn(async () => undefined);
+    await expect(
+      openAdmin(
+        "postgres://unit",
+        () => ({
+          end,
+          probe: async () => {
+            probes.push("probe");
+            throw new Error("the database system is starting up");
+          },
+          query: async () => [],
+        }),
+        async () => undefined,
+      ),
+    ).rejects.toThrow(/the database system is starting up/);
+    // Attempt bound 30 means 31 probes, and the created driver is closed exactly once.
+    expect(probes).toHaveLength(31);
+    expect(end).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the readiness error when closing an exhausted driver also fails", async () => {
+    await expect(
+      openAdmin(
+        "postgres://unit",
+        () => ({
+          end: async () => {
+            throw new Error("socket already closed");
+          },
+          probe: async () => {
+            throw new Error("connection refused");
+          },
+          query: async () => [],
+        }),
+        async () => undefined,
+      ),
+    ).rejects.toThrow(/connection refused/);
+  });
+
+  it("leaves a ready driver open and does not close it on the success path", async () => {
+    const end = vi.fn(async () => undefined);
+    const admin = await openAdmin(
+      "postgres://unit",
+      () => ({ end, probe: async () => [], query: async () => [] }),
+      async () => undefined,
+    );
+    expect(end).not.toHaveBeenCalled();
+    await admin.end();
+    expect(end).toHaveBeenCalledTimes(1);
+  });
+
   it("waits for a container that answers late and gives up after the attempt bound", async () => {
     let attempts = 0;
     await waitForDatabase(

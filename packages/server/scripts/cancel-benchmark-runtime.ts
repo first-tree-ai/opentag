@@ -36,6 +36,12 @@ const LOCAL_PASSWORD = "benchmark-local-only";
 /**
  * Start the owned container and return its loopback URL. The label and binding assertions reject a
  * container this run did not create or a published address that is not loopback-only.
+ *
+ * A container whose `docker run` succeeded is this run's container even when the follow-up inspection
+ * fails: a failed inspect command, an unexpected label or a non-loopback binding must remove it before
+ * the error propagates, or every aborted acquisition leaks a running database. Removal is attempted only
+ * after `docker run` returned, so a name this run never created is never removed, and a failing removal
+ * never replaces the acquisition error the operator needs to see.
  */
 export function startDatabaseContainer(docker: (args: readonly string[]) => string, containerName: string): string {
   docker([
@@ -53,11 +59,26 @@ export function startDatabaseContainer(docker: (args: readonly string[]) => stri
     "POSTGRES_DB=opentag_benchmark",
     CONTAINER_IMAGE,
   ]);
-  const label = docker(["inspect", "--format", '{{index .Config.Labels "opentag.benchmark"}}', containerName]);
-  if (label !== "cancel-deliveries") throw new Error(`unexpected container label: ${label}`);
-  const binding = docker(["port", containerName, "5432/tcp"]);
-  if (!/^127\.0\.0\.1:\d+$/.test(binding)) throw new Error(`unexpected container port binding: ${binding}`);
-  return `postgres://postgres:${LOCAL_PASSWORD}@${binding}/opentag_benchmark`;
+  try {
+    const label = docker(["inspect", "--format", '{{index .Config.Labels "opentag.benchmark"}}', containerName]);
+    if (label !== "cancel-deliveries") throw new Error(`unexpected container label: ${label}`);
+    const binding = docker(["port", containerName, "5432/tcp"]);
+    if (!/^127\.0\.0\.1:\d+$/.test(binding)) throw new Error(`unexpected container port binding: ${binding}`);
+    return `postgres://postgres:${LOCAL_PASSWORD}@${binding}/opentag_benchmark`;
+  } catch (error) {
+    removeOwnedContainer(docker, containerName);
+    throw error;
+  }
+}
+
+/** Best-effort removal of the container this run created; the acquisition error stays the report. */
+function removeOwnedContainer(docker: (args: readonly string[]) => string, containerName: string): void {
+  try {
+    docker(["rm", "--force", "--volumes", containerName]);
+  } catch {
+    // Nothing to add: the acquisition failure is already on its way out, and this container is owned by
+    // this run, so a later cleanup pass finds it by its label.
+  }
 }
 
 /** Poll a fresh container until it answers; the attempt bound keeps a broken image from hanging. */
@@ -122,7 +143,18 @@ export async function openAdmin(
     new Promise((resolve) => setTimeout(resolve, milliseconds)),
 ): Promise<BenchmarkAdminPort> {
   const admin = connect(databaseUrl);
-  await waitForDatabase(() => admin.probe(), sleep);
+  try {
+    await waitForDatabase(() => admin.probe(), sleep);
+  } catch (error) {
+    // A driver whose readiness never arrives must not outlive the failure: close the connection this call
+    // created, then rethrow the readiness error, so the operator sees the cause and not a cleanup error.
+    try {
+      await admin.end();
+    } catch {
+      // Same rule as the container: the readiness failure is the report.
+    }
+    throw error;
+  }
   return {
     end: () => admin.end(),
     query: <T>(sql: string, params: readonly unknown[] = []) => admin.query(sql, params) as Promise<T[]>,

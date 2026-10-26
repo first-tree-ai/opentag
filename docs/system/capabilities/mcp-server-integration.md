@@ -119,8 +119,13 @@ unreadable successful body — an HTML error page from a proxy, an empty body, a
 JSON value that is not an object, or an envelope with no `result` — and a stream that ends without
 that answer are protocol failures reported as `MCP_UPSTREAM_ERROR`, never as an empty result. The
 probe would otherwise record a Server that answered nothing as a healthy one with zero tools, and a
-gateway `tools/call` would answer with an envelope that carries no `result`. An explicit
-`"result": null` and a `202`/`204` notification acknowledgement stay valid.
+gateway `tools/call` would answer with an envelope that carries no `result`. A `202` or `204` answers
+a notification only: `tools/call`, `tools/list`, and `initialize` each require a result, so an
+acknowledgement of one is `MCP_UPSTREAM_ERROR` as well. A present but unreadable `error` member —
+`null`, a scalar, an array, or a wrong-typed `code` or `message` — is also `MCP_UPSTREAM_ERROR`, with
+the real HTTP status and a fixed message, never a raw type error. Valid answers still pass: an
+explicit `"result": null`, a `202`/`204` notification acknowledgement, and a JSON-RPC error whose
+`code` the caller branches on.
 
 Because there is no session, **a Server must not rely on prior requests**. This is also why the probe
 snapshot is per authorization row rather than per Server: two credentials are two independent clients.

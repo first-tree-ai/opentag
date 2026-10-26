@@ -28,6 +28,7 @@ Deploy Server compatibility first, then Client/Runner. Preserve serving availabi
 - Client unit suite: 2,803 passed, 6 skipped.
 - Server unit suite: 4,262 passed, 16 skipped; the final Git scope/adapter/real-Git regressions also passed (72 passed, one Linux-only transport skip).
 - PostgreSQL credential integration: 22 passed, including authoritative Context Tree selection.
+- IM binding PostgreSQL integration: 106 passed. Retained-Turn recovery waits for the old owner's dispatch-release transaction before testing expiry and owner restart.
 - Shared unit suite: 773 passed; the added public exports were then checked against the updated snapshot.
 - Account GitHub settings and actions: 39 passed.
 - Agent Runtime: 773 passed; statements, branches, functions and lines all reached 100%.

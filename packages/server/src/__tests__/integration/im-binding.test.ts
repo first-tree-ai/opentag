@@ -493,10 +493,11 @@ async function respondingRuntime(input: {
       async () => undefined,
     );
   await register();
-  domain = new RuntimeDomainOwner(registry, new PostgresRuntimeCustodyStore(input.database), {
+  const custody = new PostgresRuntimeCustodyStore(input.database);
+  domain = new RuntimeDomainOwner(registry, custody, {
     requestTimeoutMs: input.requestTimeoutMs,
   });
-  return { context, domain, frames, registry, register };
+  return { context, custody, domain, frames, registry, register };
 }
 
 function turnReportFor(input: {
@@ -5209,6 +5210,7 @@ describe("IM binding persistence", () => {
           },
         });
         owners.push(first.domain);
+        const releaseDispatch = vi.spyOn(first.custody, "releaseDeliveryDispatch");
         const firstWorker = imDeliveryWorker({
           database: value.database,
           registry: first.registry,
@@ -5218,6 +5220,7 @@ describe("IM binding persistence", () => {
         const firstFrame = await dispatched.promise;
         first.domain.close();
         await firstRun;
+        await expect(releaseDispatch.mock.results[0]?.value).resolves.toBe("released");
         const turnId = `turn-${durableState}-retained`;
         const report = turnReportFor({
           agentId: firstFrame.agentId,

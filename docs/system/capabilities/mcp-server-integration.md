@@ -141,9 +141,22 @@ the handshake, not a message scoped to a session. A Server may answer `initializ
 `Mcp-Session-Id`, and such a peer still waits for `notifications/initialized` before it accepts
 anything else, so sending it only when a session came back left a session-less Server talking to a
 client that had never introduced itself. `Mcp-Session-Id` is attached to the notification only when
-the handshake issued one. A failure of either handshake request fails the operation before anything
-is dispatched: a gateway `tools/call` is never sent, and a probe records `probe_state = failed` with
-no `tools/list`.
+the handshake issued one.
+
+The notification speaks the revision that `initialize` negotiated, exactly as the request after it
+does. `2025-06-18` and `2025-11-25` expect `MCP-Protocol-Version` on every request after the
+handshake, so the notification carries the negotiated value. `2025-03-26` predates that header, so
+its notification omits it. Omission is not a neutral default: the specification reads a missing
+header as `2025-03-26`, so a strict `2025-06-18` or `2025-11-25` Server refuses a notification that
+a permissive Server accepted.
+
+A notification carries no `id` and returns no result, so no response interpreter runs on it and its
+status is checked on its own. A non-2xx answer to `notifications/initialized` stops the handshake
+before anything is dispatched — the gateway never sends its `tools/call`, and a probe records
+`probe_state = failed` with no `tools/list` — and reports a bounded, credential-free error: its
+`HTTP <status>` summary, or the shared `MCP_AUTH_REJECTION_SUMMARY` for `401` and `403`. The
+response body is never read, so an upstream message cannot reach a probe error, a log line, or a
+model. A failed `initialize` stops the handshake the same way.
 
 The probe API answers `200` whether or not the probe succeeded and never returns the upstream
 status. A failed probe and a legacy fallback each write one `info` line carrying `upstreamStatus`,

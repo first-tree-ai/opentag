@@ -77,3 +77,19 @@ export class DaemonServiceError extends Error {
     super(message, options);
   }
 }
+
+export class CliInvocationError extends DaemonServiceError {
+  constructor(
+    message: string,
+    readonly diagnostic: {
+      kind: "node" | "cli" | "portable";
+      path: string;
+      runningVersion: string;
+      installedVersion?: string;
+      reason: string;
+    },
+    options?: ErrorOptions,
+  ) {
+    super("CONFIGURATION", message, options);
+  }
+}

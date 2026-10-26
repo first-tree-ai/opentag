@@ -88,13 +88,13 @@ describe("daemon service primitives", () => {
       symlink(staleDist, join(staleBin, "opentag-dev")),
     ]);
 
-    await expect(
-      resolveCliInvocation({
-        binName: "opentag-dev",
-        argv: [process.execPath, currentDist],
-        env: { PATH: `${staleBin}:${installedBin}` },
-      }),
-    ).resolves.toEqual({ args: [await realpath(currentDist)], program: await realpath(process.execPath) });
+    const invocation = await resolveCliInvocation({
+      binName: "opentag-dev",
+      argv: [process.execPath, currentDist],
+      env: { PATH: `${staleBin}:${installedBin}` },
+    });
+    expect(invocation.args).toEqual([await realpath(currentDist)]);
+    expect(await realpath(invocation.program)).toBe(await realpath(process.execPath));
   });
 
   it("builds a stable service PATH from trusted executable, user, and platform directories", () => {
@@ -182,14 +182,14 @@ describe("daemon service primitives", () => {
     const root = await temporaryDirectory("opentag-relative-cli-");
     const script = join(root, "relative.mjs");
     await writeFile(script, "");
-    await expect(
-      resolveCliInvocation({
-        binName: "missing-opentag",
-        env: { PATH: "" },
-        argv: ["node", "relative.mjs"],
-        cwd: root,
-      }),
-    ).resolves.toEqual({ args: [await realpath(script)], program: await realpath(process.execPath) });
+    const invocation = await resolveCliInvocation({
+      binName: "missing-opentag",
+      env: { PATH: "" },
+      argv: ["node", "relative.mjs"],
+      cwd: root,
+    });
+    expect(invocation.args).toEqual([await realpath(script)]);
+    expect(await realpath(invocation.program)).toBe(await realpath(process.execPath));
     await expect(resolveCliInvocation({ binName: "missing", env: { PATH: "" }, argv: ["node"] })).rejects.toThrow(
       "entry script",
     );

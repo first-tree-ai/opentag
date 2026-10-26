@@ -489,7 +489,18 @@ describe("createClientRuntime production composition", () => {
     const factory = new PiAgentRuntimeFactory({
       probeRunner: async () => ({ credential: true, rpc: true, version: "0.84.2" }),
     });
-    const options = { clientVersion: "0.0.1", environment: { HOME: home, PATH: process.env.PATH }, factory, home };
+    const create = vi.spyOn(factory, "create");
+    const resume = vi.spyOn(factory, "resume");
+    const cliInvocation = ["/opt/current node/bin/node", "/opt/owner's app/cli/index.mjs"];
+    const cliCommand = cliInvocation.map((value) => `'${value.replaceAll("'", `'"'"'`)}'`).join(" ");
+    const options = {
+      clientVersion: "0.0.1",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory,
+      home,
+      cliInvocation,
+      cliCommand,
+    };
     const piSnapshot: EffectiveRuntimeSnapshot = { ...snapshot(), provider: "pi" };
     const first = await createClientRuntime(connection, options);
     let originalBinding: AgentRuntime["binding"];
@@ -497,6 +508,8 @@ describe("createClientRuntime production composition", () => {
       await first.reconciler.reconcile(reconcileRequest(connection.installationId, piSnapshot));
       originalBinding = (await first.runtimeManager.ensureRuntime("session-1")).binding;
       expect(originalBinding?.providerId).toBe("pi");
+      expect(create.mock.calls[0]?.[0].policy.managedCli).toEqual(cliInvocation);
+      expect(create.mock.calls[0]?.[0].systemPrompt).toContain(cliCommand);
     } finally {
       first.stop();
       await first.run();
@@ -508,6 +521,8 @@ describe("createClientRuntime production composition", () => {
       const recovered = await restarted.runtimeManager.ensureRuntime("session-1");
       expect(recovered.binding?.providerId).toBe("pi");
       expect(recovered.binding).toEqual(originalBinding);
+      expect(resume.mock.calls[0]?.[0].policy.managedCli).toEqual(cliInvocation);
+      expect(resume.mock.calls[0]?.[0].systemPrompt).toContain(cliCommand);
     } finally {
       restarted.stop();
       await restarted.run();

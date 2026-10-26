@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import { resolveCliInvocation } from "../core/daemon/service/shared.js";
+import { quotePosix, resolveCliInvocation } from "../core/daemon/service/shared.js";
 import { renderPortableShim } from "../core/update/portable-installer.js";
 
 const execute = promisify(execFile);
@@ -36,7 +36,7 @@ async function portableFixture() {
     const entry = join(payload, "app/cli/index.mjs");
     await mkdir(dirname(node), { recursive: true });
     await mkdir(dirname(entry), { recursive: true });
-    await symlink(process.execPath, node);
+    await writeFile(node, `#!/bin/sh\nexec ${quotePosix(process.execPath)} "$@"\n`, { mode: 0o755 });
     await writeFile(
       entry,
       `console.log(JSON.stringify({version:${JSON.stringify(name)},args:process.argv.slice(2)}))\n`,
@@ -75,7 +75,8 @@ describe("installation-owned CLI invocation", () => {
       execPath: process.execPath,
       env: { PATH: staleBin },
     });
-    expect(invocation).toEqual({ program: await realpath(process.execPath), args: [await realpath(entry)] });
+    expect(await realpath(invocation.program)).toBe(await realpath(process.execPath));
+    expect(invocation.args).toEqual([await realpath(entry)]);
     const { stdout } = await execute(invocation.program, [...invocation.args, "session", "send", "a b'c"]);
     expect(JSON.parse(stdout)).toEqual(["session", "send", "a b'c"]);
   });
@@ -156,5 +157,78 @@ describe("installation-owned CLI invocation", () => {
     await expect(
       resolveCliInvocation({ ...options, env: { ...options.env, OPENTAG_PORTABLE_ROOT: root } }),
     ).resolves.toEqual({ program: launcher, args: [] });
+  });
+
+  it("keeps a superseded process attached to its own installation after current advances", async () => {
+    const { options, current, launcher, version } = await portableFixture();
+    const second = await version("v2");
+    const next = join(dirname(current), "next-current");
+    await symlink(second.payload, next);
+    await rename(next, current);
+    options.argv[1] = join(current, "app/cli/index.mjs");
+    await expect(resolveCliInvocation(options)).resolves.toEqual({ program: launcher, args: [] });
+  });
+
+  it("accepts compatible launcher template changes while checking its root and bin directory", async () => {
+    const { options, launcher } = await portableFixture();
+    const original = await readFile(launcher, "utf8");
+    await writeFile(launcher, `${original}# compatible newer template\n`);
+    await expect(resolveCliInvocation(options)).resolves.toEqual({ program: launcher, args: [] });
+    await writeFile(launcher, original.replace(/^bin_dir=.*$/m, "bin_dir='/another/install/bin'"));
+    await expect(resolveCliInvocation(options)).rejects.toThrow(/portable/i);
+  });
+
+  it("reports the failed launcher path and both versions without exposing metadata contents", async () => {
+    const { options, first, launcher } = await portableFixture();
+    await writeFile(
+      join(first.payload, "INSTALL.json"),
+      JSON.stringify({
+        installMode: "portable",
+        binName: "opentag-staging",
+        appEntry: "app/cli/index.mjs",
+        version: "0.0.3",
+        secret: "private-token",
+      }),
+    );
+    await rm(launcher);
+    await expect(resolveCliInvocation(options)).rejects.toMatchObject({
+      diagnostic: {
+        path: launcher,
+        installedVersion: "0.0.3",
+        runningVersion: expect.any(String),
+        reason: "launcher is unavailable or targets another installation",
+      },
+    });
+    await expect(resolveCliInvocation(options)).rejects.toSatisfy(
+      (error) => !JSON.stringify(error.diagnostic).includes("private-token"),
+    );
+  });
+
+  it("requires installing an artifact before using its daemon integration", async () => {
+    const { options, first } = await portableFixture();
+    await expect(
+      resolveCliInvocation({ ...options, env: { ...options.env, OPENTAG_PORTABLE_ROOT: first.payload } }),
+    ).rejects.toMatchObject({
+      diagnostic: { kind: "portable", reason: expect.stringContaining("install the Portable artifact") },
+    });
+  });
+
+  it("uses a stable Node alias only when it resolves to the running executable", async () => {
+    const { root, entry, staleBin } = await fixture();
+    const node = join(root, "Cellar/node@24/24.0.0/bin/node");
+    const stable = join(root, "opt/node@24/bin/node");
+    await mkdir(dirname(node), { recursive: true });
+    await mkdir(dirname(stable), { recursive: true });
+    await writeFile(node, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    await symlink(node, stable);
+    await writeFile(join(staleBin, "node"), "#!/bin/sh\nexit 99\n", { mode: 0o755 });
+    await expect(
+      resolveCliInvocation({
+        binName: "opentag-staging",
+        argv: [node, entry],
+        execPath: node,
+        env: { PATH: `${staleBin}:${dirname(node)}:${dirname(stable)}` },
+      }),
+    ).resolves.toEqual({ program: stable, args: [await realpath(entry)] });
   });
 });

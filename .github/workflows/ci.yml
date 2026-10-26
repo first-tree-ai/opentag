@@ -410,6 +410,9 @@ jobs:
       - name: Build source CLI and dependencies
         run: pnpm exec turbo run build --filter=open-tag...
 
+      - name: Verify managed CLI continuation
+        run: node --test testing/managed-cli-entry/acceptance.test.mjs
+
       - name: Resolve deterministic pack coordinates
         id: version
         run: |

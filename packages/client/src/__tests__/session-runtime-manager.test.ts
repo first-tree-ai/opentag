@@ -61,6 +61,35 @@ afterEach(async () => {
 });
 
 describe("SessionRuntimeManager", () => {
+  it("supplies the same installation invocation to managed instructions and provider permissions", async () => {
+    const home = homes[0] as string;
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+    const factory = new FakeFactory();
+    const invocation = ["/opt/current node/bin/node", "/opt/owner's app/cli/index.mjs"];
+    const command = invocation.map((value) => `'${value.replaceAll("'", `'"'"'`)}'`).join(" ");
+    const manager = new SessionRuntimeManager({
+      bindingStore: store,
+      home,
+      cliCommand: command,
+      cliInvocation: invocation,
+      providers: await providerRegistry(factory),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace: new AgentWorkspaceManager({ home, bindingStore: store }),
+    });
+    try {
+      const computerId = randomUUID();
+      const request = reconcile(computerId, snapshot(1));
+      await new SessionReconciler({ installationId: computerId, preparation: manager, localPolicy: manager }).reconcile(
+        request,
+      );
+      await manager.ensureRuntime(request.sessionId);
+      expect(factory.created[0]?.policy.managedCli).toEqual(invocation);
+      expect(factory.created[0]?.systemPrompt).toContain(command);
+    } finally {
+      await manager.close();
+    }
+  });
+
   it.each(["visible-proof", "visible-no-proof", "internal-proof"])(
     "limits Slack management writable permission to visible proof-backed Sessions: %s",
     async (kind) => {

@@ -1229,8 +1229,12 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
   ): Promise<CodexAgentRuntime> {
     validateFactoryRequest(request);
     validateConfiguration(request.configuration);
-    if (request.policy.approvals !== "never" && request.policy.allowedCommands !== undefined)
-      await prepareCodexPermissionRules(request.workspace.cwd, request.policy.allowedCommands);
+    if (request.policy.approvals !== "never")
+      await prepareCodexPermissionRules(
+        request.workspace.cwd,
+        request.policy.allowedCommands,
+        request.policy.managedCli,
+      );
     const providerConfiguration = parseProviderConfiguration(request.configuration?.provider);
     const binding = mode === "resume" && "binding" in request ? request.binding : undefined;
     if (binding) assertBinding(binding, this.manifest);

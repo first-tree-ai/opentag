@@ -29,6 +29,46 @@ const messagingPrefixes = [
 ];
 
 describe("Native permission configuration", () => {
+  it.each([
+    ["/opt/current node/bin/node", "/opt/owner's app/cli/index.mjs"],
+    ["/opt/owner's portable/bin/opentag-staging"],
+  ])("matches the exact managed CLI invocation %j through both provider gates", async (...invocation) => {
+    const root = await mkdtemp(join(tmpdir(), "opentag-managed-cli-rules-"));
+    try {
+      const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
+      const command = invocation.map(quote).join(" ");
+      const claude = claudePermissionRules([], invocation).allow;
+      expect(claude).toContain(`Bash(${command} *)`);
+      const rule = claude.find((value) => value === `Bash(${command} *)`);
+      expect(`${command} session send target`).toMatch(
+        new RegExp(`^${rule?.slice(5, -3).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} `),
+      );
+      await prepareCodexPermissionRules(root, [], invocation);
+      const codex = await readFile(join(root, ".codex/rules/opentag.rules"), "utf8");
+      expect(codex).toContain(`prefix_rule(pattern=${JSON.stringify(invocation)}, decision="allow")`);
+      if (invocation.length > 1) expect(codex).not.toContain(`pattern=${JSON.stringify([invocation[0]])}`);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    [],
+    ["node", "/app/cli.mjs"],
+    ["/bin/node", ""],
+    ["/bin/no*de"],
+    ["/bin/node", "bad\nentry"],
+    ["/bin/node", "bad\0entry"],
+  ])("rejects nonliteral or nonabsolute managed invocation %j", async (...invocation) => {
+    expect(() => claudePermissionRules([], invocation)).toThrow("absolute executable");
+    const root = await mkdtemp(join(tmpdir(), "opentag-invalid-managed-cli-"));
+    try {
+      await expect(prepareCodexPermissionRules(root, [], invocation)).rejects.toThrow("absolute executable");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("allows message reads, writes, attachments, and compound-command helpers through both native gates", async () => {
     const root = await mkdtemp(join(tmpdir(), "opentag-native-rules-"));
     try {

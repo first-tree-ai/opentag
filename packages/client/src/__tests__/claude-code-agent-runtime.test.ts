@@ -67,6 +67,22 @@ describe("ClaudeCodeAgentRuntime", () => {
     },
   );
 
+  it("passes the quoted managed CLI command into native Bash permissions", async () => {
+    const processes: ScriptedClaudeCodeProcess[] = [];
+    const request = createRequest(() => undefined);
+    const runtime = await claudeFactory(processes, "complete").create({
+      ...request,
+      policy: { ...request.policy, approvals: "on-request", managedCli: ["/opt/app's bin/opentag-staging"] },
+    });
+    try {
+      await runtime.prompt({ runId: "managed-cli", input: input("continue") });
+      const settings = JSON.parse(argumentAfter(processes[0]?.args ?? [], "--settings") as string);
+      expect(settings.permissions.allow).toContain(`Bash('/opt/app'"'"'s bin/opentag-staging' *)`);
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it("cancels native permission requests and rejects stale native replies", async () => {
     const processes: ScriptedClaudeCodeProcess[] = [];
     const events: AgentRuntimeEvent[] = [];

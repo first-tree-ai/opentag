@@ -318,6 +318,7 @@ export interface CreateClientRuntimeOptions {
   readonly piCommand?: string;
   readonly piHome?: string;
   readonly cliCommand?: string;
+  readonly cliInvocation?: readonly string[];
   /** Authoritative packaged CLI entry for the Slack deployment hook; absent embeddings use manual setup. */
   readonly slackAutoSetupCliEntry?: string;
   readonly environment?: NodeJS.ProcessEnv;
@@ -751,6 +752,7 @@ export async function createClientRuntime(
     environment: sourceEnvironment,
     bindingStore,
     cliCommand: options.cliCommand ?? "opentag",
+    cliInvocation: options.cliInvocation,
     cleanupProviderEnvironment: (sessionId) => credentialEnvironment.cleanup(sessionId),
     contextTree,
     contextTreeBin: contextTree.binDirectory(),

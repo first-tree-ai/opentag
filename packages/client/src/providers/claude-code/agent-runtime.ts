@@ -344,7 +344,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
         disableSkillShellExecution: true,
         ...(this.#policy.approvals === "never"
           ? {}
-          : { permissions: claudePermissionRules(this.#policy.allowedCommands ?? []) }),
+          : { permissions: claudePermissionRules(this.#policy.allowedCommands ?? [], this.#policy.managedCli) }),
       }),
       ...(this.#emptyNativeToolAllowList ? ["--tools", ""] : []),
       ...(configuration?.model ? ["--model", configuration.model] : []),

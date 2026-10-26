@@ -65,6 +65,7 @@ export class SessionRuntimeNotPreparedError extends Error {
 export interface SessionRuntimeManagerOptions {
   readonly bindingStore: SessionBindingStore;
   readonly cliCommand?: string;
+  readonly cliInvocation?: readonly string[];
   readonly cleanupProviderEnvironment?: (sessionId: string) => Promise<void>;
   readonly contextTree?: Pick<ContextTreeManager, "ensureAgent" | "skillPaths">;
   /** Managed CLI directory applied after Provider discovery and execution environment overrides. */
@@ -105,6 +106,7 @@ export interface SessionRuntimeManagerOptions {
 export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPolicy {
   readonly #bindingStore: SessionBindingStore;
   readonly #cliCommand: string;
+  readonly #cliInvocation?: readonly string[];
   readonly #cleanupProviderEnvironment?: SessionRuntimeManagerOptions["cleanupProviderEnvironment"];
   readonly #contextTree?: SessionRuntimeManagerOptions["contextTree"];
   readonly #contextTreeBin?: string;
@@ -131,6 +133,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   constructor(options: SessionRuntimeManagerOptions) {
     this.#bindingStore = options.bindingStore;
     this.#cliCommand = options.cliCommand ?? "opentag";
+    this.#cliInvocation = options.cliInvocation;
     this.#cleanupProviderEnvironment = options.cleanupProviderEnvironment;
     this.#environment = { ...(options.environment ?? process.env) };
     if (options.contextTree) this.#contextTree = options.contextTree;
@@ -372,7 +375,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
           ...configurationRoots,
         ],
       },
-      policy: provider.policy(managed.snapshot),
+      policy: { ...provider.policy(managed.snapshot), managedCli: this.#cliInvocation },
       configuration: {
         ...(managed.snapshot.model ? { model: managed.snapshot.model } : {}),
         ...(managed.snapshot.reasoningEffort ? { reasoningEffort: managed.snapshot.reasoningEffort } : {}),

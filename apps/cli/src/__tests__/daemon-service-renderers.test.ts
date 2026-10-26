@@ -298,9 +298,10 @@ describe("systemd service backend", () => {
       join(userHome, ".config", "systemd", "user", `${channelConfig.serviceId}.service`),
       "utf8",
     );
-    expect(unit).toContain(
-      `"${await realpath(process.execPath)}" "${await realpath(installedCli)}" "daemon" "service-run"`,
-    );
+    expect(unit).toContain(`"${await realpath(installedCli)}" "daemon" "service-run"`);
+    const executable = unit.match(/"([^"\n]+)" "[^"\n]+" "daemon" "service-run"/)?.[1];
+    expect(executable).toBeDefined();
+    expect(await realpath(executable as string)).toBe(await realpath(process.execPath));
     expect(unit).not.toContain(staleCli);
     expect(unit).toContain(staleBin);
   });

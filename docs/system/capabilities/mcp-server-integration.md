@@ -143,7 +143,13 @@ anything else, so sending it only when a session came back left a session-less S
 client that had never introduced itself. `Mcp-Session-Id` is attached to the notification only when
 the handshake issued one. A failure of either handshake request fails the operation before anything
 is dispatched: a gateway `tools/call` is never sent, and a probe records `probe_state = failed` with
-no `tools/list`.
+no `tools/list`. The notification carries no `id` and returns no result, so its HTTP status is checked
+on its own: a non-2xx answer is the transport's bounded failure — `The MCP Server returned HTTP
+<status>`, or the shared `MCP_AUTH_REJECTION_SUMMARY` for `401` and `403`. That summary is built from
+the status alone; the notification's response body is never interpreted or exposed, so an upstream
+message cannot reach a probe error, a log line, or a model. The outbound fetcher reads and bounds the
+body before it returns, so a redirect or an oversized body fails inside the fetcher first, as its own
+bounded error, rather than as one of these status summaries.
 
 The probe API answers `200` whether or not the probe succeeded and never returns the upstream
 status. A failed probe and a legacy fallback each write one `info` line carrying `upstreamStatus`,

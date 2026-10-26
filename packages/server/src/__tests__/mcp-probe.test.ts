@@ -789,6 +789,78 @@ describe("MCP probe era handling", () => {
     );
   });
 
+  /*
+   * A refused `notifications/initialized` is a half-finished handshake. The reviewer reproduced the
+   * status being discarded — the notification has no `id`, so nothing interpreted its response — and
+   * a session-less peer that refused the handshake was then sent `tools/list` anyway.
+   *
+   * These drive the real `McpOutboundFetcher` with a network-free `fetch` and resolver, and answer
+   * `tools/list` successfully, so a passing assertion cannot come from the listing's own error.
+   */
+  describe("a refused initialized notification", () => {
+    const MARKER = "notification-body-marker-5c19";
+
+    function legacyNode(notifyStatus: number) {
+      const methods: string[] = [];
+      const json = { "content-type": "application/json" };
+      const fetchImpl = vi.fn(async (_url: URL | string, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string; id?: string };
+        const method = String(body.method ?? "");
+        methods.push(method);
+        if (method === "initialize") {
+          // No `mcp-session-id`: a legacy peer that issues no session still needs the notification.
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: body.id,
+              result: { protocolVersion: "2025-06-18", capabilities: {} },
+            }),
+            { status: 200, headers: json },
+          );
+        }
+        if (method === "notifications/initialized") {
+          return new Response(JSON.stringify({ message: MARKER }), { status: notifyStatus, headers: json });
+        }
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { tools: [{ name: "legacy-tool" }] } }),
+          {
+            status: 200,
+            headers: json,
+          },
+        );
+      }) as unknown as typeof globalThis.fetch;
+      return {
+        methods,
+        fetcher: new McpOutboundFetcher({ ...PUBLIC_RESOLVE, allowLoopback: false, fetch: fetchImpl }),
+      };
+    }
+
+    it.each([
+      [400, "The MCP Server returned HTTP 400"],
+      [401, MCP_AUTH_REJECTION_SUMMARY],
+      [500, "The MCP Server returned HTTP 500"],
+    ])("fails the probe on HTTP %i and lists no tools", async (status, expected) => {
+      const { fetcher, methods } = legacyNode(status);
+      const result = await new McpProbe({ fetcher }).probe({
+        ...request(),
+        cachedEra: "legacy",
+        cachedVersion: "2025-06-18",
+      });
+
+      // No `server/discover` (the era was cached), no `tools/list`, and no second `initialize`.
+      expect(methods).toEqual(["initialize", "notifications/initialized"]);
+      expect(result.probeState).toBe("failed");
+      expect(result.tools).toEqual([]);
+      expect(result.toolsCount).toBe(0);
+      // The bounded, credential-free mapping: no part of the upstream body is interpreted or exposed.
+      expect(result.probeError).toContain(MCP_ERROR_CODES.UPSTREAM_ERROR);
+      expect(result.probeError).toContain(expected);
+      expect(result.probeError).not.toContain(MARKER);
+      // A refused handshake is not evidence the origin changed its protocol.
+      expect(result.eraInvalidated).toBe(false);
+    });
+  });
+
   it("omits the version header for the legacy version that predates it", async () => {
     /*
      * `2025-03-26` has no `MCP-Protocol-Version` at all, so sending one would be wrong in the other

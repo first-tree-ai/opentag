@@ -276,7 +276,22 @@ export class McpTransport {
     return { ...(sessionId ? { sessionId } : {}), result };
   }
 
-  /** A legacy session-scoped notification (`notifications/initialized`). */
+  /**
+   * A legacy session-scoped notification (`notifications/initialized`).
+   *
+   * It closes the handshake, so a refusal is not ignorable: a notification carries no `id` and never
+   * reaches {@link #interpret}, which leaves this status check as the only one it gets. Without it a
+   * peer that answered `400`, `401` or `500` to the notification was still sent the `tools/call` or
+   * `tools/list` that followed, and the refusal surfaced later as a confusing tool failure or as a
+   * healthy-looking empty probe.
+   *
+   * The status maps through the same {@link upstreamFailure} as every other failed response, so the
+   * reason stays bounded and credential-free: that summary is built from the status alone, never
+   * from the peer's body. The fetcher has already read and bounded that body before returning, and
+   * this method never interprets or exposes it. Status summaries therefore describe responses the
+   * fetcher returned; a redirect or an oversized body fails inside the fetcher first, as its own
+   * bounded error.
+   */
   async notifyLegacy(
     accountId: string,
     url: string,
@@ -284,7 +299,7 @@ export class McpTransport {
     authHeaders: Record<string, string>,
     sessionId?: string,
   ): Promise<void> {
-    await this.#fetcher.fetchOutbound(accountId, url, {
+    const response = await this.#fetcher.fetchOutbound(accountId, url, {
       method: "POST",
       headers: {
         ...authHeaders,
@@ -294,6 +309,7 @@ export class McpTransport {
       },
       body: JSON.stringify({ jsonrpc: "2.0", method }),
     });
+    if (response.status < 200 || response.status >= 300) throw upstreamFailure(response.status);
   }
 
   async #interpret(

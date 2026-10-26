@@ -71,6 +71,9 @@ importers:
       '@opentag/client':
         specifier: workspace:*
         version: link:../../packages/client
+      '@opentag/mcp-presets':
+        specifier: workspace:*
+        version: link:../../packages/mcp-presets
       '@opentag/shared':
         specifier: workspace:*
         version: link:../../packages/shared

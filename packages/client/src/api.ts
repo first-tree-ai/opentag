@@ -50,6 +50,7 @@ import {
   type CreateAgentRequest,
   type CreateAgentScheduleRequest,
   type CreateMCPServerRequest,
+  type CreateSelfMCPServerRequest,
   computerAgentSkillBundlePath,
   computerAgentSkillsPath,
   type ErrorCategory,
@@ -105,6 +106,7 @@ import {
   type RebindAgentComputerRequest,
   type RefreshTokenResponse,
   RefreshTokenResponseSchema,
+  RUNTIME_AGENT_MCP_SERVER_DEFINITIONS_PATH,
   RUNTIME_AGENT_MCP_SERVERS_AVAILABLE_PATH,
   RUNTIME_AGENT_MCP_SERVERS_PATH,
   RUNTIME_AGENT_PATH,
@@ -118,6 +120,10 @@ import {
   type RuntimeDurableWorkRecord,
   type RuntimeSkillManifest,
   RuntimeSkillManifestSchema,
+  runtimeAgentMcpServerCredentialsPath,
+  runtimeAgentMcpServerDefinitionPath,
+  runtimeAgentMcpServerOAuthStartPath,
+  runtimeAgentMcpServerOAuthStatusPath,
   runtimeAgentMcpServerPath,
   runtimeAgentSchedulePath,
   runtimeAgentSchedulePausePath,
@@ -127,6 +133,8 @@ import {
   runtimeSkillBundlePath,
   runtimeSkillPresetInstallPath,
   SESSION_CLI_PROOF_HEADER,
+  type SelfMCPOAuthStatus,
+  SelfMCPOAuthStatusSchema,
   type SessionCliCommandResponse,
   SessionCliCommandResponseSchema,
   type SessionCliCreateRequest,
@@ -1382,6 +1390,80 @@ export class OpenTagApi {
     return this.#requestNoContent(
       runtimeAgentMcpServerPath(mcpServerId),
       { method: "DELETE", headers: { [SESSION_CLI_PROOF_HEADER]: proof } },
+      options,
+    );
+  }
+
+  createRuntimeAgentMcpServer(
+    proof: string,
+    input: CreateSelfMCPServerRequest,
+    options?: RequestOptions,
+  ): Promise<MCPAgentServer> {
+    return this.#request(
+      RUNTIME_AGENT_MCP_SERVER_DEFINITIONS_PATH,
+      MCPAgentServerSchema,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        headers: { "content-type": "application/json", [SESSION_CLI_PROOF_HEADER]: proof },
+      },
+      options,
+    );
+  }
+
+  deleteRuntimeAgentMcpServerDefinition(proof: string, mcpServerId: string, options?: RequestOptions): Promise<void> {
+    return this.#requestNoContent(
+      runtimeAgentMcpServerDefinitionPath(mcpServerId),
+      { method: "DELETE", headers: { [SESSION_CLI_PROOF_HEADER]: proof } },
+      options,
+    );
+  }
+
+  setRuntimeAgentMcpBearerKey(
+    proof: string,
+    mcpServerId: string,
+    apiKey: string,
+    options?: RequestOptions,
+  ): Promise<MCPAgentServer> {
+    return this.#request(
+      runtimeAgentMcpServerCredentialsPath(mcpServerId),
+      MCPAgentServerSchema,
+      {
+        method: "POST",
+        body: JSON.stringify({ apiKey }),
+        headers: { "content-type": "application/json", [SESSION_CLI_PROOF_HEADER]: proof },
+      },
+      options,
+    );
+  }
+
+  startRuntimeAgentMcpOAuth(
+    proof: string,
+    mcpServerId: string,
+    input: StartMCPOAuthRequest = {},
+    options?: RequestOptions,
+  ): Promise<StartMCPOAuthResponse> {
+    return this.#request(
+      runtimeAgentMcpServerOAuthStartPath(mcpServerId),
+      StartMCPOAuthResponseSchema,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        headers: { "content-type": "application/json", [SESSION_CLI_PROOF_HEADER]: proof },
+      },
+      options,
+    );
+  }
+
+  getRuntimeAgentMcpOAuthStatus(
+    proof: string,
+    mcpServerId: string,
+    options?: RequestOptions,
+  ): Promise<SelfMCPOAuthStatus> {
+    return this.#request(
+      runtimeAgentMcpServerOAuthStatusPath(mcpServerId),
+      SelfMCPOAuthStatusSchema,
+      { headers: { [SESSION_CLI_PROOF_HEADER]: proof } },
       options,
     );
   }

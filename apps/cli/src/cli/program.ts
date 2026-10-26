@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import { CLI_VERSION } from "../build-info.js";
 import { registerAgentCommand } from "../commands/agent/index.js";
+import { registerAgentSelfCommands } from "../commands/agent/self.js";
 import { registerComputerConnectCommand } from "../commands/computer/connect.js";
 import { registerComputerCommand } from "../commands/computer/index.js";
 import { registerDaemonCommand } from "../commands/daemon/index.js";
@@ -35,6 +36,8 @@ export function createProgram(options: { json?: boolean } = {}): Command {
   registerComputerConnectCommand(program);
   registerComputerCommand(program);
   registerAgentCommand(program);
+  // `opentag self` is `opentag agent self`: inside a managed Session the Agent is implied by the proof.
+  registerAgentSelfCommands(program);
   registerDaemonCommand(program);
   registerDoctorCommand(program);
   registerLoginCommand(program);

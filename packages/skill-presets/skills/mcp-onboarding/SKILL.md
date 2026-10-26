@@ -5,121 +5,138 @@ description: Add MCP tools to this Agent. Use when a task needs a tool that live
 
 # MCP onboarding
 
-An MCP Server gives this Agent a group of tools. This Skill tells you how to find one, how to mount
-it on yourself, and — because two of the three steps are not yours to take — exactly what to ask the
-human for.
+An MCP Server gives this Agent a group of tools. This Skill tells you how to find one, how to add it
+to yourself, and which single step still needs the human: completing an OAuth consent screen in a
+browser.
 
-## The boundary you cannot cross
+## The two boundaries
 
 Read this before you promise anything.
 
 | Step | Who can do it | Command |
 | --- | --- | --- |
-| Register a Server definition for the Account | A human operator | `opentag mcp add` |
-| Mount an Account definition on this Agent | You | `opentag agent self mcp attach` |
-| Write this Agent's credential (key or OAuth) | A human operator | `opentag mcp use`, `opentag mcp authorize` |
+| Search the connector catalog | You | `opentag self mcp search <query>` |
+| Register a Server definition and mount it on yourself | You | `opentag self mcp add <name> <url> [oauth\|bearer]` |
+| Write your own Bearer key | You | `opentag self mcp add … bearer --api-key-stdin` |
+| Start an OAuth flow | You | `opentag self mcp generate_oauth_url <server>` |
+| Complete an OAuth consent screen | The human, in a browser | `opentag self mcp check_oauth_status <server> --wait` |
+| Mount, enable, or disable an Account definition | You | `opentag agent self mcp attach` / `enable` / `disable` |
+| Edit or delete a definition another Agent still mounts | A human operator | `opentag mcp remove` |
 
-Your own commands are authenticated by the Session proof, which names this Agent. That proof can
-mount an existing definition on you and nothing else: your Agent id is not a parameter anywhere, and
-the Account's Server definitions and every credential stay behind the operator's authority. Do not
-attempt them, and do not ask the human to paste a credential into the conversation.
+Your commands are authenticated by the Session proof, which names this Agent. That proof lets you
+create definitions and write *your own* credentials; it can never write a credential for another
+Agent, and it cannot mount a Server that requires no credentials at all. A definition you create is
+shared with the Account's other Agents as an *available* definition, so name it for the service, not
+for yourself.
 
 ## Procedure
-
-Work in this order. Stop as soon as the Server you want is mounted and usable.
 
 1. **See what you already mount.**
 
    ```sh
-   opentag agent self mcp list --json
+   opentag self mcp list --json
    ```
 
    Each entry carries four independent states: `enabled`, `authorization.kind`,
    `authorization.status`, and `authorization.probeState`. If the Server you want is already here,
-   go to step 4. If it is here but `enabled` is false, run `opentag agent self mcp enable <server>`
-   and go to step 4 — a disabled Server keeps its credential and needs no reauthorization.
+   go to step 5. If it is here but `enabled` is false, run `opentag self mcp enable <server>` and go
+   to step 5 — a disabled Server keeps its credential and needs no reauthorization.
 
-2. **See whether the Account already defines it.**
-
-   ```sh
-   opentag agent self mcp available --json
-   ```
-
-   This lists Account definitions you do not mount. Match on `name`, then on `description`.
-
-3. **Mount it, if the Account defines it.**
+2. **Find the connector.**
 
    ```sh
-   opentag agent self mcp attach <server> --json
+   opentag self mcp search hubspot
    ```
 
-   `<server>` is the `name` or the `id` from step 2. If the Server you want is **not** in that list,
-   no definition exists: go to "What to ask the human for" and ask for a definition.
+   This reads the catalog shipped with the CLI, so it works before any definition exists. Each match
+   gives a `name`, an `auth` kind, and a `url` when the Server is hosted and installable. Use the
+   catalog's `name` so the definition matches what a human will search for later.
 
-4. **Check whether it is usable.**
+   If the catalog has no match, ask the human for the endpoint URL. Never invent one.
 
-   Run `opentag agent self mcp list --json` again and read the entry:
+3. **See whether the Account already defines it.**
 
-   - `authorization` is `null` or `authorization.status` is not `active` → this Server needs a
-     credential that only a human can write. Ask for it (below).
-   - `authorization.status` is `active` but `authorization.probeState` is `failed` → the Server was
-     reached but its tools could not be read. Report `authorization.probeError` to the human. The
-     usual causes are a rejected credential, a protocol revision the Server does not speak, or an
-     endpoint the platform refuses to dial.
-   - `authorization.status` is `active` and `probeState` is `succeeded` with
-     `authorization.toolsCount` above zero → you are done. Its tools are available on the next Turn.
+   ```sh
+   opentag self mcp available --json
+   ```
+
+   Match on `name`, then on `description`. If it is here, mount it with
+   `opentag self mcp attach <server>` and go to step 5 instead of creating a duplicate.
+
+4. **Add it, and mount it in the same step.**
+
+   OAuth Server — no credential yet, so it is not usable until step 6:
+
+   ```sh
+   opentag self mcp add hubspot https://mcp.hubspot.com oauth
+   ```
+
+   Bearer Server, when the human already gave you a key:
+
+   ```sh
+   opentag self mcp add cmdb https://cmdb.internal.example/mcp bearer --api-key-stdin
+   ```
+
+   `auth_kind` defaults to `bearer` when a key is supplied and to `oauth` otherwise. `none` is
+   refused: an anonymous mount would be usable immediately, which is a decision the Account owner
+   keeps. A bearer key goes in over standard input, never as an argument — a command line is
+   readable by other processes and lands in the shell history.
+
+5. **Check whether it is usable.**
+
+   ```sh
+   opentag self mcp check_oauth_status <server>
+   ```
+
+   - `authKind` is `none` and `probeState` is `null` → nothing has been authorized yet. For a Bearer
+     Server, ask the human for the key and run step 4 again with `--api-key-stdin`. For an OAuth
+     Server, go to step 6.
+   - `authStatus` is `active` and `probeState` is `failed` → the Server was reached but its tools
+     could not be read. Report `probeError` to the human. The usual causes are a rejected
+     credential, a protocol revision the Server does not speak, or an endpoint the platform refuses
+     to dial.
+   - `authStatus` is `active` and `probeState` is `succeeded` with `toolsCount` above zero → you are
+     done. The `tools` names are what you can now do. Tools are available on the next Turn.
 
    A `toolsCount` of `0` means the Server answered and offers no tools to this credential — report
    that fact rather than treating it as success.
 
-## What to ask the human for
+6. **Start the OAuth flow, and hand the URL to the human.**
 
-Give the human a finished command, not a description of a command. Always include the reason in one
-sentence, and never include a credential value.
+   ```sh
+   opentag self mcp generate_oauth_url hubspot
+   ```
 
-**A definition does not exist yet.** Ask for this, with the real endpoint and a lowercase hyphenated
-name:
+   Then say, in one message: what you added, that one click is needed, the URL, and that you will
+   report when it lands. Poll only briefly, because a login plus a second factor can take longer
+   than a Turn:
 
-```sh
-opentag mcp add --name <name> --url <url> --default-auth oauth
-```
+   ```sh
+   opentag self mcp check_oauth_status hubspot --wait 45
+   ```
 
-Pass `--default-auth none` only when the endpoint is genuinely public. It is a prefill for a new
-authorization, never a statement about what the Server requires, so do not describe it to the human
-as "this Server needs OAuth". Add `--auth-header` and `--auth-scheme` for a bearer Server whose
-header is not `Authorization: Bearer`, and `--extra-header name=value` for static headers the
-endpoint documents.
+   If it has not settled, tell the human to reply when they have finished, and check once more then
+   with no `--wait`. Never block indefinitely, and never claim success you have not observed.
 
-**The Server needs a credential.** Ask for this, substituting your own Agent id, which
-`opentag agent self show --json` reports:
+## What stays with the human
 
-```sh
-opentag mcp authorize <server> --agent <your-agent-id>
-```
-
-Use `opentag mcp use <server> --agent <your-agent-id> --kind bearer --bearer-key-stdin` instead when
-the service issues a static key. The key goes in over standard input, never as an argument: a
-command line is readable by other processes and lands in the shell history.
-
-**The credential exists but is stale.** Ask for the same authorize command again, or
-`opentag mcp revoke` followed by it when the old credential must not be reused.
+- **The OAuth consent screen.** You can start the flow; only they can approve it.
+- **Removing a definition others use.** `opentag self mcp delete <server>` unmounts it from you and
+  drops the definition only when no other Agent mounts it. It never removes a definition another
+  Agent still uses.
+- **The Account's other Agents.** You cannot read or write their mounts or credentials.
 
 ## Rules that keep this safe
 
 - Never invent, guess, or reuse a credential, and never write one into a file, a task, or this
   conversation.
-- Do not ask for a credential before you know the Server needs one. Attach first, then read the
-  state: an anonymous Server is usable immediately and needs nothing from the human.
-- Never mount a Server you cannot explain: name the endpoint and the tools it will add.
-- `opentag agent self mcp detach <server>` drops your credential for that Server. Prefer
-  `disable` when the mount should stay; a disabled mount keeps its credential and re-enables with no
-  reauthorization.
-- A Server definition is shared by every Agent in the Account. Editing or removing one is not your
-  decision to make, and `mcp remove` is refused while any Agent still mounts it.
+- Never add a Server you cannot explain: name the endpoint and the tools it will add.
+- Prefer `disable` over `detach` when the mount should stay; a disabled mount keeps its credential
+  and re-enables with no reauthorization.
 - Report what you observed, not what you expected: the exact `probeState`, `toolsCount`, and
   `probeError` are what let a human fix the problem.
 
 ## Reference
 
 `references/cli-reference.md` in this Skill lists the full flag matrix for both surfaces, including
-the Account-side commands you will ask a human to run.
+the Account-side commands a human operator may need.

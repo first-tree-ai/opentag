@@ -55,6 +55,7 @@
   },
   "devDependencies": {
     "@opentag/client": "workspace:*",
+    "@opentag/mcp-presets": "workspace:*",
     "@opentag/shared": "workspace:*",
     "@types/ws": "^8.18.1",
     "commander": "^15.0.0",

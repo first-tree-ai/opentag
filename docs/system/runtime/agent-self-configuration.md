@@ -9,26 +9,33 @@ An Agent running inside an openTag-managed Session can inspect and change part o
 CLI, without an Account login, only after its owner enables self-configuration:
 
 ```text
-opentag agent self show
-opentag agent self update [--instructions <text> | --instructions-file <path>]
-                          [--model <model> | --clear-model]
-                          [--reasoning-effort <effort> | --clear-reasoning-effort]
-opentag agent self mcp list
-opentag agent self mcp available
-opentag agent self mcp attach <server> [--disabled]
-opentag agent self mcp enable <server>
-opentag agent self mcp disable <server>
-opentag agent self mcp detach <server>
+opentag self show
+opentag self update [--instructions <text> | --instructions-file <path>]
+                    [--model <model> | --clear-model]
+                    [--reasoning-effort <effort> | --clear-reasoning-effort]
+opentag self mcp search <query> [--limit <n>]
+opentag self mcp add <name> <url> [oauth|bearer] [--api-key-stdin | --api-key <key>]
+opentag self mcp delete <server>
+opentag self mcp list [--page <n>] [--limit <n>]
+opentag self mcp available
+opentag self mcp attach <server> [--disabled]
+opentag self mcp enable <server>
+opentag self mcp disable <server>
+opentag self mcp detach <server>
+opentag self mcp generate_oauth_url <server> [--scopes <list>]
+opentag self mcp check_oauth_status <server> [--wait [seconds]]
 ```
 
-Every command accepts `--json`. `<server>` is an MCP Server name or ID.
+Every command accepts `--json`. `<server>` is an MCP Server name or ID. `opentag self` and `opentag agent self` are the
+same command group: inside a managed Session the Agent is implied by the proof, so the top-level form is what the managed
+prompt shows.
 
 ## Owner opt-in
 
 Self-configuration is disabled by default for new and existing Agents. The web settings currently do not expose
 this permission. The owner can still enable or disable it through the Account-scoped Agent update API using
 `selfConfigurationEnabled`; hiding the web control does not revoke existing opt-ins.
-The Agent cannot change this flag through `agent self update`.
+The Agent cannot change this flag through `self update`.
 
 When `selfConfigurationEnabled` is false, every route under `/api/v1/runtime/agent` returns HTTP 403 with
 `AGENT_SELF_CONFIGURATION_DISABLED`, including read routes. The managed prompt includes the Self-configuration
@@ -44,27 +51,56 @@ services that back `agent update` and `agent mcp`. A request therefore cannot ad
 checks, revision conflicts, and Cloud model validation behave exactly as they do for a human operator. Outside a
 managed Session the commands fail with `AGENT_SELF_SESSION_REQUIRED` before any network call.
 
+`self mcp search` is the exception: it reads the catalog shipped in `@opentag/mcp-presets`, so it needs neither a
+Session nor the network. It answers "which connector do I need, and what is its endpoint?" before any definition
+exists, which is what makes the add flow possible at all.
+
 The Server routes live under `/api/v1/runtime/agent` and authenticate the proof before they read the request body.
 
 ## What an Agent may change
 
-| Setting | `agent self` | Why |
+| Setting | `self` | Why |
 | --- | --- | --- |
 | Instructions, model, reasoning effort | Yes | How the Agent works; the user asks it to adjust. |
-| Attach an Account MCP Server that requires credentials | Yes | A human must authorize the credentials before the mount is usable. |
-| Attach an Account MCP Server with `defaultAuthKind: "none"` | No | Attachment would immediately grant access, including definition headers. |
-| Enable, disable, or unmount an existing Account MCP Server | Yes | Chooses among mounts the Account already has. |
+| Register a Server definition and mount it on itself | Yes | A user asking for a connector gets one without an Account login. The definition is written into the Account pool, so a human can see, adopt, or remove it. |
+| Write its own Bearer key for a Server it mounts | Yes | The key belongs to this Agent alone; no other Agent's credential is reachable. |
+| Start an OAuth flow | Yes | The Agent can produce the URL; only a human can complete the consent screen. |
+| Register or mount an anonymous Server (`defaultAuthKind: "none"`) | No | An anonymous mount is usable immediately, with no credential step for a human to review. |
+| Attach, enable, disable, or unmount an Account MCP Server | Yes | Chooses among mounts the Account already has. |
+| Edit a definition another Agent mounts | No | Shared state; a human decides. `self mcp delete` only drops a definition nothing else mounts. |
+| Another Agent's mount or credential | No | No command accepts an Agent ID. |
 | Self-configuration opt-in | No | Only the owner can enable or disable the surface. |
 | Display name, receive mode | No | Changes how humans and IM see the Agent. |
 | Maximum Turn duration | No | Would let the Agent raise its own resource limit. |
-| MCP endpoint and header overrides | No | Would redirect an existing bearer credential to another origin. |
-| MCP credentials, OAuth, Server definitions | No | Credentials stay a human decision. |
+| MCP endpoint and header overrides on a shared definition | No | Would redirect an existing bearer credential to another origin. |
 
 A human keeps the full surface through `agent update`, `agent mcp`, `mcp`, and the web app.
 
-`agent self mcp attach` rejects Servers with `defaultAuthKind: "none"` with HTTP 403 and
-`MCP_SELF_ATTACH_NONE_AUTH_FORBIDDEN`. Human attach paths are unchanged: a human can still attach these Servers,
-which become active without a separate credential step.
+Two rules keep the credential power bounded. A definition the Agent registers is always its own: `mcp_servers` names
+are unique per Account, so a self-registration that reuses a name fails with `MCP_SERVER_NAME_CONFLICT` instead of
+shadowing or redirecting an existing definition. And `self mcp attach` rejects Servers with `defaultAuthKind: "none"`
+with HTTP 403 and `MCP_SELF_ATTACH_NONE_AUTH_FORBIDDEN`, so the anonymous path stays closed on every route. Human
+attach paths are unchanged: a human can still attach these Servers, which become active without a separate credential
+step.
+
+`self mcp add` writes the definition first and mounts it second, because a mount needs a definition to point at. If the
+mount fails, the definition is deleted in the same request so the Account pool is not left with an orphan that would
+block the name on a retry.
+
+## OAuth from an Agent-started flow
+
+`self mcp generate_oauth_url` starts the same flow the Account surface starts, and returns the provider's
+`authorizationUrl` for the user to open. The flow's `state` is single-use, stored hashed, and short lived.
+
+`shortcut: the browser that opens an Agent-started URL does not hold the flow's context cookie, so the callback's
+browser binding is not satisfied; the Account surface's start route sets that cookie and this one has no browser to set
+it on. Upgrade by routing the returned URL through a same-origin handoff that sets the cookie before redirecting to the
+provider.`
+
+`self mcp check_oauth_status` reports the authorization status, the probe state, and the tool names without their input
+schemas, so a poll stays small. A plain call returns immediately; `--wait [seconds]` polls until the flow settles or the
+budget runs out, using 45 seconds when no value follows the flag. A timeout is not an error: it returns the last
+observation, so the caller can tell the human the URL is still valid and check again later.
 
 ## When changes apply
 
@@ -81,9 +117,9 @@ which become active without a separate credential step.
 - Detaching a Server drops this Agent's authorization for it. For Servers that require credentials, a human must
   authorize it again after a later attach. Prefer `disable` when the Server may be needed again.
 
-`agent self update` reads the current revision first and sends it as `expectedRevision`. A concurrent change returns
+`self update` reads the current revision first and sends it as `expectedRevision`. A concurrent change returns
 `AGENT_REVISION_CONFLICT`; read again and retry. `--instructions` replaces the whole instruction text, so read the
-current value with `agent self show` and keep what still applies.
+current value with `self show` and keep what still applies.
 
 For Local Sessions saved by an older Client, a valid newer Soul can apply directly during the
 first Session preparation after upgrade. A separate format-only migration is not required.
@@ -93,6 +129,7 @@ revisions from the saved snapshot, so restarting does not bypass same-revision c
 
 ## Observability
 
-The Server logs `agent_self.config_updated`, `agent_self.mcp_attached`, `agent_self.mcp_binding_updated`, and
-`agent_self.mcp_detached` at `info` with the Agent ID, Session ID, and changed field names or MCP Server ID.
-Instruction text is never logged.
+The Server logs `agent_self.config_updated`, `agent_self.mcp_attached`, `agent_self.mcp_binding_updated`,
+`agent_self.mcp_detached`, `agent_self.mcp_server_created`, `agent_self.mcp_server_deleted`,
+`agent_self.mcp_credential_written`, and `agent_self.mcp_oauth_started` at `info` with the Agent ID, Session ID, and
+changed field names or MCP Server ID. Instruction text, Bearer keys, and OAuth material are never logged.

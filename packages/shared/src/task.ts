@@ -228,6 +228,38 @@ export const TaskDetailSchema = z
   })
   .strict();
 
+/**
+ * One page of a Task detail section. Each section pages on its own cursor, so a reader that needs
+ * more Internal Sessions never re-reads the Turns it already has, and no section can answer with
+ * more than its page size.
+ */
+export const TaskTurnPageSchema = z
+  .object({ items: z.array(TaskTurnSchema), nextCursor: z.string().min(1).nullable() })
+  .strict();
+export const TaskInternalSessionPageSchema = z
+  .object({ items: z.array(TaskInternalSessionSchema), nextCursor: z.string().min(1).nullable() })
+  .strict();
+export const TaskCollaborationMessagePageSchema = z
+  .object({ items: z.array(TaskCollaborationMessageSchema), nextCursor: z.string().min(1).nullable() })
+  .strict();
+
+/** The default and maximum number of rows one Task detail section returns. */
+export const TASK_SECTION_DEFAULT_LIMIT = 20;
+export const TASK_SECTION_MAX_LIMIT = 100;
+
+/**
+ * The bounded Task detail: one page of each section, the first page when no cursor is given. It is
+ * the contract new readers use; `TaskDetailSchema` remains the legacy complete answer.
+ */
+export const TaskDetailPageSchema = z
+  .object({
+    task: TaskSummarySchema,
+    turns: TaskTurnPageSchema,
+    internalSessions: TaskInternalSessionPageSchema,
+    collaborationMessages: TaskCollaborationMessagePageSchema,
+  })
+  .strict();
+
 export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 export type TaskSummary = z.infer<typeof TaskSummarySchema>;
 export type ListTasksResponse = z.infer<typeof ListTasksResponseSchema>;
@@ -242,3 +274,7 @@ export type TaskReply = z.infer<typeof TaskReplySchema>;
 export type ListTaskRepliesResponse = z.infer<typeof ListTaskRepliesResponseSchema>;
 export type TaskCollaborationMessage = z.infer<typeof TaskCollaborationMessageSchema>;
 export type TaskDetail = z.infer<typeof TaskDetailSchema>;
+export type TaskTurnPage = z.infer<typeof TaskTurnPageSchema>;
+export type TaskInternalSessionPage = z.infer<typeof TaskInternalSessionPageSchema>;
+export type TaskCollaborationMessagePage = z.infer<typeof TaskCollaborationMessagePageSchema>;
+export type TaskDetailPage = z.infer<typeof TaskDetailPageSchema>;

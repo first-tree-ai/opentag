@@ -25,6 +25,20 @@ rows are topics, not Sessions.
 - The Task id is the id of the topic's earliest stored message. The detail endpoint accepts the id
   of any message in the topic and reports the canonical id. `createdAt` is the root message's time.
 
+## Reading a Task
+
+`GET /api/v1/sessions/:id` is the legacy complete detail: a Turn page bounded by `limit`, plus every
+related Internal Session and collaboration message. It stays for readers written against that
+contract and is not the contract new readers use, because its section arrays are not bounded.
+
+`GET /api/v1/sessions/:id/detail` is the bounded detail: one page of Turns, one page of Internal
+Sessions and one page of collaboration messages, each with its own `nextCursor`. The three sections
+page independently at `/detail/turns`, `/detail/internal-sessions` and
+`/detail/collaboration-messages`, so a reader that needs more of one section asks for that section
+alone. Each section returns at most 100 rows and 20 by default. Reading any of them resolves the
+topic and then serves every section from one read-only Repeatable Read transaction, so an authorized
+topic is read from a single snapshot and no wait spans external I/O.
+
 The Account's channel Session for a group is therefore never listed as a Task; a top-level request
 that nobody replied to is a topic of one message. A Task reports `sessionKind: "thread"` and its
 thread key once a message in its topic carries a thread key, which is the first reply for Slack
@@ -151,7 +165,14 @@ lock.
 A Task includes the internal Sessions that inherited its scope (channel and thread key, or the
 private chat) from a thread or private-chat Session, plus the internal Sessions a group's channel
 Session created while one of the topic's Turns was running, with their descendants. Collaboration
-messages are those exchanged by the topic's own Sessions and its internal Sessions.
+messages are those exchanged by the topic's own Sessions and its internal Sessions. A scheduled
+collaboration message has no source Session: it carries its scheduled origin instead, and belongs to
+the Task of the Session it targets. A message whose source and target both belong to the Task appears
+once.
+
+Internal Sessions are read earliest first, with ended Sessions included, so paging walks the whole
+attributed history rather than only what is alive now. Both sections page on `(createdAt, id)`; a
+message or Session is never repeated across pages.
 
 ## Boundaries
 
@@ -170,5 +191,7 @@ messages are those exchanged by the topic's own Sessions and its internal Sessio
 - A crashed Turn on a group's channel Session stays `running` until that Session accepts another
   delivery or the delivery deadline passes.
 - The list is computed per request from the Account's stored messages. Rollups decide the page
-  before any row resolves its title or Sessions; very large Accounts may later need an index on the
-  topic key.
+  before any row resolves its title or Sessions or execution; very large Accounts may later need an
+  index on the topic key. The topic rollups pair messages with their executions on the topic
+  identity — a concrete topic key by equality, a private chat's NULL key in its own branch — so a
+  page costs the rollup plus its own rows, not the product of two histories.

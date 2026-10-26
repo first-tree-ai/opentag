@@ -90,6 +90,15 @@ export const TASK_BY_ID_TEMPLATE = `${ACCOUNT_TASKS_PATH}/:sessionId`;
 export const TASK_CANCEL_TEMPLATE = `${TASK_BY_ID_TEMPLATE}/cancel`;
 /** Read-only paged subresource of the Task's platform-confirmed outbound IM replies. */
 export const TASK_REPLIES_TEMPLATE = `${TASK_BY_ID_TEMPLATE}/replies`;
+/**
+ * The bounded Task detail and its independently paged sections. The legacy complete detail stays at
+ * `TASK_BY_ID_TEMPLATE`; these paths are its versioned replacement, so no reader is silently given a
+ * truncated legacy answer.
+ */
+export const TASK_DETAIL_TEMPLATE = `${TASK_BY_ID_TEMPLATE}/detail`;
+export const TASK_DETAIL_TURNS_TEMPLATE = `${TASK_DETAIL_TEMPLATE}/turns`;
+export const TASK_DETAIL_INTERNAL_SESSIONS_TEMPLATE = `${TASK_DETAIL_TEMPLATE}/internal-sessions`;
+export const TASK_DETAIL_COLLABORATION_MESSAGES_TEMPLATE = `${TASK_DETAIL_TEMPLATE}/collaboration-messages`;
 /*
  * MCP management plane. Server definitions live on the Account pool; every binding, authorization,
  * and probe is addressed under the Agent that owns it, because authorization is strictly per Agent.
@@ -242,6 +251,17 @@ export function taskCancelPath(sessionId: string): string {
 
 export function taskRepliesPath(sessionId: string): string {
   return `${taskByIdPath(sessionId)}/replies`;
+}
+
+export function taskDetailPath(sessionId: string): string {
+  return `${taskByIdPath(sessionId)}/detail`;
+}
+
+export function taskDetailSectionPath(
+  sessionId: string,
+  section: "turns" | "internal-sessions" | "collaboration-messages",
+): string {
+  return `${taskDetailPath(sessionId)}/${section}`;
 }
 
 export function accountComputerConnectCodePath(connectCodeId: string): string {

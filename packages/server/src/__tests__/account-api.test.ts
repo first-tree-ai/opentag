@@ -9,6 +9,8 @@ import {
   HTTP_PATHS,
   PROVIDER_READINESS_V1_HEADER,
   taskCancelPath,
+  taskDetailPath,
+  taskDetailSectionPath,
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -161,6 +163,15 @@ function services() {
         collaborationMessages: [],
         nextCursor: null,
       }),
+      detail: vi.fn().mockResolvedValue({
+        task: taskSummary,
+        turns: { items: [], nextCursor: null },
+        internalSessions: { items: [], nextCursor: null },
+        collaborationMessages: { items: [], nextCursor: null },
+      }),
+      listTurns: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
+      listInternalSessions: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
+      listCollaborationMessages: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
       listReplies: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
     },
     computerService: {
@@ -480,6 +491,63 @@ describe("Account-native management collections", () => {
     expect(detail.statusCode).toBe(200);
     expect(detail.headers["cache-control"]).toBe("no-store");
     expect(service.taskService.get).toHaveBeenCalledWith(userId, taskSummary.id, { limit: 50 });
+  });
+
+  it("reads the bounded Task detail and each section under its own cursor", async () => {
+    const { app, service } = appWith();
+
+    const detail = await app.inject({
+      method: "GET",
+      url: taskDetailPath(taskSummary.id),
+      headers: authorization,
+    });
+    expect(detail.statusCode).toBe(200);
+    expect(detail.headers["cache-control"]).toBe("no-store");
+    expect(detail.json()).toEqual({
+      task: taskSummary,
+      turns: { items: [], nextCursor: null },
+      internalSessions: { items: [], nextCursor: null },
+      collaborationMessages: { items: [], nextCursor: null },
+    });
+    // The first section page is twenty rows unless the caller asks for another size.
+    expect(service.taskService.detail).toHaveBeenCalledWith(userId, taskSummary.id, { limit: 20 });
+
+    for (const [section, read] of [
+      ["turns", service.taskService.listTurns],
+      ["internal-sessions", service.taskService.listInternalSessions],
+      ["collaboration-messages", service.taskService.listCollaborationMessages],
+    ] as const) {
+      const page = await app.inject({
+        method: "GET",
+        url: `${taskDetailSectionPath(taskSummary.id, section)}?limit=50&cursor=abc`,
+        headers: authorization,
+      });
+      expect(page.statusCode).toBe(200);
+      expect(page.json()).toEqual({ items: [], nextCursor: null });
+      expect(read).toHaveBeenLastCalledWith(userId, taskSummary.id, { limit: 50, cursor: "abc" });
+      const defaulted = await app.inject({
+        method: "GET",
+        url: taskDetailSectionPath(taskSummary.id, section),
+        headers: authorization,
+      });
+      expect(defaulted.statusCode).toBe(200);
+      expect(read).toHaveBeenLastCalledWith(userId, taskSummary.id, { limit: 20 });
+      const beyondCap = await app.inject({
+        method: "GET",
+        url: `${taskDetailSectionPath(taskSummary.id, section)}?limit=101`,
+        headers: authorization,
+      });
+      expect(beyondCap.statusCode).toBe(400);
+    }
+
+    // The first page takes no cursor: a section cursor belongs to its own section.
+    const cursorOnFirstPage = await app.inject({
+      method: "GET",
+      url: `${taskDetailPath(taskSummary.id)}?cursor=abc`,
+      headers: authorization,
+    });
+    expect(cursorOnFirstPage.statusCode).toBe(400);
+    expect(service.taskService.detail).toHaveBeenCalledTimes(1);
   });
 
   it("reads the Task's captured replies with the authenticated scope and bounded paging", async () => {

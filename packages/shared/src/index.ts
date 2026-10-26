@@ -411,9 +411,15 @@ export {
   sandboxRunnerWebSocketUrl,
   TASK_BY_ID_TEMPLATE,
   TASK_CANCEL_TEMPLATE,
+  TASK_DETAIL_COLLABORATION_MESSAGES_TEMPLATE,
+  TASK_DETAIL_INTERNAL_SESSIONS_TEMPLATE,
+  TASK_DETAIL_TEMPLATE,
+  TASK_DETAIL_TURNS_TEMPLATE,
   TASK_REPLIES_TEMPLATE,
   taskByIdPath,
   taskCancelPath,
+  taskDetailPath,
+  taskDetailSectionPath,
   taskRepliesPath,
 } from "./http-paths.js";
 export * from "./im-binding.js";

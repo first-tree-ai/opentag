@@ -1,4 +1,11 @@
-import { agentAvatarPath, type ImContentV1, type TaskTurn, type TurnReportRequest } from "@opentag/shared";
+import {
+  agentAvatarPath,
+  type ImContentV1,
+  TASK_SECTION_DEFAULT_LIMIT,
+  TASK_SECTION_MAX_LIMIT,
+  type TaskTurn,
+  type TurnReportRequest,
+} from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createUnitDatabase, type UnitDatabase } from "../../../__tests__/support/unit-database.js";
@@ -1312,5 +1319,232 @@ describe("TaskService", () => {
     expect(withdrawalRefusal([row({ dispatched: true }), row({})])).toBe("awaiting_computer");
     expect(withdrawalRefusal([row({}), row({})])).toBeUndefined();
     expect(withdrawalRefusal([])).toBe("nothing");
+  });
+});
+
+describe("TaskService bounded detail", () => {
+  /** One private chat with one Turn per message, all accepted and reported, in its channel Session. */
+  async function turnsFor(bindingId: string, channelId: string, count: number) {
+    const channel = await createSession(bindingId, { channelId, conversationKind: "dm" });
+    const messages = [];
+    for (let index = 0; index < count; index += 1) {
+      const message = await createMessage(bindingId, {
+        channelId,
+        externalMessageId: `om_bounded_${index}`,
+        occurredAt: minutes(index),
+      });
+      await createDelivery(channel.id, message.id, { at: minutes(index), reported: true });
+      messages.push(message);
+    }
+    return { channel, messages };
+  }
+
+  it("returns one page of each section with its own cursor and no unrequested history", async () => {
+    const { binding, bootstrap, service } = await fixture();
+    await turnsFor(binding.id, DM, 45);
+    const root = await unitDatabase.database
+      .select()
+      .from(imMessages)
+      .where(eq(imMessages.externalMessageId, "om_bounded_0"));
+    const taskId = root[0]?.id;
+    if (!taskId) throw new Error("The bounded fixture lost its Task");
+
+    const first = await service.detail(bootstrap.userId, taskId);
+    expect(first.task.id).toBe(taskId);
+    expect(first.turns.items).toHaveLength(TASK_SECTION_DEFAULT_LIMIT);
+    expect(first.turns.nextCursor).toEqual(expect.any(String));
+    // The default page is 20 because that is what one screen of a conversation needs.
+    expect(TASK_SECTION_DEFAULT_LIMIT).toBe(20);
+
+    const secondTurns = await service.listTurns(bootstrap.userId, taskId, {
+      cursor: first.turns.nextCursor ?? undefined,
+    });
+    const firstIds = new Set(first.turns.items.map((turn) => turn.message.id));
+    expect(secondTurns.items).toHaveLength(TASK_SECTION_DEFAULT_LIMIT);
+    expect(secondTurns.items.every((turn) => !firstIds.has(turn.message.id))).toBe(true);
+    expect(secondTurns.items[0]?.message.occurredAt).toBe(minutes(24).toISOString());
+
+    // The legacy detail still answers the requested Turn page completely.
+    const legacy = await service.get(bootstrap.userId, taskId, { limit: 5 });
+    expect(legacy.turns).toHaveLength(5);
+    expect(legacy.nextCursor).toEqual(expect.any(String));
+  });
+
+  it("pages internal Sessions earliest first and keeps ended ones in the history", async () => {
+    const { binding, bootstrap, service } = await fixture();
+    const { channel } = await turnsFor(binding.id, DM, 1);
+    const taskId = (await unitDatabase.database.select().from(imMessages))[0]?.id;
+    if (!taskId) throw new Error("The bounded fixture lost its Task");
+    const created = [];
+    for (let index = 0; index < 25; index += 1) {
+      created.push(
+        await createSession(binding.id, {
+          channelId: DM,
+          conversationKind: "dm",
+          kind: "internal",
+          createdBySessionId: channel.id,
+          createdAt: minutes(index),
+          // Half of the history has ended; ended Sessions stay readable.
+          endedAt: index % 2 === 0 ? minutes(index + 1) : null,
+        }),
+      );
+    }
+
+    const first = await service.listInternalSessions(bootstrap.userId, taskId, { limit: 10 });
+    expect(first.items.map((session) => session.id)).toEqual(created.slice(0, 10).map((session) => session.id));
+    expect(first.items[0]?.endedAt).toBe(minutes(1).toISOString());
+    expect(first.nextCursor).toEqual(expect.any(String));
+    const second = await service.listInternalSessions(bootstrap.userId, taskId, {
+      cursor: first.nextCursor ?? undefined,
+      limit: 10,
+    });
+    expect(second.items.map((session) => session.id)).toEqual(created.slice(10, 20).map((session) => session.id));
+    const third = await service.listInternalSessions(bootstrap.userId, taskId, {
+      cursor: second.nextCursor ?? undefined,
+      limit: 10,
+    });
+    expect(third.items.map((session) => session.id)).toEqual(created.slice(20).map((session) => session.id));
+    expect(third.nextCursor).toBeNull();
+  });
+
+  it("reads scheduled collaboration messages and deduplicates a message whose two ends are both related", async () => {
+    const { binding, bootstrap, service } = await fixture();
+    const { channel } = await turnsFor(binding.id, DM, 1);
+    const taskId = (await unitDatabase.database.select().from(imMessages))[0]?.id;
+    if (!taskId) throw new Error("The bounded fixture lost its Task");
+    const child = await createSession(binding.id, {
+      channelId: DM,
+      conversationKind: "dm",
+      kind: "internal",
+      createdBySessionId: channel.id,
+      createdAt: minutes(1),
+    });
+    const internal = await createSession(binding.id, {
+      channelId: DM,
+      conversationKind: "dm",
+      kind: "internal",
+      createdBySessionId: child.id,
+      createdAt: minutes(2),
+    });
+    const scheduledOrigin = {
+      scheduleId: crypto.randomUUID(),
+      scheduledFor: minutes(3).toISOString(),
+      timezone: "UTC",
+      name: "Nightly review",
+    };
+    await unitDatabase.database.insert(sessionMessages).values([
+      {
+        id: crypto.randomUUID(),
+        sourceSessionId: channel.id,
+        targetSessionId: child.id,
+        content: "Both ends belong to the topic.",
+        contentHash: "d".repeat(64),
+        lastOutcome: "accepted",
+        attemptCount: 1,
+        lastAttemptAt: BASE_TIME,
+        createdAt: minutes(3),
+        updatedAt: minutes(3),
+      },
+      {
+        id: crypto.randomUUID(),
+        sourceSessionId: child.id,
+        targetSessionId: internal.id,
+        content: "One end outside the page.",
+        contentHash: "e".repeat(64),
+        lastOutcome: "unknown",
+        createdAt: minutes(4),
+        updatedAt: minutes(4),
+      },
+      {
+        id: crypto.randomUUID(),
+        sourceSessionId: null,
+        scheduledOrigin,
+        targetSessionId: internal.id,
+        content: "A scheduled message has no source Session.",
+        contentHash: "f".repeat(64),
+        lastOutcome: "unknown",
+        createdAt: minutes(5),
+        updatedAt: minutes(5),
+      },
+    ]);
+
+    const page = await service.listCollaborationMessages(bootstrap.userId, taskId, { limit: 10 });
+    expect(page.items.map((message) => message.content)).toEqual([
+      "Both ends belong to the topic.",
+      "One end outside the page.",
+      "A scheduled message has no source Session.",
+    ]);
+    expect(page.items[0]?.attemptCount).toBe(1);
+    expect(page.items[2]).toMatchObject({ sourceSessionId: null, scheduledOrigin });
+    expect(page.nextCursor).toBeNull();
+
+    const limited = await service.listCollaborationMessages(bootstrap.userId, taskId, { limit: 1 });
+    expect(limited.items).toHaveLength(1);
+    const rest = await service.listCollaborationMessages(bootstrap.userId, taskId, {
+      cursor: limited.nextCursor ?? undefined,
+      limit: 1,
+    });
+    expect(rest.items.map((message) => message.content)).toEqual(["One end outside the page."]);
+  });
+
+  it("keeps another Account out of every section and rejects a malformed cursor", async () => {
+    const { binding, bootstrap, service } = await fixture();
+    await turnsFor(binding.id, DM, 3);
+    const taskId = (await unitDatabase.database.select().from(imMessages))[0]?.id;
+    if (!taskId) throw new Error("The bounded fixture lost its Task");
+    const other = crypto.randomUUID();
+    for (const read of [
+      () => service.detail(other, taskId),
+      () => service.listTurns(other, taskId, { limit: 5 }),
+      () => service.listInternalSessions(other, taskId, { limit: 5 }),
+      () => service.listCollaborationMessages(other, taskId, { limit: 5 }),
+    ]) {
+      await expect(read()).rejects.toMatchObject({ code: "RESOURCE_NOT_FOUND", statusCode: 404 });
+    }
+    expect((await service.detail(bootstrap.userId, taskId)).task.id).toBe(taskId);
+    const badCursor = Buffer.from(JSON.stringify({ at: "not-a-date", id: "bad" }), "utf8").toString("base64url");
+    for (const read of [
+      () => service.listTurns(bootstrap.userId, taskId, { cursor: badCursor }),
+      () => service.listInternalSessions(bootstrap.userId, taskId, { cursor: badCursor }),
+      () => service.listCollaborationMessages(bootstrap.userId, taskId, { cursor: badCursor }),
+    ]) {
+      await expect(read()).rejects.toMatchObject({ code: "VALIDATION_ERROR", statusCode: 400 });
+    }
+  });
+
+  it("clamps a section limit to the contract maximum and never to an unbounded page", async () => {
+    const { binding, bootstrap, service } = await fixture();
+    await turnsFor(binding.id, DM, 3);
+    const taskId = (await unitDatabase.database.select().from(imMessages))[0]?.id;
+    if (!taskId) throw new Error("The bounded fixture lost its Task");
+    const page = await service.detail(bootstrap.userId, taskId, { limit: 10_000 });
+    expect(TASK_SECTION_MAX_LIMIT).toBe(100);
+    expect(page.turns.items).toHaveLength(3);
+    const clamped = await service.listTurns(bootstrap.userId, taskId, { limit: 10_000 });
+    expect(clamped.items).toHaveLength(3);
+  });
+
+  it("breaks a latest-execution tie by execution id and keeps the direct delivery's attention", async () => {
+    const { binding, bootstrap, service } = await fixture();
+    const channel = await createSession(binding.id, { channelId: GROUP });
+    // Two deliveries of the same message: a thread Session's direct one and the channel's ambient
+    // copy. Both carry the same activity instant, so only the id ordering decides.
+    const thread = await createSession(binding.id, { channelId: GROUP, kind: "thread", threadKey: "om_tie" });
+    const root = await createMessage(binding.id, { externalMessageId: "om_tie", occurredAt: minutes(0) });
+    const direct = await createDelivery(thread.id, root.id, { at: minutes(1), reported: true, outcome: "completed" });
+    const ambient = await createDelivery(channel.id, root.id, {
+      at: minutes(1),
+      attention: "ambient",
+      reported: true,
+      outcome: "failed",
+    });
+    const listed = await service.list(bootstrap.userId, { limit: 10 });
+    expect(listed.tasks).toHaveLength(1);
+    // The ambient copy is not an execution of a topic the thread owns, so the direct one decides.
+    expect(listed.tasks[0]?.status).toBe("completed");
+    const detail = await service.detail(bootstrap.userId, root.id);
+    expect(detail.turns.items.map((turn) => turn.deliveryId)).toEqual([direct.id]);
+    expect(detail.task.status).toBe("completed");
+    expect(ambient.id).toEqual(expect.any(String));
   });
 });

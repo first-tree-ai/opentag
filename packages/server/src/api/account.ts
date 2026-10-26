@@ -45,11 +45,21 @@ import {
   requestsCloudIdentityV1,
   TASK_BY_ID_TEMPLATE,
   TASK_CANCEL_TEMPLATE,
+  TASK_DETAIL_COLLABORATION_MESSAGES_TEMPLATE,
+  TASK_DETAIL_INTERNAL_SESSIONS_TEMPLATE,
+  TASK_DETAIL_TEMPLATE,
+  TASK_DETAIL_TURNS_TEMPLATE,
   TASK_REPLIES_TEMPLATE,
+  TASK_SECTION_DEFAULT_LIMIT,
+  TASK_SECTION_MAX_LIMIT,
   TaskCancelResponseSchema,
+  TaskCollaborationMessagePageSchema,
+  TaskDetailPageSchema,
   TaskDetailSchema,
+  TaskInternalSessionPageSchema,
   TaskTitleUpdateRequestSchema,
   TaskTitleUpdateResponseSchema,
+  TaskTurnPageSchema,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -84,6 +94,19 @@ const TaskDetailQuerySchema = z
   .object({
     cursor: z.string().min(1).max(1024).optional(),
     limit: z.coerce.number().int().min(1).max(100).default(50),
+  })
+  .strict();
+/** One independently paged Task detail section: turns, internal Sessions, or collaboration messages. */
+const TaskSectionQuerySchema = z
+  .object({
+    cursor: z.string().min(1).max(1024).optional(),
+    limit: z.coerce.number().int().min(1).max(TASK_SECTION_MAX_LIMIT).default(TASK_SECTION_DEFAULT_LIMIT),
+  })
+  .strict();
+/** The first page of every section. It takes no cursor: each section's own cursor continues it. */
+const TaskDetailPageQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(TASK_SECTION_MAX_LIMIT).default(TASK_SECTION_DEFAULT_LIMIT),
   })
   .strict();
 const TaskRepliesQuerySchema = z
@@ -237,10 +260,53 @@ export function registerAccountRoutes(
       return reply.header("Cache-Control", "no-store").code(200).send(response);
     });
 
+    /*
+     * The legacy complete detail. Its Turn page is bounded by `limit`, but its Internal Session and
+     * collaboration arrays are not: readers written against it are migrated to the sectioned
+     * contract below rather than having their answer silently cut.
+     */
     app.get(TASK_BY_ID_TEMPLATE, { preHandler }, async (request, reply) => {
       const { sessionId } = parseRequest(TaskParamsSchema, request.params);
       const query = parseRequest(TaskDetailQuerySchema, request.query);
       const response = TaskDetailSchema.parse(await taskService.get(accountId(request), sessionId, query));
+      return reply.header("Cache-Control", "no-store").code(200).send(response);
+    });
+
+    /*
+     * The bounded detail: one page of each section. Every section carries its own keyset cursor, so
+     * a reader that needs more of one section asks for that section alone.
+     */
+    app.get(TASK_DETAIL_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { sessionId } = parseRequest(TaskParamsSchema, request.params);
+      const query = parseRequest(TaskDetailPageQuerySchema, request.query);
+      const response = TaskDetailPageSchema.parse(
+        await taskService.detail(accountId(request), sessionId, { limit: query.limit }),
+      );
+      return reply.header("Cache-Control", "no-store").code(200).send(response);
+    });
+
+    app.get(TASK_DETAIL_TURNS_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { sessionId } = parseRequest(TaskParamsSchema, request.params);
+      const query = parseRequest(TaskSectionQuerySchema, request.query);
+      const response = TaskTurnPageSchema.parse(await taskService.listTurns(accountId(request), sessionId, query));
+      return reply.header("Cache-Control", "no-store").code(200).send(response);
+    });
+
+    app.get(TASK_DETAIL_INTERNAL_SESSIONS_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { sessionId } = parseRequest(TaskParamsSchema, request.params);
+      const query = parseRequest(TaskSectionQuerySchema, request.query);
+      const response = TaskInternalSessionPageSchema.parse(
+        await taskService.listInternalSessions(accountId(request), sessionId, query),
+      );
+      return reply.header("Cache-Control", "no-store").code(200).send(response);
+    });
+
+    app.get(TASK_DETAIL_COLLABORATION_MESSAGES_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { sessionId } = parseRequest(TaskParamsSchema, request.params);
+      const query = parseRequest(TaskSectionQuerySchema, request.query);
+      const response = TaskCollaborationMessagePageSchema.parse(
+        await taskService.listCollaborationMessages(accountId(request), sessionId, query),
+      );
       return reply.header("Cache-Control", "no-store").code(200).send(response);
     });
 

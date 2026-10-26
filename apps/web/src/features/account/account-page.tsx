@@ -29,7 +29,7 @@ export function AccountPage({ slackProvision = false }: { slackProvision?: boole
     <Page title={m.account_page_title()} description={m.account_page_description()}>
       <AccountSettings key={me.user.id} navigationGuardRef={profileNavigation} refreshMe={refreshMe} user={me.user} />
       <GitHubIntegrationSettings beforeAuthorize={() => profileNavigation.current?.()} />
-      <CloudBillingSettings />
+      <CloudBillingSettings key={me.user.id} accountId={me.user.id} />
     </Page>
   );
 }

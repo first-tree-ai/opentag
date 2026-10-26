@@ -150,13 +150,15 @@ its notification omits it. Omission is not a neutral default: the specification 
 header as `2025-03-26`, so a strict `2025-06-18` or `2025-11-25` Server refuses a notification that
 a permissive Server accepted.
 
-A notification carries no `id` and returns no result, so no response interpreter runs on it and its
-status is checked on its own. A non-2xx answer to `notifications/initialized` stops the handshake
-before anything is dispatched — the gateway never sends its `tools/call`, and a probe records
-`probe_state = failed` with no `tools/list` — and reports a bounded, credential-free error: its
-`HTTP <status>` summary, or the shared `MCP_AUTH_REJECTION_SUMMARY` for `401` and `403`. The
-response body is never read, so an upstream message cannot reach a probe error, a log line, or a
-model. A failed `initialize` stops the handshake the same way.
+A notification carries no `id` and returns no result, so no response interpreter runs on it and
+its status is checked on its own. That check applies to a response the fetcher returns: a redirect
+and an oversized body both fail inside the fetcher, so no status from those reaches this point.
+A non-2xx answer to `notifications/initialized` stops the handshake before anything is dispatched:
+the gateway never sends its `tools/call`, and a probe records `probe_state = failed` with no
+`tools/list`. The error is bounded and credential-free: its `HTTP <status>` summary, or the shared
+`MCP_AUTH_REJECTION_SUMMARY` for `401` and `403`. Bounding the body is the fetcher's job, and the
+notification path never interprets or exposes that text, so an upstream message cannot reach a
+probe error, a log line, or a model. A failed `initialize` stops the handshake the same way.
 
 The probe API answers `200` whether or not the probe succeeded and never returns the upstream
 status. A failed probe and a legacy fallback each write one `info` line carrying `upstreamStatus`,

@@ -20,11 +20,49 @@ export interface TaskCursor {
 
 /**
  * What a cursor may contain: the instant PostgreSQL prints, or a millisecond-precision ISO value
- * from a caller that had one. PostgreSQL parses either, and an out-of-range value fails the cast in
- * the next query rather than silently selecting a different page.
+ * from a caller that had one.
+ *
+ * The shape alone is not enough. A cursor whose fields are digits but whose values are impossible —
+ * `2026-99-99T99:99:99.123456Z` — has the right shape and would reach the `timestamptz` cast, where it
+ * raises a database error instead of the caller error this service promises. The calendar and clock
+ * ranges are therefore checked here, without turning the value into a `Date`: round-tripping through
+ * `Date` is what truncated the microseconds this cursor exists to keep.
  */
-const CURSOR_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/;
-const CursorSchema = z.object({ at: z.string().regex(CURSOR_TIMESTAMP), id: z.string().uuid() }).strict();
+const CURSOR_TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?Z$/;
+const DAYS_PER_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+function isLeapYear(year: number): boolean {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+}
+
+function daysInMonth(year: number, month: number): number {
+  return month === 2 && isLeapYear(year) ? 29 : (DAYS_PER_MONTH[month - 1] ?? 0);
+}
+
+/** A UTC instant PostgreSQL can cast, at microsecond precision or coarser. */
+function parseableInstant(value: string): boolean {
+  const match = CURSOR_TIMESTAMP.exec(value);
+  if (!match) return false;
+  const [year, month, day, hour, minute, second] = match.slice(1, 7).map(Number) as [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
+  // PostgreSQL has no year zero, and a cursor it printed never carries one.
+  if (year < 1 || month < 1 || month > 12) return false;
+  if (hour > 23 || minute > 59 || second > 59) return false;
+  return day >= 1 && day <= daysInMonth(year, month);
+}
+
+const CursorSchema = z
+  .object({
+    at: z.string().refine(parseableInstant, { message: "The cursor timestamp is not a UTC instant" }),
+    id: z.string().uuid(),
+  })
+  .strict();
 
 /**
  * A keyset cursor is opaque to callers and strict to this service: it carries the exact sort key of

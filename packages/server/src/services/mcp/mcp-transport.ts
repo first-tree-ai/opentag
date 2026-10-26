@@ -110,6 +110,7 @@ export interface McpCallOptions {
   name?: string;
   /** Extra request headers beyond the authorization set (used for `Mcp-Param-*` extensions). */
   headers?: Record<string, string>;
+  inputSchema?: unknown;
   /**
    * The version `initialize` negotiated, for a legacy call.
    *
@@ -128,13 +129,71 @@ export interface McpCallOptions {
 export function encodeHeaderValue(value: string): string {
   // Every UTF-16 code unit in the printable-ASCII range, which is what may travel raw.
   const isPrintableAscii = /^[\u0020-\u007e]*$/.test(value);
-  if (isPrintableAscii && !value.startsWith("=?base64?")) return value;
+  if (isPrintableAscii && value.trim() === value && !value.startsWith("=?base64?")) return value;
   return `=?base64?${Buffer.from(value, "utf8").toString("base64")}?=`;
 }
 
 export function decodeHeaderValue(value: string): string {
   const match = /^=\?base64\?(.+)\?=$/.exec(value);
   return match?.[1] ? Buffer.from(match[1], "base64").toString("utf8") : value;
+}
+
+function parameterHeaders(inputSchema: unknown, args: unknown): Record<string, string> {
+  const headers: Record<string, string> = {};
+  const names = new Set<string>();
+  const pending = [{ schema: inputSchema, value: args }];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current) break;
+    for (const [key, schema] of parameterProperties(current.schema)) {
+      const value = isRecord(current.value) && Object.hasOwn(current.value, key) ? current.value[key] : undefined;
+      appendParameterHeader(headers, names, schema, value);
+      pending.push({ schema, value });
+    }
+  }
+  return headers;
+}
+
+function parameterProperties(schema: unknown): [string, Record<string, unknown>][] {
+  if (!isRecord(schema) || !isRecord(schema.properties)) return [];
+  return Object.entries(schema.properties).filter((entry): entry is [string, Record<string, unknown>] =>
+    isRecord(entry[1]),
+  );
+}
+
+function appendParameterHeader(
+  headers: Record<string, string>,
+  names: Set<string>,
+  schema: Record<string, unknown>,
+  value: unknown,
+): void {
+  const name = schema["x-mcp-header"];
+  if (name === undefined) return;
+  if (
+    typeof name !== "string" ||
+    !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) ||
+    names.has(name.toLowerCase()) ||
+    typeof schema.type !== "string" ||
+    !["string", "integer", "boolean"].includes(schema.type)
+  ) {
+    throw new McpTransportError(MCP_ERROR_CODES.UPSTREAM_ERROR, "The MCP tool has invalid parameter header metadata");
+  }
+  names.add(name.toLowerCase());
+  if (value !== undefined && value !== null) headers[`Mcp-Param-${name}`] = parameterHeaderValue(schema.type, value);
+}
+
+function parameterHeaderValue(type: string, value: unknown): string {
+  const valid =
+    (type === "string" && typeof value === "string") ||
+    (type === "boolean" && typeof value === "boolean") ||
+    (type === "integer" && typeof value === "number" && Number.isSafeInteger(value));
+  if (!valid) {
+    throw new McpTransportError(
+      MCP_ERROR_CODES.UPSTREAM_ERROR,
+      "An MCP parameter header requires its declared primitive type",
+    );
+  }
+  return encodeHeaderValue(String(value));
 }
 
 export class McpTransport {
@@ -183,6 +242,7 @@ export class McpTransport {
     const name = options.name ?? paramsName(params);
     if (name !== undefined) headers["Mcp-Name"] = encodeHeaderValue(name);
     for (const [key, value] of Object.entries(options.headers ?? {})) headers[key] = value;
+    if (method === "tools/call") Object.assign(headers, parameterHeaders(options.inputSchema, params?.arguments));
 
     const body = JSON.stringify({
       jsonrpc: "2.0",

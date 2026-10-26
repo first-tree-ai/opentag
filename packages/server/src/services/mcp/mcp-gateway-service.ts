@@ -146,6 +146,9 @@ export class McpGatewayService {
     }
     const effective = McpServerService.resolveEffectiveConfig(resolved.server, resolved.binding);
     const headers = this.#authorizations.buildHeadersFor(resolved);
+    const inputSchema = readToolSnapshot(resolved.authorization.tools).find(
+      (tool) => tool.name === target.upstreamName,
+    )?.inputSchema;
     const call = await this.#upstream.call({
       accountId: input.accountId,
       url: effective.url,
@@ -153,6 +156,7 @@ export class McpGatewayService {
       method: "tools/call",
       params: { name: target.upstreamName, arguments: input.arguments ?? {} },
       name: target.upstreamName,
+      ...(inputSchema == null ? {} : { inputSchema }),
       cachedEra: resolved.authorization.protocolEra,
       cachedVersion: resolved.authorization.protocolVersion,
       ...(input.signal ? { signal: input.signal } : {}),

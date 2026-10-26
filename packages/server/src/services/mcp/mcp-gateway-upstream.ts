@@ -34,6 +34,7 @@ export interface McpUpstreamCallInput {
   params: Record<string, unknown>;
   /** `params.name`, required by the transport headers for `tools/call`. */
   name?: string;
+  inputSchema?: unknown;
   /** The era cached on this authorization row, or null when unknown. */
   cachedEra: "modern" | "legacy" | null;
   cachedVersion: string | null;
@@ -104,6 +105,7 @@ export class McpUpstreamCaller {
   #dispatchModern(transport: McpTransport, input: McpUpstreamCallInput): Promise<unknown> {
     return transport.call(input.accountId, input.url, input.method, input.params, input.authHeaders, {
       ...(input.name === undefined ? {} : { name: input.name }),
+      ...(input.inputSchema === undefined ? {} : { inputSchema: input.inputSchema }),
       ...(input.signal ? { signal: input.signal } : {}),
     });
   }

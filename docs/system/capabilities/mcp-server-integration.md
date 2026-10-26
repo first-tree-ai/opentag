@@ -49,6 +49,14 @@ only to the sandbox" expressible.
 | Background token refresh | The 2024-11-05 HTTP+SSE dual-endpoint transport |
 | Web UI, CLI, Server API | Cloning an Agent with its mounts |
 
+### Local runtime delivery
+
+Local MCP delivery requires `OPENTAG_RUNTIME_CREDENTIAL_MODE=proxy` in the daemon launch
+environment, including `<OpenTag Home>/config/daemon.env`. Restart the daemon after changing it.
+The default `legacy` mode can configure and authorize connectors in the Web App, but does not open
+the execution that delivers MCP tools to the Provider. Codex and Claude Code retain their normal
+per-action approval settings.
+
 ### Pi and Cloud runtime delivery
 
 Pi has no native MCP configuration surface. openTag pins `pi-mcp-adapter` 2.36.0 and explicitly
@@ -102,8 +110,17 @@ Every POST carries these headers:
 | `MCP-Protocol-Version` | e.g. `2026-07-28` | Required, and must **exactly** match the body's `_meta` version or the Server answers `400 HeaderMismatch` |
 | `Mcp-Method` | the JSON-RPC `method` | Required on every request |
 | `Mcp-Name` | `params.name` / `params.uri` | Required for `tools/call`, `resources/read`, `prompts/get` |
+| `Mcp-Param-{name}` | The argument at a property's exact path, annotated with `x-mcp-header` | Required for annotated, present, non-null tool parameters |
 
-A `Mcp-Method`, `Mcp-Name`, or `Mcp-Param-*` value containing non-ASCII — and any ASCII value that
+For modern upstream tool calls, the gateway passes the latest authorized probe snapshot's
+`inputSchema` to the transport. The transport follows only `properties` paths and mirrors declared
+string, safe-integer, and boolean values. It omits missing or null values and refuses malformed header
+names, case-insensitive duplicates, and mismatched primitive values before dispatch. These headers
+are not generated for legacy calls. A `HeaderMismatch` does not automatically replay a tool call;
+reconcile the outcome and re-probe when a remote schema changes.
+
+A `Mcp-Method`, `Mcp-Name`, or `Mcp-Param-*` value containing non-ASCII, control characters, or
+leading/trailing whitespace — and any ASCII value that
 merely *looks like* the Base64 sentinel — must be encoded as `=?base64?<base64>?=`. Both halves
 matter: without the second, a value that happens to start with the sentinel would be decoded as if it
 were an encoding.

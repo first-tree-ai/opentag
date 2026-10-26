@@ -222,6 +222,26 @@ describe("callTool", () => {
     );
   });
 
+  it("passes the latest authorized tool schema to the upstream caller", async () => {
+    const row = mount({ name: "github", tools: [{ name: "issue_write" }] });
+    const inputSchema = { type: "object", properties: { owner: { type: "string", "x-mcp-header": "owner" } } };
+    const { service, upstreamCall } = build([row], {
+      resolveActiveCredential: (async () => ({
+        ...row,
+        authorization: { ...row.authorization, tools: [{ name: "issue_write", description: null, inputSchema }] },
+      })) as unknown as McpAuthorizationService["resolveActiveCredential"],
+    });
+    await service.callTool({
+      accountId: ACCOUNT,
+      agentId: AGENT,
+      name: "github__issue_write",
+      arguments: { owner: "first-tree-ai" },
+    });
+    expect(upstreamCall).toHaveBeenCalledWith(
+      expect.objectContaining({ inputSchema, params: { name: "issue_write", arguments: { owner: "first-tree-ai" } } }),
+    );
+  });
+
   it("refuses a name no mount produces", async () => {
     const { service } = build([mount({ name: "linear", tools: [{ name: "x" }] })]);
     await expect(service.callTool({ accountId: ACCOUNT, agentId: AGENT, name: "notion__search" })).rejects.toThrow(

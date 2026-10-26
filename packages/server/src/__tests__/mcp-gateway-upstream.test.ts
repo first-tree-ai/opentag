@@ -77,6 +77,27 @@ function call(fetcher: McpOutboundFetcher, overrides: Record<string, unknown> = 
 }
 
 describe("the modern path", () => {
+  it("sends annotated parameter headers to a strict peer without replaying a rejected write", async () => {
+    let writes = 0;
+    const { fetcher, sent } = scriptedFetcher((body) => {
+      if (sent.at(-1)?.headers["Mcp-Param-owner"] !== "first-tree-ai") {
+        return rpcFail(body, 400, { code: -32020, message: "header mismatch: missing Mcp-Param-owner" });
+      }
+      writes += 1;
+      return rpcOk(body, { content: [] });
+    });
+    const params = { name: "create_issue", arguments: { owner: "first-tree-ai" } };
+    await expect(call(fetcher, { params })).rejects.toMatchObject({ rpcError: { code: -32020 } });
+    expect(sent).toHaveLength(1);
+    expect(writes).toBe(0);
+    await call(fetcher, {
+      params,
+      inputSchema: { properties: { owner: { type: "string", "x-mcp-header": "owner" } } },
+    });
+    expect(sent).toHaveLength(2);
+    expect(writes).toBe(1);
+  });
+
   it("calls once at the row's cached version", async () => {
     const { fetcher, sent } = scriptedFetcher((body) => rpcOk(body, { content: [] }));
     await call(fetcher);
@@ -119,6 +140,23 @@ describe("the modern path", () => {
 });
 
 describe("the legacy path", () => {
+  it("does not apply modern parameter headers to a legacy call", async () => {
+    const { fetcher, sent } = scriptedFetcher((body) =>
+      rpcOk(body, body.method === "initialize" ? { protocolVersion: "2025-11-25" } : { content: [] }),
+    );
+    await call(fetcher, {
+      cachedEra: "legacy",
+      params: { name: "create_issue", arguments: { owner: "first-tree-ai" } },
+      inputSchema: { properties: { owner: { type: "string", "x-mcp-header": "owner" } } },
+    });
+    expect(sent).toHaveLength(3);
+    expect(
+      sent.every((exchange) =>
+        Object.keys(exchange.headers).every((header) => !header.toLowerCase().startsWith("mcp-param-")),
+      ),
+    ).toBe(true);
+  });
+
   it("handshakes before the call when the row records the legacy era", async () => {
     const { fetcher, sent } = scriptedFetcher((body) =>
       body.method === "initialize"

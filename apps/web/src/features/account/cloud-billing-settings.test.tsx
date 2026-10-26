@@ -73,8 +73,32 @@ describe("cloud credit settings", () => {
     mount();
     const input = await screen.findByRole("textbox", { name: "Amount (USD)" });
     const hint = screen.getByText("Choose an amount from $10.00 to $1,000.00.");
-    expect(input.getAttribute("aria-describedby")?.split(" ")).toContain(hint.id);
+    const descriptions = input
+      .getAttribute("aria-describedby")
+      ?.split(" ")
+      .map((id) => document.getElementById(id)?.textContent);
+    expect(descriptions?.filter((text) => text === hint.textContent)).toHaveLength(1);
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+  it("records the Account reminder after creating checkout and before navigating to Stripe", async () => {
+    vi.spyOn(browserApi, "cloudBilling").mockResolvedValue(summary);
+    const url = "https://checkout.stripe.com/c/pay_test";
+    vi.spyOn(browserApi, "cloudCreditCheckout").mockResolvedValue({ url });
+    const assign = vi.fn(() => {
+      expect(hasCheckoutReturn("account-a")).toBe(true);
+      expect(hasCheckoutReturn("account-b")).toBe(false);
+    });
+    const originalLocation = window.location;
+    Object.defineProperty(window, "location", { configurable: true, value: { ...originalLocation, assign } });
+    try {
+      mount();
+      expect(hasCheckoutReturn("account-a")).toBe(false);
+      fireEvent.click(await screen.findByRole("button", { name: "Add credits" }));
+      await waitFor(() => expect(assign).toHaveBeenCalledWith(url));
+      expect(screen.queryByText("Back from checkout")).toBeNull();
+    } finally {
+      Object.defineProperty(window, "location", { configurable: true, value: originalLocation });
+    }
   });
   it("offers an exhausted-credit shortcut to the amount without starting a purchase", async () => {
     vi.spyOn(browserApi, "cloudBilling").mockResolvedValue({ ...summary, availableMicros: 0 });

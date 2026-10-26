@@ -174,7 +174,6 @@ function CloudCreditForm({
                 minimum: dollars(summary.minimumTopUpCents * 10_000),
                 maximum: dollars(summary.maximumTopUpCents * 10_000),
               })}
-              hintId={`${amountId}-hint`}
             >
               <KumoInputControl
                 id={amountId}
@@ -184,7 +183,7 @@ function CloudCreditForm({
                 autoComplete="off"
                 maxLength={12}
                 aria-invalid={invalid || undefined}
-                aria-describedby={`${amountId}-hint${invalid ? ` ${amountId}-error` : ""}`}
+                aria-describedby={invalid ? `${amountId}-error` : undefined}
                 disabled={busy || summary.blocked}
                 value={amount}
                 onChange={(event) => {

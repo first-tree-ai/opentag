@@ -145,7 +145,7 @@ openTag Web targets WCAG 2.2 AA for product UI:
 - normal text contrast is at least 4.5:1;
 - large text and meaningful non-text UI contrast are at least 3:1;
 - every interactive control has a visible focus indicator with at least 3:1 contrast against adjacent colors;
-- shared buttons and single-line controls retain at least 44px height below 768px, with icon buttons also at least 44px wide;
+- shared buttons (including `Banner.Action`) and single-line controls retain at least 44px height below 768px, with icon buttons also at least 44px wide;
 - keyboard order follows the visual and task order;
 - Enter and Space activate controls according to their native semantics;
 - Escape closes dismissible overlays, and focus returns to the control that opened them;

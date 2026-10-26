@@ -31,7 +31,6 @@ import { SessionService } from "../src/services/sessions/session-service.js";
 import {
   type BenchmarkAdmin,
   type BenchmarkDeps,
-  type LegacyUsageRow,
   readLegacyUsage,
   resolveOutputDirectory,
   runBenchmark,
@@ -43,17 +42,20 @@ const trackedDirectory = resolve(import.meta.dirname, "../../../testing/performa
 const id = (kind: number, number: number) =>
   `${String(kind).padStart(8, "0")}-0000-4000-8000-${String(number).padStart(12, "0")}`;
 
-function dependencyDependencies(): BenchmarkDeps {
-  const clock = { current: 0 };
-  const elapsed = () => {
-    clock.current += 1;
-    return clock.current;
-  };
+function benchmarkDependencies(): BenchmarkDeps {
   return {
     docker: (args) => execFileSync("docker", args, { encoding: "utf8" }).trim(),
-    // postgres.js is callable and also carries `unsafe`/`end`; the harness only uses those three members.
-    openAdmin: async (databaseUrl) =>
-      (await postgres(databaseUrl, { max: 1, onnotice: () => undefined })) as unknown as BenchmarkAdmin,
+    // postgres.js is a template tag, not an object with a `query` method: the adapter is what makes the
+    // harness depend on three plain members instead of on the driver's callable shape.
+    openAdmin: async (databaseUrl) => {
+      const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+      return {
+        query: ((strings: TemplateStringsArray, ...values: unknown[]) =>
+          sql(strings as never, ...(values as never[]))) as BenchmarkAdmin["query"],
+        unsafe: (query, parameters) => sql.unsafe(query, (parameters ?? []) as never[]),
+        end: () => sql.end({ timeout: 5 }),
+      };
+    },
     migrate: (databaseUrl) => migrateDatabase(databaseUrl, resolve(import.meta.dirname, "../drizzle")),
     readSeed: () => readFileSync(resolve(import.meta.dirname, "agent-session-seed.sql"), "utf8"),
     createDatabase: (databaseUrl) => {
@@ -81,22 +83,26 @@ function dependencyDependencies(): BenchmarkDeps {
       };
       const usageEndedAt = now;
       const usageStartedAt = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1_000);
+      let legacyRows = 0;
       return {
         listAgents: (accountId) => services.agents.listForAccount(accountId),
         usage: (accountId, agentId, windowDays) =>
           services.agents.getUsageById(accountId, agentId, windowDays as AgentUsageWindowDays),
         internalPage: (rootSessionId) =>
           services.sessions.listInternalSessions(rootSessionId, { limit: 20, recursive: true }),
-        legacyUsage: () =>
-          readLegacyUsage(database as unknown as Parameters<typeof readLegacyUsage>[0], {
-            agentId: id(4, 1),
+        // The removed read, projected to the same public body the service returns.
+        legacyUsage: async () => {
+          const legacy = await readLegacyUsage(database as unknown as Parameters<typeof readLegacyUsage>[0], {
+            agentId: deps.fixture.agentId,
+            provider: "codex",
+            windowDays: 30,
             startedAt: usageStartedAt,
             endedAt: usageEndedAt,
-            onRow: (row: LegacyUsageRow) => {
-              // Same per-row parser the removed implementation used, so the comparison stays equivalent.
-              deliveryUsageTokenCounts("codex", row.inputTokens, row.cachedInputTokens, row.outputTokens);
-            },
-          }),
+          });
+          legacyRows = legacy.rowsRead;
+          return { daily: legacy.detail.daily as unknown[] };
+        },
+        legacyRowsRead: () => legacyRows,
       };
     },
     fixture: {
@@ -117,11 +123,11 @@ function dependencyDependencies(): BenchmarkDeps {
       writeFileSync(resolve(directory, "results.json"), content);
     },
     now: () => new Date("2026-10-26T08:00:00Z"),
-    elapsed,
+    elapsed: () => performance.now(),
     log: (record) => console.log(JSON.stringify(record)),
   };
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  await runBenchmark(dependencyDependencies());
+  await runBenchmark(benchmarkDependencies());
 }

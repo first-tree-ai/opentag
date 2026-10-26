@@ -25,6 +25,7 @@ import {
   LEGACY_ACTIVITY_INDEXES,
   measureCase,
   medianOf,
+  openReadyAdmin,
   readLegacyPage,
   readLegacyUsage,
   resolveOutputDirectory,
@@ -152,6 +153,49 @@ describe("benchmark accounting helpers", () => {
     expect(describeError(withCode)).toEqual({ name: "Error", message: "x".repeat(2_000), code: "57014" });
     expect(describeError(new Error("plain"))).toEqual({ name: "Error", message: "plain", code: undefined });
     expect(describeError("thrown string")).toBe("thrown string");
+  });
+});
+
+describe("readiness wait", () => {
+  it("opens a fresh client per attempt until the container answers", async () => {
+    let opened = 0;
+    let closed = 0;
+    const deps = {
+      openAdmin: async (): Promise<BenchmarkAdmin> => {
+        opened += 1;
+        const attempt = opened;
+        return {
+          query: async () => {
+            if (attempt < 3) throw Object.assign(new Error("the database system is starting up"), { code: "57P03" });
+            return [{ "?column?": 1 }];
+          },
+          unsafe: async () => [],
+          end: async () => {
+            closed += 1;
+          },
+        };
+      },
+    };
+    const admin = await openReadyAdmin(deps, "postgres://fixture", 5, async () => undefined);
+    expect(opened).toBe(3);
+    // The two failed clients were closed; the one that answered stays open for the run.
+    expect(closed).toBe(2);
+    await expect(admin.query`select 1`).resolves.toEqual([{ "?column?": 1 }]);
+  });
+
+  it("fails the run with the last cause when the container never answers", async () => {
+    const deps = {
+      openAdmin: async (): Promise<BenchmarkAdmin> => ({
+        query: async () => {
+          throw Object.assign(new Error("starting up"), { code: "57P03" });
+        },
+        unsafe: async () => [],
+        end: async () => undefined,
+      }),
+    };
+    await expect(openReadyAdmin(deps, "postgres://fixture", 2, async () => undefined)).rejects.toThrow(
+      'did not become ready: {"name":"Error","message":"starting up","code":"57P03"}',
+    );
   });
 });
 
@@ -284,25 +328,38 @@ describe("removed implementations the benchmark compares against", () => {
     return binding.id;
   }
 
-  it("replays the removed usage read row by row", async () => {
+  it("replays the removed usage read and returns the same public body", async () => {
     await seedUsage();
-    const seen: string[] = [];
-    const result = await readLegacyUsage(unit.database as never, {
+    const legacy = await readLegacyUsage(unit.database as never, {
       agentId: "00000000-0000-4000-8000-000000000001",
-      startedAt: new Date(NOW.getTime() - 86_400_000),
-      endedAt: new Date(NOW.getTime() + 86_400_000),
-      onRow: (row) => seen.push(`${row.inputTokens}/${row.cachedInputTokens}/${row.outputTokens}/${row.outcome}`),
+      provider: "pi",
+      windowDays: 30,
+      startedAt: new Date(NOW.getTime() - 30 * 24 * 60 * 60 * 1_000),
+      endedAt: NOW,
     });
-    expect(result.rows).toBe(1);
-    expect(seen).toEqual(["10/null/5/null"]);
+    expect(legacy.rowsRead).toBe(1);
+    // The removed projection still fills every day of the window and carries the same totals as the service.
+    expect(legacy.detail).toMatchObject({
+      windowDays: 30,
+      tasks: 1,
+      measuredTasks: 1,
+      failed: 0,
+      inputTokens: 10,
+      cachedInputTokens: 0,
+      outputTokens: 5,
+      tokens: 15,
+    });
+    expect((legacy.detail.daily as unknown[]).length).toBe(31);
     // Outside the window the removed read returned nothing, which is what the comparison relies on.
     await expect(
       readLegacyUsage(unit.database as never, {
         agentId: "00000000-0000-4000-8000-000000000001",
+        provider: "pi",
+        windowDays: 30,
         startedAt: new Date(NOW.getTime() + 86_400_000),
         endedAt: new Date(NOW.getTime() + 172_800_000),
       }),
-    ).resolves.toEqual({ rows: 0 });
+    ).resolves.toMatchObject({ rowsRead: 0, detail: { tasks: 0 } });
   });
 
   it("replays the removed internal page with its look-ahead and cursor", async () => {
@@ -468,7 +525,8 @@ describe("full benchmark flow", () => {
       listAgents: vi.fn(async () => ({ agents: [{}] })),
       usage: vi.fn(async () => ({ daily: [1, 2, 3] })),
       internalPage: vi.fn(async () => ({ items: [1, 2] })),
-      legacyUsage: vi.fn(async () => ({ rows: 4 })),
+      legacyUsage: vi.fn(async () => ({ daily: [1, 2, 3] })),
+      legacyRowsRead: vi.fn(() => 4),
     };
     const logged: Record<string, unknown>[] = [];
     let clock = 0;
@@ -524,7 +582,7 @@ describe("full benchmark flow", () => {
     const results = report.results as { name: string; detail: Record<string, unknown>; queryCounts: number[] }[];
     expect(results.map((entry) => entry.name)).toEqual([
       "agents.list.1-agents",
-      "agents.list.1-agents.with-candidate-index",
+      "agents.list.1-agents.without-unreported-index",
       "agents.usage.50000-deliveries",
       "sessions.internal.100000-active.limit20",
       "sessions.internal.90000-ended.limit20",
@@ -534,9 +592,14 @@ describe("full benchmark flow", () => {
     expect(results.every((entry) => entry.queryCounts.length === 5)).toBe(true);
     expect(results[0]?.detail).toEqual({ bounded: { agents: 1 } });
     expect(results[2]?.detail).toEqual({ bounded: { dailyBuckets: 3 } });
-    expect(results[6]?.detail).toEqual({ bounded: { rowsRead: 4 } });
+    expect(results[6]?.detail).toEqual({ bounded: { rowsRead: 4, dailyBuckets: 3 } });
+    // The before case returns the same public body as the after case, so the two are comparable.
+    expect(results[2]?.detail).toEqual({ bounded: { dailyBuckets: 3 } });
     expect(report.containerRemoved).toBe(true);
-    expect(report.candidateIndex).toMatchObject({ name: expect.stringContaining("unreported_accepted") });
+    expect(report.unreportedIndex).toMatchObject({
+      name: "im_message_deliveries_unreported_accepted_idx",
+      bytes: expect.any(Number),
+    });
     expect(report.lifecycleWrite).toMatchObject({ endedDescendants: 0, divergence: { divergent: 0 } });
     expect(report.closureStorage).toMatchObject({ activeShape: expect.any(Array) });
     // Each measured case reached the services and the login; the report was saved repeatedly.
@@ -560,7 +623,8 @@ describe("full benchmark flow", () => {
         },
         usage: async () => ({ daily: [] }),
         internalPage: async () => ({ items: [] }),
-        legacyUsage: async () => ({ rows: 0 }),
+        legacyUsage: async () => ({ daily: [] }),
+        legacyRowsRead: () => 0,
       }),
     });
     const report = await runBenchmark(deps);
@@ -570,6 +634,23 @@ describe("full benchmark flow", () => {
     expect(dockerCalls.some((call) => call[0] === "rm")).toBe(true);
     expect(JSON.parse(written.at(-1)?.content ?? "{}")).toMatchObject({ containerRemoved: true });
   }, 60_000);
+
+  it("removes its container when the database never becomes ready", async () => {
+    const { deps, dockerCalls, written } = fakeDeps({
+      openAdmin: async () => ({
+        query: async () => {
+          throw Object.assign(new Error("starting up"), { code: "57P03" });
+        },
+        unsafe: async () => [],
+        end: async () => undefined,
+      }),
+    });
+    await expect(
+      runBenchmark({ ...deps, minimumRows: 0, readiness: { attempts: 2, pause: async () => undefined } }),
+    ).rejects.toThrow("did not become ready");
+    expect(dockerCalls.some((call) => call[0] === "rm")).toBe(true);
+    expect(JSON.parse(written.at(-1)?.content ?? "{}")).toMatchObject({ containerRemoved: true });
+  });
 
   it("refuses to run when the container label does not match", async () => {
     const { deps } = fakeDeps({
@@ -608,13 +689,14 @@ describe("full benchmark flow", () => {
         legacyUsage: async () => {
           throw new Error("nope");
         },
+        legacyRowsRead: () => 0,
       }),
     });
     const report = await runBenchmark(deps);
     // Every case backed by the injected services failed; the legacy page case runs the harness's own query.
     expect(report.casesWithErrors).toEqual([
       "agents.list.1-agents",
-      "agents.list.1-agents.with-candidate-index",
+      "agents.list.1-agents.without-unreported-index",
       "agents.usage.50000-deliveries",
       "sessions.internal.100000-active.limit20",
       "sessions.internal.90000-ended.limit20",

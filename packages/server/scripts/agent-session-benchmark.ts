@@ -13,6 +13,7 @@ import { and, asc, eq, gte, lte, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DatabaseClient } from "../src/db/client.js";
 import * as schema from "../src/db/schema/index.js";
+import { addUsageTokenCounts, deliveryUsageTokenCounts } from "../src/services/agents/agent-usage.js";
 import { markEndedDescendantsInactive } from "../src/services/sessions/session-closure.js";
 
 /** Rows per business table a run requires before it reports anything. */
@@ -20,7 +21,7 @@ export const MINIMUM_TABLE_ROWS = 100_000;
 /** Timed samples per case, after one warm-up. */
 export const SAMPLES_PER_CASE = 5;
 export const BENCHMARK_LABEL = "agent-session";
-export const CANDIDATE_INDEX = "im_message_deliveries_unreported_accepted_candidate_idx";
+export const SHIPPED_UNREPORTED_INDEX = "im_message_deliveries_unreported_accepted_idx";
 export const LEGACY_ACTIVITY_INDEXES = [
   "session_descendants_ancestor_activity_idx",
   "session_descendants_ancestor_depth_activity_idx",
@@ -52,12 +53,19 @@ export interface BenchmarkFixture {
   endedDescendants: number;
 }
 
-/** The measured service reads plus the removed usage implementation they are compared with. */
+/**
+ * The measured service reads plus the removed usage implementation they are compared with.
+ *
+ * `legacyUsage` must return the same public projection the service returns — not a private row count — or the
+ * two timings and response sizes would describe different outputs and could not be compared.
+ */
 export interface BenchmarkCases {
   listAgents(accountId: string): Promise<{ agents: unknown[] }>;
   usage(accountId: string, agentId: string, windowDays: number): Promise<{ daily: unknown[] }>;
   internalPage(rootSessionId: string): Promise<{ items: unknown[] }>;
-  legacyUsage(): Promise<{ rows: number }>;
+  legacyUsage(): Promise<{ daily: unknown[] }>;
+  /** Rows the last `legacyUsage` call read from the database, for the bounded-read note. */
+  legacyRowsRead(): number;
 }
 
 export interface BenchmarkDeps {
@@ -74,6 +82,8 @@ export interface BenchmarkDeps {
   elapsed(): number;
   log(record: Record<string, unknown>): void;
   minimumRows?: number;
+  /** Readiness-wait bounds; tests shorten them so a never-ready fake fails immediately. */
+  readiness?: { attempts?: number; pause?: () => Promise<void> };
 }
 
 export interface SeedStatement {
@@ -268,14 +278,23 @@ export interface LegacyUsageRow {
 }
 
 /**
- * The removed usage read: every Delivery row of the window to Node.js, aggregated by the same per-row parser.
- * It is rebuilt here so a run compares the submitted read with the implementation it replaces on one fixture
- * and one machine, instead of with a number from another run.
+ * The removed usage read, rebuilt so the comparison is between equivalent public results.
+ *
+ * It reads every Delivery row of the window into Node.js and aggregates it here, exactly as the previous
+ * implementation did, and then projects the same `AgentUsageDetail` body the submitted read returns: the same
+ * 31 zero-filled day buckets and the same totals. Returning only a row count would make the "after" response
+ * look larger and the "before" comparison meaningless.
  */
 export async function readLegacyUsage(
   database: PostgresJsDatabase<typeof schema>,
-  input: { agentId: string; startedAt: Date; endedAt: Date; onRow?(row: LegacyUsageRow): void },
-): Promise<{ rows: number }> {
+  input: {
+    agentId: string;
+    provider: "codex" | "pi" | "claude-code";
+    windowDays: number;
+    startedAt: Date;
+    endedAt: Date;
+  },
+): Promise<{ detail: Record<string, unknown>; rowsRead: number }> {
   const rows = await database
     .select({
       acceptedAt: schema.imMessageDeliveries.acceptedAt,
@@ -296,8 +315,58 @@ export async function readLegacyUsage(
       ),
     )
     .orderBy(asc(schema.imMessageDeliveries.acceptedAt), asc(schema.imMessageDeliveries.id));
-  for (const row of rows) input.onRow?.(row);
-  return { rows: rows.length };
+
+  // The removed projection, including its zero-filled buckets.
+  const daily = new Map<string, Record<string, number | string>>();
+  const firstDate = Date.UTC(
+    input.startedAt.getUTCFullYear(),
+    input.startedAt.getUTCMonth(),
+    input.startedAt.getUTCDate(),
+  );
+  const lastDate = Date.UTC(input.endedAt.getUTCFullYear(), input.endedAt.getUTCMonth(), input.endedAt.getUTCDate());
+  for (let timestamp = firstDate; timestamp <= lastDate; timestamp += 24 * 60 * 60 * 1_000) {
+    const date = new Date(timestamp).toISOString().slice(0, 10);
+    daily.set(date, {
+      date,
+      tasks: 0,
+      measuredTasks: 0,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      tokens: 0,
+    });
+  }
+  const totals = {
+    windowDays: input.windowDays,
+    startedAt: input.startedAt.toISOString(),
+    endedAt: input.endedAt.toISOString(),
+    tasks: 0,
+    measuredTasks: 0,
+    failed: 0,
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    tokens: 0,
+    daily: [] as Record<string, number | string>[],
+  };
+  for (const row of rows) {
+    if (!row.acceptedAt) continue;
+    totals.tasks += 1;
+    if (row.outcome === "failed") totals.failed += 1;
+    const counts =
+      row.executionOrigin === "cloud"
+        ? { measured: false, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, tokens: 0 }
+        : deliveryUsageTokenCounts(input.provider, row.inputTokens, row.cachedInputTokens, row.outputTokens);
+    if (counts.measured) totals.measuredTasks += 1;
+    addUsageTokenCounts(totals, counts);
+    const point = daily.get(row.acceptedAt.toISOString().slice(0, 10));
+    if (!point) throw new Error("Agent usage date falls outside the requested window");
+    point.tasks = Number(point.tasks) + 1;
+    if (counts.measured) point.measuredTasks = Number(point.measuredTasks) + 1;
+    addUsageTokenCounts(point as never, counts);
+  }
+  totals.daily = [...daily.values()];
+  return { detail: totals, rowsRead: rows.length };
 }
 
 /** The removed internal-Session page: the activity index, then `sessions` for every candidate it walked. */
@@ -367,6 +436,149 @@ export async function closureStorage(admin: BenchmarkAdmin): Promise<{ name: str
 }
 
 /**
+ * Opens an admin client and waits for the server to answer.
+ *
+ * A published port is not a ready server. The first connection attempt can land while PostgreSQL is still
+ * starting and fail with `57P03`, and postgres.js caches a fatal startup error on that connection, so the
+ * client is recreated per attempt instead of retried. The bound fails the run rather than hanging.
+ */
+export async function openReadyAdmin(
+  deps: Pick<BenchmarkDeps, "openAdmin">,
+  databaseUrl: string,
+  attempts = 120,
+  pause: () => Promise<void> = () => new Promise((resolve) => setTimeout(resolve, 250)),
+): Promise<BenchmarkAdmin> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const admin = await deps.openAdmin(databaseUrl);
+    try {
+      await admin.query`select 1`;
+      return admin;
+    } catch (error) {
+      lastError = error;
+      await admin.end().catch(() => undefined);
+      await pause();
+    }
+  }
+  throw new Error(`The benchmark database did not become ready: ${JSON.stringify(describeError(lastError))}`);
+}
+
+/**
+ * Measures every case in order and records the index, lifecycle and storage facts the report needs.
+ *
+ * Split out of `runBenchmark` so the container and cleanup flow stays readable and its own complexity stays
+ * low; everything here is measurement, and the caller owns the lifecycle.
+ */
+async function measureCases(
+  context: {
+    deps: BenchmarkDeps;
+    admin: BenchmarkAdmin;
+    database: { database: DatabaseClient; queryLog: QueryLog };
+    cases: BenchmarkCases;
+    results: MeasuredCase[];
+    save: () => void;
+  },
+  report: Record<string, unknown>,
+): Promise<void> {
+  const { deps, admin, database, cases, results, save } = context;
+  const measure = async <T>(
+    name: string,
+    operation: () => Promise<T>,
+    detail?: (value: T | undefined) => Record<string, unknown>,
+  ): Promise<T | undefined> => {
+    const { value, measurement } = await measureCase(
+      { name, queries: database.queryLog, elapsed: deps.elapsed },
+      operation,
+      detail,
+    );
+    measurement.statements = await explainStatements(admin, database.queryLog.snapshot());
+    results.push(measurement);
+    save();
+    deps.log({ ...measurement, statements: undefined });
+    return value;
+  };
+
+  await measure(
+    "agents.list.1-agents",
+    () => cases.listAgents(deps.fixture.accountId),
+    (value) => ({
+      bounded: { agents: value?.agents.length ?? 0 },
+    }),
+  );
+  /*
+   * The shipped partial index for the list's two unreported-accepted reads. Dropping it inside this
+   * container and measuring again is the before/after for that index on one fixture and one machine; the
+   * index is recreated and re-analyzed before the remaining cases run.
+   */
+  const droppedAt = deps.elapsed();
+  await admin.unsafe(`drop index "${SHIPPED_UNREPORTED_INDEX}"`);
+  await admin.query`analyze im_message_deliveries`;
+  const withoutIndex = await measure("agents.list.1-agents.without-unreported-index", () =>
+    cases.listAgents(deps.fixture.accountId),
+  );
+  void withoutIndex;
+  const rebuiltAt = deps.elapsed();
+  await admin.unsafe(`
+    create index "${SHIPPED_UNREPORTED_INDEX}" on "im_message_deliveries" ("accepted_at", "id", "session_id")
+    where "state" = 'accepted' and "reported_at" is null`);
+  await admin.query`analyze im_message_deliveries`;
+  report.unreportedIndex = {
+    name: SHIPPED_UNREPORTED_INDEX,
+    rebuildMs: deps.elapsed() - rebuiltAt,
+    dropAndMeasureMs: rebuiltAt - droppedAt,
+    bytes: Number(
+      (await admin.unsafe(`select pg_relation_size('${SHIPPED_UNREPORTED_INDEX}')::text as bytes`))[0]?.bytes ?? 0,
+    ),
+  };
+  await measure(
+    "agents.usage.50000-deliveries",
+    () => cases.usage(deps.fixture.accountId, deps.fixture.agentId, 30),
+    (value) => ({ bounded: { dailyBuckets: value?.daily.length ?? 0 } }),
+  );
+  await measure(
+    "sessions.internal.100000-active.limit20",
+    () => cases.internalPage(deps.fixture.rootSessionId),
+    (value) => ({ bounded: { items: value?.items.length ?? 0 } }),
+  );
+  report.lifecycleWrite = await endInternalTree(
+    admin,
+    database.database,
+    { bindingId: deps.fixture.hotBindingId, descendants: deps.fixture.endedDescendants },
+    deps.elapsed,
+  );
+  await admin.query`analyze sessions`;
+  await admin.query`analyze session_descendants`;
+  await measure(
+    "sessions.internal.90000-ended.limit20",
+    () => cases.internalPage(deps.fixture.rootSessionId),
+    (value) => ({ bounded: { items: value?.items.length ?? 0 } }),
+  );
+  const storage: Record<string, unknown> = { activeShape: await closureStorage(admin) };
+  report.closureStorage = storage;
+  for (const index of LEGACY_ACTIVITY_INDEXES) {
+    await admin.unsafe(
+      index === LEGACY_ACTIVITY_INDEXES[0]
+        ? `create index "${index}" on "session_descendants" ("ancestor_session_id","last_message_created_at","last_message_id","descendant_session_id")`
+        : `create index "${index}" on "session_descendants" ("ancestor_session_id","depth","last_message_created_at","last_message_id","descendant_session_id")`,
+    );
+  }
+  await admin.query`analyze session_descendants`;
+  storage.legacyIndexesAdded = await closureStorage(admin);
+  await measure("sessions.internal.90000-ended.limit20.before", () =>
+    readLegacyPage(database.database, deps.fixture.rootSessionId),
+  );
+  for (const index of LEGACY_ACTIVITY_INDEXES) await admin.unsafe(`drop index "${index}"`);
+  await admin.query`analyze session_descendants`;
+  storage.final = await closureStorage(admin);
+
+  await measure(
+    "agents.usage.50000-deliveries.before",
+    () => cases.legacyUsage(),
+    (value) => ({ bounded: { rowsRead: cases.legacyRowsRead(), dailyBuckets: value?.daily.length ?? 0 } }),
+  );
+}
+
+/**
  * Runs the whole benchmark against the injected environment and returns the report it wrote.
  *
  * Cleanup is part of the contract: the container and volume are removed even when a case throws, because a
@@ -399,9 +611,11 @@ export async function runBenchmark(deps: BenchmarkDeps): Promise<Record<string, 
   const binding = deps.docker(["port", container, "5432/tcp"]);
   if (!/^127\.0\.0\.1:\d+$/.test(binding)) throw new Error(`Unexpected container binding ${binding}`);
   const databaseUrl = `postgres://postgres:${"benchmark-only"}@${binding}/opentag_benchmark`;
-  const admin = await deps.openAdmin(databaseUrl);
+  // Inside the try: a container that never becomes ready must still be removed here.
+  let admin: BenchmarkAdmin | undefined;
   let closeDatabase: (() => Promise<void>) | undefined;
   try {
+    admin = await openReadyAdmin(deps, databaseUrl, deps.readiness?.attempts ?? 120, deps.readiness?.pause);
     await deps.migrate(databaseUrl);
     const database = deps.createDatabase(databaseUrl);
     closeDatabase = database.close;
@@ -439,107 +653,7 @@ export async function runBenchmark(deps: BenchmarkDeps): Promise<Record<string, 
     report.rowCounts = rowCounts;
     report.databaseBytes = (await admin.query`select pg_database_size(current_database())::text as bytes`)[0]?.bytes;
 
-    const measure = async <T>(
-      name: string,
-      operation: () => Promise<T>,
-      detail?: (value: T | undefined) => Record<string, unknown>,
-    ): Promise<T | undefined> => {
-      const { value, measurement } = await measureCase(
-        { name, queries: database.queryLog, elapsed: deps.elapsed },
-        operation,
-        detail,
-      );
-      measurement.statements = await explainStatements(admin, database.queryLog.snapshot());
-      results.push(measurement);
-      save();
-      deps.log({ ...measurement, statements: undefined });
-      return value;
-    };
-
-    await measure(
-      "agents.list.1-agents",
-      () => cases.listAgents(deps.fixture.accountId),
-      (value) => ({
-        bounded: { agents: value?.agents.length ?? 0 },
-      }),
-    );
-    /*
-     * A candidate index for the list's two unreported-accepted reads, measured and then dropped. With it the
-     * hot list fits the 100 ms target, but PostgreSQL also starts using it inside the IM delivery work query,
-     * whose plan test requires the dedicated active-work index alone. That query belongs to another owner, so
-     * this run keeps the measurement as evidence instead of shipping the index.
-     */
-    const indexStartedAt = deps.elapsed();
-    await admin.unsafe(`
-      create index "${CANDIDATE_INDEX}" on "im_message_deliveries" ("accepted_at", "id", "session_id")
-      where "state" = 'accepted' and "reported_at" is null`);
-    await admin.query`analyze im_message_deliveries`;
-    report.candidateIndex = {
-      name: CANDIDATE_INDEX,
-      decision: "measured, not adopted: PostgreSQL also chooses it in the IM delivery work query",
-      buildMs: deps.elapsed() - indexStartedAt,
-      bytes: Number(
-        (await admin.unsafe(`select pg_relation_size('${CANDIDATE_INDEX}')::text as bytes`))[0]?.bytes ?? 0,
-      ),
-    };
-    await measure(
-      "agents.list.1-agents.with-candidate-index",
-      () => cases.listAgents(deps.fixture.accountId),
-      (value) => ({
-        bounded: { agents: value?.agents.length ?? 0 },
-      }),
-    );
-    await admin.unsafe(`drop index "${CANDIDATE_INDEX}"`);
-    await admin.query`analyze im_message_deliveries`;
-
-    await measure(
-      "agents.usage.50000-deliveries",
-      () => cases.usage(deps.fixture.accountId, deps.fixture.agentId, 30),
-      (value) => ({ bounded: { dailyBuckets: value?.daily.length ?? 0 } }),
-    );
-    await measure(
-      "sessions.internal.100000-active.limit20",
-      () => cases.internalPage(deps.fixture.rootSessionId),
-      (value) => ({ bounded: { items: value?.items.length ?? 0 } }),
-    );
-    report.lifecycleWrite = await endInternalTree(
-      admin,
-      database.database,
-      { bindingId: deps.fixture.hotBindingId, descendants: deps.fixture.endedDescendants },
-      deps.elapsed,
-    );
-    await admin.query`analyze sessions`;
-    await admin.query`analyze session_descendants`;
-    await measure(
-      "sessions.internal.90000-ended.limit20",
-      () => cases.internalPage(deps.fixture.rootSessionId),
-      (value) => ({ bounded: { items: value?.items.length ?? 0 } }),
-    );
-    const storage: Record<string, unknown> = { activeShape: await closureStorage(admin) };
-    report.closureStorage = storage;
-    for (const index of LEGACY_ACTIVITY_INDEXES) {
-      await admin.unsafe(
-        index === LEGACY_ACTIVITY_INDEXES[0]
-          ? `create index "${index}" on "session_descendants" ("ancestor_session_id","last_message_created_at","last_message_id","descendant_session_id")`
-          : `create index "${index}" on "session_descendants" ("ancestor_session_id","depth","last_message_created_at","last_message_id","descendant_session_id")`,
-      );
-    }
-    await admin.query`analyze session_descendants`;
-    storage.legacyIndexesAdded = await closureStorage(admin);
-    await measure("sessions.internal.90000-ended.limit20.before", () =>
-      readLegacyPage(database.database, deps.fixture.rootSessionId),
-    );
-    for (const index of LEGACY_ACTIVITY_INDEXES) await admin.unsafe(`drop index "${index}"`);
-    await admin.query`analyze session_descendants`;
-    storage.final = await closureStorage(admin);
-
-    await measure(
-      "agents.usage.50000-deliveries.before",
-      () => cases.legacyUsage(),
-      (value) => ({
-        bounded: { rowsRead: value?.rows ?? 0 },
-      }),
-    );
+    await measureCases({ deps, admin, database, cases, results, save }, report);
     const httpFree = results.filter((measurement) => measurement.error !== undefined).map(({ name }) => name);
     if (httpFree.length > 0) report.casesWithErrors = httpFree;
     report.finishedAt = new Date().toISOString();
@@ -548,7 +662,7 @@ export async function runBenchmark(deps: BenchmarkDeps): Promise<Record<string, 
       await closeDatabase?.();
     } finally {
       try {
-        await admin.end();
+        await admin?.end();
       } finally {
         deps.docker(["rm", "--force", "--volumes", container]);
         report.containerRemoved = true;

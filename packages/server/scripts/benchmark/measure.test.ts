@@ -379,21 +379,26 @@ function dockerCommand(args: string[]): string {
   return args[2]?.includes(".Image") ? "inspect:image" : "inspect";
 }
 
-/** A docker CLI whose only special behaviour is a failing `rm`; everything else answers normally. */
-function dockerWithFailingRemoval(closed: string[]) {
+/** The answers a docker CLI stub gives, so each stub only decides what fails. */
+function dockerAnswer(args: string[], label = "task-queries-test"): string {
+  const command = dockerCommand(args);
+  const answers: Record<string, string> = {
+    "inspect:image": "sha256:image",
+    inspect: label,
+    port: "127.0.0.1:54321",
+    info: '{"cpus":4,"memoryBytes":8}',
+  };
+  return answers[command] ?? "";
+}
+
+/** A docker CLI whose `rm` is recorded and then fails, so cleanup failures can be observed. */
+function dockerWithFailingRemoval(observed: string[], message = "container is in use") {
   return (args: string[]) => {
     if (args[0] === "rm") {
-      closed.push("container");
-      throw new Error("container is in use");
+      observed.push("container.stop");
+      throw new Error(message);
     }
-    const answers: Record<string, string> = {
-      port: "127.0.0.1:54321",
-      info: '{"cpus":4,"memoryBytes":8}',
-    };
-    const command = dockerCommand(args);
-    if (command === "inspect:image") return "sha256:image";
-    if (command === "inspect") return "task-queries-test";
-    return answers[command] ?? "";
+    return dockerAnswer(args);
   };
 }
 
@@ -704,6 +709,8 @@ describe("benchmark run", () => {
       method: expect.stringContaining("microbenchmark"),
     });
     expect(report.rowCounts).toEqual([{ table: "public.im_messages", rows: 100_000 }]);
+    // The evidence keeps the deadlines the measured calls ran under.
+    expect(report.timeouts).toEqual({ statementTimeoutMs: 30_000 });
     expect(report.databaseBytes).toBe("1262");
     expect(report.seedTimings).toEqual([
       { table: "public.a", elapsedMs: 0 },
@@ -761,6 +768,80 @@ describe("benchmark run", () => {
     const aggregate = caught as AggregateError;
     expect(aggregate.errors[0]).toMatchObject({ message: "could not parse connection string" });
     expect(aggregate.errors[1]).toMatchObject({ message: "container is in use" });
+  });
+
+  it("retains every release failure, primary first, after attempting all of them", async () => {
+    // The primary failure lands after every client is open, so all four release steps can fail.
+    const fixture = wiring({ failMeasurement: true });
+    const attempts: string[] = [];
+    const ports = {
+      ...fixture.ports,
+      openAdmin: () => ({
+        database: { unsafe: async () => [] },
+        end: async () => {
+          attempts.push("admin.end");
+          throw new Error("admin close failed");
+        },
+      }),
+      openService: () => ({
+        service: {} as never,
+        sink: { take: () => [], reset: () => undefined },
+        timeouts: { statementTimeoutMs: 30_000 },
+        end: async () => {
+          attempts.push("service.end");
+          throw new Error("service close failed");
+        },
+      }),
+      openExplain: () => ({
+        database: { unsafe: async () => [] },
+        end: async () => {
+          attempts.push("explain.end");
+          throw new Error("explain close failed");
+        },
+      }),
+      docker: dockerWithFailingRemoval(attempts, "container removal failed"),
+    };
+    let caught: unknown;
+    try {
+      await runBenchmark(ports as never);
+    } catch (error) {
+      caught = error;
+    }
+    // The primary failure is the reason; every release failure follows it in the order attempted.
+    expect(caught).toBeInstanceOf(AggregateError);
+    const aggregate = caught as AggregateError;
+    expect(aggregate.errors.map((error: unknown) => (error as Error).message)).toEqual([
+      "The fixture produced no Task for the hot private chat",
+      "explain close failed",
+      "service close failed",
+      "admin close failed",
+      "container removal failed",
+    ]);
+    // Every release was still attempted, so no failure hides behind an earlier one.
+    expect(attempts).toEqual(["explain.end", "service.end", "admin.end", "container.stop"]);
+  });
+
+  it("treats a rejected undefined as a failure rather than a success", async () => {
+    const fixture = wiring();
+    const ports = {
+      ...fixture.ports,
+      migrate: async () => {
+        throw undefined;
+      },
+    };
+    let caught: unknown;
+    let threw = false;
+    try {
+      await runBenchmark(ports as never);
+    } catch (error) {
+      threw = true;
+      caught = error;
+    }
+    // A sentinel check would have read this as `primary === undefined` and returned the report.
+    expect(threw).toBe(true);
+    expect(caught).toBeUndefined();
+    // The cleanup still ran: the admin client was open, and the container was removed.
+    expect(fixture.closed).toEqual(["admin", "container"]);
   });
 
   it("keeps the primary failure first when a client refuses to close", async () => {

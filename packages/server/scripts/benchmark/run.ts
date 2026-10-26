@@ -79,6 +79,8 @@ export async function runBenchmark(ports: BenchmarkRunPorts): Promise<BenchmarkR
   let admin: ReturnType<BenchmarkRunPorts["openAdmin"]> | undefined;
   let service: ReturnType<BenchmarkRunPorts["openService"]> | undefined;
   let explain: ReturnType<BenchmarkRunPorts["openExplain"]> | undefined;
+  // A flag, not `primary !== undefined`: a rejected `undefined` is a failure, not a success.
+  let primaryFailed = false;
   let primary: unknown;
 
   try {
@@ -113,6 +115,8 @@ export async function runBenchmark(ports: BenchmarkRunPorts): Promise<BenchmarkR
     // The measurement clients open only once the fixture is proven; a broken seed costs no connection.
     service = ports.openService(container.url);
     explain = ports.openExplain(container.url);
+    // The evidence records the deadlines the measured calls actually ran under.
+    report.timeouts = service.timeouts;
     await runTaskQueriesBenchmark(
       {
         admin: admin.database,
@@ -129,28 +133,34 @@ export async function runBenchmark(ports: BenchmarkRunPorts): Promise<BenchmarkR
     );
     report.finishedAt = new Date().toISOString();
   } catch (error) {
+    primaryFailed = true;
     primary = error;
   }
 
   // One cleanup on every path: the clients, then the container that was ours the moment it started.
-  const cleanupFailure = await releaseContainer({ explain, service, admin, container, report, save });
-  if (primary !== undefined) {
-    if (cleanupFailure !== undefined) {
+  // Every failure is kept: dropping one would report a partial release as if nothing else went wrong.
+  const cleanupFailures = await releaseContainer({ explain, service, admin, container, report, save });
+  if (primaryFailed) {
+    if (cleanupFailures.length > 0) {
       throw new AggregateError(
-        [primary, cleanupFailure],
-        "The benchmark failed and its container or a client connection was not released cleanly",
+        [primary, ...cleanupFailures],
+        `The benchmark failed and ${cleanupFailures.length} release step(s) failed after it`,
       );
     }
     throw primary;
   }
-  if (cleanupFailure !== undefined) throw cleanupFailure;
+  if (cleanupFailures.length === 1) throw cleanupFailures[0];
+  if (cleanupFailures.length > 1) {
+    throw new AggregateError(cleanupFailures, `${cleanupFailures.length} release steps failed`);
+  }
   return report;
 }
 
 /**
- * Close every client and remove the container, collecting the first failure instead of throwing
+ * Close every client and remove the container, collecting **every** failure instead of throwing
  * part-way: a client that refuses to close must not keep the container alive, and a container that
- * refuses to be removed must not hide which step failed first.
+ * refuses to be removed must not hide the step that failed before it. The caller decides how the
+ * failures are reported; this function only tries each step once and keeps what went wrong.
  */
 async function releaseContainer(clients: {
   explain?: { end(): Promise<void> };
@@ -159,25 +169,25 @@ async function releaseContainer(clients: {
   container: { stop(): void };
   report: BenchmarkReport;
   save(): void;
-}): Promise<unknown> {
-  let failure: unknown;
+}): Promise<unknown[]> {
+  const failures: unknown[] = [];
   for (const client of [clients.explain, clients.service, clients.admin]) {
     try {
       await client?.end();
     } catch (error) {
-      failure ??= error;
+      failures.push(error);
     }
   }
   try {
     clients.container.stop();
     clients.report.containerRemoved = true;
   } catch (error) {
-    failure ??= error;
+    failures.push(error);
   }
   try {
     clients.save();
   } catch (error) {
-    failure ??= error;
+    failures.push(error);
   }
-  return failure;
+  return failures;
 }

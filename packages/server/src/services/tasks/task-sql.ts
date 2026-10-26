@@ -14,9 +14,10 @@ import { type SQL, sql } from "drizzle-orm";
  * observer copy of a message a thread Session owns is left out, as is a delivery a newer revision of
  * its message superseded. A Turn counts as running only while it is the Session's latest
  * acceptance: the successor lookup runs for the few live deliveries that satisfy the cheap
- * predicates first, never for the whole history. Its `activity_at` is the latest instant the delivery contributed — the
- * message itself, an acceptance or a steering, a report, or a withdrawal — and orders the topic's
- * latest execution, so the status read is by precedence and not by arrival.
+ * predicates first, never for the whole history. Its `activity_at` is the latest instant the
+ * delivery contributed — the message itself, an acceptance or a steering, a report, or a
+ * withdrawal — and orders the topic's latest execution, so the status read is by precedence and
+ * not by arrival.
  *
  * Every CTE here is a plain relational expression: the joins that pair rollups with their page carry
  * equality predicates on the topic identity (see `topicPageCtes`), never a NULL-safe residual over

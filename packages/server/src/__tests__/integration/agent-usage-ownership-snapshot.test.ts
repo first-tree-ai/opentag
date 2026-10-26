@@ -223,10 +223,11 @@ async function transferAndAppendDelivery(
     slack: "disable",
     targetAccountId: fixture.target.id,
   });
+  // Inside the queried window and after the read's snapshot: visibility, not the timestamp, is the test.
   await insertDelivery(writer.database, {
     bindingId: fixture.bindingId,
     sessionId: null,
-    acceptedAt: new Date(NOW.getTime() + 60_000),
+    acceptedAt: new Date(NOW.getTime() - 30_000),
     tokens: 999_999,
   });
 }

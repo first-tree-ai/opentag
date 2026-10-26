@@ -72,5 +72,21 @@ never depends on how much history the Agent has. Two details keep the aggregatio
 - The aggregate and the correction read run in one read-only `repeatable read` transaction, so they describe the same
   set of Deliveries even while new Turns are reported.
 
-The caller's Account ownership is checked before the read; the window selects Deliveries through the Agent's IM
-bindings, so a foreign Agent cannot be read by naming its window.
+The caller's Account ownership, the Provider rule that shapes the totals, and the aggregate come from **one**
+read-only `repeatable read` snapshot. Resolving ownership first let a transfer commit in between, so the previous
+owner could still read usage the new owner now owns; the window now selects Deliveries through the Agent's IM
+bindings inside the same snapshot that authorized the call.
+
+## List activity and the unreported-Turn index
+
+The Agent list reports whether an Agent is working or merely idle from Turns that a Computer accepted and has not
+reported yet. Two reads answer that question over the Agent's IM bindings, and
+`im_message_deliveries_unreported_accepted_idx` — partial on `state = 'accepted' and reported_at is null` — is the
+access path for both. Without it the reads join every Session of a binding to reach an answer, which is
+proportional to the Agent's history rather than to the Turns actually outstanding.
+
+The list reads the Agent projection, the activity, and the 30-day usage totals in one read-only `repeatable read`
+snapshot for the same reason as the detail read: the Agent query is the authorization, and the reads it enables are
+keyed by the Agent IDs it returned. A transfer committing mid-read therefore cannot hand the previous owner the
+transferred Agent's activity or usage. The Cloud ledger read stays outside that snapshot; it is keyed by Account and
+belongs to billing.

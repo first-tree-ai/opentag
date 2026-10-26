@@ -340,6 +340,8 @@ export async function readAgentUsageSummaries(
   executor: QueryExecutor,
   input: { agentIds: readonly string[]; startedAt: Date; endedAt: Date },
 ): Promise<AgentUsageSummaryRow[]> {
+  // `in ()` is not valid SQL, so an Account with no visible Agent must not reach the statement at all.
+  if (input.agentIds.length === 0) return [];
   const agentIds = sql.join(
     input.agentIds.map((agentId) => sql`${agentId}::uuid`),
     sql`, `,

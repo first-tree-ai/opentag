@@ -61,7 +61,7 @@
           }
         }
       ],
-      "unexpected": []
+      "unexpected": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
     },
     {
       "lang": "en",
@@ -123,7 +123,7 @@
           }
         }
       ],
-      "unexpected": []
+      "unexpected": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
     },
     {
       "lang": "en",
@@ -185,7 +185,7 @@
           }
         }
       ],
-      "unexpected": []
+      "unexpected": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
     },
     {
       "lang": "en",
@@ -247,7 +247,7 @@
           }
         }
       ],
-      "unexpected": []
+      "unexpected": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
     },
     {
       "lang": "zh",
@@ -309,7 +309,7 @@
           }
         }
       ],
-      "unexpected": []
+      "unexpected": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
     },
     {
       "lang": "zh",
@@ -371,7 +371,7 @@
           }
         }
       ],
-      "unexpected": []
+      "unexpected": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
     },
     {
       "lang": "zh",
@@ -433,7 +433,7 @@
           }
         }
       ],
-      "unexpected": []
+      "unexpected": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
     },
     {
       "lang": "zh",
@@ -495,7 +495,7 @@
           }
         }
       ],
-      "unexpected": []
+      "unexpected": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
     }
   ],
   "axe": {

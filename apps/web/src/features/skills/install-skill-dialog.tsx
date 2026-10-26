@@ -40,7 +40,8 @@ export function InstallSkillDialog({
       : [];
   const single = candidates.length === 1;
   const only = single ? selectable[0] : undefined;
-  const names = only ? [only.name] : selected;
+  const requiresSelection = selection?.source === source.preview?.source;
+  const names = only && !requiresSelection ? [only.name] : selected;
   const busy = install.isPending;
 
   useEffect(() => {
@@ -157,7 +158,14 @@ export function InstallSkillDialog({
         ) : null}
         {source.preview && candidates.length === 0 ? <Banner variant="alert">{m.skills_install_empty()}</Banner> : null}
         {candidates.length > 0 && results === undefined ? (
-          <CandidateList candidates={candidates} selected={names} busy={busy} error={error} onToggle={toggle} />
+          <CandidateList
+            candidates={candidates}
+            selected={names}
+            busy={busy}
+            error={error}
+            requiresSelection={requiresSelection}
+            onToggle={toggle}
+          />
         ) : null}
         {results === undefined ? null : <ResultList results={results} listRef={resultsRef} />}
         <InstallActions
@@ -231,9 +239,11 @@ function CandidateList({
   busy,
   error,
   onToggle,
+  requiresSelection,
 }: {
   candidates: readonly RemoteSkillCandidate[];
   selected: readonly string[];
+  requiresSelection: boolean;
   busy: boolean;
   error?: string;
   onToggle: (name: string, checked: boolean) => void;
@@ -270,7 +280,7 @@ function CandidateList({
               key={candidate.name}
             >
               <div className="min-w-0 wrap-anywhere">
-                {single ? (
+                {single && !requiresSelection ? (
                   <strong className="font-semibold">{candidate.name}</strong>
                 ) : (
                   <Checkbox

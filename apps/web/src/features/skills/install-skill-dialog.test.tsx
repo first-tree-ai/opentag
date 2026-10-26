@@ -202,6 +202,46 @@ describe("InstallSkillDialog", () => {
     expect(install).toHaveBeenCalledOnce();
   });
 
+  it.each(["other", "new-unrelated-skill"])(
+    "preserves failed-only selection when recovery contains only %s",
+    async (freshName) => {
+      const resolve = stubResolve([candidate(), candidate({ name: "other" })]);
+      const install = stubInstall([{ name: freshName, status: "installed" }]).mockResolvedValueOnce({
+        results: [
+          { name: "demo", status: "installed" },
+          { name: "other", status: "failed", errorCode: SKILL_ERROR_CODES.SOURCE_UNREACHABLE },
+        ],
+      });
+      const { onClose } = renderDialog();
+      await lookUp();
+      fireEvent.click(screen.getByRole("checkbox", { name: "demo" }));
+      fireEvent.click(screen.getByRole("checkbox", { name: "other" }));
+      fireEvent.click(screen.getByRole("button", { name: "Install 2 skills" }));
+      await screen.findByRole("button", { name: "Review failed skills" });
+      resolve.mockResolvedValue({
+        source: { kind: "github", url: "https://github.com/o/r.git" },
+        skills: [candidate({ name: freshName, fingerprint: "fresh-single" })],
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Review failed skills" }));
+      const choice = await screen.findByRole("checkbox", { name: freshName });
+      const confirm = screen.getByRole("button", { name: "Install skill" }) as HTMLButtonElement;
+      expect(choice.getAttribute("aria-checked")).toBe(freshName === "other" ? "true" : "false");
+      expect(confirm.disabled).toBe(freshName !== "other");
+      expect(install).toHaveBeenCalledOnce();
+      if (freshName !== "other") {
+        fireEvent.click(confirm);
+        expect(install).toHaveBeenCalledOnce();
+        fireEvent.click(choice);
+      }
+      fireEvent.click(confirm);
+      await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+      expect(install).toHaveBeenLastCalledWith(AGENT_ID, {
+        source: "owner/repo",
+        selections: [{ name: freshName, fingerprint: "fresh-single" }],
+      });
+    },
+  );
+
   it("shows an already installed candidate without offering another install", async () => {
     stubResolve([candidate({ alreadyInstalled: true })]);
     renderDialog();

@@ -1,0 +1,397 @@
+{
+  "scope": "Production App synthetic API; one unrelated fresh recovery candidate",
+  "cases": [
+    {
+      "locale": "en",
+      "width": 320,
+      "initiallyUnselected": true,
+      "initiallyDisabled": true,
+      "explicitKeyboardChoice": true,
+      "operations": [
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "release-notes",
+                "fingerprint": "preview-v1-release-notes"
+              },
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v1-incident-brief"
+              }
+            ]
+          }
+        },
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "new-unrelated-skill",
+                "fingerprint": "preview-v2-new-unrelated-skill"
+              }
+            ]
+          }
+        }
+      ],
+      "fit": {
+        "overflow": false,
+        "documentOverflow": false
+      }
+    },
+    {
+      "locale": "en",
+      "width": 390,
+      "initiallyUnselected": true,
+      "initiallyDisabled": true,
+      "explicitKeyboardChoice": true,
+      "operations": [
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "release-notes",
+                "fingerprint": "preview-v1-release-notes"
+              },
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v1-incident-brief"
+              }
+            ]
+          }
+        },
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "new-unrelated-skill",
+                "fingerprint": "preview-v2-new-unrelated-skill"
+              }
+            ]
+          }
+        }
+      ],
+      "fit": {
+        "overflow": false,
+        "documentOverflow": false
+      }
+    },
+    {
+      "locale": "en",
+      "width": 768,
+      "initiallyUnselected": true,
+      "initiallyDisabled": true,
+      "explicitKeyboardChoice": true,
+      "operations": [
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "release-notes",
+                "fingerprint": "preview-v1-release-notes"
+              },
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v1-incident-brief"
+              }
+            ]
+          }
+        },
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "new-unrelated-skill",
+                "fingerprint": "preview-v2-new-unrelated-skill"
+              }
+            ]
+          }
+        }
+      ],
+      "fit": {
+        "overflow": false,
+        "documentOverflow": false
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "initiallyUnselected": true,
+      "initiallyDisabled": true,
+      "explicitKeyboardChoice": true,
+      "operations": [
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "release-notes",
+                "fingerprint": "preview-v1-release-notes"
+              },
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v1-incident-brief"
+              }
+            ]
+          }
+        },
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "new-unrelated-skill",
+                "fingerprint": "preview-v2-new-unrelated-skill"
+              }
+            ]
+          }
+        }
+      ],
+      "fit": {
+        "overflow": false,
+        "documentOverflow": false
+      }
+    },
+    {
+      "locale": "zh",
+      "width": 320,
+      "initiallyUnselected": true,
+      "initiallyDisabled": true,
+      "explicitKeyboardChoice": true,
+      "operations": [
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "release-notes",
+                "fingerprint": "preview-v1-release-notes"
+              },
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v1-incident-brief"
+              }
+            ]
+          }
+        },
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "new-unrelated-skill",
+                "fingerprint": "preview-v2-new-unrelated-skill"
+              }
+            ]
+          }
+        }
+      ],
+      "fit": {
+        "overflow": false,
+        "documentOverflow": false
+      }
+    },
+    {
+      "locale": "zh",
+      "width": 390,
+      "initiallyUnselected": true,
+      "initiallyDisabled": true,
+      "explicitKeyboardChoice": true,
+      "operations": [
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "release-notes",
+                "fingerprint": "preview-v1-release-notes"
+              },
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v1-incident-brief"
+              }
+            ]
+          }
+        },
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "new-unrelated-skill",
+                "fingerprint": "preview-v2-new-unrelated-skill"
+              }
+            ]
+          }
+        }
+      ],
+      "fit": {
+        "overflow": false,
+        "documentOverflow": false
+      }
+    },
+    {
+      "locale": "zh",
+      "width": 768,
+      "initiallyUnselected": true,
+      "initiallyDisabled": true,
+      "explicitKeyboardChoice": true,
+      "operations": [
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "release-notes",
+                "fingerprint": "preview-v1-release-notes"
+              },
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v1-incident-brief"
+              }
+            ]
+          }
+        },
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "new-unrelated-skill",
+                "fingerprint": "preview-v2-new-unrelated-skill"
+              }
+            ]
+          }
+        }
+      ],
+      "fit": {
+        "overflow": false,
+        "documentOverflow": false
+      }
+    },
+    {
+      "locale": "zh",
+      "width": 1440,
+      "initiallyUnselected": true,
+      "initiallyDisabled": true,
+      "explicitKeyboardChoice": true,
+      "operations": [
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "release-notes",
+                "fingerprint": "preview-v1-release-notes"
+              },
+              {
+                "name": "incident-brief",
+                "fingerprint": "preview-v1-incident-brief"
+              }
+            ]
+          }
+        },
+        {
+          "action": "preview",
+          "source": "https://github.com/example/work-skills"
+        },
+        {
+          "action": "install",
+          "input": {
+            "source": "https://github.com/example/work-skills",
+            "selections": [
+              {
+                "name": "new-unrelated-skill",
+                "fingerprint": "preview-v2-new-unrelated-skill"
+              }
+            ]
+          }
+        }
+      ],
+      "fit": {
+        "overflow": false,
+        "documentOverflow": false
+      }
+    }
+  ]
+}

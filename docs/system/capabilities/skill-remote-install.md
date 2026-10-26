@@ -207,7 +207,9 @@ and abandonment alike. A staging directory that cannot be called private fails c
 
 The Web result report focuses the per-item outcome list after a partial or failed installation.
 When any item failed, **Review failed skills** retains the source and explicitly requests a new
-preview. Only previously failed names that remain installable are selected. Already installed,
+preview. Only previously failed names that remain installable are selected, even when the refreshed
+source contains just one candidate. An unrelated new candidate remains unchecked until the user
+explicitly selects it. The ordinary first-preview single-candidate shortcut is unchanged. Already installed,
 unavailable or missing names are excluded, and the next install uses the new preview's fingerprints.
 Reviewing never automatically installs or replaces a Skill: the user confirms the refreshed selection.
 

@@ -615,7 +615,7 @@ describe("full benchmark flow", () => {
     expect(indexStatements).toBe(1);
   }, 60_000);
 
-  it("removes its container even when a case throws", async () => {
+  it("fails the run when a required case records an error, after cleaning up", async () => {
     const { deps, written, dockerCalls } = fakeDeps({
       createCases: () => ({
         listAgents: async () => {
@@ -627,10 +627,10 @@ describe("full benchmark flow", () => {
         legacyRowsRead: () => 0,
       }),
     });
-    const report = await runBenchmark(deps);
-    const results = report.results as { name: string; error: unknown }[];
-    expect(results[0]?.error).toMatchObject({ message: "service exploded" });
-    expect(report.containerRemoved).toBe(true);
+    // A run that records an error is not evidence, so it must fail even though the measurement completed.
+    await expect(runBenchmark(deps)).rejects.toThrow(
+      /not usable evidence:[\s\S]*agents\.list\.1-agents: \{"name":"Error","message":"service exploded"/,
+    );
     expect(dockerCalls.some((call) => call[0] === "rm")).toBe(true);
     expect(JSON.parse(written.at(-1)?.content ?? "{}")).toMatchObject({ containerRemoved: true });
   }, 60_000);
@@ -674,8 +674,8 @@ describe("full benchmark flow", () => {
     await expect(runBenchmark(deps)).rejects.toThrow("Unexpected container binding");
   });
 
-  it("names every case that recorded an error", async () => {
-    const { deps } = fakeDeps({
+  it("names every case that recorded an error before rejecting the run", async () => {
+    const { deps, written } = fakeDeps({
       createCases: () => ({
         listAgents: async () => {
           throw new Error("nope");
@@ -692,9 +692,10 @@ describe("full benchmark flow", () => {
         legacyRowsRead: () => 0,
       }),
     });
-    const report = await runBenchmark(deps);
+    await expect(runBenchmark(deps)).rejects.toThrow("not usable evidence");
     // Every case backed by the injected services failed; the legacy page case runs the harness's own query.
-    expect(report.casesWithErrors).toEqual([
+    const saved = JSON.parse(written.at(-1)?.content ?? "{}");
+    expect(saved.casesWithErrors).toEqual([
       "agents.list.1-agents",
       "agents.list.1-agents.without-unreported-index",
       "agents.usage.50000-deliveries",

@@ -75,7 +75,41 @@ it. Only then did the rewrite show its real cost. A plan or a timing without a c
 
 Two changes would plausibly reach the target, and both are outside this change: a composite
 `(session_id, accepted_at)` index, which helps production windows but cannot be proven on a fixture where every
-Delivery is inside the window, and a pre-aggregated daily usage table, which is new schema and retention.
+Delivery is inside the window, and a pre-aggregated daily usage table, which is new schema, new write amplification
+and a new retention problem.
+
+## EXPLAIN attribution of the remaining latency
+
+`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` on the statement `getUsageById` actually issues, with the fixture's real
+parameters and authorization predicate (execution 105.55 ms in that capture):
+
+| Plan node | Actual rows | Estimated | Time incl. | Buffers |
+| --- | ---: | ---: | ---: | ---: |
+| `Aggregate` (13 day groups) | 13 | 1 | 105.0 ms | 208,648 hit |
+| `CTE Scan flagged_window` | 50,000 | 1 | 95.1 ms | 208,648 hit |
+| `CTE Scan usage_window` (materialized) | 50,000 | 1 | 81.3 ms | 208,648 hit |
+| `Nested Loop` on deliveries | 50,000 | 1 | 56.2 ms | 208,648 hit |
+| `Nested Loop` bindings→sessions | 100,001 | 8 | 11.1 ms | 4,061 hit |
+| `Seq Scan im_bindings`, 99,999 rows removed by filter | 1 | 1 | 2.6 ms | 2,438 hit |
+| `Index Scan sessions` (`sessions_im_binding_scope_idx`) | 100,001 | 8 | 4.9 ms | 1,623 hit |
+| `Index Scan im_message_deliveries` (`session_id_idx`), 100,001 loops | 0 per loop | 11 | ≈44.6 ms | 204,587 hit |
+
+Attribution: the join becomes a parameterized nested loop because the planner estimates **1** Delivery row and
+**8** Sessions for a binding join. That estimate is generic — it cannot know that this binding really owns 100,001
+Sessions — so the plan performs 100,001 delivery index probes that each return no row: about 45 ms of the 105 ms.
+The rest is intrinsic to the read: ~25 ms materializing the 50,000-row window, ~14 ms for the verdict CTE and its
+canonical test, ~10 ms for the final aggregate. There is no sort and no temp spill (all buffers are hits, no reads).
+
+Ways to remove the 45 ms of probes without changing the schema:
+
+| Option | Effect | Verdict |
+| --- | --- | --- |
+| `= ANY (ARRAY(subquery))` for the session set | Forces the Session list to be materialized and hashed, so deliveries are scanned instead of probed | Tested in a disposable database; kept only if it is both correct and clearly faster — see the recorded run |
+| Statistics or extended statistics | The bad estimate comes from a generic join condition, not from a stale column statistic; `ANALYZE` is already current | Not a fix |
+| Pre-aggregated daily usage | Would reach the target | New table, write amplification on every report, retention and backfill — rejected as out of scope |
+
+Even with the probes removed, the ~50 ms of detoast and aggregation over 50,000 JSON reports stays, which is why
+the 50 ms target is reported as missed rather than pursued further.
 
 ### Hot Agent list
 

@@ -93,7 +93,7 @@ function benchmarkDependencies(): BenchmarkDeps {
         // The removed read, projected to the same public body the service returns.
         legacyUsage: async () => {
           const legacy = await readLegacyUsage(database as unknown as Parameters<typeof readLegacyUsage>[0], {
-            agentId: deps.fixture.agentId,
+            agentId: id(4, 1),
             provider: "codex",
             windowDays: 30,
             startedAt: usageStartedAt,

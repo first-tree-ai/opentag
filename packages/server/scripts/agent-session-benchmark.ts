@@ -20,6 +20,19 @@ import { markEndedDescendantsInactive } from "../src/services/sessions/session-c
 export const MINIMUM_TABLE_ROWS = 100_000;
 /** Timed samples per case, after one warm-up. */
 export const SAMPLES_PER_CASE = 5;
+/**
+ * Every case a run must produce, in order. A run that exits zero while one of these failed to execute is not
+ * evidence: an error is how a broken case reports itself, and the exit status must not hide it.
+ */
+export const REQUIRED_CASES = [
+  "agents.list.1-agents",
+  "agents.list.1-agents.without-unreported-index",
+  "agents.usage.50000-deliveries",
+  "sessions.internal.100000-active.limit20",
+  "sessions.internal.90000-ended.limit20",
+  "sessions.internal.90000-ended.limit20.before",
+  "agents.usage.50000-deliveries.before",
+] as const;
 export const BENCHMARK_LABEL = "agent-session";
 export const SHIPPED_UNREPORTED_INDEX = "im_message_deliveries_unreported_accepted_idx";
 export const LEGACY_ACTIVITY_INDEXES = [
@@ -579,6 +592,34 @@ async function measureCases(
 }
 
 /**
+ * Rejects a report that cannot serve as evidence.
+ *
+ * A measured case can fail without failing the process — the harness records the error and continues so the rest
+ * of the run and its cleanup still happen — so the report itself is checked before it is offered as a result. A
+ * missing required case, a recorded error, or a sample count that does not match means the run is invalid.
+ */
+export function assertCompleteReport(report: Record<string, unknown>): void {
+  const results = (report.results ?? []) as MeasuredCase[];
+  const byName = new Map(results.map((measurement) => [measurement.name, measurement]));
+  const problems: string[] = [];
+  for (const name of REQUIRED_CASES) {
+    const measurement = byName.get(name);
+    if (!measurement) {
+      problems.push(`${name}: did not run`);
+      continue;
+    }
+    if (measurement.error !== undefined) {
+      problems.push(`${name}: ${JSON.stringify(measurement.error)}`);
+    }
+    if (measurement.samplesMs.length !== SAMPLES_PER_CASE) {
+      problems.push(`${name}: ${measurement.samplesMs.length} samples instead of ${SAMPLES_PER_CASE}`);
+    }
+  }
+  if (report.containerRemoved !== true) problems.push("the container was not removed");
+  if (problems.length > 0) throw new Error(`The benchmark run is not usable evidence:\n${problems.join("\n")}`);
+}
+
+/**
  * Runs the whole benchmark against the injected environment and returns the report it wrote.
  *
  * Cleanup is part of the contract: the container and volume are removed even when a case throws, because a
@@ -670,5 +711,6 @@ export async function runBenchmark(deps: BenchmarkDeps): Promise<Record<string, 
       }
     }
   }
+  assertCompleteReport(report);
   return report;
 }

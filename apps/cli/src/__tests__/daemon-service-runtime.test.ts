@@ -1,8 +1,10 @@
+import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import type { ClientLogBindings, ClientLogger } from "@opentag/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -49,6 +51,7 @@ import {
 const directories: string[] = [];
 afterEach(async () => {
   vi.clearAllMocks();
+  vi.unstubAllEnvs();
   delete process.env.OPENTAG_SERVICE_MODE;
   delete process.env.OPENTAG_RUNTIME_CREDENTIAL_MODE;
   await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
@@ -91,6 +94,39 @@ it("contains invalid module locations to the Slack feature", () => {
 });
 
 describe("daemon service runtime", () => {
+  it("supplies an installation-owned command to managed Sessions even with a stale CLI on PATH", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-cli-entry-"));
+    directories.push(home);
+    const entry = join(home, "current CLI's entry.mjs");
+    const bin = join(home, "stale-bin");
+    await mkdir(bin);
+    await writeFile(
+      entry,
+      "console.log(JSON.stringify({ args: process.argv.slice(2), home: process.env.OPENTAG_HOME }))\n",
+    );
+    await writeFile(join(bin, "opentag-dev"), "#!/bin/sh\nexit 99\n", { mode: 0o755 });
+    vi.stubEnv("PATH", bin);
+    const argv = process.argv;
+    process.argv = [process.execPath, entry];
+    clientMocks.readMachineCredentials.mockResolvedValue(machineCredentials());
+    clientMocks.resolveComputerIdentity.mockResolvedValue(computerIdentity());
+    clientMocks.createClientRuntime.mockResolvedValue({ run: vi.fn(), stop: vi.fn() });
+    try {
+      await runDaemonService({ home, logger: noopLogger(), autoUpdate: false });
+      const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
+      expect(clientMocks.createClientRuntime.mock.calls[0]?.[1].cliCommand).toBe(
+        `${quote(await realpath(process.execPath))} ${quote(await realpath(entry))}`,
+      );
+      const command = clientMocks.createClientRuntime.mock.calls[0]?.[1].cliCommand;
+      const result = await promisify(execFile)("/bin/sh", ["-c", `${command} session send 'next session'`], {
+        env: { PATH: bin, OPENTAG_HOME: home },
+      });
+      expect(JSON.parse(result.stdout)).toEqual({ args: ["session", "send", "next session"], home });
+    } finally {
+      process.argv = argv;
+    }
+  });
+
   it("configures the Client-owned service log before daemon startup", async () => {
     const home = await mkdtemp(join(tmpdir(), "opentag-daemon-log-"));
     directories.push(home);

@@ -32,6 +32,7 @@ import { applyDaemonEnvironment, buildDaemonChildEnvironment } from "./environme
 import { SUPERVISOR_RESTART_EXIT_CODE } from "./handoff.js";
 import { acquireDaemonOwner, DaemonOwnerStartupError } from "./ownership.js";
 import { resolveDaemonPaths } from "./paths.js";
+import { quotePosix, resolveCliInvocation } from "./service/shared.js";
 import { DaemonServiceError } from "./service/types.js";
 import { resolveWebToolsOptIn } from "./web-tools.js";
 
@@ -257,12 +258,13 @@ async function createDaemonRuntime(context: DaemonLifecycleContext, signal: Abor
    * failure filed before then.
    */
   const composed: { runtime?: Pick<ComposedClientRuntime, "runtimeManager"> } = {};
+  const cli = await resolveCliInvocation({ binName: channelConfig.binName });
   const runtime = await createClientRuntime(connection, {
     home: context.home,
     environment: context.daemonEnvironment,
     credentialMode: resolveRuntimeCredentialMode(context.daemonEnvironment),
     clientVersion: CLI_VERSION,
-    cliCommand: channelConfig.binName,
+    cliCommand: [cli.program, ...cli.args].map(quotePosix).join(" "),
     slackAutoSetupCliEntry: resolveSlackAutoSetupCliEntry(),
     logger: runtimeLogger,
     signal,

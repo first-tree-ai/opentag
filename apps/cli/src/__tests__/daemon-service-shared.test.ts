@@ -72,7 +72,7 @@ describe("daemon service primitives", () => {
     await expect(canonicalizeServiceHome(alias)).resolves.toBe(await realpath(actual));
   });
 
-  it("resolves the freshly installed dev binary before a stale PATH shim", async () => {
+  it("resolves the running dev entry even when a stale PATH shim is first", async () => {
     const root = await temporaryDirectory("opentag-invocation-path-");
     const installedBin = join(root, "installed-bin");
     const staleBin = join(root, "stale-bin");
@@ -91,9 +91,10 @@ describe("daemon service primitives", () => {
     await expect(
       resolveCliInvocation({
         binName: "opentag-dev",
-        env: { PATH: `${installedBin}:${staleBin}` },
+        argv: [process.execPath, currentDist],
+        env: { PATH: `${staleBin}:${installedBin}` },
       }),
-    ).resolves.toEqual({ args: [], program: currentDist });
+    ).resolves.toEqual({ args: [await realpath(currentDist)], program: await realpath(process.execPath) });
   });
 
   it("builds a stable service PATH from trusted executable, user, and platform directories", () => {
@@ -178,14 +179,17 @@ describe("daemon service primitives", () => {
   });
 
   it("resolves a Node script invocation when no installed binary is available", async () => {
+    const root = await temporaryDirectory("opentag-relative-cli-");
+    const script = join(root, "relative.mjs");
+    await writeFile(script, "");
     await expect(
       resolveCliInvocation({
         binName: "missing-opentag",
         env: { PATH: "" },
         argv: ["node", "relative.mjs"],
-        cwd: "/tmp",
+        cwd: root,
       }),
-    ).resolves.toEqual({ args: ["/tmp/relative.mjs"], program: process.execPath });
+    ).resolves.toEqual({ args: [await realpath(script)], program: await realpath(process.execPath) });
     await expect(resolveCliInvocation({ binName: "missing", env: { PATH: "" }, argv: ["node"] })).rejects.toThrow(
       "entry script",
     );
@@ -202,9 +206,9 @@ describe("daemon service primitives", () => {
       resolveCliInvocation({
         binName: "missing",
         env: { PATH: `${join(tmpdir(), "missing-directory")}` },
-        argv: ["node", "script.mjs"],
+        argv: ["node", script],
       }),
-    ).resolves.toMatchObject({ args: [expect.stringContaining("script.mjs")] });
+    ).resolves.toMatchObject({ args: [await realpath(script)] });
   });
 
   it("atomically replaces files and leaves no temporary files", async () => {

@@ -60,6 +60,10 @@ The shim is what makes updates safe. It never names a version directory, so the 
 `OPENTAG_INSTALL_MODE=portable`, `OPENTAG_PORTABLE_ROOT`, and `OPENTAG_PORTABLE_BIN_DIR` before exec'ing the embedded
 runtime.
 
+Service installation, service refresh, and managed Agent command instructions select this installation's absolute stable
+launcher after validating its payload and channel. They do not select another installation from `PATH` or freeze the
+invocation to a version directory. An unavailable or inconsistent launcher is reported as a local configuration error.
+
 Each payload contains:
 
 ~~~text

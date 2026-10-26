@@ -9,6 +9,7 @@ contents, and machine-specific operational logs outside the repository.
 
 - [Agent Runtime Provider test plan](agent-runtime-test-plan.md)
 - [Cloud Computer acceptance harness](cloud-computer.md)
+- [Managed CLI installation acceptance](managed-cli-entry/README.md)
 - [Slack local live acceptance](slack-live-acceptance.md)
 
 ## Verification by feature

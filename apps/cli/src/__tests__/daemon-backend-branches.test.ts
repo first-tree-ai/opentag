@@ -508,8 +508,8 @@ describe("daemon owner record shapes", () => {
   });
 });
 
-describe("CLI invocation resolution fallbacks", () => {
-  it("keeps non-existent script and executable paths when they cannot be canonicalized", async () => {
+describe("CLI invocation resolution failures", () => {
+  it("rejects non-existent executable paths instead of generating a broken service", async () => {
     await expect(
       resolveCliInvocation({
         binName: "missing-opentag",
@@ -517,6 +517,6 @@ describe("CLI invocation resolution fallbacks", () => {
         argv: ["node", "/nonexistent/opentag/index.mjs"],
         execPath: "/nonexistent/node/bin/node",
       }),
-    ).resolves.toEqual({ args: ["/nonexistent/opentag/index.mjs"], program: "/nonexistent/node/bin/node" });
+    ).rejects.toMatchObject({ code: "CONFIGURATION" });
   });
 });

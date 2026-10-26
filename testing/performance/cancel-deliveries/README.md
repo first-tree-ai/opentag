@@ -145,14 +145,15 @@ pnpm --filter @opentag/server typecheck
 pnpm check
 ```
 
-Results: the focused cancellation unit file passes 56 tests, and the benchmark harness passes 25
-tests with no Docker, database or network (measured at 87.5% lines / 84% branches by
-`vitest --coverage` over the three harness files; the harness had no coverage entry before, see the
-shared measurement fix). Reverting only `cloud-delivery-owner.ts` to the base commit fails the
-cancellation statement-count tests with `expected 11 to be 2` / `expected 101 to be 2`, and caching the
-per-delivery fence read fails the mid-sweep replacement test, so the regressions have teeth. Both PostgreSQL integration files pass 13 tests (real PostgreSQL 17, real
-local WebSockets, synthetic Runner responses; the cancellation case cancels one Session without
-touching another Session's authority or completion). Server typecheck and `pnpm check` exit 0.
+Results: the focused cancellation unit file passes 56 tests, and the benchmark harness passes 26
+tests with no Docker, database or network. The shared measurement fix now instruments
+`packages/server/scripts/*.ts`, so the harness lines this change adds are measured by the patch gate
+instead of reading as missing coverage entries. Reverting only `cloud-delivery-owner.ts` to the base
+commit fails the cancellation statement-count tests with `expected 11 to be 2` / `expected 101 to be
+2`, and caching the per-delivery fence read fails the mid-sweep replacement test, so the regressions
+have teeth. Both PostgreSQL integration files pass 13 tests (real PostgreSQL 17, real local
+WebSockets, synthetic Runner responses; the cancellation case cancels one Session without touching
+another Session's authority or completion). Server typecheck and `pnpm check` exit 0.
 No migration was added, so the full server integration suite is not required by this change; the two
 files above are the cancellation-relevant ones.
 

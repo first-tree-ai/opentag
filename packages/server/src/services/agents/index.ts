@@ -12,6 +12,7 @@ export {
 export {
   AGENT_ACTIVITY_READ_LIMIT,
   AGENT_ACTIVITY_RECOVERY_WINDOW_HOURS,
+  type AgentReadStage,
   AgentService,
   type AgentSessionStopTarget,
 } from "./agent-service.js";

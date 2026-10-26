@@ -58,13 +58,16 @@ import { AgentServiceError, resourceNotFound } from "./errors.js";
 
 type AgentRow = typeof agents.$inferSelect;
 type AgentRuntimeConfigRow = typeof agentRuntimeConfigs.$inferSelect;
-type QueryExecutor = Pick<DatabaseClient, "select">;
+type QueryExecutor = Pick<DatabaseClient, "select" | "selectDistinct" | "selectDistinctOn">;
 
 const AGENT_ACTIVITY_REPORT_DELIVERY_SLACK_HOURS = 1;
 const MILLISECONDS_PER_HOUR = 60 * 60 * 1_000;
 export const AGENT_ACTIVITY_RECOVERY_WINDOW_HOURS =
   RUNTIME_MAX_DURATION_MS / MILLISECONDS_PER_HOUR + AGENT_ACTIVITY_REPORT_DELIVERY_SLACK_HOURS;
 export const AGENT_ACTIVITY_READ_LIMIT = 256;
+
+/** Which read path a concurrency test is rendezvousing inside; see `afterReadAuthorization`. */
+export type AgentReadStage = "list" | "usage";
 const AGENT_ACTIVITY_RECOVERY_WINDOW_MS = AGENT_ACTIVITY_RECOVERY_WINDOW_HOURS * MILLISECONDS_PER_HOUR;
 
 interface AgentScope {
@@ -322,6 +325,7 @@ function mergeCloudUsage(
 export class AgentService {
   readonly #afterAgentLocked?: () => Promise<void>;
   readonly #afterMembershipLocked?: () => Promise<void>;
+  readonly #afterReadAuthorization?: (stage: AgentReadStage) => Promise<void> | void;
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
   readonly #onDiagnostic: (code: string) => void;
@@ -344,6 +348,13 @@ export class AgentService {
     options: {
       afterAgentLocked?: () => Promise<void>;
       afterMembershipLocked?: () => Promise<void>;
+      /**
+       * Rendezvous for concurrency tests of the read paths, called inside the read-only snapshot right
+       * after the authorization read and before the details it enables. Nothing in production passes it;
+       * it exists so a test can prove the later reads still observe the authorized snapshot after a
+       * concurrent transfer commits.
+       */
+      afterReadAuthorization?: (stage: AgentReadStage) => Promise<void> | void;
       cloudIdentitiesEnabled?: boolean;
       /**
        * The one Server-owned Router model catalog; present exactly when the deployment's Cloud
@@ -367,6 +378,7 @@ export class AgentService {
   ) {
     this.#afterAgentLocked = options.afterAgentLocked;
     this.#afterMembershipLocked = options.afterMembershipLocked;
+    this.#afterReadAuthorization = options.afterReadAuthorization;
     this.#cloudIdentitiesEnabled = options.cloudIdentitiesEnabled ?? false;
     this.#cloudModelCatalog = options.cloudModelCatalog;
     this.#cloudUsage = options.cloudUsage;
@@ -544,10 +556,11 @@ export class AgentService {
   }
 
   async #readActivityByAgent(
+    executor: QueryExecutor,
     agentIds: readonly string[],
     recoveryStartedAt: Date,
   ): Promise<Map<string, AgentListActivity>> {
-    const activityRows = await this.#database
+    const activityRows = await executor
       .selectDistinctOn([imBindings.agentId], {
         acceptedAt: imMessageDeliveries.acceptedAt,
         agentId: imBindings.agentId,
@@ -569,7 +582,7 @@ export class AgentService {
       )
       .orderBy(imBindings.agentId, desc(imMessageDeliveries.acceptedAt), desc(imMessageDeliveries.id));
 
-    const staleActivityRows = await this.#database
+    const staleActivityRows = await executor
       .selectDistinct({ agentId: imBindings.agentId })
       .from(imMessageDeliveries)
       .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
@@ -593,52 +606,65 @@ export class AgentService {
   }
 
   async listForAccount(callerUserId: string): Promise<ListAgentsResponse> {
-    const creator = alias(users, "agent_creator");
-    const rows = await this.#database
-      .select({
-        id: agents.id,
-        createdByUserId: agents.createdByUserId,
-        creatorDisplayName: creator.displayName,
-        avatarSourceUrl: imBindings.botAvatarUrl,
-        agentComputerId: agents.computerId,
-        computerId: computers.id,
-        computerDisplayName: computers.displayName,
-        computerPlatform: computers.platform,
-        computerOwnerAccountId: computers.ownerAccountId,
-        name: agents.name,
-        displayName: agents.displayName,
-        runtimeProvider: agents.runtimeProvider,
-        receiveMode: agents.receiveMode,
-        status: agents.status,
-        createdAt: agents.createdAt,
-        updatedAt: agents.updatedAt,
-      })
-      .from(agents)
-      .innerJoin(creator, eq(creator.id, agents.createdByUserId))
-      .leftJoin(imBindings, and(eq(imBindings.agentId, agents.id), ne(imBindings.status, "disabled")))
-      .leftJoin(computers, eq(computers.id, agents.computerId))
-      .where(and(eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
-      .orderBy(asc(agents.createdAt), asc(agents.id));
-    const summaries = rows.flatMap((row) => {
-      if (!row.id) return [];
-      if (!row.creatorDisplayName) throw new Error("Active Agent is missing its creator audit record");
-      return [toAgentSummary({ ...row, computer: toAgentComputer(row) })];
-    });
-    if (summaries.length === 0) return { agents: [] };
-
     const now = this.#now();
     const usageStartedAt = new Date(now.getTime() - AGENT_USAGE_WINDOW_DAYS * 24 * 60 * 60 * 1_000);
     const recoveryStartedAt = new Date(now.getTime() - AGENT_ACTIVITY_RECOVERY_WINDOW_MS);
-    const activityByAgent = await this.#readActivityByAgent(
-      summaries.map((agent) => agent.id),
-      recoveryStartedAt,
+    /*
+     * One read-only snapshot for the whole projection. The Agent query is the authorization — it is the
+     * only statement that names the caller — and the activity and usage reads it enables are keyed by the
+     * Agent IDs it returned. Read under separate Read Committed statements, a transfer committing between
+     * them would let the previous owner keep reading the transferred Agent's activity and usage. Under one
+     * snapshot the list is the state the authorization accepted, and a later call reflects the transfer.
+     * The Cloud ledger read stays outside: it is a different subsystem keyed by Account, not by Agent.
+     */
+    const read = await this.#database.transaction(
+      async (transaction) => {
+        const creator = alias(users, "agent_creator");
+        const rows = await transaction
+          .select({
+            id: agents.id,
+            createdByUserId: agents.createdByUserId,
+            creatorDisplayName: creator.displayName,
+            avatarSourceUrl: imBindings.botAvatarUrl,
+            agentComputerId: agents.computerId,
+            computerId: computers.id,
+            computerDisplayName: computers.displayName,
+            computerPlatform: computers.platform,
+            computerOwnerAccountId: computers.ownerAccountId,
+            name: agents.name,
+            displayName: agents.displayName,
+            runtimeProvider: agents.runtimeProvider,
+            receiveMode: agents.receiveMode,
+            status: agents.status,
+            createdAt: agents.createdAt,
+            updatedAt: agents.updatedAt,
+          })
+          .from(agents)
+          .innerJoin(creator, eq(creator.id, agents.createdByUserId))
+          .leftJoin(imBindings, and(eq(imBindings.agentId, agents.id), ne(imBindings.status, "disabled")))
+          .leftJoin(computers, eq(computers.id, agents.computerId))
+          .where(and(eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
+          .orderBy(asc(agents.createdAt), asc(agents.id));
+        const summaries = rows.flatMap((row) => {
+          if (!row.id) return [];
+          if (!row.creatorDisplayName) throw new Error("Active Agent is missing its creator audit record");
+          return [toAgentSummary({ ...row, computer: toAgentComputer(row) })];
+        });
+        if (summaries.length === 0) return { summaries, activityByAgent: new Map(), usageRows: [] };
+        await this.#afterReadAuthorization?.("list");
+        const agentIds = summaries.map((agent) => agent.id);
+        const activityByAgent = await this.#readActivityByAgent(transaction, agentIds, recoveryStartedAt);
+        const usageRows = await readAgentUsageSummaries(transaction, {
+          agentIds,
+          startedAt: usageStartedAt,
+          endedAt: now,
+        });
+        return { summaries, activityByAgent, usageRows };
+      },
+      { isolationLevel: "repeatable read", accessMode: "read only" },
     );
-
-    const usageRows = await readAgentUsageSummaries(this.#database, {
-      agentIds: summaries.map((agent) => agent.id),
-      startedAt: usageStartedAt,
-      endedAt: now,
-    });
+    const { summaries, activityByAgent, usageRows } = read;
+    if (summaries.length === 0) return { agents: [] };
 
     const cloudTokens = await this.#cloudUsage?.totalsByAgent(callerUserId, AGENT_USAGE_WINDOW_DAYS, now);
     const usageByAgent = new Map<string, { failed: number; tasks: number; tokens: number }>();
@@ -717,7 +743,7 @@ export class AgentService {
       .limit(1);
     if (!row || row.createdByUserId !== callerUserId) throw resourceNotFound();
     const recoveryStartedAt = new Date(this.#now().getTime() - AGENT_ACTIVITY_RECOVERY_WINDOW_MS);
-    const activityByAgent = await this.#readActivityByAgent([agentId], recoveryStartedAt);
+    const activityByAgent = await this.#readActivityByAgent(this.#database, [agentId], recoveryStartedAt);
     return {
       ...toAgentSummary({ ...row, computer: toAgentComputer(row) }),
       activity: activityByAgent.get(agentId) ?? { state: "idle" },
@@ -729,18 +755,26 @@ export class AgentService {
     agentId: string,
     windowDays: AgentUsageWindowDays,
   ): Promise<AgentUsageDetail> {
-    const { agent } = await this.#resolveAgentScope(this.#database, callerUserId, agentId);
     const usageEndedAt = this.#now();
     const usageStartedAt = new Date(usageEndedAt.getTime() - windowDays * 24 * 60 * 60 * 1_000);
-    // One read-only snapshot so the aggregate and its bounded fallback describe the same deliveries.
+    /*
+     * Authorization, the Provider rule that shapes the totals, and the aggregate read come from one
+     * read-only snapshot. Resolving ownership on the pool first let a transfer commit in between, so the
+     * previous owner could still read usage the new owner now owns, and the totals used whichever
+     * Provider the Agent had before the transfer. Both facts are read here under the same snapshot.
+     */
     const usage = await this.#database.transaction(
-      async (transaction) =>
-        readAgentUsageDaily(transaction, {
+      async (transaction) => {
+        const { agent } = await this.#resolveAgentScope(transaction, callerUserId, agentId);
+        await this.#afterReadAuthorization?.("usage");
+        const usage = await readAgentUsageDaily(transaction, {
           agentId,
           provider: agent.runtimeProvider,
           startedAt: usageStartedAt,
           endedAt: usageEndedAt,
-        }),
+        });
+        return usage;
+      },
       { isolationLevel: "repeatable read", accessMode: "read only" },
     );
     const result: AgentUsageDetail = {

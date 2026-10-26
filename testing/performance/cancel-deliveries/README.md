@@ -48,13 +48,16 @@ OPENTAG_BENCHMARK_OUTPUT=/tmp/cancel-benchmark/results.json \
 ```
 
 Keep the committed defaults: the script owns and removes its container and volume in `finally`,
-including when setup fails, and it deletes the temporary `before` module it generates. It never reads
-`DATABASE_URL` and never targets an existing database.
+including when setup fails, and it deletes the temporary `before` module it generates (the crash-safe
+`.benchmark-before-*.ts` pattern is also in `.gitignore`). The report records only the
+repository-relative `resultsPath` for the tracked default, or `<overridden>` for an override run, so
+committed evidence never carries a machine path. It never reads `DATABASE_URL` and never targets an
+existing database.
 
 ## Environment (recorded run)
 
-- Run interval 2026-10-26T09:25:05Z to 09:25:59Z, produced by the committed harness on the follow-up
-  working tree above commit `0eeaf917` (implementation commit `9c745963`); before-ref `d2fc9e8aa045`.
+- Run interval 2026-10-26T10:58:35Z to 10:59:29Z, produced by the committed harness on the working
+  tree above commit `b95ca784` (implementation commit `9c745963`); before-ref `d2fc9e8aa045`.
 - Node.js v24.19.0, macOS arm64, `postgres:17-alpine`
   (`sha256:ff80089083d7365046af7f03d949a2defa14e0b09e14bd5b8f08a242291be8b2`).
 - Docker VM: 18 CPUs and the memory reported in `results.json` (`environment.dockerResources`). These are VM
@@ -62,7 +65,7 @@ including when setup fails, and it deletes the temporary `before` module it gene
 - PostgreSQL 17.11, `shared_buffers=128MB`, `work_mem=4MB`, `max_connections=100`. The service client
   keeps its default 20-connection pool, 30-second statement timeout and 35-second query timeout.
 - 69 real migrations, 39 application tables (`public` + `billing`), each with at least 100000 rows
-  (`sessions` has 200000); database size 1262551567 bytes; `ANALYZE` runs before measurement.
+  (`sessions` has 200000); database size 1262592527 bytes; `ANALYZE` runs before measurement.
 - Method: one warm-up and five sequential timed samples per case and owner, both owners measured on the
   same database so each pair shares data and cache state. Statement counts come from the Drizzle query
   logger; plans come from one additional untimed `EXPLAIN (ANALYZE, BUFFERS, SETTINGS, FORMAT JSON)`
@@ -75,18 +78,19 @@ including when setup fails, and it deletes the temporary `before` module it gene
 
 | N eligible | Statements before | Statements after | Median ms before | Median ms after |
 | ---: | ---: | ---: | ---: | ---: |
-| 0 | 1 | 1 | 5.929 | 5.685 |
-| 1 | 2 | 2 | 6.412 | 6.078 |
-| 10 | 11 | 2 | 9.549 | 6.322 |
-| 100 | 101 | 2 | 32.765 | 5.740 |
+| 0 | 1 | 1 | 6.016 | 5.833 |
+| 1 | 2 | 2 | 6.223 | 6.383 |
+| 10 | 11 | 2 | 9.187 | 6.771 |
+| 100 | 101 | 2 | 30.120 | 6.257 |
 
 After the change the statement count is 1 for an empty backlog and 2 for any nonempty backlog, which
 is the per-delivery work of the stop itself collapsing to zero database round trips. Small-backlog
-medians (0 and 1) stay within run-to-run noise; the 100-delivery case drops from 32.765 ms to 5.740 ms.
+medians (0 and 1) stay within run-to-run noise; the 100-delivery case drops from 30.120 ms to 6.257 ms.
 Samples, per-statement SQL, parameter counts, plan trees and buffer counters are in
 [results.json](results.json). Repeated runs of the same harness reproduced the statement counts
-(1/2/11/101 before, 1/2/2/2 after) and kept the 100-delivery before-median between 28.7 ms and 33.3 ms,
-and a run with `OPENTAG_BENCHMARK_OUTPUT` pointed outside the repository produced the same counts.
+(1/2/11/101 before, 1/2/2/2 after) and kept the 100-delivery before-median between 28.7 ms and 33.7 ms.
+An `OPENTAG_BENCHMARK_OUTPUT` run outside the repository produced the same counts, reported
+`resultsPath: "<overridden>"` and left this artifact untouched.
 
 ## Plans
 
@@ -94,7 +98,7 @@ The two statements of the 100-delivery case (identical for both owners):
 
 - Eligible deliveries: `select id, turn_id, report_owner_instance_id from im_message_deliveries where
   session_id = $1 and state = 'accepted' and reported_at is null`. In this run a sequential scan of the
-  100000-row table returns the 100 qualifying rows in 5.565 ms (before) and 4.921 ms (after) analyzed,
+  100000-row table returns the 100 qualifying rows in 6.121 ms (before) and 5.702 ms (after) analyzed,
   with 2701 and 2925 shared buffer hits. One occurrence per call for both owners.
 - Session Sandbox: `select ... from sandboxes where session_id = $1 limit 1`. `Limit` over `Index Scan`
   using `sandboxes_session_id_unique`, 1 row, 4 shared buffer hits. **100 occurrences before, 1 after.**

@@ -38,10 +38,14 @@ const OWNER_SOURCE = "packages/server/src/services/sandboxes/cloud-delivery-owne
 const SESSION = "00000007-0000-4000-8000-000000000001";
 const SAMPLES = 5;
 const startedAt = new Date().toISOString();
+const TRACKED_RESULTS_PATH = "testing/performance/cancel-deliveries/results.json";
 const outputOverride = process.env.OPENTAG_BENCHMARK_OUTPUT;
 const output = outputOverride
   ? resolve(outputOverride)
-  : fileURLToPath(new URL("../../../testing/performance/cancel-deliveries/results.json", import.meta.url));
+  : fileURLToPath(new URL(`../../../${TRACKED_RESULTS_PATH}`, import.meta.url));
+// Committed evidence must never carry a machine path: record the repository-relative tracked path, or
+// only the fact that the run wrote somewhere else.
+const resultsPathLabel = outputOverride ? "<overridden>" : TRACKED_RESULTS_PATH;
 const seedFile = fileURLToPath(new URL("./database-performance-seed.sql", import.meta.url));
 const ownerDirectory = fileURLToPath(new URL("../src/services/sandboxes/", import.meta.url));
 const beforeModule = `${ownerDirectory}.benchmark-before-${process.pid}.ts`;
@@ -131,7 +135,7 @@ try {
     workingTreeCommit: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
     beforeRef: BEFORE_REF,
     seedFixture: "packages/server/scripts/database-performance-seed.sql",
-    resultsPath: output,
+    resultsPath: resultsPathLabel,
     resultsPathOverridden: Boolean(outputOverride),
     node: process.version,
     platform: process.platform,

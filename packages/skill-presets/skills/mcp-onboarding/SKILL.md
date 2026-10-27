@@ -8,12 +8,11 @@ description: "Connect, authorize, and manage MCP Servers for this Agent inside t
 Configure MCP in this OpenTag chat. You run the commands before you reply. The user stays in the
 conversation. The one step they take outside the chat is opening the OAuth consent URL you give them.
 
-A message such as "我想配置 Figma 的 MCP" is this Skill. The wrong reply is a setup guide: two
-methods, a recommended web console, "log in, open Agent settings, open Connectors, search, click
-Connect", or a list of actions and tool names you have not observed. The Connectors page exists.
-Describing it is still the wrong reply. Run `opentag self mcp search` with the product name first.
-Report what that command returned. Ask for a pasted configuration only when the search has no
-installable match.
+A message such as "我想配置 Figma 的 MCP" is a request for a new connection. A message such as
+"disable Notion" is a request about a binding you already have. Decide which one it is before you
+search or add. The wrong reply is a setup guide: two methods, a recommended web console, "log in,
+open Agent settings, open Connectors, search, click Connect", or a list of actions and tool names
+you have not observed. The Connectors page exists. Describing it is still the wrong reply.
 
 The production binary is `opentag`. A development Computer has `opentag-dev` and a staging Computer
 has `opentag-staging`. Use the binary this workspace has. `opentag self` and `opentag agent self`
@@ -25,18 +24,33 @@ settings page for that flag. Do not send them to the web MCP screen as a substit
 
 ## Decide from what the user said
 
-1. **They name a product or service.** Search before you ask for a URL. Use their words as the
-   query (`Notion`, `HubSpot`, `Linear`, or any other name):
+1. **They ask to enable, disable, remove, detach, or reauthorize a Server.** This includes "disable
+   Notion". The first command is `opentag self mcp list --json`. Use the mounted name from that
+   list, even when it is a custom name such as `work-notion`. Then run `enable`, `disable`,
+   `delete`, or `generate_oauth_url` on that binding. Do not search the catalog. Do not run `add`.
+   `add` only creates a definition. It does not change an existing one.
+
+2. **They ask to connect or configure a product this Agent does not mount yet.** This includes
+   "我想配置 Figma 的 MCP". Check the bindings you already have before you search:
+
+   ```sh
+   opentag self mcp list --json
+   opentag self mcp available --json
+   ```
+
+   If it is already mounted, report that binding and stop. Do not add another. If the Account
+   already defines it and you do not mount it, run `opentag self mcp attach <server>` and go to the
+   authorization check. Search only when neither list has it. Use their words as the query:
 
    ```sh
    opentag self mcp search notion --json
    ```
 
    A usable match has `installable: true` and a `url`. Add that `name`, `url`, and
-   `defaultAuthKind`. Tell the user you found the connector and are adding it. Do not ask them for
-   an endpoint the catalog already has.
+   `defaultAuthKind`. Tell the user what the command returned. Do not ask them for an endpoint the
+   catalog already has.
 
-2. **The search has no installable match.** Ask them to paste the MCP configuration into this chat.
+3. **The search has no installable match.** Ask them to paste the MCP configuration into this chat.
    Accept a remote `http` or `https` URL, JSON or YAML whose servers sit under `mcpServers`, `mcp`,
    `servers`, or `mcp_servers`, or a `claude mcp add` / `codex mcp add` line that names a remote URL.
 
@@ -51,10 +65,6 @@ settings page for that flag. Do not send them to the web MCP screen as a substit
    `self mcp add` stores the endpoint and this Agent's own credential. It does not store extra
    headers. Register what it can store, and tell the user that shared extra headers stay with a
    human operator.
-
-3. **They ask to list, enable, disable, reauthorize, or remove a Server.** Do that in this chat
-   with `opentag self mcp list`, `enable`, `disable`, `attach`, `generate_oauth_url`, or `delete`.
-   Keep the work in the conversation.
 
 An anonymous Server (`none`) is refused here. Tell the user that an Account owner adds that kind.
 
@@ -80,6 +90,9 @@ shared with the Account's other Agents as an *available* definition, so name it 
 for yourself.
 
 ## Procedure
+
+Use this procedure for a new connection. An enable, disable, remove, or reauthorize request stops
+after `list` and the requested command. It does not continue into search or `add`.
 
 1. **See what you already mount.**
 

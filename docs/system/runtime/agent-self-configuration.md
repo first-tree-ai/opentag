@@ -43,12 +43,15 @@ section only when the flag is true and the Session CLI is available, and only on
 covers instructions, model, and reasoning effort.
 
 The same two conditions include an MCP section on Local and Cloud. That section tells the Agent to configure
-Servers in the current chat. The Agent runs `self mcp search` before it replies. It asks the user to paste an
-MCP configuration when the catalog has no installable match, then runs `self mcp`. The user opens an OAuth
-consent screen. The Agent does every other step, including list, enable, disable, and attach. A reply that
-sends the user to the web console, Agent settings, or the Connectors page, or that lists connectors and tools
-the command did not return, is the failure this section forbids. Enable this setting only when you trust the
-messages that the Agent receives: a configuration change can affect all of its future Turns.
+Servers in the current chat, and to branch on the operation before it replies. An enable, disable, remove, or
+reauthorize request resolves the mounted name with `self mcp list` and runs that operation. It does not search
+the catalog and it does not run `self mcp add`, because `add` only creates a definition. A new connection
+checks mounted Servers and available Account definitions first. The Agent searches the catalog only when
+neither list has the Server, asks the user to paste an MCP configuration when the catalog has no installable
+match, then runs `self mcp add`. The user opens an OAuth consent screen. A reply that sends the user to the
+web console, Agent settings, or the Connectors page, or that lists connectors and tools the command did not
+return, is the failure this section forbids. Enable this setting only when you trust the messages that the
+Agent receives: a configuration change can affect all of its future Turns.
 
 ## Identity
 

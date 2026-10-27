@@ -108,6 +108,11 @@ describe("renderManagedSystemPrompt Agent Home", () => {
     expect(prompt).toContain("Run `opentag-dev self mcp` before you reply.");
     expect(prompt).toContain("Do not answer with a setup guide.");
     expect(prompt).toContain("Connectors page");
+    expect(prompt).toContain("Branch on the operation before you search or add.");
+    expect(prompt).toContain("disable Notion");
+    expect(prompt).toContain("Do not search the catalog and do not run add.");
+    expect(prompt).toContain("`opentag-dev self mcp list --json`");
+    expect(prompt).toContain("Search the catalog only when neither list has it");
     expect(prompt).toContain("`opentag-dev self mcp search <query> --json`");
     expect(prompt).toContain("paste the MCP configuration into this chat");
     expect(prompt).toContain("`opentag-dev self mcp add <name> <url> [oauth|bearer]`");
@@ -427,6 +432,8 @@ describe("renderManagedSystemPrompt Cloud environment", () => {
     expect(prompt).not.toContain("## Self-configuration");
     expect(prompt).not.toContain("agent self");
     expect(prompt).toContain("## MCP");
+    expect(prompt).toContain("Branch on the operation before you search or add.");
+    expect(prompt).toContain("Do not search the catalog and do not run add.");
     expect(prompt).toContain("`opentag self mcp search <query> --json`");
     expect(prompt).toContain("paste the MCP configuration into this chat");
   });

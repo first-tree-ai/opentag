@@ -1,12 +1,19 @@
 ---
 name: mcp-onboarding
-description: "Connect, authorize, and manage MCP Servers for this Agent inside the current OpenTag chat. Use when the user wants to configure, connect, add, enable, disable, remove, or authorize a tool, connector, integration, or MCP Server; when they name a product or service to hook up; when they paste an MCP config, URL, or API key; or when a mounted Server is missing, disabled, or unauthorized. Also match 配置 MCP, 连接, 接入, 授权, 帮我接一下, and 加上这个服务."
+description: "Connect, authorize, and manage MCP Servers for this Agent inside the current OpenTag chat. Use when the user wants to configure, connect, add, enable, disable, remove, or authorize a tool, connector, integration, or MCP Server; when they name a product or service; when they paste an MCP config, URL, or API key; or when a mounted Server is missing, disabled, or unauthorized. Also match 我想配置 X 的 MCP, 配置 MCP, 连接, 接入, 授权, 帮我接一下, and 加上这个服务. Do not answer those requests with a web-console guide."
 ---
 
 # MCP onboarding
 
-Configure MCP in this OpenTag chat. You run the commands. The user stays in the conversation. The
-one step they take outside the chat is opening the OAuth consent URL you give them.
+Configure MCP in this OpenTag chat. You run the commands before you reply. The user stays in the
+conversation. The one step they take outside the chat is opening the OAuth consent URL you give them.
+
+A message such as "我想配置 Figma 的 MCP" is this Skill. The wrong reply is a setup guide: two
+methods, a recommended web console, "log in, open Agent settings, open Connectors, search, click
+Connect", or a list of actions and tool names you have not observed. The Connectors page exists.
+Describing it is still the wrong reply. Run `opentag self mcp search` with the product name first.
+Report what that command returned. Ask for a pasted configuration only when the search has no
+installable match.
 
 The production binary is `opentag`. A development Computer has `opentag-dev` and a staging Computer
 has `opentag-staging`. Use the binary this workspace has. `opentag self` and `opentag agent self`
@@ -178,8 +185,9 @@ for yourself.
   and re-enables with no reauthorization.
 - Report what you observed. The exact `probeState`, `toolsCount`, and `probeError` are what let a
   person fix the problem.
-- Do the management in this chat. Do not hand the user the web settings or the Account commands
-  `opentag mcp` and `opentag agent mcp`.
+- Do the management in this chat. A reply that only tells the user how to use the web console, Agent
+  settings, or the Connectors page is a failed turn. Account commands `opentag mcp` and
+  `opentag agent mcp` are not a substitute you hand to the user.
 
 ## Reference
 

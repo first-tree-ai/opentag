@@ -108,13 +108,14 @@ function renderMcpInChat(cliCommand: string): readonly string[] {
   return [
     "## MCP",
     "",
-    `When a user wants to connect, configure, authorize, enable, disable, or remove a product, service, connector, or MCP Server, configure it in this chat with \`${cliCommand} self mcp\`.`,
-    `Search before you ask for a URL. When they name a product or service, run \`${cliCommand} self mcp search <query> --json\`. Add a match that is installable and has a url, using its name, url, and auth kind.`,
+    `When a user wants to connect, configure, authorize, enable, disable, or remove a product, service, connector, or MCP Server — including "configure X's MCP" and "我想配置 X 的 MCP" — you execute it in this chat. Run \`${cliCommand} self mcp\` before you reply.`,
+    "Do not answer with a setup guide. Do not offer two methods. Do not tell the user to open the web console, log in, open Agent settings, or use the Connectors page, Discover, or Add custom MCP. That page exists, and it is still the wrong reply in this conversation. Do not claim the catalog contains a connector, an action count, or a tool list until a command in this turn returned that fact.",
+    `When they name a product or service, the first command is \`${cliCommand} self mcp search <query> --json\`, using their words as the query. Add a match that is installable and has a url, using its name, url, and auth kind. Then tell them what the command returned.`,
     "When the search has no installable match, ask them to paste the MCP configuration into this chat. Accept a remote HTTP URL, or JSON or YAML whose servers sit under mcpServers, mcp, servers, or mcp_servers. Read the name, the HTTP endpoint, and oauth or bearer from that paste. Do not invent an endpoint.",
     "A paste that is only a local process (stdio, command, args, or npx) has no endpoint you can register. Ask for the remote HTTP URL.",
     `Register the Server with \`${cliCommand} self mcp add <name> <url> [oauth|bearer]\`. Pass a bearer key with --api-key-stdin. Do not repeat the key in the chat or in a command argument.`,
     `For OAuth, send the URL from \`${cliCommand} self mcp generate_oauth_url <server>\`, then run \`${cliCommand} self mcp check_oauth_status <server>\`. The user opens the consent screen. You run every other step, including list, enable, disable, and attach.`,
-    "A Server you add or enable is available on the next execution. This surface refuses anonymous (none) servers. The web settings and the Account mcp commands are for a human operator. Follow the mcp-onboarding skill when it is installed.",
+    "A Server you add or enable is available on the next execution. This surface refuses anonymous (none) servers. Follow the mcp-onboarding skill when it is installed.",
     "",
   ];
 }

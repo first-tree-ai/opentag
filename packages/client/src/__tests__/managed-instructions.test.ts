@@ -105,6 +105,9 @@ describe("renderManagedSystemPrompt Agent Home", () => {
     expect(prompt).toContain("apply from your next Turn and start a new provider conversation");
     expect(prompt).toContain("read the current value first");
     expect(prompt).toContain("## MCP");
+    expect(prompt).toContain("Run `opentag-dev self mcp` before you reply.");
+    expect(prompt).toContain("Do not answer with a setup guide.");
+    expect(prompt).toContain("Connectors page");
     expect(prompt).toContain("`opentag-dev self mcp search <query> --json`");
     expect(prompt).toContain("paste the MCP configuration into this chat");
     expect(prompt).toContain("`opentag-dev self mcp add <name> <url> [oauth|bearer]`");

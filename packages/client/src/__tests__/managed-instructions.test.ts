@@ -116,6 +116,8 @@ describe("renderManagedSystemPrompt Agent Home", () => {
     expect(prompt).toContain("authorization: null");
     expect(prompt).toContain("Do not add a second definition.");
     expect(prompt).toContain("Stop only when the observed state is enabled");
+    expect(prompt).toContain("Do not call generate_oauth_url while the status is pending.");
+    expect(prompt).toContain("`opentag-dev self mcp use <server> --api-key-stdin`");
     expect(prompt).not.toContain("report it and stop");
     expect(prompt).toContain("`opentag-dev self mcp search <query> --json`");
     expect(prompt).toContain("paste the MCP configuration into this chat");
@@ -440,6 +442,8 @@ describe("renderManagedSystemPrompt Cloud environment", () => {
     expect(prompt).toContain("Do not search the catalog and do not run add.");
     expect(prompt).toContain("authorization: null");
     expect(prompt).toContain("Do not add a second definition.");
+    expect(prompt).toContain("Do not call generate_oauth_url while the status is pending.");
+    expect(prompt).toContain("`opentag self mcp use <server> --api-key-stdin`");
     expect(prompt).toContain("`opentag self mcp search <query> --json`");
     expect(prompt).toContain("paste the MCP configuration into this chat");
   });

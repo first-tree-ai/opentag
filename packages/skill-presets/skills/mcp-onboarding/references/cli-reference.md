@@ -22,6 +22,7 @@ implied by the proof, so the shorter form is what to type.
 | `self update` | Instructions, model, reasoning effort | `--model`, `--clear-model`, `--reasoning-effort`, `--clear-reasoning-effort`, `--instructions`, `--instructions-file`, `--json` |
 | `self mcp search <query>` | Search the connector catalog; needs no network and no definition | `--limit`, `--json` |
 | `self mcp add <name> <url> [auth_kind]` | Register a definition and mount it on this Agent | `auth_kind` is `oauth` or `bearer`; `--api-key-stdin`, `--api-key` (**UNSAFE**), `--json` |
+| `self mcp use <server>` | Write a Bearer key onto a Server this Agent already mounts. Does not create a definition | `--api-key-stdin`, `--api-key` (**UNSAFE**), `--json` |
 | `self mcp delete <server>` | Unmount the Server and drop this Agent's credential; retains the Account definition | `--json` |
 | `self mcp generate_oauth_url <server>` | Start the flow; prints the URL a human must open | `--scopes a,b`, `--json` |
 | `self mcp check_oauth_status <server>` | Authorization and probe state, with the tool names | `--wait [seconds]`, `--json` |
@@ -37,7 +38,11 @@ the Agent, so no command can address another one.
 
 `mcp add` refuses `none`. An anonymous mount is usable the instant it exists, with no step a human
 reviews, so declaring one stays an operator decision. `--api-key` only accompanies `bearer`, and
-`--api-key-stdin` is preferred for the same reason `--bearer-key-stdin` is.
+`--api-key-stdin` is preferred for the same reason `--bearer-key-stdin` is. `self mcp use` is the
+command that writes a key onto a mount that already exists. `add` is only for a new definition.
+
+`generate_oauth_url` replaces any pending flow, which invalidates a link the user may still be
+opening. A status of `pending` means that link is still the one to finish.
 
 `check_oauth_status` reports `authKind`, `authStatus`, `probeState`, `toolsCount`, `probeError`,
 `failureCode`, and the tool `name`/`description` pairs. It never carries an OAuth token or a Bearer

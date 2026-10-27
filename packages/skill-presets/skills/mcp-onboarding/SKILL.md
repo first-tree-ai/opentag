@@ -26,9 +26,11 @@ settings page for that flag. Do not send them to the web MCP screen as a substit
 
 1. **They ask to enable, disable, remove, detach, or reauthorize a Server.** This includes "disable
    Notion". The first command is `opentag self mcp list --json`. Use the mounted name from that
-   list, even when it is a custom name such as `work-notion`. Then run `enable`, `disable`,
-   `delete`, or `generate_oauth_url` on that binding. Do not search the catalog. Do not run `add`.
-   `add` only creates a definition. It does not change an existing one.
+   list, even when it is a custom name such as `work-notion`. Then run `enable`, `disable`, or
+   `delete` on that binding. Run `generate_oauth_url` only when they explicitly ask to replace the
+   link. A status of `pending` is not that request: the link you already sent is still live, and a
+   new URL invalidates it. Do not search the catalog. Do not run `add`. `add` only creates a
+   definition. It does not change an existing one.
 
 2. **They ask to connect or configure a product this Agent does not mount yet.** This includes
    "我想配置 Figma 的 MCP". Check the bindings you already have before you search:
@@ -41,9 +43,13 @@ settings page for that flag. Do not send them to the web MCP screen as a substit
    If it is already mounted, reuse that name. Do not add a second definition. A mount is not a
    usable connection: an enabled OAuth binding can still have `authorization: null`. If `enabled`
    is false, run `opentag self mcp enable <server>`. Then run the authorization check in Procedure
-   step 5 on that name. Continue the bearer or OAuth flow while authorization is null or its status
-   is `pending`, `expired`, `revoked`, or `error`. Stop only when the observed state is enabled,
-   the authorization status is `active`, and `probeState` is `succeeded`. If the Account already
+   step 5 on that name. A missing Bearer key is written with `opentag self mcp use <server>
+   --api-key-stdin`. Do not run `add` to store a key for an existing name. `authorization: null`
+   means no OAuth flow has started: run `generate_oauth_url` once. A status of `pending` means that
+   link is still live: check again and wait. Do not start a new flow while it is `pending`. Start
+   one again only when the status is `expired`, `revoked`, or `error`, or when the user says the
+   link was refused or already used. Stop only when the observed state is enabled, the
+   authorization status is `active`, and `probeState` is `succeeded`. If the Account already
    defines it and you do not mount it, run `opentag self mcp attach <server>` and run the same
    check. Search only when neither list has it. Use their words as the query:
 
@@ -82,7 +88,8 @@ Read this before you promise anything.
 | Search the connector catalog | You | `opentag self mcp search <query>` |
 | Read a pasted MCP configuration | The user, in this chat | You parse it, then you run `add` |
 | Register a Server definition and mount it on yourself | You | `opentag self mcp add <name> <url> [oauth\|bearer]` |
-| Write your own Bearer key | You | `opentag self mcp add … bearer --api-key-stdin` |
+| Write a Bearer key while creating the definition | You | `opentag self mcp add … bearer --api-key-stdin` |
+| Write a Bearer key onto a Server you already mount | You | `opentag self mcp use <server> --api-key-stdin` |
 | Start an OAuth flow | You | `opentag self mcp generate_oauth_url <server>` |
 | Complete an OAuth consent screen | The user, in a browser | `opentag self mcp check_oauth_status <server> --wait` |
 | Mount, enable, or disable an Account definition | You | `opentag self mcp attach` / `enable` / `disable` |
@@ -149,9 +156,15 @@ after `list` and the requested command. It does not continue into search or `add
    opentag self mcp check_oauth_status <server>
    ```
 
-   - `authKind` is `none` and `probeState` is `null`. Nothing has been authorized yet. For a Bearer
-     Server, ask the user for the key and run step 4 again with `--api-key-stdin`. For an OAuth
-     Server, go to step 6.
+   - `authKind` is `none` and `probeState` is `null`, or `authorization` is null. Nothing has been
+     authorized yet. For a Bearer Server, ask the user for the key and run `opentag self mcp use
+     <server> --api-key-stdin`. Do not run `add` again: the name already exists. For an OAuth
+     Server, go to step 6 once.
+   - `authStatus` is `pending`. The consent link is still live. Do not run `generate_oauth_url`.
+     Tell the user to finish the link you already sent, and check again when they say they have
+     finished.
+   - `authStatus` is `expired`, `revoked`, or `error`. The previous flow cannot be finished. For
+     OAuth, generate a fresh URL. For Bearer, run `use` again with a new key.
    - `authStatus` is `active` and `probeState` is `failed`. The Server was reached but its tools
      could not be read. Report `probeError` to the user. The usual causes are a rejected
      credential, a protocol revision the Server does not speak, or an endpoint the platform refuses
@@ -179,7 +192,8 @@ after `list` and the requested command. It does not continue into search or `add
    ```
 
    If it has not settled, tell the user to reply when they have finished, and check once more then
-   with no `--wait`. If they report that the link was refused or already used, generate a fresh one.
+   with no `--wait`. A status that is still `pending` is that wait. It is not a reason to generate
+   another URL. If they report that the link was refused or already used, generate a fresh one.
    Do not reuse the old URL. Do not block indefinitely, and do not claim success you have not
    observed.
 

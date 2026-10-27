@@ -217,6 +217,26 @@ export async function runAgentSelfMcpAdd(options: AgentSelfMcpAddOptions): Promi
   return api.createRuntimeAgentMcpServer(proof, input);
 }
 
+/**
+ * Write this Agent's Bearer key onto a Server it already mounts.
+ *
+ * `add` is the only command that creates a definition, and a second `add` of a retained Account name
+ * fails with `MCP_SERVER_NAME_CONFLICT`. The key for an existing mount goes to the credential
+ * endpoint instead.
+ */
+export async function runAgentSelfMcpUse(
+  reference: string,
+  apiKey: string,
+  dependencies: AgentSelfDependencies = {},
+): Promise<MCPAgentServer> {
+  if (apiKey.length === 0) {
+    throw new CommandError(validationError(), "A credential is required; pass it with --api-key-stdin");
+  }
+  const { api, proof } = await resolveAgentSelfContext(dependencies);
+  const mounted = await resolveMounted(api, proof, reference);
+  return api.setRuntimeAgentMcpBearerKey(proof, mounted.mcpServerId, apiKey);
+}
+
 function resolveAuthKind(value: string | undefined, hasApiKey: boolean): MCPAuthKind {
   const kind = value ?? (hasApiKey ? "bearer" : "oauth");
   if (kind === "none") {

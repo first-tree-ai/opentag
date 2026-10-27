@@ -17,6 +17,7 @@ import {
   runAgentSelfMcpGenerateOAuthUrl,
   runAgentSelfMcpList,
   runAgentSelfMcpSearch,
+  runAgentSelfMcpUse,
   runAgentSelfShow,
   runAgentSelfUpdate,
 } from "../core/agent/self.js";
@@ -210,6 +211,17 @@ describe("agent self core", () => {
     expect(api.createRuntimeAgentMcpServer).not.toHaveBeenCalled();
   });
 
+  it("writes a Bearer key onto the mount it resolved and does not create a definition", async () => {
+    const { api, deps } = fakeApi();
+    await expect(runAgentSelfMcpUse("docs", "k", deps)).resolves.toEqual(mounted);
+    expect(api.setRuntimeAgentMcpBearerKey).toHaveBeenCalledWith("fixture-proof", mcpServerId, "k");
+    expect(api.createRuntimeAgentMcpServer).not.toHaveBeenCalled();
+    await expect(runAgentSelfMcpUse("missing", "k", deps)).rejects.toThrow("This Agent does not mount");
+    await expect(runAgentSelfMcpUse("docs", "", deps)).rejects.toThrow(
+      "A credential is required; pass it with --api-key-stdin",
+    );
+  });
+
   it("deletes by name from this Agent's own mounts", async () => {
     const { api, deps } = fakeApi();
     await expect(runAgentSelfMcpDelete("docs", deps)).resolves.toEqual(mounted);
@@ -334,6 +346,7 @@ describe("agent self commands", () => {
       },
     ]);
     const add = vi.spyOn(agentSelf, "runAgentSelfMcpAdd").mockResolvedValue(mounted);
+    const use = vi.spyOn(agentSelf, "runAgentSelfMcpUse").mockResolvedValue(mounted);
     const remove = vi.spyOn(agentSelf, "runAgentSelfMcpDelete").mockResolvedValue(mounted);
     const oauthUrl = vi.spyOn(agentSelf, "runAgentSelfMcpGenerateOAuthUrl").mockResolvedValue({
       server: mounted,
@@ -348,6 +361,7 @@ describe("agent self commands", () => {
       for (const args of [
         ["self", "mcp", "search", "notion"],
         ["self", "mcp", "add", "hubspot", "https://mcp.hubspot.example/mcp", "oauth"],
+        ["self", "mcp", "use", "docs", "--api-key", "secret-key"],
         ["self", "mcp", "delete", "docs"],
         ["self", "mcp", "generate_oauth_url", "docs", "--scopes", "read,write"],
         ["self", "mcp", "check_oauth_status", "docs"],
@@ -362,6 +376,7 @@ describe("agent self commands", () => {
         url: "https://mcp.hubspot.example/mcp",
         authKind: "oauth",
       });
+      expect(use).toHaveBeenCalledWith("docs", "secret-key");
       expect(remove).toHaveBeenCalledWith("docs");
       expect(oauthUrl).toHaveBeenCalledWith("docs", { scopes: ["read", "write"] });
       // A bare status read does not wait; `--wait` takes the default budget; an explicit value is honoured.

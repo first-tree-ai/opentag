@@ -14,6 +14,7 @@ import {
   runAgentSelfMcpGenerateOAuthUrl,
   runAgentSelfMcpList,
   runAgentSelfMcpSearch,
+  runAgentSelfMcpUse,
   runAgentSelfShow,
   runAgentSelfUpdate,
 } from "../../core/agent/self.js";
@@ -131,6 +132,29 @@ function registerAgentSelfMcpCommands(self: Command): void {
             ...whenDefined("authKind", authKind),
             ...whenDefined("apiKey", await readApiKey(options)),
           }),
+        { json: options.json === true, formatValue: formatAgentServerRow, phase: "request" },
+      );
+    });
+
+  mcp
+    .command("use <server>")
+    .description("Write this Agent's Bearer key for a Server it already mounts; this does not create a definition")
+    .addOption(new Option("--api-key-stdin", "read the Bearer key from standard input (preferred)").conflicts("apiKey"))
+    .addOption(
+      new Option("--api-key <key>", "UNSAFE: the Bearer key as an argument, visible in shell history and ps").conflicts(
+        "apiKeyStdin",
+      ),
+    )
+    .option("--json", "print JSON")
+    .action(async (server: string, options: RawApiKeyOptions) => {
+      process.exitCode = await executeCommand(
+        async () => {
+          const apiKey = await readApiKey(options);
+          if (apiKey === undefined) {
+            throw new Error("A credential is required; pass it with --api-key-stdin");
+          }
+          return runAgentSelfMcpUse(server, apiKey);
+        },
         { json: options.json === true, formatValue: formatAgentServerRow, phase: "request" },
       );
     });

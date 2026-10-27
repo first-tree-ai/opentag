@@ -15,6 +15,7 @@ opentag self update [--instructions <text> | --instructions-file <path>]
                     [--reasoning-effort <effort> | --clear-reasoning-effort]
 opentag self mcp search <query> [--limit <n>]
 opentag self mcp add <name> <url> [oauth|bearer] [--api-key-stdin | --api-key <key>]
+opentag self mcp use <server> [--api-key-stdin | --api-key <key>]
 opentag self mcp delete <server>
 opentag self mcp list [--page <n>] [--limit <n>]
 opentag self mcp available
@@ -47,14 +48,15 @@ Servers in the current chat, and to branch on the operation before it replies. A
 reauthorize request resolves the mounted name with `self mcp list` and runs that operation. It does not search
 the catalog and it does not run `self mcp add`, because `add` only creates a definition. A new connection
 checks mounted Servers and available Account definitions first. A mounted Server is not finished while
-`authorization` is null or its status is pending, expired, revoked, or error, including an enabled binding
-that has not completed OAuth. The Agent reuses that mounted name, enables it when it is disabled, and
-continues `check_oauth_status` and the OAuth or bearer flow. It does not create a second definition. The
-Agent searches the catalog only when neither list has the Server, asks the user to paste an MCP
-configuration when the catalog has no installable match, then runs `self mcp add`. The user opens an OAuth consent screen. A reply that sends the user to the
-web console, Agent settings, or the Connectors page, or that lists connectors and tools the command did not
-return, is the failure this section forbids. Enable this setting only when you trust the messages that the
-Agent receives: a configuration change can affect all of its future Turns.
+`authorization` is null or its status is expired, revoked, or error, including an enabled binding that has
+not completed OAuth. The Agent reuses that mounted name and enables it when it is disabled. A missing Bearer
+key is written with `self mcp use`, not with another `add`. A status of `pending` waits on the link already
+sent; it does not start a new OAuth flow. The Agent does not create a second definition. The Agent searches
+the catalog only when neither list has the Server, asks the user to paste an MCP configuration when the
+catalog has no installable match, then runs `self mcp add`. The user opens an OAuth consent screen. A reply
+that sends the user to the web console, Agent settings, or the Connectors page, or that lists connectors and
+tools the command did not return, is the failure this section forbids. Enable this setting only when you
+trust the messages that the Agent receives: a configuration change can affect all of its future Turns.
 
 ## Identity
 
@@ -100,6 +102,15 @@ step.
 `self mcp add` creates the definition and mounts it atomically inside a single database transaction under a row lock on
 the Agent. If the mount fails or the Agent's ownership / self-configuration permission changes concurrently,
 PostgreSQL rolls back the entire operation so no orphan definition is left in the Account pool.
+
+`self mcp use` writes a Bearer key onto a Server this Agent already mounts. It uses the existing credential
+endpoint and does not create a definition. A second `add` of a name the Account already keeps fails with
+`MCP_SERVER_NAME_CONFLICT`.
+
+`self mcp generate_oauth_url` starts a new flow and replaces any pending state and PKCE verifier. That
+invalidates a link the user may still be opening. A status of `pending` means that link is still the one to
+finish. Start another flow only when no authorization exists yet, when the status is `expired`, `revoked`, or
+`error`, or when the user says the previous link was refused or already used.
 
 Every other self-service write path — writing a Bearer key, starting an OAuth flow, enabling or disabling the mount,
 and unmounting it — re-checks `selfConfigurationEnabled` inside its own transaction under the same row lock a human

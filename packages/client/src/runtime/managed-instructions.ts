@@ -79,20 +79,42 @@ function renderSkills(cliCommand: string): readonly string[] {
 }
 
 /**
- * The Agent may tune its own configuration through the Session proof. Instructions, model, and
- * reasoning effort feed the effective snapshot hash, so a change applies from the next Turn and that
+ * The Agent may tune its own instructions, model, and reasoning effort through the Session proof.
+ * Those fields feed the effective snapshot hash, so a change applies from the next Turn and that
  * Turn starts a new provider conversation instead of resuming the old one. The Agent is told so it
  * does not change them casually mid-task.
  *
- * The MCP sentence names the self-service path as well as the mount-only one, because the two are
- * different commands and an Agent that learned only `agent self mcp attach` would keep asking a
- * human to register a connector it can register itself.
+ * MCP configuration is a separate section (`renderMcpInChat`). It used to be one sentence inside
+ * this paragraph, which the model skipped when the user named a product or asked to connect a
+ * service without saying "MCP".
  */
 function renderSelfConfiguration(cliCommand: string): readonly string[] {
   return [
     "## Self-configuration",
     "",
-    `Inspect your own configuration with \`${cliCommand} agent self show\`. When a user asks you to change how you work, you may update your own instructions, model, or reasoning effort with \`${cliCommand} agent self update\`, and mount or enable Account MCP Servers with \`${cliCommand} agent self mcp\`. When a user names a connector you do not mount yet, search for it with \`${cliCommand} self mcp search <query>\`, add it with \`${cliCommand} self mcp add <name> <url> [oauth|bearer]\`, and for an OAuth Server give the user the URL from \`${cliCommand} self mcp generate_oauth_url <server>\` and then check \`${cliCommand} self mcp check_oauth_status <server>\`: the consent screen is theirs to click, everything else is yours. Instruction, model, and reasoning-effort changes apply from your next Turn and start a new provider conversation in every existing Session, so earlier conversation context is not carried over; change them only when asked, not mid-task. An Agent that had no usable MCP Server gets MCP access at its next execution. Replacing instructions overwrites them entirely, so read the current value first and keep what still applies.`,
+    `Inspect your own configuration with \`${cliCommand} agent self show\`. When a user asks you to change how you work, you may update your own instructions, model, or reasoning effort with \`${cliCommand} agent self update\`. Instruction, model, and reasoning-effort changes apply from your next Turn and start a new provider conversation in every existing Session, so earlier conversation context is not carried over; change them only when asked, not mid-task. Replacing instructions overwrites them entirely, so read the current value first and keep what still applies.`,
+    "",
+  ];
+}
+
+/**
+ * How the Agent configures MCP inside this Session, on Local and Cloud.
+ *
+ * The section is always present when the Session CLI and the self-configuration opt-in are both
+ * available, including when the `mcp-onboarding` skill is not installed. The skill holds the
+ * command detail. This section is the rule that has to fire from the user message alone.
+ */
+function renderMcpInChat(cliCommand: string): readonly string[] {
+  return [
+    "## MCP",
+    "",
+    `When a user wants to connect, configure, authorize, enable, disable, or remove a product, service, connector, or MCP Server, configure it in this chat with \`${cliCommand} self mcp\`.`,
+    `Search before you ask for a URL. When they name a product or service, run \`${cliCommand} self mcp search <query> --json\`. Add a match that is installable and has a url, using its name, url, and auth kind.`,
+    "When the search has no installable match, ask them to paste the MCP configuration into this chat. Accept a remote HTTP URL, or JSON or YAML whose servers sit under mcpServers, mcp, servers, or mcp_servers. Read the name, the HTTP endpoint, and oauth or bearer from that paste. Do not invent an endpoint.",
+    "A paste that is only a local process (stdio, command, args, or npx) has no endpoint you can register. Ask for the remote HTTP URL.",
+    `Register the Server with \`${cliCommand} self mcp add <name> <url> [oauth|bearer]\`. Pass a bearer key with --api-key-stdin. Do not repeat the key in the chat or in a command argument.`,
+    `For OAuth, send the URL from \`${cliCommand} self mcp generate_oauth_url <server>\`, then run \`${cliCommand} self mcp check_oauth_status <server>\`. The user opens the consent screen. You run every other step, including list, enable, disable, and attach.`,
+    "A Server you add or enable is available on the next execution. This surface refuses anonymous (none) servers. The web settings and the Account mcp commands are for a human operator. Follow the mcp-onboarding skill when it is installed.",
     "",
   ];
 }
@@ -119,6 +141,7 @@ function renderSession(context: ManagedSessionContext): readonly string[] {
     ...(local && context.sessionCliAvailable && context.selfConfigurationEnabled
       ? renderSelfConfiguration(context.cliCommand)
       : []),
+    ...(context.sessionCliAvailable && context.selfConfigurationEnabled ? renderMcpInChat(context.cliCommand) : []),
     "## Session",
     "",
     `Current Session: ${context.sessionId}`,

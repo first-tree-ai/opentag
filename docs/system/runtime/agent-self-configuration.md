@@ -39,8 +39,15 @@ The Agent cannot change this flag through `self update`.
 
 When `selfConfigurationEnabled` is false, every route under `/api/v1/runtime/agent` returns HTTP 403 with
 `AGENT_SELF_CONFIGURATION_DISABLED`, including read routes. The managed prompt includes the Self-configuration
-section only when the flag is true and the Session CLI is available. Enable this setting only when you trust the
-messages that the Agent receives: a configuration change can affect all of its future Turns.
+section only when the flag is true and the Session CLI is available, and only on a Local Computer. That section
+covers instructions, model, and reasoning effort.
+
+The same two conditions include an MCP section on Local and Cloud. That section tells the Agent to configure
+Servers in the current chat: search the catalog when the user names a product or service, ask the user to paste
+an MCP configuration when the catalog has no installable match, then run `self mcp`. The user opens an OAuth
+consent screen. The Agent does every other step, including list, enable, disable, and attach. The section does
+not send the user to the web settings or to the Account `mcp` commands. Enable this setting only when you trust
+the messages that the Agent receives: a configuration change can affect all of its future Turns.
 
 ## Identity
 

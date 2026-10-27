@@ -436,8 +436,10 @@ A Skill the platform's own team owns is authored as a bundle under one of two ho
 
 `packages/skill-presets/skills/<name>/` is the **preset catalog**: these bundles ship with the
 product and are discoverable and installable through the routes above. One lives there today:
-`mcp-onboarding` tells an Agent how to find, mount, and verify an MCP Server for itself, and which of
-those steps only a human may take.
+`mcp-onboarding` tells an Agent to configure an MCP Server inside the current chat. When the user names
+a product or service, the Agent searches the catalog first. When the catalog has no installable match, the
+Agent asks the user to paste an MCP configuration, then registers and authorizes it with `self mcp`. The
+OAuth consent screen is the step only a human takes.
 
 Root `skills/<name>/` is the home for a first-party bundle that is not part of the discoverable
 catalog. `mcp-catalog-entry` lives there today: the operator's procedure for recording a remote

@@ -108,7 +108,9 @@ for yourself.
    ```
 
    Then say, in one message: what you added, that one click is needed, the URL, and that you will
-   report when it lands. Poll only briefly, because a login plus a second factor can take longer
+   report when it lands. The link only works for the Account that owns this Agent and only once, so
+   tell them to open it themselves while signed in to openTag — not to forward it to a colleague, and
+   not to open it twice. Poll only briefly, because a login plus a second factor can take longer
    than a Turn:
 
    ```sh
@@ -116,11 +118,13 @@ for yourself.
    ```
 
    If it has not settled, tell the human to reply when they have finished, and check once more then
-   with no `--wait`. Never block indefinitely, and never claim success you have not observed.
+   with no `--wait`. If they report that the link was refused or already used, generate a fresh one —
+   never reuse the old URL. Never block indefinitely, and never claim success you have not observed.
 
 ## What stays with the human
 
-- **The OAuth consent screen.** You can start the flow; only they can approve it.
+- **The OAuth consent screen.** You can start the flow; only they can approve it. The link is bound
+  to the Account that owns this Agent and is single use, so it cannot be shared or retried.
 - **Deleting an Account definition.** `opentag self mcp delete <server>` removes your mount and your
   authorization, but retains the Account definition. Removing or reusing its name requires human
   Account deletion.

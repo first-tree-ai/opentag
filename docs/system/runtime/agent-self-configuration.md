@@ -87,16 +87,30 @@ step.
 the Agent. If the mount fails or the Agent's ownership / self-configuration permission changes concurrently,
 PostgreSQL rolls back the entire operation so no orphan definition is left in the Account pool.
 
+Every other self-service write path — writing a Bearer key, starting an OAuth flow, enabling or disabling the mount,
+and unmounting it — re-checks `selfConfigurationEnabled` inside its own transaction under the same row lock a human
+edit takes. The proof-authenticated request that preceded it is not enough on its own: an owner who revokes the opt-in
+while a request is in flight must not end up with a credential or a mount change written after the revocation. Account
+callers are unaffected by that flag; it gates only the Agent surface.
+
 ## OAuth from an Agent-started flow
 
-`self mcp generate_oauth_url` starts the same flow the Account surface starts, and returns the provider's
-`authorizationUrl` for the user to open. The flow's `state` is single-use, stored hashed, and short lived.
+`self mcp generate_oauth_url` starts the same flow the Account surface starts, and returns a handoff URL for the user
+to open. The flow's `state` is stored hashed and short lived.
 
-The URL returned by `self mcp generate_oauth_url` routes through a secure same-origin browser handoff
-(`/api/v1/mcp-servers/oauth/handoff?token=...`). When the human opens this URL, the server redeems the short-lived,
-single-use handoff token, sets the `mcpOAuthContext` cookie on the browser, and issues a 302 redirect to the
-provider's authorization endpoint. The subsequent callback retains this cookie and satisfies the required browser
-binding.
+The URL routes through a same-origin browser handoff (`/api/v1/mcp-servers/oauth/handoff?token=...`). That route is
+**not anonymous**, which is what keeps an Agent from binding the wrong person:
+
+| Caller | Result |
+| --- | --- |
+| Not signed in | 302 to `/login?next=<the handoff URL>`, then back here. No cookie is set. |
+| Signed in, but not the Account that owns the Agent | 404, the same body a token that never existed produces. No cookie is set. |
+| Signed in as the owning Account | The handoff is consumed, the `mcpOAuthContext` cookie is set, and the browser is redirected to the provider. |
+
+Redemption is single use. The flow row holds a hash of the browser secret the token carries; redeeming replaces it with
+the hash of a fresh secret and returns that one for the cookie, in a single conditional update. A second use of the same
+URL matches no row and is refused, so a forwarded link cannot re-bind the flow to another browser. The flow itself —
+`state`, its deadline, and the PKCE verifier — is left untouched, because the callback still needs it.
 
 `self mcp check_oauth_status` reports the authorization status, the probe state, and the tool names without their input
 schemas, so a poll stays small. A plain call returns immediately; `--wait [seconds]` polls until the flow settles or the

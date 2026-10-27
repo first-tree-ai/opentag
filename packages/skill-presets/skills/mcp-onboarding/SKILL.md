@@ -38,9 +38,14 @@ settings page for that flag. Do not send them to the web MCP screen as a substit
    opentag self mcp available --json
    ```
 
-   If it is already mounted, report that binding and stop. Do not add another. If the Account
-   already defines it and you do not mount it, run `opentag self mcp attach <server>` and go to the
-   authorization check. Search only when neither list has it. Use their words as the query:
+   If it is already mounted, reuse that name. Do not add a second definition. A mount is not a
+   usable connection: an enabled OAuth binding can still have `authorization: null`. If `enabled`
+   is false, run `opentag self mcp enable <server>`. Then run the authorization check in Procedure
+   step 5 on that name. Continue the bearer or OAuth flow while authorization is null or its status
+   is `pending`, `expired`, `revoked`, or `error`. Stop only when the observed state is enabled,
+   the authorization status is `active`, and `probeState` is `succeeded`. If the Account already
+   defines it and you do not mount it, run `opentag self mcp attach <server>` and run the same
+   check. Search only when neither list has it. Use their words as the query:
 
    ```sh
    opentag self mcp search notion --json

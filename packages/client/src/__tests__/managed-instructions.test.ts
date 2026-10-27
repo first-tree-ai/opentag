@@ -113,6 +113,10 @@ describe("renderManagedSystemPrompt Agent Home", () => {
     expect(prompt).toContain("Do not search the catalog and do not run add.");
     expect(prompt).toContain("`opentag-dev self mcp list --json`");
     expect(prompt).toContain("Search the catalog only when neither list has it");
+    expect(prompt).toContain("authorization: null");
+    expect(prompt).toContain("Do not add a second definition.");
+    expect(prompt).toContain("Stop only when the observed state is enabled");
+    expect(prompt).not.toContain("report it and stop");
     expect(prompt).toContain("`opentag-dev self mcp search <query> --json`");
     expect(prompt).toContain("paste the MCP configuration into this chat");
     expect(prompt).toContain("`opentag-dev self mcp add <name> <url> [oauth|bearer]`");
@@ -434,6 +438,8 @@ describe("renderManagedSystemPrompt Cloud environment", () => {
     expect(prompt).toContain("## MCP");
     expect(prompt).toContain("Branch on the operation before you search or add.");
     expect(prompt).toContain("Do not search the catalog and do not run add.");
+    expect(prompt).toContain("authorization: null");
+    expect(prompt).toContain("Do not add a second definition.");
     expect(prompt).toContain("`opentag self mcp search <query> --json`");
     expect(prompt).toContain("paste the MCP configuration into this chat");
   });

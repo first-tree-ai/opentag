@@ -438,9 +438,11 @@ A Skill the platform's own team owns is authored as a bundle under one of two ho
 product and are discoverable and installable through the routes above. One lives there today:
 `mcp-onboarding` tells an Agent to configure an MCP Server inside the current chat. The Agent branches on
 the operation first. An enable, disable, remove, or reauthorize request uses the mounted name from `self mcp
-list` and does not search or add. A new connection checks mounted and available definitions, searches the
-catalog only when neither has the Server, and asks the user to paste an MCP configuration when the catalog has
-no installable match. A reply that sends the user to the web console or the Connectors page is the failure
+list` and does not search or add. A new connection checks mounted and available definitions. A mounted Server whose authorization is
+missing, pending, expired, revoked, or in error stays on that binding: the Agent enables it when needed and
+continues authorization, and does not create a second definition. The Agent searches the catalog only when
+neither list has the Server, and asks the user to paste an MCP configuration when the catalog has no
+installable match. A reply that sends the user to the web console or the Connectors page is the failure
 this Skill forbids. The OAuth consent screen is the step only a human takes.
 
 Root `skills/<name>/` is the home for a first-party bundle that is not part of the discoverable

@@ -46,9 +46,12 @@ The same two conditions include an MCP section on Local and Cloud. That section 
 Servers in the current chat, and to branch on the operation before it replies. An enable, disable, remove, or
 reauthorize request resolves the mounted name with `self mcp list` and runs that operation. It does not search
 the catalog and it does not run `self mcp add`, because `add` only creates a definition. A new connection
-checks mounted Servers and available Account definitions first. The Agent searches the catalog only when
-neither list has the Server, asks the user to paste an MCP configuration when the catalog has no installable
-match, then runs `self mcp add`. The user opens an OAuth consent screen. A reply that sends the user to the
+checks mounted Servers and available Account definitions first. A mounted Server is not finished while
+`authorization` is null or its status is pending, expired, revoked, or error, including an enabled binding
+that has not completed OAuth. The Agent reuses that mounted name, enables it when it is disabled, and
+continues `check_oauth_status` and the OAuth or bearer flow. It does not create a second definition. The
+Agent searches the catalog only when neither list has the Server, asks the user to paste an MCP
+configuration when the catalog has no installable match, then runs `self mcp add`. The user opens an OAuth consent screen. A reply that sends the user to the
 web console, Agent settings, or the Connectors page, or that lists connectors and tools the command did not
 return, is the failure this section forbids. Enable this setting only when you trust the messages that the
 Agent receives: a configuration change can affect all of its future Turns.

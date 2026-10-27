@@ -484,10 +484,83 @@ describe("Agent self-configuration against PostgreSQL", () => {
       expect(token).toBeTruthy();
       if (!token) throw new Error("Expected token parameter in handoff URL");
 
-      // Redeem the handoff token
-      const redeemed = await value.flows.redeemHandoffToken(token);
+      // Redeem the handoff token as the Account that owns the Agent.
+      const redeemed = await value.flows.redeemHandoffToken(token, value.accountId);
       expect(redeemed.flowSecret).toBeTruthy();
       expect(redeemed.targetUrl).toContain("/authorize");
+      // Single use: the same link cannot bind a second browser.
+      await expect(value.flows.redeemHandoffToken(token, value.accountId)).rejects.toMatchObject({
+        code: "MCP_OAUTH_FLOW_INVALID",
+      });
+    } finally {
+      await fixtureServer.stop();
+      await value.sql.end();
+    }
+  });
+
+  it("refuses a handoff redemption from another Account as a missing Server (P1)", async () => {
+    const fixtureServer = await McpFixtureServer.start();
+    const value = await fixture();
+    const stranger = await createUser(value.database, "stranger-handoff@example.com");
+    try {
+      await enableSelfConfiguration(value);
+      const scope = await value.self.authenticate("valid-proof");
+      const created = await value.self.createMcpServer(scope, {
+        name: "handoff-owner-only",
+        url: fixtureServer.endpoint,
+        defaultAuthKind: "oauth",
+      });
+      const started = await value.self.startMcpOAuth(scope, created.mcpServerId, {});
+      const token = new URL(started.authorizationUrl).searchParams.get("token") ?? "";
+
+      // A stranger's session cannot bind this flow, and learns nothing about whether it exists.
+      await expect(value.flows.redeemHandoffToken(token, stranger.id)).rejects.toMatchObject({
+        code: "MCP_SERVER_NOT_FOUND",
+        statusCode: 404,
+      });
+      // The refusal must not burn the link for the Account it belongs to.
+      const redeemed = await value.flows.redeemHandoffToken(token, value.accountId);
+      expect(redeemed.targetUrl).toContain("/authorize");
+    } finally {
+      await fixtureServer.stop();
+      await value.sql.end();
+    }
+  });
+
+  it("refuses every self-service write path once the opt-in is withdrawn (DB1)", async () => {
+    // The flow's discovery has to reach a real endpoint, so the fixture serves both roles here.
+    const fixtureServer = await McpFixtureServer.start();
+    const value = await fixture();
+    try {
+      await enableSelfConfiguration(value);
+      const scope = await value.self.authenticate("valid-proof");
+      const server = await value.mcp.createServer(value.accountId, {
+        name: "revoked-writes",
+        url: fixtureServer.endpoint,
+        defaultAuthKind: "oauth",
+      });
+      await value.mcp.attachServer(value.accountId, value.agent.id, server.id, true);
+
+      // The owner revokes while the Agent's authenticated scope is still valid.
+      await value.agentService.updateById(value.accountId, value.agent.id, {
+        expectedRevision: value.agent.revision,
+        selfConfigurationEnabled: false,
+      });
+
+      for (const write of [
+        () => value.self.setMcpBearerKey(scope, server.id, "sk-late"),
+        () => value.self.startMcpOAuth(scope, server.id, {}),
+        () => value.self.deleteMcpServer(scope, server.id),
+        () => value.self.detachMcpServer(scope, server.id),
+        () => value.self.updateMcpBinding(scope, server.id, { enabled: false }),
+      ]) {
+        await expect(write()).rejects.toMatchObject({ code: "AGENT_SELF_CONFIGURATION_DISABLED" });
+      }
+
+      // Nothing was written: the mount is intact and carries no credential.
+      expect(await value.mcp.listAgentServers(value.accountId, value.agent.id)).toMatchObject([
+        { mcpServerId: server.id, enabled: true, authorization: null },
+      ]);
     } finally {
       await fixtureServer.stop();
       await value.sql.end();

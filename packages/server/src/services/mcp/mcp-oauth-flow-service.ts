@@ -12,8 +12,9 @@ import {
 import { and, eq, isNull, lte, or, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { agents, mcpClientRegistrations, mcpServerAuthorizations } from "../../db/schema/index.js";
-import { hashSecret } from "../auth/security.js";
+import { generateSecret, hashSecret } from "../auth/security.js";
 import { MCP_ERROR_CODES, McpServiceError } from "./errors.js";
+import { lockMcpCredentialBinding } from "./mcp-binding-locks.js";
 import type { McpCredentialCipher } from "./mcp-credential-cipher.js";
 import {
   MCP_OAUTH_STATE_TTL_MS,
@@ -164,6 +165,7 @@ export class McpOAuthFlowService {
      * silently produce an unbound flow, which is the vulnerability this parameter exists to close.
      */
     flowSecret: string,
+    source: "account" | "agent-self" = "account",
   ): Promise<StartedMcpOAuth> {
     const context = await this.#servers.readProbeContext(accountId, agentId, mcpServerId);
     const effective = McpServerService.resolveEffectiveConfig(context.server, context.binding);
@@ -198,86 +200,89 @@ export class McpOAuthFlowService {
       ...(client.authorizationParams ? { authorizationParams: client.authorizationParams } : {}),
     });
 
-    await this.#database
-      .insert(mcpServerAuthorizations)
-      .values({
-        agentId,
-        mcpServerId,
-        kind: "oauth",
-        status: "pending",
-        // A row created by a flow has no credential yet, so the flow's issuer is also its own.
-        authorizationServer: metadata.issuer,
-        flowAuthorizationServer: metadata.issuer,
-        flowOauthResource: resource,
-        clientRegistrationId: registrationId,
-        // Stored hashed: the raw state is only ever in the URL the browser carries.
-        state: hashSecret(state),
-        stateExpiresAt: expiresAt,
-        pkceCiphertext: sealedPkce.ciphertext,
-        scopes,
-        loginSessionHash: hashSecret(flowSecret),
-        probeState: "pending",
-        createdAt: now,
-        updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: [mcpServerAuthorizations.mcpServerId, mcpServerAuthorizations.agentId],
-        set: {
+    await this.#database.transaction(async (tx) => {
+      await lockMcpCredentialBinding(tx, accountId, agentId, mcpServerId, source);
+      await tx
+        .insert(mcpServerAuthorizations)
+        .values({
+          agentId,
+          mcpServerId,
           kind: "oauth",
-          // A restarted flow invalidates the previous state in the same write, so an old callback
-          // URL can no longer be redeemed.
+          status: "pending",
+          // A row created by a flow has no credential yet, so the flow's issuer is also its own.
+          authorizationServer: metadata.issuer,
+          flowAuthorizationServer: metadata.issuer,
+          flowOauthResource: resource,
+          clientRegistrationId: registrationId,
+          // Stored hashed: the raw state is only ever in the URL the browser carries.
           state: hashSecret(state),
           stateExpiresAt: expiresAt,
           pkceCiphertext: sealedPkce.ciphertext,
-          /*
-           * The flow's issuer goes in its own column, and `authorizationServer` is left alone unless
-           * there is no credential to protect.
-           *
-           * `authorizationServer` is the credential envelope's AAD, so writing this flow's issuer over
-           * it while an existing ciphertext stays on the row made that ciphertext undecryptable. The
-           * row's credential is only replaced at the callback, which writes the credential's issuer and
-           * the new envelope together — so a row that keeps its credential keeps the issuer that sealed
-           * it.
-           */
-          flowAuthorizationServer: metadata.issuer,
-          /*
-           * The flow's audience goes in `flow_oauth_resource`, mirroring the issuer split: the
-           * credential's `oauth_resource` is replaced only at the callback, together with the
-           * credential it belongs to, so an abandoned flow cannot change a working credential.
-           */
-          flowOauthResource: resource,
-          /*
-           * `authorizationServer` is only written when the row has no credential to protect.
-           *
-           * It is the credential envelope's AAD — and it is legitimately `null` for a Bearer row, whose
-           * key is not issued by any authorization server. Writing this flow's issuer into it either
-           * invalidated a working credential or, with a `coalesce`, filled in a column the Bearer
-           * envelope was sealed against being null. The flow's own issuer is `flowAuthorizationServer`,
-           * and the credential's issuer is replaced only at the callback, together with the envelope.
-           */
-          authorizationServer: sql`case when ${mcpServerAuthorizations.ciphertext} is null then ${metadata.issuer} else ${mcpServerAuthorizations.authorizationServer} end`,
-          clientRegistrationId: sql`case when ${mcpServerAuthorizations.ciphertext} is null then ${registrationId}::uuid else ${mcpServerAuthorizations.clientRegistrationId} end`,
           scopes,
-          /*
-           * The existing credential is deliberately left in place, and so is its `status`.
-           *
-           * Both used to be reset here, which meant that starting a flow destroyed a working token
-           * before the user had consented to anything: open the dialog on an Agent that already works,
-           * close the tab, and the Agent is unauthorized with no way back except authorizing again.
-           * A live flow is identified by `state` being set and unexpired — which is how the callback
-           * finds its row — so nothing needs `status` to be bent for the flow's sake. A row that has
-           * no credential yet still gets `pending`, because that is the honest description of it.
-           */
-          status: sql`case when ${mcpServerAuthorizations.ciphertext} is null then 'pending' else ${mcpServerAuthorizations.status} end`,
-          failureCode: null,
-          probeState: "pending",
           loginSessionHash: hashSecret(flowSecret),
-          refreshClaimId: null,
-          refreshClaimedAt: null,
-          revision: sql`${mcpServerAuthorizations.revision} + 1`,
+          probeState: "pending",
+          createdAt: now,
           updatedAt: now,
-        },
-      });
+        })
+        .onConflictDoUpdate({
+          target: [mcpServerAuthorizations.mcpServerId, mcpServerAuthorizations.agentId],
+          set: {
+            kind: "oauth",
+            // A restarted flow invalidates the previous state in the same write, so an old callback
+            // URL can no longer be redeemed.
+            state: hashSecret(state),
+            stateExpiresAt: expiresAt,
+            pkceCiphertext: sealedPkce.ciphertext,
+            /*
+             * The flow's issuer goes in its own column, and `authorizationServer` is left alone unless
+             * there is no credential to protect.
+             *
+             * `authorizationServer` is the credential envelope's AAD, so writing this flow's issuer over
+             * it while an existing ciphertext stays on the row made that ciphertext undecryptable. The
+             * row's credential is only replaced at the callback, which writes the credential's issuer and
+             * the new envelope together — so a row that keeps its credential keeps the issuer that sealed
+             * it.
+             */
+            flowAuthorizationServer: metadata.issuer,
+            /*
+             * The flow's audience goes in `flow_oauth_resource`, mirroring the issuer split: the
+             * credential's `oauth_resource` is replaced only at the callback, together with the
+             * credential it belongs to, so an abandoned flow cannot change a working credential.
+             */
+            flowOauthResource: resource,
+            /*
+             * `authorizationServer` is only written when the row has no credential to protect.
+             *
+             * It is the credential envelope's AAD — and it is legitimately `null` for a Bearer row, whose
+             * key is not issued by any authorization server. Writing this flow's issuer into it either
+             * invalidated a working credential or, with a `coalesce`, filled in a column the Bearer
+             * envelope was sealed against being null. The flow's own issuer is `flowAuthorizationServer`,
+             * and the credential's issuer is replaced only at the callback, together with the envelope.
+             */
+            authorizationServer: sql`case when ${mcpServerAuthorizations.ciphertext} is null then ${metadata.issuer} else ${mcpServerAuthorizations.authorizationServer} end`,
+            clientRegistrationId: sql`case when ${mcpServerAuthorizations.ciphertext} is null then ${registrationId}::uuid else ${mcpServerAuthorizations.clientRegistrationId} end`,
+            scopes,
+            /*
+             * The existing credential is deliberately left in place, and so is its `status`.
+             *
+             * Both used to be reset here, which meant that starting a flow destroyed a working token
+             * before the user had consented to anything: open the dialog on an Agent that already works,
+             * close the tab, and the Agent is unauthorized with no way back except authorizing again.
+             * A live flow is identified by `state` being set and unexpired — which is how the callback
+             * finds its row — so nothing needs `status` to be bent for the flow's sake. A row that has
+             * no credential yet still gets `pending`, because that is the honest description of it.
+             */
+            status: sql`case when ${mcpServerAuthorizations.ciphertext} is null then 'pending' else ${mcpServerAuthorizations.status} end`,
+            failureCode: null,
+            probeState: "pending",
+            loginSessionHash: hashSecret(flowSecret),
+            refreshClaimId: null,
+            refreshClaimedAt: null,
+            revision: sql`${mcpServerAuthorizations.revision} + 1`,
+            updatedAt: now,
+          },
+        });
+    });
     return { authorizationUrl, expiresAt, state };
   }
 
@@ -295,9 +300,10 @@ export class McpOAuthFlowService {
     mcpServerId: string,
     requestedScopes: readonly string[] = [],
     publicOrigin: string,
+    source: "account" | "agent-self" = "agent-self",
   ): Promise<StartedMcpOAuth> {
     const flowSecret = randomUUID();
-    const started = await this.start(accountId, agentId, mcpServerId, requestedScopes, flowSecret);
+    const started = await this.start(accountId, agentId, mcpServerId, requestedScopes, flowSecret, source);
     const handoffUrl = this.createHandoffUrl({
       flowSecret,
       authorizationUrl: started.authorizationUrl,
@@ -329,39 +335,77 @@ export class McpOAuthFlowService {
     return `${origin}${MCP_OAUTH_HANDOFF_PATH}?token=${encodeURIComponent(token)}`;
   }
 
-  async redeemHandoffToken(token: string): Promise<{ flowSecret: string; targetUrl: string }> {
+  /**
+   * Redeem a handoff token for the browser secret the callback will compare against.
+   *
+   * Three properties make this safe to expose as a link a human clicks:
+   *
+   * - The caller must be signed in, and the signed-in Account must own the Agent the flow belongs to
+   *   (`expectedAccountId`). Otherwise a link an Agent posted into a shared channel would bind
+   *   *whoever clicked it* into the Agent's authorization. A mismatch is reported as
+   *   `MCP_SERVER_NOT_FOUND`, the same bounded answer a caller gets for a token that does not exist,
+   *   so the response never tells a stranger whether the flow is real.
+   * - Redemption is single use. The row's `loginSessionHash` is compared and then replaced with the
+   *   hash of a fresh browser secret in one conditional update, so the token that was redeemed can
+   *   never be redeemed again — a replay updates nothing and is refused.
+   * - The returned secret is the *new* one, which the route sets as the `mcpOAuthContext` cookie. The
+   *   token therefore stops being a bearer credential for the callback the moment it is used.
+   */
+  async redeemHandoffToken(
+    token: string,
+    expectedAccountId: string,
+  ): Promise<{ flowSecret: string; targetUrl: string }> {
     const payload = this.#cipher.decryptHandoff(token);
-    const now = this.#now().getTime();
-    if (now > payload.expiresAt) {
+    const now = this.#now();
+    if (now.getTime() > payload.expiresAt) {
       throw new McpServiceError(MCP_ERROR_CODES.OAUTH_FLOW_INVALID, "The authorization handoff token has expired");
     }
 
+    const issuedBinding = hashSecret(payload.flowSecret);
     const [row] = await this.#database
       .select({
-        state: mcpServerAuthorizations.state,
+        id: mcpServerAuthorizations.id,
         stateExpiresAt: mcpServerAuthorizations.stateExpiresAt,
         loginSessionHash: mcpServerAuthorizations.loginSessionHash,
-        status: mcpServerAuthorizations.status,
+        ownerAccountId: agents.createdByUserId,
       })
       .from(mcpServerAuthorizations)
+      .innerJoin(agents, eq(agents.id, mcpServerAuthorizations.agentId))
       .where(eq(mcpServerAuthorizations.state, payload.stateHash))
       .limit(1);
 
-    if (!row || !row.stateExpiresAt || row.stateExpiresAt.getTime() <= now) {
+    if (!row || !row.stateExpiresAt || row.stateExpiresAt.getTime() <= now.getTime()) {
       throw new McpServiceError(MCP_ERROR_CODES.OAUTH_FLOW_INVALID, "The authorization flow is no longer valid");
     }
 
-    if (
-      !row.loginSessionHash ||
-      !timingSafeEqual(Buffer.from(row.loginSessionHash), Buffer.from(hashSecret(payload.flowSecret)))
-    ) {
+    if (!row.loginSessionHash || !timingSafeEqual(Buffer.from(row.loginSessionHash), Buffer.from(issuedBinding))) {
       throw new McpServiceError(
         MCP_ERROR_CODES.OAUTH_FLOW_INVALID,
         "The authorization flow was not started by this browser",
       );
     }
 
-    return { flowSecret: payload.flowSecret, targetUrl: payload.targetUrl };
+    if (row.ownerAccountId !== expectedAccountId) {
+      throw new McpServiceError(MCP_ERROR_CODES.SERVER_NOT_FOUND, "The requested MCP Server was not found");
+    }
+
+    /*
+     * The conditional update is the single-use gate: the secret that arrived in the token is the one
+     * being replaced, so exactly one caller can win, and a second redemption of the same token matches
+     * no row. The flow itself stays live — `state`, its deadline, and the PKCE verifier are untouched —
+     * because the callback still needs them.
+     */
+    const browserSecret = generateSecret(32);
+    const [consumed] = await this.#database
+      .update(mcpServerAuthorizations)
+      .set({ loginSessionHash: hashSecret(browserSecret), updatedAt: now })
+      .where(and(eq(mcpServerAuthorizations.id, row.id), eq(mcpServerAuthorizations.loginSessionHash, issuedBinding)))
+      .returning({ id: mcpServerAuthorizations.id });
+    if (!consumed) {
+      throw new McpServiceError(MCP_ERROR_CODES.OAUTH_FLOW_INVALID, "The authorization handoff was already used");
+    }
+
+    return { flowSecret: browserSecret, targetUrl: payload.targetUrl };
   }
 
   /**

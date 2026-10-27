@@ -1,6 +1,7 @@
 import { and, asc, eq, ne, type SQL } from "drizzle-orm";
 import type { DatabaseTransaction } from "../../db/client.js";
 import { agentMcpServers, agents, mcpServers } from "../../db/schema/index.js";
+import { AgentServiceError } from "../agents/index.js";
 import { mcpBindingNotFound } from "./errors.js";
 
 /**
@@ -22,14 +23,23 @@ export async function lockMcpCredentialBinding(
   accountId: string,
   agentId: string,
   mcpServerId: string,
+  source: "account" | "agent-self" = "account",
 ) {
   // Shared parent locks fence edits/deletion without serializing saves on independent mounts.
   const [agent] = await transaction
-    .select({ id: agents.id })
+    .select({ id: agents.id, selfConfigurationEnabled: agents.selfConfigurationEnabled })
     .from(agents)
     .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, accountId), ne(agents.status, "deleted")))
-    .for("share");
+    .for(source === "agent-self" ? "update" : "share");
   if (!agent) throw mcpBindingNotFound();
+  if (source === "agent-self" && !agent.selfConfigurationEnabled) {
+    throw new AgentServiceError(
+      "AGENT_SELF_CONFIGURATION_DISABLED",
+      "deterministic",
+      "Agent self-configuration is disabled by the Agent owner",
+      403,
+    );
+  }
   const [server] = await transaction
     .select({ id: mcpServers.id })
     .from(mcpServers)

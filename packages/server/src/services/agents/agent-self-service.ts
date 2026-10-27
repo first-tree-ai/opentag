@@ -160,10 +160,13 @@ export class AgentSelfService {
       "agent-self",
     );
     if (input.apiKey !== undefined) {
-      await this.#options.authorization.setBearerOrNone(scope.accountId, scope.agentId, created.mcpServerId, {
-        kind: "bearer",
-        bearerKey: input.apiKey,
-      });
+      await this.#options.authorization.setBearerOrNone(
+        scope.accountId,
+        scope.agentId,
+        created.mcpServerId,
+        { kind: "bearer", bearerKey: input.apiKey },
+        "agent-self",
+      );
       // Synchronous so `add --api-key` reports the tool catalogue it just earned, rather than an
       // object that is still `pending` and needs a second command to interpret.
       await this.#options.authorization.probe(scope.accountId, scope.agentId, created.mcpServerId);
@@ -182,9 +185,12 @@ export class AgentSelfService {
    * Under the least-privilege self-service boundary, an Agent can only manage its own mounts.
    * Account-level definitions are preserved across self-service deletion, eliminating provenance
    * heuristics and preventing accidental destruction of shared or human-managed definitions.
+   *
+   * `agent-self` is passed down so the unmount re-checks the owner's opt-in under the same row lock a
+   * human edit takes: an opt-in revoked after the Agent authenticated still refuses the write.
    */
   async deleteMcpServer(scope: AgentSelfScope, mcpServerId: string): Promise<{ definitionRemoved: boolean }> {
-    await this.#options.mcp.detachServer(scope.accountId, scope.agentId, mcpServerId);
+    await this.#options.mcp.detachServer(scope.accountId, scope.agentId, mcpServerId, "agent-self");
     this.#audit(scope, "agent_self.mcp_server_deleted", { mcpServerId, definitionRemoved: false });
     return { definitionRemoved: false };
   }
@@ -194,24 +200,37 @@ export class AgentSelfService {
     mcpServerId: string,
     input: UpdateSelfMCPBindingRequest,
   ): Promise<MCPAgentServer> {
-    const mounted = await this.#options.mcp.updateBinding(scope.accountId, scope.agentId, mcpServerId, {
-      enabled: input.enabled,
-    });
+    const mounted = await this.#options.mcp.updateBinding(
+      scope.accountId,
+      scope.agentId,
+      mcpServerId,
+      { enabled: input.enabled },
+      "agent-self",
+    );
     this.#audit(scope, "agent_self.mcp_binding_updated", { mcpServerId, enabled: input.enabled });
     return mounted;
   }
 
   async detachMcpServer(scope: AgentSelfScope, mcpServerId: string): Promise<void> {
-    await this.#options.mcp.detachServer(scope.accountId, scope.agentId, mcpServerId);
+    await this.#options.mcp.detachServer(scope.accountId, scope.agentId, mcpServerId, "agent-self");
     this.#audit(scope, "agent_self.mcp_detached", { mcpServerId });
   }
 
-  /** Write this Agent's own Bearer key, then probe so the caller learns whether it works. */
+  /**
+   * Write this Agent's own Bearer key, then probe so the caller learns whether it works.
+   *
+   * The key is a credential write, so the opt-in is re-checked inside the transaction rather than
+   * trusted from the authentication that preceded it: an owner who revokes self-configuration while a
+   * request is in flight must not end up with a key written after the revocation.
+   */
   async setMcpBearerKey(scope: AgentSelfScope, mcpServerId: string, apiKey: string): Promise<MCPAgentServer> {
-    await this.#options.authorization.setBearerOrNone(scope.accountId, scope.agentId, mcpServerId, {
-      kind: "bearer",
-      bearerKey: apiKey,
-    });
+    await this.#options.authorization.setBearerOrNone(
+      scope.accountId,
+      scope.agentId,
+      mcpServerId,
+      { kind: "bearer", bearerKey: apiKey },
+      "agent-self",
+    );
     await this.#options.authorization.probe(scope.accountId, scope.agentId, mcpServerId);
     // The key itself is never logged, not even masked.
     this.#audit(scope, "agent_self.mcp_credential_written", { mcpServerId, kind: "bearer" });
@@ -221,9 +240,12 @@ export class AgentSelfService {
   /**
    * Begin an OAuth flow for a Server this Agent mounts, returning a same-origin handoff URL.
    *
-   * The URL returned to the Agent routes through the same-origin handoff endpoint, which writes the
-   * required single-use `mcpOAuthContext` cookie to the user's browser before redirecting to the
-   * authorization provider, preserving full PKCE/state/cookie security end-to-end.
+   * The URL routes through the same-origin handoff endpoint, so the browser receives the
+   * `mcpOAuthContext` cookie and is redirected to the provider with PKCE, state, and cookie binding
+   * intact. The handoff itself is session- and owner-checked and single use; the Agent can produce the
+   * link, but only the Account that owns it can complete the flow.
+   *
+   * `startWithHandoff` defaults to `agent-self`, which is what re-checks the opt-in under the row lock.
    */
   async startMcpOAuth(
     scope: AgentSelfScope,
@@ -236,6 +258,7 @@ export class AgentSelfService {
       mcpServerId,
       input.scopes ?? [],
       this.#options.publicOrigin,
+      "agent-self",
     );
     this.#audit(scope, "agent_self.mcp_oauth_started", {
       mcpServerId,

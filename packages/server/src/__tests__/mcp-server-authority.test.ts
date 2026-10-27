@@ -350,3 +350,153 @@ describe("effective connection changes", () => {
     });
   });
 });
+
+/**
+ * `createAndAttachServer` is the one write path that makes a definition and a mount inseparable, and
+ * `assertAgentEligible` is what keeps that path from writing into an Agent the caller may not use.
+ * Both are enforced inside the transaction, so the assertions here also prove the rollback: a refused
+ * call must leave no definition behind for the next caller to trip over.
+ */
+describe("atomic definition and mount", () => {
+  const agentService = () => new AgentService(unit.database, { cloudIdentitiesEnabled: true });
+
+  async function selfConfiguredAgent(accountId: string, enabled = true) {
+    const created = await agent(accountId);
+    if (!enabled) return created;
+    return agentService().updateById(accountId, created.id, {
+      expectedRevision: created.revision,
+      selfConfigurationEnabled: true,
+    });
+  }
+
+  const input = {
+    description: "Created by Agent self-service",
+    name: "self-added",
+    url: "https://mcp.example.test/self",
+  };
+
+  it("writes the definition and the mount together", async () => {
+    const accountId = await owner();
+    const local = await selfConfiguredAgent(accountId);
+
+    const mounted = await service.createAndAttachServer(
+      accountId,
+      local.id,
+      { ...input, defaultAuthKind: "oauth" },
+      true,
+      "agent-self",
+    );
+
+    expect(mounted).toMatchObject({ name: "self-added", enabled: true, authorization: null });
+    expect(await service.listServers(accountId)).toMatchObject([
+      { name: "self-added", description: "Created by Agent self-service", boundAgentCount: 1 },
+    ]);
+    expect(await service.listAgentServers(accountId, local.id)).toMatchObject([{ mcpServerId: mounted.mcpServerId }]);
+    expect(await service.readServer(accountId, mounted.mcpServerId)).toMatchObject({ name: "self-added" });
+  });
+
+  it("leaves the account path unrestricted by the self-service rules", async () => {
+    const accountId = await owner();
+    const local = await agent(accountId);
+
+    // `none` is only refused for `agent-self`; a human-owned caller may create an anonymous mount.
+    const mounted = await service.createAndAttachServer(
+      accountId,
+      local.id,
+      {
+        ...input,
+        defaultAuthKind: "none",
+      },
+      false,
+    );
+
+    expect(mounted).toMatchObject({ enabled: false, authorization: null });
+    expect(await service.listServers(accountId)).toMatchObject([{ name: "self-added", boundAgentCount: 1 }]);
+  });
+
+  it("refuses an anonymous definition for self-service and writes nothing", async () => {
+    const accountId = await owner();
+    const local = await selfConfiguredAgent(accountId);
+
+    await expect(
+      service.createAndAttachServer(accountId, local.id, { ...input, defaultAuthKind: "none" }, true, "agent-self"),
+    ).rejects.toMatchObject({ code: MCP_ERROR_CODES.SELF_ATTACH_NONE_AUTH_FORBIDDEN });
+    expect(await service.listServers(accountId)).toEqual([]);
+    expect(await unit.database.select().from(agentMcpServers)).toEqual([]);
+  });
+
+  it("rolls the definition back when the owner has disabled self-configuration", async () => {
+    const accountId = await owner();
+    const local = await selfConfiguredAgent(accountId, false);
+
+    await expect(
+      service.createAndAttachServer(accountId, local.id, { ...input, defaultAuthKind: "oauth" }, true, "agent-self"),
+    ).rejects.toMatchObject({ code: "AGENT_SELF_CONFIGURATION_DISABLED", statusCode: 403 });
+    expect(await service.listServers(accountId)).toEqual([]);
+    expect(await unit.database.select().from(agentMcpServers)).toEqual([]);
+  });
+
+  it("refuses an Agent of another Account, a deleted Agent, and a duplicate name", async () => {
+    const accountId = await owner();
+    const foreignId = await owner();
+    const local = await selfConfiguredAgent(accountId);
+    const foreign = await selfConfiguredAgent(foreignId);
+    const inputWithAuth = { ...input, defaultAuthKind: "oauth" as const };
+
+    await expect(
+      service.createAndAttachServer(accountId, foreign.id, inputWithAuth, true, "agent-self"),
+    ).rejects.toMatchObject({ code: MCP_ERROR_CODES.SERVER_NOT_FOUND });
+
+    await unit.database.update(agents).set({ status: "deleted" }).where(eq(agents.id, local.id));
+    await expect(
+      service.createAndAttachServer(accountId, local.id, inputWithAuth, true, "agent-self"),
+    ).rejects.toMatchObject({ code: MCP_ERROR_CODES.SERVER_NOT_FOUND });
+    expect(await service.listServers(accountId)).toEqual([]);
+
+    const survivor = await selfConfiguredAgent(accountId);
+    await service.createAndAttachServer(accountId, survivor.id, inputWithAuth, true, "agent-self");
+    // PGlite names the unique violation `constraint`; the PostgreSQL suite asserts the public code.
+    await expect(
+      service.createAndAttachServer(accountId, survivor.id, inputWithAuth, true, "agent-self"),
+    ).rejects.toThrow();
+    expect(await service.listServers(accountId)).toHaveLength(1);
+    expect(await unit.database.select().from(agentMcpServers)).toHaveLength(1);
+  });
+
+  it("rechecks the opt-in when a self-service caller mounts an existing definition", async () => {
+    const accountId = await owner();
+    const local = await selfConfiguredAgent(accountId, false);
+    const server = await service.createServer(accountId, { ...input, defaultAuthKind: "oauth" });
+
+    await expect(service.attachServer(accountId, local.id, server.id, true, "agent-self")).rejects.toMatchObject({
+      code: "AGENT_SELF_CONFIGURATION_DISABLED",
+    });
+    expect(await service.listAgentServers(accountId, local.id)).toEqual([]);
+  });
+
+  it("refuses a self-service unmount or toggle once the opt-in is withdrawn", async () => {
+    const accountId = await owner();
+    const local = await selfConfiguredAgent(accountId);
+    const mounted = await service.createAndAttachServer(
+      accountId,
+      local.id,
+      { ...input, defaultAuthKind: "oauth" },
+      true,
+      "agent-self",
+    );
+    await unit.database.update(agents).set({ selfConfigurationEnabled: false }).where(eq(agents.id, local.id));
+
+    // The mount survives: the refusal happens before any delete, not halfway through one.
+    await expect(service.detachServer(accountId, local.id, mounted.mcpServerId, "agent-self")).rejects.toMatchObject({
+      code: "AGENT_SELF_CONFIGURATION_DISABLED",
+    });
+    await expect(
+      service.updateBinding(accountId, local.id, mounted.mcpServerId, { enabled: false }, "agent-self"),
+    ).rejects.toMatchObject({ code: "AGENT_SELF_CONFIGURATION_DISABLED" });
+    expect(await service.listAgentServers(accountId, local.id)).toMatchObject([{ enabled: true }]);
+
+    // The Account surface is not gated by an Agent's opt-in.
+    await service.detachServer(accountId, local.id, mounted.mcpServerId);
+    expect(await service.listAgentServers(accountId, local.id)).toEqual([]);
+  });
+});

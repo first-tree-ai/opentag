@@ -796,6 +796,8 @@ export function createApp(options: CreateAppOptions = {}) {
     if (options.mcp) {
       registerMcpServerRoutes(app, authService, { ...options.mcp, authOptions });
       registerMcpOAuthRoutes(app, {
+        authOptions,
+        authService,
         flows: options.mcp.flows,
         /*
          * The callback cannot probe cheaply itself, so the probe is fired here and not awaited. The

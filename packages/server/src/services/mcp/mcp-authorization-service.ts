@@ -80,9 +80,10 @@ export class McpAuthorizationService {
     agentId: string,
     mcpServerId: string,
     input: { kind: "none" | "bearer"; bearerKey?: string },
+    source: "account" | "agent-self" = "account",
   ): Promise<void> {
     await this.#database.transaction(async (transaction) => {
-      await lockMcpCredentialBinding(transaction, accountId, agentId, mcpServerId);
+      await lockMcpCredentialBinding(transaction, accountId, agentId, mcpServerId, source);
       const now = this.#now();
       if (input.kind === "bearer" && (!input.bearerKey || input.bearerKey.length === 0)) {
         throw new McpServiceError(MCP_ERROR_CODES.CREDENTIAL_INPUT_INVALID, "A bearer authorization requires its key");

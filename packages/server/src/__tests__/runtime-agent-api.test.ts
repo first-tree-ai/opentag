@@ -314,7 +314,13 @@ describe("Runtime Agent self-configuration routes", () => {
       payload: { enabled: false },
     });
     expect(disabled.statusCode).toBe(200);
-    expect(mcp.updateBinding).toHaveBeenCalledWith(accountId, source.agentId, mcpServerId, { enabled: false });
+    expect(mcp.updateBinding).toHaveBeenCalledWith(
+      accountId,
+      source.agentId,
+      mcpServerId,
+      { enabled: false },
+      "agent-self",
+    );
 
     const override = await app.inject({
       method: "PATCH",
@@ -327,7 +333,7 @@ describe("Runtime Agent self-configuration routes", () => {
 
     const detached = await app.inject({ method: "DELETE", url: runtimeAgentMcpServerPath(mcpServerId), headers });
     expect(detached.statusCode).toBe(204);
-    expect(mcp.detachServer).toHaveBeenCalledWith(accountId, source.agentId, mcpServerId);
+    expect(mcp.detachServer).toHaveBeenCalledWith(accountId, source.agentId, mcpServerId, "agent-self");
 
     const badId = await app.inject({ method: "DELETE", url: runtimeAgentMcpServerPath("not-a-uuid"), headers });
     expect(badId.statusCode).toBe(400);
@@ -356,10 +362,13 @@ describe("Runtime Agent self-configuration routes", () => {
       true,
       "agent-self",
     );
-    expect(authorization.setBearerOrNone).toHaveBeenCalledWith(accountId, source.agentId, mcpServerId, {
-      kind: "bearer",
-      bearerKey: "key-1",
-    });
+    expect(authorization.setBearerOrNone).toHaveBeenCalledWith(
+      accountId,
+      source.agentId,
+      mcpServerId,
+      { kind: "bearer", bearerKey: "key-1" },
+      "agent-self",
+    );
     expect(authorization.probe).toHaveBeenCalledWith(accountId, source.agentId, mcpServerId);
     expect(created.body).not.toContain("key-1");
 
@@ -370,10 +379,13 @@ describe("Runtime Agent self-configuration routes", () => {
       payload: { apiKey: "key-2" },
     });
     expect(rewritten.statusCode).toBe(200);
-    expect(authorization.setBearerOrNone).toHaveBeenLastCalledWith(accountId, source.agentId, mcpServerId, {
-      kind: "bearer",
-      bearerKey: "key-2",
-    });
+    expect(authorization.setBearerOrNone).toHaveBeenLastCalledWith(
+      accountId,
+      source.agentId,
+      mcpServerId,
+      { kind: "bearer", bearerKey: "key-2" },
+      "agent-self",
+    );
     expect(rewritten.body).not.toContain("key-2");
     await app.close();
   });
@@ -406,7 +418,7 @@ describe("Runtime Agent self-configuration routes", () => {
       headers,
     });
     expect(removed.statusCode).toBe(204);
-    expect(mcp.detachServer).toHaveBeenCalledWith(accountId, source.agentId, mcpServerId);
+    expect(mcp.detachServer).toHaveBeenCalledWith(accountId, source.agentId, mcpServerId, "agent-self");
     expect(mcp.deleteServer).not.toHaveBeenCalled();
     await app.close();
   });
@@ -430,6 +442,7 @@ describe("Runtime Agent self-configuration routes", () => {
       mcpServerId,
       ["read"],
       "https://test.local",
+      "agent-self",
     );
 
     mcp.readAgentServer.mockResolvedValueOnce({

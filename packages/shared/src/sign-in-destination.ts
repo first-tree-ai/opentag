@@ -30,8 +30,17 @@ export function resolveSignInDestination(value?: string): string | undefined {
   ) {
     return undefined;
   }
-  // An allowlist rather than a "starts with /" test: only these areas are somewhere a sign-in is meant to arrive at.
-  if (/^\/(?:agents(?:\/[^?#]*)?|settings(?:\/[^?#]*)?|account|usage|login)(?:\?[^#]*)?$/.test(next)) {
+  /*
+   * An allowlist rather than a "starts with /" test: only these areas are somewhere a sign-in is meant
+   * to arrive at. `/api/v1/mcp-servers/oauth/handoff` (MCP_OAUTH_HANDOFF_PATH) is on it because an
+   * Agent hands that link to a human who may not be signed in yet, and completing the round trip after
+   * signing in is the point. The destination test pins it to the real path.
+   */
+  if (
+    /^\/(?:agents(?:\/[^?#]*)?|settings(?:\/[^?#]*)?|account|usage|login|api\/v1\/mcp-servers\/oauth\/handoff)(?:\?[^#]*)?$/.test(
+      next,
+    )
+  ) {
     return next;
   }
   return undefined;

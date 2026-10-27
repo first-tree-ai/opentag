@@ -16,7 +16,9 @@ import {
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { registerMcpOAuthRoutes } from "../api/mcp-oauth.js";
+import type { UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
 import { BROWSER_COOKIE_NAMES } from "../services/auth/browser-cookies.js";
+import type { UserAuthService } from "../services/auth/index.js";
 import { McpServiceError } from "../services/mcp/errors.js";
 import type { McpOAuthFlowService } from "../services/mcp/index.js";
 
@@ -38,7 +40,15 @@ interface Harness {
   onCredentialStored: ReturnType<typeof vi.fn>;
 }
 
-function build(options: { secureCookies?: boolean; withProbeHook?: boolean } = {}): Harness {
+const OWNER = "44444444-4444-4444-8444-444444444444";
+const STRANGER = "55555555-5555-4555-8555-555555555555";
+
+/**
+ * A handoff redemption is only reachable by the Account that owns the flow, so the harness resolves
+ * the session the same way the real service does: one known cookie is the owner, another is a
+ * different Account, and no cookie is an anonymous visitor.
+ */
+function build(options: { secureCookies?: boolean; sessionUserId?: string; withProbeHook?: boolean } = {}): Harness {
   const flows = {
     callback: vi.fn(async () => ({ accountId: ACCOUNT, agentId: AGENT, mcpServerId: SERVER })),
     redeemHandoffToken: vi.fn(async (token: string) => {
@@ -52,7 +62,21 @@ function build(options: { secureCookies?: boolean; withProbeHook?: boolean } = {
   };
   const onCredentialStored = vi.fn();
   const app = Fastify({ logger: false });
+  const sessionUserId = options.sessionUserId ?? OWNER;
   registerMcpOAuthRoutes(app, {
+    authOptions: {
+      betterAuth: {
+        api: {
+          getSession: async ({ headers }: { headers: Headers }) =>
+            headers.get("cookie") === "session=owner" ? { user: { id: sessionUserId } } : null,
+        },
+      } as unknown as UserAuthPreHandlerOptions["betterAuth"],
+    },
+    authService: {
+      // `getActiveUserById` answers with a `MeResponse`; the id the session carries is the identity.
+      getActiveUserById: async (userId: string) => ({ user: { id: userId } }),
+      getAuthenticatedUser: async () => ({ me: { user: { id: sessionUserId } }, tokenExpiresAt: new Date() }),
+    } as unknown as UserAuthService,
     flows: flows as unknown as McpOAuthFlowService,
     publicOrigin: PUBLIC_ORIGIN,
     secureCookies: options.secureCookies ?? false,
@@ -334,11 +358,16 @@ describe("MCP client metadata document", () => {
 });
 
 describe("MCP OAuth browser handoff", () => {
-  it("redeems handoff token, sets the browser cookie on the callback path, and redirects to provider", async () => {
+  const ownerCookie = { cookie: "session=owner" };
+  const noCookies = (response: { headers: Record<string, unknown> }) =>
+    String(response.headers["set-cookie"] ?? "").includes(BROWSER_COOKIE_NAMES.mcpOAuthContext);
+
+  it("redeems for the owning Account, sets the callback cookie, and redirects to the provider", async () => {
     const { app, flows } = build();
     const response = await app.inject({
       method: "GET",
       url: `${MCP_OAUTH_HANDOFF_PATH}?token=valid-token`,
+      headers: ownerCookie,
     });
     expect(response.statusCode).toBe(302);
     expect(response.headers.location).toBe("https://provider.example.com/oauth/authorize?state=abc");
@@ -348,16 +377,67 @@ describe("MCP OAuth browser handoff", () => {
     expect(cookieStr).toContain(BROWSER_COOKIE_NAMES.mcpOAuthContext);
     expect(cookieStr).toContain(FLOW_SECRET);
     expect(cookieStr).toContain(`Path=${MCP_OAUTH_CALLBACK_PATH}`);
-    expect(flows.redeemHandoffToken).toHaveBeenCalledWith("valid-token");
+    // The session's own id is what the flow is checked against, never a value from the query.
+    expect(flows.redeemHandoffToken).toHaveBeenCalledWith("valid-token", OWNER);
   });
 
-  it("redirects to failure destination when handoff token is invalid or expired", async () => {
-    const { app } = build();
-    const response = await app.inject({
+  it("sends an unauthenticated visitor to sign in, then back to this exact URL", async () => {
+    const { app, flows } = build();
+    const response = await app.inject({ method: "GET", url: `${MCP_OAUTH_HANDOFF_PATH}?token=valid-token` });
+
+    expect(response.statusCode).toBe(302);
+    const location = locationOf(response as never);
+    expect(location.origin).toBe(PUBLIC_ORIGIN);
+    expect(location.pathname).toBe("/login");
+    // A local path, so the sign-in allowlist can accept it and no other origin can be reached.
+    expect(location.searchParams.get("next")).toBe(`${MCP_OAUTH_HANDOFF_PATH}?token=valid-token`);
+    // Nothing was redeemed and no flow cookie was issued.
+    expect(flows.redeemHandoffToken).not.toHaveBeenCalled();
+    expect(noCookies(response)).toBe(false);
+  });
+
+  it("checks the flow against the signed-in Account and answers strangers indistinguishably", async () => {
+    const { app, flows } = build({ sessionUserId: STRANGER });
+    // The service refuses by ownership; this test pins that the route forwards the session id at all.
+    flows.redeemHandoffToken.mockRejectedValueOnce(
+      new McpServiceError(MCP_ERROR_CODES.SERVER_NOT_FOUND, "The requested MCP Server was not found"),
+    );
+    const stranger = await app.inject({
+      method: "GET",
+      url: `${MCP_OAUTH_HANDOFF_PATH}?token=valid-token`,
+      headers: ownerCookie,
+    });
+    expect(flows.redeemHandoffToken).toHaveBeenCalledWith("valid-token", STRANGER);
+    expect(stranger.statusCode).toBe(404);
+    expect(noCookies(stranger)).toBe(false);
+
+    /*
+     * The stranger's refusal and a token that never existed must be the same response, byte for byte:
+     * any difference would confirm to a reader of a shared channel that the link is live.
+     */
+    build();
+    const invalid = await app.inject({
       method: "GET",
       url: `${MCP_OAUTH_HANDOFF_PATH}?token=invalid`,
+      headers: ownerCookie,
     });
+    expect(invalid.statusCode).toBe(stranger.statusCode);
+    expect(invalid.body).toBe(stranger.body);
+    expect(noCookies(invalid)).toBe(false);
+  });
+
+  it("rejects a handoff redemption that arrives with a bearer token instead of a session", async () => {
+    const { app, flows } = build();
+    const response = await app.inject({
+      method: "GET",
+      url: `${MCP_OAUTH_HANDOFF_PATH}?token=valid-token`,
+      headers: { authorization: "Bearer any-token" },
+    });
+    /*
+     * A bearer is resolved through the same service as a session, so an Account presenting one is
+     * checked against its own id rather than trusted for whoever the flow names.
+     */
+    expect(flows.redeemHandoffToken).toHaveBeenCalledWith("valid-token", OWNER);
     expect(response.statusCode).toBe(302);
-    expect(response.headers.location).toContain("mcp_oauth=error");
   });
 });

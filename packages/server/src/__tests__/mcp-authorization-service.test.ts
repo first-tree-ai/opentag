@@ -246,6 +246,50 @@ describe("McpAuthorizationService.setBearerOrNone", () => {
       authorization.setBearerOrNone(ids.accountId, ids.agentId, ids.mcpServerId, { kind: "none" }),
     ).rejects.toMatchObject({ code: MCP_ERROR_CODES.BINDING_NOT_FOUND });
   });
+
+  /*
+   * The self-service source re-checks the owner's opt-in inside the write's own transaction. The
+   * authentication that preceded the request is not enough: an owner can revoke the opt-in while a
+   * request is in flight, and a credential written after that revocation is a credential the owner
+   * already refused.
+   */
+  it("refuses a self-service write once the owner has withdrawn the opt-in", async () => {
+    const ids = await seed();
+    const { authorization } = build();
+    await unit.database.update(agents).set({ selfConfigurationEnabled: false }).where(eq(agents.id, ids.agentId));
+
+    await expect(
+      authorization.setBearerOrNone(
+        ids.accountId,
+        ids.agentId,
+        ids.mcpServerId,
+        { kind: "bearer", bearerKey: "sk-secret" },
+        "agent-self",
+      ),
+    ).rejects.toMatchObject({ code: "AGENT_SELF_CONFIGURATION_DISABLED", statusCode: 403 });
+    expect(await unit.database.select().from(mcpServerAuthorizations)).toEqual([]);
+  });
+
+  it("still writes for the owner's own Account surface and for an opted-in Agent", async () => {
+    const ids = await seed();
+    const { authorization } = build();
+    // A human operator is not gated by an Agent's opt-in.
+    await authorization.setBearerOrNone(ids.accountId, ids.agentId, ids.mcpServerId, {
+      kind: "bearer",
+      bearerKey: "sk-human",
+    });
+    expect((await readRow(ids))?.kind).toBe("bearer");
+
+    await unit.database.update(agents).set({ selfConfigurationEnabled: true }).where(eq(agents.id, ids.agentId));
+    await authorization.setBearerOrNone(
+      ids.accountId,
+      ids.agentId,
+      ids.mcpServerId,
+      { kind: "bearer", bearerKey: "sk-agent" },
+      "agent-self",
+    );
+    expect((await readRow(ids))?.kind).toBe("bearer");
+  });
 });
 
 describe("McpAuthorizationService.revoke", () => {

@@ -465,9 +465,17 @@ export class McpServerService {
     return await this.readAgentServer(accountId, agentId, mcpServerId);
   }
 
-  async detachServer(accountId: string, agentId: string, mcpServerId: string): Promise<void> {
+  async detachServer(
+    accountId: string,
+    agentId: string,
+    mcpServerId: string,
+    source: "account" | "agent-self" = "account",
+  ): Promise<void> {
     await this.#requireAgent(accountId, agentId);
     await this.#database.transaction(async (transaction) => {
+      if (source === "agent-self") {
+        await assertAgentEligible(transaction, agentId, accountId, source, true);
+      }
       const [binding] = await lockMcpBindings(
         transaction,
         and(eq(agentMcpServers.agentId, agentId), eq(agentMcpServers.mcpServerId, mcpServerId)),
@@ -493,9 +501,13 @@ export class McpServerService {
     agentId: string,
     mcpServerId: string,
     input: UpdateMCPBindingRequest,
+    source: "account" | "agent-self" = "account",
   ): Promise<MCPAgentServer> {
     await this.#requireAgent(accountId, agentId);
     await this.#database.transaction(async (transaction) => {
+      if (source === "agent-self") {
+        await assertAgentEligible(transaction, agentId, accountId, source, true);
+      }
       const [server] = await transaction
         .select()
         .from(mcpServers)

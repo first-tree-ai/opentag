@@ -5,6 +5,7 @@ import {
   EmailSignUpRequestSchema,
   ErrorCodeSchema,
   HTTP_PATHS,
+  SIGN_IN_DESTINATION_MAX_LENGTH,
 } from "@opentag/shared";
 import { fromNodeHeaders } from "better-auth/node";
 import type { FastifyInstance, FastifyRequest } from "fastify";
@@ -22,7 +23,16 @@ import { AuthServiceError } from "../services/auth/errors.js";
 import { validateOAuthNext } from "../services/auth/index.js";
 import { parseRequest } from "./request-validation.js";
 
-const StartQuerySchema = z.object({ next: z.string().max(1024).optional() }).strict();
+/**
+ * The destination bound every sign-in entry point shares.
+ *
+ * `validateOAuthNext` is the gate that decides where a sign-in may land; this schema only has to
+ * accept everything that gate would accept and refuse what a browser should not send. It used to
+ * carry its own 1024, which silently contradicted the allowlist: a generated MCP OAuth handoff runs
+ * past 1200 characters, so the provider start refused with a 400 the destination the login page had
+ * just validated. One exported bound keeps the two from drifting apart again.
+ */
+const StartQuerySchema = z.object({ next: z.string().max(SIGN_IN_DESTINATION_MAX_LENGTH).optional() }).strict();
 
 export interface BrowserAuthRoutesOptions {
   /** Better Auth owns every browser session; without it there is no way to sign in. */

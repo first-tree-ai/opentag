@@ -1,4 +1,4 @@
-import { HTTP_PATHS } from "@opentag/shared";
+import { HTTP_PATHS, SIGN_IN_DESTINATION_MAX_LENGTH } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RouteRateLimiter } from "../api/browser-auth.js";
 import { createApp } from "../app.js";
@@ -137,6 +137,70 @@ describe("browser authentication routes", () => {
 
     expect(response.statusCode).toBe(400);
     expect(betterAuth.paths).toEqual([]);
+  });
+
+  /*
+   * The provider start and the development sign-in are the two entry points a sign-in link passes
+   * through, and both used to carry their own 1024-character bound. A generated MCP OAuth handoff is
+   * longer than that, so the login page would validate the destination and the start route would then
+   * refuse it with a 400 — the flow could never be resumed. These pin the two bounds to one another.
+   */
+  describe("a destination longer than a page path", () => {
+    const handoff = `/api/v1/mcp-servers/oauth/handoff?token=${`A${"b".repeat(1215)}`}`;
+
+    it("carries it through the Google start and leaves it to the provider, not the callback", async () => {
+      const betterAuth = betterAuthStub(googleRedirect);
+      const { app } = createBrowserApp({ betterAuth: betterAuth.instance, googleSignIn: true });
+
+      const response = await app.inject({
+        method: "GET",
+        url: `${HTTP_PATHS.authGoogleStart}?next=${encodeURIComponent(handoff)}`,
+      });
+
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe("https://accounts.google.com/auth");
+      // The exact destination, token and all, reaches Better Auth as the post-callback target.
+      expect(betterAuth.bodies).toEqual([{ callbackURL: handoff, provider: "google" }]);
+    });
+
+    it("returns the development sign-in to the exact handoff URL", async () => {
+      const betterAuth = betterAuthStub(devSession);
+      const { app } = createBrowserApp({ betterAuth: betterAuth.instance, devSignIn: true });
+
+      const response = await app.inject({
+        method: "GET",
+        url: `${HTTP_PATHS.authDevCallback}?next=${encodeURIComponent(handoff)}`,
+        headers: { host: "localhost:8000" },
+        remoteAddress: "127.0.0.1",
+      });
+
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe(handoff);
+      expect(String(response.headers["set-cookie"])).toContain("opentag.session_token=dev-session");
+    });
+
+    it("still refuses a destination past the shared bound", async () => {
+      const tooLong = `/api/v1/mcp-servers/oauth/handoff?token=${"a".repeat(SIGN_IN_DESTINATION_MAX_LENGTH)}`;
+      const google = betterAuthStub(googleRedirect);
+      const dev = betterAuthStub(devSession);
+      const { app: googleApp } = createBrowserApp({ betterAuth: google.instance, googleSignIn: true });
+      const { app: devApp } = createBrowserApp({ betterAuth: dev.instance, devSignIn: true });
+
+      for (const app of [googleApp, devApp]) {
+        const response = await app.inject({
+          method: "GET",
+          url: `${
+            app === googleApp ? HTTP_PATHS.authGoogleStart : HTTP_PATHS.authDevCallback
+          }?next=${encodeURIComponent(tooLong)}`,
+          headers: { host: "localhost:8000" },
+          remoteAddress: "127.0.0.1",
+        });
+        expect(response.statusCode).toBe(400);
+      }
+      // Neither entry point reached Better Auth with a destination it will not carry.
+      expect(google.paths).toEqual([]);
+      expect(dev.paths).toEqual([]);
+    });
   });
 
   it.each(["/agents", "/account", "/usage"])(

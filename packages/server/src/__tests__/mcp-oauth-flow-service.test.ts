@@ -2085,4 +2085,50 @@ describe("cancelling reauthorization", () => {
     ).rejects.toMatchObject({ code: MCP_ERROR_CODES.OAUTH_FLOW_INVALID });
     expect((await readAuthorization(ids))?.ciphertext).toBe(before?.ciphertext);
   });
+
+  describe("browser handoff", () => {
+    it("starts with handoff and redeems token successfully", async () => {
+      const ids = await seed();
+      const { flows } = build(discoverableAs());
+      const started = await flows.startWithHandoff(
+        ids.accountId,
+        ids.agentId,
+        ids.mcpServerId,
+        [],
+        "https://opentag.example",
+      );
+      expect(started.authorizationUrl).toContain("/api/v1/mcp-servers/oauth/handoff?token=");
+      const token = new URL(started.authorizationUrl).searchParams.get("token");
+      expect(token).not.toBeNull();
+      const redeemed = await flows.redeemHandoffToken(token ?? "");
+      expect(redeemed.targetUrl).toContain("https://auth.example.com/authorize");
+      expect(redeemed.flowSecret).toBeDefined();
+    });
+
+    it("rejects expired handoff token", async () => {
+      const { cipher, flows } = build(discoverableAs());
+      const expiredToken = cipher.encryptHandoff({
+        flowSecret: FLOW_SECRET,
+        targetUrl: "https://example.com",
+        stateHash: "hash",
+        expiresAt: Date.now() - 10000,
+      });
+      await expect(flows.redeemHandoffToken(expiredToken)).rejects.toMatchObject({
+        code: MCP_ERROR_CODES.OAUTH_FLOW_INVALID,
+      });
+    });
+
+    it("rejects handoff token when authorization row is not pending", async () => {
+      const { cipher, flows } = build(discoverableAs());
+      const token = cipher.encryptHandoff({
+        flowSecret: FLOW_SECRET,
+        targetUrl: "https://example.com",
+        stateHash: "nonexistent-state-hash",
+        expiresAt: Date.now() + 60000,
+      });
+      await expect(flows.redeemHandoffToken(token)).rejects.toMatchObject({
+        code: MCP_ERROR_CODES.OAUTH_FLOW_INVALID,
+      });
+    });
+  });
 });

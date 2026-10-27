@@ -506,4 +506,82 @@ describe("OpenTagApi Agent methods", () => {
     expect(new Headers(fetchImpl.mock.calls[0]?.[1]?.headers).get(PROVIDER_CLI_REASON_V2_HEADER)).toBe("2");
     expect(new Headers(fetchImpl.mock.calls[1]?.[1]?.headers).get(PROVIDER_CLI_REASON_V2_HEADER)).toBe("2");
   });
+
+  describe("runtime agent self mcp operations", () => {
+    it("creates, sets credentials, starts oauth, gets status and deletes mcp server definition", async () => {
+      const serverPayload = {
+        mcpServerId: "0f4c8f7e-4a4d-4b7b-9a51-7c8f1d2e3a4b",
+        name: "test-mcp",
+        description: null,
+        discoveredDescription: null,
+        enabled: true,
+        effective: {
+          url: "https://mcp.example.com",
+          authHeader: "Authorization",
+          authScheme: "Bearer",
+          extraHeaders: {},
+        },
+        overridden: { url: false, authHeader: false, authScheme: false, extraHeaders: false },
+        authorization: null,
+        snapshot: null,
+        createdAt: "2026-09-22T00:00:00.000Z",
+        updatedAt: "2026-09-22T00:00:00.000Z",
+      };
+
+      const oauthStartPayload = {
+        authorizationUrl: "https://example.com/oauth/handoff?token=xyz",
+        expiresAt: "2026-10-27T10:00:00.000Z",
+      };
+
+      const oauthStatusPayload = {
+        mcpServerId: "0f4c8f7e-4a4d-4b7b-9a51-7c8f1d2e3a4b",
+        name: "test-mcp",
+        enabled: true,
+        authKind: "oauth",
+        authStatus: "pending",
+        probeState: null,
+        probeError: null,
+        failureCode: null,
+        toolsCount: null,
+        toolsTruncated: false,
+        tools: null,
+      };
+
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse(serverPayload, 201))
+        .mockResolvedValueOnce(jsonResponse(serverPayload))
+        .mockResolvedValueOnce(jsonResponse(oauthStartPayload))
+        .mockResolvedValueOnce(jsonResponse(oauthStatusPayload))
+        .mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+      const api = new OpenTagApi("https://opentag.example", fetchImpl);
+
+      const created = await api.createRuntimeAgentMcpServer("proof-token", {
+        name: "test-mcp",
+        url: "https://mcp.example.com",
+        defaultAuthKind: "bearer",
+      });
+      expect(created.name).toBe("test-mcp");
+
+      const authed = await api.setRuntimeAgentMcpBearerKey(
+        "proof-token",
+        "0f4c8f7e-4a4d-4b7b-9a51-7c8f1d2e3a4b",
+        "secret-key",
+      );
+      expect(authed.mcpServerId).toBe("0f4c8f7e-4a4d-4b7b-9a51-7c8f1d2e3a4b");
+
+      const started = await api.startRuntimeAgentMcpOAuth("proof-token", "0f4c8f7e-4a4d-4b7b-9a51-7c8f1d2e3a4b", {
+        scopes: ["read"],
+      });
+      expect(started.authorizationUrl).toContain("token=xyz");
+
+      const status = await api.getRuntimeAgentMcpOAuthStatus("proof-token", "0f4c8f7e-4a4d-4b7b-9a51-7c8f1d2e3a4b");
+      expect(status.authStatus).toBe("pending");
+
+      await expect(
+        api.deleteRuntimeAgentMcpServerDefinition("proof-token", "0f4c8f7e-4a4d-4b7b-9a51-7c8f1d2e3a4b"),
+      ).resolves.toBeUndefined();
+    });
+  });
 });

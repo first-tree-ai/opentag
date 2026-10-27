@@ -110,6 +110,11 @@ import {
   RUNTIME_SKILL_PRESET_INSTALL_TEMPLATE,
   RUNTIME_SKILL_PRESETS_PATH,
   RUNTIME_SKILLS_PATH,
+  runtimeAgentMcpServerCredentialsPath,
+  runtimeAgentMcpServerDefinitionPath,
+  runtimeAgentMcpServerOAuthStartPath,
+  runtimeAgentMcpServerOAuthStatusPath,
+  runtimeAgentMcpServerPath,
   runtimeDurableWorkPath,
   runtimeImResourcePath,
   runtimeSkillBundlePath,
@@ -471,6 +476,13 @@ describe("http paths", () => {
         runtimeSkillPresetInstallPath("mcp-onboarding"),
       );
       expect(render(RUNTIME_DURABLE_WORK_PATH, {})).toBe(RUNTIME_DURABLE_WORK_PATH);
+      expect(runtimeAgentMcpServerPath("srv-1")).toBe("/api/v1/runtime/agent/mcp-servers/srv-1");
+      expect(runtimeAgentMcpServerCredentialsPath("srv-1")).toBe("/api/v1/runtime/agent/mcp-servers/srv-1/credentials");
+      expect(runtimeAgentMcpServerOAuthStartPath("srv-1")).toBe("/api/v1/runtime/agent/mcp-servers/srv-1/oauth/start");
+      expect(runtimeAgentMcpServerOAuthStatusPath("srv-1")).toBe(
+        "/api/v1/runtime/agent/mcp-servers/srv-1/oauth/status",
+      );
+      expect(runtimeAgentMcpServerDefinitionPath("srv-1")).toBe("/api/v1/runtime/agent/mcp-servers/srv-1/definition");
     });
 
     it("exposes the same static and template values through HTTP_PATHS", () => {

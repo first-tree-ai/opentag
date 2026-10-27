@@ -1,9 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import {
   GOOGLE_WORKSPACE_MCP_AUTHORIZATION_SERVER,
   isGoogleWorkspaceMcpEndpoint,
   isMcpStaticOAuthEndpoint,
   MCP_CATALOG_DEPLOYMENT_ENDPOINTS,
+  MCP_OAUTH_HANDOFF_PATH,
   MCP_STATIC_OAUTH_PROVIDERS,
   type MCPCatalogEndpoint,
   type McpStaticOAuthBrand,
@@ -116,6 +117,7 @@ function deploymentOAuthClients(options: McpOAuthFlowServiceOptions): readonly D
 export interface StartedMcpOAuth {
   authorizationUrl: string;
   expiresAt: Date;
+  state: string;
 }
 
 export class McpOAuthFlowService {
@@ -276,7 +278,89 @@ export class McpOAuthFlowService {
           updatedAt: now,
         },
       });
-    return { authorizationUrl, expiresAt };
+    return { authorizationUrl, expiresAt, state };
+  }
+
+  /**
+   * Start an OAuth flow with a same-origin handoff URL for Agent self-service.
+   *
+   * An Agent CLI or runtime cannot set cookies in the user's browser directly.
+   * By routing through `MCP_OAUTH_HANDOFF_PATH`, the user's browser receives the
+   * required single-use `mcpOAuthContext` cookie and is immediately redirected to
+   * the upstream provider authorization URL, preserving full PKCE/state/cookie security.
+   */
+  async startWithHandoff(
+    accountId: string,
+    agentId: string,
+    mcpServerId: string,
+    requestedScopes: readonly string[] = [],
+    publicOrigin: string,
+  ): Promise<StartedMcpOAuth> {
+    const flowSecret = randomUUID();
+    const started = await this.start(accountId, agentId, mcpServerId, requestedScopes, flowSecret);
+    const handoffUrl = this.createHandoffUrl({
+      flowSecret,
+      authorizationUrl: started.authorizationUrl,
+      state: started.state,
+      expiresAt: started.expiresAt,
+      publicOrigin,
+    });
+    return {
+      authorizationUrl: handoffUrl,
+      expiresAt: started.expiresAt,
+      state: started.state,
+    };
+  }
+
+  createHandoffUrl(params: {
+    flowSecret: string;
+    authorizationUrl: string;
+    state: string;
+    expiresAt: Date;
+    publicOrigin: string;
+  }): string {
+    const token = this.#cipher.encryptHandoff({
+      flowSecret: params.flowSecret,
+      targetUrl: params.authorizationUrl,
+      stateHash: hashSecret(params.state),
+      expiresAt: params.expiresAt.getTime(),
+    });
+    const origin = params.publicOrigin.replace(/\/+$/, "");
+    return `${origin}${MCP_OAUTH_HANDOFF_PATH}?token=${encodeURIComponent(token)}`;
+  }
+
+  async redeemHandoffToken(token: string): Promise<{ flowSecret: string; targetUrl: string }> {
+    const payload = this.#cipher.decryptHandoff(token);
+    const now = this.#now().getTime();
+    if (now > payload.expiresAt) {
+      throw new McpServiceError(MCP_ERROR_CODES.OAUTH_FLOW_INVALID, "The authorization handoff token has expired");
+    }
+
+    const [row] = await this.#database
+      .select({
+        state: mcpServerAuthorizations.state,
+        loginSessionHash: mcpServerAuthorizations.loginSessionHash,
+        status: mcpServerAuthorizations.status,
+      })
+      .from(mcpServerAuthorizations)
+      .where(eq(mcpServerAuthorizations.state, payload.stateHash))
+      .limit(1);
+
+    if (!row || row.status !== "pending") {
+      throw new McpServiceError(MCP_ERROR_CODES.OAUTH_FLOW_INVALID, "The authorization flow is no longer valid");
+    }
+
+    if (
+      !row.loginSessionHash ||
+      !timingSafeEqual(Buffer.from(row.loginSessionHash), Buffer.from(hashSecret(payload.flowSecret)))
+    ) {
+      throw new McpServiceError(
+        MCP_ERROR_CODES.OAUTH_FLOW_INVALID,
+        "The authorization flow was not started by this browser",
+      );
+    }
+
+    return { flowSecret: payload.flowSecret, targetUrl: payload.targetUrl };
   }
 
   /**

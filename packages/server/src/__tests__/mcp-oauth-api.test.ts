@@ -7,7 +7,12 @@
  * upstream's own words never echo back.
  */
 
-import { MCP_CLIENT_METADATA_PATH, MCP_ERROR_CODES, MCP_OAUTH_CALLBACK_PATH } from "@opentag/shared";
+import {
+  MCP_CLIENT_METADATA_PATH,
+  MCP_ERROR_CODES,
+  MCP_OAUTH_CALLBACK_PATH,
+  MCP_OAUTH_HANDOFF_PATH,
+} from "@opentag/shared";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { registerMcpOAuthRoutes } from "../api/mcp-oauth.js";
@@ -27,6 +32,7 @@ interface Harness {
   app: FastifyInstance;
   flows: {
     callback: ReturnType<typeof vi.fn>;
+    redeemHandoffToken: ReturnType<typeof vi.fn>;
     redirectFor: ReturnType<typeof vi.fn>;
   };
   onCredentialStored: ReturnType<typeof vi.fn>;
@@ -35,6 +41,10 @@ interface Harness {
 function build(options: { secureCookies?: boolean; withProbeHook?: boolean } = {}): Harness {
   const flows = {
     callback: vi.fn(async () => ({ accountId: ACCOUNT, agentId: AGENT, mcpServerId: SERVER })),
+    redeemHandoffToken: vi.fn(async (token: string) => {
+      if (token === "invalid") throw new McpServiceError(MCP_ERROR_CODES.OAUTH_FLOW_INVALID, "Invalid token");
+      return { flowSecret: FLOW_SECRET, targetUrl: "https://provider.example.com/oauth/authorize?state=abc" };
+    }),
     redirectFor: vi.fn(
       (agentId: string, mcpServerId: string, errorCode?: string) =>
         `${PUBLIC_ORIGIN}/agents/${agentId}/mcp?server=${mcpServerId}&mcp_oauth=${errorCode ? "error" : "success"}`,
@@ -320,5 +330,34 @@ describe("MCP client metadata document", () => {
     });
     expect(response.json().client_id).toBe(`${PUBLIC_ORIGIN}${MCP_CLIENT_METADATA_PATH}`);
     expect(response.json().redirect_uris).toEqual([`${PUBLIC_ORIGIN}${MCP_OAUTH_CALLBACK_PATH}`]);
+  });
+});
+
+describe("MCP OAuth browser handoff", () => {
+  it("redeems handoff token, sets the browser cookie on the callback path, and redirects to provider", async () => {
+    const { app, flows } = build();
+    const response = await app.inject({
+      method: "GET",
+      url: `${MCP_OAUTH_HANDOFF_PATH}?token=valid-token`,
+    });
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe("https://provider.example.com/oauth/authorize?state=abc");
+    const setCookie = response.headers["set-cookie"];
+    expect(setCookie).toBeDefined();
+    const cookieStr = Array.isArray(setCookie) ? setCookie.join("; ") : String(setCookie);
+    expect(cookieStr).toContain(BROWSER_COOKIE_NAMES.mcpOAuthContext);
+    expect(cookieStr).toContain(FLOW_SECRET);
+    expect(cookieStr).toContain(`Path=${MCP_OAUTH_CALLBACK_PATH}`);
+    expect(flows.redeemHandoffToken).toHaveBeenCalledWith("valid-token");
+  });
+
+  it("redirects to failure destination when handoff token is invalid or expired", async () => {
+    const { app } = build();
+    const response = await app.inject({
+      method: "GET",
+      url: `${MCP_OAUTH_HANDOFF_PATH}?token=invalid`,
+    });
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toContain("mcp_oauth=error");
   });
 });

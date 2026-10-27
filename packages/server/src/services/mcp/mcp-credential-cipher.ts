@@ -42,6 +42,14 @@ const ClientSecretSchema = z
       .max(16 * 1024),
   })
   .strict();
+const HandoffPayloadSchema = z
+  .object({
+    flowSecret: z.string().min(1).max(256),
+    targetUrl: z.string().min(1).max(8192),
+    stateHash: z.string().min(1).max(128),
+    expiresAt: z.number().int().positive(),
+  })
+  .strict();
 const EncryptedMaterialSchema = z
   .object({
     ciphertext: z
@@ -136,6 +144,16 @@ export class McpCredentialCipher {
 
   decryptClientSecret(binding: McpRegistrationBinding, material: McpEncryptedMaterial): string {
     return this.open(ClientSecretSchema, material, registrationAadContext(binding)).clientSecret;
+  }
+
+  encryptHandoff(payload: z.infer<typeof HandoffPayloadSchema>): string {
+    const sealed = this.seal(HandoffPayloadSchema, payload, "mcp-oauth-handoff");
+    return Buffer.from(JSON.stringify(sealed), "utf8").toString("base64url");
+  }
+
+  decryptHandoff(token: string): z.infer<typeof HandoffPayloadSchema> {
+    const material = JSON.parse(Buffer.from(token, "base64url").toString("utf8"));
+    return this.open(HandoffPayloadSchema, material, "mcp-oauth-handoff");
   }
 
   private seal<T>(schema: z.ZodType<T>, value: T, context: string): McpEncryptedMaterial {

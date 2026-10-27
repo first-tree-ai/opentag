@@ -106,6 +106,7 @@ function fixture(overrides: Partial<AgentSelfServiceOptions> = {}) {
   };
   const mcp = {
     attachServer: vi.fn(async () => mounted),
+    createAndAttachServer: vi.fn(async () => mounted),
     createServer: vi.fn(async () => serverRow),
     deleteServer: vi.fn(async () => undefined),
     detachServer: vi.fn(async () => undefined),
@@ -114,6 +115,20 @@ function fixture(overrides: Partial<AgentSelfServiceOptions> = {}) {
       { id: randomUUID(), name: "search", description: null, boundAgentCount: 0 },
     ]),
     readAgentServer: vi.fn(async () => mounted),
+    readServer: vi.fn(async () => ({
+      id: mcpServerId,
+      accountId,
+      name: "docs",
+      description: "Created by Agent self-service",
+      url: "https://mcp.example.com/mcp",
+      defaultAuthKind: "oauth" as const,
+      authHeader: "authorization",
+      authScheme: "Bearer",
+      extraHeaders: {},
+      revision: 1,
+      createdAt: new Date(now),
+      updatedAt: new Date(now),
+    })),
     updateBinding: vi.fn(async () => ({ ...mounted, enabled: false })),
   };
   const authorization = {
@@ -131,6 +146,12 @@ function fixture(overrides: Partial<AgentSelfServiceOptions> = {}) {
     start: vi.fn(async () => ({
       authorizationUrl: "https://provider.example/authorize?x=1",
       expiresAt: new Date(now),
+      state: "state-probe",
+    })),
+    startWithHandoff: vi.fn(async () => ({
+      authorizationUrl: "https://test.local/api/v1/mcp-servers/oauth/handoff?token=handoff-token",
+      expiresAt: new Date(now),
+      state: "state-probe",
     })),
   };
   const proofs = { authenticate: vi.fn(async () => source) };
@@ -147,6 +168,7 @@ function fixture(overrides: Partial<AgentSelfServiceOptions> = {}) {
     owners,
     proofs,
     logger,
+    publicOrigin: "https://test.local",
     ...overrides,
   });
   const app = createApp({ runtimeAgent: { service } });
@@ -260,7 +282,7 @@ describe("Runtime Agent self-configuration routes", () => {
     expect(mcp.attachServer).not.toHaveBeenCalled();
     expect(mcp.updateBinding).not.toHaveBeenCalled();
     expect(mcp.detachServer).not.toHaveBeenCalled();
-    expect(mcp.createServer).not.toHaveBeenCalled();
+    expect(mcp.createAndAttachServer).not.toHaveBeenCalled();
     expect(mcp.deleteServer).not.toHaveBeenCalled();
     await app.close();
   });
@@ -324,12 +346,18 @@ describe("Runtime Agent self-configuration routes", () => {
       payload: { name: "docs", url: "https://mcp.example.com/mcp", defaultAuthKind: "bearer", apiKey: "key-1" },
     });
     expect(created.statusCode).toBe(201);
-    expect(mcp.createServer).toHaveBeenCalledWith(accountId, {
-      name: "docs",
-      url: "https://mcp.example.com/mcp",
-      defaultAuthKind: "bearer",
-    });
-    expect(mcp.attachServer).toHaveBeenCalledWith(accountId, source.agentId, mcpServerId, true, "agent-self");
+    expect(mcp.createAndAttachServer).toHaveBeenCalledWith(
+      accountId,
+      source.agentId,
+      {
+        name: "docs",
+        description: "Created by Agent self-service",
+        url: "https://mcp.example.com/mcp",
+        defaultAuthKind: "bearer",
+      },
+      true,
+      "agent-self",
+    );
     expect(authorization.setBearerOrNone).toHaveBeenCalledWith(accountId, source.agentId, mcpServerId, {
       kind: "bearer",
       bearerKey: "key-1",
@@ -368,7 +396,7 @@ describe("Runtime Agent self-configuration routes", () => {
       });
       expect(response.statusCode).toBe(400);
     }
-    expect(mcp.createServer).not.toHaveBeenCalled();
+    expect(mcp.createAndAttachServer).not.toHaveBeenCalled();
     await app.close();
   });
 
@@ -406,8 +434,16 @@ describe("Runtime Agent self-configuration routes", () => {
       payload: { scopes: ["read"] },
     });
     expect(started.statusCode).toBe(200);
-    expect(started.json()).toMatchObject({ authorizationUrl: "https://provider.example/authorize?x=1" });
-    expect(flows.start).toHaveBeenCalledWith(accountId, source.agentId, mcpServerId, ["read"], expect.any(String));
+    expect(started.json()).toMatchObject({
+      authorizationUrl: "https://test.local/api/v1/mcp-servers/oauth/handoff?token=handoff-token",
+    });
+    expect(flows.startWithHandoff).toHaveBeenCalledWith(
+      accountId,
+      source.agentId,
+      mcpServerId,
+      ["read"],
+      "https://test.local",
+    );
 
     mcp.readAgentServer.mockResolvedValueOnce({
       ...mounted,

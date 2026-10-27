@@ -144,3 +144,27 @@ describe("a kind change does not strand a credential", () => {
     });
   });
 });
+
+describe("MCP OAuth handoff token", () => {
+  it("encrypts and decrypts a handoff payload round-trip", () => {
+    const store = cipher();
+    const payload = {
+      flowSecret: "secret-123",
+      targetUrl: "https://provider.example.com/oauth/authorize?state=abc",
+      stateHash: "state-hash-value",
+      expiresAt: Date.now() + 60_000,
+    };
+    const token = store.encryptHandoff(payload);
+    expect(token).toBeTruthy();
+    expect(token).not.toContain("secret-123");
+    expect(token).not.toContain("https://");
+
+    const decrypted = store.decryptHandoff(token);
+    expect(decrypted).toEqual(payload);
+  });
+
+  it("fails to decrypt tampered handoff token", () => {
+    const store = cipher();
+    expect(() => store.decryptHandoff("invalid-token-string")).toThrow();
+  });
+});

@@ -15,7 +15,6 @@ import { and, eq, ne } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { agents } from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
-import { generateSecret } from "../auth/security.js";
 import {
   type McpAuthorizationService,
   type McpOAuthFlowService,
@@ -77,21 +76,24 @@ export class DatabaseAgentOwnerResolver implements AgentOwnerResolver {
 export interface AgentSelfServiceOptions {
   agents: Pick<AgentService, "getConfigById" | "updateById">;
   authorization: Pick<McpAuthorizationService, "probe" | "setBearerOrNone">;
-  flows: Pick<McpOAuthFlowService, "start">;
+  flows: Pick<McpOAuthFlowService, "startWithHandoff">;
   logger?: ServiceLogger;
   mcp: Pick<
     McpServerService,
     | "attachServer"
+    | "createAndAttachServer"
     | "createServer"
     | "deleteServer"
     | "detachServer"
     | "listAgentServers"
     | "listAvailableServers"
     | "readAgentServer"
+    | "readServer"
     | "updateBinding"
   >;
   owners: AgentOwnerResolver;
   proofs: Pick<SessionCliProofService, "authenticate">;
+  publicOrigin: string;
 }
 
 /** The authenticated self scope. Only `authenticate` creates one; callers pass it back unchanged. */
@@ -147,56 +149,56 @@ export class AgentSelfService {
   }
 
   /**
-   * Register a definition and mount it on this Agent.
-   *
-   * The definition is written first because a mount needs one, so a failed mount must not leave the
-   * definition behind: an orphan in the Account pool that no Agent mounts would show up in every
-   * Agent's "available" list and would block the name on the next attempt. The compensating delete is
-   * best effort — the original mount error is the one worth reporting.
+   * Register a definition and mount it on this Agent atomically in a single transaction.
+   * Eliminates the window where a failed mount leaves an unattached orphan definition behind.
    */
   async createMcpServer(scope: AgentSelfScope, input: CreateSelfMCPServerRequest): Promise<MCPAgentServer> {
-    const created = await this.#options.mcp.createServer(scope.accountId, {
-      name: input.name,
-      url: input.url,
-      defaultAuthKind: input.defaultAuthKind,
-    });
-    try {
-      await this.#options.mcp.attachServer(scope.accountId, scope.agentId, created.id, true, "agent-self");
-    } catch (error) {
-      await this.#options.mcp.deleteServer(scope.accountId, created.id).catch(() => undefined);
-      throw error;
-    }
+    const created = await this.#options.mcp.createAndAttachServer(
+      scope.accountId,
+      scope.agentId,
+      {
+        name: input.name,
+        description: "Created by Agent self-service",
+        url: input.url,
+        defaultAuthKind: input.defaultAuthKind,
+      },
+      true,
+      "agent-self",
+    );
     if (input.apiKey !== undefined) {
-      await this.#options.authorization.setBearerOrNone(scope.accountId, scope.agentId, created.id, {
+      await this.#options.authorization.setBearerOrNone(scope.accountId, scope.agentId, created.mcpServerId, {
         kind: "bearer",
         bearerKey: input.apiKey,
       });
       // Synchronous so `add --api-key` reports the tool catalogue it just earned, rather than an
       // object that is still `pending` and needs a second command to interpret.
-      await this.#options.authorization.probe(scope.accountId, scope.agentId, created.id);
+      await this.#options.authorization.probe(scope.accountId, scope.agentId, created.mcpServerId);
     }
     this.#audit(scope, "agent_self.mcp_server_created", {
-      mcpServerId: created.id,
-      defaultAuthKind: created.defaultAuthKind,
+      mcpServerId: created.mcpServerId,
+      defaultAuthKind: input.defaultAuthKind,
       credentialWritten: input.apiKey !== undefined,
     });
-    return this.#options.mcp.readAgentServer(scope.accountId, scope.agentId, created.id);
+    return this.#options.mcp.readAgentServer(scope.accountId, scope.agentId, created.mcpServerId);
   }
 
   /**
-   * Unmount, then drop the definition when nothing else mounts it.
-   *
-   * `SERVER_IN_USE` is the expected answer when another Agent of the Account still mounts the
-   * definition: the unmount succeeded, and the shared definition must stay for that other Agent.
+   * Unmount, and drop the definition only when it was created by Agent self-service and nothing else mounts it.
+   * Human-created definitions are preserved when an Agent unmounts them.
    */
   async deleteMcpServer(scope: AgentSelfScope, mcpServerId: string): Promise<{ definitionRemoved: boolean }> {
+    const server = await this.#options.mcp.readServer(scope.accountId, mcpServerId);
     await this.#options.mcp.detachServer(scope.accountId, scope.agentId, mcpServerId);
-    let definitionRemoved = true;
-    try {
-      await this.#options.mcp.deleteServer(scope.accountId, mcpServerId);
-    } catch (error) {
-      if (!(error instanceof McpServiceError) || error.code !== MCP_ERROR_CODES.SERVER_IN_USE) throw error;
-      definitionRemoved = false;
+    let definitionRemoved = false;
+    // Option B: Only cascade-delete definitions that this Agent or another Agent self-service created.
+    if (server.description?.includes("Agent self-service")) {
+      try {
+        await this.#options.mcp.deleteServer(scope.accountId, mcpServerId);
+        definitionRemoved = true;
+      } catch (error) {
+        if (!(error instanceof McpServiceError) || error.code !== MCP_ERROR_CODES.SERVER_IN_USE) throw error;
+        definitionRemoved = false;
+      }
     }
     this.#audit(scope, "agent_self.mcp_server_deleted", { mcpServerId, definitionRemoved });
     return { definitionRemoved };
@@ -232,28 +234,23 @@ export class AgentSelfService {
   }
 
   /**
-   * Begin an OAuth flow for a Server this Agent mounts.
+   * Begin an OAuth flow for a Server this Agent mounts, returning a same-origin handoff URL.
    *
-   * The flow secret is minted here and nowhere else: the Agent surface has no browser, so it cannot
-   * be handed a cookie the way the Account surface's start route does. It exists so the flow row is
-   * bound to a single start rather than left with a null binding.
-   *
-   * `shortcut:` the browser that completes this flow does not hold the flow secret cookie, so the
-   * callback's browser binding is not satisfied by an Agent-started flow; the state is still single
-   * use, hashed, and short lived. Upgrade by having the returned URL pass through a same-origin
-   * handoff that sets the cookie before redirecting to the provider.
+   * The URL returned to the Agent routes through the same-origin handoff endpoint, which writes the
+   * required single-use `mcpOAuthContext` cookie to the user's browser before redirecting to the
+   * authorization provider, preserving full PKCE/state/cookie security end-to-end.
    */
   async startMcpOAuth(
     scope: AgentSelfScope,
     mcpServerId: string,
     input: StartMCPOAuthRequest,
   ): Promise<StartMCPOAuthResponse> {
-    const started = await this.#options.flows.start(
+    const started = await this.#options.flows.startWithHandoff(
       scope.accountId,
       scope.agentId,
       mcpServerId,
       input.scopes ?? [],
-      generateSecret(32),
+      this.#options.publicOrigin,
     );
     this.#audit(scope, "agent_self.mcp_oauth_started", {
       mcpServerId,

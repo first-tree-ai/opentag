@@ -15,6 +15,7 @@ import {
   McpProbe,
   McpServerService,
 } from "../../services/mcp/index.js";
+import { McpFixtureServer } from "../fixtures/mcp-fixture-server.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 let testDatabase: MigratedTestDatabase;
@@ -57,6 +58,7 @@ async function fixture() {
     flows,
     mcp,
     owners: new DatabaseAgentOwnerResolver(client.database),
+    publicOrigin: "https://opentag.example.com",
     proofs: {
       authenticate: async (proof) => {
         if (proof !== "valid-proof") throw new Error("invalid proof");
@@ -290,6 +292,107 @@ describe("Agent self-configuration against PostgreSQL", () => {
       });
       expect(JSON.stringify(status)).not.toContain("secret-key-value");
     } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("rolls back the definition atomically if mounting fails (P2 regression)", async () => {
+    const value = await fixture();
+    try {
+      await enableSelfConfiguration(value);
+      const scope = await value.self.authenticate("valid-proof");
+
+      // Inject a database failure on the mount table inside the transaction
+      await value.sql.unsafe(`
+        CREATE FUNCTION reject_agent_mcp_mount() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'simulated mount failure'; END $$;
+        CREATE TRIGGER reject_agent_mcp_mount BEFORE INSERT ON agent_mcp_servers
+        FOR EACH ROW EXECUTE FUNCTION reject_agent_mcp_mount();
+      `);
+
+      await expect(
+        value.self.createMcpServer(scope, {
+          name: "fail-mount",
+          url: "https://mcp.fail.example/mcp",
+          defaultAuthKind: "oauth",
+        }),
+      ).rejects.toThrow();
+
+      // Verify that no orphan definition exists in mcp_servers
+      const rows = await value.database
+        .select({ id: mcpServers.id })
+        .from(mcpServers)
+        .where(eq(mcpServers.name, "fail-mount"));
+      expect(rows).toEqual([]);
+    } finally {
+      await value.sql.unsafe(`DROP TRIGGER IF EXISTS reject_agent_mcp_mount ON agent_mcp_servers;`);
+      await value.sql.unsafe(`DROP FUNCTION IF EXISTS reject_agent_mcp_mount();`);
+      await value.sql.end();
+    }
+  });
+
+  it("preserves human-created definitions when unmounted by an Agent (Option B)", async () => {
+    const value = await fixture();
+    try {
+      await enableSelfConfiguration(value);
+      const scope = await value.self.authenticate("valid-proof");
+
+      // Human/Admin created definition without Agent self-service description marker
+      const humanCreated = await value.mcp.createServer(value.accountId, {
+        name: "human-global",
+        url: "https://mcp.global.example/mcp",
+        defaultAuthKind: "oauth",
+      });
+
+      // Mount to Agent
+      await value.self.attachMcpServer(scope, humanCreated.id, true);
+      expect((await value.self.listMcpServers(scope)).map((s) => s.mcpServerId)).toContain(humanCreated.id);
+
+      // Agent deletes it: unmounts, but must NOT cascade delete the definition
+      const { definitionRemoved } = await value.self.deleteMcpServer(scope, humanCreated.id);
+      expect(definitionRemoved).toBe(false);
+
+      // Unmounted from Agent
+      expect((await value.self.listMcpServers(scope)).map((s) => s.mcpServerId)).not.toContain(humanCreated.id);
+
+      // But definition still exists in Account pool!
+      const [remaining] = await value.database
+        .select({ id: mcpServers.id })
+        .from(mcpServers)
+        .where(eq(mcpServers.id, humanCreated.id));
+      expect(remaining).toBeDefined();
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("generates a safe browser handoff URL that redeems the flow secret (P1)", async () => {
+    const fixtureServer = await McpFixtureServer.start();
+    const value = await fixture();
+    try {
+      await enableSelfConfiguration(value);
+      const scope = await value.self.authenticate("valid-proof");
+
+      const created = await value.self.createMcpServer(scope, {
+        name: "handoff-test",
+        url: fixtureServer.endpoint,
+        defaultAuthKind: "oauth",
+      });
+
+      const started = await value.self.startMcpOAuth(scope, created.mcpServerId, {});
+      expect(started.authorizationUrl).toContain("https://opentag.example.com/api/v1/mcp-servers/oauth/handoff?token=");
+
+      const parsedUrl = new URL(started.authorizationUrl);
+      const token = parsedUrl.searchParams.get("token");
+      expect(token).toBeTruthy();
+      if (!token) throw new Error("Expected token parameter in handoff URL");
+
+      // Redeem the handoff token
+      const redeemed = await value.flows.redeemHandoffToken(token);
+      expect(redeemed.flowSecret).toBeTruthy();
+      expect(redeemed.targetUrl).toContain("/authorize");
+    } finally {
+      await fixtureServer.stop();
       await value.sql.end();
     }
   });

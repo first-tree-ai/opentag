@@ -108,6 +108,7 @@ export const TASK_DETAIL_COLLABORATION_MESSAGES_TEMPLATE = `${TASK_DETAIL_TEMPLA
 export const MCP_SERVERS_PATH = `${API_V1_PREFIX}/mcp-servers`;
 export const MCP_SERVER_BY_ID_TEMPLATE = `${MCP_SERVERS_PATH}/:mcpServerId`;
 export const MCP_OAUTH_CALLBACK_PATH = `${MCP_SERVERS_PATH}/oauth/callback`;
+export const MCP_OAUTH_HANDOFF_PATH = `${MCP_SERVERS_PATH}/oauth/handoff`;
 export const AGENT_MCP_SERVERS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/mcp-servers`;
 export const AGENT_MCP_SERVER_TEMPLATE = `${AGENT_MCP_SERVERS_TEMPLATE}/:mcpServerId`;
 export const AGENT_MCP_AUTHORIZATION_TEMPLATE = `${AGENT_MCP_SERVER_TEMPLATE}/authorization`;
@@ -215,6 +216,7 @@ export const HTTP_PATHS = {
   githubOAuthCallback: GITHUB_OAUTH_CALLBACK_PATH,
   mcpServers: MCP_SERVERS_PATH,
   mcpOAuthCallback: MCP_OAUTH_CALLBACK_PATH,
+  mcpOAuthHandoff: MCP_OAUTH_HANDOFF_PATH,
   mcpClientMetadata: MCP_CLIENT_METADATA_PATH,
   mcpCatalogEndpoints: MCP_CATALOG_ENDPOINTS_PATH,
   publicSkills: PUBLIC_SKILLS_PATH,

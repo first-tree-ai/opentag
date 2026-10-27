@@ -1247,6 +1247,7 @@ export async function startServer(): Promise<void> {
           mcp: mcpServers,
           owners: new DatabaseAgentOwnerResolver(database),
           proofs: sessionCliProofService,
+          publicOrigin: config.publicUrl,
         }),
       },
       runtimeAgentSlackProvision: {

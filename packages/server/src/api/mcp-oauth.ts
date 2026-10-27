@@ -13,10 +13,20 @@
  * and the redirect URIs. Nothing here is a secret, and nothing here names an Account.
  */
 
-import { MCP_CLIENT_METADATA_PATH, MCP_ERROR_CODES, MCP_OAUTH_CALLBACK_PATH } from "@opentag/shared";
+import {
+  MCP_CLIENT_METADATA_PATH,
+  MCP_ERROR_CODES,
+  MCP_OAUTH_CALLBACK_PATH,
+  MCP_OAUTH_HANDOFF_PATH,
+} from "@opentag/shared";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
-import { BROWSER_COOKIE_NAMES, clearMcpOAuthContextCookie, parseCookies } from "../services/auth/browser-cookies.js";
+import {
+  BROWSER_COOKIE_NAMES,
+  clearMcpOAuthContextCookie,
+  parseCookies,
+  setMcpOAuthContextCookie,
+} from "../services/auth/browser-cookies.js";
 import type { McpOAuthFlowService } from "../services/mcp/index.js";
 import { McpServiceError } from "../services/mcp/index.js";
 import { parseRequest } from "./request-validation.js";
@@ -38,6 +48,10 @@ const CallbackQuerySchema = z.object({
   // Accepted and discarded: a bounded value is never shown to the browser.
   error_description: z.string().max(2048).optional(),
   iss: z.string().min(1).max(2048).optional(),
+});
+
+const HandoffQuerySchema = z.object({
+  token: z.string().min(1).max(16384),
 });
 
 export interface McpOAuthRoutesOptions {
@@ -96,6 +110,21 @@ export function registerMcpOAuthRoutes(app: FastifyInstance, options: McpOAuthRo
     } catch (error) {
       request.log.error({ errorCode: publicCode(error) }, "MCP OAuth callback failed");
       return redirectFailure(reply, options.publicOrigin, agentId, mcpServerId, publicCode(error));
+    }
+  });
+
+  app.get(MCP_OAUTH_HANDOFF_PATH, async (request, reply) => {
+    try {
+      const query = parseRequest(HandoffQuerySchema, request.query);
+      const { flowSecret, targetUrl } = await options.flows.redeemHandoffToken(query.token);
+      setMcpOAuthContextCookie(reply, flowSecret, {
+        path: MCP_OAUTH_CALLBACK_PATH,
+        secure: options.secureCookies,
+      });
+      return reply.redirect(targetUrl, 302);
+    } catch (error) {
+      request.log.error({ errorCode: publicCode(error) }, "MCP OAuth handoff failed");
+      return redirectFailure(reply, options.publicOrigin, undefined, undefined, publicCode(error));
     }
   });
 

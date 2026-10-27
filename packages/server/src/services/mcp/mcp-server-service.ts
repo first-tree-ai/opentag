@@ -105,6 +105,69 @@ export class McpServerService {
   }
 
   /**
+   * Atomically create a definition and attach it to an Agent in a single transaction.
+   * Eliminates the window where a failed mount leaves an unattached orphan definition behind.
+   */
+  async createAndAttachServer(
+    accountId: string,
+    agentId: string,
+    input: CreateMCPServerRequest & { description?: string },
+    enabled = true,
+    source: "account" | "agent-self" = "account",
+  ): Promise<MCPAgentServer> {
+    await this.#requireAgent(accountId, agentId);
+    if (source === "agent-self" && input.defaultAuthKind === "none") {
+      throw new McpServiceError(
+        MCP_ERROR_CODES.SELF_ATTACH_NONE_AUTH_FORBIDDEN,
+        "Agent self-configuration cannot attach an MCP Server that does not require credentials",
+      );
+    }
+    const now = this.#now();
+    try {
+      return await this.#database.transaction(async (tx) => {
+        const [serverRow] = await tx
+          .insert(mcpServers)
+          .values({
+            accountId,
+            name: input.name,
+            description: input.description,
+            url: input.url,
+            defaultAuthKind: input.defaultAuthKind,
+            authHeader: input.authHeader ?? "authorization",
+            authScheme: input.authScheme ?? "Bearer",
+            extraHeaders: normalizeExtraHeaders(input.extraHeaders ?? {}),
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning();
+        if (!serverRow) throw mcpServerNotFound();
+
+        const [bindingRow] = await tx
+          .insert(agentMcpServers)
+          .values({
+            agentId,
+            mcpServerId: serverRow.id,
+            enabled,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning();
+        if (!bindingRow) throw mcpServerNotFound();
+
+        return toAgentServerDto(bindingRow, serverRow, null);
+      });
+    } catch (error) {
+      if (isMcpUniqueViolation(error, "mcp_servers_account_name_unique")) {
+        throw new McpServiceError(MCP_ERROR_CODES.SERVER_NAME_CONFLICT, "An MCP Server with this name already exists");
+      }
+      if (isMcpUniqueViolation(error, "agent_mcp_servers_agent_id_mcp_server_id_pk")) {
+        throw new McpServiceError(MCP_ERROR_CODES.BINDING_CONFLICT, "The Agent already mounts this MCP Server");
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Edit a shared definition. The `expectedRevision` CAS admits exactly one writer among humans —
    * and, because probes never touch this row, a concurrent probe cannot make a user's edit conflict.
    */
@@ -604,6 +667,10 @@ export class McpServerService {
     const joined = await this.readJoinedBinding(accountId, agentId, mcpServerId);
     if (!joined) throw mcpBindingNotFound();
     return toAgentServerDto(joined.binding, joined.server, joined.authorization);
+  }
+
+  async readServer(accountId: string, mcpServerId: string): Promise<typeof mcpServers.$inferSelect> {
+    return this.#requireServer(accountId, mcpServerId);
   }
 
   async requireAgentBinding(accountId: string, agentId: string, mcpServerId: string) {

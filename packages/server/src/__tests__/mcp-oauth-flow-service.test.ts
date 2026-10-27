@@ -2105,6 +2105,32 @@ describe("cancelling reauthorization", () => {
       expect(redeemed.flowSecret).toBeDefined();
     });
 
+    it("allows handoff redemption when reauthorizing an existing active credential", async () => {
+      const ids = await seed();
+      const { flows } = build({
+        ...discoverableAs(),
+        [TOKEN_URL]: doc({ access_token: "active-token", expires_in: 3600 }),
+      });
+      const initial = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+      await flows.callback({ code: "initial-code", state: stateOf(initial.authorizationUrl) }, FLOW_SECRET);
+      const auth = await readAuthorization(ids);
+      expect(auth?.status).toBe("active");
+
+      const started = await flows.startWithHandoff(
+        ids.accountId,
+        ids.agentId,
+        ids.mcpServerId,
+        [],
+        "https://opentag.example",
+      );
+      const token = new URL(started.authorizationUrl).searchParams.get("token");
+      expect(token).not.toBeNull();
+
+      const redeemed = await flows.redeemHandoffToken(token ?? "");
+      expect(redeemed.targetUrl).toContain("https://auth.example.com/authorize");
+      expect(redeemed.flowSecret).toBeDefined();
+    });
+
     it("rejects expired handoff token", async () => {
       const { cipher, flows } = build(discoverableAs());
       const expiredToken = cipher.encryptHandoff({

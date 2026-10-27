@@ -1,7 +1,6 @@
 import {
   type AgentAdminConfig,
   type CreateSelfMCPServerRequest,
-  MCP_ERROR_CODES,
   type MCPAgentServer,
   type MCPAvailableServer,
   type SelfMCPOAuthStatus,
@@ -15,12 +14,7 @@ import { and, eq, ne } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { agents } from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
-import {
-  type McpAuthorizationService,
-  type McpOAuthFlowService,
-  type McpServerService,
-  McpServiceError,
-} from "../mcp/index.js";
+import type { McpAuthorizationService, McpOAuthFlowService, McpServerService } from "../mcp/index.js";
 import type { SessionCliProofService } from "../sessions/session-cli-proof-service.js";
 import type { AgentService } from "./agent-service.js";
 import { AgentServiceError, resourceNotFound } from "./errors.js";
@@ -183,25 +177,16 @@ export class AgentSelfService {
   }
 
   /**
-   * Unmount, and drop the definition only when it was created by Agent self-service and nothing else mounts it.
-   * Human-created definitions are preserved when an Agent unmounts them.
+   * Unmount the MCP Server from this Agent.
+   *
+   * Under the least-privilege self-service boundary, an Agent can only manage its own mounts.
+   * Account-level definitions are preserved across self-service deletion, eliminating provenance
+   * heuristics and preventing accidental destruction of shared or human-managed definitions.
    */
   async deleteMcpServer(scope: AgentSelfScope, mcpServerId: string): Promise<{ definitionRemoved: boolean }> {
-    const server = await this.#options.mcp.readServer(scope.accountId, mcpServerId);
     await this.#options.mcp.detachServer(scope.accountId, scope.agentId, mcpServerId);
-    let definitionRemoved = false;
-    // Option B: Only cascade-delete definitions that this Agent or another Agent self-service created.
-    if (server.description?.includes("Agent self-service")) {
-      try {
-        await this.#options.mcp.deleteServer(scope.accountId, mcpServerId);
-        definitionRemoved = true;
-      } catch (error) {
-        if (!(error instanceof McpServiceError) || error.code !== MCP_ERROR_CODES.SERVER_IN_USE) throw error;
-        definitionRemoved = false;
-      }
-    }
-    this.#audit(scope, "agent_self.mcp_server_deleted", { mcpServerId, definitionRemoved });
-    return { definitionRemoved };
+    this.#audit(scope, "agent_self.mcp_server_deleted", { mcpServerId, definitionRemoved: false });
+    return { definitionRemoved: false };
   }
 
   async updateMcpBinding(

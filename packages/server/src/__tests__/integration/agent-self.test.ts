@@ -217,13 +217,13 @@ describe("Agent self-configuration against PostgreSQL", () => {
       expect((await value.self.listMcpServers(scope)).map((entry) => entry.name)).toEqual(["hubspot"]);
 
       const { definitionRemoved } = await value.self.deleteMcpServer(scope, created.mcpServerId);
-      expect(definitionRemoved).toBe(true);
+      expect(definitionRemoved).toBe(false);
       expect(await value.self.listMcpServers(scope)).toEqual([]);
       const [row] = await value.database
         .select({ id: mcpServers.id })
         .from(mcpServers)
         .where(eq(mcpServers.id, created.mcpServerId));
-      expect(row).toBeUndefined();
+      expect(row).toBeDefined();
     } finally {
       await value.sql.end();
     }
@@ -331,37 +331,80 @@ describe("Agent self-configuration against PostgreSQL", () => {
     }
   });
 
-  it("preserves human-created definitions when unmounted by an Agent (Option B)", async () => {
+  it("preserves Account-level definitions regardless of description when unmounted by an Agent (Option 1 pure detach)", async () => {
     const value = await fixture();
     try {
       await enableSelfConfiguration(value);
       const scope = await value.self.authenticate("valid-proof");
 
-      // Human/Admin created definition without Agent self-service description marker
-      const humanCreated = await value.mcp.createServer(value.accountId, {
+      // Definition with edited description containing arbitrary text
+      const definition = await value.mcp.createServer(value.accountId, {
         name: "human-global",
         url: "https://mcp.global.example/mcp",
         defaultAuthKind: "oauth",
       });
+      await value.database
+        .update(mcpServers)
+        .set({ description: "Human-maintained Agent self-service documentation" })
+        .where(eq(mcpServers.id, definition.id));
 
       // Mount to Agent
-      await value.self.attachMcpServer(scope, humanCreated.id, true);
-      expect((await value.self.listMcpServers(scope)).map((s) => s.mcpServerId)).toContain(humanCreated.id);
+      await value.self.attachMcpServer(scope, definition.id, true);
+      expect((await value.self.listMcpServers(scope)).map((s) => s.mcpServerId)).toContain(definition.id);
 
-      // Agent deletes it: unmounts, but must NOT cascade delete the definition
-      const { definitionRemoved } = await value.self.deleteMcpServer(scope, humanCreated.id);
+      // Agent deletes it: under Option 1 pure detach, definition is NEVER cascaded
+      const { definitionRemoved } = await value.self.deleteMcpServer(scope, definition.id);
       expect(definitionRemoved).toBe(false);
 
       // Unmounted from Agent
-      expect((await value.self.listMcpServers(scope)).map((s) => s.mcpServerId)).not.toContain(humanCreated.id);
+      expect((await value.self.listMcpServers(scope)).map((s) => s.mcpServerId)).not.toContain(definition.id);
 
-      // But definition still exists in Account pool!
+      // But definition still exists in Account pool intact!
       const [remaining] = await value.database
+        .select({ id: mcpServers.id, description: mcpServers.description })
+        .from(mcpServers)
+        .where(eq(mcpServers.id, definition.id));
+      expect(remaining).toBeDefined();
+      expect(remaining?.description).toBe("Human-maintained Agent self-service documentation");
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("aborts and rolls back definition insert if Agent ownership changes concurrently (P1, DB1)", async () => {
+    const value = await fixture();
+    try {
+      await enableSelfConfiguration(value);
+      const otherUser = await createUser(value.database, "other-owner@example.com");
+
+      // Inject a trigger on mcp_servers INSERT that simulates concurrent Agent transfer
+      await value.sql.unsafe(`
+        CREATE FUNCTION simulate_concurrent_agent_transfer() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          UPDATE agents SET created_by_user_id = '${otherUser.id}' WHERE id = '${value.agent.id}';
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER simulate_concurrent_agent_transfer AFTER INSERT ON mcp_servers
+        FOR EACH ROW EXECUTE FUNCTION simulate_concurrent_agent_transfer();
+      `);
+
+      await expect(
+        value.mcp.createAndAttachServer(value.accountId, value.agent.id, {
+          name: "race-transfer-mcp",
+          url: "https://mcp.race.example/mcp",
+          defaultAuthKind: "bearer",
+        }),
+      ).rejects.toMatchObject({ code: "MCP_SERVER_NOT_FOUND" });
+
+      // Verify that the definition insert was completely rolled back
+      const rows = await value.database
         .select({ id: mcpServers.id })
         .from(mcpServers)
-        .where(eq(mcpServers.id, humanCreated.id));
-      expect(remaining).toBeDefined();
+        .where(eq(mcpServers.name, "race-transfer-mcp"));
+      expect(rows).toEqual([]);
     } finally {
+      await value.sql.unsafe(`DROP TRIGGER IF EXISTS simulate_concurrent_agent_transfer ON mcp_servers;`);
+      await value.sql.unsafe(`DROP FUNCTION IF EXISTS simulate_concurrent_agent_transfer();`);
       await value.sql.end();
     }
   });

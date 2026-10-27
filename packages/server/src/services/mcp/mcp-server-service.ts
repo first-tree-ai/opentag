@@ -125,6 +125,15 @@ export class McpServerService {
     const now = this.#now();
     try {
       return await this.#database.transaction(async (tx) => {
+        const [agentRow] = await tx
+          .select({ id: agents.id, createdByUserId: agents.createdByUserId, status: agents.status })
+          .from(agents)
+          .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, accountId), ne(agents.status, "deleted")))
+          .for("update");
+        if (!agentRow) {
+          throw new McpServiceError(MCP_ERROR_CODES.SERVER_NOT_FOUND, "The Agent was not found");
+        }
+
         const [serverRow] = await tx
           .insert(mcpServers)
           .values({
@@ -141,6 +150,14 @@ export class McpServerService {
           })
           .returning();
         if (!serverRow) throw mcpServerNotFound();
+
+        const [verifiedAgent] = await tx
+          .select({ id: agents.id })
+          .from(agents)
+          .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, accountId), ne(agents.status, "deleted")));
+        if (!verifiedAgent) {
+          throw new McpServiceError(MCP_ERROR_CODES.SERVER_NOT_FOUND, "The Agent was not found");
+        }
 
         const [bindingRow] = await tx
           .insert(agentMcpServers)

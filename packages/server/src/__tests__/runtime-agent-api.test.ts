@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
   type AgentAdminConfig,
-  MCP_ERROR_CODES,
   type MCPAgentServer,
   type MCPServer,
   RUNTIME_AGENT_MCP_SERVER_DEFINITIONS_PATH,
@@ -18,7 +17,6 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import { AgentSelfService, type AgentSelfServiceOptions } from "../services/agents/index.js";
-import { McpServiceError } from "../services/mcp/index.js";
 import { SessionCliProofError } from "../services/sessions/index.js";
 
 const accountId = randomUUID();
@@ -400,7 +398,7 @@ describe("Runtime Agent self-configuration routes", () => {
     await app.close();
   });
 
-  it("drops the definition on delete only when nothing else mounts it", async () => {
+  it("unmounts the server on delete without dropping the account definition (Option 1 pure detach)", async () => {
     const { app, mcp } = fixture();
     const removed = await app.inject({
       method: "DELETE",
@@ -409,18 +407,7 @@ describe("Runtime Agent self-configuration routes", () => {
     });
     expect(removed.statusCode).toBe(204);
     expect(mcp.detachServer).toHaveBeenCalledWith(accountId, source.agentId, mcpServerId);
-    expect(mcp.deleteServer).toHaveBeenCalledWith(accountId, mcpServerId);
-
-    mcp.deleteServer.mockRejectedValueOnce(
-      new McpServiceError(MCP_ERROR_CODES.SERVER_IN_USE, "still mounted by another Agent"),
-    );
-    const shared = await app.inject({
-      method: "DELETE",
-      url: runtimeAgentMcpServerDefinitionPath(mcpServerId),
-      headers,
-    });
-    expect(shared.statusCode).toBe(204);
-    expect(mcp.detachServer).toHaveBeenCalledTimes(2);
+    expect(mcp.deleteServer).not.toHaveBeenCalled();
     await app.close();
   });
 

@@ -339,6 +339,7 @@ export class McpOAuthFlowService {
     const [row] = await this.#database
       .select({
         state: mcpServerAuthorizations.state,
+        stateExpiresAt: mcpServerAuthorizations.stateExpiresAt,
         loginSessionHash: mcpServerAuthorizations.loginSessionHash,
         status: mcpServerAuthorizations.status,
       })
@@ -346,7 +347,7 @@ export class McpOAuthFlowService {
       .where(eq(mcpServerAuthorizations.state, payload.stateHash))
       .limit(1);
 
-    if (!row || row.status !== "pending") {
+    if (!row || !row.stateExpiresAt || row.stateExpiresAt.getTime() <= now) {
       throw new McpServiceError(MCP_ERROR_CODES.OAUTH_FLOW_INVALID, "The authorization flow is no longer valid");
     }
 

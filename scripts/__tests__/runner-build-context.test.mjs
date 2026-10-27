@@ -41,10 +41,12 @@ test("the production allowlist stages scripts and dependency patches required by
     stageRunnerBuildContext({ sourceRoot: repositoryRoot, destination: dest });
     const files = listStagedRelativeFiles(dest);
     assert.ok(files.includes("scripts/copy-web-tools-extension.mjs"));
+    assert.ok(files.includes("scripts/check-cli-bundle.mjs"));
     assert.ok(files.includes("scripts/prepare-cli-release.mjs"));
     assert.ok(files.includes("scripts/channel-config.mjs"));
     assert.ok(files.includes("scripts/runner/Dockerfile"));
     assert.ok(files.includes("apps/cli/package.json"));
+    assert.ok(files.includes("packages/mcp-presets/package.json"));
     const manifest = JSON.parse(await readFile(join(dest, "package.json"), "utf8"));
     for (const patch of Object.values(manifest.pnpm.patchedDependencies)) {
       assert.ok(files.includes(patch), `the frozen install requires ${patch}`);

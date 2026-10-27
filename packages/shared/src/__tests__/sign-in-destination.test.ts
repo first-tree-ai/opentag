@@ -1,5 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SIGN_IN_DESTINATION, resolveSignInDestination } from "../sign-in-destination.js";
+import { MCP_OAUTH_HANDOFF_PATH } from "../http-paths.js";
+import {
+  DEFAULT_SIGN_IN_DESTINATION,
+  resolveSignInDestination,
+  SIGN_IN_DESTINATION_MAX_LENGTH,
+} from "../sign-in-destination.js";
+
+/**
+ * A destination of the shape the server actually mints for an MCP OAuth handoff.
+ *
+ * The real token is the base64url of a sealed envelope, so it is long and URL-safe; this is the same
+ * shape at the length a measured production URL reached, which is what the old 1024-character bound
+ * refused.
+ */
+function handoffDestination(payloadLength: number): string {
+  const token = Array.from(
+    { length: payloadLength },
+    (_, index) => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"[index % 64],
+  ).join("");
+  return `${MCP_OAUTH_HANDOFF_PATH}?token=${token}`;
+}
 
 describe("sign-in destination", () => {
   it("defaults when a caller asked for nowhere in particular", () => {
@@ -59,7 +79,26 @@ describe("sign-in destination", () => {
     }
   });
 
+  it("keeps a real generated handoff destination that is longer than a page path", () => {
+    /*
+     * A real handoff URL measured past 1200 characters. At the previous 1024-character bound this was
+     * refused, so a visitor who signed in on the way was dropped on `/agents` and the OAuth flow could
+     * never finish — the whole point of putting the handoff on the allowlist.
+     */
+    for (const length of [1000, 1200, 1216, 2000]) {
+      const destination = handoffDestination(length);
+      expect(destination.length).toBeGreaterThan(1024);
+      expect(resolveSignInDestination(destination), String(length)).toBe(destination);
+    }
+  });
+
   it("refuses a destination longer than the bound", () => {
-    expect(resolveSignInDestination(`/agents?q=${"a".repeat(1024)}`)).toBeUndefined();
+    // The bound is a bound, not a suggestion: one character past it is refused.
+    const base = MCP_OAUTH_HANDOFF_PATH;
+    const atLimit = `${base}?token=${"a".repeat(SIGN_IN_DESTINATION_MAX_LENGTH - base.length - "?token=".length)}`;
+    expect(atLimit).toHaveLength(SIGN_IN_DESTINATION_MAX_LENGTH);
+    expect(resolveSignInDestination(atLimit)).toBe(atLimit);
+    expect(resolveSignInDestination(`${atLimit}a`)).toBeUndefined();
+    expect(resolveSignInDestination(`/agents?q=${"a".repeat(SIGN_IN_DESTINATION_MAX_LENGTH)}`)).toBeUndefined();
   });
 });

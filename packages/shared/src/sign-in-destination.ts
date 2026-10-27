@@ -2,6 +2,19 @@
 export const DEFAULT_SIGN_IN_DESTINATION = "/agents";
 
 /**
+ * The longest destination a sign-in will carry.
+ *
+ * The bound exists so an unbounded query string can never become this module's problem, not to be
+ * tight. It has to clear a real MCP OAuth handoff URL, which is minted by this deployment and is long
+ * by construction: the sealed token alone carries the flow secret, the provider's authorize URL, the
+ * hashed state, and the expiry, and a measured URL runs past 1200 characters. At 1024 the handoff
+ * every Agent produces was refused, so an unauthenticated visitor was returned to `/agents` after
+ * signing in and the flow could never be completed. 4096 keeps roughly three times the headroom while
+ * still refusing anything a browser would not send.
+ */
+export const SIGN_IN_DESTINATION_MAX_LENGTH = 4096;
+
+/**
  * The single contract for where any sign-in may land.
  *
  * It lives here rather than on the server because the password form navigates the browser itself, while the redirect
@@ -19,7 +32,7 @@ export function resolveSignInDestination(value?: string): string | undefined {
    * reads the value afterwards.
    */
   if (
-    next.length > 1024 ||
+    next.length > SIGN_IN_DESTINATION_MAX_LENGTH ||
     next.includes("\\") ||
     next.includes("#") ||
     next.startsWith("//") ||

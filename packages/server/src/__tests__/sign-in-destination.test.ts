@@ -48,7 +48,7 @@ describe("sign-in destinations", () => {
       "/admin",
       "agents",
       `/invites/${"A".repeat(43)}`,
-      `/agents${"?".repeat(1025)}`,
+      `/agents${"?".repeat(5000)}`,
     ];
     for (const next of rejected) {
       expect(() => validateOAuthNext(next), next).toThrow(

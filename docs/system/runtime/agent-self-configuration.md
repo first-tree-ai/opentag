@@ -107,6 +107,12 @@ The URL routes through a same-origin browser handoff (`/api/v1/mcp-servers/oauth
 | Signed in, but not the Account that owns the Agent | 404, the same body a token that never existed produces. No cookie is set. |
 | Signed in as the owning Account | The handoff is consumed, the `mcpOAuthContext` cookie is set, and the browser is redirected to the provider. |
 
+The sign-in round trip has to carry the URL unchanged, which is why a sign-in destination may be up to
+`SIGN_IN_DESTINATION_MAX_LENGTH` (4096) characters: the sealed token alone pushes a generated handoff past 1200, and a
+bound tighter than the URL this deployment mints would drop the visitor on `/agents` and strand the flow. The web app
+lands an unauthenticated handoff as a full document request rather than a router navigation, because the handoff is a
+server route with no page to match — a client-side navigation would never send the request that redeems the token.
+
 Redemption is single use. The flow row holds a hash of the browser secret the token carries; redeeming replaces it with
 the hash of a fresh secret and returns that one for the cookie, in a single conditional update. A second use of the same
 URL matches no row and is refused, so a forwarded link cannot re-bind the flow to another browser. The flow itself —

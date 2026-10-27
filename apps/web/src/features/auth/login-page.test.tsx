@@ -61,6 +61,36 @@ describe("LoginPage", () => {
     expect(screen.queryByLabelText("Email")).toBeNull();
   });
 
+  it("sends an already-signed-in visitor to the OAuth handoff as a document request", async () => {
+    /*
+     * The handoff is a Fastify route, not a page: a client-side navigation has nothing to match and the
+     * request that redeems the token is never sent, so the Agent's flow stalls until the token expires.
+     * The destination is a real one, longer than 1200 characters, which the sign-in allowlist keeps.
+     */
+    vi.spyOn(browserApi, "me").mockResolvedValue({
+      user: { id: "1a63a21e-f6c7-4474-91ea-4dabf0566a24", email: "ada@example.com", displayName: "Ada" },
+      setupCompletedAt: "2026-08-20T00:00:00.000Z",
+    } as never);
+    const navigate = vi.fn();
+    const handoff = `/api/v1/mcp-servers/oauth/handoff?token=A${"b".repeat(1215)}`;
+    await renderInRouter(<LoginPage next={handoff} navigate={navigate} />);
+
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith(handoff));
+  });
+
+  it("lands an already-signed-in visitor on a page destination through the router", async () => {
+    vi.spyOn(browserApi, "me").mockResolvedValue({
+      user: { id: "1a63a21e-f6c7-4474-91ea-4dabf0566a24", email: "ada@example.com", displayName: "Ada" },
+      setupCompletedAt: "2026-08-20T00:00:00.000Z",
+    } as never);
+    const navigate = vi.fn();
+    await renderInRouter(<LoginPage next="/agents?tab=all" navigate={navigate} />);
+
+    // A router navigation is not a document request, so the injected writer stays unused.
+    await waitFor(() => expect(screen.queryByRole("heading", { name: "Sign in to openTag" })).toBeNull());
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
   it("keeps Google-only sign-in free of password and registration controls", async () => {
     vi.spyOn(browserApi, "authProviders").mockResolvedValue({
       providers: [

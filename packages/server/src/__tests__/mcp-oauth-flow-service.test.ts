@@ -4,6 +4,7 @@ import {
   CANVA_DEVELOPER_PORTAL_MCP_URL,
   GOOGLE_WORKSPACE_MCP_AUTHORIZATION_SERVER,
   type McpStaticOAuthBrand,
+  resolveSignInDestination,
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -2168,6 +2169,46 @@ describe("cancelling reauthorization", () => {
       await expect(flows.redeemHandoffToken(token, randomUUID())).rejects.toMatchObject({
         code: MCP_ERROR_CODES.OAUTH_FLOW_INVALID,
       });
+    });
+
+    it("survives the sign-in round trip unresolved and redeems only for its owner", async () => {
+      /*
+       * The whole round trip an unauthenticated human takes: the Agent hands out a link, the browser is
+       * bounced through `/login?next=…`, and the destination has to come back intact and still
+       * redeemable. Two things used to break here — a destination bound tighter than the URL this
+       * deployment mints, and a redemption that treated being shown to a browser as being used.
+       */
+      const ids = await handoffSeed();
+      const { cipher, flows } = build(discoverableAs());
+      const started = await flows.startWithHandoff(
+        ids.accountId,
+        ids.agentId,
+        ids.mcpServerId,
+        [],
+        "https://opentag.example",
+      );
+
+      const url = new URL(started.authorizationUrl);
+      const destination = `${url.pathname}${url.search}`;
+      // The sign-in allowlist carries the real generated URL, token and all.
+      expect(resolveSignInDestination(destination)).toBe(destination);
+
+      // Passing through sign-in reads the destination; it must not consume the flow.
+      // This fixture's own URL already runs past the bound that used to refuse a real one.
+      expect(destination.length).toBeGreaterThan(1024);
+
+      // Passing through sign-in reads the destination; it must not consume the flow.
+      const token = url.searchParams.get("token") ?? "";
+      const before = await readAuthorization(ids);
+      expect(before?.state).not.toBeNull();
+      expect(before?.loginSessionHash).toBe(hashSecret(cipher.decryptHandoff(token).flowSecret));
+      const redeemed = await flows.redeemHandoffToken(token, ids.accountId);
+      expect(redeemed.targetUrl).toContain("https://auth.example.com/authorize");
+      // Only now is the issued binding gone, replaced by the fresh secret the cookie will carry.
+      const after = await readAuthorization(ids);
+      expect(after?.state).not.toBeNull();
+      expect(after?.loginSessionHash).toBe(hashSecret(redeemed.flowSecret));
+      expect(after?.loginSessionHash).not.toBe(before?.loginSessionHash);
     });
 
     it("rejects a handoff token whose flow state has already lapsed", async () => {

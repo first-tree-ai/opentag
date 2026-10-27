@@ -141,65 +141,26 @@ async function exhaust(session: AgentSession, requests: readonly number[]): Prom
   await work;
 }
 
-describe("Cloud model retry through the pinned Pi session and provider", () => {
-  it("honors Retry-After in the actual request path and completes the same task", async () => {
-    const f = await fixture((attempt) => (attempt === 1 ? rejected(429, "3") : answer()));
-    const startedAt = Date.now();
-    const work = f.session.prompt("Complete this task once.");
-    await until(() => f.requests.length === 1);
-    await vi.advanceTimersByTimeAsync(2_999);
-    expect(f.requests).toHaveLength(1);
-    await vi.advanceTimersByTimeAsync(1);
-    await work;
-    expect(f.requests).toEqual([startedAt, startedAt + 3_000]);
-    expect(f.events).not.toContain("auto_retry_start");
-    expect(f.session.messages.at(-1)).toMatchObject({ stopReason: "stop" });
-  });
+describe("Cloud Pi makes one request per model or summary call", () => {
+  it.each([400, 401, 402, 403, 408, 409, 429, 500, 502, 503, 504])(
+    "does not retry HTTP %s, including a proxy-exhausted rate limit",
+    async (status) => {
+      const f = await fixture(() => rejected(status, "0"));
+      await exhaust(f.session, f.requests);
+      expect(f.requests).toHaveLength(1);
+      expect(f.events).not.toContain("auto_retry_start");
+      expect(f.session.messages.at(-1)).toMatchObject({ stopReason: "error" });
+    },
+  );
 
-  it("exhausts exactly four upstream attempts without starting another session retry budget", async () => {
-    const f = await fixture(() => rejected(429, "0"));
+  it("does not retry a statusless transport failure after dispatch", async () => {
+    const f = await fixture(() => {
+      throw new TypeError("fixture post-dispatch connection loss");
+    });
     await exhaust(f.session, f.requests);
-    expect(f.requests).toHaveLength(4);
+    expect(f.requests).toHaveLength(1);
     expect(f.events).not.toContain("auto_retry_start");
     expect(f.session.messages.at(-1)).toMatchObject({ stopReason: "error" });
-  });
-
-  it("uses bounded exponential backoff without a hint", async () => {
-    vi.spyOn(Math, "random").mockReturnValue(0);
-    const f = await fixture(() => rejected());
-    const startedAt = Date.now();
-    await exhaust(f.session, f.requests);
-    expect(f.requests).toEqual([0, 500, 1_500, 3_500].map((delay) => startedAt + delay));
-  });
-
-  it.each([400, 401, 402, 403])("does not retry a permanent HTTP %s failure", async (status) => {
-    const f = await fixture(() => rejected(status));
-    await exhaust(f.session, f.requests);
-    expect(f.requests).toHaveLength(1);
-  });
-
-  it("fails immediately when the requested delay exceeds the waiting budget", async () => {
-    const f = await fixture(() => rejected(429, "61"));
-    await exhaust(f.session, f.requests);
-    expect(f.requests).toHaveLength(1);
-    expect(f.session.messages.at(-1)).toMatchObject({
-      stopReason: "error",
-      errorMessage: expect.stringContaining("Server requested 61s retry delay"),
-    });
-  });
-
-  it.each(["cancel", "deadline"])("stops waiting on %s without another upstream request", async (kind) => {
-    const f = await fixture(() => rejected(429, "30"));
-    const work = f.session.prompt("Complete this task once.");
-    await until(() => f.requests.length === 1);
-    await vi.advanceTimersByTimeAsync(0);
-    if (kind === "deadline") {
-      setTimeout(() => void f.session.abort(), 1_000);
-      await vi.advanceTimersByTimeAsync(1_000);
-    } else await f.session.abort();
-    await work;
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(f.requests).toHaveLength(1);
   });
 
   it("does not replay a model stream after output has started", async () => {
@@ -229,7 +190,7 @@ describe("Cloud model retry through the pinned Pi session and provider", () => {
     });
   });
 
-  it("gives a summary call the same single request budget without an outer summary retry", async () => {
+  it("does not reset the proxy budget through a summary retry", async () => {
     const f = await fixture((attempt) => (attempt === 1 ? answer() : rejected(429, "0")));
     await f.session.prompt("Complete this task once.");
     const summary = f.session.compact();
@@ -237,18 +198,15 @@ describe("Cloud model retry through the pinned Pi session and provider", () => {
     await until(() => f.requests.length === 2);
     await vi.runAllTimersAsync();
     await rejection;
-    expect(f.requests).toHaveLength(5);
+    expect(f.requests).toHaveLength(2);
     expect(f.events).not.toContain("summarization_retry_scheduled");
   });
 
-  it("continues a summary after a transient rate limit without disabling compaction", async () => {
-    const f = await fixture((attempt) => (attempt === 2 ? rejected(429, "0") : answer()));
+  it("keeps successful native compaction enabled without request retries", async () => {
+    const f = await fixture(() => answer());
     await f.session.prompt("Complete this task once.");
-    const summary = f.session.compact();
-    await until(() => f.requests.length === 2);
-    await vi.runAllTimersAsync();
-    expect((await summary).summary).toContain("Completed.");
-    expect(f.requests).toHaveLength(3);
+    expect((await f.session.compact()).summary).toContain("Completed.");
+    expect(f.requests).toHaveLength(2);
     expect(f.events).not.toContain("summarization_retry_scheduled");
   });
 

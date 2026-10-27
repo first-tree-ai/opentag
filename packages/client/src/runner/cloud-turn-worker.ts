@@ -208,6 +208,7 @@ export function cloudTurnPiDocuments(request: RunnerCloudWorkerRequest): {
         [CLOUD_MODEL_PI_PROVIDER]: {
           api: "openai-completions",
           baseUrl: model.baseUrl,
+          headers: { "x-opentag-model-retry-owner": "proxy" },
           // The Server-selected window and output budget travel with the grant verbatim: Pi's
           // native compaction works against this real contextWindow instead of Pi's 128K
           // custom-model default, and the output budget is the issued capability (never a
@@ -233,8 +234,8 @@ export function cloudTurnPiDocuments(request: RunnerCloudWorkerRequest): {
       // Pi native auto-compaction is explicitly enabled with its pinned defaults
       // (reserveTokens 16,384 / keepRecentTokens 20,000 stay untouched).
       compaction: { enabled: true },
-      // The provider request owns retries; session and summary loops must not multiply its budget.
-      retry: { enabled: false, maxRetries: 0, provider: { maxRetries: 3, maxRetryDelayMs: 60_000 } },
+      // The model proxy owns retries; Pi must never replay an ambiguous or exhausted call.
+      retry: { enabled: false, maxRetries: 0, provider: { maxRetries: 0 } },
       defaultModel: `${CLOUD_MODEL_PI_PROVIDER}/${model.model}`,
       defaultProvider: CLOUD_MODEL_PI_PROVIDER,
     },

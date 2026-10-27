@@ -10,7 +10,7 @@ import {
   CLOUD_MODEL_ERROR_BODY_MAX_BYTES,
   CloudModelRequestSchema,
 } from "../cloud-model-request.js";
-import { cloudModelRetryAfter } from "../cloud-model-retry.js";
+import { cloudModelRetryAfter, cloudModelRetryDelay, waitForCloudModelRetry } from "../cloud-model-retry.js";
 import type { CloudModelService } from "../services/cloud-model-service.js";
 import { readBoundedResponseText } from "../services/sandboxes/cloud-model-catalog.js";
 import type { CloudModelGrantService } from "../services/sandboxes/cloud-model-grants.js";
@@ -318,7 +318,7 @@ function classifyUpstreamError(status: number, bodyText: string | undefined): Up
   if (status === 402 || (envelope?.code !== undefined && UPSTREAM_BILLING_CODES.has(envelope.code))) {
     return "billing";
   }
-  if (status === 429 || envelope?.code === UPSTREAM_RATE_LIMIT_CODE) return "rate_limit";
+  if (status === 429) return "rate_limit";
   if (status === 401 || status === 403 || (envelope?.code !== undefined && UPSTREAM_AUTH_CODES.has(envelope.code))) {
     return "authentication";
   }
@@ -424,19 +424,23 @@ function isSupportedUpstreamContentType(contentType: string, expectsSse: boolean
   return !expectsSse;
 }
 
+function upstreamUnavailableRejection(signal: AbortSignal, timedOut: () => boolean): UpstreamRejection {
+  if (timedOut()) {
+    return { status: 504, code: "CLOUD_MODEL_UPSTREAM_TIMEOUT", message: "The model upstream did not respond in time" };
+  }
+  if (signal.aborted) {
+    return { status: 401, code: "CLOUD_MODEL_TOKEN_INVALID", message: "The model call permission was revoked" };
+  }
+  return { status: 502, code: "CLOUD_MODEL_UPSTREAM_UNAVAILABLE", message: "The model upstream could not be reached" };
+}
+
 function finalizeUpstreamUnavailable(
   reply: FastifyReply,
   signal: AbortSignal,
   timedOut: () => boolean,
 ): FastifyReply | Promise<FastifyReply> {
-  if (isResponseClosed(reply)) return reply;
-  if (timedOut()) {
-    return fail(reply, 504, "CLOUD_MODEL_UPSTREAM_TIMEOUT", "The model upstream did not respond in time");
-  }
-  if (signal.aborted) {
-    return fail(reply, 401, "CLOUD_MODEL_TOKEN_INVALID", "The model call permission was revoked");
-  }
-  return fail(reply, 502, "CLOUD_MODEL_UPSTREAM_UNAVAILABLE", "The model upstream could not be reached");
+  const rejection = upstreamUnavailableRejection(signal, timedOut);
+  return fail(reply, rejection.status, rejection.code, rejection.message);
 }
 
 function finalizePipedOutcome(
@@ -467,7 +471,39 @@ function billingFailure(error: unknown): UpstreamRejection | undefined {
   return undefined;
 }
 
-/** Forward one authorized request and finalize the client response in every path. */
+type ModelAttempt = { ok: true; upstream: Response } | { ok: false; upstream?: Response; rejection: UpstreamRejection };
+
+async function requestModelAttempt(
+  options: CloudModelProxyRouteOptions,
+  claims: GrantClaims,
+  body: z.infer<typeof CloudModelRequestSchema>,
+  signal: AbortSignal,
+  timedOut: () => boolean,
+): Promise<ModelAttempt> {
+  let upstream: Response | undefined;
+  try {
+    upstream = await callUpstream(options, claims.model, body, signal, claims);
+    if (upstream) upstream = await normalizeInitialModelStream(upstream);
+  } catch (error) {
+    // An accepted stream's missing outcome does not prove that replay is safe.
+    if (upstream && (!signal.aborted || timedOut())) {
+      return {
+        ok: false,
+        rejection: {
+          status: 400,
+          code: "CLOUD_MODEL_UPSTREAM_UNCERTAIN",
+          message: "The model upstream stream failed with an uncertain outcome",
+        },
+      };
+    }
+    return { ok: false, rejection: billingFailure(error) ?? upstreamUnavailableRejection(signal, timedOut) };
+  }
+  if (!upstream) return { ok: false, rejection: upstreamUnavailableRejection(signal, timedOut) };
+  const rejection = await rejectUnusableUpstream(upstream, body, options.config.maxResponseBytes);
+  return rejection ? { ok: false, upstream, rejection } : { ok: true, upstream };
+}
+
+/** Own the single retry budget; every ambiguous failure and exhausted response is terminal. */
 async function forwardChatCompletions(
   options: CloudModelProxyRouteOptions,
   reply: FastifyReply,
@@ -475,46 +511,38 @@ async function forwardChatCompletions(
   body: z.infer<typeof CloudModelRequestSchema>,
   signal: AbortSignal,
   timedOut: () => boolean,
+  proxyOwnsRetry: boolean,
 ): Promise<FastifyReply> {
-  let upstream: Response | undefined;
-  try {
-    upstream = await callUpstream(options, claims.model, body, signal, claims);
-    if (upstream) upstream = await normalizeInitialModelStream(upstream);
-  } catch (error) {
-    const billingRejection = billingFailure(error);
-    if (billingRejection) return fail(reply, billingRejection.status, billingRejection.code, billingRejection.message);
-    // An accepted stream's missing outcome does not prove that replay is safe.
-    if (upstream && (!signal.aborted || timedOut())) {
-      return fail(
-        reply,
-        400,
-        "CLOUD_MODEL_UPSTREAM_UNCERTAIN",
-        "The model upstream stream failed with an uncertain outcome",
-      );
+  for (let retries = 0; ; retries += 1) {
+    if (signal.aborted) return finalizeUpstreamUnavailable(reply, signal, timedOut);
+    const attempt = await requestModelAttempt(options, claims, body, signal, timedOut);
+    if (attempt.ok) {
+      const outcome = await pipeUpstreamBody(reply, attempt.upstream, options, signal);
+      return finalizePipedOutcome(reply, outcome, signal, timedOut);
     }
-    return finalizeUpstreamUnavailable(reply, signal, timedOut);
-  }
-  if (!upstream) return finalizeUpstreamUnavailable(reply, signal, timedOut);
-  const rejection = await rejectUnusableUpstream(upstream, body, options.config.maxResponseBytes);
-  if (rejection) {
-    if (isResponseClosed(reply)) return reply;
+    const { upstream, rejection } = attempt;
+    const delayMs =
+      proxyOwnsRetry && upstream?.status === 429 && rejection.code === UPSTREAM_RATE_LIMIT_CODE
+        ? cloudModelRetryDelay(rejection.retryAfter, retries)
+        : undefined;
     if (rejection.code === UPSTREAM_RATE_LIMIT_CODE) {
       reply.log.info(
-        { code: "CLOUD_MODEL_RATE_LIMIT", retryAfterSeconds: rejection.retryAfter },
-        "Cloud model request rate limited; retries belong to the Pi request layer",
+        { code: "CLOUD_MODEL_RATE_LIMIT", attempt: retries + 1, retryDelayMs: delayMs, proxyOwnsRetry },
+        "Cloud model request rate limited",
       );
     }
-    return fail(
-      reply,
-      rejection.status,
-      rejection.code,
-      rejection.message,
-      rejection.upstreamStatus,
-      rejection.retryAfter,
-    );
+    if (delayMs === undefined) {
+      return fail(
+        reply,
+        rejection.status,
+        rejection.code,
+        rejection.message,
+        rejection.upstreamStatus,
+        rejection.retryAfter,
+      );
+    }
+    if (!(await waitForCloudModelRetry(delayMs, signal))) return finalizeUpstreamUnavailable(reply, signal, timedOut);
   }
-  const outcome = await pipeUpstreamBody(reply, upstream, options, signal);
-  return finalizePipedOutcome(reply, outcome, signal, timedOut);
 }
 
 export function registerCloudModelProxyRoutes(app: FastifyInstance, options: CloudModelProxyRouteOptions): void {
@@ -556,7 +584,15 @@ export function registerCloudModelProxyRoutes(app: FastifyInstance, options: Clo
     reply.raw.on("error", onResponseError);
     const signal = AbortSignal.any([admission.signal, controller.signal]);
     try {
-      return await forwardChatCompletions(options, reply, authorized.claims, authorized.body, signal, () => timedOut);
+      return await forwardChatCompletions(
+        options,
+        reply,
+        authorized.claims,
+        authorized.body,
+        signal,
+        () => timedOut,
+        request.headers["x-opentag-model-retry-owner"] === "proxy",
+      );
     } finally {
       clearTimeout(timer);
       // Keep the error listener: a hijacked response can emit a late socket error after the

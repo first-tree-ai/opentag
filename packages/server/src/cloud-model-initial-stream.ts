@@ -1,5 +1,6 @@
-import { CLOUD_MODEL_ERROR_BODY_MAX_BYTES } from "./cloud-model-request.js";
 import { cloudModelRetryAfter } from "./cloud-model-retry.js";
+
+const CLOUD_MODEL_STREAM_PRELUDE_MAX_BYTES = 8 * 1024;
 
 function initialRateLimit(data: string): { retryAfter?: string } | undefined {
   let value: unknown;
@@ -86,11 +87,11 @@ export async function normalizeInitialModelStream(upstream: Response): Promise<R
   let text = "";
   let bytes = 0;
   try {
-    while (bytes < CLOUD_MODEL_ERROR_BODY_MAX_BYTES) {
+    while (bytes < CLOUD_MODEL_STREAM_PRELUDE_MAX_BYTES) {
       const chunk = await reader.read();
-      if (chunk.done) break;
+      if (chunk.done) throw new Error("Model stream ended before its first data event");
       chunks.push(chunk.value);
-      text += decoder.decode(chunk.value.subarray(0, CLOUD_MODEL_ERROR_BODY_MAX_BYTES - bytes), { stream: true });
+      text += decoder.decode(chunk.value.subarray(0, CLOUD_MODEL_STREAM_PRELUDE_MAX_BYTES - bytes), { stream: true });
       bytes += chunk.value.byteLength;
       const data = firstData(text);
       if (data === undefined) continue;

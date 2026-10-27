@@ -408,6 +408,7 @@ describe("cloud-turn-worker", () => {
     expect(Object.keys(models.providers)).toEqual(["opentag"]);
     expect(models.providers.opentag?.api).toBe("openai-completions");
     expect(models.providers.opentag?.baseUrl).toBe("https://server.example.com/api/v1/cloud-model");
+    expect(models.providers.opentag).toMatchObject({ headers: { "x-opentag-model-retry-owner": "proxy" } });
     expect(models.providers.opentag?.models[0]?.id).toBe("deepseek-v4.1-flash-expires-on-0910");
     // The Server-selected window and issued output budget reach Pi verbatim: Pi's native
     // compaction works against the real 258,000-token window, not its 128K custom-model default.
@@ -430,7 +431,7 @@ describe("cloud-turn-worker", () => {
       retry: {
         enabled: false,
         maxRetries: 0,
-        provider: { maxRetries: 3, maxRetryDelayMs: 60_000 },
+        provider: { maxRetries: 0 },
       },
     });
   });

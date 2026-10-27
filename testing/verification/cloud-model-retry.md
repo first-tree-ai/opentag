@@ -4,27 +4,25 @@ Supports [Cloud Runner execution](../../docs/system/cloud/cloud-runner-execution
 
 ## Scope
 
-Issue #827: one automatic retry owner for each logical Cloud model or summary call. The Pi
-provider request helper owns three retries after the initial attempt; session and summary
-retry loops have zero retries. OpenTag forwards each model request once. Context compaction
-remains enabled. Transient stream failures are not replayed by session/summary retry loops. Native context-overflow recovery remains a bounded, changed-context operation.
+Issue #827: one retry owner and one bounded attempt/deadline budget per managed model or summary
+call. The model proxy retries confirmed HTTP 429 rejections at most three times after the initial
+attempt. Pi session, summary, provider and SDK retries are zero. Native context compaction remains
+enabled; its bounded changed-context overflow recovery does not execute partial tool calls.
 
-No schema, query, accounting, schedule, delivery-custody, Local runtime, or dependency changes
-are involved.
+The generated provider declares `x-opentag-model-retry-owner: proxy` only with retries disabled.
+Older requests without that declaration are forwarded once, preventing retry multiplication
+across Runner/proxy version skew. No schema, query, accounting, schedule, delivery-custody, Local
+runtime or dependency changes are involved.
 
 ## Regression proof
 
-Tests were added against the unmodified baseline `0e14583bce8e80483f0f1da9357bf87f364c656a`.
-The initial run had 10 expected failures: missing response hints, the absent explicit Cloud
-retry configuration, premature retry before the hint, outer session/summary retries,
-over-budget hints being retried, and partial-stream replay.
+The previous implementation at `bd1044e4a7cd4e67c68fed4307063d3e0d01475e` used Pi's generic
+provider retry helper. Four focused probes reproduced all review blockers: HTTP 502, HTTP 504
+and a statusless transport loss each made four requests instead of one; a heartbeat followed by
+clean EOF returned HTTP 200 instead of terminal uncertainty. The corrected policy disables that
+generic helper, including the unclassified-5xx and unusable-2xx paths.
 
-The initial fix passed 313 tests across 10 files. Independent review then found that the real
-Router wraps pre-output Provider 429 rejections inside HTTP 200 SSE. Those envelopes were
-indistinguishable from uncertain in-band errors, so the companion Router patch marks only
-observed HTTP 429 rejections. The corrected implementation adds bounded initial-SSE
-normalization, heartbeat/cancellation tests, and an explicit native overflow recovery regression.
-The complete affected test command is:
+The affected test command is:
 
 ```sh
 pnpm exec vitest run \
@@ -39,79 +37,76 @@ pnpm exec vitest run \
   packages/server/src/__tests__/cloud-model-service.test.ts \
   packages/server/src/__tests__/cloud-model-boundaries.test.ts \
   packages/server/src/__tests__/cloud-model-grants.test.ts \
+  packages/server/src/__tests__/cloud-agent-runtime-tester.test.ts \
+  packages/server/src/__tests__/cloud-model-catalog.test.ts \
   --maxWorkers=1
 ```
 
-The corrected run passed all 337 tests across these 11 files.
+The final run passed all 391 tests across these 13 files.
 
-The Client retry tests use the installed Pi SDK, its real session/compaction logic, and its
-real OpenAI-compatible provider request helper. Only HTTP responses and the clock are
-controlled; neither retry loop is mocked. They also place a conflicting 99-retry project
-configuration in the restored workspace. Managed Pi's existing `--no-approve` policy excludes
-project settings, preserving the execution-owned retry budget.
+Client tests use the installed Pi SDK and real session, summary and provider code. Only HTTP
+responses and the clock are controlled. A conflicting 99-retry project configuration is present;
+managed `--no-approve` excludes it. The tests assert one HTTP request for 400/401/402/403,
+408/409/429, 500/502/503/504 and statusless transport loss. Summary exhaustion cannot start an
+outer retry loop; native compaction and changed-context overflow recovery remain exercised.
 
-Covered outcomes:
+Proxy tests use the actual route, model service and loopback HTTP fixture. Only the backoff
+clock is replaced in most route tests. Real waits test cancellation, request deadline, grant
+revocation and shutdown. Coverage includes:
 
-- A valid wait hint delays the next request and the same task completes after recovery.
-- Exhaustion produces exactly four upstream completion requests and zero outer retry events.
-- Missing hints use the pinned provider's jittered exponential backoff.
-- Permanent HTTP 400/401/402/403 responses are not retried.
-- A requested wait above 60 seconds fails after one request without retrying early.
-- Cancellation and deadline interruption stop waits without later requests.
-- A transient partial model stream fails without a generic retry. Native context-overflow recovery makes a changed-context request, executes no partial tool call, and stops after one unsuccessful overflow recovery.
-- Summary exhaustion has four requests, without another summary retry budget; a transiently
-  limited summary can also recover and complete normally.
-- Integer and canonical HTTP-date hints are validated; malformed or arbitrary header text is
-  discarded. Permanent quota errors expose no hint.
-- A Router-shaped HTTP 200 SSE rate-limit rejection with the boolean
-  `error.pre_stream_rejection: true` is normalized before any model data, including fragmented
-  frames and heartbeat comments. Unmarked or uncertain errors, model data and oversized
-  prefixes are preserved byte for byte. Prelude timeout and shutdown remain bounded.
-- A failed or timed-out accepted HTTP 200 prelude returns terminal HTTP 400
-  `CLOUD_MODEL_UPSTREAM_UNCERTAIN`, without making that uncertain outcome retryable.
-  Explicit revocation/shutdown still returns HTTP 401. Admission is released in either case.
-- The Server sends at most one upstream completion request per received request and retains
-  its existing usage-settlement and grant-revocation behavior.
+- Exactly four upstream attempts for one persistent confirmed rate-limit request; two on recovery.
+- One attempt for ambiguous 408/409/5xx, including a false rate-limit code on HTTP 503 and a Router
+  502 with or without `x-router-dispatch: not_dispatched`.
+- One attempt and one Router idempotency key after a post-dispatch transport loss.
+- Valid integer/HTTP-date hints, malformed hints, native jitter bounds and the 60-second wait cap.
+- Marked initial Router SSE rejections, split frames and comments; unmarked, uncertain, post-data
+  and oversized prefixes remain preserved without retry.
+- Terminal HTTP 400 for zero-byte EOF, heartbeat-only EOF, incomplete-event EOF and prelude
+  timeout/read failure. Explicit revocation/shutdown still returns HTTP 401.
+- Cancellation during an actual backoff releases admission and makes no later request.
+- One forwarding attempt for legacy requests without the ownership declaration.
 
-Client and Server type checks and builds passed. No PostgreSQL integration run was needed:
-the change does not alter persistence behavior. The model-service regression uses the existing
-embedded database fixture; this is not a production accounting acceptance claim.
+Client/Server type checks, builds and `pnpm check` cover the changed packages. No PostgreSQL
+integration run is required: persistence behavior is unchanged. The model-service regression uses
+the existing embedded database fixture; this is not a production accounting acceptance claim.
 
 ## Local CLI acceptance
 
-An additional local harness launched the actual pinned Pi CLI in RPC mode, using the generated
-Cloud auth/model/settings documents and the same managed isolation flags. It called the actual
-OpenTag model service and Fastify proxy over loopback, with a loopback model fixture and a
-fixture-only usage store. No public model, real credentials, or deployed database was used.
+A local harness launches the actual pinned Pi CLI in RPC mode with generated Cloud documents
+and managed isolation flags. It calls the actual OpenTag model service and proxy over loopback.
+A loopback model fixture and fixture-only usage store avoid public models, real credentials and
+deployed databases. For explicit summary commands only, the fixture reduces native
+`keepRecentTokens` to force a summary with short history; retry settings are unmodified.
 
-| Scenario | Proxy requests | Upstream completion requests | Outer retry events | Result |
+All 18 cases passed, including the following attempt counts:
+
+| Scenario | Proxy requests | Upstream completions | Outer retry events | Result |
 | --- | ---: | ---: | ---: | --- |
-| Persistent transient 429, zero-second hint | 4 | 4 | 0 | Terminal model error |
-| 429 with a one-second hint, then success | 2 | 2 | 0 | Successful completion after the requested wait |
-| Marked Router HTTP 200 SSE rate limit, persistent | 4 | 4 | 0 | Terminal model error |
-| Marked Router HTTP 200 SSE rate limit, then success | 2 | 2 | 0 | Successful completion after the requested wait |
-| Unmarked Router HTTP 200 SSE rate limit | 1 | 1 | 0 | Terminal model error |
-| Model data followed by a marked rate limit | 1 | 1 | 0 | Terminal model error |
-| Accepted HTTP 200 heartbeat prelude, then timeout | 1 | 1 | 0 | Terminal uncertain-outcome error |
+| Persistent HTTP 429 | 1 | 4 | 0 | Terminal rate limit |
+| HTTP 429 with a one-second hint, then success | 1 | 2 | 0 | Successful completion after the wait |
+| Persistent marked HTTP 200 SSE rate limit | 1 | 4 | 0 | Terminal rate limit |
+| Marked SSE rate limit with a one-second hint, then success | 1 | 2 | 0 | Successful completion after the wait |
+| Unmarked or post-data rate-limit error | 1 | 1 | 0 | Terminal model error |
+| HTTP 502/504 or false rate-limit code on 503 | 1 | 1 | 0 | Terminal model error |
+| Pi-to-proxy or Router transport loss | 1 | 1 | 0 | Terminal model error |
+| Invalid HTTP 200, empty/heartbeat EOF or prelude timeout | 1 | 1 | 0 | Terminal model error |
+| Requested wait above 60 seconds | 1 | 1 | 0 | Terminal rate limit |
+| Initial call plus summary rate-limit recovery | 2 | 3 | 0 | Summary completes |
+| Initial call plus summary exhaustion | 2 | 5 | 0 | Summary fails after four summary attempts |
 
-All cases included a conflicting project retry configuration and verified that it did not
-override the managed settings.
+Every request declared proxy ownership. All cases excluded conflicting project retry settings;
+the ambiguous outcomes had exactly one Router call key. Wait hints were measured before the next
+upstream attempt. The source, route and CLI checks prove separate parts of the same budget.
 
 ## Router and deployment boundary
 
-Source inspection of LLM Router main at
-`3a1fa09f2f1ecd4094c11dd67788031e116ba103` confirmed zero Router retries, zero LiteLLM retries,
-and zero provider SDK retries in deployment/model configuration. Its gateway transport forwards
-once. The companion Router patch adds `error.pre_stream_rejection: true` only for observed
-upstream HTTP 429 `rate_limit_exceeded` rejections and carries a validated optional
-`error.retry_after` value. These fields are added to a fresh client response after the existing
-ledger handling; stored errors, accounting transitions and in-band error handling are unchanged.
-Provider-supplied markers are stripped. Router tests cover those boundaries, including a ledger
-release failure. No additional retry layer or deployed configuration change is introduced.
+LLM Router source at `3a1fa09f2f1ecd4094c11dd67788031e116ba103` configures zero Router,
+LiteLLM and provider-SDK retries. The companion Router change marks only observed upstream HTTP
+429 rate-limit rejections, with an optional validated string wait hint in the fresh client error.
+Stored errors, accounting transitions and in-band error handling remain unchanged; forged
+Provider markers are stripped. Deploy that Router change before accepting streamed Provider 429
+recovery. Unmarked older Router SSE errors remain conservatively terminal.
 
-Deploy the companion Router change before accepting recovery of streamed Provider 429s.
-Without the marker, OpenTag conservatively preserves the SSE error and does not retry it.
-
-Actual deployed settings, native Linux Sandbox execution, and live-provider TPM recovery were
-not exercised. Source checks, loopback CLI acceptance, merging, and deployment remain separate
-evidence. Keep the issue open until the fix is merged and deployed behavior is accepted.
+Actual deployed settings, native Linux Sandbox execution and live Provider TPM recovery were not
+exercised. Source review, hosted CI, merging, deployment and business acceptance remain separate
+evidence. Keep the issue open until merged and deployed behavior is accepted.

@@ -18,6 +18,8 @@ export const FIXTURE_RESPONSE_HEADER = "x-fixture-upstream-secret";
 export type FixtureHandler =
   | { kind: "json"; payload?: unknown }
   | { kind: "sse"; chunks?: string[]; retryAfter?: string }
+  | { kind: "raw-sse"; chunks: string[]; retryAfter?: string }
+  | { kind: "sequence"; handlers: FixtureHandler[] }
   | { kind: "slow-sse"; chunkIntervalMs?: number }
   | { kind: "heartbeat"; chunkIntervalMs?: number }
   | { kind: "stall"; declaredLength?: number }
@@ -69,6 +71,12 @@ async function respond(
   stats: CloudModelUpstreamStats,
 ): Promise<void> {
   switch (handler.kind) {
+    case "sequence":
+      return respond(
+        handler.handlers[Math.min(stats.hits - 1, handler.handlers.length - 1)] ?? { kind: "empty" },
+        response,
+        stats,
+      );
     case "json": {
       const payload = JSON.stringify(handler.payload ?? { id: "chatcmpl-fixture", choices: [] });
       response.writeHead(200, {
@@ -79,7 +87,8 @@ async function respond(
       response.end(payload);
       return;
     }
-    case "sse": {
+    case "sse":
+    case "raw-sse": {
       respondSse(handler, response, stats);
       return;
     }
@@ -161,7 +170,7 @@ async function respond(
 }
 
 function respondSse(
-  handler: Extract<FixtureHandler, { kind: "sse" }>,
+  handler: Extract<FixtureHandler, { kind: "sse" | "raw-sse" }>,
   response: ServerResponse,
   stats: CloudModelUpstreamStats,
 ): void {
@@ -169,6 +178,12 @@ function respondSse(
     "content-type": "text/event-stream",
     ...(handler.retryAfter === undefined ? {} : { "retry-after": handler.retryAfter }),
   });
+  if (handler.kind === "raw-sse") {
+    const payload = handler.chunks.join("");
+    stats.responseBytesSent += Buffer.byteLength(payload);
+    response.end(payload);
+    return;
+  }
   for (const chunk of handler.chunks ?? ["fixture-chunk-0", "fixture-chunk-1", "fixture-chunk-2"]) {
     const payload = `data: ${chunk}\n\n`;
     stats.responseBytesSent += Buffer.byteLength(payload);

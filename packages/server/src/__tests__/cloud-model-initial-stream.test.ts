@@ -40,7 +40,6 @@ describe("initial Router SSE rate-limit rejection", () => {
     ['data: {"error":{"code":"rate_limit_exceeded","pre_stream_rejection":"true"}}\n\n'],
     ['data: {"error":{"code":"rate_limit_exceeded"},"choices":[{}]}\n\n'],
     ["data: [DONE]\n\n"],
-    [": heartbeat\n\n"],
     ["data: invalid\n\n"],
     [`data: ${"x".repeat(9_000)}`, RATE_LIMIT],
   ])("preserves model data, uncertain failures and oversized prefixes byte for byte", async (...chunks) => {
@@ -48,6 +47,15 @@ describe("initial Router SSE rate-limit rejection", () => {
     expect(response.status).toBe(200);
     expect(await response.text()).toBe(chunks.join(""));
   });
+
+  it.each([[], [": heartbeat\n\n"], ['data: {"error":']])(
+    "rejects clean EOF before a complete first data event",
+    async (...chunks) => {
+      const upstream = source(chunks);
+      await expect(normalizeInitialModelStream(upstream)).rejects.toThrow("before its first data event");
+      expect(upstream.body?.locked).toBe(false);
+    },
+  );
 
   it("propagates cancellation while waiting for the initial data event", async () => {
     let controller: ReadableStreamDefaultController<Uint8Array> | undefined;

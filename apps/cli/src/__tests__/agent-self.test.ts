@@ -369,7 +369,7 @@ describe("agent self commands", () => {
 
       const output = stdout.mock.calls.map(([chunk]) => String(chunk)).join("");
       expect(output).toContain("notion\toauth\thttps://mcp.notion.example/mcp\tnotion");
-      expect(output).toContain(`Deleted docs (${mcpServerId})`);
+      expect(output).toContain(`Unmounted docs (${mcpServerId})`);
       expect(output).toContain("https://provider.example/authorize?x=1");
       expect(output).toContain("docs\tactive\tsucceeded\t1 tools");
       expect(process.exitCode ?? 0).toBe(0);

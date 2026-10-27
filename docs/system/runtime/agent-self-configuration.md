@@ -67,7 +67,7 @@ The Server routes live under `/api/v1/runtime/agent` and authenticate the proof 
 | Start an OAuth flow | Yes | The Agent can produce the URL; only a human can complete the consent screen. |
 | Register or mount an anonymous Server (`defaultAuthKind: "none"`) | No | An anonymous mount is usable immediately, with no credential step for a human to review. |
 | Attach, enable, disable, or unmount an Account MCP Server | Yes | Chooses among mounts the Account already has. |
-| Edit a definition another Agent mounts | No | Shared state; a human decides. `self mcp delete` only drops a definition nothing else mounts. |
+| Edit a definition another Agent mounts | No | Shared state; a human decides. `self mcp delete` unmounts the Server and drops this Agent's credential, but retains the Account definition. |
 | Another Agent's mount or credential | No | No command accepts an Agent ID. |
 | Self-configuration opt-in | No | Only the owner can enable or disable the surface. |
 | Display name, receive mode | No | Changes how humans and IM see the Agent. |
@@ -83,19 +83,20 @@ with HTTP 403 and `MCP_SELF_ATTACH_NONE_AUTH_FORBIDDEN`, so the anonymous path s
 attach paths are unchanged: a human can still attach these Servers, which become active without a separate credential
 step.
 
-`self mcp add` writes the definition first and mounts it second, because a mount needs a definition to point at. If the
-mount fails, the definition is deleted in the same request so the Account pool is not left with an orphan that would
-block the name on a retry.
+`self mcp add` creates the definition and mounts it atomically inside a single database transaction under a row lock on
+the Agent. If the mount fails or the Agent's ownership / self-configuration permission changes concurrently,
+PostgreSQL rolls back the entire operation so no orphan definition is left in the Account pool.
 
 ## OAuth from an Agent-started flow
 
 `self mcp generate_oauth_url` starts the same flow the Account surface starts, and returns the provider's
 `authorizationUrl` for the user to open. The flow's `state` is single-use, stored hashed, and short lived.
 
-`shortcut: the browser that opens an Agent-started URL does not hold the flow's context cookie, so the callback's
-browser binding is not satisfied; the Account surface's start route sets that cookie and this one has no browser to set
-it on. Upgrade by routing the returned URL through a same-origin handoff that sets the cookie before redirecting to the
-provider.`
+The URL returned by `self mcp generate_oauth_url` routes through a secure same-origin browser handoff
+(`/api/v1/mcp-servers/oauth/handoff?token=...`). When the human opens this URL, the server redeems the short-lived,
+single-use handoff token, sets the `mcpOAuthContext` cookie on the browser, and issues a 302 redirect to the
+provider's authorization endpoint. The subsequent callback retains this cookie and satisfies the required browser
+binding.
 
 `self mcp check_oauth_status` reports the authorization status, the probe state, and the tool names without their input
 schemas, so a poll stays small. A plain call returns immediately; `--wait [seconds]` polls until the flow settles or the
@@ -114,8 +115,10 @@ observation, so the caller can tell the human the URL is still valid and check a
   keep that override.
 - MCP mounts are read by the MCP gateway on each request, so attaching, enabling, or disabling a Server changes the
   tool catalog on the next MCP request. An Agent that had no usable MCP Server gets MCP access at its next execution.
-- Detaching a Server drops this Agent's authorization for it. For Servers that require credentials, a human must
-  authorize it again after a later attach. Prefer `disable` when the Server may be needed again.
+- Detaching or deleting a Server drops this Agent's authorization and mount for it, while retaining the Account
+  definition. A human must delete the definition through Account management to remove or reuse its name. For Servers
+  that require credentials, a human must authorize it again after a later attach. Prefer `disable` when the Server
+  may be needed again.
 
 `self update` reads the current revision first and sends it as `expectedRevision`. A concurrent change returns
 `AGENT_REVISION_CONFLICT`; read again and retry. `--instructions` replaces the whole instruction text, so read the

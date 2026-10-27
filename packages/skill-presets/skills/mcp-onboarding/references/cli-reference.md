@@ -22,7 +22,7 @@ implied by the proof, so the shorter form is what to type.
 | `self update` | Instructions, model, reasoning effort | `--model`, `--clear-model`, `--reasoning-effort`, `--clear-reasoning-effort`, `--instructions`, `--instructions-file`, `--json` |
 | `self mcp search <query>` | Search the connector catalog; needs no network and no definition | `--limit`, `--json` |
 | `self mcp add <name> <url> [auth_kind]` | Register a definition and mount it on this Agent | `auth_kind` is `oauth` or `bearer`; `--api-key-stdin`, `--api-key` (**UNSAFE**), `--json` |
-| `self mcp delete <server>` | Unmount, then drop the definition if no other Agent mounts it | `--json` |
+| `self mcp delete <server>` | Unmount the Server and drop this Agent's credential; retains the Account definition | `--json` |
 | `self mcp generate_oauth_url <server>` | Start the flow; prints the URL a human must open | `--scopes a,b`, `--json` |
 | `self mcp check_oauth_status <server>` | Authorization and probe state, with the tool names | `--wait [seconds]`, `--json` |
 | `self mcp list` | The MCP Servers this Agent mounts | `--page`, `--limit`, `--json` |

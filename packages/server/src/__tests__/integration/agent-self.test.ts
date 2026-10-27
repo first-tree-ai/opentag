@@ -409,6 +409,60 @@ describe("Agent self-configuration against PostgreSQL", () => {
     }
   });
 
+  it("aborts self-configuration create if selfConfigurationEnabled is revoked concurrently (P2, DB1)", async () => {
+    const value = await fixture();
+    const secondClient = createDatabaseClient(testDatabase.databaseUrl);
+    try {
+      await enableSelfConfiguration(value);
+      const scope = await value.self.authenticate("valid-proof");
+
+      // In a second PostgreSQL connection, revoke selfConfigurationEnabled
+      const secondAgentService = new AgentService(secondClient.database);
+      await secondAgentService.updateById(value.accountId, value.agent.id, {
+        expectedRevision: value.agent.revision,
+        selfConfigurationEnabled: false,
+      });
+
+      // Self-create under previously authenticated scope must reject and roll back
+      await expect(
+        value.self.createMcpServer(scope, {
+          name: "race-revoked-mcp",
+          url: "https://mcp.revoked.example/mcp",
+          defaultAuthKind: "bearer",
+          apiKey: "test-key",
+        }),
+      ).rejects.toMatchObject({ code: "AGENT_SELF_CONFIGURATION_DISABLED" });
+
+      const rows = await value.database
+        .select({ id: mcpServers.id })
+        .from(mcpServers)
+        .where(eq(mcpServers.name, "race-revoked-mcp"));
+      expect(rows).toEqual([]);
+
+      // Normal Account operations succeed when flag is false
+      const accountCreated = await value.mcp.createAndAttachServer(
+        value.accountId,
+        value.agent.id,
+        {
+          name: "account-created-mcp",
+          url: "https://mcp.account.example/mcp",
+          defaultAuthKind: "bearer",
+        },
+        true,
+        "account",
+      );
+      expect(accountCreated.mcpServerId).toBeTruthy();
+
+      // But agent-self attach fails when flag is false
+      await expect(
+        value.mcp.attachServer(value.accountId, value.agent.id, accountCreated.mcpServerId, true, "agent-self"),
+      ).rejects.toMatchObject({ code: "AGENT_SELF_CONFIGURATION_DISABLED" });
+    } finally {
+      await secondClient.sql.end();
+      await value.sql.end();
+    }
+  });
+
   it("generates a safe browser handoff URL that redeems the flow secret (P1)", async () => {
     const fixtureServer = await McpFixtureServer.start();
     const value = await fixture();

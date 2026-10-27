@@ -137,13 +137,13 @@ function registerAgentSelfMcpCommands(self: Command): void {
 
   mcp
     .command("delete <server>")
-    .description("Unmount an MCP Server and drop its definition when no other Agent mounts it")
+    .description("Unmount an MCP Server, removing this Agent's credential while retaining the Account definition")
     .option("--json", "print JSON")
     .action(async (server: string, options: JsonOption) => {
       process.exitCode = await executeCommand(
         async () => {
           const deleted = await runAgentSelfMcpDelete(server);
-          return `Deleted ${deleted.name} (${deleted.mcpServerId})`;
+          return `Unmounted ${deleted.name} (${deleted.mcpServerId})`;
         },
         { json: options.json === true, phase: "request" },
       );

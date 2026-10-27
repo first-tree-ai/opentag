@@ -121,9 +121,9 @@ for yourself.
 ## What stays with the human
 
 - **The OAuth consent screen.** You can start the flow; only they can approve it.
-- **Removing a definition others use.** `opentag self mcp delete <server>` unmounts it from you and
-  drops the definition only when no other Agent mounts it. It never removes a definition another
-  Agent still uses.
+- **Deleting an Account definition.** `opentag self mcp delete <server>` removes your mount and your
+  authorization, but retains the Account definition. Removing or reusing its name requires human
+  Account deletion.
 - **The Account's other Agents.** You cannot read or write their mounts or credentials.
 
 ## Rules that keep this safe

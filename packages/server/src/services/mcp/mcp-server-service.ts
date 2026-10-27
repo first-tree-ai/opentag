@@ -15,8 +15,9 @@ import {
   type UpdateMCPServerRequest,
 } from "@opentag/shared";
 import { and, asc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
-import type { DatabaseClient } from "../../db/client.js";
+import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { agentMcpServers, agents, mcpServerAuthorizations, mcpServers } from "../../db/schema/index.js";
+import { AgentServiceError } from "../agents/index.js";
 import {
   isMcpUniqueViolation,
   MCP_ERROR_CODES,
@@ -40,6 +41,36 @@ import { lockMcpBindings } from "./mcp-binding-locks.js";
  *    UI all read through `resolveEffectiveConfig`; nothing reads `mcp_servers` columns directly, so
  *    an Agent override cannot be honored in one path and ignored in another.
  */
+
+async function assertAgentEligible(
+  tx: DatabaseTransaction,
+  agentId: string,
+  accountId: string,
+  source: "account" | "agent-self",
+  forUpdate: boolean,
+): Promise<void> {
+  const query = tx
+    .select({
+      id: agents.id,
+      createdByUserId: agents.createdByUserId,
+      status: agents.status,
+      selfConfigurationEnabled: agents.selfConfigurationEnabled,
+    })
+    .from(agents)
+    .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, accountId), ne(agents.status, "deleted")));
+  const [row] = forUpdate ? await query.for("update") : await query;
+  if (!row) {
+    throw new McpServiceError(MCP_ERROR_CODES.SERVER_NOT_FOUND, "The Agent was not found");
+  }
+  if (source === "agent-self" && !row.selfConfigurationEnabled) {
+    throw new AgentServiceError(
+      "AGENT_SELF_CONFIGURATION_DISABLED",
+      "deterministic",
+      "Agent self-configuration is disabled by the Agent owner",
+      403,
+    );
+  }
+}
 
 export interface McpServerServiceOptions {
   database: DatabaseClient;
@@ -125,14 +156,7 @@ export class McpServerService {
     const now = this.#now();
     try {
       return await this.#database.transaction(async (tx) => {
-        const [agentRow] = await tx
-          .select({ id: agents.id, createdByUserId: agents.createdByUserId, status: agents.status })
-          .from(agents)
-          .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, accountId), ne(agents.status, "deleted")))
-          .for("update");
-        if (!agentRow) {
-          throw new McpServiceError(MCP_ERROR_CODES.SERVER_NOT_FOUND, "The Agent was not found");
-        }
+        await assertAgentEligible(tx, agentId, accountId, source, true);
 
         const [serverRow] = await tx
           .insert(mcpServers)
@@ -151,13 +175,7 @@ export class McpServerService {
           .returning();
         if (!serverRow) throw mcpServerNotFound();
 
-        const [verifiedAgent] = await tx
-          .select({ id: agents.id })
-          .from(agents)
-          .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, accountId), ne(agents.status, "deleted")));
-        if (!verifiedAgent) {
-          throw new McpServiceError(MCP_ERROR_CODES.SERVER_NOT_FOUND, "The Agent was not found");
-        }
+        await assertAgentEligible(tx, agentId, accountId, source, false);
 
         const [bindingRow] = await tx
           .insert(agentMcpServers)
@@ -417,6 +435,9 @@ export class McpServerService {
     const now = this.#now();
     try {
       await this.#database.transaction(async (transaction) => {
+        if (source === "agent-self") {
+          await assertAgentEligible(transaction, agentId, accountId, source, true);
+        }
         await transaction
           .insert(agentMcpServers)
           .values({ agentId, mcpServerId, enabled, createdAt: now, updatedAt: now });

@@ -31,13 +31,80 @@ description: "Per-Agent MCP Server bindings and authorization, the MCP gateway, 
 
 An Agent's usefulness is bounded by the tools it can reach. MCP is the emerging standard for
 exposing those tools, so openTag needs to be able to register an MCP Server once per Account,
-mount it selectively per Agent, and hold a distinct credential for each of those mounts.
+mount it selectively per Agent, and resolve the authentication each mount is allowed to use.
+Anonymous and Bearer authorizations remain independent. Compatible OAuth mounts within one Account
+can reference one authentication. Account GitHub authorization for Context Tree remains separate.
 
-The design goal that shapes everything below: **authorization is strictly per Agent.** One Server
-may be authorized with a Bearer key for one Agent and OAuth for another, and there is no
-Account-level credential that either could fall back to. That is a deliberate product decision, not
-an implementation detail — it is what makes "this Agent has access to production Linear, that one
-only to the sandbox" expressible.
+### Shared OAuth authentication
+
+`OPENTAG_MCP_OAUTH_REUSE` controls creation of new references and defaults to `false`. The Web Connect
+operation tries reuse before starting OAuth. Ordinary URL and catalog installations first ask the
+Server to select an existing definition with a usable compatible root. Both the definition defaults
+and the source mount must exactly match the submitted URL, authorization header/scheme and extra
+headers; catalog scopes and the OAuth client boundary must also match. This Account-authenticated
+lookup is read-only and returns one safe definition, never source identities or credentials. It does
+not merge historical definitions. Mounting and Connect revalidate current ownership and compatibility,
+so an earlier lookup does not grant access after revocation or a configuration change.
+
+Connect selects a usable root on the mounted definition with
+identical effective URL, header, scheme and extra headers, compatible granted scopes and a provable
+OAuth client binding. Unreadable candidate envelopes are logged by authentication ID and skipped;
+they neither block a later usable candidate nor mutate the old authentication. Selection is
+`created_at ASC, id ASC`, with one bounded database candidate at
+a time and no browser chooser. Up to 100 invalid historical candidates are inspected per attempt.
+`offline_access` is lifecycle permission rather than an additional business permission for matching.
+A refresh claim or live consent flow does not exclude a root whose access credential still works.
+
+An existing binding retains its authentication even when it needs renewal. Reauthorization from
+any referring Agent updates that same authentication for every member. The existing Agent MCP DTO
+projects credential status, failure and expiry from the root while retaining the requesting Agent's
+own probe and tool snapshot. Web keeps its existing page, buttons, feedback and browser-attempt
+guards. There is no separate authentication view, shared badge, impact notice or group operation.
+Every settled browser OAuth attempt invalidates existing Agent mount queries, including denial,
+callback failure and cancellation. Polling and focus refresh retain their existing cross-page behavior.
+
+Removing or revoking a connection affects only the current Agent. If it holds the shared credential,
+the same root ID and encrypted credential move to a surviving compatible member before removal.
+Changing the current Agent's effective URL, header, scheme or extra headers similarly unlinks that
+Agent inside the configuration-save transaction, before writing its new overrides. The mount remains
+with a new independent revoked OAuth row and uses the existing authorization entry; it cannot select
+another root automatically. Other members retain the old credential, refresh claim and pending flow.
+Unchanged effective settings and enable switches retain sharing. Definition-wide configuration edits
+still reject changes affecting shared members; independent mounts keep their existing edit behavior.
+
+A new binding reserves its authorization row ID before discovery. A refused discovery leaves no
+published flow or credential, and a detach/recreate during discovery cannot receive the old result.
+The credential envelope records its issuing client ID for shared-format authorizations. Legacy
+registrations can be matched through their existing registration row. A historical static-client or
+CIMD credential without provable client identity remains independent until a refresh or new consent
+records that identity. Deployment clients with null `client_registration_id`, including GitHub, are
+supported. Refresh refuses to apply a changed deployment client ID to an existing pinned credential.
+
+No usable source means a new OAuth flow on the current binding. Initial authorizations on different
+Agents can proceed independently; neither business calls nor new binds wait for another Agent's
+refresh or consent. Legacy OAuth-start API and CLI responses keep their existing shapes; automatic
+reuse is exposed through the new Web Connect operation.
+
+### Compatibility and rollout
+
+Apply the additive migration with new reuse disabled, upgrade every Server/Worker, drain old
+processes, then enable `OPENTAG_MCP_OAUTH_REUSE`. Compatibility mode writes legacy envelopes for
+independent authorizations. Shared families retain the versioned flow format even with new reuse
+disabled. All existing references continue resolving, refreshing and handing off when the flag is off.
+
+Use a compatible binary for rollback. Disabling new reuse does not make an old binary safe: it cannot
+read references, versioned PKCE flows, or credentials containing the client identity. Before any
+legacy downgrade, disable new reuse, stop concurrent OAuth writes and run the read-only admission
+command with the deployment database and encryption configuration:
+
+```bash
+pnpm --filter @opentag/server mcp:rollout-status
+```
+
+It emits counts only and exits nonzero while references, new envelope formats or unreadable
+envelopes remain. Old binaries cannot enforce this check themselves; the deployment operator must
+run it before selecting an old image. Clear affected authorizations through the current compatible
+version when a legacy downgrade is required. Never copy refresh tokens or reverse the migration.
 
 ## Scope
 
@@ -221,7 +288,7 @@ differ per Agent, the cached era lives on the **authorization row**, not the def
 
 ## Data model
 
-Four tables, migration `0045`.
+Four tables. `credential_source_id` is the sole additional column for OAuth reuse.
 
 ```
 mcp_servers                     a shared definition; holds no secret of any kind
@@ -237,7 +304,7 @@ agent_mcp_servers               Agent <-> Server mount, plus that Agent's overri
   PK(agent_id, mcp_server_id)
 
 mcp_server_authorizations       exactly one row per (Server, Agent)
-  id, mcp_server_id, agent_id, kind, status,
+  id, mcp_server_id, agent_id, kind, status, credential_source_id,
   ciphertext, key_id, scopes, access_token_expires_at,
   authorization_server, oauth_resource, flow_oauth_resource, client_registration_id,
   state, state_expires_at, pkce_ciphertext, login_session_hash,
@@ -268,8 +335,8 @@ A few decisions worth stating explicitly:
   column is `agent_id`; ownership is proven through `agents.created_by_user_id` and
   `mcp_servers.account_id`. `mcp_client_registrations` is the one table that stays Account-scoped,
   because a registration is the Account's client at an issuer rather than any Agent's.
-- **`kind='none'` is a real row**, not an absence. Every `(Server, Agent)` pair has exactly one row,
-  so resolution is one step and every credential has a place to keep its own snapshot.
+- **`kind='none'` is a real row**, not an absence. Every authorized `(Server, Agent)` pair has one row,
+  so every mount retains its own probe snapshot even when OAuth authentication is shared.
 - **The tool snapshot lives on the authorization row**, because the tool list genuinely differs per
   credential. The Server-level `lastProbedAt` is a `max(probed_at)` over those rows; there is no
   `mcp_servers.last_probed_at` column.
@@ -286,7 +353,8 @@ A few decisions worth stating explicitly:
 | Delete a definition, with any live mount | **Refused** with `MCP_SERVER_IN_USE` and `boundAgentCount`; detach first |
 | Delete a definition, with no live mount | Cascades its authorization rows; `mcp_client_registrations` is untouched |
 | Delete an Agent | The Agent is **soft-deleted**, so its mounts and authorizations are cleaned up explicitly |
-| Delete a Server from one Agent | Detach drops that Agent's mount and its authorization row |
+| Delete a Server from one Agent | Detach removes that mount; a shared root is handed to a surviving member before removal |
+| Disconnect a shared authentication family | Revalidate the displayed member count and atomically remove its authorizations and mounts |
 
 **Agent deletion is a status change, not a row delete.** `agent-service.ts` sets `status='deleted'`,
 so the `on delete cascade` on the binding and authorization tables is dead code on every real path.
@@ -303,10 +371,10 @@ Two consequences follow, and both are handled:
 Detaching is also what drops a credential: a Server an Agent no longer mounts keeps no usable secret
 for it.
 
-Bearer and anonymous saves validate and write in one short transaction, taking Agent → Server
-definition → binding → authorization locks. Agent ownership/status and definition ownership are
+Graph writes validate and write in one short transaction, taking Account (`users FOR NO KEY UPDATE`) → Agent → Server
+definition → binding → authorization locks. Transfer locks both Accounts in ID order before the Agent. Agent ownership/status and definition ownership are
 rechecked before the locked mount authorizes the write. The Agent and definition use
-`FOR SHARE` so saves on independent mounts and existing child-row FK key shares remain compatible; the mount uses
+`FOR SHARE`; Account admission serializes short graph writes and the mount uses
 the same binding lock as cleanup. If detach wins, save finds no mount and returns
 `MCP_BINDING_NOT_FOUND`; if save wins, detach removes that authorization afterward. A mount cannot
 be deleted and recreated between the save's binding read and its commit. Disabling retains the
@@ -315,17 +383,34 @@ credential. No provider request or browser authorization wait runs inside this s
 Probe settlement matches both the existing authorization row ID and its revision. A recreated
 authorization can start at the same revision, so revision alone does not identify the row probed.
 Late probe success, failure or transport errors leave a replacement authorization unchanged.
-OAuth callback state/row fences and refresh claim fences retain their existing behavior.
+OAuth callbacks and refreshes fence their final writes on the stable root, Account and current flow/claim.
+Credential replacement invalidates member probe versions; access-token rotation alone leaves valid snapshots usable.
 
 ## Authorization resolution
 
-For one Agent and one Server, the chain has exactly one step:
+For one Agent and one Server, read the target mount and optional source root in one SQL snapshot.
+Both Agents must belong to the definition's Account and be nondeleted; both mounts must exist with
+identical effective connection configuration. A source must be an OAuth root, never another reference.
+The credential resource must still match the target endpoint on every runtime and probe read.
+An active, unexpired authentication is usable. Invalid ownership, chains, missing roots or changed
+configuration fail closed. There is no Account GitHub credential fallback.
 
-1. An `active` authorization row → use it, with that row's `kind`.
-2. Otherwise → unauthorized.
+A reference row holds no credential, expiry, refresh claim or OAuth flow. Root authentication fields
+are projected into legacy summaries while probe fields and revisions remain local. The new batch
+`authentications` API supplies shared root identity, expiry, flow progress and member count without
+changing strict legacy response schemas. Shared settings use the same flow-cancel action, fenced by
+the root revision. Cancelling consent preserves a working access credential, refresh claim and tool
+snapshots; a stale cancellation cannot end a newer flow. Summary/detail aggregates use the same resolution and
+readonly snapshots; they do not issue one query per Agent.
 
-There is **no Account-level fallback**. The Server-level views show how many Agents are authorized
-and how many are not; they never show a shared credential, because there is none.
+Legacy credential revoke keeps its Agent scope: it unlinks that Agent from shared authentication
+while leaving the mount ready for authorization. It never silently revokes the other members.
+Removing a holder preserves its authentication row ID: delete the successor's empty reference row,
+assign the root to that successor, and reencrypt credential/PKCE AAD for the new holder. Preserve
+credential generation, refresh claim, creation time and flow identity, but carry the successor's own
+tool snapshot. In-flight network results reread the current holder and encrypt inside final settlement.
+No cleanup waits for refresh or consent. Effective connection changes are rejected while shared;
+names and enable switches can still change.
 
 Mounting does not require authorizing first. A Server that needs a credential can be mounted and
 authorized afterwards, in which case the row's state reads as awaiting authorization. A Server whose
@@ -705,9 +790,11 @@ so those Agents must authorize again.
   have developer B's approval land a credential on A's Agent.
 - Re-starting a flow overwrites `state`, its deadline, the PKCE verifier, and the binding in one
   write, so the previous callback URL is immediately unusable. The callback then validates the
-  browser binding, then existence, then expiry, then pending status, and clears the flow as soon as
-  the code is redeemed.
-- **The client is the one `start` registered.** The flow records `client_registration_id`, and the
+  browser binding, then existence, then expiry, and expiry. A state CAS admits one code exchange, and final settlement clears the flow.
+  Starting a newer flow or disconnecting fences late results; no provider I/O holds a transaction.
+- **The client is the one `start` selected.** Shared-format flows seal client ID, registration, scopes,
+  initiating Account/Agent and configuration in the existing PKCE envelope; live credential metadata
+  remains separate. Starting consent preserves an existing access credential and refresh claim. The
   callback and every later refresh look that registration up rather than resolving a client again.
   Registering afresh at callback time produces a second client (DCR) and then presents the first
   client's code under it, which a strict authorization server refuses with `invalid_client`.
@@ -742,6 +829,12 @@ telling the UI that a result is still coming.
 
 ### Refresh
 
+An explicit granted `scope` replaces the recorded scopes, including an explicitly empty scope.
+Changed resource scopes invalidate every member's tool snapshot and probe revision in the same
+transaction as the refresh result, so late probes cannot restore old-permission tools. Scope order,
+duplicates and lifecycle-only `offline_access` changes do not invalidate tools; an omitted scope
+retains the recorded permissions and snapshots.
+
 Refresh happens only for rows whose `kind='oauth'` and whose expiry is near, and it never
 re-discovers: it uses the endpoint the row already recorded, so a peer cannot move this client's
 token endpoint mid-flight.
@@ -755,20 +848,20 @@ reauthorization instead of minting a token for an audience it no longer talks to
 management-plane URL change already revokes origin-bound credentials outright; this is the invariant
 behind that behavior, not a replacement for it.
 
-The deadline is pulled forward by `min(5 minutes, half the lifetime)`, so a refresh never races the
-request that uses the token. A lifetime shorter than ten minutes therefore gets half of it. A missing
+The deadline is pulled forward by `min(5 minutes, half the lifetime)`, providing a renewal window before
+expiry while existing requests continue with a usable access credential. A lifetime shorter than ten minutes therefore gets half of it. A missing
 `expires_in` is treated as a five-minute lifetime.
 
 Two mechanisms keep concurrent workers from spending one refresh token twice: a single-flight claim
-taken with a compare-and-swap (and expiring after two minutes, so a crashed worker cannot wedge a
-row), and a generation fence on the write-back.
+taken with a compare-and-swap, and a generation fence on write-back. A claim left for two minutes
+has an unknown outcome; it fails closed instead of being taken over and replayed.
 
 | Observation | Verdict | Action |
 | --- | --- | --- |
-| Token endpoint 2xx | Success | New envelope, `refresh_generation += 1`, claim cleared, **no re-probe** |
+| Token endpoint 2xx | Success | New envelope, `refresh_generation += 1`, claim cleared; retain snapshots for token rotation alone, invalidate all member snapshots if resource scopes change |
 | `invalid_grant` | **Terminal** | `revoked`; the user must authorize again |
 | `invalid_client` | **Terminal** | `revoked`; the user must re-register the client |
-| Transport failure, timeout, 5xx, unparseable | **Outcome unknown** | `error` with `failure_code = MCP_REFRESH_OUTCOME_UNKNOWN`, keep the refresh token, require reauthorization, **never** auto-retry |
+| Transport failure, timeout, 5xx, unparseable | **Outcome unknown** | `error` with `failure_code = MCP_REFRESH_OUTCOME_UNKNOWN`, clear potentially consumed credential material, require reauthorization, **never** auto-retry |
 | Recorded resource no longer matches the effective endpoint | No call made | `error` with `failure_code = MCP_AUTHORIZATION_REQUIRED`, credential kept for a deliberate reauthorization |
 | Local envelope decryption failure | Nothing was sent | Release the claim, leave the state, retry next pass |
 | MCP Server returns 401/403 | Not evidence the credential is dead | Never clear the refresh token |
@@ -1082,8 +1175,8 @@ it; the runtime path never re-detects an era on its own.
 ## HTTP API
 
 Server definitions and the aggregate view are Account-scoped; every mount, override, authorization,
-and probe is addressed under the Agent that owns it. That is not cosmetic: authorization is strictly
-per Agent, so a Server-scoped authorization route would have no way to say whose credential it was
+and probe is addressed under the Agent that owns it. That is not cosmetic: authorization is addressed through the current
+Agent mount, which may reference shared OAuth authentication, so a Server-scoped authorization route would have no way to say whose credential it was
 writing.
 
 ```
@@ -1099,7 +1192,9 @@ POST   /api/v1/agents/:agentId/mcp-servers               mount
 PATCH  /api/v1/agents/:agentId/mcp-servers/:mcpServerId  enable/disable and this Agent's overrides
 DELETE /api/v1/agents/:agentId/mcp-servers/:mcpServerId  unmount (drops this Agent's credential)
 PUT    /api/v1/agents/:agentId/mcp-servers/:mcpServerId/authorization        Bearer key, or `none`
-DELETE /api/v1/agents/:agentId/mcp-servers/:mcpServerId/authorization        revoke
+DELETE /api/v1/agents/:agentId/mcp-servers/:mcpServerId/authorization        revoke this mount only
+POST   /api/v1/agents/:agentId/mcp-servers/reusable-installation select compatible definition
+POST   /api/v1/agents/:agentId/mcp-servers/:mcpServerId/authorization/connect try reuse
 POST   /api/v1/agents/:agentId/mcp-servers/:mcpServerId/authorization/oauth  start OAuth
 POST   /api/v1/agents/:agentId/mcp-servers/:mcpServerId/probe                re-probe
 
@@ -1261,16 +1356,18 @@ no source switch, name field, authentication picker, or header editor in this en
 manual configuration, and configuration import remain implementation capabilities rather than entry
 points in this dialog.
 
-Web installations are independent per Agent. Add custom offers only a URL; it neither lists the
-Account's definitions nor selects one by URL. Discover creates a new definition from the served
-catalog defaults when this Agent has no installation. Existing installations of this Agent remain
+Web installations retain an explicit mount and independent tool snapshot per Agent. Add custom does
+not list the Account pool. With new OAuth reuse enabled, both Add custom and Discover perform the
+same Server-side compatible-installation lookup before creation; the returned definition is mounted
+through the ordinary flow. No candidate means a new definition and the current Agent's OAuth flow.
+Bearer and anonymous installations still create independent definitions. Existing installations of this Agent remain
 available for connection, retry, and management, including URL overrides and every known endpoint
 of a deployment-replaced catalog entry.
 
 Names are generated automatically from an exact preset or the URL's host. Creation tries the base
 name first; only `MCP_SERVER_NAME_CONFLICT` reads the Account's names and retries with a bounded,
-case-insensitive numeric suffix. A matching URL never selects another definition. Both add entry
-points share this operation. Confirmed definitions are retained within the current journey for
+case-insensitive numeric suffix. A matching name or URL alone never selects another definition;
+only the compatible OAuth lookup can do so. Both add entry points share this operation. Confirmed definitions are retained within the current journey for
 attachment and authorization retries. Account definitions do not gate the ordinary Add button or
 first-use dialog. Reads of overridden definitions and OAuth return state are limited to this Agent's
 installations and the explicitly returned ID.
@@ -1281,7 +1378,7 @@ installed endpoint locates the current Agent's connection instead of creating an
 backend registry and shared configuration semantics remain available through the API and CLI;
 this Web change does not migrate historical shared mounts or change OAuth client registration reuse.
 
-Connect uses the existing create, attach, authorization, OAuth, and probe APIs.
+Connect uses the installation lookup and existing create, attach, authorization, OAuth, and probe APIs.
 Exact preset matches provide new-installation authentication defaults; Bearer defaults reveal an API-key field
 only after Connect, and OAuth defaults start provider sign-in directly. An unknown endpoint starts
 with an anonymous probe; an explicit authentication rejection permits an OAuth attempt through the
@@ -1468,8 +1565,9 @@ and category rules, the icon, and the gates to run — is a first-party Skill at
 uploads it explicitly, and the Presets catalog never offers it.
 
 The current Add server flow uses an exact catalog endpoint match to supply authentication defaults
-and a suggested name. Each Web installation creates its own definition; the Account registry is consulted only to resolve
-a creation-name conflict.
+and a suggested name. OAuth installations may select an existing compatible definition through the
+Account-authenticated installation lookup; other new installations create a definition. Name conflicts
+use bounded numeric suffixes and never select a credential source.
 `auth.default_kind` remains a prefill for the new authorization, never a statement about the Server.
 
 An entry's `auth.oauth.scopes`, when present, travel as the OAuth start request's explicit scopes, so the

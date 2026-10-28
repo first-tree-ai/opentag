@@ -45,6 +45,7 @@ contents, and machine-specific operational logs outside the repository.
 - [Ordered IM batches and Cloud steering](verification/im-backlog-batching.md)
 - [Inbound receipt recovery](verification/inbound-receipt-recovery.md)
 - [MCP Server integration](verification/mcp-server-integration.md)
+- [MCP OAuth authorization reuse](verification/mcp-authorization-reuse.md)
 - [Release guide](verification/releasing.md)
 - [Session collaboration writes](verification/session-collaboration-writes.md)
 - [Session configuration transitions](verification/session-configuration-transitions.md)

@@ -9,6 +9,17 @@ export const DEFAULT_QUERY_TIMEOUT_MS = 35_000;
 export const DEFAULT_IDLE_IN_TRANSACTION_TIMEOUT_MS = 60_000;
 export const DATABASE_KEEP_ALIVE_SECONDS = 10;
 export const DATABASE_CONNECT_TIMEOUT_SECONDS = 10;
+export const DATABASE_CLOSE_TIMEOUT_SECONDS = 1;
+
+export const MIGRATION_TIMEOUTS = {
+  connectSeconds: 5,
+  lockMs: 2_000,
+  statementMs: 5_000,
+  transactionMs: 10_000,
+  operationMs: 15_000,
+} as const;
+
+export const MIGRATION_VERIFICATION_TIMEOUT_MS = 10_000;
 
 export interface DatabaseTimeouts {
   statementTimeoutMs: number;

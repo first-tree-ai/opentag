@@ -114,3 +114,17 @@ pnpm --filter @opentag/client build
 pnpm --filter @opentag/server build
 pnpm check
 ```
+
+## Latest-main integration and export contract
+
+The PR branch integrates main `984d68b3ce1503543ce34cebcbc6415fb238a020`, including
+MCP authorization reuse and bounded PostgreSQL startup/connection cleanup. The merge preserves
+the existing after-commit IM feedback hook, queue ownership and Cloud steering authority.
+The four new batch/steer public exports are included in the checked-in export contract snapshot;
+the snapshot regression failed before the update and passes afterwards.
+
+Validation on the integrated tree: all 779 Shared tests in 48 files, 363 Server tests in 14
+files, and 204 Client tests in five files passed. Server coverage includes startup, readiness,
+query deadlines, resource shutdown and the IM/Runner owners. Client coverage includes native
+Worker/socket control, Turn controller, journal and Runner serve. Shared, Client and Server
+type checks and builds passed.

@@ -175,6 +175,7 @@ export function useMcpDiscoverState(props: DiscoverProps) {
           extraHeaders: catalog.extraHeaders,
         }),
         create.mutateAsync,
+        props.agentId,
       );
       created.current.set(catalog.id, server);
     }

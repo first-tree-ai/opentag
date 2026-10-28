@@ -34,7 +34,6 @@ import {
   computers,
   imBindings,
   imMessageDeliveries,
-  mcpServerAuthorizations,
   sessionPlacements,
   sessions,
   slackOAuthNonces,
@@ -42,7 +41,9 @@ import {
 } from "../../db/schema/index.js";
 import type { CloudUsageService } from "../cloud-usage.js";
 import { disableImBindingInTransaction } from "../im-bindings/index.js";
-import { lockMcpBindings } from "../mcp/index.js";
+import { removeMcpLocalAuthorization } from "../mcp/mcp-authorization-graph.js";
+import { lockMcpAccounts, lockMcpBindings } from "../mcp/mcp-binding-locks.js";
+import type { McpCredentialCipher } from "../mcp/mcp-credential-cipher.js";
 import { resolveAgentRuntimeConfig } from "../runtime-config/index.js";
 import type { CloudModelCatalog } from "../sandboxes/cloud-model-catalog.js";
 import { markEndedDescendantsInactive } from "../sessions/session-closure.js";
@@ -338,6 +339,7 @@ export class AgentService {
       }) => Promise<void> | void)
     | undefined;
   readonly #stopSessions: (targets: AgentSessionStopTarget[]) => Promise<void>;
+  readonly #mcpCredentialCipher: McpCredentialCipher | undefined;
   readonly #cloudIdentitiesEnabled: boolean;
   readonly #cloudModelCatalog?: CloudModelCatalog;
   readonly #cloudUsage?: CloudUsageService;
@@ -346,6 +348,7 @@ export class AgentService {
   constructor(
     database: DatabaseClient,
     options: {
+      mcpCredentialCipher?: McpCredentialCipher;
       afterAgentLocked?: () => Promise<void>;
       afterMembershipLocked?: () => Promise<void>;
       /**
@@ -376,6 +379,7 @@ export class AgentService {
       stopSessions?: (targets: AgentSessionStopTarget[]) => Promise<void>;
     } = {},
   ) {
+    this.#mcpCredentialCipher = options.mcpCredentialCipher;
     this.#afterAgentLocked = options.afterAgentLocked;
     this.#afterMembershipLocked = options.afterMembershipLocked;
     this.#afterReadAuthorization = options.afterReadAuthorization;
@@ -980,6 +984,7 @@ export class AgentService {
 
   async reactivateById(callerUserId: string, agentId: string): Promise<AgentAdminConfig> {
     const result = await this.#database.transaction(async (transaction) => {
+      await lockMcpAccounts(transaction, [callerUserId]);
       const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
       this.#requireManagePermission(scope);
       if (scope.agent.status !== "suspended") {
@@ -1160,6 +1165,7 @@ export class AgentService {
 
   async deleteById(callerUserId: string, agentId: string): Promise<void> {
     const result = await this.#database.transaction(async (transaction) => {
+      await lockMcpAccounts(transaction, [callerUserId]);
       const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
       this.#requireManagePermission(scope);
       if (scope.agent.status !== "suspended") {
@@ -1205,8 +1211,20 @@ export class AgentService {
    * conversations, which is why the Schedules are paused rather than left live.
    */
   async transferToAccount(input: AgentTransferInput): Promise<AgentTransferResult> {
+    const [owner] = await this.#database
+      .select({ accountId: agents.createdByUserId })
+      .from(agents)
+      .where(eq(agents.id, input.agentId));
+    if (!owner) throw new AgentTransferError("agent_not_found");
     const result = await this.#database.transaction(async (transaction) => {
+      const [targetAccount] = await transaction
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.id, input.targetAccountId));
+      if (!targetAccount) throw new AgentTransferError("target_account_not_found");
+      await lockMcpAccounts(transaction, [owner.accountId, input.targetAccountId]);
       const { agent, computerKind } = await this.#lockAgentForTransfer(transaction, input.agentId);
+      if (agent.createdByUserId !== owner.accountId) throw new AgentTransferError("agent_not_found");
       const target = await this.#assertTransferTarget(transaction, agent, input.targetAccountId);
       const targets = await this.#assertTransferSessionsClear(transaction, agent.id);
       const runtimeConfig = await this.#lockRuntimeConfig(transaction, agent.id);
@@ -1433,8 +1451,9 @@ export class AgentService {
    * already cleaned them up explicitly for the same reason; these are the other two paths.
    */
   async #deleteMcpBindings(transaction: DatabaseTransaction, agentId: string): Promise<void> {
-    await lockMcpBindings(transaction, eq(agentMcpServers.agentId, agentId));
-    await transaction.delete(mcpServerAuthorizations).where(eq(mcpServerAuthorizations.agentId, agentId));
+    const mounts = await lockMcpBindings(transaction, eq(agentMcpServers.agentId, agentId));
+    for (const mount of mounts)
+      await removeMcpLocalAuthorization(transaction, agentId, mount.mcpServerId, this.#mcpCredentialCipher);
     await transaction.delete(agentMcpServers).where(eq(agentMcpServers.agentId, agentId));
   }
 

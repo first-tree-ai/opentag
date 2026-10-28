@@ -1,6 +1,6 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
-import { applyQueryDeadline, assertQueryDeadlineSupport } from "./query-deadline.js";
+import { applyQueryDeadline } from "./query-deadline.js";
 import * as schema from "./schema/index.js";
 import {
   DATABASE_CONNECT_TIMEOUT_SECONDS,
@@ -33,7 +33,6 @@ export function createDatabaseClient(databaseUrl: string, options: DatabaseClien
     },
     onnotice: () => undefined,
   });
-  assertQueryDeadlineSupport(sql);
   applyQueryDeadline(sql, {
     timeoutMs: timeouts.queryTimeoutMs,
     ...(options.onQueryTimeout ? { onTimeout: options.onQueryTimeout } : {}),

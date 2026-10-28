@@ -17,7 +17,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsdown src/index.ts src/app.ts src/cloud-billing.ts src/admin/bootstrap.ts src/admin/bootstrap-cli.ts src/admin/transfer-agent.ts src/admin/transfer-agent-cli.ts src/db/migrate-cli.ts --format esm --dts",
+    "build": "tsdown src/index.ts src/app.ts src/cloud-billing.ts src/admin/bootstrap.ts src/admin/bootstrap-cli.ts src/admin/transfer-agent.ts src/admin/transfer-agent-cli.ts src/admin/mcp-rollout-status-cli.ts src/db/migrate-cli.ts --format esm --dts",
     "bootstrap:admin": "node dist/admin/bootstrap-cli.mjs",
     "transfer:agent": "node dist/admin/transfer-agent-cli.mjs",
     "db:generate": "drizzle-kit generate",
@@ -26,7 +26,8 @@
     "start": "node dist/index.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --maxWorkers=1 --exclude 'src/__tests__/integration/**'",
-    "test:integration": "vitest run src/__tests__/integration --maxWorkers=2"
+    "test:integration": "vitest run src/__tests__/integration --maxWorkers=2",
+    "mcp:rollout-status": "node dist/admin/mcp-rollout-status-cli.mjs"
   },
   "dependencies": {
     "@autotelic/fastify-opentelemetry": "^0.23.0",

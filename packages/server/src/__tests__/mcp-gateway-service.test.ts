@@ -24,6 +24,9 @@ interface MountSpec {
 function mount(spec: MountSpec): McpJoinedBinding {
   const id = `server-${spec.name}`;
   return {
+    agent: { id: AGENT, name: "agent", displayName: "Agent" },
+    localAuthorization: null,
+    credentialAuthorization: null,
     binding: { agentId: AGENT, mcpServerId: id, enabled: spec.enabled ?? true } as McpJoinedBinding["binding"],
     server: {
       id,

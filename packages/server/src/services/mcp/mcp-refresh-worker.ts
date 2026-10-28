@@ -101,6 +101,7 @@ export class McpRefreshWorker {
         .innerJoin(agents, eq(agents.id, mcpServerAuthorizations.agentId))
         .where(
           and(
+            isNull(mcpServerAuthorizations.credentialSourceId),
             eq(mcpServerAuthorizations.kind, "oauth"),
             eq(mcpServerAuthorizations.status, "active"),
             ne(agents.status, "deleted"),

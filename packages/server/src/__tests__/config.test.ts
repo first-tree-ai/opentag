@@ -14,6 +14,7 @@ import {
 } from "../config.js";
 import { createDatabaseClient } from "../db/client.js";
 import {
+  DatabaseStartupTimeoutError,
   MIGRATION_ADVISORY_LOCK_ID,
   MigrationVerificationError,
   migrateDatabase,
@@ -956,10 +957,16 @@ describe("parseServerConfig", () => {
   });
 });
 
-function mockSql(handler: (query: string, values: readonly unknown[]) => unknown | Promise<unknown>) {
+function mockSql(
+  handler: (query: string, values: readonly unknown[]) => unknown | Promise<unknown>,
+  version = "170000",
+) {
   const sql = Object.assign(
-    vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => handler(strings.join(""), values)),
-    { end: vi.fn(async () => undefined) },
+    vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      if (strings.join("") === "show server_version_num") return [{ server_version_num: version }];
+      return handler(strings.join(""), values);
+    }),
+    { end: vi.fn(async () => undefined), setQueryDeadline: vi.fn() },
   );
   vi.mocked(postgres).mockReturnValue(sql as never);
   return sql;
@@ -1010,14 +1017,16 @@ describe("database migration helpers", () => {
       }),
     );
     expect(client.timeouts.queryTimeoutMs).toBe(6_000);
-    expect((sql as unknown as { unsafe: unknown }).unsafe).not.toBe(unsafe);
+    expect((sql as unknown as { unsafe: unknown }).unsafe).toBe(unsafe);
+    expect(sql.setQueryDeadline).toHaveBeenCalledWith(6_000, expect.any(Function));
     await client.sql.end();
   });
 
   it("refuses a postgres.js build whose Query lacks the deadline internals", () => {
-    mockSql(() => []);
+    const sql = mockSql(() => []);
+    Object.assign(sql, { setQueryDeadline: undefined });
 
-    expect(() => createDatabaseClient("postgresql://localhost/opentag")).toThrow(/query deadline needs updating/);
+    expect(() => createDatabaseClient("postgresql://localhost/opentag")).toThrow(/pinned query deadline/);
   });
 
   it("preserves non-Zod parser failures and returns no unauthenticated identity", async () => {
@@ -1072,8 +1081,70 @@ describe("database migration helpers", () => {
     await expect(migrateDatabase("postgresql://localhost/opentag", "/tmp/drizzle")).rejects.toThrow("migration failed");
     expect(drizzle).toHaveBeenCalledWith(sql);
     expect(migrate).toHaveBeenCalledWith({ kind: "database" }, { migrationsFolder: "/tmp/drizzle" });
-    expect(sql).toHaveBeenCalledTimes(2);
+    expect(sql).toHaveBeenCalledTimes(4);
     expect(sql.end).toHaveBeenCalledOnce();
+  });
+
+  it("caps the whole migration operation without extending the budget for progress", async () => {
+    vi.useFakeTimers();
+    const sql = mockSql(() => []);
+    vi.mocked(migrate).mockImplementationOnce(async () => {
+      for (let step = 0; step < 4; step++) await new Promise((resolve) => setTimeout(resolve, 4000));
+    });
+    try {
+      const result = migrateDatabase("postgresql://localhost/opentag", "/tmp/drizzle").catch((error) => error);
+      await vi.advanceTimersByTimeAsync(15000);
+      expect(await result).toBeInstanceOf(DatabaseStartupTimeoutError);
+      expect(await result).toMatchObject({ operation: "migration", timeoutMs: 15000 });
+      expect(sql.end).toHaveBeenNthCalledWith(1, { timeout: 0 });
+      await vi.advanceTimersByTimeAsync(1000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps PostgreSQL 16 within the transaction cap through a shorter overall deadline", async () => {
+    vi.useFakeTimers();
+    const sql = mockSql(() => [], "160000");
+    vi.mocked(migrate).mockImplementationOnce(() => new Promise(() => {}));
+    try {
+      const result = migrateDatabase("postgresql://localhost/opentag", "/tmp/drizzle").catch((error) => error);
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(await result).toMatchObject({ operation: "migration", timeoutMs: 10000 });
+      expect(sql.mock.calls.some(([strings]) => strings.join("").includes("transaction_timeout"))).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds silent verification with its own total budget", async () => {
+    vi.useFakeTimers();
+    mockSql(() => new Promise(() => {}));
+    vi.mocked(readMigrationFiles).mockReturnValue([]);
+    try {
+      const result = verifyDatabaseMigrations("postgresql://localhost/opentag", "/tmp/drizzle").catch((error) => error);
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(await result).toMatchObject({
+        reason: "unreachable",
+        cause: { operation: "verification", timeoutMs: 10000 },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the migration failure as the cause when unlocking also fails", async () => {
+    const primary = new Error("primary failure"),
+      cleanup = new Error("unlock failure");
+    const sql = mockSql((query) => {
+      if (query.includes("pg_advisory_unlock")) throw cleanup;
+      return [];
+    });
+    await expect(
+      withMigrationLock(sql as never, async () => {
+        throw primary;
+      }),
+    ).rejects.toMatchObject({ cause: primary, errors: [primary, cleanup] });
   });
 
   it.each([

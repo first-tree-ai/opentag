@@ -102,10 +102,12 @@ describe("database availability after transport failure", () => {
   it("reclaims initialization after a multi-host deadline without replaying the expired write", async () => {
     const proxy = await startDatabaseFaultProxy(container.getConnectionUri(), true);
     const url = new URL(proxy.url);
-    url.hostname = "127.0.0.1,127.0.0.1";
+    const multiHostUrl = proxy.url.replace(url.host, `${url.host},${url.host}`);
     const observer = createDatabaseClient(container.getConnectionUri());
-    const client = createDatabaseClient(url.toString(), { max: 1, queryTimeoutMs: 300 });
+    const client = createDatabaseClient(multiHostUrl, { max: 1, queryTimeoutMs: 300 });
     try {
+      expect(client.sql.options.host).toEqual([url.hostname, url.hostname]);
+      expect(client.sql.options.port).toEqual([Number(url.port), Number(url.port)]);
       await observer.sql`create table availability_multihost (value int)`;
       const failure = await client.database.execute(query`insert into availability_multihost values (1)`).then(
         () => undefined,
@@ -125,10 +127,12 @@ describe("database availability after transport failure", () => {
   it("retains normal multi-host failover while a query is still within its deadline", async () => {
     const proxy = await startDatabaseFaultProxy(container.getConnectionUri());
     const url = new URL(proxy.url);
-    url.hostname = "127.0.0.1,127.0.0.1";
+    const multiHostUrl = proxy.url.replace(url.host, `${url.host},${url.host}`);
     proxy.refuseNextConnection();
-    const client = createDatabaseClient(url.toString(), { max: 1, queryTimeoutMs: 2000 });
+    const client = createDatabaseClient(multiHostUrl, { max: 1, queryTimeoutMs: 2000 });
     try {
+      expect(client.sql.options.host).toEqual([url.hostname, url.hostname]);
+      expect(client.sql.options.port).toEqual([Number(url.port), Number(url.port)]);
       await expect(client.database.execute(query`select 1`)).resolves.toBeDefined();
     } finally {
       await client.sql.end({ timeout: 1 });

@@ -42,6 +42,11 @@ postgres.js patch. These tests do not establish production business completion o
 - Withhold TCP closing acknowledgement and require a child process to exit normally after bounded database close,
   including a case where the active query completes before the peer withholds FIN.
 
+Both multi-host cases build the raw authority with a port on each candidate and assert the driver's parsed
+host and port arrays before issuing SQL. Every candidate must target the disposable proxy. URL `host` or
+`hostname` setters must not construct this authority: they can collapse the candidate list or leave an entry
+using PostgreSQL's default port instead of the controlled fixture.
+
 `database-startup.test.ts` runs on PostgreSQL 16 and 17 and checks native session settings, the 2 s advisory-lock wait, the 5 s statement limit,
 the 10 s transaction or total-operation limit across individually shorter statements, rollback, and silent established migration
 and verification connections. Startup work must not reconnect and continue after losing its dedicated session.

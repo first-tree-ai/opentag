@@ -22,6 +22,7 @@ import {
   mcpEffectiveConfig,
   readMcpAuthorizationContexts,
   removeMcpLocalAuthorization,
+  unlinkMcpSharedAuthorization,
 } from "./mcp-authorization-graph.js";
 import { lockMcpAccounts, lockMcpCredentialBinding } from "./mcp-binding-locks.js";
 import type { McpAuthorizationCredential, McpCredentialCipher } from "./mcp-credential-cipher.js";
@@ -190,7 +191,10 @@ export class McpAuthorizationService {
         transaction,
         and(eq(mcpServers.accountId, accountId), eq(agentMcpServers.agentId, agentId), eq(mcpServers.id, mcpServerId)),
       );
-      if (expectedOAuthState === undefined && context && (await this.#unlinkSharedAuthorization(transaction, context)))
+      if (
+        expectedOAuthState === undefined &&
+        (await unlinkMcpSharedAuthorization(transaction, context?.localAuthorization, this.#cipher, this.#now()))
+      )
         return;
       const root = revocableMcpRoot(context, expectedOAuthState);
       if (!root) return;
@@ -226,80 +230,6 @@ export class McpAuthorizationService {
           .where(eq(mcpServerAuthorizations.id, root.id));
       } else await invalidateMcpCredentialProbes(transaction, root.id);
     });
-  }
-
-  async #unlinkSharedAuthorization(transaction: DatabaseTransaction, context: McpAuthorizationContext) {
-    const local = context.localAuthorization;
-    if (!local) return false;
-    const [reference] = await transaction
-      .select({ id: mcpServerAuthorizations.id })
-      .from(mcpServerAuthorizations)
-      .where(eq(mcpServerAuthorizations.credentialSourceId, local.id))
-      .limit(1);
-    if (!local.credentialSourceId && !reference) return false;
-    await removeMcpLocalAuthorization(transaction, local.agentId, local.mcpServerId, this.#cipher);
-    await transaction.insert(mcpServerAuthorizations).values({
-      agentId: local.agentId,
-      mcpServerId: local.mcpServerId,
-      kind: local.kind,
-      status: "revoked",
-      createdAt: this.#now(),
-      updatedAt: this.#now(),
-    });
-    return true;
-  }
-
-  async cancelSharedFlow(
-    accountId: string,
-    agentId: string,
-    mcpServerId: string,
-    authenticationId: string,
-    expectedRevision: number,
-  ) {
-    await this.#database.transaction(async (transaction) => {
-      await lockMcpCredentialBinding(transaction, accountId, agentId, mcpServerId);
-      const [context] = await readMcpAuthorizationContexts(
-        transaction,
-        and(eq(mcpServers.accountId, accountId), eq(mcpServers.id, mcpServerId), eq(agentMcpServers.agentId, agentId)),
-        { tools: false, limit: 1 },
-      );
-      const root = context?.credentialAuthorization;
-      if (!root || root.id !== authenticationId || root.revision !== expectedRevision || !root.state)
-        throw new McpServiceError(
-          MCP_ERROR_CODES.OAUTH_FLOW_INVALID,
-          "The authorization flow changed; reload and retry",
-        );
-      const [cancelled] = await transaction
-        .update(mcpServerAuthorizations)
-        .set({
-          state: null,
-          stateExpiresAt: null,
-          pkceCiphertext: null,
-          loginSessionHash: null,
-          flowAuthorizationServer: null,
-          flowOauthResource: null,
-          ...(!root.ciphertext ? { status: "revoked" as const, refreshClaimId: null, refreshClaimedAt: null } : {}),
-          revision: sql`${mcpServerAuthorizations.revision} + 1`,
-          updatedAt: this.#now(),
-        })
-        .where(
-          and(
-            eq(mcpServerAuthorizations.id, authenticationId),
-            eq(mcpServerAuthorizations.revision, expectedRevision),
-            eq(mcpServerAuthorizations.state, root.state),
-          ),
-        )
-        .returning({ id: mcpServerAuthorizations.id });
-      if (!cancelled)
-        throw new McpServiceError(
-          MCP_ERROR_CODES.OAUTH_FLOW_INVALID,
-          "The authorization flow changed; reload and retry",
-        );
-    });
-    this.#logger?.info(
-      { accountId, agentId, mcpServerId, authorizationId: authenticationId },
-      "MCP OAuth flow cancelled",
-    );
   }
 
   /** Advisory definition selection; mounting and Connect still validate the current graph. */

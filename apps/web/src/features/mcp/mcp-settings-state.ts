@@ -1,15 +1,10 @@
-import {
-  type MCPAgentServer,
-  type MCPAuthenticationView,
-  type MCPAuthKind,
-  MCPServerUrlSchema,
-} from "@opentag/shared/browser";
+import { type MCPAgentServer, type MCPAuthKind, MCPServerUrlSchema } from "@opentag/shared/browser";
 import { useEffect, useRef, useState } from "react";
 import * as m from "../../paraglide/messages.js";
 import { useMcpCatalogEntries } from "./catalog/mcp-catalog-entries.js";
 import { useMcpAuthorization, validAuth } from "./mcp-authorization.js";
 import { connectionAuthKind, presetAuthConfig, presetAuthKinds, settingsPreset } from "./mcp-connection-model.js";
-import { authenticationFeedback, connectorFeedback } from "./mcp-feedback.js";
+import { connectorFeedback } from "./mcp-feedback.js";
 import {
   authDraft,
   bindingPatch,
@@ -20,12 +15,7 @@ import {
   validTokenSettings,
 } from "./mcp-form-model.js";
 import type { McpOAuthSession } from "./mcp-oauth-session.js";
-import {
-  useMcpAuthentications,
-  useMcpServerDetail,
-  useSharedMcpAuthentication,
-  useUpdateMcpBinding,
-} from "./mcp-queries.js";
+import { useMcpServerDetail, useUpdateMcpBinding } from "./mcp-queries.js";
 import type { McpReturnContext } from "./mcp-return-context.js";
 
 export function useMcpSettings({
@@ -55,10 +45,6 @@ export function useMcpSettings({
   returnContext?: () => McpReturnContext;
 }) {
   const catalog = useMcpCatalogEntries();
-  const authentications = useMcpAuthentications(agentId);
-  const authentication = useSharedMcpAuthentication(
-    authentications.data?.authorizations.find((view) => view.mcpServerId === entry.mcpServerId),
-  );
   const preset = settingsPreset(entry, catalog.entries);
   const detail = useMcpServerDetail(entry.authorization ? undefined : entry.mcpServerId);
   const authenticationReady = Boolean(entry.authorization || detail.data);
@@ -99,7 +85,9 @@ export function useMcpSettings({
   const dirty = Object.keys(patch).length > 0;
   const authEdited = editing || draft.kind !== kind;
   const configValid = authenticationReady && validConfiguration(config, draft.kind);
-  const feedback = settingsFeedback(entry, kind, authentication, retrying, connectionError);
+  const feedback = retrying
+    ? { label: m.mcp_add_loading_tools(), action: "retry" as const, neutral: true }
+    : connectorFeedback(entry, connectionError);
   const begin = (next: MCPAuthKind) => {
     setFailure(undefined);
     setEditing(true);
@@ -167,7 +155,6 @@ export function useMcpSettings({
     setFailure(undefined);
   };
   return {
-    agentId,
     entry,
     preset,
     authenticationReady,
@@ -187,7 +174,6 @@ export function useMcpSettings({
     authEdited,
     configValid,
     feedback,
-    authentication,
     error: failure?.authentication ? undefined : failure?.label,
     authenticationError: failure?.authentication ? failure.label : undefined,
     authorization,
@@ -205,16 +191,4 @@ function validConfiguration(config: ReturnType<typeof settingsDraft>, kind: MCPA
     validHeaders(config.headers, header) &&
     (kind !== "bearer" || validTokenSettings(config))
   );
-}
-
-function settingsFeedback(
-  entry: MCPAgentServer,
-  kind: MCPAuthKind,
-  authentication: MCPAuthenticationView | undefined,
-  retrying: boolean,
-  connectionError?: string,
-) {
-  if (retrying) return { label: m.mcp_add_loading_tools(), action: "retry" as const, neutral: true };
-  if (authentication && kind === "oauth") return authenticationFeedback(authentication);
-  return connectorFeedback(entry, connectionError);
 }

@@ -1,9 +1,9 @@
 import { MCP_CATALOG_ENTRIES } from "@opentag/mcp-presets";
-import type { MCPAgentServer, MCPAuthenticationView } from "@opentag/shared/browser";
+import type { MCPAgentServer } from "@opentag/shared/browser";
 import * as m from "../../paraglide/messages.js";
 import { Button, Icon, Tooltip } from "../../ui/design-system.js";
 import { findCatalogEntryByUrl, localizedText } from "./catalog/mcp-catalog-model.js";
-import { authenticationFeedback, authorizationAction, connectorFeedback, type McpFeedback } from "./mcp-feedback.js";
+import { authorizationAction, connectorFeedback, type McpFeedback } from "./mcp-feedback.js";
 import type { McpOAuthSession } from "./mcp-oauth-session.js";
 import { McpServiceIcon } from "./mcp-service-icon.js";
 import { mcpTitle } from "./mcp-title.js";
@@ -13,7 +13,6 @@ export type ServerAction = "authorize" | "edit" | "delete" | "retry";
 
 type CardProps = {
   entry: MCPAgentServer;
-  authentication?: MCPAuthenticationView;
   onAction: (action: ServerAction) => void;
   onResume: () => void;
   resuming: boolean;
@@ -27,16 +26,14 @@ type CardProps = {
 
 export function McpServerCard(props: CardProps) {
   const { entry, highlighted } = props;
-  const connecting = sharedAuthentication(entry, props.authentication)
-    ? false
-    : Boolean(
-        props.connecting ||
-          props.oauthSession?.phase ||
-          (entry.enabled &&
-            entry.authorization?.status === "active" &&
-            entry.authorization.probeState === "pending" &&
-            !hasMcpToolSnapshot(entry)),
-      );
+  const connecting = Boolean(
+    props.connecting ||
+      props.oauthSession?.phase ||
+      (entry.enabled &&
+        entry.authorization?.status === "active" &&
+        entry.authorization.probeState === "pending" &&
+        !hasMcpToolSnapshot(entry)),
+  );
   return (
     <li
       id={`mcp-server-${entry.mcpServerId}`}
@@ -93,9 +90,7 @@ function McpIdentity(props: CardProps) {
 function McpControls(props: CardProps & { checking: boolean }) {
   const { entry, checking: connecting, resuming, onResume, onAction } = props;
   const feedback = rowFeedback({ ...props, connecting });
-  const busy = Boolean(
-    resuming || (!sharedAuthentication(entry, props.authentication) && (props.connecting || props.oauthSession?.phase)),
-  );
+  const busy = Boolean(props.connecting || props.oauthSession?.phase || resuming);
   const actionLabel =
     feedback.action === "retry"
       ? m.mcp_retry()
@@ -150,37 +145,22 @@ function McpControls(props: CardProps & { checking: boolean }) {
   );
 }
 
-function rowFeedback({
-  entry,
-  error,
-  connecting,
-  oauthSession,
-  connectionError,
-  authentication,
-}: CardProps): McpFeedback {
-  const shared = sharedAuthentication(entry, authentication);
-  if (shared) return authenticationFeedback(shared);
-  if (connecting) return pendingConnectionFeedback(oauthSession);
+function rowFeedback({ entry, error, connecting, oauthSession, connectionError }: CardProps): McpFeedback {
+  if (connecting) {
+    const phase = oauthSession?.phase;
+    const label = oauthSession?.blocked
+      ? m.mcp_catalog_page_blocked()
+      : phase === "waiting"
+        ? m.mcp_waiting_authorization()
+        : phase === "preparing"
+          ? m.mcp_oauth_preparing()
+          : m.mcp_checking_connection();
+    return { label, neutral: true };
+  }
   if (error) return { label: error };
   if (!entry.enabled) return { label: m.mcp_disabled_label(), neutral: true };
   const feedback = connectorFeedback(entry, connectionError);
   if (!feedback.label && feedback.action === "authorize")
     return { ...feedback, label: m.mcp_authorization_required(), neutral: true };
   return feedback;
-}
-
-function sharedAuthentication(entry: MCPAgentServer, view: MCPAuthenticationView | undefined) {
-  return entry.authorization?.kind === "oauth" && view && view.agentCount > 1 ? view : undefined;
-}
-
-function pendingConnectionFeedback(oauthSession?: McpOAuthSession): McpFeedback {
-  const phase = oauthSession?.phase;
-  const label = oauthSession?.blocked
-    ? m.mcp_catalog_page_blocked()
-    : phase === "waiting"
-      ? m.mcp_waiting_authorization()
-      : phase === "preparing"
-        ? m.mcp_oauth_preparing()
-        : m.mcp_checking_connection();
-  return { label, neutral: true };
 }

@@ -44,7 +44,7 @@ test("custom OAuth retries a failed tool probe without replacing the completed a
   await expectAccessible(page);
 });
 
-test("failed key-to-OAuth preparation preserves the working key and preset", async ({ page }) => {
+test("a failed key-to-OAuth switch remains a preset and reopens with the submitted method", async ({ page }) => {
   const agentId = await createAgent(page, "Preset method recovery");
   const definition = {
     ...server("exa", "bearer"),
@@ -70,15 +70,9 @@ test("failed key-to-OAuth preparation preserves the working key and preset", asy
   await expect(details.getByRole("textbox", { name: "Connector address" })).toHaveCount(0);
   await details.getByRole("button", { name: "Close Exa", exact: true }).click();
   await page.getByRole("button", { name: "Exa", exact: true }).click();
-  await expect(details.getByRole("combobox", { name: "Authentication", exact: true })).toBeVisible();
-  await expect(details.getByRole("combobox", { name: "Authentication", exact: true })).toHaveText("API key or token");
-  expect(fixture.mounts.get(agentId)?.[0]?.authorization).toMatchObject({
-    kind: "bearer",
-    status: "active",
-    hasCredential: true,
-    probeState: "succeeded",
-    toolsCount: 1,
-  });
+  await expect(details.getByText("Account sign-in", { exact: true })).toBeVisible();
+  await expect(details.getByRole("combobox", { name: "Authentication", exact: true })).toHaveText("Account sign-in");
+  expect(fixture.mounts.get(agentId)?.[0]?.authorization?.hasCredential).toBe(false);
   await expectAccessible(page);
 });
 

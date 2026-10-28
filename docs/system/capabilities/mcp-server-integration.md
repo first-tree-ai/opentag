@@ -56,16 +56,21 @@ a time and no browser chooser. Up to 100 invalid historical candidates are inspe
 A refresh claim or live consent flow does not exclude a root whose access credential still works.
 
 An existing binding retains its authentication even when it needs renewal. Reauthorization from
-any referring Agent updates that same authentication for every member. The UI shows one shared
-authentication state, error, expiry, progress and authentication action; enable switches and tool
-probes remain Agent-local. A failed tool probe alone does not mark authentication invalid. New
-shared connections show Connected immediately after reuse; probing runs in the background.
-The list uses this common authentication status only when more than one Agent shares it. A
-single-Agent OAuth row retains the ordinary quiet success state, local probe progress, failures,
-Retry and empty-tool hint, with its own OAuth busy guards. Settings show authentication and local
-tool feedback separately, including a failed probe's Retry for a connected authentication.
-Every settled browser OAuth attempt refreshes authentication and mount reads, including denial,
-callback failure and cancellation, so a completed flow does not leave a cached authorizing state.
+any referring Agent updates that same authentication for every member. The existing Agent MCP DTO
+projects credential status, failure and expiry from the root while retaining the requesting Agent's
+own probe and tool snapshot. Web keeps its existing page, buttons, feedback and browser-attempt
+guards. There is no separate authentication view, shared badge, impact notice or group operation.
+Every settled browser OAuth attempt invalidates existing Agent mount queries, including denial,
+callback failure and cancellation. Polling and focus refresh retain their existing cross-page behavior.
+
+Removing or revoking a connection affects only the current Agent. If it holds the shared credential,
+the same root ID and encrypted credential move to a surviving compatible member before removal.
+Changing the current Agent's effective URL, header, scheme or extra headers similarly unlinks that
+Agent inside the configuration-save transaction, before writing its new overrides. The mount remains
+with a new independent revoked OAuth row and uses the existing authorization entry; it cannot select
+another root automatically. Other members retain the old credential, refresh claim and pending flow.
+Unchanged effective settings and enable switches retain sharing. Definition-wide configuration edits
+still reject changes affecting shared members; independent mounts keep their existing edit behavior.
 
 A new binding reserves its authorization row ID before discovery. A refused discovery leaves no
 published flow or credential, and a detach/recreate during discovery cannot receive the old result.
@@ -1188,11 +1193,8 @@ PATCH  /api/v1/agents/:agentId/mcp-servers/:mcpServerId  enable/disable and this
 DELETE /api/v1/agents/:agentId/mcp-servers/:mcpServerId  unmount (drops this Agent's credential)
 PUT    /api/v1/agents/:agentId/mcp-servers/:mcpServerId/authorization        Bearer key, or `none`
 DELETE /api/v1/agents/:agentId/mcp-servers/:mcpServerId/authorization        revoke this mount only
-GET    /api/v1/agents/:agentId/mcp-servers/authentications                   batch authentication views
 POST   /api/v1/agents/:agentId/mcp-servers/reusable-installation select compatible definition
 POST   /api/v1/agents/:agentId/mcp-servers/:mcpServerId/authorization/connect try reuse
-DELETE /api/v1/agents/:agentId/mcp-servers/:mcpServerId/authorization/family  disconnect family
-DELETE /api/v1/agents/:agentId/mcp-servers/:mcpServerId/authorization/flow    cancel shared flow
 POST   /api/v1/agents/:agentId/mcp-servers/:mcpServerId/authorization/oauth  start OAuth
 POST   /api/v1/agents/:agentId/mcp-servers/:mcpServerId/probe                re-probe
 

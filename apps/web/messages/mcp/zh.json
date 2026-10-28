@@ -280,10 +280,5 @@
   "mcp_add_failed": "暂时无法添加，请重试。",
   "mcp_waiting_authorization": "等待授权完成…",
   "mcp_checking_connection": "正在检查连接…",
-  "mcp_update_credentials": "更新凭证",
-  "mcp_shared_connected": "已连接",
-  "mcp_shared_reauthorize": "重新授权将更新使用此认证的全部 {count} 个 Agent 的账号与权限。",
-  "mcp_shared_remove": "另有 {count} 个 Agent 使用此授权。",
-  "mcp_shared_remove_all": "全部断开",
-  "mcp_shared_settings_locked": "修改连接配置或认证方式前，请先断开当前 Agent。"
+  "mcp_update_credentials": "更新凭证"
 }

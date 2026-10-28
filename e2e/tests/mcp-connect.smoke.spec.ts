@@ -1,10 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type ServerResponse } from "node:http";
-import {
-  ListMCPAuthenticationViewsResponseSchema,
-  type MCPAgentServer,
-  type MCPAuthKind,
-} from "@opentag/shared/browser";
+import type { MCPAgentServer, MCPAuthKind } from "@opentag/shared/browser";
 import type { Page, Route } from "@playwright/test";
 import { baseURL } from "../playwright.config.js";
 import { expectAccessible, expectNoPageOverflow, expectWithinViewport } from "./browser-contract.js";
@@ -413,15 +409,13 @@ test("closing reauthorization keeps saved tools quiet without waiting for a back
     await page.getByRole("button", { name: installed.name, exact: true }).click();
     const details = page.getByRole("dialog", { name: installed.name, exact: true });
     const opening = page.waitForEvent("popup");
-    const flowRead = page.waitForResponse(async (response) => {
-      if (
-        response.request().method() !== "GET" ||
-        new URL(response.url()).pathname !== `/api/v1/agents/${current.id}/mcp-servers/authentications`
-      )
-        return false;
-      const body = ListMCPAuthenticationViewsResponseSchema.parse(await response.json());
-      return body.authorizations.some((row) => row.mcpServerId === installed.mcpServerId && row.flowExpiresAt !== null);
-    });
+    const flowRead = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname ===
+          `/api/v1/agents/${current.id}/mcp-servers/${installed.mcpServerId}/authorization/oauth` &&
+        response.status() === 200,
+    );
     await details.getByRole("button", { name: "Reauthorize", exact: true }).click();
     const consent = await opening;
     await consent.getByRole("heading", { name: "Local consent fixture", exact: true }).waitFor();

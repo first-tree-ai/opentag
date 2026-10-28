@@ -945,25 +945,4 @@ function isAllowedMcpOrigin(url: string, origins: readonly string[]): boolean {
   return origins.includes(parsed.origin);
 }
 
-export const MCPAuthenticationViewSchema = z
-  .object({
-    mcpServerId: z.string().uuid(),
-    authenticationId: z.string().uuid().nullable(),
-    authenticationRevision: z.number().int().positive().nullable(),
-    credentialGeneration: z.number().int().nonnegative().nullable(),
-    status: z.enum(["unconfigured", "connected", "authorizing", "authorization_required"]),
-    failureCode: z.string().nullable(),
-    authorizationExpiresAt: z.string().datetime().nullable(),
-    flowExpiresAt: z.string().datetime().nullable(),
-    agentCount: z.number().int().nonnegative(),
-  })
-  .strict();
-export type MCPAuthenticationView = z.infer<typeof MCPAuthenticationViewSchema>;
-export const ListMCPAuthenticationViewsResponseSchema = z
-  .object({ authorizations: z.array(MCPAuthenticationViewSchema) })
-  .strict();
 export const ConnectMCPOAuthResponseSchema = z.object({ connected: z.boolean() }).strict();
-
-export const CancelSharedMCPOAuthRequestSchema = z
-  .object({ authenticationId: z.string().uuid(), expectedRevision: z.number().int().positive() })
-  .strict();

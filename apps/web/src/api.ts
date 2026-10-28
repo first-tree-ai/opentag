@@ -139,7 +139,6 @@ import {
   ListAgentsResponseSchema,
   type ListAvailableMCPServersResponse,
   ListAvailableMCPServersResponseSchema,
-  ListMCPAuthenticationViewsResponseSchema,
   type ListMCPServersResponse,
   ListMCPServersResponseSchema,
   type ListSkillPresetsResponse,
@@ -869,30 +868,10 @@ export class BrowserApi {
     return this.request(agentMcpServersPath(agentId), ListAgentMCPServersResponseSchema);
   }
 
-  mcpAuthentications(agentId: string) {
-    return this.request(`${agentMcpServersPath(agentId)}/authentications`, ListMCPAuthenticationViewsResponseSchema);
-  }
-
   connectMcpOAuth(agentId: string, mcpServerId: string, scopes: readonly string[] = []) {
     return this.request(`${agentMcpAuthorizationPath(agentId, mcpServerId)}/connect`, ConnectMCPOAuthResponseSchema, {
       method: "POST",
       body: JSON.stringify({ scopes }),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
-  }
-
-  cancelSharedMcpOAuth(agentId: string, mcpServerId: string, authenticationId: string, expectedRevision: number) {
-    return this.requestNoContent(`${agentMcpAuthorizationPath(agentId, mcpServerId)}/flow`, {
-      method: "DELETE",
-      body: JSON.stringify({ authenticationId, expectedRevision }),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
-  }
-
-  disconnectMcpFamily(agentId: string, mcpServerId: string, authenticationId: string, agentCount: number) {
-    return this.requestNoContent(`${agentMcpAuthorizationPath(agentId, mcpServerId)}/family`, {
-      method: "DELETE",
-      body: JSON.stringify({ authenticationId, agentCount }),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
     });
   }

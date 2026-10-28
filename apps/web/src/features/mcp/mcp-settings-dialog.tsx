@@ -1,4 +1,4 @@
-import { type MCPAuthenticationView, MCPServerUrlSchema } from "@opentag/shared/browser";
+import { MCPServerUrlSchema } from "@opentag/shared/browser";
 import { useState } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Button, Dialog, Field, Icon, KumoInputControl, Loader } from "../../ui/design-system.js";
@@ -9,7 +9,6 @@ import { McpAuthFields } from "./mcp-form.js";
 import { McpOAuthControls } from "./mcp-oauth-controls.js";
 import { McpPresetAuthentication } from "./mcp-preset-authentication.js";
 import { useMcpSettings } from "./mcp-settings-state.js";
-import { McpSharedAuthentication } from "./mcp-shared-authentication.js";
 import { mcpTitle } from "./mcp-title.js";
 
 type SettingsState = ReturnType<typeof useMcpSettings>;
@@ -17,8 +16,6 @@ type SettingsState = ReturnType<typeof useMcpSettings>;
 export function McpSettingsDialog(props: Parameters<typeof useMcpSettings>[0]) {
   const state = useMcpSettings(props);
   const { entry, preset, busy, config, setConfig, draft, authEdited, error } = state;
-  const shared = (state.authentication?.agentCount ?? 0) > 1;
-  const connectionSettingsDisabled = busy || shared;
   const [addressTouched, setAddressTouched] = useState(false);
   const addressInvalid = addressTouched && !MCPServerUrlSchema.safeParse(config.url).success;
   return (
@@ -43,7 +40,7 @@ export function McpSettingsDialog(props: Parameters<typeof useMcpSettings>[0]) {
                   id="mcp-settings-url"
                   aria-label={m.mcp_settings_address()}
                   value={config.url}
-                  disabled={connectionSettingsDisabled}
+                  disabled={busy}
                   aria-invalid={addressInvalid}
                   aria-describedby={addressInvalid ? "mcp-settings-url-error" : undefined}
                   onBlur={() => setAddressTouched(true)}
@@ -58,11 +55,9 @@ export function McpSettingsDialog(props: Parameters<typeof useMcpSettings>[0]) {
             </div>
           ) : null}
           <AuthenticationSection state={state} />
-          <McpProbeDetails state={state} />
-          <SharedAuthorizationNotice authentication={state.authentication} />
           {preset ? <PresetAddress url={authEdited ? config.url : entry.effective.url} /> : null}
           {!preset ? (
-            <fieldset disabled={connectionSettingsDisabled} className="min-w-0 m-0 border-0 p-0">
+            <fieldset disabled={busy} className="min-w-0 m-0 border-0 p-0">
               <McpConfigurationFields draft={config} kind={draft.kind} onChange={setConfig} address={false} />
             </fieldset>
           ) : null}
@@ -129,10 +124,6 @@ function PresetAddress({ url }: { url: string }) {
 
 function AuthenticationSection({ state }: { state: SettingsState }) {
   if (!state.authenticationReady) return <AuthenticationLoading state={state} />;
-  if (state.authentication && state.authentication.agentCount > 1 && state.draft.kind === "oauth")
-    return (
-      <McpSharedAuthentication agentId={state.agentId} entry={state.entry} authentication={state.authentication} />
-    );
   if (state.preset) return <McpPresetAuthentication state={state} />;
   const { authEdited, authorization } = state;
   return (
@@ -236,34 +227,5 @@ function ProbeRecovery({ state }: { state: SettingsState }) {
       </Button>
       <AuthenticationFeedback state={state} recovery />
     </div>
-  );
-}
-
-function SharedAuthorizationNotice({ authentication }: { authentication: MCPAuthenticationView | undefined }) {
-  if (!authentication || authentication.agentCount <= 1) return null;
-  return (
-    <div className="grid gap-1 text-sm text-kumo-subtle">
-      <p>{m.mcp_shared_reauthorize({ count: authentication.agentCount })}</p>
-      <p>{m.mcp_shared_settings_locked()}</p>
-    </div>
-  );
-}
-
-function McpProbeDetails({ state }: { state: SettingsState }) {
-  if (state.kind !== "oauth" || state.authentication?.status !== "connected") return null;
-  const probe = state.entry.authorization;
-  if (!probe || probe.probeState === "succeeded") return null;
-  return (
-    <section className="grid gap-2" aria-label={m.mcp_tools_title()}>
-      <span className="text-sm font-medium">{m.mcp_tools_title()}</span>
-      <p className="text-sm text-kumo-subtle">
-        {probe.probeState === "pending" ? m.mcp_add_loading_tools() : m.mcp_add_tools_failed()}
-      </p>
-      {state.onRetry ? (
-        <Button type="button" variant="secondary" disabled={state.retrying} onClick={state.onRetry}>
-          {m.mcp_retry()}
-        </Button>
-      ) : null}
-    </section>
   );
 }

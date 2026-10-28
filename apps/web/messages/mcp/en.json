@@ -280,10 +280,5 @@
   "mcp_add_failed": "Couldn't add connector. Try again.",
   "mcp_waiting_authorization": "Waiting for authorization…",
   "mcp_checking_connection": "Checking connection…",
-  "mcp_update_credentials": "Update credentials",
-  "mcp_shared_connected": "Connected",
-  "mcp_shared_reauthorize": "Reauthorizing updates the account and permissions used by all {count} Agents.",
-  "mcp_shared_remove": "{count} other Agents use this authorization.",
-  "mcp_shared_remove_all": "Disconnect all Agents",
-  "mcp_shared_settings_locked": "Disconnect this Agent before changing its connection settings or authentication method."
+  "mcp_update_credentials": "Update credentials"
 }

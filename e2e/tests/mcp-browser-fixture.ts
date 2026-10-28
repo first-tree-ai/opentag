@@ -304,8 +304,7 @@ export async function mcpFixture(page: Page, servers: MCPServer[] = []) {
 
 export async function respondMcpReuseDisabled(route: Route, path: string, method: string) {
   let json: object;
-  if (method === "GET" && path.endsWith("/mcp-servers/authentications")) json = { authorizations: [] };
-  else if (method === "POST" && path.endsWith("/mcp-servers/reusable-installation")) json = { server: null };
+  if (method === "POST" && path.endsWith("/mcp-servers/reusable-installation")) json = { server: null };
   else if (method === "POST" && path.endsWith("/authorization/connect")) json = { connected: false };
   else return false;
   await route.fulfill({ json });

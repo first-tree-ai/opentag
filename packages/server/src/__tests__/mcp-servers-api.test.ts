@@ -127,7 +127,6 @@ interface Harness {
     setBearerOrNone: ReturnType<typeof vi.fn>;
     connectOAuth: ReturnType<typeof vi.fn>;
     findReusableInstallation: ReturnType<typeof vi.fn>;
-    cancelSharedFlow: ReturnType<typeof vi.fn>;
   };
   flows: {
     catalogEndpoints: ReturnType<typeof vi.fn>;
@@ -139,8 +138,6 @@ interface Harness {
     | "createServer"
     | "deleteServer"
     | "detachServer"
-    | "listAuthenticationViews"
-    | "detachAuthorizationFamily"
     | "getServerDetail"
     | "listAgentServers"
     | "listAvailableServers"
@@ -179,20 +176,6 @@ function build(
 ): Harness {
   const servers = {
     attachServer: vi.fn(async () => AGENT_SERVER_DTO),
-    listAuthenticationViews: vi.fn(async () => [
-      {
-        mcpServerId: SERVER,
-        authenticationId: ACCOUNT,
-        authenticationRevision: 1,
-        credentialGeneration: 0,
-        status: "connected",
-        failureCode: null,
-        authorizationExpiresAt: null,
-        flowExpiresAt: null,
-        agentCount: 2,
-      },
-    ]),
-    detachAuthorizationFamily: vi.fn(async () => undefined),
     createServer: vi.fn(async () => SERVER_DTO),
     deleteServer: vi.fn(async () => undefined),
     detachServer: vi.fn(async () => undefined),
@@ -210,7 +193,6 @@ function build(
   const authorization = {
     connectOAuth: vi.fn(async () => true),
     findReusableInstallation: vi.fn(async () => SERVER_DTO),
-    cancelSharedFlow: vi.fn(async () => undefined),
     probe: vi.fn(async () => PROBE_OUTCOME),
     revoke: vi.fn(async () => undefined),
     setBearerOrNone: vi.fn(async () => undefined),
@@ -796,27 +778,6 @@ describe("MCP management authentication", () => {
 });
 
 describe("shared MCP authentication routes", () => {
-  it("returns one safe batch authentication view with no credential or flow secret", async () => {
-    const h = build();
-    const result = await send(h.app, "GET", `${AGENT_MCP_SERVERS_TEMPLATE_PATH}/authentications`);
-    expect(result.response.statusCode).toBe(200);
-    expect(result.body).toEqual({
-      authorizations: [
-        {
-          mcpServerId: SERVER,
-          authenticationId: ACCOUNT,
-          authenticationRevision: 1,
-          credentialGeneration: 0,
-          status: "connected",
-          failureCode: null,
-          authorizationExpiresAt: null,
-          flowExpiresAt: null,
-          agentCount: 2,
-        },
-      ],
-    });
-    expect(h.servers.listAuthenticationViews).toHaveBeenCalledWith(ACCOUNT, AGENT);
-  });
   it("tries server-selected reuse before issuing a new OAuth URL", async () => {
     const h = build();
     const result = await send(h.app, "POST", `${AGENT_MCP_AUTHORIZATION_TEMPLATE_PATH}/connect`, {
@@ -835,23 +796,6 @@ describe("shared MCP authentication routes", () => {
     expect(result.response.statusCode).toBe(400);
     expect(h.authorization.connectOAuth).not.toHaveBeenCalled();
   });
-  it("passes the reviewed authentication identity and count when disconnecting a family", async () => {
-    const h = build();
-    const result = await send(h.app, "DELETE", `${AGENT_MCP_AUTHORIZATION_TEMPLATE_PATH}/family`, {
-      payload: { authenticationId: ACCOUNT, agentCount: 2 },
-    });
-    expect(result.response.statusCode).toBe(204);
-    expect(h.servers.detachAuthorizationFamily).toHaveBeenCalledWith(ACCOUNT, AGENT, SERVER, ACCOUNT, 2);
-  });
-});
-
-it("cancels one reviewed shared flow without requiring another Agent's browser secret", async () => {
-  const h = build();
-  const result = await send(h.app, "DELETE", `${AGENT_MCP_AUTHORIZATION_TEMPLATE_PATH}/flow`, {
-    payload: { authenticationId: ACCOUNT, expectedRevision: 1 },
-  });
-  expect(result.status).toBe(204);
-  expect(h.authorization.cancelSharedFlow).toHaveBeenCalledWith(ACCOUNT, AGENT, SERVER, ACCOUNT, 1);
 });
 
 describe("reusable MCP installation lookup", () => {

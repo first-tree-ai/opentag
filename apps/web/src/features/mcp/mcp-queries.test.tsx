@@ -358,7 +358,6 @@ describe("MCP write invalidation", () => {
 
     const keys = invalidate.mock.calls.map((call) => call[0]?.queryKey);
     expect(keys).toContainEqual(["mcp", "agents"]);
-    expect(keys).toContainEqual(["mcp", "authentications"]);
     // Prefix invalidation also retires the Agent's available-server query.
     expect(keys).toContainEqual(["mcp", "servers"]);
     expect(keys).toContainEqual(["mcp", "server"]);

@@ -132,14 +132,11 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   mcpServers: [],
   mcpCatalogEndpoints: [],
   mcpServer: [ID],
-  mcpAuthentications: [ID],
   reusableMcpInstallation: [
     ID,
     { name: "github", url: "https://api.githubcopilot.com/mcp/", defaultAuthKind: "oauth" },
   ],
   connectMcpOAuth: [ID, ID, ["repo"]],
-  cancelSharedMcpOAuth: [ID, ID, ID, 1],
-  disconnectMcpFamily: [ID, ID, ID, 2],
   createMcpServer: [{ name: "linear", url: "https://mcp.example.com/mcp", defaultAuthKind: "oauth" }],
   updateMcpServer: [ID, { expectedRevision: 1, description: "Issue tracking" }],
   removeMcpServer: [ID],
@@ -229,20 +226,17 @@ describe("BrowserApi mutations", () => {
     expect(missing).toEqual([]);
   });
 
-  it.each(["reusableMcpInstallation", "connectMcpOAuth", "cancelSharedMcpOAuth", "disconnectMcpFamily"])(
-    "declares the JSON request body for %s",
-    async (name) => {
-      setDocumentCookie("opentag_csrf=probe-token");
-      const fetchImpl = vi.fn(async () => new Response("{}", { headers: { "content-type": "application/json" } }));
-      const api = new BrowserApi(fetchImpl);
-      await (api as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>)
-        [name]?.(...(INVOCATIONS[name] ?? []))
-        .catch(() => undefined);
-      const init = (fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1];
-      expect(new Headers(init.headers).get("content-type")).toBe("application/json");
-      expect(JSON.parse(init.body as string)).toBeTypeOf("object");
-    },
-  );
+  it.each(["reusableMcpInstallation", "connectMcpOAuth"])("declares the JSON request body for %s", async (name) => {
+    setDocumentCookie("opentag_csrf=probe-token");
+    const fetchImpl = vi.fn(async () => new Response("{}", { headers: { "content-type": "application/json" } }));
+    const api = new BrowserApi(fetchImpl);
+    await (api as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>)
+      [name]?.(...(INVOCATIONS[name] ?? []))
+      .catch(() => undefined);
+    const init = (fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1];
+    expect(new Headers(init.headers).get("content-type")).toBe("application/json");
+    expect(JSON.parse(init.body as string)).toBeTypeOf("object");
+  });
 
   it("builds the skill bundle download URL from the shared path template", () => {
     const api = new BrowserApi();

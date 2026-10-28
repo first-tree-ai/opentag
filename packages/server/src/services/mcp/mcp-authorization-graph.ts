@@ -234,6 +234,31 @@ export async function assertMcpAuthorizationUnshared(
     );
 }
 
+export async function unlinkMcpSharedAuthorization(
+  transaction: DatabaseTransaction,
+  local: McpAuthorizationRow | null | undefined,
+  cipher: McpCredentialCipher | undefined,
+  now: Date,
+): Promise<boolean> {
+  if (!local) return false;
+  const [reference] = await transaction
+    .select({ id: mcpServerAuthorizations.id })
+    .from(mcpServerAuthorizations)
+    .where(eq(mcpServerAuthorizations.credentialSourceId, local.id))
+    .limit(1);
+  if (!local.credentialSourceId && !reference) return false;
+  await removeMcpLocalAuthorization(transaction, local.agentId, local.mcpServerId, cipher);
+  await transaction.insert(mcpServerAuthorizations).values({
+    agentId: local.agentId,
+    mcpServerId: local.mcpServerId,
+    kind: local.kind,
+    status: "revoked",
+    createdAt: now,
+    updatedAt: now,
+  });
+  return true;
+}
+
 function localSnapshot(row: McpAuthorizationRow) {
   return {
     probeState: row.probeState,

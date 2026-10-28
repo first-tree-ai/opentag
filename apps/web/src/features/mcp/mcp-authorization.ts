@@ -5,6 +5,7 @@ import {
   type MCPEffectiveConfig,
 } from "@opentag/shared/browser";
 import { useRef } from "react";
+import { browserApi } from "../../api.js";
 import { type AuthDraft, bindingPatch, headerRows } from "./mcp-form-model.js";
 import { type McpOAuthSession, useMcpOAuthSession } from "./mcp-oauth-session.js";
 import { closeMcpOAuthWindow, prepareMcpOAuthWindow } from "./mcp-oauth-window.js";
@@ -29,8 +30,11 @@ export function useMcpAuthorization(agentId: string, session?: McpOAuthSession) 
   const localSession = useMcpOAuthSession(agentId);
   const oauth = session ?? localSession;
   const inFlight = useRef(false);
-  const prepareConfiguration = async (entry: MCPAgentServer, config?: MCPEffectiveConfig) => {
+  const prepareConfiguration = async (entry: MCPAgentServer, draft: AuthDraft, config?: MCPEffectiveConfig) => {
     const patch = config ? bindingPatch(entry, { ...config, headers: headerRows(config.extraHeaders) }) : {};
+    if (entry.authorization && (entry.authorization.kind !== draft.kind || patch.url !== undefined)) {
+      await browserApi.revokeMcpAuthorization(agentId, entry.mcpServerId);
+    }
     if (Object.keys(patch).length) await update.mutateAsync({ mcpServerId: entry.mcpServerId, ...patch });
   };
   const run = async (
@@ -46,7 +50,7 @@ export function useMcpAuthorization(agentId: string, session?: McpOAuthSession) 
     inFlight.current = true;
     const prepared = draft.kind === "oauth" ? prepareMcpOAuthWindow() : undefined;
     try {
-      await prepareConfiguration(entry, options?.config);
+      await prepareConfiguration(entry, draft, options?.config);
       if (draft.kind === "oauth") {
         return await oauth.start(
           options?.returnContext?.() ?? { agentId, serverId: entry.mcpServerId, source: "edit" },

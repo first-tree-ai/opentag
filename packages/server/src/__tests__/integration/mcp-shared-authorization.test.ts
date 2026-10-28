@@ -67,7 +67,7 @@ describe("shared MCP authentication on PostgreSQL", () => {
         toolsCount: 1,
         tools: [{ name: "b-only" }],
       });
-      expect((await f.servers.listAuthenticationViews(f.accountId, c))[0]?.status).toBe("connected");
+      expect((await f.servers.readAgentServer(f.accountId, c, f.server.id)).authorization?.status).toBe("active");
     } finally {
       reply.resolve({ accessToken: "rotated", refreshToken: "rotated-refresh", expiresIn: 3600 });
       await refreshing;
@@ -78,6 +78,90 @@ describe("shared MCP authentication on PostgreSQL", () => {
     expect(holder?.refreshGeneration).toBe(f.root.refreshGeneration + 1);
     expect(holder?.refreshClaimId).toBeNull();
     expect(f.refresh).toHaveBeenCalledTimes(1);
+  });
+  it.each([0, 1])("keeps other Agents authorized when member %i edits its URL", async (index) => {
+    const f = await sharedMcpFixture(client.database);
+    const [a, b, c] = f.ids as [string, string, string];
+    await f.connect(b);
+    await f.connect(c);
+    const edited = f.ids[index] as string;
+    const survivor = index === 0 ? b : a;
+    const before = await f.row(edited);
+    const changed = await f.servers.updateBinding(f.accountId, edited, f.server.id, {
+      url: "https://other.example.test/mcp",
+    });
+    expect(changed.effective.url).toBe("https://other.example.test/mcp");
+    expect(changed.authorization).toMatchObject({ status: "revoked", hasCredential: false });
+    expect(await f.row(edited)).toMatchObject({ credentialSourceId: null, ciphertext: null, keyId: null, state: null });
+    expect((await f.row(edited))?.id).not.toBe(before?.id);
+    expect((await f.row(survivor))?.id).toBe(f.root.id);
+    expect((await f.auth.buildHeaders(f.accountId, survivor, f.server.id)).authorization).toBe("Bearer old-access");
+    expect((await f.auth.buildHeaders(f.accountId, c, f.server.id)).authorization).toBe("Bearer old-access");
+    await expect(f.connect(edited)).resolves.toBe(false);
+    expect(f.exchange).not.toHaveBeenCalled();
+    expect(f.refresh).not.toHaveBeenCalled();
+  });
+  it("hands off an in-flight refresh before changing the holder configuration", async () => {
+    const f = await sharedMcpFixture(client.database);
+    const [a, b] = f.ids as [string, string];
+    await f.connect(b);
+    const sent = deferred();
+    const reply = deferred<{ accessToken: string; expiresIn: number }>();
+    f.refresh.mockImplementation(async () => {
+      sent.resolve();
+      return reply.promise;
+    });
+    const refreshing = f.flows.refreshAuthorization(f.root.id);
+    try {
+      await sent.promise;
+      const claim = (await f.row(a))?.refreshClaimId;
+      await f.servers.updateBinding(f.accountId, a, f.server.id, { authScheme: "Token" });
+      expect(await f.row(b)).toMatchObject({ id: f.root.id, refreshClaimId: claim });
+      expect(await f.row(a)).toMatchObject({ status: "revoked", ciphertext: null, refreshClaimId: null });
+    } finally {
+      reply.resolve({ accessToken: "after-edit", expiresIn: 3600 });
+      await refreshing;
+    }
+    expect((await f.auth.buildHeaders(f.accountId, b, f.server.id)).authorization).toBe("Bearer after-edit");
+    expect(await f.row(a)).toMatchObject({ status: "revoked", ciphertext: null });
+    expect(f.refresh).toHaveBeenCalledTimes(1);
+  });
+  it("preserves another Agent's pending consent across holder configuration changes", async () => {
+    const f = await sharedMcpFixture(client.database);
+    const [a, b] = f.ids as [string, string];
+    await f.connect(b);
+    const state = await f.start(b);
+    await f.servers.updateBinding(f.accountId, a, f.server.id, { extraHeaders: { "x-workspace": "new" } });
+    expect((await f.row(b))?.id).toBe(f.root.id);
+    await f.flows.callback({ code: "after-edit", state }, SHARED_PROOF);
+    expect((await f.auth.buildHeaders(f.accountId, b, f.server.id)).authorization).toBe("Bearer new-consent");
+    expect(await f.row(a)).toMatchObject({ status: "revoked", ciphertext: null });
+  });
+  it("rolls back handoff and unlink if saving the configuration fails", async () => {
+    const f = await sharedMcpFixture(client.database);
+    const [a, b] = f.ids as [string, string];
+    await f.connect(b);
+    const beforeA = await f.row(a);
+    const beforeB = await f.row(b);
+    const beforeMount = await f.servers.readAgentServer(f.accountId, a, f.server.id);
+    await client.sql.unsafe(
+      `create function mcp_test_reject_binding_update() returns trigger language plpgsql as $$ begin raise exception 'injected binding save failure'; end $$`,
+    );
+    await client.sql.unsafe(
+      `create trigger mcp_test_binding_failure before update on agent_mcp_servers for each row execute function mcp_test_reject_binding_update()`,
+    );
+    try {
+      await expect(
+        f.servers.updateBinding(f.accountId, a, f.server.id, { url: "https://other.example.test/mcp" }),
+      ).rejects.toMatchObject({ cause: { message: "injected binding save failure" } });
+    } finally {
+      await client.sql.unsafe(`drop trigger mcp_test_binding_failure on agent_mcp_servers`);
+      await client.sql.unsafe(`drop function mcp_test_reject_binding_update()`);
+    }
+    expect(await f.row(a)).toEqual(beforeA);
+    expect(await f.row(b)).toEqual(beforeB);
+    expect(await f.servers.readAgentServer(f.accountId, a, f.server.id)).toEqual(beforeMount);
+    expect((await f.auth.buildHeaders(f.accountId, b, f.server.id)).authorization).toBe("Bearer old-access");
   });
   it.each(["read", ""])(
     "invalidates every member's tools and fences an old probe when refresh scopes become %j",
@@ -257,7 +341,7 @@ describe("shared MCP authentication on PostgreSQL", () => {
     expect((await f.auth.buildHeaders(f.accountId, b, f.server.id)).authorization).toBe("Bearer new-consent");
     expect(f.refresh).toHaveBeenCalledTimes(1);
   });
-  it("never resurrects a disconnected family from an in-flight refresh", async () => {
+  it("never resurrects removed connections from an in-flight refresh", async () => {
     const f = await sharedMcpFixture(client.database);
     const [a, b] = f.ids as [string, string];
     await f.connect(b);
@@ -270,7 +354,8 @@ describe("shared MCP authentication on PostgreSQL", () => {
     const refreshing = f.flows.refreshAuthorization(f.root.id);
     try {
       await sent.promise;
-      await f.servers.detachAuthorizationFamily(f.accountId, b, f.server.id, f.root.id, 2);
+      await f.servers.detachServer(f.accountId, b, f.server.id);
+      await f.servers.detachServer(f.accountId, a, f.server.id);
     } finally {
       reply.resolve({ accessToken: "discarded", expiresIn: 3600 });
       await refreshing;
@@ -295,7 +380,10 @@ describe("shared MCP authentication on PostgreSQL", () => {
       status: "error",
       failureCode: MCP_ERROR_CODES.REFRESH_OUTCOME_UNKNOWN,
     });
-    expect((await f.servers.listAuthenticationViews(f.accountId, b))[0]?.status).toBe("authorization_required");
+    expect((await f.servers.readAgentServer(f.accountId, b, f.server.id)).authorization).toMatchObject({
+      status: "error",
+      hasCredential: false,
+    });
   });
   it("transfers only the departing Agent and retains the root for its original Account", async () => {
     const f = await sharedMcpFixture(client.database);

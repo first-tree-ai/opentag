@@ -1,10 +1,5 @@
 import type { McpInstallableCatalogEntry } from "@opentag/mcp-presets";
-import {
-  MCP_ERROR_CODES,
-  type MCPAgentServer,
-  type MCPAuthenticationView,
-  type MCPServer,
-} from "@opentag/shared/browser";
+import { MCP_ERROR_CODES, type MCPAgentServer, type MCPServer } from "@opentag/shared/browser";
 import { useQuery } from "@tanstack/react-query";
 import { type RefObject, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
@@ -20,13 +15,7 @@ import { actionError } from "./mcp-form-model.js";
 import { readMcpOAuthOutcome } from "./mcp-oauth-outcome.js";
 import { type McpOAuthSession, useMcpOAuthSessions } from "./mcp-oauth-session.js";
 import { publishMcpOAuthWindowReturn, readMcpOAuthWindowReturn } from "./mcp-oauth-window.js";
-import {
-  useAgentMcpServers,
-  useDetachMcpServer,
-  useMcpAuthentications,
-  useSharedMcpAuthentication,
-  useUpdateMcpBinding,
-} from "./mcp-queries.js";
+import { useAgentMcpServers, useDetachMcpServer, useUpdateMcpBinding } from "./mcp-queries.js";
 import { consumeMcpReturn, consumePendingMcpSetupReturn, type McpReturnContext } from "./mcp-return-context.js";
 import { McpServerCard, type ServerAction } from "./mcp-server-card.js";
 import { McpConfirmDialog } from "./mcp-server-dialogs.js";
@@ -68,7 +57,6 @@ function McpManagementPage({ agentId }: { agentId: string }) {
   const identity = useQuery({ queryKey: queryKeys.agents.detail(agentId), queryFn: () => browserApi.agent(agentId) });
   const agentName = identity.data?.displayName ?? agentId;
   const mounted = useAgentMcpServers(agentId);
-  const authentications = useMcpAuthentications(agentId);
   const detach = useDetachMcpServer(agentId);
   const servers = mounted.data?.servers ?? [];
   const detailOAuth = useMcpOAuthSessions(agentId);
@@ -265,9 +253,6 @@ function McpManagementPage({ agentId }: { agentId: string }) {
               key={entry.mcpServerId}
               entry={entry}
               agentId={agentId}
-              authentication={authentications.data?.authorizations.find(
-                (view) => view.mcpServerId === entry.mcpServerId,
-              )}
               highlighted={highlight === entry.mcpServerId}
               connecting={
                 addingId === entry.mcpServerId ||
@@ -458,7 +443,6 @@ function McpPanel({
   }
 }
 function McpRow({
-  authentication,
   agentId,
   entry,
   highlighted,
@@ -470,7 +454,6 @@ function McpRow({
 }: {
   agentId: string;
   entry: MCPAgentServer;
-  authentication?: MCPAuthenticationView;
   highlighted: boolean;
   onAction: (action: ServerAction) => void;
   connecting: boolean;
@@ -479,7 +462,6 @@ function McpRow({
   oauthSession?: McpOAuthSession;
 }) {
   const update = useUpdateMcpBinding(agentId);
-  const sharedAuthentication = useSharedMcpAuthentication(authentication);
   const [error, setError] = useState<string>();
   const inFlight = useRef(false);
   const resume = async () => {
@@ -502,7 +484,6 @@ function McpRow({
   return (
     <McpServerCard
       entry={entry}
-      authentication={sharedAuthentication}
       highlighted={highlighted}
       connecting={connecting}
       recoveryDisabled={recoveryDisabled}

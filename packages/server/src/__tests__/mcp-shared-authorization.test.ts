@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { readMcpRolloutStatus } from "../admin/mcp-rollout-status.js";
-import { agentMcpServers, agents, mcpServerAuthorizations } from "../db/schema/index.js";
+import { agents, mcpServerAuthorizations } from "../db/schema/index.js";
 import { MCP_ERROR_CODES } from "../services/mcp/errors.js";
 import { McpServerService } from "../services/mcp/mcp-server-service.js";
 import { SHARED_PROOF, sharedMcpFixture } from "./support/mcp-shared-authorization.js";
@@ -18,7 +18,7 @@ beforeEach(async () => unit.reset());
 describe("shared MCP authentication", () => {
   it("reuses the oldest compatible root without OAuth or a local credential", async () => {
     const f = await sharedMcpFixture(unit.database);
-    const [a, b, c, d] = f.ids as [string, string, string, string];
+    const [, b, c, d] = f.ids as [string, string, string, string];
     await f.authorize(c);
     await expect(f.connect(b)).resolves.toBe(true);
     await expect(f.connect(d)).resolves.toBe(true);
@@ -34,11 +34,7 @@ describe("shared MCP authentication", () => {
     expect(f.exchange).not.toHaveBeenCalled();
     expect(f.refresh).not.toHaveBeenCalled();
     expect((await f.servers.listServers(f.accountId))[0]?.authorizedAgentCount).toBe(4);
-    expect((await f.servers.listAuthenticationViews(f.accountId, a))[0]).toMatchObject({
-      authenticationId: f.root.id,
-      status: "connected",
-      agentCount: 3,
-    });
+    expect((await f.row(d))?.credentialSourceId).toBe(f.root.id);
   });
   it("does not wait for a refresh claim and preserves each Agent's own tool probe", async () => {
     const f = await sharedMcpFixture(unit.database);
@@ -47,8 +43,9 @@ describe("shared MCP authentication", () => {
       .set({ refreshClaimId: randomUUID(), refreshClaimedAt: new Date(), probeState: "failed", probeError: "401" })
       .where(eq(mcpServerAuthorizations.id, f.root.id));
     await f.connect(f.ids[1] as string);
-    const view = (await f.servers.listAuthenticationViews(f.accountId, f.ids[1] as string))[0];
-    expect(view).toMatchObject({ status: "connected", authenticationId: f.root.id });
+    expect((await f.servers.readAgentServer(f.accountId, f.ids[1] as string, f.server.id)).authorization).toMatchObject(
+      { status: "active", hasCredential: true },
+    );
     expect(
       (await f.servers.readAgentServer(f.accountId, f.ids[1] as string, f.server.id)).authorization?.probeState,
     ).toBe("pending");
@@ -61,16 +58,16 @@ describe("shared MCP authentication", () => {
       .update(mcpServerAuthorizations)
       .set({ status: "expired" })
       .where(eq(mcpServerAuthorizations.id, f.root.id));
-    expect((await f.servers.listAuthenticationViews(f.accountId, b))[0]?.status).toBe("authorization_required");
+    expect((await f.servers.readAgentServer(f.accountId, b, f.server.id)).authorization?.status).toBe("expired");
     const state = await f.start(b);
-    expect((await f.servers.listAuthenticationViews(f.accountId, f.ids[0] as string))[0]?.status).toBe("authorizing");
+    expect((await f.row(f.ids[0] as string))?.state).toEqual(expect.any(String));
     expect(await f.flows.callback({ code: "code", state }, SHARED_PROOF)).toMatchObject({
       agentId: b,
       accountId: f.accountId,
     });
     expect((await f.row(b))?.credentialSourceId).toBe(f.root.id);
     expect((await f.auth.buildHeaders(f.accountId, b, f.server.id)).authorization).toBe("Bearer new-consent");
-    expect((await f.servers.listAuthenticationViews(f.accountId, b))[0]?.status).toBe("connected");
+    expect((await f.servers.readAgentServer(f.accountId, b, f.server.id)).authorization?.status).toBe("active");
   });
   it("records an explicitly empty granted scope instead of the requested scope", async () => {
     const f = await sharedMcpFixture(unit.database);
@@ -117,19 +114,32 @@ describe("shared MCP authentication", () => {
     await disabled.detachServer(f.accountId, f.ids[0] as string, f.server.id);
     expect((await f.row(b))?.id).toBe(f.root.id);
   });
-  it("rejects changed shared connection settings but allows enable switches", async () => {
+  it("keeps sharing for unchanged connection settings and enable switches while guarding definition edits", async () => {
     const f = await sharedMcpFixture(unit.database);
     const b = f.ids[1] as string;
     await f.connect(b);
-    await expect(
-      f.servers.updateBinding(f.accountId, b, f.server.id, { url: "https://other.example.test/mcp" }),
-    ).rejects.toMatchObject({ code: MCP_ERROR_CODES.BINDING_CONFLICT });
+    const before = await f.row(b);
+    await f.servers.updateBinding(f.accountId, b, f.server.id, { url: f.server.url });
     await expect(
       f.servers.updateServer(f.accountId, f.server.id, { expectedRevision: f.server.revision, authScheme: "Token" }),
     ).rejects.toMatchObject({ code: MCP_ERROR_CODES.BINDING_CONFLICT });
     await f.servers.updateBinding(f.accountId, b, f.server.id, { enabled: false });
-    expect((await f.servers.listAuthenticationViews(f.accountId, b))[0]?.status).toBe("connected");
+    expect(await f.row(b)).toEqual(before);
+    expect((await f.servers.readAgentServer(f.accountId, b, f.server.id)).authorization?.status).toBe("active");
   });
+  it.each([{ authHeader: "x-api-key" }, { authScheme: "Token" }, { extraHeaders: { "x-workspace": "other" } }])(
+    "detaches only the edited Agent when headers change: %j",
+    async (patch) => {
+      const f = await sharedMcpFixture(unit.database);
+      const [a, b] = f.ids as [string, string];
+      await f.connect(b);
+      await f.servers.updateBinding(f.accountId, b, f.server.id, patch);
+      expect(await f.row(b)).toMatchObject({ credentialSourceId: null, status: "revoked", ciphertext: null });
+      expect((await f.row(a))?.id).toBe(f.root.id);
+      expect((await f.auth.buildHeaders(f.accountId, a, f.server.id)).authorization).toBe("Bearer old-access");
+      await expect(f.connect(b)).resolves.toBe(false);
+    },
+  );
   it("does not publish OAuth onto a mount recreated during discovery", async () => {
     const f = await sharedMcpFixture(unit.database);
     const b = f.ids[1] as string;
@@ -157,7 +167,7 @@ describe("shared MCP authentication", () => {
     expect((await f.row(b))?.id).toBe(f.root.id);
     expect((await f.auth.buildHeaders(f.accountId, c, f.server.id)).authorization).toBe("Bearer old-access");
   });
-  it("cancels shared consent from another Agent without clearing a working credential, refresh claim or tools", async () => {
+  it("cancels shared consent from its initiating Agent without clearing a working credential, refresh claim or tools", async () => {
     const f = await sharedMcpFixture(unit.database);
     const [a, b, c] = f.ids as [string, string, string];
     await f.connect(b);
@@ -171,9 +181,8 @@ describe("shared MCP authentication", () => {
       .update(mcpServerAuthorizations)
       .set({ refreshClaimId: claim, refreshClaimedAt: new Date() })
       .where(eq(mcpServerAuthorizations.id, f.root.id));
-    await f.start(b);
-    const view = (await f.servers.listAuthenticationViews(f.accountId, c))[0];
-    await f.auth.cancelSharedFlow(f.accountId, c, f.server.id, f.root.id, view?.authenticationRevision as number);
+    const state = await f.start(b);
+    await f.auth.revoke(f.accountId, b, f.server.id, state);
     expect(await f.row(a)).toMatchObject({
       ciphertext: expect.any(String),
       status: "active",
@@ -185,16 +194,15 @@ describe("shared MCP authentication", () => {
     expect(await f.row(b)).toMatchObject({ toolsCount: 1, probeState: "succeeded" });
     expect((await f.auth.buildHeaders(f.accountId, c, f.server.id)).authorization).toBe("Bearer old-access");
   });
-  it("does not cancel a newer flow using an older authentication revision", async () => {
+  it("does not cancel a newer flow using an older browser state", async () => {
     const f = await sharedMcpFixture(unit.database);
     const [a, b] = f.ids as [string, string];
     await f.connect(b);
-    await f.start(a);
-    const old = (await f.servers.listAuthenticationViews(f.accountId, b))[0];
+    const old = await f.start(a);
     const state = await f.start(b);
-    await expect(
-      f.auth.cancelSharedFlow(f.accountId, a, f.server.id, f.root.id, old?.authenticationRevision as number),
-    ).rejects.toMatchObject({ code: MCP_ERROR_CODES.OAUTH_FLOW_INVALID });
+    await expect(f.auth.revoke(f.accountId, a, f.server.id, old)).rejects.toMatchObject({
+      code: MCP_ERROR_CODES.OAUTH_FLOW_INVALID,
+    });
     expect(await f.flows.callback({ code: "new-flow", state }, SHARED_PROOF)).toMatchObject({ agentId: b });
   });
   it("blocks legacy downgrade for references, versioned credentials and active versioned flows", async () => {
@@ -210,18 +218,8 @@ describe("shared MCP authentication", () => {
       unreadableEnvelopeCount: 0,
       legacyDowngradeAllowed: false,
     });
-    await f.servers.detachAuthorizationFamily(f.accountId, a, f.server.id, f.root.id, 2);
+    await f.servers.detachServer(f.accountId, a, f.server.id);
+    await f.servers.detachServer(f.accountId, b, f.server.id);
     expect(await readMcpRolloutStatus(unit.database, f.cipher)).toMatchObject({ legacyDowngradeAllowed: true });
-  });
-  it("requires fresh membership confirmation before disconnecting all", async () => {
-    const f = await sharedMcpFixture(unit.database);
-    await f.connect(f.ids[1] as string);
-    await expect(
-      f.servers.detachAuthorizationFamily(f.accountId, f.ids[0] as string, f.server.id, f.root.id, 1),
-    ).rejects.toMatchObject({ code: MCP_ERROR_CODES.BINDING_CONFLICT });
-    await f.servers.detachAuthorizationFamily(f.accountId, f.ids[0] as string, f.server.id, f.root.id, 2);
-    expect(await f.row(f.ids[0] as string)).toBeUndefined();
-    expect(await f.row(f.ids[1] as string)).toBeUndefined();
-    expect(await unit.database.select().from(agentMcpServers)).toHaveLength(2);
   });
 });

@@ -1,7 +1,6 @@
 import {
   type CreateMCPServerRequest,
   type MCPAgentServer,
-  type MCPAuthenticationView,
   type MCPAuthorizationSummary,
   type MCPEffectiveConfig,
   type MCPOverrideSources,
@@ -33,6 +32,7 @@ import {
   mcpEffectiveConfig,
   readMcpAuthorizationContexts,
   removeMcpLocalAuthorization,
+  unlinkMcpSharedAuthorization,
 } from "./mcp-authorization-graph.js";
 import { lockMcpAccounts, lockMcpBindings, lockMcpCredentialBinding } from "./mcp-binding-locks.js";
 import type { McpCredentialCipher } from "./mcp-credential-cipher.js";
@@ -403,50 +403,6 @@ export class McpServerService {
     return rows.map((row) => toAgentServerDto(row.binding, row.server, row.authorization));
   }
 
-  async listAuthenticationViews(accountId: string, agentId: string): Promise<MCPAuthenticationView[]> {
-    await this.#requireAgent(accountId, agentId);
-    const contexts = await readMcpAuthorizationContexts(this.#database, eq(mcpServers.accountId, accountId), {
-      tools: false,
-    });
-    const counts = new Map<string, number>();
-    for (const context of contexts) {
-      const id = context.credentialAuthorization?.id;
-      if (id) counts.set(id, (counts.get(id) ?? 0) + 1);
-    }
-    const now = this.#now();
-    return contexts
-      .filter((context) => context.binding.agentId === agentId)
-      .map((context) => {
-        const root = context.credentialAuthorization;
-        if (!root)
-          return {
-            mcpServerId: context.server.id,
-            authenticationId: null,
-            authenticationRevision: null,
-            credentialGeneration: null,
-            status: context.localAuthorization ? "authorization_required" : "unconfigured",
-            failureCode: null,
-            authorizationExpiresAt: null,
-            flowExpiresAt: null,
-            agentCount: 0,
-          };
-        const flowExpiresAt =
-          root.state && root.stateExpiresAt && root.stateExpiresAt > now ? root.stateExpiresAt.toISOString() : null;
-        const connected = context.authorization?.status === "active";
-        return {
-          mcpServerId: context.server.id,
-          authenticationId: root.id,
-          authenticationRevision: root.revision,
-          credentialGeneration: root.refreshGeneration,
-          status: connected ? "connected" : flowExpiresAt ? "authorizing" : "authorization_required",
-          failureCode: root.failureCode,
-          authorizationExpiresAt: root.accessTokenExpiresAt?.toISOString() ?? null,
-          flowExpiresAt,
-          agentCount: counts.get(root.id) ?? 1,
-        };
-      });
-  }
-
   /**
    * Mount a Server for one Agent. Mounting does not require an authorization: a Server that needs one
    * can be mounted first and authorized afterwards. The exception is a `none` default, whose
@@ -538,42 +494,6 @@ export class McpServerService {
     });
   }
 
-  async detachAuthorizationFamily(
-    accountId: string,
-    agentId: string,
-    mcpServerId: string,
-    authenticationId: string,
-    agentCount: number,
-  ): Promise<void> {
-    await this.#database.transaction(async (transaction) => {
-      await lockMcpCredentialBinding(transaction, accountId, agentId, mcpServerId);
-      const rows = await readMcpAuthorizationContexts(
-        transaction,
-        and(eq(mcpServers.accountId, accountId), eq(mcpServers.id, mcpServerId)),
-      );
-      const target = rows.find((row) => row.binding.agentId === agentId);
-      const members = rows.filter((row) => row.credentialAuthorization?.id === authenticationId);
-      if (target?.credentialAuthorization?.id !== authenticationId || members.length !== agentCount)
-        throw new McpServiceError(
-          MCP_ERROR_CODES.BINDING_CONFLICT,
-          "Authorization membership changed; review the affected Agents again",
-        );
-      const ids = members.map((row) => row.binding.agentId);
-      await lockMcpBindings(
-        transaction,
-        and(eq(agentMcpServers.mcpServerId, mcpServerId), inArray(agentMcpServers.agentId, ids)),
-      );
-      await transaction
-        .delete(mcpServerAuthorizations)
-        .where(
-          and(eq(mcpServerAuthorizations.mcpServerId, mcpServerId), inArray(mcpServerAuthorizations.agentId, ids)),
-        );
-      await transaction
-        .delete(agentMcpServers)
-        .where(and(eq(agentMcpServers.mcpServerId, mcpServerId), inArray(agentMcpServers.agentId, ids)));
-    });
-  }
-
   /**
    * The single enable/disable layer and this Agent's overrides. Disabling keeps the mount and the
    * credential, so re-enabling needs no reauthorization — the two states are deliberately
@@ -605,16 +525,25 @@ export class McpServerService {
       );
       if (!binding) throw mcpBindingNotFound();
       const patch = applyOverridePatch(binding, input);
+      const before = McpServerService.resolveEffectiveConfig(server, binding);
+      const after = McpServerService.resolveEffectiveConfig(server, { ...binding, ...patch });
+      const changed = connectionChanged(before, after);
+      if (changed) {
+        const [local] = await transaction
+          .select()
+          .from(mcpServerAuthorizations)
+          .where(
+            and(eq(mcpServerAuthorizations.agentId, agentId), eq(mcpServerAuthorizations.mcpServerId, mcpServerId)),
+          );
+        await unlinkMcpSharedAuthorization(transaction, local, this.#cipher, this.#now());
+      }
       const [row] = await transaction
         .update(agentMcpServers)
         .set({ ...(input.enabled === undefined ? {} : { enabled: input.enabled }), ...patch, updatedAt: this.#now() })
         .where(and(eq(agentMcpServers.agentId, agentId), eq(agentMcpServers.mcpServerId, mcpServerId)))
         .returning();
       if (!row) throw mcpBindingNotFound();
-      const before = McpServerService.resolveEffectiveConfig(server, binding);
-      const after = McpServerService.resolveEffectiveConfig(server, row);
-      if (connectionChanged(before, after)) {
-        await assertMcpAuthorizationUnshared(transaction, agentId, mcpServerId);
+      if (changed) {
         const endpointChanged = before.url !== after.url;
         await this.markProbesPending(
           mcpServerId,

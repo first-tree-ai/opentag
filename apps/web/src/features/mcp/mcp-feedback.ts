@@ -2,7 +2,6 @@ import {
   MCP_AUTH_REJECTION_SUMMARY,
   MCP_ERROR_CODES,
   type MCPAgentServer,
-  type MCPAuthenticationView,
   type MCPAuthKind,
 } from "@opentag/shared/browser";
 import * as m from "../../paraglide/messages.js";
@@ -70,15 +69,4 @@ export function isAuthorizationFeedback(label: string): boolean {
     m.mcp_authorization_revoked(),
   ];
   return reasons.includes(label);
-}
-
-export function authenticationFeedback(view: MCPAuthenticationView): McpFeedback {
-  if (view.status === "connected") return { label: m.mcp_shared_connected(), neutral: true };
-  if (view.status === "authorizing")
-    return { label: m.mcp_waiting_authorization(), action: "authorize", neutral: true };
-  return {
-    label: view.failureCode ? m.mcp_authorization_issue() : m.mcp_authorization_required(),
-    action: "authorize",
-    neutral: !view.failureCode,
-  };
 }

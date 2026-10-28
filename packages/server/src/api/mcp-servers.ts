@@ -20,13 +20,11 @@ import {
   AGENT_MCP_SERVERS_TEMPLATE,
   AttachMCPServerRequestSchema,
   CancelMCPOAuthRequestSchema,
-  CancelSharedMCPOAuthRequestSchema,
   ConnectMCPOAuthResponseSchema,
   CreateMCPServerRequestSchema,
   FindReusableMCPInstallationRequestSchema,
   ListAgentMCPServersResponseSchema,
   ListAvailableMCPServersResponseSchema,
-  ListMCPAuthenticationViewsResponseSchema,
   ListMCPServersResponseSchema,
   MCP_CATALOG_ENDPOINTS_PATH,
   MCP_OAUTH_CALLBACK_PATH,
@@ -201,44 +199,6 @@ export function registerMcpServerRoutes(
         request.log.warn({ agentId, mcpServerId }, "MCP tools could not be refreshed after cancelling reauthorization");
       });
     return reply.code(200).send(current);
-  });
-
-  app.get(`${AGENT_MCP_SERVERS_TEMPLATE}/authentications`, { preHandler }, async (request, reply) => {
-    const { agentId } = parseRequest(AgentParamsSchema, request.params);
-    return reply.header("Cache-Control", "no-store").send(
-      ListMCPAuthenticationViewsResponseSchema.parse({
-        authorizations: await servers.listAuthenticationViews(authenticatedUserId(request), agentId),
-      }),
-    );
-  });
-
-  app.delete(`${AGENT_MCP_AUTHORIZATION_TEMPLATE}/flow`, { preHandler }, async (request, reply) => {
-    const { agentId, mcpServerId } = parseRequest(AgentServerParamsSchema, request.params);
-    const input = parseRequest(CancelSharedMCPOAuthRequestSchema, request.body);
-    await authorization.cancelSharedFlow(
-      authenticatedUserId(request),
-      agentId,
-      mcpServerId,
-      input.authenticationId,
-      input.expectedRevision,
-    );
-    return reply.code(204).send();
-  });
-
-  app.delete(`${AGENT_MCP_AUTHORIZATION_TEMPLATE}/family`, { preHandler }, async (request, reply) => {
-    const { agentId, mcpServerId } = parseRequest(AgentServerParamsSchema, request.params);
-    const input = parseRequest(
-      z.object({ authenticationId: z.string().uuid(), agentCount: z.number().int().min(1) }).strict(),
-      request.body,
-    );
-    await servers.detachAuthorizationFamily(
-      authenticatedUserId(request),
-      agentId,
-      mcpServerId,
-      input.authenticationId,
-      input.agentCount,
-    );
-    return reply.code(204).send();
   });
 
   app.post(`${AGENT_MCP_AUTHORIZATION_TEMPLATE}/connect`, { preHandler }, async (request, reply) => {

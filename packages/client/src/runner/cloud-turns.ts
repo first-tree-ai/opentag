@@ -396,12 +396,13 @@ export class CloudTurnRunner {
       }
       const journalScope = this.#requireJournalScope();
       const existing = await this.#options.journal.read(delivery.deliveryId);
-      const reusable = this.#reuseDeliveryEntry(existing, delivery, journalScope);
+      const reusable = await this.#reuseDeliveryEntry(existing, delivery, journalScope);
       if (existing && !reusable) return;
       // A journaled delivery may only be re-dispatched with the SAME dispatch identity and
       // content. Changed input under the same ids is a visible conflict, never a second turn.
+      const retained = reusable === "replace-steer" ? undefined : reusable;
       const entry =
-        reusable ??
+        retained ??
         (await this.#options.journal.recordReceived({
           delivery,
           scope: journalScope,
@@ -418,15 +419,13 @@ export class CloudTurnRunner {
     });
   }
 
-  /** Reuse one already-journaled delivery, or undefined when the re-dispatch must be refused. */
-  #reuseDeliveryEntry(
+  /** Reuse direct input or allow atomic replacement of a steer that never started. */
+  async #reuseDeliveryEntry(
     existing: CloudJournalEntry | undefined,
     delivery: DirectImMessageDeliveryRequest,
     journalScope: CloudJournalScope,
-  ): CloudJournalDeliveryEntry | undefined {
+  ): Promise<CloudJournalDeliveryEntry | "replace-steer" | undefined> {
     if (!existing) return undefined;
-    if (existing.kind === "delivery" && steerNeverStarted(existing) && existing.requestId !== delivery.requestId)
-      return undefined;
     if (existing.kind !== "delivery") {
       this.#log(`refusing re-dispatch of ${delivery.deliveryId}: journal key belongs to a Session message`);
       return undefined;
@@ -435,6 +434,11 @@ export class CloudTurnRunner {
       assertCloudJournalScope(existing, journalScope);
     } catch {
       this.#log(`refusing re-dispatch of ${delivery.deliveryId}: journaled under another allocation`);
+      return undefined;
+    }
+    if (existing.steer) {
+      if (steerNeverStarted(existing) && existing.requestId !== delivery.requestId) return "replace-steer";
+      await this.#reconcileSteer(existing);
       return undefined;
     }
     if (existing.requestId !== delivery.requestId || existing.inputHash !== computeCloudDeliveryInputHash(delivery)) {

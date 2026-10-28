@@ -79,6 +79,9 @@ They are covered by focused regressions and corrected before PR creation:
 
 Exact uncertainty also survives later retry/deferred receipts, while exact success may settle it.
 Local keeps its existing conflict deferral policy; native uncertainty retains its frozen correlation.
+Initial-delivery recovery also exercises all five old steer journal states: unexecuted intents may
+be replaced, while started/results are replayed and retained until exact old acknowledgement. The
+fresh initial delivery then receives a receipt and starts only once.
 
 A subsequent review also covered provider edits of a frozen head/member and delayed older receipt
 acknowledgements during failed-Root recovery. Recovery now uses immutable frozen member/source IDs
@@ -88,7 +91,7 @@ request with uncertainty or overwrite the older effect evidence. Targeted Postgr
 regressions verify both paths.
 
 Review-fix validation: 205 Server tests in seven files passed, followed by 88 owning Server tests
-after the last recovery update; 157 Client tests in three files and 48 PostgreSQL tests in five
+after the last recovery update; 162 Client tests in three files and 48 PostgreSQL tests in five
 files passed. Seven additional proof/ACK cases cover a recovered child moving to another Session:
 the old authenticated allocation may acknowledge its exact retired-parent receipt without changing
 the recovered child, while mismatched parent/Turn/Session evidence cannot clear an old journal. The Client controller was also rerun after a bounded refactor. Type checks and builds

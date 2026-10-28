@@ -277,6 +277,32 @@ async function seedSteerBeforeRootRetires(
     );
 }
 
+async function retireFailedRoot(journal: CloudJournal, runner: CloudTurnRunner, root: CloudJournalDeliveryEntry) {
+  await journal.markStarted(root.deliveryId, root.scope);
+  const reportBase = {
+    type: "turn:report" as const,
+    requestId: randomUUID(),
+    deliveryId: root.deliveryId,
+    turnId: root.turnId,
+    sessionId: root.delivery.sessionId,
+    agentId: root.delivery.agentId,
+    placementGeneration: root.delivery.placementGeneration,
+    outcome: "failed" as const,
+    executionEffects: "may_have_occurred" as const,
+    errorReason: "turn_timeout" as const,
+    traceSummary: { lastSequence: 0, droppedEvents: 0 },
+  };
+  const report = { ...reportBase, resultHash: computeTurnResultHash(reportBase) };
+  await journal.recordReport(root.deliveryId, root.scope, report);
+  await runner.handleReportAck({
+    type: "delivery:report:ack",
+    requestId: randomUUID(),
+    turnId: root.turnId,
+    resultHash: report.resultHash,
+    status: "recorded",
+  });
+}
+
 describe("CloudTurnRunner", () => {
   let directory: string;
   let journal: CloudJournal;
@@ -525,28 +551,7 @@ describe("CloudTurnRunner", () => {
         expectedTurnId: oldRoot.turnId,
       };
       await seedSteerBeforeRootRetires(journal, oldRoot, oldRequest, phase);
-      const reportBase = {
-        type: "turn:report" as const,
-        requestId: randomUUID(),
-        deliveryId: oldRoot.deliveryId,
-        turnId: oldRoot.turnId,
-        sessionId: oldDelivery.sessionId,
-        agentId: oldDelivery.agentId,
-        placementGeneration: 1,
-        outcome: "failed" as const,
-        executionEffects: "may_have_occurred" as const,
-        errorReason: "turn_timeout" as const,
-        traceSummary: { lastSequence: 0, droppedEvents: 0 },
-      };
-      const report = { ...reportBase, resultHash: computeTurnResultHash(reportBase) };
-      await journal.recordReport(oldRoot.deliveryId, oldRoot.scope, report);
-      await h.runner.handleReportAck({
-        type: "delivery:report:ack",
-        requestId: randomUUID(),
-        turnId: oldRoot.turnId,
-        resultHash: report.resultHash,
-        status: "recorded",
-      });
+      await retireFailedRoot(journal, h.runner, oldRoot);
       await h.runner.handleDeliveryRun(runFrame(h.delivery));
       await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
       await waitFor(() => h.workerInputs.length === 1, "new active Root");
@@ -597,6 +602,73 @@ describe("CloudTurnRunner", () => {
         await h.runner.waitForActive();
         await h.runner.close();
       }
+    },
+  );
+
+  it.each(["received", "retry", "started", "steered", "uncertain"] as const)(
+    "admits recovered direct input after old %s steer custody is retired",
+    async (phase) => {
+      const h = harness();
+      const oldDelivery = cloudDeliveryFixture({
+        sessionId: h.delivery.sessionId,
+        agentId: h.delivery.agentId,
+        runtime: h.delivery.runtime,
+      });
+      const oldRoot = await journal.recordReceived({
+        delivery: oldDelivery,
+        scope: { ...h.scope, resourceUid: "uid-1" },
+        deliveryId: oldDelivery.deliveryId,
+        requestId: oldDelivery.requestId,
+        turnId: randomUUID(),
+      });
+      const { runtime: _, ...base } = h.delivery;
+      const request: RuntimeImSteerRequest = {
+        ...base,
+        type: "im:steer",
+        requestId: randomUUID(),
+        rootDeliveryId: oldRoot.deliveryId,
+        expectedTurnId: oldRoot.turnId,
+      };
+      await seedSteerBeforeRootRetires(journal, oldRoot, request, phase === "retry" ? "received" : phase);
+      if (phase === "retry")
+        await journal.recordSteerResult(
+          request.deliveryId,
+          oldRoot.scope,
+          cloudSteerResult(request, "retry", "turn_starting"),
+        );
+      await retireFailedRoot(journal, h.runner, oldRoot);
+      h.sent.length = 0;
+      await h.runner.handleDeliveryRun(runFrame(h.delivery));
+      if (phase === "started" || phase === "steered" || phase === "uncertain") {
+        expect(h.sent).toContainEqual(
+          expect.objectContaining({ type: "delivery:steer:result", requestId: request.requestId }),
+        );
+        expect(h.sent.some((frame) => frame.type === "delivery:received")).toBe(false);
+        expect((await journal.read(request.deliveryId))?.requestId).toBe(request.requestId);
+        await h.runner.handleSteerAck({
+          type: "delivery:steer:ack",
+          requestId: request.requestId,
+          deliveryId: request.deliveryId,
+          inputHash: computeRuntimeImSteerInputHash(request),
+          status: "conflict",
+        });
+        await h.runner.handleDeliveryRun(runFrame(h.delivery));
+      }
+      expect(h.sent).toContainEqual(
+        expect.objectContaining({
+          type: "delivery:received",
+          requestId: h.delivery.requestId,
+          deliveryId: h.delivery.deliveryId,
+        }),
+      );
+      const fresh = await journal.read(h.delivery.deliveryId);
+      expect(fresh).toMatchObject({ requestId: h.delivery.requestId, phase: "received" });
+      expect(fresh?.kind === "delivery" && fresh.steer).toBeFalsy();
+      expect(h.workerInputs).toHaveLength(0);
+      await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+      await h.runner.waitForActive();
+      expect(h.workerInputs).toHaveLength(1);
+      await h.runner.close();
     },
   );
 

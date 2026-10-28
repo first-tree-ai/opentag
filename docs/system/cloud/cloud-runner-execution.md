@@ -173,7 +173,9 @@ before the Root journal. A previously unseen input whose Root journal has retire
 repeatable no-effect response without launching work or inventing a Root runtime snapshot. If failed
 Root recovery assigns an input to another Turn while its older receipt still awaits acknowledgement,
 the Runner replays that older evidence and returns a known no-effect retry for the untouched new
-attempt. It retains the older journal until its exact acknowledgement before admitting the new input.
+attempt. This also applies when the recovered input becomes the next Turn's initial delivery:
+known unexecuted steer intents can be replaced atomically, while older effect evidence must be
+acknowledged before the new direct input is admitted.
 That old receipt can also retire after the child moves to a replacement Session: authenticated old
 scope and exact retired-parent evidence authorize only its old journal acknowledgement, not a
 mutation of the recovered child.

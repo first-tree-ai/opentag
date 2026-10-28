@@ -306,32 +306,46 @@ console. Cloud Monitoring watches the Server from outside and through the platfo
 (`configuration`, `migration`, `application`, `listen`), and again whenever the database probe fails. `/healthz` only
 proves that the process is up. The check needs no credential.
 
-The database probe runs `select 1` on its own single connection, not on the application pool, and fails after 1 s.
-On that deadline the Server destroys the probe connection and opens a new one on the next probe. At most two probe
-attempts younger than 10 s count as live; an older attempt no longer holds a slot. A database outage therefore turns
-`/readyz` to `503`, and `/readyz` returns to `200` within about 10 s after the database answers again.
+Database readiness combines `select 1` on a dedicated single connection with a query on the shared
+application pool, each bounded to 1 s. The shared probe waits for an idle connection and runs exclusively,
+so its short deadline cannot interrupt a healthy query ahead of it or behind it in a pipeline. Concurrent checks share one attempt. A healthy dedicated connection
+cannot hide an exhausted application pool. An expired queued probe is removed; a probe that loses its
+transport discards that connection. Plain `/healthz` remains liveness-only.
 
-Application queries have two bounds. PostgreSQL cancels a statement after `OPENTAG_DATABASE_STATEMENT_TIMEOUT_MS`
-(SQLSTATE `57014`) and ends a session that stays idle inside a transaction after
-`OPENTAG_DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS`. When the server does not answer, for example on a lost network path,
-the Server rejects the query after `OPENTAG_DATABASE_QUERY_TIMEOUT_MS` and logs the warning
-`Database query exceeded client deadline` with `check: "database"` and `timeoutMs`. The log has no SQL text or
-parameters. Pool connections send TCP keepalive probes after 10 s idle. Startup logs the resolved values once as
-`Resolved database timeouts`.
+PostgreSQL cancels application statements after `OPENTAG_DATABASE_STATEMENT_TIMEOUT_MS` (default 30 s,
+SQLSTATE `57014`) and terminates sessions idle inside a transaction after
+`OPENTAG_DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS` (default 60 s). Application connections use 10 s TCP keepalive.
+The startup log `Resolved database timeouts` records the configured application bounds.
 
-A transaction gets the same bound where the server cannot help. postgres.js sends `commit`, `rollback`, and a nested
-transaction's opening `savepoint` itself, so the Server bounds those phases separately: the scope gets
-`OPENTAG_DATABASE_QUERY_TIMEOUT_MS` until the callback starts, and the commit or rollback that follows gets the same
-window again. A callback that already failed on a query deadline rejects at once. Either way the caller stops waiting,
-while the connection stays busy until TCP gives up, the same limit as a timed-out single query. A deadline during
-`commit` leaves the outcome unknown, not rolled back: the transaction may have committed on the server.
+The pinned postgres.js patch supplies the remaining client transport bound, including pool queue time:
+`OPENTAG_DATABASE_QUERY_TIMEOUT_MS` (default 35 s). It applies to ordinary queries and the driver's own
+`BEGIN`, `SAVEPOINT`, `COMMIT`, and `ROLLBACK`. Expired queued work is removed without affecting healthy
+holders; an expired dispatched operation destroys its socket and frees that pool slot. Closed transactions
+remain invalid after a new connection opens, so late callbacks cannot write or commit outside their original
+transaction. Application callbacks still own their non-database work. A lost write or `COMMIT` response leaves
+its outcome unknown; disposal does not prove rollback and never automatically replays the operation.
+The deadline warning carries only `check: "database"` and `timeoutMs`, without SQL or parameters.
 
-The pinned postgres.js dependency patch invalidates a transaction when its connection closes. In-flight and queued
-queries reject, and later statements and savepoints from that callback reject even after the pool reconnects. Its
-commit or rollback cannot act on a replacement transaction. The driver clears the closed connection's buffered writes
-and protocol error state before reuse. Application callbacks still need to finish their own non-database work; the
-driver does not cancel arbitrary JavaScript or replay the transaction. Replace the patch only with an upstream version
-that passes the database disconnect process regressions.
+Routine migrations use native limits of 5 s to connect, 2 s per lock acquisition, and 5 s per statement.
+On PostgreSQL 17 or later, native `transaction_timeout` also caps the migration transaction at 10 s. The whole migration operation has a
+15 s client budget, including connection, advisory lock, every pending migration, commit acknowledgement and
+unlock; it does not restart for each file. PostgreSQL 16 uses a stricter 10 s client operation budget instead of the unsupported native transaction limit;
+its native statement and transaction-idle limits still apply. Verification has a 10 s total budget. Direct timeout parameters in the connection URL cannot disable this startup policy. Losing the dedicated startup session invalidates the attempt;
+a replacement cannot inherit its advisory lock. Failure ends that startup attempt without widening its budget.
+Large index builds and bulk backfills require a separate measured execution, compatibility and recovery design.
+
+Database shutdown supplies `end({ timeout: 1 })` on its first call, including startup cleanup. After the graceful
+budget the driver destroys remaining sockets, even if a peer withholds its closing acknowledgement.
+Unsent global work is rejected when closing starts; admitted transactions can still finish within that budget.
+Graceful close waits for physical socket closure even when the last query has already completed. Cleanup
+has its own 1 s budget. Other worker shutdown waits are independent. A resource cleanup failure does not skip
+later workers, database disposal or telemetry cleanup. Signal shutdown logs each failed resource and its redacted
+cause, then exits with code 1; a clean shutdown exits normally. Keep the patch until an upstream release
+passes the database timeout, disconnect, startup and availability regressions.
+
+Startup failure follows the same cleanup rule: application, Cloud model, billing and telemetry cleanup are
+attempted independently. The original failure and nested cleanup errors are reported once through secret
+redaction, and the failure path sets exit code 1 even when cleanup rejects.
 
 The Cloud Monitoring uptime check stays on `/readyz`. `/healthz?deep=1` is an additional probe for an external uptime
 monitor that should not depend on bootstrap stages or deployment headers; it does not replace the `/readyz` check, which

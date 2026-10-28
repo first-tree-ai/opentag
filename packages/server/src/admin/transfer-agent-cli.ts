@@ -1,6 +1,7 @@
 import { redactForLog } from "@opentag/shared";
 import { parseDatabaseConfig } from "../config.js";
 import { createDatabaseClient } from "../db/client.js";
+import { DATABASE_CLOSE_TIMEOUT_SECONDS } from "../db/timeouts.js";
 import type { ServiceLogger } from "../observability/service-logger.js";
 import { transferAgent } from "./transfer-agent.js";
 
@@ -44,5 +45,5 @@ try {
   );
   process.stdout.write(`${JSON.stringify(result)}\n`);
 } finally {
-  await sql.end();
+  await sql.end({ timeout: DATABASE_CLOSE_TIMEOUT_SECONDS });
 }

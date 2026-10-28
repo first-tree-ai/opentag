@@ -1,5 +1,5 @@
 {
-  "id": "56c93a62-66e7-4ea6-9746-221f8d082dfa",
+  "id": "30f9ce8f-89c9-4255-932c-64732cbcb4f3",
   "prevId": "2f13f4c4-7e24-4a1c-8567-80625244c6f5",
   "version": "7",
   "dialect": "postgresql",
@@ -391,7 +391,7 @@
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,
-          "default": true
+          "default": false
         },
         "status": {
           "name": "status",
@@ -4289,6 +4289,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "credential_source_id": {
+          "name": "credential_source_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "status": {
           "name": "status",
           "type": "mcp_authorization_status",
@@ -4551,6 +4557,22 @@
           "method": "btree",
           "with": {}
         },
+        "mcp_server_authorizations_credential_source_idx": {
+          "name": "mcp_server_authorizations_credential_source_idx",
+          "columns": [
+            {
+              "expression": "credential_source_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"mcp_server_authorizations\".\"credential_source_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "mcp_server_authorizations_refresh_due_idx": {
           "name": "mcp_server_authorizations_refresh_due_idx",
           "columns": [
@@ -4613,6 +4635,10 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
+        "mcp_server_authorizations_source_shape": {
+          "name": "mcp_server_authorizations_source_shape",
+          "value": "\"mcp_server_authorizations\".\"credential_source_id\" is null or (\n        \"mcp_server_authorizations\".\"credential_source_id\" <> \"mcp_server_authorizations\".\"id\"\n        and \"mcp_server_authorizations\".\"kind\" = 'oauth' and \"mcp_server_authorizations\".\"status\" = 'active'\n        and \"mcp_server_authorizations\".\"ciphertext\" is null and \"mcp_server_authorizations\".\"key_id\" is null\n        and \"mcp_server_authorizations\".\"access_token_expires_at\" is null\n        and \"mcp_server_authorizations\".\"refresh_claim_id\" is null and \"mcp_server_authorizations\".\"refresh_claimed_at\" is null\n        and \"mcp_server_authorizations\".\"state\" is null and \"mcp_server_authorizations\".\"state_expires_at\" is null\n        and \"mcp_server_authorizations\".\"pkce_ciphertext\" is null and \"mcp_server_authorizations\".\"login_session_hash\" is null\n        and \"mcp_server_authorizations\".\"flow_authorization_server\" is null and \"mcp_server_authorizations\".\"flow_oauth_resource\" is null\n      )"
+        },
         "mcp_server_authorizations_revision_positive": {
           "name": "mcp_server_authorizations_revision_positive",
           "value": "\"mcp_server_authorizations\".\"revision\" >= 1"
@@ -4647,7 +4673,7 @@
         },
         "mcp_server_authorizations_oauth_shape": {
           "name": "mcp_server_authorizations_oauth_shape",
-          "value": "\"mcp_server_authorizations\".\"kind\" <> 'oauth' or (\n        \"mcp_server_authorizations\".\"status\" not in ('active', 'expired') or \"mcp_server_authorizations\".\"ciphertext\" is not null\n      )"
+          "value": "\"mcp_server_authorizations\".\"kind\" <> 'oauth' or (\n        \"mcp_server_authorizations\".\"status\" not in ('active', 'expired') or \"mcp_server_authorizations\".\"ciphertext\" is not null or \"mcp_server_authorizations\".\"credential_source_id\" is not null\n      )"
         },
         "mcp_server_authorizations_oauth_resource_bounds": {
           "name": "mcp_server_authorizations_oauth_resource_bounds",

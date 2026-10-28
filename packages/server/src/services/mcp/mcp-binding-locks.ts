@@ -1,8 +1,18 @@
-import { and, asc, eq, ne, type SQL } from "drizzle-orm";
+import { and, asc, eq, inArray, ne, type SQL } from "drizzle-orm";
 import type { DatabaseTransaction } from "../../db/client.js";
-import { agentMcpServers, agents, mcpServers } from "../../db/schema/index.js";
+import { agentMcpServers, agents, mcpServers, users } from "../../db/schema/index.js";
 import { AgentServiceError } from "../agents/index.js";
 import { mcpBindingNotFound } from "./errors.js";
+
+export async function lockMcpAccounts(transaction: DatabaseTransaction, accountIds: readonly string[]): Promise<void> {
+  const ids = [...new Set(accountIds)].sort();
+  await transaction
+    .select({ id: users.id })
+    .from(users)
+    .where(inArray(users.id, ids))
+    .orderBy(asc(users.id))
+    .for("no key update");
+}
 
 /**
  * Edits and cleanup lock bindings before authorization rows. Bulk operations use the same primary-key
@@ -25,7 +35,8 @@ export async function lockMcpCredentialBinding(
   mcpServerId: string,
   source: "account" | "agent-self" = "account",
 ) {
-  // Shared parent locks fence edits/deletion without serializing saves on independent mounts.
+  await lockMcpAccounts(transaction, [accountId]);
+  // Account admission comes first; the remaining locks fence definition and Agent mutations.
   const [agent] = await transaction
     .select({ id: agents.id, selfConfigurationEnabled: agents.selfConfigurationEnabled })
     .from(agents)

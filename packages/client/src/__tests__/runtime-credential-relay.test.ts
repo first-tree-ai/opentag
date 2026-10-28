@@ -1219,8 +1219,9 @@ function runWithInput(
       stderr += chunk.toString("utf8");
     });
     child.on("error", reject);
+    child.stdin.on("error", reject);
     child.on("close", (code) => resolve({ code, stdout, stderr }));
-    child.stdin.end(input);
+    child.stdin.end(input.length === 0 ? undefined : input);
   });
 }
 

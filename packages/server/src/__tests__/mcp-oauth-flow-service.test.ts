@@ -445,8 +445,8 @@ describe("McpOAuthFlowService.start", () => {
     await expect(flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET)).rejects.toMatchObject({
       code: MCP_ERROR_CODES.OAUTH_FAILED,
     });
-    // A refused discovery never writes an authorization row.
-    expect(await unit.database.select().from(mcpServerAuthorizations)).toHaveLength(0);
+    // Discovery may reserve identity, but never publishes an unverified flow or credential.
+    await expectUnpublishedAuthorization(ids);
   });
 
   it("requests the protected resource's scopes when no caller requests any", async () => {
@@ -686,7 +686,12 @@ describe("McpOAuthFlowService.start", () => {
             ? { scopes_supported: ["offline_access"], authorization_response_iss_parameter_supported: true }
             : {}),
         }),
-      [tokenUrl]: doc({ access_token: "at_1", refresh_token: "rt_1", expires_in: 600 }),
+      [tokenUrl]: doc({
+        access_token: "at_1",
+        refresh_token: "rt_1",
+        expires_in: 600,
+        ...(brand === "github" ? { scope: "repo, read:user" } : {}),
+      }),
     });
 
     it("is presented at start, the callback and refresh, and registers nothing", async () => {
@@ -702,6 +707,7 @@ describe("McpOAuthFlowService.start", () => {
       await flows.callback({ code: "code-1", state: stateOf(started.authorizationUrl), iss: issuer }, FLOW_SECRET);
       const row = await readAuthorization(ids);
       expect(row?.status).toBe("active");
+      expectGitHubGrantedScopes(brand, row);
       await flows.refreshAuthorization(row?.id as string);
       const tokenCalls = calls.filter((call) => call.url === tokenUrl);
       expect(tokenCalls).toHaveLength(2);
@@ -1039,7 +1045,7 @@ describe("McpOAuthFlowService.start", () => {
     await expect(flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET)).rejects.toMatchObject({
       code: MCP_ERROR_CODES.URL_BLOCKED,
     });
-    expect(await unit.database.select().from(mcpServerAuthorizations)).toEqual([]);
+    await expectUnpublishedAuthorization(ids);
   });
 
   it("reports every issuer it tried when none of them can be used", async () => {
@@ -1056,7 +1062,7 @@ describe("McpOAuthFlowService.start", () => {
       .catch((caught: unknown) => caught);
     expect(error).toMatchObject({ code: MCP_ERROR_CODES.OAUTH_FAILED });
     expect(JSON.stringify((error as { detail?: unknown }).detail)).toContain("tried");
-    expect(await unit.database.select().from(mcpServerAuthorizations)).toEqual([]);
+    await expectUnpublishedAuthorization(ids);
   });
 
   it("refuses a start for an Agent that does not mount the Server", async () => {
@@ -1450,7 +1456,7 @@ describe("McpOAuthFlowService.callback", () => {
     });
     const [registration] = await unit.database.select().from(mcpClientRegistrations);
     expect(registration?.clientId).toBe("someone-elses-client");
-    expect(await unit.database.select().from(mcpServerAuthorizations)).toEqual([]);
+    await expectUnpublishedAuthorization(ids);
   });
 
   it("refuses to redeem a code when no client registration survives for the issuer", async () => {
@@ -1817,7 +1823,7 @@ describe("McpOAuthFlowService.refreshAuthorization", () => {
     }
   });
 
-  it("keeps the token and asks for a human when the outcome is unknown", async () => {
+  it("clears potentially consumed credentials when the refresh outcome is unknown", async () => {
     const ids = await seed();
     const { row } = await authorizedRow(ids, { accessToken: "at_1", refreshToken: "rt_1" });
     await unit.database.insert(mcpClientRegistrations).values({
@@ -1834,11 +1840,12 @@ describe("McpOAuthFlowService.refreshAuthorization", () => {
     });
     await flows.refreshAuthorization(row?.id as string);
     const after = await readAuthorization(ids);
-    // A blind retry could spend a token the AS already rotated away, so the token is kept untouched.
+    // A blind retry could spend a token the AS already rotated away; remove the replayable material.
     expect(after).toMatchObject({
       status: "error",
       failureCode: MCP_ERROR_CODES.REFRESH_OUTCOME_UNKNOWN,
-      ciphertext: row?.ciphertext,
+      ciphertext: null,
+      keyId: null,
     });
   });
 
@@ -1864,7 +1871,7 @@ describe("McpOAuthFlowService.refreshAuthorization", () => {
     });
   });
 
-  it("classifies a failure that is not a service error as an unknown outcome", async () => {
+  it("preserves unspent credentials when client preparation fails before dispatch", async () => {
     /*
      * The client resolution throws a plain `Error` when the recorded secret cannot be authenticated.
      * That is not a `McpServiceError`, so the row keeps its token and asks a human rather than
@@ -1887,8 +1894,9 @@ describe("McpOAuthFlowService.refreshAuthorization", () => {
     expect(calls.filter((call) => call.url === TOKEN_URL)).toEqual([]);
     expect(await readAuthorization(ids)).toMatchObject({
       status: "error",
-      failureCode: MCP_ERROR_CODES.REFRESH_OUTCOME_UNKNOWN,
+      failureCode: MCP_ERROR_CODES.OAUTH_FAILED,
       ciphertext: row?.ciphertext,
+      keyId: row?.keyId,
     });
   });
 
@@ -2305,3 +2313,24 @@ describe("cancelling reauthorization", () => {
     });
   });
 });
+
+function expectGitHubGrantedScopes(brand: McpStaticOAuthBrand, row: { scopes: string[] | null } | undefined) {
+  if (brand === "github") expect(row?.scopes).toEqual(["repo", "read:user"]);
+}
+
+async function expectUnpublishedAuthorization(ids: { agentId: string; mcpServerId: string }) {
+  expect(await unit.database.select().from(mcpServerAuthorizations)).toMatchObject([
+    {
+      agentId: ids.agentId,
+      mcpServerId: ids.mcpServerId,
+      kind: "oauth",
+      status: "pending",
+      state: null,
+      pkceCiphertext: null,
+      ciphertext: null,
+      keyId: null,
+      authorizationServer: null,
+      clientRegistrationId: null,
+    },
+  ]);
+}

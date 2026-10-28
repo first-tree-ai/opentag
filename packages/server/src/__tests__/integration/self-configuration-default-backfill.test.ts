@@ -11,13 +11,13 @@ import { agentRuntimeConfigs, agents, users } from "../../db/schema/index.js";
 import { startPostgresTestContainer } from "./postgres-test-container.js";
 
 /**
- * `0071_self_configuration_default_enabled` turns self-configuration on for every non-deleted Agent and
+ * `0072_self_configuration_default_enabled` turns self-configuration on for every non-deleted Agent and
  * makes it the column default. It must take the same revisions an owner toggle takes, so the runtime
  * assembles a new snapshot, and it must not touch deleted Agents or Agents that are already on.
  */
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
-const THROUGH_0070_IDX = 70;
-const CURRENT_MIGRATION_COUNT = 72;
+const THROUGH_0071_IDX = 71;
+const CURRENT_MIGRATION_COUNT = 73;
 const EARLY = new Date("2026-08-01T00:00:00.000Z");
 const ACCOUNT = "00000000-0000-4000-8000-000000000501";
 
@@ -64,7 +64,7 @@ async function truncatedMigrations(lastIndex: number): Promise<string> {
 
 describe("self-configuration default backfill", () => {
   it("enables non-deleted Agents with fresh revisions and defaults new Agents to enabled", async () => {
-    const throughPrevious = await truncatedMigrations(THROUGH_0070_IDX);
+    const throughPrevious = await truncatedMigrations(THROUGH_0071_IDX);
     const client = createDatabaseClient(databaseUrl);
     const fixtures = {
       active: { id: "00000000-0000-4000-8000-000000000601", status: "active", enabled: false },

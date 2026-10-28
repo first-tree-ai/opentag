@@ -377,6 +377,7 @@ const ServerEnvironmentSchema = z
      * port scanner.
      */
     OPENTAG_MCP_ALLOW_LOOPBACK: booleanString("false"),
+    OPENTAG_MCP_OAUTH_REUSE: booleanString("false"),
     OPENTAG_MCP_GOOGLE_CLIENT_ID: z.string().min(1).optional(),
     OPENTAG_MCP_GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
     OPENTAG_MCP_CANVA_CLIENT_ID: z.string().min(1).optional(),
@@ -840,6 +841,7 @@ export interface ServerConfig {
    * development environment, regardless of the configured value.
    */
   mcpAllowLoopback: boolean;
+  mcpOAuthReuse: boolean;
   /**
    * The deployment's pre-registered Google Workspace MCP OAuth client, present only when both
    * variables are configured together. The flow offers it only to the Google-hosted MCP endpoints
@@ -965,6 +967,15 @@ export function serverEnvironmentSummary(config: ServerConfig) {
   };
 }
 
+export function parseCredentialEncryptionConfig(environment: NodeJS.ProcessEnv) {
+  const encryptionKey = EncryptionKeySchema.parse(environment.OPENTAG_ENCRYPTION_KEY);
+  const keys = EncryptionKeyRingSchema.parse(emptyToUndefined(environment.OPENTAG_ENCRYPTION_KEY_RING));
+  const activeKeyId = emptyToUndefined(environment.OPENTAG_ENCRYPTION_ACTIVE_KEY_ID);
+  if (Boolean(keys) !== Boolean(activeKeyId))
+    throw new Error("Encryption key ring and active key ID must be configured together");
+  return keys && activeKeyId ? { legacyKey: encryptionKey, keys, activeKeyId } : encryptionKey;
+}
+
 export function parseDatabaseConfig(environment: NodeJS.ProcessEnv): DatabaseConfig {
   return {
     databaseUrl: DatabaseUrlSchema.parse(environment.OPENTAG_DATABASE_URL),
@@ -994,6 +1005,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_DEV_INTERNAL_TOOLS_ENABLED: environment.OPENTAG_DEV_INTERNAL_TOOLS_ENABLED,
     OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED: environment.OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED,
     OPENTAG_MCP_ALLOW_LOOPBACK: environment.OPENTAG_MCP_ALLOW_LOOPBACK,
+    OPENTAG_MCP_OAUTH_REUSE: environment.OPENTAG_MCP_OAUTH_REUSE,
     OPENTAG_MCP_GOOGLE_CLIENT_ID: emptyToUndefined(environment.OPENTAG_MCP_GOOGLE_CLIENT_ID),
     OPENTAG_MCP_GOOGLE_CLIENT_SECRET: emptyToUndefined(environment.OPENTAG_MCP_GOOGLE_CLIENT_SECRET),
     OPENTAG_MCP_CANVA_CLIENT_ID: emptyToUndefined(environment.OPENTAG_MCP_CANVA_CLIENT_ID),
@@ -1116,6 +1128,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
       : {}),
     migrationsDirectory: parseDatabaseConfig(environment).migrationsDirectory,
     logLevel: parsed.OPENTAG_LOG_LEVEL,
+    mcpOAuthReuse: parsed.OPENTAG_MCP_OAUTH_REUSE,
     mcpAllowLoopback: !isHostedEnvironment(parsed.OPENTAG_ENV) && parsed.OPENTAG_MCP_ALLOW_LOOPBACK,
     ...resolveMcpGoogleOAuth(parsed),
     ...resolveMcpStaticOAuth(parsed),

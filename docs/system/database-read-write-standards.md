@@ -75,6 +75,11 @@ Run commands from the repository root; see the [migration policy](https://github
    Before opening a PR, run `pnpm check` and `pnpm --filter @opentag/server test:integration`
    (requires Docker). The count check is covered by integration tests, not `pnpm check`.
 
+Startup migrations use a [short operation budget](../operations/observability.md).
+Large index builds and bulk backfills need a separate execution and compatibility design;
+measure their duration and lock impact before choosing an operation-specific limit.
+Do not widen the routine startup budget or rewrite merged migration history to accommodate them.
+
 ## 1. Atomic commit
 
 | ID | Requirement | Review evidence |

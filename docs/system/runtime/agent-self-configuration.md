@@ -34,7 +34,7 @@ prompt shows.
 ## Owner control
 
 Self-configuration is enabled by default. New Agents start with `selfConfigurationEnabled` set to true, and migration
-`0071_self_configuration_default_enabled` turned it on for every Agent that was not deleted. That migration cannot
+`0072_self_configuration_default_enabled` turned it on for every Agent that was not deleted. That migration cannot
 tell an earlier owner opt-out from the earlier default, so it turned both on.
 
 The owner turns it off or on with the Self-configuration switch on the Agent's Name settings page, or through the

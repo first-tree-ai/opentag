@@ -116,7 +116,7 @@ import { registerWebApp } from "./web-app.js";
 export interface CreateAppOptions {
   /** Drizzle client used by the readiness probe. The production bootstrap also exposes it through TaskService. */
   database?: DatabaseClient;
-  /** Replaces the `select 1` on `database`; production passes a probe on its own connection. */
+  /** Production checks both dedicated connectivity and application-pool availability. */
   databaseReadinessProbe?: () => Promise<void>;
   authService?: UserAuthService;
   /** Publishes Better Auth's allowlisted endpoints and lets every authenticated route resolve its sessions. */

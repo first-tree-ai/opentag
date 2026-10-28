@@ -80,7 +80,9 @@ function createMcpOAuthSession(
   const setBlocked = (blocked: boolean) => update({ blocked });
   const setNotice = (notice: string | undefined) => update({ notice });
   const interruption: { current: "cancelled" | "timeout" | undefined } = { current: undefined };
-  let attempt: { context: McpReturnContext; state?: string; cancellation?: Promise<boolean> } | undefined;
+  let attempt:
+    | { context: McpReturnContext; state?: string; expiresAt?: string; cancellation?: Promise<boolean> }
+    | undefined;
   const cancelFlow = async (): Promise<boolean> => {
     const current = attempt;
     if (!current?.state) return false;
@@ -123,13 +125,13 @@ function createMcpOAuthSession(
         ...(scopes?.length ? { scopes: [...scopes] } : {}),
       });
       attempt.state = new URL(result.authorizationUrl).searchParams.get("state") ?? undefined;
+      attempt.expiresAt = result.expiresAt;
       const outcome = await finishAuthorization(
         result.authorizationUrl,
         { ...context, oauthState: attempt.state },
         reserved,
         abort.signal,
       );
-      if (outcome === "authorized") await invalidate();
       return outcome;
     } finally {
       abort.abort();
@@ -138,6 +140,7 @@ function createMcpOAuthSession(
       fallback.current = undefined;
       setBlocked(false);
       setPhase(undefined);
+      await invalidate();
     }
   };
   async function finishAuthorization(
@@ -244,6 +247,9 @@ function createMcpOAuthSession(
     cancel,
     openFallback,
     interruption,
+    get expiresAt() {
+      return attempt?.expiresAt;
+    },
     get phase() {
       return state.phase;
     },

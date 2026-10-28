@@ -355,6 +355,11 @@
       "idx": 70,
       "tag": "0070_unreported_accepted_index",
       "sha256": "20452ae63dba8ede1a3710fe54679c9c25252c4dda3e2f0e4bb95e700556c42f"
+    },
+    {
+      "idx": 71,
+      "tag": "0071_glossy_joystick",
+      "sha256": "86b6dadda929b9d8bb029f16d1ee8d8447f87bad1be16a971e13b46eba6543ee"
     }
   ]
 }

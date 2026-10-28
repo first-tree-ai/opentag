@@ -14,9 +14,9 @@ import { AgentDisplayNameSchema } from "./agent.js";
  * credential ciphertext or key IDs, no OAuth state/PKCE material, no bearer key values, and no
  * access or refresh tokens. A caller learns only whether a credential exists.
  *
- * Authorization is scoped strictly per Agent. One Server may be authorized differently for two
- * Agents of the same Account — Agent A with a bearer key, Agent B with OAuth — and there is no
- * Account-level fallback.
+ * Each Agent must have its own explicit authorization relationship. Compatible OAuth mounts may
+ * reference one authentication root; Bearer and anonymous authorizations remain independent. There
+ * is no implicit Account-level fallback.
  */
 
 const UuidSchema = z.string().uuid();
@@ -353,6 +353,8 @@ export type MCPServer = z.infer<typeof MCPServerSchema>;
 export const ListMCPServersResponseSchema = z.object({ servers: z.array(MCPServerSchema) }).strict();
 export type ListMCPServersResponse = z.infer<typeof ListMCPServersResponseSchema>;
 
+export const ReusableMCPInstallationResponseSchema = z.object({ server: MCPServerSchema.nullable() }).strict();
+
 /** The Agent-level overrides. Each is independent; `null` means inherit the shared definition. */
 export const MCPBindingOverridesSchema = z
   .object({
@@ -657,6 +659,10 @@ export const StartMCPOAuthRequestSchema = z
   .strict();
 export type StartMCPOAuthRequest = z.infer<typeof StartMCPOAuthRequestSchema>;
 
+export const FindReusableMCPInstallationRequestSchema = CreateMCPServerRequestSchema.safeExtend({
+  scopes: StartMCPOAuthRequestSchema.shape.scopes,
+});
+
 export const StartMCPOAuthResponseSchema = z
   .object({
     authorizationUrl: z.string().url().max(8192),
@@ -938,3 +944,5 @@ function isAllowedMcpOrigin(url: string, origins: readonly string[]): boolean {
   if (parsed.port.length > 0) return false;
   return origins.includes(parsed.origin);
 }
+
+export const ConnectMCPOAuthResponseSchema = z.object({ connected: z.boolean() }).strict();

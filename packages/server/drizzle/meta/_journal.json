@@ -498,6 +498,13 @@
       "when": 1793016066995,
       "tag": "0070_unreported_accepted_index",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1793100263891,
+      "tag": "0071_glossy_joystick",
+      "breakpoints": true
     }
   ]
 }

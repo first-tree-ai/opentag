@@ -44,6 +44,7 @@ contents, and machine-specific operational logs outside the repository.
 - [IM content and attachment delivery](verification/im-content-delivery.md)
 - [Inbound receipt recovery](verification/inbound-receipt-recovery.md)
 - [MCP Server integration](verification/mcp-server-integration.md)
+- [MCP OAuth authorization reuse](verification/mcp-authorization-reuse.md)
 - [Release guide](verification/releasing.md)
 - [Session collaboration writes](verification/session-collaboration-writes.md)
 - [Session configuration transitions](verification/session-configuration-transitions.md)

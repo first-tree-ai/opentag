@@ -9,8 +9,8 @@ import * as m from "../../paraglide/messages.js";
 import { connectionPreset } from "./mcp-connection-model.js";
 import { probeFeedback } from "./mcp-feedback.js";
 import { type McpOAuthSession, useMcpOAuthSession } from "./mcp-oauth-session.js";
-import type { McpOAuthWindow } from "./mcp-oauth-window.js";
-import { useProbeMcpServer, useSetMcpAuthorization } from "./mcp-queries.js";
+import { closeMcpOAuthWindow, type McpOAuthWindow } from "./mcp-oauth-window.js";
+import { useConnectMcpOAuth, useProbeMcpServer, useSetMcpAuthorization } from "./mcp-queries.js";
 import type { McpReturnContext } from "./mcp-return-context.js";
 
 export class McpConnectionError extends Error {
@@ -29,8 +29,26 @@ export type ConnectionAttempt = {
 /** The same Agent-scoped connection operation serves URL Add, Discover, and row Connect. */
 export function useMcpConnectionOperation(agentId: string) {
   const authorize = useSetMcpAuthorization(agentId);
+  const connect = useConnectMcpOAuth(agentId);
   const oauth = useMcpOAuthSession(agentId);
   const probe = useProbeMcpServer(agentId);
+  const reuse = async (
+    attempt: ConnectionAttempt,
+    options: { reauthorize?: boolean; oauthWindow?: McpOAuthWindow; isAlive: () => boolean },
+  ): Promise<"connected" | "cancelled" | undefined> => {
+    if (!shouldTryOAuthReuse(attempt)) return undefined;
+    const result = await connect.mutateAsync({
+      mcpServerId: attempt.binding.mcpServerId,
+      scopes: connectionPreset(attempt.binding.effective.url)?.oauthScopes,
+    });
+    if (!options.isAlive()) {
+      closeMcpOAuthWindow(options.oauthWindow?.popup);
+      return "cancelled";
+    }
+    if (!result.connected) return undefined;
+    closeMcpOAuthWindow(options.oauthWindow?.popup);
+    return "connected";
+  };
   const run = async (
     attempt: ConnectionAttempt,
     options: {
@@ -68,6 +86,8 @@ export function useMcpConnectionOperation(agentId: string) {
       await checkConnection();
       return "connected" as const;
     };
+    const reused = await reuse(attempt, options);
+    if (reused) return reused;
     if (requiresOAuth(attempt, options.reauthorize)) return startOAuth();
     if (requiresConnectionKey(attempt.kind, attempt.binding, options.token)) return "key";
     if (shouldAuthorize(attempt, options.token)) {
@@ -141,4 +161,8 @@ function authorizationInput(attempt: ConnectionAttempt, token?: string) {
     kind: attempt.kind === "bearer" ? ("bearer" as const) : ("none" as const),
     ...(attempt.kind === "bearer" ? { bearerKey: token } : {}),
   };
+}
+
+function shouldTryOAuthReuse(attempt: ConnectionAttempt) {
+  return attempt.kind === "oauth" && !attempt.binding.authorization;
 }

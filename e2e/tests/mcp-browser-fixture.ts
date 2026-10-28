@@ -75,6 +75,7 @@ export async function mcpFixture(page: Page, servers: MCPServer[] = []) {
     const body = route.request().postDataJSON() as Record<string, unknown> | null;
     const method = route.request().method();
     if (method !== "GET") writes.push({ path, body: body ?? {} });
+    if (await respondMcpReuseDisabled(route, path, method)) return;
     if (path === "/api/v1/mcp-servers") {
       await respondPool(route, method, body);
       return;
@@ -299,6 +300,15 @@ export async function mcpFixture(page: Page, servers: MCPServer[] = []) {
     },
     releaseAuthorization: () => releaseAuthorization(),
   };
+}
+
+export async function respondMcpReuseDisabled(route: Route, path: string, method: string) {
+  let json: object;
+  if (method === "POST" && path.endsWith("/mcp-servers/reusable-installation")) json = { server: null };
+  else if (method === "POST" && path.endsWith("/authorization/connect")) json = { connected: false };
+  else return false;
+  await route.fulfill({ json });
+  return true;
 }
 
 async function respondBindingUpdate(

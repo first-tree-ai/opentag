@@ -1,32 +1,48 @@
-import { MCP_ACCOUNT_TOOL_SNAPSHOT_MAX_BYTES } from "@opentag/shared";
-import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
-import type { DatabaseClient } from "../../db/client.js";
-import { type agentMcpServers, agents, mcpServerAuthorizations } from "../../db/schema/index.js";
+import {
+  type CreateMCPServerRequest,
+  MCP_ACCOUNT_TOOL_SNAPSHOT_MAX_BYTES,
+  normalizeExtraHeaders,
+} from "@opentag/shared";
+import { and, arrayContains, eq, gt, isNotNull, isNull, ne, notInArray, or, type SQL, sql } from "drizzle-orm";
+import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
+import {
+  agentMcpServers,
+  agents,
+  mcpClientRegistrations,
+  mcpServerAuthorizations,
+  mcpServers,
+} from "../../db/schema/index.js";
+import type { ServiceLogger } from "../../observability/service-logger.js";
 import { hashSecret } from "../auth/security.js";
-import { boundedMcpSummary, MCP_ERROR_CODES, McpServiceError } from "./errors.js";
+import { boundedMcpSummary, MCP_ERROR_CODES, McpServiceError, mcpServerNotFound } from "./errors.js";
 import { buildMcpAuthHeaders } from "./mcp-auth-headers.js";
-import { lockMcpCredentialBinding } from "./mcp-binding-locks.js";
+import {
+  invalidateMcpCredentialProbes,
+  type McpAuthorizationContext,
+  mcpEffectiveConfig,
+  readMcpAuthorizationContexts,
+  removeMcpLocalAuthorization,
+  unlinkMcpSharedAuthorization,
+} from "./mcp-authorization-graph.js";
+import { lockMcpAccounts, lockMcpCredentialBinding } from "./mcp-binding-locks.js";
 import type { McpAuthorizationCredential, McpCredentialCipher } from "./mcp-credential-cipher.js";
 import type { McpProbe, McpProbeResult } from "./mcp-probe.js";
-import { McpServerService } from "./mcp-server-service.js";
+import { McpServerService, toServerDto } from "./mcp-server-service.js";
 
-/**
- * Per-Agent authorization: resolving the one row that decides this Agent's access to this Server,
- * and writing it for each kind.
- *
- * Resolution has exactly one step and no Account-level fallback: an `active` row for this
- * `(Server, Agent)` pair is used, and anything else means unauthorized. That is what lets two Agents
- * of one Account hold different kinds — a Bearer key for one, OAuth for the other — on one Server.
- *
- * `none` is written as a real row rather than treated as an absence, so the pair always has exactly
- * one row and a probe always has somewhere to put its snapshot.
- */
+/** Agent-local mounts and probes resolve OAuth credentials through one validated authentication root. */
 
 export interface McpAuthorizationServiceOptions {
   database: DatabaseClient;
+  logger?: ServiceLogger;
   cipher: McpCredentialCipher;
   probe: McpProbe;
   servers: McpServerService;
+  reusableClient?: (
+    url: string,
+    issuer: string,
+    clientId: string | undefined,
+    registrationId: string | null,
+  ) => boolean;
   now?: () => Date;
   /**
    * The Account's stored-tool-snapshot bound, in bytes. Overridable so a test can reach it without
@@ -44,7 +60,10 @@ export interface McpProbeOutcome {
   protocolVersion: string | null;
 }
 
-type ProbeAuthorizationVersion = Pick<typeof mcpServerAuthorizations.$inferSelect, "id" | "revision">;
+type ProbeAuthorizationVersion = Pick<typeof mcpServerAuthorizations.$inferSelect, "id" | "revision"> & {
+  accountId: string;
+  rootId: string;
+};
 
 export interface ResolvedMcpCredential {
   binding: typeof agentMcpServers.$inferSelect;
@@ -57,17 +76,21 @@ export class McpAuthorizationService {
   readonly #accountSnapshotMaxBytes: number;
   readonly #cipher: McpCredentialCipher;
   readonly #database: DatabaseClient;
+  readonly #logger: ServiceLogger | undefined;
   readonly #now: () => Date;
   readonly #probe: McpProbe;
   readonly #servers: McpServerService;
+  readonly #reusableClient: NonNullable<McpAuthorizationServiceOptions["reusableClient"]>;
 
   constructor(options: McpAuthorizationServiceOptions) {
     this.#accountSnapshotMaxBytes = options.accountSnapshotMaxBytes ?? MCP_ACCOUNT_TOOL_SNAPSHOT_MAX_BYTES;
     this.#cipher = options.cipher;
     this.#database = options.database;
+    this.#logger = options.logger;
     this.#now = options.now ?? (() => new Date());
     this.#probe = options.probe;
     this.#servers = options.servers;
+    this.#reusableClient = options.reusableClient ?? (() => false);
   }
 
   /**
@@ -84,6 +107,7 @@ export class McpAuthorizationService {
   ): Promise<void> {
     await this.#database.transaction(async (transaction) => {
       await lockMcpCredentialBinding(transaction, accountId, agentId, mcpServerId, source);
+      await removeMcpLocalAuthorization(transaction, agentId, mcpServerId, this.#cipher, true);
       const now = this.#now();
       if (input.kind === "bearer" && (!input.bearerKey || input.bearerKey.length === 0)) {
         throw new McpServiceError(MCP_ERROR_CODES.CREDENTIAL_INPUT_INVALID, "A bearer authorization requires its key");
@@ -123,6 +147,7 @@ export class McpAuthorizationService {
         .onConflictDoUpdate({
           target: [mcpServerAuthorizations.mcpServerId, mcpServerAuthorizations.agentId],
           set: {
+            credentialSourceId: null,
             kind: input.kind,
             status: "active",
             // The new envelope replaces the old in this same statement, so a kind change can never
@@ -160,73 +185,233 @@ export class McpAuthorizationService {
 
   /** A guarded cancellation ends only that flow; an explicit revoke also drops the credential. */
   async revoke(accountId: string, agentId: string, mcpServerId: string, expectedOAuthState?: string): Promise<void> {
-    await this.#servers.requireAgentBinding(accountId, agentId, mcpServerId);
-    const now = this.#now();
-    const endedFlow = {
-      state: null,
-      stateExpiresAt: null,
-      pkceCiphertext: null,
-      loginSessionHash: null,
-      flowAuthorizationServer: null,
-      flowOauthResource: null,
-      revision: sql`${mcpServerAuthorizations.revision} + 1`,
-      updatedAt: now,
-    };
-    if (expectedOAuthState !== undefined) {
-      const cancelled = await this.#database
-        .update(mcpServerAuthorizations)
-        .set(endedFlow)
-        .where(
-          and(
-            eq(mcpServerAuthorizations.agentId, agentId),
-            eq(mcpServerAuthorizations.mcpServerId, mcpServerId),
-            eq(mcpServerAuthorizations.state, hashSecret(expectedOAuthState)),
-            isNotNull(mcpServerAuthorizations.ciphertext),
-          ),
-        )
-        .returning({ id: mcpServerAuthorizations.id });
-      if (cancelled.length) return;
-    }
-    const removed = await this.#database
-      .update(mcpServerAuthorizations)
-      .set({
-        ...endedFlow,
-        status: "revoked",
-        ciphertext: null,
-        keyId: null,
-        // The credential and its audience are cleared together.
-        oauthResource: null,
-        accessTokenExpiresAt: null,
-        refreshClaimId: null,
-        refreshClaimedAt: null,
-        probeState: "pending",
-        probeError: null,
-        tools: null,
-        toolsCount: null,
-        toolsTruncated: false,
-        failureCode: null,
-      })
-      .where(
-        and(
-          eq(mcpServerAuthorizations.agentId, agentId),
-          eq(mcpServerAuthorizations.mcpServerId, mcpServerId),
-          ...(expectedOAuthState !== undefined
-            ? [
-                eq(mcpServerAuthorizations.state, hashSecret(expectedOAuthState)),
-                isNull(mcpServerAuthorizations.ciphertext),
-              ]
-            : []),
-        ),
+    await this.#database.transaction(async (transaction) => {
+      await lockMcpCredentialBinding(transaction, accountId, agentId, mcpServerId);
+      const [context] = await readMcpAuthorizationContexts(
+        transaction,
+        and(eq(mcpServers.accountId, accountId), eq(agentMcpServers.agentId, agentId), eq(mcpServers.id, mcpServerId)),
+      );
+      if (
+        expectedOAuthState === undefined &&
+        (await unlinkMcpSharedAuthorization(transaction, context?.localAuthorization, this.#cipher, this.#now()))
       )
-      .returning({ id: mcpServerAuthorizations.id });
-    if (expectedOAuthState !== undefined && removed.length === 0) {
-      throw new McpServiceError(MCP_ERROR_CODES.OAUTH_FLOW_INVALID, "The authorization attempt has already ended");
+        return;
+      const root = revocableMcpRoot(context, expectedOAuthState);
+      if (!root) return;
+      await transaction
+        .update(mcpServerAuthorizations)
+        .set({
+          state: null,
+          stateExpiresAt: null,
+          pkceCiphertext: null,
+          loginSessionHash: null,
+          flowAuthorizationServer: null,
+          flowOauthResource: null,
+          ...(expectedOAuthState && root.ciphertext
+            ? {}
+            : {
+                status: "revoked" as const,
+                ciphertext: null,
+                keyId: null,
+                oauthResource: null,
+                accessTokenExpiresAt: null,
+                refreshClaimId: null,
+                refreshClaimedAt: null,
+                refreshGeneration: sql`${mcpServerAuthorizations.refreshGeneration} + 1`,
+                failureCode: null,
+              }),
+          updatedAt: this.#now(),
+        })
+        .where(eq(mcpServerAuthorizations.id, root.id));
+      if (expectedOAuthState && root.ciphertext) {
+        await transaction
+          .update(mcpServerAuthorizations)
+          .set({ revision: sql`${mcpServerAuthorizations.revision} + 1` })
+          .where(eq(mcpServerAuthorizations.id, root.id));
+      } else await invalidateMcpCredentialProbes(transaction, root.id);
+    });
+  }
+
+  /** Advisory definition selection; mounting and Connect still validate the current graph. */
+  async findReusableInstallation(
+    accountId: string,
+    agentId: string,
+    input: CreateMCPServerRequest,
+    scopes: readonly string[] = [],
+  ) {
+    return this.#database.transaction(
+      async (transaction) => {
+        const [target] = await transaction
+          .select({ id: agents.id })
+          .from(agents)
+          .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, accountId), ne(agents.status, "deleted")))
+          .limit(1);
+        if (!target) throw mcpServerNotFound();
+        if (!this.#servers.reuseOAuth || input.defaultAuthKind !== "oauth") return null;
+        const effective = {
+          url: input.url,
+          authHeader: input.authHeader ?? "authorization",
+          authScheme: input.authScheme ?? "Bearer",
+          extraHeaders: normalizeExtraHeaders(input.extraHeaders ?? {}),
+        };
+        const root = await this.#oldestReusableRoot(
+          transaction,
+          accountId,
+          effective,
+          scopes.filter((scope) => scope !== "offline_access"),
+          and(
+            eq(mcpServers.defaultAuthKind, "oauth"),
+            eq(mcpServers.url, effective.url),
+            eq(mcpServers.authHeader, effective.authHeader),
+            eq(mcpServers.authScheme, effective.authScheme),
+            sql`${mcpServers.extraHeaders} = ${JSON.stringify(effective.extraHeaders)}::jsonb`,
+          ),
+        );
+        if (!root) return null;
+        const [server] = await transaction.select().from(mcpServers).where(eq(mcpServers.id, root.mcpServerId));
+        if (!server) return null;
+        const aggregates = await this.#servers.aggregatesFor([server.id], transaction);
+        return toServerDto(server, aggregates.get(server.id));
+      },
+      { isolationLevel: "repeatable read", accessMode: "read only" },
+    );
+  }
+
+  async connectOAuth(
+    accountId: string,
+    agentId: string,
+    mcpServerId: string,
+    scopes: readonly string[] = [],
+  ): Promise<boolean> {
+    let sourceAuthorizationId: string | undefined;
+    const connected = await this.#database.transaction(async (transaction) => {
+      await lockMcpCredentialBinding(transaction, accountId, agentId, mcpServerId);
+      const [target] = await readMcpAuthorizationContexts(
+        transaction,
+        and(eq(mcpServers.accountId, accountId), eq(mcpServers.id, mcpServerId), eq(agentMcpServers.agentId, agentId)),
+        { tools: false, limit: 1 },
+      );
+      if (!target) return false;
+      if (target.localAuthorization) return hasRequestedOAuth(target.authorization, scopes);
+      if (!this.#servers.reuseOAuth) return false;
+      const effective = mcpEffectiveConfig(target.server, target.binding);
+      const requiredScopes = scopes.filter((scope) => scope !== "offline_access");
+      const root = await this.#oldestReusableRoot(
+        transaction,
+        accountId,
+        effective,
+        requiredScopes,
+        eq(mcpServers.id, mcpServerId),
+      );
+      if (!root) return false;
+      sourceAuthorizationId = root.id;
+      await transaction.insert(mcpServerAuthorizations).values({
+        agentId,
+        mcpServerId,
+        kind: "oauth",
+        status: "active",
+        credentialSourceId: root.id,
+        probeState: "pending",
+        createdAt: this.#now(),
+        updatedAt: this.#now(),
+      });
+      return true;
+    });
+    if (connected && sourceAuthorizationId)
+      this.#logger?.info(
+        { accountId, agentId, mcpServerId, authorizationId: sourceAuthorizationId },
+        "MCP OAuth authentication reused",
+      );
+    return connected;
+  }
+
+  async #oldestReusableRoot(
+    transaction: DatabaseTransaction,
+    accountId: string,
+    effective: ReturnType<typeof mcpEffectiveConfig>,
+    requiredScopes: string[],
+    definitionScope?: SQL,
+  ) {
+    const rejected: string[] = [];
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const [candidate] = await readMcpAuthorizationContexts(
+        transaction,
+        and(
+          eq(mcpServers.accountId, accountId),
+          definitionScope,
+          isNull(mcpServerAuthorizations.credentialSourceId),
+          eq(mcpServerAuthorizations.kind, "oauth"),
+          eq(mcpServerAuthorizations.status, "active"),
+          isNotNull(mcpServerAuthorizations.ciphertext),
+          isNotNull(mcpServerAuthorizations.keyId),
+          isNotNull(mcpServerAuthorizations.authorizationServer),
+          or(
+            isNull(mcpServerAuthorizations.accessTokenExpiresAt),
+            gt(mcpServerAuthorizations.accessTokenExpiresAt, this.#now()),
+          ),
+          sql`coalesce(${agentMcpServers.urlOverride},${mcpServers.url}) = ${effective.url}`,
+          sql`coalesce(${agentMcpServers.authHeaderOverride},${mcpServers.authHeader}) = ${effective.authHeader}`,
+          sql`coalesce(${agentMcpServers.authSchemeOverride},${mcpServers.authScheme}) = ${effective.authScheme}`,
+          sql`coalesce(${agentMcpServers.extraHeadersOverride},${mcpServers.extraHeaders}) = ${JSON.stringify(effective.extraHeaders)}::jsonb`,
+          requiredScopes.length ? arrayContains(mcpServerAuthorizations.scopes, requiredScopes) : undefined,
+          rejected.length ? notInArray(mcpServerAuthorizations.id, rejected) : undefined,
+        ),
+        { oldestFirst: true, limit: 1, tools: false },
+      );
+      const row = candidate?.localAuthorization;
+      if (!row?.ciphertext || !row.keyId || !row.authorizationServer) break;
+      rejected.push(row.id);
+      if (candidate?.authorization?.status !== "active") continue;
+      const credential = this.#reusableCredential(row, { ciphertext: row.ciphertext, keyId: row.keyId });
+      if (
+        !credential ||
+        !(await this.#matchesRegistration(transaction, accountId, row, credential.clientId)) ||
+        !this.#reusableClient(effective.url, row.authorizationServer, credential.clientId, row.clientRegistrationId)
+      )
+        continue;
+      return row;
+    }
+    return undefined;
+  }
+
+  #reusableCredential(
+    row: typeof mcpServerAuthorizations.$inferSelect,
+    material: { ciphertext: string; keyId: string },
+  ) {
+    try {
+      return this.#cipher.decryptAuthorizationCredential(
+        { mcpServerId: row.mcpServerId, agentId: row.agentId, authorizationServer: row.authorizationServer },
+        material,
+      );
+    } catch {
+      this.#logger?.warn({ authorizationId: row.id }, "Unreadable MCP reuse candidate skipped");
+      return undefined;
     }
   }
 
+  async #matchesRegistration(
+    transaction: DatabaseTransaction,
+    accountId: string,
+    row: typeof mcpServerAuthorizations.$inferSelect,
+    clientId: string | undefined,
+  ) {
+    if (!row.clientRegistrationId) return true;
+    const [registration] = await transaction
+      .select({ clientId: mcpClientRegistrations.clientId })
+      .from(mcpClientRegistrations)
+      .where(
+        and(
+          eq(mcpClientRegistrations.id, row.clientRegistrationId),
+          eq(mcpClientRegistrations.accountId, accountId),
+          eq(mcpClientRegistrations.authorizationServer, row.authorizationServer ?? ""),
+        ),
+      )
+      .limit(1);
+    return Boolean(registration && (!clientId || registration.clientId === clientId));
+  }
+
   /**
-   * The entire resolution chain for one Agent and one Server: an active row, or nothing. There is no
-   * Account-level row to fall back to, which is the whole point of the per-Agent design.
+   * Resolve the mounted authentication root in the same Account and decrypt under its current holder.
    */
   async resolveActiveCredential(
     accountId: string,
@@ -240,7 +425,11 @@ export class McpAuthorizationService {
     if (authorization.kind === "none") return { ...base, credential: undefined };
     if (!authorization.ciphertext || !authorization.keyId) return undefined;
     const credential = this.#cipher.decryptAuthorizationCredential(
-      { mcpServerId, agentId, authorizationServer: authorization.authorizationServer },
+      {
+        mcpServerId,
+        agentId: context.credentialAuthorization?.agentId ?? agentId,
+        authorizationServer: authorization.authorizationServer,
+      },
       { ciphertext: authorization.ciphertext, keyId: authorization.keyId },
     );
     return { ...base, credential };
@@ -297,7 +486,12 @@ export class McpAuthorizationService {
      * credential and immediately re-probing brought back `succeeded` and a tool snapshot on the
      * revoked row, and replacing key A with key B let A's slower answer overwrite B's.
      */
-    const expected = { id: authorization.id, revision: authorization.revision };
+    const expected = {
+      id: authorization.id,
+      revision: authorization.revision,
+      accountId,
+      rootId: context.credentialAuthorization?.id ?? authorization.id,
+    };
     let result: McpProbeResult;
     try {
       const headers = await this.buildHeaders(accountId, agentId, mcpServerId);
@@ -365,28 +559,12 @@ export class McpAuthorizationService {
   ): Promise<McpProbeOutcome> {
     const probeError = probeErrorOf(failure);
     const now = this.#now();
-    await this.#database
-      .update(mcpServerAuthorizations)
-      .set({
-        probeState: "failed",
-        probeError,
-        /*
-         * Only a protocol-class failure invalidates the cached era. A timeout, a 5xx, or a 401 are
-         * not evidence that the origin changed its protocol, and re-detecting on them would throw
-         * away a correct cache on every transient error.
-         */
-        ...(eraInvalidated ? { protocolEra: null, protocolVersion: null } : {}),
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(mcpServerAuthorizations.agentId, agentId),
-          eq(mcpServerAuthorizations.mcpServerId, mcpServerId),
-          // Fenced: a row changed while this probe ran keeps the newer decision.
-          eq(mcpServerAuthorizations.id, expected.id),
-          eq(mcpServerAuthorizations.revision, expected.revision),
-        ),
-      );
+    await this.#writeProbe(mcpServerId, agentId, expected, {
+      probeState: "failed",
+      probeError,
+      ...(eraInvalidated ? { protocolEra: null, protocolVersion: null } : {}),
+      updatedAt: now,
+    });
     return {
       probeState: "failed",
       probeError,
@@ -414,21 +592,11 @@ export class McpAuthorizationService {
     expected: ProbeAuthorizationVersion,
   ): Promise<McpProbeOutcome | undefined> {
     const now = this.#now();
-    if (await this.#exceedsAccountSnapshotBudget(mcpServerId, agentId, result.tools)) {
-      return await this.#persistProbeFailure(
-        mcpServerId,
-        agentId,
-        new McpServiceError(
-          MCP_ERROR_CODES.PROBE_FAILED,
-          "The Account's stored MCP tool snapshots would exceed 64 MiB; remove unused Servers",
-        ),
-        false,
-        expected,
-      );
-    }
-    await this.#database
-      .update(mcpServerAuthorizations)
-      .set({
+    const stored = await this.#writeProbe(
+      mcpServerId,
+      agentId,
+      expected,
+      {
         probeState: "succeeded",
         probedAt: now,
         probeError: null,
@@ -441,16 +609,63 @@ export class McpAuthorizationService {
         protocolEra: result.protocolEra,
         protocolVersion: result.protocolVersion,
         updatedAt: now,
-      })
-      .where(
-        and(
-          eq(mcpServerAuthorizations.agentId, agentId),
-          eq(mcpServerAuthorizations.mcpServerId, mcpServerId),
-          eq(mcpServerAuthorizations.id, expected.id),
-          eq(mcpServerAuthorizations.revision, expected.revision),
+      },
+      result.tools,
+    );
+    if (stored === "budget")
+      return this.#persistProbeFailure(
+        mcpServerId,
+        agentId,
+        new McpServiceError(
+          MCP_ERROR_CODES.PROBE_FAILED,
+          "The Account's stored MCP tool snapshots would exceed 64 MiB; remove unused Servers",
         ),
+        false,
+        expected,
       );
     return undefined;
+  }
+
+  async #writeProbe(
+    mcpServerId: string,
+    agentId: string,
+    expected: ProbeAuthorizationVersion,
+    values: Partial<typeof mcpServerAuthorizations.$inferInsert>,
+    tools?: McpProbeResult["tools"],
+  ) {
+    return this.#database.transaction(async (transaction) => {
+      await lockMcpAccounts(transaction, [expected.accountId]);
+      const [current] = await readMcpAuthorizationContexts(
+        transaction,
+        and(
+          eq(mcpServers.accountId, expected.accountId),
+          eq(mcpServers.id, mcpServerId),
+          eq(agentMcpServers.agentId, agentId),
+        ),
+        { tools: false, limit: 1 },
+      );
+      if (
+        current?.authorization?.status !== "active" ||
+        current.localAuthorization?.id !== expected.id ||
+        current.localAuthorization.revision !== expected.revision ||
+        current.credentialAuthorization?.id !== expected.rootId
+      )
+        return "superseded";
+      if (tools && (await this.#exceedsAccountSnapshotBudget(mcpServerId, agentId, tools, transaction)))
+        return "budget";
+      const [stored] = await transaction
+        .update(mcpServerAuthorizations)
+        .set(values)
+        .where(
+          and(
+            eq(mcpServerAuthorizations.id, expected.id),
+            eq(mcpServerAuthorizations.revision, expected.revision),
+            eq(mcpServerAuthorizations.agentId, agentId),
+          ),
+        )
+        .returning({ id: mcpServerAuthorizations.id });
+      return stored ? "stored" : "superseded";
+    });
   }
 
   /**
@@ -463,8 +678,9 @@ export class McpAuthorizationService {
     mcpServerId: string,
     agentId: string,
     tools: McpProbeResult["tools"],
+    executor: Pick<DatabaseClient, "select"> = this.#database,
   ): Promise<boolean> {
-    const [row] = await this.#database
+    const [row] = await executor
       .select({
         accountId: agents.createdByUserId,
         currentBytes: sql<number>`coalesce(pg_column_size(${mcpServerAuthorizations.tools}), 0)::bigint`,
@@ -474,7 +690,7 @@ export class McpAuthorizationService {
       .where(and(eq(mcpServerAuthorizations.mcpServerId, mcpServerId), eq(mcpServerAuthorizations.agentId, agentId)))
       .limit(1);
     if (!row) return false;
-    const [total] = await this.#database
+    const [total] = await executor
       .select({ bytes: sql<number>`coalesce(sum(pg_column_size(${mcpServerAuthorizations.tools})), 0)::bigint` })
       .from(mcpServerAuthorizations)
       .innerJoin(agents, eq(agents.id, mcpServerAuthorizations.agentId))
@@ -516,4 +732,19 @@ function probeErrorOf(failure: unknown): string {
 /** Whether a value is a probe result rather than an error, without importing the class. */
 function isProbeResult(value: unknown): value is { probeError: string | null } {
   return typeof value === "object" && value !== null && "probeState" in value;
+}
+
+function hasRequestedOAuth(
+  authorization: typeof mcpServerAuthorizations.$inferSelect | null,
+  scopes: readonly string[],
+): boolean {
+  if (authorization?.kind !== "oauth" || authorization.status !== "active" || !authorization.ciphertext) return false;
+  return scopes.filter((scope) => scope !== "offline_access").every((scope) => authorization.scopes?.includes(scope));
+}
+
+function revocableMcpRoot(context: McpAuthorizationContext | undefined, expectedState: string | undefined) {
+  const root = context?.credentialAuthorization;
+  if (expectedState && (!root || root.state !== hashSecret(expectedState)))
+    throw new McpServiceError(MCP_ERROR_CODES.OAUTH_FLOW_INVALID, "The authorization attempt has already ended");
+  return root;
 }

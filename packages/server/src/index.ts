@@ -714,7 +714,8 @@ export async function startServer(): Promise<void> {
      * service is stateless over the database, so constructing it early costs nothing and keeps one
      * instance shared by the management routes and the runtime gateway.
      */
-    const mcpServers = new McpServerService({ database });
+    const mcpCipher = new McpCredentialCipher(applicationCipher);
+    const mcpServers = new McpServerService({ database, cipher: mcpCipher, reuseOAuth: config.mcpOAuthReuse });
     const platformRuntime = await createPlatformRuntime({
       slackWorkingStatus: true,
       config,
@@ -862,6 +863,7 @@ export async function startServer(): Promise<void> {
     const agentRuntimeTestOwner = new AgentRuntimeTestOwner(registry);
     const slackAutoSetupOwner = new SlackAutoSetupOwner(registry);
     const agentService = new AgentService(database, {
+      mcpCredentialCipher: mcpCipher,
       ...optionalCloudUsage(config, cloudUsage),
       cloudIdentitiesEnabled: cloudIdentities.enabled,
       ...modelCatalogOptions,
@@ -1052,26 +1054,10 @@ export async function startServer(): Promise<void> {
       timeoutMs: MCP_RUNTIME_TIMEOUT_MS,
       maxConcurrentPerAccount: MCP_RUNTIME_MAX_CONCURRENT_PER_ACCOUNT,
     });
-    const mcpCipher = new McpCredentialCipher(applicationCipher);
     const mcpOAuth = new McpOAuthClient({ fetcher: mcpFetcher, publicUrl: config.publicUrl });
     const mcpProbe = new McpProbe({ fetcher: mcpFetcher, logger: serviceLogger("mcp-probe") });
-    const mcpAuthorization = new McpAuthorizationService({
-      database,
-      cipher: mcpCipher,
-      probe: mcpProbe,
-      servers: mcpServers,
-    });
-    /*
-     * The runtime gateway. It shares the one outbound fetcher with the management plane, so a
-     * runtime tool call is bound by the same URL policy, per-Account concurrency limit, redirect
-     * refusal, and response cap that a probe is.
-     */
-    const mcpGatewayService = new McpGatewayService({
-      servers: mcpServers,
-      authorizations: mcpAuthorization,
-      upstream: new McpUpstreamCaller({ fetcher: mcpRuntimeFetcher }),
-    });
     const mcpFlows = new McpOAuthFlowService({
+      logger: serviceLogger("mcp-oauth"),
       database,
       cipher: mcpCipher,
       oauth: mcpOAuth,
@@ -1090,6 +1076,25 @@ export async function startServer(): Promise<void> {
        * catalog's Canva card create its Server on the Developer Portal endpoint.
        */
       staticMcpClients: config.mcpStaticOAuth,
+    });
+    const mcpAuthorization = new McpAuthorizationService({
+      logger: serviceLogger("mcp-authorization"),
+      database,
+      cipher: mcpCipher,
+      probe: mcpProbe,
+      reusableClient: (url, issuer, clientId, registrationId) =>
+        mcpFlows.reusableClient(url, issuer, clientId, registrationId),
+      servers: mcpServers,
+    });
+    /*
+     * The runtime gateway. It shares the one outbound fetcher with the management plane, so a
+     * runtime tool call is bound by the same URL policy, per-Account concurrency limit, redirect
+     * refusal, and response cap that a probe is.
+     */
+    const mcpGatewayService = new McpGatewayService({
+      servers: mcpServers,
+      authorizations: mcpAuthorization,
+      upstream: new McpUpstreamCaller({ fetcher: mcpRuntimeFetcher }),
     });
     const mcpRefreshWorker = new McpRefreshWorker({
       authorization: mcpAuthorization,

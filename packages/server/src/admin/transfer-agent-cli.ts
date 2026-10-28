@@ -1,8 +1,10 @@
 import { redactForLog } from "@opentag/shared";
-import { parseDatabaseConfig } from "../config.js";
+import { parseCredentialEncryptionConfig, parseDatabaseConfig } from "../config.js";
 import { createDatabaseClient } from "../db/client.js";
 import { DATABASE_CLOSE_TIMEOUT_SECONDS } from "../db/timeouts.js";
 import type { ServiceLogger } from "../observability/service-logger.js";
+import { ApplicationCipher } from "../services/crypto.js";
+import { McpCredentialCipher } from "../services/mcp/mcp-credential-cipher.js";
 import { transferAgent } from "./transfer-agent.js";
 
 /**
@@ -32,6 +34,8 @@ function createStderrLogger(): ServiceLogger {
 
 const config = parseDatabaseConfig(process.env);
 const { database, sql } = createDatabaseClient(config.databaseUrl);
+const encryption = parseCredentialEncryptionConfig(process.env);
+const cipher = encryption instanceof Uint8Array ? new ApplicationCipher(encryption) : new ApplicationCipher(encryption);
 
 try {
   const result = await transferAgent(
@@ -41,7 +45,7 @@ try {
       targetAccountId: process.env.OPENTAG_TRANSFER_TARGET_ACCOUNT_ID,
       slack: process.env.OPENTAG_TRANSFER_SLACK,
     },
-    { logger: createStderrLogger() },
+    { logger: createStderrLogger(), mcpCredentialCipher: new McpCredentialCipher(cipher) },
   );
   process.stdout.write(`${JSON.stringify(result)}\n`);
 } finally {

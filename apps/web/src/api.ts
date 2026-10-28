@@ -86,6 +86,7 @@ import {
   ComputerConnectCodeIssueResponseSchema,
   type ComputerConnectCodeStatus,
   ComputerConnectCodeStatusSchema,
+  ConnectMCPOAuthResponseSchema,
   type ContextTreeOperationRequest,
   type ContextTreeOperationResponse,
   ContextTreeOperationResponseSchema,
@@ -170,6 +171,7 @@ import {
   type RemoteSkillSelection,
   type ResolveRemoteSkillsResponse,
   ResolveRemoteSkillsResponseSchema,
+  ReusableMCPInstallationResponseSchema,
   type SaveSlackConfigurationRequest,
   type SetMCPAuthorizationRequest,
   SKILL_FORMAT_HEADER,
@@ -827,6 +829,18 @@ export class BrowserApi {
     return this.request(mcpServerPath(mcpServerId), MCPServerDetailSchema);
   }
 
+  reusableMcpInstallation(agentId: string, input: CreateMCPServerRequest, scopes: readonly string[] = []) {
+    return this.request(
+      `${agentMcpServersPath(agentId)}/reusable-installation`,
+      ReusableMCPInstallationResponseSchema,
+      {
+        method: "POST",
+        body: JSON.stringify({ ...input, scopes }),
+        headers: { "content-type": "application/json", ...this.csrfHeaders() },
+      },
+    );
+  }
+
   createMcpServer(input: CreateMCPServerRequest): Promise<MCPServer> {
     return this.request(mcpServersPath(), MCPServerSchema, {
       method: "POST",
@@ -852,6 +866,14 @@ export class BrowserApi {
 
   agentMcpServers(agentId: string): Promise<ListAgentMCPServersResponse> {
     return this.request(agentMcpServersPath(agentId), ListAgentMCPServersResponseSchema);
+  }
+
+  connectMcpOAuth(agentId: string, mcpServerId: string, scopes: readonly string[] = []) {
+    return this.request(`${agentMcpAuthorizationPath(agentId, mcpServerId)}/connect`, ConnectMCPOAuthResponseSchema, {
+      method: "POST",
+      body: JSON.stringify({ scopes }),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
   }
 
   availableMcpServers(agentId: string): Promise<ListAvailableMCPServersResponse> {

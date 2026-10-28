@@ -25,7 +25,17 @@ import {
   mcpBindingNotFound,
   mcpServerNotFound,
 } from "./errors.js";
-import { lockMcpBindings } from "./mcp-binding-locks.js";
+import {
+  assertMcpAuthorizationUnshared,
+  type McpAuthorizationContext,
+  type McpExecutor,
+  mcpEffectiveConfig,
+  readMcpAuthorizationContexts,
+  removeMcpLocalAuthorization,
+  unlinkMcpSharedAuthorization,
+} from "./mcp-authorization-graph.js";
+import { lockMcpAccounts, lockMcpBindings, lockMcpCredentialBinding } from "./mcp-binding-locks.js";
+import type { McpCredentialCipher } from "./mcp-credential-cipher.js";
 
 /**
  * Server definitions, Agent mounts, effective configuration, and the aggregate views.
@@ -75,37 +85,47 @@ async function assertAgentEligible(
 export interface McpServerServiceOptions {
   database: DatabaseClient;
   now?: () => Date;
+  cipher?: McpCredentialCipher;
+  reuseOAuth?: boolean;
 }
 
 /** A binding row plus its definition and that pair's authorization, joined for the view builders. */
-export interface McpJoinedBinding {
-  binding: typeof agentMcpServers.$inferSelect;
-  server: typeof mcpServers.$inferSelect;
-  authorization: typeof mcpServerAuthorizations.$inferSelect | null;
-}
+export type McpJoinedBinding = McpAuthorizationContext;
 
 type Aggregate = { boundAgentCount: number; authorizedAgentCount: number; lastProbedAt: Date | null };
 
 export class McpServerService {
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
+  readonly #cipher: McpCredentialCipher | undefined;
+  readonly reuseOAuth: boolean;
 
   constructor(options: McpServerServiceOptions) {
     this.#database = options.database;
+    this.#cipher = options.cipher;
+    this.reuseOAuth = options.reuseOAuth ?? false;
     this.#now = options.now ?? (() => new Date());
   }
 
   // ---------------------------------------------------------------- definitions
 
   async listServers(accountId: string): Promise<MCPServer[]> {
-    const rows = await this.#database
-      .select()
-      .from(mcpServers)
-      .where(eq(mcpServers.accountId, accountId))
-      .orderBy(asc(mcpServers.name));
-    if (rows.length === 0) return [];
-    const aggregates = await this.aggregatesFor(rows.map((row) => row.id));
-    return rows.map((row) => toServerDto(row, aggregates.get(row.id)));
+    return this.#database.transaction(
+      async (transaction) => {
+        const rows = await transaction
+          .select()
+          .from(mcpServers)
+          .where(eq(mcpServers.accountId, accountId))
+          .orderBy(asc(mcpServers.name));
+        if (!rows.length) return [];
+        const aggregates = await this.aggregatesFor(
+          rows.map((row) => row.id),
+          transaction,
+        );
+        return rows.map((row) => toServerDto(row, aggregates.get(row.id)));
+      },
+      { isolationLevel: "repeatable read", accessMode: "read only" },
+    );
   }
 
   async createServer(accountId: string, input: CreateMCPServerRequest): Promise<MCPServer> {
@@ -156,6 +176,7 @@ export class McpServerService {
     const now = this.#now();
     try {
       return await this.#database.transaction(async (tx) => {
+        await lockMcpAccounts(tx, [accountId]);
         await assertAgentEligible(tx, agentId, accountId, source, true);
 
         const [serverRow] = await tx
@@ -208,6 +229,7 @@ export class McpServerService {
    */
   async updateServer(accountId: string, mcpServerId: string, input: UpdateMCPServerRequest): Promise<MCPServer> {
     const updated = await this.#database.transaction(async (transaction) => {
+      await lockMcpAccounts(transaction, [accountId]);
       // Serialize definition edits with binding edits. Keep config and authorization fencing atomic.
       const [row] = await transaction
         .select()
@@ -230,6 +252,8 @@ export class McpServerService {
       if (!next) throw mcpServerNotFound();
       const bindings = await lockMcpBindings(transaction, eq(agentMcpServers.mcpServerId, mcpServerId));
       const { changedUrls, changedHeaders } = affectedBindings(row, next, bindings);
+      for (const agentId of [...changedUrls, ...changedHeaders])
+        await assertMcpAuthorizationUnshared(transaction, agentId, mcpServerId);
       // Empty scopes historically mean all bindings, so never pass an empty affected group.
       if (changedUrls.length)
         await this.markProbesPending(
@@ -252,6 +276,7 @@ export class McpServerService {
    */
   async deleteServer(accountId: string, mcpServerId: string): Promise<void> {
     await this.#database.transaction(async (transaction) => {
+      await lockMcpAccounts(transaction, [accountId]);
       const [server] = await transaction
         .select({ id: mcpServers.id })
         .from(mcpServers)
@@ -277,31 +302,38 @@ export class McpServerService {
   }
 
   async getServerDetail(accountId: string, mcpServerId: string): Promise<MCPServerDetail> {
-    const row = await this.#requireServer(accountId, mcpServerId);
-    const aggregates = await this.aggregatesFor([mcpServerId]);
-    const rows = await this.#database
-      .select({
-        binding: agentMcpServers,
-        server: mcpServers,
-        authorization: mcpServerAuthorizations,
-        agent: { id: agents.id, name: agents.name, displayName: agents.displayName },
-      })
-      .from(agentMcpServers)
-      .innerJoin(mcpServers, eq(mcpServers.id, agentMcpServers.mcpServerId))
-      .innerJoin(agents, eq(agents.id, agentMcpServers.agentId))
-      .leftJoin(
-        mcpServerAuthorizations,
-        and(
-          eq(mcpServerAuthorizations.mcpServerId, agentMcpServers.mcpServerId),
-          eq(mcpServerAuthorizations.agentId, agentMcpServers.agentId),
-        ),
-      )
-      .where(and(eq(agentMcpServers.mcpServerId, mcpServerId), ne(agents.status, "deleted")))
-      .orderBy(asc(agents.name));
-    return {
-      server: toServerDto(row, aggregates.get(mcpServerId)),
-      agents: rows.map((joined) => toServerAgentDto(joined.binding, joined.server, joined.authorization, joined.agent)),
-    };
+    return this.#database.transaction(
+      async (transaction) => {
+        const [server] = await transaction
+          .select()
+          .from(mcpServers)
+          .where(and(eq(mcpServers.id, mcpServerId), eq(mcpServers.accountId, accountId)));
+        if (!server) throw mcpServerNotFound();
+        const contexts = await readMcpAuthorizationContexts(
+          transaction,
+          and(eq(mcpServers.id, mcpServerId), eq(mcpServers.accountId, accountId)),
+          { tools: false },
+        );
+        const aggregate: Aggregate = {
+          boundAgentCount: contexts.length,
+          authorizedAgentCount: contexts.filter((context) => context.authorization?.status === "active").length,
+          lastProbedAt: contexts.reduce<Date | null>(
+            (latest, context) =>
+              context.localAuthorization?.probedAt && (!latest || context.localAuthorization.probedAt > latest)
+                ? context.localAuthorization.probedAt
+                : latest,
+            null,
+          ),
+        };
+        return {
+          server: toServerDto(server, aggregate),
+          agents: contexts
+            .sort((a, b) => a.agent.name.localeCompare(b.agent.name))
+            .map((context) => toServerAgentDto(context.binding, context.server, context.authorization, context.agent)),
+        };
+      },
+      { isolationLevel: "repeatable read", accessMode: "read only" },
+    );
   }
 
   /** Servers of this Account that the Agent has not mounted, for the "add existing" chooser. */
@@ -339,30 +371,12 @@ export class McpServerService {
    * merely asked about.
    */
   async hasUsableMount(accountId: string, agentId: string): Promise<boolean> {
-    const rows = await this.#database
-      .select({ mcpServerId: agentMcpServers.mcpServerId })
-      .from(agentMcpServers)
-      .innerJoin(mcpServers, eq(mcpServers.id, agentMcpServers.mcpServerId))
-      .innerJoin(agents, eq(agents.id, agentMcpServers.agentId))
-      .innerJoin(
-        mcpServerAuthorizations,
-        and(
-          eq(mcpServerAuthorizations.mcpServerId, agentMcpServers.mcpServerId),
-          eq(mcpServerAuthorizations.agentId, agentMcpServers.agentId),
-        ),
-      )
-      .where(
-        and(
-          eq(agentMcpServers.agentId, agentId),
-          eq(agentMcpServers.enabled, true),
-          eq(mcpServers.accountId, accountId),
-          eq(agents.createdByUserId, accountId),
-          ne(agents.status, "deleted"),
-          eq(mcpServerAuthorizations.status, "active"),
-        ),
-      )
-      .limit(1);
-    return rows.length > 0;
+    const rows = await readMcpAuthorizationContexts(
+      this.#database,
+      and(eq(agentMcpServers.agentId, agentId), eq(mcpServers.accountId, accountId), eq(agentMcpServers.enabled, true)),
+      { tools: false },
+    );
+    return rows.some((row) => row.authorization?.status === "active");
   }
 
   /**
@@ -378,37 +392,14 @@ export class McpServerService {
    */
   async listAgentBindings(accountId: string, agentId: string): Promise<McpJoinedBinding[]> {
     await this.#requireAgent(accountId, agentId);
-    const rows = await this.#database
-      .select({ binding: agentMcpServers, server: mcpServers, authorization: mcpServerAuthorizations })
-      .from(agentMcpServers)
-      .innerJoin(mcpServers, eq(mcpServers.id, agentMcpServers.mcpServerId))
-      .leftJoin(
-        mcpServerAuthorizations,
-        and(
-          eq(mcpServerAuthorizations.mcpServerId, agentMcpServers.mcpServerId),
-          eq(mcpServerAuthorizations.agentId, agentMcpServers.agentId),
-        ),
-      )
-      .where(and(eq(agentMcpServers.agentId, agentId), eq(mcpServers.accountId, accountId)))
-      .orderBy(asc(mcpServers.name));
-    return rows.map((row) => ({ binding: row.binding, server: row.server, authorization: row.authorization }));
+    return readMcpAuthorizationContexts(
+      this.#database,
+      and(eq(agentMcpServers.agentId, agentId), eq(mcpServers.accountId, accountId)),
+    );
   }
 
   async listAgentServers(accountId: string, agentId: string): Promise<MCPAgentServer[]> {
-    await this.#requireAgent(accountId, agentId);
-    const rows = await this.#database
-      .select({ binding: agentMcpServers, server: mcpServers, authorization: mcpServerAuthorizations })
-      .from(agentMcpServers)
-      .innerJoin(mcpServers, eq(mcpServers.id, agentMcpServers.mcpServerId))
-      .leftJoin(
-        mcpServerAuthorizations,
-        and(
-          eq(mcpServerAuthorizations.mcpServerId, agentMcpServers.mcpServerId),
-          eq(mcpServerAuthorizations.agentId, agentMcpServers.agentId),
-        ),
-      )
-      .where(and(eq(agentMcpServers.agentId, agentId), eq(mcpServers.accountId, accountId)))
-      .orderBy(asc(mcpServers.name));
+    const rows = await this.listAgentBindings(accountId, agentId);
     return rows.map((row) => toAgentServerDto(row.binding, row.server, row.authorization));
   }
 
@@ -435,13 +426,30 @@ export class McpServerService {
     const now = this.#now();
     try {
       await this.#database.transaction(async (transaction) => {
-        if (source === "agent-self") {
-          await assertAgentEligible(transaction, agentId, accountId, source, true);
-        }
+        await lockMcpAccounts(transaction, [accountId]);
+        if (source === "agent-self") await assertAgentEligible(transaction, agentId, accountId, source, true);
+        const [agent] = await transaction
+          .select({ id: agents.id })
+          .from(agents)
+          .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, accountId), ne(agents.status, "deleted")))
+          .for("share");
+        if (!agent) throw mcpBindingNotFound();
+        const [currentServer] = await transaction
+          .select()
+          .from(mcpServers)
+          .where(and(eq(mcpServers.id, mcpServerId), eq(mcpServers.accountId, accountId)))
+          .for("share");
+        if (!currentServer) throw mcpServerNotFound();
+        if (source === "agent-self" && currentServer.defaultAuthKind === "none")
+          throw new McpServiceError(
+            MCP_ERROR_CODES.SELF_ATTACH_NONE_AUTH_FORBIDDEN,
+            "Agent self-configuration cannot attach an MCP Server that does not require credentials",
+          );
+
         await transaction
           .insert(agentMcpServers)
           .values({ agentId, mcpServerId, enabled, createdAt: now, updatedAt: now });
-        if (server.defaultAuthKind === "none") {
+        if (currentServer.defaultAuthKind === "none") {
           await transaction
             .insert(mcpServerAuthorizations)
             .values({
@@ -473,18 +481,13 @@ export class McpServerService {
   ): Promise<void> {
     await this.#requireAgent(accountId, agentId);
     await this.#database.transaction(async (transaction) => {
-      if (source === "agent-self") {
-        await assertAgentEligible(transaction, agentId, accountId, source, true);
-      }
+      await lockMcpCredentialBinding(transaction, accountId, agentId, mcpServerId, source);
       const [binding] = await lockMcpBindings(
         transaction,
         and(eq(agentMcpServers.agentId, agentId), eq(agentMcpServers.mcpServerId, mcpServerId)),
       );
       if (!binding) throw mcpBindingNotFound();
-      // The credential goes with the mount: a detached Server keeps no usable secret for this Agent.
-      await transaction
-        .delete(mcpServerAuthorizations)
-        .where(and(eq(mcpServerAuthorizations.agentId, agentId), eq(mcpServerAuthorizations.mcpServerId, mcpServerId)));
+      await removeMcpLocalAuthorization(transaction, agentId, mcpServerId, this.#cipher);
       await transaction
         .delete(agentMcpServers)
         .where(and(eq(agentMcpServers.agentId, agentId), eq(agentMcpServers.mcpServerId, mcpServerId)));
@@ -505,9 +508,11 @@ export class McpServerService {
   ): Promise<MCPAgentServer> {
     await this.#requireAgent(accountId, agentId);
     await this.#database.transaction(async (transaction) => {
+      await lockMcpAccounts(transaction, [accountId]);
       if (source === "agent-self") {
         await assertAgentEligible(transaction, agentId, accountId, source, true);
       }
+
       const [server] = await transaction
         .select()
         .from(mcpServers)
@@ -520,15 +525,25 @@ export class McpServerService {
       );
       if (!binding) throw mcpBindingNotFound();
       const patch = applyOverridePatch(binding, input);
+      const before = McpServerService.resolveEffectiveConfig(server, binding);
+      const after = McpServerService.resolveEffectiveConfig(server, { ...binding, ...patch });
+      const changed = connectionChanged(before, after);
+      if (changed) {
+        const [local] = await transaction
+          .select()
+          .from(mcpServerAuthorizations)
+          .where(
+            and(eq(mcpServerAuthorizations.agentId, agentId), eq(mcpServerAuthorizations.mcpServerId, mcpServerId)),
+          );
+        await unlinkMcpSharedAuthorization(transaction, local, this.#cipher, this.#now());
+      }
       const [row] = await transaction
         .update(agentMcpServers)
         .set({ ...(input.enabled === undefined ? {} : { enabled: input.enabled }), ...patch, updatedAt: this.#now() })
         .where(and(eq(agentMcpServers.agentId, agentId), eq(agentMcpServers.mcpServerId, mcpServerId)))
         .returning();
       if (!row) throw mcpBindingNotFound();
-      const before = McpServerService.resolveEffectiveConfig(server, binding);
-      const after = McpServerService.resolveEffectiveConfig(server, row);
-      if (connectionChanged(before, after)) {
+      if (changed) {
         const endpointChanged = before.url !== after.url;
         await this.markProbesPending(
           mcpServerId,
@@ -607,6 +622,10 @@ export class McpServerService {
       .set({
         ...reset,
         status: "revoked",
+        refreshClaimId: null,
+        refreshClaimedAt: null,
+        refreshGeneration: sql`${mcpServerAuthorizations.refreshGeneration} + 1`,
+        flowAuthorizationServer: null,
         ciphertext: null,
         keyId: null,
         // The credential's audience is dropped with the credential, and the flow's resource with
@@ -640,12 +659,7 @@ export class McpServerService {
       "urlOverride" | "authHeaderOverride" | "authSchemeOverride" | "extraHeadersOverride"
     >,
   ): MCPEffectiveConfig {
-    return {
-      url: binding.urlOverride ?? server.url,
-      authHeader: binding.authHeaderOverride ?? server.authHeader,
-      authScheme: binding.authSchemeOverride ?? server.authScheme,
-      extraHeaders: binding.extraHeadersOverride ?? server.extraHeaders,
-    };
+    return mcpEffectiveConfig(server, binding);
   }
 
   static resolveOverrideSources(
@@ -684,33 +698,15 @@ export class McpServerService {
     agentId: string,
     mcpServerId: string,
   ): Promise<McpJoinedBinding | undefined> {
-    const [row] = await this.#database
-      .select({ binding: agentMcpServers, server: mcpServers, authorization: mcpServerAuthorizations })
-      .from(agentMcpServers)
-      .innerJoin(mcpServers, eq(mcpServers.id, agentMcpServers.mcpServerId))
-      /*
-       * A deleted Agent is excluded here rather than checked by each caller, because every path that
-       * reads a binding goes on to use the Agent's credential against an external Server.
-       */
-      .innerJoin(agents, eq(agents.id, agentMcpServers.agentId))
-      .leftJoin(
-        mcpServerAuthorizations,
-        and(
-          eq(mcpServerAuthorizations.mcpServerId, agentMcpServers.mcpServerId),
-          eq(mcpServerAuthorizations.agentId, agentMcpServers.agentId),
-        ),
-      )
-      .where(
-        and(
-          eq(agentMcpServers.agentId, agentId),
-          eq(agentMcpServers.mcpServerId, mcpServerId),
-          eq(mcpServers.accountId, accountId),
-          ne(agents.status, "deleted"),
-        ),
-      )
-      .limit(1);
-    if (!row) return undefined;
-    return { binding: row.binding, server: row.server, authorization: row.authorization };
+    const [row] = await readMcpAuthorizationContexts(
+      this.#database,
+      and(
+        eq(agentMcpServers.agentId, agentId),
+        eq(agentMcpServers.mcpServerId, mcpServerId),
+        eq(mcpServers.accountId, accountId),
+      ),
+    );
+    return row;
   }
 
   async readAgentServer(accountId: string, agentId: string, mcpServerId: string): Promise<MCPAgentServer> {
@@ -775,46 +771,25 @@ export class McpServerService {
    * separately, and keeping the value derived is what lets automatic writes stay off a row whose
    * `revision` belongs to human editors.
    */
-  async aggregatesFor(mcpServerIds: readonly string[]): Promise<Map<string, Aggregate>> {
+  async aggregatesFor(
+    mcpServerIds: readonly string[],
+    executor: McpExecutor = this.#database,
+  ): Promise<Map<string, Aggregate>> {
     const aggregates = new Map<string, Aggregate>();
     for (const id of mcpServerIds) {
       aggregates.set(id, { boundAgentCount: 0, authorizedAgentCount: 0, lastProbedAt: null });
     }
     if (mcpServerIds.length === 0) return aggregates;
-    const bindings = await this.#database
-      .select({ mcpServerId: agentMcpServers.mcpServerId, count: sql<number>`count(*)::int` })
-      .from(agentMcpServers)
-      .innerJoin(agents, eq(agents.id, agentMcpServers.agentId))
-      .where(and(inArray(agentMcpServers.mcpServerId, [...mcpServerIds]), ne(agents.status, "deleted")))
-      .groupBy(agentMcpServers.mcpServerId);
-    for (const row of bindings) {
-      const entry = aggregates.get(row.mcpServerId);
-      if (entry) entry.boundAgentCount = row.count;
-    }
-    const authorizations = await this.#database
-      .select({
-        mcpServerId: mcpServerAuthorizations.mcpServerId,
-        /*
-         * Only `active` counts as authorized. A `none` row is active by design and does count, while
-         * a revoked, expired, or errored credential does not: the aggregate answers "how many Agents
-         * can use this right now", and reporting a revoked row as authorized would hide exactly the
-         * state a user needs to act on.
-         *
-         * `lastProbedAt` stays a max over every row, because it records when a probe happened rather
-         * than whether the credential currently works.
-         */
-        count: sql<number>`count(*) filter (where ${mcpServerAuthorizations.status} = 'active')::int`,
-        lastProbedAt: sql<string | null>`max(${mcpServerAuthorizations.probedAt})`,
-      })
-      .from(mcpServerAuthorizations)
-      .innerJoin(agents, eq(agents.id, mcpServerAuthorizations.agentId))
-      .where(and(inArray(mcpServerAuthorizations.mcpServerId, [...mcpServerIds]), ne(agents.status, "deleted")))
-      .groupBy(mcpServerAuthorizations.mcpServerId);
-    for (const row of authorizations) {
-      const entry = aggregates.get(row.mcpServerId);
+    const rows = await readMcpAuthorizationContexts(executor, inArray(mcpServers.id, [...mcpServerIds]), {
+      tools: false,
+    });
+    for (const row of rows) {
+      const entry = aggregates.get(row.server.id);
       if (!entry) continue;
-      entry.authorizedAgentCount = row.count;
-      entry.lastProbedAt = row.lastProbedAt ? new Date(row.lastProbedAt) : null;
+      entry.boundAgentCount++;
+      if (row.authorization?.status === "active") entry.authorizedAgentCount++;
+      const probedAt = row.localAuthorization?.probedAt;
+      if (probedAt && (!entry.lastProbedAt || probedAt > entry.lastProbedAt)) entry.lastProbedAt = probedAt;
     }
     return aggregates;
   }
@@ -940,7 +915,7 @@ function connectionChanged(before: MCPEffectiveConfig, after: MCPEffectiveConfig
 
 // ------------------------------------------------------------------ view builders
 
-function toServerDto(row: typeof mcpServers.$inferSelect, aggregate: Aggregate | undefined): MCPServer {
+export function toServerDto(row: typeof mcpServers.$inferSelect, aggregate: Aggregate | undefined): MCPServer {
   return {
     id: row.id,
     name: row.name,

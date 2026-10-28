@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type ServerResponse } from "node:http";
-import type { ListAgentMCPServersResponse, MCPAgentServer, MCPAuthKind } from "@opentag/shared/browser";
+import type { MCPAgentServer, MCPAuthKind } from "@opentag/shared/browser";
 import type { Page, Route } from "@playwright/test";
 import { baseURL } from "../playwright.config.js";
 import { expectAccessible, expectNoPageOverflow, expectWithinViewport } from "./browser-contract.js";
 import { expect, smokeTest as test } from "./fixtures.js";
+import { respondMcpReuseDisabled } from "./mcp-browser-fixture.js";
 
 // Real API scenarios share the Account's definition-name namespace.
 test.describe.configure({ mode: "default" });
@@ -408,31 +409,27 @@ test("closing reauthorization keeps saved tools quiet without waiting for a back
     await page.getByRole("button", { name: installed.name, exact: true }).click();
     const details = page.getByRole("dialog", { name: installed.name, exact: true });
     const opening = page.waitForEvent("popup");
-    const pendingRead = page.waitForResponse(async (response) => {
-      if (
-        response.request().method() !== "GET" ||
-        new URL(response.url()).pathname !== `/api/v1/agents/${current.id}/mcp-servers`
-      )
-        return false;
-      const body = (await response.json()) as ListAgentMCPServersResponse;
-      return body.servers.some(
-        (row) => row.mcpServerId === installed.mcpServerId && row.authorization?.probeState === "pending",
-      );
-    });
+    const flowRead = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname ===
+          `/api/v1/agents/${current.id}/mcp-servers/${installed.mcpServerId}/authorization/oauth` &&
+        response.status() === 200,
+    );
     await details.getByRole("button", { name: "Reauthorize", exact: true }).click();
     const consent = await opening;
     await consent.getByRole("heading", { name: "Local consent fixture", exact: true }).waitFor();
-    const pendingRows = (await (await pendingRead).json()) as ListAgentMCPServersResponse;
-    const lastProbeAt = pendingRows.servers.find((row) => row.mcpServerId === installed.mcpServerId)?.authorization
-      ?.probedAt;
+    await flowRead;
+    const lastProbeAt = installed.authorization?.probedAt;
     expect(lastProbeAt).toEqual(expect.any(String));
+    expect((await mounts(page, current.id))[0]?.snapshot).toEqual(installed.snapshot);
     await consent.close();
     await details.getByRole("button", { name: `Close ${installed.name}`, exact: true }).click();
     await expect(page.locator('[data-ui="mcp-server-list"]').getByText("Checking connection…")).toHaveCount(0);
     expect((await mounts(page, current.id))[0]?.authorization).toMatchObject({
       status: "active",
       hasCredential: true,
-      probeState: "pending",
+      probeState: "succeeded",
       probedAt: lastProbeAt,
     });
     await page.screenshot({ path: testInfo.outputPath("reauthorization-background.png") });
@@ -590,6 +587,7 @@ for (const kind of ["oauth", "bearer", "none"] as const) {
       const path = new URL(route.request().url()).pathname;
       const method = route.request().method();
       if (method !== "GET") writes.push(path);
+      if (await respondMcpReuseDisabled(route, path, method)) return;
       if (await respondDefinition(route, path)) return;
       const id = path.split("/")[4] ?? "";
       const list = fixtureEntries(id);

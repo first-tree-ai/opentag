@@ -459,8 +459,9 @@ export class CloudTurnRunner {
       const scope = this.#requireJournalScope();
       if (request.sessionId !== scope.sessionId) return;
       const existing = await this.#existingSteer(request, scope);
-      if (existing === "conflict") {
-        this.#sendSteerWithoutJournal(request, cloudSteerResult(request, "rejected", "input_conflict"));
+      if (typeof existing === "string") {
+        if (existing === "conflict")
+          this.#sendSteerWithoutJournal(request, cloudSteerResult(request, "rejected", "input_conflict"));
         return;
       }
       if (existing && (await this.#replaySteer(existing))) return;
@@ -490,14 +491,20 @@ export class CloudTurnRunner {
   async #existingSteer(
     request: import("@opentag/shared").RuntimeImSteerRequest,
     scope: CloudJournalScope,
-  ): Promise<CloudJournalDeliveryEntry | "conflict" | undefined> {
+  ): Promise<CloudJournalDeliveryEntry | "conflict" | "retiring" | undefined> {
     const entry = await this.#options.journal.read(request.deliveryId);
     if (!entry) return undefined;
     assertCloudJournalScope(entry, scope);
     if (entry.kind !== "delivery" || !entry.steer) return "conflict";
     if (entry.requestId === request.requestId && entry.inputHash === computeRuntimeImSteerInputHash(request))
       return entry;
-    return steerNeverStarted(entry) && entry.requestId !== request.requestId ? undefined : "conflict";
+    if (steerNeverStarted(entry) && entry.requestId !== request.requestId) return undefined;
+    if (entry.requestId !== request.requestId && differentSteerTarget(entry.steer, request)) {
+      await this.#reconcileSteer(entry);
+      this.#sendSteerWithoutJournal(request, cloudSteerResult(request, "retry", "turn_starting"));
+      return "retiring";
+    }
+    return "conflict";
   }
 
   async #replaySteer(entry: CloudJournalDeliveryEntry): Promise<boolean> {
@@ -2419,4 +2426,11 @@ function providerProtocolError(): TurnCompletion {
 /** UTF-8 byte length without depending on a Shared-internal helper. */
 function utf8Length(value: string): number {
   return Buffer.byteLength(value, "utf8");
+}
+
+function differentSteerTarget(
+  left: import("@opentag/shared").RuntimeImSteerRequest,
+  right: import("@opentag/shared").RuntimeImSteerRequest,
+): boolean {
+  return left.rootDeliveryId !== right.rootDeliveryId || left.expectedTurnId !== right.expectedTurnId;
 }

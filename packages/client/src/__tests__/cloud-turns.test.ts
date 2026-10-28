@@ -490,6 +490,116 @@ describe("CloudTurnRunner", () => {
     },
   );
 
+  it.each(["started", "steered", "uncertain"] as const)(
+    "retires old %s evidence before injecting a recovered input into a different Root",
+    async (phase) => {
+      const finish = deferred<ExecResult>();
+      const inject = vi.fn(async ({ request }: { request: RuntimeImSteerRequest }) =>
+        cloudSteerResult(request, "steered"),
+      );
+      const h = harness({
+        worker: () => finish.promise,
+        runnerOptions: { steeringEnabled: () => true, steerWorker: inject },
+      });
+      const oldDelivery = cloudDeliveryFixture({
+        sessionId: h.delivery.sessionId,
+        agentId: h.delivery.agentId,
+        runtime: h.delivery.runtime,
+      });
+      const oldRoot = await journal.recordReceived({
+        delivery: oldDelivery,
+        scope: { ...h.scope, resourceUid: "uid-1" },
+        deliveryId: oldDelivery.deliveryId,
+        requestId: oldDelivery.requestId,
+        turnId: randomUUID(),
+      });
+      await journal.markStarted(oldRoot.deliveryId, oldRoot.scope);
+      const { runtime: _, ...oldBase } = oldDelivery;
+      const oldRequest: RuntimeImSteerRequest = {
+        ...oldBase,
+        type: "im:steer",
+        requestId: randomUUID(),
+        deliveryId: randomUUID(),
+        imMessageId: randomUUID(),
+        rootDeliveryId: oldRoot.deliveryId,
+        expectedTurnId: oldRoot.turnId,
+      };
+      await seedSteerBeforeRootRetires(journal, oldRoot, oldRequest, phase);
+      const reportBase = {
+        type: "turn:report" as const,
+        requestId: randomUUID(),
+        deliveryId: oldRoot.deliveryId,
+        turnId: oldRoot.turnId,
+        sessionId: oldDelivery.sessionId,
+        agentId: oldDelivery.agentId,
+        placementGeneration: 1,
+        outcome: "failed" as const,
+        executionEffects: "may_have_occurred" as const,
+        errorReason: "turn_timeout" as const,
+        traceSummary: { lastSequence: 0, droppedEvents: 0 },
+      };
+      const report = { ...reportBase, resultHash: computeTurnResultHash(reportBase) };
+      await journal.recordReport(oldRoot.deliveryId, oldRoot.scope, report);
+      await h.runner.handleReportAck({
+        type: "delivery:report:ack",
+        requestId: randomUUID(),
+        turnId: oldRoot.turnId,
+        resultHash: report.resultHash,
+        status: "recorded",
+      });
+      await h.runner.handleDeliveryRun(runFrame(h.delivery));
+      await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+      await waitFor(() => h.workerInputs.length === 1, "new active Root");
+      const current = await journal.read(h.delivery.deliveryId);
+      if (!current) throw new Error("missing active Root");
+      const request = {
+        ...oldRequest,
+        requestId: randomUUID(),
+        rootDeliveryId: h.delivery.deliveryId,
+        expectedTurnId: current.turnId,
+      };
+      try {
+        h.sent.length = 0;
+        await h.runner.handleSteer({ type: "delivery:steer", requestId: request.requestId, steer: request });
+        expect(h.sent).toContainEqual(
+          expect.objectContaining({ type: "delivery:steer:result", requestId: oldRequest.requestId }),
+        );
+        expect(h.sent.at(-1)).toMatchObject({
+          type: "delivery:steer:result",
+          requestId: request.requestId,
+          result: { status: "retry", reason: "turn_starting" },
+        });
+        expect(inject).not.toHaveBeenCalled();
+        expect((await journal.read(request.deliveryId))?.requestId).toBe(oldRequest.requestId);
+        await h.runner.handleSteerAck({
+          type: "delivery:steer:ack",
+          requestId: oldRequest.requestId,
+          deliveryId: oldRequest.deliveryId,
+          inputHash: computeRuntimeImSteerInputHash(oldRequest),
+          status: "conflict",
+        });
+        expect(await journal.read(oldRequest.deliveryId)).toBeUndefined();
+        const fresh = { ...request, requestId: randomUUID() };
+        await h.runner.handleSteer({ type: "delivery:steer", requestId: fresh.requestId, steer: fresh });
+        await waitFor(
+          () =>
+            h.sent.some(
+              (value) =>
+                value.type === "delivery:steer:result" &&
+                value.requestId === fresh.requestId &&
+                value.result.status === "steered",
+            ),
+          "fresh input receipt",
+        );
+        expect(inject).toHaveBeenCalledTimes(1);
+      } finally {
+        finish.resolve(completedExec());
+        await h.runner.waitForActive();
+        await h.runner.close();
+      }
+    },
+  );
+
   it.each(["received", "started"] as const)("does not inject a recovered %s steer intent", async (phase) => {
     const h = harness({
       runnerOptions: {

@@ -276,7 +276,7 @@ describe("RuntimeDomainOwner", () => {
 
   it.each([
     { status: "deferred", reason: "steer_state_unknown", disposition: "uncertain" },
-    { status: "rejected", reason: "input_conflict", disposition: "uncertain" },
+    { status: "rejected", reason: "input_conflict", disposition: "deferred" },
     { status: "retry", reason: "turn_starting", disposition: "retry" },
     { status: "deferred", reason: "turn_not_running", disposition: "deferred" },
   ] as const)("records $status/$reason with $disposition steer custody", async ({ status, reason, disposition }) => {

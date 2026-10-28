@@ -88,3 +88,79 @@ it.each(["dispatched", "already_dispatched"] as const)(
     }
   },
 );
+
+it.each([
+  { status: "steered", mismatch: "none", acknowledges: true },
+  { status: "deferred", mismatch: "none", acknowledges: true },
+  { status: "steered", mismatch: "result_session", acknowledges: false },
+  { status: "steered", mismatch: "parent_session", acknowledges: false },
+  { status: "steered", mismatch: "parent_turn", acknowledges: false },
+  { status: "deferred", mismatch: "completed_parent", acknowledges: false },
+  { status: "deferred", mismatch: "unreported_parent", acknowledges: false },
+] as const)(
+  "settles old $status receipts after Session recovery with $mismatch proof",
+  async ({ status, mismatch, acknowledges }) => {
+    const sessionId = randomUUID();
+    const record = new CloudRuntimeFence().attach({
+      computerId: randomUUID(),
+      installationId: randomUUID(),
+      imInputVersion: 1,
+      executionEligible: false,
+      scope: {
+        sandboxId: randomUUID(),
+        sessionId,
+        environmentGeneration: 1,
+        resourceName: "projects/p/locations/r/instances/test",
+      },
+    });
+    const requestId = randomUUID();
+    const turnId = randomUUID();
+    const deliveryId = randomUUID();
+    const moved = { id: deliveryId, sessionId: randomUUID(), dispatchPayload: null, dispatchInputHash: null };
+    const original = { ...moved };
+    const parent = {
+      sessionId: mismatch === "parent_session" ? randomUUID() : sessionId,
+      turnId: mismatch === "parent_turn" ? randomUUID() : turnId,
+      reportedAt: mismatch === "unreported_parent" ? null : new Date(),
+      turnReport: { outcome: mismatch === "completed_parent" ? "completed" : "failed" },
+    };
+    const rows = [[moved], [parent]];
+    const send = vi.fn(() => true);
+    const custody = { recordSteered: vi.fn(), releaseSteerDispatch: vi.fn() };
+    const steering = new CloudImSteering({
+      database: { select: () => ({ from: () => ({ where: async () => rows.shift() ?? [] }) }) } as never,
+      custody: custody as unknown as RuntimeCustodyStore,
+      connection: async () => undefined,
+      current: () => true,
+      validAllocation: async () => true,
+      context: () => {
+        throw new Error("obsolete receipt must not mutate custody");
+      },
+      send,
+    });
+    const result = {
+      type: "im:steer:result" as const,
+      requestId,
+      deliveryId,
+      sessionId: mismatch === "result_session" ? randomUUID() : sessionId,
+      placementGeneration: 1,
+      rootDeliveryId: randomUUID(),
+      expectedTurnId: turnId,
+      status,
+      ...(status === "deferred" ? { reason: "steer_state_unknown" as const } : {}),
+    } as import("@opentag/shared").RuntimeImSteerResult;
+    await steering.handle(record, { type: "delivery:steer:result", requestId, inputHash: "a".repeat(64), result });
+    expect(send).toHaveBeenCalledTimes(acknowledges ? 1 : 0);
+    if (acknowledges)
+      expect(send).toHaveBeenCalledWith(record, {
+        type: "delivery:steer:ack",
+        requestId,
+        deliveryId,
+        inputHash: "a".repeat(64),
+        status: "conflict",
+      });
+    expect(custody.recordSteered).not.toHaveBeenCalled();
+    expect(custody.releaseSteerDispatch).not.toHaveBeenCalled();
+    expect(moved).toEqual(original);
+  },
+);

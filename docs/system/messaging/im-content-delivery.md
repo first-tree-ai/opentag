@@ -70,7 +70,9 @@ atomically. A known no-effect release frees the reservation. A timeout keeps the
 and cannot authorize repackaging or another native injection. Initial batch members follow their
 Root Turn outcome; later steer batches use the existing failed-Root recovery path. Recovery keeps
 a frozen batch intact when its head or any member cannot be locked. A claim defers to that recovery
-when the Root already has a non-completed report instead of marking the input unknown.
+when the Root already has a non-completed report instead of marking the input unknown. Delivery
+reasons may change after a provider edit; frozen member IDs, source IDs, Session and target linkage
+remain the recovery authority.
 
 The first batch starts a Turn. Further batches steer that same running Turn as soon as its active
 connection can accept input, preserving order without waiting for Turn completion. A new request

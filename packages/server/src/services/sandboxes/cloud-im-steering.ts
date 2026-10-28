@@ -91,7 +91,7 @@ export class CloudImSteering {
       .where(eq(imMessageDeliveries.id, result.deliveryId));
     const parsed = RuntimeImSteerRequestSchema.safeParse(row?.dispatchPayload);
     if (!parsed.success || parsed.data.requestId !== frame.requestId || row?.dispatchInputHash !== frame.inputHash) {
-      await this.#ackObsolete(record, frame, row);
+      await this.#ackObsolete(record, frame);
       return;
     }
     const request = parsed.data;
@@ -137,13 +137,9 @@ export class CloudImSteering {
     return { committed, effective };
   }
 
-  async #ackObsolete(
-    record: CloudConnectionRecord,
-    frame: RunnerCloudSteerResultFrame,
-    row: typeof imMessageDeliveries.$inferSelect | undefined,
-  ): Promise<void> {
+  async #ackObsolete(record: CloudConnectionRecord, frame: RunnerCloudSteerResultFrame): Promise<void> {
     const result = frame.result;
-    if (result.sessionId !== record.scope.sessionId || (row && row.sessionId !== record.scope.sessionId)) return;
+    if (result.sessionId !== record.scope.sessionId) return;
     const [root] = await this.options.database
       .select()
       .from(imMessageDeliveries)

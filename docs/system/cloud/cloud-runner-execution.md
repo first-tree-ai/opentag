@@ -170,7 +170,13 @@ After an uncertainty receipt is acknowledged, the Server retains the exact froze
 does not resubmit it while its Root Turn is running. A later negative receipt cannot erase that
 uncertainty; an exact successful receipt can settle it. Existing child journal evidence is checked
 before the Root journal. A previously unseen input whose Root journal has retired receives a
-repeatable no-effect response without launching work or inventing a Root runtime snapshot.
+repeatable no-effect response without launching work or inventing a Root runtime snapshot. If failed
+Root recovery assigns an input to another Turn while its older receipt still awaits acknowledgement,
+the Runner replays that older evidence and returns a known no-effect retry for the untouched new
+attempt. It retains the older journal until its exact acknowledgement before admitting the new input.
+That old receipt can also retire after the child moves to a replacement Session: authenticated old
+scope and exact retired-parent evidence authorize only its old journal acknowledgement, not a
+mutation of the recovered child.
 
 The native worker exposes a bounded private Unix socket during its active Prompt. A per-execution
 token travels only through trusted Runner memory and Worker stdin. The Runner invokes a single

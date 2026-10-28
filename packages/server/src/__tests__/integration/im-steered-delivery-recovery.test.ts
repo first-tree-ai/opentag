@@ -8,12 +8,13 @@ import {
 import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
-import { computers, imMessageDeliveries, sessions } from "../../db/schema/index.js";
+import { computers, imBindings, imMessageDeliveries, sessions } from "../../db/schema/index.js";
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { runImDeliveryExpiry } from "../../runtime/im-delivery-janitor.js";
 import { STEER_TARGET_ENDED_ERROR_CODE } from "../../runtime/im-delivery-recovery.js";
 import { ImDeliveryWorker } from "../../runtime/im-delivery-worker.js";
 import { PostgresRuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
+import { ImMessageInbox } from "../../services/im/im-message-inbox.js";
 import {
   acceptAndSteer,
   createFixture,
@@ -142,6 +143,73 @@ describe("steered IM delivery recovery", () => {
     expect(rows.root?.state).toBe("pending");
     expect(rows.children.every((row) => row.state === "pending")).toBe(true);
   });
+
+  it.each(["head", "member"] as const)(
+    "recovers exact frozen identities after a provider edits the %s",
+    async (edited) => {
+      const fixture = await createFixture(client.database);
+      const custody = new PostgresRuntimeCustodyStore(client.database);
+      const rootHash = computeDirectInputHash(fixture.rootRequest);
+      await custody.beginDeliveryDispatch(fixture.rootRequest, rootHash, fixture.dispatchContext);
+      await custody.acceptDelivery(fixture.rootRequest, rootHash, fixture.rootTurnId, fixture.context);
+      const [first, second] = fixture.steerRequests;
+      const request = {
+        ...first,
+        batch: [
+          {
+            deliveryId: second.deliveryId,
+            imMessageId: second.imMessageId,
+            inputHash: computeRuntimeImMessageSemanticHash(second),
+          },
+        ],
+      };
+      const hash = computeRuntimeImSteerInputHash(request);
+      await custody.beginSteerDispatch(request, hash, fixture.dispatchContext);
+      await custody.releaseSteerDispatch(request, hash, "uncertain");
+      const [binding] = await client.database.select().from(imBindings);
+      if (!binding) throw new Error("missing binding");
+      const event = {
+        providerEventId: `edited-frozen-${edited}`,
+        externalAppId: "app",
+        externalTeamId: "team",
+        providerContext: { provider: "feishu" as const, chatType: "group" as const },
+        conversation: { externalId: "channel", kind: "channel" as const },
+        message: {
+          externalId: edited === "head" ? "follow-up-1" : "follow-up-2",
+          revisionKey: "2",
+          operation: "edited" as const,
+          author: { externalId: "human", kind: "human" as const },
+          occurredAt: new Date(fixture.now.getTime() + 3_000),
+          content: {
+            version: 1 as const,
+            fallbackText: "edited content",
+            blocks: [{ type: "text" as const, text: "edited content" }],
+            truncated: false,
+          },
+          resources: [],
+        },
+        mentions: [{ externalId: "bot", displayName: null }],
+      };
+      const result = await new ImMessageInbox(client.database).ingest(binding.id, 1, event);
+      expect(result.duplicate).toBe(false);
+      const before = (await deliveryRows(client.database, fixture)).children;
+      expect(before[edited === "head" ? 0 : 1]).toMatchObject({ state: "expired", reason: "superseded_revision" });
+      expect(await custody.recordTurn(turnReport(fixture, "failed", "turn_timeout"), fixture.context)).toBe("recorded");
+      await runImDeliveryExpiry(client.database, janitorOptions(new Date()));
+      const after = (await deliveryRows(client.database, fixture)).children;
+      expect(after.map((row) => row.id)).toEqual([first.deliveryId, second.deliveryId]);
+      expect(
+        after.every(
+          (row) =>
+            row.state === "pending" &&
+            row.reason === null &&
+            row.dispatchRequestId === null &&
+            row.steerTargetDeliveryId === null,
+        ),
+      ).toBe(true);
+      expect(after[0]?.nextAttemptAt.getTime()).toBeLessThan(after[1]?.nextAttemptAt.getTime() ?? 0);
+    },
+  );
 
   it.each(["retry", "deferred"] as const)(
     "keeps exact uncertainty frozen after a later %s receipt and accepts exact success",

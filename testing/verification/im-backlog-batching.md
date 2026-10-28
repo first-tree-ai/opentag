@@ -78,11 +78,21 @@ They are covered by focused regressions and corrected before PR creation:
   failed-Root recovery. All three original failed-Root schedules failed before this correction.
 
 Exact uncertainty also survives later retry/deferred receipts, while exact success may settle it.
-Local `input_conflict` results use the same uncertainty rule as Cloud.
+Local keeps its existing conflict deferral policy; native uncertainty retains its frozen correlation.
 
-Review-fix validation: 205 Server tests in seven files, 154 Client tests in three files, and 46
-PostgreSQL tests in five files passed. The Client controller's 88 tests were rerun after a bounded
-refactor. Type checks and builds cover both changed consumers. Shared protocol/queue-policy code
+A subsequent review also covered provider edits of a frozen head/member and delayed older receipt
+acknowledgements during failed-Root recovery. Recovery now uses immutable frozen member/source IDs
+and target/Session identity instead of mutable delivery reasons. A fresh request for another Turn
+replays older journal evidence and waits for its exact acknowledgement; it does not poison the new
+request with uncertainty or overwrite the older effect evidence. Targeted PostgreSQL and Controller
+regressions verify both paths.
+
+Review-fix validation: 205 Server tests in seven files passed, followed by 88 owning Server tests
+after the last recovery update; 157 Client tests in three files and 48 PostgreSQL tests in five
+files passed. Seven additional proof/ACK cases cover a recovered child moving to another Session:
+the old authenticated allocation may acknowledge its exact retired-parent receipt without changing
+the recovered child, while mismatched parent/Turn/Session evidence cannot clear an old journal. The Client controller was also rerun after a bounded refactor. Type checks and builds
+cover both changed consumers. Shared protocol/queue-policy code
 has not changed since the earlier successful checks. No migration, independent retry owner, or
 live-provider acceptance is introduced by the review fixes.
 

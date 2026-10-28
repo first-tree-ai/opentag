@@ -128,3 +128,9 @@ files, and 204 Client tests in five files passed. Server coverage includes start
 query deadlines, resource shutdown and the IM/Runner owners. Client coverage includes native
 Worker/socket control, Turn controller, journal and Runner serve. Shared, Client and Server
 type checks and builds passed.
+
+All 72 PostgreSQL integration cases in seven files also passed on the integrated tree, including
+IM batch custody/recovery and the newly merged database availability/startup fault cases.
+CI additionally exposed two stale test fixtures: the negotiated IM version assertion still expected
+v2, and the observability fixture omitted the new custody-lock transaction path. Both failures
+were reproduced locally before updating the fixture/expectation; production behavior is unchanged.

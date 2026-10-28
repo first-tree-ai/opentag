@@ -635,24 +635,34 @@ describe("background and WebSocket tracing", () => {
     const databaseFailure = Object.assign(new Error("PRIVATE_FEISHU_DATABASE_BODY"), {
       code: "PRIVATE_FEISHU_DATABASE_SENDER",
     });
+    const computerId = randomUUID();
+    const ownerAccountId = randomUUID();
     const fenceTransaction = {
+      execute: vi.fn().mockResolvedValue([]),
       update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn().mockResolvedValue([]) })) })),
-      select: vi.fn(() =>
-        resolvedQuery([
-          {
-            agent: { computerId: randomUUID() },
-            imBinding: {
-              connectionFencingEpoch: 1,
-              connectionLeaseExpiresAt: new Date(Date.now() + 60_000),
-              connectionOwnerInstanceId: "another-instance",
-              externalAppId: "app-1",
-              externalBotId: "bot-test",
-              externalTeamId: null,
-              provider: "feishu",
+      select: vi
+        .fn()
+        .mockImplementationOnce(() => resolvedQuery([{ agentId }]))
+        .mockImplementationOnce(() =>
+          resolvedQuery([{ computerId, createdByUserId: ownerAccountId, status: "active" }]),
+        )
+        .mockImplementationOnce(() => resolvedQuery([{ ownerAccountId }]))
+        .mockImplementationOnce(() =>
+          resolvedQuery([
+            {
+              agent: { computerId },
+              imBinding: {
+                connectionFencingEpoch: 1,
+                connectionLeaseExpiresAt: new Date(Date.now() + 60_000),
+                connectionOwnerInstanceId: "another-instance",
+                externalAppId: "app-1",
+                externalBotId: "bot-test",
+                externalTeamId: null,
+                provider: "feishu",
+              },
             },
-          },
-        ]),
-      ),
+          ]),
+        ),
     };
     const inbox = new ImMessageInbox({
       transaction: vi

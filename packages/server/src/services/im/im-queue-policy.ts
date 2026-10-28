@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, desc, eq, isNull, ne, or } from "drizzle-orm";
+import { and, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
 import type { DatabaseTransaction } from "../../db/client.js";
 import { imMessageDeliveries, imMessages } from "../../db/schema/index.js";
 
@@ -41,7 +41,8 @@ export async function repeatsPendingInput(
     .where(
       and(
         eq(imMessageDeliveries.sessionId, sessionId),
-        ne(imMessages.id, message.id),
+        sql`(${imMessages.occurredAt}, ${imMessages.providerRevisionKey}, ${imMessages.id}) <
+          (${message.occurredAt.toISOString()}::timestamptz, ${message.providerRevisionKey}, ${message.id}::uuid)`,
         or(isNull(imMessageDeliveries.reason), ne(imMessageDeliveries.reason, IM_DUPLICATE_PENDING_REASON)),
       ),
     )
@@ -63,7 +64,6 @@ export async function repeatsPendingInput(
     source.authorExternalId === message.authorExternalId &&
     source.threadKey === message.threadKey &&
     source.replyToExternalId === message.replyToExternalId &&
-    source.occurredAt.getTime() <= message.occurredAt.getTime() &&
     isDeepStrictEqual(source.content, message.content)
   );
 }

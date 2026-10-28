@@ -127,14 +127,14 @@ describe("pending IM queue concurrency", () => {
         sessionId: fixture.sessionId,
         attention: "ambient" as const,
         placementGeneration: 1,
-        expiresAt: new Date(fixture.now.getTime() + 86_400_000),
+        expiresAt: new Date(Date.now() + 86_400_000),
       })),
     );
     const ready = barrier();
     const startExpiry = barrier();
     const completed = barrier();
     const inbox = new ImMessageInbox(first.database, {
-      now: () => fixture.now,
+      now: () => new Date(),
       beforeOverflowExpiry: async () => {
         ready.resolve();
         await startExpiry.promise;

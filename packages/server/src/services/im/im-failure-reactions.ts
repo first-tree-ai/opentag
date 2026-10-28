@@ -138,10 +138,13 @@ export class ImFailureReactions {
               ))
               and (
                 (d.state in ('expired', 'terminal_rejected') and coalesce(d.reason, '') not in ('cancelled', 'duplicate_pending'))
-                or (d.state = 'pending' and d.reason is null and d.dispatch_request_id is null and d.steer_target_delivery_id is null
+                or (d.state = 'pending' and d.reason is null and d.expires_at > now()
+                  and d.dispatch_request_id is null and d.steer_target_delivery_id is null
+                  and coalesce(d.last_error_code, '') not like 'IM_DELIVERY_CLAIM_%'
                   and exists (
                     select 1 from im_message_deliveries queue
                     where queue.session_id = d.session_id and queue.state = 'pending' and queue.reason is null
+                      and queue.expires_at > now()
                       and queue.dispatch_request_id is null and queue.steer_target_delivery_id is null
                       and coalesce(queue.last_error_code, '') not like 'IM_DELIVERY_CLAIM_%'
                     limit 1 offset ${IM_QUEUE_WARNING_COUNT - 1}

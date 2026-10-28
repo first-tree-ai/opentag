@@ -582,8 +582,12 @@ export async function runCloudTurnWorker(
     const onAbort = () => terminateTrackedProcesses(pids);
     execution.signal.addEventListener("abort", onAbort, { once: true });
     let completion: TurnCompletion;
-    const steering = await openWorkerSteering(request, activeRuntime, options);
+    let steering: Awaited<ReturnType<typeof openWorkerSteering>>;
     try {
+      steering = await openWorkerSteering(request, activeRuntime, options).catch((error: unknown) => {
+        diagnostics.failure(error);
+        return undefined;
+      });
       const result = await activeRuntime.prompt({
         runId: randomTurnRunId(request),
         configuration,
@@ -600,7 +604,7 @@ export async function runCloudTurnWorker(
       completion = completionForError(error, execution.stopReason());
     } finally {
       execution.signal.removeEventListener("abort", onAbort);
-      await steering?.close();
+      await steering?.close().catch((error: unknown) => diagnostics.failure(error));
       await activeRuntime.close().catch(() => undefined);
       terminateTrackedProcesses(pids);
     }

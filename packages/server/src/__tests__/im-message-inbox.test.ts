@@ -13,7 +13,7 @@ import { ImBindingService } from "../services/im-bindings/index.js";
 import { normalizeSlackEnvelope } from "../services/im-bindings/slack/adapter.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
-const fixedNow = new Date("2026-08-19T00:00:00.000Z");
+const fixedNow = new Date();
 let unitDatabase: UnitDatabase;
 
 beforeAll(async () => {
@@ -211,6 +211,54 @@ describe("IM pending input policy", () => {
       ).toHaveLength(1);
     }
   });
+
+  it.each([false, true])(
+    "suppresses against the provider-order predecessor after out-of-order ingress (equal timestamps=%s)",
+    async (equalTimestamps) => {
+      const value = await inboxFixture();
+      const inbox = new ImMessageInbox(unitDatabase.database);
+      for (const [sequence, text] of [
+        [1, "A"],
+        [3, "B"],
+        [2, "A"],
+      ] as const) {
+        const input = repeat(`out-of-order-${sequence}`, equalTimestamps ? 1 : sequence, text);
+        input.message.revisionKey = String(sequence);
+        const admitted = await inbox.ingest(value.imBindingId, 1, input);
+        expect(admitted.deliveryIds).toHaveLength(sequence === 2 ? 0 : 1);
+      }
+    },
+  );
+
+  it.each(["mention_only", "all_message"] as const)(
+    "suppresses consecutive pre-root replies during %s thread backfill",
+    async (receiveMode) => {
+      const value = await inboxFixture();
+      await unitDatabase.database.update(agents).set({ receiveMode });
+      const inbox = new ImMessageInbox(unitDatabase.database);
+      for (const sequence of [3, 1, 2]) {
+        const input = repeat(`late-repeat-${sequence}`, sequence);
+        input.message.externalId = `late-repeat-${sequence}`;
+        input.mentions = [];
+        input.message.threadKey = "late-repeat-root";
+        input.providerContext = { provider: "slack", channelType: "channel", threadTs: "late-repeat-root" };
+        await inbox.ingest(value.imBindingId, 1, input);
+      }
+      const root = event("late-repeat-root", 0);
+      root.message.externalId = "late-repeat-root";
+      await inbox.ingest(value.imBindingId, 1, root);
+      const rows = await unitDatabase.database
+        .select({ delivery: imMessageDeliveries, message: imMessages })
+        .from(imMessageDeliveries)
+        .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
+        .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+        .where(eq(sessions.kind, "thread"));
+      expect(
+        rows.filter((row) => row.delivery.state === "pending").map((row) => row.message.externalMessageId),
+      ).toEqual(["late-repeat-1"]);
+      expect(rows.filter((row) => row.delivery.reason === "duplicate_pending")).toHaveLength(2);
+    },
+  );
 
   it.each(["author", "resource", "reply", "edited", "claimed", "dispatched", "steer_uncertain", "elapsed_deadline"])(
     "does not suppress a repeat after a %s difference",
@@ -520,7 +568,7 @@ async function seedPendingDeliveries(
       sessionId,
       attention,
       placementGeneration: 1,
-      expiresAt: new Date("2026-08-26T00:00:00.000Z"),
+      expiresAt: new Date(fixedNow.getTime() + 7 * 86_400_000),
     })),
   );
 }

@@ -39,6 +39,7 @@ export async function openCloudSteerControl(input: {
   steer(request: RuntimeImSteerRequest): Promise<RuntimeImSteerResult>;
 }): Promise<{ close(): Promise<void> }> {
   const path = cloudSteerSocketPath(input.deliveryId);
+  await rm(path, { force: true });
   const sockets = new Set<Socket>();
   const server = createServer({ allowHalfOpen: true }, (socket) => {
     if (sockets.size >= 4) {

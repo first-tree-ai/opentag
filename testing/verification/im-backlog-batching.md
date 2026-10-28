@@ -134,3 +134,43 @@ IM batch custody/recovery and the newly merged database availability/startup fau
 CI additionally exposed two stale test fixtures: the negotiated IM version assertion still expected
 v2, and the observability fixture omitted the new custody-lock transaction path. Both failures
 were reproduced locally before updating the fixture/expectation; production behavior is unchanged.
+
+## PR review and CI corrections
+
+The queue's eligibility now requires an unexpired ingress deadline in the backlog target/count,
+overflow probe, candidate selection and final capacity mutation. PostgreSQL regressions cover
+past-deadline rows at the 10/99 thresholds, provider timestamp skew, TTL reason preservation, and
+a concurrent expiry update committed while the capacity UPDATE waits for its row lock.
+
+Duplicate lookup is bounded strictly before the current provider timestamp/revision/UUID tuple.
+Regressions cover out-of-order ingress, equal timestamps and a PostgreSQL UUID tie. Late-root
+backfills keep the latest source revisions, process them in provider order and reuse the same
+predecessor rule for inserted or retained ambient inputs. Both receive modes are covered.
+
+Optional steering socket startup now occurs within Pi's cleanup boundary. A socket-open failure
+emits a sanitized diagnostic while the main Prompt completes; the runtime and a real tracked child
+process close. A stale control artifact is removed before listening. Frozen batch identities remain
+intact on a peer capability mismatch; that mismatch does not prove a prior attempt had no effect.
+
+The 12 original PostgreSQL CI failures were reproduced in the two failing files. Legacy integration
+fixtures/assertions now follow the approved 99-input capacity, frozen dispatch protection, provider
+FIFO and uncertainty rules; Runtime test doubles declare their individual-input capability version.
+An invalid-input rejection remains terminal, while a legacy cached conflict remains retryable.
+
+| Validation scope | Observed result |
+| --- | --- |
+| Pre-fix deadline/concurrency PostgreSQL reproductions | 5 failed before correction |
+| Pre-fix out-of-order/backfill and socket-open regressions | 4 Server and 1 Client cases failed before correction |
+| Original failing CI owners plus new queue-policy integration suite | 122 passed in 3 files |
+| Server inbox, reactions and observability | 79 passed in 4 files |
+| Client Worker/socket, Turn controller and journal | 160 passed in 4 files; tightened PID-exit regression also passed |
+| Full PostgreSQL integration command | 1065 passed, 9 failed across 84 files / 1074 cases |
+| Owning PostgreSQL follow-up after test-clock/CLI preparation fixes | All 11 cases in the 2 failed files passed |
+| Client, Server and CLI builds; Client and Server types | Passed |
+| `pnpm check` and `git diff --check` | Passed |
+
+The broad PostgreSQL run's failures were an expired historical lock-test fixture and the missing
+local built CLI entry. Its 82 successful files were unchanged; only the two owning files were rerun
+after correcting the fixture and building the CLI. This establishes passing coverage of all 1074
+cases across the broad run and follow-up, not a claim that the original full command exited zero.
+No migration, additional retry owner or deployed/provider acceptance is introduced.

@@ -49,14 +49,19 @@ Each Session keeps the newest 99 eligible, undispatched pending inputs across di
 Capacity counts original message deliveries, not Runtime frames. Claimed inputs, persisted dispatches, unresolved steer correlations and accepted
 custody are excluded from capacity eviction on both Local and Cloud Computers. An unknown placement is retained
 conservatively. Overflow marks older eligible deliveries `expired / capacity`; it never deletes their immutable
-source messages. The final update rechecks claim and dispatch state after any concurrent row-lock wait.
+source messages. Rows past their ingress deadline do not count toward warning or capacity thresholds;
+the janitor retains authority for their TTL outcome. The final update rechecks the deadline, claim and
+dispatch state after any concurrent row-lock wait.
 Existing direct/continuity and ambient ingress deadlines remain unchanged.
 
 An immediately repeated created message from the same author, with identical full structured content, attachments,
 attention and reply scope, is suppressed only while the preceding representative remains pending, unclaimed and
 undispatched within its ingress deadline. Intervening distinct input, an edit, a claim or a dispatch prevents suppression. Suppressed input keeps
 its immutable message and an `expired / duplicate_pending` delivery, and is excluded from Agent history and failure
-markers. Ingress uses the same Agent custody advisory fence as delivery claims before making this decision.
+markers. The predecessor is the immediately preceding provider tuple (`occurred_at`, revision key, source ID),
+even when ingress arrives out of order. Late-root thread backfills process the latest source revisions in
+that same order and apply the same suppression rule. Ingress uses the same Agent custody advisory fence
+as delivery claims before making this decision.
 
 After inbound commit, new input requests a projection through the existing provider warning reaction. A Session
 with at least ten eligible pending inputs can mark the new message as backlogged; a capacity-expired message can

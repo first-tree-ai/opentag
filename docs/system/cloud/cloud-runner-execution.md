@@ -184,7 +184,10 @@ The native worker exposes a bounded private Unix socket during its active Prompt
 token travels only through trusted Runner memory and Worker stdin. The Runner invokes a single
 bounded native relay; the Worker checks the Session, Agent, placement and expected Turn before
 using the active Pi runtime's steer API. The existing model, credential execution and Turn remain in
-use. No host listener, extra model grant, database schema or independent retry loop is introduced.
+use. Steering is optional: a control-socket startup failure is recorded diagnostically while the Prompt
+continues, and Pi/process cleanup still runs. A stale socket path is removed before listening. Socket
+cleanup failure cannot mask the completed Turn or skip runtime/process cleanup. No host listener, extra
+model grant, database schema or independent retry loop is introduced.
 Ordered batching and message budgets follow [IM content delivery](../messaging/im-content-delivery.md).
 
 Once the current Runner connection and its verified allocation are both ready, the allocation

@@ -11,7 +11,7 @@ import type {
   RunnerCloudTurnWorkerRequest,
   RuntimeImOutboxContext,
 } from "@opentag/shared";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentInput,
   AgentPromptRequest,
@@ -43,6 +43,45 @@ const MODEL = {
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => Promise.all(cleanup.splice(0).map((close) => close())));
+
+it("continues the Turn and closes Pi when the optional steering socket cannot open", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cloud-worker-steer-unavailable-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const request = turnRequest(await fixtureExecution(root, "steer-unavailable"));
+  request.steering = { turnId: randomUUID(), token: randomUUID() };
+  const { cloudSteerSocketPath } = await import("../runner/cloud-steer-control.js");
+  const path = cloudSteerSocketPath(request.delivery.deliveryId);
+  await mkdir(path);
+  cleanup.push(() => rm(path, { recursive: true, force: true }));
+  const close = vi.fn(async () => undefined);
+  const prompt = vi.fn(async (input: AgentPromptRequest) => ({
+    runId: input.runId,
+    output: [{ text: "completed without steering", type: "text" as const }],
+    status: "completed" as const,
+  }));
+  const diagnostics: PiDiagnosticEvent[] = [];
+  const runtime = { close, prompt };
+  let child: ChildProcess | undefined;
+  cleanup.push(async () => {
+    child?.kill("SIGKILL");
+  });
+  const completion = await runCloudTurnWorker(request, {
+    executionMount: join(root, "mount"),
+    localProxyLoopbackSeam: true,
+    workspace: join(root, "workspace"),
+    onDiagnostic: (event) => diagnostics.push(event),
+    createPiFactory: ({ pids }) => {
+      child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+      if (child.pid) pids.add(child.pid);
+      return { create: async () => runtime, resume: async () => runtime };
+    },
+  });
+  expect(completion).toMatchObject({ outcome: "completed", finalText: "completed without steering" });
+  expect(prompt).toHaveBeenCalledOnce();
+  expect(close).toHaveBeenCalledOnce();
+  await expect.poll(() => child !== undefined && (child.exitCode !== null || child.signalCode !== null)).toBe(true);
+  expect(diagnostics).toContainEqual(expect.objectContaining({ phase: "worker_preparation", event: "failure" }));
+});
 
 function turnRequest(executionDir: string, sessionDirectory?: string) {
   const delivery = cloudDeliveryFixture();

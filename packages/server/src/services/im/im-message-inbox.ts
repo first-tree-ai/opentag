@@ -561,14 +561,7 @@ export class ImMessageInbox {
             );
             if (direct && threadKey === null) {
               const pendingThreadMessages = await transaction
-                .select({
-                  id: imMessages.id,
-                  externalMessageId: imMessages.externalMessageId,
-                  threadKey: imMessages.threadKey,
-                  providerContext: imMessages.providerContext,
-                  occurredAt: imMessages.occurredAt,
-                  providerRevisionKey: imMessages.providerRevisionKey,
-                })
+                .select()
                 .from(imMessages)
                 .where(
                   and(
@@ -589,9 +582,12 @@ export class ImMessageInbox {
                 }
               }
               const seenExternalMessageIds = new Set<string>();
-              for (const pending of pendingThreadMessages) {
-                if (seenExternalMessageIds.has(pending.externalMessageId)) continue;
+              const latestThreadMessages = pendingThreadMessages.filter((pending) => {
+                if (seenExternalMessageIds.has(pending.externalMessageId)) return false;
                 seenExternalMessageIds.add(pending.externalMessageId);
+                return true;
+              });
+              for (const pending of latestThreadMessages.reverse()) {
                 if (
                   !pending.threadKey ||
                   reliableRootsByThreadKey.get(pending.threadKey) !== event.message.externalId ||
@@ -614,39 +610,8 @@ export class ImMessageInbox {
                   now,
                 });
                 recordCreatedTask(createdTasks, thread, event.message.content.fallbackText);
-                // The direct root establishes continuity for these earlier-committed replies; they
-                // stay ambient because they do not address the Agent themselves.
-                const [retained] = await transaction
-                  .update(imMessageDeliveries)
-                  .set({ expiresAt: new Date(receivedAt.getTime() + DIRECT_TTL_MS) })
-                  .where(
-                    and(
-                      eq(imMessageDeliveries.messageId, pending.id),
-                      eq(imMessageDeliveries.sessionId, thread.id),
-                      eq(imMessageDeliveries.state, "pending"),
-                      eq(imMessageDeliveries.attention, "ambient"),
-                      isNull(imMessageDeliveries.dispatchRequestId),
-                      isNull(imMessageDeliveries.dispatchInputHash),
-                      isNull(imMessageDeliveries.dispatchPayload),
-                      isNull(imMessageDeliveries.inputHash),
-                    ),
-                  )
-                  .returning({ id: imMessageDeliveries.id });
-                if (!retained) {
-                  const backfilled = await transaction
-                    .insert(imMessageDeliveries)
-                    .values({
-                      messageId: pending.id,
-                      sessionId: thread.id,
-                      attention: "ambient",
-                      placementGeneration: thread.generation,
-                      nextAttemptAt: now,
-                      expiresAt: new Date(receivedAt.getTime() + DIRECT_TTL_MS),
-                    })
-                    .onConflictDoNothing()
-                    .returning({ id: imMessageDeliveries.id });
-                  for (const row of backfilled) feedbackDeliveryIds.add(row.id);
-                }
+                const backfilled = await this.#backfillThreadDelivery(transaction, pending, thread, receivedAt, now);
+                for (const id of backfilled) feedbackDeliveryIds.add(id);
                 const candidate = { sessionId: thread.id, attention: "ambient" as const };
                 overflowCandidates.set(candidate.sessionId, candidate);
               }
@@ -679,6 +644,57 @@ export class ImMessageInbox {
         }
       },
     );
+  }
+
+  async #backfillThreadDelivery(
+    transaction: DatabaseTransaction,
+    pending: typeof imMessages.$inferSelect,
+    thread: ChatSessionPlacement,
+    receivedAt: Date,
+    now: Date,
+  ): Promise<string[]> {
+    const repeated = await repeatsPendingInput(transaction, pending, thread.id, "ambient", now);
+    const retention = {
+      expiresAt: new Date(receivedAt.getTime() + DIRECT_TTL_MS),
+      ...(repeated ? { state: "expired" as const, reason: IM_DUPLICATE_PENDING_REASON } : {}),
+    };
+    // The direct root establishes continuity for these earlier-committed replies; they
+    // stay ambient because they do not address the Agent themselves.
+    const [retained] = await transaction
+      .update(imMessageDeliveries)
+      .set(retention)
+      .where(
+        and(
+          eq(imMessageDeliveries.messageId, pending.id),
+          eq(imMessageDeliveries.sessionId, thread.id),
+          eq(imMessageDeliveries.state, "pending"),
+          isNull(imMessageDeliveries.reason),
+          eq(imMessageDeliveries.attention, "ambient"),
+          isNull(imMessageDeliveries.dispatchRequestId),
+          isNull(imMessageDeliveries.dispatchInputHash),
+          isNull(imMessageDeliveries.dispatchPayload),
+          isNull(imMessageDeliveries.inputHash),
+          isNull(imMessageDeliveries.steerTargetDeliveryId),
+          sql`coalesce(${imMessageDeliveries.lastErrorCode}, '') not like 'IM_DELIVERY_CLAIM_%'`,
+        ),
+      )
+      .returning({ id: imMessageDeliveries.id });
+    if (!retained) {
+      const backfilled = await transaction
+        .insert(imMessageDeliveries)
+        .values({
+          messageId: pending.id,
+          sessionId: thread.id,
+          attention: "ambient",
+          placementGeneration: thread.generation,
+          nextAttemptAt: now,
+          ...retention,
+        })
+        .onConflictDoNothing()
+        .returning({ id: imMessageDeliveries.id });
+      return repeated ? [] : backfilled.map((row) => row.id);
+    }
+    return [];
   }
 
   async #persistDeliveries(
@@ -731,6 +747,7 @@ export class ImMessageInbox {
         and(
           eq(imMessageDeliveries.sessionId, sessionId),
           eq(imMessageDeliveries.state, "pending"),
+          sql`${imMessageDeliveries.expiresAt} > now()`,
           isNull(imMessageDeliveries.reason),
           isNull(imMessageDeliveries.dispatchRequestId),
           isNull(imMessageDeliveries.steerTargetDeliveryId),
@@ -799,6 +816,7 @@ export class ImMessageInbox {
         join im_messages m on m.id = d.message_id
         where d.session_id = ${sessionId}
           and d.state = 'pending' and d.reason is null
+          and d.expires_at > now()
           and d.dispatch_request_id is null and d.steer_target_delivery_id is null
           and coalesce(d.last_error_code, '') not like 'IM_DELIVERY_CLAIM_%'
           and exists (
@@ -812,6 +830,7 @@ export class ImMessageInbox {
       set state = 'expired'::im_delivery_state, reason = 'capacity'
       where d.id in (select id from overflow)
         and d.state = 'pending' and d.reason is null
+        and d.expires_at > now()
         and d.dispatch_request_id is null and d.steer_target_delivery_id is null
         and coalesce(d.last_error_code, '') not like 'IM_DELIVERY_CLAIM_%'
       returning d.id

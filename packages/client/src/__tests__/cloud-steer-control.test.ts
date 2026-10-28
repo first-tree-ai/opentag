@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { stat } from "node:fs/promises";
+import { stat, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import type { RuntimeImSteerRequest } from "@opentag/shared";
 import { expect, it } from "vitest";
@@ -24,6 +24,23 @@ function steerFixture(): RuntimeImSteerRequest {
     expectedTurnId: randomUUID(),
   };
 }
+
+it("replaces a stale control path before listening and removes it on close", async () => {
+  const deliveryId = randomUUID();
+  const path = cloudSteerSocketPath(deliveryId);
+  await writeFile(path, "stale control artifact");
+  const control = await openCloudSteerControl({
+    deliveryId,
+    token: randomUUID(),
+    steer: async (request) => cloudSteerResult(request, "steered"),
+  });
+  try {
+    expect((await stat(path)).isSocket()).toBe(true);
+  } finally {
+    await control.close();
+  }
+  await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
+});
 
 it("authenticates the local control socket and preserves split UTF-8 input", async () => {
   const request = steerFixture();

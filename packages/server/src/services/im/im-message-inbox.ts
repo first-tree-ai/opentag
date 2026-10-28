@@ -14,6 +14,7 @@ import {
 import { imAttrs, outcomeAttrs, setActiveSpanAttributes, withSpan } from "../../observability/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import { SessionService } from "../sessions/index.js";
+import { IM_DUPLICATE_PENDING_REASON, IM_QUEUE_CAPACITY, repeatsPendingInput } from "./im-queue-policy.js";
 import { threadRootExternalId } from "./provider-thread-context.js";
 
 const DIRECT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -112,6 +113,7 @@ export class ImMessageInbox {
   readonly #database: DatabaseClient;
   readonly #logger: Pick<ServiceLogger, "error"> | undefined;
   readonly #now: () => Date;
+  readonly #onDeliveryChanged: ((deliveryId: string) => void) | undefined;
   readonly #onTaskCreated: ((request: TaskTitleGenerationRequest) => Promise<void> | void) | undefined;
   readonly #overflowPasses = new Map<string, Promise<void>>();
   readonly #overflowRechecks = new Map<string, OverflowCandidate>();
@@ -128,12 +130,14 @@ export class ImMessageInbox {
       beforeSupersedeDeliveries?: () => Promise<void>;
       beforeOverflowExpiry?: () => Promise<void>;
       logger?: Pick<ServiceLogger, "error">;
+      onDeliveryChanged?: (deliveryId: string) => void;
       onTaskCreated?: (request: TaskTitleGenerationRequest) => Promise<void> | void;
     } = {},
   ) {
     this.#database = database;
     this.#now = options.now ?? (() => new Date());
     this.#onTaskCreated = options.onTaskCreated;
+    this.#onDeliveryChanged = options.onDeliveryChanged;
     this.#afterAdmissionFence = options.afterAdmissionFence;
     this.#afterMessageAuthority = options.afterMessageAuthority;
     this.#afterOverflowExpiry = options.afterOverflowExpiry;
@@ -164,6 +168,7 @@ export class ImMessageInbox {
       async () => {
         const createdTasks = new Map<string, TaskTitleGenerationRequest>();
         const overflowCandidates = new Map<string, OverflowCandidate>();
+        const feedbackDeliveryIds = new Set<string>();
         try {
           const result = await this.#database.transaction(async (transaction) => {
             const finish = (result: IngestResult, outcome: string): IngestResult => {
@@ -187,6 +192,9 @@ export class ImMessageInbox {
             if (!candidate) {
               throw new ImInboundPersistenceError("IM_INBOUND_BINDING_STALE", "IM_BINDING_GENERATION_STALE");
             }
+            await transaction.execute(
+              sql`select pg_advisory_xact_lock(hashtextextended(${`im-agent-custody:${candidate.agentId}`}, 0))`,
+            );
             const [agent] = await transaction
               .select({
                 computerId: agents.computerId,
@@ -542,23 +550,15 @@ export class ImMessageInbox {
               }
             }
 
-            const deliveryIds: string[] = [];
-            for (const delivery of deliveries) {
-              const [deliveryRow] = await transaction
-                .insert(imMessageDeliveries)
-                .values({
-                  messageId: created.id,
-                  sessionId: delivery.sessionId,
-                  attention: delivery.attention,
-                  placementGeneration: delivery.generation,
-                  nextAttemptAt: now,
-                  expiresAt: new Date(receivedAt.getTime() + deliveryRetentionMs(delivery)),
-                })
-                .onConflictDoNothing()
-                .returning({ id: imMessageDeliveries.id });
-              if (deliveryRow) deliveryIds.push(deliveryRow.id);
-              overflowCandidates.set(this.#overflowKey(delivery.sessionId, delivery.attention), delivery);
-            }
+            const deliveryIds = await this.#persistDeliveries(
+              transaction,
+              created,
+              deliveries,
+              overflowCandidates,
+              feedbackDeliveryIds,
+              receivedAt,
+              now,
+            );
             if (direct && threadKey === null) {
               const pendingThreadMessages = await transaction
                 .select({
@@ -632,8 +632,8 @@ export class ImMessageInbox {
                     ),
                   )
                   .returning({ id: imMessageDeliveries.id });
-                if (!retained)
-                  await transaction
+                if (!retained) {
+                  const backfilled = await transaction
                     .insert(imMessageDeliveries)
                     .values({
                       messageId: pending.id,
@@ -643,9 +643,12 @@ export class ImMessageInbox {
                       nextAttemptAt: now,
                       expiresAt: new Date(receivedAt.getTime() + DIRECT_TTL_MS),
                     })
-                    .onConflictDoNothing();
+                    .onConflictDoNothing()
+                    .returning({ id: imMessageDeliveries.id });
+                  for (const row of backfilled) feedbackDeliveryIds.add(row.id);
+                }
                 const candidate = { sessionId: thread.id, attention: "ambient" as const };
-                overflowCandidates.set(this.#overflowKey(candidate.sessionId, candidate.attention), candidate);
+                overflowCandidates.set(candidate.sessionId, candidate);
               }
             }
             await this.#retainOverflowCandidates(transaction, overflowCandidates);
@@ -654,6 +657,7 @@ export class ImMessageInbox {
               deliveryIds.length > 0 ? "persisted" : "no_delivery",
             );
           });
+          for (const deliveryId of feedbackDeliveryIds) this.#notifyDeliveryChanged(deliveryId);
           for (const candidate of overflowCandidates.values()) {
             this.#queueOverflowExpiry(candidate);
           }
@@ -677,52 +681,69 @@ export class ImMessageInbox {
     );
   }
 
-  #overflowKey(sessionId: string, attention: DeliveryAttention): string {
-    return `${sessionId}:${attention}`;
+  async #persistDeliveries(
+    transaction: DatabaseTransaction,
+    created: typeof imMessages.$inferSelect,
+    deliveries: Array<{ sessionId: string; attention: DeliveryAttention; generation: number; continuity?: boolean }>,
+    overflowCandidates: Map<string, OverflowCandidate>,
+    feedbackDeliveryIds: Set<string>,
+    receivedAt: Date,
+    now: Date,
+  ): Promise<string[]> {
+    const deliveryIds: string[] = [];
+    for (const delivery of deliveries) {
+      const repeated = await repeatsPendingInput(transaction, created, delivery.sessionId, delivery.attention, now);
+      const [deliveryRow] = await transaction
+        .insert(imMessageDeliveries)
+        .values({
+          messageId: created.id,
+          sessionId: delivery.sessionId,
+          attention: delivery.attention,
+          ...(repeated ? { state: "expired" as const, reason: IM_DUPLICATE_PENDING_REASON } : {}),
+          placementGeneration: delivery.generation,
+          nextAttemptAt: now,
+          expiresAt: new Date(receivedAt.getTime() + deliveryRetentionMs(delivery)),
+        })
+        .onConflictDoNothing()
+        .returning({ id: imMessageDeliveries.id });
+      if (deliveryRow && !repeated) {
+        deliveryIds.push(deliveryRow.id);
+        feedbackDeliveryIds.add(deliveryRow.id);
+      }
+      overflowCandidates.set(delivery.sessionId, delivery);
+    }
+    return deliveryIds;
   }
 
-  async #hasOverflow(
-    transaction: DatabaseTransaction,
-    sessionId: string,
-    attention: DeliveryAttention,
-  ): Promise<boolean> {
-    const capacity = attention === "direct" ? 100 : 500;
-    const [row] = await transaction
-      .select({ count: sql<number>`count(*)` })
+  #notifyDeliveryChanged(deliveryId: string): void {
+    try {
+      this.#onDeliveryChanged?.(deliveryId);
+    } catch (error) {
+      this.#logger?.error({ err: error, deliveryId }, "IM queue feedback scheduling failed");
+    }
+  }
+
+  async #hasOverflow(transaction: DatabaseTransaction, sessionId: string): Promise<boolean> {
+    const rows = await transaction
+      .select({ id: imMessageDeliveries.id })
       .from(imMessageDeliveries)
       .where(
         and(
           eq(imMessageDeliveries.sessionId, sessionId),
-          eq(imMessageDeliveries.attention, attention),
           eq(imMessageDeliveries.state, "pending"),
           isNull(imMessageDeliveries.reason),
-          // Capacity bounds pending input per bucket. Local rows always count; Cloud rows count
-          // only while they are UNDISPATCHED — a dispatched Cloud row is owned by its frozen
-          // execution window and accepted custody is never pending. A missing or unknown
-          // placement fails conservative: every pending delivery stays durable and no pass is
-          // queued.
-          sql`(
-            exists (
-              select 1
-              from session_placements as placement
-              inner join computers as computer on computer.id = placement.computer_id
-              where placement.session_id = im_message_deliveries.session_id
-                and computer.kind = 'local'
-            )
-            or (
-              ${imMessageDeliveries.dispatchRequestId} is null
-              and exists (
-                select 1
-                from session_placements as placement
-                inner join computers as computer on computer.id = placement.computer_id
-                where placement.session_id = im_message_deliveries.session_id
-                  and computer.kind = 'cloud'
-              )
-            )
+          isNull(imMessageDeliveries.dispatchRequestId),
+          isNull(imMessageDeliveries.steerTargetDeliveryId),
+          sql`coalesce(${imMessageDeliveries.lastErrorCode}, '') not like 'IM_DELIVERY_CLAIM_%'`,
+          sql`exists (
+            select 1 from session_placements p inner join computers c on c.id = p.computer_id
+            where p.session_id = ${imMessageDeliveries.sessionId} and c.kind in ('local', 'cloud')
           )`,
         ),
-      );
-    return Number(row?.count ?? 0) > capacity;
+      )
+      .limit(1)
+      .offset(IM_QUEUE_CAPACITY);
+    return rows.length > 0;
   }
 
   async #retainOverflowCandidates(
@@ -730,13 +751,13 @@ export class ImMessageInbox {
     candidates: Map<string, OverflowCandidate>,
   ): Promise<void> {
     for (const candidate of candidates.values()) {
-      if (await this.#hasOverflow(transaction, candidate.sessionId, candidate.attention)) continue;
-      candidates.delete(this.#overflowKey(candidate.sessionId, candidate.attention));
+      if (await this.#hasOverflow(transaction, candidate.sessionId)) continue;
+      candidates.delete(candidate.sessionId);
     }
   }
 
   #queueOverflowExpiry(candidate: OverflowCandidate): void {
-    const key = this.#overflowKey(candidate.sessionId, candidate.attention);
+    const key = candidate.sessionId;
     if (this.#overflowPasses.has(key)) {
       this.#overflowRechecks.set(key, candidate);
       return;
@@ -744,13 +765,14 @@ export class ImMessageInbox {
     const pass = Promise.resolve()
       .then(async () => {
         const hasOverflow = await this.#database.transaction((transaction) =>
-          this.#hasOverflow(transaction, candidate.sessionId, candidate.attention),
+          this.#hasOverflow(transaction, candidate.sessionId),
         );
         if (!hasOverflow) return;
         await this.#beforeOverflowExpiry?.();
-        await this.#database.transaction((transaction) =>
-          this.#expireOverflow(transaction, candidate.sessionId, candidate.attention),
+        const expiredIds = await this.#database.transaction((transaction) =>
+          this.#expireOverflow(transaction, candidate.sessionId),
         );
+        for (const id of expiredIds) this.#notifyDeliveryChanged(id);
         await this.#afterOverflowExpiry?.();
       })
       .catch((error: unknown) => {
@@ -769,66 +791,32 @@ export class ImMessageInbox {
     this.#overflowPasses.set(key, pass);
   }
 
-  async #expireOverflow(
-    transaction: DatabaseTransaction,
-    sessionId: string,
-    attention: DeliveryAttention,
-  ): Promise<void> {
-    const capacity = attention === "direct" ? 100 : 500;
-    // Re-evaluate the current placement and dispatch state per row here: they can change since the
-    // count. A row that became dispatched, acquired accepted custody, or lost its placement
-    // classification must lose nothing; an undispatched Cloud row follows the same capacity bound
-    // as Local. The same per-row eligibility is repeated in the final UPDATE predicate because a
-    // concurrent dispatcher can hold the row lock: the UPDATE waits, and PostgreSQL re-evaluates
-    // only the final predicate against the committed row version.
-    await transaction.execute(sql`
+  async #expireOverflow(transaction: DatabaseTransaction, sessionId: string): Promise<string[]> {
+    const expired = (await transaction.execute(sql`
       with overflow as (
         select d.id
         from im_message_deliveries d
         join im_messages m on m.id = d.message_id
         where d.session_id = ${sessionId}
-          and d.attention = ${attention}
-          and d.state = 'pending'
-          and d.reason is null
-          and (
-            exists (
-              select 1
-              from session_placements as placement
-              inner join computers as computer on computer.id = placement.computer_id
-              where placement.session_id = d.session_id
-                and computer.kind = 'local'
-            )
-            or (
-              d.dispatch_request_id is null
-              and exists (
-                select 1
-                from session_placements as placement
-                inner join computers as computer on computer.id = placement.computer_id
-                where placement.session_id = d.session_id
-                  and computer.kind = 'cloud'
-              )
-            )
+          and d.state = 'pending' and d.reason is null
+          and d.dispatch_request_id is null and d.steer_target_delivery_id is null
+          and coalesce(d.last_error_code, '') not like 'IM_DELIVERY_CLAIM_%'
+          and exists (
+            select 1 from session_placements p inner join computers c on c.id = p.computer_id
+            where p.session_id = d.session_id and c.kind in ('local', 'cloud')
           )
-        order by m.occurred_at desc, d.id desc
-        offset ${capacity}
+        order by m.occurred_at desc, m.provider_revision_key desc, m.id desc
+        offset ${IM_QUEUE_CAPACITY}
       )
       update im_message_deliveries as d
-      set state = 'expired'::im_delivery_state,
-          reason = 'capacity'
+      set state = 'expired'::im_delivery_state, reason = 'capacity'
       where d.id in (select id from overflow)
-        and d.state = 'pending'
-        and d.reason is null
-        and (
-          d.dispatch_request_id is null
-          or exists (
-            select 1
-            from session_placements as placement
-            inner join computers as computer on computer.id = placement.computer_id
-            where placement.session_id = d.session_id
-              and computer.kind = 'local'
-          )
-        )
-    `);
+        and d.state = 'pending' and d.reason is null
+        and d.dispatch_request_id is null and d.steer_target_delivery_id is null
+        and coalesce(d.last_error_code, '') not like 'IM_DELIVERY_CLAIM_%'
+      returning d.id
+    `)) as Array<{ id: string }>;
+    return expired.map((row) => row.id);
   }
 
   async #findConversationKind(

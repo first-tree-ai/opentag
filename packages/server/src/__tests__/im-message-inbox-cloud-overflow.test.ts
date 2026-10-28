@@ -10,7 +10,7 @@ import { ImBindingService } from "../services/im-bindings/index.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 const fixedNow = new Date("2026-08-19T00:00:00.000Z");
-const DIRECT_CAPACITY = 100;
+const DIRECT_CAPACITY = 99;
 let unit: UnitDatabase;
 
 beforeAll(async () => {

@@ -43,6 +43,28 @@ decides whether to retry an unknown or unreachable result using the same message
 identity for best-effort deduplication. Sending from or to an ended Session is
 rejected; delivery never revives the Session.
 
+## Pending IM queue
+
+Each Session keeps the newest 99 eligible, undispatched pending inputs across direct and ambient attention.
+Capacity counts original message deliveries, not Runtime frames. Claimed inputs, persisted dispatches, unresolved steer correlations and accepted
+custody are excluded from capacity eviction on both Local and Cloud Computers. An unknown placement is retained
+conservatively. Overflow marks older eligible deliveries `expired / capacity`; it never deletes their immutable
+source messages. The final update rechecks claim and dispatch state after any concurrent row-lock wait.
+Existing direct/continuity and ambient ingress deadlines remain unchanged.
+
+An immediately repeated created message from the same author, with identical full structured content, attachments,
+attention and reply scope, is suppressed only while the preceding representative remains pending, unclaimed and
+undispatched within its ingress deadline. Intervening distinct input, an edit, a claim or a dispatch prevents suppression. Suppressed input keeps
+its immutable message and an `expired / duplicate_pending` delivery, and is excluded from Agent history and failure
+markers. Ingress uses the same Agent custody advisory fence as delivery claims before making this decision.
+
+After inbound commit, new input requests a projection through the existing provider warning reaction. A Session
+with at least ten eligible pending inputs can mark the new message as backlogged; a capacity-expired message can
+receive the existing terminal-failure marker. These provider calls run outside the transaction and do not reject an
+already committed ingress. Reaction scheduling is bounded and best-effort: provider errors, saturation, process
+restarts and multiple Server instances can still leave missing or stale markers. This projection adds no text
+notification, persistent notification queue or additional retry layer. A marker alone is not a delivery receipt.
+
 ## Durable inbound receipt work
 
 Slack persists recoverable work on its existing receipt before acknowledging an

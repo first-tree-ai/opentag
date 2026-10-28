@@ -4,6 +4,7 @@ import { imBindings, imMessageDeliveries, imMessages } from "../../db/schema/ind
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import { KeyedTaskScheduler } from "../../runtime/keyed-task-scheduler.js";
 import type { ImProviderAdapter } from "../im-bindings/provider-adapter.js";
+import { IM_QUEUE_WARNING_COUNT } from "./im-queue-policy.js";
 
 type ReactionTarget = Pick<typeof imMessages.$inferSelect, "channelId" | "externalMessageId"> & { bindingId: string };
 type ReactionOutcome = { generation: number; failed: boolean };
@@ -76,7 +77,6 @@ export class ImFailureReactions {
         .where(
           and(
             eq(imBindings.status, "active"),
-            eq(imMessageDeliveries.attention, "direct"),
             eq(imMessages.direction, "inbound"),
             eq(imMessages.authorKind, "human"),
             or(eq(imMessageDeliveries.id, deliveryId), eq(imMessageDeliveries.steerTargetDeliveryId, deliveryId)),
@@ -115,7 +115,8 @@ export class ImFailureReactions {
   async #outcome(target: ReactionTarget): Promise<ReactionOutcome | undefined> {
     const [outcome] = (await this.options.database.execute(sql`
             select b.credential_generation as generation,
-              case when d.state in ('expired', 'terminal_rejected') then true
+              case when d.state = 'pending' then true
+                when d.state in ('expired', 'terminal_rejected') then true
                 else coalesce(root.turn_report, d.turn_report) ->> 'outcome' <> 'completed' end as failed
             from im_message_deliveries d
             inner join im_messages m on m.id = d.message_id
@@ -125,7 +126,10 @@ export class ImFailureReactions {
             where m.im_binding_id = ${target.bindingId}::uuid and m.channel_id = ${target.channelId}
               and m.external_message_id = ${target.externalMessageId} and b.status = 'active'
               and m.direction = 'inbound' and m.author_kind = 'human' and m.operation <> 'deleted'
-              and d.attention = 'direct' and s.kind <> 'internal'
+              and (d.attention = 'direct' or d.state = 'pending' or d.reason = 'capacity'
+                or (d.state = 'accepted' and d.turn_report ->> 'outcome' = 'completed')
+                or (d.state = 'steered' and root.turn_report ->> 'outcome' = 'completed'))
+              and s.kind <> 'internal'
               and coalesce(d.dispatch_payload ->> 'replyRole', '') <> 'observer'
               and not (s.kind = 'channel' and m.thread_key is not null and exists (
                 select 1 from im_message_deliveries sibling
@@ -133,7 +137,15 @@ export class ImFailureReactions {
                 where sibling.message_id = m.id and owner.kind = 'thread' and owner.thread_key = m.thread_key
               ))
               and (
-                (d.state in ('expired', 'terminal_rejected') and coalesce(d.reason, '') <> 'cancelled')
+                (d.state in ('expired', 'terminal_rejected') and coalesce(d.reason, '') not in ('cancelled', 'duplicate_pending'))
+                or (d.state = 'pending' and d.reason is null and d.dispatch_request_id is null and d.steer_target_delivery_id is null
+                  and exists (
+                    select 1 from im_message_deliveries queue
+                    where queue.session_id = d.session_id and queue.state = 'pending' and queue.reason is null
+                      and queue.dispatch_request_id is null and queue.steer_target_delivery_id is null
+                      and coalesce(queue.last_error_code, '') not like 'IM_DELIVERY_CLAIM_%'
+                    limit 1 offset ${IM_QUEUE_WARNING_COUNT - 1}
+                  ))
                 or (d.state = 'accepted' and d.reported_at is not null and d.turn_report ->> 'outcome' <> 'cancelled')
                 or (d.state = 'steered' and root.reported_at is not null and root.turn_report ->> 'outcome' = 'completed')
               )

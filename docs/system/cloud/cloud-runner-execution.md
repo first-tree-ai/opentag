@@ -142,8 +142,9 @@ queued on the old connection cannot authorize a new start after reconnect.
 A queued Turn cancelled before it starts reports `not_started` and immediately advances the
 remaining FIFO queue; it does not require a new message or availability signal.
 
-Undispatched Cloud inputs use the existing ingress TTL and per-Session queue capacities (100
-direct, 500 ambient). Expiry/overflow records an explicit terminal reason. Dispatched Cloud
+Undispatched Cloud inputs use the existing ingress TTL and share a 99-input per-Session queue
+capacity across direct and ambient attention. Claimed inputs are protected from capacity eviction.
+Expiry/overflow records an explicit terminal reason. Dispatched Cloud
 inputs retain their frozen dispatch window; accepted-but-unreported custody is never pruned as
 pending input. The Server settles accepted work as `unknown` once it can no longer accept a report
 for it: a superseded allocation, a proven physical absence, or the end of the frozen execution

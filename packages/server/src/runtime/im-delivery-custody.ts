@@ -232,6 +232,18 @@ function buildHistoryBoundary(
   const { occurredAt, providerRevisionKey, messageId } = input;
   return and(
     messageBefore(occurredAt, providerRevisionKey, messageId),
+    notExists(
+      database
+        .select({ id: imMessageDeliveries.id })
+        .from(imMessageDeliveries)
+        .where(
+          and(
+            eq(imMessageDeliveries.messageId, imMessages.id),
+            eq(imMessageDeliveries.sessionId, input.session.id),
+            eq(imMessageDeliveries.reason, "duplicate_pending"),
+          ),
+        ),
+    ),
     ...(lastAccepted ? [messageAfter(lastAccepted.occurredAt, lastAccepted.providerRevisionKey, lastAccepted.id)] : []),
     notExists(
       database

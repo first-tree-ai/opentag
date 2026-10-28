@@ -48,6 +48,36 @@ import {
 } from "../index.js";
 
 describe("runtime domain contract", () => {
+  it("freezes ordered batch membership into delivery and steer identities", () => {
+    const root = directDelivery(snapshot());
+    const batch = [1, 2].map((index) => ({
+      deliveryId: `child-${index}`,
+      imMessageId: `source-${index}`,
+      inputHash: "a".repeat(64),
+    }));
+    expect(DirectImMessageDeliveryRequestSchema.safeParse({ ...root, batch }).success).toBe(true);
+    expect(computeDirectInputHash({ ...root, batch })).not.toBe(computeDirectInputHash(root));
+    expect(computeDirectInputHash({ ...root, batch: batch.toReversed() })).not.toBe(
+      computeDirectInputHash({ ...root, batch }),
+    );
+    for (const invalid of [
+      [],
+      [...batch, batch[0]],
+      [{ ...batch[0], deliveryId: root.deliveryId }],
+      Array.from({ length: 32 }, (_, index) => ({
+        deliveryId: `d-${index}`,
+        imMessageId: `m-${index}`,
+        inputHash: "b".repeat(64),
+      })),
+    ]) {
+      expect(DirectImMessageDeliveryRequestSchema.safeParse({ ...root, batch: invalid }).success).toBe(false);
+    }
+    const { runtime: _, ...base } = root;
+    const steer = { ...base, type: "im:steer" as const, rootDeliveryId: "active-root", expectedTurnId: "active-turn" };
+    expect(RuntimeImSteerRequestSchema.safeParse({ ...steer, batch }).success).toBe(true);
+    expect(computeRuntimeImSteerInputHash({ ...steer, batch })).not.toBe(computeRuntimeImSteerInputHash(steer));
+  });
+
   it.each(ProviderFailureReasonSchema.options)("accepts and hashes a v3 %s report", (errorReason) => {
     const report = turnReport({ outcome: "failed", errorReason });
     expect(TurnReportRequestSchema.parse(report)).toEqual(report);

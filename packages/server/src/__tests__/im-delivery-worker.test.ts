@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   computeDirectInputHash,
   computeLegacyDirectInputHash,
+  computeRuntimeImMessageSemanticHash,
   computeRuntimeImSteerInputHash,
   type DirectImMessageDeliveryRequest,
   RUNTIME_CAPABILITY,
@@ -1918,12 +1919,19 @@ describe("ImDeliveryWorker database workflow", () => {
     }).runOnce();
     const [retiredRow] = await unit.database
       .select({
+        state: imMessageDeliveries.state,
+        reason: imMessageDeliveries.reason,
         dispatchRequestId: imMessageDeliveries.dispatchRequestId,
         steerTargetDeliveryId: imMessageDeliveries.steerTargetDeliveryId,
       })
       .from(imMessageDeliveries)
       .where(eq(imMessageDeliveries.id, retired.deliveryId));
-    expect(retiredRow).toEqual({ dispatchRequestId: null, steerTargetDeliveryId: null });
+    expect(retiredRow).toEqual({
+      state: "terminal_rejected",
+      reason: "steer_state_unknown",
+      dispatchRequestId: steer.requestId,
+      steerTargetDeliveryId: steer.rootDeliveryId,
+    });
 
     await unit.reset();
     const staleRecovery = await workerFixture(unit);
@@ -2111,6 +2119,210 @@ describe("ImDeliveryWorker database workflow", () => {
     }).runOnce();
     expect(steerEvents).toContain("IM_DELIVERY_STEER_UNAVAILABLE");
   });
+  it("keeps an explicitly uncertain steer frozen without sending it again while its Root runs", async () => {
+    const fixture = await steerFixture(unit);
+    const custody = new PostgresRuntimeCustodyStore(unit.database);
+    const request: RuntimeImSteerRequest = {
+      type: "im:steer",
+      requestId: randomUUID(),
+      deliveryId: fixture.deliveryId,
+      imMessageId: fixture.messageId,
+      sessionId: fixture.sessionId,
+      agentId: fixture.agentId,
+      placementGeneration: 1,
+      rootDeliveryId: fixture.rootDeliveryId,
+      expectedTurnId: "turn-root",
+      attention: "direct",
+      content: fixture.request.content,
+    };
+    const hash = computeRuntimeImSteerInputHash(request);
+    expect(
+      await custody.beginSteerDispatch(request, hash, {
+        computerId: fixture.computerId,
+        instanceId: fixture.instanceId,
+      }),
+    ).toBe("dispatched");
+    expect(await custody.releaseSteerDispatch(request, hash, "uncertain")).toBe("released");
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(Date.now() - 1_000) })
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    const domain = fakeDomain(custody, fixture);
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: domain as never,
+      registry: fixture.registry,
+      assembler: { assembleForSession: vi.fn() },
+    });
+    await worker.runOnce();
+    expect(domain.requestSteer).not.toHaveBeenCalled();
+    const [row] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    expect(row).toMatchObject({
+      state: "pending",
+      dispatchRequestId: request.requestId,
+      dispatchInputHash: hash,
+      lastErrorCode: "IM_DELIVERY_STEER_UNKNOWN",
+    });
+    await worker.stop();
+  });
+
+  it.each([
+    { count: 35, text: "small input", expectedMinimumRequests: 2 },
+    { count: 6, text: "中".repeat(1800), expectedMinimumRequests: 3 },
+  ])(
+    "delivers $count ordered inputs in bounded batches into one active Turn",
+    async ({ count, text, expectedMinimumRequests }) => {
+      const fixture = await workerFixture(unit);
+      await fixture.registry.register(
+        {
+          computerId: fixture.computerId,
+          installationId: randomUUID(),
+          instanceId: fixture.instanceId,
+          clientVersion: "0.1.1",
+          lastHeartbeatAt: Date.now(),
+          socket: { close: vi.fn(), terminate: vi.fn() } as never,
+          negotiatedCapabilities: {
+            [RUNTIME_CAPABILITY.imDelivery]: 3,
+            [RUNTIME_CAPABILITY.imSteer]: 3,
+            [RUNTIME_CAPABILITY.sessionReconcile]: 1,
+          },
+        },
+        async () => undefined,
+      );
+      const [rootMessage] = await unit.database.select().from(imMessages).where(eq(imMessages.id, fixture.messageId));
+      const [rootDelivery] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      if (!rootMessage || !rootDelivery) throw new Error("missing batch fixture");
+      await unit.database
+        .update(imMessages)
+        .set({ content: { version: 1, fallbackText: `${text} 0`, blocks: [], truncated: false, resources: [] } })
+        .where(eq(imMessages.id, rootMessage.id));
+      const messages = await unit.database
+        .insert(imMessages)
+        .values(
+          Array.from({ length: count - 1 }, (_, index) => ({
+            ...rootMessage,
+            id: randomUUID(),
+            providerEventId: randomUUID(),
+            externalMessageId: `batch-${index}`,
+            occurredAt: new Date(rootMessage.occurredAt.getTime() + index + 1),
+            content: {
+              version: 1 as const,
+              fallbackText: `${text} ${index + 1}`,
+              blocks: [],
+              truncated: false,
+              resources: [],
+            },
+          })),
+        )
+        .returning({ id: imMessages.id });
+      const children = await unit.database
+        .insert(imMessageDeliveries)
+        .values(
+          messages.map((message) => ({
+            messageId: message.id,
+            sessionId: fixture.sessionId,
+            attention: "direct" as const,
+            placementGeneration: 1,
+            expiresAt: rootDelivery.expiresAt,
+          })),
+        )
+        .returning({ id: imMessageDeliveries.id });
+      const custody = new PostgresRuntimeCustodyStore(unit.database);
+      const domain = fakeDomain(custody, fixture);
+      const sent: Array<DirectImMessageDeliveryRequest | RuntimeImSteerRequest> = [];
+      domain.requestDelivery.mockImplementation(async (_computer, _instance, request, onDispatched) => {
+        const hash = computeDirectInputHash(request);
+        expect(
+          await custody.beginDeliveryDispatch(request, hash, {
+            computerId: fixture.computerId,
+            instanceId: fixture.instanceId,
+          }),
+        ).toBe("dispatched");
+        onDispatched?.();
+        sent.push(request);
+        expect(
+          await custody.acceptDelivery(request, hash, "batch-turn", {
+            computerId: fixture.computerId,
+            installationId: randomUUID(),
+            instanceId: fixture.instanceId,
+            signal: new AbortController().signal,
+          }),
+        ).toBe("accepted");
+        return {
+          type: "im:deliver:result",
+          requestId: request.requestId,
+          deliveryId: request.deliveryId,
+          sessionId: request.sessionId,
+          placementGeneration: 1,
+          status: "accepted",
+          turnId: "batch-turn",
+        };
+      });
+      domain.requestSteer.mockImplementation(async (_computer, _instance, input, onDispatched) => {
+        const request = input as RuntimeImSteerRequest;
+        const hash = computeRuntimeImSteerInputHash(request);
+        expect(
+          await custody.beginSteerDispatch(request, hash, {
+            computerId: fixture.computerId,
+            instanceId: fixture.instanceId,
+          }),
+        ).toBe("dispatched");
+        onDispatched?.();
+        sent.push(request);
+        expect(
+          await custody.recordSteered(request, hash, computeRuntimeImMessageSemanticHash(request), {
+            computerId: fixture.computerId,
+            installationId: randomUUID(),
+            instanceId: fixture.instanceId,
+            signal: new AbortController().signal,
+          }),
+        ).toBe("steered");
+        return {
+          type: "im:steer:result",
+          requestId: request.requestId,
+          deliveryId: request.deliveryId,
+          sessionId: request.sessionId,
+          placementGeneration: 1,
+          status: "steered",
+        };
+      });
+      const worker = new ImDeliveryWorker({
+        database: unit.database,
+        domain: domain as never,
+        registry: fixture.registry,
+        assembler: { assembleForSession: vi.fn(async () => fixture.runtime) },
+      });
+      for (let index = 0; index < count; index += 1) await worker.runOnce();
+      expect(domain.requestDelivery).toHaveBeenCalledTimes(1);
+      for (const call of domain.requestSteer.mock.results)
+        await expect(call.value).resolves.toMatchObject({ status: "steered" });
+      expect(sent.length).toBeGreaterThanOrEqual(expectedMinimumRequests);
+      expect(sent.length).toBeLessThan(count);
+      const deliveredIds = sent.flatMap((request) => [
+        request.deliveryId,
+        ...(request.batch ?? []).map((member) => member.deliveryId),
+      ]);
+      expect(deliveredIds).toEqual([fixture.deliveryId, ...children.map((row) => row.id)]);
+      for (const request of sent) {
+        expect(Buffer.byteLength(request.content.text)).toBeLessThanOrEqual(16 * 1024);
+        expect(Buffer.byteLength(JSON.stringify(request))).toBeLessThanOrEqual(64 * 1024);
+        expect((request.batch?.length ?? 0) + 1).toBeLessThanOrEqual(32);
+      }
+      const rows = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.sessionId, fixture.sessionId));
+      expect(rows.filter((row) => row.state === "accepted")).toHaveLength(1);
+      expect(rows.filter((row) => row.state === "steered")).toHaveLength(count - 1);
+      await worker.stop();
+    },
+  );
 });
 
 async function workerFixture(unit: UnitDatabase) {

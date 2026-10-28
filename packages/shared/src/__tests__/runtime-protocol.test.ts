@@ -119,9 +119,9 @@ describe("runtime protocol", () => {
     expect(negotiateRuntimeCapabilities({}, RUNTIME_SERVER_CAPABILITY_OFFERS)).toEqual({});
   });
 
-  it("negotiates observer-safe IM delivery and steer independently from owner-compatible v1", () => {
-    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.imDelivery]).toEqual({ min: 1, max: 2 });
-    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.imSteer]).toEqual({ min: 1, max: 2 });
+  it("negotiates batched IM input while preserving owner-compatible v1 and observer-safe v2", () => {
+    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.imDelivery]).toEqual({ min: 1, max: 3 });
+    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.imSteer]).toEqual({ min: 1, max: 3 });
     expect(
       negotiateRuntimeCapabilities(
         {
@@ -253,8 +253,8 @@ describe("runtime protocol", () => {
     expect(negotiated["future.optionalFeature"]).toBe(3);
     expect(negotiated["server.unknownFeature"]).toBeUndefined();
     expect(negotiated[RUNTIME_CAPABILITY.sessionCollaboration]).toBe(3);
-    expect(negotiated[RUNTIME_CAPABILITY.imDelivery]).toBe(2);
-    expect(negotiated[RUNTIME_CAPABILITY.imSteer]).toBe(2);
+    expect(negotiated[RUNTIME_CAPABILITY.imDelivery]).toBe(3);
+    expect(negotiated[RUNTIME_CAPABILITY.imSteer]).toBe(3);
     expect(negotiated[RUNTIME_CAPABILITY.agentRuntimeTest]).toBe(1);
     expect(negotiated[RUNTIME_CAPABILITY.turnReport]).toBe(3);
     expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.agentRuntimeTest]).toEqual({ min: 1, max: 1 });

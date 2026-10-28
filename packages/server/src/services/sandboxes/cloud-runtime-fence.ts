@@ -43,6 +43,7 @@ export interface CloudConnectionRecord {
    */
   readonly executionEligible: boolean;
   readonly turnActivityVersion: 0 | 1;
+  readonly imInputVersion?: 1;
 }
 
 /**
@@ -64,6 +65,7 @@ export function cloudInstanceIdFor(scope: RunnerScope): string {
 export class CloudRuntimeFence {
   readonly #byConnection = new Map<string, CloudConnectionRecord>();
   readonly #bySandbox = new Map<string, string>();
+  readonly #bySession = new Map<string, string>();
 
   /** Register an authenticated, hub-attached connection. One current connection per Sandbox. */
   attach(input: {
@@ -73,6 +75,7 @@ export class CloudRuntimeFence {
     socket?: RunnerControlSocket;
     executionEligible?: boolean;
     turnActivityVersion?: 1;
+    imInputVersion?: 1;
     githubUserTaskVersion?: 1;
     contextTreeExecutionVersion?: 1;
     sessionCollaborationEligible?: boolean;
@@ -91,6 +94,7 @@ export class CloudRuntimeFence {
       ...(input.socket ? { socket: input.socket } : {}),
       executionEligible: input.executionEligible !== false,
       turnActivityVersion: input.turnActivityVersion ?? 0,
+      ...(input.imInputVersion ? { imInputVersion: input.imInputVersion } : {}),
       sessionCollaborationEligible: sessionCollaborationVersion > 0,
       sessionCollaborationVersion,
       ...(input.githubUserTaskVersion ? { githubUserTaskVersion: input.githubUserTaskVersion } : {}),
@@ -98,6 +102,7 @@ export class CloudRuntimeFence {
     };
     this.#byConnection.set(record.connectionId, record);
     this.#bySandbox.set(input.scope.sandboxId, record.connectionId);
+    this.#bySession.set(input.scope.sessionId, record.connectionId);
     return record;
   }
 
@@ -105,6 +110,7 @@ export class CloudRuntimeFence {
     const record = this.#byConnection.get(connectionId);
     if (!record) return undefined;
     this.#byConnection.delete(connectionId);
+    if (this.#bySession.get(record.scope.sessionId) === connectionId) this.#bySession.delete(record.scope.sessionId);
     if (this.#bySandbox.get(record.scope.sandboxId) === connectionId) {
       this.#bySandbox.delete(record.scope.sandboxId);
     }
@@ -114,6 +120,11 @@ export class CloudRuntimeFence {
   detachSandbox(sandboxId: string): void {
     const connectionId = this.#bySandbox.get(sandboxId);
     if (connectionId) this.detach(connectionId);
+  }
+
+  connectionForSession(sessionId: string): CloudConnectionRecord | undefined {
+    const id = this.#bySession.get(sessionId);
+    return id ? this.#byConnection.get(id) : undefined;
   }
 
   connectionForSandbox(sandboxId: string): CloudConnectionRecord | undefined {

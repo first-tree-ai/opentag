@@ -56,7 +56,7 @@ export async function runImDeliverySteerRecovery(
   const eligible = sql`
     exists (
       select 1 from im_message_deliveries as child
-      where child.state = 'steered' and child.steer_target_delivery_id = target.id
+      where child.steer_target_delivery_id = target.id and ((child.state = 'steered' and coalesce(child.reason, '') <> 'batch_initial') or (child.state in ('pending', 'expired') and child.dispatch_payload ->> 'type' = 'im:steer'))
     )
     and (
       target.state <> 'accepted'

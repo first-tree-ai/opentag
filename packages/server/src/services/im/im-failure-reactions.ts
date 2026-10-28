@@ -147,7 +147,7 @@ export class ImFailureReactions {
                     limit 1 offset ${IM_QUEUE_WARNING_COUNT - 1}
                   ))
                 or (d.state = 'accepted' and d.reported_at is not null and d.turn_report ->> 'outcome' <> 'cancelled')
-                or (d.state = 'steered' and root.reported_at is not null and root.turn_report ->> 'outcome' = 'completed')
+                or (d.state = 'steered' and root.reported_at is not null and (root.turn_report ->> 'outcome' = 'completed' or (d.reason = 'batch_initial' and root.turn_report ->> 'outcome' <> 'cancelled')))
               )
             order by m.occurred_at desc, m.received_at desc,
               coalesce(root.reported_at, d.reported_at, d.expires_at) desc, d.id desc

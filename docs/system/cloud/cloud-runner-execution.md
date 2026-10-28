@@ -158,7 +158,23 @@ path to explain. Without E5 persistence, `restore_required` rejects replacement 
 replacement allocation is permitted but cannot execute before verified restoration. A stopped
 environment rejects input explicitly. Transient model/Runner unavailability remains retryable within the input
 deadline, with exponential delays from two seconds to a thirty-second cap using the existing
-attempt counter. Cloud follow-ups wait for the current Turn and never enter the Local steering path.
+attempt counter.
+
+Cloud follow-ups negotiate `imInputVersion: 1` and use `delivery:steer` on the same authenticated
+control connection. The Server freezes the existing delivery rows before sending. The Runner fsyncs
+the exact steer input and target Turn before a single native injection, fsyncs its result before
+`delivery:steer:result`, and retires it only after the exact `delivery:steer:ack`. Report-only
+connections may settle receipts but cannot submit new execution. A reopened `received` intent
+requires fresh authority; a reopened `started` intent reports uncertainty and never injects again.
+After an uncertainty receipt is acknowledged, the Server retains the frozen unknown state and does
+not resubmit it while its Root Turn is running.
+
+The native worker exposes a bounded private Unix socket during its active Prompt. A per-execution
+token travels only through trusted Runner memory and Worker stdin. The Runner invokes a single
+bounded native relay; the Worker checks the Session, Agent, placement and expected Turn before
+using the active Pi runtime's steer API. The existing model, credential execution and Turn remain in
+use. No host listener, extra model grant, database schema or independent retry loop is introduced.
+Ordered batching and message budgets follow [IM content delivery](../messaging/im-content-delivery.md).
 
 Once the current Runner connection and its verified allocation are both ready, the allocation
 service publishes a composition-injected notification. The IM worker wakes already-due initial inputs

@@ -42,6 +42,7 @@ contents, and machine-specific operational logs outside the repository.
 - [Steered IM custody without terminal reports](verification/im-steer-custody.md)
 - [Provider process shutdown](verification/provider-process-custody.md)
 - [IM content and attachment delivery](verification/im-content-delivery.md)
+- [Ordered IM batches and Cloud steering](verification/im-backlog-batching.md)
 - [Inbound receipt recovery](verification/inbound-receipt-recovery.md)
 - [MCP Server integration](verification/mcp-server-integration.md)
 - [Release guide](verification/releasing.md)

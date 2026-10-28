@@ -93,9 +93,8 @@ export class TurnCustodyOwner {
   }
 
   acceptSteer(request: RuntimeImSteerRequest): Promise<RuntimeImSteerResult> {
-    if (request.replyRole === "observer" && this.#imSteerVersion() !== 2) {
+    if ((this.#imSteerVersion() ?? 0) < requiredImInputVersion(request))
       return Promise.resolve(deferredSteer(request, "steer_unsupported"));
-    }
     const inputHash = computeRuntimeImSteerInputHash(request);
     const requestHash = hashTuple([request.deliveryId, inputHash]);
     const remembered = this.#steerRequests.get(request.requestId);
@@ -130,9 +129,8 @@ export class TurnCustodyOwner {
   }
 
   accept(request: DirectImMessageDeliveryRequest): Promise<DeliveryDecision> {
-    if (request.replyRole === "observer" && this.#imDeliveryVersion() !== 2) {
+    if ((this.#imDeliveryVersion() ?? 0) < requiredImInputVersion(request))
       return Promise.resolve({ result: rejected(request, "session_not_ready") });
-    }
     const inputHash = computeDirectInputHash(request);
     const requestHash = hashTuple([request.deliveryId, inputHash]);
     const remembered = this.#requests.get(request.requestId);
@@ -414,4 +412,9 @@ function assertMatchingReport(owner: LiveTurnOwner, report: TurnReportRequest): 
   ) {
     throw new Error("The Turn Report does not match its live custody owner");
   }
+}
+
+function requiredImInputVersion(request: DirectImMessageDeliveryRequest | RuntimeImSteerRequest): number {
+  if (request.batch) return 3;
+  return request.replyRole === "observer" ? 2 : 0;
 }

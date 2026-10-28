@@ -30,6 +30,7 @@ import type { RuntimeCustodyStore } from "../../runtime/runtime-custody-store.js
 import type { RuntimeBusinessContext } from "../../runtime/runtime-session.js";
 import type { RuntimeCredentialOwner } from "../../runtime-credentials/runtime-credential-owner.js";
 import type { SessionCliProofService } from "../sessions/session-cli-proof-service.js";
+import { CloudImSteering } from "./cloud-im-steering.js";
 import type { CloudModelGrantIssue } from "./cloud-model-grants.js";
 import { type CloudConnectionRecord, type CloudRuntimeFence, cloudInstanceIdFor } from "./cloud-runtime-fence.js";
 import { loadManagedSandboxBySessionId, loadSandboxRecordBySessionId } from "./owned-sandbox.js";
@@ -165,6 +166,7 @@ export type CloudSessionCancelOutcome = {
 };
 
 export class CloudDeliveryOwner {
+  readonly #steering: CloudImSteering;
   readonly #credentials?: CloudDeliveryOwnerCredentialDeps;
   readonly #custody: RuntimeCustodyStore;
   readonly #database: DatabaseClient;
@@ -211,6 +213,34 @@ export class CloudDeliveryOwner {
     this.#allocationStatus = options.allocationStatus;
     this.#noteActivity = options.noteActivity;
     this.#sessionProofs = options.sessionProofs;
+    this.#steering = new CloudImSteering({
+      database: this.#database,
+      custody: this.#custody,
+      connection: async (id) => {
+        const record = this.#fence.connectionForSession(id);
+        if (
+          !record ||
+          !this.canSteer(id, record.instanceId) ||
+          !(await this.#loadCurrentAllocation(record)) ||
+          !this.#isExactConnection(record)
+        )
+          return undefined;
+        const socket = this.#socketFor(record);
+        if (!socket) return undefined;
+        return {
+          record,
+          context: this.#context(record),
+          send: (frame) => this.#hub.sendToCurrent(record.scope.sandboxId, socket, frame),
+        };
+      },
+      current: (record) => this.#isExactConnection(record),
+      validAllocation: async (record) => !!(await this.#loadCurrentAllocation(record, { allowReleasing: true })),
+      context: (record) => this.#context(record),
+      send: (record, frame) => {
+        const socket = this.#socketFor(record);
+        return !!socket && this.#hub.sendToCurrent(record.scope.sandboxId, socket, frame);
+      },
+    });
   }
 
   /* ------------------------------------------------------------------------------------------
@@ -230,6 +260,35 @@ export class CloudDeliveryOwner {
     if (runtime.model) return (await grants.isModelAllowed(runtime.model)) ? runtime : undefined;
     const fallback = await grants.defaultModel();
     return fallback ? { ...runtime, model: fallback } : undefined;
+  }
+
+  inputInstance(sessionId: string): string | undefined {
+    const record = this.#fence.connectionForSession(sessionId);
+    return record && this.canSteer(sessionId, record.instanceId) ? record.instanceId : undefined;
+  }
+
+  canBatch(sessionId: string): boolean {
+    return this.#fence.connectionForSession(sessionId)?.imInputVersion === 1;
+  }
+
+  canSteer(sessionId: string, instanceId: string | null): boolean {
+    const record = this.#fence.connectionForSession(sessionId);
+    return (
+      !!record &&
+      record.instanceId === instanceId &&
+      record.executionEligible &&
+      record.imInputVersion === 1 &&
+      this.#hub.describe(record.scope.sandboxId).ready &&
+      this.#isExactConnection(record)
+    );
+  }
+
+  requestSteer(request: import("@opentag/shared").RuntimeImSteerRequest, onDispatched: () => void) {
+    return this.#steering.request(request, onDispatched);
+  }
+
+  handleSteerResult(record: CloudConnectionRecord, frame: import("@opentag/shared").RunnerCloudSteerResultFrame) {
+    return this.#steering.handle(record, frame);
   }
 
   /** True when the deployment has a usable model path; allocation must not run without it. */
@@ -274,6 +333,8 @@ export class CloudDeliveryOwner {
       throw new CloudDeliveryDispatchError("model_unavailable", "The Session model is not offered by the Router");
     }
     const connection = requireDispatchableConnection(this.#fence.connectionForSandbox(row.id), snapshot.scope);
+    if (!supportsBatchRequest(request, connection))
+      throw new CloudDeliveryDispatchError("runner_not_ready", "The Runner does not support batched input");
     const socket = this.#socketFor(connection);
     if (!socket) throw new CloudDeliveryDispatchError("runner_not_ready", "The Runner connection was replaced");
     const dispatch = await this.#custody.beginDeliveryDispatch(request, input.inputHash, {
@@ -1130,6 +1191,7 @@ export class CloudDeliveryOwner {
     /** False for a report-only reconnect: settle/report only, never mint execution permission. */
     executionEligible?: boolean;
     turnActivityVersion?: 1;
+    imInputVersion?: 1;
     githubUserTaskVersion?: 1;
     contextTreeExecutionVersion?: 1;
     /** E8: only when the Runner negotiated the collaboration capability at the same handshake. */
@@ -1153,6 +1215,7 @@ export class CloudDeliveryOwner {
   }
 
   #teardownConnection(connectionId: string): void {
+    this.#steering.detach(connectionId);
     this.#signals.get(connectionId)?.abort();
     this.#signals.delete(connectionId);
     for (const [requestId, pending] of [...this.#pendingQueries.entries()]) {
@@ -1512,4 +1575,8 @@ function credentialFailure(
     return { type: "runtime:proxy:ticket:result", code: code as never, requestId: frame.requestId, status: "rejected" };
   }
   return { type: "runtime:credential:result", code: code as never, requestId: frame.requestId, status: "rejected" };
+}
+
+function supportsBatchRequest(request: DirectImMessageDeliveryRequest, connection: CloudConnectionRecord): boolean {
+  return !request.batch || connection.imInputVersion === 1;
 }

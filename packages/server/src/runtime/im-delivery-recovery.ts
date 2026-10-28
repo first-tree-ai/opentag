@@ -14,6 +14,7 @@ type Candidate = {
   id: string;
   messageId: string;
   sourceSessionId: string;
+  targetDeliveryId: string;
 };
 
 type RecoveryRoute = { kind: "pending"; sessionId: string; placementGeneration: number } | { kind: "terminal" };
@@ -77,7 +78,7 @@ export async function requeueSteeredDeliveries(
     const recoveredId = await transitionSteeredDelivery(
       transaction,
       candidate,
-      targetDeliveryId,
+      candidate.targetDeliveryId,
       routes.get(candidate.sourceSessionId),
       now,
       index,
@@ -103,11 +104,20 @@ async function readSteeredCandidates(transaction: DatabaseTransaction, targetDel
       id: imMessageDeliveries.id,
       messageId: imMessageDeliveries.messageId,
       sourceSessionId: imMessageDeliveries.sessionId,
+      targetDeliveryId: imMessageDeliveries.steerTargetDeliveryId,
     })
     .from(imMessageDeliveries)
     .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
     .where(
-      and(eq(imMessageDeliveries.state, "steered"), eq(imMessageDeliveries.steerTargetDeliveryId, targetDeliveryId)),
+      sql`(
+        (${imMessageDeliveries.steerTargetDeliveryId} = ${targetDeliveryId}::uuid and (
+          (${imMessageDeliveries.state} = 'steered' and coalesce(${imMessageDeliveries.reason}, '') <> 'batch_initial')
+          or (${imMessageDeliveries.state} in ('pending', 'expired') and ${imMessageDeliveries.dispatchPayload} ->> 'type' = 'im:steer')
+        )) or (${imMessageDeliveries.reason} = 'batch_pending' and ${imMessageDeliveries.steerTargetDeliveryId} in (
+          select frozen.id from im_message_deliveries frozen where frozen.steer_target_delivery_id = ${targetDeliveryId}::uuid
+            and frozen.state in ('pending', 'expired') and frozen.dispatch_payload ->> 'type' = 'im:steer'
+        ))
+      )`,
     )
     .orderBy(
       asc(imMessages.occurredAt),
@@ -191,7 +201,7 @@ async function transitionSteeredDelivery(
     .where(
       and(
         eq(imMessageDeliveries.id, candidate.id),
-        eq(imMessageDeliveries.state, "steered"),
+        inArray(imMessageDeliveries.state, ["steered", "pending", "expired"]),
         eq(imMessageDeliveries.steerTargetDeliveryId, targetDeliveryId),
       ),
     )
@@ -228,7 +238,7 @@ async function terminalizeSteeredDelivery(
     .where(
       and(
         eq(imMessageDeliveries.id, deliveryId),
-        eq(imMessageDeliveries.state, "steered"),
+        inArray(imMessageDeliveries.state, ["steered", "pending", "expired"]),
         eq(imMessageDeliveries.steerTargetDeliveryId, targetDeliveryId),
       ),
     )

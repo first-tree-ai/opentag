@@ -1187,6 +1187,34 @@ describe("E4 Cloud IM delivery over the runner channel", () => {
     return { deliveryId, messageId };
   }
 
+  it.each([false, true])("negotiates Cloud IM input only with Cloud delivery enabled: %s", async (cloudEnabled) => {
+    const accountId = await account();
+    const sandbox = await ownedSandbox(accountId);
+    const stack = await cloudDeliveryStack(accountId);
+    await stack.service.startForAccount(accountId, sandbox.sandboxId);
+    const [row] = await unit.database.select().from(sandboxes).where(eq(sandboxes.id, sandbox.sandboxId));
+    const token = await stack.tokens.issue({
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: row?.currentResourceName as string,
+    });
+    const client = await connectRunner(stack.address);
+    client.send({
+      type: "auth",
+      requestId: randomUUID(),
+      token,
+      imInputVersion: 1,
+      ...(cloudEnabled ? { cloudDeliveryVersion: 1 } : {}),
+    });
+    expect((await client.waitFor("auth:result")).ok).toBe(true);
+    expect((await client.waitFor("server:welcome")).imInputVersion).toBe(cloudEnabled ? 1 : undefined);
+    expect(stack.fence.connectionForSandbox(sandbox.sandboxId)?.imInputVersion).toBe(cloudEnabled ? 1 : undefined);
+    client.socket.close();
+    await client.closed;
+    stack.grants.close();
+  });
+
   it("keeps the exact legacy E3 welcome shape and rejects E4 frames without negotiation", async () => {
     const accountId = await account();
     const sandbox = await ownedSandbox(accountId);

@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  computeRuntimeImSteerInputHash,
   computeTurnResultHash,
   ProviderFailureReasonSchema,
   type RunnerClientFrame,
@@ -10,6 +11,7 @@ import {
   type RunnerCloudDeliveryRunFrame,
   type RunnerCloudDeliveryVerifiedFrame,
   type RunnerCloudModelGrant,
+  type RuntimeImSteerRequest,
   type SessionMessageDeliveryRequest,
   TurnReportRequestSchema,
 } from "@opentag/shared";
@@ -23,6 +25,7 @@ import {
   type CloudJournalScope,
   cloudJournalEntryKey,
 } from "../runner/cloud-journal.js";
+import { cloudSteerResult } from "../runner/cloud-steer-control.js";
 import { CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS, CloudTurnRunner, type CloudTurnScope } from "../runner/cloud-turns.js";
 import { NativeSandboxError } from "../runner/native-sandbox.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
@@ -342,6 +345,106 @@ describe("CloudTurnRunner", () => {
       workerInputs,
     };
   }
+
+  it("steers an active Cloud Turn once, journals before sending, and replays only the receipt", async () => {
+    const finish = deferred<ExecResult>();
+    let injections = 0;
+    const h = harness({
+      worker: () => finish.promise,
+      runnerOptions: {
+        steeringEnabled: () => true,
+        steerWorker: async ({ request }) => {
+          injections += 1;
+          expect((await journal.read(request.deliveryId))?.phase).toBe("started");
+          return cloudSteerResult(request, "steered");
+        },
+      },
+    });
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+    await waitFor(() => h.workerInputs.length === 1, "active prompt");
+    const { runtime: _, ...base } = h.delivery;
+    const request: RuntimeImSteerRequest = {
+      ...base,
+      type: "im:steer",
+      requestId: randomUUID(),
+      deliveryId: randomUUID(),
+      imMessageId: randomUUID(),
+      rootDeliveryId: h.delivery.deliveryId,
+      expectedTurnId: (await journal.read(h.delivery.deliveryId))?.turnId ?? "missing",
+      content: { ...base.content, text: "follow up while running" },
+    };
+    const frame = { type: "delivery:steer" as const, requestId: request.requestId, steer: request };
+    await h.runner.handleSteer(frame);
+    await waitFor(() => h.sent.some((value) => value.type === "delivery:steer:result"), "steer receipt");
+    expect(reportsOf(h.sent)).toHaveLength(0);
+    expect(injections).toBe(1);
+    await h.runner.handleSteer(frame);
+    await h.runner.reconcile();
+    expect(injections).toBe(1);
+    const receipts = h.sent.filter((value) => value.type === "delivery:steer:result");
+    expect(receipts.length).toBeGreaterThanOrEqual(3);
+    expect(receipts.every((value) => JSON.stringify(value) === JSON.stringify(receipts[0]))).toBe(true);
+    await h.runner.handleSteerAck({
+      type: "delivery:steer:ack",
+      requestId: request.requestId,
+      deliveryId: request.deliveryId,
+      inputHash: "0".repeat(64),
+      status: "recorded",
+    });
+    expect(await journal.read(request.deliveryId)).toBeDefined();
+    await h.runner.handleSteerAck({
+      type: "delivery:steer:ack",
+      requestId: request.requestId,
+      deliveryId: request.deliveryId,
+      inputHash: computeRuntimeImSteerInputHash(request),
+      status: "recorded",
+    });
+    expect(await journal.read(request.deliveryId)).toBeUndefined();
+    finish.resolve(completedExec());
+    await h.runner.waitForActive();
+    await h.runner.close();
+  });
+
+  it.each(["received", "started"] as const)("does not inject a recovered %s steer intent", async (phase) => {
+    const h = harness({
+      runnerOptions: {
+        steeringEnabled: () => true,
+        steerWorker: async () => {
+          throw new Error("must not execute recovered intent");
+        },
+      },
+    });
+    const root = await journal.recordReceived({
+      delivery: h.delivery,
+      scope: { ...h.scope, resourceUid: "uid-1" },
+      deliveryId: h.delivery.deliveryId,
+      requestId: h.delivery.requestId,
+      turnId: randomUUID(),
+    });
+    const { runtime: _, ...base } = h.delivery;
+    const request: RuntimeImSteerRequest = {
+      ...base,
+      type: "im:steer",
+      requestId: randomUUID(),
+      deliveryId: randomUUID(),
+      imMessageId: randomUUID(),
+      rootDeliveryId: root.deliveryId,
+      expectedTurnId: root.turnId,
+    };
+    await journal.recordSteerReceived(request, root);
+    if (phase === "started") await journal.markSteerStarted(request.deliveryId, root.scope);
+    await h.runner.reconcile();
+    const receipt = h.sent.find((value) => value.type === "delivery:steer:result");
+    expect(receipt).toMatchObject({
+      result:
+        phase === "received"
+          ? { status: "retry", reason: "turn_starting" }
+          : { status: "deferred", reason: "steer_state_unknown" },
+    });
+    expect(h.workerInputs).toHaveLength(0);
+    await h.runner.close();
+  });
 
   it.each(ProviderFailureReasonSchema.options)(
     "keeps %s compatible with the frozen Cloud v1 parser",

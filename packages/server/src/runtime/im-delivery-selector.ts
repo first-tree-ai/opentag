@@ -11,8 +11,8 @@ import {
   deliveryCandidatePage,
   loadDeliveryContexts,
   lockDeliveryCandidate,
-  readCloudPendingHead,
   readDeliveryCustody,
+  readPendingHead,
 } from "./im-delivery-work-query.js";
 
 function readyCandidate(row: DeliveryCandidate, context: DeliveryContext) {
@@ -43,7 +43,9 @@ export function eligibleDeliveryCandidate(
   const dueInput =
     (row.state === "pending" &&
       row.reason === null &&
-      (row.ingressLive || (context.computerKind === "cloud" && row.dispatchRequestId !== null))) ||
+      (row.ingressLive ||
+        (row.dispatchRequestId !== null &&
+          (context.computerKind === "cloud" || row.steerTargetDeliveryId !== null)))) ||
     (row.state === "expired" && row.dispatchRequestId !== null);
   if (!dueInput) return false;
   const other = custody.other({
@@ -52,21 +54,13 @@ export function eligibleDeliveryCandidate(
     agentId: context.agentId,
     computerKind: context.computerKind,
   });
-  const steer =
-    context.computerKind === "local" &&
-    row.state === "pending" &&
-    row.dispatchRequestId === null &&
-    row.steerTargetDeliveryId === null &&
-    custody.acceptedInSession(row.sessionId, row.id);
+  const steer = canSteerCandidate(row, custody);
   return !other || !!steer;
 }
 
-export function needsCloudOrder(row: DeliveryCandidate, context: DeliveryContext) {
+export function needsPendingOrder(row: DeliveryCandidate, _context: DeliveryContext) {
   return (
-    context.computerKind === "cloud" &&
-    row.state === "pending" &&
-    row.dispatchRequestId === null &&
-    !row.lastErrorCode?.startsWith(DISPATCH_CLAIM_PREFIX)
+    row.state === "pending" && row.dispatchRequestId === null && !row.lastErrorCode?.startsWith(DISPATCH_CLAIM_PREFIX)
   );
 }
 
@@ -106,8 +100,8 @@ export class ImDeliverySelector {
   }
 
   async #ordered(row: DeliveryCandidate, context: DeliveryContext, heads: Map<string, string | undefined>) {
-    if (!needsCloudOrder(row, context)) return true;
-    if (!heads.has(row.sessionId)) heads.set(row.sessionId, await readCloudPendingHead(this.database, row.sessionId));
+    if (!needsPendingOrder(row, context)) return true;
+    if (!heads.has(row.sessionId)) heads.set(row.sessionId, await readPendingHead(this.database, row.sessionId));
     return heads.get(row.sessionId) === row.id;
   }
 
@@ -181,7 +175,16 @@ export async function lockEligibleDelivery(
   const custody = new DeliveryCustodySnapshot(rows, contexts);
   if (!eligibleDeliveryCandidate(delivery, context, custody, !!sessionId) || context.agentId !== expectedAgentId)
     return undefined;
-  if (needsCloudOrder(delivery, context) && (await readCloudPendingHead(database, delivery.sessionId)) !== delivery.id)
+  if (needsPendingOrder(delivery, context) && (await readPendingHead(database, delivery.sessionId)) !== delivery.id)
     return undefined;
   return { row: { ...delivery, ...context }, custody };
+}
+
+function canSteerCandidate(row: DeliveryCandidate, custody: DeliveryCustodySnapshot): boolean {
+  return (
+    ["pending", "expired"].includes(row.state) &&
+    ((row.dispatchRequestId === null && row.steerTargetDeliveryId === null) ||
+      (row.dispatchRequestId !== null && row.steerTargetDeliveryId !== null)) &&
+    !!custody.acceptedInSession(row.sessionId, row.id)
+  );
 }

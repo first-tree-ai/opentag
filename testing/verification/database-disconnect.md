@@ -47,6 +47,12 @@ host and port arrays before issuing SQL. Every candidate must target the disposa
 `hostname` setters must not construct this authority: they can collapse the candidate list or leave an entry
 using PostgreSQL's default port instead of the controlled fixture.
 
+`server-startup.test.ts` additionally combines a rejected listen call with a real Fastify `onClose` resource
+failure. It requires later outer billing and telemetry cleanup to run, including when those also reject,
+`startServer()` to resolve with exit code 1, and one redacted report preserving the original and nested cleanup
+errors. A pre-creation failure plus rejected telemetry cleanup covers the stderr fallback. These regressions
+fail against the previous unguarded startup catch.
+
 `database-startup.test.ts` runs on PostgreSQL 16 and 17 and checks native session settings, the 2 s advisory-lock wait, the 5 s statement limit,
 the 10 s transaction or total-operation limit across individually shorter statements, rollback, and silent established migration
 and verification connections. Startup work must not reconnect and continue after losing its dedicated session.
@@ -77,6 +83,7 @@ image; the built runtime image runs the following end-to-end checks:
 | Start against an existing ledger with auto-migration disabled | Verification succeeds on PostgreSQL 16 and 17 |
 | Migration advisory lock held by another session | Startup exits 1 after the native 2 s lock limit |
 | Startup TCP connection accepts but never responds | Startup exits 1 within its short connect/transport bounds |
+| Listen fails while a scheduler cleanup rejects | One redacted report retains both failures, no database sockets remain, and the process exits 1 without an uncaught rejection |
 | Healthy SIGTERM | Normal exit 0 |
 | SIGTERM with an active request and persistent database black hole | Every resource cleanup is attempted, failures are logged with resource and cause, exit 1 without an unhandled rejection |
 

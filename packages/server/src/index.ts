@@ -512,6 +512,20 @@ function reportIgnoredGitHubAppConfiguration(log: { warn(payload: object, messag
   );
 }
 
+function formatStartupFailure(error: unknown, knownSecrets: string[]): string {
+  const pending = [error];
+  const seen = new Set<unknown>();
+  const details: string[] = [];
+  for (const failure of pending) {
+    if (seen.has(failure)) continue;
+    seen.add(failure);
+    details.push(formatStartupError(failure, knownSecrets));
+    if (failure instanceof AggregateError) pending.push(...failure.errors);
+    if (failure instanceof Error && failure.cause !== undefined) pending.push(failure.cause);
+  }
+  return details.join("\n");
+}
+
 export async function startServer(): Promise<void> {
   const readiness = new BootstrapReadiness();
   let app: ReturnType<typeof createApp> | undefined;
@@ -1368,16 +1382,23 @@ export async function startServer(): Promise<void> {
     readiness.complete("listen");
     runnerImagePrewarmWorker?.start();
   } catch (error) {
-    if (app) {
-      app.log.error({ detail: formatStartupError(error, knownSecrets) }, "Failed to start OpenTag server");
-      await app.close();
-    } else {
-      process.stderr.write(`Failed to start OpenTag server: ${formatStartupError(error, knownSecrets)}\n`);
-    }
-    await cloudModelService?.close();
-    await cloudBilling?.close();
-    await shutdownTelemetry();
+    const failure = await closeServerResources([
+      ["application", () => app?.close()],
+      ["cloud model service", () => cloudModelService?.close()],
+      ["cloud billing", () => cloudBilling?.close()],
+      ["telemetry", () => shutdownTelemetry()],
+    ]).then(
+      () => error,
+      (cleanupError) =>
+        new AggregateError([error, cleanupError], "Server startup and resource cleanup failed", { cause: error }),
+    );
     process.exitCode = 1;
+    const detail = formatStartupFailure(failure, knownSecrets);
+    if (app) {
+      app.log.error({ detail }, "Failed to start OpenTag server");
+    } else {
+      process.stderr.write(`Failed to start OpenTag server: ${detail}\n`);
+    }
   }
 }
 

@@ -68,7 +68,9 @@ The dispatch snapshot freezes the ordered member list and hashes before sending.
 rows reserve members in the same transaction, and an exact receipt acknowledges the entire batch
 atomically. A known no-effect release frees the reservation. A timeout keeps the original snapshot
 and cannot authorize repackaging or another native injection. Initial batch members follow their
-Root Turn outcome; later steer batches use the existing failed-Root recovery path.
+Root Turn outcome; later steer batches use the existing failed-Root recovery path. Recovery keeps
+a frozen batch intact when its head or any member cannot be locked. A claim defers to that recovery
+when the Root already has a non-completed report instead of marking the input unknown.
 
 The first batch starts a Turn. Further batches steer that same running Turn as soon as its active
 connection can accept input, preserving order without waiting for Turn completion. A new request

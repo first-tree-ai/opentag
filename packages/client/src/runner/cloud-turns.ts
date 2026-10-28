@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { TurnActivityResult } from "@opentag/shared";
 import {
+  computeRuntimeImSteerInputHash,
   computeTurnResultHash,
   type DirectImMessageDeliveryRequest,
   MCP_GATEWAY_PATH,
@@ -457,20 +458,70 @@ export class CloudTurnRunner {
       const request = frame.steer;
       const scope = this.#requireJournalScope();
       if (request.sessionId !== scope.sessionId) return;
-      const root = await this.#steerRoot(request, scope);
-      if (!root) return;
-      const entry = await this.#receiveSteer(request, root);
-      if (!entry) return;
-      if (entry.steerResult) {
-        this.#sendSteerResult(entry);
+      const existing = await this.#existingSteer(request, scope);
+      if (existing === "conflict") {
+        this.#sendSteerWithoutJournal(request, cloudSteerResult(request, "rejected", "input_conflict"));
         return;
       }
-      if (this.#steerJobs.has(entry.deliveryId)) return;
-      if (entry.phase === "started") {
-        await this.#reconcileSteer(entry);
-        return;
-      }
-      await this.#startSteer(entry, root, generation);
+      if (existing && (await this.#replaySteer(existing))) return;
+      const prepared = await this.#prepareSteer(request, scope, existing);
+      if (prepared) await this.#startSteer(prepared.entry, prepared.root, generation);
+    });
+  }
+
+  async #prepareSteer(
+    request: import("@opentag/shared").RuntimeImSteerRequest,
+    scope: CloudJournalScope,
+    existing: CloudJournalDeliveryEntry | undefined,
+  ) {
+    const root = await this.#steerRoot(request, scope);
+    if (!root) {
+      const result = cloudSteerResult(request, "deferred", "turn_not_running");
+      if (existing)
+        this.#sendSteerResult(await this.#options.journal.recordSteerResult(existing.deliveryId, scope, result));
+      else this.#sendSteerWithoutJournal(request, result);
+      return;
+    }
+    const entry = existing ?? (await this.#receiveSteer(request, root));
+    if (!entry) return;
+    return { entry, root };
+  }
+
+  async #existingSteer(
+    request: import("@opentag/shared").RuntimeImSteerRequest,
+    scope: CloudJournalScope,
+  ): Promise<CloudJournalDeliveryEntry | "conflict" | undefined> {
+    const entry = await this.#options.journal.read(request.deliveryId);
+    if (!entry) return undefined;
+    assertCloudJournalScope(entry, scope);
+    if (entry.kind !== "delivery" || !entry.steer) return "conflict";
+    if (entry.requestId === request.requestId && entry.inputHash === computeRuntimeImSteerInputHash(request))
+      return entry;
+    return steerNeverStarted(entry) && entry.requestId !== request.requestId ? undefined : "conflict";
+  }
+
+  async #replaySteer(entry: CloudJournalDeliveryEntry): Promise<boolean> {
+    if (entry.steerResult) {
+      this.#sendSteerResult(entry);
+      return true;
+    }
+    if (this.#steerJobs.has(entry.deliveryId)) return true;
+    if (entry.phase === "started") {
+      await this.#reconcileSteer(entry);
+      return true;
+    }
+    return false;
+  }
+
+  #sendSteerWithoutJournal(
+    request: import("@opentag/shared").RuntimeImSteerRequest,
+    result: RuntimeImSteerResult,
+  ): void {
+    this.#send({
+      type: "delivery:steer:result",
+      requestId: request.requestId,
+      inputHash: computeRuntimeImSteerInputHash(request),
+      result,
     });
   }
 

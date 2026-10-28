@@ -57,7 +57,10 @@ export class CloudImSteering {
       clearTimeout(previous.timer);
       previous.reject(new Error("CLOUD_STEER_ATTEMPT_REPLACED"));
     }
-    if (this.#pending.size >= 1024 && !previous) throw new Error("CLOUD_STEER_CAPACITY");
+    if (this.#pending.size >= 1024 && !previous) {
+      if (status === "dispatched") await this.options.custody.releaseSteerDispatch(request, hash, "retry");
+      throw new Error("CLOUD_STEER_CAPACITY");
+    }
     const result = new Promise<RuntimeImSteerResult>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.#pending.delete(request.requestId);

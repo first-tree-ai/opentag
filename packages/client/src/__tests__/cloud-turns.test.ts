@@ -21,6 +21,7 @@ import { createPiDiagnosticWriter } from "../observability/pi-diagnostics.js";
 import { PiRpcError } from "../providers/pi/rpc-wire.js";
 import {
   CloudJournal,
+  type CloudJournalDeliveryEntry,
   CloudJournalError,
   type CloudJournalScope,
   cloudJournalEntryKey,
@@ -256,6 +257,26 @@ async function waitFor(check: () => boolean | Promise<boolean>, description: str
   }
 }
 
+async function seedSteerBeforeRootRetires(
+  journal: CloudJournal,
+  root: CloudJournalDeliveryEntry,
+  request: RuntimeImSteerRequest,
+  phase: "unseen" | "received" | "started" | "steered" | "uncertain",
+) {
+  if (phase === "unseen") return;
+  await journal.recordSteerReceived(request, root);
+  if (phase === "received") return;
+  await journal.markSteerStarted(request.deliveryId, root.scope);
+  if (phase === "steered")
+    await journal.recordSteerResult(request.deliveryId, root.scope, cloudSteerResult(request, "steered"));
+  if (phase === "uncertain")
+    await journal.recordSteerResult(
+      request.deliveryId,
+      root.scope,
+      cloudSteerResult(request, "deferred", "steer_state_unknown"),
+    );
+}
+
 describe("CloudTurnRunner", () => {
   let directory: string;
   let journal: CloudJournal;
@@ -405,6 +426,69 @@ describe("CloudTurnRunner", () => {
     await h.runner.waitForActive();
     await h.runner.close();
   });
+
+  it.each([
+    { phase: "unseen", expected: { status: "deferred", reason: "turn_not_running" } },
+    { phase: "received", expected: { status: "deferred", reason: "turn_not_running" } },
+    { phase: "started", expected: { status: "deferred", reason: "steer_state_unknown" } },
+    { phase: "steered", expected: { status: "steered" } },
+    { phase: "uncertain", expected: { status: "deferred", reason: "steer_state_unknown" } },
+  ] as const)(
+    "handles a $phase steer after the exact Root report acknowledgement without new execution",
+    async ({ phase, expected }) => {
+      const inject = vi.fn(async ({ request }: { request: RuntimeImSteerRequest }) =>
+        cloudSteerResult(request, "steered"),
+      );
+      const h = harness({ runnerOptions: { steeringEnabled: () => true, steerWorker: inject } });
+      await h.runner.handleDeliveryRun(runFrame(h.delivery));
+      await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+      await h.runner.waitForActive();
+      const root = await journal.read(h.delivery.deliveryId);
+      if (root?.kind !== "delivery" || !root.report) throw new Error("missing reported Root");
+      const { runtime: _, ...base } = h.delivery;
+      const request: RuntimeImSteerRequest = {
+        ...base,
+        type: "im:steer",
+        requestId: randomUUID(),
+        deliveryId: randomUUID(),
+        imMessageId: randomUUID(),
+        rootDeliveryId: root.deliveryId,
+        expectedTurnId: root.turnId,
+      };
+      await seedSteerBeforeRootRetires(journal, root, request, phase);
+      await h.runner.handleReportAck({
+        type: "delivery:report:ack",
+        requestId: randomUUID(),
+        turnId: root.turnId,
+        resultHash: root.report.resultHash,
+        status: "recorded",
+      });
+      expect(await journal.read(root.deliveryId)).toBeUndefined();
+      h.sent.length = 0;
+      const frame = { type: "delivery:steer" as const, requestId: request.requestId, steer: request };
+      await h.runner.handleSteer(frame);
+      await h.runner.handleSteer(frame);
+      const results = h.sent.filter((value) => value.type === "delivery:steer:result");
+      expect(results).toHaveLength(2);
+      expect(results[0]).toMatchObject({
+        requestId: request.requestId,
+        inputHash: computeRuntimeImSteerInputHash(request),
+        result: expected,
+      });
+      expect(results[1]).toEqual(results[0]);
+      expect(inject).not.toHaveBeenCalled();
+      if (phase !== "unseen") {
+        const changed = { ...request, content: { ...request.content, text: "different input" } };
+        await h.runner.handleSteer({ ...frame, steer: changed });
+        expect(h.sent.at(-1)).toMatchObject({
+          inputHash: computeRuntimeImSteerInputHash(changed),
+          result: { status: "rejected", reason: "input_conflict" },
+        });
+        expect((await journal.read(request.deliveryId))?.inputHash).toBe(computeRuntimeImSteerInputHash(request));
+      }
+      await h.runner.close();
+    },
+  );
 
   it.each(["received", "started"] as const)("does not inject a recovered %s steer intent", async (phase) => {
     const h = harness({

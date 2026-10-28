@@ -1,3 +1,4 @@
+import type { RuntimeImSteerRequest } from "@opentag/shared";
 import { and, asc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import type { DatabaseTransaction } from "../db/client.js";
 import { agents, computers, imBindings, imMessageDeliveries, imMessages, sessions } from "../db/schema/index.js";
@@ -15,6 +16,8 @@ type Candidate = {
   messageId: string;
   sourceSessionId: string;
   targetDeliveryId: string;
+  reason: string | null;
+  frozenBatch: RuntimeImSteerRequest["batch"] | null;
 };
 
 type RecoveryRoute = { kind: "pending"; sessionId: string; placementGeneration: number } | { kind: "terminal" };
@@ -70,7 +73,7 @@ export async function requeueSteeredDeliveries(
   now: Date,
   sessionService: SessionEnsurer,
 ): Promise<{ recoveredIds: string[]; terminalizedIds: string[] }> {
-  const candidates = await readSteeredCandidates(transaction, targetDeliveryId);
+  const candidates = wholeFrozenBatches(await readSteeredCandidates(transaction, targetDeliveryId));
   if (candidates.length === 0) return { recoveredIds: [], terminalizedIds: [] };
   const routes = await resolveRecoveryRoutes(transaction, candidates, now, sessionService);
   const recoveredIds: string[] = [];
@@ -105,6 +108,10 @@ async function readSteeredCandidates(transaction: DatabaseTransaction, targetDel
       messageId: imMessageDeliveries.messageId,
       sourceSessionId: imMessageDeliveries.sessionId,
       targetDeliveryId: imMessageDeliveries.steerTargetDeliveryId,
+      reason: imMessageDeliveries.reason,
+      frozenBatch: sql<RuntimeImSteerRequest["batch"] | null>`case
+        when ${imMessageDeliveries.state} in ('pending', 'expired') and ${imMessageDeliveries.dispatchPayload} ->> 'type' = 'im:steer'
+        then ${imMessageDeliveries.dispatchPayload} -> 'batch' else null end`,
     })
     .from(imMessageDeliveries)
     .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
@@ -126,6 +133,24 @@ async function readSteeredCandidates(transaction: DatabaseTransaction, targetDel
       asc(imMessageDeliveries.id),
     )
     .for("update", { of: imMessageDeliveries, skipLocked: true })) as Candidate[];
+}
+
+function wholeFrozenBatches(rows: Candidate[]): Candidate[] {
+  const locked = new Map(rows.map((row) => [row.id, row]));
+  const complete = new Set(
+    rows
+      .filter((root) =>
+        root.frozenBatch?.every((member) => {
+          const child = locked.get(member.deliveryId);
+          return child?.targetDeliveryId === root.id && child.reason === "batch_pending";
+        }),
+      )
+      .map((root) => root.id),
+  );
+  return rows.filter((row) => {
+    if (row.frozenBatch) return complete.has(row.id);
+    return row.reason !== "batch_pending" || complete.has(row.targetDeliveryId);
+  });
 }
 
 async function resolveRecoveryRoutes(

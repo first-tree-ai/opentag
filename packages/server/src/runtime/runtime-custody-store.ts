@@ -315,7 +315,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       if (!scope) return "conflict";
       const existing = steerReleaseStatus(scope, request, inputHash, disposition);
       if (existing) return existing;
-      if (disposition === "uncertain") {
+      if (disposition === "uncertain" || scope.delivery.lastErrorCode === "IM_DELIVERY_STEER_UNKNOWN") {
         await transaction
           .update(imMessageDeliveries)
           .set({ lastErrorCode: "IM_DELIVERY_STEER_UNKNOWN", nextAttemptAt: new Date(this.#now().getTime() + 30_000) })

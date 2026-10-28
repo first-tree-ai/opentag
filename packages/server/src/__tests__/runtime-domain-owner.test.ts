@@ -6,6 +6,7 @@ import {
   type EffectiveRuntimeSnapshot,
   RUNTIME_CAPABILITY,
   type RuntimeImSteerRequest,
+  type RuntimeImSteerResult,
   type SessionMessageDeliveryRequest,
   type SessionMessageDeliveryResult,
   type SessionReconcileRequest,
@@ -271,6 +272,36 @@ describe("RuntimeDomainOwner", () => {
     ).rejects.toMatchObject({
       code: "stale_placement",
     });
+  });
+
+  it.each([
+    { status: "deferred", reason: "steer_state_unknown", disposition: "uncertain" },
+    { status: "rejected", reason: "input_conflict", disposition: "uncertain" },
+    { status: "retry", reason: "turn_starting", disposition: "retry" },
+    { status: "deferred", reason: "turn_not_running", disposition: "deferred" },
+  ] as const)("records $status/$reason with $disposition steer custody", async ({ status, reason, disposition }) => {
+    const fixture = await ownerFixture();
+    const custody = new MemoryRuntimeCustodyStore();
+    const release = vi.spyOn(custody, "releaseSteerDispatch");
+    const owner = new RuntimeDomainOwner(fixture.registry, custody);
+    const request = steerRequest(deliveryRequest());
+    const pending = owner.requestSteer(fixture.computerId, fixture.instanceId, request);
+    await vi.waitFor(() => expect(fixture.frames).toContainEqual(expect.objectContaining({ type: "im:steer" })));
+    const result = {
+      type: "im:steer:result",
+      requestId: request.requestId,
+      deliveryId: request.deliveryId,
+      sessionId: request.sessionId,
+      placementGeneration: request.placementGeneration,
+      rootDeliveryId: request.rootDeliveryId,
+      expectedTurnId: request.expectedTurnId,
+      status,
+      reason,
+    } as RuntimeImSteerResult;
+    await owner.handle(result, fixture.context);
+    expect(await pending).toEqual(result);
+    expect(release).toHaveBeenCalledWith(request, expect.any(String), disposition);
+    owner.close();
   });
 
   it("preserves uncertain steer custody when stopped", async () => {

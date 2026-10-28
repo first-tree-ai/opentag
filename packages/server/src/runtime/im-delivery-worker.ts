@@ -11,7 +11,7 @@ import {
   type SessionReconcileResult,
 } from "@opentag/shared";
 import { and, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
-import type { DatabaseClient } from "../db/client.js";
+import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
 import {
   agents,
   computers,
@@ -473,6 +473,13 @@ export class ImDeliveryWorker {
       }
       const retiredSteerCorrelation = frozenSteerMatches(row);
       if (retiredSteerCorrelation && !steerTarget) {
+        if (await recoverableSteerTarget(transaction, row)) {
+          await transaction
+            .update(imMessageDeliveries)
+            .set({ nextAttemptAt: new Date(now.getTime() + RETRY_DELAY_MS) })
+            .where(eq(imMessageDeliveries.id, row.id));
+          return undefined;
+        }
         await transaction
           .update(imMessageDeliveries)
           .set({
@@ -1475,4 +1482,27 @@ function frozenSteerMatches(row: LockedDeliveryRow): boolean {
     row.sessionId === request.sessionId &&
     row.agentId === request.agentId
   );
+}
+
+async function recoverableSteerTarget(transaction: DatabaseTransaction, row: LockedDeliveryRow): Promise<boolean> {
+  if (!row.steerTargetDeliveryId) return false;
+  const [target] = await transaction
+    .select({ id: imMessageDeliveries.id })
+    .from(imMessageDeliveries)
+    .where(
+      and(
+        eq(imMessageDeliveries.id, row.steerTargetDeliveryId),
+        ne(imMessageDeliveries.id, row.id),
+        eq(imMessageDeliveries.sessionId, row.sessionId),
+        or(
+          ne(imMessageDeliveries.state, "accepted"),
+          and(
+            isNotNull(imMessageDeliveries.reportedAt),
+            sql`coalesce(${imMessageDeliveries.turnReport} ->> 'outcome', 'unknown') <> 'completed'`,
+          ),
+        ),
+      ),
+    )
+    .limit(1);
+  return target !== undefined;
 }

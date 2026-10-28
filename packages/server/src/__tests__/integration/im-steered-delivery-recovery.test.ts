@@ -143,6 +143,55 @@ describe("steered IM delivery recovery", () => {
     expect(rows.children.every((row) => row.state === "pending")).toBe(true);
   });
 
+  it.each(["retry", "deferred"] as const)(
+    "keeps exact uncertainty frozen after a later %s receipt and accepts exact success",
+    async (disposition) => {
+      const fixture = await createFixture(client.database);
+      const custody = new PostgresRuntimeCustodyStore(client.database);
+      const rootHash = computeDirectInputHash(fixture.rootRequest);
+      await custody.beginDeliveryDispatch(fixture.rootRequest, rootHash, fixture.dispatchContext);
+      await custody.acceptDelivery(fixture.rootRequest, rootHash, fixture.rootTurnId, fixture.context);
+      const [first, second] = fixture.steerRequests;
+      const request = {
+        ...first,
+        batch: [
+          {
+            deliveryId: second.deliveryId,
+            imMessageId: second.imMessageId,
+            inputHash: computeRuntimeImMessageSemanticHash(second),
+          },
+        ],
+      };
+      const hash = computeRuntimeImSteerInputHash(request);
+      await custody.beginSteerDispatch(request, hash, fixture.dispatchContext);
+      await custody.releaseSteerDispatch(request, hash, "uncertain");
+      expect(await custody.releaseSteerDispatch({ ...request, requestId: randomUUID() }, hash, disposition)).toBe(
+        "conflict",
+      );
+      expect(await custody.releaseSteerDispatch(request, hash, disposition)).toBe("released");
+      const frozen = (await deliveryRows(client.database, fixture)).children;
+      expect(frozen[0]).toMatchObject({
+        state: "pending",
+        dispatchRequestId: request.requestId,
+        dispatchInputHash: hash,
+        lastErrorCode: "IM_DELIVERY_STEER_UNKNOWN",
+      });
+      expect(frozen[1]).toMatchObject({
+        state: "pending",
+        reason: "batch_pending",
+        steerTargetDeliveryId: first.deliveryId,
+      });
+      expect(
+        await custody.recordSteered(request, hash, computeRuntimeImMessageSemanticHash(request), fixture.context),
+      ).toBe("steered");
+      expect(
+        (await deliveryRows(client.database, fixture)).children.every(
+          (row) => row.state === "steered" && row.lastErrorCode === null,
+        ),
+      ).toBe(true);
+    },
+  );
+
   it("settles an exact late receipt after an unconfirmed batch was marked unknown", async () => {
     const fixture = await createFixture(client.database);
     const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => new Date() });

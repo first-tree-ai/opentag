@@ -1224,6 +1224,10 @@ function domainLaneKey(frame: ClientRuntimeBusinessFrame): string {
 }
 
 function steerReleaseDisposition(result: RuntimeImSteerResult): "retry" | "deferred" | "uncertain" {
-  if (result.status === "deferred" && result.reason === "steer_state_unknown") return "uncertain";
+  if (
+    (result.status === "deferred" && result.reason === "steer_state_unknown") ||
+    (result.status === "rejected" && result.reason === "input_conflict")
+  )
+    return "uncertain";
   return result.status === "retry" ? "retry" : "deferred";
 }

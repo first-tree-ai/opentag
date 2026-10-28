@@ -62,11 +62,35 @@ closeout. Agent Runtime coverage is not applicable: no file in its configured co
 changed. No full workspace suite or full PostgreSQL suite was run; the changed contracts and database
 paths have bounded coverage above, and there is no migration. CI and live acceptance remain separate.
 
+## Independent review follow-up
+
+Independent review of `63653a3d3757ee419fe6a3fec3ca657a1a7fe9ac` found three P2 boundary defects.
+They are covered by focused regressions and corrected before PR creation:
+
+- A full Cloud control map releases a newly reserved, never-sent input, while retaining older
+  dispatch evidence. The new regression failed before the correction and passes afterwards.
+- A steer arriving after its Root report acknowledgement receives a known no-effect response when
+  unseen. Existing received, started, successful and uncertain child journals are handled first;
+  mismatched input cannot borrow an older receipt. No native input is injected in these cases.
+- Failed/cancelled/unknown Root reporting can skip a concurrently claimed steer head. Real
+  PostgreSQL interleavings now preserve the whole frozen batch until all member locks are acquired.
+  The reverse case, with a member locked, also retains its frozen head. The claim defers to recorded
+  failed-Root recovery. All three original failed-Root schedules failed before this correction.
+
+Exact uncertainty also survives later retry/deferred receipts, while exact success may settle it.
+Local `input_conflict` results use the same uncertainty rule as Cloud.
+
+Review-fix validation: 205 Server tests in seven files, 154 Client tests in three files, and 46
+PostgreSQL tests in five files passed. The Client controller's 88 tests were rerun after a bounded
+refactor. Type checks and builds cover both changed consumers. Shared protocol/queue-policy code
+has not changed since the earlier successful checks. No migration, independent retry owner, or
+live-provider acceptance is introduced by the review fixes.
+
 Reproduction commands:
 
 ```sh
 pnpm --filter @opentag/shared exec vitest run src/__tests__/runtime-domain.test.ts src/__tests__/runtime-protocol.test.ts src/__tests__/cloud-runner.test.ts src/__tests__/runtime-protocol-corpus.test.ts
-pnpm --filter @opentag/server exec vitest run src/__tests__/im-delivery-worker.test.ts src/__tests__/im-delivery-worker-cloud.test.ts src/__tests__/runtime-custody-store.test.ts src/__tests__/runtime-domain-owner.test.ts src/__tests__/im-delivery-janitor.test.ts src/__tests__/im-delivery-recovery.test.ts src/__tests__/im-failure-reactions.test.ts src/__tests__/cloud-delivery-owner.test.ts src/__tests__/runner-ws.test.ts --maxWorkers=2
+pnpm --filter @opentag/server exec vitest run src/__tests__/cloud-im-steering.test.ts src/__tests__/im-delivery-worker.test.ts src/__tests__/im-delivery-worker-cloud.test.ts src/__tests__/runtime-custody-store.test.ts src/__tests__/runtime-domain-owner.test.ts src/__tests__/im-delivery-janitor.test.ts src/__tests__/im-delivery-recovery.test.ts src/__tests__/im-failure-reactions.test.ts src/__tests__/cloud-delivery-owner.test.ts src/__tests__/runner-ws.test.ts --maxWorkers=2
 pnpm --filter @opentag/client exec vitest run src/__tests__/cloud-steer-control.test.ts src/__tests__/cloud-turns.test.ts src/__tests__/cloud-turn-worker.test.ts src/__tests__/cloud-journal.test.ts src/__tests__/turn-custody-owner.test.ts src/__tests__/runner-serve.test.ts --maxWorkers=2
 pnpm --filter @opentag/server exec vitest run src/__tests__/integration/cloud-dispatch-custody.test.ts src/__tests__/integration/im-steered-delivery-recovery.test.ts src/__tests__/integration/im-delivery-query.test.ts src/__tests__/integration/im-recovery-locks.test.ts src/__tests__/integration/im-failure-reactions.test.ts --maxWorkers=2
 pnpm --filter @opentag/shared typecheck

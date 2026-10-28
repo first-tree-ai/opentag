@@ -162,12 +162,15 @@ attempt counter.
 
 Cloud follow-ups negotiate `imInputVersion: 1` and use `delivery:steer` on the same authenticated
 control connection. The Server freezes the existing delivery rows before sending. The Runner fsyncs
-the exact steer input and target Turn before a single native injection, fsyncs its result before
+the exact steer input and target Turn before a single native injection, fsyncs journaled results before
 `delivery:steer:result`, and retires it only after the exact `delivery:steer:ack`. Report-only
 connections may settle receipts but cannot submit new execution. A reopened `received` intent
 requires fresh authority; a reopened `started` intent reports uncertainty and never injects again.
-After an uncertainty receipt is acknowledged, the Server retains the frozen unknown state and does
-not resubmit it while its Root Turn is running.
+After an uncertainty receipt is acknowledged, the Server retains the exact frozen unknown state and
+does not resubmit it while its Root Turn is running. A later negative receipt cannot erase that
+uncertainty; an exact successful receipt can settle it. Existing child journal evidence is checked
+before the Root journal. A previously unseen input whose Root journal has retired receives a
+repeatable no-effect response without launching work or inventing a Root runtime snapshot.
 
 The native worker exposes a bounded private Unix socket during its active Prompt. A per-execution
 token travels only through trusted Runner memory and Worker stdin. The Runner invokes a single

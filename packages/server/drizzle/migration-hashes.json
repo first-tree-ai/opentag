@@ -360,6 +360,11 @@
       "idx": 71,
       "tag": "0071_glossy_joystick",
       "sha256": "86b6dadda929b9d8bb029f16d1ee8d8447f87bad1be16a971e13b46eba6543ee"
+    },
+    {
+      "idx": 72,
+      "tag": "0072_self_configuration_default_enabled",
+      "sha256": "936ba197d58227fbf7986dc4a9ce3bccb7f83e715d46f8b8745080aa41055fdd"
     }
   ]
 }

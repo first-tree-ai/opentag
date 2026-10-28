@@ -362,10 +362,10 @@ describe("atomic definition and mount", () => {
 
   async function selfConfiguredAgent(accountId: string, enabled = true) {
     const created = await agent(accountId);
-    if (!enabled) return created;
+    if (created.selfConfigurationEnabled === enabled) return created;
     return agentService().updateById(accountId, created.id, {
       expectedRevision: created.revision,
-      selfConfigurationEnabled: true,
+      selfConfigurationEnabled: enabled,
     });
   }
 

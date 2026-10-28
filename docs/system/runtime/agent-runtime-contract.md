@@ -87,7 +87,7 @@ session or process group is outside that ownership boundary.
 
 The Server uses `agent_runtime_configs.revision` for both Agent and Session snapshot sequences.
 An owner change to `selfConfigurationEnabled` advances that runtime revision in the same transaction
-as the Agent row, just as a runtime configuration change does. Repeating the same opt-in value or
+as the Agent row, just as a runtime configuration change does. Repeating the same switch value or
 editing only the display name or receive mode does not advance it. Agent names are immutable.
 Agent and Session revision IDs identify their respective content; the sequences order updates.
 

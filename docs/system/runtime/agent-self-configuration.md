@@ -1,12 +1,12 @@
 ---
 title: "Agent self-configuration"
-description: "Which parts of its own configuration an Agent may read and change through the CLI once its owner enables it."
+description: "Which parts of its own configuration an Agent may read and change through the CLI while its owner allows it."
 ---
 
 # Agent self-configuration
 
 An Agent running inside an openTag-managed Session can inspect and change part of its own configuration through the
-CLI, without an Account login, only after its owner enables self-configuration:
+CLI, without an Account login, while self-configuration is enabled for that Agent:
 
 ```text
 opentag self show
@@ -31,12 +31,15 @@ Every command accepts `--json`. `<server>` is an MCP Server name or ID. `opentag
 same command group: inside a managed Session the Agent is implied by the proof, so the top-level form is what the managed
 prompt shows.
 
-## Owner opt-in
+## Owner control
 
-Self-configuration is disabled by default for new and existing Agents. The web settings currently do not expose
-this permission. The owner can still enable or disable it through the Account-scoped Agent update API using
-`selfConfigurationEnabled`; hiding the web control does not revoke existing opt-ins.
-The Agent cannot change this flag through `self update`.
+Self-configuration is enabled by default. New Agents start with `selfConfigurationEnabled` set to true, and migration
+`0072_self_configuration_default_enabled` turned it on for every Agent that was not deleted. That migration cannot
+tell an earlier owner opt-out from the earlier default, so it turned both on.
+
+The owner turns it off or on with the Self-configuration switch on the Agent's Name settings page, or through the
+Account-scoped Agent update API with `selfConfigurationEnabled`. The Agent cannot change this flag through
+`self update`.
 
 When `selfConfigurationEnabled` is false, every route under `/api/v1/runtime/agent` returns HTTP 403 with
 `AGENT_SELF_CONFIGURATION_DISABLED`, including read routes. The managed prompt includes the Self-configuration
@@ -85,7 +88,7 @@ The Server routes live under `/api/v1/runtime/agent` and authenticate the proof 
 | Attach, enable, disable, or unmount an Account MCP Server | Yes | Chooses among mounts the Account already has. |
 | Edit a definition another Agent mounts | No | Shared state; a human decides. `self mcp delete` unmounts the Server and drops this Agent's credential, but retains the Account definition. |
 | Another Agent's mount or credential | No | No command accepts an Agent ID. |
-| Self-configuration opt-in | No | Only the owner can enable or disable the surface. |
+| Self-configuration switch | No | Only the owner can enable or disable the surface. |
 | Display name, receive mode | No | Changes how humans and IM see the Agent. |
 | Maximum Turn duration | No | Would let the Agent raise its own resource limit. |
 | MCP endpoint and header overrides on a shared definition | No | Would redirect an existing bearer credential to another origin. |
@@ -114,7 +117,7 @@ finish. Start another flow only when no authorization exists yet, when the statu
 
 Every other self-service write path — writing a Bearer key, starting an OAuth flow, enabling or disabling the mount,
 and unmounting it — re-checks `selfConfigurationEnabled` inside its own transaction under the same row lock a human
-edit takes. The proof-authenticated request that preceded it is not enough on its own: an owner who revokes the opt-in
+edit takes. The proof-authenticated request that preceded it is not enough on its own: an owner who turns the switch off
 while a request is in flight must not end up with a credential or a mount change written after the revocation. Account
 callers are unaffected by that flag; it gates only the Agent surface.
 
@@ -150,7 +153,7 @@ observation, so the caller can tell the human the URL is still valid and check a
 
 ## When changes apply
 
-- An owner opt-in change advances the runtime configuration revision atomically with the Agent
+- An owner change to the switch advances the runtime configuration revision atomically with the Agent
   update. The next eligible Turn uses the new setting and starts a new native conversation after
   any unresolved work settles. Repeating the same value does not advance the runtime revision.
 - Instructions, model, and reasoning effort are read from the live Agent configuration when each Turn is assembled, so

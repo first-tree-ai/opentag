@@ -83,6 +83,15 @@ async function createUser(database: DatabaseClient, email: string) {
   return user;
 }
 
+async function setSelfConfiguration(value: Awaited<ReturnType<typeof fixture>>, enabled: boolean) {
+  const updated = await value.agentService.updateById(value.accountId, value.agent.id, {
+    expectedRevision: value.agent.revision,
+    selfConfigurationEnabled: enabled,
+  });
+  value.agent = updated;
+  return updated;
+}
+
 async function enableSelfConfiguration(value: Awaited<ReturnType<typeof fixture>>) {
   const updated = await value.agentService.updateById(value.accountId, value.agent.id, {
     expectedRevision: value.agent.revision,
@@ -96,6 +105,7 @@ describe("Agent self-configuration against PostgreSQL", () => {
   it("rolls back the owner toggle if the runtime revision write fails", async () => {
     const value = await fixture();
     try {
+      await setSelfConfiguration(value, false);
       await value.sql.unsafe(`
         CREATE FUNCTION reject_runtime_revision() RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN RAISE EXCEPTION 'simulated runtime revision write failure'; END $$;
@@ -114,7 +124,8 @@ describe("Agent self-configuration against PostgreSQL", () => {
   it("resolves the owning Account from the Agent and updates its runtime config", async () => {
     const value = await fixture();
     try {
-      expect(value.agent.selfConfigurationEnabled).toBe(false);
+      expect(value.agent.selfConfigurationEnabled).toBe(true);
+      await setSelfConfiguration(value, false);
       await expect(value.self.authenticate("valid-proof")).rejects.toMatchObject({
         code: "AGENT_SELF_CONFIGURATION_DISABLED",
         statusCode: 403,

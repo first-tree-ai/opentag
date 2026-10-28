@@ -18,9 +18,10 @@ The production binary is `opentag`. A development Computer has `opentag-dev` and
 has `opentag-staging`. Use the binary this workspace has. `opentag self` and `opentag agent self`
 are the same command group. Inside a managed Session, type `opentag self`.
 
-These commands run only after the owner enables self-configuration. If a command fails with
-`AGENT_SELF_CONFIGURATION_DISABLED`, tell the user that the owner has to enable it. There is no
-settings page for that flag. Do not send them to the web MCP screen as a substitute.
+These commands run only while self-configuration is enabled for this Agent. It is on by default. If
+a command fails with `AGENT_SELF_CONFIGURATION_DISABLED`, tell the user that the owner turned it off
+and can turn it on with the Self-configuration switch on this Agent's Name settings page. Do not send
+them to the web MCP screen as a substitute.
 
 ## Decide from what the user said
 

@@ -14,6 +14,9 @@ const migrationTag = "0066_self_configuration_runtime_revision";
 let container: Awaited<ReturnType<typeof startPostgresTestContainer>>;
 let client: ReturnType<typeof createDatabaseClient>;
 let legacyFolder: string;
+// Later data migrations (0071 turns self-configuration on) also rewrite these rows, so the repair is
+// observed at its own migration before the suite moves to the latest schema.
+let repairFolder: string;
 
 beforeAll(async () => {
   container = await startPostgresTestContainer();
@@ -27,6 +30,13 @@ beforeAll(async () => {
     await copyFile(join(migrationsFolder, `${entry.tag}.sql`), join(legacyFolder, `${entry.tag}.sql`));
   }
   await writeFile(join(legacyFolder, "meta/_journal.json"), JSON.stringify({ ...journal, entries }));
+  repairFolder = await mkdtemp(join(tmpdir(), "opentag-runtime-revision-repair-"));
+  await mkdir(join(repairFolder, "meta"));
+  const repairEntries = journal.entries.slice(0, index + 1);
+  for (const entry of repairEntries) {
+    await copyFile(join(migrationsFolder, `${entry.tag}.sql`), join(repairFolder, `${entry.tag}.sql`));
+  }
+  await writeFile(join(repairFolder, "meta/_journal.json"), JSON.stringify({ ...journal, entries: repairEntries }));
   await migrateDatabase(container.getConnectionUri(), legacyFolder);
   client = createDatabaseClient(container.getConnectionUri());
 }, 120_000);
@@ -35,6 +45,7 @@ afterAll(async () => {
   await client?.sql.end();
   await container?.stop();
   if (legacyFolder) await rm(legacyFolder, { recursive: true, force: true });
+  if (repairFolder) await rm(repairFolder, { recursive: true, force: true });
 });
 
 describe("Runtime revision repair upgrade against PostgreSQL", () => {
@@ -63,7 +74,7 @@ describe("Runtime revision repair upgrade against PostgreSQL", () => {
     ).rejects.toThrow("interrupted runtime revision migration");
     expect(await sql`select * from agent_runtime_configs order by agent_id`).toEqual(previousConfigs);
 
-    await migrateDatabase(container.getConnectionUri(), migrationsFolder);
+    await migrateDatabase(container.getConnectionUri(), repairFolder);
     const repairedConfigs = await sql`select * from agent_runtime_configs order by agent_id`;
     expect(repairedConfigs).toHaveLength(previousConfigs.length);
     for (const [index, repaired] of repairedConfigs.entries()) {
@@ -72,9 +83,11 @@ describe("Runtime revision repair upgrade against PostgreSQL", () => {
       expect({ ...repaired, revision: previous?.revision }).toEqual(previous);
     }
     expect(await sql`select * from agents order by id`).toEqual(previousAgents);
-    await verifyDatabaseMigrations(container.getConnectionUri(), migrationsFolder);
-    await migrateDatabase(container.getConnectionUri(), migrationsFolder);
+    await verifyDatabaseMigrations(container.getConnectionUri(), repairFolder);
+    await migrateDatabase(container.getConnectionUri(), repairFolder);
     expect(await sql`select * from agent_runtime_configs order by agent_id`).toEqual(repairedConfigs);
+    await migrateDatabase(container.getConnectionUri(), migrationsFolder);
+    await verifyDatabaseMigrations(container.getConnectionUri(), migrationsFolder);
     const agent = await service.getConfigById(account.userId, previousAgents[0]?.id);
     const next = await service.updateById(account.userId, agent.id, {
       expectedRevision: agent.revision,

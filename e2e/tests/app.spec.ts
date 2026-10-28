@@ -239,6 +239,18 @@ test("Agent settings persist a change across reload", async ({ page }) => {
   await expect(page.getByRole("status")).toContainText("Name saved.");
   await page.reload({ waitUntil: "networkidle" });
   await expect(page.getByLabel("Display name")).toHaveValue("E2E Agent Updated");
+
+  const selfConfiguration = page.getByRole("switch", { name: "Self-configuration" });
+  await expect(selfConfiguration).toHaveAttribute("aria-checked", "true");
+  await selfConfiguration.click();
+  await expect(page.getByRole("status")).toContainText("Self-configuration setting saved.");
+  await expect(selfConfiguration).toHaveAttribute("aria-checked", "false");
+  await page.reload({ waitUntil: "networkidle" });
+  await expect(page.getByLabel("Display name")).toHaveValue("E2E Agent Updated");
+  await expect(selfConfiguration).toHaveAttribute("aria-checked", "false");
+  await selfConfiguration.click();
+  await expect(page.getByRole("status")).toContainText("Self-configuration setting saved.");
+  await expect(selfConfiguration).toHaveAttribute("aria-checked", "true");
 });
 
 test("Agent navigation reaches every visible Agent-owned destination", async ({ page }) => {

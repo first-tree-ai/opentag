@@ -420,17 +420,17 @@ test("closing reauthorization keeps saved tools quiet without waiting for a back
     const consent = await opening;
     await consent.getByRole("heading", { name: "Local consent fixture", exact: true }).waitFor();
     await flowRead;
-    const lastProbeAt = installed.authorization?.probedAt;
-    expect(lastProbeAt).toEqual(expect.any(String));
     expect((await mounts(page, current.id))[0]?.snapshot).toEqual(installed.snapshot);
     await consent.close();
     await details.getByRole("button", { name: `Close ${installed.name}`, exact: true }).click();
     await expect(page.locator('[data-ui="mcp-server-list"]').getByText("Checking connection…")).toHaveCount(0);
-    expect((await mounts(page, current.id))[0]?.authorization).toMatchObject({
+    const closed = (await mounts(page, current.id))[0];
+    expect(closed?.snapshot).toEqual(installed.snapshot);
+    // Close cancels the flow and probes in the background, so probedAt can move after close.
+    expect(closed?.authorization).toMatchObject({
       status: "active",
       hasCredential: true,
       probeState: "succeeded",
-      probedAt: lastProbeAt,
     });
     await page.screenshot({ path: testInfo.outputPath("reauthorization-background.png") });
   } finally {

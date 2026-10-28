@@ -254,7 +254,7 @@ describe("Slack Agent provisioning", () => {
       expect(JSON.stringify(stored)).not.toContain(f.input.slack.botAccessToken);
       expect(JSON.stringify(stored)).not.toContain(f.input.slack.signingSecret);
       const [original] = await f.database.select().from(agents).where(eq(agents.id, f.source.id));
-      expect(original?.selfConfigurationEnabled).toBe(false);
+      expect(original?.selfConfigurationEnabled).toBe(f.source.selfConfigurationEnabled);
       expect(await f.database.select().from(imBindings).where(eq(imBindings.agentId, f.source.id))).toHaveLength(0);
     } finally {
       await f.close();

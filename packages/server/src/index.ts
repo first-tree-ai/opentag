@@ -529,6 +529,7 @@ function formatStartupFailure(error: unknown, knownSecrets: string[]): string {
 export async function startServer(): Promise<void> {
   const readiness = new BootstrapReadiness();
   let app: ReturnType<typeof createApp> | undefined;
+  let databaseSql: ReturnType<typeof createDatabaseClient>["sql"] | undefined;
   let cloudBilling: CloudBilling | undefined;
   let cloudModelService: CloudModelService | undefined;
   const knownSecrets: string[] = collectKnownSecrets(process.env);
@@ -558,6 +559,7 @@ export async function startServer(): Promise<void> {
       onQueryTimeout: ({ timeoutMs }) =>
         app?.log.warn({ check: "database", timeoutMs }, "Database query exceeded client deadline"),
     });
+    databaseSql = sql;
     const databaseReadinessProbe = createDedicatedDatabaseReadinessProbe(config.databaseUrl, {
       deadlineMs: DATABASE_READINESS_TIMEOUT_MS,
       log: { debug: (fields, message) => app?.log.debug(fields, message) },
@@ -1394,6 +1396,7 @@ export async function startServer(): Promise<void> {
       ["application", () => app?.close()],
       ["cloud model service", () => cloudModelService?.close()],
       ["cloud billing", () => cloudBilling?.close()],
+      ["database pool", () => databaseSql?.end({ timeout: DATABASE_CLOSE_TIMEOUT_SECONDS })],
       ["telemetry", () => shutdownTelemetry()],
     ]).then(
       () => error,

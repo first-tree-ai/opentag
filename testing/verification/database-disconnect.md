@@ -102,3 +102,28 @@ and a 1 GiB Node old-space limit to avoid kernel OOM kills seen when broad suite
 The completed run passes 1,030 integration tests in 81 files and 4,519 unit tests in 246 files, with one existing
 unit file containing 15 skipped tests. The final runs have no unhandled errors or kernel OOM kills.
 No production environment, managed-database failover or complete TLS/platform matrix is established by this run.
+
+## PostgreSQL caller lifecycle
+
+Run `pnpm --filter @opentag/server exec vitest run src/__tests__/integration/postgres-caller-lifecycle.test.ts`
+with Docker available. It uses a fresh migrated database, real Server/admin entrypoint subprocesses and a local
+TCP proxy. Child processes must exit normally within the harness deadline; killing a hung child is a failure.
+
+| Caller fault | Required result |
+| --- | --- |
+| Cloud-model initialization fails on established SQL before App creation | Original permission failure is reported, exit 1, no application-pool sessions remain |
+| MCP rollout CLI completes its read while the peer withholds FIN | Status JSON is preserved and the CLI exits 0 after its bounded close |
+| MCP rollout CLI encounters a SQL error while the peer withholds FIN | Original query failure is retained and the CLI exits 1 after its bounded close |
+| Six scheduled handoffs target an unready Cloud Session and expire | Scheduler slots and Cloud tails converge, cancelled entries start no later preparation, healthy SQL still works |
+| Stop overlaps those queued/preparing Cloud handoffs | Only the already-started allocation runs, no frame leaves, no new preparation starts after stop |
+
+The Cloud cases use the actual Scheduler, Session service, collaboration owner, durable-work store and PostgreSQL;
+only the allocation port reports a pending local fixture. The budget case scales the existing 20 s preparation /
+50 s scheduled handoff budgets to 200 / 500 ms. No real Cloud allocation, model, or messaging provider is called.
+Already-issued I/O keeps its independent bound; these tests do not assert that cancellation undoes it.
+
+The focused `server-startup`, `session-collaboration-scheduled`, and `cloud-session-collaboration-owner` unit tests
+also cover cleanup rejection before App creation, App close failing before its hook, cancelled queue entries with
+live FIFO successors, cancellation during model/Sandbox/durable reads, stopped readiness polling, late allocation
+completion with and without parent cancellation, final admission waiting, and post-send custody completion.
+Accepted custody is never downgraded or replayed because the caller stopped waiting.

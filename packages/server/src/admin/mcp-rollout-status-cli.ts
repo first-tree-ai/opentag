@@ -1,5 +1,6 @@
 import { parseCredentialEncryptionConfig, parseDatabaseConfig } from "../config.js";
 import { createDatabaseClient } from "../db/client.js";
+import { DATABASE_CLOSE_TIMEOUT_SECONDS } from "../db/timeouts.js";
 import { ApplicationCipher } from "../services/crypto.js";
 import { McpCredentialCipher } from "../services/mcp/mcp-credential-cipher.js";
 import { readMcpRolloutStatus } from "./mcp-rollout-status.js";
@@ -13,5 +14,5 @@ try {
   process.stdout.write(`${JSON.stringify(status)}\n`);
   if (!status.legacyDowngradeAllowed) process.exitCode = 1;
 } finally {
-  await sql.end();
+  await sql.end({ timeout: DATABASE_CLOSE_TIMEOUT_SECONDS });
 }

@@ -457,7 +457,7 @@ export class CloudSessionCollaborationOwner {
     return this.#work.isBusy(allocation);
   }
 
-  /** Number of serialized per-Session dispatch tails; bounded by the caller-awaiting HTTP requests. */
+  /** Number of Sessions with a serialized dispatch tail. */
   get activeDispatchTargets(): number {
     return this.#tails.size;
   }
@@ -469,11 +469,19 @@ export class CloudSessionCollaborationOwner {
   async deliver(
     input: CloudSessionDeliveryInput,
     admission: RuntimeDispatchAdmission<RunnerCloudSessionMessageReceivedFrame>,
+    signal?: AbortSignal,
   ): Promise<CloudSessionMessageOutcome> {
     const { route } = input;
     // Same-Session dispatches are serialized so the Runner journals them in call order (FIFO).
     const tail = this.#tails.get(route.targetSessionId) ?? Promise.resolve();
-    const run: Promise<CloudSessionMessageOutcome> = tail.then(() => this.#deliverSerialized(input, admission));
+    const run: Promise<CloudSessionMessageOutcome> = tail
+      .then(() => this.#deliverSerialized(input, admission, signal))
+      .catch((error: unknown) => {
+        if (signal?.aborted && error === signal.reason) {
+          return { status: "unreachable", code: "delivery_timeout" };
+        }
+        throw error;
+      });
     const next = run.then(
       () => undefined,
       () => undefined,
@@ -488,17 +496,23 @@ export class CloudSessionCollaborationOwner {
   async #deliverSerialized(
     input: CloudSessionDeliveryInput,
     admission: RuntimeDispatchAdmission<RunnerCloudSessionMessageReceivedFrame>,
+    signal?: AbortSignal,
   ): Promise<CloudSessionMessageOutcome> {
     const { route, message } = input;
+    signal?.throwIfAborted();
     const runtime = await this.#resolveRuntimeModel(input.runtime);
     if (!runtime) return { status: "unreachable", code: "model_unavailable" };
+    signal?.throwIfAborted();
     const envelope = await this.#loadTargetEnvelope(route.targetSessionId);
     if (!envelope) return { status: "unreachable", code: "outbox_unavailable" };
+    signal?.throwIfAborted();
     // Authoritative retirement runs before placement: accepted work whose Instance is gone can
     // never execute, so it is retired here instead of blocking a replacement allocation forever.
-    await this.reconcileSessionWork(route.targetSessionId);
+    await this.reconcileSessionWork(route.targetSessionId, signal);
 
-    const ready = await this.#ensureReady(route.targetSessionId);
+    signal?.throwIfAborted();
+    const ready = await this.#ensureReady(route.targetSessionId, signal);
+    signal?.throwIfAborted();
     if (ready.kind !== "ready") return ready.outcome;
     const sandbox = ready.sandbox;
 
@@ -536,6 +550,7 @@ export class CloudSessionCollaborationOwner {
     let receipt: RunnerCloudSessionMessageReceivedFrame;
     try {
       const admitted = await admission(async (onDispatched) => {
+        signal?.throwIfAborted();
         // Resolved INSIDE the authority admission: the freshest exact fenced connection is the
         // only legal dispatch target, and the admission's row locks prove the route's authority.
         const connection = this.#dispatchableConnection(sandbox);
@@ -883,6 +898,7 @@ export class CloudSessionCollaborationOwner {
    */
   async #ensureReady(
     targetSessionId: string,
+    signal?: AbortSignal,
   ): Promise<
     | { kind: "ready"; sandbox: typeof sandboxes.$inferSelect }
     | { kind: "unreachable"; outcome: CloudSessionMessageOutcome }
@@ -893,19 +909,24 @@ export class CloudSessionCollaborationOwner {
     };
     const allocation = this.#allocation;
     let owned = await loadManagedSandboxBySessionId(this.#database, targetSessionId);
+    signal?.throwIfAborted();
     if (!owned) {
       if (!allocation) return notReady;
       const ensured = await allocation.ensureSandbox(targetSessionId).catch(() => undefined);
+      signal?.throwIfAborted();
       if (!ensured) return notReady;
       owned = await loadManagedSandboxBySessionId(this.#database, targetSessionId);
+      signal?.throwIfAborted();
       if (!owned) return notReady;
     }
     const row = owned.sandbox;
     if (this.#isRunnerReady(row)) return { kind: "ready", sandbox: row };
     if (!allocation) return notReady;
     const accountId = await this.#accountForSession(targetSessionId);
+    signal?.throwIfAborted();
     if (!accountId) return notReady;
-    const outcome = await this.#convergeAllocation(allocation, accountId, row.id, targetSessionId);
+    const outcome = await this.#convergeAllocation(allocation, accountId, row.id, targetSessionId, signal);
+    signal?.throwIfAborted();
     if (outcome === "restore_required") {
       // Previously used storage with no persistence: allocating would be a blank replacement.
       return { kind: "unreachable", outcome: { status: "rejected", code: "restore_required" } };
@@ -917,6 +938,7 @@ export class CloudSessionCollaborationOwner {
     }
     if (outcome !== "ready") return notReady;
     const converged = await loadManagedSandboxBySessionId(this.#database, targetSessionId);
+    signal?.throwIfAborted();
     if (!converged || !isDispatchReadySandbox(converged.sandbox)) return notReady;
     return { kind: "ready", sandbox: converged.sandbox };
   }
@@ -958,28 +980,32 @@ export class CloudSessionCollaborationOwner {
     accountId: string,
     sandboxId: string,
     targetSessionId: string,
+    signal?: AbortSignal,
   ): Promise<IngressAllocationOutcome | "timeout" | "failed" | "capacity"> {
     const controller = new AbortController();
+    const preparationSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
     const convergence = allocation
       .ensureEnvironmentAllocated({ accountId, sandboxId })
-      .then((outcome) =>
-        outcome === "pending" || outcome === "ready"
-          ? this.#waitForRunnerReady(targetSessionId, controller.signal)
-          : outcome,
-      );
-    // A rejected convergence is transient here: the durable reservation stays retryable.
-    void convergence.catch(() => {
-      this.#logger?.warn(
-        { code: "CLOUD_SESSION_ALLOCATION_FAILED", sandboxId },
-        "Cloud Session Sandbox allocation convergence failed; the input stays retryable",
-      );
-    });
+      .then((outcome) => {
+        preparationSignal.throwIfAborted();
+        return outcome === "pending" || outcome === "ready"
+          ? this.#waitForRunnerReady(targetSessionId, preparationSignal)
+          : outcome;
+      })
+      .catch((error: unknown): "failed" | "capacity" => {
+        if (!preparationSignal.aborted || error !== preparationSignal.reason) {
+          this.#logger?.warn(
+            { code: "CLOUD_SESSION_ALLOCATION_FAILED", sandboxId },
+            "Cloud Session Sandbox allocation convergence failed; the input stays retryable",
+          );
+        }
+        signal?.throwIfAborted();
+        return error instanceof CloudCapacityExceededError ? "capacity" : "failed";
+      });
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
-        convergence.catch((error): "failed" | "capacity" =>
-          error instanceof CloudCapacityExceededError ? "capacity" : "failed",
-        ),
+        convergence,
         new Promise<"timeout">((resolve) => {
           timer = setTimeout(() => resolve("timeout"), this.#ensureTimeoutMs);
           timer.unref?.();
@@ -995,6 +1021,7 @@ export class CloudSessionCollaborationOwner {
   async #waitForRunnerReady(targetSessionId: string, signal: AbortSignal): Promise<IngressAllocationOutcome> {
     while (!signal.aborted) {
       const owned = await loadManagedSandboxBySessionId(this.#database, targetSessionId);
+      if (signal.aborted) return "stopped";
       if (!owned || owned.sandbox.lifecycle === "releasing") return "stopped";
       if (this.#isRunnerReady(owned.sandbox)) return "ready";
       try {
@@ -1390,10 +1417,12 @@ export class CloudSessionCollaborationOwner {
    * journal lived in that Instance), so it is terminalized conservatively as failed. Timeout is
    * never used as evidence, and terminal work is never replayed. Returns the retired count.
    */
-  async reconcileSessionWork(sessionId: string): Promise<number> {
+  async reconcileSessionWork(sessionId: string, signal?: AbortSignal): Promise<number> {
+    signal?.throwIfAborted();
     const store = this.#durableWork;
     if (!store) return 0;
     const computerId = await this.#sessionComputerId(sessionId);
+    signal?.throwIfAborted();
     if (!computerId) return 0;
     const rows = await this.#database
       .select({
@@ -1411,9 +1440,11 @@ export class CloudSessionCollaborationOwner {
         ),
       );
     if (rows.length === 0) return 0;
+    signal?.throwIfAborted();
     const sandbox = await loadSandboxRecordBySessionId(this.#database, sessionId);
     let retired = 0;
     for (const row of rows) {
+      signal?.throwIfAborted();
       const envelope = parseCloudSessionWorkEnvelope(row.payload);
       if (!envelope) continue;
       const allocation = envelope.allocation;
@@ -1424,13 +1455,16 @@ export class CloudSessionCollaborationOwner {
         sandbox.currentResourceName === allocation.resourceName;
       if (current) continue;
       const messageId = row.recordKey.slice(sessionId.length + 1);
-      const committed = await this.#terminalizeDurable({
-        code: "allocation_retired",
-        computerId: row.computerId,
-        messageId,
-        sessionId,
-        status: "failed",
-      });
+      const committed = await this.#terminalizeDurable(
+        {
+          code: "allocation_retired",
+          computerId: row.computerId,
+          messageId,
+          sessionId,
+          status: "failed",
+        },
+        signal,
+      );
       if (committed) {
         retired += 1;
         // Clear the in-memory picture for the exact retired Turn only: a newer attempt of the
@@ -1462,18 +1496,22 @@ export class CloudSessionCollaborationOwner {
    * a missing record or an identical already-terminal record is reported, while a conflicting
    * terminal state is never overwritten and never acked.
    */
-  async #terminalizeDurable(input: {
-    computerId: string;
-    sessionId: string;
-    messageId: string;
-    status: "succeeded" | "failed";
-    code?: string;
-  }): Promise<"recorded" | "already_recorded" | undefined> {
+  async #terminalizeDurable(
+    input: {
+      computerId: string;
+      sessionId: string;
+      messageId: string;
+      status: "succeeded" | "failed";
+      code?: string;
+    },
+    signal?: AbortSignal,
+  ): Promise<"recorded" | "already_recorded" | undefined> {
     const store = this.#durableWork;
     if (!store) return undefined;
     const key = durableKey(input.sessionId, input.messageId);
     try {
       const existing = await store.read(input.computerId, "session-message", key);
+      signal?.throwIfAborted();
       if (!existing) return undefined;
       if (isTerminalDurable(existing.status)) {
         return existing.status === input.status && existing.lastError?.code === input.code
@@ -1500,6 +1538,7 @@ export class CloudSessionCollaborationOwner {
       await store.write(input.computerId, next);
       return "recorded";
     } catch (error) {
+      signal?.throwIfAborted();
       this.#logger?.warn(
         { code: "CLOUD_SESSION_DURABLE_SETTLE_FAILED", messageId: input.messageId, err: error },
         "Durable Session work could not be terminalized; the reclaim barrier stays conservative",

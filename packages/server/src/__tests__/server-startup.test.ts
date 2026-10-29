@@ -779,7 +779,7 @@ describe("Server startup", () => {
     expect(app.close).toHaveBeenCalledTimes(1);
     expect(state.events).not.toContain("ready:listen");
     expect(state.events).not.toContain("prewarm:start");
-    expect(state.events.slice(-8)).toEqual([
+    expect(state.events.slice(-9)).toEqual([
       "app:close",
       "prewarm:stop",
       "scheduler:stop",
@@ -787,6 +787,7 @@ describe("Server startup", () => {
       "platform:close",
       "feishu-setup:stop",
       "feishu-connections:stop",
+      "sql:end",
       "sql:end",
     ]);
     const logged = JSON.stringify(app.log.error.mock.calls);
@@ -837,7 +838,7 @@ describe("Server startup", () => {
       expect(state.events).not.toContain("ready:listen");
       expect(state.events.indexOf("sql:end")).toBeGreaterThan(state.events.indexOf("scheduler:stop"));
       expect(state.events.indexOf("billing:close")).toBeGreaterThan(state.events.indexOf("sql:end"));
-      expect(state.events.slice(-2)).toEqual(["billing:close", "telemetry:close"]);
+      expect(state.events.slice(-3)).toEqual(["billing:close", "sql:end", "telemetry:close"]);
       expect(state.shutdownTelemetry).toHaveBeenCalledTimes(2);
       expect(report).toHaveBeenCalledOnce();
       const logged = JSON.stringify(report.mock.calls);
@@ -856,6 +857,42 @@ describe("Server startup", () => {
       }
     },
   );
+
+  it.each([false, true])("closes the pool before App creation, including cleanup failure=%s", async (closeFails) => {
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    state.loadCloudBilling.mockRejectedValue(new Error("initialization failed jwt-secret"));
+    if (closeFails) state.sql.end.mockRejectedValue(new Error("database close failed encryption-secret"));
+    try {
+      await expect(startServer()).resolves.toBeUndefined();
+      expect(state.createDatabaseClient).toHaveBeenCalledOnce();
+      expect(state.createApp).not.toHaveBeenCalled();
+      expect(state.sql.end).toHaveBeenCalledExactlyOnceWith({ timeout: 1 });
+      expect(state.shutdownTelemetry).toHaveBeenCalledOnce();
+      expect(process.exitCode).toBe(1);
+      const output = stderr.mock.calls.flat().join(" ");
+      expect(output).toContain("initialization failed");
+      if (closeFails) expect(output).toContain("database close failed");
+      expect(output).not.toContain("jwt-secret");
+      expect(output).not.toContain("encryption-secret");
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it("closes the pool even when App close fails before its resource hook", async () => {
+    const app = state.app as {
+      listen: ReturnType<typeof vi.fn>;
+      close: ReturnType<typeof vi.fn>;
+      log: { error: ReturnType<typeof vi.fn> };
+    };
+    app.listen.mockRejectedValue(new Error("listen failed"));
+    app.close.mockRejectedValue(new Error("App close failed"));
+    await expect(startServer()).resolves.toBeUndefined();
+    expect(state.sql.end).toHaveBeenCalledExactlyOnceWith({ timeout: 1 });
+    expect(state.shutdownTelemetry).toHaveBeenCalledOnce();
+    expect(process.exitCode).toBe(1);
+    expect(JSON.stringify(app.log.error.mock.calls)).toContain("App close failed");
+  });
 
   it("reports a pre-creation failure even when telemetry cleanup rejects", async () => {
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);

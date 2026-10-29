@@ -1,14 +1,20 @@
 import { randomUUID } from "node:crypto";
-import { computeDirectInputHash, type SessionReconcileRequest } from "@opentag/shared";
-import { eq } from "drizzle-orm";
+import {
+  computeDirectInputHash,
+  computeRuntimeImMessageSemanticHash,
+  computeRuntimeImSteerInputHash,
+  type SessionReconcileRequest,
+} from "@opentag/shared";
+import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
-import { computers, imMessageDeliveries, sessions } from "../../db/schema/index.js";
+import { computers, imBindings, imMessageDeliveries, sessions } from "../../db/schema/index.js";
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { runImDeliveryExpiry } from "../../runtime/im-delivery-janitor.js";
 import { STEER_TARGET_ENDED_ERROR_CODE } from "../../runtime/im-delivery-recovery.js";
 import { ImDeliveryWorker } from "../../runtime/im-delivery-worker.js";
 import { PostgresRuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
+import { ImMessageInbox } from "../../services/im/im-message-inbox.js";
 import {
   acceptAndSteer,
   createFixture,
@@ -35,6 +41,273 @@ describe("steered IM delivery recovery", () => {
 
   beforeEach(async () => {
     await testDatabase.reset();
+  });
+
+  it("atomically freezes, releases and acknowledges initial batch members without requeueing them on failure", async () => {
+    const fixture = await createFixture(client.database);
+    const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => new Date() });
+    const request = {
+      ...fixture.rootRequest,
+      batch: fixture.steerRequests.map((child) => ({
+        deliveryId: child.deliveryId,
+        imMessageId: child.imMessageId,
+        inputHash: computeRuntimeImMessageSemanticHash(child),
+      })),
+    };
+    const hash = computeDirectInputHash(request);
+    expect(await custody.beginDeliveryDispatch(request, hash, fixture.dispatchContext)).toBe("dispatched");
+    expect(await custody.beginDeliveryDispatch(request, hash, fixture.dispatchContext)).toBe("already_dispatched");
+    expect((await deliveryRows(client.database, fixture)).children.every((row) => row.reason === "batch_pending")).toBe(
+      true,
+    );
+    expect(await custody.releaseDeliveryDispatch(request, hash, "retry")).toBe("released");
+    expect(
+      (await deliveryRows(client.database, fixture)).children.every(
+        (row) => row.reason === null && row.steerTargetDeliveryId === null,
+      ),
+    ).toBe(true);
+    expect(await custody.beginDeliveryDispatch(request, hash, fixture.dispatchContext)).toBe("dispatched");
+    expect(await custody.acceptDelivery(request, hash, fixture.rootTurnId, fixture.context)).toBe("accepted");
+    expect(await custody.acceptDelivery(request, hash, fixture.rootTurnId, fixture.context)).toBe("already_accepted");
+    expect(
+      (await deliveryRows(client.database, fixture)).children.every(
+        (row) => row.state === "steered" && row.reason === "batch_initial",
+      ),
+    ).toBe(true);
+    expect(await custody.recordTurn(turnReport(fixture, "failed", "turn_timeout"), fixture.context)).toBe("recorded");
+    await runImDeliveryExpiry(client.database, janitorOptions(fixture.now));
+    expect(
+      (await deliveryRows(client.database, fixture)).children.every(
+        (row) => row.state === "steered" && row.reason === "batch_initial",
+      ),
+    ).toBe(true);
+  });
+
+  it("recovers every member of a frozen unconfirmed steer batch after its target fails", async () => {
+    const fixture = await createFixture(client.database);
+    const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => new Date() });
+    const rootHash = computeDirectInputHash(fixture.rootRequest);
+    await custody.beginDeliveryDispatch(fixture.rootRequest, rootHash, fixture.dispatchContext);
+    await custody.acceptDelivery(fixture.rootRequest, rootHash, fixture.rootTurnId, fixture.context);
+    const [first, second] = fixture.steerRequests;
+    const request = {
+      ...first,
+      batch: [
+        {
+          deliveryId: second.deliveryId,
+          imMessageId: second.imMessageId,
+          inputHash: computeRuntimeImMessageSemanticHash(second),
+        },
+      ],
+    };
+    const hash = computeRuntimeImSteerInputHash(request);
+    expect(await custody.beginSteerDispatch(request, hash, fixture.dispatchContext)).toBe("dispatched");
+    expect(await custody.releaseSteerDispatch(request, hash, "uncertain")).toBe("released");
+    expect((await deliveryRows(client.database, fixture)).children[0]?.dispatchRequestId).toBe(request.requestId);
+    expect(await custody.recordTurn(turnReport(fixture, "failed", "turn_timeout"), fixture.context)).toBe("recorded");
+    const rows = (await deliveryRows(client.database, fixture)).children;
+    expect(rows).toHaveLength(2);
+    expect(
+      rows.every(
+        (row) =>
+          row.state === "pending" &&
+          row.reason === null &&
+          row.dispatchRequestId === null &&
+          row.steerTargetDeliveryId === null,
+      ),
+    ).toBe(true);
+    expect(rows[0]?.nextAttemptAt.getTime()).toBeLessThan(rows[1]?.nextAttemptAt.getTime() ?? 0);
+  });
+
+  it("rolls back the entire batch receipt when any reserved member changed", async () => {
+    const fixture = await createFixture(client.database);
+    const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => new Date() });
+    const request = {
+      ...fixture.rootRequest,
+      batch: fixture.steerRequests.map((child) => ({
+        deliveryId: child.deliveryId,
+        imMessageId: child.imMessageId,
+        inputHash: computeRuntimeImMessageSemanticHash(child),
+      })),
+    };
+    const hash = computeDirectInputHash(request);
+    await custody.beginDeliveryDispatch(request, hash, fixture.dispatchContext);
+    await client.database
+      .update(imMessageDeliveries)
+      .set({ steerTargetDeliveryId: null })
+      .where(eq(imMessageDeliveries.id, fixture.steerRequests[1].deliveryId));
+    await expect(custody.acceptDelivery(request, hash, fixture.rootTurnId, fixture.context)).rejects.toThrow(
+      "IM_BATCH_MEMBER_CONFLICT",
+    );
+    const rows = await deliveryRows(client.database, fixture);
+    expect(rows.root?.state).toBe("pending");
+    expect(rows.children.every((row) => row.state === "pending")).toBe(true);
+  });
+
+  it.each(["head", "member"] as const)(
+    "recovers exact frozen identities after a provider edits the %s",
+    async (edited) => {
+      const fixture = await createFixture(client.database);
+      const custody = new PostgresRuntimeCustodyStore(client.database);
+      const rootHash = computeDirectInputHash(fixture.rootRequest);
+      await custody.beginDeliveryDispatch(fixture.rootRequest, rootHash, fixture.dispatchContext);
+      await custody.acceptDelivery(fixture.rootRequest, rootHash, fixture.rootTurnId, fixture.context);
+      const [first, second] = fixture.steerRequests;
+      const request = {
+        ...first,
+        batch: [
+          {
+            deliveryId: second.deliveryId,
+            imMessageId: second.imMessageId,
+            inputHash: computeRuntimeImMessageSemanticHash(second),
+          },
+        ],
+      };
+      const hash = computeRuntimeImSteerInputHash(request);
+      await custody.beginSteerDispatch(request, hash, fixture.dispatchContext);
+      await custody.releaseSteerDispatch(request, hash, "uncertain");
+      const [binding] = await client.database.select().from(imBindings);
+      if (!binding) throw new Error("missing binding");
+      const event = {
+        providerEventId: `edited-frozen-${edited}`,
+        externalAppId: "app",
+        externalTeamId: "team",
+        providerContext: { provider: "feishu" as const, chatType: "group" as const },
+        conversation: { externalId: "channel", kind: "channel" as const },
+        message: {
+          externalId: edited === "head" ? "follow-up-1" : "follow-up-2",
+          revisionKey: "2",
+          operation: "edited" as const,
+          author: { externalId: "human", kind: "human" as const },
+          occurredAt: new Date(fixture.now.getTime() + 3_000),
+          content: {
+            version: 1 as const,
+            fallbackText: "edited content",
+            blocks: [{ type: "text" as const, text: "edited content" }],
+            truncated: false,
+          },
+          resources: [],
+        },
+        mentions: [{ externalId: "bot", displayName: null }],
+      };
+      const result = await new ImMessageInbox(client.database).ingest(binding.id, 1, event);
+      expect(result.duplicate).toBe(false);
+      const before = (await deliveryRows(client.database, fixture)).children;
+      expect(before[edited === "head" ? 0 : 1]).toMatchObject({ state: "expired", reason: "superseded_revision" });
+      expect(await custody.recordTurn(turnReport(fixture, "failed", "turn_timeout"), fixture.context)).toBe("recorded");
+      await runImDeliveryExpiry(client.database, janitorOptions(new Date()));
+      const after = (await deliveryRows(client.database, fixture)).children;
+      expect(after.map((row) => row.id)).toEqual([first.deliveryId, second.deliveryId]);
+      expect(
+        after.every(
+          (row) =>
+            row.state === "pending" &&
+            row.reason === null &&
+            row.dispatchRequestId === null &&
+            row.steerTargetDeliveryId === null,
+        ),
+      ).toBe(true);
+      expect(after[0]?.nextAttemptAt.getTime()).toBeLessThan(after[1]?.nextAttemptAt.getTime() ?? 0);
+    },
+  );
+
+  it.each(["retry", "deferred"] as const)(
+    "keeps exact uncertainty frozen after a later %s receipt and accepts exact success",
+    async (disposition) => {
+      const fixture = await createFixture(client.database);
+      const custody = new PostgresRuntimeCustodyStore(client.database);
+      const rootHash = computeDirectInputHash(fixture.rootRequest);
+      await custody.beginDeliveryDispatch(fixture.rootRequest, rootHash, fixture.dispatchContext);
+      await custody.acceptDelivery(fixture.rootRequest, rootHash, fixture.rootTurnId, fixture.context);
+      const [first, second] = fixture.steerRequests;
+      const request = {
+        ...first,
+        batch: [
+          {
+            deliveryId: second.deliveryId,
+            imMessageId: second.imMessageId,
+            inputHash: computeRuntimeImMessageSemanticHash(second),
+          },
+        ],
+      };
+      const hash = computeRuntimeImSteerInputHash(request);
+      await custody.beginSteerDispatch(request, hash, fixture.dispatchContext);
+      await custody.releaseSteerDispatch(request, hash, "uncertain");
+      expect(await custody.releaseSteerDispatch({ ...request, requestId: randomUUID() }, hash, disposition)).toBe(
+        "conflict",
+      );
+      expect(await custody.releaseSteerDispatch(request, hash, disposition)).toBe("released");
+      const frozen = (await deliveryRows(client.database, fixture)).children;
+      expect(frozen[0]).toMatchObject({
+        state: "pending",
+        dispatchRequestId: request.requestId,
+        dispatchInputHash: hash,
+        lastErrorCode: "IM_DELIVERY_STEER_UNKNOWN",
+      });
+      expect(frozen[1]).toMatchObject({
+        state: "pending",
+        reason: "batch_pending",
+        steerTargetDeliveryId: first.deliveryId,
+      });
+      expect(
+        await custody.recordSteered(request, hash, computeRuntimeImMessageSemanticHash(request), fixture.context),
+      ).toBe("steered");
+      expect(
+        (await deliveryRows(client.database, fixture)).children.every(
+          (row) => row.state === "steered" && row.lastErrorCode === null,
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it("settles an exact late receipt after an unconfirmed batch was marked unknown", async () => {
+    const fixture = await createFixture(client.database);
+    const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => new Date() });
+    const rootHash = computeDirectInputHash(fixture.rootRequest);
+    await custody.beginDeliveryDispatch(fixture.rootRequest, rootHash, fixture.dispatchContext);
+    await custody.acceptDelivery(fixture.rootRequest, rootHash, fixture.rootTurnId, fixture.context);
+    const [first, second] = fixture.steerRequests;
+    const request = {
+      ...first,
+      batch: [
+        {
+          deliveryId: second.deliveryId,
+          imMessageId: second.imMessageId,
+          inputHash: computeRuntimeImMessageSemanticHash(second),
+        },
+      ],
+    };
+    const hash = computeRuntimeImSteerInputHash(request);
+    await custody.beginSteerDispatch(request, hash, fixture.dispatchContext);
+    await custody.recordTurn(turnReport(fixture, "completed"), fixture.context);
+    await client.database
+      .update(imMessageDeliveries)
+      .set({ state: "terminal_rejected", reason: "steer_state_unknown" })
+      .where(
+        inArray(
+          imMessageDeliveries.id,
+          fixture.steerRequests.map((child) => child.deliveryId),
+        ),
+      );
+    expect(
+      await custody.recordSteered(
+        request,
+        "0".repeat(64),
+        computeRuntimeImMessageSemanticHash(request),
+        fixture.context,
+      ),
+    ).toBe("conflict");
+    expect(
+      await custody.recordSteered(request, hash, computeRuntimeImMessageSemanticHash(request), fixture.context),
+    ).toBe("steered");
+    expect(
+      await custody.recordSteered(request, hash, computeRuntimeImMessageSemanticHash(request), fixture.context),
+    ).toBe("already_steered");
+    expect(
+      (await deliveryRows(client.database, fixture)).children.every(
+        (row) => row.state === "steered" && row.reason === null,
+      ),
+    ).toBe(true);
   });
 
   it.each([

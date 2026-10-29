@@ -11,7 +11,7 @@ import {
   type SessionReconcileResult,
 } from "@opentag/shared";
 import { and, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
-import type { DatabaseClient } from "../db/client.js";
+import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
 import {
   agents,
   computers,
@@ -36,8 +36,13 @@ import {
 import type { CloudDeliveryOwner } from "../services/sandboxes/index.js";
 import type { ReadyRunnerAllocation } from "../services/sandboxes/sandbox-runner-service.js";
 import type { ConnectionRegistry } from "./connection-registry.js";
+import { appendPendingImBatch, releaseImBatch } from "./im-delivery-batch.js";
 import { dispatchClaimToken } from "./im-delivery-claim.js";
-import { CloudDeliveryCoordinator, readPersistedDeliveryRequest } from "./im-delivery-cloud.js";
+import {
+  type CloudDeliveryClaimRow,
+  CloudDeliveryCoordinator,
+  readPersistedDeliveryRequest,
+} from "./im-delivery-cloud.js";
 import {
   deliveryMessageContent,
   ImDeliveryInputError,
@@ -392,7 +397,8 @@ export class ImDeliveryWorker {
     expectedAgentId: string,
     sessionId?: string,
   ): Promise<WorkerClaim | undefined> {
-    return this.#database.transaction(async (transaction) => {
+    let uncertainDeliveryId: string | undefined;
+    const claim = await this.#database.transaction(async (transaction) => {
       const now = this.#clock();
       const locked = await lockEligibleDelivery(transaction, deliveryId, expectedAgentId, now, sessionId);
       if (!locked) return undefined;
@@ -407,24 +413,25 @@ export class ImDeliveryWorker {
       const laneKey = occupancyScopeKey(deliveryOccupancyScope(subject));
       let steerTarget: { id: string; turnId: string } | undefined;
       if (otherCustody) {
-        const instanceId = this.#registry.currentInstanceId(row.computerId);
+        const instanceId =
+          row.computerKind === "cloud"
+            ? this.#cloudDelivery?.inputInstance(row.sessionId)
+            : this.#registry.currentInstanceId(row.computerId);
         if (
-          row.computerKind !== "local" ||
-          row.state !== "pending" ||
-          row.dispatchRequestId !== null ||
-          row.steerTargetDeliveryId !== null ||
+          !["pending", "expired"].includes(row.state) ||
+          (row.dispatchRequestId !== null && row.steerTargetDeliveryId !== otherCustody.id) ||
           otherCustody.state !== "accepted" ||
           otherCustody.sessionId !== row.sessionId ||
           otherCustody.reportedAt !== null ||
           !otherCustody.turnId ||
           !instanceId ||
           otherCustody.reportOwnerInstanceId !== instanceId ||
-          !this.#registry.supportsCapability(row.computerId, instanceId, RUNTIME_CAPABILITY.imSteer)
+          !(row.computerKind === "cloud"
+            ? this.#cloudDelivery?.canSteer(row.sessionId, instanceId)
+            : this.#registry.supportsCapability(row.computerId, instanceId, RUNTIME_CAPABILITY.imSteer))
         ) {
           // A declined steer must be deferred, not skipped: returning without advancing the row
           // makes the same earliest row win every tick and block all other tenants' deliveries.
-          // A Cloud row defers the same way when a competing claim took its Session first; there
-          // is no steer frame, so it waits for its turn instead of re-selecting every tick.
           await transaction
             .update(imMessageDeliveries)
             .set({
@@ -453,21 +460,7 @@ export class ImDeliveryWorker {
           kind: "recovery" as const,
         };
       }
-      const persistedRequest = row.dispatchPayload
-        ? DirectImMessageDeliveryRequestSchema.safeParse(row.dispatchPayload)
-        : undefined;
-      const persistedSteer = row.dispatchPayload
-        ? RuntimeImSteerRequestSchema.safeParse(row.dispatchPayload)
-        : undefined;
-      const persistedPlacementGeneration = persistedRequest?.success
-        ? persistedRequest.data.placementGeneration
-        : persistedSteer?.success
-          ? persistedSteer.data.placementGeneration
-          : undefined;
-      const staleCorrelation =
-        row.dispatchRequestId !== null &&
-        (row.deliveryGeneration !== row.generation ||
-          (persistedPlacementGeneration !== undefined && persistedPlacementGeneration !== row.generation));
+      const staleCorrelation = staleDispatchGeneration(row);
       if (staleCorrelation) {
         await transaction
           .update(imMessageDeliveries)
@@ -478,25 +471,38 @@ export class ImDeliveryWorker {
           .where(eq(imMessageDeliveries.id, row.id));
         return undefined;
       }
-      const retiredSteerCorrelation =
-        persistedSteer?.success === true &&
-        row.dispatchRequestId === persistedSteer.data.requestId &&
-        row.dispatchInputHash === computeRuntimeImSteerInputHash(persistedSteer.data) &&
-        row.steerTargetDeliveryId === persistedSteer.data.rootDeliveryId &&
-        row.id === persistedSteer.data.deliveryId &&
-        row.sessionId === persistedSteer.data.sessionId &&
-        row.agentId === persistedSteer.data.agentId;
-      if (retiredSteerCorrelation && row.state === "expired") {
+      const retiredSteerCorrelation = frozenSteerMatches(row);
+      if (retiredSteerCorrelation && !steerTarget) {
+        if (await recoverableSteerTarget(transaction, row)) {
+          await transaction
+            .update(imMessageDeliveries)
+            .set({ nextAttemptAt: new Date(now.getTime() + RETRY_DELAY_MS) })
+            .where(eq(imMessageDeliveries.id, row.id));
+          return undefined;
+        }
         await transaction
           .update(imMessageDeliveries)
           .set({
-            executionOrigin: null,
-            dispatchRequestId: null,
-            dispatchInputHash: null,
-            dispatchPayload: null,
-            steerTargetDeliveryId: null,
-            lastErrorCode: null,
+            state: "terminal_rejected",
+            reason: "steer_state_unknown",
+            lastErrorCode: "IM_DELIVERY_STEER_UNKNOWN",
           })
+          .where(
+            or(
+              eq(imMessageDeliveries.id, row.id),
+              and(
+                eq(imMessageDeliveries.steerTargetDeliveryId, row.id),
+                eq(imMessageDeliveries.reason, "batch_pending"),
+              ),
+            ),
+          );
+        uncertainDeliveryId = row.id;
+        return undefined;
+      }
+      if (retiredSteerCorrelation && row.lastErrorCode === "IM_DELIVERY_STEER_UNKNOWN") {
+        await transaction
+          .update(imMessageDeliveries)
+          .set({ nextAttemptAt: new Date(now.getTime() + 30_000) })
           .where(eq(imMessageDeliveries.id, row.id));
         return undefined;
       }
@@ -507,15 +513,6 @@ export class ImDeliveryWorker {
           attemptCount: sql`${imMessageDeliveries.attemptCount} + 1`,
           ...(row.state === "pending" ? { placementGeneration: row.generation } : {}),
           executionOrigin: sql`case when ${imMessageDeliveries.dispatchRequestId} is null then null else ${imMessageDeliveries.executionOrigin} end`,
-          ...(retiredSteerCorrelation
-            ? {
-                executionOrigin: null,
-                dispatchRequestId: null,
-                dispatchInputHash: null,
-                dispatchPayload: null,
-                steerTargetDeliveryId: null,
-              }
-            : {}),
           nextAttemptAt: new Date(now.getTime() + this.#claimLeaseMs),
           lastErrorCode: claimToken,
         })
@@ -540,6 +537,8 @@ export class ImDeliveryWorker {
             claimToken,
           };
     });
+    if (uncertainDeliveryId) this.#onDeliverySettled?.(uncertainDeliveryId);
+    return claim;
   }
 
   async #deliver(deliveryId: string, claimToken: string, signal: AbortSignal): Promise<void> {
@@ -552,6 +551,75 @@ export class ImDeliveryWorker {
     } finally {
       await lease.stop();
     }
+  }
+
+  #supportsBatchInput(
+    row: CloudDeliveryClaimRow,
+    instanceId: string,
+    capability: typeof RUNTIME_CAPABILITY.imSteer | typeof RUNTIME_CAPABILITY.imDelivery,
+    version: number,
+  ): boolean {
+    return row.computer.kind === "cloud"
+      ? this.#cloudDelivery?.canBatch(row.session.id) === true
+      : (this.#registry.capabilityVersion(row.computer.id, instanceId, capability) ?? 0) >= version;
+  }
+
+  #steerInstance(row: CloudDeliveryClaimRow): string | undefined {
+    if (row.computer.kind === "cloud") return this.#cloudDelivery?.inputInstance(row.session.id);
+    const instanceId = this.#registry.currentInstanceId(row.computer.id);
+    return instanceId &&
+      row.computer.currentInstanceId === instanceId &&
+      this.#registry.supportsCapability(row.computer.id, instanceId, RUNTIME_CAPABILITY.imSteer)
+      ? instanceId
+      : undefined;
+  }
+
+  async #buildSteerRequest(
+    row: CloudDeliveryClaimRow,
+    claim: { rootDeliveryId: string; expectedTurnId: string },
+    replyRole: "observer" | undefined,
+    instanceId: string,
+  ): Promise<RuntimeImSteerRequest> {
+    const pinned = RuntimeImSteerRequestSchema.safeParse(row.delivery.dispatchPayload);
+    let request: RuntimeImSteerRequest;
+    if (pinned.success) {
+      request = pinned.data;
+      if (
+        request.requestId !== row.delivery.dispatchRequestId ||
+        computeRuntimeImSteerInputHash(request) !== row.delivery.dispatchInputHash ||
+        request.rootDeliveryId !== claim.rootDeliveryId
+      )
+        throw new Error("IM_DELIVERY_STEER_INPUT_CONFLICT");
+    } else {
+      const content = await this.#buildDeliveryContent({
+        delivery: row.delivery,
+        message: row.message,
+        session: row.session,
+        imBinding: row.imBinding,
+        receiveMode: row.agent.receiveMode,
+      });
+      request = {
+        type: "im:steer",
+        requestId: randomUUID(),
+        deliveryId: row.delivery.id,
+        imMessageId: row.message.id,
+        sessionId: row.session.id,
+        agentId: row.agent.id,
+        placementGeneration: row.placement.generation,
+        rootDeliveryId: claim.rootDeliveryId,
+        expectedTurnId: claim.expectedTurnId,
+        attention: row.delivery.attention,
+        ...(replyRole ? { replyRole } : {}),
+        content,
+        deadlineAt: row.delivery.expiresAt.toISOString(),
+      };
+      fitDeliveryFrame(request);
+      if (this.#supportsBatchInput(row, instanceId, RUNTIME_CAPABILITY.imSteer, 3)) {
+        await appendPendingImBatch(this.#database, request, row.imBinding, row.session, this.#clock());
+      }
+      validateFreshImRequest(request);
+    }
+    return request;
   }
 
   async #deliverSteer(
@@ -586,7 +654,7 @@ export class ImDeliveryWorker {
         .where(
           and(
             eq(imMessageDeliveries.id, claim.id),
-            eq(imMessageDeliveries.state, "pending"),
+            inArray(imMessageDeliveries.state, ["pending", "expired"]),
             isNull(imMessageDeliveries.reason),
             isNull(sessions.endedAt),
             eq(imBindings.status, "active"),
@@ -606,20 +674,13 @@ export class ImDeliveryWorker {
         }
         return;
       }
-      const instanceId = this.#registry.currentInstanceId(row.computer.id);
-      if (
-        !instanceId ||
-        row.computer.currentInstanceId !== instanceId ||
-        !this.#registry.supportsCapability(row.computer.id, instanceId, RUNTIME_CAPABILITY.imSteer)
-      ) {
+      const instanceId = this.#steerInstance(row);
+      if (!instanceId) {
         await this.#recordFailure(claim.id, "IM_DELIVERY_STEER_UNAVAILABLE", claim.claimToken);
         return;
       }
       const replyRole = await this.#replyRole(row.message.id, row.session.kind, row.message.threadKey);
-      if (
-        replyRole === "observer" &&
-        this.#registry.capabilityVersion(row.computer.id, instanceId, RUNTIME_CAPABILITY.imSteer) !== 2
-      ) {
+      if (replyRole === "observer" && !this.#supportsBatchInput(row, instanceId, RUNTIME_CAPABILITY.imSteer, 2)) {
         await this.#recordFailure(claim.id, "IM_DELIVERY_OBSERVER_STEER_UNSUPPORTED", claim.claimToken);
         return;
       }
@@ -645,34 +706,11 @@ export class ImDeliveryWorker {
         await this.#recordFailure(claim.id, "IM_DELIVERY_STEER_TARGET_ENDED", claim.claimToken);
         return;
       }
-      const content = await this.#buildDeliveryContent({
-        delivery: row.delivery,
-        message: row.message,
-        session: row.session,
-        imBinding: row.imBinding,
-        receiveMode: row.agent.receiveMode,
-      });
-      const request: RuntimeImSteerRequest = {
-        type: "im:steer",
-        requestId: randomUUID(),
-        deliveryId: row.delivery.id,
-        imMessageId: row.message.id,
-        sessionId: row.session.id,
-        agentId: row.agent.id,
-        placementGeneration: row.placement.generation,
-        rootDeliveryId: target.id,
-        expectedTurnId: claim.expectedTurnId,
-        attention: row.delivery.attention,
-        ...(replyRole ? { replyRole } : {}),
-        content,
-        deadlineAt: row.delivery.expiresAt.toISOString(),
-      };
-      fitDeliveryFrame(request);
-      validateFreshImRequest(request);
+      const request = await this.#buildSteerRequest(row, claim, replyRole, instanceId);
       if (!(await lease.assertOwned())) return;
       await this.#database
         .update(imMessageDeliveries)
-        .set({ executionOrigin: "local" })
+        .set({ executionOrigin: row.computer.kind })
         .where(and(eq(imMessageDeliveries.id, claim.id), eq(imMessageDeliveries.lastErrorCode, claim.claimToken)));
       const admitted = await this.#withActiveAgentAdmission(
         {
@@ -681,7 +719,10 @@ export class ImDeliveryWorker {
           placementGeneration: row.placement.generation,
           sessionId: row.session.id,
         },
-        (onDispatched) => this.#domain.requestSteer(row.computer.id, instanceId, request, onDispatched),
+        (onDispatched) =>
+          row.computer.kind === "cloud" && this.#cloudDelivery
+            ? this.#cloudDelivery.requestSteer(request, onDispatched)
+            : this.#domain.requestSteer(row.computer.id, instanceId, request, onDispatched),
         signal,
       );
       if (!admitted.admitted) {
@@ -690,7 +731,7 @@ export class ImDeliveryWorker {
       }
       const result = await admitted.result;
       setActiveSpanAttributes(outcomeAttrs(result.status, "reason" in result ? result.reason : undefined));
-      if (result.status === "rejected" && (result.reason === "invalid_input" || result.reason === "input_conflict")) {
+      if (result.status === "rejected" && result.reason === "invalid_input") {
         await this.#reject(claim.id, result.reason, claim.claimToken);
       } else if (result.status !== "steered") {
         await this.#recordFailure(
@@ -811,10 +852,7 @@ export class ImDeliveryWorker {
     const replyRole = persistedRequest
       ? persistedRequest.replyRole
       : await this.#replyRole(row.message.id, row.session.kind, row.message.threadKey);
-    if (
-      replyRole === "observer" &&
-      this.#registry.capabilityVersion(row.computer.id, instanceId, RUNTIME_CAPABILITY.imDelivery) !== 2
-    ) {
+    if (replyRole === "observer" && !this.#supportsBatchInput(row, instanceId, RUNTIME_CAPABILITY.imDelivery, 2)) {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_OBSERVER_UNSUPPORTED", claimToken);
       return;
     }
@@ -938,6 +976,9 @@ export class ImDeliveryWorker {
         deadlineAt: row.delivery.expiresAt.toISOString(),
       };
       fitDeliveryFrame(request);
+      if (this.#supportsBatchInput(row, instanceId, RUNTIME_CAPABILITY.imDelivery, 3)) {
+        await appendPendingImBatch(this.#database, request, row.imBinding, row.session, this.#clock());
+      }
       validateFreshImRequest(request);
       if (!(await lease.assertOwned())) return;
       await this.#beforeDeliveryAdmission?.(signal);
@@ -1234,25 +1275,29 @@ export class ImDeliveryWorker {
   async #releaseDispatch(deliveryId: string, requestId: string, code: string, claimToken: string): Promise<void> {
     const bounded = /^IM_DELIVERY_[A-Z0-9_]{1,100}$/.test(code) ? code : "IM_DELIVERY_FAILED";
     setActiveSpanAttributes(outcomeAttrs("released", bounded));
-    const [released] = await this.#database
-      .update(imMessageDeliveries)
-      .set({
-        executionOrigin: null,
-        dispatchRequestId: null,
-        dispatchInputHash: null,
-        dispatchPayload: null,
-        lastErrorCode: bounded,
-        nextAttemptAt: new Date(this.#now() + RETRY_DELAY_MS),
-      })
-      .where(
-        and(
-          eq(imMessageDeliveries.id, deliveryId),
-          inArray(imMessageDeliveries.state, ["pending", "expired"]),
-          eq(imMessageDeliveries.dispatchRequestId, requestId),
-          eq(imMessageDeliveries.lastErrorCode, claimToken),
-        ),
-      )
-      .returning({ id: imMessageDeliveries.id });
+    const released = await this.#database.transaction(async (transaction) => {
+      const [released] = await transaction
+        .update(imMessageDeliveries)
+        .set({
+          executionOrigin: null,
+          dispatchRequestId: null,
+          dispatchInputHash: null,
+          dispatchPayload: null,
+          lastErrorCode: bounded,
+          nextAttemptAt: new Date(this.#now() + RETRY_DELAY_MS),
+        })
+        .where(
+          and(
+            eq(imMessageDeliveries.id, deliveryId),
+            inArray(imMessageDeliveries.state, ["pending", "expired"]),
+            eq(imMessageDeliveries.dispatchRequestId, requestId),
+            eq(imMessageDeliveries.lastErrorCode, claimToken),
+          ),
+        )
+        .returning({ id: imMessageDeliveries.id });
+      if (released) await releaseImBatch(transaction, deliveryId);
+      return released;
+    });
     if (released) {
       this.#onDiagnostic(bounded);
       this.#onMetric({ name: "retry", value: 1 });
@@ -1279,25 +1324,29 @@ export class ImDeliveryWorker {
 
   async #reject(deliveryId: string, reason: string, claimToken?: string): Promise<void> {
     setActiveSpanAttributes(outcomeAttrs("terminal_rejected", reason));
-    const [rejected] = await this.#database
-      .update(imMessageDeliveries)
-      .set({
-        state: "terminal_rejected",
-        executionOrigin: null,
-        dispatchRequestId: null,
-        dispatchInputHash: null,
-        dispatchPayload: null,
-        reason: reason.slice(0, 120),
-        lastErrorCode: "IM_DELIVERY_TERMINAL",
-      })
-      .where(
-        and(
-          eq(imMessageDeliveries.id, deliveryId),
-          eq(imMessageDeliveries.state, "pending"),
-          ...(claimToken ? [eq(imMessageDeliveries.lastErrorCode, claimToken)] : []),
-        ),
-      )
-      .returning({ id: imMessageDeliveries.id });
+    const rejected = await this.#database.transaction(async (transaction) => {
+      const [rejected] = await transaction
+        .update(imMessageDeliveries)
+        .set({
+          state: "terminal_rejected",
+          executionOrigin: null,
+          dispatchRequestId: null,
+          dispatchInputHash: null,
+          dispatchPayload: null,
+          reason: reason.slice(0, 120),
+          lastErrorCode: "IM_DELIVERY_TERMINAL",
+        })
+        .where(
+          and(
+            eq(imMessageDeliveries.id, deliveryId),
+            eq(imMessageDeliveries.state, "pending"),
+            ...(claimToken ? [eq(imMessageDeliveries.lastErrorCode, claimToken)] : []),
+          ),
+        )
+        .returning({ id: imMessageDeliveries.id });
+      if (rejected) await releaseImBatch(transaction, deliveryId);
+      return rejected;
+    });
     if (rejected) this.#onDeliverySettled?.(deliveryId);
   }
 
@@ -1403,4 +1452,57 @@ export class ImDeliveryWorker {
       .limit(1);
     return threadDelivery ? "observer" : undefined;
   }
+}
+
+type LockedDeliveryRow = NonNullable<Awaited<ReturnType<typeof lockEligibleDelivery>>>["row"];
+
+function staleDispatchGeneration(row: LockedDeliveryRow): boolean {
+  const parsed = DirectImMessageDeliveryRequestSchema.safeParse(row.dispatchPayload);
+  const steer = RuntimeImSteerRequestSchema.safeParse(row.dispatchPayload);
+  const generation = parsed.success
+    ? parsed.data.placementGeneration
+    : steer.success
+      ? steer.data.placementGeneration
+      : undefined;
+  return (
+    row.dispatchRequestId !== null &&
+    (row.deliveryGeneration !== row.generation || (generation !== undefined && generation !== row.generation))
+  );
+}
+
+function frozenSteerMatches(row: LockedDeliveryRow): boolean {
+  const parsed = RuntimeImSteerRequestSchema.safeParse(row.dispatchPayload);
+  if (!parsed.success) return false;
+  const request = parsed.data;
+  return (
+    row.dispatchRequestId === request.requestId &&
+    row.dispatchInputHash === computeRuntimeImSteerInputHash(request) &&
+    row.steerTargetDeliveryId === request.rootDeliveryId &&
+    row.id === request.deliveryId &&
+    row.sessionId === request.sessionId &&
+    row.agentId === request.agentId
+  );
+}
+
+async function recoverableSteerTarget(transaction: DatabaseTransaction, row: LockedDeliveryRow): Promise<boolean> {
+  if (!row.steerTargetDeliveryId) return false;
+  const [target] = await transaction
+    .select({ id: imMessageDeliveries.id })
+    .from(imMessageDeliveries)
+    .where(
+      and(
+        eq(imMessageDeliveries.id, row.steerTargetDeliveryId),
+        ne(imMessageDeliveries.id, row.id),
+        eq(imMessageDeliveries.sessionId, row.sessionId),
+        or(
+          ne(imMessageDeliveries.state, "accepted"),
+          and(
+            isNotNull(imMessageDeliveries.reportedAt),
+            sql`coalesce(${imMessageDeliveries.turnReport} ->> 'outcome', 'unknown') <> 'completed'`,
+          ),
+        ),
+      ),
+    )
+    .limit(1);
+  return target !== undefined;
 }

@@ -29,7 +29,12 @@ import {
 } from "../observability/pi-diagnostics.js";
 import { PiAgentRuntimeFactory } from "../providers/pi/agent-runtime.js";
 import type { PiRpcProcessSpawnOptions } from "../providers/pi/rpc-wire.js";
-import { completionForError, completionForResult, type TurnCompletion } from "../runtime/agent-turn-runner.js";
+import {
+  buildAgentInput,
+  completionForError,
+  completionForResult,
+  type TurnCompletion,
+} from "../runtime/agent-turn-runner.js";
 import { serializeEnvironment } from "../runtime/im-credential-environment-manager.js";
 import {
   type ManagedSessionContext,
@@ -45,6 +50,7 @@ import {
   type CloudContextTreeStatus,
   prepareCloudContextTree,
 } from "./cloud-context-tree.js";
+import { cloudSteerResult, openCloudSteerControl } from "./cloud-steer-control.js";
 import {
   cloudSessionCliEnvironment,
   cloudWorkerInput,
@@ -295,6 +301,7 @@ export interface CloudTurnPiFactory {
 }
 
 export interface CloudTurnPiRuntime {
+  steer?(request: import("../agent-runtime/types.js").AgentSteerRequest): Promise<void>;
   prompt(request: AgentPromptRequest): Promise<AgentRunResult>;
   close(): Promise<void>;
 }
@@ -575,7 +582,12 @@ export async function runCloudTurnWorker(
     const onAbort = () => terminateTrackedProcesses(pids);
     execution.signal.addEventListener("abort", onAbort, { once: true });
     let completion: TurnCompletion;
+    let steering: Awaited<ReturnType<typeof openWorkerSteering>>;
     try {
+      steering = await openWorkerSteering(request, activeRuntime, options).catch((error: unknown) => {
+        diagnostics.failure(error);
+        return undefined;
+      });
       const result = await activeRuntime.prompt({
         runId: randomTurnRunId(request),
         configuration,
@@ -592,6 +604,7 @@ export async function runCloudTurnWorker(
       completion = completionForError(error, execution.stopReason());
     } finally {
       execution.signal.removeEventListener("abort", onAbort);
+      await steering?.close().catch((error: unknown) => diagnostics.failure(error));
       await activeRuntime.close().catch(() => undefined);
       terminateTrackedProcesses(pids);
     }
@@ -774,4 +787,44 @@ async function prepareCliDirectories(environment: Record<string, string>, scratc
     await mkdir(directory, { mode: 0o700 });
     environment.LARKSUITE_CLI_CONFIG_DIR = directory;
   }
+}
+
+async function openWorkerSteering(
+  request: RunnerCloudWorkerRequest,
+  activeRuntime: CloudTurnPiRuntime,
+  options: CloudTurnWorkerRunOptions,
+) {
+  return request.kind === "turn" && request.steering
+    ? await openCloudSteerControl({
+        deliveryId: request.delivery.deliveryId,
+        token: request.steering.token,
+        steer: async (input) => {
+          if (
+            request.kind !== "turn" ||
+            !request.steering ||
+            input.rootDeliveryId !== request.delivery.deliveryId ||
+            input.expectedTurnId !== request.steering.turnId ||
+            input.sessionId !== request.delivery.sessionId ||
+            input.agentId !== request.delivery.agentId ||
+            input.placementGeneration !== request.delivery.placementGeneration
+          )
+            return cloudSteerResult(input, "rejected", "target_mismatch");
+          if (!activeRuntime.steer) return cloudSteerResult(input, "deferred", "steer_unsupported");
+          try {
+            await activeRuntime.steer({
+              expectedRunId: randomTurnRunId(request),
+              input: buildAgentInput(
+                input,
+                undefined,
+                request.delivery.runtime,
+                new Date(options.now?.() ?? Date.now()),
+              ),
+            });
+            return cloudSteerResult(input, "steered");
+          } catch {
+            return cloudSteerResult(input, "deferred", "steer_state_unknown");
+          }
+        },
+      })
+    : undefined;
 }

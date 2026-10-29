@@ -4,11 +4,7 @@ import { PgDialect } from "drizzle-orm/pg-core";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
 import { ImDeliverySelector, lockEligibleDelivery } from "../../runtime/im-delivery-selector.js";
-import {
-  cloudPendingHeadQuery,
-  deliveryCandidatePage,
-  deliveryCustodyQuery,
-} from "../../runtime/im-delivery-work-query.js";
+import { deliveryCandidatePage, deliveryCustodyQuery, pendingHeadQuery } from "../../runtime/im-delivery-work-query.js";
 import { deliveryTestId, seedDeliveryQuery } from "../support/im-delivery-query-fixture.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
@@ -155,7 +151,7 @@ describe("delivery query plans on PostgreSQL 16", { timeout: 60_000 }, () => {
     await client.database.execute(sql`analyze im_message_deliveries`);
     for (const generic of [false, true]) {
       const custody = await explain(dialect.sqlToQuery(deliveryCustodyQuery()), generic);
-      const head = await explain(dialect.sqlToQuery(cloudPendingHeadQuery(deliveryTestId("session", 1))), generic);
+      const head = await explain(dialect.sqlToQuery(pendingHeadQuery(deliveryTestId("session", 1))), generic);
       expectActiveIndex(custody);
       const headNodes = flatten(head.Plan);
       expect(

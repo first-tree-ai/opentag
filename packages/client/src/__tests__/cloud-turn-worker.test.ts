@@ -11,7 +11,7 @@ import type {
   RunnerCloudTurnWorkerRequest,
   RuntimeImOutboxContext,
 } from "@opentag/shared";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentInput,
   AgentPromptRequest,
@@ -43,6 +43,45 @@ const MODEL = {
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => Promise.all(cleanup.splice(0).map((close) => close())));
+
+it("continues the Turn and closes Pi when the optional steering socket cannot open", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cloud-worker-steer-unavailable-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const request = turnRequest(await fixtureExecution(root, "steer-unavailable"));
+  request.steering = { turnId: randomUUID(), token: randomUUID() };
+  const { cloudSteerSocketPath } = await import("../runner/cloud-steer-control.js");
+  const path = cloudSteerSocketPath(request.delivery.deliveryId);
+  await mkdir(path);
+  cleanup.push(() => rm(path, { recursive: true, force: true }));
+  const close = vi.fn(async () => undefined);
+  const prompt = vi.fn(async (input: AgentPromptRequest) => ({
+    runId: input.runId,
+    output: [{ text: "completed without steering", type: "text" as const }],
+    status: "completed" as const,
+  }));
+  const diagnostics: PiDiagnosticEvent[] = [];
+  const runtime = { close, prompt };
+  let child: ChildProcess | undefined;
+  cleanup.push(async () => {
+    child?.kill("SIGKILL");
+  });
+  const completion = await runCloudTurnWorker(request, {
+    executionMount: join(root, "mount"),
+    localProxyLoopbackSeam: true,
+    workspace: join(root, "workspace"),
+    onDiagnostic: (event) => diagnostics.push(event),
+    createPiFactory: ({ pids }) => {
+      child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+      if (child.pid) pids.add(child.pid);
+      return { create: async () => runtime, resume: async () => runtime };
+    },
+  });
+  expect(completion).toMatchObject({ outcome: "completed", finalText: "completed without steering" });
+  expect(prompt).toHaveBeenCalledOnce();
+  expect(close).toHaveBeenCalledOnce();
+  await expect.poll(() => child !== undefined && (child.exitCode !== null || child.signalCode !== null)).toBe(true);
+  expect(diagnostics).toContainEqual(expect.objectContaining({ phase: "worker_preparation", event: "failure" }));
+});
 
 function turnRequest(executionDir: string, sessionDirectory?: string) {
   const delivery = cloudDeliveryFixture();
@@ -1531,4 +1570,80 @@ describe("session-message worker integration", () => {
     // The continuation binding persists under the Session continuity directory, not scratch.
     await expect(readFile(join(continuity, "pi-binding.json"), "utf8")).resolves.toContain("pi");
   });
+});
+
+it("injects authenticated input through the native socket before the Cloud prompt finishes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cloud-worker-steer-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const request = turnRequest(await fixtureExecution(root, "steer-turn"));
+  request.steering = { turnId: randomUUID(), token: randomUUID() };
+  let started!: () => void;
+  const active = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  let finish!: () => void;
+  const done = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const inputs: import("../agent-runtime/types.js").AgentSteerRequest[] = [];
+  const completion = runCloudTurnWorker(request, {
+    createPiFactory: () => ({
+      create: async () => ({
+        prompt: async (input) => {
+          started();
+          await done;
+          return { runId: input.runId, output: [{ type: "text", text: "done" }], status: "completed" };
+        },
+        steer: async (input) => {
+          inputs.push(input);
+        },
+        close: async () => undefined,
+      }),
+      resume: async () => {
+        throw new Error("unexpected resume");
+      },
+    }),
+    executionMount: join(root, "mount"),
+    localProxyLoopbackSeam: true,
+    workspace: join(root, "workspace"),
+  });
+  await active;
+  const { runtime: _, ...base } = request.delivery;
+  const steer: import("@opentag/shared").RuntimeImSteerRequest = {
+    ...base,
+    type: "im:steer",
+    deliveryId: randomUUID(),
+    imMessageId: randomUUID(),
+    requestId: randomUUID(),
+    rootDeliveryId: base.deliveryId,
+    expectedTurnId: request.steering.turnId,
+    content: { ...base.content, text: "顺序追加的中文消息" },
+  };
+  const { CLOUD_STEER_RELAY_SOURCE, cloudSteerSocketPath } = await import("../runner/cloud-steer-control.js");
+  const relay = async (input: typeof steer) =>
+    new Promise<string>((resolve, reject) => {
+      const child = spawn(process.execPath, ["-e", CLOUD_STEER_RELAY_SOURCE, cloudSteerSocketPath(base.deliveryId)]);
+      let output = "";
+      child.stdout.on("data", (chunk) => {
+        output += chunk;
+      });
+      child
+        .once("error", reject)
+        .once("close", (code) => (code === 0 ? resolve(output) : reject(new Error(`relay ${code}`))));
+      child.stdin.end(JSON.stringify({ token: request.steering?.token, request: input }));
+    });
+  try {
+    expect(JSON.parse(await relay({ ...steer, expectedTurnId: randomUUID() }))).toMatchObject({
+      status: "rejected",
+      reason: "target_mismatch",
+    });
+    expect(inputs).toHaveLength(0);
+    expect(JSON.parse(await relay(steer))).toMatchObject({ status: "steered" });
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0]?.expectedRunId).toBe(`cloud-turn-${base.deliveryId}`);
+    expect(JSON.stringify(inputs[0]?.input)).toContain(steer.content.text);
+  } finally {
+    finish();
+    await completion;
+  }
 });

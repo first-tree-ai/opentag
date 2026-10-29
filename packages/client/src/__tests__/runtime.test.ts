@@ -135,7 +135,7 @@ describe("RuntimeConnection", () => {
     await registeredWaiter;
     expect(socket.frame("computer:register")).toMatchObject({ capabilities: { imCredentialGrant: 0 } });
     expect(connection.supportsCapability("runtime.imDelivery")).toBe(true);
-    expect(connection.capabilityVersion("runtime.imDelivery")).toBe(2);
+    expect(connection.capabilityVersion("runtime.imDelivery")).toBe(3);
     expect(await connection.whenRegistered()).toBeUndefined();
     expect(stateListener).toHaveBeenCalledWith("registered");
     expect(unsubscribe()).toBe(true);

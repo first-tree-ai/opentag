@@ -347,6 +347,10 @@ describe("E6 Cloud Session concurrency on PostgreSQL and WebSockets", { timeout:
     expect((await b.wait("delivery:report:ack", after)).status).toBe("already_recorded");
     await a.finish(activeA.request, activeA.turnId);
     const aAfter = a.frames.length;
+    await client.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(0) })
+      .where(eq(imMessageDeliveries.id, a2));
     await worker.runOnce();
     expect((await a.wait("delivery:run", aAfter)).delivery.deliveryId).toBe(a2);
   });

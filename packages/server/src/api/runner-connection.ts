@@ -261,6 +261,7 @@ export class RunnerConnection {
    * ---------------------------------------------------------------------------------------- */
 
   #wantsTurnActivity = false;
+  #wantsImInput = false;
   #wantsGithubUserTask = false;
   #wantsContextTreeExecution = false;
 
@@ -531,6 +532,7 @@ export class RunnerConnection {
         githubUserTaskVersion: this.#githubUserTaskVersion(),
         contextTreeExecutionVersion: this.#contextTreeExecutionVersion(),
         turnActivityVersion: this.#wantsTurnActivity ? 1 : undefined,
+        imInputVersion: this.#wantsImInput ? 1 : undefined,
       });
     }
     this.#sendAuthResult(true, requestId);
@@ -600,6 +602,7 @@ export class RunnerConnection {
       environmentGeneration: input.validated.environmentGeneration,
       resourceName: input.validated.resourceName,
       ...(input.cloudNegotiated ? { cloudDeliveryVersion: RUNNER_CLOUD_DELIVERY_VERSION } : {}),
+      ...(input.cloudNegotiated && this.#wantsImInput ? { imInputVersion: 1 as const } : {}),
       ...(input.cloudNegotiated && this.#wantsTurnActivity ? { turnActivityVersion: 1 as const } : {}),
       ...(input.cloudNegotiated && input.fence?.resourceUid ? { resourceUid: input.fence.resourceUid } : {}),
       ...(input.workspaceNegotiated ? { workspaceVersion: RUNNER_WORKSPACE_VERSION } : {}),
@@ -1066,6 +1069,19 @@ export class RunnerConnection {
     return frame.data;
   }
 
+  async #handleSteerResult(current: RunnerScope, data: Extract<RunnerClientFrame, { type: "delivery:steer:result" }>) {
+    const cloud = this.#cloudConnection;
+    if (
+      !this.#cloudNegotiated ||
+      !cloud ||
+      cloud.imInputVersion !== 1 ||
+      !this.#options.cloudDelivery ||
+      !(await this.#channelHolds(current))
+    )
+      return;
+    await this.#options.cloudDelivery.handleSteerResult(cloud, data);
+  }
+
   async #dispatchAuthenticatedFrame(current: RunnerScope, data: RunnerClientFrame): Promise<void> {
     if (data.type === "heartbeat") {
       // The heartbeat cadence also re-evaluates a report-only latch: a restored authority chain
@@ -1077,6 +1093,7 @@ export class RunnerConnection {
     if (data.type === "runner:ready")
       return this.#handleReady(current, data.readiness, data.workspaceRestored === true);
     if (data.type === "acceptance:result") return this.#handleResult(current, data);
+    if (data.type === "delivery:steer:result") return this.#handleSteerResult(current, data);
     if (data.type === "delivery:received") return this.#handleDeliveryReceived(current, data);
     if (data.type === "turn:activity") return this.#handleTurnActivity(current, data);
     if (data.type === "delivery:report") return this.#handleDeliveryReport(current, data);
@@ -1096,6 +1113,7 @@ export class RunnerConnection {
     // capability and keeps the exact legacy welcome/behavior, and an E7 Runner that does not send
     // the E8 request never receives a Session-collaboration field or frame.
     this.#wantsTurnActivity = data.turnActivityVersion === 1;
+    this.#wantsImInput = data.imInputVersion === 1;
     this.#wantsGithubUserTask = data.githubUserTaskVersion === 1;
     this.#wantsContextTreeExecution = data.contextTreeExecutionVersion === 1;
     await this.#handleAuth(

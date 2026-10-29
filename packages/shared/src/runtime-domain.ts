@@ -450,6 +450,31 @@ export const SessionReconcileResultSchema = z
     }
   });
 
+export const RUNTIME_IM_BATCH_MAX_COUNT = 32;
+export const RuntimeImBatchMemberSchema = z
+  .object({
+    deliveryId: RuntimeOpaqueIdSchema,
+    imMessageId: RuntimeOpaqueIdSchema,
+    inputHash: RuntimeSha256Schema,
+  })
+  .strict();
+const RuntimeImBatchSchema = z
+  .array(RuntimeImBatchMemberSchema)
+  .min(1)
+  .max(RUNTIME_IM_BATCH_MAX_COUNT - 1);
+
+function validateImBatch(
+  frame: { deliveryId: string; imMessageId: string; batch?: Array<{ deliveryId: string; imMessageId: string }> },
+  context: z.RefinementCtx,
+): void {
+  if (!frame.batch) return;
+  const deliveryIds = [frame.deliveryId, ...frame.batch.map((item) => item.deliveryId)];
+  const messageIds = [frame.imMessageId, ...frame.batch.map((item) => item.imMessageId)];
+  if (new Set(deliveryIds).size !== deliveryIds.length || new Set(messageIds).size !== messageIds.length) {
+    context.addIssue({ code: "custom", path: ["batch"], message: "Batch members must have unique identities" });
+  }
+}
+
 export const DirectImMessageDeliveryRequestSchema = z
   .object({
     type: z.literal("im:deliver"),
@@ -462,11 +487,13 @@ export const DirectImMessageDeliveryRequestSchema = z
     attention: z.enum(["direct", "ambient"]),
     replyRole: z.literal("observer").optional(),
     content: RuntimeImDeliveryContentSchema,
+    batch: RuntimeImBatchSchema.optional(),
     runtime: EffectiveRuntimeSnapshotSchema,
     deadlineAt: z.string().datetime({ offset: true }).optional(),
   })
   .strict()
   .superRefine((frame, context) => {
+    validateImBatch(frame, context);
     if (frame.runtime.agentId !== frame.agentId) {
       context.addIssue({ code: "custom", path: ["runtime", "agentId"], message: "Agent identity does not match" });
     }
@@ -486,9 +513,11 @@ export const RuntimeImSteerRequestSchema = z
     attention: z.enum(["direct", "ambient"]),
     replyRole: z.literal("observer").optional(),
     content: RuntimeImDeliveryContentSchema,
+    batch: RuntimeImBatchSchema.optional(),
     deadlineAt: z.string().datetime({ offset: true }).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine(validateImBatch);
 
 export const RuntimeImCredentialGrantRequestSchema = z
   .object({
@@ -1447,7 +1476,8 @@ function directInputHash(frame: DirectImMessageDeliveryRequest, effectiveSnapsho
     effectiveSnapshotHash,
     frame.deadlineAt ?? null,
   ];
-  return frame.replyRole === "observer" ? hashTuple([2, "observer", ...payload.slice(1)]) : hashTuple(payload);
+  const hash = frame.replyRole === "observer" ? hashTuple([2, "observer", ...payload.slice(1)]) : hashTuple(payload);
+  return frame.batch ? hashTuple([3, hash, frame.batch]) : hash;
 }
 
 export function computeRuntimeImMessageSemanticHash(
@@ -1469,7 +1499,8 @@ export function computeRuntimeImMessageSemanticHash(
     frame.content.providerRef,
     frame.deadlineAt ?? null,
   ];
-  return frame.replyRole === "observer" ? hashTuple([2, "observer", ...payload.slice(1)]) : hashTuple(payload);
+  const hash = frame.replyRole === "observer" ? hashTuple([2, "observer", ...payload.slice(1)]) : hashTuple(payload);
+  return frame.batch ? hashTuple([3, hash, frame.batch]) : hash;
 }
 
 export function computeRuntimeImSteerInputHash(input: RuntimeImSteerRequest): string {

@@ -3,10 +3,15 @@ import { constants } from "node:fs";
 import { mkdir, open, readdir, readFile, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  computeRuntimeImSteerInputHash,
   type DirectImMessageDeliveryRequest,
   DirectImMessageDeliveryRequestSchema,
   type RuntimeImOutboxContext,
   RuntimeImOutboxContextSchema,
+  type RuntimeImSteerRequest,
+  RuntimeImSteerRequestSchema,
+  type RuntimeImSteerResult,
+  RuntimeImSteerResultSchema,
   type SessionMessageDeliveryRequestV3,
   SessionMessageDeliveryRequestV3Schema,
   type TurnReportRequest,
@@ -72,6 +77,8 @@ const CloudJournalDeliveryEntrySchema = z
     turnId: z.string().min(1).max(256),
     phase: z.enum(CLOUD_JOURNAL_PHASES),
     report: TurnReportRequestSchema.optional(),
+    steer: RuntimeImSteerRequestSchema.optional(),
+    steerResult: RuntimeImSteerResultSchema.optional(),
   })
   .strict();
 
@@ -142,6 +149,8 @@ export interface CloudJournalDeliveryEntry {
   readonly turnId: string;
   readonly phase: CloudJournalPhase;
   readonly report?: TurnReportRequest;
+  readonly steer?: RuntimeImSteerRequest;
+  readonly steerResult?: RuntimeImSteerResult;
 }
 
 export interface CloudJournalSessionEntry {
@@ -284,6 +293,21 @@ function assertSessionEnvelope(
   }
 }
 
+function canReplaceSteer(entry: CloudJournalEntry, scope: CloudJournalScope, requestId: string): boolean {
+  if (entry.kind !== "delivery" || !steerNeverStarted(entry) || entry.requestId === requestId) return false;
+  assertCloudJournalScope(entry, scope);
+  return true;
+}
+
+export function steerNeverStarted(entry: CloudJournalDeliveryEntry): boolean {
+  return (
+    !!entry.steer &&
+    (entry.phase === "received" ||
+      entry.steerResult?.status === "retry" ||
+      (entry.steerResult?.status === "deferred" && entry.steerResult.reason !== "steer_state_unknown"))
+  );
+}
+
 export class CloudJournal {
   readonly #directory: string;
   /** Serializes every mutation so concurrent frames cannot interleave read-modify-write. */
@@ -362,7 +386,7 @@ export class CloudJournal {
       const scope = CloudJournalScopeSchema.parse(input.scope);
       const inputHash = computeCloudDeliveryInputHash(input.delivery);
       const existing = await this.#readEntry(input.deliveryId);
-      if (existing) {
+      if (existing && !canReplaceSteer(existing, scope, input.requestId)) {
         if (existing.kind !== "delivery") {
           throw new CloudJournalError("conflict", `Journal entry ${input.deliveryId} is not an IM delivery`);
         }
@@ -381,7 +405,7 @@ export class CloudJournal {
         }
         return existing;
       }
-      await this.#assertCapacity();
+      if (!existing) await this.#assertCapacity();
       const entry: CloudJournalDeliveryEntry = {
         kind: "delivery",
         delivery: input.delivery,
@@ -394,6 +418,109 @@ export class CloudJournal {
       };
       await this.#write(input.deliveryId, entry);
       return entry;
+    });
+  }
+
+  async recordSteerReceived(
+    request: RuntimeImSteerRequest,
+    root: CloudJournalDeliveryEntry,
+  ): Promise<CloudJournalDeliveryEntry> {
+    return this.#mutate(async () => {
+      if (
+        root.steer ||
+        request.rootDeliveryId !== root.deliveryId ||
+        request.expectedTurnId !== root.turnId ||
+        request.sessionId !== root.scope.sessionId ||
+        request.agentId !== root.delivery.agentId ||
+        request.placementGeneration !== root.delivery.placementGeneration
+      )
+        throw new CloudJournalError("conflict", "The steer root conflicts");
+      const inputHash = computeRuntimeImSteerInputHash(request);
+      const old = await this.#readEntry(request.deliveryId);
+      if (old) {
+        assertCloudJournalScope(old, root.scope);
+        if (old.kind === "delivery" && old.steer && old.requestId === request.requestId && old.inputHash === inputHash)
+          return old;
+        if (old.kind !== "delivery" || !steerNeverStarted(old) || old.requestId === request.requestId)
+          throw new CloudJournalError("conflict", "The steer identity conflicts");
+      } else await this.#assertCapacity();
+      const delivery: DirectImMessageDeliveryRequest = {
+        ...root.delivery,
+        requestId: request.requestId,
+        deliveryId: request.deliveryId,
+        imMessageId: request.imMessageId,
+        attention: request.attention,
+        replyRole: request.replyRole,
+        content: request.content,
+        batch: request.batch,
+        deadlineAt: request.deadlineAt,
+      };
+      const entry: CloudJournalDeliveryEntry = {
+        kind: "delivery",
+        delivery,
+        steer: request,
+        inputHash,
+        scope: root.scope,
+        deliveryId: request.deliveryId,
+        requestId: request.requestId,
+        turnId: request.expectedTurnId,
+        phase: "received",
+      };
+      await this.#write(request.deliveryId, entry);
+      return entry;
+    });
+  }
+
+  async markSteerStarted(id: string, scope: CloudJournalScope): Promise<CloudJournalDeliveryEntry> {
+    return this.#mutate(async () => {
+      const entry = await this.#requireScopedDeliveryEntry(id, scope);
+      if (!entry.steer || entry.phase !== "received")
+        throw new CloudJournalError("invalid_transition", "The steer cannot start");
+      return this.#transitionDelivery(entry, "started");
+    });
+  }
+
+  async recordSteerResult(
+    id: string,
+    scope: CloudJournalScope,
+    result: RuntimeImSteerResult,
+  ): Promise<CloudJournalDeliveryEntry> {
+    return this.#mutate(async () => {
+      const entry = await this.#requireScopedDeliveryEntry(id, scope);
+      if (
+        !entry.steer ||
+        result.requestId !== entry.requestId ||
+        result.deliveryId !== id ||
+        result.expectedTurnId !== entry.turnId ||
+        result.rootDeliveryId !== entry.steer.rootDeliveryId ||
+        result.sessionId !== entry.scope.sessionId ||
+        result.placementGeneration !== entry.steer.placementGeneration
+      )
+        throw new CloudJournalError("conflict", "The steer result conflicts");
+      if (entry.steerResult) {
+        if (JSON.stringify(entry.steerResult) !== JSON.stringify(result))
+          throw new CloudJournalError("conflict", "The steer result changed");
+        return entry;
+      }
+      if (result.status === "steered" && entry.phase !== "started")
+        throw new CloudJournalError("invalid_transition", "The steer never started");
+      const next: CloudJournalDeliveryEntry = { ...entry, phase: "reported", steerResult: result };
+      await this.#write(id, next);
+      return next;
+    });
+  }
+
+  async clearSteerAcknowledged(
+    id: string,
+    scope: CloudJournalScope,
+    requestId: string,
+    inputHash: string,
+  ): Promise<void> {
+    return this.#mutate(async () => {
+      const entry = await this.#requireScopedDeliveryEntry(id, scope);
+      if (!entry.steerResult || entry.requestId !== requestId || entry.inputHash !== inputHash)
+        throw new CloudJournalError("ack_mismatch", "The steer acknowledgement conflicts");
+      await this.#remove(id);
     });
   }
 
@@ -809,6 +936,8 @@ export class CloudJournal {
         turnId: delivery.data.turnId,
         phase: delivery.data.phase,
         ...(delivery.data.report ? { report: delivery.data.report } : {}),
+        steer: delivery.data.steer,
+        steerResult: delivery.data.steerResult,
       };
     }
     throw new CloudJournalError("store_failed", `The Cloud delivery journal entry ${name} is unreadable`);

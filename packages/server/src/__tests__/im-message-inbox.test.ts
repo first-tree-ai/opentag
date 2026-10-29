@@ -4,7 +4,8 @@ import { and, count, eq, isNull } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin } from "../admin/bootstrap.js";
 import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
-import { computers, imMessageDeliveries, imMessages, sessions } from "../db/schema/index.js";
+import { agents, computers, imMessageDeliveries, imMessages, sessions } from "../db/schema/index.js";
+import { loadDirectHistory } from "../runtime/im-delivery-custody.js";
 import { AgentService } from "../services/agents/index.js";
 import { ApplicationCipher } from "../services/crypto.js";
 import { ImMessageInbox } from "../services/im/index.js";
@@ -12,7 +13,7 @@ import { ImBindingService } from "../services/im-bindings/index.js";
 import { normalizeSlackEnvelope } from "../services/im-bindings/slack/adapter.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
-const fixedNow = new Date("2026-08-19T00:00:00.000Z");
+const fixedNow = new Date();
 let unitDatabase: UnitDatabase;
 
 beforeAll(async () => {
@@ -89,8 +90,8 @@ describe("ImMessageInbox overflow scheduling", () => {
   });
 
   it.each([
-    { attention: "direct" as const, capacity: 100 },
-    { attention: "ambient" as const, capacity: 500 },
+    { attention: "direct" as const, capacity: 99 },
+    { attention: "ambient" as const, capacity: 99 },
   ])("rechecks $attention overflow after a delayed cleanup commit acknowledgement", async ({ attention, capacity }) => {
     const value = await inboxFixture();
     const delayed = delayTransactionCompletion(unitDatabase.database);
@@ -134,6 +135,186 @@ describe("ImMessageInbox overflow scheduling", () => {
       delayed.release();
     }
   });
+});
+
+describe("IM pending input policy", () => {
+  function repeat(id: string, at: number, text = "same instruction") {
+    const input = event(id, at);
+    input.message.content = { version: 1, fallbackText: text, blocks: [{ type: "text", text }], truncated: false };
+    return input;
+  }
+
+  it("suppresses A,A,A while preserving all immutable source messages", async () => {
+    const value = await inboxFixture();
+    const changed = vi.fn();
+    const inbox = new ImMessageInbox(unitDatabase.database, { onDeliveryChanged: changed });
+    const first = await inbox.ingest(value.imBindingId, 1, repeat("repeat-a1", 1));
+    const second = await inbox.ingest(value.imBindingId, 1, repeat("repeat-a2", 2));
+    const third = await inbox.ingest(value.imBindingId, 1, repeat("repeat-a3", 3));
+    expect(first.deliveryIds).toHaveLength(1);
+    expect(second.deliveryIds).toEqual([]);
+    expect(third.deliveryIds).toEqual([]);
+    const rows = await unitDatabase.database.select().from(imMessageDeliveries);
+    expect(rows.filter((row) => row.state === "pending")).toHaveLength(1);
+    expect(rows.filter((row) => row.reason === "duplicate_pending")).toHaveLength(2);
+    expect(await unitDatabase.database.select().from(imMessages)).toHaveLength(3);
+    expect(changed.mock.calls).toEqual([[first.deliveryIds[0]]]);
+  });
+
+  it("omits suppressed repeats from bounded history", async () => {
+    const value = await inboxFixture();
+    const inbox = new ImMessageInbox(unitDatabase.database);
+    const first = await inbox.ingest(value.imBindingId, 1, repeat("history-first", 1));
+    await inbox.ingest(value.imBindingId, 1, repeat("history-repeat", 2));
+    const current = await inbox.ingest(value.imBindingId, 1, repeat("history-current", 3, "different instruction"));
+    const [session] = await unitDatabase.database.select().from(sessions);
+    if (!current.messageId) throw new Error("missing current message");
+    const [message] = await unitDatabase.database.select().from(imMessages).where(eq(imMessages.id, current.messageId));
+    if (!session || !message) throw new Error("missing history fixture");
+    const history = await loadDirectHistory(unitDatabase.database, {
+      session,
+      providerContext: message.providerContext,
+      externalMessageId: message.externalMessageId,
+      occurredAt: message.occurredAt,
+      providerRevisionKey: message.providerRevisionKey,
+      messageId: message.id,
+    });
+    expect(history.items.map((item) => item.imMessageId)).toEqual([first.messageId]);
+  });
+
+  it("requests post-commit feedback for Thread inputs backfilled by a late direct root", async () => {
+    const value = await inboxFixture();
+    await unitDatabase.database.update(agents).set({ receiveMode: "mention_only" });
+    const changed = vi.fn();
+    const inbox = new ImMessageInbox(unitDatabase.database, { onDeliveryChanged: changed });
+    for (let index = 1; index <= 11; index += 1) {
+      const input = event(`late-thread-${index}`, index, "ambient");
+      input.message.threadKey = "late-root";
+      input.providerContext = { provider: "slack", channelType: "channel", threadTs: "late-root" };
+      expect((await inbox.ingest(value.imBindingId, 1, input)).deliveryIds).toEqual([]);
+    }
+    const root = event("late-root-event", 0);
+    root.message.externalId = "late-root";
+    const result = await inbox.ingest(value.imBindingId, 1, root);
+    expect(result.deliveryIds).toHaveLength(1);
+    const deliveries = await unitDatabase.database.select({ id: imMessageDeliveries.id }).from(imMessageDeliveries);
+    expect(deliveries).toHaveLength(12);
+    expect(new Set(changed.mock.calls.map(([id]) => id))).toEqual(new Set(deliveries.map((row) => row.id)));
+  });
+
+  it("keeps A,B,A in order", async () => {
+    const value = await inboxFixture();
+    const inbox = new ImMessageInbox(unitDatabase.database);
+    for (const [index, text] of ["A", "B", "A"].entries()) {
+      expect(
+        (await inbox.ingest(value.imBindingId, 1, repeat(`different-${index}`, index, text))).deliveryIds,
+      ).toHaveLength(1);
+    }
+  });
+
+  it.each([false, true])(
+    "suppresses against the provider-order predecessor after out-of-order ingress (equal timestamps=%s)",
+    async (equalTimestamps) => {
+      const value = await inboxFixture();
+      const inbox = new ImMessageInbox(unitDatabase.database);
+      for (const [sequence, text] of [
+        [1, "A"],
+        [3, "B"],
+        [2, "A"],
+      ] as const) {
+        const input = repeat(`out-of-order-${sequence}`, equalTimestamps ? 1 : sequence, text);
+        input.message.revisionKey = String(sequence);
+        const admitted = await inbox.ingest(value.imBindingId, 1, input);
+        expect(admitted.deliveryIds).toHaveLength(sequence === 2 ? 0 : 1);
+      }
+    },
+  );
+
+  it.each(["mention_only", "all_message"] as const)(
+    "suppresses consecutive pre-root replies during %s thread backfill",
+    async (receiveMode) => {
+      const value = await inboxFixture();
+      await unitDatabase.database.update(agents).set({ receiveMode });
+      const inbox = new ImMessageInbox(unitDatabase.database);
+      for (const sequence of [3, 1, 2]) {
+        const input = repeat(`late-repeat-${sequence}`, sequence);
+        input.message.externalId = `late-repeat-${sequence}`;
+        input.mentions = [];
+        input.message.threadKey = "late-repeat-root";
+        input.providerContext = { provider: "slack", channelType: "channel", threadTs: "late-repeat-root" };
+        await inbox.ingest(value.imBindingId, 1, input);
+      }
+      const root = event("late-repeat-root", 0);
+      root.message.externalId = "late-repeat-root";
+      await inbox.ingest(value.imBindingId, 1, root);
+      const rows = await unitDatabase.database
+        .select({ delivery: imMessageDeliveries, message: imMessages })
+        .from(imMessageDeliveries)
+        .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
+        .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+        .where(eq(sessions.kind, "thread"));
+      expect(
+        rows.filter((row) => row.delivery.state === "pending").map((row) => row.message.externalMessageId),
+      ).toEqual(["late-repeat-1"]);
+      expect(rows.filter((row) => row.delivery.reason === "duplicate_pending")).toHaveLength(2);
+    },
+  );
+
+  it.each(["author", "resource", "reply", "edited", "claimed", "dispatched", "steer_uncertain", "elapsed_deadline"])(
+    "does not suppress a repeat after a %s difference",
+    async (difference) => {
+      const value = await inboxFixture();
+      const inbox = new ImMessageInbox(unitDatabase.database);
+      const first = await inbox.ingest(value.imBindingId, 1, repeat("original", 1));
+      const firstDeliveryId = first.deliveryIds[0];
+      if (!firstDeliveryId) throw new Error("missing original delivery");
+      const next = repeat("next", 2);
+      await changeInputOrPredecessor(difference, next, firstDeliveryId);
+      expect((await inbox.ingest(value.imBindingId, 1, next)).deliveryIds).toHaveLength(1);
+    },
+  );
+
+  it("keeps the newest 99 across attention kinds and notifies an expired input after commit", async () => {
+    const value = await inboxFixture();
+    const changed = vi.fn();
+    const inbox = new ImMessageInbox(unitDatabase.database, { onDeliveryChanged: changed });
+    const first = await inbox.ingest(value.imBindingId, 1, event("mixed-first", 1));
+    const firstDeliveryId = first.deliveryIds[0];
+    if (!firstDeliveryId) throw new Error("missing first delivery");
+    const [session] = await unitDatabase.database.select().from(sessions);
+    if (!session) throw new Error("missing session");
+    await seedPendingDeliveries(value.imBindingId, session.id, 98, "mixed-filler", "ambient");
+    await inbox.ingest(value.imBindingId, 1, event("mixed-trigger", 200));
+    await expect.poll(() => deliveryState(firstDeliveryId)).toBe("expired");
+    expect(changed).toHaveBeenCalledWith(first.deliveryIds[0]);
+    const rows = await unitDatabase.database.select().from(imMessageDeliveries);
+    expect(rows.filter((row) => row.state === "pending")).toHaveLength(99);
+    expect(rows.filter((row) => row.reason === "capacity")).toHaveLength(1);
+  });
+
+  it.each(["claimed", "dispatched", "steer_uncertain"])(
+    "protects %s Local input during overflow",
+    async (difference) => {
+      const value = await inboxFixture();
+      const inbox = new ImMessageInbox(unitDatabase.database);
+      const first = await inbox.ingest(value.imBindingId, 1, event("claimed-first", 1));
+      const firstDeliveryId = first.deliveryIds[0];
+      if (!firstDeliveryId) throw new Error("missing first delivery");
+      const [session] = await unitDatabase.database.select().from(sessions);
+      if (!session) throw new Error("missing session");
+      await changeInputOrPredecessor(difference, event("unused", 1), firstDeliveryId);
+      await seedPendingDeliveries(value.imBindingId, session.id, 99, "claimed-filler");
+      await inbox.ingest(value.imBindingId, 1, event("claimed-trigger", 200));
+      await expect
+        .poll(
+          async () =>
+            (await unitDatabase.database.select().from(imMessageDeliveries)).filter((row) => row.reason === "capacity")
+              .length,
+        )
+        .toBe(1);
+      expect(await deliveryState(firstDeliveryId)).toBe("pending");
+    },
+  );
 });
 
 describe("Slack file_share adapter to inbox", () => {
@@ -219,6 +400,87 @@ describe("Slack file_share adapter to inbox", () => {
     await expect(unitDatabase.database.select().from(imMessages)).resolves.toHaveLength(1);
   });
 });
+
+async function changeInputOrPredecessor(
+  difference: string,
+  next: NormalizedInboundImEvent,
+  firstDeliveryId: string,
+): Promise<void> {
+  if (difference === "author") next.message.author.externalId = "U_ANOTHER";
+  if (difference === "resource")
+    next.message.resources = [
+      {
+        providerResourceKey: "F_DISTINCT",
+        kind: "file",
+        filename: "same.txt",
+        mediaType: "text/plain",
+        sizeBytes: 10,
+      },
+    ];
+  if (difference === "reply") next.message.replyToExternalId = "another-target";
+  if (difference === "edited") next.message.operation = "edited";
+  if (difference === "elapsed_deadline")
+    await unitDatabase.database
+      .update(imMessageDeliveries)
+      .set({ expiresAt: new Date(0) })
+      .where(eq(imMessageDeliveries.id, firstDeliveryId));
+  if (difference === "steer_uncertain") await markUncertainSteer(firstDeliveryId);
+  if (difference === "claimed")
+    await unitDatabase.database
+      .update(imMessageDeliveries)
+      .set({ lastErrorCode: "IM_DELIVERY_CLAIM_ACTIVE" })
+      .where(eq(imMessageDeliveries.id, firstDeliveryId));
+  if (difference === "dispatched")
+    await unitDatabase.database
+      .update(imMessageDeliveries)
+      .set({
+        dispatchRequestId: crypto.randomUUID(),
+        dispatchInputHash: "0".repeat(64),
+        dispatchPayload: {} as never,
+      })
+      .where(eq(imMessageDeliveries.id, firstDeliveryId));
+}
+
+async function markUncertainSteer(deliveryId: string): Promise<void> {
+  const [source] = await unitDatabase.database
+    .select()
+    .from(imMessageDeliveries)
+    .where(eq(imMessageDeliveries.id, deliveryId));
+  if (!source) throw new Error("missing steer source");
+  const [message] = await unitDatabase.database.select().from(imMessages).where(eq(imMessages.id, source.messageId));
+  if (!message) throw new Error("missing steer message");
+  const [rootMessage] = await unitDatabase.database
+    .insert(imMessages)
+    .values({
+      ...message,
+      id: crypto.randomUUID(),
+      externalMessageId: "steer-root",
+      providerEventId: crypto.randomUUID(),
+      occurredAt: new Date(message.occurredAt.getTime() - 1),
+    })
+    .returning();
+  if (!rootMessage) throw new Error("missing steer root message");
+  const [root] = await unitDatabase.database
+    .insert(imMessageDeliveries)
+    .values({
+      messageId: rootMessage.id,
+      sessionId: source.sessionId,
+      attention: "direct",
+      placementGeneration: 1,
+      expiresAt: source.expiresAt,
+      state: "accepted",
+      inputHash: "0".repeat(64),
+      turnId: crypto.randomUUID(),
+      reportOwnerInstanceId: crypto.randomUUID(),
+      acceptedAt: new Date(),
+    })
+    .returning();
+  if (!root) throw new Error("missing steer root");
+  await unitDatabase.database
+    .update(imMessageDeliveries)
+    .set({ steerTargetDeliveryId: root.id, lastErrorCode: "IM_DELIVERY_STEER_DEFERRED" })
+    .where(eq(imMessageDeliveries.id, deliveryId));
+}
 
 async function inboxFixture() {
   const bootstrap = await bootstrapInitialAdmin(unitDatabase.database, {
@@ -306,7 +568,7 @@ async function seedPendingDeliveries(
       sessionId,
       attention,
       placementGeneration: 1,
-      expiresAt: new Date("2026-08-26T00:00:00.000Z"),
+      expiresAt: new Date(fixedNow.getTime() + 7 * 86_400_000),
     })),
   );
 }
@@ -355,8 +617,8 @@ function event(
       occurredAt: new Date(fixedNow.getTime() + millisecondsAfterEpoch),
       content: {
         version: 1,
-        fallbackText: "unit inbox event",
-        blocks: [{ type: "text", text: "unit inbox event" }],
+        fallbackText: `unit inbox event ${providerEventId}`,
+        blocks: [{ type: "text", text: `unit inbox event ${providerEventId}` }],
         truncated: false,
       },
       resources: [],

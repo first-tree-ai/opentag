@@ -211,6 +211,8 @@ describe("E4 Cloud delivery protocol", () => {
     };
     expect(RunnerAuthFrameSchema.safeParse(auth).success).toBe(true);
     expect(RunnerClientFrameSchema.safeParse(auth).success).toBe(true);
+    expect(RunnerClientFrameSchema.safeParse({ ...auth, imInputVersion: 1 }).success).toBe(true);
+    expect(RunnerClientFrameSchema.safeParse({ ...auth, imInputVersion: 2 }).success).toBe(false);
     // Legacy E3 auth shape stays parseable without the capability.
     expect(
       RunnerAuthFrameSchema.safeParse({
@@ -232,6 +234,8 @@ describe("E4 Cloud delivery protocol", () => {
       type: "server:welcome" as const,
     };
     expect(RunnerServerFrameSchema.safeParse(welcome).success).toBe(true);
+    expect(RunnerServerFrameSchema.safeParse({ ...welcome, imInputVersion: 1 }).success).toBe(true);
+    expect(RunnerServerFrameSchema.safeParse({ ...welcome, imInputVersion: 2 }).success).toBe(false);
     expect(RunnerServerFrameSchema.safeParse({ ...welcome, resourceUid: null }).success).toBe(true);
     // Legacy E3 welcome keeps the exact old shape (no capability/resourceUid).
     const { cloudDeliveryVersion: _capability, resourceUid: _uid, ...legacy } = welcome;

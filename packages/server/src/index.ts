@@ -815,7 +815,10 @@ export async function startServer(): Promise<void> {
       logger: serviceLogger("im-binding"),
     });
     const accountSetupService = new AccountSetupService(database);
-    const imMessageInbox = new ImMessageInbox(database, { logger: serviceLogger("im-inbox") });
+    const imMessageInbox = new ImMessageInbox(database, {
+      logger: serviceLogger("im-inbox"),
+      onDeliveryChanged: onDeliverySettled,
+    });
     const feishuInboundReceipts = new FeishuInboundReceiptStore(database, {
       onMetric: (metric) => app?.log.info({ metric }, "Feishu inbound receipt metric"),
     });

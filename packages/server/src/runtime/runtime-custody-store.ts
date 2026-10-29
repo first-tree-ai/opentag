@@ -6,7 +6,7 @@ import type {
   TurnReportRequest,
   TurnReportResult,
 } from "@opentag/shared";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
 import {
   agents,
@@ -20,6 +20,7 @@ import {
 } from "../db/schema/index.js";
 import { finishSlackWorkingTurn } from "../services/im/slack-working-store.js";
 import { SessionService } from "../services/sessions/session-service.js";
+import { releaseImBatch, reserveImBatch, settleImBatch } from "./im-delivery-batch.js";
 import { lockSteeredRecoverySessions, requeueSteeredDeliveries } from "./im-delivery-recovery.js";
 import type { RuntimeCustodyStoreDispatchRelease } from "./runtime-custody-store.types.js";
 import type { RuntimeBusinessContext } from "./runtime-session.js";
@@ -92,7 +93,7 @@ export interface RuntimeCustodyStore extends RuntimeCustodyStoreDispatchRelease 
   releaseSteerDispatch(
     request: RuntimeImSteerRequest,
     inputHash: string,
-    disposition: "retry" | "deferred",
+    disposition: "retry" | "deferred" | "uncertain",
   ): Promise<SteerReleaseStatus>;
   claimRetainedReports(
     request: SessionReconcileRequest,
@@ -155,6 +156,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       if (sandbox && (sandbox.lifecycle !== "ready" || sandbox.idleReclaimAt !== null)) return "claimed";
       const existing = existingDispatchStatus(scope.delivery, request.requestId, inputHash);
       if (existing) return existing;
+      if (!(await reserveImBatch(transaction, request, this.#now()))) return "conflict";
       const [dispatched] = await transaction
         .update(imMessageDeliveries)
         .set({
@@ -199,7 +201,10 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
           ),
         )
         .returning({ id: imMessageDeliveries.id });
-      if (released) return "released";
+      if (released) {
+        if (disposition === "retry") await releaseImBatch(transaction, request.deliveryId);
+        return "released";
+      }
       const [current] = await transaction
         .select({
           dispatchRequestId: imMessageDeliveries.dispatchRequestId,
@@ -229,6 +234,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       if (existing) return existing;
       if (scope.delivery.steerTargetDeliveryId !== null) return "conflict";
       if (!(await this.#steerTargetMatches(transaction, scope, request, context))) return "conflict";
+      if (!(await reserveImBatch(transaction, request, this.#now()))) return "conflict";
       const [dispatched] = await transaction
         .update(imMessageDeliveries)
         .set({
@@ -256,7 +262,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
     semanticHash: string,
     context: RuntimeBusinessContext,
   ): Promise<SteerCustodyStatus> {
-    return this.#database.transaction(async (transaction) => {
+    const status = await this.#database.transaction(async (transaction) => {
       const scope = await this.#deliveryScope(transaction, request.deliveryId);
       if (!scope || !steerRequestMatches(scope, request)) return "conflict";
       if (!placementMatches(scope, context.computerId, request.placementGeneration)) return "stale_generation";
@@ -269,10 +275,12 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
         return "conflict";
       }
       if (!(await this.#steerTargetMatches(transaction, scope, request, context, true))) return "conflict";
-      return (await this.#writeSteered(transaction, request.deliveryId, semanticHash, request.rootDeliveryId))
-        ? "steered"
-        : "conflict";
+      const written = await this.#writeSteered(transaction, request.deliveryId, semanticHash, request.rootDeliveryId);
+      if (written) await settleImBatch(transaction, request, request.rootDeliveryId, this.#now());
+      return written ? "steered" : "conflict";
     });
+    if (status === "steered" || status === "already_steered") this.#onDeliverySettled?.(request.rootDeliveryId);
+    return status;
   }
 
   async recordAbsorbed(
@@ -291,25 +299,28 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       if (replay) return replay;
       if (!steerTransitionMatches(scope.delivery, request.requestId, inputHash)) return "conflict";
       if (!(await this.#absorbedTargetMatches(transaction, scope, rootDeliveryId, turnId, context))) return "conflict";
-      return (await this.#writeSteered(transaction, request.deliveryId, semanticHash, rootDeliveryId))
-        ? "steered"
-        : "conflict";
+      const written = await this.#writeSteered(transaction, request.deliveryId, semanticHash, rootDeliveryId);
+      if (written) await settleImBatch(transaction, request, rootDeliveryId, this.#now());
+      return written ? "steered" : "conflict";
     });
   }
 
   async releaseSteerDispatch(
     request: RuntimeImSteerRequest,
     inputHash: string,
-    disposition: "retry" | "deferred",
+    disposition: "retry" | "deferred" | "uncertain",
   ): Promise<SteerReleaseStatus> {
     return this.#database.transaction(async (transaction) => {
       const scope = await this.#deliveryScope(transaction, request.deliveryId);
-      if (!scope || !steerRequestMatches(scope, request) || scope.delivery.state !== "pending") return "conflict";
-      if (scope.delivery.dispatchRequestId === null) {
-        return releasedSteerTargetMatches(scope.delivery, request, disposition) ? "already_released" : "conflict";
-      }
-      if (!steerReleaseCorrelationMatches(scope.delivery, request.requestId, inputHash, request.rootDeliveryId)) {
-        return "conflict";
+      if (!scope) return "conflict";
+      const existing = steerReleaseStatus(scope, request, inputHash, disposition);
+      if (existing) return existing;
+      if (disposition === "uncertain" || scope.delivery.lastErrorCode === "IM_DELIVERY_STEER_UNKNOWN") {
+        await transaction
+          .update(imMessageDeliveries)
+          .set({ lastErrorCode: "IM_DELIVERY_STEER_UNKNOWN", nextAttemptAt: new Date(this.#now().getTime() + 30_000) })
+          .where(eq(imMessageDeliveries.id, request.deliveryId));
+        return "released";
       }
       const [released] = await transaction
         .update(imMessageDeliveries)
@@ -329,6 +340,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
           ),
         )
         .returning({ id: imMessageDeliveries.id });
+      if (released) await releaseImBatch(transaction, request.deliveryId);
       return released ? "released" : "conflict";
     });
   }
@@ -373,6 +385,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
           ),
         )
         .returning({ id: imMessageDeliveries.id });
+      if (accepted) await settleImBatch(transaction, request, request.deliveryId, this.#now(), true);
       return accepted ? "accepted" : "conflict";
     });
   }
@@ -402,6 +415,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
         const scope = await this.#deliveryScope(transaction, claim.deliveryId);
         if (!scope || !retainedClaimMatches(scope, claim, request, context)) continue;
         if (scope.delivery.state === "pending" || scope.delivery.state === "expired") {
+          await settleRetainedBatch(transaction, scope.delivery, this.#now());
           await transaction
             .update(imMessageDeliveries)
             .set({
@@ -598,7 +612,18 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
         reason: null,
         lastErrorCode: null,
       })
-      .where(and(eq(imMessageDeliveries.id, deliveryId), inArray(imMessageDeliveries.state, ["pending", "expired"])))
+      .where(
+        and(
+          eq(imMessageDeliveries.id, deliveryId),
+          or(
+            inArray(imMessageDeliveries.state, ["pending", "expired"]),
+            and(
+              eq(imMessageDeliveries.state, "terminal_rejected"),
+              eq(imMessageDeliveries.reason, "steer_state_unknown"),
+            ),
+          ),
+        ),
+      )
       .returning({ id: imMessageDeliveries.id });
     return steered !== undefined;
   }
@@ -649,12 +674,19 @@ function steeredReplayStatus(
 
 /** A steered/absorbed transition requires the exact frozen dispatch correlation on an open row. */
 function steerTransitionMatches(
-  delivery: { state: string; dispatchRequestId: string | null; dispatchInputHash: string | null },
+  delivery: {
+    state: string;
+    reason: string | null;
+    dispatchRequestId: string | null;
+    dispatchInputHash: string | null;
+  },
   requestId: string,
   inputHash: string,
 ): boolean {
   return (
-    (delivery.state === "pending" || delivery.state === "expired") &&
+    (delivery.state === "pending" ||
+      delivery.state === "expired" ||
+      (delivery.state === "terminal_rejected" && delivery.reason === "steer_state_unknown")) &&
     delivery.dispatchRequestId === requestId &&
     delivery.dispatchInputHash === inputHash
   );
@@ -680,7 +712,7 @@ function steerReleaseCorrelationMatches(
 function releasedSteerTargetMatches(
   delivery: { steerTargetDeliveryId: string | null },
   request: RuntimeImSteerRequest,
-  disposition: "retry" | "deferred",
+  disposition: "retry" | "deferred" | "uncertain",
 ): boolean {
   return disposition === "retry"
     ? delivery.steerTargetDeliveryId === null
@@ -828,4 +860,29 @@ function sameReport(left: TurnReportRequest, right: TurnReportRequest): boolean 
     left.placementGeneration === right.placementGeneration &&
     left.resultHash === right.resultHash
   );
+}
+
+async function settleRetainedBatch(
+  transaction: DatabaseTransaction,
+  delivery: typeof imMessageDeliveries.$inferSelect,
+  now: Date,
+) {
+  const request = delivery.dispatchPayload;
+  if (request?.type === "im:deliver") await settleImBatch(transaction, request, request.deliveryId, now, true);
+}
+
+function steerReleaseStatus(
+  scope: DeliveryScope,
+  request: RuntimeImSteerRequest,
+  hash: string,
+  disposition: "retry" | "deferred" | "uncertain",
+): SteerReleaseStatus | undefined {
+  if (!steerRequestMatches(scope, request) || !["pending", "expired"].includes(scope.delivery.state)) return "conflict";
+  if (scope.delivery.dispatchRequestId === null)
+    return releasedSteerTargetMatches(scope.delivery, request, disposition === "uncertain" ? "deferred" : disposition)
+      ? "already_released"
+      : "conflict";
+  if (!steerReleaseCorrelationMatches(scope.delivery, request.requestId, hash, request.rootDeliveryId))
+    return "conflict";
+  return undefined;
 }

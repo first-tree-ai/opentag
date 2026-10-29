@@ -6,6 +6,7 @@ import {
   type EffectiveRuntimeSnapshot,
   RUNTIME_CAPABILITY,
   type RuntimeImSteerRequest,
+  type RuntimeImSteerResult,
   type SessionMessageDeliveryRequest,
   type SessionMessageDeliveryResult,
   type SessionReconcileRequest,
@@ -273,7 +274,37 @@ describe("RuntimeDomainOwner", () => {
     });
   });
 
-  it("releases pending steer custody when stopped", async () => {
+  it.each([
+    { status: "deferred", reason: "steer_state_unknown", disposition: "uncertain" },
+    { status: "rejected", reason: "input_conflict", disposition: "deferred" },
+    { status: "retry", reason: "turn_starting", disposition: "retry" },
+    { status: "deferred", reason: "turn_not_running", disposition: "deferred" },
+  ] as const)("records $status/$reason with $disposition steer custody", async ({ status, reason, disposition }) => {
+    const fixture = await ownerFixture();
+    const custody = new MemoryRuntimeCustodyStore();
+    const release = vi.spyOn(custody, "releaseSteerDispatch");
+    const owner = new RuntimeDomainOwner(fixture.registry, custody);
+    const request = steerRequest(deliveryRequest());
+    const pending = owner.requestSteer(fixture.computerId, fixture.instanceId, request);
+    await vi.waitFor(() => expect(fixture.frames).toContainEqual(expect.objectContaining({ type: "im:steer" })));
+    const result = {
+      type: "im:steer:result",
+      requestId: request.requestId,
+      deliveryId: request.deliveryId,
+      sessionId: request.sessionId,
+      placementGeneration: request.placementGeneration,
+      rootDeliveryId: request.rootDeliveryId,
+      expectedTurnId: request.expectedTurnId,
+      status,
+      reason,
+    } as RuntimeImSteerResult;
+    await owner.handle(result, fixture.context);
+    expect(await pending).toEqual(result);
+    expect(release).toHaveBeenCalledWith(request, expect.any(String), disposition);
+    owner.close();
+  });
+
+  it("preserves uncertain steer custody when stopped", async () => {
     const fixture = await ownerFixture();
     const custody = new MemoryRuntimeCustodyStore();
     const release = vi.spyOn(custody, "releaseSteerDispatch");
@@ -283,7 +314,7 @@ describe("RuntimeDomainOwner", () => {
     await vi.waitFor(() => expect(fixture.frames).toContainEqual(expect.objectContaining({ type: "im:steer" })));
     owner.close();
     await expect(pending).rejects.toMatchObject({ code: "stopped" });
-    expect(release).toHaveBeenCalledWith(request, expect.any(String), "deferred");
+    expect(release).toHaveBeenCalledWith(request, expect.any(String), "uncertain");
   });
 
   it("releases delivery custody when the runtime send fails synchronously", async () => {
@@ -351,19 +382,24 @@ describe("RuntimeDomainOwner", () => {
     expect(custody.hasDispatch(request.deliveryId)).toBe(true);
   });
 
-  it("releases steer custody when admission capacity rejects after begin", async () => {
-    const fixture = await ownerFixture();
-    const custody = new MemoryRuntimeCustodyStore();
-    const release = vi.spyOn(custody, "releaseSteerDispatch");
-    const owner = new RuntimeDomainOwner(fixture.registry, custody, { maxPendingRequests: 1 });
-    const reconcile = reconcileRequest(fixture.computerId);
-    owner.requestReconcile(fixture.computerId, fixture.instanceId, reconcile);
-    const request = steerRequest(deliveryRequest());
-    await expect(owner.requestSteer(fixture.computerId, fixture.instanceId, request)).rejects.toMatchObject({
-      code: "capacity",
-    });
-    expect(release).toHaveBeenCalledWith(request, expect.any(String), "deferred");
-  });
+  it.each(["dispatched", "already_dispatched"] as const)(
+    "handles steer admission capacity after %s without losing prior execution evidence",
+    async (dispatch) => {
+      const fixture = await ownerFixture();
+      const custody = new MemoryRuntimeCustodyStore();
+      const release = vi.spyOn(custody, "releaseSteerDispatch");
+      vi.spyOn(custody, "beginSteerDispatch").mockResolvedValue(dispatch);
+      const owner = new RuntimeDomainOwner(fixture.registry, custody, { maxPendingRequests: 1 });
+      const reconcile = reconcileRequest(fixture.computerId);
+      owner.requestReconcile(fixture.computerId, fixture.instanceId, reconcile);
+      const request = steerRequest(deliveryRequest());
+      await expect(owner.requestSteer(fixture.computerId, fixture.instanceId, request)).rejects.toMatchObject({
+        code: "capacity",
+      });
+      if (dispatch === "dispatched") expect(release).toHaveBeenCalledWith(request, expect.any(String), "retry");
+      else expect(release).not.toHaveBeenCalled();
+    },
+  );
   it("passes the negotiated credential grant version to the authority callback", async () => {
     const onImCredentialGrant = vi.fn(async (request) => ({
       type: "im:credential:result" as const,

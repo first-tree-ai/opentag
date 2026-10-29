@@ -213,7 +213,7 @@ export class DeliveryCustodySnapshot {
   }
 }
 
-export function cloudPendingHeadQuery(sessionId: string) {
+export function pendingHeadQuery(sessionId: string) {
   return sql`
     select d.id from im_message_deliveries d
     join lateral (select id, occurred_at, provider_revision_key from im_messages
@@ -223,7 +223,7 @@ export function cloudPendingHeadQuery(sessionId: string) {
   `;
 }
 
-export async function readCloudPendingHead(database: DeliveryWorkQuery, sessionId: string) {
-  const [row] = await database.execute<{ id: string }>(cloudPendingHeadQuery(sessionId));
+export async function readPendingHead(database: DeliveryWorkQuery, sessionId: string) {
+  const [row] = await database.execute<{ id: string }>(pendingHeadQuery(sessionId));
   return row?.id;
 }

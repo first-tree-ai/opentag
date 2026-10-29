@@ -406,6 +406,7 @@ function createCloudTurnRunner(input: {
     },
     credentialChannel: () => input.bridge,
     turnActivityEnabled: () => input.bridge.turnActivityEnabled,
+    steeringEnabled: () => input.bridge.imInputEnabled,
     journal: input.journal,
     onPersistenceError: (error) => input.state()?.persistenceFailure?.(error),
     publicDirectory: input.publicRoot,
@@ -459,6 +460,7 @@ class RunnerChannelBridge implements CloudCredentialChannel {
   scope?: CloudTurnScope;
   /** True only after a negotiated `cloudDeliveryVersion: 1` welcome. Legacy E3 stays Cloud-free. */
   cloudEnabled = false;
+  imInputEnabled = false;
   turnActivityEnabled = false;
   /*
    * The negotiated E8 Session-collaboration version echoed at the current welcome (0 when the
@@ -934,6 +936,7 @@ async function serveOnce(
       bridge.sendFn = undefined;
       bridge.scope = undefined;
       bridge.cloudEnabled = false;
+      bridge.imInputEnabled = false;
       bridge.turnActivityEnabled = false;
       bridge.sessionCollaborationVersion = 0;
       bridge.emitState("closed");
@@ -991,6 +994,7 @@ async function serveOnce(
         requestId: randomUUID(),
         token: state.token,
         cloudDeliveryVersion: RUNNER_CLOUD_DELIVERY_VERSION,
+        imInputVersion: 1,
         turnActivityVersion: 1,
         contextTreeExecutionVersion: 1,
         /*
@@ -1033,6 +1037,7 @@ async function serveOnce(
         resourceUid: data.resourceUid ?? null,
       };
       bridge.cloudEnabled = cloudCapable;
+      bridge.imInputEnabled = cloudCapable && data.imInputVersion === 1;
       bridge.turnActivityEnabled = cloudCapable && data.turnActivityVersion === 1;
       bridge.sessionCollaborationVersion = negotiatedRunnerSessionCollaborationVersion(data);
       bridge.sendFn = send;
@@ -1599,6 +1604,8 @@ type CloudServerFrame = Extract<
   RunnerServerFrame,
   {
     type:
+      | "delivery:steer"
+      | "delivery:steer:ack"
       | "delivery:run"
       | "delivery:verified"
       | "delivery:cancel"
@@ -1616,6 +1623,8 @@ type CloudServerFrame = Extract<
 function isCloudServerFrame(frame: RunnerServerFrame): frame is CloudServerFrame {
   return (
     frame.type === "turn:activity:result" ||
+    frame.type === "delivery:steer" ||
+    frame.type === "delivery:steer:ack" ||
     frame.type === "delivery:run" ||
     frame.type === "delivery:verified" ||
     frame.type === "delivery:cancel" ||
@@ -1656,7 +1665,17 @@ function dispatchCloudFrame(data: CloudServerFrame, c: FrameDispatch): void {
     c.finish();
     return;
   }
+  if ((data.type === "delivery:steer" || data.type === "delivery:steer:ack") && !c.bridge.imInputEnabled) {
+    c.finish();
+    return;
+  }
   switch (data.type) {
+    case "delivery:steer":
+      c.enqueueCloudControl(data.type, () => c.turns.handleSteer(data));
+      break;
+    case "delivery:steer:ack":
+      c.enqueueCloudControl(data.type, () => c.turns.handleSteerAck(data));
+      break;
     case "turn:activity:result":
       if (c.bridge.turnActivityEnabled) c.turns.handleActivityResult(data);
       else c.finish();

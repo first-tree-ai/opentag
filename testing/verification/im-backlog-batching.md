@@ -1,0 +1,176 @@
+# Ordered IM batches and Cloud steering: local acceptance
+
+Date: 2026-10-28. Main baseline: `bd415ef217299690ac54236ed82e1c31534dcc74`.
+Queue-policy baseline: `f5d9f488fbaaf93d577cc16d44003bb8b88713df`.
+Contracts: [IM content delivery](../../docs/system/messaging/im-content-delivery.md) and
+[Cloud Runner execution](../../docs/system/cloud/cloud-runner-execution.md).
+
+## Result and boundary
+
+Local acceptance passes for ordered aggregation, length splitting, correlated member receipts,
+and steering a running Cloud Turn. Inputs are synthetic. PostgreSQL uses local migrated testcontainers.
+Worker control tests use actual Unix sockets and child-process relay execution, with an injected Pi
+runtime. Cloud infrastructure, model upstreams and IM providers are fixtures. These checks establish
+local behavior, not deployed Runner/native Sandbox readiness or live IM delivery.
+
+No database migration is introduced. No additional retry loop is introduced. Negotiated Local v3 and
+Cloud IM input v1 enable batching; older peers keep individual inputs.
+
+## Accepted cases
+
+- Thirty-five ordered short inputs split at the 32-message bound. Long Chinese inputs split at
+  the 16 KiB UTF-8 text bound. Every source ID appears once and in provider order. Requests remain
+  within 64 KiB, and the original message projection is not additionally truncated by aggregation.
+- The first batch starts one Turn; further batches steer it before completion. Per-member source
+  IDs, authors, timestamps, provider references, resources and frozen hashes remain available.
+- Real PostgreSQL freezes reservations with the Root request, releases known no-effect batches,
+  acknowledges all members atomically, and rolls back the entire receipt if any member conflicts.
+- Initial batch members follow the Root outcome. Later unconfirmed steer batches recover every
+  member in source order after a recorded non-completed Root report. An exact late receipt can
+  settle a batch previously marked `steer_state_unknown`; a mismatched hash cannot.
+- A running Worker accepts input through its private socket before its Prompt finishes. Wrong
+  authentication or target Turn cannot call Pi steer. Split UTF-8 input is preserved.
+- Runner journal intent precedes native injection, and the result precedes transmission. Repeated
+  requests and reconnect replay receipts without another injection. Reopened received/started
+  intents do not execute automatically. Mismatched acknowledgements retain the journal entry.
+- Explicit uncertainty stays frozen on the Server and is not sent again while its Root runs.
+  Synchronous capacity failure can release a newly frozen request, but cannot discard an older
+  dispatch's execution evidence. Connection replacement follows the same rule.
+- A replaced connection cannot settle a steer. Its current report-only replacement can settle
+  the exact receipt while remaining unable to authorize another input. IM input capability is
+  echoed only alongside negotiated Cloud delivery.
+- Existing recovery lock ordering and failure-reaction integration remain covered on PostgreSQL.
+
+## Validation
+
+| Scope | Observed result |
+| --- | --- |
+| Shared Runtime/Cloud schemas, hashes and protocol corpus | 123 passed in 4 files |
+| Server delivery, custody, recovery, reactions and Runner WebSocket regression | 326 passed in 9 files |
+| Final connection-replacement and capacity follow-up | 55 passed in 2 files |
+| Client journal, Turn controller, native Worker and socket relay | 145 passed in 4 files |
+| Local custody compatibility after the legacy observer adjustment | 31 passed |
+| Runner serve regression | Passed in the affected Client run |
+| PostgreSQL dispatch, member recovery, query plans, recovery locks and reactions | 39 passed in 5 files |
+| Added PostgreSQL connection replacement/report-only receipt case | Passed; owning file 6 passed |
+| Shared, Client and Server type checks and builds | Passed |
+| `pnpm check` and `git diff --check` | Passed |
+
+The broad Server and PostgreSQL runs precede the final bounded connection/capacity guard;
+the owning suites were rerun afterwards. Unchanged successful suites were not rerun solely for
+closeout. Agent Runtime coverage is not applicable: no file in its configured coverage include set
+changed. No full workspace suite or full PostgreSQL suite was run; the changed contracts and database
+paths have bounded coverage above, and there is no migration. CI and live acceptance remain separate.
+
+## Independent review follow-up
+
+Independent review of `63653a3d3757ee419fe6a3fec3ca657a1a7fe9ac` found three P2 boundary defects.
+They are covered by focused regressions and corrected before PR creation:
+
+- A full Cloud control map releases a newly reserved, never-sent input, while retaining older
+  dispatch evidence. The new regression failed before the correction and passes afterwards.
+- A steer arriving after its Root report acknowledgement receives a known no-effect response when
+  unseen. Existing received, started, successful and uncertain child journals are handled first;
+  mismatched input cannot borrow an older receipt. No native input is injected in these cases.
+- Failed/cancelled/unknown Root reporting can skip a concurrently claimed steer head. Real
+  PostgreSQL interleavings now preserve the whole frozen batch until all member locks are acquired.
+  The reverse case, with a member locked, also retains its frozen head. The claim defers to recorded
+  failed-Root recovery. All three original failed-Root schedules failed before this correction.
+
+Exact uncertainty also survives later retry/deferred receipts, while exact success may settle it.
+Local keeps its existing conflict deferral policy; native uncertainty retains its frozen correlation.
+Initial-delivery recovery also exercises all five old steer journal states: unexecuted intents may
+be replaced, while started/results are replayed and retained until exact old acknowledgement. The
+fresh initial delivery then receives a receipt and starts only once.
+
+A subsequent review also covered provider edits of a frozen head/member and delayed older receipt
+acknowledgements during failed-Root recovery. Recovery now uses immutable frozen member/source IDs
+and target/Session identity instead of mutable delivery reasons. A fresh request for another Turn
+replays older journal evidence and waits for its exact acknowledgement; it does not poison the new
+request with uncertainty or overwrite the older effect evidence. Targeted PostgreSQL and Controller
+regressions verify both paths.
+
+Review-fix validation: 205 Server tests in seven files passed, followed by 88 owning Server tests
+after the last recovery update; 162 Client tests in three files and 48 PostgreSQL tests in five
+files passed. Seven additional proof/ACK cases cover a recovered child moving to another Session:
+the old authenticated allocation may acknowledge its exact retired-parent receipt without changing
+the recovered child, while mismatched parent/Turn/Session evidence cannot clear an old journal. The Client controller was also rerun after a bounded refactor. Type checks and builds
+cover both changed consumers. Shared protocol/queue-policy code
+has not changed since the earlier successful checks. No migration, independent retry owner, or
+live-provider acceptance is introduced by the review fixes.
+
+Reproduction commands:
+
+```sh
+pnpm --filter @opentag/shared exec vitest run src/__tests__/runtime-domain.test.ts src/__tests__/runtime-protocol.test.ts src/__tests__/cloud-runner.test.ts src/__tests__/runtime-protocol-corpus.test.ts
+pnpm --filter @opentag/server exec vitest run src/__tests__/cloud-im-steering.test.ts src/__tests__/im-delivery-worker.test.ts src/__tests__/im-delivery-worker-cloud.test.ts src/__tests__/runtime-custody-store.test.ts src/__tests__/runtime-domain-owner.test.ts src/__tests__/im-delivery-janitor.test.ts src/__tests__/im-delivery-recovery.test.ts src/__tests__/im-failure-reactions.test.ts src/__tests__/cloud-delivery-owner.test.ts src/__tests__/runner-ws.test.ts --maxWorkers=2
+pnpm --filter @opentag/client exec vitest run src/__tests__/cloud-steer-control.test.ts src/__tests__/cloud-turns.test.ts src/__tests__/cloud-turn-worker.test.ts src/__tests__/cloud-journal.test.ts src/__tests__/turn-custody-owner.test.ts src/__tests__/runner-serve.test.ts --maxWorkers=2
+pnpm --filter @opentag/server exec vitest run src/__tests__/integration/cloud-dispatch-custody.test.ts src/__tests__/integration/im-steered-delivery-recovery.test.ts src/__tests__/integration/im-delivery-query.test.ts src/__tests__/integration/im-recovery-locks.test.ts src/__tests__/integration/im-failure-reactions.test.ts --maxWorkers=2
+pnpm --filter @opentag/shared typecheck
+pnpm --filter @opentag/client typecheck
+pnpm --filter @opentag/server typecheck
+pnpm --filter @opentag/shared build
+pnpm --filter @opentag/client build
+pnpm --filter @opentag/server build
+pnpm check
+```
+
+## Latest-main integration and export contract
+
+The PR branch integrates main `984d68b3ce1503543ce34cebcbc6415fb238a020`, including
+MCP authorization reuse and bounded PostgreSQL startup/connection cleanup. The merge preserves
+the existing after-commit IM feedback hook, queue ownership and Cloud steering authority.
+The four new batch/steer public exports are included in the checked-in export contract snapshot;
+the snapshot regression failed before the update and passes afterwards.
+
+Validation on the integrated tree: all 779 Shared tests in 48 files, 363 Server tests in 14
+files, and 204 Client tests in five files passed. Server coverage includes startup, readiness,
+query deadlines, resource shutdown and the IM/Runner owners. Client coverage includes native
+Worker/socket control, Turn controller, journal and Runner serve. Shared, Client and Server
+type checks and builds passed.
+
+All 72 PostgreSQL integration cases in seven files also passed on the integrated tree, including
+IM batch custody/recovery and the newly merged database availability/startup fault cases.
+CI additionally exposed two stale test fixtures: the negotiated IM version assertion still expected
+v2, and the observability fixture omitted the new custody-lock transaction path. Both failures
+were reproduced locally before updating the fixture/expectation; production behavior is unchanged.
+
+## PR review and CI corrections
+
+The queue's eligibility now requires an unexpired ingress deadline in the backlog target/count,
+overflow probe, candidate selection and final capacity mutation. PostgreSQL regressions cover
+past-deadline rows at the 10/99 thresholds, provider timestamp skew, TTL reason preservation, and
+a concurrent expiry update committed while the capacity UPDATE waits for its row lock.
+
+Duplicate lookup is bounded strictly before the current provider timestamp/revision/UUID tuple.
+Regressions cover out-of-order ingress, equal timestamps and a PostgreSQL UUID tie. Late-root
+backfills keep the latest source revisions, process them in provider order and reuse the same
+predecessor rule for inserted or retained ambient inputs. Both receive modes are covered.
+
+Optional steering socket startup now occurs within Pi's cleanup boundary. A socket-open failure
+emits a sanitized diagnostic while the main Prompt completes; the runtime and a real tracked child
+process close. A stale control artifact is removed before listening. Frozen batch identities remain
+intact on a peer capability mismatch; that mismatch does not prove a prior attempt had no effect.
+
+The 12 original PostgreSQL CI failures were reproduced in the two failing files. Legacy integration
+fixtures/assertions now follow the approved 99-input capacity, frozen dispatch protection, provider
+FIFO and uncertainty rules; Runtime test doubles declare their individual-input capability version.
+An invalid-input rejection remains terminal, while a legacy cached conflict remains retryable.
+
+| Validation scope | Observed result |
+| --- | --- |
+| Pre-fix deadline/concurrency PostgreSQL reproductions | 5 failed before correction |
+| Pre-fix out-of-order/backfill and socket-open regressions | 4 Server and 1 Client cases failed before correction |
+| Original failing CI owners plus new queue-policy integration suite | 122 passed in 3 files |
+| Server inbox, reactions and observability | 79 passed in 4 files |
+| Client Worker/socket, Turn controller and journal | 160 passed in 4 files; tightened PID-exit regression also passed |
+| Full PostgreSQL integration command | 1065 passed, 9 failed across 84 files / 1074 cases |
+| Owning PostgreSQL follow-up after test-clock/CLI preparation fixes | All 11 cases in the 2 failed files passed |
+| Client, Server and CLI builds; Client and Server types | Passed |
+| `pnpm check` and `git diff --check` | Passed |
+
+The broad PostgreSQL run's failures were an expired historical lock-test fixture and the missing
+local built CLI entry. Its 82 successful files were unchanged; only the two owning files were rerun
+after correcting the fixture and building the CLI. This establishes passing coverage of all 1074
+cases across the broad run and follow-up, not a claim that the original full command exited zero.
+No migration, additional retry owner or deployed/provider acceptance is introduced.

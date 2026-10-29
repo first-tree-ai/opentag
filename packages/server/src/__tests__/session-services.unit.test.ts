@@ -892,6 +892,7 @@ describe("ImMessageInbox with the unit database", () => {
       1,
       inboundEvent({
         providerEventId: "mention",
+        text: "hello from an addressed channel message",
         conversationKind: "channel",
         externalMessageId: "mention-msg",
         mentions: [{ externalId: "bot", displayName: null }],
@@ -1629,6 +1630,7 @@ describe("SessionCollaborationService response mapping", () => {
 function inboundEvent(
   options: {
     providerEventId?: string;
+    text?: string;
     externalMessageId?: string;
     revisionKey?: string;
     conversationKind?: "channel" | "dm" | "group_dm" | "unknown";
@@ -1662,8 +1664,8 @@ function inboundEvent(
       occurredAt: options.occurredAt ?? new Date("2025-12-31T23:59:00.000Z"),
       content: {
         version: 1,
-        fallbackText: "hello",
-        blocks: [{ type: "text", text: "hello" }],
+        fallbackText: options.text ?? "hello",
+        blocks: [{ type: "text", text: options.text ?? "hello" }],
         truncated: false,
       },
       resources: options.resources ?? [],

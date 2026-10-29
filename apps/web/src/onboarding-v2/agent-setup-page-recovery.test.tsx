@@ -344,7 +344,7 @@ describe("AgentSetupPage messaging recovery", () => {
     const unbind = vi.spyOn(memory.adapter, "unbindMessaging");
     renderSetup(memory.adapter);
     await settle();
-    expect(screen.getByText(/In Slack, add this Bot to a channel/)).toBeTruthy();
+    expect(screen.getByText(/In Slack, open a direct message/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Disconnect Slack" }));
     await settle();
@@ -354,7 +354,7 @@ describe("AgentSetupPage messaging recovery", () => {
 
     expect(unbind).not.toHaveBeenCalled();
     expect(screen.queryByRole("alertdialog")).toBeNull();
-    expect(screen.getByText("Connected. Checking your agent can be reached…")).toBeTruthy();
+    expect(screen.getByText("Checking your agent can be reached…")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Disconnect Slack" }));
     await settle();
@@ -416,7 +416,7 @@ describe("AgentSetupPage messaging recovery", () => {
       await settle();
 
       expect(screen.getByText(copy)).toBeTruthy();
-      expect(screen.queryByText(/In Slack, add this Bot to a channel/)).toBeNull();
+      expect(screen.queryByText(/In Slack, open a direct message/)).toBeNull();
     },
   );
 

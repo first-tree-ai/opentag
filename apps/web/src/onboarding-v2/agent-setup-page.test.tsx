@@ -590,7 +590,7 @@ describe("AgentSetupPage stages", () => {
     renderSetup(memory.adapter);
     await settle();
 
-    expect(screen.getByText("Connected. Checking your agent can be reached…")).toBeTruthy();
+    expect(screen.getByText("Checking your agent can be reached…")).toBeTruthy();
   });
 
   it("renders a blocked binding with its identity and recovery actions, and no direct switch", async () => {
@@ -781,9 +781,7 @@ describe("preparation review regressions", () => {
     await settle();
 
     expect(
-      screen.getByText(
-        "In Slack, add this Bot to a channel and send it a message, or message it directly, to finish the connection check.",
-      ),
+      screen.getByText("In Slack, open a direct message with this app and send “Hi” to finish the connection check."),
     ).toBeTruthy();
   });
 });
@@ -1051,7 +1049,7 @@ describe("AgentSetupPage transitions", () => {
 
     memory.controls.scanFeishuCode();
     await advance(POLL_MS + 10);
-    expect(screen.getByText("Connected. Checking your agent can be reached…")).toBeTruthy();
+    expect(screen.getByText("Checking your agent can be reached…")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Disconnect Lark" })).toBeTruthy();
 
     memory.controls.completeHandoff();
@@ -2451,13 +2449,13 @@ describe("AgentSetupPage manual Slack verification", () => {
     await settle(20);
     expect(save).toHaveBeenCalledTimes(1);
     expect((await memory.adapter.readSnapshot(SETUP_AGENT_ID)).messaging.kind).toBe("waiting-handoff");
-    const dialog = screen.getByRole("dialog", { name: "Connect Slack" });
+    const dialog = screen.getByRole("dialog", { name: "Test your Slack connection" });
     expect(
       within(dialog).getByText(
-        "In Event Subscriptions, confirm Verified and select Save Changes, then send a message.",
+        "In Event Subscriptions, confirm Verified and select Save Changes, then send a direct message to this app in Slack.",
       ),
     ).toBeTruthy();
-    expect(within(dialog).getByRole("link", { name: "Open settings" })).toHaveProperty(
+    expect(within(dialog).getByRole("link", { name: "Open event settings in Slack" })).toHaveProperty(
       "href",
       "https://api.slack.com/apps/A1/event-subscriptions",
     );

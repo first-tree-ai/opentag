@@ -384,7 +384,7 @@ describe("F6 cross-layer gating, page level", () => {
 
     // The handoff surface owns Messaging; CLI readiness rows left the page entirely.
     expect(document.querySelector('[data-ui="readiness-list"]')).toBeNull();
-    expect(screen.getByText("Connected. Checking your agent can be reached…")).toBeTruthy();
+    expect(screen.getByText("Checking your agent can be reached…")).toBeTruthy();
     const messaging = document.querySelector('[data-ui="agent-setup-messaging"]') as HTMLElement | null;
     expect(messaging?.textContent).not.toMatch(/CLI|Installation required|Waiting for Computer/);
 
@@ -394,13 +394,13 @@ describe("F6 cross-layer gating, page level", () => {
     await advance(POLL_MS + 10);
     await settle();
     expect(document.querySelector('[data-ui="readiness-list"]')).toBeNull();
-    expect(screen.getByText("Connected. Checking your agent can be reached…")).toBeTruthy();
+    expect(screen.getByText("Checking your agent can be reached…")).toBeTruthy();
 
     memory.controls.setImCliReadiness("feishu", "ready");
     await advance(POLL_MS + 10);
     await settle();
     expect(document.querySelector('[data-ui="readiness-list"]')).toBeNull();
-    expect(screen.getByText("Connected. Checking your agent can be reached…")).toBeTruthy();
+    expect(screen.getByText("Checking your agent can be reached…")).toBeTruthy();
   });
 
   it("opens the Messaging gate for a ready Pi snapshot with the actual Pi labels", async () => {

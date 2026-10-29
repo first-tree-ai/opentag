@@ -21,13 +21,18 @@ The user opens the prefilled Slack creation link, chooses the Team, creates and 
 7 events, Agent-specific Events URL, writable Messages tab, and existing Interactivity callback. After saving, the user
 confirms **Verified → Save Changes** in Slack Event Subscriptions and sends the Bot a DM. No second manifest paste,
 manual App/Team/Bot ID entry, or final confirmation page is required. Existing Apps can repair their URLs/events from
-collapsed help without replacing their other configuration.
+**Having trouble?** without replacing their other configuration. A saved, unverified custom App on a Local Computer
+can use **Retry automatic setup** there to recover callbacks for the same locally created App without another install
+or credential rotation. Existing Apps without a matching local creation record use manual event settings. The same dialog
+has separate connection-test,
+troubleshooting, credential-update, and connection-details views. The test view names Slack as the destination and
+asks for a direct message; connection details label App/Team IDs, the copyable Request URL, and required events.
 
 The new App's Bot name follows the Agent name within Slack's naming rules, with its exact prefilled `@name` visible
 before opening Slack. Existing Apps keep their current names. Creation recovery stays in collapsed help: check Your Apps
 first, finish installation for an App already created, or wait before retrying a rate-limited creation. No automatic
-creation retry is introduced. Credential updates are directly available in the App dialog and show only the Token by
-default; expand the Secret field when changing it. A connection that has received a real message verifies updated
+creation retry is introduced. Credential updates are available under **Having trouble?** in the App dialog and show only
+the Token by default; expand the Secret field when changing it. A connection that has received a real message verifies updated
 credentials with another DM, without repeating an unchanged Events URL setup. The saved status and identity/runtime
 readiness checks remain unchanged.
 

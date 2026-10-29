@@ -89,7 +89,7 @@ describe("AgentSetupPage for a Cloud-bound Agent", () => {
 
     memory.controls.scanFeishuCode();
     await advance(SETUP_POLL_MS + 10);
-    expect(screen.getByText("Connected. Checking your agent can be reached…")).toBeTruthy();
+    expect(screen.getByText("Checking your agent can be reached…")).toBeTruthy();
 
     memory.controls.completeHandoff();
     await advance(SETUP_POLL_MS + 10);

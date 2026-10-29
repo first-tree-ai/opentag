@@ -996,7 +996,7 @@ async function serveOnce(
         cloudDeliveryVersion: RUNNER_CLOUD_DELIVERY_VERSION,
         imInputVersion: 1,
         turnActivityVersion: 1,
-        contextTreeExecutionVersion: 1,
+        contextTreeExecutionVersion: 2,
         /*
          * This build speaks Session collaboration v2 (scheduled origin). An older Server whose
          * auth schema only admits v1 fails the strict handshake; a foundation Server that parses

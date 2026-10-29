@@ -111,6 +111,7 @@ class ProxyDataConnection {
   #executionId?: string;
   #unsubscribeClose?: () => void;
   #revalidateTimer?: ReturnType<typeof setInterval>;
+  #revalidatingExecution = false;
   #authTimer?: ReturnType<typeof setTimeout>;
 
   constructor(socket: WebSocket, options: RuntimeProviderProxyTransportOptions, limits: ResolvedTransportLimits) {
@@ -461,7 +462,26 @@ class ProxyDataConnection {
 
   async #revalidateStreams(): Promise<void> {
     if (this.#state !== "ready") return;
+    await this.#revalidateLocalExecution();
+    if (this.#state !== "ready") return;
     await Promise.all([...this.#streams.values()].map((stream) => this.#revalidateStream(stream)));
+  }
+
+  async #revalidateLocalExecution(): Promise<void> {
+    const execution = this.#executionId ? this.#transport.executions?.get(this.#executionId) : undefined;
+    if (execution?.contextTree?.mode !== "local" || this.#revalidatingExecution) return;
+    this.#revalidatingExecution = true;
+    try {
+      if (!this.#transport.broker) throw new Error("Execution broker is unavailable");
+      await this.#transport.broker.revalidateExecution(execution.executionId);
+    } catch {
+      if (this.#state === "ready" && this.#executionId === execution.executionId) {
+        this.#transport.executions?.close(execution.executionId, "execution_closed");
+        this.#fail(4000, "proxy_execution_closed");
+      }
+    } finally {
+      this.#revalidatingExecution = false;
+    }
   }
 
   async #revalidateStream(stream: ProxyStream): Promise<void> {

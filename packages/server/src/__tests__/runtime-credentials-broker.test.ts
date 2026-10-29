@@ -226,6 +226,35 @@ function createBroker(
 }
 
 describe("RuntimeCredentialBroker.acquire", () => {
+  it("revalidates a credential-free local Context without GitHub and denies every provider", async () => {
+    const { broker, executions, scopeResolver, admission } = createBroker();
+    const parent = execution(executions, [], {
+      services: [{ service: "context-tree", scopes: ["context-tree:local"] }],
+    });
+    const local = execution(executions, [], {
+      purpose: "context-tree",
+      contextTree: {
+        kind: "git",
+        repository: "acme/repo",
+        path: ".",
+        ref: "main",
+        parentExecutionId: parent.executionId,
+        mode: "local",
+      },
+    });
+    await expect(broker.revalidateExecution(local.executionId)).resolves.toBeUndefined();
+    for (const provider of ["github", "slack", "feishu"] as const) {
+      await expect(broker.describeProvider({ execution: local, provider, bindingId: BINDING })).rejects.toMatchObject({
+        code: "credential_scope_denied",
+      });
+    }
+    expect(admission.calls).toBe(0);
+    (scopeResolver as FakeScopeResolver).session = sessionSnapshot({ contextTrees: [] });
+    await expect(broker.revalidateExecution(local.executionId)).rejects.toMatchObject({
+      code: "credential_scope_denied",
+    });
+  });
+
   it("issues a capability with outbox context and pinned generations", async () => {
     const { broker, executions } = createBroker();
     const record = execution(executions, [slackProvider()]);

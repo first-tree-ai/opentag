@@ -64,7 +64,7 @@ OpenTag writes authorized selections to its own configuration at
 Repository-owned `.context-tree.json` files are left alone. Those files can describe
 local directory trees used through the normal repository workflow.
 
-Managed synchronization and write commands route through a per-execution Context Tree command gateway in the trusted Local Daemon or Cloud Runner. Only its pinned CLI child receives a GitHub handle; the Agent receives a Unix socket or fixed Cloud loopback endpoint. The Server separately admits each command against the live parent, current Account authorization and exact selected tree. See [GitHub platform integration](github-platform-integration.md#context-tree-command-boundary).
+Managed synchronization and write commands route through a per-execution Context Tree command gateway in the trusted Local Daemon or Cloud Runner. The Agent receives a Unix socket or fixed Cloud loopback endpoint. With execution capability version 2, offline sync, non-publishing finish and abort use credential-free local child executions; only remote commands give the pinned CLI child a GitHub handle. The Server checks the live parent, Account, task and exact current selection for every command. Remote commands additionally require current managed GitHub authorization. See [GitHub platform integration](github-platform-integration.md#context-tree-command-boundary).
 
 Preparation uses `context-tree sync --project-path PROJECT` through this gateway. Responses are parsed
 with the package's public contracts; OpenTag never reads the package's internal registry.
@@ -74,8 +74,9 @@ are unavailable and preserved for recovery.
 
 Local preparation is serialized. Concurrent starts join the same work; a five-second
 startup budget lets the Session proceed while preparation continues. Failed sources
-observe a one-minute retry cooldown. Changed selections or missing managed authorization invalidate
-cached results. Rotating execution tokens preserve ready read snapshots; in-flight work remains
+observe a one-minute retry cooldown. Changed selections or lost OpenTag execution authority invalidate
+cached results. Under execution capability version 2, losing GitHub authorization stops remote
+synchronization and publication but preserves local use of already selected, cached content. Rotating execution tokens preserve ready read snapshots; in-flight work remains
 bound to its original token. Providers receive the bounded Context Tree state directory needed to create
 write sessions, not just the read snapshot path.
 
@@ -99,7 +100,11 @@ again. A failed connection names the symlink repair and the verification command
 
 Managed prompts identify each source, its exact selector, project path, and availability.
 Remote snapshots are for reading. Agents use `write prepare` to create an isolated worktree,
-then `write finish` to commit and optionally publish. Local directory trees use direct edits
+then `write finish` to commit and optionally publish. `write prepare` still refreshes the remote
+source and requires managed GitHub access. An already prepared worktree can be edited and committed
+without GitHub authorization; only `--publish` pushes. Offline sync requires a complete local cache.
+These operations still require a live OpenTag execution. Removing a selection or transferring an
+Agent prevents its managed use; unpublished files remain for recovery. Local directory trees use direct edits
 and their host repository's Git workflow. Agent member directories remain a convention,
 not a confidentiality boundary.
 Cache and publication identity checks use the stored origin URL, so the managed Git

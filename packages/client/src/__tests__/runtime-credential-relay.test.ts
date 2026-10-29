@@ -656,15 +656,26 @@ describe("RuntimeCredentialEnvironmentManager", () => {
     await strict.close();
   });
 
-  it.each([false, true])("exposes a nonsecret Context Tree socket only after a service grant (%s)", async (granted) => {
+  it.each([
+    { granted: false, version: 1 },
+    { granted: true, version: 1 },
+    { granted: false, version: 2 },
+    { granted: true, version: 2 },
+  ])("exposes a Context Tree socket only after a v$version service grant ($granted)", async ({ granted, version }) => {
     const home = await temporaryHome();
     const harness = relayHarness({
       providers: ["feishu"],
-      capabilities: { "runtime.runtimeCredential": 1, "runtime.providerProxy": 1, "runtime.contextTreeExecution": 1 },
+      capabilities: {
+        "runtime.runtimeCredential": 1,
+        "runtime.providerProxy": 1,
+        "runtime.contextTreeExecution": version,
+      },
       openResults: [
         {
           ...openResultFrame("placeholder", ["feishu"], Date.now()),
-          services: granted ? [{ service: "context-tree", scopes: ["context-tree:git"] }] : [],
+          services: granted
+            ? [{ service: "context-tree", scopes: [version === 2 ? "context-tree:local" : "context-tree:git"] }]
+            : [],
         },
       ],
     });

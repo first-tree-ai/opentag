@@ -26,7 +26,7 @@
   "integrations_github_reauthorize_description": "Authorize this account again so Context Tree can continue syncing and publishing.",
   "integrations_github_remove": "Disconnect",
   "integrations_github_remove_account": "Disconnect account authorization",
-  "integrations_github_remove_description": "Context Tree will lose access through {account}. Unpublished Context Tree changes may be affected.",
+  "integrations_github_remove_description": "Context Tree will no longer sync or publish through {account}. Existing local content and unpublished changes are retained; connected Context Trees remain available for local use.",
   "integrations_github_remove_scope": "Disconnecting in openTag does not revoke your authorization on GitHub. You can revoke it in GitHub settings.",
   "integrations_github_remove_title": "Disconnect GitHub account authorization?",
   "integrations_github_removed": "GitHub account authorization disconnected.",

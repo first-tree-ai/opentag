@@ -34,7 +34,7 @@ export interface CloudConnectionRecord {
   readonly sessionCollaborationEligible: boolean;
   /** Exact negotiated Runner collaboration version; 0 means the capability was not negotiated. */
   readonly githubUserTaskVersion?: 1;
-  contextTreeExecutionVersion?: 1;
+  contextTreeExecutionVersion?: 1 | 2;
   readonly sessionCollaborationVersion: 0 | 1 | 2;
   /**
    * Whether this connection may receive execution permission. A report-only reconnect (the active
@@ -77,7 +77,7 @@ export class CloudRuntimeFence {
     turnActivityVersion?: 1;
     imInputVersion?: 1;
     githubUserTaskVersion?: 1;
-    contextTreeExecutionVersion?: 1;
+    contextTreeExecutionVersion?: 1 | 2;
     sessionCollaborationEligible?: boolean;
     sessionCollaborationVersion?: 1 | 2;
   }): CloudConnectionRecord {

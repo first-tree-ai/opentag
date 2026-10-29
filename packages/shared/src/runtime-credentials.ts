@@ -101,6 +101,7 @@ export type RuntimeExecutionSandbox = z.infer<typeof RuntimeExecutionSandboxSche
 
 export const RuntimeContextTreeExecutionSchema = ContextTreeConnectionSchema.extend({
   parentExecutionId: z.string().uuid(),
+  mode: z.enum(["local", "remote"]).optional(),
 }).strict();
 export type RuntimeContextTreeExecution = z.infer<typeof RuntimeContextTreeExecutionSchema>;
 

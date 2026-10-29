@@ -410,9 +410,8 @@ export class RuntimeCredentialEnvironmentManager {
     if (this.#options.connection.capabilityVersion(RUNTIME_MCP_GATEWAY_CAPABILITY) === 1) {
       services.push("mcp");
     }
-    if (this.#options.connection.capabilityVersion("runtime.contextTreeExecution") === 1) {
-      services.push("context-tree");
-    }
+    const contextVersion = this.#options.connection.capabilityVersion("runtime.contextTreeExecution");
+    if (contextVersion === 1 || contextVersion === 2) services.push("context-tree");
     return services.length > 0 ? services : undefined;
   }
 
@@ -516,6 +515,11 @@ export class RuntimeCredentialEnvironmentManager {
                   OPENTAG_PROVIDER_CA_PATH: adapter.caCertPath,
                 }),
                 HOME: resolveAccountHome(process.env),
+                PATH: process.env.PATH,
+                SystemRoot: process.env.SystemRoot,
+                USERPROFILE: process.env.USERPROFILE,
+                TMPDIR: process.env.TMPDIR,
+                TEMP: process.env.TEMP,
                 GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME ?? "OpenTag Context Tree",
                 GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL ?? "opentag-context-tree@localhost",
                 GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME ?? "OpenTag Context Tree",
@@ -528,7 +532,7 @@ export class RuntimeCredentialEnvironmentManager {
               const result = await runContextTreeCli(pack, args, {
                 cwd: contextTreeGateway.workspace,
                 network: true,
-                env: { ...process.env, ...environment },
+                env: environment,
                 signal: commandSignal,
               });
               return {

@@ -446,7 +446,7 @@ test("disconnecting the Context Tree GitHub account requires confirmation before
   await removeButton.click();
   const dialog = page.getByRole("dialog", { name: "Disconnect GitHub account authorization?" });
   await expect(dialog).toBeVisible();
-  await expect(dialog).toContainText("Context Tree will lose access through @octocat");
+  await expect(dialog).toContainText("Context Tree will no longer sync or publish through @octocat");
   await expect(dialog).toContainText("You can revoke it in GitHub settings");
   await expect(dialog.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
   expect(fixture.disconnectCalls, "No shared authorization should be disconnected before confirmation").toBe(0);

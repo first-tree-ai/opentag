@@ -11,7 +11,7 @@ import {
   contextTreeSelector,
 } from "@opentag/shared";
 import { z } from "zod";
-import type { RuntimeCredentialRelay } from "./runtime-credential-relay.js";
+import { type RuntimeCredentialRelay, RuntimeCredentialRelayError } from "./runtime-credential-relay.js";
 
 const LIMIT = 1024 * 1024;
 const RequestSchema = z.object({ args: z.array(z.string().max(4096)).min(1).max(16) }).strict();
@@ -157,7 +157,7 @@ export class ContextTreeCommandGateway {
     if (command.operation === "sync" && !command.source) return this.#syncAll(command.offline === true, signal);
     const source = command.source ?? (command.id ? await this.#sessionSource(command.id) : undefined);
     if (!source) throw new Error("Choose a configured Context Tree");
-    const result = await this.#execute(source, command.argv, signal);
+    const result = await this.#execute(source, command.argv, signal, command.mode);
     if (result.code !== 0) return result;
     if (command.operation === "prepare") await this.#rememberSession(result.stdout, source);
     if (command.id && (command.operation === "abort" || JSON.parse(result.stdout || "{}").outcome === "published"))
@@ -179,6 +179,7 @@ export class ContextTreeCommandGateway {
           ...(offline ? ["--offline"] : []),
         ],
         signal,
+        offline ? "local" : "remote",
       );
       if (result.code !== 0) return result;
       results.push(...(JSON.parse(result.stdout) as { connections: unknown[] }).connections);
@@ -239,26 +240,14 @@ export class ContextTreeCommandGateway {
     const source = selectSource(options.get("--tree"), this.#options.sources);
     if (operation === "sync") {
       if (positional.length) throw new Error("Unexpected Context Tree argument");
-      const offline = options.has("--offline");
-      return {
-        operation,
-        source,
-        offline,
-        argv: [
-          "sync",
-          "--tree",
-          source ? contextTreeSelector(source) : "",
-          "--project-path",
-          this.#project(),
-          ...(offline ? ["--offline"] : []),
-        ],
-      };
+      return syncCommand(source, this.#project(), options.has("--offline"));
     }
     if (operation === "prepare") {
       if (!source || positional.length) throw new Error("Choose a configured Context Tree");
       return {
         operation,
         source,
+        mode: "remote",
         argv: ["write", "prepare", "--tree", contextTreeSelector(source), "--project-path", this.#project()],
       };
     }
@@ -269,40 +258,60 @@ export class ContextTreeCommandGateway {
     source: ContextTreeConnection,
     args: readonly string[],
     signal: AbortSignal,
+    mode: "local" | "remote",
   ): Promise<ContextTreeCommandResult> {
-    const relay = await this.#options.parent.openContextTree(source, signal);
+    const localAccess = this.#options.parent.services?.some(
+      (service) => service.service === "context-tree" && service.scopes[0] === "context-tree:local",
+    );
+    const local = localAccess && mode === "local";
+    let relay: RuntimeCredentialRelay;
+    try {
+      relay = localAccess
+        ? await this.#options.parent.openContextTree(source, signal, mode)
+        : await this.#options.parent.openContextTree(source, signal);
+    } catch (error) {
+      if (local || !localAccess || signal.aborted || !(error instanceof RuntimeCredentialRelayError)) throw error;
+      return {
+        code: 1,
+        stdout: JSON.stringify({ error: { code: "REMOTE_EXECUTION_UNAVAILABLE" } }),
+        stderr: "Remote Context Tree access is unavailable.\n",
+      };
+    }
     this.#relay = relay;
     try {
-      const environment = {
-        ...this.#options.environment(),
-        GH_TOKEN: relay.localHandleFor("github"),
-        GITHUB_TOKEN: undefined,
-        GH_ENTERPRISE_TOKEN: undefined,
-        GITHUB_ENTERPRISE_TOKEN: undefined,
-        GIT_CONFIG_GLOBAL: "/dev/null",
-        GIT_CONFIG_NOSYSTEM: "1",
-        GIT_TERMINAL_PROMPT: "0",
-        GIT_CONFIG_PARAMETERS: undefined,
-        GIT_ASKPASS: undefined,
-        SSH_AUTH_SOCK: undefined,
-        GIT_CONFIG_COUNT: "7",
-        GIT_CONFIG_KEY_2: "http.https://github.com.proxy",
-        GIT_CONFIG_VALUE_2: this.#options.environment().OPENTAG_PROVIDER_PROXY_URL ?? "",
-        GIT_CONFIG_KEY_3: "http.https://github.com.sslCAInfo",
-        GIT_CONFIG_VALUE_3: this.#options.environment().OPENTAG_PROVIDER_CA_PATH ?? "",
-        GIT_CONFIG_KEY_4: "http.proxy",
-        GIT_CONFIG_VALUE_4: "",
-        GIT_CONFIG_KEY_5: "http.sslVerify",
-        GIT_CONFIG_VALUE_5: "true",
-        GIT_CONFIG_KEY_6: "core.hooksPath",
-        GIT_CONFIG_VALUE_6: "/dev/null",
-        GIT_CONFIG_KEY_0: "credential.helper",
-        GIT_CONFIG_VALUE_0: "",
-        GIT_CONFIG_KEY_1: "credential.helper",
-        GIT_CONFIG_VALUE_1: "!f() { printf 'username=x-access-token\\npassword=%s\\n' \"$GH_TOKEN\"; }; f",
-        OPENTAG_CONTEXT_TREE_SOCKET: undefined,
-        OPENTAG_CONTEXT_TREE_URL: undefined,
-      };
+      const base = this.#options.environment();
+      const environment = local
+        ? localContextEnvironment(base)
+        : {
+            ...base,
+            GH_TOKEN: relay.localHandleFor("github"),
+            GITHUB_TOKEN: undefined,
+            GH_ENTERPRISE_TOKEN: undefined,
+            GITHUB_ENTERPRISE_TOKEN: undefined,
+            GIT_CONFIG_GLOBAL: "/dev/null",
+            GIT_CONFIG_NOSYSTEM: "1",
+            GIT_TERMINAL_PROMPT: "0",
+            GIT_CONFIG_PARAMETERS: undefined,
+            GIT_ASKPASS: undefined,
+            SSH_AUTH_SOCK: undefined,
+            GIT_CONFIG_COUNT: "7",
+            GIT_CONFIG_KEY_2: "http.https://github.com.proxy",
+            GIT_CONFIG_VALUE_2: base.OPENTAG_PROVIDER_PROXY_URL ?? "",
+            GIT_CONFIG_KEY_3: "http.https://github.com.sslCAInfo",
+            GIT_CONFIG_VALUE_3: base.OPENTAG_PROVIDER_CA_PATH ?? "",
+            GIT_CONFIG_KEY_4: "http.proxy",
+            GIT_CONFIG_VALUE_4: "",
+            GIT_CONFIG_KEY_5: "http.sslVerify",
+            GIT_CONFIG_VALUE_5: "true",
+            GIT_CONFIG_KEY_6: "core.hooksPath",
+            GIT_CONFIG_VALUE_6: "/dev/null",
+            GIT_CONFIG_KEY_0: "credential.helper",
+            GIT_CONFIG_VALUE_0: "",
+            GIT_CONFIG_KEY_1: "credential.helper",
+            GIT_CONFIG_VALUE_1: "!f() { printf 'username=x-access-token\\npassword=%s\\n' \"$GH_TOKEN\"; }; f",
+            OPENTAG_CONTEXT_TREE_SOCKET: undefined,
+            OPENTAG_CONTEXT_TREE_URL: undefined,
+          };
       const result = await this.#options.execute(args, environment, signal);
       if (Buffer.byteLength(JSON.stringify(result)) > LIMIT) throw new Error("Context Tree output exceeded its limit");
       return result;
@@ -313,14 +322,68 @@ export class ContextTreeCommandGateway {
   }
 }
 
+function localContextEnvironment(base: Record<string, string | undefined>): Record<string, string | undefined> {
+  const keys = [
+    "PATH",
+    "HOME",
+    "USERPROFILE",
+    "SystemRoot",
+    "SYSTEMROOT",
+    "PATHEXT",
+    "COMSPEC",
+    "LANG",
+    "LC_ALL",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+  ];
+  return {
+    ...Object.fromEntries(keys.filter((key) => base[key] !== undefined).map((key) => [key, base[key]])),
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_ALLOW_PROTOCOL: "",
+    GIT_NO_LAZY_FETCH: "1",
+    GIT_CONFIG_COUNT: "3",
+    GIT_CONFIG_KEY_0: "credential.helper",
+    GIT_CONFIG_VALUE_0: "",
+    GIT_CONFIG_KEY_1: "core.hooksPath",
+    GIT_CONFIG_VALUE_1: "/dev/null",
+    GIT_CONFIG_KEY_2: "commit.gpgsign",
+    GIT_CONFIG_VALUE_2: "false",
+  };
+}
+
 type CommandOperation = "sync" | "prepare" | "finish" | "abort";
 interface ManagedCommand {
   operation: CommandOperation;
+  mode: "local" | "remote";
   argv: string[];
   source?: ContextTreeConnection;
   id?: string;
   offline?: boolean;
 }
+function syncCommand(source: ContextTreeConnection | undefined, project: string, offline: boolean): ManagedCommand {
+  return {
+    operation: "sync",
+    source,
+    offline,
+    mode: offline ? "local" : "remote",
+    argv: [
+      "sync",
+      "--tree",
+      source ? contextTreeSelector(source) : "",
+      "--project-path",
+      project,
+      ...(offline ? ["--offline"] : []),
+    ],
+  };
+}
+
 const OPERATION_FLAGS: Record<CommandOperation, ReadonlySet<string>> = {
   sync: new Set(["--tree", "--project-path", "--offline", "--json"]),
   prepare: new Set(["--tree", "--project-path", "--json"]),
@@ -340,7 +403,7 @@ function writeSessionCommand(
     argv.push("--message", options.get("--message") ?? "Update Context Tree");
     if (options.has("--publish")) argv.push("--publish");
   }
-  return { operation, id, argv };
+  return { operation, id, argv, mode: operation === "abort" || !options.has("--publish") ? "local" : "remote" };
 }
 function commandOperation(args: readonly string[]): CommandOperation {
   if (args[0] === "sync") return "sync";

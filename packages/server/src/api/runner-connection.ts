@@ -263,7 +263,7 @@ export class RunnerConnection {
   #wantsTurnActivity = false;
   #wantsImInput = false;
   #wantsGithubUserTask = false;
-  #wantsContextTreeExecution = false;
+  #requestedContextTreeVersion?: 1 | 2;
 
   async #handleAuth(
     token: string,
@@ -576,8 +576,8 @@ export class RunnerConnection {
    * The exact legacy E3 welcome shape for a connection that did not opt into a capability: only
    * negotiated capabilities and the verified allocation UID are additive fields.
    */
-  #contextTreeExecutionVersion(): 1 | undefined {
-    return this.#wantsContextTreeExecution ? 1 : undefined;
+  #contextTreeExecutionVersion(): 1 | 2 | undefined {
+    return this.#requestedContextTreeVersion;
   }
 
   #githubUserTaskVersion(): 1 | undefined {
@@ -590,7 +590,7 @@ export class RunnerConnection {
     fence: { resourceUid: string | null } | undefined;
     sessionCollaborationVersion: 0 | 1 | 2;
     githubUserTaskVersion?: 1;
-    contextTreeExecutionVersion?: 1;
+    contextTreeExecutionVersion?: 1 | 2;
     validated: RunnerScope;
     workspaceNegotiated: boolean;
   }): RunnerServerFrame {
@@ -1115,7 +1115,7 @@ export class RunnerConnection {
     this.#wantsTurnActivity = data.turnActivityVersion === 1;
     this.#wantsImInput = data.imInputVersion === 1;
     this.#wantsGithubUserTask = data.githubUserTaskVersion === 1;
-    this.#wantsContextTreeExecution = data.contextTreeExecutionVersion === 1;
+    this.#requestedContextTreeVersion = data.contextTreeExecutionVersion;
     await this.#handleAuth(
       data.token,
       data.requestId,

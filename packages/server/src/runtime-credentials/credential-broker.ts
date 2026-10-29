@@ -281,6 +281,15 @@ export class RuntimeCredentialBroker {
     return this.#scopeMaterial(input.execution, input.provider, input.bindingId, input.signal);
   }
 
+  async revalidateExecution(executionId: string): Promise<void> {
+    const execution = this.#options.executions.get(executionId);
+    if (!execution) throw new RuntimeCredentialError("execution_closed");
+    await this.#fence(execution);
+    if (this.#options.executions.get(executionId) !== execution) {
+      throw new RuntimeCredentialError("execution_closed");
+    }
+  }
+
   async #fence(execution: RuntimeExecutionRecord, signal?: AbortSignal): Promise<RuntimeFenceSnapshot> {
     signal?.throwIfAborted();
     this.#assertCurrentConnection(execution);
@@ -361,7 +370,7 @@ export class RuntimeCredentialBroker {
     bindingId: string,
     signal?: AbortSignal,
   ): Promise<RuntimeScopeMaterial> {
-    if (provider === "github" && execution.purpose !== "context-tree")
+    if (execution.contextTree?.mode === "local" || (provider === "github" && execution.purpose !== "context-tree"))
       throw new RuntimeCredentialError("credential_scope_denied");
     const fence = await this.#fence(execution, signal);
     const permitted = await this.#options.policy.authorize({

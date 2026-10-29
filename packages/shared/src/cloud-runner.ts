@@ -358,7 +358,7 @@ export const RunnerAuthFrameSchema = z
     imInputVersion: z.literal(1).optional(),
     turnActivityVersion: z.literal(1).optional(),
     githubUserTaskVersion: z.literal(1).optional(),
-    contextTreeExecutionVersion: z.literal(1).optional(),
+    contextTreeExecutionVersion: z.union([z.literal(1), z.literal(2)]).optional(),
     workspaceVersion: z.literal(RUNNER_WORKSPACE_VERSION).optional(),
     /**
      * E8: opt in to Cloud Session collaboration at a specific version. Only sent by a Runner
@@ -983,7 +983,7 @@ export const RunnerWelcomeFrameSchema = z
     imInputVersion: z.literal(1).optional(),
     turnActivityVersion: z.literal(1).optional(),
     githubUserTaskVersion: z.literal(1).optional(),
-    contextTreeExecutionVersion: z.literal(1).optional(),
+    contextTreeExecutionVersion: z.union([z.literal(1), z.literal(2)]).optional(),
     /**
      * E4: verified Cloud UID of the CURRENT allocation, echoed by the Runner inside credential
      * execution-open sandbox facts. Required when `cloudDeliveryVersion` is present; a

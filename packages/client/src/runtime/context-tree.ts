@@ -413,7 +413,7 @@ export class ContextTreeManager {
     const target = JSON.stringify([
       provider ?? "codex",
       ordered,
-      this.#managedCredentials ? hasManagedGitHubTransport(environment ?? {}) : null,
+      this.#managedCredentials ? hasManagedContextTreeTransport(environment ?? {}) : null,
     ]);
     if (this.#observedTarget.get(cwd) !== target) {
       this.#observedTarget.set(cwd, target);
@@ -580,7 +580,7 @@ export class ContextTreeManager {
   #managedFailure(environment: Readonly<Record<string, string | undefined>> | undefined): string | undefined {
     if (!this.#managedCredentials) return undefined;
     if (!environment) return "AUTHENTICATION_REQUIRED";
-    return hasManagedGitHubTransport(environment) ? undefined : "GITHUB_PERMISSION";
+    return hasManagedContextTreeTransport(environment) ? undefined : "GITHUB_PERMISSION";
   }
 
   async #connect(
@@ -718,7 +718,7 @@ export function mergeContextTreeEnvironment(
 }
 
 /** Managed transports need execution-local routing, never an Agent repository allowlist. */
-export function hasManagedGitHubTransport(environment: Readonly<Record<string, string | undefined>>): boolean {
+export function hasManagedContextTreeTransport(environment: Readonly<Record<string, string | undefined>>): boolean {
   return (
     Boolean(environment.OPENTAG_CONTEXT_TREE_SOCKET || environment.OPENTAG_CONTEXT_TREE_URL) ||
     (typeof environment.GH_TOKEN === "string" &&

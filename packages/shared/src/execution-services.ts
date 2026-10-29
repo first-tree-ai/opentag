@@ -39,7 +39,7 @@ export type RuntimeMcpExecutionService = z.infer<typeof RuntimeMcpExecutionServi
 export const RuntimeContextTreeExecutionServiceSchema = z
   .object({
     service: z.literal("context-tree"),
-    scopes: z.tuple([z.literal("context-tree:git")]),
+    scopes: z.tuple([z.enum(["context-tree:git", "context-tree:local"])]),
   })
   .strict();
 

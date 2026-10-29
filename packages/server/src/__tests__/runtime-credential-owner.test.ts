@@ -733,6 +733,52 @@ describe("RuntimeCredentialOwner GitHub source and Cloud control", () => {
     ).toBe(true);
   });
 
+  it("opens local Context children without GitHub and refuses remote or foreign selections", async () => {
+    const target = { kind: "git", repository: "acme/memory", path: "docs", ref: "main" } as const;
+    const scopeResolver = new FakeScopeResolver();
+    scopeResolver.session = { ...sessionSnapshot(), contextTrees: [target] };
+    const admit = vi.fn(async () => undefined);
+    const state = await fixture({ scopeResolver, gitHubAdmission: { admit } });
+    cleanup.push(() => state.owner.close());
+    const context = {
+      ...state.context,
+      negotiatedCapabilities: { ...state.context.negotiatedCapabilities, "runtime.contextTreeExecution": 2 },
+    };
+    const parent = (await state.owner.handle(openFrame({ services: ["context-tree"] }), context)) as {
+      executionId: string;
+    };
+    expect(parent).toMatchObject({
+      status: "succeeded",
+      services: [{ service: "context-tree", scopes: ["context-tree:local"] }],
+    });
+    const child = { ...target, parentExecutionId: parent.executionId, mode: "local" as const };
+    const opened = await state.owner.handle(openFrame({ contextTree: child }), context);
+    expect(opened).toMatchObject({ status: "succeeded", providers: [] });
+    expect(admit).not.toHaveBeenCalled();
+    expect(await state.owner.handle(openFrame({ contextTree: { ...child, mode: "remote" } }), context)).toMatchObject({
+      status: "rejected",
+      code: "execution_authority_denied",
+    });
+    expect(await state.owner.handle(openFrame({ contextTree: { ...child, ref: "foreign" } }), context)).toMatchObject({
+      status: "rejected",
+      code: "execution_authority_denied",
+    });
+    const legacyContext = {
+      ...context,
+      negotiatedCapabilities: { ...context.negotiatedCapabilities, "runtime.contextTreeExecution": 1 },
+    };
+    expect(await state.owner.handle(openFrame({ contextTree: child }), legacyContext)).toMatchObject({
+      status: "rejected",
+      code: "capability_unsupported",
+    });
+    expect(
+      await state.owner.handle(
+        openFrame({ contextTree: { ...target, parentExecutionId: parent.executionId } }),
+        context,
+      ),
+    ).toMatchObject({ status: "rejected", code: "capability_unsupported" });
+  });
+
   it("re-checks the live Cloud control credential before admitting a Cloud open", async () => {
     let active = false;
     const control: RuntimeControlIdentity = {

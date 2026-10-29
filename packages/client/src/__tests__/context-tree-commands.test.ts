@@ -4,15 +4,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { prepareCloudContextTree } from "../runner/cloud-context-tree.js";
 import { CONTEXT_TREE_COMMAND_WORKER_SOURCE } from "../runner/context-tree-command-worker.js";
-import { resolveContextTreePackage, runContextTreeCli } from "../runtime/context-tree.js";
+import {
+  ContextTreeManager,
+  type ContextTreePackage,
+  resolveContextTreePackage,
+  runContextTreeCli,
+} from "../runtime/context-tree.js";
 import {
   CONTEXT_TREE_COMMAND_CLIENT_SOURCE,
   ContextTreeCommandGateway,
   requestContextTreeCommand,
 } from "../runtime/context-tree-commands.js";
 import { configureContextTrees } from "../runtime/context-tree-connections.js";
-import type { RuntimeCredentialRelay } from "../runtime/runtime-credential-relay.js";
+import { type RuntimeCredentialRelay, RuntimeCredentialRelayError } from "../runtime/runtime-credential-relay.js";
 
 const executeFile = promisify(execFile);
 const cleanups: (() => Promise<unknown>)[] = [];
@@ -24,9 +30,10 @@ function parent() {
   const controller = new AbortController();
   const close = vi.fn(async () => undefined);
   const child = { localHandleFor: () => "tree-local-handle", close };
-  const openContextTree = vi.fn(async () => child);
+  const openContextTree = vi.fn(async (_source: unknown, _signal?: AbortSignal, _mode?: string) => child);
   return {
     controller,
+    child,
     close,
     openContextTree,
     relay: { signal: controller.signal, openContextTree } as unknown as RuntimeCredentialRelay,
@@ -36,6 +43,36 @@ async function directory() {
   const root = await realpath(await mkdtemp(join(tmpdir(), "ot-tree-command-test-")));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   return root;
+}
+
+async function recoverCachedTree(
+  mode: string,
+  root: string,
+  workspace: string,
+  environment: Record<string, string | undefined>,
+  pack: ContextTreePackage,
+) {
+  if (mode === "cloud") {
+    return (
+      await prepareCloudContextTree(
+        {
+          workspace,
+          contextTrees: [source],
+          environment: environment as Record<string, string>,
+          path: environment.PATH ?? "",
+          scratch: root,
+        },
+        { contextTreePackage: pack },
+      )
+    ).status;
+  }
+  return new ContextTreeManager({
+    home: join(root, "host"),
+    environment,
+    contextTreePackage: pack,
+    managedCredentials: true,
+    sessionStartBudgetMs: 20_000,
+  }).ensureAgent(workspace, "pi", [source], environment);
 }
 
 describe("Context Tree command boundary", () => {
@@ -88,6 +125,73 @@ describe("Context Tree command boundary", () => {
     expect(gateway.relay).toBeUndefined();
     owner.controller.abort();
     await expect(gateway.run(["sync"])).rejects.toThrow("unavailable");
+  });
+
+  it("uses a credential-free environment for offline commands even when GitHub credentials exist", async () => {
+    const root = await directory();
+    const owner = parent();
+    Object.assign(owner.relay, { services: [{ service: "context-tree", scopes: ["context-tree:local"] }] });
+    const execute = vi.fn(
+      async (_args: readonly string[], environment: Readonly<Record<string, string | undefined>>) => {
+        expect(environment).toMatchObject({ HOME: root, GIT_ALLOW_PROTOCOL: "", GIT_CONFIG_NOSYSTEM: "1" });
+        for (const key of [
+          "GH_TOKEN",
+          "GITHUB_TOKEN",
+          "SSH_AUTH_SOCK",
+          "OPENTAG_PROVIDER_PROXY_URL",
+          "GIT_ASKPASS",
+          "GIT_CONFIG_PARAMETERS",
+        ]) {
+          expect(environment[key]).toBeUndefined();
+        }
+        return { code: 0, stdout: "{}", stderr: "" };
+      },
+    );
+    const gateway = new ContextTreeCommandGateway({
+      parent: owner.relay,
+      sources: [source],
+      workspace: root,
+      stateDirectory: join(root, "routing"),
+      environment: () => ({
+        HOME: root,
+        GH_TOKEN: "ambient",
+        GITHUB_TOKEN: "ambient",
+        SSH_AUTH_SOCK: "agent",
+        OPENTAG_PROVIDER_PROXY_URL: "proxy",
+        GIT_ASKPASS: "helper",
+        GIT_CONFIG_PARAMETERS: "unsafe",
+      }),
+      execute,
+    });
+    await gateway.run(["sync", "--offline"]);
+    expect(owner.openContextTree).toHaveBeenCalledWith(source, expect.any(AbortSignal), "local");
+    expect(owner.close).toHaveBeenCalledOnce();
+    await gateway.close();
+  });
+
+  it.each(["local", "cancelled-remote"])("does not turn %s rejection into cache permission", async (mode) => {
+    const root = await directory();
+    const owner = parent();
+    Object.assign(owner.relay, { services: [{ service: "context-tree", scopes: ["context-tree:local"] }] });
+    owner.openContextTree.mockImplementation(async () => {
+      if (mode === "cancelled-remote") owner.controller.abort();
+      throw new RuntimeCredentialRelayError("execution_rejected", "Execution unavailable");
+    });
+    const execute = vi.fn();
+    const gateway = new ContextTreeCommandGateway({
+      parent: owner.relay,
+      sources: [source],
+      workspace: root,
+      stateDirectory: join(root, "routing"),
+      environment: () => ({}),
+      execute,
+    });
+    await expect(gateway.run(mode === "local" ? ["sync", "--offline"] : ["sync"])).rejects.toThrow(
+      "Execution unavailable",
+    );
+    expect(execute).not.toHaveBeenCalled();
+    expect(owner.openContextTree).toHaveBeenCalledOnce();
+    await gateway.close();
   });
 
   it.each(["caller", "parent", "close"])(
@@ -152,9 +256,14 @@ describe("Context Tree command boundary", () => {
     expect(execute).toHaveBeenCalledOnce();
   });
 
-  it.each(["local", "cloud"])(
-    "runs real CLI sync and publication through the %s worker, including a later execution",
-    async (mode) => {
+  it.each([
+    { mode: "local", version: 1 },
+    { mode: "cloud", version: 1 },
+    { mode: "local", version: 2 },
+    { mode: "cloud", version: 2 },
+  ])(
+    "runs real CLI sync and publication through the $mode v$version worker, including a later execution",
+    async ({ mode, version }) => {
       const root = await directory();
       const pack = resolveContextTreePackage();
       if (!pack) throw new Error("Missing pinned CLI");
@@ -189,8 +298,13 @@ describe("Context Tree command boundary", () => {
       environment.PATH = `${bin}:${environment.PATH}`;
       const workspace = join(root, "workspace");
       await mkdir(workspace);
+      environment.HOME = join(workspace, ".opentag", "context-tree", "home");
+      await mkdir(environment.HOME, { recursive: true });
       await configureContextTrees(workspace, [source]);
       const owner = parent();
+      if (version === 2)
+        Object.assign(owner.relay, { services: [{ service: "context-tree", scopes: ["context-tree:local"] }] });
+      let localEnvironment: Readonly<Record<string, string | undefined>> | undefined;
       const makeGateway = () =>
         new ContextTreeCommandGateway({
           parent: owner.relay,
@@ -199,6 +313,7 @@ describe("Context Tree command boundary", () => {
           stateDirectory: join(root, "routing"),
           environment: () => environment,
           execute: async (args, privateEnvironment, signal) => {
+            if (privateEnvironment.GIT_ALLOW_PROTOCOL === "") localEnvironment = privateEnvironment;
             if (mode === "cloud") {
               const execution = executeFile(
                 process.execPath,
@@ -229,6 +344,30 @@ describe("Context Tree command boundary", () => {
       expect(prepared.code, prepared.stdout).toBe(0);
       await writeFile(join(session.treeRoot, "decision.md"), "---\ntitle: Decision\n---\nUse MCP for GitHub.\n");
       expect(await readFile(join(root, "routing", `${session.id}.json`), "utf8")).not.toContain("tree-local-handle");
+      if (version === 2) {
+        owner.openContextTree.mockImplementation(async (_source, _signal, childMode) => {
+          if (childMode === "remote")
+            throw new RuntimeCredentialRelayError(
+              "execution_rejected",
+              "GitHub unavailable",
+              "execution_authority_denied",
+            );
+          return owner.child;
+        });
+        const recoveryEnvironment = { ...environment, OPENTAG_CONTEXT_TREE_SOCKET: gateway.socketPath as string };
+        const recovered = await recoverCachedTree(mode, root, workspace, recoveryEnvironment, pack);
+        expect(recovered).toMatchObject({ status: "configured", connections: [{ status: "stale" }] });
+        const committed = await gateway.run(["write", "finish", session.id, "--message", "--publish"]);
+        expect(JSON.parse(committed.stdout).outcome).toBe("committed");
+        expect((await gateway.run(["write", "abort", session.id])).code).toBe(1);
+        expect(await readFile(join(root, "routing", `${session.id}.json`), "utf8")).toContain(session.id);
+        expect(localEnvironment?.GH_TOKEN).toBeUndefined();
+        await expect(
+          executeFile("/usr/bin/git", ["ls-remote", `file://${remote}`], { env: localEnvironment }),
+        ).rejects.toMatchObject({ stderr: expect.stringContaining("not allowed") });
+        expect(await git("--git-dir", remote, "show", "main:docs/decision.md").catch(() => "absent")).toBe("absent");
+      }
+      owner.openContextTree.mockImplementation(async () => owner.child);
       await gateway.close();
       const later = makeGateway();
       cleanups.push(() => later.close());
@@ -248,6 +387,11 @@ describe("Context Tree command boundary", () => {
         { env: providerEnvironment },
       );
       expect(JSON.parse(finished.stdout).outcome).toBe("published");
+      if (version === 2) {
+        const empty = JSON.parse((await later.run(["write", "prepare"])).stdout) as { id: string };
+        expect((await later.run(["write", "abort", empty.id])).code).toBe(0);
+        await expect(readFile(join(root, "routing", `${empty.id}.json`))).rejects.toMatchObject({ code: "ENOENT" });
+      }
       await later.close();
       await rm(manifest);
       await expect(
@@ -255,8 +399,8 @@ describe("Context Tree command boundary", () => {
       ).rejects.toMatchObject({ stderr: expect.stringContaining("Context Tree execution unavailable") });
       expect(await git("--git-dir", remote, "show", "main:docs/decision.md")).toContain("Use MCP for GitHub.");
       await expect(readFile(join(root, "routing", `${session.id}.json`))).rejects.toMatchObject({ code: "ENOENT" });
-      expect(owner.openContextTree).toHaveBeenCalledTimes(3);
-      expect(owner.close).toHaveBeenCalledTimes(3);
+      expect(owner.openContextTree).toHaveBeenCalledTimes(version === 2 ? 9 : 3);
+      expect(owner.close).toHaveBeenCalledTimes(version === 2 ? 8 : 3);
     },
     60_000,
   );

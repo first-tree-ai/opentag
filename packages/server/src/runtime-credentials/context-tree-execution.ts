@@ -12,7 +12,11 @@ export function contextTreeExecutionIsCurrent(
     !target ||
     execution.purpose !== "context-tree" ||
     parent?.purpose !== "execution" ||
-    !parent.services?.some((service) => service.service === "context-tree")
+    !parent.services?.some(
+      (service) =>
+        service.service === "context-tree" &&
+        service.scopes[0] === (target.mode ? "context-tree:local" : "context-tree:git"),
+    )
   )
     return false;
   const sameOwner = (

@@ -99,7 +99,7 @@ export async function openRuntimeSessionExecution(
     decision.validation,
     frame.source,
     internal,
-    frame.contextTree !== undefined,
+    frame.contextTree,
   );
   const services = frame.contextTree ? [] : await describeSessionServices(deps, frame, context, snapshot);
   /*
@@ -108,7 +108,7 @@ export async function openRuntimeSessionExecution(
    * message, and its Session CLI proof is the actual capability it needs. It still never receives
    * a provider binding — an internal child must not inherit the parent/visible IM credential.
    */
-  if (!hasOpenAuthority(candidates.length, services, internal)) {
+  if (!hasContextOpenAuthority(frame.contextTree, candidates.length, services, internal)) {
     return rejected("execution_authority_denied");
   }
   const record = openSessionRecord(deps, frame, context, snapshot, purpose, connectionId, services, internal);
@@ -121,7 +121,7 @@ export async function openRuntimeSessionExecution(
     return rejected("execution_authority_denied");
   }
   const providers = await describeSessionCandidates(deps, record, candidates);
-  if (!hasOpenAuthority(providers.size, services, internal)) {
+  if (!hasContextOpenAuthority(frame.contextTree, providers.size, services, internal)) {
     deps.executions.close(record.executionId, "execution_closed");
     return rejected("execution_authority_denied");
   }
@@ -277,6 +277,16 @@ function executionPurpose(frame: ExecutionOpenFrame, validation: boolean): Runti
   return validation ? "validation" : "execution";
 }
 
+function hasContextOpenAuthority(
+  contextTree: ExecutionOpenFrame["contextTree"],
+  providerCount: number,
+  services: readonly RuntimeExecutionService[],
+  internal: boolean,
+): boolean {
+  if (contextTree) return contextTree.mode === "local" || providerCount > 0;
+  return hasOpenAuthority(providerCount, services, internal);
+}
+
 function hasOpenAuthority(
   providerCount: number,
   services: readonly RuntimeExecutionService[],
@@ -291,7 +301,10 @@ function contextTreeCapabilityAllowed(
 ): boolean {
   return (
     !frame.contextTree ||
-    (!validation && context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.contextTreeExecution] === 1)
+    (!validation &&
+      (frame.contextTree.mode
+        ? context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.contextTreeExecution] === 2
+        : context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.contextTreeExecution] === 1))
   );
 }
 
@@ -302,7 +315,8 @@ const SERVICE_CAPABILITY: Record<RuntimeExecutionService["service"], string> = {
 };
 
 function negotiated(context: RuntimeBusinessContext, service: RuntimeExecutionService["service"]): boolean {
-  return context.negotiatedCapabilities?.[SERVICE_CAPABILITY[service]] === 1;
+  const version = context.negotiatedCapabilities?.[SERVICE_CAPABILITY[service]];
+  return version === 1 || (service === "context-tree" && version === 2);
 }
 
 /**
@@ -329,15 +343,19 @@ async function describeSessionServices(
     frame.services?.includes("context-tree") &&
     snapshot.contextTrees?.length
   ) {
-    const admission = await deps.gitHubAdmission
-      .admit({
-        accountId: snapshot.computer.ownerAccountId,
-        agentId: snapshot.agent.id,
-        sessionId: snapshot.sessionId,
-        source: frame.source,
-      })
-      .catch(() => undefined);
-    if (admission) services.push({ service: "context-tree", scopes: ["context-tree:git"] });
+    if (context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.contextTreeExecution] === 2) {
+      services.push({ service: "context-tree", scopes: ["context-tree:local"] });
+    } else {
+      const admission = await deps.gitHubAdmission
+        .admit({
+          accountId: snapshot.computer.ownerAccountId,
+          agentId: snapshot.agent.id,
+          sessionId: snapshot.sessionId,
+          source: frame.source,
+        })
+        .catch(() => undefined);
+      if (admission) services.push({ service: "context-tree", scopes: ["context-tree:git"] });
+    }
   }
   return services;
 }
@@ -410,14 +428,14 @@ async function candidateProviders(
   validation: { provider: CandidateProvider; bindingId: string } | undefined,
   source: RuntimeExecutionSource,
   internal: boolean,
-  contextTree: boolean,
+  contextTree: ExecutionOpenFrame["contextTree"],
 ): Promise<{ provider: CandidateProvider; bindingId: string }[]> {
   if (validation) return [{ provider: validation.provider, bindingId: validation.bindingId }];
   const candidates: { provider: CandidateProvider; bindingId: string }[] = [];
   if (!internal && !contextTree) {
     candidates.push({ provider: snapshot.binding.provider, bindingId: snapshot.binding.id });
   }
-  if (!contextTree) return candidates;
+  if (!contextTree || contextTree.mode === "local") return candidates;
   const admission = await deps.gitHubAdmission
     .admit({
       accountId: snapshot.computer.ownerAccountId,

@@ -4,7 +4,7 @@ import type { ContextTreeConnection } from "@opentag/shared";
 import {
   type ContextTreeExecFile,
   type ContextTreePackage,
-  hasManagedGitHubTransport,
+  hasManagedContextTreeTransport,
   resolveContextTreePackage,
   runContextTreeCli,
 } from "../runtime/context-tree.js";
@@ -60,7 +60,7 @@ async function prepare(
   internals: CloudContextTreeInternals,
 ): Promise<CloudContextTreePreparation> {
   const workspace = await realpath(resolve(input.workspace));
-  const authorized = hasManagedGitHubTransport(input.environment);
+  const authorized = hasManagedContextTreeTransport(input.environment);
   const project = await configureContextTrees(workspace, authorized ? input.contextTrees : []);
   if (!input.contextTrees.length) return { status: { status: "unconfigured" } };
   if (!authorized) return failedPreparation(input.contextTrees, "GITHUB_PERMISSION");

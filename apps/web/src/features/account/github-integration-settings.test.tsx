@@ -240,7 +240,7 @@ describe("GitHub account settings", () => {
     render(<GitHubIntegrationSettings />);
     fireEvent.click(await screen.findByRole("button", { name: "Disconnect account authorization" }));
     const dialog = await screen.findByRole("dialog", { name: "Disconnect GitHub account authorization?" });
-    expect(within(dialog).getByText(/Context Tree will lose access through @octocat/)).toBeTruthy();
+    expect(within(dialog).getByText(/Context Tree will no longer sync or publish through @octocat/)).toBeTruthy();
     expect(within(dialog).getByText(/You can revoke it in GitHub settings/)).toBeTruthy();
     expect(disconnect).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));

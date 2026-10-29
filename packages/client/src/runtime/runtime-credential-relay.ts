@@ -263,16 +263,23 @@ export class RuntimeCredentialRelay {
   async openContextTree(
     source: import("@opentag/shared").ContextTreeConnection,
     signal?: AbortSignal,
+    mode: "local" | "remote" = "remote",
   ): Promise<RuntimeCredentialRelay> {
     if (!this.#subject || this.#subject.contextTree || this.closed)
       throw new RuntimeCredentialRelayError("execution_rejected", "A live parent execution is required");
+    const localAccess = this.#services.some(
+      (service) => service.service === "context-tree" && service.scopes[0] === "context-tree:local",
+    );
+    if (mode === "local" && !localAccess) {
+      throw new RuntimeCredentialRelayError("unsupported_negotiation", "Local Context execution requires version 2");
+    }
     return RuntimeCredentialRelay.open(
       this.#options,
       {
         ...this.#subject,
         runId: randomUUID(),
         services: [],
-        contextTree: { ...source, parentExecutionId: this.executionId },
+        contextTree: { ...source, parentExecutionId: this.executionId, ...(localAccess ? { mode } : {}) },
       },
       AbortSignal.any([this.signal, ...(signal ? [signal] : [])]),
     );

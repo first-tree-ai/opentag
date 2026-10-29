@@ -1340,12 +1340,15 @@ describe("E4 Cloud IM delivery over the runner channel", () => {
       cloudDeliveryVersion: 1,
       sessionCollaborationVersion: 2,
       githubUserTaskVersion: 1,
+      contextTreeExecutionVersion: 2,
     });
     expect((await v2.waitFor("auth:result")).ok).toBe(true);
     expect(await v2.waitFor("server:welcome")).toMatchObject({
       sessionCollaborationVersion: 2,
       githubUserTaskVersion: 1,
+      contextTreeExecutionVersion: 2,
     });
+    expect(stack.fence.connectionForSandbox(sandbox.sandboxId)?.contextTreeExecutionVersion).toBe(2);
     expect(stack.fence.connectionForSandbox(sandbox.sandboxId)?.githubUserTaskVersion).toBe(1);
     expect(stack.fence.connectionForSandbox(sandbox.sandboxId)?.sessionCollaborationVersion).toBe(2);
     v2.socket.close();

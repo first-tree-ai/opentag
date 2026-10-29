@@ -360,7 +360,7 @@ describe("F6 cross-layer gating, page level", () => {
 
     expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
     expect(document.querySelector('[data-ui="readiness-list"]')).toBeNull();
-    expect(screen.getByRole("button", { name: /Your Slack workspace/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Slack/ })).toBeTruthy();
   });
 
   it("never lets an unselected Provider's later report regress an underway Messaging handoff", async () => {
@@ -384,7 +384,7 @@ describe("F6 cross-layer gating, page level", () => {
 
     // The handoff surface owns Messaging; CLI readiness rows left the page entirely.
     expect(document.querySelector('[data-ui="readiness-list"]')).toBeNull();
-    expect(screen.getByText("Connected. Checking your agent can be reached…")).toBeTruthy();
+    expect(screen.getByText("Authorization saved. Checking whether the Agent is ready…")).toBeTruthy();
     const messaging = document.querySelector('[data-ui="agent-setup-messaging"]') as HTMLElement | null;
     expect(messaging?.textContent).not.toMatch(/CLI|Installation required|Waiting for Computer/);
 
@@ -394,13 +394,13 @@ describe("F6 cross-layer gating, page level", () => {
     await advance(POLL_MS + 10);
     await settle();
     expect(document.querySelector('[data-ui="readiness-list"]')).toBeNull();
-    expect(screen.getByText("Connected. Checking your agent can be reached…")).toBeTruthy();
+    expect(screen.getByText("Authorization saved. Checking whether the Agent is ready…")).toBeTruthy();
 
     memory.controls.setImCliReadiness("feishu", "ready");
     await advance(POLL_MS + 10);
     await settle();
     expect(document.querySelector('[data-ui="readiness-list"]')).toBeNull();
-    expect(screen.getByText("Connected. Checking your agent can be reached…")).toBeTruthy();
+    expect(screen.getByText("Authorization saved. Checking whether the Agent is ready…")).toBeTruthy();
   });
 
   it("opens the Messaging gate for a ready Pi snapshot with the actual Pi labels", async () => {

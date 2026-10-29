@@ -31,6 +31,15 @@ export const designTokens = {
     inverse: "#ffffff",
     danger: "#b42318",
     dangerHover: "#88180f",
+    // Messaging-only visual direction; the application palette above is unchanged.
+    connectionAccent: "#00cbb4",
+    connectionAccentHover: "#00b69f",
+    connectionSurface: "#ffffff",
+    connectionForeground: "#25282d",
+    connectionSecondary: "#696c73",
+    connectionBorder: "#dfe2e6",
+    connectionHover: "#f4f5f7",
+    connectionOnAccent: "#25282d",
   },
   // Compatibility palette; light mode is the supported product theme.
   dark: {
@@ -61,6 +70,14 @@ export const designTokens = {
     inverse: "#ffffff",
     danger: "#b42318",
     dangerHover: "#88180f",
+    connectionAccent: "#00cbb4",
+    connectionAccentHover: "#00b69f",
+    connectionSurface: "#232127",
+    connectionForeground: "#f7f4fa",
+    connectionSecondary: "#d0cbd8",
+    connectionBorder: "#59545f",
+    connectionHover: "#33303a",
+    connectionOnAccent: "#181818",
   },
 } as const;
 

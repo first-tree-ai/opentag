@@ -20,18 +20,30 @@ is not used.
 
 ## Automatically create and connect your own App
 
-In Agent creation or Messaging settings, choose **Connect Slack**. The same dialog offers a command and code on an online Local Computer with a current Client. Cloud Agents open manual setup directly. Switching methods preserves the current ticket without issuing another one; leaving the manual form clears its credentials.
+In Agent creation or Messaging settings, choose **Connect Slack**. Agent setup presents the command/code form inline; Messaging settings keep the shared dialog. Both use an online Local Computer with a current Client. Cloud Agents open manual setup directly. Switching methods preserves the current ticket without issuing another one; leaving the manual form clears its credentials.
 
 On a supported Local Computer:
 
 The new App and Bot use the Agent's `name`, rather than its separate `displayName`, with existing Slack name validation
 and length limits. No random suffix is added, and this entry does not rename existing Apps.
 
-1. Copy the generated `/slackauthticket …` command into Slack in the target workspace, review the official CLI's
+1. Paste the generated `/slackauthticket …` command into any channel or DM message composer in the target Slack workspace and send it. Review the official CLI's
    management permissions, and confirm. Slack may be on another device; there is no localhost browser callback.
-2. Paste Slack's challenge code into openTag and select **Connect**.
+2. Copy the challenge code from the confirmation modal in Slack, paste it into openTag and select **Connect**.
 3. openTag creates and installs the fixed App manifest, saves the Bot Token and Signing Secret through existing
-   encrypted storage, and configures Events API and Interactivity. Send the Bot a DM to verify actual delivery.
+   encrypted storage, and configures Events API and Interactivity. Send the Bot a DM and confirm its reply to verify actual delivery.
+
+The UI distinguishes saved authorization, verified App identity and Agent readiness.
+An identity-only result does not display connected. The setup response does not prove
+that an outbound reply arrived; the message/reply check remains a user verification.
+The command instructions follow the [Slack CLI authorization guide](https://docs.slack.dev/tools/slack-cli/guides/authorizing-the-slack-cli/).
+
+Invalid or expired challenge codes share the Server's `authorization_failed` result;
+the UI describes those as possible causes and offers a fresh ticket through explicit
+Reauthorize. Slow requests remain single-flight. A network/gateway failure is an
+uncertain result, with explicit Retry preserving the current operation. `computer_unavailable`
+can also mean the existing runtime request timed out; it is not presented as proof
+that credentials were rejected. Manual setup remains available.
 
 The Computer prepares the official Slack CLI through existing Provider CLI installation when necessary. Web uses the
 current Account session and checks Agent ownership; it receives neither Slack credentials nor an Account Token for the

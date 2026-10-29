@@ -61,3 +61,13 @@ describe("a brand inside a finished Chinese sentence", () => {
     });
   });
 });
+
+// Keep the delivery instruction unchanged while routing its brand through the label helper.
+it.each([
+  ["en", "Open the Bot’s chat in Slack, send “Hello” and confirm its reply."],
+  ["zh", "在 Slack 中打开 Bot 私聊，发送“你好”并确认收到回复。"],
+] as const)("preserves the %s delivery instruction", (locale, expected) => {
+  withLocale(locale, () => {
+    expect(m.im_slack_delivery_check({ provider: messagingProviderLabel("slack") })).toBe(expected);
+  });
+});

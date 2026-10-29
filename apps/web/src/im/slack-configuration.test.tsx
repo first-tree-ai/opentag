@@ -82,11 +82,12 @@ describe("SlackConfiguration", () => {
     expect(screen.queryByLabelText("Signing Secret")).toBeNull();
   });
 
-  it("surfaces a completed OAuth callback without requiring a test message", async () => {
+  it("reports saved authorization without claiming a working message connection", async () => {
     const onSuccess = vi.fn();
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging?slack_oauth=success`);
     render(<Harness onSuccess={onSuccess} />);
-    expect(await screen.findByText("Slack connected.")).toBeTruthy();
+    expect(await screen.findByText("Authorization saved · verification pending")).toBeTruthy();
+    expect(screen.queryByText("Slack connected.")).toBeNull();
     expect(onSuccess).toHaveBeenCalledTimes(1);
     expect(window.location.search).not.toContain("slack_oauth");
   });

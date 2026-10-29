@@ -77,6 +77,68 @@ and typography as editing, with a quiet Edit action below the document on the ri
 Save changes in that position; no persistent edit hint or prominent header action is added. Success feedback
 briefly appears beside these actions, with its layout space retained when it disappears.
 
+Messaging setup uses a single 720px content column on a white canvas. A compact
+horizontal progress rail precedes the 24px main heading and secondary Agent name.
+The current step and primary actions use openTag teal `#00cbb4`, with dark action
+text. Provider choices share a two-column arrangement that stacks below 560px,
+with 14px names and 13px descriptions explaining each authorization method.
+
+State cards share provider identity, concise guidance and an action area. The
+176px Feishu QR sits beside the left-aligned title, instructions and status on
+wider screens and below them on phones. Cards use 16px insets, 12–14px content
+gaps and 32px desktop footer controls (at least 44px below 768px or for coarse
+pointers). Slack inline forms place cancellation beside their
+primary action in the bottom bar, with manual setup or Back on the left. Native
+form submission and disabled/busy behavior are preserved. Saved authorization exposes prerequisite-specific guidance and expandable
+application/permission details. Retry and permission update remain the primary
+recovery actions; destructive disconnection retains its confirmation.
+
+Authorization guidance names the next action in the provider, including Slack's
+message composer and returned challenge code. Inline Slack forms use the same
+shared controls, including keyboard submission, busy guards and accessible input
+descriptions. The inline editing exit exposes its visible Cancel label to assistive
+technology; the non-editing Close action retains its contextual name. Slow operations
+report waiting without inventing a progress percentage
+or a failure. A lost response allows an explicit retry of the same operation, never
+automatic replay. Known provider errors retain their specific recovery message.
+
+Slack reports connected only when App identity is verified and the Server reports
+an active, ready handoff. Saved authorization and identity-only verification remain
+pending states. Ready screens explain that these are connection/readiness checks;
+actual delivery still requires sending a message and confirming the Bot's reply.
+No outbound-message test endpoint or reply acknowledgement is added by this UI.
+Slack configuration reads combine query-lifecycle and deadline cancellation and
+forward it to fetch, so expired reads and reads with no remaining observers abort.
+The shared deadline helper links abort events and cleans up listeners when settled;
+it does not require newer signal-composition APIs than the build browser baseline.
+The last-good view and foreground readiness polling remain available; cancellation
+does not introduce automatic authorization writes.
+
+Feishu QR pixels disappear at their supplied expiry; the Server continues to own
+attempt state and permitted recovery actions. Expired attempts offer a new QR when
+the snapshot permits a retry. Messaging observation timeouts keep the last snapshot
+visible with an explicit stale-status notice that does not promise automatic checks
+for states without polling. Reduced-motion preferences disable
+the waiting pulse, and coarse pointers retain 44px button targets.
+
+Recovery prioritizes recognized provider error codes over generic blocker labels,
+then uses the reported blocker category. An unspecified or unrecognized cause is
+explicitly described as unavailable, with the original error code available in
+expandable diagnostics when present. A separate next-step explanation guides the
+user without inventing an underlying network or authorization diagnosis.
+
+Slack setup opts into an inline presentation here, sharing the page position and
+state-card composition with Feishu. Its existing authorization command, code,
+manual configuration, busy guards and post-save verification remain functional.
+Opening focuses the inline heading and closing restores focus to its entry. The
+flow keeps one stable mount across binding changes; other callers retain the
+original dialog presentation. Platform authorization protocols remain distinct.
+
+Completion uses the same content column, ready heading, provider status and
+next-use guidance. Its existing completion callbacks and pending/retry actions
+are unchanged. Creation, Computer preparation and other consumers retain their
+existing layout and navigation behavior.
+
 ## Website reference sources
 
 | Source | Responsibility |

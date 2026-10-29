@@ -648,7 +648,9 @@ it("keeps manual Slack verification open when settings refresh to a bound Agent"
   expect(document.querySelector('[data-ui="messaging-app-identity"]')).toBeTruthy();
   const dialog = await screen.findByRole("dialog", { name: "Connect Slack" });
   expect(
-    within(dialog).getByText("In Event Subscriptions, confirm Verified and select Save Changes, then send a message."),
+    within(dialog).getByText(
+      "In Event Subscriptions, confirm Verified and select Save Changes. Then open the Bot’s chat, send “Hello” and check for a reply.",
+    ),
   ).toBeTruthy();
   expect(within(dialog).getByRole("link", { name: "Open settings" })).toHaveProperty(
     "href",

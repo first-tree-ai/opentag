@@ -38,14 +38,24 @@ import { isTerminalResourceError } from "../features/resource/resource-state.js"
 import { useInAppShell } from "../features/shell/shell-context.js";
 import { formatDateTime, spaceScriptBoundary } from "../i18n/format.js";
 import { FeishuActivationWaiting } from "../im/feishu-activation-waiting.js";
-import { messagingProviderAlternateBrand, messagingProviderLabel } from "../im/provider-label.js";
+import { messagingProviderLabel } from "../im/provider-label.js";
 import { slackConfigurationMessage } from "../im/slack-configuration.js";
 import { SlackCustomApp, type SlackSetupApi } from "../im/slack-custom-app.js";
 import * as m from "../paraglide/messages.js";
 import { syncAgentQueries } from "../query/agent-sync.js";
 import { queryKeys } from "../query/keys.js";
 import { QrCode, WAITING_LINE } from "../setup/index.js";
-import { Banner, Button, Dialog, Icon, Loader, StatusIndicator, type StatusTone, Text } from "../ui/design-system.js";
+import {
+  Banner,
+  Button,
+  Collapsible,
+  Dialog,
+  Icon,
+  Loader,
+  StatusIndicator,
+  type StatusTone,
+  Text,
+} from "../ui/design-system.js";
 import { OpenTagLogo } from "../ui/opentag-logo.js";
 import { ProviderIcon } from "../ui/provider-icon.js";
 import { BrandMark } from "./brand-mark.js";
@@ -239,6 +249,9 @@ function providerTitle(provider: ImProvider): string {
 
 /* One recovery message per known Server code, then a per-Provider fallback. */
 const FEISHU_ACTION_ERRORS: Record<string, () => string> = {
+  FEISHU_SETUP_DENIED: () => m.im_feishu_authorization_declined({ provider: providerTitle("feishu") }),
+  FEISHU_APP_IDENTITY_MISMATCH: () => m.im_feishu_authorization_mismatch({ provider: providerTitle("feishu") }),
+  FEISHU_BOT_IDENTITY_MISMATCH: () => m.im_feishu_authorization_mismatch({ provider: providerTitle("feishu") }),
   FEISHU_SETUP_EXPIRED: () => m.im_feishu_authorization_expired(),
   FEISHU_SETUP_CANCELED: () => m.im_feishu_setup_canceled({ provider: providerTitle("feishu") }),
   FEISHU_SETUP_OWNER_RESTARTED: () => m.im_feishu_setup_interrupted({ provider: providerTitle("feishu") }),
@@ -268,7 +281,7 @@ function setupActionErrorMessage(action: AgentSetupAction, cause: unknown): stri
   const provider = "provider" in action ? action.provider : undefined;
   const code = cause instanceof ApiError ? cause.code : undefined;
   if (provider === "slack" && code) return spaceScriptBoundary(slackConfigurationMessage(code));
-  const known = code === undefined ? undefined : FEISHU_ACTION_ERRORS[code];
+  const known = code && Object.hasOwn(FEISHU_ACTION_ERRORS, code) ? FEISHU_ACTION_ERRORS[code] : undefined;
   if (known) return spaceScriptBoundary(known());
   return provider === "slack"
     ? spaceScriptBoundary(m.im_slack_authorization_failed({ provider: providerTitle("slack") }))
@@ -420,7 +433,11 @@ function useSnapshotReader(
       if (!lifecycle.isCurrent(ticket)) return false;
       // A timed-out automatic re-read must settle so polling and focus can continue; the last-good
       // snapshot stays until a later read or the bounded window offers Check again.
-      if (cause instanceof CancelledRequestError && phaseRef.current.kind === "ready") return false;
+      if (cause instanceof CancelledRequestError && phaseRef.current.kind === "ready") {
+        if (phaseRef.current.snapshot.stage === "needs-messaging")
+          setRefreshError(m.onboarding_v2_connection_status_timeout());
+        return false;
+      }
       failRead(cause);
       return false;
     }
@@ -995,10 +1012,13 @@ function AgentSetupSnapshotView({
     <>
       <StepRail steps={setupSteps(stage, awaitingPreparationContinue)} />
       {shouldShowSetupTitle(stage, awaitingPreparationContinue) ? (
-        <header className={SECTION_HEADER}>
-          <Text as="h1" ref={messagingHeadingRef} size="lg" tabIndex={-1} variant="heading">
-            {m.onboarding_v2_setup_title({ name: snapshot.agent.displayName })}
+        <header className={`${SECTION_HEADER} otv2-messaging-heading`}>
+          <Text as="h1" ref={messagingHeadingRef} headingSize="section" tabIndex={-1} variant="heading">
+            {snapshot.messaging.kind === "blocked"
+              ? m.onboarding_v2_messaging_recovery_title()
+              : m.onboarding_v2_messaging_title()}
           </Text>
+          <p className={HINT}>{m.onboarding_v2_setup_title({ name: snapshot.agent.displayName })}</p>
         </header>
       ) : null}
       {observationFailed ? (
@@ -1026,13 +1046,15 @@ function AgentSetupSnapshotView({
         <MessagingSetupSection
           controller={controller}
           oauthError={oauthError}
+          refreshAction={computerObservationFailed ? undefined : refreshAction}
           snapshot={snapshot}
           slackApi={slackApi}
         />
       ) : null}
       {stage === "ready" ? (
-        <div data-ui="agent-setup-ready">
+        <div className="otv2-messaging-settings" data-ui="agent-setup-ready">
           <DoneStep
+            presentation="settings"
             action={onOpenAgent ? { label: m.onboarding_v2_open_agent(), onClick: onOpenAgent } : undefined}
             completion={report}
             name={snapshot.agent.name}
@@ -1074,7 +1096,9 @@ function SetupStageNavigation({
   readonly showingPreparation: boolean;
   readonly snapshot: AgentSetupSnapshot;
 }) {
-  if (!showingPreparation) return computerObservationFailed ? null : refreshAction;
+  if (!showingPreparation) {
+    return computerObservationFailed || snapshot.messaging.kind === "waiting-handoff" ? null : refreshAction;
+  }
   const pollClass = snapshotPollClass(snapshot);
   const observingAutomatically = pollClass === "bounded" && !controller.pollExhausted;
   const genuineChecking = preparationShowsAutomaticChecking(snapshot);
@@ -1543,26 +1567,26 @@ function MessagingSetupSection({
   slackApi,
   controller,
   oauthError,
+  refreshAction,
   snapshot,
 }: {
   readonly slackApi?: SlackSetupApi;
   readonly controller: AgentSetupController;
   readonly oauthError?: string;
+  readonly refreshAction?: ReactNode;
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const { messaging } = snapshot;
-  const title =
-    messaging.kind === "blocked" ? m.onboarding_v2_messaging_recovery_title() : m.onboarding_v2_messaging_title();
+  const [slackOpen, setSlackOpen] = useState(false);
   return (
-    <section className={SECTION} data-state={messaging.kind} data-ui="agent-setup-messaging">
-      <header className={SECTION_HEADER}>
-        <Text as="h2" variant="heading">
-          {title}
-        </Text>
-      </header>
+    <section
+      className={`${SECTION} otv2-messaging-settings`}
+      data-state={messaging.kind}
+      data-slack-open={slackOpen || undefined}
+      data-ui="agent-setup-messaging"
+    >
       {oauthError ? <Banner variant="error" role="alert" description={oauthError} /> : null}
-      <MessagingConnections controller={controller} snapshot={snapshot} slackApi={slackApi} />
-      {messaging.kind === "authorizing" && messaging.provider === "feishu" ? (
+      {!slackOpen && messaging.kind === "authorizing" && messaging.provider === "feishu" ? (
         <FeishuAuthorizing
           busyKey={controller.busyKey}
           messaging={messaging}
@@ -1570,18 +1594,29 @@ function MessagingSetupSection({
           snapshot={snapshot}
         />
       ) : null}
-      {messaging.kind === "authorizing" && messaging.provider === "slack" ? (
+      {!slackOpen && messaging.kind === "authorizing" && messaging.provider === "slack" ? (
         <SlackAuthorizing messaging={messaging} />
       ) : null}
-      {messaging.kind === "waiting-handoff" ? (
-        <MessagingHandoff controller={controller} messaging={messaging} snapshot={snapshot} />
+      {!slackOpen && messaging.kind === "waiting-handoff" ? (
+        <MessagingHandoff
+          controller={controller}
+          messaging={messaging}
+          snapshot={snapshot}
+          refreshAction={refreshAction}
+        />
       ) : null}
-      {messaging.kind === "blocked" ? (
+      {!slackOpen && messaging.kind === "blocked" ? (
         <BlockedMessaging controller={controller} messaging={messaging} snapshot={snapshot} />
       ) : null}
       {controller.actionError && messaging.kind !== "blocked" && messaging.kind !== "waiting-handoff" ? (
         <Banner variant="error" role="alert" description={controller.actionError} />
       ) : null}
+      <MessagingConnections
+        controller={controller}
+        snapshot={snapshot}
+        slackApi={slackApi}
+        onSetupOpenChange={setSlackOpen}
+      />
     </section>
   );
 }
@@ -1595,11 +1630,13 @@ function setupExitLabel(snapshot: AgentSetupSnapshot | undefined): string {
 /** Custom App setup remains available independently of the official OAuth actions. */
 function SlackSetupConfiguration({
   slackApi,
+  onSetupOpenChange,
   controller,
   snapshot,
   renderTrigger,
 }: {
   slackApi?: SlackSetupApi;
+  onSetupOpenChange?: (open: boolean) => void;
   controller: AgentSetupController;
   snapshot: AgentSetupSnapshot;
   renderTrigger?: ComponentProps<typeof SlackCustomApp>["renderTrigger"];
@@ -1612,6 +1649,8 @@ function SlackSetupConfiguration({
   );
   return (
     <SlackCustomApp
+      presentation="inline"
+      onOpenChange={onSetupOpenChange}
       api={slackApi}
       agentId={snapshot.agent.id}
       bindingId={"bindingId" in messaging ? messaging.bindingId : undefined}
@@ -1627,10 +1666,12 @@ function SlackSetupConfiguration({
 function MessagingConnections({
   controller,
   slackApi,
+  onSetupOpenChange,
   snapshot,
 }: {
   readonly controller: AgentSetupController;
   readonly slackApi?: SlackSetupApi;
+  onSetupOpenChange?: (open: boolean) => void;
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const starting = useRef(false);
@@ -1655,10 +1696,13 @@ function MessagingConnections({
       {choosing ? <p className={HINT}>{m.onboarding_v2_messaging_description()}</p> : null}
       <ul
         className={choosing && startActions.length ? CHOICE_GRID : "m-0 flex list-none flex-wrap gap-3 p-0"}
-        data-ui={choosing && startActions.length ? "agent-setup-messaging-choices" : undefined}
+        data-ui={
+          choosing && startActions.length ? "agent-setup-messaging-choices" : "agent-setup-messaging-configuration"
+        }
       >
         <li key="slack">
           <SlackSetupConfiguration
+            onSetupOpenChange={onSetupOpenChange}
             controller={controller}
             snapshot={snapshot}
             slackApi={slackApi}
@@ -1706,13 +1750,28 @@ function MessagingChoiceCopy({ provider }: { provider: "slack" | "feishu" }) {
       <CardCopy
         description={
           provider === "feishu"
-            ? m.onboarding_v2_messaging_feishu_description({ provider: messagingProviderAlternateBrand() })
-            : m.onboarding_v2_messaging_provider_description({ provider: providerTitle(provider) })
+            ? m.onboarding_v2_connection_method_feishu({ provider: messagingProviderLabel("feishu") })
+            : m.onboarding_v2_connection_method_slack({ provider: messagingProviderLabel("slack") })
         }
         title={providerTitle(provider)}
       />
+      <Icon name="chevron-right" className="otv2-messaging-settings__chevron" aria-hidden="true" />
     </>
   );
+}
+
+/** Hide unusable QR pixels locally; only the Server may end or replace the attempt. */
+function useQrValidity(expiresAt: string): boolean {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const current = Date.now();
+    setNow(current);
+    const remaining = Date.parse(expiresAt) - current;
+    if (!Number.isFinite(remaining) || remaining <= 0) return;
+    const timer = window.setTimeout(() => setNow(Date.now()), Math.min(remaining, 2_147_483_647));
+    return () => window.clearTimeout(timer);
+  }, [expiresAt]);
+  return Date.parse(expiresAt) > now;
 }
 
 function FeishuAuthorizing({
@@ -1726,6 +1785,7 @@ function FeishuAuthorizing({
   readonly onAct: (action: AgentSetupAction) => Promise<boolean>;
   readonly snapshot: AgentSetupSnapshot;
 }) {
+  const qrValid = useQrValidity(messaging.expiresAt);
   const cancel = snapshot.actions.find(
     (action): action is Extract<AgentSetupAction, { kind: "cancel-messaging-attempt" }> =>
       action.kind === "cancel-messaging-attempt" && action.attemptId === messaging.attemptId,
@@ -1734,6 +1794,7 @@ function FeishuAuthorizing({
     const check = snapshot.actions.find((action) => action.kind === "refresh");
     return (
       <FeishuActivationWaiting
+        presentation="settings"
         activation={messaging.activation}
         expiresAt={messaging.expiresAt}
         disabled={busyKey !== undefined}
@@ -1744,18 +1805,34 @@ function FeishuAuthorizing({
     );
   }
   return (
-    <>
-      <p className={WAITING_LINE} role="status">
-        <span aria-hidden="true" className="ots-pulse shrink-0" />
-        {m.onboarding_v2_messaging_waiting()}
-      </p>
-      <p className={HINT}>
-        {spaceScriptBoundary(m.onboarding_v2_messaging_lark_intro({ provider: providerTitle("feishu") }))}
-      </p>
-      {messaging.qrUrl ? <QrCode value={messaging.qrUrl} /> : null}
-      <p className={HINT}>{m.im_feishu_qr_expires({ date: formatDateTime(messaging.expiresAt) })}</p>
-      {cancel ? (
-        <div>
+    <div className="otv2-connection-card otv2-connection-scan">
+      <div className="otv2-connection-card__body">
+        <div className="otv2-connection-card__identity">
+          <Text as="h2" variant="heading" size="lg">
+            <ProviderIcon className="size-6" provider="feishu" />
+            <strong>{spaceScriptBoundary(m.im_connect_feishu({ provider: providerTitle("feishu") }))}</strong>
+          </Text>
+        </div>
+        <p className={HINT}>
+          {spaceScriptBoundary(m.onboarding_v2_messaging_lark_intro({ provider: providerTitle("feishu") }))}
+        </p>
+        <p className={WAITING_LINE} role="status">
+          <span aria-hidden="true" className={qrValid ? "ots-pulse shrink-0" : "hidden"} />
+          {!qrValid
+            ? m.onboarding_v2_connection_qr_elapsed()
+            : messaging.qrUrl
+              ? m.onboarding_v2_messaging_waiting()
+              : m.onboarding_v2_connection_qr_loading()}
+        </p>
+        <div className="otv2-connection-scan__content">
+          {qrValid && messaging.qrUrl ? <QrCode value={messaging.qrUrl} /> : null}
+        </div>
+      </div>
+      <div className="otv2-connection-card__footer">
+        <p className="otv2-connection-card__metadata">
+          {qrValid ? m.im_feishu_qr_expires({ date: formatDateTime(messaging.expiresAt) }) : m.im_feishu_qr_expired()}
+        </p>
+        {cancel ? (
           <Button
             disabled={busyKey !== undefined}
             loading={busyKey?.kind === "cancel-messaging-attempt"}
@@ -1764,9 +1841,9 @@ function FeishuAuthorizing({
           >
             {m.common_cancel()}
           </Button>
-        </div>
-      ) : null}
-    </>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -1776,15 +1853,23 @@ function SlackAuthorizing({
   readonly messaging: Extract<AgentSetupSnapshot["messaging"], { kind: "authorizing"; provider: "slack" }>;
 }) {
   return (
-    <>
-      <p className={WAITING_LINE} role="status">
-        <span aria-hidden="true" className="ots-pulse shrink-0" />
-        {spaceScriptBoundary(m.onboarding_v2_messaging_slack_waiting({ provider: providerTitle("slack") }))}
-      </p>
-      <p className={HINT}>
-        {m.onboarding_v2_setup_slack_install_expires({ date: formatDateTime(messaging.expiresAt) })}
-      </p>
-    </>
+    <div className="otv2-connection-card">
+      <div className="otv2-connection-card__body">
+        <span className="otv2-connection-card__provider">
+          <ProviderIcon className="size-6" provider="slack" />
+          <strong>{providerTitle("slack")}</strong>
+        </span>
+        <p className={WAITING_LINE} role="status">
+          <span aria-hidden="true" className="ots-pulse shrink-0" />
+          {spaceScriptBoundary(m.onboarding_v2_messaging_slack_waiting({ provider: providerTitle("slack") }))}
+        </p>
+      </div>
+      <div className="otv2-connection-card__footer">
+        <p className="otv2-connection-card__metadata">
+          {m.onboarding_v2_setup_slack_install_expires({ date: formatDateTime(messaging.expiresAt) })}
+        </p>
+      </div>
+    </div>
   );
 }
 
@@ -1805,10 +1890,12 @@ function MessagingHandoff({
   controller,
   messaging,
   snapshot,
+  refreshAction,
 }: {
   readonly controller: AgentSetupController;
   readonly messaging: Extract<AgentSetupSnapshot["messaging"], { kind: "waiting-handoff" }>;
   readonly snapshot: AgentSetupSnapshot;
+  readonly refreshAction?: ReactNode;
 }) {
   const [unbindAsked, setUnbindAsked] = useState(false);
   const unbindButtonRef = useRef<HTMLButtonElement>(null);
@@ -1819,29 +1906,46 @@ function MessagingHandoff({
       action.bindingId === messaging.bindingId,
   );
   return (
-    <>
-      <p className={WAITING_LINE} role="status">
-        <span aria-hidden="true" className="ots-pulse shrink-0" />
-        {m.onboarding_v2_messaging_confirming()}
-      </p>
-      {messaging.progress ? (
-        <p className={HINT}>{messagingHandoffCopy(messaging.progress, messaging.provider)}</p>
-      ) : null}
-      {!messaging.progress && messaging.provider === "slack" ? (
-        <p className={HINT}>
-          {m.onboarding_v2_messaging_slack_observe({ provider: providerTitle(messaging.provider) })}
+    <div className="otv2-connection-card">
+      <div className="otv2-connection-card__body">
+        <span className="otv2-connection-card__provider">
+          <ProviderIcon className="size-6" provider={messaging.provider} />
+          <strong>{providerTitle(messaging.provider)}</strong>
+        </span>
+        <p className={WAITING_LINE} role="status">
+          <span aria-hidden="true" className="ots-pulse shrink-0" />
+          {m.onboarding_v2_messaging_confirming()}
         </p>
-      ) : null}
-      {unbind ? (
-        <div className="otv2-destructive-action" data-ui="agent-setup-messaging-destructive-action">
-          <Button
-            disabled={controller.busyKey !== undefined}
-            onClick={() => setUnbindAsked(true)}
-            ref={unbindButtonRef}
-            variant="secondary-destructive"
-          >
-            {m.im_disconnect({ providerName: providerTitle(unbind.provider) })}
-          </Button>
+        {messaging.progress ? (
+          <p className={HINT}>{messagingHandoffCopy(messaging.progress, messaging.provider)}</p>
+        ) : null}
+        {messaging.provider === "feishu" ? (
+          <p className={HINT}>
+            {m.onboarding_v2_connection_feishu_test({ provider: messagingProviderLabel("feishu") })}
+          </p>
+        ) : null}
+        {!messaging.progress && messaging.provider === "slack" ? (
+          <p className={HINT}>
+            {m.onboarding_v2_messaging_slack_observe({ provider: providerTitle(messaging.provider) })}
+          </p>
+        ) : null}
+      </div>
+      {unbind || refreshAction ? (
+        <div className="otv2-connection-card__footer">
+          {unbind ? (
+            <div data-ui="agent-setup-messaging-destructive-action">
+              <Button
+                className="otv2-connection-disconnect"
+                disabled={controller.busyKey !== undefined}
+                onClick={() => setUnbindAsked(true)}
+                ref={unbindButtonRef}
+                variant="secondary-destructive"
+              >
+                {m.im_disconnect({ providerName: providerTitle(unbind.provider) })}
+              </Button>
+            </div>
+          ) : null}
+          {refreshAction}
         </div>
       ) : null}
       {controller.actionError && !unbindAsked ? (
@@ -1857,22 +1961,47 @@ function MessagingHandoff({
           returnFocusRef={unbindButtonRef}
         />
       ) : null}
-    </>
+    </div>
   );
 }
 
 function blockedMessagingCopy(messaging: Extract<AgentSetupSnapshot["messaging"], { kind: "blocked" }>): string {
   const provider = providerTitle(messaging.provider);
-  if (messaging.code === "reauthorization-required") {
+  if (messaging.errorCode) {
+    const known =
+      messaging.provider === "feishu" && Object.hasOwn(FEISHU_ACTION_ERRORS, messaging.errorCode)
+        ? FEISHU_ACTION_ERRORS[messaging.errorCode]
+        : undefined;
+    if (known) return known();
+    if (
+      messaging.provider === "slack" &&
+      [
+        "AGENT_COMPUTER_NOT_BOUND",
+        "SLACK_CONFIGURATION_CONFLICT",
+        "SLACK_CREDENTIALS_UNAVAILABLE",
+        "SLACK_SCOPE_REAUTH_REQUIRED",
+        "SLACK_TOKEN_REVOKED",
+        "SLACK_UPSTREAM_UNAVAILABLE",
+        "SLACK_APP_TEAM_ALREADY_BOUND",
+      ].includes(messaging.errorCode)
+    )
+      return slackConfigurationMessage(messaging.errorCode);
+  }
+  if (messaging.code === "reauthorization-required")
     return m.onboarding_v2_setup_messaging_reauth_required({ provider });
-  }
-  if (messaging.code === "provider-error") return m.onboarding_v2_setup_messaging_provider_error({ provider });
   if (messaging.code === "unbind-required") return m.onboarding_v2_setup_messaging_unbind_required({ provider });
-  if (messaging.provider === "feishu" && messaging.credentialGeneration === 0) {
-    const known = messaging.errorCode ? FEISHU_ACTION_ERRORS[messaging.errorCode] : undefined;
-    return known ? known() : m.im_feishu_authorization_failed({ provider });
+  return m.onboarding_v2_connection_failure_unknown();
+}
+
+function messagingRepairAdvice(messaging: Extract<AgentSetupSnapshot["messaging"], { kind: "blocked" }>): string {
+  const code = messaging.errorCode ?? "";
+  if (code.includes("UPSTREAM_UNAVAILABLE")) return m.onboarding_v2_connection_repair_service();
+  if (code.includes("EXPIRED") || code === "FEISHU_SETUP_CANCELED") return m.onboarding_v2_connection_repair_new_code();
+  if (code.includes("ALREADY_BOUND")) return m.onboarding_v2_connection_repair_other_bot();
+  if (code.includes("SCOPE") || code === "SLACK_TOKEN_REVOKED" || messaging.code === "reauthorization-required") {
+    return m.onboarding_v2_connection_repair_permissions();
   }
-  return m.onboarding_v2_setup_messaging_auth_failed({ provider });
+  return m.onboarding_v2_connection_repair_authorize();
 }
 
 function currentBindingOf(
@@ -1885,6 +2014,25 @@ function currentBindingOf(
     return { provider: messaging.provider, bindingId: messaging.bindingId };
   }
   return undefined;
+}
+
+function MessagingDiagnostics({ errorCode }: { errorCode: string | null | undefined }) {
+  if (!errorCode) return null;
+  return (
+    <Collapsible.Root className="otv2-connection-diagnostics">
+      <Collapsible.Trigger render={<Button variant="ghost" size="compact" />}>
+        {m.onboarding_v2_connection_diagnostics()}
+        <Icon name="chevron-down" aria-hidden="true" />
+      </Collapsible.Trigger>
+      <Collapsible.Panel>
+        <code>{m.onboarding_v2_connection_error_code({ code: errorCode })}</code>
+      </Collapsible.Panel>
+    </Collapsible.Root>
+  );
+}
+
+function isFeishuStartAction(action: AgentSetupAction): boolean {
+  return action.kind === "start-messaging" && action.provider === "feishu";
 }
 
 function BlockedMessaging({
@@ -1922,59 +2070,72 @@ function BlockedMessaging({
       action.provider === binding.provider &&
       action.bindingId === binding.bindingId,
   );
+  const hasActions = [unbind, replace, reauthorize, snapshot.actions.find(isFeishuStartAction)].some(Boolean);
   const busy = controller.busyKey !== undefined;
   return (
     <div className="otv2-messaging-recovery" data-ui="agent-setup-messaging-recovery">
-      <div className="otv2-messaging-recovery__identity" data-ui="agent-setup-messaging-identity">
-        <ProviderIcon className="size-6" provider={messaging.provider} />
-        <strong className="min-w-0 text-base font-semibold text-kumo-strong">
-          {providerTitle(messaging.provider)}
-        </strong>
-        <StatusIndicator label={m.onboarding_v2_setup_messaging_needs_attention()} tone="warning" />
-      </div>
-      <p className={HINT}>{blockedMessagingCopy(messaging)}</p>
-      <RetryInitialAuthorization controller={controller} snapshot={snapshot} />
-      {switchBlocker ? (
-        <p className={HINT}>
-          {m.onboarding_v2_setup_messaging_switch_required({
-            current: providerTitle(switchBlocker.currentProvider),
-            requested: providerTitle(switchBlocker.requestedProvider),
-          })}
-        </p>
-      ) : null}
-      {reauthorize || replace ? (
-        <div className="otv2-messaging-recovery__actions" data-ui="agent-setup-messaging-recovery-actions">
-          {reauthorize ? (
-            <Button
-              disabled={busy}
-              loading={controller.busyKey?.kind === "reauthorize-messaging"}
-              onClick={() => void controller.act(reauthorize)}
-            >
-              {messaging.code === "reauthorization-required" ? m.im_update_permissions() : m.im_reconnect()}
-            </Button>
-          ) : null}
-          {replace ? (
-            <Button
-              disabled={busy}
-              loading={controller.busyKey?.kind === "replace-messaging"}
-              onClick={() => void controller.act(replace)}
-              variant="secondary"
-            >
-              {m.im_change_bot()}
-            </Button>
-          ) : null}
+      <div className="otv2-messaging-recovery__summary">
+        <div className="otv2-messaging-recovery__identity" data-ui="agent-setup-messaging-identity">
+          <span className="otv2-messaging-recovery__provider">
+            <ProviderIcon className="size-6" provider={messaging.provider} />
+            <strong>{providerTitle(messaging.provider)}</strong>
+          </span>
+          <StatusIndicator label={m.onboarding_v2_setup_messaging_needs_attention()} tone="warning" />
         </div>
-      ) : null}
-      {unbind ? (
-        <div className="otv2-destructive-action" data-ui="agent-setup-messaging-destructive-action">
-          <Button
-            disabled={busy}
-            onClick={() => setUnbindAsked(true)}
-            ref={unbindButtonRef}
-            variant="secondary-destructive"
-          >
-            {m.im_disconnect({ providerName: providerTitle(unbind.provider) })}
-          </Button>
+        <div className="otv2-connection-failure" role="alert">
+          <strong>{m.onboarding_v2_connection_failure_heading()}</strong>
+          <p>{blockedMessagingCopy(messaging)}</p>
+        </div>
+        <div className="otv2-connection-advice">
+          <strong>{m.onboarding_v2_connection_next_step()}</strong>
+          <p>{messagingRepairAdvice(messaging)}</p>
+        </div>
+        <MessagingDiagnostics errorCode={messaging.errorCode} />
+        {switchBlocker ? (
+          <p className={HINT}>
+            {m.onboarding_v2_setup_messaging_switch_required({
+              current: providerTitle(switchBlocker.currentProvider),
+              requested: providerTitle(switchBlocker.requestedProvider),
+            })}
+          </p>
+        ) : null}
+      </div>
+      {hasActions ? (
+        <div className="otv2-messaging-recovery__footer">
+          {unbind ? (
+            <div className="otv2-destructive-action" data-ui="agent-setup-messaging-destructive-action">
+              <Button
+                disabled={busy}
+                onClick={() => setUnbindAsked(true)}
+                ref={unbindButtonRef}
+                variant="secondary-destructive"
+              >
+                {m.im_disconnect({ providerName: providerTitle(unbind.provider) })}
+              </Button>
+            </div>
+          ) : null}
+          <div className="otv2-messaging-recovery__actions" data-ui="agent-setup-messaging-recovery-actions">
+            {replace ? (
+              <Button
+                disabled={busy}
+                loading={controller.busyKey?.kind === "replace-messaging"}
+                onClick={() => void controller.act(replace)}
+                variant="secondary"
+              >
+                {m.im_change_bot()}
+              </Button>
+            ) : null}
+            <RetryInitialAuthorization controller={controller} snapshot={snapshot} />
+            {reauthorize ? (
+              <Button
+                disabled={busy}
+                loading={controller.busyKey?.kind === "reauthorize-messaging"}
+                onClick={() => void controller.act(reauthorize)}
+              >
+                {messaging.code === "reauthorization-required" ? m.im_update_permissions() : m.im_reconnect()}
+              </Button>
+            ) : null}
+          </div>
         </div>
       ) : null}
       {controller.actionError && !unbindAsked ? (
@@ -2009,7 +2170,9 @@ function RetryInitialAuthorization({
       loading={controller.busyKey?.kind === "start-messaging"}
       onClick={() => void controller.act(retry)}
     >
-      {m.im_feishu_retry_setup({ provider: providerTitle("feishu") })}
+      {snapshot.messaging.kind === "blocked" && snapshot.messaging.errorCode === "FEISHU_SETUP_EXPIRED"
+        ? m.onboarding_v2_connection_qr_new()
+        : m.im_feishu_retry_setup({ provider: providerTitle("feishu") })}
     </Button>
   );
 }

@@ -83,7 +83,7 @@ it("starts the post-write read after an authorization write instead of adopting 
   expect(post).toHaveBeenCalledTimes(1);
   // The read that follows the write is its own request, begun after the write — not the pre-write GET.
   expect(get).toHaveBeenCalledTimes(3);
-  expect(screen.queryByText("Waiting for you to scan…")).not.toBeNull();
+  expect(screen.queryByText("Waiting for scan and authorization…")).not.toBeNull();
 
   // The retired pre-write answer lands late and must not bury the authorizing snapshot or the beat.
   preWrite.resolve(before);
@@ -91,7 +91,7 @@ it("starts the post-write read after an authorization write instead of adopting 
   await act(async () => {
     await vi.advanceTimersByTimeAsync(SETUP_POLL_MS * 3);
   });
-  expect(screen.queryByText("Waiting for you to scan…")).not.toBeNull();
+  expect(screen.queryByText("Waiting for scan and authorization…")).not.toBeNull();
   expect(get.mock.calls.length).toBeGreaterThan(3);
 });
 
@@ -118,7 +118,7 @@ it("starts the post-write read after a cancel instead of republishing the pre-wr
     </>,
   );
   await settle();
-  expect(screen.getByText("Waiting for you to scan…")).toBeTruthy();
+  expect(screen.getByText("Waiting for scan and authorization…")).toBeTruthy();
 
   // The 2s beat starts a slow snapshot GET that is still in flight when the cancel lands.
   await act(async () => {
@@ -130,12 +130,12 @@ it("starts the post-write read after a cancel instead of republishing the pre-wr
   await settle();
   expect(cancel).toHaveBeenCalledTimes(1);
   expect(get).toHaveBeenCalledTimes(3);
-  expect(screen.queryByText("Waiting for you to scan…")).toBeNull();
+  expect(screen.queryByText("Waiting for scan and authorization…")).toBeNull();
 
   // The retired pre-cancel answer must not bring the QR back once it lands.
   preWrite.resolve(authorizing);
   await settle();
-  expect(screen.queryByText("Waiting for you to scan…")).toBeNull();
+  expect(screen.queryByText("Waiting for scan and authorization…")).toBeNull();
 });
 
 it("shares one in-flight read within an operation and retires it at the write boundary", async () => {

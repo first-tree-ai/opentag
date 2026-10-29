@@ -85,11 +85,11 @@ describe("AgentSetupPage for a Cloud-bound Agent", () => {
     await settle();
     fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
     await settle(10);
-    expect(screen.getByText("Waiting for you to scan…")).toBeTruthy();
+    expect(screen.getByText("Waiting for scan and authorization…")).toBeTruthy();
 
     memory.controls.scanFeishuCode();
     await advance(SETUP_POLL_MS + 10);
-    expect(screen.getByText("Connected. Checking your agent can be reached…")).toBeTruthy();
+    expect(screen.getByText("Authorization saved. Checking whether the Agent is ready…")).toBeTruthy();
 
     memory.controls.completeHandoff();
     await advance(SETUP_POLL_MS + 10);
@@ -126,11 +126,15 @@ describe("AgentSetupPage for a Cloud-bound Agent", () => {
     await settle();
     fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
     await settle(10);
-    expect(screen.getByText("Waiting for you to scan…")).toBeTruthy();
+    expect(screen.getByText("Waiting for scan and authorization…")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     await settle();
-    expect(screen.getByText("Couldn’t connect Lark. Try scanning a new QR code.")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "The server did not provide a specific cause. Retry the connection; if this persists, ask an administrator to investigate.",
+      ),
+    ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry Lark setup" })).toBeTruthy();
   });
 });

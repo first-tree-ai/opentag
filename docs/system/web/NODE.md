@@ -11,6 +11,9 @@ application behavior together.
 
 ## Pages
 
+- **[Bot connection preview](bot-connection-preview.md)** — isolated local playground
+  for the last Agent setup step, with production components and simulated connections.
+
 - **[openTag design guide](design.md)** — shared visual rules and website
   references, with application implementation ownership made explicit.
 

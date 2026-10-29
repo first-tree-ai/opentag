@@ -41,14 +41,14 @@ it("offers a custom Slack App in the creation guide even without OAuth setup act
       expect(screen.getByRole("button", { name: "Connect Slack" })).not.toHaveProperty("disabled", true),
     );
     fireEvent.click(screen.getByRole("button", { name: "Connect Slack" }));
-    expect(await screen.findByRole("dialog", { name: "Connect Slack" })).toBeTruthy();
+    expect(await screen.findByRole("region", { name: "Connect Slack" })).toBeTruthy();
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Manual setup" })).not.toHaveProperty("disabled", true),
     );
     fireEvent.click(screen.getByRole("button", { name: "Manual setup" }));
     expect(await screen.findByRole("link", { name: "Create App" })).toBeTruthy();
     expect(screen.getByLabelText("Signing Secret")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Close Connect Slack" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     fireEvent.click(screen.getByRole("button", { name: "Set up later" }));
     expect(openAgent).toHaveBeenCalledTimes(1);
     expect(oauth).not.toHaveBeenCalled();

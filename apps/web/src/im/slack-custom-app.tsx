@@ -7,7 +7,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { type FormEvent, type ReactNode, type RefObject, useCallback, useEffect, useId, useRef, useState } from "react";
-import { ApiError, browserApi } from "../api.js";
+import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, browserApi, withDeadline } from "../api.js";
 import { isHandoffChecking } from "../features/agents/agent-model.js";
 import { agentDetailLink } from "../features/agents/agent-routes.js";
 import { spaceScriptBoundary } from "../i18n/format.js";
@@ -21,6 +21,7 @@ import {
   DropdownMenu,
   Input,
   InputArea,
+  Text,
 } from "../ui/design-system.js";
 import { ProviderIcon } from "../ui/provider-icon.js";
 import { messagingProviderLabel } from "./provider-label.js";
@@ -40,6 +41,8 @@ export type SlackSetupApi = {
 };
 
 interface Props {
+  presentation?: "dialog" | "inline";
+  onOpenChange?: (open: boolean) => void;
   api?: SlackSetupApi;
   agentId: string;
   bindingId?: string;
@@ -59,6 +62,8 @@ export function SlackCustomApp(props: Props) {
 }
 
 function SlackCustomAppFlow({
+  presentation = "dialog",
+  onOpenChange,
   api = browserApi,
   agentId,
   bindingId,
@@ -77,6 +82,12 @@ function SlackCustomAppFlow({
   const saving = useRef(false);
   const mounted = useRef(true);
   const trigger = useRef<HTMLButtonElement>(null);
+  const wasOpen = useRef(false);
+  useEffect(() => {
+    onOpenChange?.(open);
+    if (presentation === "inline" && wasOpen.current && !open) trigger.current?.focus();
+    wasOpen.current = open;
+  }, [open, onOpenChange, presentation]);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -85,11 +96,12 @@ function SlackCustomAppFlow({
   }, []);
   const configuration = useQuery({
     queryKey: ["slack-configuration", agentId, bindingId],
-    queryFn: () => api.slackConfiguration(agentId),
+    queryFn: ({ signal: querySignal }) =>
+      withDeadline(AGENT_SETUP_READ_TIMEOUT_MS, (signal) => api.slackConfiguration(agentId, signal), querySignal),
     // A new binding key must not remove the open post-save verification dialog.
     placeholderData: (previous) => previous,
     retry: false,
-    refetchInterval: (query) => (open && !editing && query.state.data?.handoff?.handoffReady === false ? 2_000 : false),
+    refetchInterval: (query) => (open && !editing && !slackSetupReady(query.state.data) ? 2_000 : false),
     refetchIntervalInBackground: false,
   });
   const view = configuration.data;
@@ -160,20 +172,22 @@ function SlackCustomAppFlow({
   const officialRecovery = view?.preferredRecovery === "oauth" ? onOAuth : undefined;
   return (
     <>
-      <SlackConfigurationEntry
-        view={view}
-        bindingId={bindingId}
-        busy={busy}
-        renderTrigger={renderTrigger}
-        trigger={trigger}
-        onOpen={start}
-        onOAuth={officialRecovery}
-        onDisconnect={onDisconnect}
-        onEdit={() => {
-          start();
-          update();
-        }}
-      />
+      {presentation !== "inline" || !open ? (
+        <SlackConfigurationEntry
+          view={view}
+          bindingId={bindingId}
+          busy={busy}
+          renderTrigger={renderTrigger}
+          trigger={trigger}
+          onOpen={start}
+          onOAuth={officialRecovery}
+          onDisconnect={onDisconnect}
+          onEdit={() => {
+            start();
+            update();
+          }}
+        />
+      ) : null}
       {!open ? (
         <SlackConfigurationFeedback
           view={view}
@@ -185,6 +199,7 @@ function SlackCustomAppFlow({
       ) : null}
       {open && view ? (
         <SlackConfigurationDialog
+          presentation={presentation}
           view={view}
           editing={editing}
           busy={busy}
@@ -195,35 +210,38 @@ function SlackCustomAppFlow({
           onClose={close}
           onRetry={() => void configuration.refetch()}
         >
-          {editing ? (
-            <SlackSetupEditor
-              api={api}
-              agentId={agentId}
-              view={editing}
-              busy={busy}
-              manualOnly={manualOnly}
-              automatic={editing.allowedIntent === "create" || autoResume}
-              onBusy={setBusy}
-              onSave={save}
-              onConnected={async () => {
-                await configuration.refetch();
-                setBusy(false);
-                finishSave("auto");
-              }}
-            />
-          ) : (
-            <SlackAppStatus
-              agentId={agentId}
-              view={view}
-              onUpdate={update}
-              onOAuth={officialRecovery}
-              savedMethod={savedMethod}
-              onAutoResume={() => {
-                setAutoResume(true);
-                setEditing(view);
-              }}
-            />
-          )}
+          {(closeAction) =>
+            editing ? (
+              <SlackSetupEditor
+                footerAction={closeAction}
+                api={api}
+                agentId={agentId}
+                view={editing}
+                busy={busy}
+                manualOnly={manualOnly}
+                automatic={editing.allowedIntent === "create" || autoResume}
+                onBusy={setBusy}
+                onSave={save}
+                onConnected={async () => {
+                  await configuration.refetch();
+                  setBusy(false);
+                  finishSave("auto");
+                }}
+              />
+            ) : (
+              <SlackAppStatus
+                agentId={agentId}
+                view={view}
+                onUpdate={update}
+                onOAuth={officialRecovery}
+                savedMethod={savedMethod}
+                onAutoResume={() => {
+                  setAutoResume(true);
+                  setEditing(view);
+                }}
+              />
+            )
+          }
         </SlackConfigurationDialog>
       ) : null}
     </>
@@ -321,6 +339,7 @@ function SlackConfigurationFeedback({
 }
 
 function SlackConfigurationDialog({
+  presentation,
   view,
   editing,
   busy,
@@ -332,6 +351,7 @@ function SlackConfigurationDialog({
   onRetry,
   children,
 }: {
+  presentation: "dialog" | "inline";
   view: SlackConfigurationView;
   editing?: SlackConfigurationView;
   busy: boolean;
@@ -341,38 +361,71 @@ function SlackConfigurationDialog({
   readError: boolean;
   onClose: () => void;
   onRetry: () => void;
-  children: ReactNode;
+  children: (closeAction?: ReactNode) => ReactNode;
 }) {
-  return (
-    <Dialog
-      busy={busy}
-      returnFocusRef={trigger}
-      onClose={onClose}
-      title={
-        editing?.allowedIntent === "reauthorize" && !autoResume
-          ? m.im_slack_update_credentials()
-          : m.im_connect_slack({ provider: messagingProviderLabel("slack") })
-      }
-      description={view.agentDisplayName}
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const headingId = useId();
+  useEffect(() => {
+    if (presentation === "inline") headingRef.current?.focus();
+  }, [presentation]);
+  const title =
+    editing?.allowedIntent === "reauthorize" && !autoResume
+      ? m.im_slack_update_credentials()
+      : m.im_connect_slack({ provider: messagingProviderLabel("slack") });
+  const closeAction = (
+    <Button
+      type="button"
+      disabled={busy}
+      variant="ghost"
+      size="compact"
+      onClick={onClose}
+      aria-label={editing ? undefined : `${m.common_close()} ${title}`}
     >
-      <div className="grid gap-4">
-        {error ? <Banner variant="error" role="alert" description={error} /> : null}
-        {readError ? (
-          <div className="grid gap-2">
-            <Banner variant="error" role="alert" description={m.im_slack_status_failed()} />
-            <Button variant="secondary" onClick={onRetry}>
-              {m.im_slack_retry()}
-            </Button>
+      {editing ? m.common_cancel() : m.common_close()}
+    </Button>
+  );
+  const content = (
+    <div className="grid gap-4">
+      {error ? <Banner variant="error" role="alert" description={error} /> : null}
+      {readError ? (
+        <div className="grid gap-2">
+          <Banner variant="error" role="alert" description={m.im_slack_status_failed()} />
+          <Button variant="secondary" onClick={onRetry}>
+            {m.im_slack_retry()}
+          </Button>
+        </div>
+      ) : null}
+      {!editing && !view.binding ? <p role="status">{m.im_slack_auto_saved()}</p> : null}
+      {children(presentation === "inline" ? closeAction : undefined)}
+    </div>
+  );
+  if (presentation === "inline") {
+    return (
+      <section className="otv2-slack-inline otv2-connection-card" aria-labelledby={headingId}>
+        <div className="otv2-connection-card__body">
+          <div className="otv2-connection-card__identity">
+            <Text as="h2" variant="heading" size="lg" id={headingId} ref={headingRef} tabIndex={-1}>
+              <ProviderIcon className="size-6" provider="slack" />
+              {title}
+            </Text>
           </div>
+          {content}
+        </div>
+        {!editing ? (
+          <div className="otv2-connection-card__footer otv2-connection-card__footer--finish">{closeAction}</div>
         ) : null}
-        {!editing && !view.binding ? <p role="status">{m.im_slack_auto_saved()}</p> : null}
-        {children}
-      </div>
+      </section>
+    );
+  }
+  return (
+    <Dialog busy={busy} returnFocusRef={trigger} onClose={onClose} title={title} description={view.agentDisplayName}>
+      {content}
     </Dialog>
   );
 }
 
 function SlackSetupEditor({
+  footerAction,
   api,
   agentId,
   view,
@@ -383,6 +436,7 @@ function SlackSetupEditor({
   onSave,
   onConnected,
 }: {
+  footerAction?: ReactNode;
   agentId: string;
   view: SlackConfigurationView;
   api: SlackSetupApi;
@@ -406,6 +460,7 @@ function SlackSetupEditor({
     <>
       {automatic && !manualOnly ? (
         <SlackAutoConnect
+          footerAction={footerAction}
           api={api}
           agentId={agentId}
           resume={view.allowedIntent !== "create"}
@@ -418,6 +473,7 @@ function SlackSetupEditor({
       ) : null}
       {manual ? (
         <ManualSlackSetup
+          footerAction={footerAction}
           agentId={agentId}
           view={view}
           busy={busy}
@@ -437,6 +493,7 @@ function SlackSetupEditor({
 }
 
 function ManualSlackSetup({
+  footerAction,
   agentId,
   view,
   busy,
@@ -446,6 +503,7 @@ function ManualSlackSetup({
   unavailable,
   onBack,
 }: {
+  footerAction?: ReactNode;
   agentId: string;
   view: SlackConfigurationView;
   busy: boolean;
@@ -461,8 +519,26 @@ function ManualSlackSetup({
         <p className="text-sm text-kumo-subtle">{m.im_slack_cloud_manual()}</p>
       ) : null}
       {unavailable ? <p className="text-sm text-kumo-subtle">{m.im_slack_auto_unavailable()}</p> : null}
-      <SlackCredentialForm agentId={agentId} view={view} busy={busy} onSave={onSave} existingApp={existingApp} />
-      {onBack ? (
+      <SlackCredentialForm
+        agentId={agentId}
+        view={view}
+        busy={busy}
+        onSave={onSave}
+        existingApp={existingApp}
+        footerAction={
+          footerAction ? (
+            <>
+              {onBack ? (
+                <Button type="button" variant="ghost" disabled={busy} onClick={onBack}>
+                  {m.common_back()}
+                </Button>
+              ) : null}
+              {footerAction}
+            </>
+          ) : undefined
+        }
+      />
+      {onBack && !footerAction ? (
         <Button variant="ghost" disabled={busy} onClick={onBack}>
           {m.common_back()}
         </Button>
@@ -550,12 +626,14 @@ function SlackAppEntry({
 }
 
 function SlackCredentialForm({
+  footerAction,
   existingApp,
   agentId,
   view,
   busy,
   onSave,
 }: {
+  footerAction?: ReactNode;
   agentId: string;
   view: SlackConfigurationView;
   busy: boolean;
@@ -629,7 +707,8 @@ function SlackCredentialForm({
           </label>
         </Collapsible.Panel>
       </Collapsible.Root>
-      <div className="flex flex-wrap gap-3">
+      <div className={footerAction ? "otv2-connection-form-actions" : "flex flex-wrap gap-3"}>
+        {footerAction}
         <Button
           type="submit"
           disabled={busy || (create ? !token.trim() || !secret.trim() : !token.trim() && !secret.trim())}
@@ -720,6 +799,21 @@ function SlackAppCreation({ agentId, view }: { agentId: string; view: SlackConfi
   );
 }
 
+function slackSetupReady(view: SlackConfigurationView | undefined): boolean {
+  return Boolean(
+    view?.identityClosure?.status === "verified" &&
+      view.handoff?.bindingState === "active" &&
+      view.handoff.handoffReady,
+  );
+}
+
+function slackVerificationLabel(view: SlackConfigurationView): string {
+  if (slackSetupReady(view)) return m.im_slack_connected({ provider: messagingProviderLabel("slack") });
+  return view.identityClosure?.status === "verified"
+    ? m.im_slack_identity_verified()
+    : m.im_slack_pending_verification();
+}
+
 function SlackAppStatus({
   agentId,
   view,
@@ -743,19 +837,14 @@ function SlackAppStatus({
   return (
     <>
       <strong>{view.binding?.bot.displayName ?? m.im_slack_current_app()}</strong>
-      <Banner
-        role="status"
-        variant="secondary"
-        description={
-          verified
-            ? m.im_slack_connected({ provider: messagingProviderLabel("slack") })
-            : m.im_slack_pending_verification()
-        }
-      />
+      <Banner role="status" variant="secondary" description={slackVerificationLabel(view)} />
       {!verified ? (
         <p className="text-sm">{verifyUrl ? m.im_slack_verify_instructions() : m.im_slack_auto_saved()}</p>
       ) : null}
-      {verified && !view.handoff?.handoffReady ? (
+      {slackSetupReady(view) ? (
+        <p className="text-sm">{m.im_slack_delivery_check({ provider: messagingProviderLabel("slack") })}</p>
+      ) : null}
+      {verified && !slackSetupReady(view) ? (
         <>
           <p role="status">
             {isHandoffChecking(view.handoff) ? m.im_slack_preparing_agent() : m.im_slack_check_agent()}

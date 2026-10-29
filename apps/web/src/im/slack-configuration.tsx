@@ -63,13 +63,7 @@ export function SlackConfiguration({ agentId, children, onSuccess }: SlackConfig
     startOAuth,
     feedback: (
       <>
-        {saved ? (
-          <Banner
-            variant="secondary"
-            role="status"
-            description={m.im_slack_connected({ provider: messagingProviderLabel("slack") })}
-          />
-        ) : null}
+        {saved ? <Banner variant="secondary" role="status" description={m.im_slack_pending_verification()} /> : null}
         {error ? <Banner variant="error" role="alert" description={error} /> : null}
       </>
     ),
@@ -83,7 +77,7 @@ function normalizeSlackConfigurationError(cause: unknown): string {
     : m.im_slack_authorization_failed({ provider: messagingProviderLabel("slack") });
 }
 
-export function slackConfigurationMessage(code: string): string {
+export function slackConfigurationMessage(code: string, fallback?: string): string {
   // An Agent with no Computer has nowhere to run, so nothing is installed for it and no route is
   // claimed. That is a different repair from a Slack permission problem, and saying so is the only
   // way the reader learns the fix is on the Agent rather than in Slack.
@@ -99,5 +93,5 @@ export function slackConfigurationMessage(code: string): string {
   if (code === "SLACK_APP_TEAM_ALREADY_BOUND") {
     return m.im_slack_workspace_already_connected({ provider: messagingProviderLabel("slack") });
   }
-  return m.im_slack_authorization_failed({ provider: messagingProviderLabel("slack") });
+  return fallback ?? m.im_slack_authorization_failed({ provider: messagingProviderLabel("slack") });
 }

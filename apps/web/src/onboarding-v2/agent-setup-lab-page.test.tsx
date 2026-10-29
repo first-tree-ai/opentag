@@ -197,7 +197,7 @@ describe("agent setup lab page", () => {
     renderLabPage();
 
     await chooseOption("Screen state", "Waiting for handoff");
-    expect(await screen.findByText("Connected. Checking your agent can be reached…")).toBeTruthy();
+    expect(await screen.findByText("Authorization saved. Checking whether the Agent is ready…")).toBeTruthy();
 
     await chooseOption("Screen state", "Needs recovery");
     expect(await screen.findByText("Lark needs updated permissions.")).toBeTruthy();
@@ -296,7 +296,9 @@ describe("agent setup lab page", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Slack/ }));
     fireEvent.change(await screen.findByLabelText("Code"), { target: { value: "lab-code" } });
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
-    await screen.findByText("Send a message to verify.");
+    await screen.findByText(
+      "Authorization saved. Open the Bot’s chat and send “Hello”. Confirm its reply to verify actual message delivery.",
+    );
     fireEvent.click(screen.getByRole("button", { name: "Close Connect Slack" }));
     fireEvent.click(await screen.findByRole("button", { name: "Observe messaging handoff" }));
     expect(await screen.findByText("reviewer is ready.")).toBeTruthy();
@@ -312,7 +314,7 @@ describe("agent setup lab page", () => {
 
     await chooseOption("Screen state", "Everything ready");
     await chooseOption("Connected messaging app", "Slack");
-    expect(await screen.findByText("Message this Bot in Slack to put it to work.")).toBeTruthy();
+    expect(await screen.findByText("Open the Bot’s chat in Slack, send “Hello” and confirm its reply.")).toBeTruthy();
     expect(screen.getByText("1 changed")).toBeTruthy();
   });
 });

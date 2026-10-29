@@ -52,5 +52,8 @@ gha-creds-*.json
 # Private package checkout used only by the trusted cloud image build.
 .cloud-billing/
 
+# Standalone local bot-connection preview
+apps/web/dist-bot-preview/
+
 # Temporary module the cancellation benchmark generates next to the owner it compares against.
 .benchmark-before-*.ts

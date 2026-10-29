@@ -239,7 +239,7 @@ describe("OpenTag Web App Shell", () => {
     const setupLink = within(status).getByRole("link", { name: /Continue setup$/ });
     expect(setupLink.closest('[data-ui="agent-status-message-channel"]')).toBeTruthy();
     fireEvent.click(setupLink);
-    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    expect(await screen.findByText("Set up Reviewer")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Back to agent" })).toBeNull();
     fireEvent.click(screen.getByRole("link", { name: "All Agents" }));
     fireEvent.click(await screen.findByRole("link", { name: "Open Reviewer" }));

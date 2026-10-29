@@ -3,7 +3,8 @@ import { type FormEvent, useId, useState } from "react";
 import { spaceScriptBoundary } from "../i18n/format.js";
 import { messagingProviderLabel } from "../im/provider-label.js";
 import * as m from "../paraglide/messages.js";
-import { Button, Icon, KumoInputControl, Text } from "../ui/design-system.js";
+import { Button, Icon, KumoInputControl, StatusIndicator, Text } from "../ui/design-system.js";
+import { ProviderIcon } from "../ui/provider-icon.js";
 import { BrandMark } from "./brand-mark.js";
 import {
   type AgentDraft,
@@ -394,17 +395,82 @@ export function AgentStep({
   );
 }
 
+function doneDescription(name: string, provider?: ImProvider): string {
+  return provider === "slack"
+    ? m.onboarding_v2_done_description_slack({ provider: messagingProviderLabel(provider) })
+    : provider
+      ? spaceScriptBoundary(
+          m.onboarding_v2_done_description({ mention: name, provider: messagingProviderLabel(provider) }),
+        )
+      : m.onboarding_v2_done_description_any_app({ name });
+}
+
+function deliveryCheckDescription(provider: ImProvider | undefined, fallback: string): string {
+  if (provider === "slack") return m.im_slack_delivery_check({ provider: messagingProviderLabel("slack") });
+  if (provider === "feishu")
+    return m.onboarding_v2_connection_feishu_test({ provider: messagingProviderLabel("feishu") });
+  return fallback;
+}
+
 export function DoneStep({
   action,
   completion,
   name,
   provider,
+  presentation = "default",
 }: {
   action?: { label: string; onClick: () => void };
   completion?: { onFinish: () => void; state: "failed" | "pending" | "ready" };
   name: string;
   provider?: ImProvider;
+  presentation?: "default" | "settings";
 }) {
+  const description = doneDescription(name, provider);
+  const finishAction = completion ? (
+    <Button disabled={completion.state === "pending"} onClick={completion.onFinish}>
+      {completion.state === "ready"
+        ? m.onboarding_v2_done_finish_reboard()
+        : completion.state === "pending"
+          ? m.onboarding_v2_done_finishing()
+          : m.onboarding_v2_done_retry_finish()}
+    </Button>
+  ) : action ? (
+    <Button onClick={action.onClick}>{action.label}</Button>
+  ) : null;
+
+  if (presentation === "settings") {
+    return (
+      <section className="otv2-connection-done" data-ui="onboarding-v2-step-done">
+        <header className={`${HEADER} otv2-messaging-heading`}>
+          <Text as="h1" headingSize="section" variant="heading">
+            {m.onboarding_v2_done_title({ name })}
+          </Text>
+        </header>
+        <div className="otv2-connection-card">
+          <div className="otv2-connection-card__body">
+            <div className="otv2-connection-card__identity">
+              {provider ? (
+                <span className="otv2-connection-card__provider">
+                  <ProviderIcon className="size-6" provider={provider} />
+                  <strong>{messagingProviderLabel(provider)}</strong>
+                </span>
+              ) : (
+                <Icon name="check" aria-hidden="true" />
+              )}
+              <StatusIndicator label={m.im_connected()} tone="success" />
+            </div>
+            <p role="status" className={HINT}>
+              {m.onboarding_v2_connection_ready_checks()}
+            </p>
+            <p className={HINT}>{deliveryCheckDescription(provider, description)}</p>
+          </div>
+          {finishAction ? (
+            <div className="otv2-connection-card__footer otv2-connection-card__footer--finish">{finishAction}</div>
+          ) : null}
+        </div>
+      </section>
+    );
+  }
   return (
     <section className="flex flex-col items-center gap-6 text-center" data-ui="onboarding-v2-step-done">
       <span
@@ -417,30 +483,9 @@ export function DoneStep({
         <Text as="h1" size="lg" variant="heading">
           {m.onboarding_v2_done_title({ name })}
         </Text>
-        <p className="text-kumo-subtle m-0">
-          {provider === "slack"
-            ? m.onboarding_v2_done_description_slack({ provider: messagingProviderLabel(provider) })
-            : provider
-              ? spaceScriptBoundary(
-                  m.onboarding_v2_done_description({
-                    mention: name,
-                    provider: messagingProviderLabel(provider),
-                  }),
-                )
-              : m.onboarding_v2_done_description_any_app({ name })}
-        </p>
+        <p className="text-kumo-subtle m-0">{description}</p>
       </header>
-      {completion ? (
-        <Button disabled={completion.state === "pending"} onClick={completion.onFinish}>
-          {completion.state === "ready"
-            ? m.onboarding_v2_done_finish_reboard()
-            : completion.state === "pending"
-              ? m.onboarding_v2_done_finishing()
-              : m.onboarding_v2_done_retry_finish()}
-        </Button>
-      ) : action ? (
-        <Button onClick={action.onClick}>{action.label}</Button>
-      ) : null}
+      {finishAction}
     </section>
   );
 }

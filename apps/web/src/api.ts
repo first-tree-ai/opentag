@@ -268,30 +268,40 @@ export const AGENT_SETUP_READ_TIMEOUT_MS = 10_000;
 /**
  * Bounds `run` in elapsed time even when the AbortSignal is ignored. Fetch cancellation is
  * best-effort; the deadline itself always rejects, including while a response body is hanging.
+ * An optional observer signal cancels through baseline abort events, with listener cleanup.
  */
-export async function withDeadline<T>(timeoutMs: number, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+export async function withDeadline<T>(
+  timeoutMs: number,
+  run: (signal: AbortSignal) => Promise<T>,
+  externalSignal?: AbortSignal,
+): Promise<T> {
+  if (externalSignal?.aborted) throw new CancelledRequestError(externalSignal.reason);
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let timedOut = false;
-  const timeoutError = (): CancelledRequestError => {
-    const cause = new Error("The operation timed out.");
-    cause.name = "TimeoutError";
-    return new CancelledRequestError(cause);
-  };
-  const operation = Promise.resolve().then(() => run(controller.signal));
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      timedOut = true;
-      const error = timeoutError();
+  let onAbort: (() => void) | undefined;
+  const cancellation = new Promise<never>((_, reject) => {
+    const cancel = (error: CancelledRequestError) => {
       controller.abort(error);
       reject(error);
+    };
+    onAbort = () => cancel(new CancelledRequestError(externalSignal?.reason));
+    externalSignal?.addEventListener("abort", onAbort, { once: true });
+    timer = setTimeout(() => {
+      const cause = new Error("The operation timed out.");
+      cause.name = "TimeoutError";
+      cancel(new CancelledRequestError(cause));
     }, timeoutMs);
   });
+  const operation = Promise.resolve().then(() => {
+    // The observer can disappear before this microtask starts the transport.
+    if (controller.signal.aborted) throw controller.signal.reason;
+    return run(controller.signal);
+  });
   try {
-    return await Promise.race([operation, timeout]);
+    return await Promise.race([operation, cancellation]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
-    if (timedOut) void operation.catch(() => undefined);
+    if (onAbort) externalSignal?.removeEventListener("abort", onAbort);
   }
 }
 
@@ -667,8 +677,10 @@ export class BrowserApi {
     });
   }
 
-  slackConfiguration(agentId: string): Promise<SlackConfigurationView> {
-    return this.request(agentSlackConfigurationPath(agentId), SlackConfigurationViewSchema);
+  slackConfiguration(agentId: string, signal?: AbortSignal): Promise<SlackConfigurationView> {
+    return this.request(agentSlackConfigurationPath(agentId), SlackConfigurationViewSchema, {
+      ...(signal ? { signal } : {}),
+    });
   }
 
   saveSlackConfiguration(agentId: string, input: SaveSlackConfigurationRequest): Promise<SlackConfigurationResult> {

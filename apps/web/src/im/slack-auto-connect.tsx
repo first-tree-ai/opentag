@@ -1,5 +1,5 @@
 import type { SlackAutoSetupRequest, SlackAutoSetupResponse } from "@opentag/shared/browser";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import * as m from "../paraglide/messages.js";
 import { Banner, Button, buttonClassName, Collapsible, Input, InputArea } from "../ui/design-system.js";
@@ -9,6 +9,7 @@ import { slackConfigurationMessage } from "./slack-configuration.js";
 type Failure = Extract<SlackAutoSetupResponse, { status: "failed" }>;
 
 export function SlackAutoConnect({
+  footerAction,
   api = browserApi,
   agentId,
   onConnected,
@@ -18,6 +19,7 @@ export function SlackAutoConnect({
   resume = false,
   hidden = false,
 }: {
+  footerAction?: ReactNode;
   agentId: string;
   api?: { autoSetupSlack: typeof browserApi.autoSetupSlack };
   resume?: boolean;
@@ -29,11 +31,12 @@ export function SlackAutoConnect({
 }) {
   const [result, setResult] = useState<SlackAutoSetupResponse>();
   const [error, setError] = useState<unknown>();
-  const apiError = error instanceof ApiError ? error : undefined;
   const [challenge, setChallenge] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [operation, setOperation] = useState<"authorize" | "connect">();
+  const busy = operation !== undefined;
   const started = useRef(false);
   const running = useRef(false);
+  const lastAction = useRef<"authorize" | "connect">(resume ? "connect" : "authorize");
   const mounted = useRef(true);
   const id = useId();
   useEffect(() => {
@@ -46,7 +49,8 @@ export function SlackAutoConnect({
     async (action: "authorize" | "connect", force = false) => {
       if (running.current) return;
       running.current = true;
-      setBusy(true);
+      lastAction.current = action;
+      setOperation(action);
       setError(undefined);
       onBusy(true);
       try {
@@ -63,7 +67,7 @@ export function SlackAutoConnect({
       } finally {
         running.current = false;
         if (mounted.current) {
-          setBusy(false);
+          setOperation(undefined);
           onBusy(false);
         }
       }
@@ -85,11 +89,7 @@ export function SlackAutoConnect({
           if (result?.status === "authorization_required" && challenge.trim()) void run("connect");
         }}
       >
-        {busy ? (
-          <p role="status" className="text-sm text-kumo-subtle">
-            {m.im_slack_auto_working()}
-          </p>
-        ) : null}
+        {operation ? <SlackSetupProgress key={operation} operation={operation} /> : null}
         {result?.status === "authorization_required" ? (
           <SlackTicket
             ticket={result.ticket}
@@ -100,26 +100,104 @@ export function SlackAutoConnect({
             onChallenge={setChallenge}
           />
         ) : null}
-        {result && !apiError ? <SetupResult result={result} /> : null}
-        {apiError ? (
-          <Banner role="alert" variant="error" description={slackConfigurationMessage(apiError.code ?? "")} />
-        ) : null}
-        {apiError && ["SLACK_CONFIGURATION_CONFLICT", "SLACK_CREDENTIALS_UNAVAILABLE"].includes(apiError.code ?? "") ? (
-          <p className="text-sm">{m.im_slack_auto_manual_required()}</p>
-        ) : null}
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          {onManual && !(result?.status === "failed" && result.code === "approval_denied") ? (
-            <Button type="button" variant="ghost" disabled={busy} onClick={onManual}>
-              {m.im_slack_auto_manual()}
-            </Button>
-          ) : null}
-          {result && apiError?.status !== 409 ? (
-            <SetupButton result={result} busy={busy} challenge={challenge} run={run} />
-          ) : null}
-        </div>
+        <SlackSetupFeedback result={result} error={error} />
+        <SlackSetupActions
+          result={result}
+          error={error}
+          lastAction={lastAction.current}
+          busy={busy}
+          challenge={challenge}
+          run={run}
+          onManual={onManual}
+          footerAction={footerAction}
+        />
       </form>
     </div>
   );
+}
+
+function SlackSetupFeedback({ result, error }: { result?: SlackAutoSetupResponse; error: unknown }) {
+  if (error === undefined) return result ? <SetupResult result={result} /> : null;
+  const apiError = error instanceof ApiError ? error : undefined;
+  const uncertain = !apiError || apiError.status >= 500;
+  return (
+    <>
+      <Banner
+        role="alert"
+        variant="error"
+        description={slackConfigurationMessage(
+          apiError?.code ?? "",
+          uncertain ? m.im_slack_auto_uncertain_response() : m.im_slack_auto_failed(),
+        )}
+      />
+      {apiError && ["SLACK_CONFIGURATION_CONFLICT", "SLACK_CREDENTIALS_UNAVAILABLE"].includes(apiError.code ?? "") ? (
+        <p className="text-sm">{m.im_slack_auto_manual_required()}</p>
+      ) : null}
+    </>
+  );
+}
+
+function SlackSetupActions({
+  result,
+  error,
+  lastAction,
+  busy,
+  challenge,
+  run,
+  onManual,
+  footerAction,
+}: {
+  result?: SlackAutoSetupResponse;
+  error: unknown;
+  lastAction: "authorize" | "connect";
+  busy: boolean;
+  challenge: string;
+  run: (action: "authorize" | "connect", force?: boolean) => Promise<void>;
+  onManual?: () => void;
+  footerAction?: ReactNode;
+}) {
+  const conflict = error instanceof ApiError && error.status === 409;
+  return (
+    <div className={autoActionsClass(footerAction)}>
+      {onManual && !(result?.status === "failed" && result.code === "approval_denied") ? (
+        <Button type="button" variant="ghost" disabled={busy} onClick={onManual}>
+          {m.im_slack_auto_manual()}
+        </Button>
+      ) : null}
+      {footerAction}
+      {result && !conflict ? (
+        <SetupButton
+          result={result}
+          busy={busy}
+          challenge={challenge}
+          run={run}
+          retryAction={error !== undefined ? lastAction : undefined}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/** A slow operation is not a timeout or proof of failure. Keep the existing single-flight request. */
+function SlackSetupProgress({ operation }: { operation: "authorize" | "connect" }) {
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSlow(true), 15_000);
+    return () => window.clearTimeout(timer);
+  }, []);
+  return (
+    <p role="status" className="text-sm text-kumo-subtle">
+      {slow
+        ? m.im_slack_auto_slow()
+        : operation === "authorize"
+          ? m.im_slack_auto_preparing_ticket()
+          : m.im_slack_auto_working()}
+    </p>
+  );
+}
+
+function autoActionsClass(footerAction: ReactNode) {
+  return footerAction ? "otv2-connection-form-actions" : "flex flex-wrap items-center justify-between gap-3";
 }
 
 function setupRequest(action: "authorize" | "connect", force: boolean, challenge: string): SlackAutoSetupRequest {
@@ -128,7 +206,8 @@ function setupRequest(action: "authorize" | "connect", force: boolean, challenge
 }
 
 function SetupResult({ result }: { result: SlackAutoSetupResponse }) {
-  if (result.status === "authorized") return <p>{m.im_slack_auto_authorized({ team: result.teamName })}</p>;
+  if (result.status === "authorized")
+    return <p role="status">{m.im_slack_auto_authorized({ team: result.teamName })}</p>;
   if (result.status !== "failed" && result.status !== "approval_pending") return null;
   const approval = result.status === "approval_pending" || result.code === "approval_denied";
   return (
@@ -174,6 +253,7 @@ function SetupDiagnostics({
   result: Failure | Extract<SlackAutoSetupResponse, { status: "approval_pending" }>;
   approval: boolean;
 }) {
+  if (!approval && !(result.appId && result.teamId) && !(result.status === "failed" && result.errorCode)) return null;
   return (
     <Collapsible.Root>
       <Collapsible.Trigger render={<Button variant="ghost" type="button" />}>
@@ -203,7 +283,7 @@ function failureMessage(code: Failure["code"], errorCode?: string): string {
     case "capability_missing":
       return m.im_slack_auto_unavailable();
     case "authorization_failed":
-      return m.im_slack_auto_authorization_failed();
+      return m.im_slack_auto_authorization_failed({ provider: messagingProviderLabel("slack") });
     case "create_uncertain":
       return m.im_slack_auto_uncertain();
     case "install_failed":
@@ -270,12 +350,15 @@ function SlackTicket({
         <label htmlFor={`${id}-command`} className="text-sm font-medium">
           1 {m.im_slack_auto_command({ provider: messagingProviderLabel("slack") })}
         </label>
-        <p className="text-sm text-kumo-subtle">{m.im_slack_auto_instructions()}</p>
+        <p id={`${id}-command-help`} className="text-sm text-kumo-subtle">
+          {m.im_slack_auto_instructions()}
+        </p>
         <div className="flex flex-wrap items-start gap-2 sm:flex-nowrap">
           <InputArea
             ref={input}
             id={`${id}-command`}
             aria-label={m.im_slack_auto_command({ provider: messagingProviderLabel("slack") })}
+            aria-describedby={`${id}-command-help`}
             readOnly
             value={command}
             rows={2}
@@ -299,8 +382,12 @@ function SlackTicket({
       </div>
       <label className="grid gap-2" htmlFor={id}>
         <span className="text-sm font-medium">2 {m.im_slack_auto_code()}</span>
+        <span id={`${id}-code-help`} className="text-sm text-kumo-subtle">
+          {m.im_slack_auto_code_help({ provider: messagingProviderLabel("slack") })}
+        </span>
         <Input
           id={id}
+          aria-describedby={`${id}-code-help`}
           aria-label={m.im_slack_auto_code()}
           value={challenge}
           placeholder={m.im_slack_code_placeholder()}
@@ -345,17 +432,19 @@ function failureAction(code: Failure["code"]): SetupAction | undefined {
 }
 
 function SetupButton({
+  retryAction,
   result,
   busy,
   challenge,
   run,
 }: {
+  retryAction?: "authorize" | "connect";
   result: SlackAutoSetupResponse;
   busy: boolean;
   challenge: string;
   run: (action: "authorize" | "connect", force?: boolean) => Promise<void>;
 }) {
-  const next = setupAction(result);
+  const next = retryAction ? { action: retryAction, label: m.im_slack_retry() } : setupAction(result);
   if (!next) return null;
   const submit = result.status === "authorization_required";
   return (

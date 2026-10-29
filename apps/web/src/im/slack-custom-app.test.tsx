@@ -2,8 +2,8 @@ import type { SlackConfigurationView } from "@opentag/shared/browser";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRouter, RouterContextProvider } from "@tanstack/react-router";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, browserApi } from "../api.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, BrowserApi, browserApi } from "../api.js";
 import { SlackCustomApp } from "./slack-custom-app.js";
 
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
@@ -62,7 +62,10 @@ function bound(): SlackConfigurationView {
   };
 }
 
-function fixture(view: SlackConfigurationView = unbound(), options: { manualOnly?: boolean } = {}) {
+function fixture(
+  view: SlackConfigurationView = unbound(),
+  options: { manualOnly?: boolean; presentation?: "dialog" | "inline"; api?: BrowserApi } = {},
+) {
   const read = vi.spyOn(browserApi, "slackConfiguration").mockResolvedValue(view);
   const save = vi.spyOn(browserApi, "saveSlackConfiguration").mockResolvedValue({
     agentId,
@@ -253,7 +256,11 @@ describe("custom Slack App flow", () => {
     expect(screen.queryByLabelText("Signing Secret")).toBeNull();
     fireEvent.change(screen.getByLabelText("Bot Token"), { target: { value: "private-token" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    expect(await screen.findByText("Send a message to verify.")).toBeTruthy();
+    expect(
+      await screen.findByText(
+        "Authorization saved. Open the Bot’s chat and send “Hello”. Confirm its reply to verify actual message delivery.",
+      ),
+    ).toBeTruthy();
     expect(screen.getByRole("link", { name: "Open chat" })).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Open settings" })).toBeNull();
     expect(screen.queryByText("Slack connected.")).toBeNull();
@@ -272,7 +279,11 @@ describe("custom Slack App flow", () => {
     view.binding.lastRuntimeObservationAt = "2026-10-12T00:01:00.000Z";
     const test = fixture(view);
     fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
-    expect(await screen.findByText("Send a message to verify.")).toBeTruthy();
+    expect(
+      await screen.findByText(
+        "Authorization saved. Open the Bot’s chat and send “Hello”. Confirm its reply to verify actual message delivery.",
+      ),
+    ).toBeTruthy();
     expect(screen.getByRole("link", { name: "Open chat" })).toBeTruthy();
     const verified = {
       ...view,
@@ -282,6 +293,8 @@ describe("custom Slack App flow", () => {
     await test.client.invalidateQueries();
     expect(await screen.findByText("Check Agent status to finish setup.")).toBeTruthy();
     expect(screen.getByRole("link", { name: "View status" })).toBeTruthy();
+    expect(screen.queryByText("Slack connected.")).toBeNull();
+    expect(screen.getByText("App identity verified. Waiting for the Agent to be ready.")).toBeTruthy();
     test.read.mockResolvedValue({ ...verified, handoff: { bindingState: "active", handoffReady: true } });
     await test.client.invalidateQueries();
     expect(await screen.findByText("Slack connected.")).toBeTruthy();
@@ -391,4 +404,154 @@ it("uses existing-App credentials after uncertain creation without offering anot
   expect(screen.queryByRole("link", { name: "Create App" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
   expect(browserApi.autoSetupSlack).toHaveBeenCalledTimes(1);
+});
+
+it("continues observing when handoff is ready but the App identity is still pending", async () => {
+  const test = fixture({ ...bound(), handoff: { bindingState: "active", handoffReady: true } });
+  const entry = await screen.findByRole("button", { name: "Continue" });
+  vi.useFakeTimers();
+  fireEvent.click(entry);
+  expect(screen.queryByText("Slack connected.")).toBeNull();
+  const calls = test.read.mock.calls.length;
+  await act(() => vi.advanceTimersByTimeAsync(2_100));
+  expect(test.read.mock.calls.length).toBeGreaterThan(calls);
+  expect(screen.queryByText("Slack connected.")).toBeNull();
+});
+
+it("surfaces a hung configuration read and offers a fresh read without writing credentials", async () => {
+  const test = fixture();
+  await screen.findByRole("button", { name: "Connect Slack" });
+  vi.useFakeTimers();
+  test.read.mockImplementation(() => new Promise(() => {}));
+  void test.client.invalidateQueries();
+  await act(() => vi.advanceTimersByTimeAsync(10_001));
+  expect(screen.getByText("Couldn’t read connection status. Try again.")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+  expect(test.save).not.toHaveBeenCalled();
+});
+
+it("names the inline editing exit Cancel in both automatic and manual setup and restores focus", async () => {
+  const test = fixture(unbound(), { presentation: "inline" });
+  vi.mocked(browserApi.autoSetupSlack).mockResolvedValue({ status: "authorization_required", ticket: "test-ticket" });
+  await screen.findByRole("button", { name: "Connect Slack" });
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Connect Slack" })).not.toHaveProperty("disabled", true),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Connect Slack" }));
+  await screen.findByLabelText("Code");
+  expect(screen.getByRole("button", { name: "Cancel" }).textContent).toBe("Cancel");
+  expect(screen.queryByRole("button", { name: "Close Connect Slack" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Manual setup" }));
+  enterCredentials();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("region", { name: "Connect Slack" })).toBeNull();
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "Connect Slack" }));
+  expect(test.save).not.toHaveBeenCalled();
+});
+
+it("keeps a contextual Close name for the non-editing inline state", async () => {
+  fixture(bound(), { presentation: "inline" });
+  fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+  const close = screen.getByRole("button", { name: "Close Connect Slack" });
+  expect(close.textContent).toBe("Close");
+  expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+  fireEvent.click(close);
+  expect(screen.queryByRole("region", { name: "Connect Slack" })).toBeNull();
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "Continue" }));
+});
+
+/** A real API transport that can stall, but releases a request when fetch is aborted. */
+function cancellableConfigurationTransport(initial?: SlackConfigurationView) {
+  const pending = new Set<{ signal: AbortSignal | null | undefined }>();
+  const signals: (AbortSignal | null | undefined)[] = [];
+  let peakPending = 0;
+  let recovered: SlackConfigurationView | undefined;
+  const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => {
+    if (initial && fetchImpl.mock.calls.length === 1) return Response.json(initial);
+    if (recovered) return Response.json(recovered);
+    const signal = init?.signal;
+    signals.push(signal);
+    const request = { signal };
+    pending.add(request);
+    peakPending = Math.max(peakPending, pending.size);
+    return new Promise<Response>((_resolve, reject) => {
+      const abort = () => {
+        pending.delete(request);
+        reject(signal?.reason ?? new DOMException("Request aborted", "AbortError"));
+      };
+      if (signal?.aborted) abort();
+      else signal?.addEventListener("abort", abort, { once: true });
+    });
+  });
+  return {
+    api: new BrowserApi(fetchImpl),
+    fetchImpl,
+    signals,
+    pending,
+    peakPending: () => peakPending,
+    recover: (view: SlackConfigurationView) => {
+      recovered = view;
+    },
+  };
+}
+
+describe("configuration reads without AbortSignal.any", () => {
+  const anyDescriptor = Object.getOwnPropertyDescriptor(AbortSignal, "any");
+  beforeEach(() => {
+    Object.defineProperty(AbortSignal, "any", { configurable: true, value: undefined });
+  });
+  afterEach(() => {
+    if (anyDescriptor) Object.defineProperty(AbortSignal, "any", anyDescriptor);
+    else Reflect.deleteProperty(AbortSignal, "any");
+  });
+
+  it("aborts expired configuration GETs without overlapping polls, retains the view, and recovers without writes", async () => {
+    const transport = cancellableConfigurationTransport(bound());
+    fixture(bound(), { api: transport.api, presentation: "inline" });
+    const entry = await screen.findByRole("button", { name: "Continue" });
+    vi.useFakeTimers();
+    fireEvent.click(entry);
+    await act(() => vi.advanceTimersByTimeAsync(2_001));
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      expect(transport.signals).toHaveLength(attempt + 1);
+      expect(transport.pending.size).toBe(1);
+      await act(() => vi.advanceTimersByTimeAsync(AGENT_SETUP_READ_TIMEOUT_MS));
+      expect(transport.signals[attempt]?.aborted).toBe(true);
+      expect(transport.pending.size).toBe(0);
+      expect(screen.getByText("Authorization saved · verification pending")).toBeTruthy();
+      expect(screen.getByText("Couldn’t read connection status. Try again.")).toBeTruthy();
+      if (attempt < 2) await act(() => vi.advanceTimersByTimeAsync(2_001));
+    }
+    transport.recover({
+      ...bound(),
+      identityClosure: { status: "verified", verifiedAt: "2026-10-12T00:02:00.000Z" },
+      handoff: { bindingState: "active", handoffReady: true },
+    });
+    await act(() => vi.advanceTimersByTimeAsync(2_001));
+    expect(screen.getByText("Slack connected.")).toBeTruthy();
+    expect(screen.queryByText("Couldn’t read connection status. Try again.")).toBeNull();
+    expect(transport.peakPending()).toBe(1);
+    const reads = transport.fetchImpl.mock.calls.length;
+    await act(() => vi.advanceTimersByTimeAsync(6_000));
+    expect(transport.fetchImpl).toHaveBeenCalledTimes(reads);
+    for (const [url, init] of transport.fetchImpl.mock.calls) {
+      expect(String(url)).toBe(`/api/v1/agents/${agentId}/im-binding/slack/configuration`);
+      expect(init?.method ?? "GET").toBe("GET");
+    }
+  });
+
+  it("aborts an in-flight configuration GET on unmount before its deadline", async () => {
+    vi.useFakeTimers();
+    const transport = cancellableConfigurationTransport();
+    const test = fixture(unbound(), { api: transport.api, presentation: "inline" });
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(transport.signals).toHaveLength(1);
+    expect(transport.pending.size).toBe(1);
+    test.unmount();
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(transport.signals[0]?.aborted).toBe(true);
+    expect(transport.pending.size).toBe(0);
+    await act(() => vi.advanceTimersByTimeAsync(AGENT_SETUP_READ_TIMEOUT_MS + 2_001));
+    expect(transport.fetchImpl).toHaveBeenCalledOnce();
+  });
 });

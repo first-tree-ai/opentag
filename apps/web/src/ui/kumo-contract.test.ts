@@ -149,6 +149,8 @@ describe("Kumo integration contract", () => {
   it("keeps module-owned stylesheet imports at reviewed seams", () => {
     const allowedImports = new Set([
       "main.tsx -> ./app.css",
+      // Standalone preview root reuses the production theme without importing the router.
+      "bot-preview/main.tsx -> ../app.css",
       "features/auth/login-provider-link.tsx -> ./google-sign-in.css",
       "onboarding-v2/agent-setup-page.tsx -> ./onboarding-v2.css",
       "onboarding-v2/page.tsx -> ./onboarding-v2.css",

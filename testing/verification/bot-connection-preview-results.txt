@@ -1,0 +1,290 @@
+Local Web validation, 2026-10-27
+All browser/provider data were fixtures. No live integration success is claimed.
+
+$ vitest run --maxWorkers=2
+
+ RUN  v5.0.1 <repo>/apps/web
+
+Not implemented: navigation to another Document
+Not implemented: navigation to another Document
+Not implemented: Window's open() method
+Not implemented: Window's open() method
+
+ Test Files  179 passed (179)
+      Tests  2263 passed (2263)
+   Start at  18:20:30
+   Duration  206.41s (import 49%, tests 23%, environment 16%, setup 6%, transform 5%)
+
+     Import  |web| 2189 modules were evaluated 231325 times · 196.62s total, 49% of tracked time
+             ~96.54s faster with isolate: false — shared modules are evaluated once per worker instead of once per file
+             learn more: https://vitest.dev/guide/improving-performance#test-isolation
+
+
+$ tsc --noEmit
+Passed (no diagnostics).
+
+$ vite build
+vite v8.3.0 building client environment for production...
+ℹ [paraglide-js] Compilation skipped — inputs unchanged (message-modules)
+transforming...
+[plugin rolldown:vite-resolve] Module "node:crypto" has been externalized for browser compatibility, imported by "<repo>/packages/shared/dist/task-2U4BjRrt.mjs". See https://vite.dev/guide/troubleshooting.html#module-externalized-for-browser-compatibility for more details.
+✓ 7868 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/assets/manrope-cyrillic-ext-700-normal-cq7F7ESW.woff2        1.56 kB
+dist/assets/manrope-cyrillic-ext-500-normal-Dz8SjJZ9.woff2        1.60 kB
+dist/assets/manrope-cyrillic-ext-600-normal-Dk-u7o-5.woff2        1.61 kB
+dist/assets/manrope-cyrillic-ext-400-normal-CRdE35mU.woff2        1.62 kB
+dist/assets/manrope-cyrillic-ext-700-normal-ezu7N0xg.woff         2.17 kB
+dist/assets/manrope-cyrillic-ext-500-normal-PaLk8PaH.woff         2.18 kB
+dist/assets/manrope-cyrillic-ext-600-normal-DjQx9_jq.woff         2.19 kB
+dist/assets/manrope-cyrillic-ext-400-normal-Djnz4Wsr.woff         2.20 kB
+dist/index.html                                                   2.35 kB │ gzip:   0.72 kB
+dist/assets/manrope-vietnamese-500-normal-DCXiE_xi.woff2          4.32 kB
+dist/assets/manrope-vietnamese-400-normal-DHb3EETF.woff2          4.46 kB
+dist/assets/manrope-vietnamese-600-normal-C1J5PCl_.woff2          4.46 kB
+dist/assets/manrope-vietnamese-700-normal-CUqMx5-1.woff2          4.55 kB
+dist/assets/manrope-greek-600-normal-BoRV6lzK.woff2               5.23 kB
+dist/assets/manrope-greek-700-normal-CHUG9PD8.woff2               5.23 kB
+dist/assets/manrope-greek-500-normal-GeMIHyWm.woff2               5.25 kB
+dist/assets/manrope-greek-400-normal-CM4qok81.woff2               5.28 kB
+dist/assets/site-lockup-DXehO7yD.svg                              5.89 kB │ gzip:   2.25 kB
+dist/assets/manrope-vietnamese-500-normal-DaZ8i3XM.woff           6.06 kB
+dist/assets/manrope-vietnamese-400-normal-D7E_mLGF.woff           6.10 kB
+dist/assets/manrope-vietnamese-600-normal-lA7a_7Ok.woff           6.14 kB
+dist/assets/manrope-vietnamese-700-normal-pt65Fn2Z.woff           6.36 kB
+dist/assets/manrope-greek-600-normal-CF2i9ZRY.woff                6.74 kB
+dist/assets/manrope-greek-700-normal-DyfsrCpP.woff                6.74 kB
+dist/assets/manrope-greek-500-normal-DyxYGEtJ.woff                6.76 kB
+dist/assets/manrope-greek-400-normal-DuX9RsAR.woff                6.77 kB
+dist/assets/manrope-cyrillic-400-normal-BMzJvInZ.woff2            7.84 kB
+dist/assets/manrope-cyrillic-700-normal-Dw_fZAg2.woff2            7.85 kB
+dist/assets/manrope-cyrillic-500-normal-B1OEZity.woff2            7.87 kB
+dist/assets/manrope-cyrillic-600-normal-DvRl3Mj-.woff2            7.87 kB
+dist/assets/manrope-latin-ext-500-normal-dm74KBQw.woff2           8.19 kB
+dist/assets/manrope-latin-ext-700-normal-DYOwVNan.woff2           8.27 kB
+dist/assets/manrope-latin-ext-400-normal-CMDvPJRp.woff2           8.29 kB
+dist/assets/manrope-latin-ext-600-normal-_gBojHdJ.woff2           8.30 kB
+dist/assets/manrope-cyrillic-700-normal-7JNVKxyl.woff            10.00 kB
+dist/assets/manrope-cyrillic-500-normal-CNwnNrRC.woff            10.01 kB
+dist/assets/manrope-cyrillic-400-normal-Dvx59UGC.woff            10.03 kB
+dist/assets/manrope-cyrillic-600-normal-It4mZcQk.woff            10.06 kB
+dist/assets/manrope-latin-ext-500-normal-EtoS1VaI.woff           11.24 kB
+dist/assets/manrope-latin-ext-600-normal-u5Pl7hTU.woff           11.24 kB
+dist/assets/manrope-latin-ext-400-normal-C-X6QNXX.woff           11.31 kB
+dist/assets/manrope-latin-ext-700-normal-eVCcYqtJ.woff           11.35 kB
+dist/assets/manrope-latin-500-normal-BYYD-dBL.woff2              14.04 kB
+dist/assets/manrope-latin-400-normal-PaqtzbVb.woff2              14.10 kB
+dist/assets/manrope-latin-600-normal-4f0koTD-.woff2              14.17 kB
+dist/assets/manrope-latin-700-normal-BZp_XxE4.woff2              14.21 kB
+dist/assets/manrope-latin-500-normal-DMZssgOp.woff               18.24 kB
+dist/assets/manrope-latin-400-normal-8tf8FM3T.woff               18.29 kB
+dist/assets/manrope-latin-600-normal-BqgrALkZ.woff               18.38 kB
+dist/assets/manrope-latin-700-normal-DGRFkw-m.woff               18.41 kB
+dist/assets/google-g-CpxN0HWb.png                                33.66 kB
+dist/assets/site-brand-mark-oToEAT1r.png                         34.42 kB
+dist/assets/login-C2nNPNJE.css                                    0.82 kB │ gzip:   0.44 kB
+dist/assets/account-DGngokvK.css                                  0.92 kB │ gzip:   0.39 kB
+dist/assets/runtime-configuration-Cpj01JNY.css                    2.59 kB │ gzip:   0.93 kB
+dist/assets/computer-connect-x5ZP-Aj-.css                         2.66 kB │ gzip:   0.93 kB
+dist/assets/agents._agentId-BlTI9Zkn.css                          9.61 kB │ gzip:   2.29 kB
+dist/assets/agents._agentId-CFgJRliQ.css                         10.28 kB │ gzip:   2.45 kB
+dist/assets/page-VmFOa4HK.css                                    21.49 kB │ gzip:   3.78 kB
+dist/assets/index-Bp6hUXce.css                                  193.47 kB │ gzip:  31.16 kB
+dist/assets/useQuery-3hg6SkBn.js                                  0.10 kB │ gzip:   0.11 kB
+dist/assets/live-BlW_mmYw.js                                      0.12 kB │ gzip:   0.11 kB
+dist/assets/agent_settings_instructions_title-GnzTedUs.js         0.13 kB │ gzip:   0.13 kB
+dist/assets/common_copy-Bkbi-uOU.js                               0.13 kB │ gzip:   0.14 kB
+dist/assets/agents_title-Dl6Hq11P.js                              0.14 kB │ gzip:   0.13 kB
+dist/assets/common_cancel-D15nQabM.js                             0.14 kB │ gzip:   0.15 kB
+dist/assets/account_language_label-BScviYWk.js                    0.14 kB │ gzip:   0.15 kB
+dist/assets/agents_status_computer-D3MjDp9K.js                    0.14 kB │ gzip:   0.15 kB
+dist/assets/common_loading-BNVKXw5w.js                            0.14 kB │ gzip:   0.15 kB
+dist/assets/common_try_again-VdmJLxQm.js                          0.15 kB │ gzip:   0.16 kB
+dist/assets/shell_all_agents-C0iU_B3t.js                          0.15 kB │ gzip:   0.15 kB
+dist/assets/common_request_failed-94xWpjqp.js                     0.15 kB │ gzip:   0.16 kB
+dist/assets/_shell-CcnfUwso.js                                    0.16 kB │ gzip:   0.15 kB
+dist/assets/integrations-CcnfUwso.js                              0.16 kB │ gzip:   0.15 kB
+dist/assets/resources-CcnfUwso.js                                 0.16 kB │ gzip:   0.15 kB
+dist/assets/skills-CcnfUwso.js                                    0.16 kB │ gzip:   0.15 kB
+dist/assets/useRouter-DSydOGUD.js                                 0.19 kB │ gzip:   0.16 kB
+dist/assets/shell-context-ChYLGaTe.js                             0.19 kB │ gzip:   0.16 kB
+dist/assets/matchContext-BIQV4wkD.js                              0.20 kB │ gzip:   0.16 kB
+dist/assets/tasks.index-D_KpqGY7.js                               0.20 kB │ gzip:   0.18 kB
+dist/assets/reboard-review-Btdz88e8.js                            0.23 kB │ gzip:   0.15 kB
+dist/assets/useRouterState-BfMZENDv.js                            0.23 kB │ gzip:   0.18 kB
+dist/assets/agents._agentId.tasks.index-CUU08_7G.js               0.23 kB │ gzip:   0.18 kB
+dist/assets/agents._agentId.settings.index-B2JUMEY_.js            0.24 kB │ gzip:   0.19 kB
+dist/assets/agents._agentId.tasks._taskId-Dws09gbz.js             0.25 kB │ gzip:   0.19 kB
+dist/assets/agents._agentId.settings._section-9whpRolc.js         0.26 kB │ gzip:   0.20 kB
+dist/assets/useNavigate-CB8HoDFT.js                               0.26 kB │ gzip:   0.21 kB
+dist/assets/redirect-DuC7Eg9n.js                                  0.26 kB │ gzip:   0.22 kB
+dist/assets/provider-label-BkzRe8Wr.js                            0.27 kB │ gzip:   0.23 kB
+dist/assets/agents._agentId.index-DIYhmEz5.js                     0.27 kB │ gzip:   0.21 kB
+dist/assets/agents._agentId.usage-BRb25rcj.js                     0.29 kB │ gzip:   0.20 kB
+dist/assets/tasks._taskId-SzGCGwrg.js                             0.30 kB │ gzip:   0.24 kB
+dist/assets/session-context-B1JzJS7Z.js                           0.40 kB │ gzip:   0.31 kB
+dist/assets/jsx-runtime-NZYk81nU.js                               0.43 kB │ gzip:   0.30 kB
+dist/assets/agent-usage-echarts-BRCncGg6.js                       0.43 kB │ gzip:   0.29 kB
+dist/assets/sign-in-intent-BnARueeP.js                            0.47 kB │ gzip:   0.29 kB
+dist/assets/agent-sync-BEWpdiMb.js                                0.49 kB │ gzip:   0.29 kB
+dist/assets/shell-memory-DzwzDrvF.js                              0.59 kB │ gzip:   0.35 kB
+dist/assets/agent-avatar-RwWT7wM1.js                              0.64 kB │ gzip:   0.43 kB
+dist/assets/useStore-C-em3yP8.js                                  0.65 kB │ gzip:   0.38 kB
+dist/assets/useMatch-L45lSZJg.js                                  0.65 kB │ gzip:   0.40 kB
+dist/assets/page-BUKb4GnE.js                                      0.67 kB │ gzip:   0.37 kB
+dist/assets/rolldown-runtime-hePW80VL.js                          0.71 kB │ gzip:   0.42 kB
+dist/assets/_shell-BQHFiK4r.js                                    0.73 kB │ gzip:   0.46 kB
+dist/assets/useTriggerFocusGuards-j8nano0pqu9dscrz-515gswLD.js    0.76 kB │ gzip:   0.43 kB
+dist/assets/agents._agentId.instructions-B1-F1duU.js              0.85 kB │ gzip:   0.47 kB
+dist/assets/agent-routes-CfLd-44N.js                              0.97 kB │ gzip:   0.27 kB
+dist/assets/profile-navigation-draft-DtrJECCX.js                  1.20 kB │ gzip:   0.72 kB
+dist/assets/preload-helper-BZ1Pz5am.js                            1.21 kB │ gzip:   0.69 kB
+dist/assets/milestones-CsIcM2L6.js                                1.38 kB │ gzip:   0.75 kB
+dist/assets/use-sign-out-D6FEhfxN.js                              1.44 kB │ gzip:   0.76 kB
+dist/assets/keys-C4k1xrv0.js                                      1.57 kB │ gzip:   0.53 kB
+dist/assets/agents._agentId._legacySection-S4KByVPs.js            1.75 kB │ gzip:   0.77 kB
+dist/assets/empty-ox60d384lkwbj5n4-B1CUMXzR.js                    1.88 kB │ gzip:   0.95 kB
+dist/assets/_authenticated-CE0xAgJJ.js                            1.97 kB │ gzip:   1.04 kB
+dist/assets/useMutation-COwsvl-5.js                               2.42 kB │ gzip:   1.00 kB
+dist/assets/resource-state-8hb2lqvu.js                            2.47 kB │ gzip:   1.20 kB
+dist/assets/settings-layout-BUF1UjHd.js                           3.09 kB │ gzip:   1.40 kB
+dist/assets/computer-status-CEUqT9TR.js                           3.10 kB │ gzip:   1.23 kB
+dist/assets/invariant-B5rOIQpd.js                                 3.13 kB │ gzip:   1.41 kB
+dist/assets/format-Eta8-udT.js                                    3.18 kB │ gzip:   1.20 kB
+dist/assets/usage-DAMfN1Wj.js                                     3.28 kB │ gzip:   1.58 kB
+dist/assets/slack-configuration-hMs5-jIK.js                       3.50 kB │ gzip:   1.82 kB
+dist/assets/useQueries-D9HMHXXD.js                                3.54 kB │ gzip:   1.52 kB
+dist/assets/lazyRouteComponent-QYyaRyIF.js                        4.42 kB │ gzip:   1.55 kB
+dist/assets/table-miggde3uqhhrd5at-CkkTIt_2.js                    4.50 kB │ gzip:   1.50 kB
+dist/assets/computer-recovery-wGVxSpJa.js                         4.54 kB │ gzip:   1.91 kB
+dist/assets/runtime-BD7oEdmu.js                                   5.01 kB │ gzip:   2.12 kB
+dist/assets/agents.index-DpGenuvV.js                              5.47 kB │ gzip:   2.25 kB
+dist/assets/agent-shell-CIkluJcV.js                               5.61 kB │ gzip:   2.31 kB
+dist/assets/provider-icon-Bt34sRhy.js                             7.42 kB │ gzip:   5.29 kB
+dist/assets/useBaseQuery-eOuFxVbl.js                              8.17 kB │ gzip:   3.01 kB
+dist/assets/agent-queries-DE0HOK57.js                             8.34 kB │ gzip:   2.68 kB
+dist/assets/agents.setup-DH5wxxg9.js                              8.39 kB │ gzip:   2.93 kB
+dist/assets/collapsible-jyajpe40jcca357s-BkUnxGtL.js              8.75 kB │ gzip:   3.46 kB
+dist/assets/_resources-Gdy5dqB1.js                                9.56 kB │ gzip:   3.86 kB
+dist/assets/agents.computers-CVttMXax.js                          9.67 kB │ gzip:   3.85 kB
+dist/assets/internal.index-DqQZgpM6.js                           10.05 kB │ gzip:   4.10 kB
+dist/assets/agent-presentation-DqWSr79K.js                       12.97 kB │ gzip:   3.61 kB
+dist/assets/login-CeCIHbw7.js                                    13.63 kB │ gzip:   4.83 kB
+dist/assets/popover-jal8z9sv176703lf-C4HRNQcj.js                 14.61 kB │ gzip:   5.43 kB
+dist/assets/link-Bx52QNs7.js                                     16.40 kB │ gzip:   6.35 kB
+dist/assets/page-header-C-EsCXJA.js                              18.04 kB │ gzip:   6.83 kB
+dist/assets/agents._agentId.context-tree-u5m2mIqI.js             20.19 kB │ gzip:   7.25 kB
+dist/assets/agent-detail-page-BKYKFxXe.js                        21.49 kB │ gzip:   7.15 kB
+dist/assets/dropdown-d5qrzj1w1a96w2we-DR6hVmWM.js                34.87 kB │ gzip:  10.81 kB
+dist/assets/lib-e2IbEi7H.js                                      38.27 kB │ gzip:  11.55 kB
+dist/assets/agents._agentId.skills-DX1pKDy6.js                   38.41 kB │ gzip:  12.64 kB
+dist/assets/account-D8KoWRnD.js                                  38.80 kB │ gzip:  12.54 kB
+dist/assets/agent-settings-page-CTI6j-0P.js                      41.55 kB │ gzip:  12.44 kB
+dist/assets/account-menu-DXPXmdbe.js                             43.14 kB │ gzip:  12.93 kB
+dist/assets/computer-connect-D5v2iKEk.js                         44.93 kB │ gzip:  16.45 kB
+dist/assets/slack-custom-app-ChfV3De4.js                         49.79 kB │ gzip:  15.45 kB
+dist/assets/tasks-page-CCZ7U77L.js                               52.30 kB │ gzip:  15.50 kB
+dist/assets/internal.agent-setup-BTikWVvd.js                     52.63 kB │ gzip:  14.45 kB
+dist/assets/agent-usage-D_Ur0igb.js                              53.97 kB │ gzip:  19.76 kB
+dist/assets/page-g6SmaIya.js                                     92.48 kB │ gzip:  27.57 kB
+dist/assets/lib-CpiLYmcG.js                                     115.84 kB │ gzip:  35.08 kB
+dist/assets/icons-lwK9_HN2.js                                   142.03 kB │ gzip:  33.39 kB
+dist/assets/agents._agentId.mcp-C2K-GMVe.js                     226.96 kB │ gzip:  98.58 kB
+dist/assets/index-BFZICCdK.js                                   281.63 kB │ gzip:  90.66 kB
+dist/assets/echarts-BpnJ6RN1.js                                 566.35 kB │ gzip: 192.11 kB
+dist/assets/api-DKmoMeNT.js                                     570.43 kB │ gzip: 170.29 kB
+dist/assets/runtime-configuration-cZaveAGx.js                   622.31 kB │ gzip: 199.35 kB
+
+[plugin builtin:vite-reporter]
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 1.51s
+
+$ vite build --config vite.bot-preview.config.ts
+vite v8.3.0 building client environment for production...
+ℹ [paraglide-js] Compilation skipped — inputs unchanged (message-modules)
+transforming...
+✓ 6767 modules transformed.
+rendering chunks...
+computing gzip size...
+dist-bot-preview/bot-connection.html                                        0.80 kB │ gzip:   0.45 kB
+dist-bot-preview/assets/manrope-cyrillic-ext-700-normal-cq7F7ESW.woff2      1.56 kB
+dist-bot-preview/assets/manrope-cyrillic-ext-500-normal-Dz8SjJZ9.woff2      1.60 kB
+dist-bot-preview/assets/manrope-cyrillic-ext-600-normal-Dk-u7o-5.woff2      1.61 kB
+dist-bot-preview/assets/manrope-cyrillic-ext-400-normal-CRdE35mU.woff2      1.62 kB
+dist-bot-preview/assets/manrope-cyrillic-ext-700-normal-ezu7N0xg.woff       2.17 kB
+dist-bot-preview/assets/manrope-cyrillic-ext-500-normal-PaLk8PaH.woff       2.18 kB
+dist-bot-preview/assets/manrope-cyrillic-ext-600-normal-DjQx9_jq.woff       2.19 kB
+dist-bot-preview/assets/manrope-cyrillic-ext-400-normal-Djnz4Wsr.woff       2.20 kB
+dist-bot-preview/assets/manrope-vietnamese-500-normal-DCXiE_xi.woff2        4.32 kB
+dist-bot-preview/assets/manrope-vietnamese-400-normal-DHb3EETF.woff2        4.46 kB
+dist-bot-preview/assets/manrope-vietnamese-600-normal-C1J5PCl_.woff2        4.46 kB
+dist-bot-preview/assets/manrope-vietnamese-700-normal-CUqMx5-1.woff2        4.55 kB
+dist-bot-preview/assets/manrope-greek-600-normal-BoRV6lzK.woff2             5.23 kB
+dist-bot-preview/assets/manrope-greek-700-normal-CHUG9PD8.woff2             5.23 kB
+dist-bot-preview/assets/manrope-greek-500-normal-GeMIHyWm.woff2             5.25 kB
+dist-bot-preview/assets/manrope-greek-400-normal-CM4qok81.woff2             5.28 kB
+dist-bot-preview/assets/site-lockup-DXehO7yD.svg                            5.89 kB │ gzip:   2.25 kB
+dist-bot-preview/assets/manrope-vietnamese-500-normal-DaZ8i3XM.woff         6.06 kB
+dist-bot-preview/assets/manrope-vietnamese-400-normal-D7E_mLGF.woff         6.10 kB
+dist-bot-preview/assets/manrope-vietnamese-600-normal-lA7a_7Ok.woff         6.14 kB
+dist-bot-preview/assets/manrope-vietnamese-700-normal-pt65Fn2Z.woff         6.36 kB
+dist-bot-preview/assets/manrope-greek-600-normal-CF2i9ZRY.woff              6.74 kB
+dist-bot-preview/assets/manrope-greek-700-normal-DyfsrCpP.woff              6.74 kB
+dist-bot-preview/assets/manrope-greek-500-normal-DyxYGEtJ.woff              6.76 kB
+dist-bot-preview/assets/manrope-greek-400-normal-DuX9RsAR.woff              6.77 kB
+dist-bot-preview/assets/manrope-cyrillic-400-normal-BMzJvInZ.woff2          7.84 kB
+dist-bot-preview/assets/manrope-cyrillic-700-normal-Dw_fZAg2.woff2          7.85 kB
+dist-bot-preview/assets/manrope-cyrillic-500-normal-B1OEZity.woff2          7.87 kB
+dist-bot-preview/assets/manrope-cyrillic-600-normal-DvRl3Mj-.woff2          7.87 kB
+dist-bot-preview/assets/manrope-latin-ext-500-normal-dm74KBQw.woff2         8.19 kB
+dist-bot-preview/assets/manrope-latin-ext-700-normal-DYOwVNan.woff2         8.27 kB
+dist-bot-preview/assets/manrope-latin-ext-400-normal-CMDvPJRp.woff2         8.29 kB
+dist-bot-preview/assets/manrope-latin-ext-600-normal-_gBojHdJ.woff2         8.30 kB
+dist-bot-preview/assets/manrope-cyrillic-700-normal-7JNVKxyl.woff          10.00 kB
+dist-bot-preview/assets/manrope-cyrillic-500-normal-CNwnNrRC.woff          10.01 kB
+dist-bot-preview/assets/manrope-cyrillic-400-normal-Dvx59UGC.woff          10.03 kB
+dist-bot-preview/assets/manrope-cyrillic-600-normal-It4mZcQk.woff          10.06 kB
+dist-bot-preview/assets/manrope-latin-ext-500-normal-EtoS1VaI.woff         11.24 kB
+dist-bot-preview/assets/manrope-latin-ext-600-normal-u5Pl7hTU.woff         11.24 kB
+dist-bot-preview/assets/manrope-latin-ext-400-normal-C-X6QNXX.woff         11.31 kB
+dist-bot-preview/assets/manrope-latin-ext-700-normal-eVCcYqtJ.woff         11.35 kB
+dist-bot-preview/assets/manrope-latin-500-normal-BYYD-dBL.woff2            14.04 kB
+dist-bot-preview/assets/manrope-latin-400-normal-PaqtzbVb.woff2            14.10 kB
+dist-bot-preview/assets/manrope-latin-600-normal-4f0koTD-.woff2            14.17 kB
+dist-bot-preview/assets/manrope-latin-700-normal-BZp_XxE4.woff2            14.21 kB
+dist-bot-preview/assets/manrope-latin-500-normal-DMZssgOp.woff             18.24 kB
+dist-bot-preview/assets/manrope-latin-400-normal-8tf8FM3T.woff             18.29 kB
+dist-bot-preview/assets/manrope-latin-600-normal-BqgrALkZ.woff             18.38 kB
+dist-bot-preview/assets/manrope-latin-700-normal-DGRFkw-m.woff             18.41 kB
+dist-bot-preview/assets/site-brand-mark-oToEAT1r.png                       34.42 kB
+dist-bot-preview/assets/bot-connection-20y7CTT0.css                       217.63 kB │ gzip:  34.74 kB
+dist-bot-preview/assets/bot-connection-DH0faP4G.js                      1,165.64 kB │ gzip: 343.47 kB
+
+[plugin builtin:vite-reporter]
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 969ms
+
+$ pnpm check (pnpm 10.12.1)
+Exit 0. Biome: 151 warnings, 10 infos, no errors.
+      1  gate       /CONTRIBUTING.zh-CN.md
+      1  gate       /SECURITY.md
+      1  gate       /SECURITY.zh-CN.md
+    518  exempt     /apps/web/
+Complexity ratchet passed: 126 warning(s), 50 improvement(s).
+
+> opentag-monorepo@0.0.0 check:docs-tree <repo>
+> pnpm --filter @opentag/client exec context-tree verify --tree-path ../../docs
+
+Context Tree OK.
+  Root:    <repo>/docs
+  Scanned: normal=59 member=0 repo-infra=0
+
+$ git diff --check
+Passed (no diagnostics).

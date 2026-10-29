@@ -154,7 +154,11 @@ describe("AgentSetupPage action failures", () => {
     expect(within(dialog).getByRole("alert").textContent).toBe("Couldn’t disconnect Lark. Try again.");
     // The failure is said inside the confirmation, not repeated behind it.
     expect(screen.getAllByRole("alert")).toHaveLength(1);
-    expect(screen.getByText("Lark authorization didn't complete. Disconnect Lark, then reconnect it.")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "The server did not provide a specific cause. Retry the connection; if this persists, ask an administrator to investigate.",
+      ),
+    ).toBeTruthy();
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Keep connected" }));
     await settle();
@@ -185,7 +189,11 @@ describe("AgentSetupPage action failures", () => {
       new ApiError(502, "upstream", "SLACK_UPSTREAM_UNAVAILABLE", "transient"),
       "Slack is unavailable right now. Check the connection and try again.",
     ],
-    ["no code", new Error("network"), "Connection failed. Try again."],
+    [
+      "no code",
+      new Error("network"),
+      "The connection result could not be confirmed. Check your network, then Retry to continue the current setup. No request will be repeated automatically.",
+    ],
   ])("explains a refused Slack start with %s", async (_label, cause, message) => {
     const memory = createMemorySetupAdapter({ agent: setupAgent() });
     vi.mocked(browserApi.autoSetupSlack).mockRejectedValue(cause);
@@ -198,7 +206,7 @@ describe("AgentSetupPage action failures", () => {
     await settle();
 
     expect(screen.getByRole("alert").textContent).toBe(message);
-    expect(screen.getByRole("button", { name: "Close Connect Slack" })).not.toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: "Cancel" })).not.toHaveProperty("disabled", true);
   });
 
   it.each([
@@ -344,7 +352,7 @@ describe("AgentSetupPage messaging recovery", () => {
     const unbind = vi.spyOn(memory.adapter, "unbindMessaging");
     renderSetup(memory.adapter);
     await settle();
-    expect(screen.getByText(/In Slack, add this Bot to a channel/)).toBeTruthy();
+    expect(screen.getByText(/Open the Bot’s DM in Slack/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Disconnect Slack" }));
     await settle();
@@ -354,7 +362,7 @@ describe("AgentSetupPage messaging recovery", () => {
 
     expect(unbind).not.toHaveBeenCalled();
     expect(screen.queryByRole("alertdialog")).toBeNull();
-    expect(screen.getByText("Connected. Checking your agent can be reached…")).toBeTruthy();
+    expect(screen.getByText("Authorization saved. Checking whether the Agent is ready…")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Disconnect Slack" }));
     await settle();
@@ -375,7 +383,11 @@ describe("AgentSetupPage messaging recovery", () => {
     renderSetup(memory.adapter);
     await settle();
 
-    expect(screen.getByText("Slack reported a problem. Reconnect it to continue.")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "The server did not provide a specific cause. Retry the connection; if this persists, ask an administrator to investigate.",
+      ),
+    ).toBeTruthy();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1);
     });
@@ -416,7 +428,7 @@ describe("AgentSetupPage messaging recovery", () => {
       await settle();
 
       expect(screen.getByText(copy)).toBeTruthy();
-      expect(screen.queryByText(/In Slack, add this Bot to a channel/)).toBeNull();
+      expect(screen.queryByText(/Open the Bot’s DM in Slack/)).toBeNull();
     },
   );
 
@@ -488,7 +500,11 @@ describe("AgentSetupPage messaging recovery", () => {
     await settle();
 
     expect(screen.getByRole("heading", { name: "Restore your messaging connection" })).toBeTruthy();
-    expect(screen.getByText("Slack authorization didn't complete. Disconnect Slack, then reconnect it.")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "The server did not provide a specific cause. Retry the connection; if this persists, ask an administrator to investigate.",
+      ),
+    ).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Disconnect Slack/ })).toBeNull();
     expect(document.querySelector('[data-ui="agent-setup-messaging-recovery-actions"]')).toBeNull();
     expect(document.querySelector('[data-ui="agent-setup-messaging-destructive-action"]')).toBeNull();

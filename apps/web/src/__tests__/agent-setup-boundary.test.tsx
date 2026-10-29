@@ -666,7 +666,8 @@ describe("Agent Setup route boundary", () => {
     expect(window.location.pathname).toBe("/agents/setup");
     const continueButton = await expectPreparationGate();
     fireEvent.click(continueButton);
-    expect(screen.getByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    expect(screen.getByText("Set up Reviewer")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Set up Reviewer" })).toBeNull();
     expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
     const completions = vi
       .mocked(fetch)

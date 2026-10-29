@@ -343,8 +343,9 @@ later workers, database disposal or telemetry cleanup. Signal shutdown logs each
 cause, then exits with code 1; a clean shutdown exits normally. Keep the patch until an upstream release
 passes the database timeout, disconnect, startup and availability regressions.
 
-Startup failure follows the same cleanup rule: application, Cloud model, billing and telemetry cleanup are
-attempted independently. The original failure and nested cleanup errors are reported once through secret
+Startup failure follows the same cleanup rule: application, Cloud model, billing, shared database pool and telemetry cleanup are
+attempted independently, including failures before the application and its close hooks exist. Direct database admin
+commands use the same 1 s connection-close budget. The original failure and nested cleanup errors are reported once through secret
 redaction, and the failure path sets exit code 1 even when cleanup rejects.
 
 The Cloud Monitoring uptime check stays on `/readyz`. `/healthz?deep=1` is an additional probe for an external uptime

@@ -433,6 +433,7 @@ describe("SessionCollaborationService.dispatchScheduledMessage", () => {
         attemptCount: 1,
       }),
       expect.any(Function),
+      expect.any(AbortSignal),
     );
   });
 

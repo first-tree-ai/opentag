@@ -79,6 +79,7 @@ export interface CloudSessionMessageDispatch {
     input: CloudSessionMessageDeliveryInput,
     /** The operation returns the Runner's receipt; the admission only fences dispatch authority. */
     admission: RuntimeDispatchAdmission<RunnerCloudSessionMessageReceivedFrame>,
+    signal?: AbortSignal,
   ): Promise<CloudSessionMessageOutcome>;
 }
 
@@ -165,7 +166,6 @@ async function raceWithAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<
   }
   return new Promise((resolve) => {
     const onAbort = () => {
-      void work.then(swallow, swallow);
       resolve({ kind: "aborted" });
     };
     signal.addEventListener("abort", onAbort, { once: true });
@@ -479,6 +479,7 @@ export class SessionCollaborationService {
         if (!admitted.admitted) admissionFailure = admitted.reason;
         return admitted;
       },
+      signal,
     );
     const settled = await raceWithAbort(work, signal);
     if (admissionFailure !== undefined) {

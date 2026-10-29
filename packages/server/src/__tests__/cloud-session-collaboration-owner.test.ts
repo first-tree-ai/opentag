@@ -332,6 +332,14 @@ const allowAdmission: RuntimeDispatchAdmission<RunnerCloudSessionMessageReceived
   result: Promise.resolve(await operation(() => undefined)),
 });
 
+function deferred<T = void>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 async function deliveryInput(
   fixture: CloudFixture,
   messageId: string,
@@ -1104,6 +1112,275 @@ describe("CloudSessionCollaborationOwner", () => {
     stack.work.clearSandbox(fixture.sandboxId);
     expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
     await expect(stack.owner.hasUnsettledSessionWork({ sessionId: fixture.sessionId })).resolves.toBe(true);
+  });
+
+  it("skips an already cancelled delivery before model or allocation work", async () => {
+    const fixture = await seedCloudSession();
+    const input = await deliveryInput(fixture, randomUUID());
+    const stack = makeStack(fixture);
+    const allowed = vi.spyOn(stack.grants, "isModelAllowed");
+    const controller = new AbortController();
+    controller.abort();
+    try {
+      await expect(stack.owner.deliver(input, allowAdmission, controller.signal)).resolves.toEqual({
+        status: "unreachable",
+        code: "delivery_timeout",
+      });
+      expect(allowed).not.toHaveBeenCalled();
+      expect(stack.owner.activeDispatchTargets).toBe(0);
+      expect(await db.database.select().from(runtimeDurableWork)).toHaveLength(0);
+    } finally {
+      stack.grants.close();
+    }
+  });
+
+  it("skips a cancelled FIFO entry while preserving live order and post-send custody", async () => {
+    const fixture = await seedCloudSession();
+    const ids = [randomUUID(), randomUUID(), randomUUID()];
+    for (const id of ids) await insertMessage(id, fixture);
+    const [first, cancelled, last] = await Promise.all(ids.map((id) => deliveryInput(fixture, id)));
+    if (!first || !cancelled || !last) throw new Error("missing delivery fixture");
+    const custody = deferred();
+    const committing = deferred();
+    const stack = makeStack(fixture, {
+      recordMessageOutcome: async ({ messageId }) => {
+        if (messageId === first.message.id) {
+          committing.resolve();
+          await custody.promise;
+        }
+        await db.database
+          .update(sessionMessages)
+          .set({ lastOutcome: "accepted" })
+          .where(eq(sessionMessages.id, messageId));
+        return true;
+      },
+    });
+    const runOrder: string[] = [];
+    await attachRunner(stack, fixture, {
+      onFrame: (frame) => {
+        if (frame.type !== "session:message:run") return;
+        runOrder.push(frame.message.messageId);
+        answeringOnFrame(stack, fixture)(frame);
+      },
+    });
+    const sentController = new AbortController();
+    const queuedController = new AbortController();
+    const delivering = [
+      stack.owner.deliver(first, allowAdmission, sentController.signal),
+      stack.owner.deliver(cancelled, allowAdmission, queuedController.signal),
+      stack.owner.deliver(last, allowAdmission),
+    ];
+    try {
+      await committing.promise;
+      sentController.abort();
+      queuedController.abort();
+      expect(runOrder).toEqual([first.message.id]);
+      custody.resolve();
+      await expect(Promise.all(delivering)).resolves.toEqual([
+        { status: "accepted" },
+        { status: "unreachable", code: "delivery_timeout" },
+        { status: "accepted" },
+      ]);
+      expect(runOrder).toEqual([first.message.id, last.message.id]);
+      expect(stack.owner.activeDispatchTargets).toBe(0);
+      const records = await db.database.select().from(runtimeDurableWork);
+      expect(records).toHaveLength(2);
+      expect(records.some((row) => row.recordKey.endsWith(cancelled.message.id))).toBe(false);
+    } finally {
+      custody.resolve();
+      await Promise.allSettled(delivering);
+      stack.grants.close();
+    }
+  });
+
+  it("stops after a cancelled Sandbox ensure without reloading or allocating", async () => {
+    const fixture = await seedCloudSession();
+    const input = await deliveryInput(fixture, randomUUID());
+    await db.database.delete(sandboxes).where(eq(sandboxes.id, fixture.sandboxId));
+    const sandbox = deferred<{ accountId: string; sandboxId: string }>();
+    const ensureSandbox = vi.fn(() => sandbox.promise);
+    const ensureEnvironmentAllocated = vi.fn(async () => "pending" as const);
+    const stack = makeStack(fixture, { allocation: { ensureSandbox, ensureEnvironmentAllocated } });
+    const controller = new AbortController();
+    const delivering = stack.owner.deliver(input, allowAdmission, controller.signal);
+    try {
+      await vi.waitFor(() => expect(ensureSandbox).toHaveBeenCalledOnce());
+      controller.abort();
+      const selects = vi.spyOn(db.database, "select");
+      sandbox.resolve({ accountId: fixture.accountId, sandboxId: fixture.sandboxId });
+      await expect(delivering).resolves.toEqual({ status: "unreachable", code: "delivery_timeout" });
+      expect(selects).not.toHaveBeenCalled();
+      selects.mockRestore();
+      expect(ensureEnvironmentAllocated).not.toHaveBeenCalled();
+    } finally {
+      sandbox.resolve({ accountId: fixture.accountId, sandboxId: fixture.sandboxId });
+      await delivering;
+      stack.grants.close();
+    }
+  });
+
+  it("does not start a retirement write after its read is cancelled", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const store = new PostgresRuntimeDurableWorkStore(db.database);
+    const stack = makeStack(fixture, { durableWork: store });
+    await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "accepted",
+    });
+    await db.database.update(sandboxes).set({ environmentGeneration: 2 }).where(eq(sandboxes.id, fixture.sandboxId));
+    const entered = deferred();
+    const release = deferred();
+    const read = store.read.bind(store);
+    vi.spyOn(store, "read").mockImplementation(async (...args) => {
+      const record = await read(...args);
+      entered.resolve();
+      await release.promise;
+      return record;
+    });
+    const write = vi.spyOn(store, "write");
+    const controller = new AbortController();
+    const reconciling = stack.owner.reconcileSessionWork(fixture.sessionId, controller.signal);
+    try {
+      await entered.promise;
+      controller.abort();
+      release.resolve();
+      await expect(reconciling).rejects.toBe(controller.signal.reason);
+      expect(write).not.toHaveBeenCalled();
+      const [record] = await db.database.select().from(runtimeDurableWork);
+      expect(record?.status).toBe("accepted");
+      expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(true);
+    } finally {
+      release.resolve();
+      await Promise.allSettled([reconciling]);
+      stack.grants.close();
+    }
+  });
+
+  it("does not start database preparation when a cancelled model lookup completes", async () => {
+    const fixture = await seedCloudSession();
+    const input = await deliveryInput(fixture, randomUUID());
+    const stack = makeStack(fixture);
+    const model = deferred<boolean>();
+    const allowed = vi.spyOn(stack.grants, "isModelAllowed").mockReturnValue(model.promise);
+    const selects = vi.spyOn(db.database, "select");
+    const controller = new AbortController();
+    const delivering = stack.owner.deliver(input, allowAdmission, controller.signal);
+    try {
+      await vi.waitFor(() => expect(allowed).toHaveBeenCalledOnce());
+      controller.abort();
+      model.resolve(true);
+      await expect(delivering).resolves.toEqual({ status: "unreachable", code: "delivery_timeout" });
+      expect(selects).not.toHaveBeenCalled();
+    } finally {
+      model.resolve(true);
+      await delivering;
+      selects.mockRestore();
+      stack.grants.close();
+    }
+  });
+
+  it("stops readiness polling on cancellation and never sends when the Runner arrives later", async () => {
+    const fixture = await seedCloudSession();
+    const input = await deliveryInput(fixture, randomUUID());
+    const ensureEnvironmentAllocated = vi.fn(async () => "pending" as const);
+    const stack = makeStack(fixture, {
+      allocation: {
+        ensureEnvironmentAllocated,
+        ensureSandbox: async () => ({ accountId: fixture.accountId, sandboxId: fixture.sandboxId }),
+      },
+      ensureTimeoutMs: 1_000,
+    });
+    const controller = new AbortController();
+    const delivering = stack.owner.deliver(input, allowAdmission, controller.signal);
+    try {
+      await vi.waitFor(() => expect(ensureEnvironmentAllocated).toHaveBeenCalledOnce());
+      controller.abort();
+      await expect(
+        Promise.race([delivering, new Promise((resolve) => setTimeout(() => resolve("late"), 300))]),
+      ).resolves.toEqual({
+        status: "unreachable",
+        code: "delivery_timeout",
+      });
+      const selects = vi.spyOn(db.database, "select");
+      const { sent } = await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(selects).not.toHaveBeenCalled();
+      selects.mockRestore();
+      expect(sent).toHaveLength(0);
+      expect(stack.owner.activeDispatchTargets).toBe(0);
+    } finally {
+      controller.abort();
+      await delivering;
+      stack.grants.close();
+    }
+  });
+
+  it.each([false, true])("does not resume late allocation preparation, parent cancelled=%s", async (cancelled) => {
+    const fixture = await seedCloudSession();
+    const input = await deliveryInput(fixture, randomUUID());
+    const allocation = deferred<"pending">();
+    const ensureEnvironmentAllocated = vi.fn(() => allocation.promise);
+    const stack = makeStack(fixture, {
+      allocation: {
+        ensureEnvironmentAllocated,
+        ensureSandbox: async () => ({ accountId: fixture.accountId, sandboxId: fixture.sandboxId }),
+      },
+      ensureTimeoutMs: 50,
+    });
+    const controller = new AbortController();
+    const delivering = stack.owner.deliver(input, allowAdmission, controller.signal);
+    try {
+      await vi.waitFor(() => expect(ensureEnvironmentAllocated).toHaveBeenCalledOnce());
+      if (cancelled) controller.abort();
+      await expect(delivering).resolves.toEqual({
+        status: "unreachable",
+        code: cancelled ? "delivery_timeout" : "runtime_not_ready",
+      });
+      const selects = vi.spyOn(db.database, "select");
+      allocation.resolve("pending");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(selects).not.toHaveBeenCalled();
+      selects.mockRestore();
+      expect(stack.owner.activeDispatchTargets).toBe(0);
+    } finally {
+      allocation.resolve("pending");
+      await delivering;
+      stack.grants.close();
+    }
+  });
+
+  it("rechecks cancellation after final admission waits and before the first frame", async () => {
+    const fixture = await seedCloudSession();
+    const input = await deliveryInput(fixture, randomUUID());
+    const stack = makeStack(fixture);
+    const { sent } = await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+    const admission = deferred();
+    const entered = deferred();
+    const controller = new AbortController();
+    const delivering = stack.owner.deliver(
+      input,
+      async (operation) => {
+        entered.resolve();
+        await admission.promise;
+        return { admitted: true, result: operation(() => undefined) };
+      },
+      controller.signal,
+    );
+    try {
+      await entered.promise;
+      controller.abort();
+      admission.resolve();
+      await expect(delivering).resolves.toEqual({ status: "unreachable", code: "delivery_timeout" });
+      expect(sent).toHaveLength(0);
+      expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
+      expect(await db.database.select().from(runtimeDurableWork)).toHaveLength(0);
+    } finally {
+      admission.resolve();
+      await delivering;
+      stack.grants.close();
+    }
   });
 
   it("cleans the serialized tail after an unexpected dispatch failure", async () => {

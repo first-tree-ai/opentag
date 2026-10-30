@@ -6,7 +6,7 @@ import {
   type SessionReconcileRequest,
   type TurnReportRequest,
 } from "@opentag/shared";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
 import {
@@ -26,6 +26,7 @@ import { STEER_TARGET_ENDED_ERROR_CODE } from "../../runtime/im-delivery-recover
 import { ImDeliveryWorker } from "../../runtime/im-delivery-worker.js";
 import { PostgresRuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
 import { ImMessageInbox } from "../../services/im/im-message-inbox.js";
+import { disableImBindingInTransaction } from "../../services/im-bindings/disable-im-binding.js";
 import {
   acceptAndSteer,
   createFixture,
@@ -672,6 +673,76 @@ describe("steered IM delivery recovery", () => {
     }
   });
 
+  it("shares one lock order with the binding disable path", async () => {
+    const fixture = await createFixture(client.database);
+    const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });
+    await acceptAndSteer(fixture, custody);
+    // A binding that needs reauthorization is a maintenance candidate whose Session is still live,
+    // so the real disable below has a Session row to end.
+    await client.database
+      .update(imBindings)
+      .set({ status: "reauthorization_required", updatedAt: fixture.now })
+      .where(eq(imBindings.id, fixture.bindingId));
+    const overdue = new Date(fixture.now.getTime() + 26 * 60 * 60_000);
+
+    // Two independent pools: one holds the lifecycle transaction, one runs the settlement.
+    const lifecycle = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
+    const maintenance = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
+    try {
+      const authorityHeld = deferred();
+      const resumeLifecycle = deferred();
+      const disabling = lifecycle.database.transaction(async (transaction) => {
+        // `ImBindingService.disable`: the Agent lock, then the binding lock, then the Session update.
+        await transaction.execute(sql`select id from agents where id = ${fixture.agentId}::uuid for update`);
+        await transaction.execute(sql`select id from im_bindings where id = ${fixture.bindingId}::uuid for update`);
+        authorityHeld.resolve();
+        await resumeLifecycle.promise;
+        await disableImBindingInTransaction(transaction, fixture.bindingId, overdue);
+      });
+      await authorityHeld.promise;
+
+      const settlement = runImDeliveryOverdueSettlement(maintenance.database, {
+        clock: () => overdue,
+        expiryBatchSize: 10,
+      });
+      // The settlement waits at the Agent lock, so it holds no Session lock the disable needs.
+      await expect(Promise.race([settlement.then(() => "settled" as const), sleep(300)])).resolves.toBeUndefined();
+      const [whileBlocked] = await client.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+      expect(whileBlocked).toMatchObject({ reportedAt: null, turnReport: null, reason: null });
+
+      resumeLifecycle.resolve();
+      // Neither side is aborted with 40P01: the lifecycle commits its disable, then the settlement
+      // re-reads the committed authority before it writes anything.
+      await expect(disabling).resolves.toBeUndefined();
+      await expect(settlement).resolves.toBeUndefined();
+
+      const [binding] = await client.database
+        .select({ status: imBindings.status })
+        .from(imBindings)
+        .where(eq(imBindings.id, fixture.bindingId));
+      const [session] = await client.database
+        .select({ endedAt: sessions.endedAt })
+        .from(sessions)
+        .where(eq(sessions.id, fixture.sessionId));
+      expect(binding?.status).toBe("disabled");
+      expect(session?.endedAt).toEqual(overdue);
+      // One deterministic winner: the disable. The settlement then settles the row exactly once
+      // because the authority it re-read is still gone.
+      const [settled] = await client.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+      expect(settled?.reportedAt).toEqual(overdue);
+      expect(settled?.turnReport).toMatchObject({ outcome: "unknown", errorReason: "turn_state_unknown" });
+    } finally {
+      await lifecycle.sql.end();
+      await maintenance.sql.end();
+    }
+  });
+
   it("blocks a maintenance settlement behind an uncommitted reactivation and then refuses it", async () => {
     const fixture = await createFixture(client.database);
     const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });
@@ -882,6 +953,15 @@ describe("steered IM delivery recovery", () => {
     );
   });
 });
+
+/** A promise plus its resolver, for holding a transaction open at a chosen point. */
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 /** Resolves after `ms`, so a barrier test can observe that a statement is still waiting. */
 function sleep(ms: number): Promise<undefined> {

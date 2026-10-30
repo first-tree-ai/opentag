@@ -114,8 +114,9 @@ export interface RuntimeCustodyStore extends RuntimeCustodyStoreDispatchRelease 
 export interface RecordTurnOptions {
   /**
    * Maintenance only: refuse the write unless the authority that justified a synthetic report is
-   * still absent, rechecked under row locks in this transaction. A genuine report never passes
-   * this.
+   * still absent. The transaction locks the Agent and the binding first, in the order the binding
+   * lifecycle mutates them, then the recovery Sessions, and rechecks the authority under those
+   * locks. A genuine report never passes this.
    */
   requireAbsentAuthority?: boolean;
 }
@@ -123,7 +124,14 @@ export interface RecordTurnOptions {
 export interface TerminalReportWriteOptions {
   /** The reason a settlement records beside the report; a real report writes none. */
   reason?: string;
-  requireAbsentAuthority?: boolean;
+}
+
+/** The identity a maintenance settlement locked before it took any recovery-Session lock. */
+export interface MaintenanceAuthority {
+  deliveryId: string;
+  sessionId: string;
+  bindingId: string;
+  agentId: string;
 }
 
 interface DeliveryScope {
@@ -143,8 +151,9 @@ interface DeliveryScope {
  * Callers own the custody fence (which report may land on which row) and the recovery-Session lock,
  * because that lock must precede every placement and delivery lock. Every other obligation of a
  * terminal report lives here, so the fenced `recordTurn` path and the historical-generation
- * settlement cannot drift. Returns the terminalized child ids, or `undefined` when the write matched
- * no row (a concurrent settlement or a refused maintenance authority).
+ * settlement cannot drift. The maintenance authority guard is deliberately not here: it has to take
+ * its row locks before the recovery-Session lock, so `recordTurn` runs it first. Returns the
+ * terminalized child ids, or `undefined` when the write matched no row.
  */
 export async function writeTerminalReport(
   transaction: DatabaseTransaction,
@@ -153,8 +162,6 @@ export async function writeTerminalReport(
   sessions: SessionEnsurer,
   options: TerminalReportWriteOptions = {},
 ): Promise<string[] | undefined> {
-  if (options.requireAbsentAuthority && !(await authorityStillAbsent(transaction, report.deliveryId, now)))
-    return undefined;
   const [written] = await transaction
     .update(imMessageDeliveries)
     .set({
@@ -175,47 +182,115 @@ export async function writeTerminalReport(
 }
 
 /**
- * Whether the authority that authorizes a maintenance settlement is still gone, decided under row
- * locks rather than by a read.
+ * Lock the rows that authorize a maintenance settlement, before any recovery-Session lock.
+ *
+ * The order is the one the binding lifecycle mutates in: `ImBindingService.disable` locks the Agent
+ * (`assertCanManageForMutation`), then the binding, and only then updates that binding's Sessions.
+ * A settlement that took the Session first would close a Session -> Agent -> binding -> Session cycle
+ * with a concurrent disable, which PostgreSQL answers with `40P01`. Taking the Agent and binding
+ * first makes one side wait at the first lock instead.
+ *
+ * Returns the identity it locked, so the caller can reload and recheck it under these locks.
+ */
+export async function lockMaintenanceAuthority(
+  transaction: DatabaseTransaction,
+  deliveryId: string,
+): Promise<MaintenanceAuthority | undefined> {
+  const [identity] = await transaction
+    .select({ sessionId: imMessageDeliveries.sessionId, bindingId: sessions.imBindingId })
+    .from(imMessageDeliveries)
+    .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+    .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+    .where(eq(imMessageDeliveries.id, deliveryId))
+    .limit(1);
+  if (!identity) return undefined;
+  const [agent] = await transaction
+    .select({ id: agents.id })
+    .from(agents)
+    .innerJoin(imBindings, eq(imBindings.id, identity.bindingId))
+    .where(eq(agents.id, imBindings.agentId))
+    .for("no key update", { of: agents })
+    .limit(1);
+  if (!agent) return undefined;
+  const [binding] = await transaction
+    .select({ id: imBindings.id })
+    .from(imBindings)
+    .where(eq(imBindings.id, identity.bindingId))
+    .for("no key update")
+    .limit(1);
+  if (!binding) return undefined;
+  return { deliveryId, sessionId: identity.sessionId, bindingId: identity.bindingId, agentId: agent.id };
+}
+
+/**
+ * Recheck the maintenance authority under the locks `lockMaintenanceAuthority` took, after the row
+ * and every identity have been reloaded.
  *
  * A cross-table `EXISTS` in the report `UPDATE` is not a guard: under Read Committed an uncommitted
  * reactivation is invisible to the statement's snapshot, and the reactivation touches other rows, so
- * both transactions commit and the persisted `unknown` beats the real owner. Taking `FOR NO KEY
- * UPDATE` on the Agent and then the binding makes a reactivation wait for this settlement (or this
- * settlement wait for it), and the recheck then reads the committed outcome. Order: the Agent before
- * the binding, matching `assertCanManageForMutation`, and after the recovery-Session lock the caller
- * already holds, matching `lockSteeredRecoverySessions`' documented order.
+ * both transactions commit and the persisted `unknown` beats the real owner. The locks taken first
+ * make a lifecycle mutation wait for this settlement (or this settlement wait for it), and this
+ * recheck then reads the committed outcome. Every identity is compared with what was locked, so a
+ * Session that moved to another binding, or a binding that moved to another Agent, refuses instead
+ * of authorizing a report for rows this transaction does not hold.
  */
-async function authorityStillAbsent(transaction: DatabaseTransaction, deliveryId: string, now: Date): Promise<boolean> {
+export async function maintenanceAuthorityAbsent(
+  transaction: DatabaseTransaction,
+  authority: MaintenanceAuthority,
+  now: Date,
+): Promise<boolean> {
   const [delivery] = await transaction
     .select({ sessionId: imMessageDeliveries.sessionId, acceptedAt: imMessageDeliveries.acceptedAt })
     .from(imMessageDeliveries)
-    .where(eq(imMessageDeliveries.id, deliveryId))
+    .where(eq(imMessageDeliveries.id, authority.deliveryId))
     .limit(1);
-  if (!delivery?.acceptedAt) return false;
+  if (!delivery || delivery.sessionId !== authority.sessionId || !delivery.acceptedAt) return false;
   if (now.getTime() < acceptedReportDeadlineMs(delivery.acceptedAt.getTime())) return false;
   const [session] = await transaction
-    .select({ endedAt: sessions.endedAt, bindingId: imBindings.id, agentId: agents.id })
+    .select({ endedAt: sessions.endedAt, bindingId: sessions.imBindingId })
     .from(sessions)
-    .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
-    .innerJoin(agents, eq(agents.id, imBindings.agentId))
-    .where(eq(sessions.id, delivery.sessionId))
+    .where(eq(sessions.id, authority.sessionId))
     .limit(1);
-  if (!session) return false;
+  if (!session || session.bindingId !== authority.bindingId) return false;
+  const [binding] = await transaction
+    .select({ status: imBindings.status, agentId: imBindings.agentId })
+    .from(imBindings)
+    .where(eq(imBindings.id, authority.bindingId))
+    .limit(1);
+  if (!binding || binding.agentId !== authority.agentId) return false;
   const [agent] = await transaction
     .select({ status: agents.status })
     .from(agents)
-    .where(eq(agents.id, session.agentId))
-    .for("no key update")
+    .where(eq(agents.id, authority.agentId))
     .limit(1);
-  const [binding] = await transaction
-    .select({ status: imBindings.status })
-    .from(imBindings)
-    .where(eq(imBindings.id, session.bindingId))
-    .for("no key update")
-    .limit(1);
-  if (!agent || !binding) return false;
+  if (!agent) return false;
   return session.endedAt !== null || binding.status !== "active" || agent.status === "deleted";
+}
+
+type MaintenanceGate = { ok: true; authority?: MaintenanceAuthority } | { ok: false };
+
+/**
+ * The maintenance gate as one step: take the Agent and binding locks first when the caller asked for
+ * the maintenance authority, or pass through for a genuine report.
+ */
+async function maintenanceGate(
+  transaction: DatabaseTransaction,
+  deliveryId: string,
+  enabled: boolean,
+): Promise<MaintenanceGate> {
+  if (!enabled) return { ok: true };
+  const authority = await lockMaintenanceAuthority(transaction, deliveryId);
+  return authority ? { ok: true, authority } : { ok: false };
+}
+
+/** Recheck the gate after the row reload. A genuine report has nothing to recheck. */
+async function maintenanceStillAbsent(
+  transaction: DatabaseTransaction,
+  gate: MaintenanceGate,
+  now: Date,
+): Promise<boolean> {
+  if (!gate.ok) return false;
+  return gate.authority ? maintenanceAuthorityAbsent(transaction, gate.authority, now) : true;
 }
 
 export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
@@ -609,6 +684,14 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
   ): Promise<TurnReportResult["status"] | undefined> {
     const terminalizedIds: string[] = [];
     const status = await this.#database.transaction(async (transaction) => {
+      /*
+       * A maintenance report locks the Agent and the binding first, in the order the binding
+       * lifecycle mutates them, and only then the recovery Sessions: `ImBindingService.disable`
+       * holds Agent and binding and then updates this Session, so the reverse order would close a
+       * Session -> Agent -> binding -> Session cycle. Ordinary reports take no Agent or binding lock.
+       */
+      const gate = await maintenanceGate(transaction, report.deliveryId, options.requireAbsentAuthority === true);
+      if (!gate.ok) return "conflict";
       if (report.outcome !== "completed") await lockSteeredRecoverySessions(transaction, [report.deliveryId]);
       const scope = await this.#deliveryScope(transaction, report.deliveryId);
       if (!scope) return undefined;
@@ -617,9 +700,9 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       const replay = recordedReportStatus(scope.delivery, report);
       if (replay) return replay;
       if (!recordTurnFenceMatches(scope, context, report)) return undefined;
-      const terminalized = await writeTerminalReport(transaction, report, this.#now(), this.#sessions, {
-        ...(options.requireAbsentAuthority ? { requireAbsentAuthority: true } : {}),
-      });
+      // Reloaded under every lock now held: the authority, and the identities it was locked for.
+      if (!(await maintenanceStillAbsent(transaction, gate, this.#now()))) return "conflict";
+      const terminalized = await writeTerminalReport(transaction, report, this.#now(), this.#sessions);
       if (!terminalized) return "conflict";
       terminalizedIds.push(...terminalized);
       return "recorded" as const;

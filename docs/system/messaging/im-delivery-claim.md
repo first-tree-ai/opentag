@@ -63,10 +63,10 @@ an inactive binding, a deleted Agent, or a superseded placement generation puts 
 `#recover`'s query, outside the selector, or behind a custody fence a report can no longer satisfy.
 That sweep is bounded by the same batch size, requires the row to be provably past the
 report-acceptance window, skips a row that another worker currently claims, and writes the same
-`unknown` report, so it settles the rows it selects. Before it writes, it re-reads the authority it
-selected the row for under row locks on the Agent and the binding: an uncommitted reactivation then
-blocks the settlement instead of being invisible to it, and a committed one refuses it. It covers
-Local custody only; Cloud custody stays with the Cloud owner's own acceptance cutoff.
+`unknown` report, so it settles the rows it selects. Before it writes, it locks the Agent and the
+binding and re-reads the authority it selected the row for under those locks: an uncommitted
+reactivation then blocks the settlement instead of being invisible to it, and a committed one refuses
+it. It covers Local custody only; Cloud custody stays with the Cloud owner's own acceptance cutoff.
 
 A superseded placement needs one difference. `PostgresRuntimeCustodyStore` requires the delivery's
 generation, the report's generation, and the current `session_placements.generation` to agree, and a
@@ -78,10 +78,15 @@ acceptance window closed, a superseded generation, no live claim marker, and Loc
 writes the same report body, keeps the delivery's own historical `placement_generation` (it is never
 re-anchored), and records `reason = placement_superseded`. It does not consult
 `report_owner_instance_id`: a superseded generation cannot report whatever instance is live now.
-The settlement takes the recovery-Session locks before it reloads the row, because
-`lockSteeredRecoverySessions` and `recordTurn` both require the Session lock to precede every
-placement and delivery lock; taking the delivery lock first would form a `40P01` cycle with a
-concurrent non-completed report.
+Lock order is part of the contract here. The rollover settlement takes the recovery-Session locks
+before it reloads the row, because `lockSteeredRecoverySessions` and `recordTurn` both require the
+Session lock to precede every placement and delivery lock; taking the delivery lock first would form a
+`40P01` cycle with a concurrent non-completed report. The maintenance report path instead locks the
+Agent and the binding **before** the recovery Sessions, in the order the binding lifecycle mutates
+them: `ImBindingService.disable` holds the Agent, then the binding, and then ends that binding's
+Sessions, so a maintenance settlement that held a Session first would close a
+Session → Agent → binding → Session cycle with a concurrent disable. After the reorder it reloads the
+row and every identity it locked, rechecks the authority, and only then writes.
 `recordTurn` and its fence are unchanged for every real report; a genuine report issued after the
 settlement is refused by that same fence and never overwrites the recorded outcome, and the
 `reported_at` gate plus the row lock make the settlement exactly once. Because the settled target now

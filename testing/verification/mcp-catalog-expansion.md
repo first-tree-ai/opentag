@@ -82,7 +82,7 @@ Selection and evidence: [authentication contracts](../research/mcp-no-backend-se
 - `pnpm build` and `pnpm typecheck`: all workspace consumers, because the catalog adds a public setup type and helpers.
 - Generator tests: 54 passed; catalog package tests: 99 passed.
 - Public catalog API consumer tests: 40 passed. Their two assertions now account for setup-only entries and the existing 50-result search bound; no Server implementation changed.
-- Discover component regressions: 27 passed after the final guidance changes; the earlier focused MCP run passed 40 tests.
+- Discover component regressions: 35 passed, including eight customer setup cases added for unit/patch coverage after the complete Web run. They cover validation before writes, separate key payloads, retry, provisional mount/definition cleanup, incompatible auth/environment isolation, and the same-session cache regression. The earlier focused MCP run passed 40 tests.
 - Browser coverage: all 71 distinct cases passed across the 20-case expansion suite and 51 existing MCP cases, including real local MCP/OAuth peers. Initial new-test failures were fixed by waiting for menu rendering and authorization requests, and by asserting the directory modal before opening management rows.
 - Complete Web suite: 184 files, 2,339 tests passed, because the generator, catalog type, and add flow change.
 - PostgreSQL integration and Agent Runtime coverage are left to CI: this implementation changes neither persistence behavior nor Agent Runtime code.
@@ -100,3 +100,7 @@ An independent agent reviewed the full implementation before commit. Findings co
 bearer methods, mixed-script product-name ranking, incompatible authorization reuse, and reuse of
 an already-mounted cached definition after an override. Each finding is fixed with regression
 coverage. Browser fixtures enforce duplicate-attach conflicts so that they cannot hide the cache bug.
+
+The test-only follow-up received independent review; fixture cleanup removes definitions and waits
+for pending authorization to settle before cancellation. Production behavior and the validated
+browser build are unchanged.

@@ -36,6 +36,16 @@ const cloudSession: ManagedSessionContext = {
 };
 
 describe("renderManagedSystemPrompt Agent Home", () => {
+  it("describes native configuration only for Local Claude, independently of Server self-configuration", () => {
+    const claude = { ...snapshot, provider: "claude-code" as const };
+    const prompt = renderManagedSystemPrompt(claude, { ...session, selfConfigurationEnabled: false });
+    expect(prompt).toContain("## Native Claude configuration");
+    expect(prompt).toContain("Prefer project scope under Agent Home");
+    expect(prompt).toContain("Native local and stdio MCP configuration does not use opentag self mcp");
+    expect(renderManagedSystemPrompt(snapshot, session)).not.toContain("## Native Claude configuration");
+    expect(renderManagedSystemPrompt(claude, cloudSession)).not.toContain("## Native Claude configuration");
+  });
+
   it.each([session, cloudSession])(
     "provides fixed CLI manuals in the $environment visible Session prompt",
     (context) => {

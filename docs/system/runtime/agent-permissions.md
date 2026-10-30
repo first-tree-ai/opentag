@@ -9,13 +9,22 @@ Local Codex Agents use `workspace-write` with `on-request` approvals and disable
 access. Local Claude Code Agents use `auto`: its native classifier reviews actions and its permission
 callback sends remaining requests to the task sender. Claude Code must support `auto` and
 `--permission-prompt-tool`. Claude's native gate does not provide an OS sandbox.
-Claude loads no user or project settings and disables hooks and dynamic skill shell execution.
-Only explicitly synced skills and packaged Context Tree skills are linked into a private skills-only
-plugin as `opentag:<skill-name>`. Unavailable skills are skipped. Skills retain their native metadata
-and use their original instructions and resources; edits remain visible during a run. Claude honors
+Local Claude loads native user, project, and local settings, plugins, hooks, and Skill shell execution.
+Its environment preserves operator-provided plugin variables. Users and Agents manage these through
+native configuration and commands, preferably at project scope under the existing Agent Home.
+Provider homes, native login, and Session history locations stay unchanged. Global settings retain
+their native scope; project directories do not isolate them.
+Claude discovers synced project Skills natively. External packaged Skills, including Context Tree
+Skills, are linked into the private `opentag` plugin as `opentag:<skill-name>`, without linking the
+project Skills a second time. Unavailable external Skills are skipped. Skills retain native metadata
+and original resources; edits remain visible during a run. Claude honors
 skill `allowed-tools` grants, which can pre-approve commands otherwise subject to approval. Approvals
 are practical guardrails, not isolation from writable skills or approval-free file reads and uploads.
-Subscription login is preserved.
+The same private plugin contains only OpenTag's supplemental MCP configuration. Its native plugin
+namespace keeps platform tools and pre-approval rules separate from user MCP servers with the same
+unqualified names. Native plugins and hooks execute as trusted local code and can run outside tool
+approvals. Subscription login is preserved. Routine model-option queries suppress hooks and MCP
+connections; their success does not establish that an installed plugin loaded or its tools worked.
 Pi always runs without approvals and has no permission settings or permission extension.
 
 Native command rules allow Feishu and Slack message reads, sends, edits, reactions, conversation

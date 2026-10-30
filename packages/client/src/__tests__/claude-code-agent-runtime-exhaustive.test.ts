@@ -301,6 +301,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
         url: "https://server.example.test/api/v1/mcp",
         token: "otmg_secret",
       },
+      "/workspace",
     );
     await gatewayRuntime.close();
 
@@ -551,10 +552,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
         request: withPolicy({ fileSystem: "unrestricted", network: "enabled" }),
         expected: (args) => {
           expect(argumentAfter(args, "--permission-mode")).toBe("bypassPermissions");
-          expect(JSON.parse(argumentAfter(args, "--settings") as string)).toEqual({
-            disableAllHooks: true,
-            disableSkillShellExecution: true,
-          });
+          expect(JSON.parse(argumentAfter(args, "--settings") as string)).toEqual({});
           expect(args).not.toContain("--tools");
         },
       },
@@ -562,10 +560,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
         request: withPolicy({ tools: { mode: "allow-list", names: [] } }),
         expected: (args) => {
           expect(argumentAfter(args, "--tools")).toBe("");
-          expect(JSON.parse(argumentAfter(args, "--settings") as string)).toEqual({
-            disableAllHooks: true,
-            disableSkillShellExecution: true,
-          });
+          expect(JSON.parse(argumentAfter(args, "--settings") as string)).toEqual({});
         },
       },
       {
@@ -717,13 +712,16 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
         process: { command: missingPromptFlagCommand, env: { PATH: process.env.PATH } },
       }).probe({}),
     ).resolves.toMatchObject({ ready: false, issues: [{ code: "version_incompatible" }] });
-    const persistenceSafe = new ClaudeCodeAgentRuntimeFactory({
+    const nativeEnvironment = new ClaudeCodeAgentRuntimeFactory({
       process: {
         command,
         env: { PATH: process.env.PATH, CLAUDE_CODE_SKIP_PROMPT_HISTORY: "1" },
       },
     });
-    await expect(persistenceSafe.probe({})).resolves.toMatchObject({ ready: true });
+    await expect(nativeEnvironment.probe({})).resolves.toMatchObject({
+      ready: false,
+      issues: [{ code: "credential_missing" }],
+    });
 
     for (const credential of [
       { ANTHROPIC_API_KEY: "key" },
@@ -818,18 +816,13 @@ echo '{"loggedIn":true}'
     });
   });
 
-  it("probes credentials without loading writable settings, matching the runtime", async () => {
+  it("probes the same native setting sources as runtime execution", async () => {
     const directory = await temporaryDirectory("opentag-claude-probe-");
     const authArguments = join(directory, "auth-arguments");
     const userCredentialCommand = join(directory, "claude-user-credential");
-    /*
-     * The credential lives in user-level settings: the CLI defaults report a login that the
-     * settings-free runtime can never use. The probe must not repeat that false positive, so
-     * this fixture only reports `loggedIn` when the default sources are in effect.
-     */
     await writeFile(
       userCredentialCommand,
-      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "auto" --append-system-prompt\\n"; exit 0; fi\nprintf '%s\\n' "$*" > '${authArguments}'\nif [ "$1" = "--setting-sources" ] && [ "$2" = "" ]; then printf '{"loggedIn":false}\\n'; exit 1; fi\nprintf '{"loggedIn":true}\\n'\n`,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "auto" --append-system-prompt\\n"; exit 0; fi\nprintf '%s\\n' "$*" > '${authArguments}'\nif [ "$1" = "--setting-sources" ] && [ "$2" = "user,project,local" ]; then printf '{"loggedIn":false}\\n'; exit 1; fi\nprintf '{"loggedIn":true}\\n'\n`,
       "utf8",
     );
     await chmod(userCredentialCommand, 0o755);
@@ -841,13 +834,15 @@ echo '{"loggedIn":true}'
       version: "2.1.210 (Claude Code)",
       issues: [{ code: "credential_missing" }],
     });
-    await expect(readFile(authArguments, "utf8")).resolves.toBe("--setting-sources  auth status --json\n");
+    await expect(readFile(authArguments, "utf8")).resolves.toBe(
+      "--setting-sources user,project,local auth status --json\n",
+    );
 
     // Subscription or API credentials that do not require settings still report ready.
     const nativeCredentialCommand = join(directory, "claude-native-credential");
     await writeFile(
       nativeCredentialCommand,
-      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "auto" --append-system-prompt\\n"; exit 0; fi\nif [ "$1" = "--setting-sources" ] && [ "$2" = "" ]; then printf '{"loggedIn":true}\\n'; exit 0; fi\nprintf '{"loggedIn":false}\\n'; exit 1\n`,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "auto" --append-system-prompt\\n"; exit 0; fi\nif [ "$1" = "--setting-sources" ] && [ "$2" = "user,project,local" ]; then printf '{"loggedIn":true}\\n'; exit 0; fi\nprintf '{"loggedIn":false}\\n'; exit 1\n`,
       "utf8",
     );
     await chmod(nativeCredentialCommand, 0o755);

@@ -167,7 +167,7 @@ describe("Agent Runtime Client Turn vertical", () => {
       finalText: "claude-answer",
     });
     expect(fixture.claudeProcesses).toHaveLength(1);
-    expect(fixture.claudeProcesses[0]?.args).toContain("--strict-mcp-config");
+    expect(fixture.claudeProcesses[0]?.args).toContain("--plugin-dir");
     expect(await fixture.store.read("agent-1", "session-1")).toMatchObject({
       provider: "claude-code",
       runtimeBinding: { providerId: "claude-code", schemaVersion: 1 },
@@ -486,7 +486,6 @@ describe("Agent Runtime Client Turn vertical", () => {
     const launched = fixture.claudeProcesses[0];
     expect(launched).toBeDefined();
 
-    // The file exists, is the one named on the command line, and carries the gateway entry.
     const configuration = JSON.parse(launched?.mcpConfig ?? "{}") as {
       mcpServers: Record<string, { type: string; url: string; headers: Record<string, string> }>;
     };
@@ -496,13 +495,12 @@ describe("Agent Runtime Client Turn vertical", () => {
       headers: { Authorization: `Bearer ${gateway.token}` },
     });
 
-    // And the CLI is actually pointed at it, with the whole-server rule that admits every
-    // aggregated tool — the names of which are not known when this file is written.
     const args = launched?.args ?? [];
-    expect(args).toContain("--strict-mcp-config");
-    expect(args[args.indexOf("--mcp-config") + 1]).toBeTruthy();
+    expect(args).not.toContain("--strict-mcp-config");
+    expect(args).not.toContain("--mcp-config");
+    expect(args[args.indexOf("--plugin-dir") + 1]).toBeTruthy();
     expect(args).toContain("--allowedTools");
-    expect(args).toContain("mcp__opentag-mcp");
+    expect(args).toContain("mcp__plugin_opentag_opentag-mcp");
   });
 
   it("writes no gateway entry when the Server granted no MCP service", async () => {
@@ -512,7 +510,7 @@ describe("Agent Runtime Client Turn vertical", () => {
     await fixture.waitForReport(0);
     const launched = fixture.claudeProcesses[0];
     expect(JSON.parse(launched?.mcpConfig ?? "{}")).toEqual({ mcpServers: {} });
-    expect(launched?.args ?? []).not.toContain("mcp__opentag-mcp");
+    expect(launched?.args ?? []).not.toContain("mcp__plugin_opentag_opentag-mcp");
   });
 });
 
@@ -988,11 +986,7 @@ class ScriptedTurnClient implements InteractiveCodexAppServerClient {
 
 class ScriptedClaudeCodeProcess implements ClaudeCodeProcessClient {
   readonly args: readonly string[];
-  /**
-   * The `--mcp-config` file as it stood when the process was created — which is exactly when the
-   * real CLI reads it, and after which the bridge deletes it. Captured here because no assertion
-   * outside the run can see it.
-   */
+  /** Capture the private plugin configuration before per-run cleanup deletes it. */
   readonly mcpConfig: string | undefined;
   readonly #failSpawn: boolean;
   readonly #terminalGate: Promise<void>;
@@ -1001,8 +995,8 @@ class ScriptedClaudeCodeProcess implements ClaudeCodeProcessClient {
     this.args = args;
     this.#failSpawn = failSpawn;
     this.#terminalGate = terminalGate;
-    const configPath = args[args.indexOf("--mcp-config") + 1];
-    this.mcpConfig = configPath ? readFileSync(configPath, "utf8") : undefined;
+    const pluginPath = args[args.indexOf("--plugin-dir") + 1];
+    this.mcpConfig = pluginPath ? readFileSync(resolve(pluginPath, ".mcp.json"), "utf8") : undefined;
   }
 
   async execute(

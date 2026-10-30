@@ -66,4 +66,14 @@ describe("Claude native skill links", () => {
     await linkClaudeSkills(f.plugin, []);
     expect(await readdir(join(f.plugin, "skills"))).toEqual([]);
   });
+
+  it("lets Claude discover project skills once and links only external packaged skills", async () => {
+    const f = await fixture();
+    const project = await skill(join(f.skills, "project"), "project");
+    const packaged = await skill(join(f.home, "packaged", "memory"), "memory");
+    await linkClaudeSkills(f.plugin, [project, packaged], join(f.home, "workspace"));
+    expect(await readdir(join(f.plugin, "skills"))).toEqual(["memory"]);
+    expect(await readFile(join(project, "SKILL.md"), "utf8")).toContain("name: project");
+    expect(await realpath(join(f.plugin, "skills", "memory"))).toBe(await realpath(packaged));
+  });
 });

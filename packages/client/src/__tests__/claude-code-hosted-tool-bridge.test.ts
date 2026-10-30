@@ -19,7 +19,7 @@ describe("Claude Code hosted tool bridge", () => {
       join(skills, "example"),
     ]);
     try {
-      expect(await readdir(bridge.pluginPath)).toEqual(["skills"]);
+      expect(await readdir(bridge.pluginPath)).toEqual([".mcp.json", "skills"]);
       expect(await realpath(join(bridge.pluginPath, "skills", "example"))).toBe(
         await realpath(join(skills, "example")),
       );
@@ -36,7 +36,7 @@ describe("Claude Code hosted tool bridge", () => {
     }
   });
 
-  it("always supplies a private strict-MCP configuration and removes it idempotently", async () => {
+  it("supplies a private namespaced plugin MCP configuration and removes it idempotently", async () => {
     const bridge = await startClaudeCodeHostedToolBridge(undefined, "run-empty", new AbortController().signal, []);
     expect(bridge.allowedTools).toEqual([]);
     await expect(readFile(bridge.configPath, "utf8")).resolves.toBe('{"mcpServers":{}}\n');
@@ -80,7 +80,10 @@ describe("Claude Code hosted tool bridge", () => {
         body: typeof body === "string" ? body : JSON.stringify(body),
       });
 
-    expect(bridge.allowedTools).toEqual(["mcp__opentag__example_success", "mcp__opentag__example_failure"]);
+    expect(bridge.allowedTools).toEqual([
+      "mcp__plugin_opentag_opentag__example_success",
+      "mcp__plugin_opentag_opentag__example_failure",
+    ]);
     await expect(
       rpc({ jsonrpc: "2.0", id: 1, method: "initialize" }).then((response) => response.json()),
     ).resolves.toMatchObject({ result: { capabilities: { tools: {} }, serverInfo: { name: "OpenTag" } } });
@@ -247,7 +250,7 @@ describe("Claude Code MCP gateway entry", () => {
       gateway,
     );
     try {
-      expect(bridge.allowedTools).toEqual(["mcp__opentag-mcp"]);
+      expect(bridge.allowedTools).toEqual(["mcp__plugin_opentag_opentag-mcp"]);
     } finally {
       await bridge.close();
     }
@@ -266,7 +269,7 @@ describe("Claude Code MCP gateway entry", () => {
         mcpServers: Record<string, unknown>;
       };
       expect(Object.keys(configuration.mcpServers).sort()).toEqual(["opentag", "opentag-mcp"]);
-      expect(bridge.allowedTools).toEqual(["mcp__opentag__example", "mcp__opentag-mcp"]);
+      expect(bridge.allowedTools).toEqual(["mcp__plugin_opentag_opentag__example", "mcp__plugin_opentag_opentag-mcp"]);
     } finally {
       await bridge.close();
     }

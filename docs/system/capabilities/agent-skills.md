@@ -246,6 +246,12 @@ have, verifies the sha256, and materializes it:
 | Codex | Agent-scoped only: `<workspace>/.agents/skills/<name>/`, or a per-Agent `CODEX_HOME`; otherwise out of v1 |
 | Pi | explicit `--skill <path>` arguments |
 
+Local Claude discovers its project Skills in `.claude/skills` through native configuration. OpenTag
+does not also link those paths into its private plugin. External packaged Skills, including Context
+Tree Skills, retain the `opentag:<name>` plugin namespace. This preserves the original resources and
+avoids offering a synced project Skill twice. Native user plugins and Skills are separate from the
+platform's archive ownership and marker-based synchronization.
+
 **Codex materialization must be Agent-scoped.** The only acceptable targets are the workspace's
 `.agents/skills` or a per-Agent `CODEX_HOME`. The OS account home's `.agents/skills` is shared by
 every Agent on the Computer and is **never** a target or a fallback — writing there would expose one

@@ -1054,12 +1054,26 @@ execution has since been replaced.
 its SHA-256 digest, one live token per execution, revoked from the single point every execution ends
 at — explicit close, connection replacement, owner loss, and the stale sweep alike. That is what
 makes writing a bearer into a provider config file acceptable: a token a prompt-injected Agent reads
-out of `mcp.json` buys no access after the turn.
+out of the temporary MCP configuration buys no access after the turn.
 
 The token is fetched through its own `runtime:mcp:gateway` frame rather than returned with the
 execution-open result, because that result has never carried a secret and both existing secrets in
 the protocol — capability tokens and proxy tickets — are fetched the same way. The Client composes
 the endpoint URL against the Server origin it already pinned; only the fixed path crosses the wire.
+
+### Claude Code native configuration
+
+Local Claude reads its native user, project, local, and plugin MCP configuration. OpenTag supplements
+it through `.mcp.json` inside the existing private `opentag` plugin, rather than an exclusive
+`--mcp-config`. The gateway's native name is `plugin:opentag:opentag-mcp`; its tool prefix is
+`mcp__plugin_opentag_opentag-mcp__`. Hosted tools use `plugin:opentag:opentag`. Their permission grants
+refer only to these plugin namespaces, so a user server named `opentag-mcp` retains its own endpoint
+and never receives OpenTag's pre-approval.
+
+Each Run receives a fresh private plugin configuration with that execution's bearer. Cleanup removes
+only that temporary plugin; it never rewrites user MCP files. Upstream credentials and Server-side
+authorization still use the existing gateway. Native local MCP services use their own configuration
+and credentials, without being registered in the platform catalog or sent to the Server.
 
 ### Codex: rebinding the thread per run
 

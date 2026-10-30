@@ -126,6 +126,20 @@ describe("selected Runtime full-probe adapter", () => {
     expect(environment.environment.OPENTAG_SERVER_URL).toBeUndefined();
   });
 
+  it("preserves Claude native plugin variables with the same home and environment as the daemon", async () => {
+    const home = await isolatedHome();
+    const source = { HOME: home, PATH: "/test/bin", PLUGIN_API_KEY: "fixture-plugin-key" };
+    const resolved = await resolveRuntimeProbeEnvironment("claude-code", source);
+    expect(resolved.environment).toEqual(
+      client.claudeCodeProcessEnvironment(source, resolved.home, join(home, ".claude")),
+    );
+    expect(resolved.environment.PLUGIN_API_KEY).toBe("fixture-plugin-key");
+    expect(resolved.environment.CLAUDE_CONFIG_DIR).toBeUndefined();
+    const { claude } = mockFactories();
+    await probeRuntimeComponent({ provider: "claude-code", environment: source });
+    expect(claude).toHaveBeenCalledWith(expect.objectContaining({ environment: resolved.environment }));
+  });
+
   it("preserves exact custom Codex home through the daemon's canonical environment filter", async () => {
     const home = await isolatedHome();
     const custom = join(home, "codex-config");

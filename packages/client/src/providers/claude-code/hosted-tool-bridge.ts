@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MCP_GATEWAY_ALLOWED_TOOL_RULE, MCP_GATEWAY_SERVER_NAME } from "@opentag/shared";
+import { MCP_GATEWAY_SERVER_NAME } from "@opentag/shared";
 import type { AgentHostedTools, JsonValue } from "../../agent-runtime/types.js";
 import { assertJsonValue } from "../../agent-runtime/validation.js";
 import { createLogger } from "../../observability/logger.js";
@@ -14,6 +14,7 @@ const MCP_PROTOCOL_VERSION = "2025-03-26";
 const logger = createLogger("provider-claude-mcp");
 /** The loopback server carrying OpenTag's own hosted tools. */
 const LOCAL_SERVER_NAME = "opentag";
+const PLUGIN_TOOL_PREFIX = "mcp__plugin_opentag_";
 
 /** The remote MCP gateway for this execution; both fields are opaque to this module. */
 export interface ClaudeCodeMcpGatewayEndpoint {
@@ -34,6 +35,7 @@ export async function startClaudeCodeHostedToolBridge(
   signal: AbortSignal,
   skillPaths: readonly string[],
   mcpGateway?: ClaudeCodeMcpGatewayEndpoint,
+  cwd?: string,
 ): Promise<ClaudeCodeHostedToolBridge> {
   signal.throwIfAborted();
   const definitions = new Map((hostedTools?.definitions ?? []).map((definition) => [definition.name, definition]));
@@ -42,11 +44,11 @@ export async function startClaudeCodeHostedToolBridge(
   }
 
   const directory = await mkdtemp(join(tmpdir(), "opentag-claude-mcp-"));
-  const configPath = join(directory, "mcp.json");
   const pluginPath = join(directory, "opentag");
+  const configPath = join(pluginPath, ".mcp.json");
   let server: Server | undefined;
   try {
-    await linkClaudeSkills(pluginPath, skillPaths);
+    await linkClaudeSkills(pluginPath, skillPaths, cwd);
     /*
      * The two entries are independent. The loopback bridge exists only when this run has hosted
      * tools; the remote gateway only when the execution holds a bearer. An MCP-only run must still
@@ -117,8 +119,8 @@ export async function startClaudeCodeHostedToolBridge(
      * that server.
      */
     allowedTools: [
-      ...[...definitions.keys()].map((name) => `mcp__${LOCAL_SERVER_NAME}__${name}`),
-      ...(mcpGateway ? [MCP_GATEWAY_ALLOWED_TOOL_RULE] : []),
+      ...[...definitions.keys()].map((name) => `${PLUGIN_TOOL_PREFIX}${LOCAL_SERVER_NAME}__${name}`),
+      ...(mcpGateway ? [`${PLUGIN_TOOL_PREFIX}${MCP_GATEWAY_SERVER_NAME}`] : []),
     ],
     configPath,
     pluginPath,

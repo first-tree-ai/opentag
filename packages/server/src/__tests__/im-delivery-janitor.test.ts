@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agents,
   computers,
@@ -102,6 +102,101 @@ describe("runImDeliveryExpiry", () => {
 
     expect(await deliveryRow(unit, local.deliveryId)).toMatchObject({ state: "expired", reason: "ttl" });
     expect(await deliveryRow(unit, cloud.deliveryId)).toMatchObject({ state: "pending", reason: null });
+  });
+});
+
+describe("runImDeliveryOverdueSettlement", () => {
+  it("settles an overdue accepted delivery whose Session ended, which no work path can reach", async () => {
+    const now = new Date();
+    const settled = vi.fn();
+    const overdue = await seedScope(unit, {
+      kind: "local",
+      occurredAt: aged(now),
+      expiresAt: aged(now),
+      ended: true,
+      state: "accepted-unreported",
+    });
+
+    await runImDeliveryExpiry(unit.database, janitorOptions(now), settled);
+
+    const row = await deliveryRow(unit, overdue.deliveryId);
+    expect(row).toMatchObject({ state: "accepted" });
+    expect(row?.reportedAt).toEqual(now);
+    expect(row?.turnReport).toMatchObject({
+      outcome: "unknown",
+      executionEffects: "may_have_occurred",
+      errorReason: "turn_state_unknown",
+      turnId: "turn-id",
+    });
+    expect(settled).toHaveBeenCalledExactlyOnceWith(overdue.deliveryId);
+  });
+
+  it("settles overdue custody whose binding was deactivated", async () => {
+    const now = new Date();
+    const overdue = await seedScope(unit, {
+      kind: "local",
+      occurredAt: aged(now),
+      expiresAt: aged(now),
+      state: "accepted-unreported",
+    });
+    await unit.database
+      .update(imBindings)
+      .set({ status: "disabled", disabledAt: now, activatedAt: null, encryptedCredential: null })
+      .where(eq(imBindings.id, overdue.bindingId));
+
+    await runImDeliveryExpiry(unit.database, janitorOptions(now));
+
+    expect(await deliveryRow(unit, overdue.deliveryId)).toMatchObject({
+      state: "accepted",
+      turnReport: expect.objectContaining({ errorReason: "turn_state_unknown" }),
+    });
+  });
+
+  it("leaves custody alone until the report-acceptance window has closed", async () => {
+    const now = new Date();
+    const fresh = await seedScope(unit, {
+      kind: "local",
+      occurredAt: new Date(now.getTime() - 60 * 60_000),
+      expiresAt: aged(now),
+      ended: true,
+      state: "accepted-unreported",
+    });
+
+    await runImDeliveryExpiry(unit.database, janitorOptions(now));
+
+    expect(await deliveryRow(unit, fresh.deliveryId)).toMatchObject({ reportedAt: null, turnReport: null });
+  });
+
+  it("leaves overdue custody alone while the authority chain is live", async () => {
+    const now = new Date();
+    const liveAuthority = await seedScope(unit, {
+      kind: "local",
+      occurredAt: aged(now),
+      expiresAt: aged(now),
+      state: "accepted-unreported",
+    });
+
+    await runImDeliveryExpiry(unit.database, janitorOptions(now));
+
+    expect(await deliveryRow(unit, liveAuthority.deliveryId)).toMatchObject({
+      reportedAt: null,
+      turnReport: null,
+    });
+  });
+
+  it("leaves an overdue Cloud delivery to the Cloud owner", async () => {
+    const now = new Date();
+    const cloud = await seedScope(unit, {
+      kind: "cloud",
+      occurredAt: aged(now),
+      expiresAt: aged(now),
+      ended: true,
+      state: "accepted-unreported",
+    });
+
+    await runImDeliveryExpiry(unit.database, janitorOptions(now));
+
+    expect(await deliveryRow(unit, cloud.deliveryId)).toMatchObject({ reportedAt: null, turnReport: null });
   });
 });
 

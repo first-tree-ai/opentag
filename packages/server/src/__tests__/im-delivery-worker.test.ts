@@ -1476,7 +1476,8 @@ describe("ImDeliveryWorker database workflow", () => {
 
       worker.start();
       await vi.advanceTimersByTimeAsync(10);
-      expect(maintenanceExecute).toHaveBeenCalledTimes(2);
+      // One expiry pass: steer recovery, the overdue-custody sweep, and the bounded TTL expiry.
+      expect(maintenanceExecute).toHaveBeenCalledTimes(3);
       expect(database.transaction).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(10);

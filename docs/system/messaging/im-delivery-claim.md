@@ -58,6 +58,14 @@ while the delivery is still accepted, unreported, and at that attempt; a late re
 attempt wins. The response never fabricates a report, expires accepted custody, or dispatches
 the input again. Only the actual report settles custody.
 
+The expiry pass also sweeps accepted custody that no work path can reach any more: an ended Session,
+an inactive binding, or a deleted Agent puts the row outside `#recover`'s query and outside the
+selector, so nothing else would settle it. That sweep is bounded by the same batch size, requires
+the row to be provably past the report-acceptance window, skips a row that another worker currently
+claims, and writes the same `unknown` report through the same custody fence, so it settles exactly
+the rows a real report could no longer describe. It covers Local custody only; Cloud custody stays
+with the Cloud owner's own acceptance cutoff.
+
 An accepted target without a recorded terminal report retains its steered children and their
 target identity. Error codes, expired retry backoff, an offline Computer, and an ended Session
 do not prove that execution ended and cannot requeue those children. Existing error diagnostics
@@ -68,8 +76,9 @@ A recorded `completed` report keeps the children steered. Recording a valid `fai
 or `unknown` report requeues them once in the same transaction; replaying the report cannot requeue
 them again. The janitor can recover children of an already recorded non-completed report or an
 explicitly disposed target. A missing report therefore retains custody only until the
-report-acceptance cutoff below, which the delivery worker then settles as `unknown`; maintenance
-itself never synthesizes a report, and ownership fencing keeps its separate policy.
+report-acceptance cutoff below, which the delivery worker or the expiry sweep then settles as
+`unknown` through the custody fence; a Turn whose placement generation was superseded is out of that
+reach and keeps its custody, and ownership fencing keeps its separate policy.
 
 Non-completed report recovery locks the target and steered children's Sessions in ID order with
 `FOR NO KEY UPDATE` before acquiring placement and delivery locks. It rechecks report identity,

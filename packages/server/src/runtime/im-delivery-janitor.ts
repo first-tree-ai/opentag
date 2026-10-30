@@ -1,10 +1,14 @@
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
+import { agents, computers, imBindings, imMessageDeliveries, sessionPlacements, sessions } from "../db/schema/index.js";
 import type { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
 import { expireInboundReceiptWork } from "../services/im/inbound-receipt-work-store.js";
 import { SessionService } from "../services/sessions/session-service.js";
+import { settleUnreportableTurn } from "./im-delivery-failure.js";
 import { lockSteeredRecoverySessions, requeueSteeredDeliveries } from "./im-delivery-recovery.js";
+import { ACCEPTED_REPORT_WINDOW_MS } from "./im-delivery-retry.js";
 import type { ImDeliveryDiagnosticReporter } from "./im-delivery-worker.types.js";
+import { PostgresRuntimeCustodyStore } from "./runtime-custody-store.js";
 
 const DEFAULT_JANITOR_INTERVAL_MS = 5_000;
 const DEFAULT_RETENTION_INTERVAL_MS = 60_000;
@@ -93,6 +97,74 @@ export async function runImDeliverySteerRecovery(
       return recovered.terminalizedIds;
     });
     for (const deliveryId of terminalizedIds) onDeliverySettled?.(deliveryId);
+  }
+}
+
+/**
+ * Settle accepted custody whose report-acceptance window has closed and whose authority chain the
+ * work paths can no longer reach: an ended Session, an inactive binding, or a deleted Agent. Those
+ * rows are outside `#recover`'s query and outside the selector, so nothing else would ever settle
+ * them and they would be retried — or simply strand — for the retention lifetime.
+ *
+ * The fence is deliberately narrow: the row must be provably past the window (`accepted_at` older
+ * than the platform maximum runtime plus its grace), unclaimed, and on a placement generation that
+ * still matches, so the settlement goes through the same custody fence as a real report. A superseded
+ * placement generation is out of reach here — see the proposal recorded for the placement rollover.
+ */
+export async function runImDeliveryOverdueSettlement(
+  database: DatabaseClient,
+  options: Pick<ImDeliveryJanitorOptions, "clock" | "expiryBatchSize">,
+  onDiagnostic: ImDeliveryDiagnosticReporter = () => undefined,
+  onDeliverySettled?: (deliveryId: string) => void,
+): Promise<void> {
+  const now = options.clock();
+  const cutoff = new Date(now.getTime() - ACCEPTED_REPORT_WINDOW_MS).toISOString();
+  const candidates = (await database.execute(sql`
+    select delivery.id
+    from im_message_deliveries as delivery
+    inner join sessions as session on session.id = delivery.session_id
+    inner join im_bindings as binding on binding.id = session.im_binding_id
+    inner join agents as agent on agent.id = binding.agent_id
+    inner join session_placements as placement on placement.session_id = session.id
+    inner join computers as computer on computer.id = placement.computer_id
+    where delivery.state = 'accepted'
+      and computer.kind = 'local'
+      and delivery.reported_at is null
+      and delivery.turn_id is not null
+      and delivery.report_owner_instance_id is not null
+      and delivery.accepted_at <= ${cutoff}::timestamptz
+      and delivery.placement_generation = placement.generation
+      and coalesce(delivery.last_error_code, '') not like 'IM_DELIVERY_CLAIM_%'
+      and (
+        session.ended_at is not null
+        or binding.status <> 'active'
+        or agent.status = 'deleted'
+      )
+    order by delivery.accepted_at asc, delivery.id asc
+    limit ${options.expiryBatchSize}
+  `)) as Array<{ id: string }>;
+  if (candidates.length === 0) return;
+  const custody = new PostgresRuntimeCustodyStore(database, { now: options.clock });
+  for (const candidate of candidates) {
+    const [row] = await database
+      .select({
+        delivery: imMessageDeliveries,
+        session: sessions,
+        placement: sessionPlacements,
+        agent: agents,
+        computer: computers,
+      })
+      .from(imMessageDeliveries)
+      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
+      .where(eq(imMessageDeliveries.id, candidate.id))
+      .limit(1);
+    if (!row) continue;
+    if (await settleUnreportableTurn({ custody, onDiagnostic }, row, "maintenance"))
+      onDeliverySettled?.(row.delivery.id);
   }
 }
 
@@ -227,8 +299,10 @@ export async function runImDeliveryExpiry(
   database: DatabaseClient,
   options: ImDeliveryJanitorOptions,
   onDeliverySettled?: (deliveryId: string) => void,
+  onDiagnostic?: ImDeliveryDiagnosticReporter,
 ): Promise<void> {
   await runImDeliverySteerRecovery(database, options, onDeliverySettled);
+  await runImDeliveryOverdueSettlement(database, options, onDiagnostic, onDeliverySettled);
   const now = options.clock().getTime();
   const expiryNow = new Date(now).toISOString();
   // A pending row has exactly one bounded deadline. Local rows expire at the ingress deadline.
@@ -384,7 +458,12 @@ export async function runImDeliveryRetention(
   });
 }
 
-export async function runImDeliveryJanitor(database: DatabaseClient, options: ImDeliveryJanitorOptions): Promise<void> {
-  await runImDeliveryExpiry(database, options);
+export async function runImDeliveryJanitor(
+  database: DatabaseClient,
+  options: ImDeliveryJanitorOptions,
+  onDeliverySettled?: (deliveryId: string) => void,
+  onDiagnostic?: ImDeliveryDiagnosticReporter,
+): Promise<void> {
+  await runImDeliveryExpiry(database, options, onDeliverySettled, onDiagnostic);
   await runImDeliveryRetention(database, options);
 }

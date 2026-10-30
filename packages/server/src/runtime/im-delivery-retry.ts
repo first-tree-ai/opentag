@@ -76,6 +76,9 @@ export function operationTimeoutExhausted(streak: number): boolean {
 /** A report written as the execution window closes must still be accepted. */
 export const ACCEPTED_REPORT_GRACE_MS = 60 * 60_000;
 
+/** How long after acceptance a Turn Report can still be truthful. */
+export const ACCEPTED_REPORT_WINDOW_MS = RUNTIME_MAX_DURATION_MS + ACCEPTED_REPORT_GRACE_MS;
+
 /**
  * The last instant at which a Turn Report can still be truthful for an accepted delivery: the
  * platform maximum runtime from acceptance, plus the grace. Mirrors the Cloud report-acceptance
@@ -83,7 +86,7 @@ export const ACCEPTED_REPORT_GRACE_MS = 60 * 60_000;
  * report acceptance, not evidence that no Turn ran.
  */
 export function acceptedReportDeadlineMs(acceptedAtMs: number): number {
-  return acceptedAtMs + RUNTIME_MAX_DURATION_MS + ACCEPTED_REPORT_GRACE_MS;
+  return acceptedAtMs + ACCEPTED_REPORT_WINDOW_MS;
 }
 
 /** Whether no Turn Report can still be truthful for a Turn accepted at `acceptedAt`. */

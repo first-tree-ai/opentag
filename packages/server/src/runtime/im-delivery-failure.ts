@@ -327,7 +327,7 @@ export async function deferRecoveryRetry(
  * `reported_at`, so the row leaves the work predicate and the retry loop ends here.
  */
 export async function settleUnreportableTurn(
-  deps: DeliveryFailureDeps,
+  deps: Pick<DeliveryFailureDeps, "custody" | "onDiagnostic">,
   row: {
     delivery: typeof imMessageDeliveries.$inferSelect;
     session: typeof sessions.$inferSelect;
@@ -335,6 +335,7 @@ export async function settleUnreportableTurn(
     agent: typeof agents.$inferSelect;
     computer: typeof computers.$inferSelect;
   },
+  phase: ImDeliveryDiagnosticContext["phase"] = "recover",
 ): Promise<boolean> {
   const turnId = row.delivery.turnId;
   const ownerInstanceId = row.delivery.reportOwnerInstanceId;
@@ -361,7 +362,7 @@ export async function settleUnreportableTurn(
   });
   if (status !== "recorded" && status !== "already_recorded") return false;
   deps.onDiagnostic("IM_DELIVERY_TURN_STATE_UNKNOWN", {
-    phase: "recover",
+    phase,
     deliveryId: row.delivery.id,
     agentId: row.agent.id,
     computerId: row.computer.id,

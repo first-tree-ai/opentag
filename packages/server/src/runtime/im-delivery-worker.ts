@@ -271,7 +271,7 @@ export class ImDeliveryWorker {
     const schedulers = createImDeliveryMaintenanceSchedulers({
       expiryRun: async () => {
         const options = { ...this.#janitorConfig, clock: this.#clock };
-        await runImDeliveryExpiry(this.#database, options, this.#onDeliverySettled);
+        await runImDeliveryExpiry(this.#database, options, this.#onDeliverySettled, this.#onDiagnostic);
         await this.#cloudCoordinator.reconcileStoppedWork();
       },
       retentionRun: () => runImDeliveryRetention(this.#database, { ...this.#janitorConfig, clock: this.#clock }),
@@ -307,7 +307,12 @@ export class ImDeliveryWorker {
   }
 
   async runJanitorOnce(): Promise<void> {
-    await runImDeliveryJanitor(this.#database, { ...this.#janitorConfig, clock: this.#clock });
+    await runImDeliveryJanitor(
+      this.#database,
+      { ...this.#janitorConfig, clock: this.#clock },
+      this.#onDeliverySettled,
+      this.#onDiagnostic,
+    );
     await this.#cloudCoordinator.reconcileStoppedWork();
   }
 

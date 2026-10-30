@@ -16,7 +16,13 @@ export const SHARED_ISSUER = "https://auth.example.test";
 export const SHARED_URL = "https://mcp.example.test/mcp";
 export const SHARED_PROOF = "test-browser-proof";
 
-export async function sharedMcpFixture(database: DatabaseClient) {
+export async function sharedMcpFixture(
+  database: DatabaseClient,
+  provider?: { url: string; issuer: string; scopes: string[]; clientId: string },
+) {
+  const issuer = provider?.issuer ?? SHARED_ISSUER;
+  const url = provider?.url ?? SHARED_URL;
+  const scopes = provider?.scopes ?? ["read"];
   const accountId = randomUUID();
   await database.insert(users).values({ id: accountId, email: `${accountId}@example.test`, displayName: "Owner" });
   const ids = Array.from({ length: 4 }, () => randomUUID());
@@ -33,7 +39,7 @@ export async function sharedMcpFixture(database: DatabaseClient) {
   await database.insert(agentRuntimeConfigs).values(ids.map((agentId) => ({ agentId, instructions: "" })));
   const cipher = new McpCredentialCipher(new ApplicationCipher(new Uint8Array(32).fill(7)));
   const servers = new McpServerService({ database, cipher, reuseOAuth: true });
-  const server = await servers.createServer(accountId, { name: "shared", url: SHARED_URL, defaultAuthKind: "oauth" });
+  const server = await servers.createServer(accountId, { name: "shared", url: url, defaultAuthKind: "oauth" });
   for (const id of ids) await servers.attachServer(accountId, id, server.id, true);
   const oauth = new McpOAuthClient({
     publicUrl: "https://opentag.example.test",
@@ -45,16 +51,16 @@ export async function sharedMcpFixture(database: DatabaseClient) {
     }),
   });
   vi.spyOn(oauth, "protectedResourceMetadata").mockResolvedValue({
-    metadata: { resource: SHARED_URL, authorizationServers: [SHARED_ISSUER], scopesSupported: ["read"] },
+    metadata: { resource: url, authorizationServers: [issuer], scopesSupported: scopes },
   });
   vi.spyOn(oauth, "authorizationServerMetadata").mockResolvedValue({
-    issuer: SHARED_ISSUER,
-    authorizationEndpoint: `${SHARED_ISSUER}/authorize`,
-    tokenEndpoint: `${SHARED_ISSUER}/token`,
-    scopesSupported: ["read"],
+    issuer: issuer,
+    authorizationEndpoint: `${issuer}/authorize`,
+    tokenEndpoint: `${issuer}/token`,
+    scopesSupported: scopes,
     clientIdMetadataDocumentSupported: true,
     authorizationResponseIssParameterSupported: false,
-    tokenEndpointAuthMethodsSupported: ["none"],
+    tokenEndpointAuthMethodsSupported: provider ? ["client_secret_post"] : ["none"],
   });
   const refresh = vi
     .spyOn(oauth, "refreshAccessToken")
@@ -63,9 +69,15 @@ export async function sharedMcpFixture(database: DatabaseClient) {
     accessToken: "new-consent",
     refreshToken: "new-consent-refresh",
     expiresIn: 3600,
-    scope: "read",
+    scope: scopes.join(" "),
   });
-  const flows = new McpOAuthFlowService({ database, cipher, servers, oauth });
+  const flows = new McpOAuthFlowService({
+    database,
+    cipher,
+    servers,
+    oauth,
+    ...(provider ? { staticMcpClients: { github: { clientId: provider.clientId, clientSecret: "test-secret" } } } : {}),
+  });
   const auth = new McpAuthorizationService({
     database,
     cipher,
@@ -75,8 +87,12 @@ export async function sharedMcpFixture(database: DatabaseClient) {
   });
   async function authorize(agentId: string, createdAt = new Date(), definition = server) {
     const sealed = cipher.encryptAuthorizationCredential(
-      { mcpServerId: definition.id, agentId, authorizationServer: SHARED_ISSUER },
-      { accessToken: "old-access", refreshToken: "old-refresh", clientId: oauth.clientMetadataUrl },
+      { mcpServerId: definition.id, agentId, authorizationServer: issuer },
+      {
+        accessToken: "old-access",
+        refreshToken: "old-refresh",
+        clientId: provider?.clientId ?? oauth.clientMetadataUrl,
+      },
     );
     const [row] = await database
       .insert(mcpServerAuthorizations)
@@ -85,9 +101,9 @@ export async function sharedMcpFixture(database: DatabaseClient) {
         mcpServerId: definition.id,
         kind: "oauth",
         status: "active",
-        authorizationServer: SHARED_ISSUER,
+        authorizationServer: issuer,
         oauthResource: definition.url,
-        scopes: ["read"],
+        scopes,
         accessTokenExpiresAt: new Date(Date.now() + 3600000),
         ...sealed,
         createdAt,
@@ -105,10 +121,10 @@ export async function sharedMcpFixture(database: DatabaseClient) {
   }
   const root = await authorize(ids[0] as string, new Date("2026-01-01T00:00:00Z"));
   async function connect(agentId: string) {
-    return auth.connectOAuth(accountId, agentId, server.id, ["read", "offline_access"]);
+    return auth.connectOAuth(accountId, agentId, server.id, [...scopes, "offline_access"]);
   }
   async function start(agentId: string) {
-    const result = await flows.start(accountId, agentId, server.id, ["read"], SHARED_PROOF);
+    const result = await flows.start(accountId, agentId, server.id, scopes, SHARED_PROOF);
     const state = new URL(result.authorizationUrl).searchParams.get("state");
     if (!state) throw new Error("No state");
     return state;

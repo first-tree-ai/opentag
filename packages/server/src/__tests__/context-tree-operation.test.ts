@@ -35,7 +35,7 @@ function fixture() {
   };
   const github = {
     computerKind: vi.fn(async () => "local" as const),
-    run: vi.fn(async () => ({ status: "completed" as const, repository: "acme/memory", ref: "main" })),
+    run: vi.fn(async () => ({ result: { status: "completed" as const, repository: "acme/memory", ref: "main" } })),
   };
   const service = new ContextTreeOperationService(agents, registry, github);
   return { config, agents, input, service, registry, github };
@@ -99,7 +99,9 @@ it("accepts case-insensitive repository identity and passes every fence to the t
 });
 it("saves the resolved default branch and does not duplicate an existing connection", async () => {
   const f = fixture();
-  const start = f.github.run.mockResolvedValue({ status: "completed", repository: "Acme/Memory", ref: "trunk" });
+  const start = f.github.run.mockResolvedValue({
+    result: { status: "completed", repository: "Acme/Memory", ref: "trunk" },
+  });
   const input = { ...f.input, ref: "HEAD" };
   await f.service.run("user", f.config.id, input);
   expect(f.agents.updateContextTreeSelection).toHaveBeenCalledWith(
@@ -112,13 +114,13 @@ it("saves the resolved default branch and does not duplicate an existing connect
   f.agents.updateContextTreeSelection.mockClear();
   await f.service.run("user", f.config.id, input);
   expect(f.agents.updateContextTreeSelection).not.toHaveBeenCalled();
-  start.mockResolvedValue({ status: "completed", repository: "Acme/Memory", ref: "HEAD" });
+  start.mockResolvedValue({ result: { status: "completed", repository: "Acme/Memory", ref: "HEAD" } });
   expect(await f.service.run("user", f.config.id, input)).toEqual({ status: "failed", code: "failed" });
 });
 
 it("rejects mismatched repository results", async () => {
   const f = fixture();
-  f.github.run.mockResolvedValue({ status: "completed", repository: "other/tree", ref: "main" });
+  f.github.run.mockResolvedValue({ result: { status: "completed", repository: "other/tree", ref: "main" } });
   const pending = f.service.run("user", f.config.id, f.input);
   expect(await pending).toEqual({ status: "failed", code: "failed" });
   expect(f.agents.updateContextTreeSelection).not.toHaveBeenCalled();
@@ -164,7 +166,7 @@ it("rejects a new connection at the tree limit before any remote work", async ()
   }));
   const cloud = {
     computerKind: vi.fn(async () => "cloud" as const),
-    run: vi.fn(async () => ({ status: "completed" as const, repository: "acme/memory" })),
+    run: vi.fn(async () => ({ result: { status: "completed" as const, repository: "acme/memory" } })),
   };
   const service = new ContextTreeOperationService(f.agents, f.registry, cloud);
   expect(await service.run("user", f.config.id, f.input)).toEqual({ status: "failed", code: "tree_limit_reached" });

@@ -695,7 +695,7 @@ describe("Server startup", () => {
           event: "github_app_configuration_ignored",
           variables: ["OPENTAG_GITHUB_APP_CLIENT_ID", "OPENTAG_GITHUB_APP_CLIENT_SECRET"],
         },
-        expect.stringContaining("OPENTAG_GITHUB_OAUTH_*"),
+        expect.stringContaining("OPENTAG_MCP_GITHUB_CLIENT_ID"),
       );
       expect(JSON.stringify(warn.mock.calls)).not.toContain("legacy-client-id");
       expect(JSON.stringify(warn.mock.calls)).not.toContain("legacy-client-secret");

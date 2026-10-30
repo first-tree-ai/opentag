@@ -159,7 +159,7 @@ it.each([null, "acme/existing"])("creates a Cloud tree with existing selection %
   );
   const dialog = await openForm("create");
   expect(within(dialog).getByText(/new private repository/)).toBeTruthy();
-  expect(within(dialog).getByText("Manage GitHub authorization in Account settings.")).toBeTruthy();
+  expect(within(dialog).getByText("Manage GitHub authorization in this Agent’s Connectors.")).toBeTruthy();
   enter();
   submit("create");
   await waitFor(() => expect(changed).toHaveBeenCalledOnce());
@@ -235,7 +235,9 @@ it.each([
   ["authentication_required", /Connect or reconnect GitHub/],
   ["permission_denied", /GitHub denied access/],
   ["capability_missing", /Update openTag on the bound computer/],
-  ["github_not_configured", /GitHub isn't configured on this openTag server/],
+  ["github_not_configured", /GitHub MCP isn’t configured on this openTag server/],
+  ["github_connector_disabled", /GitHub Connector is disabled/],
+  ["github_connector_unsupported", /official GitHub MCP connection with OAuth/],
   ["tree_limit_reached", /maximum number of Context Trees/],
   ["invalid_tree", /Remove symlinks such as CLAUDE.md or README.md/],
   ["repository_rejected", /may already exist/],

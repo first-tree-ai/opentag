@@ -445,11 +445,19 @@ export class RuntimeCredentialBroker {
     if (!admission || admission.connectionId !== bindingId) {
       throw new RuntimeCredentialError("credential_scope_denied");
     }
+    const scopeHash = computeGitHubScopeHash(execution, bindingId, admission);
+    if (execution.purpose === "context-tree") {
+      const live = this.#options.executions.get(execution.executionId);
+      if (!live) throw new RuntimeCredentialError("execution_closed");
+      if (live.contextTreeAuthorityHash !== undefined && live.contextTreeAuthorityHash !== scopeHash)
+        throw new RuntimeCredentialError("credential_scope_denied");
+      live.contextTreeAuthorityHash = scopeHash;
+    }
     return {
       // Normal UAT refresh rotates `credentialGeneration` only; the scope hash intentionally
       // excludes it so unchanged task authority survives rotation. Account, task source and
       // `authorizationVersion` remain pinned; every target operation proves current rights.
-      scopeHash: computeGitHubScopeHash(execution, bindingId, admission),
+      scopeHash,
       authorizationRevision: `github:${admission.authorizationVersion}`,
       credentialGeneration: admission.credentialGeneration,
       cli: gitHubCliMetadata(admission),

@@ -571,6 +571,10 @@ function failureMessage(
       return m.agent_settings_context_tree_authentication_required();
     case "github_not_configured":
       return m.agent_settings_context_tree_github_not_configured();
+    case "github_connector_disabled":
+      return m.agent_settings_context_tree_github_connector_disabled();
+    case "github_connector_unsupported":
+      return m.agent_settings_context_tree_github_connector_unsupported();
     case "permission_denied":
       return cloud
         ? m.agent_settings_context_tree_cloud_permission_denied()

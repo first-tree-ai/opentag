@@ -93,7 +93,7 @@ function credentialProjection(row: McpAuthorizationRow) {
 export async function readMcpAuthorizationContexts(
   executor: McpExecutor,
   scope: SQL | undefined,
-  options: { limit?: number; oldestFirst?: boolean; tools?: boolean } = {},
+  options: { limit?: number; oldestFirst?: boolean; oldestMount?: boolean; tools?: boolean } = {},
 ): Promise<McpAuthorizationContext[]> {
   const localColumns = {
     ...getTableColumns(mcpServerAuthorizations),
@@ -141,9 +141,11 @@ export async function readMcpAuthorizationContexts(
     )
     .where(scope)
     .orderBy(
-      ...(options.oldestFirst
-        ? [asc(mcpServerAuthorizations.createdAt), asc(mcpServerAuthorizations.id)]
-        : [asc(mcpServers.name)]),
+      ...(options.oldestMount
+        ? [asc(agentMcpServers.createdAt), asc(agentMcpServers.mcpServerId)]
+        : options.oldestFirst
+          ? [asc(mcpServerAuthorizations.createdAt), asc(mcpServerAuthorizations.id)]
+          : [asc(mcpServers.name)]),
     );
   const rows = await (options.limit ? query.limit(options.limit) : query);
 

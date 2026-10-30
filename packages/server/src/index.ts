@@ -5,7 +5,7 @@ import type {
   ProviderReadinessStatus,
   RuntimeCredentialServerFrame,
 } from "@opentag/shared";
-import { RUNTIME_CAPABILITY } from "@opentag/shared";
+import { MCP_OAUTH_CALLBACK_PATH, RUNTIME_CAPABILITY } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { createApp } from "./app.js";
 import { createBetterAuth } from "./auth/better-auth.js";
@@ -89,8 +89,8 @@ import { createRunnerImagePrewarmWorker } from "./services/cloud-run/runner-imag
 import { CloudUsageService } from "./services/cloud-usage.js";
 import { ComputerService, MachineAuthService } from "./services/computers/index.js";
 import { ApplicationCipher } from "./services/crypto.js";
-import { createGitHubIntegration } from "./services/github/index.js";
-import { GitHubCredentialCipher } from "./services/github-credential-material.js";
+import { AgentGitHubCredentialService } from "./services/github/agent-github-credential-service.js";
+import { GitHubApiClient } from "./services/github/github-api-client.js";
 import { GitHubExecutionCredentials } from "./services/github-proxy/execution-credentials.js";
 import { ExternalCallPolicy } from "./services/im/external-call-policy.js";
 import { ImFailureReactions } from "./services/im/im-failure-reactions.js";
@@ -392,7 +392,7 @@ function cloudSessionAuthorityOptions(
 }
 
 function createContextTreeServices(
-  github: ReturnType<typeof createGitHubIntegration> | undefined,
+  github: { api: GitHubApiClient; management: AgentGitHubCredentialService } | undefined,
   imBindings: ImBindingService,
   agents: AgentService,
   registry: ConnectionRegistry,
@@ -411,7 +411,8 @@ function createContextTreeServices(
     contextTreeOperationService: new ContextTreeOperationService(agents, registry, {
       computerKind,
       run: (input) =>
-        githubContextTreeOperations?.run(input) ?? Promise.resolve({ status: "failed", code: "github_not_configured" }),
+        githubContextTreeOperations?.run(input) ??
+        Promise.resolve({ result: { status: "failed", code: "github_not_configured" } }),
     }),
   };
 }
@@ -508,7 +509,7 @@ function reportIgnoredGitHubAppConfiguration(log: { warn(payload: object, messag
   if (variables.length === 0) return;
   log.warn(
     { event: "github_app_configuration_ignored", variables },
-    "OPENTAG_GITHUB_APP_* is ignored; configure OPENTAG_GITHUB_OAUTH_* to enable GitHub connections",
+    "Legacy GitHub App configuration is ignored; configure OPENTAG_MCP_GITHUB_CLIENT_ID and OPENTAG_MCP_GITHUB_CLIENT_SECRET for Agent connectors",
   );
 }
 
@@ -621,24 +622,6 @@ export async function startServer(): Promise<void> {
     const cloudIdentities = config.cloudIdentities;
 
     const applicationCipher = createApplicationCipher(config);
-    /*
-     * The GitHub management plane exists only when the deployment App is coherently configured;
-     * the routes are registered either way so the UI reads explicit availability instead of a 404.
-     */
-    const github = config.githubOAuth
-      ? createGitHubIntegration({
-          database,
-          config: config.githubOAuth,
-          cipher: new GitHubCredentialCipher(applicationCipher),
-          worker: {
-            logger: {
-              info: (bindings, message) => app?.log.info(bindings, message),
-              warn: (bindings, message) => app?.log.warn(bindings, message),
-              error: (bindings, message) => app?.log.error(bindings, message),
-            },
-          },
-        })
-      : undefined;
     let imFailureReactions: ImFailureReactions | undefined;
     const onDeliverySettled = (deliveryId: string) => imFailureReactions?.notify(deliveryId);
     const custody = new PostgresRuntimeCustodyStore(database, { onDeliverySettled });
@@ -718,6 +701,70 @@ export async function startServer(): Promise<void> {
      */
     const mcpCipher = new McpCredentialCipher(applicationCipher);
     const mcpServers = new McpServerService({ database, cipher: mcpCipher, reuseOAuth: config.mcpOAuthReuse });
+    const mcpFetcher = new McpOutboundFetcher({ allowLoopback: config.mcpAllowLoopback });
+    /*
+     * A second fetcher for runtime tool calls. It enforces the same URL policy — the gate, the
+     * redirect refusal, the response bound are all properties of the class — but carries its own
+     * deadline and its own per-Account concurrency counter, because a tool call is not a probe: it
+     * runs as long as the tool does, and a background probe must never be able to starve a live turn.
+     */
+    const mcpRuntimeFetcher = new McpOutboundFetcher({
+      allowLoopback: config.mcpAllowLoopback,
+      timeoutMs: MCP_RUNTIME_TIMEOUT_MS,
+      maxConcurrentPerAccount: MCP_RUNTIME_MAX_CONCURRENT_PER_ACCOUNT,
+    });
+    const mcpOAuth = new McpOAuthClient({ fetcher: mcpFetcher, publicUrl: config.publicUrl });
+    const mcpProbe = new McpProbe({ fetcher: mcpFetcher, logger: serviceLogger("mcp-probe") });
+    const mcpFlows = new McpOAuthFlowService({
+      logger: serviceLogger("mcp-oauth"),
+      database,
+      cipher: mcpCipher,
+      oauth: mcpOAuth,
+      servers: mcpServers,
+      /*
+       * The deployment's pre-registered Google Workspace client, present only when the
+       * OPENTAG_MCP_GOOGLE_CLIENT_* pair is configured. The flow itself re-checks the Server's
+       * origin and the resolved issuer before it uses this client, so wiring it here grants it no
+       * reach beyond the Google-hosted endpoints.
+       */
+      googleMcpClient: config.mcpGoogleOAuth,
+      /*
+       * The deployment's static clients for providers without DCR or CIMD (Canva, HubSpot, Asana,
+       * Zoom), present per brand only when its OPENTAG_MCP_<BRAND>_CLIENT_* pair is configured. The
+       * flow offers each only to that provider's own endpoints and issuer, and Canva's also makes the
+       * catalog's Canva card create its Server on the Developer Portal endpoint.
+       */
+      staticMcpClients: config.mcpStaticOAuth,
+    });
+    const mcpAuthorization = new McpAuthorizationService({
+      logger: serviceLogger("mcp-authorization"),
+      database,
+      cipher: mcpCipher,
+      probe: mcpProbe,
+      reusableClient: (url, issuer, clientId, registrationId) =>
+        mcpFlows.reusableClient(url, issuer, clientId, registrationId),
+      servers: mcpServers,
+    });
+    const githubClient = config.mcpStaticOAuth?.github;
+    const github = githubClient
+      ? (() => {
+          const api = new GitHubApiClient({
+            ...githubClient,
+            redirectUri: `${config.publicUrl}${MCP_OAUTH_CALLBACK_PATH}`,
+          });
+          return {
+            api,
+            management: new AgentGitHubCredentialService({
+              database,
+              authorization: mcpAuthorization,
+              api,
+              configured: true,
+              trustedClient: (url, issuer, clientId, registrationId) =>
+                mcpFlows.reusableClient(url, issuer, clientId, registrationId),
+            }),
+          };
+        })()
+      : undefined;
     const platformRuntime = await createPlatformRuntime({
       slackWorkingStatus: true,
       config,
@@ -1047,50 +1094,6 @@ export async function startServer(): Promise<void> {
      * URL policy, so the discovery chain cannot be used to reach an internal address; loopback plain
      * HTTP is permitted only on a development deployment that explicitly opted in.
      */
-    const mcpFetcher = new McpOutboundFetcher({ allowLoopback: config.mcpAllowLoopback });
-    /*
-     * A second fetcher for runtime tool calls. It enforces the same URL policy — the gate, the
-     * redirect refusal, the response bound are all properties of the class — but carries its own
-     * deadline and its own per-Account concurrency counter, because a tool call is not a probe: it
-     * runs as long as the tool does, and a background probe must never be able to starve a live turn.
-     */
-    const mcpRuntimeFetcher = new McpOutboundFetcher({
-      allowLoopback: config.mcpAllowLoopback,
-      timeoutMs: MCP_RUNTIME_TIMEOUT_MS,
-      maxConcurrentPerAccount: MCP_RUNTIME_MAX_CONCURRENT_PER_ACCOUNT,
-    });
-    const mcpOAuth = new McpOAuthClient({ fetcher: mcpFetcher, publicUrl: config.publicUrl });
-    const mcpProbe = new McpProbe({ fetcher: mcpFetcher, logger: serviceLogger("mcp-probe") });
-    const mcpFlows = new McpOAuthFlowService({
-      logger: serviceLogger("mcp-oauth"),
-      database,
-      cipher: mcpCipher,
-      oauth: mcpOAuth,
-      servers: mcpServers,
-      /*
-       * The deployment's pre-registered Google Workspace client, present only when the
-       * OPENTAG_MCP_GOOGLE_CLIENT_* pair is configured. The flow itself re-checks the Server's
-       * origin and the resolved issuer before it uses this client, so wiring it here grants it no
-       * reach beyond the Google-hosted endpoints.
-       */
-      googleMcpClient: config.mcpGoogleOAuth,
-      /*
-       * The deployment's static clients for providers without DCR or CIMD (Canva, HubSpot, Asana,
-       * Zoom), present per brand only when its OPENTAG_MCP_<BRAND>_CLIENT_* pair is configured. The
-       * flow offers each only to that provider's own endpoints and issuer, and Canva's also makes the
-       * catalog's Canva card create its Server on the Developer Portal endpoint.
-       */
-      staticMcpClients: config.mcpStaticOAuth,
-    });
-    const mcpAuthorization = new McpAuthorizationService({
-      logger: serviceLogger("mcp-authorization"),
-      database,
-      cipher: mcpCipher,
-      probe: mcpProbe,
-      reusableClient: (url, issuer, clientId, registrationId) =>
-        mcpFlows.reusableClient(url, issuer, clientId, registrationId),
-      servers: mcpServers,
-    });
     /*
      * The runtime gateway. It shares the one outbound fetcher with the management plane, so a
      * runtime tool call is bound by the same URL policy, per-Account concurrency limit, redirect
@@ -1318,14 +1321,6 @@ export async function startServer(): Promise<void> {
             botId: binding.botId,
           }),
       },
-      githubIntegrations: {
-        availability: config.githubOAuth
-          ? ({ available: true, githubHost: "github.com", oauthClientId: config.githubOAuth.clientId } as const)
-          : ({ available: false, githubHost: "github.com", oauthClientId: null } as const),
-        publicOrigin: config.publicUrl,
-        secureCookies: isHostedEnvironment(config.environment),
-        ...(github ? { management: github.management } : {}),
-      },
       ...(setupResetService ? { internalNavigationService, setupResetService } : {}),
       accountSetupService,
     });
@@ -1336,7 +1331,6 @@ export async function startServer(): Promise<void> {
     slackWorkingWorker.start();
     scheduleScheduler.start();
     sandboxIdleReclaimer?.start();
-    github?.worker.start();
     mcpRefreshWorker.start();
     skillRuntime.gc?.start();
     channelTargetPoller.start();
@@ -1372,7 +1366,6 @@ export async function startServer(): Promise<void> {
         ["IM failure reactions", () => imFailureReactions?.close()],
         ["MCP refresh worker", () => mcpRefreshWorker.stop()],
         ["skill garbage collector", () => skillRuntime.gc?.stop()],
-        ["GitHub worker", () => github?.worker.stop()],
         ["GitHub Context Tree operations", () => githubContextTreeOperations?.close()],
         ["platform runtime", () => platformRuntime.close()],
         ["Feishu setup service", () => feishuSetupService.stop()],

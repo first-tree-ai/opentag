@@ -504,6 +504,45 @@ describe("RuntimeCredentialBroker data-request fences", () => {
 });
 
 describe("RuntimeCredentialBroker GitHub scope hash", () => {
+  it("pins authority for the child lifetime across acquire, renewal and data requests", async () => {
+    const f = createBroker();
+    f.admission.result = {
+      connectionId: "connection-live",
+      authorizationVersion: "mcp:original",
+      credentialGeneration: "1",
+    };
+    const providers = [
+      runtimeExecutionProviderBinding("github", "connection-live", {
+        provider: "github",
+        connectionId: "connection-live",
+        authority: "context-tree",
+      }),
+    ];
+    const record = execution(f.executions, providers);
+    const input = { execution: record, provider: "github" as const, bindingId: "connection-live" };
+    const first = await f.broker.acquire(input);
+    if (first.status !== "succeeded") throw new Error("Initial grant rejected");
+    f.admission.result.credentialGeneration = "2";
+    const rotated = await f.broker.renew({ execution: record, grantId: first.record.grantId });
+    if (rotated.status !== "succeeded") throw new Error("Routine rotation rejected");
+    expect(
+      (await f.broker.beginRequest({ capability: rotated.token, provider: "github", bindingId: "connection-live" }))
+        .credentialGeneration,
+    ).toBe("2");
+    f.admission.result.authorizationVersion = "mcp:replacement";
+    await expect(f.broker.renew({ execution: record, grantId: rotated.record.grantId })).resolves.toEqual({
+      status: "rejected",
+      code: "credential_scope_denied",
+    });
+    await expect(f.broker.acquire(input)).resolves.toEqual({ status: "rejected", code: "credential_scope_denied" });
+    await expect(f.broker.describeProvider(input)).rejects.toMatchObject({ code: "credential_scope_denied" });
+    await expect(
+      f.broker.beginRequest({ capability: rotated.token, provider: "github", bindingId: "connection-live" }),
+    ).rejects.toMatchObject({ code: "credential_scope_denied" });
+    const next = execution(f.executions, providers);
+    expect((await f.broker.acquire({ ...input, execution: next })).status).toBe("succeeded");
+  });
+
   function admission(overrides: Partial<TestGitHubAdmissionResult> = {}): TestGitHubAdmissionResult {
     return {
       connectionId: "connection-live",
@@ -546,7 +585,9 @@ describe("RuntimeCredentialBroker GitHub scope hash", () => {
   it("invalidates on authorizationVersion and on any exact repository scope change", async () => {
     const githubScope = githubFixture();
     const base = await githubScope(admission());
-    const version = await githubScope(admission({ authorizationVersion: "uat-2" }));
+    await expect(githubScope(admission({ authorizationVersion: "uat-2" }))).rejects.toMatchObject({
+      code: "credential_scope_denied",
+    });
     const access = await githubScope(
       admission({ bindings: [{ repositoryId: "1", fullName: "acme/repo", role: "code", access: "write" }] }),
     );
@@ -558,7 +599,6 @@ describe("RuntimeCredentialBroker GitHub scope hash", () => {
         ],
       }),
     );
-    expect(version.scopeHash).not.toBe(base.scopeHash);
     expect(access.scopeHash).toBe(base.scopeHash);
     expect(added.scopeHash).toBe(base.scopeHash);
   });

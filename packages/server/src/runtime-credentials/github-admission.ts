@@ -1,6 +1,6 @@
 import type { RuntimeExecutionSource } from "@opentag/shared";
 
-/** Source-checked Account authority. Repository rights are checked lazily for each operation. */
+/** Source-checked Agent GitHub MCP authority. Repository rights are checked per operation. */
 export interface RuntimeGitHubAdmissionResult {
   connectionId: string;
   authorizationVersion: string;

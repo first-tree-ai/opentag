@@ -1,30 +1,24 @@
-/*
- * Account-authorized verification of existing Context Tree targets for Local and Cloud settings.
- * Live user/OAuth admission fixes the requested repository and selected branch. Server target checks
- * bound read-only verification with the Account's OAuth token; connection and credential versions
- * are checked around remote work. Repository creation also stays on the Server.
- */
-
 import { randomUUID } from "node:crypto";
 import {
   ContextTreeBranchSchema,
   type ContextTreeOperationResponse,
   ContextTreePathSchema,
   ContextTreeRepositorySchema,
-  type GitHubConnectionStatus,
 } from "@opentag/shared";
+import type { AgentGitHubConnection, AgentGitHubCredentialService } from "../github/agent-github-credential-service.js";
+import { AgentGitHubAuthorizationError } from "../github/agent-github-credential-service.js";
 import { GITHUB_CONNECTION_ERROR_CODES, GitHubConnectionServiceError } from "../github/errors.js";
 import {
   GITHUB_API_CLIENT_ERROR_CODES,
   type GitHubApiClient,
   GitHubApiClientError,
 } from "../github/github-api-client.js";
-import type { GitHubManagementService } from "../github/github-management-service.js";
 import type { GitHubExecutionCredentials } from "../github-proxy/execution-credentials.js";
 import { GitPublicationError } from "../github-proxy/git-packets.js";
 import { GitHubPublicationRemote, type PublicationRemote } from "../github-proxy/git-remote.js";
 import { GitWorkspace } from "../github-proxy/git-workspace.js";
 import { VerifiedTreeHead } from "../github-proxy/verified-tree-head.js";
+import type { GitHubMcpAuthorityFence } from "../mcp/github-authorization.js";
 import { contextTreeInitialContent } from "./context-tree-initial-content.js";
 
 export interface GitHubContextTreeOperationInput {
@@ -37,20 +31,28 @@ export interface GitHubContextTreeOperationInput {
 }
 
 /** Server-side GitHub operations used by the settings service. */
-export interface GitHubContextTreeOperationRunner {
-  computerKind(computerId: string): Promise<"local" | "cloud" | undefined>;
-  run(input: GitHubContextTreeOperationInput): Promise<ContextTreeOperationResponse>;
+export interface PreparedContextTreeOperation {
+  result: ContextTreeOperationResponse;
+  authority?: GitHubMcpAuthorityFence;
 }
 
-/** Exactly the GitHub management facade surface settings operations use. Server-internal; never HTTP. */
+export interface GitHubContextTreeOperationRunner {
+  computerKind(computerId: string): Promise<"local" | "cloud" | undefined>;
+  run(input: GitHubContextTreeOperationInput): Promise<PreparedContextTreeOperation>;
+}
+
+/** Server-internal credential port for settings; never an HTTP token response. */
 export type ContextTreeGitHubManagement = Pick<
-  GitHubManagementService,
+  AgentGitHubCredentialService,
   "getOverview" | "resolveRepository" | "getExecutionUserCredential"
 >;
 
 export interface GitHubContextTreeOperationsOptions {
   management: ContextTreeGitHubManagement;
-  api: Pick<GitHubApiClient, "createPrivateRepository" | "initializeContextTree" | "getRepository">;
+  api: Pick<
+    GitHubApiClient,
+    "createPrivateRepository" | "initializeContextTree" | "getRepository" | "getAuthenticatedUser"
+  >;
   credentials: Pick<GitHubExecutionCredentials, "acquire">;
   /** Exact Computer kind lookup; `undefined` for unknown rows so Cloud is never mistaken for Local. */
   computerKind: (computerId: string) => Promise<"local" | "cloud" | undefined>;
@@ -59,7 +61,7 @@ export interface GitHubContextTreeOperationsOptions {
   /** Remote head verifier; constructed over the workspace when absent. */
   treeHeads?: Pick<VerifiedTreeHead, "verify">;
   /** GitHub remote factory; the default authenticates git through GIT_ASKPASS, never argv or URLs. */
-  remoteFactory?: (fullName: string, accessToken: string) => PublicationRemote;
+  remoteFactory?: (fullName: string, accessToken: () => Promise<string>) => PublicationRemote;
   /** Total per-operation budget; an exhausted budget aborts the operation. */
   budgetMs?: number;
   /** Global in-flight bound; excess operations report `busy`. */
@@ -69,8 +71,7 @@ export interface GitHubContextTreeOperationsOptions {
 type FailureCode = Extract<ContextTreeOperationResponse, { status: "failed" }>["code"];
 
 interface Fencing {
-  authorizationVersion: bigint;
-  credentialGeneration: bigint;
+  authorizationVersion: string;
 }
 
 const DEFAULT_BUDGET_MS = 120_000;
@@ -92,19 +93,15 @@ function halt(code: FailureCode): never {
   throw new GitHubOperationFailure(code);
 }
 
-function connectionFence(connection: GitHubConnectionStatus): Fencing {
+function connectionFence(connection: AgentGitHubConnection): Fencing {
   return {
-    authorizationVersion: BigInt(connection.authorizationVersion),
-    credentialGeneration: BigInt(connection.credentialGeneration),
+    authorizationVersion: connection.authorizationVersion,
   };
 }
 
 /** A fencing mismatch means the credential or binding state moved mid-operation; never commit. */
 function assertFence(observed: Fencing, expected: Fencing): void {
-  if (
-    observed.authorizationVersion !== expected.authorizationVersion ||
-    observed.credentialGeneration !== expected.credentialGeneration
-  ) {
+  if (observed.authorizationVersion !== expected.authorizationVersion) {
     halt("stale_configuration");
   }
 }
@@ -121,11 +118,11 @@ export class GitHubContextTreeOperations implements GitHubContextTreeOperationRu
   readonly #api: GitHubContextTreeOperationsOptions["api"];
   readonly #computerKind: (computerId: string) => Promise<"local" | "cloud" | undefined>;
   readonly #treeHeads: Pick<VerifiedTreeHead, "verify">;
-  readonly #remoteFactory: (fullName: string, accessToken: string) => PublicationRemote;
+  readonly #remoteFactory: (fullName: string, accessToken: () => Promise<string>) => PublicationRemote;
   readonly #budgetMs: number;
   readonly #maxConcurrent: number;
   readonly #workspace: GitWorkspace;
-  readonly #inFlight = new Map<string, { identity: string; promise: Promise<ContextTreeOperationResponse> }>();
+  readonly #inFlight = new Map<string, { identity: string; promise: Promise<PreparedContextTreeOperation> }>();
   readonly #closer = new AbortController();
   #closed = false;
 
@@ -151,8 +148,8 @@ export class GitHubContextTreeOperations implements GitHubContextTreeOperationRu
    * Runs one settings operation. At most one
    * operation per Agent is in flight; an identical replay joins it and a different one is `busy`.
    */
-  run(input: GitHubContextTreeOperationInput): Promise<ContextTreeOperationResponse> {
-    if (this.#closed) return Promise.resolve(failed("failed"));
+  run(input: GitHubContextTreeOperationInput): Promise<PreparedContextTreeOperation> {
+    if (this.#closed) return Promise.resolve({ result: failed("failed") });
     const identity = JSON.stringify([
       input.accountId,
       input.action,
@@ -161,8 +158,8 @@ export class GitHubContextTreeOperations implements GitHubContextTreeOperationRu
       input.ref,
     ]);
     const active = this.#inFlight.get(input.agentId);
-    if (active) return active.identity === identity ? active.promise : Promise.resolve(failed("busy"));
-    if (this.#inFlight.size >= this.#maxConcurrent) return Promise.resolve(failed("busy"));
+    if (active) return active.identity === identity ? active.promise : Promise.resolve({ result: failed("busy") });
+    if (this.#inFlight.size >= this.#maxConcurrent) return Promise.resolve({ result: failed("busy") });
     const signal = AbortSignal.any([this.#closer.signal, AbortSignal.timeout(this.#budgetMs)]);
     const promise = this.#execute(input, signal).finally(() => {
       if (this.#inFlight.get(input.agentId)?.promise === promise) this.#inFlight.delete(input.agentId);
@@ -179,41 +176,55 @@ export class GitHubContextTreeOperations implements GitHubContextTreeOperationRu
     await this.#workspace.close();
   }
 
-  async #execute(input: GitHubContextTreeOperationInput, signal: AbortSignal): Promise<ContextTreeOperationResponse> {
+  async #execute(input: GitHubContextTreeOperationInput, signal: AbortSignal): Promise<PreparedContextTreeOperation> {
     try {
-      return input.action === "create" ? await this.#create(input, signal) : await this.#connect(input, signal);
+      const connection = await this.#activeConnection(input.accountId, input.agentId);
+      const result =
+        input.action === "create"
+          ? await this.#create(input, signal, connection)
+          : await this.#connect(input, signal, connection);
+      return { result, ...(connection.fence ? { authority: connection.fence } : {}) };
     } catch (error) {
-      return this.#classify(error, signal);
+      return { result: this.#classify(error, signal) };
     }
   }
 
-  async #create(input: GitHubContextTreeOperationInput, signal: AbortSignal): Promise<ContextTreeOperationResponse> {
+  async #create(
+    input: GitHubContextTreeOperationInput,
+    signal: AbortSignal,
+    connection: AgentGitHubConnection,
+  ): Promise<ContextTreeOperationResponse> {
     const api = this.#api;
     if (input.path !== "." || input.ref !== "HEAD") halt("invalid_tree");
     const repository = parseRepository(input.repository);
-    const connection = await this.#activeConnection(input.accountId);
-    if (!connection.githubLogin) halt("authentication_required");
+    if (connection.readOnly) halt("permission_denied");
     const fence = connectionFence(connection);
     const credential = async () => {
-      await this.#assertFinalFence(input.accountId, connection.id, fence);
+      await this.#assertFinalFence(input.accountId, input.agentId, connection.id, fence);
       const current = await this.#management.getExecutionUserCredential({
         accountId: input.accountId,
+        agentId: input.agentId,
         connectionId: connection.id,
         authorizationRevision: `github:${connection.authorizationVersion}`,
       });
       if (!current) halt("authentication_required");
-      if (current.credentialGeneration !== fence.credentialGeneration) halt("stale_configuration");
+
       signal.throwIfAborted();
       return current.accessToken;
     };
     const content = await contextTreeInitialContent(this.#workspace, signal, repository.split("/")[1] as string);
+    const user = await api.getAuthenticatedUser({
+      accessToken: await credential(),
+      signal,
+      requireRepositoryScope: false,
+    });
     const accessToken = await credential();
     let created = false;
     try {
       await api.createPrivateRepository({
         accessToken,
         fullName: repository,
-        githubLogin: connection.githubLogin,
+        githubLogin: user.login,
         signal,
       });
       created = true;
@@ -221,7 +232,7 @@ export class GitHubContextTreeOperations implements GitHubContextTreeOperationRu
       const target = await api.getRepository({ accessToken: await credential(), fullName: repository, signal });
       if (!target.private || target.fullName.toLowerCase() !== repository.toLowerCase() || !target.defaultBranch)
         halt("publication_uncertain");
-      await this.#assertFinalFence(input.accountId, connection.id, fence);
+      await this.#assertFinalFence(input.accountId, input.agentId, connection.id, fence);
       return { status: "completed", repository, ref: ContextTreeBranchSchema.parse(target.defaultBranch) };
     } catch (error) {
       // Never retry a write automatically or adopt an existing repository after an uncertain reply.
@@ -236,10 +247,15 @@ export class GitHubContextTreeOperations implements GitHubContextTreeOperationRu
    * Resolves the requested working target, then verifies the live remote head with the canonical CLI;
    * `recheck` re-proves admission and the fencing versions around the remote read.
    */
-  async #connect(input: GitHubContextTreeOperationInput, signal: AbortSignal): Promise<ContextTreeOperationResponse> {
+  async #connect(
+    input: GitHubContextTreeOperationInput,
+    signal: AbortSignal,
+    connection: AgentGitHubConnection,
+  ): Promise<ContextTreeOperationResponse> {
     const repository = parseRepository(input.repository);
-    const connection = await this.#activeConnection(input.accountId);
     const target = await this.#management.resolveRepository({
+      accountId: input.accountId,
+      agentId: input.agentId,
       connectionId: connection.id,
       fullName: repository,
       access: "read",
@@ -252,6 +268,8 @@ export class GitHubContextTreeOperations implements GitHubContextTreeOperationRu
     assertFence(target, fence);
     const recheck = async () => {
       const observed = await this.#management.resolveRepository({
+        accountId: input.accountId,
+        agentId: input.agentId,
         connectionId: connection.id,
         fullName: repository,
         access: "read",
@@ -265,46 +283,51 @@ export class GitHubContextTreeOperations implements GitHubContextTreeOperationRu
         halt("stale_configuration");
     };
     signal.throwIfAborted();
-    const lease = await this.#credentials.acquire(randomUUID(), {
-      accountId: input.accountId,
-      connectionId: connection.id,
-      authorizationRevision: `github:${connection.authorizationVersion}`,
-      signal,
-    });
-    try {
-      await this.#treeHeads.verify({
-        repositoryId: target.repositoryId,
-        ref: branch,
-        path,
-        remote: this.#remoteFactory(repository, lease.token),
+    const token = async () => {
+      const lease = await this.#credentials.acquire(randomUUID(), {
+        accountId: input.accountId,
+        agentId: input.agentId,
+        connectionId: connection.id,
+        authorizationRevision: `github:${connection.authorizationVersion}`,
         signal,
-        recheck,
       });
-      await recheck();
-      await this.#assertFinalFence(input.accountId, connection.id, fence);
-      return { status: "completed", repository, ...(input.ref === "HEAD" ? { ref } : {}) };
-    } finally {
-      await lease.release();
-    }
+      try {
+        return lease.token;
+      } finally {
+        await lease.release();
+      }
+    };
+    await this.#treeHeads.verify({
+      repositoryId: target.repositoryId,
+      ref: branch,
+      path,
+      remote: this.#remoteFactory(repository, token),
+      signal,
+      recheck,
+    });
+    await recheck();
+    await this.#assertFinalFence(input.accountId, input.agentId, connection.id, fence);
+    return { status: "completed", repository, ...(input.ref === "HEAD" ? { ref } : {}) };
   }
 
-  /** The Account's current active connection; nothing else may authenticate these operations. */
-  async #activeConnection(accountId: string): Promise<GitHubConnectionStatus> {
-    const { connection } = await this.#management.getOverview(accountId);
-    if (!connection || connection.accountId !== accountId || connection.status !== "active") {
+  /** The current Agent's active GitHub MCP connection. */
+  async #activeConnection(accountId: string, agentId: string): Promise<AgentGitHubConnection> {
+    const { connection } = await this.#management.getOverview(accountId, agentId);
+    if (!connection || connection.accountId !== accountId) {
       halt("authentication_required");
     }
     return connection;
   }
 
   /** After remote work, the same active connection and fencing versions must hold. */
-  async #assertFinalFence(accountId: string, connectionId: string, fence: Fencing): Promise<void> {
-    const connection = await this.#activeConnection(accountId);
+  async #assertFinalFence(accountId: string, agentId: string, connectionId: string, fence: Fencing): Promise<void> {
+    const connection = await this.#activeConnection(accountId, agentId);
     if (connection.id !== connectionId) halt("stale_configuration");
     assertFence(connectionFence(connection), fence);
   }
 
   #classify(error: unknown, signal: AbortSignal): ContextTreeOperationResponse {
+    if (error instanceof AgentGitHubAuthorizationError) return failed(error.code);
     if (error instanceof GitHubOperationFailure) return failed(error.code);
     if (signal.aborted) return failed("failed");
     if (error instanceof GitHubConnectionServiceError) {

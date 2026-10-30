@@ -124,7 +124,7 @@ describe("shared MCP authentication", () => {
       f.servers.updateServer(f.accountId, f.server.id, { expectedRevision: f.server.revision, authScheme: "Token" }),
     ).rejects.toMatchObject({ code: MCP_ERROR_CODES.BINDING_CONFLICT });
     await f.servers.updateBinding(f.accountId, b, f.server.id, { enabled: false });
-    expect(await f.row(b)).toEqual(before);
+    expect(await f.row(b)).toEqual({ ...before, revision: (before?.revision ?? 0) + 1 });
     expect((await f.servers.readAgentServer(f.accountId, b, f.server.id)).authorization?.status).toBe("active");
   });
   it.each([{ authHeader: "x-api-key" }, { authScheme: "Token" }, { extraHeaders: { "x-workspace": "other" } }])(

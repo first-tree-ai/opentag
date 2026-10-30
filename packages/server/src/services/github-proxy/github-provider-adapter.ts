@@ -5,7 +5,7 @@ import type {
   ProviderProxyRequest,
   ProviderProxyResponse,
 } from "../../runtime-credentials/provider-proxy-adapter.js";
-import type { GitHubManagementService } from "../github/github-management-service.js";
+import type { GitHubExecutionCredentialReader } from "../github/agent-github-credential-service.js";
 import { contextTreePushBody, GitPublicationError } from "./git-packets.js";
 import { githubRequestTarget } from "./http-target.js";
 import { GitHubHttpTransport, GitHubProxyError } from "./http-transport.js";
@@ -15,7 +15,7 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
   readonly #transport: Pick<GitHubHttpTransport, "request">;
   constructor(
     readonly options: {
-      management: Pick<GitHubManagementService, "getExecutionUserCredential">;
+      management: GitHubExecutionCredentialReader;
       transport?: Pick<GitHubHttpTransport, "request">;
     },
   ) {
@@ -40,6 +40,7 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
     const credential = await this.options.management
       .getExecutionUserCredential({
         accountId: authorization.accountId,
+        agentId: authorization.agentId,
         connectionId: authorization.bindingId,
         authorizationRevision: authorization.authorizationRevision,
       })
@@ -49,6 +50,11 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
     await authorization.recheck(request.signal);
     request.signal.throwIfAborted();
     if (!credential) throw new GitHubProxyError("github_credential_unavailable");
+    if (
+      credential.readOnly &&
+      (url.pathname.endsWith("/git-receive-pack") || url.searchParams.get("service") === "git-receive-pack")
+    )
+      throw new GitPublicationError("scope_denied");
     return this.#transport.request({ ...request, url, token: credential.accessToken });
   }
 }

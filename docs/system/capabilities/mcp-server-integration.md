@@ -33,7 +33,7 @@ An Agent's usefulness is bounded by the tools it can reach. MCP is the emerging 
 exposing those tools, so openTag needs to be able to register an MCP Server once per Account,
 mount it selectively per Agent, and resolve the authentication each mount is allowed to use.
 Anonymous and Bearer authorizations remain independent. Compatible OAuth mounts within one Account
-can reference one authentication. Account GitHub authorization for Context Tree remains separate.
+can reference one authentication. Context Tree consumes the current Agent’s official GitHub MCP OAuth credential through its existing restricted Server transport; it maintains no separate Account token.
 
 ### Shared OAuth authentication
 
@@ -747,18 +747,16 @@ only the scopes listed on its **Scopes** page, so add the full advertised list t
 GitHub uses the [official remote MCP server](https://github.com/github/github-mcp-server/blob/main/docs/host-integration.md).
 An existing GitHub OAuth App can supply the MCP client pair: add the MCP callback alongside its
 existing callbacks and keep the same Client ID. The GitHub catalog entry requests `repo offline_access`
-and selects the `context,repos,issues,pull_requests,users` toolsets. Each Agent completes its own MCP
-OAuth flow and stores its own encrypted access/refresh credential. Reusing the App does not reuse the
-Account integration's token, connect other Agents, or add GitHub sign-in. Context Tree retains its Account credential path through a restricted command gateway. Ordinary Agent GitHub operations use the MCP connector.
+and selects the `context,repos,issues,pull_requests,users` toolsets. Connect reuses the oldest compatible
+OAuth root on the installed definition before starting a new flow. Context Tree resolves that Agent's
+same credential through its restricted command gateway; it does not issue or store another token.
+Ordinary Agent GitHub operations use MCP and receive no native Git/gh credential. GitHub sign-in is
+not introduced.
 
-App reuse does couple credential availability. The Account integration and GitHub MCP both request
-`repo offline_access`, so the same GitHub user's Account and Agent tokens share GitHub's limit of ten
-tokens per user/App/scope combination. An additional authorization beyond that limit revokes an
-existing token, preferring an unused token and otherwise the least recently used one. That token can
-belong to the Account integration, breaking its Context Tree access, or to another
-Agent. Independent encrypted rows do not isolate this upstream revocation. Historical authorizations
-also consume the limit, so ten tokens does not guarantee ten Agents can connect. GitHub additionally
-limits creation to ten tokens per hour; exceeding that rate prompts reauthorization.
+Existing independent GitHub authorizations for the same user/App share GitHub's token limits.
+Historical Account tokens may continue consuming that bucket even after their local maintenance
+is retired. Reuse avoids issuing additional Context tokens; it does not revoke historical tokens or
+make the limit disappear. Never revoke the entire App grant to clean up those historical credentials.
 
 A dedicated MCP OAuth App isolates this bucket from the Account integration; Agent credentials still
 share the dedicated App's per-user limit. Choose the deployment's App with this constraint in mind;
@@ -1689,4 +1687,4 @@ record provenance for maintainers without adding links or explanatory copy to th
 | Amplitude | [Amplitude MCP server](https://amplitude.com/docs/amplitude-ai/amplitude-mcp) |
 | Stripe | [Stripe MCP tools](https://docs.stripe.com/mcp) |
 
-GitHub business operations in ordinary Agents use this MCP path. Account-level GitHub OAuth remains dedicated to Context Tree; it does not supply a native Git/gh credential to the Agent or replace its MCP authorization.
+GitHub business operations in ordinary Agents use this MCP path. Context Tree reuses the current Agent’s OAuth credential through its restricted Server Git path; it has no independent Account token and supplies no native Git/gh credential to the Agent.

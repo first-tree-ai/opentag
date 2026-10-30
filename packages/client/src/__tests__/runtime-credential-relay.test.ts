@@ -628,6 +628,7 @@ describe("RuntimeCredentialEnvironmentManager", () => {
     const prepared = await manager.prepare({ sessionId: "s", agentId: "a", placementGeneration: 1 });
     expect(prepared.path).toBe("/tmp/legacy.sh");
     expect(prepared.providers).toEqual(["slack"]);
+    expect(manager.environmentForSession("s")).toBeUndefined();
     await manager.cleanup("s");
     await manager.close();
     expect(calls).toEqual(["prepare", "cleanup", "close"]);
@@ -684,6 +685,9 @@ describe("RuntimeCredentialEnvironmentManager", () => {
         run: { runId: randomUUID(), source: { kind: "delivery", deliveryId: "delivery", turnId: randomUUID() } },
       });
       const environment = manager.environmentForSession("tree-session") ?? {};
+      expect(environment.OPENTAG_CONTEXT_TREE_MANAGED).toBe("1");
+      const manifest = JSON.parse(await readFile(environment.OPENTAG_CONTEXT_TREE_MANIFEST as string, "utf8"));
+      expect(manifest.environment.OPENTAG_CONTEXT_TREE_MANAGED).toBe("1");
       expect(environment.GH_TOKEN).toBeUndefined();
       expect(environment.GITHUB_TOKEN).toBeUndefined();
       if (granted) {
@@ -1075,6 +1079,7 @@ describe("runtime proxy material", () => {
       slackApiHost: "https://127.0.0.1:5678",
     });
     expect(environment.GH_TOKEN).toBe("otrh_github");
+    expect(environment.OPENTAG_CONTEXT_TREE_MANAGED).toBe("1");
     expect(environment.GH_CONFIG_DIR).toBe("/exec/gh-config");
     expect(environment.OPENTAG_GITHUB_REPOSITORIES).toBeUndefined();
     const denied = buildRuntimeProxyEnvironment({
@@ -1100,6 +1105,7 @@ describe("runtime proxy material", () => {
       slackApiHost: "https://127.0.0.1:5678",
     });
     expect(denied.GH_TOKEN).toBeUndefined();
+    expect(denied.OPENTAG_CONTEXT_TREE_MANAGED).toBe("1");
     expect(denied.GH_CONFIG_DIR).toBeUndefined();
     expect(denied.GIT_CONFIG_VALUE_0).toBe("");
     expect(denied.GIT_CONFIG_GLOBAL).toBe("/dev/null");

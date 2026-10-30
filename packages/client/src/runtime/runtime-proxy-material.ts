@@ -64,6 +64,7 @@ const LOCAL_PROXY_BYPASS = "127.0.0.1,localhost";
  */
 export function buildRuntimeProxyEnvironment(input: RuntimeProxyEnvironmentInput): RuntimeProxyEnvironment {
   const environment: Record<string, string | undefined> = {
+    OPENTAG_CONTEXT_TREE_MANAGED: "1",
     // Scrub ambient platform credentials and agent-forwarding from CLI subprocesses.
     OPENTAG_GITHUB_REPOSITORIES: undefined,
     OPENTAG_EXECUTION_ID: input.executionId,

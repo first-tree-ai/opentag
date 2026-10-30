@@ -136,7 +136,7 @@ export const CODEX_AGENT_RUNTIME_APP_SERVER_ARGS = [
   "-c",
   'shell_environment_policy.inherit="all"',
   "-c",
-  'shell_environment_policy.filters={ PATH = "include", ZDOTDIR = "include", LANG = "include", LC_ALL = "include", OPENTAG_HOME = "include", OPENTAG_PROVIDER_ENV_FILE = "include", OPENTAG_SESSION_PROOF_FILE = "include", OPENTAG_EXECUTION_ID = "include" }',
+  'shell_environment_policy.filters={ PATH = "include", ZDOTDIR = "include", LANG = "include", LC_ALL = "include", OPENTAG_HOME = "include", OPENTAG_PROVIDER_ENV_FILE = "include", OPENTAG_CONTEXT_TREE_MANIFEST = "include", OPENTAG_CONTEXT_TREE_MANAGED = "include", OPENTAG_SESSION_PROOF_FILE = "include", OPENTAG_EXECUTION_ID = "include" }',
 ] as const;
 const TOOL_ITEM_TYPES = new Set([
   "collabToolCall",

@@ -110,3 +110,20 @@ behavior. Authorization-specific messages and the existing recovery link target 
 Connectors rather than the retired Account integration. The merged Web build and all 12 typecheck
 tasks pass; four affected Web suites pass 52 tests and the three existing Chromium smoke cases pass
 with zero retries. The no-GitHub Memory screenshot is refreshed to the merged layout.
+
+## Codex Context Tree command routing
+
+The Codex adapter tests capture the real spawned process environment and shell-filter arguments
+for visible and internal launches, including the per-execution Context Tree manifest path and explicit
+proxy-managed marker. Local credential-manager and Cloud bridge tests check that the shared proxy
+environment publishes this marker, including when no Context Tree service is granted; legacy mode
+does not publish a proxy environment.
+Command-client process tests reject proxy sync and write commands before invoking a standalone
+CLI when the manifest is absent, missing, invalid, or lacks routing. Separate cases retain legacy
+visible/internal offline sync and local write commands, local reads and verification during proxy
+routing loss, and standalone use outside a Session. A manifest alone still prevents fallback.
+Existing Local/Cloud command-gateway tests retain credential rotation and interrupted-write coverage.
+
+A live invocation against a public repository is not proof of MCP credential reuse when its routing
+manifest was filtered out: the standalone CLI can fetch anonymously and create a local review commit.
+Deployment acceptance must verify the managed gateway route as well as successful CLI output.

@@ -427,7 +427,9 @@ export const PLACEMENT_SUPERSEDED_REASON = "placement_superseded";
  * generation, and records `reason = placement_superseded`. It never re-anchors or rewrites the
  * generation, and it does not touch `recordTurn` or `placementMatches`.
  *
- * Fences, evaluated under `select … for update` in one transaction: accepted, unreported,
+ * Fences, evaluated in one transaction whose first statement takes the recovery-Session locks
+ * (`lockSteeredRecoverySessions`, the order `recordTurn` uses) and which then reloads the row under
+ * `select … for update`: accepted, unreported,
  * `result_hash is null`, past `acceptedReportDeadlineMs` (the same helper every overdue settlement
  * uses), a superseded generation, no live claim marker, and Local custody. `report_owner_instance_id`
  * is deliberately not consulted: a superseded generation cannot report regardless of which instance
@@ -463,6 +465,14 @@ export async function settleSupersededPlacement(
   deliveryId: string,
 ): Promise<boolean> {
   const settled = await deps.database.transaction(async (transaction) => {
+    /*
+     * The recovery Session locks come FIRST, before any placement or delivery lock, exactly as
+     * `recordTurn` and `lockSteeredRecoverySessions` document. Taking the delivery lock first would
+     * close a cycle with a concurrent non-completed report (it holds the Session and waits for the
+     * delivery), which PostgreSQL answers with 40P01. The row is reloaded and rechecked afterwards,
+     * so holding the Session lock before knowing the row is still settleable costs nothing.
+     */
+    await lockSteeredRecoverySessions(transaction, [deliveryId]);
     const [row] = await transaction
       .select({
         delivery: imMessageDeliveries,
@@ -482,9 +492,6 @@ export async function settleSupersededPlacement(
       .for("update", { of: imMessageDeliveries });
     if (!row) return undefined;
     const { delivery } = row;
-    // Lock order matches `recordTurn`: the recovery Sessions before this row's placement and delivery
-    // locks, which `requeueSteeredDeliveries` below relies on.
-    if (delivery.turnId !== null) await lockSteeredRecoverySessions(transaction, [deliveryId]);
     const overdue =
       delivery.acceptedAt !== null && deps.now() >= acceptedReportDeadlineMs(delivery.acceptedAt.getTime());
     if (

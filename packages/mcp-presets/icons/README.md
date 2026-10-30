@@ -44,3 +44,51 @@ The People API documentation does not identify a separate product mark. Its cata
 Only catalog endpoints with `iconIsOfficial: true` receive a product mark. Leave this flag absent until the asset is verified against an official source. Unknown services and unavailable images use the shared neutral connection icon. Do not infer a brand from a user-defined Server name or fetch arbitrary favicons.
 
 Downloaded SVGs and PNGs remain unmodified vendor files. Asana, Canva, and Zapier are format-only ICO-to-PNG conversions with unchanged pixels and dimensions. No mark is redrawn, recolored, or cropped. The scoped Biome override leaves their accessibility metadata intact; `McpServiceIcon` renders them as decorative images with an empty `alt` beside the visible service name.
+
+Retrieved on 2026-10-30 for the expanded catalog. Each asset is linked by the provider’s official homepage; SVG/PNG bytes are retained unchanged.
+
+| Asset | Official source | Download |
+| --- | --- | --- |
+| `miro.png` | [Official homepage](https://miro.com) | [Unmodified product icon](https://framerusercontent.com/images/6FBG66PBxjV2QFaDfIdUi5mi9A.png) |
+| `todoist.svg` | [Official homepage](https://www.todoist.com/) | [Unmodified product icon](https://www.todoist.com/static/safari-pinned-tab.svg) |
+| `fireflies.png` | [Official homepage](https://fireflies.ai) | [Unmodified product icon](https://fireflies.ai/icon.png?icon.3227koqampzl_.png) |
+| `intercom.png` | [Official homepage](https://www.intercom.com) | [Unmodified product icon](https://www.intercom.com/intercom-marketing-site/favicons/favicon-16x16.png) |
+| `dovetail.svg` | [Official homepage](https://dovetail.com) | [Unmodified product icon](https://dovetail.com/favicon.svg) |
+| `webflow.png` | [Official homepage](https://webflow.com) | [Unmodified product icon](https://cdn.prod.website-files.com/686294e263eb7e215bd232f7/686d53ceda66a40cb6b6d546_favicon.png) |
+| `wordpress-com.png` | [Official homepage](https://wordpress.com) | [Unmodified product icon](https://0.gravatar.com/blavatar/653166773dc88127bd3afe0b6dfe5ea7?s=114&d=https%3A%2F%2Fs1.wp.com%2Fi%2Fwebclip.png) |
+| `sanity.svg` | [Official homepage](https://www.sanity.io) | [Unmodified product icon](https://www.sanity.io/_astro/safari-pinned-tab.D2gKSbuw.svg) |
+| `klaviyo.png` | [Official homepage](https://www.klaviyo.com) | [Unmodified product icon](https://www.klaviyo.com/icons/icon-32x32.png) |
+| `brevo.svg` | [Official homepage](https://www.brevo.com) | [Unmodified product icon](https://corp-backend.brevo.com/wp-content/uploads/2025/07/Brevo_logo.svg) |
+| `similarweb.png` | [Official homepage](https://www.similarweb.com) | [Unmodified product icon](https://static-us-west-2.similarcdn.com/build/20261029.master.d4b768f/dist/scripts/lite-app/assets/bf0781432ef84ce62b85.png) |
+| `se-ranking.svg` | [Official homepage](https://seranking.com) | [Unmodified product icon](https://seranking.com/wp-content/themes/se_theme/images/favicons/favicon_48x48.svg?v=2) |
+| `clay.png` | [Official homepage](https://www.clay.com) | [Unmodified product icon](https://cdn.prod.website-files.com/61477f2c24a826836f969afe/6a3a92ab841a6313dc068fb8_dot-com_favicon_2026_512.png) |
+| `ashby.png` | [Official homepage](https://www.ashbyhq.com) | [Unmodified product icon](https://www.ashbyhq.com/icon.png) |
+| `mercury.svg` | [Official homepage](https://mercury.com) | [Unmodified product icon](https://mercury.com/icon.svg?icon.2sq_8nnp61c03.svg) |
+| `fal.png` | [Official homepage](https://fal.ai) | [Unmodified product icon](https://cdn.prod.website-files.com/6a72ef21c470312422dea9b3/6adae13a22ee576600bb0fcf_fal-icon-favicon.png) |
+| `apify.svg` | [Official homepage](https://apify.com) | [Unmodified product icon](https://apify.com/icon0.svg?icon0.0z-sy_vfu_0k9.svg?dpl=cfd55ff433) |
+| `gitlab.png` | [Official homepage](https://about.gitlab.com) | [Unmodified product icon](https://about.gitlab.com/images/ico/favicon-32x32.png) |
+| `postman.svg` | [Official homepage](https://www.postman.com) | [Unmodified product icon](https://www.postman.com/_mk-www-next/icons/safari-pinned-tab.svg) |
+| `cloudflare.png` | [Official homepage](https://www.cloudflare.com) | [Unmodified product icon](https://www.cloudflare.com/favicon.ico) |
+| `digitalocean.svg` | [Official homepage](https://www.digitalocean.com) | [Unmodified product icon](https://www.digitalocean.com/_do-www-marketing/3ea1fb0a/_next/static/media/favicon.91372345.svg) |
+| `netlify.svg` | [Official homepage](https://www.netlify.com) | [Unmodified product icon](https://www.netlify.com/favicon/icon.svg) |
+| `new-relic.png` | [Official homepage](https://newrelic.com) | [Unmodified product icon](https://newrelic.com/themes/custom/erno/assets/images/metadata/favicon-16x16.png) |
+| `dynatrace.png` | [Official homepage](https://www.dynatrace.com) | [Unmodified product icon](https://dt-cdn.net/images/favicon-48x48-transparent-48-9b4df9c769.png) |
+| `elastic.svg` | [Official homepage](https://www.elastic.co) | [Unmodified product icon](https://www.elastic.co/favicon.svg) |
+| `honeycomb.png` | [Official homepage](https://www.honeycomb.io) | [Unmodified product icon](https://www.honeycomb.io/favicon-16x16.png) |
+| `pagerduty.svg` | [Official homepage](https://www.pagerduty.com) | [Unmodified product icon](https://www.pagerduty.com/favicon/prod/icon.svg) |
+| `snowflake.svg` | [Official homepage](https://www.snowflake.com/ja/) | [Unmodified product icon](https://www.snowflake.com/etc.clientlibs/snowflake-site/clientlibs/clientlib-react/resources/safari-pinned-tab.svg?v=3) |
+| `databricks.png` | [Official homepage](https://www.databricks.com) | [Unmodified product icon](https://www.databricks.com/en-website-assets/favicon-32x32.png?v=c9b9916c3b27dc51866c46b79a6e9b88) |
+| `dbt.png` | [Official homepage](https://www.getdbt.com) | [Unmodified product icon](https://www.getdbt.com/img/site-meta/apple-touch-icon.png) |
+| `fivetran.png` | [Official homepage](https://www.fivetran.com) | [Unmodified product icon](https://cdn.prod.website-files.com/6130fa1501794ed4d11867ba/6a106678b524f3ffeb0e6bc5_Light%20Favicon.png) |
+| `langsmith.png` | [Official homepage](https://www.langchain.com/langsmith/observability) | [Unmodified product icon](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/69a17e4a429d54e956e2a763_favicon.png) |
+| `make.png` | [Official homepage](https://www.make.com) | [Unmodified product icon](https://cdn.prod.website-files.com/6a294495bc84130c6dd0c4fd/6a7b944121e8a94aaf6ca04f_favicon-32x32.png) |
+| `n8n.png` | [Official homepage](https://n8n.io) | [Unmodified product icon](https://n8n.io/apple-touch-icon.png) |
+| `storyblok.svg` | [Official homepage](https://www.storyblok.com) | [Unmodified product icon](https://www.storyblok.com/favicon.svg) |
+| `vidiq.png` | [Official homepage](https://vidiq.com) | [Unmodified product icon](https://vidiq.com/favicons/apple-icon-57x57.png) |
+| `close.png` | [Official homepage](https://close.com) | [Unmodified product icon](https://close.com/favicon.png) |
+| `pipedrive.png` | [Official homepage](https://www.pipedrive.com/ja) | [Unmodified product icon](https://cdn.syd-1.pipedriveassets.com/www-main-renderer/_next/static/media/apple-touch-icon-57x57.9b9c7103.png) |
+| `granola.png` | [Official homepage](https://www.granola.ai) | [Unmodified product icon](https://www.granola.ai/favicon/favicon-96x96.png) |
+| `higgsfield.png` | [Official homepage](https://higgsfield.ai) | [Unmodified product icon](https://higgsfield.ai/icon.png) |
+| `tally.svg` | [Official homepage](https://tally.so) | [Unmodified product icon](https://tally.so/favicon.svg) |
+
+`connector.svg` is a neutral first-party fallback, not an official provider logo. Entries without a verified mark retain `icon_is_official: false`.

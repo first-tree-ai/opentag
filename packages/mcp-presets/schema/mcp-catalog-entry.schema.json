@@ -337,6 +337,98 @@
         "minLength": 1,
         "maxLength": 128
       }
+    },
+    "setup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["documentation_url", "help"],
+      "properties": {
+        "documentation_url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "help": {
+          "$ref": "#/$defs/localizedText"
+        },
+        "endpoint": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["placeholder", "path_pattern"],
+          "properties": {
+            "placeholder": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            },
+            "path_pattern": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "host_suffix": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9.-]+$",
+              "maxLength": 253
+            },
+            "query_parameters": {
+              "type": "array",
+              "maxItems": 8,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^[a-zA-Z][a-zA-Z0-9_-]*$",
+                "maxLength": 64
+              }
+            }
+          }
+        },
+        "auth_header": {
+          "type": "string",
+          "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$",
+          "maxLength": 64
+        },
+        "auth_scheme": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[^\\r\\n]*$"
+        },
+        "key_prefix": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[^\\s]+$"
+        },
+        "headers": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "label", "required"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$",
+                "maxLength": 64
+              },
+              "label": {
+                "$ref": "#/$defs/localizedText"
+              },
+              "required": {
+                "type": "boolean"
+              },
+              "placeholder": {
+                "type": "string",
+                "maxLength": 255
+              },
+              "format": {
+                "enum": ["integer"]
+              }
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {
@@ -446,6 +538,15 @@
     },
     {
       "required": ["remotes"]
+    },
+    {
+      "required": ["setup"],
+      "properties": {
+        "setup": {
+          "required": ["endpoint"],
+          "type": "object"
+        }
+      }
     }
   ]
 }

@@ -51,7 +51,7 @@ describe("mcp preset catalog shape", () => {
       expect(entry.whenToUse.zh.length).toBeGreaterThan(0);
       expect(entry.capabilities.length).toBeGreaterThan(0);
       expect(entry.auth.methods).toContain(entry.auth.defaultKind);
-      expect(entry.auth.defaultKind).toBe(entry.defaultAuthKind);
+      if (entry.installable) expect(entry.auth.defaultKind).toBe(entry.defaultAuthKind);
       expect(entry.auth.oauth !== undefined).toBe(entry.auth.methods.includes("oauth"));
     }
   });
@@ -72,7 +72,9 @@ describe("mcp preset catalog shape", () => {
     const text = MCP_CATALOG_ENTRY_SCHEMA.$defs.localizedText;
     expect(Object.keys(text.properties).sort()).toEqual(["en", "zh"]);
     expect(MCP_CATALOG_ENTRY_SCHEMA.required).not.toContain("remotes");
-    expect(MCP_CATALOG_ENTRY_SCHEMA.anyOf).toEqual([{ required: ["packages"] }, { required: ["remotes"] }]);
+    expect(MCP_CATALOG_ENTRY_SCHEMA.anyOf).toEqual(
+      expect.arrayContaining([{ required: ["packages"] }, { required: ["remotes"] }]),
+    );
   });
 
   it("embeds every icon as a self-contained data URL", () => {

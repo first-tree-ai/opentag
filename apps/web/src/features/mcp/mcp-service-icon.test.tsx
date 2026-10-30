@@ -4,7 +4,8 @@ import { McpServerCard } from "./mcp-server-card.js";
 import { McpServiceIcon } from "./mcp-service-icon.js";
 import { entry } from "./mcp-test-fixtures.js";
 
-vi.mock("@opentag/mcp-presets", () => ({
+vi.mock("@opentag/mcp-presets", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@opentag/mcp-presets")>()),
   MCP_CATALOG_ENTRIES: [
     {
       url: "https://mcp.provider.test/mcp",

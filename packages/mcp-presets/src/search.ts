@@ -218,8 +218,7 @@ function raise(ranked: Map<number, Ranked>, position: number, tier: number, hits
  */
 function rankQuery(index: CatalogIndex, queryTokens: readonly string[], needle: string): Map<number, Ranked> {
   const ranked = new Map<number, Ranked>();
-  const exact = index.byName.get(needle);
-  if (exact !== undefined) raise(ranked, exact, 0, queryTokens.length);
+  rankNamedMatches(index, ranked, needle, queryTokens.length);
   for (const position of index.byPrefix.get(needle) ?? []) {
     raise(ranked, position, 1, ranked.get(position)?.hits ?? 0);
   }
@@ -230,6 +229,18 @@ function rankQuery(index: CatalogIndex, queryTokens: readonly string[], needle: 
     }
   }
   return ranked;
+}
+
+/** Keep name priority when a product and task are written without a script separator. */
+function rankNamedMatches(index: CatalogIndex, ranked: Map<number, Ranked>, needle: string, hits: number): void {
+  const exact = index.byName.get(needle);
+  if (exact !== undefined) raise(ranked, exact, 0, hits);
+  const runs = needle.match(SCRIPT_RUNS) ?? [];
+  if (runs.length < 2) return;
+  for (const run of runs) {
+    const named = index.byName.get(run.trim());
+    if (named !== undefined) raise(ranked, named, 0, hits);
+  }
 }
 
 function compareRanked(active: readonly IndexedEntry[]) {

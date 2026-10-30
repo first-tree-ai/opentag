@@ -43,7 +43,8 @@ const CATALOG = vi.hoisted(() => ({
   ],
 }));
 
-vi.mock("@opentag/mcp-presets", () => ({
+vi.mock("@opentag/mcp-presets", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@opentag/mcp-presets")>()),
   MCP_CATALOG_CATEGORIES: CATALOG.categories,
   MCP_CATALOG_ENTRIES: CATALOG.entries,
 }));

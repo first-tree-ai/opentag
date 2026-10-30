@@ -280,5 +280,11 @@
   "mcp_add_failed": "Couldn't add connector. Try again.",
   "mcp_waiting_authorization": "Waiting for authorization…",
   "mcp_checking_connection": "Checking connection…",
-  "mcp_update_credentials": "Update credentials"
+  "mcp_update_credentials": "Update credentials",
+  "mcp_setup_instructions": "Setup instructions",
+  "mcp_setup_invalid": "Enter the MCP address and required settings from your provider.",
+  "mcp_setup_address_invalid": "Use the HTTPS MCP address from your provider’s settings.",
+  "mcp_setup_integer_hint": "Positive whole number",
+  "mcp_setup_integer_error": "Enter a positive whole number.",
+  "mcp_setup_value_invalid": "Enter a valid value."
 }

@@ -1,3 +1,4 @@
+import { formatMcpCatalogKey } from "@opentag/mcp-presets";
 import {
   type MCPAgentServer,
   MCPAuthSchemeSchema,
@@ -6,6 +7,7 @@ import {
 } from "@opentag/shared/browser";
 import { useRef } from "react";
 import { browserApi } from "../../api.js";
+import { connectionPreset } from "./mcp-connection-model.js";
 import { type AuthDraft, bindingPatch, headerRows } from "./mcp-form-model.js";
 import { type McpOAuthSession, useMcpOAuthSession } from "./mcp-oauth-session.js";
 import { closeMcpOAuthWindow, prepareMcpOAuthWindow } from "./mcp-oauth-window.js";
@@ -61,7 +63,15 @@ export function useMcpAuthorization(agentId: string, session?: McpOAuthSession) 
       return await authorize.mutateAsync({
         mcpServerId: entry.mcpServerId,
         kind: draft.kind,
-        ...(draft.kind === "bearer" ? { bearerKey: draft.token.trim() } : {}),
+        ...(draft.kind === "bearer"
+          ? {
+              bearerKey: formatMcpCatalogKey(
+                connectionPreset(options?.config?.url ?? entry.effective.url),
+                draft.token,
+                draft,
+              ),
+            }
+          : {}),
       });
     } finally {
       closeMcpOAuthWindow(prepared?.popup);

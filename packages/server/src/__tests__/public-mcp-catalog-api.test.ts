@@ -182,12 +182,12 @@ describe("public catalog MCP endpoint: tools", () => {
     expect(notion?.title).toBe("Notion");
   });
 
-  it("lists the whole active catalog for an empty query and localizes for zh", async () => {
+  it("lists a bounded active catalog page for an empty query and localizes for zh", async () => {
     const payload = payloadOf(await call(newApp(), "search_mcp_servers", { query: "", locale: "zh", limit: 50 }));
     const active = MCP_CATALOG_ENTRIES.filter((entry) => entry.status === "active");
     expect(payload.total).toBe(active.length);
     const results = payload.results as Record<string, unknown>[];
-    expect(results).toHaveLength(active.length);
+    expect(results).toHaveLength(Math.min(active.length, 50));
     expect(results.find((entry) => entry.id === "notion")?.title).toBe("Notion");
     expect(results.find((entry) => entry.id === "notion")?.whenToUse).toContain("Notion");
   });

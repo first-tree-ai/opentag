@@ -23,6 +23,7 @@ export {
   type McpCatalogPackageArgument,
   type McpCatalogPlatform,
   type McpCatalogRemote,
+  type McpCatalogSetup,
   type McpCatalogSideEffect,
   type McpCatalogStatus,
   type McpCatalogTool,
@@ -40,4 +41,10 @@ export {
   mcpCatalogSearch,
   searchMcpCatalog,
 } from "./search.js";
+export {
+  formatMcpCatalogKey,
+  matchesMcpCatalogEndpoint,
+  mcpCatalogSetupHeaderError,
+  resolveMcpCatalogSetup,
+} from "./setup.js";
 export { type McpCatalogViolation, validateMcpCatalog, validateMcpCatalogEntry } from "./validate.js";

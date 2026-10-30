@@ -1518,14 +1518,34 @@ Directory cards place the service name and description on the left, with **Add**
 right rather than in a separate footer row. Limited-access labels sit beside the service name.
 On narrow screens, descriptions span the card width.
 
-Adding creates this Agent's independent definition and mounts it to this Agent. The directory closes as
-soon as the mount is confirmed, and the management list highlights the service without waiting for
-authorization or tools. OAuth services immediately navigate to the provider without another confirmation.
-Bearer services open the shared authentication dialog with the known method fixed and no connection
-settings; saving credentials closes it. Closing authentication leaves the mount on the list with
-**Not connected** and **Connect**. Anonymous mounts already authorized by the server trigger an
-immediate tool probe on the page; they do not wait for the periodic background worker or rewrite
-their authorization.
+Discover keeps setup and authorization in its directory dialog. Fixed endpoints use the existing
+create, attach, authorize, and probe operations. OAuth starts immediately; key-based services ask for
+a password-masked key. Successful connection returns to the directory. Fixed endpoint cards then show Added; customer
+endpoint cards keep Add available for connecting another instance.
+Failures preserve the current form or card for retry. Cancelling an unfinished attempt removes only
+its provisional mount; an already authorized mount is retained.
+
+The customer endpoint setup form marks required fields and positive integer IDs, and reports
+validation errors beside the affected field with accessible descriptions. Header validation uses
+the same catalog helper as connection resolution, so a missing or malformed environment ID does
+not incorrectly mark a valid endpoint as invalid. Endpoint recipes currently support bearer
+credentials only; generation rejects `none` or `oauth` defaults for this form.
+
+Customer-hosted services use a catalog `setup.endpoint` recipe rather than a fabricated global URL.
+Dynatrace, Elastic Agent Builder, Snowflake, Databricks, dbt platform, Make, and n8n ask for the actual
+HTTPS MCP address before any write. The recipe constrains its path, optional hostname suffix, and
+allowed non-secret query names. dbt additionally asks for a required production environment ID and
+optional SQL user/development environment IDs. Only declared headers are accepted. All resolved
+settings pass `CreateMCPServerRequestSchema` and use the existing APIs, storage, authorization, and
+outbound policy. Distinct instance URLs, environment headers, or authorization methods do not reuse
+an incompatible mount. These entries remain `installable: false` until a customer supplies the endpoint;
+Discover explicitly offers their setup recipes, while the public catalog returns no runnable config.
+
+PagerDuty's key recipe adds `token=` exactly once to a raw key when the effective header is still
+`Authorization: Token`. Close uses a raw `close-api-key` header and static `close-scope: mcp.read`.
+Similarweb, SE Ranking, LangSmith, and lemlist also retain their documented raw key headers. Fixed
+bearer defaults are derived from `auth.bearer`, including empty schemes and static extra headers.
+Advanced user overrides remain authoritative.
 
 Pending tool probes poll every second for their first 30 seconds, then return to the ordinary
 30-second live cadence. The budget follows each mount in its query cache and uses elapsed time,
@@ -1533,9 +1553,8 @@ so failed reads cannot leave a page polling every second indefinitely. Newly pen
 receive their own fast-poll window; settled or disabled mounts stop using it.
 
 Create and attach errors remain in the directory, preserving its search and category. Confirmed
-definitions are retained for retries. After mounting, connection startup errors and probe retries
-belong to the existing list; credential errors remain in the shared authentication form. There is no
-separate setup, connection-progress, or connection-result view. OAuth uses the existing return context
+definitions are retained for retries. Connection errors remain on the corresponding card or setup
+form; the management list also reflects the mount's current state. There is no separate connection-result view. OAuth uses the existing return context
 handling, including authentication errors returned by the provider. Adding and authorizing a
 connector have no separate success or failure notification. Connection status remains on the card;
 failures remain on the corresponding card or connection form with a retry action. An OAuth error
@@ -1546,10 +1565,9 @@ The catalog aligns rows to the top of its bounded scroll area. Minimum list heig
 below the cards instead of stretching a lone row. The directory omits the redundant Agent
 authorization footer.
 
-Category navigation starts with **All**, then follows the catalog's fixed order:
-Docs & Knowledge, Communication, Projects, Developer Tools, Web Search, Data & Analytics,
-and Design. Categories with fewer than two offered entries are omitted from navigation;
-their entries remain available in All and search. Other catalog categories follow these groups.
+Category navigation starts with **All**, then follows the ten-category order defined below.
+Categories with fewer than two offered entries are omitted from navigation; their entries remain
+available in All and search.
 Desktop filters stay on one line and move a trailing suffix into **More** according to the
 available container width. More retains the same order and marks the selected item. Selecting
 an overflow category replaces the trigger's label with that category's name without reordering
@@ -1620,6 +1638,13 @@ known limitation: its authorization server advertises `client_secret_post` and `
 `client_secret_basic` the dynamic-registration path presents, so its authorization stays unverified
 until token-endpoint authentication-method support exists (issue #814 tracks the follow-up).
 
+Discover uses ten categories in fixed order: Docs & Content, Communication & Meetings, Work
+Management, Search & Extraction, Data & Analytics, Design & Creative, Customers & Growth,
+Automation, Finance & Payments, and Development & Ops. All precedes them as the default view.
+The YAML source owns this order in both locales, including desktop overflow menus and mobile
+selectors. A category with fewer than two offered entries is omitted from navigation while its
+entries remain reachable in All and search. Search does not reorder the categories.
+
 Discover lists only `active` entries. A `deprecated` or `archived` entry is compiled but hidden, and
 a `removed` entry is not emitted. Discover search also matches an entry's `keywords`, `aliases`,
 `tags`, `capabilities`, and `when_to_use` text. The compiled module keeps the flat card fields the
@@ -1630,8 +1655,8 @@ Web App reads (`id` as the slug, `title`, `description`, `url`, `defaultAuthKind
 The generator refuses, at build time, at minimum:
 
 - an entry that does not validate against the entry schema: an unknown key, a non-HTTPS remote, an
-  unknown package registry type, an unknown `status`, a missing locale, or neither `packages` nor
-  `remotes`;
+  unknown package registry type, an unknown `status`, a missing locale, or none of `packages`,
+  `remotes`, and an endpoint setup recipe;
 - a package whose named argument has no name, whose secret carries a value or default, whose
   credential-looking variable is not marked secret, or whose value looks like a credential;
 - an `auth.default_kind` that is not in `auth.methods`, or an `oauth` method without an `auth.oauth`
@@ -1650,11 +1675,12 @@ The generator refuses, at build time, at minimum:
 - an entry whose referenced icon file does not exist;
 - a compiled module that does not match its sources.
 
-Only a Server with a remote Streamable HTTP endpoint is **installable**. An entry may also record
+Only a Server with a fixed remote Streamable HTTP endpoint is immediately **installable**. An entry may also record
 self-hosted `packages` (stdio and similar) as catalog data: the deployment has sandboxes, but the
 Server create contract and runtime do not run packages yet, so such an entry is emitted with
 `installable: false`, carries no flat connection fields, is withheld from Discover and URL matching,
-and is exposed read-only in the public catalog (with package values and defaults omitted). An SSE
+and is exposed read-only in the public catalog (with package values and defaults omitted). Customer
+endpoint recipes are the explicit Discover exception described above. An SSE
 remote is data only as well. This document's Server-create contract is unchanged.
 
 **Staleness is not asserted by `pnpm check`.** Whether a listed endpoint still answers, and whether its

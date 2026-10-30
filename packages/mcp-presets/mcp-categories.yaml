@@ -1,70 +1,50 @@
-# The marketplace category set.
-#
-# Every category declared here must be referenced by at least one entry in `mcp-catalog.yaml`, and
-# every entry's `category` must name one of these ids — `pnpm check` fails either way.
-# Discover shows category navigation only for categories with at least two entries. Entries from
-# smaller categories remain available in All and search.
-#
-# `label` must supply every locale listed in `apps/web/project.inlang/settings.json`. A missing locale
-# fails the build rather than falling back to another at render time.
-# `order` sets the category navigation order.
-
 - id: docs
   label:
-    en: Docs & Knowledge
-    zh: 文档与知识
+    en: Docs & Content
+    zh: 文档内容
   order: 10
-
 - id: communication
   label:
-    en: Communication
-    zh: 沟通
+    en: Communication & Meetings
+    zh: 沟通会议
   order: 20
-
 - id: projects
   label:
-    en: Projects
-    zh: 项目管理
+    en: Work Management
+    zh: 工作管理
   order: 30
-
-- id: development
-  label:
-    en: Developer Tools
-    zh: 开发工具
-  order: 40
-
 - id: search
   label:
-    en: Web Search
-    zh: 网页搜索
-  order: 50
-
+    en: Search & Extraction
+    zh: 搜索采集
+  order: 40
 - id: data
   label:
     en: Data & Analytics
     zh: 数据分析
-  order: 60
-
+  order: 50
 - id: design
   label:
-    en: Design
-    zh: 设计
-  order: 70
-
+    en: Design & Creative
+    zh: 设计创作
+  order: 60
 - id: sales
   label:
-    en: Sales & CRM
-    zh: 销售与客户
+    en: Customers & Growth
+    zh: 客户增长
+  order: 70
+- id: automation
+  label:
+    en: Automation
+    zh: 自动化
   order: 80
-
 - id: finance
   label:
     en: Finance & Payments
     zh: 财务支付
   order: 90
-
-- id: automation
+- id: development
   label:
-    en: Automation
-    zh: 工作流自动化
+    en: Development & Ops
+    zh: 开发运维
   order: 100

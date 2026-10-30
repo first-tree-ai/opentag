@@ -526,3 +526,80 @@ test("rejects a key connection when bearer is not a supported method", (t) => {
     entries: [nested("auth", { bearer: { url: "https://api.example.com/mcp" } })],
   });
 });
+
+test("uses a default key configuration on first installation without losing static headers", (t) => {
+  const url = "https://mcp.example.com/mcp";
+  const fixture = fixtureDirectory(t, {
+    entries: [
+      entry({
+        auth: {
+          methods: ["bearer"],
+          default_kind: "bearer",
+          bearer: { url, auth_header: "x-api-key", auth_scheme: "" },
+        },
+        remotes: [{ type: "streamable-http", url, headers: [{ name: "x-scope", role: "extra", value: "read" }] }],
+      }),
+    ],
+  });
+  const result = runGenerator(fixture.root);
+  assert.equal(result.status, 0, result.stderr);
+  const source = readFileSync(fixture.target, "utf8");
+  const block = source.slice(source.indexOf("export const MCP_CATALOG_ENTRIES"));
+  assert.match(block, /authHeader: "x-api-key"/);
+  assert.match(block, /authScheme: ""/);
+  assert.match(block, /"x-scope": "read"/);
+});
+
+test("records customer setup without publishing an unresolved executable endpoint", (t) => {
+  const { remotes: _remotes, ...base } = entry();
+  const fixture = fixtureDirectory(t, {
+    entries: [
+      {
+        ...base,
+        auth: { methods: ["bearer"], default_kind: "bearer" },
+        setup: {
+          documentation_url: "https://example.com/docs",
+          help: { en: "Copy your endpoint.", zh: "复制实例地址。" },
+          endpoint: { placeholder: "https://your-instance.example.com/mcp", path_pattern: "^/mcp$" },
+        },
+      },
+    ],
+  });
+  const result = runGenerator(fixture.root);
+  assert.equal(result.status, 0, result.stderr);
+  const block = readFileSync(fixture.target, "utf8").split("export const MCP_CATALOG_ENTRIES")[1];
+  assert.match(block, /installable: false/);
+  assert.match(block, /documentationUrl:/);
+  assert.doesNotMatch(block, /^\s{4}url:/m);
+});
+
+for (const kind of ["none", "oauth"]) {
+  test(`rejects a customer endpoint recipe with unsupported ${kind} authentication`, (t) => {
+    const { remotes: _remotes, ...base } = entry();
+    assertRejected(t, /setup\.endpoint: requires auth\.default_kind bearer/, {
+      entries: [
+        {
+          ...base,
+          auth: { methods: [kind], default_kind: kind, ...(kind === "oauth" ? { oauth: {} } : {}) },
+          setup: {
+            documentation_url: "https://example.com/docs",
+            help: { en: "Copy your endpoint.", zh: "复制实例地址。" },
+            endpoint: { placeholder: "https://your-instance.example.com/mcp", path_pattern: "^/mcp$" },
+          },
+        },
+      ],
+    });
+  });
+}
+
+test("refuses invalid customer endpoint patterns and reserved setup headers", (t) => {
+  const base = entry({
+    setup: {
+      documentation_url: "https://example.com/docs",
+      help: { en: "Setup", zh: "配置" },
+      endpoint: { placeholder: "https://example.com/mcp", path_pattern: "[" },
+      headers: [{ name: "authorization", label: { en: "Bad", zh: "错误" }, required: true }],
+    },
+  });
+  assertRejected(t, /setup\.(?:endpoint|headers)/, { entries: [base] });
+});

@@ -58,8 +58,9 @@ Checks:
 - Native plugin disablement, sibling isolation, socket coexistence, and native feature preservation passed.
 - Binding preserved; adapter configuration snapshots unchanged; no fixture bearer persisted.
 
-The fixture includes a native plugin hook definition without approving its hash. Its marker remains
-absent, consistent with native hook trust enforcement. Trusted hook execution through App Server
+The fixture includes a native plugin hook definition without approving its hash. Native
+`hooks/list` reports its `sessionStart` definition with `trustStatus=untrusted`; its execution marker
+remains absent. This verifies discovery and preservation of native hook trust enforcement. Trusted hook execution through App Server
 has **not** been validated by this smoke. OpenTag does not bypass trust or write native hook trust
 state. Review definitions with the installed CLI's native `/hooks` flow; compatibility depends on
 that Codex version and the hook. See the official [hook guide](https://learn.chatgpt.com/docs/hooks)

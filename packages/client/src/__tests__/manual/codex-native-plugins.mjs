@@ -7,7 +7,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
-import { CodexAgentRuntimeFactory, codexAgentRuntimeEnvironment } from "@opentag/client";
+import {
+  CODEX_AGENT_RUNTIME_APP_SERVER_ARGS,
+  CodexAgentRuntimeFactory,
+  CodexAppServerProcess,
+  codexAgentRuntimeEnvironment,
+} from "@opentag/client";
 
 const exec = promisify(execFile);
 const home = await realpath(await mkdtemp(join(tmpdir(), "otcn-")));
@@ -332,6 +337,25 @@ try {
   const originalUserConfig = await readFile(userConfigPath, "utf8");
   const enabledProject = '[plugins."native-fixture@native-market"]\nenabled=true\n';
   await writeFile(projectConfigPath, enabledProject);
+  const inspection = new CodexAppServerProcess({
+    command,
+    args: [...CODEX_AGENT_RUNTIME_APP_SERVER_ARGS],
+    cwd: workspace,
+    env: environment,
+    expectedCodexHome: configHome,
+  });
+  try {
+    await inspection.initialize("0.0.1-native-fixture");
+    const listed = await inspection.request("hooks/list", { cwds: [workspace] });
+    const entry = listed.data.find((entry) => entry.cwd === workspace);
+    assert.deepEqual(entry.errors, []);
+    const nativeHook = entry.hooks.find((hook) => hook.source === "plugin");
+    assert.ok(nativeHook, JSON.stringify(listed));
+    assert.equal(nativeHook.eventName, "sessionStart");
+    assert.equal(nativeHook.trustStatus, "untrusted");
+  } finally {
+    await inspection.close();
+  }
   const factory = new CodexAgentRuntimeFactory({
     clientVersion: "0.0.1-native-fixture",
     process: { command, env: environment },
@@ -396,7 +420,19 @@ try {
   await scanBearers(configHome);
   const version = (await exec(command, ["--version"], { env: environment })).stdout.trim();
   process.stdout.write(
-    `${JSON.stringify({ ok: true, version, reports, nativeMcpCalls: calls.length, hostedCalls: hostedCalls.length, untrustedHooksSkipped: true, stdioCalls: stdioCalls.length, bindingPreserved: true, userConfigurationUnchanged: true, bearerPersisted: false })}\n`,
+    `${JSON.stringify({
+      ok: true,
+      version,
+      reports,
+      nativeMcpCalls: calls.length,
+      hostedCalls: hostedCalls.length,
+      nativeHookListedAsUntrusted: true,
+      untrustedHooksSkipped: true,
+      stdioCalls: stdioCalls.length,
+      bindingPreserved: true,
+      userConfigurationUnchanged: true,
+      bearerPersisted: false,
+    })}\n`,
   );
 } finally {
   await runtime?.close();

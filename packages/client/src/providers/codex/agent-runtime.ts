@@ -96,6 +96,8 @@ export const CODEX_AGENT_RUNTIME_APP_SERVER_ARGS = [
   "shell_snapshot",
   "-c",
   "allow_login_shell=false",
+  "-c",
+  'shell_environment_policy.inherit="all"',
 ] as const;
 const TOOL_ITEM_TYPES = new Set([
   "collabToolCall",

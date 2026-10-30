@@ -399,7 +399,7 @@ try {
   const userConfigPath = join(configHome, "config.toml");
   await writeFile(
     userConfigPath,
-    `model="gpt-5.1-codex"\nmodel_provider="fixture"\nweb_search="disabled"\n[features]\nplugins=true\nremote_plugin=false\nhooks=true\n[model_providers.fixture]\nname="fixture"\nbase_url="${origin}/v1"\nwire_api="responses"\nrequires_openai_auth=false\n[mcp_servers.opentag-mcp]\nurl="${origin}/mcp/user"\nstartup_timeout_sec=2\ndefault_tools_approval_mode="approve"\n[shell_environment_policy.filters]\nPLUGIN_HIDDEN_OPTION="exclude"\n`,
+    `model="gpt-5.1-codex"\nmodel_provider="fixture"\nweb_search="disabled"\n[features]\nplugins=true\nremote_plugin=false\nhooks=true\n[model_providers.fixture]\nname="fixture"\nbase_url="${origin}/v1"\nwire_api="responses"\nrequires_openai_auth=false\n[mcp_servers.opentag-mcp]\nurl="${origin}/mcp/user"\nstartup_timeout_sec=2\ndefault_tools_approval_mode="approve"\n[shell_environment_policy]\ninherit="core"\n[shell_environment_policy.filters]\nPLUGIN_HIDDEN_OPTION="exclude"\n`,
   );
   await appendFile(
     userConfigPath,

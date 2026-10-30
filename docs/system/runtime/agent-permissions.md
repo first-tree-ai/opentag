@@ -35,8 +35,9 @@ also follows native configuration; OpenTag supplies no browser UI or additional 
 Local Codex also admits native user/project settings, plugins, hooks, Skills, and direct or
 plugin-provided MCP services. Native feature choices and hook trust checks remain Codex's own;
 OpenTag supplies no hook trust bypass. It preserves custom environment variables and native shell
-filters. Shell snapshots and login shells remain disabled, with managed `ZDOTDIR` retained for
-Session CLI routing. File-system/network policy and approval mappings remain unchanged. Required
+filters, while inheritance is pinned to `all` for Session routing. Shell snapshots and login shells
+remain disabled, with managed `ZDOTDIR` retained for Session CLI routing. File-system/network policy
+and approval mappings remain unchanged. Required
 per-execution Unix socket exceptions override only their own network-proxy feature key and named
 permission profile. Other native feature choices and profiles remain intact. Native helpers,
 trusted hooks, and stdio MCP subprocesses are trusted local code outside model tool isolation.

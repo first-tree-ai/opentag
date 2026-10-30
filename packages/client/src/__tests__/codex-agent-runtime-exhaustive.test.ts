@@ -2156,6 +2156,7 @@ it.each(["visible", "internal"])(
     const manifests: Array<string | undefined> = [];
     const managedMarkers: Array<string | undefined> = [];
     const shellPolicies: Array<string | undefined> = [];
+    const shellInheritance: Array<string | undefined> = [];
     const basePath = `/provider/bin${delimiter}/usr/bin`;
     const runtime = await new CodexAgentRuntimeFactory({
       clientVersion: "0.0.1-test",
@@ -2166,6 +2167,7 @@ it.each(["visible", "internal"])(
           manifests.push(options.env?.OPENTAG_CONTEXT_TREE_MANIFEST);
           managedMarkers.push(options.env?.OPENTAG_CONTEXT_TREE_MANAGED);
           shellPolicies.push(args.find((arg) => arg.startsWith("shell_environment_policy.filters=")));
+          shellInheritance.push(args.find((arg) => arg.startsWith("shell_environment_policy.inherit=")));
           return spawn(process.execPath, [fixture], { ...options, stdio: "pipe" });
         },
       },
@@ -2191,6 +2193,7 @@ it.each(["visible", "internal"])(
     expect(manifests).toEqual(["/opentag/session/current.json"]);
     expect(managedMarkers).toEqual(["1"]);
     expect(shellPolicies[0]).toBeUndefined();
+    expect(shellInheritance).toEqual(['shell_environment_policy.inherit="all"']);
   },
 );
 

@@ -183,7 +183,9 @@ native plugin inventory. Existing cwd, Provider Home, login, and history locatio
 
 OpenTag keeps one App Server per Session runtime. It disables shell snapshots and login shells and
 sets managed `ZDOTDIR` when needed to preserve Session CLI routing; it does not replace native shell
-environment filters. Environment changes require a new runtime. OpenTag overlays only its private
+environment filters. Shell inheritance is pinned to `all` so Session metadata and custom plugin
+variables do not depend on the native default; configured exclusions still apply. Environment
+changes require a new runtime. OpenTag overlays only its private
 execution MCP key and necessary execution socket profile in memory, retaining other native
 configuration. See [MCP integration](../capabilities/mcp-server-integration.md#codex-rebinding-the-thread-per-run).
 

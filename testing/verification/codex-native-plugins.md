@@ -28,8 +28,9 @@ Checks:
 - Call the user MCP named `opentag-mcp`, dynamic plugin HTTP MCP, plugin stdio MCP, private execution
   gateway, and hosted tool. Native stdio MCP and shell execution receive a custom environment variable.
 - Native shell execution also retains `OPENTAG_CONTEXT_TREE_MANAGED` and the Context Tree manifest
-  path while honoring a user-configured exclusion for an unrelated fixture variable. No forced
-  shell filter table or include allowlist is needed to retain the managed routing metadata.
+  path while honoring a user-configured exclusion for an unrelated fixture variable, even with
+  `inherit="core"` configured as the native default. The adapter explicitly pins inheritance to
+  `all`; it does not replace the native filter table or add an include allowlist.
 - Discover a unique native plugin Skill marker in the model context. Existing history may retain
   its earlier text after disablement; this is not evidence of current plugin activation.
 - Rotate execution gateway tokens across Runs on the same runtime/binding. A Run without a gateway

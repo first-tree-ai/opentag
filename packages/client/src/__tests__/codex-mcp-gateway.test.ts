@@ -351,6 +351,51 @@ describe("Codex MCP gateway delivery", () => {
     await runtime.close();
   });
 
+  it("unsubscribes late replacements after repeated cancellation before the first turn", async () => {
+    const { client, factory } = setup();
+    const runtime = await factory.create(createRequest());
+    const originalBinding = runtime.binding;
+    const subscribed = new Set(["thread-1"]);
+    const replies: Array<() => void> = [];
+    client.start = async (_params, signal) => {
+      const id = `cancelled-${replies.length + 1}`;
+      return new Promise((resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(new Error("request aborted")), { once: true });
+        replies.push(() => {
+          subscribed.add(id);
+          resolve({ thread: { id } });
+        });
+      });
+    };
+    client.unsubscribe = async (params, signal) => {
+      expect(signal?.aborted).toBe(false);
+      subscribed.delete(params.threadId as string);
+      return { status: "unsubscribed" };
+    };
+
+    for (let index = 0; index < 3; index += 1) {
+      const runId = `cancel-first-${index}`;
+      const run = runtime.prompt(prompt(runId, true));
+      await vi.waitFor(() => expect(replies).toHaveLength(index + 1));
+      await runtime.abort({ expectedRunId: runId, reason: "user" });
+      await expect(run).resolves.toMatchObject({ status: "aborted" });
+      expect(runtime.binding).toEqual(originalBinding);
+    }
+    expect(client.events.some((event) => event.startsWith("turn:"))).toBe(false);
+
+    client.start = async () => {
+      subscribed.add("current");
+      return { thread: { id: "current" } };
+    };
+    await expect(runtime.prompt(prompt("healthy-first", true))).resolves.toMatchObject({ status: "completed" });
+    const currentBinding = runtime.binding;
+    for (const reply of replies.reverse()) reply();
+    await vi.waitFor(() => expect(subscribed).toEqual(new Set(["current"])));
+    expect(runtime.binding).toEqual(currentBinding);
+    expect(client.events.filter((event) => event.startsWith("turn:"))).toEqual(["turn:current"]);
+    await runtime.close();
+  });
+
   it("keeps the replacement when the replaced thread cannot be unloaded", async () => {
     const { client, factory } = setup();
     const runtime = await factory.create(createRequest());
@@ -383,12 +428,15 @@ describe("Codex MCP gateway delivery", () => {
   it("aborts a fresh run after its replacement exists without waiting for the old thread to unload", async () => {
     const { client, factory } = setup();
     const runtime = await factory.create(createRequest());
+    let cleanupSignal: AbortSignal | undefined;
     client.unsubscribe = async (_params, signal) => {
+      cleanupSignal = signal;
       await runtime.abort({ expectedRunId: "fresh-aborted", reason: "user" });
       return hangUntilAborted(signal);
     };
     await expect(runtime.prompt(prompt("fresh-aborted", true))).resolves.toMatchObject({ status: "aborted" });
     expect(client.events.some((event) => event.startsWith("turn:"))).toBe(false);
+    expect(cleanupSignal?.aborted).toBe(false);
     await runtime.close();
   });
 

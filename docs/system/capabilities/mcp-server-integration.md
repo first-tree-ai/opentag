@@ -1106,6 +1106,11 @@ reconstruct that catalog through `config/read`.
   for a native failure response before restoration. Only failure to restore a usable thread fails
   the Run. Cancellation returns promptly; bounded pending RPC slots consume late native replies so
   a cancelled handshake cannot poison the next Run.
+- An unpersisted replacement's creation stays observable after local cancellation. A successful
+  reply that was not adopted into the binding triggers `thread/unsubscribe`, including replies
+  arriving after a newer Run succeeds. Cleanup uses its own bounded deadline rather than the
+  cancelled Run's signal. Native no-subscriber inactivity cleanup may keep an unsubscribed thread
+  temporarily loaded; continued subscription is not part of that grace period.
 - History survives a persisted rebind: `excludeTurns` omits the response's turn list, while Codex
   reloads model context from its rollout. App Server processes are not restarted per Turn.
 - Only the private gateway gets `default_tools_approval_mode = "approve"` for `never`, or `"writes"`

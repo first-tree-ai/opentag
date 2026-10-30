@@ -41,6 +41,7 @@ let fixtureError;
 let runtime;
 let siblingRuntime;
 let socketRuntime;
+let firstRunRuntime;
 const socketServers = [];
 let messageSequence = 0;
 
@@ -170,6 +171,12 @@ const server = createServer(async (request, response) => {
     let raw = "";
     for await (const chunk of request) raw += chunk;
     const body = raw ? JSON.parse(raw) : {};
+    if (request.url === "/mcp/delayed" && state.abort) {
+      const abort = state.abort;
+      delete state.abort;
+      setTimeout(abort, 25);
+      await delay(200);
+    }
     if (request.url.startsWith("/mcp/")) return serveMcp(request, response, body);
     if (request.url.startsWith("/v1/responses")) return serveModel(response, body);
     response.writeHead(404).end("{}");
@@ -256,6 +263,70 @@ async function scanBearers(directory) {
   }
 }
 
+async function verifyFirstRunCancellation() {
+  let wire;
+  const created = new Set();
+  const unsubscribed = new Set();
+  const factory = new CodexAgentRuntimeFactory({
+    clientVersion: "0.0.1-native-fixture",
+    mcpAttachTimeoutMs: 3000,
+    createClient: (cwd) => {
+      wire = new CodexAppServerProcess({
+        command,
+        cwd,
+        env: environment,
+        args: [...CODEX_AGENT_RUNTIME_APP_SERVER_ARGS],
+      });
+      const nativeRequest = wire.request.bind(wire);
+      wire.request = async (method, params, signal) => {
+        const result = await nativeRequest(method, params, signal);
+        if (method === "thread/start") created.add(result.thread.id);
+        if (method === "thread/unsubscribe") unsubscribed.add(params.threadId);
+        return result;
+      };
+      return wire;
+    },
+  });
+  firstRunRuntime = await openRuntime(factory, workspace);
+  const seedBinding = firstRunRuntime.binding;
+  for (let index = 0; index < 3; index += 1) {
+    const phase = `cancel-first-${index}`;
+    state = {
+      phase,
+      token: tokens[4],
+      abort: () => {
+        void firstRunRuntime.abort({ expectedRunId: phase, reason: "fixture" });
+      },
+    };
+    const result = await firstRunRuntime.prompt({
+      runId: phase,
+      input: { items: [{ type: "text", text: "Cancel before the first turn." }] },
+      configuration: { provider: { mcpGateway: { url: `${origin}/mcp/delayed`, token: tokens[4] } } },
+      signal: AbortSignal.timeout(30_000),
+    });
+    assert.equal(result.status, "aborted");
+    assert.deepEqual(firstRunRuntime.binding, seedBinding);
+  }
+  await run(firstRunRuntime, "healthy-first-after-cancels", tokens[5]);
+  const currentBinding = firstRunRuntime.binding;
+  const current = currentBinding.payload.threadId;
+  const deadline = Date.now() + 5000;
+  while (created.size < 5 || [...created].some((id) => id !== current && !unsubscribed.has(id))) {
+    assert.ok(Date.now() < deadline, "Cancelled replacements were not unsubscribed");
+    await delay(25);
+  }
+  for (const id of created) {
+    if (id === current) continue;
+    const result = await wire.request("thread/unsubscribe", { threadId: id });
+    assert.ok(
+      ["notSubscribed", "notLoaded"].includes(result.status),
+      "An abandoned thread retained its native subscription",
+    );
+  }
+  assert.deepEqual(firstRunRuntime.binding, currentBinding);
+  await firstRunRuntime.close();
+}
+
 try {
   for (const directory of [
     workspace,
@@ -337,6 +408,7 @@ try {
   const originalUserConfig = await readFile(userConfigPath, "utf8");
   const enabledProject = '[plugins."native-fixture@native-market"]\nenabled=true\n';
   await writeFile(projectConfigPath, enabledProject);
+  await verifyFirstRunCancellation();
   const inspection = new CodexAppServerProcess({
     command,
     args: [...CODEX_AGENT_RUNTIME_APP_SERVER_ARGS],
@@ -430,6 +502,7 @@ try {
       untrustedHooksSkipped: true,
       stdioCalls: stdioCalls.length,
       bindingPreserved: true,
+      cancelledFirstRunsCleaned: 3,
       userConfigurationUnchanged: true,
       bearerPersisted: false,
     })}\n`,
@@ -438,6 +511,7 @@ try {
   await runtime?.close();
   await siblingRuntime?.close();
   await socketRuntime?.close();
+  await firstRunRuntime?.close();
   for (const socketServer of socketServers) await new Promise((resolve) => socketServer.close(resolve));
   server.closeAllConnections();
   await new Promise((resolve) => server.close(resolve));

@@ -35,6 +35,11 @@ Checks:
   complete the Run. This fixture uses a three-second adapter budget and one-second native startup.
 - Cancel a pending handshake, consume its late native response, and complete a healthy Run using
   the same runtime and binding afterward.
+- Before any completed Turn, cancel three successful but delayed replacement creations and then
+  complete a healthy first Run. Confirm that every abandoned native thread was already unsubscribed
+  and that late replies do not change the current binding. This case uses a real App Server with
+  observed RPC replies; the rest of the smoke uses the default factory process path. The unit
+  regression also delivers all three late replies in reverse order after the healthy Run completes.
 - In a workspace-write, network-disabled runtime, connect to exact execution Unix sockets across
   two successive configurations and remove the execution profile on a later Run. Native/plugin MCP
   and hosted tools continue working. Unit tests additionally verify exact profile content, rotation,
@@ -52,11 +57,14 @@ Checks:
 
 2026-10-30: passed on macOS, Node.js 24.20.0, `codex-cli 0.165.0`.
 
-- 12 completed Runs plus one cancelled attach.
-- 24 native HTTP MCP calls, 9 native stdio MCP calls, and 12 hosted tool calls.
+- 13 completed Runs, three cancelled first Runs, and one cancelled persisted attach.
+- 27 native HTTP MCP calls, 10 native stdio MCP calls, and 13 hosted tool calls.
 - Gateway rotation, removal, 401/timeout recovery, and cancellation recovery passed.
 - Native plugin disablement, sibling isolation, socket coexistence, and native feature preservation passed.
 - Binding preserved; adapter configuration snapshots unchanged; no fixture bearer persisted.
+- All three late first-Run replacements lost their native subscriptions without displacing the
+  healthy binding. `thread/loaded/list` alone is not an orphan assertion because native Codex keeps
+  unsubscribed threads during its inactivity grace period.
 
 The fixture includes a native plugin hook definition without approving its hash. Native
 `hooks/list` reports its `sessionStart` definition with `trustStatus=untrusted`; its execution marker
@@ -75,7 +83,7 @@ Server-side gateway revocation, every Codex version, or every plugin's headless 
 - Codex launch restrictions, environment preservation, private MCP keys/grants, token rotation,
   native-only restoration, cancellation replies, socket profiles, and history/binding behavior.
 - Local Codex managed instructions and CLI runtime inspection environment parity; Pi's filter stays intact.
-- Client Agent Runtime coverage: 780 tests passed, with statements, branches, functions, and lines at 100%.
+- Client Agent Runtime coverage: 781 tests passed, with statements, branches, functions, and lines at 100%.
 - CLI runtime probe/preparation: 49 tests passed; managed-instruction and MCP credential environment: 30 passed.
 - Native Git/gh sandbox fixtures with real Codex and gh: 9 passed, 2 Linux-only cases skipped on macOS.
 - Client/CLI type checks, Client build, and `pnpm check` passed.

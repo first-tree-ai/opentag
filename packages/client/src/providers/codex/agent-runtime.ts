@@ -54,6 +54,7 @@ import {
   assertHostedTools,
   assertJsonValue,
   assertSystemPrompt,
+  runWithAbortSignal,
 } from "../../agent-runtime/validation.js";
 import { createLogger } from "../../observability/logger.js";
 import { prepareCodexPermissionRules } from "../native-permissions.js";
@@ -485,36 +486,59 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     context: AgentProviderRunContext,
     signal: AbortSignal,
   ): Promise<void> {
-    const response = requireRecord(
-      await this.#client.request(
-        "thread/start",
-        { ...codexThreadPermissions(this.#threadStartParams, config), config },
-        signal,
-      ),
-      "thread/start returned an invalid response",
-    );
-    assertCodexSocketProfile(response, config);
-    const thread = requireRecord(response.thread, "thread/start returned no thread");
-    const threadId = requireString(thread.id, "thread/start returned no thread id");
-    const previous = this.#threadId;
-    /* v8 ignore next -- a runtime always has a binding once its factory has opened the thread. */
-    const payload = record(this.binding?.payload) ?? {};
-    const binding: AgentRuntimeBinding = {
-      providerId: CODEX_PROVIDER_ID,
-      schemaVersion: CODEX_BINDING_SCHEMA_VERSION,
-      payload: { ...(payload as Record<string, JsonValue>), threadId },
-    };
-    assertBinding(binding, this.manifest);
-    await context.updateBinding(binding);
-    this.#threadId = threadId;
-    // Unloading the replaced thread is housekeeping, so it stays off the turn's critical path; the
-    // rebind signal still releases it on the deadline or on cancellation.
-    void this.#client.request("thread/unsubscribe", { threadId: previous }, signal).catch((error: unknown) => {
-      logger.debug(
-        { code: "replaced_thread_unsubscribe_failed", error: String(error) },
-        "Codex did not unload a replaced thread",
-      );
+    signal.throwIfAborted();
+    // Local cancellation must not hide a successful native creation and its thread ID.
+    const pending = this.#client.request("thread/start", {
+      ...codexThreadPermissions(this.#threadStartParams, config),
+      config,
     });
+    let adopted = false;
+    try {
+      const response = requireRecord(
+        await runWithAbortSignal(() => pending, signal),
+        "thread/start returned an invalid response",
+      );
+      assertCodexSocketProfile(response, config);
+      const thread = requireRecord(response.thread, "thread/start returned no thread");
+      const threadId = requireString(thread.id, "thread/start returned no thread id");
+      const previous = this.#threadId;
+      /* v8 ignore next -- a runtime always has a binding once its factory has opened the thread. */
+      const payload = record(this.binding?.payload) ?? {};
+      const binding: AgentRuntimeBinding = {
+        providerId: CODEX_PROVIDER_ID,
+        schemaVersion: CODEX_BINDING_SCHEMA_VERSION,
+        payload: { ...(payload as Record<string, JsonValue>), threadId },
+      };
+      assertBinding(binding, this.manifest);
+      await context.updateBinding(binding);
+      this.#threadId = threadId;
+      adopted = true;
+      this.#unsubscribeThread(previous);
+    } finally {
+      if (!adopted) {
+        void pending
+          .then((value) => {
+            const response = requireRecord(value, "thread/start returned an invalid response");
+            const thread = requireRecord(response.thread, "thread/start returned no thread");
+            this.#unsubscribeThread(requireString(thread.id, "thread/start returned no thread id"));
+          })
+          .catch((error: unknown) => {
+            logger.debug({ error: String(error) }, "Codex replacement did not yield a thread to unload");
+          });
+      }
+    }
+  }
+
+  #unsubscribeThread(threadId: string): void {
+    // Cleanup outlives the cancelled Run, while the native transport still bounds every request.
+    void this.#client
+      .request("thread/unsubscribe", { threadId }, AbortSignal.timeout(this.#mcpAttachTimeoutMs))
+      .catch((error: unknown) => {
+        logger.debug(
+          { code: "replaced_thread_unsubscribe_failed", error: String(error) },
+          "Codex did not unload a replaced thread",
+        );
+      });
   }
 
   async #handleHostedTool(call: CodexDynamicToolCall): Promise<CodexDynamicToolResult> {

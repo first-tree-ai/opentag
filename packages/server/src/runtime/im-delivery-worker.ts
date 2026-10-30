@@ -61,6 +61,7 @@ import { withOperationDeadline } from "./im-delivery-deadline.js";
 import {
   type DeliveryFailureDeps,
   deferRecoveryRetry,
+  diagnosticContext,
   handleDeliveryFailure,
   recordDeliveryFailure,
   rejectDelivery,
@@ -83,7 +84,6 @@ import { ImDeliverySelector, lockEligibleDelivery } from "./im-delivery-selector
 import type {
   CloudSessionAllocationPort,
   DeliveryAttempt,
-  ImDeliveryDiagnosticContext,
   ImDeliveryDiagnosticReporter,
   ImDeliveryFailurePhase,
   ImDeliveryWorkerInput,
@@ -162,15 +162,6 @@ function claimAttempt(claim: WorkerClaim, phase: ImDeliveryFailurePhase): Delive
 /** How long the placement Computer has been silent; a Computer that never registered is fully offline. */
 function absentRuntimeMs(lastSeenAt: Date | null, now: number): number {
   return lastSeenAt ? now - lastSeenAt.getTime() : Number.POSITIVE_INFINITY;
-}
-function diagnosticContext(attempt: DeliveryAttempt): ImDeliveryDiagnosticContext {
-  return {
-    phase: attempt.phase,
-    deliveryId: attempt.deliveryId,
-    agentId: attempt.agentId,
-    computerId: attempt.computerId,
-    attemptCount: attempt.attemptCount,
-  };
 }
 export class ImDeliveryWorker {
   #closed = false;

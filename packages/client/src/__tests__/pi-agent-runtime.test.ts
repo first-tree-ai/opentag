@@ -127,9 +127,12 @@ describe("PiAgentRuntime", () => {
     const client = new ScriptedPiClient("hold");
     client.nativeStreaming = false;
     const request = client.request.bind(client);
-    client.request = async (command) => {
-      if (command.type === "prompt") client.emit({ type: "agent_start" });
-      return request(command);
+    client.request = async (command, signal, options) => {
+      if (command.type === "prompt") {
+        options?.onResponse?.();
+        client.emit({ type: "agent_start" });
+      }
+      return request(command, signal, options);
     };
     const runtime = await new PiAgentRuntimeFactory({
       nativeResources: true,
@@ -152,9 +155,16 @@ describe("PiAgentRuntime", () => {
     const client = new ScriptedPiClient("hold");
     client.nativeStreaming = false;
     const request = client.request.bind(client);
-    client.request = async (command) => {
-      if (command.type === "prompt" && scenario === "event-failure") client.emit({ type: "turn_end" });
-      const result = await request(command);
+    client.request = async (command, signal, options) => {
+      if (command.type === "prompt" && scenario === "compacting") {
+        options?.onResponse?.();
+        client.emit({ type: "agent_start" });
+      }
+      if (command.type === "prompt" && scenario === "event-failure") {
+        options?.onResponse?.();
+        client.emit({ type: "turn_end" });
+      }
+      const result = await request(command, signal, options);
       return command.type === "get_state" &&
         client.commands.some((entry) => entry.type === "prompt") &&
         scenario === "compacting"
@@ -1307,7 +1317,11 @@ class ScriptedPiClient implements PiRpcClient {
     this.#sessionId = sessionId;
   }
 
-  async request(command: Readonly<Record<string, unknown>>): Promise<unknown> {
+  async request(
+    command: Readonly<Record<string, unknown>>,
+    _signal?: AbortSignal,
+    options?: PiRpcRequestOptions,
+  ): Promise<unknown> {
     this.commands.push(command);
     if (command.type === "get_state") {
       return {
@@ -1324,6 +1338,7 @@ class ScriptedPiClient implements PiRpcClient {
       return undefined;
     }
     if (command.type !== "prompt") throw new Error(`unexpected Pi command: ${String(command.type)}`);
+    options?.onResponse?.();
     if (this.promptError) {
       if (this.persistSession) {
         writeFileSync(

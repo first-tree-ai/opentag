@@ -54,11 +54,19 @@ without patching the native Session or using idle time as a completion signal:
 - Hold delivery of the initial state result while a real `session_start` extension triggers a
   model turn. Reject startup activity before sending the requested prompt; neither startup text
   nor a startup terminal is attributed to the requested Run.
+- Start a real foreign model turn while a native input handler holds prompt preflight open.
+  Reject its lifecycle before ACK; the requested prompt was submitted, but receives no ACK or
+  model output. A wire regression separately puts ACK and normal events in one JSONL chunk and
+  proves the ACK observer runs before those events, even before the request Promise resumes.
 - Hold prompt acknowledgement and its subsequent state fence around a consumed command. A
   concurrent steer stays pending until the fence rejects the command, then rejects too. No
   `steer` RPC, `input_accepted`, native queued input, or model request occurs for that steer.
 - Hold a real active model response and steer successfully. The queued follow-up reaches the
   next model request and the Run completes, preserving supported model steering.
+- Delay the native `agent_settled` hook after the model becomes idle. Reject a real steer RPC
+  during that cleanup without an acceptance event, then let the owned Run complete.
+- Hold the host's steer response while the real model finishes. Reject steer after settlement
+  without an input acceptance event; ordinary active-model steering still succeeds.
 - Call both `ctx.ui.setEditorText` and `ctx.ui.pasteToEditor` through a real native extension.
   Require their `set_editor_text` wire events and successful model completion. The native resource
   harness exercises the same APIs alongside native tools and platform MCP/Web tools.
@@ -116,3 +124,10 @@ The real lifecycle harness rejects a startup turn before prompt submission, reje
 steer for consumed input without queuing it, completes active-model steering, and accepts both
 native editor APIs. The resource harness still passes its 16 model requests, four MCP calls and
 two Web dispatches with those editor APIs enabled.
+
+The subsequent ACK/steer boundary fix passes 818 Runtime tests with all four metrics at 100%.
+Its focused tests fail on the preceding head. Wire-level rechecks use a real JSONL subprocess
+transport to exercise ACK plus model events in one batch, foreign completion before ACK, and
+settlement during steer. Seven real Pi lifecycle scenarios pass, including pre-ACK activity and
+idle cleanup before the native terminal; native resource acceptance and 64 affected regressions
+also pass. These results do not replace new-head CI or owner review.

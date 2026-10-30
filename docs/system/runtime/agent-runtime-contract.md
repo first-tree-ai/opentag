@@ -226,9 +226,13 @@ Pi RPC does not provide the TUI or theme switching.
 
 Startup model activity is rejected before submitting the managed prompt, including active or queued
 native state whose start events were not observed. Startup notifications and custom messages remain
-allowed. Only the submitted prompt can own model events and settle the managed Run. Steer waits for
-the prompt acknowledgement and ordered state/event check to establish model ownership; consumed
-inputs reject waiting steer without an acceptance event. A settled model cannot accept a late steer.
+allowed. Model ownership starts at the decoded successful prompt ACK, before later events in the same
+RPC batch. Agent/turn/message/terminal lifecycle before that ACK is rejected; threshold-compaction
+events remain allowed during prompt preflight and never own a terminal or authorize steer alone.
+Steer waits for that acknowledgement and the ordered state/event check to establish model ownership; consumed
+inputs reject waiting steer without an acceptance event. A settled model cannot accept a late steer. After the steer RPC, the runtime drains its event queue
+and checks native active state and settlement again before emitting input acceptance. Native
+idle cleanup is not an active model, even if extension handlers have delayed `agent_settled`.
 
 Pi 0.84.2 acknowledges extension commands and handled input without a completion disposition or
 `agent_settled` event. After an ordered state query, an acknowledged input with no model lifecycle

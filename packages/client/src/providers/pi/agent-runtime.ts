@@ -256,7 +256,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   #closingForAbort = false;
   #mcpEnabled = false;
   #agentStarted = false;
-  #promptSubmitted = false;
+  #promptPhase: "startup" | "awaiting-ack" | "owned" = "startup";
 
   constructor(options: PiRuntimeOptions) {
     super({
@@ -374,8 +374,18 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     this.#promptAcceptanceClock = { arm, pause };
     arm();
     try {
-      this.#promptSubmitted = true;
-      await client.request({ type: "prompt", message }, AbortSignal.any([signal, expired.signal]), { timeoutMs: null });
+      this.#promptPhase = "awaiting-ack";
+      await client.request({ type: "prompt", message }, AbortSignal.any([signal, expired.signal]), {
+        timeoutMs: null,
+        ...(this.#nativeResources
+          ? {
+              onResponse: () => {
+                this.#promptPhase = "owned";
+              },
+            }
+          : {}),
+      });
+      this.#promptPhase = "owned";
       return true;
     } catch (error) {
       if (this.#closingForAbort && error instanceof PiRpcError && error.code === "aborted") {
@@ -402,7 +412,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     );
     await this.#eventTail;
     if (this.#providerFailure) throw this.#providerFailure;
-    if (this.#agentStarted || state.isStreaming === true || state.isCompacting === true) return;
+    if (this.#agentStarted || state.isStreaming === true) return;
     throw new AgentProviderError(
       "provider_request_rejected",
       "Pi accepted input without a model run. This Pi RPC protocol cannot confirm extension command or handled-input completion. Extension side effects may already have occurred; inspect them before retrying.",
@@ -483,6 +493,14 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     /* v8 ignore next -- the client remains owned until the active Provider Run leaves executeRun. */
     if (!client) throw new AgentRuntimeError("run_mismatch", "there is no active Pi process");
     await client.request({ type: "steer", message: piItems(request.input.items) });
+    if (!this.#nativeResources) return;
+    await this.#eventTail;
+    if (this.#terminalClaimed) throw new AgentRuntimeError("run_mismatch", "Pi settled before steer was accepted");
+    const state = requireRecord(await client.request({ type: "get_state" }), "Pi get_state returned invalid data");
+    await this.#eventTail;
+    if (this.#terminalClaimed || this.#providerFailure || state.isStreaming !== true) {
+      throw new AgentRuntimeError("run_mismatch", "Pi settled before steer was accepted");
+    }
   }
 
   protected override async abortProvider(_request: AgentAbortRequest): Promise<void> {
@@ -533,7 +551,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     this.#compacting = false;
     this.#closingForAbort = false;
     this.#agentStarted = false;
-    this.#promptSubmitted = false;
+    this.#promptPhase = "startup";
   }
 
   #arguments(request: AgentPromptRequest): readonly string[] {
@@ -567,8 +585,11 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   }
 
   #enqueue(message: Readonly<Record<string, unknown>>): void {
-    if (this.#nativeResources && !this.#promptSubmitted && piModelActivity(message)) {
-      this.#failProvider(protocolError("Pi emitted model activity before the requested prompt"));
+    const preflightCompaction =
+      this.#promptPhase === "awaiting-ack" &&
+      (message.type === "compaction_start" || message.type === "compaction_end");
+    if (this.#nativeResources && this.#promptPhase !== "owned" && piModelActivity(message) && !preflightCompaction) {
+      this.#failProvider(protocolError("Pi emitted model activity before the requested prompt was acknowledged"));
       return;
     }
     this.#claimTerminalAtIngress(message);

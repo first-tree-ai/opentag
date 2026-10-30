@@ -2,12 +2,12 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentRuntimeEvent, CreateAgentRuntimeRequest } from "../agent-runtime/types.js";
 import { PiAgentRuntimeFactory } from "../providers/pi/agent-runtime.js";
-import type { PiRpcClient } from "../providers/pi/rpc-wire.js";
+import type { PiRpcClient, PiRpcRequestOptions } from "../providers/pi/rpc-wire.js";
 
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
 const SESSION_FILE = `/sessions/${SESSION_ID}.jsonl`;
 const input = (text: string) => ({ items: [{ type: "text" as const, text }] });
-const STARTUP_ERROR = "Pi emitted model activity before the requested prompt";
+const STARTUP_ERROR = "Pi emitted model activity before the requested prompt was acknowledged";
 
 function deferred() {
   let resolve!: () => void;
@@ -25,12 +25,16 @@ class PhaseClient implements PiRpcClient {
   readonly fenceCalled = deferred();
   readonly fence = deferred();
   startup?: () => void;
+  beforeAck?: () => void;
+  duringSteer?: () => void;
   initialState: Record<string, unknown> = {};
   nextState: Record<string, unknown> = {};
   closed = false;
   #initialState = true;
+  #onResponse?: () => void;
+  #acknowledged = false;
 
-  async request(command: Readonly<Record<string, unknown>>) {
+  async request(command: Readonly<Record<string, unknown>>, _signal?: AbortSignal, options?: PiRpcRequestOptions) {
     this.commands.push(command);
     if (command.type === "get_state") {
       const initial = this.#initialState;
@@ -51,10 +55,22 @@ class PhaseClient implements PiRpcClient {
       };
     }
     if (command.type === "prompt") {
+      this.#onResponse = options?.onResponse;
+      this.#acknowledged = false;
       this.promptCalled.resolve();
       await this.promptAck.promise;
+      this.beforeAck?.();
+      this.acknowledgePrompt();
     }
+    if (command.type === "steer") this.duringSteer?.();
     return undefined;
+  }
+  acknowledgePrompt() {
+    if (!this.#acknowledged) {
+      this.#acknowledged = true;
+      this.#onResponse?.();
+    }
+    this.promptAck.resolve();
   }
   subscribe(listener: (message: Readonly<Record<string, unknown>>) => void) {
     this.listeners.add(listener);
@@ -202,12 +218,115 @@ describe("Local Pi prompt ownership", () => {
     const steer = runtime
       .steer({ expectedRunId: "requested", input: input("late follow-up") })
       .catch((error: unknown) => error);
+    client.acknowledgePrompt();
     client.complete();
-    client.promptAck.resolve();
     client.fence.resolve();
     await expect(run).resolves.toMatchObject({ status: "completed" });
     await expect(steer).resolves.toMatchObject({ code: "run_mismatch" });
     expect(client.commands.some((command) => command.type === "steer")).toBe(false);
+    await runtime.close();
+  });
+
+  it("rejects a foreign lifecycle before the prompt ACK while its RPC is in flight", async () => {
+    const client = new PhaseClient();
+    client.beforeAck = () => client.complete();
+    client.promptAck.resolve();
+    client.fence.resolve();
+    const events: AgentRuntimeEvent[] = [];
+    const runtime = await open(client, events);
+    await expect(runtime.prompt({ runId: "requested", input: input("/consumed") })).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_protocol_error" },
+    });
+    expect(events.some((event) => event.type === "message_completed" || event.type === "run_completed")).toBe(false);
+    await runtime.close();
+  });
+
+  it("allows threshold compaction before the ACK without treating it as a terminal", async () => {
+    const client = new PhaseClient();
+    client.beforeAck = () => {
+      client.emit({ type: "compaction_start", reason: "threshold" });
+      client.emit({ type: "compaction_end", reason: "threshold", result: { summary: "fixture" } });
+    };
+    client.promptAck.resolve();
+    const events: AgentRuntimeEvent[] = [];
+    const runtime = await open(client, events);
+    const run = runtime.prompt({ runId: "requested", input: input("hello") });
+    await client.fenceCalled.promise;
+    expect(events.some((event) => event.type === "run_completed")).toBe(false);
+    client.complete();
+    client.fence.resolve();
+    await expect(run).resolves.toMatchObject({ status: "completed" });
+    await runtime.close();
+  });
+
+  it("does not authorize steer from compaction state alone after the ACK", async () => {
+    const client = new PhaseClient();
+    client.nextState = { isCompacting: true };
+    client.promptAck.resolve();
+    const events: AgentRuntimeEvent[] = [];
+    const runtime = await open(client, events);
+    const run = runtime.prompt({ runId: "requested", input: input("/consumed") });
+    await client.fenceCalled.promise;
+    const steer = runtime
+      .steer({ expectedRunId: "requested", input: input("follow-up") })
+      .catch((error: unknown) => error);
+    client.fence.resolve();
+    await expect(run).resolves.toMatchObject({ status: "failed", error: { code: "provider_request_rejected" } });
+    await expect(steer).resolves.toMatchObject({ code: "provider_request_rejected" });
+    expect(events.some((event) => event.type === "input_accepted")).toBe(false);
+    expect(client.commands.some((command) => command.type === "steer")).toBe(false);
+    await runtime.close();
+  });
+
+  it("rejects steer when settlement arrives while the steer RPC is in flight", async () => {
+    const client = new PhaseClient();
+    client.nextState = { isStreaming: true };
+    client.duringSteer = () => client.complete();
+    client.promptAck.resolve();
+    client.fence.resolve();
+    const events: AgentRuntimeEvent[] = [];
+    const runtime = await open(client, events);
+    const run = runtime.prompt({ runId: "requested", input: input("hello") });
+    await client.fenceCalled.promise;
+    await expect(runtime.steer({ expectedRunId: "requested", input: input("too late") })).rejects.toMatchObject({
+      code: "run_mismatch",
+    });
+    await expect(run).resolves.toMatchObject({ status: "completed" });
+    expect(events.some((event) => event.type === "input_accepted")).toBe(false);
+    await runtime.close();
+  });
+
+  it.each(["idle", "settled", "failed"])("rejects steer at its final native state fence: %s", async (mode) => {
+    const client = new PhaseClient();
+    client.nextState = { isStreaming: true };
+    if (mode === "idle")
+      client.duringSteer = () => {
+        client.nextState = { isStreaming: false };
+      };
+    const request = client.request.bind(client);
+    client.request = async (command, signal, options) => {
+      const data = await request(command, signal, options);
+      if (command.type === "get_state" && client.commands.some((entry) => entry.type === "steer")) {
+        if (mode === "settled") client.complete();
+        if (mode === "failed") {
+          client.emit({ type: "opentag/process_error", error: new Error("failed during steer fence") });
+        }
+      }
+      return data;
+    };
+    client.promptAck.resolve();
+    client.fence.resolve();
+    const events: AgentRuntimeEvent[] = [];
+    const runtime = await open(client, events);
+    const run = runtime.prompt({ runId: "requested", input: input("hello") });
+    await client.fenceCalled.promise;
+    await expect(runtime.steer({ expectedRunId: "requested", input: input("late") })).rejects.toMatchObject({
+      code: "run_mismatch",
+    });
+    expect(events.some((event) => event.type === "input_accepted")).toBe(false);
+    if (mode === "idle") client.complete();
+    await expect(run).resolves.toMatchObject({ status: mode === "failed" ? "failed" : "completed" });
     await runtime.close();
   });
 
@@ -217,8 +336,8 @@ describe("Local Pi prompt ownership", () => {
     const runtime = await open(client, events);
     const first = runtime.prompt({ runId: "first", input: input("hello") });
     await client.promptCalled.promise;
+    client.acknowledgePrompt();
     client.complete();
-    client.promptAck.resolve();
     client.fence.resolve();
     await expect(first).resolves.toMatchObject({ status: "completed" });
     client.startup = () => client.complete();
@@ -243,8 +362,8 @@ describe("Local Pi prompt ownership", () => {
     const runtime = await open(client, events);
     const run = runtime.prompt({ runId: "requested", input: input("hello") });
     await client.promptCalled.promise;
+    client.acknowledgePrompt();
     client.complete();
-    client.promptAck.resolve();
     client.fence.resolve();
     await expect(run).resolves.toMatchObject({ status: "completed" });
     expect(
@@ -264,8 +383,8 @@ describe("Local Pi prompt ownership", () => {
     const runtime = await open(client, events);
     const run = runtime.prompt({ runId: "requested", input: input("hello") });
     await vi.waitFor(() => expect(client.commands.some((command) => command.type === "prompt")).toBe(true));
+    client.acknowledgePrompt();
     client.complete();
-    client.promptAck.resolve();
     client.fence.resolve();
     await expect(run).resolves.toMatchObject({ status: "completed" });
     expect(events).toContainEqual(

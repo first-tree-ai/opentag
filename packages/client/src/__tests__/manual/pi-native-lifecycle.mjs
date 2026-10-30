@@ -13,6 +13,9 @@ const piHome = join(root, "pi");
 const sessionDirectory = join(root, "sessions");
 const trigger = join(root, "trigger");
 const commandLog = join(root, "consumed");
+const preflight = join(root, "preflight");
+const releaseInput = join(root, "release-input");
+const releaseCleanup = join(root, "release-cleanup");
 const models = [];
 const records = [];
 let phase = "seed";
@@ -61,7 +64,7 @@ const model = createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
     models.push({ phase, body: JSON.parse(Buffer.concat(chunks).toString()) });
-    if (phase === "active-steer" && !heldResponse) {
+    if (["active-steer", "settling-steer"].includes(phase) && !heldResponse) {
       heldResponse = response;
       modelReady.resolve();
     } else reply(response);
@@ -118,11 +121,23 @@ try {
     export default function(pi) {
       pi.registerCommand("consume-requested", { description: "Consume", handler: async () => writeFileSync(${JSON.stringify(commandLog)}, "consumed") });
       pi.on("session_start", () => {
-        if (process.env.REVIEW_PHASE !== "startup") return;
+        if (!["startup", "pre-ack"].includes(process.env.REVIEW_PHASE)) return;
         void (async () => {
-          while (!existsSync(${JSON.stringify(trigger)})) await delay(5);
+          const gate = process.env.REVIEW_PHASE === "pre-ack" ? ${JSON.stringify(preflight)} : ${JSON.stringify(trigger)};
+          while (!existsSync(gate)) await delay(5);
           pi.sendMessage({ customType: "startup", content: "startup trigger", display: true }, { triggerTurn: true });
         })();
+      });
+      pi.on("input", async () => {
+        if (process.env.REVIEW_PHASE !== "pre-ack") return;
+        writeFileSync(${JSON.stringify(preflight)}, "entered");
+        while (!existsSync(${JSON.stringify(releaseInput)})) await delay(5);
+        return { action: "handled" };
+      });
+      pi.on("agent_settled", async (_event, ctx) => {
+        if (process.env.REVIEW_PHASE !== "cleanup-steer") return;
+        ctx.ui.notify("cleanup_ready", "info");
+        while (!existsSync(${JSON.stringify(releaseCleanup)})) await delay(5);
       });
       pi.on("before_agent_start", (_event, ctx) => {
         if (process.env.REVIEW_PHASE !== "ui") return;
@@ -131,7 +146,7 @@ try {
     }
   `,
   );
-  for (phase of ["startup", "steer", "active-steer", "ui"]) {
+  for (phase of ["startup", "pre-ack", "steer", "active-steer", "settling-steer", "cleanup-steer", "ui"]) {
     signal = AbortSignal.timeout(30000);
     const events = [],
       wire = [],
@@ -141,8 +156,11 @@ try {
       rawAck = deferred(),
       releaseAck = deferred(),
       stateCaptured = deferred(),
-      releaseFence = deferred();
+      releaseFence = deferred(),
+      cleanupReady = deferred();
     modelReady = deferred();
+    heldResponse = undefined;
+    let ackObserved = false;
     let first = true;
     let nativeState;
     const factory = new PiAgentRuntimeFactory({
@@ -156,36 +174,50 @@ try {
           env: { ...environment, REVIEW_PHASE: phase, ...extra },
           requestTimeoutMs: 10000,
         });
+        async function readState(command, requestSignal, options) {
+          const data = await raw.request(command, requestSignal, options);
+          if (first) {
+            first = false;
+            if (phase === "startup") {
+              await writeFile(trigger, "go");
+              await bounded(Promise.race([startupDone.promise, stopped.promise]));
+            }
+          } else if (phase === "steer") {
+            nativeState = data;
+            stateCaptured.resolve();
+            await bounded(releaseFence.promise);
+          }
+          return data;
+        }
         return {
           subscribe(listener) {
             return raw.subscribe((event) => {
               wire.push(event);
+              if (event.type === "extension_ui_request" && event.message === "cleanup_ready") cleanupReady.resolve();
               listener(event);
               if (event.type === "agent_settled") startupDone.resolve();
             });
           },
           async request(command, requestSignal, options) {
             commands.push(command);
-            if (command.type === "get_state" && first) {
-              first = false;
-              const data = await raw.request(command, requestSignal, options);
-              if (phase === "startup") {
-                await writeFile(trigger, "go");
-                await bounded(Promise.race([startupDone.promise, stopped.promise]));
-              }
-              return data;
-            }
+            if (command.type === "get_state") return readState(command, requestSignal, options);
             if (command.type === "prompt") {
-              const data = await raw.request(command, requestSignal, options);
+              const data = await raw.request(command, requestSignal, {
+                ...options,
+                onResponse: () => {
+                  ackObserved = true;
+                  options?.onResponse?.();
+                },
+              });
               rawAck.resolve();
               if (phase === "steer") await bounded(releaseAck.promise);
               return data;
             }
-            if (command.type === "get_state" && phase === "steer") {
-              nativeState = await raw.request(command, requestSignal, options);
-              stateCaptured.resolve();
-              await bounded(releaseFence.promise);
-              return nativeState;
+            if (command.type === "steer" && phase === "settling-steer") {
+              const data = await raw.request(command, requestSignal, options);
+              reply(heldResponse);
+              await bounded(startupDone.promise);
+              return data;
             }
             return raw.request(command, requestSignal, options);
           },
@@ -243,6 +275,29 @@ try {
       );
       reply(heldResponse);
     }
+    if (phase === "settling-steer") {
+      await bounded(modelReady.promise);
+      await assert.rejects(
+        runtime.steer({ expectedRunId: `requested-${phase}`, input: input("important follow-up") }),
+        (error) => error.code === "run_mismatch",
+      );
+      assert.equal(
+        events.some((event) => event.type === "input_accepted"),
+        false,
+      );
+    }
+    if (phase === "cleanup-steer") {
+      await bounded(cleanupReady.promise);
+      await assert.rejects(
+        runtime.steer({ expectedRunId: `requested-${phase}`, input: input("too late in cleanup") }),
+        (error) => error.code === "run_mismatch",
+      );
+      assert.equal(
+        events.some((event) => event.type === "input_accepted"),
+        false,
+      );
+      await writeFile(releaseCleanup, "done");
+    }
     const result = await run;
     if (phase === "startup") {
       assert.equal(result.status, "failed", JSON.stringify(result));
@@ -253,6 +308,15 @@ try {
       );
       assert.equal(
         events.some((event) => event.type === "message_completed" || event.type === "run_completed"),
+        false,
+      );
+    } else if (phase === "pre-ack") {
+      assert.equal(result.status, "failed", JSON.stringify(result));
+      assert.match(result.error.message, /acknowledged/);
+      assert.equal(ackObserved, false);
+      assert.equal(commands.filter((command) => command.type === "prompt").length, 1);
+      assert.equal(
+        events.some((event) => event.type === "run_completed" || event.type === "message_completed"),
         false,
       );
     } else if (phase === "steer") {
@@ -272,6 +336,7 @@ try {
       code: result.error?.code,
       steer,
       modelRequests: models.length - count,
+      ackObserved,
       wire: wire.map((event) => ({ type: event.type, method: event.method })),
       commands,
     });
@@ -281,6 +346,7 @@ try {
   assert.equal(fixtureError, undefined);
   console.log(JSON.stringify({ piVersion: "0.84.2", records }, null, 2));
 } finally {
+  await writeFile(releaseCleanup, "teardown");
   await runtime?.close();
   model.closeAllConnections();
   await new Promise((resolve) => model.close(resolve));

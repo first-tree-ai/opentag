@@ -201,6 +201,7 @@ try {
       pi.on("before_agent_start", (_event, ctx) => {
         ctx.ui.notify("Native notice", "info"); ctx.ui.setStatus("native", "ready");
         ctx.ui.setWidget("native", ["Native widget"]); ctx.ui.setTitle("Native title");
+        ctx.ui.setEditorText("Native editor text"); ctx.ui.pasteToEditor("Native pasted text");
       });
       pi.registerTool({ name: "native_probe", label: "Native probe", description: "Local plugin fixture", parameters: { type: "object", properties: {} }, execute: async () => {
         record({ type: "tool", secret: process.env.NATIVE_PLUGIN_SECRET });
@@ -289,6 +290,16 @@ try {
     assert.equal(result.status, "completed", JSON.stringify(result));
     assert.equal(result.output[0].text, "native-ok");
     assert(events.some((event) => event.type === "provider_event" && event.payload.method === "notify"));
+    for (const text of ["Native editor text", "Native pasted text"]) {
+      assert(
+        events.some(
+          (event) =>
+            event.type === "provider_event" &&
+            event.payload.method === "set_editor_text" &&
+            event.payload.text === text,
+        ),
+      );
+    }
     assert(
       !events.some((event) => event.type === "provider_warning" && event.code === "pi_extension_error"),
       JSON.stringify(events),

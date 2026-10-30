@@ -10,6 +10,7 @@ Supports the [Pi native resource contract](../../docs/system/runtime/agent-runti
 pnpm exec turbo run build --filter='@opentag/client^...'
 pnpm --filter @opentag/client build
 pnpm --filter @opentag/client test:e2e:pi-native-plugins
+pnpm --filter @opentag/client test:e2e:pi-native-lifecycle
 ```
 
 The harness uses the built public Client, the installed pinned Pi 0.84.2 CLI and MCP adapter 2.36.0,
@@ -43,6 +44,30 @@ Checks:
 - Model-option queries do not load project extensions. Native project settings and MCP config
   retain identical bytes; `trust.json` is not created. No managed bearer appears in persisted
   fixture files, model input, or bindings.
+
+## Prompt lifecycle regression acceptance
+
+`test:e2e:pi-native-lifecycle` uses the built public Client and real Pi RPC with a loopback model
+and a persisted Session. Its controlled response gates reproduce the previously ambiguous windows
+without patching the native Session or using idle time as a completion signal:
+
+- Hold delivery of the initial state result while a real `session_start` extension triggers a
+  model turn. Reject startup activity before sending the requested prompt; neither startup text
+  nor a startup terminal is attributed to the requested Run.
+- Hold prompt acknowledgement and its subsequent state fence around a consumed command. A
+  concurrent steer stays pending until the fence rejects the command, then rejects too. No
+  `steer` RPC, `input_accepted`, native queued input, or model request occurs for that steer.
+- Hold a real active model response and steer successfully. The queued follow-up reaches the
+  next model request and the Run completes, preserving supported model steering.
+- Call both `ctx.ui.setEditorText` and `ctx.ui.pasteToEditor` through a real native extension.
+  Require their `set_editor_text` wire events and successful model completion. The native resource
+  harness exercises the same APIs alongside native tools and platform MCP/Web tools.
+
+The scripted regression also rejects initial streaming/compaction/queued state even without
+observed start events, checks every startup lifecycle shape, resets ownership between Runs,
+retains startup custom messages/notifications, and rejects a waiting steer after model settlement.
+The Runtime coverage gate includes these cases. `public-exports.test.ts` separately verifies the
+public barrel remains within its checked contract; the Cloud environment helper stays internal.
 
 ## Automated regression scope
 
@@ -84,3 +109,10 @@ On 2026-10-30 with Pi 0.84.2 and adapter 2.36.0:
 - CLI environment inspection: 16 tests passed. Client type checking and build passed.
 
 These are local fixture results, not remote CI or deployment acceptance.
+
+The prompt-ownership fix was additionally verified with 809 Runtime tests and four 100% coverage
+metrics. The new focused regressions failed against the prior implementation and pass with the fix.
+The real lifecycle harness rejects a startup turn before prompt submission, rejects concurrent
+steer for consumed input without queuing it, completes active-model steering, and accepts both
+native editor APIs. The resource harness still passes its 16 model requests, four MCP calls and
+two Web dispatches with those editor APIs enabled.

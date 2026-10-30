@@ -56,6 +56,21 @@ const logger = createLogger("provider-pi-runtime");
 const PI_MINIMUM_VERSION = [0, 80, 6] as const;
 const PI_READ_ONLY_TOOLS = ["read", "grep", "find", "ls"] as const;
 const PI_STOP_REASONS = new Set(["stop", "length", "toolUse", "error", "aborted"]);
+const PI_MODEL_EVENTS = new Set([
+  "agent_start",
+  "agent_end",
+  "agent_settled",
+  "turn_start",
+  "turn_end",
+  "message_update",
+  "tool_execution_start",
+  "tool_execution_update",
+  "tool_execution_end",
+  "compaction_start",
+  "compaction_end",
+  "auto_retry_start",
+  "auto_retry_end",
+]);
 const PI_RESOURCE_DISABLE_ARGUMENTS = [
   "--offline",
   "--no-extensions",
@@ -241,6 +256,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   #closingForAbort = false;
   #mcpEnabled = false;
   #agentStarted = false;
+  #promptSubmitted = false;
 
   constructor(options: PiRuntimeOptions) {
     super({
@@ -297,6 +313,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       const accepted = await this.#requestPrompt(client, piInput(request), context.signal);
       if (accepted) {
         await this.#checkNativePrompt(client, context.signal);
+        this.#promptAccepted?.resolve();
         this.#diagnostics.end();
         this.#diagnostics.start("await_terminal");
       }
@@ -339,6 +356,8 @@ export class PiAgentRuntime extends BaseAgentRuntime {
    * acceptance is not a Provider failure: `abortProvider` owns the aborted terminal instead.
    */
   async #requestPrompt(client: PiRpcClient, message: unknown, signal: AbortSignal): Promise<boolean> {
+    await this.#eventTail;
+    if (this.#providerFailure) throw this.#providerFailure;
     const expired = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const pause = (): void => {
@@ -355,8 +374,8 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     this.#promptAcceptanceClock = { arm, pause };
     arm();
     try {
+      this.#promptSubmitted = true;
       await client.request({ type: "prompt", message }, AbortSignal.any([signal, expired.signal]), { timeoutMs: null });
-      this.#promptAccepted?.resolve();
       return true;
     } catch (error) {
       if (this.#closingForAbort && error instanceof PiRpcError && error.code === "aborted") {
@@ -394,6 +413,13 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     state: Readonly<Record<string, unknown>>,
     context: AgentProviderRunContext,
   ): Promise<void> {
+    if (
+      this.#nativeResources &&
+      (state.isStreaming === true ||
+        state.isCompacting === true ||
+        (typeof state.pendingMessageCount === "number" && state.pendingMessageCount > 0))
+    )
+      throw protocolError("Pi has model activity before the requested prompt");
     const sessionId = requireUuid(state.sessionId, "Pi get_state sessionId");
     if (sessionId !== this.#sessionId) throw protocolError("Pi opened another session");
     const sessionFile = requireAbsolutePath(state.sessionFile, "Pi get_state sessionFile is not absolute");
@@ -450,6 +476,9 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     /* v8 ignore next -- BaseAgentRuntime admits steer only while executeRun owns an active prompt. */
     if (!this.#promptAccepted) throw new AgentRuntimeError("run_mismatch", "there is no active Pi prompt");
     await this.#promptAccepted.promise;
+    if (this.#nativeResources && this.#terminalClaimed) {
+      throw new AgentRuntimeError("run_mismatch", "Pi settled before steer was accepted");
+    }
     const client = this.#client;
     /* v8 ignore next -- the client remains owned until the active Provider Run leaves executeRun. */
     if (!client) throw new AgentRuntimeError("run_mismatch", "there is no active Pi process");
@@ -504,6 +533,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     this.#compacting = false;
     this.#closingForAbort = false;
     this.#agentStarted = false;
+    this.#promptSubmitted = false;
   }
 
   #arguments(request: AgentPromptRequest): readonly string[] {
@@ -537,6 +567,10 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   }
 
   #enqueue(message: Readonly<Record<string, unknown>>): void {
+    if (this.#nativeResources && !this.#promptSubmitted && piModelActivity(message)) {
+      this.#failProvider(protocolError("Pi emitted model activity before the requested prompt"));
+      return;
+    }
     this.#claimTerminalAtIngress(message);
     if (message.type === "agent_start") this.#agentStarted = true;
     if (message.type === "compaction_start") {
@@ -657,7 +691,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
 
   async #handleExtensionUiRequest(message: Readonly<Record<string, unknown>>): Promise<void> {
     if (this.#nativeResources) {
-      if (["notify", "setStatus", "setWidget", "setTitle", "setEditorText"].includes(String(message.method))) {
+      if (["notify", "setStatus", "setWidget", "setTitle", "set_editor_text"].includes(String(message.method))) {
         await this.#emitProviderEvent(message);
         return;
       }
@@ -1688,4 +1722,11 @@ function fingerprint(value: string): string {
 /** Local event reference only; the original provider ID stays unchanged in Pi's Session and model requests. */
 function piToolEventId(id: string): string {
   return Buffer.byteLength(id, "utf8") <= AGENT_RUNTIME_ID_MAX_BYTES ? id : `pi-tool-${fingerprint(id)}`;
+}
+
+function piModelActivity(message: Readonly<Record<string, unknown>>): boolean {
+  if (PI_MODEL_EVENTS.has(String(message.type))) return true;
+  return (
+    (message.type === "message_start" || message.type === "message_end") && record(message.message)?.role !== "custom"
+  );
 }

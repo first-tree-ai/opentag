@@ -63,7 +63,7 @@ describe("PiAgentRuntime", () => {
     );
     const run = runtime.prompt({ runId: "native", input: input("hello") });
     await vi.waitFor(() => expect(client.commands).toHaveLength(3));
-    for (const method of ["notify", "setStatus", "setWidget", "setTitle", "setEditorText"]) {
+    for (const method of ["notify", "setStatus", "setWidget", "setTitle", "set_editor_text"]) {
       client.emit({ type: "extension_ui_request", method, message: "native notice" });
     }
     client.emit({ type: "message_start", message: { role: "custom", customType: "native", content: "custom" } });
@@ -155,7 +155,9 @@ describe("PiAgentRuntime", () => {
     client.request = async (command) => {
       if (command.type === "prompt" && scenario === "event-failure") client.emit({ type: "turn_end" });
       const result = await request(command);
-      return command.type === "get_state" && scenario === "compacting"
+      return command.type === "get_state" &&
+        client.commands.some((entry) => entry.type === "prompt") &&
+        scenario === "compacting"
         ? { ...(result as object), isCompacting: true }
         : result;
     };

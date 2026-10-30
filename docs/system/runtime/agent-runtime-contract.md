@@ -131,10 +131,11 @@ extension. Claude Code uses `auto` with its native permission callback; Codex us
 `workspace-write` and `on-request` approvals. Cloud runs always use full permissions.
 See [Agent permissions](agent-permissions.md) for allowed-command settings and the
 Slack/Feishu approval flow. Pi's read-only adapter mode limits exposed tools without
-providing an OS isolation boundary. Automatic extensions,
-ambient skills, prompt templates, themes, and context-file discovery are disabled.
-Packaged Context Tree skills are passed explicitly. Model credentials come from the
-operator's configured Pi environment; Local E1 does not introduce a hosted secret
+providing an OS isolation boundary. Actual Local Runs enable native extensions,
+ambient Skills, prompt templates, themes, and context files. Cloud execution and
+readiness/help/model-option queries disable implicit resource discovery. Packaged
+Context Tree Skills remain explicit additions to actual execution. Model credentials come
+from the operator's configured Pi environment; Local E1 does not introduce a hosted secret
 proxy or Cloud sandbox.
 
 ### Local Claude native configuration and trust
@@ -219,9 +220,15 @@ receive no explicit platform resources. Their success does not establish project
 Check the current native command/tool catalog and exercise the resource before reporting success.
 
 Headless execution accepts fire-and-forget `notify`, `setStatus`, `setWidget`, `setTitle`, and
-`setEditorText` events as Provider events. Custom extension messages may occur outside model turns
+`set_editor_text` events as Provider events. Custom extension messages may occur outside model turns
 and are retained as Provider events. Interactive dialogs fail with a headless compatibility error;
 Pi RPC does not provide the TUI or theme switching.
+
+Startup model activity is rejected before submitting the managed prompt, including active or queued
+native state whose start events were not observed. Startup notifications and custom messages remain
+allowed. Only the submitted prompt can own model events and settle the managed Run. Steer waits for
+the prompt acknowledgement and ordered state/event check to establish model ownership; consumed
+inputs reject waiting steer without an acceptance event. A settled model cannot accept a late steer.
 
 Pi 0.84.2 acknowledges extension commands and handled input without a completion disposition or
 `agent_settled` event. After an ordered state query, an acknowledged input with no model lifecycle

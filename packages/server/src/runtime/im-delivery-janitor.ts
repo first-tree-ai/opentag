@@ -4,7 +4,7 @@ import { agents, computers, imBindings, imMessageDeliveries, sessionPlacements, 
 import type { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
 import { expireInboundReceiptWork } from "../services/im/inbound-receipt-work-store.js";
 import { SessionService } from "../services/sessions/session-service.js";
-import { settleUnreportableTurn } from "./im-delivery-failure.js";
+import { settleSupersededPlacement, settleUnreportableTurn } from "./im-delivery-failure.js";
 import { lockSteeredRecoverySessions, requeueSteeredDeliveries } from "./im-delivery-recovery.js";
 import { ACCEPTED_REPORT_WINDOW_MS } from "./im-delivery-retry.js";
 import type { ImDeliveryDiagnosticReporter } from "./im-delivery-worker.types.js";
@@ -133,12 +133,12 @@ export async function runImDeliveryOverdueSettlement(
       and delivery.turn_id is not null
       and delivery.report_owner_instance_id is not null
       and delivery.accepted_at <= ${cutoff}::timestamptz
-      and delivery.placement_generation = placement.generation
       and coalesce(delivery.last_error_code, '') not like 'IM_DELIVERY_CLAIM_%'
       and (
         session.ended_at is not null
         or binding.status <> 'active'
         or agent.status = 'deleted'
+        or delivery.placement_generation <> placement.generation
       )
     order by delivery.accepted_at asc, delivery.id asc
     limit ${options.expiryBatchSize}
@@ -163,8 +163,13 @@ export async function runImDeliveryOverdueSettlement(
       .where(eq(imMessageDeliveries.id, candidate.id))
       .limit(1);
     if (!row) continue;
-    if (await settleUnreportableTurn({ custody, onDiagnostic }, row, "maintenance"))
-      onDeliverySettled?.(row.delivery.id);
+    // A superseded placement generation is out of `recordTurn`'s reach by construction, so that case
+    // settles through its own fenced write; every other candidate settles through the custody fence.
+    const settled =
+      row.delivery.placementGeneration === row.placement.generation
+        ? await settleUnreportableTurn({ custody, onDiagnostic }, row, "maintenance")
+        : await settleSupersededPlacement({ database, now: () => now.getTime(), onDiagnostic }, row.delivery.id);
+    if (settled) onDeliverySettled?.(row.delivery.id);
   }
 }
 

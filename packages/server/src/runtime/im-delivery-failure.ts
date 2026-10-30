@@ -2,18 +2,13 @@ import { randomUUID } from "node:crypto";
 import { computeTurnResultHash, type TurnReportRequest } from "@opentag/shared";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
-import {
-  type agents,
-  type computers,
-  imMessageDeliveries,
-  type sessionPlacements,
-  type sessions,
-} from "../db/schema/index.js";
+import { agents, computers, imBindings, imMessageDeliveries, sessionPlacements, sessions } from "../db/schema/index.js";
 import { outcomeAttrs, setActiveSpanAttributes } from "../observability/index.js";
 import { releaseImBatch } from "./im-delivery-batch.js";
 import { ImDeliveryInputError, rejectInvalidImDelivery } from "./im-delivery-content.js";
 import { isCloudReadinessRetry } from "./im-delivery-ready-wakeup.js";
 import {
+  acceptedReportDeadlineMs,
   canonicalFailureCode,
   cappedRetryDelayMs,
   deliveryRetryDelayMs,
@@ -322,6 +317,36 @@ export async function deferRecoveryRetry(
 }
 
 /**
+ * The `unknown` report body both overdue settlements write: the Turn may have run, and no report can
+ * be truthful any more. `placementGeneration` is the generation the Turn is settled under — the
+ * current placement for a reconcilable custody, the delivery's own historical one for a superseded
+ * placement — so the report never claims a placement the dispatch did not have.
+ */
+function unknownTurnReport(input: {
+  delivery: typeof imMessageDeliveries.$inferSelect;
+  session: typeof sessions.$inferSelect;
+  agent: typeof agents.$inferSelect;
+  placementGeneration: number;
+}): TurnReportRequest | undefined {
+  const { delivery } = input;
+  if (!delivery.turnId || !delivery.reportOwnerInstanceId) return undefined;
+  const body = {
+    type: "turn:report" as const,
+    requestId: randomUUID(),
+    deliveryId: delivery.id,
+    turnId: delivery.turnId,
+    sessionId: input.session.id,
+    agentId: input.agent.id,
+    placementGeneration: input.placementGeneration,
+    outcome: "unknown" as const,
+    executionEffects: "may_have_occurred" as const,
+    errorReason: "turn_state_unknown" as const,
+    traceSummary: { droppedEvents: 0, lastSequence: 0 },
+  };
+  return { ...body, resultHash: computeTurnResultHash(body) };
+}
+
+/**
  * Settle owed custody whose report can no longer arrive, exactly as the Cloud owner settles an
  * unreportable accepted Turn: an `unknown` report with `may_have_occurred` evidence. It writes
  * `reported_at`, so the row leaves the work predicate and the retry loop ends here.
@@ -337,23 +362,15 @@ export async function settleUnreportableTurn(
   },
   phase: ImDeliveryDiagnosticContext["phase"] = "recover",
 ): Promise<boolean> {
-  const turnId = row.delivery.turnId;
   const ownerInstanceId = row.delivery.reportOwnerInstanceId;
-  if (!turnId || !ownerInstanceId) return false;
-  const body = {
-    type: "turn:report" as const,
-    requestId: randomUUID(),
-    deliveryId: row.delivery.id,
-    turnId,
-    sessionId: row.session.id,
-    agentId: row.agent.id,
+  if (!ownerInstanceId) return false;
+  const report = unknownTurnReport({
+    delivery: row.delivery,
+    session: row.session,
+    agent: row.agent,
     placementGeneration: row.placement.generation,
-    outcome: "unknown" as const,
-    executionEffects: "may_have_occurred" as const,
-    errorReason: "turn_state_unknown" as const,
-    traceSummary: { droppedEvents: 0, lastSequence: 0 },
-  };
-  const report: TurnReportRequest = { ...body, resultHash: computeTurnResultHash(body) };
+  });
+  if (!report) return false;
   const status = await deps.custody.recordTurn(report, {
     computerId: row.computer.id,
     installationId: row.computer.currentInstallationId,
@@ -367,6 +384,123 @@ export async function settleUnreportableTurn(
     agentId: row.agent.id,
     computerId: row.computer.id,
     attemptCount: row.delivery.attemptCount,
+  });
+  return true;
+}
+
+/** The `reason` a superseded-placement settlement records; see `settleSupersededPlacement`. */
+export const PLACEMENT_SUPERSEDED_REASON = "placement_superseded";
+
+/**
+ * Settle accepted Local custody whose placement generation was superseded, so the row leaves the
+ * retry loop instead of waiting for a report its own fence can never accept.
+ *
+ * A rollover makes `delivery.placement_generation` differ from `session_placements.generation`, and
+ * `recordTurn`'s fence requires all three generations to agree, so `settleUnreportableTurn` cannot
+ * reach these rows (measured: it returns `false` and writes nothing). This path writes the same
+ * `unknown` / `may_have_occurred` / `turn_state_unknown` body, keeps the delivery's own historical
+ * generation, and records `reason = placement_superseded`. It never re-anchors or rewrites the
+ * generation, and it does not touch `recordTurn` or `placementMatches`.
+ *
+ * Fences, evaluated under `select … for update` in one transaction: accepted, unreported,
+ * `result_hash is null`, past `acceptedReportDeadlineMs` (the same helper every overdue settlement
+ * uses), a superseded generation, no live claim marker, and Local custody. `report_owner_instance_id`
+ * is deliberately not consulted: a superseded generation cannot report regardless of which instance
+ * is live now, which is what distinguishes this case from the absent-runtime one.
+ *
+ * Idempotence: the `reported_at is null` gate plus the row lock make it exactly once; a concurrent
+ * genuine report either lands first (the gate then skips the row) or is refused by `recordTurn`'s
+ * placement fence with `stale_generation`, so the settlement is never overwritten.
+ *
+ * `reason` consumers audited before introducing the value, and why `placement_superseded` is inert
+ * for each: the delivery batch reserve/settle/release paths (state-gated to pending/expired/steered,
+ * or equality on `batch_pending`/`batch_initial`/`steer_state_unknown`); `im-delivery-custody`
+ * (`duplicate_pending` equality on pending rows); the janitor's TTL pass (`state = 'pending'` and
+ * `reason is null`) and its steer recovery (reads the *target* through state, `reported_at`, and
+ * `turn_report`; a settled target actually becomes eligible for the existing child requeue); the
+ * ready wakeup, selector, and pending-head query (`reason is null` on pending); the worker's steer
+ * rewiring (`batch_pending` equality) and pending claims (`reason is null`); the Cloud coordinator
+ * (reads `reason` only for pending, `reported_at` for accepted); the custody store's
+ * `steer_state_unknown` equality on terminal rows; failure reactions (attention/pending/expired/
+ * terminal/steered disjuncts, none of which an accepted reported row matches); the IM queue policy
+ * (`duplicate_pending`); the message inbox (pending gates and its own expired reasons); the Cloud
+ * overview and Runner service (pending only); the task history projection, its summary status, and
+ * the web task features (all read `reason` only when `state = 'expired'`, and the DTO types it as an
+ * arbitrary nullable string). Delivery retention reads `state`, `reported_at`, `steered_at`, and
+ * `expires_at` only, so a settled row stays removable.
+ */
+export async function settleSupersededPlacement(
+  deps: Pick<DeliveryFailureDeps, "database" | "now" | "onDiagnostic">,
+  deliveryId: string,
+): Promise<boolean> {
+  const settled = await deps.database.transaction(async (transaction) => {
+    const [row] = await transaction
+      .select({
+        delivery: imMessageDeliveries,
+        session: sessions,
+        placement: sessionPlacements,
+        agent: agents,
+        computer: computers,
+      })
+      .from(imMessageDeliveries)
+      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
+      .where(and(eq(imMessageDeliveries.id, deliveryId), eq(imMessageDeliveries.state, "accepted")))
+      .limit(1)
+      .for("update", { of: imMessageDeliveries });
+    if (!row) return undefined;
+    const { delivery } = row;
+    const overdue =
+      delivery.acceptedAt !== null && deps.now() >= acceptedReportDeadlineMs(delivery.acceptedAt.getTime());
+    if (
+      !overdue ||
+      delivery.reportedAt !== null ||
+      delivery.resultHash !== null ||
+      row.computer.kind !== "local" ||
+      delivery.placementGeneration === row.placement.generation ||
+      delivery.lastErrorCode?.startsWith("IM_DELIVERY_CLAIM_")
+    )
+      return undefined;
+    const report = unknownTurnReport({
+      delivery,
+      session: row.session,
+      agent: row.agent,
+      placementGeneration: delivery.placementGeneration,
+    });
+    if (!report) return undefined;
+    const [written] = await transaction
+      .update(imMessageDeliveries)
+      .set({
+        dispatchPayload: null,
+        resultHash: report.resultHash,
+        turnReport: report,
+        reportedAt: new Date(deps.now()),
+        reason: PLACEMENT_SUPERSEDED_REASON,
+        lastErrorCode: null,
+      })
+      .where(
+        and(
+          eq(imMessageDeliveries.id, deliveryId),
+          eq(imMessageDeliveries.state, "accepted"),
+          isNull(imMessageDeliveries.reportedAt),
+          isNull(imMessageDeliveries.resultHash),
+          eq(imMessageDeliveries.placementGeneration, delivery.placementGeneration),
+          sql`coalesce(${imMessageDeliveries.lastErrorCode}, '') not like ${"IM_DELIVERY_CLAIM_%"}`,
+        ),
+      )
+      .returning({ id: imMessageDeliveries.id });
+    return written ? { row, report } : undefined;
+  });
+  if (!settled) return false;
+  deps.onDiagnostic("IM_DELIVERY_TURN_STATE_UNKNOWN", {
+    phase: "maintenance",
+    deliveryId: settled.row.delivery.id,
+    agentId: settled.row.agent.id,
+    computerId: settled.row.computer.id,
+    attemptCount: settled.row.delivery.attemptCount,
   });
   return true;
 }

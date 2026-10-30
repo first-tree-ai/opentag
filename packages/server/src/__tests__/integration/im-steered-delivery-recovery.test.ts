@@ -4,11 +4,12 @@ import {
   computeRuntimeImMessageSemanticHash,
   computeRuntimeImSteerInputHash,
   type SessionReconcileRequest,
+  type TurnReportRequest,
 } from "@opentag/shared";
 import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
-import { computers, imBindings, imMessageDeliveries, sessions } from "../../db/schema/index.js";
+import { computers, imBindings, imMessageDeliveries, sessionPlacements, sessions } from "../../db/schema/index.js";
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { runImDeliveryExpiry } from "../../runtime/im-delivery-janitor.js";
 import { STEER_TARGET_ENDED_ERROR_CODE } from "../../runtime/im-delivery-recovery.js";
@@ -486,6 +487,100 @@ describe("steered IM delivery recovery", () => {
       }
     },
   );
+
+  it("settles custody superseded by a placement rollover exactly once and keeps its generation", async () => {
+    const fixture = await createFixture(client.database);
+    const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });
+    await acceptAndSteer(fixture, custody);
+    // The Session is re-placed after the Turn was accepted: the delivery keeps the generation the
+    // Turn ran under, and no report can satisfy the custody fence any more.
+    await client.database
+      .update(sessionPlacements)
+      .set({ generation: fixture.placementGeneration + 1 })
+      .where(eq(sessionPlacements.sessionId, fixture.sessionId));
+    const overdue = new Date(fixture.now.getTime() + 26 * 60 * 60_000);
+
+    await runImDeliveryExpiry(client.database, janitorOptions(overdue));
+
+    const settled = await deliveryRows(client.database, fixture);
+    const report = settled.root.turnReport as TurnReportRequest;
+    expect(settled.root).toMatchObject({
+      state: "accepted",
+      placementGeneration: fixture.placementGeneration,
+      reason: "placement_superseded",
+      turnId: fixture.rootTurnId,
+      reportedAt: overdue,
+      resultHash: report.resultHash,
+    });
+    expect(report).toMatchObject({
+      type: "turn:report",
+      deliveryId: fixture.rootDeliveryId,
+      turnId: fixture.rootTurnId,
+      sessionId: fixture.sessionId,
+      agentId: fixture.agentId,
+      placementGeneration: fixture.placementGeneration,
+      outcome: "unknown",
+      executionEffects: "may_have_occurred",
+      errorReason: "turn_state_unknown",
+    });
+
+    // The second sweep leaves the settlement alone: the row is reported, so it is out of the set.
+    await runImDeliveryExpiry(client.database, janitorOptions(new Date(overdue.getTime() + 60_000)));
+    expect((await deliveryRows(client.database, fixture)).root).toEqual(settled.root);
+  });
+
+  it("leaves a rolled-over delivery alone while its report-acceptance window is open", async () => {
+    const fixture = await createFixture(client.database);
+    const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });
+    await acceptAndSteer(fixture, custody);
+    await client.database
+      .update(sessionPlacements)
+      .set({ generation: fixture.placementGeneration + 1 })
+      .where(eq(sessionPlacements.sessionId, fixture.sessionId));
+
+    // One hour after acceptance, an hour-long grace and a day-long runtime are still open.
+    await runImDeliveryExpiry(client.database, janitorOptions(new Date(fixture.now.getTime() + 60 * 60_000)));
+
+    const untouched = await deliveryRows(client.database, fixture);
+    expect(untouched.root).toMatchObject({
+      state: "accepted",
+      reportedAt: null,
+      turnReport: null,
+      reason: null,
+      resultHash: null,
+    });
+  });
+
+  it("refuses a later genuine report for a superseded placement without overwriting the settlement", async () => {
+    const fixture = await createFixture(client.database);
+    const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });
+    await acceptAndSteer(fixture, custody);
+    await client.database
+      .update(sessionPlacements)
+      .set({ generation: fixture.placementGeneration + 1 })
+      .where(eq(sessionPlacements.sessionId, fixture.sessionId));
+    await runImDeliveryExpiry(client.database, janitorOptions(new Date(fixture.now.getTime() + 26 * 60 * 60_000)));
+    const settled = await deliveryRows(client.database, fixture);
+
+    // A genuine report cannot be recorded for a superseded placement: `recordTurn`'s placement fence
+    // refuses it before the recorded-report comparison, for the delivery's own generation and for the
+    // current one alike. The refusal is `stale_generation` here, not `conflict`; what the settlement
+    // needs is that the report loses and the recorded outcome is untouched.
+    await expect(custody.recordTurn(turnReport(fixture, "completed"), fixture.context)).resolves.toBe(
+      "stale_generation",
+    );
+    await expect(
+      custody.recordTurn(
+        { ...turnReport(fixture, "completed"), placementGeneration: fixture.placementGeneration + 1 },
+        fixture.context,
+      ),
+    ).resolves.toBe("stale_generation");
+    const after = await deliveryRows(client.database, fixture);
+    expect(after.root.turnReport).toEqual(settled.root.turnReport);
+    expect(after.root.resultHash).toEqual(settled.root.resultHash);
+    expect(after.root.reason).toBe("placement_superseded");
+    expect(after.root.reportedAt).toEqual(settled.root.reportedAt);
+  });
 
   it("requeues a timed-out target", async () => {
     const timedOut = await createFixture(client.database);

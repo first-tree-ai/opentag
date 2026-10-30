@@ -7,6 +7,7 @@ import { outcomeAttrs, setActiveSpanAttributes } from "../observability/index.js
 import { releaseImBatch } from "./im-delivery-batch.js";
 import { ImDeliveryInputError, rejectInvalidImDelivery } from "./im-delivery-content.js";
 import { isCloudReadinessRetry } from "./im-delivery-ready-wakeup.js";
+import { lockSteeredRecoverySessions, type SessionEnsurer } from "./im-delivery-recovery.js";
 import {
   acceptedReportDeadlineMs,
   canonicalFailureCode,
@@ -23,7 +24,7 @@ import type {
   ImDeliveryDiagnosticReporter,
   RuntimeDeliveryWorkerMetric,
 } from "./im-delivery-worker.types.js";
-import type { PostgresRuntimeCustodyStore } from "./runtime-custody-store.js";
+import { type PostgresRuntimeCustodyStore, writeTerminalReport } from "./runtime-custody-store.js";
 
 /**
  * Every transition that gives up on a claimed delivery attempt, in one place: backoff, dispatch
@@ -347,9 +348,14 @@ function unknownTurnReport(input: {
 }
 
 /**
- * Settle owed custody whose report can no longer arrive, exactly as the Cloud owner settles an
- * unreportable accepted Turn: an `unknown` report with `may_have_occurred` evidence. It writes
- * `reported_at`, so the row leaves the work predicate and the retry loop ends here.
+ * Settle accepted custody whose report can no longer arrive, on a placement generation that is
+ * still current, exactly as the Cloud owner settles an unreportable accepted Turn: an `unknown`
+ * report with `may_have_occurred` evidence. It writes `reported_at` through the same custody fence a
+ * real report uses, so the row leaves the work predicate.
+ *
+ * This covers the shapes it is called for; it is not a bound on every accepted row. A superseded
+ * placement generation is refused by that fence and settles through `settleSupersededPlacement`
+ * instead, and a rollover that already carries a retained `result_hash` is refused by both.
  */
 export async function settleUnreportableTurn(
   deps: Pick<DeliveryFailureDeps, "custody" | "onDiagnostic">,
@@ -430,7 +436,11 @@ export const PLACEMENT_SUPERSEDED_REASON = "placement_superseded";
  * `expires_at` only, so a settled row stays removable.
  */
 export async function settleSupersededPlacement(
-  deps: Pick<DeliveryFailureDeps, "database" | "now" | "onDiagnostic">,
+  deps: Pick<DeliveryFailureDeps, "database" | "now" | "onDiagnostic"> & {
+    /** Session authority the steered-child requeue already uses on every terminal report. */
+    sessions: SessionEnsurer;
+    onDeliverySettled?: (deliveryId: string) => void;
+  },
   deliveryId: string,
 ): Promise<boolean> {
   const settled = await deps.database.transaction(async (transaction) => {
@@ -453,6 +463,9 @@ export async function settleSupersededPlacement(
       .for("update", { of: imMessageDeliveries });
     if (!row) return undefined;
     const { delivery } = row;
+    // Lock order matches `recordTurn`: the recovery Sessions before this row's placement and delivery
+    // locks, which `requeueSteeredDeliveries` below relies on.
+    if (delivery.turnId !== null) await lockSteeredRecoverySessions(transaction, [deliveryId]);
     const overdue =
       delivery.acceptedAt !== null && deps.now() >= acceptedReportDeadlineMs(delivery.acceptedAt.getTime());
     if (
@@ -471,28 +484,10 @@ export async function settleSupersededPlacement(
       placementGeneration: delivery.placementGeneration,
     });
     if (!report) return undefined;
-    const [written] = await transaction
-      .update(imMessageDeliveries)
-      .set({
-        dispatchPayload: null,
-        resultHash: report.resultHash,
-        turnReport: report,
-        reportedAt: new Date(deps.now()),
-        reason: PLACEMENT_SUPERSEDED_REASON,
-        lastErrorCode: null,
-      })
-      .where(
-        and(
-          eq(imMessageDeliveries.id, deliveryId),
-          eq(imMessageDeliveries.state, "accepted"),
-          isNull(imMessageDeliveries.reportedAt),
-          isNull(imMessageDeliveries.resultHash),
-          eq(imMessageDeliveries.placementGeneration, delivery.placementGeneration),
-          sql`coalesce(${imMessageDeliveries.lastErrorCode}, '') not like ${"IM_DELIVERY_CLAIM_%"}`,
-        ),
-      )
-      .returning({ id: imMessageDeliveries.id });
-    return written ? { row, report } : undefined;
+    const terminalizedIds = await writeTerminalReport(transaction, report, new Date(deps.now()), deps.sessions, {
+      reason: PLACEMENT_SUPERSEDED_REASON,
+    });
+    return terminalizedIds ? { row, terminalizedIds } : undefined;
   });
   if (!settled) return false;
   deps.onDiagnostic("IM_DELIVERY_TURN_STATE_UNKNOWN", {
@@ -502,5 +497,7 @@ export async function settleSupersededPlacement(
     computerId: settled.row.computer.id,
     attemptCount: settled.row.delivery.attemptCount,
   });
+  deps.onDeliverySettled?.(settled.row.delivery.id);
+  for (const childId of settled.terminalizedIds) deps.onDeliverySettled?.(childId);
   return true;
 }

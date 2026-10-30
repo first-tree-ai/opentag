@@ -145,6 +145,7 @@ export async function runImDeliveryOverdueSettlement(
   `)) as Array<{ id: string }>;
   if (candidates.length === 0) return;
   const custody = new PostgresRuntimeCustodyStore(database, { now: options.clock });
+  const sessionService = new SessionService(database);
   for (const candidate of candidates) {
     const [row] = await database
       .select({
@@ -163,13 +164,15 @@ export async function runImDeliveryOverdueSettlement(
       .where(eq(imMessageDeliveries.id, candidate.id))
       .limit(1);
     if (!row) continue;
-    // A superseded placement generation is out of `recordTurn`'s reach by construction, so that case
-    // settles through its own fenced write; every other candidate settles through the custody fence.
-    const settled =
-      row.delivery.placementGeneration === row.placement.generation
-        ? await settleUnreportableTurn({ custody, onDiagnostic }, row, "maintenance")
-        : await settleSupersededPlacement({ database, now: () => now.getTime(), onDiagnostic }, row.delivery.id);
-    if (settled) onDeliverySettled?.(row.delivery.id);
+    const placementCurrent = row.delivery.placementGeneration === row.placement.generation;
+    const settled = placementCurrent
+      ? await settleUnreportableTurn({ custody, onDiagnostic }, row, "maintenance")
+      : await settleSupersededPlacement(
+          { database, now: () => now.getTime(), onDiagnostic, sessions: sessionService, onDeliverySettled },
+          row.delivery.id,
+        );
+    // The superseded settlement notifies the delivery and every child it terminalized itself.
+    if (settled && placementCurrent) onDeliverySettled?.(row.delivery.id);
   }
 }
 

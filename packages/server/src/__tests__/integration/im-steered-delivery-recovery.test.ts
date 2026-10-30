@@ -9,7 +9,17 @@ import {
 import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
-import { computers, imBindings, imMessageDeliveries, sessionPlacements, sessions } from "../../db/schema/index.js";
+import {
+  agents,
+  computers,
+  imBindings,
+  imMessageDeliveries,
+  sessionPlacements,
+  sessions,
+  slackInstallations,
+  slackWorkingTargets,
+  slackWorkingTurns,
+} from "../../db/schema/index.js";
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { runImDeliveryExpiry } from "../../runtime/im-delivery-janitor.js";
 import { STEER_TARGET_ENDED_ERROR_CODE } from "../../runtime/im-delivery-recovery.js";
@@ -529,6 +539,73 @@ describe("steered IM delivery recovery", () => {
     expect((await deliveryRows(client.database, fixture)).root).toEqual(settled.root);
   });
 
+  it("settles a superseded placement with the whole terminal-report contract", async () => {
+    const fixture = await createFixture(client.database);
+    const settled = vi.fn();
+    const custody = new PostgresRuntimeCustodyStore(client.database, {
+      now: () => fixture.now,
+      onDeliverySettled: settled,
+    });
+    await acceptAndSteer(fixture, custody);
+    settled.mockClear();
+    const slack = await seedSlackWorkingTurn(client.database, fixture);
+    // Suspending the Agent makes the steered children unplaceable, so the settlement has to
+    // terminalize them exactly as a real terminal report does.
+    await client.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, fixture.agentId));
+    await client.database
+      .update(sessionPlacements)
+      .set({ generation: fixture.placementGeneration + 1 })
+      .where(eq(sessionPlacements.sessionId, fixture.sessionId));
+    const overdue = new Date(fixture.now.getTime() + 26 * 60 * 60_000);
+
+    await runImDeliveryExpiry(client.database, janitorOptions(overdue), settled);
+
+    const rollover = await deliveryRows(client.database, fixture);
+    expect(rollover.root.reason).toBe("placement_superseded");
+    expect(rollover.root.turnReport).toMatchObject({ outcome: "unknown", errorReason: "turn_state_unknown" });
+    // The children reach the outcome a real terminal report gives them (the next test settles a
+    // control fixture through `recordTurn` and asserts this same shape).
+    expect(rollover.children.map(terminalizedChildContract)).toEqual([TERMINALIZED_CHILD, TERMINALIZED_CHILD]);
+    // The settled callback covers the delivery and every child it terminalized.
+    expect(new Set(settled.mock.calls.map(([id]) => id as string))).toEqual(
+      new Set([fixture.rootDeliveryId, ...fixture.steerRequests.map((request) => request.deliveryId)]),
+    );
+    // No Slack working turn survives the settlement: it is terminal, its lease expired at the
+    // settlement instant, and its target was dirtied for the cleanup pass.
+    const [turn] = await client.database
+      .select()
+      .from(slackWorkingTurns)
+      .where(eq(slackWorkingTurns.deliveryId, fixture.rootDeliveryId));
+    expect(turn).toMatchObject({ phase: "terminal", leaseExpiresAt: overdue });
+    const [target] = await client.database
+      .select()
+      .from(slackWorkingTargets)
+      .where(eq(slackWorkingTargets.id, slack.targetId));
+    expect(target).toMatchObject({ nextAttemptAt: overdue, revision: slack.revision + 1 });
+  });
+
+  it("gives a settled parent's steered children the same outcome a real terminal report gives them", async () => {
+    const fixture = await createFixture(client.database);
+    const settled = vi.fn();
+    const custody = new PostgresRuntimeCustodyStore(client.database, {
+      now: () => fixture.now,
+      onDeliverySettled: settled,
+    });
+    await acceptAndSteer(fixture, custody);
+    settled.mockClear();
+    await client.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, fixture.agentId));
+
+    await expect(
+      custody.recordTurn(turnReport(fixture, "unknown", "turn_state_unknown"), fixture.context),
+    ).resolves.toBe("recorded");
+
+    const control = await deliveryRows(client.database, fixture);
+    expect(control.children.map(terminalizedChildContract)).toEqual([TERMINALIZED_CHILD, TERMINALIZED_CHILD]);
+    expect(new Set(settled.mock.calls.map(([id]) => id as string))).toEqual(
+      new Set([fixture.rootDeliveryId, ...fixture.steerRequests.map((request) => request.deliveryId)]),
+    );
+  });
+
   it("leaves a rolled-over delivery alone while its report-acceptance window is open", async () => {
     const fixture = await createFixture(client.database);
     const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });
@@ -674,3 +751,80 @@ describe("steered IM delivery recovery", () => {
     );
   });
 });
+
+/** The contract a settled parent owes its steered children, asserted by both settlement paths. */
+const TERMINALIZED_CHILD = {
+  state: "terminal_rejected",
+  reason: "steer_target_ended_unplaceable",
+  lastErrorCode: "IM_DELIVERY_STEER_TARGET_UNPLACEABLE",
+  steerTargetDeliveryId: null,
+  attemptCount: 1,
+  reportedAt: null,
+  acceptedAt: null,
+  turnId: null,
+};
+
+function terminalizedChildContract(row: typeof imMessageDeliveries.$inferSelect) {
+  return {
+    state: row.state,
+    reason: row.reason,
+    lastErrorCode: row.lastErrorCode,
+    steerTargetDeliveryId: row.steerTargetDeliveryId,
+    attemptCount: row.attemptCount,
+    reportedAt: row.reportedAt,
+    acceptedAt: row.acceptedAt,
+    turnId: row.turnId,
+  };
+}
+
+/**
+ * One open Slack working turn for the fixture's root delivery. `finishSlackWorkingTurn` is keyed by
+ * delivery id and never reads the binding's provider, so the fixture's non-Slack binding is enough
+ * to exercise the cleanup contract.
+ */
+async function seedSlackWorkingTurn(
+  database: ReturnType<typeof createDatabaseClient>["database"],
+  fixture: Awaited<ReturnType<typeof createFixture>>,
+) {
+  const [session] = await database
+    .select({ imBindingId: sessions.imBindingId })
+    .from(sessions)
+    .where(eq(sessions.id, fixture.sessionId));
+  if (!session) throw new Error("Fixture Session is missing");
+  const installationId = randomUUID();
+  const targetId = `slack-target-${randomUUID()}`;
+  await database.insert(slackInstallations).values({
+    id: installationId,
+    agentId: fixture.agentId,
+    status: "active",
+    externalAppId: `app-${installationId}`,
+    externalTeamId: `team-${installationId}`,
+    externalBotId: `bot-${installationId}`,
+    credentialSchemaVersion: 1,
+    credentialGeneration: 1,
+    encryptedCredential: "unit-only-unused",
+    activatedAt: fixture.now,
+  });
+  await database.insert(slackWorkingTargets).values({
+    id: targetId,
+    bindingId: session.imBindingId,
+    installationId,
+    credentialGeneration: 1,
+    channelId: "channel",
+    threadTs: "thread-1",
+    revision: 4,
+    working: true,
+    nextAttemptAt: fixture.now,
+    notBeforeAt: fixture.now,
+  });
+  await database.insert(slackWorkingTurns).values({
+    deliveryId: fixture.rootDeliveryId,
+    targetId,
+    turnId: fixture.rootTurnId,
+    sequence: 1,
+    phase: "running",
+    leaseExpiresAt: new Date(fixture.now.getTime() + 90_000),
+    deadlineAt: new Date(fixture.now.getTime() + 30 * 60_000),
+  });
+  return { installationId, targetId, revision: 4 };
+}

@@ -21,7 +21,7 @@ import {
 import { finishSlackWorkingTurn } from "../services/im/slack-working-store.js";
 import { SessionService } from "../services/sessions/session-service.js";
 import { releaseImBatch, reserveImBatch, settleImBatch } from "./im-delivery-batch.js";
-import { lockSteeredRecoverySessions, requeueSteeredDeliveries } from "./im-delivery-recovery.js";
+import { lockSteeredRecoverySessions, requeueSteeredDeliveries, type SessionEnsurer } from "./im-delivery-recovery.js";
 import type { RuntimeCustodyStoreDispatchRelease } from "./runtime-custody-store.types.js";
 import type { RuntimeBusinessContext } from "./runtime-session.js";
 
@@ -109,6 +109,11 @@ export interface RuntimeCustodyStore extends RuntimeCustodyStoreDispatchRelease 
   ): Promise<TurnReportResult["status"] | undefined>;
 }
 
+export interface TerminalReportWriteOptions {
+  /** The reason a settlement records beside the report; a real report writes none. */
+  reason?: string;
+}
+
 interface DeliveryScope {
   delivery: typeof imMessageDeliveries.$inferSelect;
   message: typeof imMessages.$inferSelect;
@@ -116,6 +121,42 @@ interface DeliveryScope {
   session: typeof sessions.$inferSelect;
   workspaceComputer: typeof computers.$inferSelect;
   agentId: string;
+}
+
+/**
+ * The complete terminal-report contract inside the caller's transaction: the report columns, the
+ * Slack working turn reaching `terminal` with its lease expired and its target dirtied, and — for a
+ * non-completed outcome — the steered children returning to the queue exactly once.
+ *
+ * Callers own the custody fence (which report may land on which row); every other obligation of a
+ * terminal report lives here, so the fenced `recordTurn` path and the historical-generation
+ * settlement cannot drift. Returns the terminalized child ids, or `undefined` when the write matched
+ * no row (a concurrent settlement or a refused maintenance authority).
+ */
+export async function writeTerminalReport(
+  transaction: DatabaseTransaction,
+  report: TurnReportRequest,
+  now: Date,
+  sessions: SessionEnsurer,
+  options: TerminalReportWriteOptions = {},
+): Promise<string[] | undefined> {
+  const [written] = await transaction
+    .update(imMessageDeliveries)
+    .set({
+      dispatchPayload: null,
+      resultHash: report.resultHash,
+      turnReport: report,
+      reportedAt: now,
+      lastErrorCode: null,
+      ...(options.reason ? { reason: options.reason } : {}),
+    })
+    .where(eq(imMessageDeliveries.id, report.deliveryId))
+    .returning({ id: imMessageDeliveries.id });
+  if (!written) return undefined;
+  await finishSlackWorkingTurn(transaction, report.deliveryId, now);
+  if (report.outcome === "completed") return [];
+  const recovered = await requeueSteeredDeliveries(transaction, report.deliveryId, now, sessions);
+  return recovered.terminalizedIds;
 }
 
 export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
@@ -516,21 +557,9 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       const replay = recordedReportStatus(scope.delivery, report);
       if (replay) return replay;
       if (!recordTurnFenceMatches(scope, context, report)) return undefined;
-      await transaction
-        .update(imMessageDeliveries)
-        .set({
-          dispatchPayload: null,
-          resultHash: report.resultHash,
-          turnReport: report,
-          reportedAt: this.#now(),
-          lastErrorCode: null,
-        })
-        .where(eq(imMessageDeliveries.id, report.deliveryId));
-      await finishSlackWorkingTurn(transaction, report.deliveryId, this.#now());
-      if (report.outcome !== "completed") {
-        const recovered = await requeueSteeredDeliveries(transaction, report.deliveryId, this.#now(), this.#sessions);
-        terminalizedIds.push(...recovered.terminalizedIds);
-      }
+      const terminalized = await writeTerminalReport(transaction, report, this.#now(), this.#sessions);
+      if (!terminalized) return "conflict";
+      terminalizedIds.push(...terminalized);
       return "recorded" as const;
     });
     if (status === "recorded" || status === "already_recorded") this.#onDeliverySettled?.(report.deliveryId);

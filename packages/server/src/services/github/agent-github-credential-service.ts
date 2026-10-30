@@ -115,6 +115,7 @@ export class AgentGitHubCredentialService implements GitHubExecutionCredentialRe
     accountId: string;
     agentId: string;
     connectionId: string;
+    expectedAuthorizationVersion: string;
     fullName: string;
     access: "read" | "write";
     signal?: AbortSignal;
@@ -127,6 +128,12 @@ export class AgentGitHubCredentialService implements GitHubExecutionCredentialRe
         "This Agent has no usable GitHub MCP authorization",
       );
     }
+    if (current.connection.authorizationVersion !== input.expectedAuthorizationVersion)
+      throw new GitHubConnectionServiceError(
+        GITHUB_CONNECTION_ERROR_CODES.AUTHORIZATION_VERSION_CONFLICT,
+        409,
+        "GitHub MCP authorization changed",
+      );
     if (input.access === "write" && current.connection.readOnly)
       throw new GitHubConnectionServiceError(
         GITHUB_CONNECTION_ERROR_CODES.ADMISSION_PERMISSION_INSUFFICIENT,

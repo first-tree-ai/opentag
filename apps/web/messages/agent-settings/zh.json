@@ -67,6 +67,8 @@
   "agent_settings_context_tree_disconnect": "断开连接",
   "agent_settings_context_tree_empty_title": "添加 Context Tree",
   "agent_settings_context_tree_failed": "Context Tree 准备失败。请检查电脑和仓库，然后重试。",
+  "agent_settings_context_tree_github_connector_disabled": "当前 Agent 的 GitHub Connector 已禁用，请在 Connectors 中启用后重试。",
+  "agent_settings_context_tree_github_connector_unsupported": "Context Tree 需要当前 Agent 通过 OAuth 授权的官方 GitHub MCP 连接。",
   "agent_settings_context_tree_github_not_configured": "此 openTag 服务器尚未配置 GitHub MCP。请联系服务器管理员配置其 OAuth App，然后重试。",
   "agent_settings_context_tree_invalid_tree": "此目录不是有效的 Context Tree。请移除 CLAUDE.md 或 README.md 等符号链接，再运行 `context-tree verify` 查找并修复其他问题，然后重新连接。",
   "agent_settings_context_tree_limit_reached": "此智能体已达到 Context Tree 数量上限。请先断开一个，再连接新的。",
@@ -262,7 +264,5 @@
   "agent_settings_troubleshooting": "故障排除",
   "agent_settings_unsaved_changes": "有未保存的更改",
   "agent_settings_unsaved_confirm_description": "离开此页面将丢失尚未保存的更改。",
-  "agent_settings_unsaved_confirm_title": "放弃未保存的更改？",
-  "agent_settings_context_tree_github_connector_disabled": "当前 Agent 的 GitHub Connector 已禁用，请在 Connectors 中启用后重试。",
-  "agent_settings_context_tree_github_connector_unsupported": "Context Tree 需要当前 Agent 通过 OAuth 授权的官方 GitHub MCP 连接。"
+  "agent_settings_unsaved_confirm_title": "放弃未保存的更改？"
 }

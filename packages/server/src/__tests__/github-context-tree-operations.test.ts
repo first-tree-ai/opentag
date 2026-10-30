@@ -211,6 +211,7 @@ describe("Cloud Context Tree connect", () => {
       accountId: ACCOUNT,
       agentId: AGENT,
       connectionId: row.id,
+      expectedAuthorizationVersion: row.authorizationVersion,
       fullName: "acme/memory",
       access: "read",
       signal: expect.any(AbortSignal),

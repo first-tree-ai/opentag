@@ -88,3 +88,13 @@ API/OAuth responses are offline fixtures. These checks do not establish deployed
 GitHub acceptance. No real token, Agent message, repository, Issue or PR business fixture was
 created. The full PostgreSQL and cross-package regression matrix remains CI-owned. Client Agent
 Runtime coverage implementation/configuration is unchanged, so that separate gate was not rerun.
+
+The subsequent independent review also found that repository admission could query a replacement
+identity before comparing the operation's authorization version. Repository lookups now require the
+initial version and compare it before API I/O. Actual shared-root regressions prove zero calls with
+the replacement token during initial admission and recheck; ordinary refresh remains usable.
+The failing CI fixtures were updated to the Agent credential port (including `agentId`), locale keys
+were sorted, and a baseline receipt test now injects failure after its first durable write completes.
+The affected Server batch passes 204 tests (16 native-tool cases skipped without the pinned binaries),
+PostgreSQL passes 48, reply capture passes 24 and the locale catalog passes 3. The affected Server build,
+workspace typecheck and repository check pass. Complete CI results remain separate from these local checks.

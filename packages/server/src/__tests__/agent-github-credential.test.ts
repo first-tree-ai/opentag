@@ -3,6 +3,8 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { agents, mcpServerAuthorizations } from "../db/schema/index.js";
 import { AgentService } from "../services/agents/agent-service.js";
+import { GitHubContextTreeOperations } from "../services/agents/github-context-tree-operations.js";
+import { GitHubExecutionCredentials } from "../services/github-proxy/execution-credentials.js";
 import { GitHubProviderAdapter } from "../services/github-proxy/github-provider-adapter.js";
 import { githubMcpFixture } from "./support/github-mcp.js";
 import { body, proxyAuthorization, proxyRequest } from "./support/github-proxy-fixture.js";
@@ -64,6 +66,93 @@ describe("Context Tree consumes Agent GitHub MCP OAuth", () => {
     const f = await githubMcpFixture(unit.database);
     expect((await f.github.getOverview(f.accountId, f.ids[1] as string)).connection).toBeNull();
     expect((await f.github.getOverview(randomUUID(), f.ids[0] as string)).connection).toBeNull();
+  });
+
+  it.each(["initial lookup", "recheck"])("never probes with a replacement identity during %s", async (stage) => {
+    const f = await githubMcpFixture(unit.database);
+    const agentId = f.ids[1] as string;
+    await f.connect(agentId);
+    const getRepository = vi.spyOn(f.api, "getRepository").mockResolvedValue({
+      repositoryId: "77",
+      fullName: "acme/memory",
+      defaultBranch: "main",
+      private: true,
+      permissions: { pull: true, push: true, admin: false },
+    });
+    const replace = async () => {
+      const sealed = f.cipher.encryptAuthorizationCredential(
+        { mcpServerId: f.server.id, agentId: f.ids[0] as string, authorizationServer: f.root.authorizationServer },
+        { accessToken: "replacement-user", clientId: "github-client" },
+      );
+      await unit.database
+        .update(mcpServerAuthorizations)
+        .set({ ...sealed, revision: f.root.revision + 1 })
+        .where(eq(mcpServerAuthorizations.id, f.root.id));
+    };
+    if (stage === "initial lookup") {
+      const overview = f.github.getOverview.bind(f.github);
+      vi.spyOn(f.github, "getOverview").mockImplementationOnce(async (...args) => {
+        const original = await overview(...args);
+        await replace();
+        return original;
+      });
+    }
+    const operation = new GitHubContextTreeOperations({
+      management: f.github,
+      api: f.api,
+      credentials: new GitHubExecutionCredentials(f.github),
+      computerKind: async () => "cloud",
+      treeHeads: {
+        verify: async (input) => {
+          await replace();
+          await input.recheck();
+          return "a".repeat(40);
+        },
+      },
+    });
+    try {
+      expect(
+        await operation.run({
+          accountId: f.accountId,
+          agentId,
+          action: "connect",
+          repository: "acme/memory",
+          path: ".",
+          ref: "main",
+        }),
+      ).toEqual({ result: { status: "failed", code: "stale_configuration" } });
+      expect(getRepository).toHaveBeenCalledTimes(stage === "initial lookup" ? 0 : 1);
+      if (stage === "recheck")
+        expect(getRepository).toHaveBeenCalledWith(expect.objectContaining({ accessToken: "old-access" }));
+    } finally {
+      await operation.close();
+    }
+  });
+
+  it("probes with the rotated token while the expected authorization remains unchanged", async () => {
+    const f = await githubMcpFixture(unit.database);
+    const agentId = f.ids[0] as string;
+    const connection = (await f.github.getOverview(f.accountId, agentId)).connection;
+    if (!connection) throw new Error("Missing MCP connection");
+    const getRepository = vi.spyOn(f.api, "getRepository").mockResolvedValue({
+      repositoryId: "77",
+      fullName: "acme/memory",
+      defaultBranch: "main",
+      private: true,
+      permissions: { pull: true, push: true, admin: false },
+    });
+    await f.flows.refreshAuthorization(f.root.id);
+    await expect(
+      f.github.resolveRepository({
+        accountId: f.accountId,
+        agentId,
+        connectionId: f.server.id,
+        expectedAuthorizationVersion: connection.authorizationVersion,
+        fullName: "acme/memory",
+        access: "read",
+      }),
+    ).resolves.toMatchObject({ repositoryId: "77", authorizationVersion: connection.authorizationVersion });
+    expect(getRepository).toHaveBeenCalledWith(expect.objectContaining({ accessToken: "new-access" }));
   });
 
   it("routes Context requests with the current MCP token and enforces the selected repository", async () => {

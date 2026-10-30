@@ -103,8 +103,8 @@ describe.skipIf(process.platform === "win32")("native Git execution-local transp
           [adapter.githubApiSocketPath as string, adapter.githubGitSocketPath as string],
           { cwd: root },
           policy,
-        ) as { permissions: Record<string, { filesystem: Record<string, string> }> };
-        const profile = config.permissions[CODEX_EXECUTION_PERMISSIONS];
+        ) as Record<`permissions.${string}`, { filesystem: Record<string, string> }>;
+        const profile = config[`permissions.${CODEX_EXECUTION_PERMISSIONS}`];
         if (!profile) throw Error("Missing execution profile");
         profile.filesystem[await realpath(layout.executionDir)] = "read";
         const wire = new CodexAppServerProcess({ command: codex as string, cwd: root, env });
@@ -123,7 +123,7 @@ describe.skipIf(process.platform === "win32")("native Git execution-local transp
         }
         await writeFile(
           join(home, "config.toml"),
-          `features={network_proxy=true}\npermissions=${toml(config.permissions)}\n`,
+          `features.network_proxy=true\npermissions.${CODEX_EXECUTION_PERMISSIONS}=${toml(profile)}\n`,
         );
       }
       const execute = (command: string, args: string[], cwd = root, patch = {}) =>

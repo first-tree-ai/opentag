@@ -77,6 +77,7 @@ Server-side gateway revocation, every Codex version, or every plugin's headless 
 - Local Codex managed instructions and CLI runtime inspection environment parity; Pi's filter stays intact.
 - Client Agent Runtime coverage: 780 tests passed, with statements, branches, functions, and lines at 100%.
 - CLI runtime probe/preparation: 49 tests passed; managed-instruction and MCP credential environment: 30 passed.
+- Native Git/gh sandbox fixtures with real Codex and gh: 9 passed, 2 Linux-only cases skipped on macOS.
 - Client/CLI type checks, Client build, and `pnpm check` passed.
 
 CI owns the complete repository matrix. This record is not a deployment or merge receipt.

@@ -124,6 +124,10 @@ Two terminal outcomes bound the paths, and neither needs a schema change:
   mirrors the Cloud report-acceptance cutoff, writes `reported_at`, and therefore removes the row
   from the work set. It is a cutoff on report acceptance, not evidence that no Turn ran, so it
   never overwrites a report recorded earlier.
+  A live report owner of the delivery's own placement is reconciled first and is never settled by
+  the cutoff: it can still describe the Turn, so settling it there would discard a genuine result.
+  The cutoff therefore only covers custody that cannot report through the work path — a Computer
+  with no live runtime, or a placement generation that was superseded.
 
 Each of these paths emits one diagnostic per failure run instead of one per attempt: a repeat of
 the failure code already recorded for the delivery adds nothing an operator can act on. Only the

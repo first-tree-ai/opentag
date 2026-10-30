@@ -2526,6 +2526,92 @@ describe("ImDeliveryWorker database workflow", () => {
     expect(domain.requestReconcile).not.toHaveBeenCalled();
   });
 
+  it("reconciles a live report owner even after the report-acceptance cutoff", async () => {
+    const fixture = await workerFixture(unit);
+    const clock = Date.now();
+    // Past `accepted_at + platform maximum runtime + grace`, but the owner is live and current.
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        state: "accepted",
+        inputHash: "frozen-hash",
+        turnId: "turn-live",
+        reportOwnerInstanceId: fixture.instanceId,
+        acceptedAt: new Date(clock - 25 * 60 * 60_000 - 1),
+        nextAttemptAt: new Date(clock - 1),
+      })
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, { reconcileStatus: "busy" });
+    const diagnostic = vi.fn();
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: domain as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+      registry: fixture.registry,
+      now: () => new Date(clock),
+      onDiagnostic: diagnostic,
+    });
+
+    await worker.runOnce();
+
+    expect(domain.requestReconcile).toHaveBeenCalledTimes(1);
+    const [row] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    expect(row).toMatchObject({
+      state: "accepted",
+      reportedAt: null,
+      lastErrorCode: "IM_DELIVERY_RECOVERY_BUSY",
+    });
+    expect(diagnosticCodes(diagnostic)).not.toContain("IM_DELIVERY_TURN_STATE_UNKNOWN");
+  });
+
+  it("settles an absent report owner that is past the cutoff", async () => {
+    const fixture = await workerFixture(unit);
+    const clock = Date.now();
+    await unit.database
+      .update(computers)
+      .set({ currentInstanceId: null, lastSeenAt: new Date(clock - 60_000) })
+      .where(eq(computers.id, fixture.computerId));
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        state: "accepted",
+        inputHash: "frozen-hash",
+        turnId: "turn-absent",
+        reportOwnerInstanceId: fixture.instanceId,
+        acceptedAt: new Date(clock - 25 * 60 * 60_000 - 1),
+        nextAttemptAt: new Date(clock - 1),
+      })
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture);
+    const diagnostic = vi.fn();
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: domain as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+      registry: new ConnectionRegistry(),
+      now: () => new Date(clock),
+      onDiagnostic: diagnostic,
+    });
+
+    await worker.runOnce();
+
+    expect(domain.requestReconcile).not.toHaveBeenCalled();
+    const [row] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    expect(row?.reportedAt).not.toBeNull();
+    expect(row?.turnReport as TurnReportRequest).toMatchObject({
+      outcome: "unknown",
+      executionEffects: "may_have_occurred",
+      errorReason: "turn_state_unknown",
+    });
+    expect(diagnosticCodes(diagnostic)).toEqual(["IM_DELIVERY_TURN_STATE_UNKNOWN"]);
+  });
+
   it("makes offline-parked retries due again when the placement Computer registers", async () => {
     const fixture = await workerFixture(unit);
     const clock = Date.now();

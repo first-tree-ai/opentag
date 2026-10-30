@@ -1143,10 +1143,6 @@ export class ImDeliveryWorker {
         attempt: row.delivery.attemptCount,
       }),
     });
-    if (row.delivery.placementGeneration !== row.placement.generation) {
-      await this.#recordFailure(attempt, "IM_DELIVERY_PLACEMENT_STALE");
-      return;
-    }
     /*
      * E4 Cloud recovery: an accepted Cloud delivery owes a Turn Report from its Sandbox Runner.
      * While the allocation still owns the report, recovery waits for the Runner's journal-driven
@@ -1158,17 +1154,22 @@ export class ImDeliveryWorker {
       return;
     }
     /*
-     * A Local Turn Report can only be written while the execution window plus its grace is open.
-     * Past that cutoff no report can still be truthful, so the owed custody settles exactly once as
-     * unknown instead of being retried for the retention lifetime (#821/#1079). Every window in
-     * which the Turn could have run has closed, so this never replaces a genuine in-flight result.
+     * A live owner of the delivery's own placement gets its reconcile attempt first, whatever the
+     * clock says: it can still describe the Turn, and settling it would discard a genuine result.
+     * The report-acceptance cutoff below covers only custody that cannot report through this path —
+     * no reconcilable placement, or no live runtime on the Computer.
      */
-    const acceptedAt = row.delivery.acceptedAt?.getTime();
-    if (acceptedAt !== undefined && this.#now() >= acceptedReportDeadlineMs(acceptedAt)) {
-      if (await this.#settleUnknownTurn(row)) return;
-    }
     const instanceId = this.#registry.currentInstanceId(row.computer.id);
-    if (!instanceId || row.computer.currentInstanceId !== instanceId) {
+    const liveOwner = instanceId !== undefined && row.computer.currentInstanceId === instanceId;
+    const placementCurrent = row.delivery.placementGeneration === row.placement.generation;
+    if (!placementCurrent || !liveOwner) {
+      if (placementCurrent && this.#reportAcceptanceClosed(row)) {
+        if (await this.#settleUnknownTurn(row)) return;
+      }
+      if (!placementCurrent) {
+        await this.#recordFailure(attempt, "IM_DELIVERY_PLACEMENT_STALE");
+        return;
+      }
       await this.#recordFailure(
         { ...attempt, offlineMs: absentRuntimeMs(row.computer.lastSeenAt, this.#now()) },
         "IM_DELIVERY_RUNTIME_UNAVAILABLE",
@@ -1191,6 +1192,15 @@ export class ImDeliveryWorker {
     } catch {
       await this.#deferRecovery(attempt, row.delivery.attemptCount, "IM_DELIVERY_RECOVERY_FAILED");
     }
+  }
+
+  /**
+   * Whether no Turn Report can still be truthful for this accepted delivery: the platform maximum
+   * runtime from acceptance plus its grace has passed.
+   */
+  #reportAcceptanceClosed(row: { delivery: typeof imMessageDeliveries.$inferSelect }): boolean {
+    const acceptedAt = row.delivery.acceptedAt?.getTime();
+    return acceptedAt !== undefined && this.#now() >= acceptedReportDeadlineMs(acceptedAt);
   }
 
   /** Settle owed custody once no report can still be truthful; see the failure module for the policy. */

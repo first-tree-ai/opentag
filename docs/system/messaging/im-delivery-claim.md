@@ -59,12 +59,28 @@ attempt wins. The response never fabricates a report, expires accepted custody, 
 the input again. Only the actual report settles custody.
 
 The expiry pass also sweeps accepted custody that no work path can reach any more: an ended Session,
-an inactive binding, or a deleted Agent puts the row outside `#recover`'s query and outside the
-selector, so nothing else would settle it. That sweep is bounded by the same batch size, requires
-the row to be provably past the report-acceptance window, skips a row that another worker currently
-claims, and writes the same `unknown` report through the same custody fence, so it settles exactly
-the rows a real report could no longer describe. It covers Local custody only; Cloud custody stays
-with the Cloud owner's own acceptance cutoff.
+an inactive binding, a deleted Agent, or a superseded placement generation puts the row outside
+`#recover`'s query, outside the selector, or behind a custody fence a report can no longer satisfy.
+That sweep is bounded by the same batch size, requires the row to be provably past the
+report-acceptance window, skips a row that another worker currently claims, and writes the same
+`unknown` report, so it settles exactly the rows a real report could no longer describe. It covers
+Local custody only; Cloud custody stays with the Cloud owner's own acceptance cutoff.
+
+A superseded placement needs one difference. `PostgresRuntimeCustodyStore` requires the delivery's
+generation, the report's generation, and the current `session_placements.generation` to agree, and a
+rollover makes the delivery's historical generation differ from the current one for good — so
+`recordTurn` refuses a report for it (measured: `stale_generation`) and cannot settle it. The sweep
+therefore settles that case with a fenced write of its own: in one transaction it locks the delivery
+with `select … for update` and requires accepted and unreported state, no recorded `result_hash`, the
+acceptance window closed, a superseded generation, no live claim marker, and Local custody — then
+writes the same report body, keeps the delivery's own historical `placement_generation` (it is never
+re-anchored), and records `reason = placement_superseded`. It does not consult
+`report_owner_instance_id`: a superseded generation cannot report whatever instance is live now.
+`recordTurn` and its fence are unchanged for every real report; a genuine report issued after the
+settlement is refused by that same fence and never overwrites the recorded outcome, and the
+`reported_at` gate plus the row lock make the settlement exactly once. Because the settled target now
+carries a non-`completed` report, the existing steered-child recovery requeues its children on the
+next sweep, as it does for any other non-completed report.
 
 An accepted target without a recorded terminal report retains its steered children and their
 target identity. Error codes, expired retry backoff, an offline Computer, and an ended Session
@@ -77,8 +93,7 @@ or `unknown` report requeues them once in the same transaction; replaying the re
 them again. The janitor can recover children of an already recorded non-completed report or an
 explicitly disposed target. A missing report therefore retains custody only until the
 report-acceptance cutoff below, which the delivery worker or the expiry sweep then settles as
-`unknown` through the custody fence; a Turn whose placement generation was superseded is out of that
-reach and keeps its custody, and ownership fencing keeps its separate policy.
+`unknown`; ownership fencing keeps its separate policy.
 
 Non-completed report recovery locks the target and steered children's Sessions in ID order with
 `FOR NO KEY UPDATE` before acquiring placement and delivery locks. It rechecks report identity,
@@ -142,7 +157,9 @@ Two terminal outcomes bound the paths, and neither needs a schema change:
   A live report owner of the delivery's own placement is reconciled first and is never settled by
   the cutoff: it can still describe the Turn, so settling it there would discard a genuine result.
   The cutoff therefore only covers custody that cannot report through the work path — a Computer
-  with no live runtime, or a placement generation that was superseded.
+  with no live runtime, or a placement generation that was superseded. The superseded case is the one
+  the delivery worker cannot write at all; the expiry sweep settles it and records
+  `reason = placement_superseded` (see the expiry-sweep paragraph above).
 
 Each of these paths emits one diagnostic per failure run instead of one per attempt: a repeat of
 the failure code already recorded for the delivery adds nothing an operator can act on. Only the

@@ -1210,6 +1210,7 @@ export function resolvedPiFactory(options: ResolvedPiFactoryOptions): AgentRunti
     options.createCandidateFactory ??
     ((command: string, environment: NodeJS.ProcessEnv) =>
       new PiAgentRuntimeFactory({
+        nativeResources: true,
         process: {
           args: skillArgs,
           command,

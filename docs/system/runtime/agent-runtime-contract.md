@@ -194,6 +194,45 @@ plugin loading, native hook trust, or working tool calls. Inspect native configu
 current tool/Skill catalog from Agent Home and exercise the relevant resource before reporting
 success. A native reload or new Session runtime may be necessary for a changed resource.
 
+### Local Pi native resources and trust
+
+Local Pi discovers native user and project extensions, packages, Skills, prompt templates, context
+files, and themes. OpenTag does not force offline mode or disable those resources during a Run.
+Native enablement, exclusion rules, installation, and updates follow the installed Pi CLI. Agents
+can use `pi install -l <source> --approve`, `pi list`, and project settings from Agent Home to manage
+and inspect their resources. Prefer project settings for one Agent; global configuration retains
+its native scope. Existing cwd, Pi Home, login, and Session history locations stay unchanged.
+Server stores no native resource inventory or configuration.
+
+OpenTag passes `--approve` to the actual Local process, trusting that invocation's selected cwd.
+It does not write `trust.json`, trust parent directories, or approve unrelated projects. Native
+extensions are trusted local code and may run outside model tool restrictions. The Local process
+inherits custom environment variables and operator credentials. These credentials do not acquire
+OpenTag execution fencing or revocation. Explicitly prepared factory environments are not filtered
+again. Cloud retains its controlled environment and disabled implicit resource discovery.
+
+Platform Skills and Web extensions remain explicit additions to native discovery. Native Pi owns
+resource deduplication and exclusions. Platform MCP uses a private runtime registration alongside
+native MCP configuration; see [Pi MCP composition](../capabilities/mcp-server-integration.md#pi-and-cloud-runtime-delivery).
+Readiness, help, and model-option queries keep resource discovery and project trust disabled, and
+receive no explicit platform resources. Their success does not establish project plugin loading.
+Check the current native command/tool catalog and exercise the resource before reporting success.
+
+Headless execution accepts fire-and-forget `notify`, `setStatus`, `setWidget`, `setTitle`, and
+`setEditorText` events as Provider events. Custom extension messages may occur outside model turns
+and are retained as Provider events. Interactive dialogs fail with a headless compatibility error;
+Pi RPC does not provide the TUI or theme switching.
+
+Pi 0.84.2 acknowledges extension commands and handled input without a completion disposition or
+`agent_settled` event. After an ordered state query, an acknowledged input with no model lifecycle
+and no active run is reported as `provider_request_rejected`, with an explicit protocol
+compatibility explanation. Extension side effects may already have happened; inspect them before
+retrying. OpenTag never reports successful completion from idle state or a timeout. Model runs
+still require `agent_settled`, including while native extension cleanup is pending. Consequently
+this path opens native resources but does not promise complete plugin command or interactive UI
+compatibility. Upgrading Cloud's pinned Pi dependency or implementing a general TUI bridge is
+outside this Local resource policy.
+
 ### Pi binding lifecycle
 
 A new Pi binding records the provider Session UUID before Run admission. Its

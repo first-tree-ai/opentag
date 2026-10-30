@@ -170,6 +170,7 @@ export {
   PiAgentRuntimeFactory,
   type PiAgentRuntimeFactoryOptions,
   piAgentRuntimeEnvironment,
+  piCloudAgentRuntimeEnvironment,
 } from "./providers/pi/agent-runtime.js";
 export {
   PI_RPC_MAX_LINE_BYTES,

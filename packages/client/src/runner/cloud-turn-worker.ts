@@ -27,7 +27,7 @@ import {
   type PiDiagnosticSink,
   piDiagnosticError,
 } from "../observability/pi-diagnostics.js";
-import { PiAgentRuntimeFactory } from "../providers/pi/agent-runtime.js";
+import { PiAgentRuntimeFactory, piCloudAgentRuntimeEnvironment } from "../providers/pi/agent-runtime.js";
 import type { PiRpcProcessSpawnOptions } from "../providers/pi/rpc-wire.js";
 import {
   buildAgentInput,
@@ -547,7 +547,7 @@ export async function runCloudTurnWorker(
         process: {
           args: skillArgsOf(skillPaths),
           command: "pi",
-          env: environment,
+          env: piCloudAgentRuntimeEnvironment(environment),
           sessionDirectory,
           // E3 measured native Cloud Pi startup above the Local 5s default; keep the verified budget.
           probeTimeoutMs: 30_000,

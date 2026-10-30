@@ -43,7 +43,12 @@ permission profile. Other native feature choices and profiles remain intact. Nat
 trusted hooks, and stdio MCP subprocesses are trusted local code outside model tool isolation.
 See the [Codex native trust contract](agent-runtime-contract.md#local-codex-native-configuration-and-trust).
 
-Pi always runs without approvals and has no permission settings or permission extension.
+Pi has no model approval bridge or OS sandbox. Local execution admits native resources and passes
+`--approve` for the selected cwd without writing persistent project trust. Native extensions can
+execute outside the requested model tool restrictions and inherit custom plugin variables and
+operator credentials. Cloud retains disabled implicit discovery. See the
+[Pi native resource contract](agent-runtime-contract.md#local-pi-native-resources-and-trust) for
+headless command and UI compatibility limits.
 
 Native command rules allow Feishu and Slack message reads, sends, edits, reactions, conversation
 lookup, native attachment commands, and `opentag` (`opentag-dev`, `opentag-staging`) and

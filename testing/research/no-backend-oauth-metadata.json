@@ -1,0 +1,295 @@
+{
+  "review_date": "2026-10-30",
+  "get_only": true,
+  "authenticated_acceptance": false,
+  "results": [
+    {
+      "product": "Miro",
+      "url": "https://mcp.miro.com/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://mcp.miro.com/",
+      "registration": "https://mcp.miro.com/register",
+      "methods": ["client_secret_post", "client_secret_basic"],
+      "cimd": false
+    },
+    {
+      "product": "Todoist",
+      "url": "https://todoist.com/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://todoist.com",
+      "registration": "https://todoist.com/oauth/register",
+      "methods": ["client_secret_basic", "client_secret_post", "none"],
+      "cimd": true
+    },
+    {
+      "product": "Calendly",
+      "url": "https://calendly.com/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://calendly.com/",
+      "registration": "https://calendly.com/oauth/register",
+      "methods": ["none"],
+      "cimd": false
+    },
+    {
+      "product": "Otter",
+      "url": "https://otter.ai/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://otter.ai",
+      "registration": "https://otter.ai/oauth/register",
+      "methods": ["none", "client_secret_post", "client_secret_basic"],
+      "cimd": false
+    },
+    {
+      "product": "Webflow",
+      "url": "https://mcp.webflow.com/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://mcp.webflow.com",
+      "registration": "https://mcp.webflow.com/oauth/register",
+      "methods": ["client_secret_basic", "client_secret_post", "none"],
+      "cimd": false
+    },
+    {
+      "product": "WordPress.com",
+      "url": "https://public-api.wordpress.com/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://public-api.wordpress.com",
+      "registration": "https://public-api.wordpress.com/oauth2-1/register",
+      "methods": ["client_secret_basic", "client_secret_post", "none"],
+      "cimd": false
+    },
+    {
+      "product": "Contentful",
+      "url": "https://mcp.contentful.com/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://mcp.contentful.com",
+      "registration": "https://mcp.contentful.com/register",
+      "methods": ["client_secret_basic", "client_secret_post", "none"],
+      "cimd": false
+    },
+    {
+      "product": "Sanity",
+      "url": "https://mcp.sanity.io/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://mcp.sanity.io",
+      "registration": "https://mcp.sanity.io/register",
+      "methods": ["client_secret_basic", "client_secret_post", "none"],
+      "cimd": false
+    },
+    {
+      "product": "Klaviyo",
+      "url": "https://mcp.klaviyo.com/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://mcp.klaviyo.com",
+      "registration": "https://mcp.klaviyo.com/register",
+      "methods": ["client_secret_basic", "client_secret_post", "none"],
+      "cimd": true
+    },
+    {
+      "product": "Clay",
+      "url": "https://api.clay.com/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://api.clay.com",
+      "registration": "https://api.clay.com/oauth/register",
+      "methods": ["client_secret_post", "client_secret_basic", "none"],
+      "cimd": false
+    },
+    {
+      "product": "Ashby",
+      "url": "https://mcp-auth.ashbyhq.com/.well-known/oauth-authorization-server/oidc",
+      "status": 200,
+      "issuer": "https://mcp-auth.ashbyhq.com/oidc",
+      "registration": "https://mcp-auth.ashbyhq.com/oidc/reg",
+      "methods": ["client_secret_basic", "client_secret_jwt", "client_secret_post", "private_key_jwt", "none"],
+      "cimd": false
+    },
+    {
+      "product": "Airwallex AgentOS",
+      "url": "https://mcp.airwallex.com/.well-known/oauth-authorization-server/mcp",
+      "status": 200,
+      "issuer": "https://mcp.airwallex.com/mcp",
+      "registration": "https://mcp.airwallex.com/mcp/register",
+      "methods": ["client_secret_post", "client_secret_basic", "private_key_jwt", "none"],
+      "cimd": true
+    },
+    {
+      "product": "Mercury",
+      "url": "https://mcp.mercury.com/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://mcp.mercury.com/",
+      "registration": "https://mcp.mercury.com/register",
+      "methods": ["client_secret_basic", "none"],
+      "cimd": false
+    },
+    {
+      "product": "HeyGen",
+      "url": "https://api2.heygen.com/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://api2.heygen.com",
+      "registration": "https://api2.heygen.com/v1/oauth/register",
+      "methods": ["client_secret_basic", "client_secret_post", "none"],
+      "cimd": true
+    },
+    {
+      "product": "Runway",
+      "url": "https://mcp.runwayml.com/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://mcp.runwayml.com",
+      "registration": "https://mcp.runwayml.com/register",
+      "methods": ["none"],
+      "cimd": false
+    },
+    {
+      "product": "fal",
+      "url": "https://mcp.fal.ai/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://mcp.fal.ai",
+      "registration": "https://authkit.fal.ai/oauth2/register",
+      "methods": ["client_secret_basic", "client_secret_post", "none"],
+      "cimd": true
+    },
+    {
+      "product": "Recraft",
+      "url": "https://mcp.recraft.ai/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://mcp.recraft.ai",
+      "registration": "https://mcp.recraft.ai/register",
+      "methods": ["none"],
+      "cimd": false
+    },
+    {
+      "product": "Ideogram",
+      "url": "https://mcp.ideogram.ai/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://mcp.ideogram.ai/",
+      "registration": "https://mcp.ideogram.ai/register",
+      "methods": ["client_secret_post", "client_secret_basic"],
+      "cimd": false
+    },
+    {
+      "product": "VEED",
+      "url": "https://www.veed.io/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://www.veed.io",
+      "registration": "https://www.veed.io/api/v1/oauth2/reg",
+      "methods": ["none", "client_secret_basic", "client_secret_post"],
+      "cimd": false
+    },
+    {
+      "product": "GitLab",
+      "url": "https://gitlab.com/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://gitlab.com",
+      "registration": "https://gitlab.com/oauth/register",
+      "methods": ["client_secret_basic", "client_secret_post"],
+      "cimd": false
+    },
+    {
+      "product": "Netlify",
+      "url": "https://netlify-mcp.netlify.app/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://netlify-mcp.netlify.app/",
+      "registration": "https://netlify-mcp.netlify.app/oauth-server/reg",
+      "methods": ["none", "client_secret_post", "client_secret_basic"],
+      "cimd": false
+    },
+    {
+      "product": "Pulumi",
+      "url": "https://mcp.ai.pulumi.com/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://mcp.ai.pulumi.com",
+      "registration": "https://mcp.ai.pulumi.com/oauth/register",
+      "methods": ["none"],
+      "cimd": false
+    },
+    {
+      "product": "Grafana Cloud",
+      "url": "https://mcp.grafana.com/.well-known/oauth-authorization-server/mcp",
+      "status": 200,
+      "issuer": "https://mcp.grafana.com/mcp",
+      "registration": "https://mcp.grafana.com/mcp/oauth/register",
+      "methods": ["none", "client_secret_basic", "client_secret_post"],
+      "cimd": true
+    },
+    {
+      "product": "Datadog",
+      "url": "https://mcp.datadoghq.com/.well-known/oauth-authorization-server/v1/mcp",
+      "status": 200,
+      "issuer": "https://mcp.datadoghq.com/v1/mcp",
+      "registration": "https://app.datadoghq.com/api/v2/oauth2/register",
+      "methods": ["none"],
+      "cimd": false
+    },
+    {
+      "product": "New Relic",
+      "url": "https://oauth2.service.newrelic.com/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://oauth2.service.newrelic.com",
+      "registration": "https://dcr.service.newrelic.com/register",
+      "methods": ["client_secret_post", "client_secret_basic", "private_key_jwt", "none"],
+      "cimd": false
+    },
+    {
+      "product": "ClickHouse Cloud",
+      "url": "https://mcp.clickhouse.cloud/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://mcp.clickhouse.cloud",
+      "registration": "https://mcp.clickhouse.cloud/register",
+      "methods": ["none"],
+      "cimd": false
+    },
+    {
+      "product": "Higgsfield",
+      "url": "https://mcp.higgsfield.ai/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://mcp.higgsfield.ai",
+      "registration": "https://mcp.higgsfield.ai/oauth2/register",
+      "methods": ["client_secret_basic", "none", "client_secret_post"],
+      "cimd": true
+    },
+    {
+      "product": "Granola",
+      "url": "https://mcp-auth.granola.ai/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://mcp-auth.granola.ai",
+      "registration": "https://mcp-auth.granola.ai/oauth2/register",
+      "methods": ["none", "client_secret_post", "client_secret_basic", "private_key_jwt"],
+      "cimd": true
+    },
+    {
+      "product": "Fellow",
+      "url": "https://fellow.app/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://fellow.app",
+      "registration": "https://fellow.app/mcp/register",
+      "methods": ["none", "client_secret_post", "client_secret_basic"],
+      "cimd": false
+    },
+    {
+      "product": "Dust",
+      "url": "https://signin.dust.tt/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://signin.dust.tt",
+      "registration": "https://signin.dust.tt/oauth2/register",
+      "methods": ["none", "client_secret_post", "client_secret_basic"],
+      "cimd": true
+    },
+    {
+      "product": "Airbyte Agents",
+      "url": "https://mcp.airbyte.ai/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://mcp.airbyte.ai/",
+      "registration": "https://mcp.airbyte.ai/register",
+      "methods": ["client_secret_post", "client_secret_basic"],
+      "cimd": true
+    },
+    {
+      "product": "SocialPilot",
+      "url": "https://mcp.socialpilot.co/.well-known/oauth-authorization-server",
+      "status": 200,
+      "issuer": "https://mcp.socialpilot.co",
+      "registration": "https://mcp.socialpilot.co/oauth2/register",
+      "methods": ["client_secret_basic", "client_secret_post"],
+      "cimd": false
+    }
+  ]
+}

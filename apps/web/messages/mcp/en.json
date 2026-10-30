@@ -280,5 +280,7 @@
   "mcp_add_failed": "Couldn't add connector. Try again.",
   "mcp_waiting_authorization": "Waiting for authorization…",
   "mcp_checking_connection": "Checking connection…",
-  "mcp_update_credentials": "Update credentials"
+  "mcp_update_credentials": "Update credentials",
+  "mcp_setup_instructions": "Setup instructions",
+  "mcp_setup_invalid": "Enter the MCP address and required settings from your provider."
 }

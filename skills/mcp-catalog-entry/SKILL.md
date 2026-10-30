@@ -34,12 +34,14 @@ blog post, a client configuration in another project, or from memory.
 | when to use | one sentence that tells an Agent when this Server is the right tool, in every supported locale |
 | capabilities and risk | what the tools do, and the strongest side effect any tool has (`none`, `write`, `destructive`) |
 | website | the provider's main site |
-| documentation URL | keep it for the report — the catalog has no field for it |
+| documentation URL | keep it in the verification report; setup recipes also carry `setup.documentation_url` |
 
 Rules:
 
 - Prefer the provider's remote Streamable HTTP endpoint: only an entry with one is installable and
-  shown as an addable card in Discover. A self-hosted stdio package (`npx …`, `uvx …`, `docker …`)
+  shown as an immediately addable card in Discover. A customer-specific HTTPS endpoint may instead
+  use `setup.endpoint`; Discover asks for the actual URL and declared environment headers before
+  creating a definition. Never invent a tenant endpoint or embed a key in its query string. A self-hosted stdio package (`npx …`, `uvx …`, `docker …`)
   may be recorded under `packages` as data, but it is **not yet installable**: the Server create
   contract and the runtime do not run packages, so a packages-only entry never appears as a card.
   An SSE remote (`/sse`) is likewise data only. Do not list `mcp-remote …` wrappers.
@@ -126,7 +128,7 @@ The entry is validated against `packages/mcp-presets/schema/mcp-catalog-entry.sc
 - `name`, `summary`, and `when_to_use` must supply every locale listed in
   `apps/web/project.inlang/settings.json` (currently `en` and `zh`) and no other. A missing locale is
   a build failure, not a fallback.
-- An entry needs `packages`, `remotes`, or both. Every remote `url` must be an absolute `https` URL
+- An entry needs `packages`, `remotes`, or a customer endpoint recipe in `setup.endpoint`. Every remote `url` must be an absolute `https` URL
   with no credentials and no fragment; the generator refuses plain HTTP and every loopback host.
   Remote `type` is `streamable-http` or `sse`; only the first `streamable-http` remote makes the
   entry installable and supplies the flat connection fields.
@@ -156,6 +158,20 @@ The entry is validated against `packages/mcp-presets/schema/mcp-catalog-entry.sc
 - `repository`, `license`, and `maintainers` are optional: closed-source hosted vendors have none.
 - A card's `summary` is presentation only: the create contract has no description field, so the
   definition starts without one until a probe succeeds.
+
+### Customer endpoint recipes and key formatting
+
+`setup` contains a localized `help` and HTTPS `documentation_url`. An `endpoint` recipe declares
+`placeholder`, anchored `path_pattern`, optional `host_suffix`, and allowed `query_parameters`.
+It must not coexist with a fixed Streamable HTTP remote. Setup headers have `name`, localized
+`label`, `required`, and optionally `format: integer`; these fields are public instance/environment
+identifiers, never secrets. The separate masked input collects the key. Resolved values pass the
+existing shared create contract and outbound policy, without a new Server API or database change.
+
+`setup.key_prefix` is for a documented credential format, such as PagerDuty's `token=`. Formatting
+is idempotent and applies only when the effective auth header and scheme still match the preset.
+Fixed bearer services declare their actual defaults in `auth.bearer`; generation preserves empty
+schemes and static extra headers, including on the first installation.
 
 ## Step 4 — Add the icon
 
@@ -198,7 +214,7 @@ flow.
 - a declared category that no entry references;
 - a duplicate entry or category id;
 - an entry that does not validate against the entry schema (unknown key, bad status, non-HTTPS
-  remote, an unknown registry type, or neither `packages` nor `remotes`);
+  remote, an unknown registry type, or none of `packages`, `remotes`, and an endpoint setup recipe);
 - a package whose named argument has no name, whose secret carries a value or default, whose
   credential-looking variable is not secret, or whose value looks like a credential;
 - an `auth.default_kind` outside `auth.methods`, or an `oauth` method without an `auth.oauth` block;

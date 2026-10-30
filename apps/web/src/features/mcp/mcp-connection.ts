@@ -1,3 +1,4 @@
+import { formatMcpCatalogKey } from "@opentag/mcp-presets";
 import {
   MCP_AUTH_REJECTION_SUMMARY,
   MCP_ERROR_CODES,
@@ -159,7 +160,15 @@ function authorizationInput(attempt: ConnectionAttempt, token?: string) {
   return {
     mcpServerId: attempt.binding.mcpServerId,
     kind: attempt.kind === "bearer" ? ("bearer" as const) : ("none" as const),
-    ...(attempt.kind === "bearer" ? { bearerKey: token } : {}),
+    ...(attempt.kind === "bearer"
+      ? {
+          bearerKey: formatMcpCatalogKey(
+            connectionPreset(attempt.binding.effective.url),
+            token ?? "",
+            attempt.binding.effective,
+          ),
+        }
+      : {}),
   };
 }
 

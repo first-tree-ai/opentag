@@ -1,0 +1,639 @@
+{
+  "review_date": "2026-10-30",
+  "requests": "unauthenticated discovery reads only; no registration, consent, token exchange or business tools",
+  "runtime_tested": false,
+  "results": [
+    {
+      "product": "Miro",
+      "endpoint": "https://mcp.miro.com/",
+      "requests": [
+        {
+          "url": "https://mcp.miro.com/.well-known/oauth-protected-resource",
+          "status": 200
+        },
+        {
+          "url": "https://mcp.miro.com/.well-known/oauth-authorization-server",
+          "status": 200
+        }
+      ],
+      "endpoint_status": 401,
+      "prm_url": "https://mcp.miro.com/.well-known/oauth-protected-resource",
+      "resource": "https://mcp.miro.com/",
+      "authorization_servers": ["https://mcp.miro.com/"],
+      "metadata_url": "https://mcp.miro.com/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.miro.com/",
+      "issuer_exact": true,
+      "registration": "https://mcp.miro.com/register",
+      "methods": ["client_secret_post", "client_secret_basic"],
+      "cimd": false
+    },
+    {
+      "product": "Todoist",
+      "endpoint": "https://ai.todoist.net/mcp",
+      "requests": [
+        {
+          "url": "https://ai.todoist.net/.well-known/oauth-protected-resource/mcp",
+          "status": 200
+        },
+        {
+          "url": "https://todoist.com/.well-known/oauth-authorization-server",
+          "status": 200
+        }
+      ],
+      "endpoint_status": 401,
+      "prm_url": "https://ai.todoist.net/.well-known/oauth-protected-resource/mcp",
+      "resource": "https://ai.todoist.net/mcp",
+      "authorization_servers": ["https://todoist.com"],
+      "metadata_url": "https://todoist.com/.well-known/oauth-authorization-server",
+      "issuer": "https://todoist.com",
+      "issuer_exact": true,
+      "registration": "https://todoist.com/oauth/register",
+      "methods": ["client_secret_basic", "client_secret_post", "none"],
+      "cimd": true
+    },
+    {
+      "product": "Webflow",
+      "endpoint": "https://mcp.webflow.com/mcp",
+      "requests": [
+        {
+          "url": "https://mcp.webflow.com/.well-known/oauth-protected-resource/mcp",
+          "status": 200
+        },
+        {
+          "url": "https://mcp.webflow.com/.well-known/oauth-authorization-server",
+          "status": 200
+        }
+      ],
+      "endpoint_status": 401,
+      "prm_url": "https://mcp.webflow.com/.well-known/oauth-protected-resource/mcp",
+      "resource": "https://mcp.webflow.com/mcp",
+      "authorization_servers": ["https://mcp.webflow.com"],
+      "metadata_url": "https://mcp.webflow.com/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.webflow.com",
+      "issuer_exact": true,
+      "registration": "https://mcp.webflow.com/oauth/register",
+      "methods": ["client_secret_basic", "client_secret_post", "none"],
+      "cimd": false
+    },
+    {
+      "product": "WordPress.com",
+      "endpoint": "https://public-api.wordpress.com/wpcom/v2/mcp/v1",
+      "requests": [
+        {
+          "url": "https://public-api.wordpress.com/.well-known/oauth-protected-resource?resource=wpcom/v2/mcp/v1",
+          "status": 200
+        },
+        {
+          "url": "https://public-api.wordpress.com/.well-known/oauth-authorization-server",
+          "status": 200
+        }
+      ],
+      "endpoint_status": 401,
+      "prm_url": "https://public-api.wordpress.com/.well-known/oauth-protected-resource?resource=wpcom/v2/mcp/v1",
+      "resource": "https://public-api.wordpress.com/wpcom/v2/mcp/v1",
+      "authorization_servers": ["https://public-api.wordpress.com"],
+      "metadata_url": "https://public-api.wordpress.com/.well-known/oauth-authorization-server",
+      "issuer": "https://public-api.wordpress.com",
+      "issuer_exact": true,
+      "registration": "https://public-api.wordpress.com/oauth2-1/register",
+      "methods": ["client_secret_basic", "client_secret_post", "none"],
+      "cimd": false
+    },
+    {
+      "product": "Contentful",
+      "endpoint": "https://mcp.contentful.com/mcp",
+      "requests": [
+        {
+          "url": "https://mcp.contentful.com/.well-known/oauth-protected-resource/mcp",
+          "status": 200
+        },
+        {
+          "url": "https://mcp.contentful.com/.well-known/oauth-authorization-server",
+          "status": 200
+        }
+      ],
+      "endpoint_status": 401,
+      "prm_url": "https://mcp.contentful.com/.well-known/oauth-protected-resource/mcp",
+      "resource": "https://mcp.contentful.com/mcp",
+      "authorization_servers": ["https://mcp.contentful.com"],
+      "metadata_url": "https://mcp.contentful.com/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.contentful.com",
+      "issuer_exact": true,
+      "registration": "https://mcp.contentful.com/register",
+      "methods": ["client_secret_basic", "client_secret_post", "none"],
+      "cimd": false
+    },
+    {
+      "product": "Sanity",
+      "endpoint": "https://mcp.sanity.io",
+      "requests": [
+        {
+          "url": "https://mcp.sanity.io/.well-known/oauth-protected-resource",
+          "status": 200
+        },
+        {
+          "url": "https://mcp.sanity.io/.well-known/oauth-authorization-server",
+          "status": 200
+        }
+      ],
+      "endpoint_status": 401,
+      "prm_url": "https://mcp.sanity.io/.well-known/oauth-protected-resource",
+      "resource": "https://mcp.sanity.io",
+      "authorization_servers": ["https://mcp.sanity.io"],
+      "metadata_url": "https://mcp.sanity.io/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.sanity.io",
+      "issuer_exact": true,
+      "registration": "https://mcp.sanity.io/register",
+      "methods": ["client_secret_basic", "client_secret_post", "none"],
+      "cimd": false
+    },
+    {
+      "product": "Klaviyo",
+      "endpoint": "https://mcp.klaviyo.com/mcp",
+      "requests": [
+        {
+          "url": "https://mcp.klaviyo.com/.well-known/oauth-protected-resource/mcp",
+          "status": 200
+        },
+        {
+          "url": "https://mcp.klaviyo.com/.well-known/oauth-authorization-server",
+          "status": 200
+        }
+      ],
+      "endpoint_status": 401,
+      "prm_url": "https://mcp.klaviyo.com/.well-known/oauth-protected-resource/mcp",
+      "resource": "https://mcp.klaviyo.com/mcp",
+      "authorization_servers": ["https://mcp.klaviyo.com"],
+      "metadata_url": "https://mcp.klaviyo.com/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.klaviyo.com",
+      "issuer_exact": true,
+      "registration": "https://mcp.klaviyo.com/register",
+      "methods": ["client_secret_basic", "client_secret_post", "none"],
+      "cimd": true
+    },
+    {
+      "product": "Clay",
+      "endpoint": "https://api.clay.com/v3/mcp",
+      "requests": [
+        {
+          "url": "https://api.clay.com/.well-known/oauth-protected-resource/v3/mcp",
+          "status": 200
+        },
+        {
+          "url": "https://api.clay.com/.well-known/oauth-authorization-server",
+          "status": 200
+        }
+      ],
+      "endpoint_status": 401,
+      "prm_url": "https://api.clay.com/.well-known/oauth-protected-resource/v3/mcp",
+      "resource": "https://api.clay.com/v3/mcp",
+      "authorization_servers": ["https://api.clay.com"],
+      "metadata_url": "https://api.clay.com/.well-known/oauth-authorization-server",
+      "issuer": "https://api.clay.com",
+      "issuer_exact": true,
+      "registration": "https://api.clay.com/oauth/register",
+      "methods": ["client_secret_post", "client_secret_basic", "none"],
+      "cimd": false
+    },
+    {
+      "product": "Ashby",
+      "endpoint": "https://mcp.ashbyhq.com/mcp/v1",
+      "requests": [
+        {
+          "url": "https://mcp.ashbyhq.com/.well-known/oauth-protected-resource",
+          "status": 200
+        },
+        {
+          "url": "https://mcp-auth.ashbyhq.com/.well-known/oauth-authorization-server/oidc",
+          "status": 200
+        }
+      ],
+      "endpoint_status": 401,
+      "prm_url": "https://mcp.ashbyhq.com/.well-known/oauth-protected-resource",
+      "resource": "https://mcp.ashbyhq.com/mcp/v1",
+      "authorization_servers": ["https://mcp-auth.ashbyhq.com/oidc"],
+      "metadata_url": "https://mcp-auth.ashbyhq.com/.well-known/oauth-authorization-server/oidc",
+      "issuer": "https://mcp-auth.ashbyhq.com/oidc",
+      "issuer_exact": true,
+      "registration": "https://mcp-auth.ashbyhq.com/oidc/reg",
+      "methods": ["client_secret_basic", "client_secret_jwt", "client_secret_post", "private_key_jwt", "none"],
+      "cimd": false
+    },
+    {
+      "product": "Airwallex AgentOS",
+      "endpoint": "https://mcp.airwallex.com/mcp",
+      "requests": [
+        {
+          "url": "https://mcp.airwallex.com/.well-known/oauth-protected-resource/mcp/",
+          "status": 200
+        },
+        {
+          "url": "https://mcp.airwallex.com/.well-known/oauth-authorization-server/mcp",
+          "status": 200
+        }
+      ],
+      "endpoint_status": 401,
+      "prm_url": "https://mcp.airwallex.com/.well-known/oauth-protected-resource/mcp/",
+      "resource": "https://mcp.airwallex.com/mcp",
+      "authorization_servers": ["https://mcp.airwallex.com/mcp"],
+      "metadata_url": "https://mcp.airwallex.com/.well-known/oauth-authorization-server/mcp",
+      "issuer": "https://mcp.airwallex.com/mcp",
+      "issuer_exact": true,
+      "registration": "https://mcp.airwallex.com/mcp/register",
+      "methods": ["client_secret_post", "client_secret_basic", "private_key_jwt", "none"],
+      "cimd": true
+    },
+    {
+      "product": "Mercury",
+      "endpoint": "https://mcp.mercury.com/mcp",
+      "requests": [
+        {
+          "url": "https://mcp.mercury.com/.well-known/oauth-protected-resource/mcp",
+          "status": 404
+        },
+        {
+          "url": "https://mcp.mercury.com/.well-known/oauth-protected-resource",
+          "status": 200
+        },
+        {
+          "url": "https://mcp.mercury.com/.well-known/oauth-authorization-server",
+          "status": 200
+        }
+      ],
+      "endpoint_status": 401,
+      "prm_url": "https://mcp.mercury.com/.well-known/oauth-protected-resource",
+      "resource": "https://mcp.mercury.com/mcp",
+      "authorization_servers": ["https://mcp.mercury.com/"],
+      "metadata_url": "https://mcp.mercury.com/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.mercury.com/",
+      "issuer_exact": true,
+      "registration": "https://mcp.mercury.com/register",
+      "methods": ["client_secret_basic", "none"],
+      "cimd": false
+    },
+    {
+      "product": "HeyGen",
+      "endpoint": "https://mcp.heygen.com/mcp/v1/",
+      "requests": [
+        {
+          "url": "https://mcp.heygen.com/.well-known/oauth-protected-resource/mcp/v1",
+          "status": 200
+        },
+        {
+          "url": "https://api2.heygen.com/.well-known/oauth-authorization-server",
+          "status": 200
+        }
+      ],
+      "endpoint_status": 401,
+      "prm_url": "https://mcp.heygen.com/.well-known/oauth-protected-resource/mcp/v1",
+      "resource": "https://mcp.heygen.com/mcp/v1",
+      "authorization_servers": ["https://api2.heygen.com"],
+      "metadata_url": "https://api2.heygen.com/.well-known/oauth-authorization-server",
+      "issuer": "https://api2.heygen.com",
+      "issuer_exact": true,
+      "registration": "https://api2.heygen.com/v1/oauth/register",
+      "methods": ["client_secret_basic", "client_secret_post", "none"],
+      "cimd": true
+    },
+    {
+      "product": "fal",
+      "endpoint": "https://mcp.fal.ai/mcp-relay",
+      "requests": [
+        {
+          "url": "https://mcp.fal.ai/.well-known/oauth-protected-resource/mcp-relay",
+          "status": 200
+        },
+        {
+          "url": "https://authkit.fal.ai/.well-known/oauth-authorization-server",
+          "status": 200
+        }
+      ],
+      "endpoint_status": 401,
+      "prm_url": "https://mcp.fal.ai/.well-known/oauth-protected-resource/mcp-relay",
+      "resource": "https://mcp.fal.ai/mcp-relay",
+      "authorization_servers": ["https://authkit.fal.ai"],
+      "metadata_url": "https://authkit.fal.ai/.well-known/oauth-authorization-server",
+      "issuer": "https://authkit.fal.ai",
+      "issuer_exact": true,
+      "registration": "https://authkit.fal.ai/oauth2/register",
+      "methods": ["none", "client_secret_post", "client_secret_basic"],
+      "cimd": true
+    },
+    {
+      "product": "Ideogram",
+      "endpoint": "https://mcp.ideogram.ai/mcp",
+      "requests": [
+        {
+          "url": "https://mcp.ideogram.ai/.well-known/oauth-protected-resource/mcp",
+          "status": 200
+        },
+        {
+          "url": "https://mcp.ideogram.ai/.well-known/oauth-authorization-server",
+          "status": 200
+        }
+      ],
+      "endpoint_status": 401,
+      "prm_url": "https://mcp.ideogram.ai/.well-known/oauth-protected-resource/mcp",
+      "resource": "https://mcp.ideogram.ai/mcp",
+      "authorization_servers": ["https://mcp.ideogram.ai/"],
+      "metadata_url": "https://mcp.ideogram.ai/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.ideogram.ai/",
+      "issuer_exact": true,
+      "registration": "https://mcp.ideogram.ai/register",
+      "methods": ["client_secret_post", "client_secret_basic"],
+      "cimd": false
+    },
+    {
+      "product": "VEED",
+      "endpoint": "https://www.veed.io/api/v1/mcp",
+      "requests": [
+        {
+          "url": "https://www.veed.io/.well-known/oauth-protected-resource/api/v1/mcp",
+          "status": 200
+        },
+        {
+          "url": "https://www.veed.io/.well-known/oauth-authorization-server",
+          "status": 200
+        }
+      ],
+      "endpoint_status": 401,
+      "prm_url": "https://www.veed.io/.well-known/oauth-protected-resource/api/v1/mcp",
+      "resource": "https://www.veed.io/api/v1/mcp",
+      "authorization_servers": ["https://www.veed.io"],
+      "metadata_url": "https://www.veed.io/.well-known/oauth-authorization-server",
+      "issuer": "https://www.veed.io",
+      "issuer_exact": true,
+      "registration": "https://www.veed.io/api/v1/oauth2/reg",
+      "methods": ["none", "client_secret_basic", "client_secret_post"],
+      "cimd": false
+    },
+    {
+      "product": "GitLab",
+      "endpoint": "https://gitlab.com/api/v4/mcp",
+      "requests": [
+        {
+          "url": "https://gitlab.com/.well-known/oauth-protected-resource/api/v4/mcp",
+          "status": 200
+        },
+        {
+          "url": "https://gitlab.com/.well-known/oauth-authorization-server",
+          "status": 200
+        }
+      ],
+      "endpoint_status": 401,
+      "prm_url": "https://gitlab.com/.well-known/oauth-protected-resource/api/v4/mcp",
+      "resource": "https://gitlab.com/api/v4/mcp",
+      "authorization_servers": ["https://gitlab.com"],
+      "metadata_url": "https://gitlab.com/.well-known/oauth-authorization-server",
+      "issuer": "https://gitlab.com",
+      "issuer_exact": true,
+      "registration": "https://gitlab.com/oauth/register",
+      "methods": ["client_secret_basic", "client_secret_post"],
+      "cimd": false
+    },
+    {
+      "product": "Netlify",
+      "endpoint": "https://netlify-mcp.netlify.app/mcp",
+      "requests": [
+        {
+          "url": "https://netlify-mcp.netlify.app/.well-known/oauth-protected-resource/mcp",
+          "status": 200
+        },
+        {
+          "url": "https://netlify-mcp.netlify.app/.well-known/oauth-authorization-server",
+          "status": 200
+        }
+      ],
+      "endpoint_status": 401,
+      "prm_url": "https://netlify-mcp.netlify.app/.well-known/oauth-protected-resource/mcp",
+      "resource": "https://netlify-mcp.netlify.app/mcp",
+      "authorization_servers": ["https://netlify-mcp.netlify.app/"],
+      "metadata_url": "https://netlify-mcp.netlify.app/.well-known/oauth-authorization-server",
+      "issuer": "https://netlify-mcp.netlify.app/",
+      "issuer_exact": true,
+      "registration": "https://netlify-mcp.netlify.app/oauth-server/reg",
+      "methods": ["none", "client_secret_post", "client_secret_basic"],
+      "cimd": false
+    },
+    {
+      "product": "Grafana Cloud",
+      "endpoint": "https://mcp.grafana.com/mcp",
+      "requests": [
+        {
+          "url": "https://mcp.grafana.com/.well-known/oauth-protected-resource/mcp",
+          "status": 200
+        },
+        {
+          "url": "https://mcp.grafana.com/.well-known/oauth-authorization-server/mcp",
+          "status": 200
+        }
+      ],
+      "endpoint_status": 401,
+      "prm_url": "https://mcp.grafana.com/.well-known/oauth-protected-resource/mcp",
+      "resource": "https://mcp.grafana.com/mcp",
+      "authorization_servers": ["https://mcp.grafana.com/mcp"],
+      "metadata_url": "https://mcp.grafana.com/.well-known/oauth-authorization-server/mcp",
+      "issuer": "https://mcp.grafana.com/mcp",
+      "issuer_exact": true,
+      "registration": "https://mcp.grafana.com/mcp/oauth/register",
+      "methods": ["none", "client_secret_basic", "client_secret_post"],
+      "cimd": true
+    },
+    {
+      "product": "New Relic",
+      "endpoint": "https://mcp.newrelic.com/mcp/",
+      "requests": [
+        {
+          "url": "https://mcp.newrelic.com/.well-known/oauth-protected-resource",
+          "status": 200
+        },
+        {
+          "url": "https://oauth2.service.newrelic.com/.well-known/oauth-authorization-server",
+          "status": 200
+        }
+      ],
+      "endpoint_status": 401,
+      "prm_url": "https://mcp.newrelic.com/.well-known/oauth-protected-resource",
+      "resource": "https://mcp.newrelic.com/mcp/",
+      "authorization_servers": ["https://oauth2.service.newrelic.com"],
+      "metadata_url": "https://oauth2.service.newrelic.com/.well-known/oauth-authorization-server",
+      "issuer": "https://oauth2.service.newrelic.com",
+      "issuer_exact": true,
+      "registration": "https://dcr.service.newrelic.com/register",
+      "methods": ["client_secret_post", "client_secret_basic", "private_key_jwt", "none"],
+      "cimd": false
+    },
+    {
+      "product": "Granola",
+      "endpoint": "https://mcp.granola.ai/mcp",
+      "requests": [
+        {
+          "url": "https://mcp.granola.ai/.well-known/oauth-protected-resource",
+          "status": 200
+        },
+        {
+          "url": "https://mcp-auth.granola.ai/.well-known/oauth-authorization-server",
+          "status": 200
+        }
+      ],
+      "endpoint_status": 401,
+      "prm_url": "https://mcp.granola.ai/.well-known/oauth-protected-resource",
+      "resource": "https://mcp.granola.ai/mcp",
+      "authorization_servers": ["https://mcp-auth.granola.ai"],
+      "metadata_url": "https://mcp-auth.granola.ai/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp-auth.granola.ai",
+      "issuer_exact": true,
+      "registration": "https://mcp-auth.granola.ai/oauth2/register",
+      "methods": ["none", "client_secret_post", "client_secret_basic", "private_key_jwt"],
+      "cimd": true
+    },
+    {
+      "product": "Higgsfield",
+      "endpoint": "https://mcp.higgsfield.ai/mcp",
+      "requests": [
+        {
+          "url": "https://mcp.higgsfield.ai/.well-known/oauth-protected-resource/mcp",
+          "status": 200
+        },
+        {
+          "url": "https://clerk.higgsfield.ai/.well-known/oauth-authorization-server",
+          "status": 200
+        }
+      ],
+      "endpoint_status": 401,
+      "prm_url": "https://mcp.higgsfield.ai/.well-known/oauth-protected-resource/mcp",
+      "resource": "https://mcp.higgsfield.ai/mcp",
+      "authorization_servers": ["https://clerk.higgsfield.ai"],
+      "metadata_url": "https://clerk.higgsfield.ai/.well-known/oauth-authorization-server",
+      "issuer": "https://clerk.higgsfield.ai",
+      "issuer_exact": true,
+      "registration": "https://clerk.higgsfield.ai/oauth/register",
+      "methods": ["client_secret_basic", "none", "client_secret_post"],
+      "cimd": true
+    },
+    {
+      "product": "Attio",
+      "endpoint": "https://mcp.attio.com/mcp",
+      "requests": [
+        {
+          "url": "https://mcp.attio.com/.well-known/oauth-protected-resource",
+          "status": 200
+        },
+        {
+          "url": "https://app.attio.com/.well-known/oauth-authorization-server",
+          "status": 200
+        }
+      ],
+      "endpoint_status": 401,
+      "prm_url": "https://mcp.attio.com/.well-known/oauth-protected-resource",
+      "resource": "https://mcp.attio.com/mcp",
+      "authorization_servers": ["https://app.attio.com"],
+      "metadata_url": "https://app.attio.com/.well-known/oauth-authorization-server",
+      "issuer": "https://app.attio.com",
+      "issuer_exact": true,
+      "registration": "https://app.attio.com/oauth/register",
+      "methods": ["none", "client_secret_post"],
+      "cimd": false
+    },
+    {
+      "product": "Pipedrive",
+      "endpoint": "https://mcp.pipedrive.ai/mcp",
+      "requests": [
+        {
+          "url": "https://mcp.pipedrive.ai/mcp/.well-known/oauth-protected-resource",
+          "status": 200
+        },
+        {
+          "url": "https://oauth.pipedrive.com/.well-known/oauth-authorization-server",
+          "status": 200
+        }
+      ],
+      "endpoint_status": 401,
+      "prm_url": "https://mcp.pipedrive.ai/mcp/.well-known/oauth-protected-resource",
+      "resource": "https://mcp.pipedrive.ai/mcp",
+      "authorization_servers": ["https://oauth.pipedrive.com"],
+      "metadata_url": "https://oauth.pipedrive.com/.well-known/oauth-authorization-server",
+      "issuer": "https://oauth.pipedrive.com",
+      "issuer_exact": true,
+      "registration": "https://oauth.pipedrive.com/oauth/register",
+      "methods": ["client_secret_basic", "client_secret_post"],
+      "cimd": false
+    },
+    {
+      "product": "Fellow",
+      "endpoint": "https://fellow.app/mcp",
+      "requests": [
+        {
+          "url": "https://fellow.app/.well-known/oauth-protected-resource/mcp",
+          "status": 404
+        },
+        {
+          "url": "https://fellow.app/.well-known/oauth-protected-resource",
+          "status": 200
+        },
+        {
+          "url": "https://fellow.app/.well-known/oauth-authorization-server",
+          "status": 200
+        }
+      ],
+      "endpoint_status": 401,
+      "prm_url": "https://fellow.app/.well-known/oauth-protected-resource",
+      "resource": "https://fellow.app/mcp",
+      "authorization_servers": ["https://fellow.app"],
+      "metadata_url": "https://fellow.app/.well-known/oauth-authorization-server",
+      "issuer": "https://fellow.app",
+      "issuer_exact": true,
+      "registration": "https://fellow.app/mcp/register",
+      "methods": ["none", "client_secret_post", "client_secret_basic"],
+      "cimd": false
+    },
+    {
+      "product": "Dust",
+      "endpoint": "https://dust.tt/mcp",
+      "requests": [
+        {
+          "url": "https://dust.tt/.well-known/oauth-protected-resource/mcp",
+          "status": 200
+        },
+        {
+          "url": "https://signin.dust.tt/.well-known/oauth-authorization-server",
+          "status": 200
+        }
+      ],
+      "endpoint_status": 401,
+      "prm_url": "https://dust.tt/.well-known/oauth-protected-resource/mcp",
+      "resource": "https://dust.tt/mcp",
+      "authorization_servers": ["https://signin.dust.tt"],
+      "metadata_url": "https://signin.dust.tt/.well-known/oauth-authorization-server",
+      "issuer": "https://signin.dust.tt",
+      "issuer_exact": true,
+      "registration": "https://signin.dust.tt/oauth2/register",
+      "methods": ["none", "client_secret_post", "client_secret_basic"],
+      "cimd": true
+    },
+    {
+      "product": "SocialPilot",
+      "endpoint": "https://mcp.socialpilot.co/mcp",
+      "requests": [
+        {
+          "url": "https://mcp.socialpilot.co/.well-known/oauth-protected-resource",
+          "status": 200
+        },
+        {
+          "url": "https://mcp.socialpilot.co/.well-known/oauth-authorization-server",
+          "status": 200
+        }
+      ],
+      "endpoint_status": 401,
+      "prm_url": "https://mcp.socialpilot.co/.well-known/oauth-protected-resource",
+      "resource": "https://mcp.socialpilot.co/mcp",
+      "authorization_servers": ["https://mcp.socialpilot.co"],
+      "metadata_url": "https://mcp.socialpilot.co/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.socialpilot.co",
+      "issuer_exact": true,
+      "registration": "https://mcp.socialpilot.co/oauth2/register",
+      "methods": ["client_secret_basic", "client_secret_post"],
+      "cimd": false
+    }
+  ]
+}

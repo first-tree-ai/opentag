@@ -246,6 +246,45 @@ function validateAuth(row, at, violations) {
   }
 }
 
+/** Setup guidance is frontend-only; unresolved endpoints never become connection defaults. */
+function validateSetup(row, at, violations) {
+  const setup = row.setup;
+  if (!setup) return;
+  for (const [index, field] of (setup.headers ?? []).entries()) {
+    validateCreatePayload(
+      {
+        name: row.id.slice(4),
+        url: "https://setup.example.com/mcp",
+        defaultAuthKind: "bearer",
+        extraHeaders: { [field.name]: "1" },
+      },
+      `${at}.setup.headers[${index}]`,
+      violations,
+    );
+  }
+  if (setup.endpoint) {
+    try {
+      new RegExp(setup.endpoint.path_pattern);
+    } catch {
+      violations.push(`${at}.setup.endpoint.path_pattern: must be a valid regular expression`);
+    }
+    if ((row.remotes ?? []).some((remote) => remote.type === "streamable-http")) {
+      violations.push(`${at}.setup.endpoint: may not replace a fixed streamable-http endpoint`);
+    }
+    validateCreatePayload(
+      {
+        name: row.id.slice(4),
+        url: "https://setup.example.com/mcp",
+        defaultAuthKind: row.auth.default_kind,
+        authHeader: setup.auth_header,
+        authScheme: setup.auth_scheme,
+      },
+      `${at}.setup`,
+      violations,
+    );
+  }
+}
+
 /** A catalog key alternative uses the same URL and header contract as a custom connection. */
 function keyAuthFrom(bearer) {
   if (!bearer) return undefined;
@@ -403,6 +442,7 @@ function validateCatalogMembership(row, at, categoryIds, violations) {
 /** A schema-valid entry, read into the shape the generated module carries. */
 function catalogEntryFrom(row, remote, headers) {
   const slug = row.id.slice("mcp/".length);
+  const keyDefaults = row.auth.default_kind === "bearer" ? keyAuthFrom(row.auth.bearer) : undefined;
   return {
     id: slug,
     registryId: row.id,
@@ -412,12 +452,38 @@ function catalogEntryFrom(row, remote, headers) {
     whenToUse: row.when_to_use,
     // Only an entry with a streamable-http remote is installable; the flat connection fields follow it.
     installable: remote !== undefined,
-    ...(remote === undefined ? {} : { url: remote.url, defaultAuthKind: row.auth.default_kind, ...headers }),
+    ...(remote === undefined
+      ? {}
+      : { url: remote.url, defaultAuthKind: row.auth.default_kind, ...headers, ...keyDefaults }),
     oauthScopes: remote === undefined ? undefined : row.auth.oauth?.scopes,
     keyAuth: remote === undefined ? undefined : keyAuthFrom(row.auth.bearer),
     remotes: row.remotes?.map((entry) => ({ type: entry.type, url: entry.url })),
     packages: packagesFrom(row.packages),
     prerequisites: row.prerequisites,
+    setup: row.setup
+      ? {
+          documentationUrl: row.setup.documentation_url,
+          help: row.setup.help,
+          endpoint: row.setup.endpoint
+            ? {
+                placeholder: row.setup.endpoint.placeholder,
+                pathPattern: row.setup.endpoint.path_pattern,
+                hostSuffix: row.setup.endpoint.host_suffix,
+                queryParameters: row.setup.endpoint.query_parameters,
+              }
+            : undefined,
+          authHeader: row.setup.auth_header,
+          authScheme: row.setup.auth_scheme,
+          keyPrefix: row.setup.key_prefix,
+          headers: row.setup.headers?.map((field) => ({
+            name: field.name,
+            label: field.label,
+            required: field.required,
+            placeholder: field.placeholder,
+            format: field.format,
+          })),
+        }
+      : undefined,
     platforms: row.platforms,
     category: row.catalog.category,
     website: row.homepage,
@@ -453,6 +519,7 @@ function catalogEntryFrom(row, remote, headers) {
 /** Validate one schema-valid row beyond the schema and derive its entry, or undefined when withheld. */
 function deriveEntry(row, at, categoryIds, violations) {
   validateAuth(row, at, violations);
+  validateSetup(row, at, violations);
   validateRisk(row, at, violations);
   validateCatalogMembership(row, at, categoryIds, violations);
   const remotes = row.remotes ?? [];
@@ -465,6 +532,9 @@ function deriveEntry(row, at, categoryIds, violations) {
     validatePackage(pkg, `${at}.packages[${packageIndex}]`, violations);
   }
   const remoteIndex = remotes.findIndex((candidate) => candidate.type === "streamable-http");
+  if (row.auth.default_kind === "bearer" && row.auth.bearer && row.auth.bearer.url !== remotes[remoteIndex]?.url) {
+    violations.push(`${at}.auth.bearer.url: a default key endpoint must match the primary streamable-http endpoint`);
+  }
   const entry = catalogEntryFrom(row, remotes[remoteIndex], headersByRemote[remoteIndex]);
   if (entry.installable) validateCreatePayload(entry, at, violations);
   return entry;
@@ -610,6 +680,22 @@ function emitModule(categories, entries, locales, icons, entrySchema) {
     "  url: string;",
     "};",
     "",
+    "export type McpCatalogSetup = {",
+    "  documentationUrl: string;",
+    "  help: McpCatalogLocalizedText;",
+    "  endpoint?: { placeholder: string; pathPattern: string; hostSuffix?: string; queryParameters?: string[] };",
+    "  authHeader?: string;",
+    "  authScheme?: string;",
+    "  keyPrefix?: string;",
+    "  headers?: {",
+    "    name: string;",
+    "    label: McpCatalogLocalizedText;",
+    "    required: boolean;",
+    "    placeholder?: string;",
+    '    format?: "integer";',
+    "  }[];",
+    "};",
+    "",
     "export type McpCatalogPackageArgument = {",
     '  type: "positional" | "named";',
     "  name?: string;",
@@ -684,6 +770,7 @@ function emitModule(categories, entries, locales, icons, entrySchema) {
     "  remotes?: McpCatalogRemote[];",
     "  packages?: McpCatalogPackage[];",
     "  prerequisites?: string[];",
+    "  setup?: McpCatalogSetup;",
     "  platforms?: McpCatalogPlatform[];",
     "  repository?: string;",
     "  license?: string;",

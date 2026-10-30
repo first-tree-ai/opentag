@@ -1,4 +1,9 @@
-import type { McpCatalogEntry, McpCatalogLocalizedText, McpInstallableCatalogEntry } from "@opentag/mcp-presets";
+import {
+  type McpCatalogEntry,
+  type McpCatalogLocalizedText,
+  type McpInstallableCatalogEntry,
+  matchesMcpCatalogEndpoint,
+} from "@opentag/mcp-presets";
 import {
   MCP_CATALOG_DEPLOYMENT_ENDPOINTS,
   type MCPAgentServer,
@@ -63,9 +68,22 @@ export function findCatalogEntryByUrl(
 ): McpInstallableCatalogEntry | undefined {
   const target = catalogEndpoint(value);
   if (!target) return undefined;
-  return installableEntries(entries).find((entry) =>
+  const fixed = installableEntries(entries).find((entry) =>
     catalogEntryUrls(entry).some((url) => catalogEndpoint(url) === target),
   );
+  if (fixed) return fixed;
+  for (const entry of entries) {
+    if (entry.setup?.endpoint && matchesMcpCatalogEndpoint(entry, value))
+      return {
+        ...entry,
+        installable: true,
+        url: value,
+        defaultAuthKind: entry.auth.defaultKind,
+        authHeader: entry.setup?.authHeader,
+        authScheme: entry.setup?.authScheme,
+      };
+  }
+  return undefined;
 }
 
 /**
@@ -103,16 +121,12 @@ function catalogEndpoint(value: string): string | undefined {
  * Whether an entry matches the catalog search: its name, URL, and the active locale's title,
  * description, and when-to-use text, plus its keywords, aliases, tags, and capabilities.
  */
-export function matchesCatalogEntry(
-  entry: McpInstallableCatalogEntry,
-  query: string,
-  locale: Locale = getLocale(),
-): boolean {
+export function matchesCatalogEntry(entry: McpCatalogEntry, query: string, locale: Locale = getLocale()): boolean {
   const term = query.trim().toLowerCase();
   if (term.length === 0) return true;
   const fields = [
     entry.name,
-    entry.url,
+    entry.url ?? "",
     entry.title[locale],
     entry.description[locale],
     entry.whenToUse[locale],
@@ -125,7 +139,7 @@ export function matchesCatalogEntry(
 }
 
 /** The entries Discover offers: `deprecated` and `archived` entries stay out of the directory. */
-export function offeredEntries(entries: readonly McpInstallableCatalogEntry[]): readonly McpInstallableCatalogEntry[] {
+export function offeredEntries(entries: readonly McpCatalogEntry[]): readonly McpCatalogEntry[] {
   return entries.filter((entry) => entry.status === "active");
 }
 
@@ -139,10 +153,7 @@ export function installableEntries(entries: readonly McpCatalogEntry[]): readonl
 }
 
 /** The entries of one category, in the generator's order. */
-export function entriesInCategory(
-  entries: readonly McpInstallableCatalogEntry[],
-  categoryId: string,
-): McpInstallableCatalogEntry[] {
+export function entriesInCategory(entries: readonly McpCatalogEntry[], categoryId: string): McpCatalogEntry[] {
   return entries.filter((entry) => entry.category === categoryId);
 }
 

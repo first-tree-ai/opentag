@@ -280,5 +280,7 @@
   "mcp_add_failed": "暂时无法添加，请重试。",
   "mcp_waiting_authorization": "等待授权完成…",
   "mcp_checking_connection": "正在检查连接…",
-  "mcp_update_credentials": "更新凭证"
+  "mcp_update_credentials": "更新凭证",
+  "mcp_setup_instructions": "查看配置说明",
+  "mcp_setup_invalid": "请填写服务商提供的 MCP 地址和必填配置。"
 }

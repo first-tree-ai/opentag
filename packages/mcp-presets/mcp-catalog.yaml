@@ -1026,3 +1026,1988 @@
     icon: zoom.png
     icon_is_official: true
   homepage: https://www.zoom.com
+
+- schema_version: 1
+  id: mcp/miro
+  kind: mcp
+  name:
+    en: Miro
+    zh: Miro
+  summary:
+    en: Plan projects on shared boards.
+    zh: 在共享白板上规划项目。
+  when_to_use:
+    en: Use when the task needs to plan projects on shared boards.
+    zh: 当任务需要在共享白板上规划项目时使用。
+  keywords:
+    - miro
+    - Visual collaboration
+  capabilities:
+    - collaborative-planning
+  status: active
+  auth:
+    methods:
+      - oauth
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: projects
+    order: 50
+    icon: miro.png
+    icon_is_official: true
+  homepage: https://miro.com
+  remotes:
+    - type: streamable-http
+      url: https://mcp.miro.com/
+- schema_version: 1
+  id: mcp/todoist
+  kind: mcp
+  name:
+    en: Todoist
+    zh: Todoist
+  summary:
+    en: Manage tasks and projects.
+    zh: 管理任务和项目。
+  when_to_use:
+    en: Use when the task needs to manage tasks and projects.
+    zh: 当任务需要管理任务和项目时使用。
+  keywords:
+    - todoist
+    - Task management
+  capabilities:
+    - manage-tasks
+  status: active
+  auth:
+    methods:
+      - oauth
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: projects
+    order: 60
+    icon: todoist.svg
+    icon_is_official: true
+  homepage: https://todoist.com
+  remotes:
+    - type: streamable-http
+      url: https://ai.todoist.net/mcp
+- schema_version: 1
+  id: mcp/fireflies
+  kind: mcp
+  name:
+    en: Fireflies
+    zh: Fireflies
+  summary:
+    en: Read meeting notes and transcripts.
+    zh: 查询会议记录和转写。
+  when_to_use:
+    en: Use when the task needs to read meeting notes and transcripts.
+    zh: 当任务需要查询会议记录和转写时使用。
+  keywords:
+    - fireflies
+    - Meeting intelligence
+  capabilities:
+    - read-meetings
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+    bearer:
+      url: https://api.fireflies.ai/mcp
+      auth_header: authorization
+      auth_scheme: Bearer
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: communication
+    order: 60
+    icon: fireflies.png
+    icon_is_official: true
+  homepage: https://fireflies.ai
+  remotes:
+    - type: streamable-http
+      url: https://api.fireflies.ai/mcp
+- schema_version: 1
+  id: mcp/intercom
+  kind: mcp
+  name:
+    en: Intercom
+    zh: Intercom
+  summary:
+    en: Find conversations and customer context.
+    zh: 查询客服对话和客户信息。
+  when_to_use:
+    en: Use when the task needs to find conversations and customer context.
+    zh: 当任务需要查询客服对话和客户信息时使用。
+  keywords:
+    - intercom
+    - Customer support
+  capabilities:
+    - customer-support
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+    bearer:
+      url: https://mcp.intercom.com/mcp
+      auth_header: authorization
+      auth_scheme: Bearer
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: sales
+    order: 20
+    icon: intercom.png
+    icon_is_official: true
+  homepage: https://www.intercom.com
+  remotes:
+    - type: streamable-http
+      url: https://mcp.intercom.com/mcp
+  prerequisites:
+    - Uses your Intercom API token; OAuth-only Fin Operator tools are not included.
+- schema_version: 1
+  id: mcp/dovetail
+  kind: mcp
+  name:
+    en: Dovetail
+    zh: Dovetail
+  summary:
+    en: Find customer research and insights.
+    zh: 查询客户研究和洞察。
+  when_to_use:
+    en: Use when the task needs to find customer research and insights.
+    zh: 当任务需要查询客户研究和洞察时使用。
+  keywords:
+    - dovetail
+    - Customer research
+  capabilities:
+    - customer-research
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+    bearer:
+      url: https://dovetail.com/api/mcp
+      auth_header: authorization
+      auth_scheme: Bearer
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: sales
+    order: 30
+    icon: dovetail.svg
+    icon_is_official: true
+  homepage: https://dovetail.com
+  remotes:
+    - type: streamable-http
+      url: https://dovetail.com/api/mcp
+- schema_version: 1
+  id: mcp/superhuman-docs
+  kind: mcp
+  name:
+    en: Superhuman Docs / Coda
+    zh: Superhuman Docs / Coda
+  summary:
+    en: Read and update documents and tables.
+    zh: 查询和编辑文档与表格。
+  when_to_use:
+    en: Use when the task needs to read and update documents and tables.
+    zh: 当任务需要查询和编辑文档与表格时使用。
+  keywords:
+    - superhuman-docs
+    - Documents and tables
+  capabilities:
+    - manage-documents
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+    bearer:
+      url: https://docs.superhuman.com/apis/mcp
+      auth_header: authorization
+      auth_scheme: Bearer
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: docs
+    order: 50
+    icon: connector.svg
+    icon_is_official: false
+  homepage: https://docs.superhuman.com
+  remotes:
+    - type: streamable-http
+      url: https://docs.superhuman.com/apis/mcp
+  aliases:
+    - coda
+    - superhuman docs
+  setup:
+    documentation_url: https://help.superhuman.com/hc/en-us/articles/46210076980365-Connect-to-the-Superhuman-Docs-MCP
+    help:
+      en: "Generate a personal token with MCP enabled in Superhuman Docs / Coda."
+      zh: "在 Superhuman Docs / Coda 生成个人 Token 时启用 MCP。"
+- schema_version: 1
+  id: mcp/webflow
+  kind: mcp
+  name:
+    en: Webflow
+    zh: Webflow
+  summary:
+    en: Manage websites and CMS content.
+    zh: 管理网站和内容。
+  when_to_use:
+    en: Use when the task needs to manage websites and CMS content.
+    zh: 当任务需要管理网站和内容时使用。
+  keywords:
+    - webflow
+    - Website and CMS
+  capabilities:
+    - manage-sites
+  status: active
+  auth:
+    methods:
+      - oauth
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: docs
+    order: 60
+    icon: webflow.png
+    icon_is_official: true
+  homepage: https://webflow.com
+  remotes:
+    - type: streamable-http
+      url: https://mcp.webflow.com/mcp
+  prerequisites:
+    - Install Webflow’s official Bridge App in the target site; Designer tools may require it to remain open.
+- schema_version: 1
+  id: mcp/wordpress-com
+  kind: mcp
+  name:
+    en: WordPress.com
+    zh: WordPress.com
+  summary:
+    en: Manage site pages and posts.
+    zh: 管理网站页面和文章。
+  when_to_use:
+    en: Use when the task needs to manage site pages and posts.
+    zh: 当任务需要管理网站页面和文章时使用。
+  keywords:
+    - wordpress-com
+    - Website and CMS
+  capabilities:
+    - manage-content
+  status: active
+  auth:
+    methods:
+      - oauth
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: docs
+    order: 70
+    icon: wordpress-com.png
+    icon_is_official: true
+  homepage: https://wordpress.com
+  remotes:
+    - type: streamable-http
+      url: https://public-api.wordpress.com/wpcom/v2/mcp/v1
+- schema_version: 1
+  id: mcp/contentful
+  kind: mcp
+  name:
+    en: Contentful
+    zh: Contentful
+  summary:
+    en: Manage content, models and assets.
+    zh: 管理内容、模型和素材。
+  when_to_use:
+    en: Use when the task needs to manage content, models and assets.
+    zh: 当任务需要管理内容、模型和素材时使用。
+  keywords:
+    - contentful
+    - Enterprise CMS
+  capabilities:
+    - manage-content
+  status: active
+  auth:
+    methods:
+      - oauth
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: docs
+    order: 80
+    icon: connector.svg
+    icon_is_official: false
+  homepage: https://www.contentful.com
+  remotes:
+    - type: streamable-http
+      url: https://mcp.contentful.com/mcp
+  prerequisites:
+    - Install Contentful’s official MCP app in the target space and environment.
+- schema_version: 1
+  id: mcp/sanity
+  kind: mcp
+  name:
+    en: Sanity
+    zh: Sanity
+  summary:
+    en: Query and manage project content.
+    zh: 查询和管理项目内容。
+  when_to_use:
+    en: Use when the task needs to query and manage project content.
+    zh: 当任务需要查询和管理项目内容时使用。
+  keywords:
+    - sanity
+    - Headless CMS
+  capabilities:
+    - manage-content
+  status: active
+  auth:
+    methods:
+      - oauth
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: docs
+    order: 90
+    icon: sanity.svg
+    icon_is_official: true
+  homepage: https://www.sanity.io
+  remotes:
+    - type: streamable-http
+      url: https://mcp.sanity.io
+- schema_version: 1
+  id: mcp/klaviyo
+  kind: mcp
+  name:
+    en: Klaviyo
+    zh: Klaviyo
+  summary:
+    en: Analyze customers and campaigns.
+    zh: 分析客户和营销活动。
+  when_to_use:
+    en: Use when the task needs to analyze customers and campaigns.
+    zh: 当任务需要分析客户和营销活动时使用。
+  keywords:
+    - klaviyo
+    - B2C marketing
+  capabilities:
+    - marketing-analytics
+  status: active
+  auth:
+    methods:
+      - oauth
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: sales
+    order: 40
+    icon: klaviyo.png
+    icon_is_official: true
+  homepage: https://www.klaviyo.com
+  remotes:
+    - type: streamable-http
+      url: https://mcp.klaviyo.com/mcp
+- schema_version: 1
+  id: mcp/brevo
+  kind: mcp
+  name:
+    en: Brevo
+    zh: Brevo
+  summary:
+    en: Manage contacts and marketing campaigns.
+    zh: 管理联系人和营销活动。
+  when_to_use:
+    en: Use when the task needs to manage contacts and marketing campaigns.
+    zh: 当任务需要管理联系人和营销活动时使用。
+  keywords:
+    - brevo
+    - Email and marketing
+  capabilities:
+    - manage-campaigns
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+    bearer:
+      url: https://mcp.brevo.com/v1/brevo/mcp
+      auth_header: authorization
+      auth_scheme: Bearer
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: sales
+    order: 50
+    icon: brevo.svg
+    icon_is_official: true
+  homepage: https://www.brevo.com
+  remotes:
+    - type: streamable-http
+      url: https://mcp.brevo.com/v1/brevo/mcp
+  prerequisites:
+    - Create an MCP-specific token; ordinary SMTP credentials do not work.
+  setup:
+    documentation_url: https://developers.brevo.com/docs/mcp-protocol
+    help:
+      en: "Use an MCP-enabled Brevo token, not SMTP credentials or an ordinary REST API key."
+      zh: "在 Brevo 生成启用 MCP 的 Token 后填写；请勿使用 SMTP 凭据或普通 REST API Key。"
+- schema_version: 1
+  id: mcp/similarweb
+  kind: mcp
+  name:
+    en: Similarweb
+    zh: Similarweb
+  summary:
+    en: Research traffic and competitors.
+    zh: 研究网站流量和竞争对手。
+  when_to_use:
+    en: Use when the task needs to research traffic and competitors.
+    zh: 当任务需要研究网站流量和竞争对手时使用。
+  keywords:
+    - similarweb
+    - Competitive intelligence
+  capabilities:
+    - traffic-research
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+    bearer:
+      url: https://mcp.similarweb.com
+      auth_header: api-key
+      auth_scheme: ""
+  risk:
+    side_effects: none
+    data_access: public
+  catalog:
+    category: sales
+    order: 60
+    icon: similarweb.png
+    icon_is_official: true
+  homepage: https://www.similarweb.com
+  remotes:
+    - type: streamable-http
+      url: https://mcp.similarweb.com
+- schema_version: 1
+  id: mcp/se-ranking
+  kind: mcp
+  name:
+    en: SE Ranking
+    zh: SE Ranking
+  summary:
+    en: Research keywords and SEO performance.
+    zh: 研究关键词和搜索表现。
+  when_to_use:
+    en: Use when the task needs to research keywords and SEO performance.
+    zh: 当任务需要研究关键词和搜索表现时使用。
+  keywords:
+    - se-ranking
+    - SEO
+  capabilities:
+    - seo-research
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+    bearer:
+      url: https://api.seranking.com/mcp
+      auth_header: x-api-key
+      auth_scheme: ""
+  risk:
+    side_effects: none
+    data_access: public
+  catalog:
+    category: sales
+    order: 70
+    icon: se-ranking.svg
+    icon_is_official: true
+  homepage: https://seranking.com
+  remotes:
+    - type: streamable-http
+      url: https://api.seranking.com/mcp
+- schema_version: 1
+  id: mcp/clay
+  kind: mcp
+  name:
+    en: Clay
+    zh: Clay
+  summary:
+    en: Find and enrich sales prospects.
+    zh: 查找并补全潜在客户资料。
+  when_to_use:
+    en: Use when the task needs to find and enrich sales prospects.
+    zh: 当任务需要查找并补全潜在客户资料时使用。
+  keywords:
+    - clay
+    - GTM enrichment
+  capabilities:
+    - enrich-leads
+  status: active
+  auth:
+    methods:
+      - oauth
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: sales
+    order: 80
+    icon: clay.png
+    icon_is_official: true
+  homepage: https://www.clay.com
+  remotes:
+    - type: streamable-http
+      url: https://api.clay.com/v3/mcp
+- schema_version: 1
+  id: mcp/ashby
+  kind: mcp
+  name:
+    en: Ashby
+    zh: Ashby
+  summary:
+    en: Query recruiting and candidate context.
+    zh: 查询招聘进展和候选人信息。
+  when_to_use:
+    en: Use when the task needs to query recruiting and candidate context.
+    zh: 当任务需要查询招聘进展和候选人信息时使用。
+  keywords:
+    - ashby
+    - Recruiting and ATS
+  capabilities:
+    - recruiting
+  status: active
+  auth:
+    methods:
+      - oauth
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: projects
+    order: 70
+    icon: ashby.png
+    icon_is_official: true
+  homepage: https://www.ashbyhq.com
+  remotes:
+    - type: streamable-http
+      url: https://mcp.ashbyhq.com/mcp/v1
+  prerequisites:
+    - An organization admin must enable MCP; Elevated Access is required.
+- schema_version: 1
+  id: mcp/airwallex
+  kind: mcp
+  name:
+    en: Airwallex AgentOS
+    zh: Airwallex AgentOS
+  summary:
+    en: Query business finance and payments.
+    zh: 查询企业财务和支付信息。
+  when_to_use:
+    en: Use when the task needs to query business finance and payments.
+    zh: 当任务需要查询企业财务和支付信息时使用。
+  keywords:
+    - airwallex
+    - Finance operations
+  capabilities:
+    - business-finance
+  status: active
+  auth:
+    methods:
+      - oauth
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: finance
+    order: 20
+    icon: connector.svg
+    icon_is_official: false
+  homepage: https://www.airwallex.com
+  remotes:
+    - type: streamable-http
+      url: https://mcp.airwallex.com/mcp
+- schema_version: 1
+  id: mcp/mercury
+  kind: mcp
+  name:
+    en: Mercury
+    zh: Mercury
+  summary:
+    en: Query business banking and transactions.
+    zh: 查询企业账户和交易。
+  when_to_use:
+    en: Use when the task needs to query business banking and transactions.
+    zh: 当任务需要查询企业账户和交易时使用。
+  keywords:
+    - mercury
+    - Business banking
+  capabilities:
+    - business-banking
+  status: active
+  auth:
+    methods:
+      - oauth
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: finance
+    order: 30
+    icon: mercury.svg
+    icon_is_official: true
+  homepage: https://mercury.com
+  remotes:
+    - type: streamable-http
+      url: https://mcp.mercury.com/mcp
+- schema_version: 1
+  id: mcp/heygen
+  kind: mcp
+  name:
+    en: HeyGen
+    zh: HeyGen
+  summary:
+    en: Create avatar videos and translations.
+    zh: 创作数字人视频和翻译。
+  when_to_use:
+    en: Use when the task needs to create avatar videos and translations.
+    zh: 当任务需要创作数字人视频和翻译时使用。
+  keywords:
+    - heygen
+    - Avatar video
+  capabilities:
+    - generate-video
+  status: active
+  auth:
+    methods:
+      - oauth
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: design
+    order: 30
+    icon: connector.svg
+    icon_is_official: false
+  homepage: https://www.heygen.com
+  remotes:
+    - type: streamable-http
+      url: https://mcp.heygen.com/mcp/v1/
+- schema_version: 1
+  id: mcp/fal
+  kind: mcp
+  name:
+    en: fal
+    zh: fal
+  summary:
+    en: Generate images, video and audio.
+    zh: 生成图片、视频和音频。
+  when_to_use:
+    en: Use when the task needs to generate images, video and audio.
+    zh: 当任务需要生成图片、视频和音频时使用。
+  keywords:
+    - fal
+    - Generative media models
+  capabilities:
+    - generate-media
+  status: active
+  auth:
+    methods:
+      - oauth
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: design
+    order: 40
+    icon: fal.png
+    icon_is_official: true
+  homepage: https://fal.ai
+  remotes:
+    - type: streamable-http
+      url: https://mcp.fal.ai/mcp-relay
+- schema_version: 1
+  id: mcp/ideogram
+  kind: mcp
+  name:
+    en: Ideogram
+    zh: Ideogram
+  summary:
+    en: Generate images with styled text.
+    zh: 生成图片和文字排版。
+  when_to_use:
+    en: Use when the task needs to generate images with styled text.
+    zh: 当任务需要生成图片和文字排版时使用。
+  keywords:
+    - ideogram
+    - Image and typography generation
+  capabilities:
+    - generate-images
+  status: active
+  auth:
+    methods:
+      - oauth
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: design
+    order: 50
+    icon: connector.svg
+    icon_is_official: false
+  homepage: https://ideogram.ai
+  remotes:
+    - type: streamable-http
+      url: https://mcp.ideogram.ai/mcp
+- schema_version: 1
+  id: mcp/veed
+  kind: mcp
+  name:
+    en: VEED
+    zh: VEED
+  summary:
+    en: Create and generate videos.
+    zh: 创作和生成视频。
+  when_to_use:
+    en: Use when the task needs to create and generate videos.
+    zh: 当任务需要创作和生成视频时使用。
+  keywords:
+    - veed
+    - Video creation
+  capabilities:
+    - generate-video
+  status: active
+  auth:
+    methods:
+      - oauth
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: design
+    order: 60
+    icon: connector.svg
+    icon_is_official: false
+  homepage: https://www.veed.io
+  remotes:
+    - type: streamable-http
+      url: https://www.veed.io/api/v1/mcp
+- schema_version: 1
+  id: mcp/hugging-face
+  kind: mcp
+  name:
+    en: Hugging Face
+    zh: Hugging Face
+  summary:
+    en: Find models, datasets and Spaces.
+    zh: 查找模型、数据集和空间。
+  when_to_use:
+    en: Use when the task needs to find models, datasets and Spaces.
+    zh: 当任务需要查找模型、数据集和空间时使用。
+  keywords:
+    - hugging-face
+    - Models and datasets
+  capabilities:
+    - model-discovery
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+    bearer:
+      url: https://huggingface.co/mcp
+      auth_header: authorization
+      auth_scheme: Bearer
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: development
+    order: 50
+    icon: connector.svg
+    icon_is_official: false
+  homepage: https://huggingface.co
+  remotes:
+    - type: streamable-http
+      url: https://huggingface.co/mcp
+- schema_version: 1
+  id: mcp/perplexity
+  kind: mcp
+  name:
+    en: Perplexity API
+    zh: Perplexity API
+  summary:
+    en: Search the web and research topics.
+    zh: 搜索网页和研究主题。
+  when_to_use:
+    en: Use when the task needs to search the web and research topics.
+    zh: 当任务需要搜索网页和研究主题时使用。
+  keywords:
+    - perplexity
+    - AI search and research
+  capabilities:
+    - web-research
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+    bearer:
+      url: https://api.perplexity.ai/mcp
+      auth_header: authorization
+      auth_scheme: Bearer
+  risk:
+    side_effects: none
+    data_access: public
+  catalog:
+    category: search
+    order: 40
+    icon: connector.svg
+    icon_is_official: false
+  homepage: https://www.perplexity.ai
+  remotes:
+    - type: streamable-http
+      url: https://api.perplexity.ai/mcp
+  prerequisites:
+    - Uses API-platform billing, separate from consumer subscriptions.
+- schema_version: 1
+  id: mcp/apify
+  kind: mcp
+  name:
+    en: Apify
+    zh: Apify
+  summary:
+    en: Run Actors and extract web data.
+    zh: 运行采集任务并提取网页数据。
+  when_to_use:
+    en: Use when the task needs to run Actors and extract web data.
+    zh: 当任务需要运行采集任务并提取网页数据时使用。
+  keywords:
+    - apify
+    - Web extraction
+  capabilities:
+    - web-extraction
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+    bearer:
+      url: https://mcp.apify.com
+      auth_header: authorization
+      auth_scheme: Bearer
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: search
+    order: 50
+    icon: apify.svg
+    icon_is_official: true
+  homepage: https://apify.com
+  remotes:
+    - type: streamable-http
+      url: https://mcp.apify.com
+- schema_version: 1
+  id: mcp/gitlab
+  kind: mcp
+  name:
+    en: GitLab
+    zh: GitLab
+  summary:
+    en: Work with repositories and merge requests.
+    zh: 管理代码仓库和合并请求。
+  when_to_use:
+    en: Use when the task needs to work with repositories and merge requests.
+    zh: 当任务需要管理代码仓库和合并请求时使用。
+  keywords:
+    - gitlab
+    - DevSecOps
+  capabilities:
+    - manage-repositories
+  status: active
+  auth:
+    methods:
+      - oauth
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: development
+    order: 60
+    icon: gitlab.png
+    icon_is_official: true
+  homepage: https://about.gitlab.com
+  remotes:
+    - type: streamable-http
+      url: https://gitlab.com/api/v4/mcp
+- schema_version: 1
+  id: mcp/postman
+  kind: mcp
+  name:
+    en: Postman
+    zh: Postman
+  summary:
+    en: Work with API collections and requests.
+    zh: 管理接口集合和请求。
+  when_to_use:
+    en: Use when the task needs to work with API collections and requests.
+    zh: 当任务需要管理接口集合和请求时使用。
+  keywords:
+    - postman
+    - API development
+  capabilities:
+    - api-development
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+    bearer:
+      url: https://mcp.postman.com/minimal
+      auth_header: authorization
+      auth_scheme: Bearer
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: development
+    order: 70
+    icon: postman.svg
+    icon_is_official: true
+  homepage: https://www.postman.com
+  remotes:
+    - type: streamable-http
+      url: https://mcp.postman.com/minimal
+- schema_version: 1
+  id: mcp/cloudflare
+  kind: mcp
+  name:
+    en: Cloudflare
+    zh: Cloudflare
+  summary:
+    en: Manage account infrastructure.
+    zh: 管理账户中的网络基础设施。
+  when_to_use:
+    en: Use when the task needs to manage account infrastructure.
+    zh: 当任务需要管理账户中的网络基础设施时使用。
+  keywords:
+    - cloudflare
+    - Internet infrastructure
+  capabilities:
+    - cloud-infrastructure
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+    bearer:
+      url: https://mcp.cloudflare.com/mcp
+      auth_header: authorization
+      auth_scheme: Bearer
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: development
+    order: 80
+    icon: cloudflare.png
+    icon_is_official: true
+  homepage: https://www.cloudflare.com
+  remotes:
+    - type: streamable-http
+      url: https://mcp.cloudflare.com/mcp
+- schema_version: 1
+  id: mcp/digitalocean
+  kind: mcp
+  name:
+    en: DigitalOcean
+    zh: DigitalOcean
+  summary:
+    en: Manage cloud resources.
+    zh: 管理云资源。
+  when_to_use:
+    en: Use when the task needs to manage cloud resources.
+    zh: 当任务需要管理云资源时使用。
+  keywords:
+    - digitalocean
+    - Developer cloud
+  capabilities:
+    - cloud-infrastructure
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+    bearer:
+      url: https://mcp.digitalocean.com/mcp
+      auth_header: authorization
+      auth_scheme: Bearer
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: development
+    order: 90
+    icon: digitalocean.svg
+    icon_is_official: true
+  homepage: https://www.digitalocean.com
+  remotes:
+    - type: streamable-http
+      url: https://mcp.digitalocean.com/mcp
+- schema_version: 1
+  id: mcp/netlify
+  kind: mcp
+  name:
+    en: Netlify
+    zh: Netlify
+  summary:
+    en: Manage sites and deployments.
+    zh: 管理站点和部署。
+  when_to_use:
+    en: Use when the task needs to manage sites and deployments.
+    zh: 当任务需要管理站点和部署时使用。
+  keywords:
+    - netlify
+    - Web application hosting
+  capabilities:
+    - site-deployment
+  status: active
+  auth:
+    methods:
+      - oauth
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: development
+    order: 100
+    icon: netlify.svg
+    icon_is_official: true
+  homepage: https://www.netlify.com
+  remotes:
+    - type: streamable-http
+      url: https://netlify-mcp.netlify.app/mcp
+- schema_version: 1
+  id: mcp/grafana-cloud
+  kind: mcp
+  name:
+    en: Grafana Cloud
+    zh: Grafana Cloud
+  summary:
+    en: Investigate metrics, logs and traces.
+    zh: 排查指标、日志和链路。
+  when_to_use:
+    en: Use when the task needs to investigate metrics, logs and traces.
+    zh: 当任务需要排查指标、日志和链路时使用。
+  keywords:
+    - grafana-cloud
+    - Observability
+  capabilities:
+    - observability
+  status: active
+  auth:
+    methods:
+      - oauth
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: development
+    order: 110
+    icon: connector.svg
+    icon_is_official: false
+  homepage: https://grafana.com
+  remotes:
+    - type: streamable-http
+      url: https://mcp.grafana.com/mcp
+- schema_version: 1
+  id: mcp/new-relic
+  kind: mcp
+  name:
+    en: New Relic
+    zh: New Relic
+  summary:
+    en: Investigate applications and telemetry.
+    zh: 排查应用和监控数据。
+  when_to_use:
+    en: Use when the task needs to investigate applications and telemetry.
+    zh: 当任务需要排查应用和监控数据时使用。
+  keywords:
+    - new-relic
+    - Observability
+  capabilities:
+    - observability
+  status: active
+  auth:
+    methods:
+      - oauth
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: development
+    order: 120
+    icon: new-relic.png
+    icon_is_official: true
+  homepage: https://newrelic.com
+  remotes:
+    - type: streamable-http
+      url: https://mcp.newrelic.com/mcp/
+- schema_version: 1
+  id: mcp/dynatrace
+  kind: mcp
+  name:
+    en: Dynatrace
+    zh: Dynatrace
+  summary:
+    en: Investigate monitored environments.
+    zh: 排查环境中的监控数据。
+  when_to_use:
+    en: Use when the task needs to investigate monitored environments.
+    zh: 当任务需要排查环境中的监控数据时使用。
+  keywords:
+    - dynatrace
+    - Observability
+  capabilities:
+    - observability
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: development
+    order: 130
+    icon: dynatrace.png
+    icon_is_official: true
+  homepage: https://www.dynatrace.com
+  setup:
+    documentation_url: https://docs.dynatrace.com/docs/dynatrace-intelligence/dynatrace-mcp
+    help:
+      en: Copy the MCP endpoint from your account settings. Use a publicly reachable HTTPS address.
+      zh: 从账户设置复制 MCP 地址，使用可公开访问的 HTTPS 地址。
+    endpoint:
+      placeholder: https://your-environment.apps.dynatrace.com/platform-reserved/mcp-gateway/v0.1/servers/dynatrace-mcp/mcp
+      path_pattern: ^/platform-reserved/mcp-gateway/v0\.1/servers/dynatrace-mcp/mcp/?$
+      host_suffix: apps.dynatrace.com
+    auth_header: authorization
+    auth_scheme: Bearer
+- schema_version: 1
+  id: mcp/elastic
+  kind: mcp
+  name:
+    en: Elastic Agent Builder
+    zh: Elastic Agent Builder
+  summary:
+    en: Search data with Agent Builder tools.
+    zh: 使用智能体工具检索数据。
+  when_to_use:
+    en: Use when the task needs to search data with Agent Builder tools.
+    zh: 当任务需要使用智能体工具检索数据时使用。
+  keywords:
+    - elastic
+    - Search and observability
+  capabilities:
+    - search-data
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: development
+    order: 140
+    icon: elastic.svg
+    icon_is_official: true
+  homepage: https://www.elastic.co
+  setup:
+    documentation_url: https://www.elastic.co/docs/explore-analyze/ai-features/agent-builder/mcp-server-api-keys
+    help:
+      en: Copy the MCP endpoint from your account settings. Use a publicly reachable HTTPS address.
+      zh: 从账户设置复制 MCP 地址，使用可公开访问的 HTTPS 地址。
+    endpoint:
+      placeholder: https://your-kibana-host/api/agent_builder/mcp
+      path_pattern: ^(?:/s/[^/]+)?/api/agent_builder/mcp/?$
+    auth_header: authorization
+    auth_scheme: ApiKey
+- schema_version: 1
+  id: mcp/honeycomb
+  kind: mcp
+  name:
+    en: Honeycomb
+    zh: Honeycomb
+  summary:
+    en: Query traces and investigate services.
+    zh: 查询链路并排查服务。
+  when_to_use:
+    en: Use when the task needs to query traces and investigate services.
+    zh: 当任务需要查询链路并排查服务时使用。
+  keywords:
+    - honeycomb
+    - Observability
+  capabilities:
+    - observability
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+    bearer:
+      url: https://mcp.honeycomb.io/mcp
+      auth_header: authorization
+      auth_scheme: Bearer
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: development
+    order: 150
+    icon: honeycomb.png
+    icon_is_official: true
+  homepage: https://www.honeycomb.io
+  remotes:
+    - type: streamable-http
+      url: https://mcp.honeycomb.io/mcp
+  prerequisites:
+    - Use a Management API key with MCP permissions in KEY_ID:SECRET_KEY format.
+  setup:
+    documentation_url: https://docs.honeycomb.io/integrations/mcp/configuration-guide
+    help:
+      en: "Use KEY_ID:SECRET_KEY with Management API Read access to MCP and Environments. No ingestion keys."
+      zh: "使用具备 MCP 和 Environments 读取权限的 Management API Key，按 KEY_ID:SECRET_KEY 格式填写；不能使用数据写入 Key。"
+- schema_version: 1
+  id: mcp/pagerduty
+  kind: mcp
+  name:
+    en: PagerDuty
+    zh: PagerDuty
+  summary:
+    en: Manage incidents and on-call context.
+    zh: 管理事件和查看值班信息。
+  when_to_use:
+    en: Use when the task needs to manage incidents and on-call context.
+    zh: 当任务需要管理事件和查看值班信息时使用。
+  keywords:
+    - pagerduty
+    - Incident and on-call management
+  capabilities:
+    - incident-management
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+    bearer:
+      url: https://mcp.pagerduty.com/mcp
+      auth_header: authorization
+      auth_scheme: Token
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: development
+    order: 160
+    icon: pagerduty.svg
+    icon_is_official: true
+  homepage: https://www.pagerduty.com
+  remotes:
+    - type: streamable-http
+      url: https://mcp.pagerduty.com/mcp
+  setup:
+    documentation_url: https://docs.pagerduty.com/ai-automation/advance/pagerduty-mcp-server
+    help:
+      en: Paste your raw user API key. The required token= prefix is added automatically.
+      zh: 粘贴用户 API Key，系统会自动补齐所需前缀。
+    key_prefix: token=
+  prerequisites:
+    - For generic API/CLI clients, use auth scheme Token and supply token=<raw-user-key> as the encrypted key.
+- schema_version: 1
+  id: mcp/snowflake
+  kind: mcp
+  name:
+    en: Snowflake
+    zh: Snowflake
+  summary:
+    en: Query governed warehouse tools.
+    zh: 查询授权的数据仓库工具。
+  when_to_use:
+    en: Use when the task needs to query governed warehouse tools.
+    zh: 当任务需要查询授权的数据仓库工具时使用。
+  keywords:
+    - snowflake
+    - Data warehouse
+  capabilities:
+    - warehouse-analysis
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: data
+    order: 40
+    icon: snowflake.svg
+    icon_is_official: true
+  homepage: https://www.snowflake.com
+  setup:
+    documentation_url: https://www.snowflake.com/en/developers/guides/getting-started-with-snowflake-mcp-server/
+    help:
+      en: Copy the MCP endpoint from your account settings. Use a publicly reachable HTTPS address.
+      zh: 从账户设置复制 MCP 地址，使用可公开访问的 HTTPS 地址。
+    endpoint:
+      placeholder: https://your-account.snowflakecomputing.com/api/v2/databases/DB/schemas/SCHEMA/mcp-servers/SERVER
+      path_pattern: ^/api/v2/databases/[^/]+/schemas/[^/]+/mcp-servers/[^/]+/?$
+      host_suffix: snowflakecomputing.com
+    auth_header: authorization
+    auth_scheme: Bearer
+  prerequisites:
+    - Create the MCP server object and grant the required database, schema and warehouse access.
+- schema_version: 1
+  id: mcp/databricks
+  kind: mcp
+  name:
+    en: Databricks
+    zh: Databricks
+  summary:
+    en: Query workspace SQL data.
+    zh: 查询工作区中的数据。
+  when_to_use:
+    en: Use when the task needs to query workspace SQL data.
+    zh: 当任务需要查询工作区中的数据时使用。
+  keywords:
+    - databricks
+    - Data and AI platform
+  capabilities:
+    - sql-analysis
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: data
+    order: 50
+    icon: databricks.png
+    icon_is_official: true
+  homepage: https://www.databricks.com
+  setup:
+    documentation_url: https://docs.databricks.com/aws/en/ai-gateway/coding-agent-codex
+    help:
+      en: Copy the MCP endpoint from your account settings. Use a publicly reachable HTTPS address.
+      zh: 从账户设置复制 MCP 地址，使用可公开访问的 HTTPS 地址。
+    endpoint:
+      placeholder: https://your-workspace.cloud.databricks.com/ai-gateway/mcp-services/system.ai.dbsql?o=123
+      path_pattern: ^/ai-gateway/mcp-services/system\.ai\.dbsql/?$
+      query_parameters:
+        - o
+    auth_header: authorization
+    auth_scheme: Bearer
+  prerequisites:
+    - The selected Unity Gateway SQL service is Beta and must be enabled by your workspace admin.
+- schema_version: 1
+  id: mcp/dbt
+  kind: mcp
+  name:
+    en: dbt platform
+    zh: dbt platform
+  summary:
+    en: Explore models and analytics metadata.
+    zh: 探索数据模型和分析元数据。
+  when_to_use:
+    en: Use when the task needs to explore models and analytics metadata.
+    zh: 当任务需要探索数据模型和分析元数据时使用。
+  keywords:
+    - dbt
+    - Analytics engineering
+  capabilities:
+    - analytics-engineering
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: data
+    order: 60
+    icon: dbt.png
+    icon_is_official: true
+  homepage: https://www.getdbt.com
+  setup:
+    documentation_url: https://docs.getdbt.com/docs/dbt-ai/setup-remote-mcp
+    help:
+      en: Copy the MCP endpoint from your account settings. Use a publicly reachable HTTPS address.
+      zh: 从账户设置复制 MCP 地址，使用可公开访问的 HTTPS 地址。
+    endpoint:
+      placeholder: https://your-dbt-host/api/ai/v1/mcp/
+      path_pattern: ^/api/ai/v1/mcp/?$
+    auth_header: authorization
+    auth_scheme: Token
+    headers:
+      - name: x-dbt-prod-environment-id
+        label:
+          en: Production environment ID
+          zh: 生产环境 ID
+        required: true
+        placeholder: "12345"
+        format: integer
+      - name: x-dbt-user-id
+        label:
+          en: User ID for SQL (optional)
+          zh: SQL 用户 ID（选填）
+        required: false
+        format: integer
+      - name: x-dbt-dev-environment-id
+        label:
+          en: Development environment ID for SQL (optional)
+          zh: SQL 开发环境 ID（选填）
+        required: false
+        format: integer
+  prerequisites:
+    - Requires platform permissions and a production environment ID; SQL additionally needs a PAT, user ID and
+      development environment ID.
+- schema_version: 1
+  id: mcp/fivetran
+  kind: mcp
+  name:
+    en: Fivetran Agent Context
+    zh: Fivetran Agent Context
+  summary:
+    en: Query enterprise data context.
+    zh: 查询企业数据上下文。
+  when_to_use:
+    en: Use when the task needs to query enterprise data context.
+    zh: 当任务需要查询企业数据上下文时使用。
+  keywords:
+    - fivetran
+    - Enterprise data context
+  capabilities:
+    - data-context
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+    bearer:
+      url: https://api.fivetran.ai/mcp
+      auth_header: authorization
+      auth_scheme: Bearer
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: data
+    order: 70
+    icon: fivetran.png
+    icon_is_official: true
+  homepage: https://www.fivetran.com
+  remotes:
+    - type: streamable-http
+      url: https://api.fivetran.ai/mcp
+  prerequisites:
+    - "Public preview: requires Agent Context/Context Layer access and an administrator-created system key."
+  setup:
+    documentation_url: https://fivetran.com/docs/context-layer/agent-context-mcp/setup-guide
+    help:
+      en: "Ask an admin for a Context Layer system key and warehouse access (public preview)."
+      zh: "请向管理员获取 Context Layer 系统 Key 及数据仓库权限。Agent Context 目前为公开预览。"
+- schema_version: 1
+  id: mcp/langsmith
+  kind: mcp
+  name:
+    en: LangSmith
+    zh: LangSmith
+  summary:
+    en: Inspect traces, datasets and experiments.
+    zh: 查看链路、数据集和实验。
+  when_to_use:
+    en: Use when the task needs to inspect traces, datasets and experiments.
+    zh: 当任务需要查看链路、数据集和实验时使用。
+  keywords:
+    - langsmith
+    - LLM observability and development
+  capabilities:
+    - llm-development
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+    bearer:
+      url: https://api.smith.langchain.com/mcp
+      auth_header: x-api-key
+      auth_scheme: ""
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: development
+    order: 170
+    icon: langsmith.png
+    icon_is_official: true
+  homepage: https://www.langchain.com/langsmith
+  remotes:
+    - type: streamable-http
+      url: https://api.smith.langchain.com/mcp
+- schema_version: 1
+  id: mcp/make
+  kind: mcp
+  name:
+    en: Make
+    zh: Make
+  summary:
+    en: Run scenarios and automate workflows.
+    zh: 运行场景并自动化工作流。
+  when_to_use:
+    en: Use when the task needs to run scenarios and automate workflows.
+    zh: 当任务需要运行场景并自动化工作流时使用。
+  keywords:
+    - make
+    - Workflow automation
+  capabilities:
+    - workflow-automation
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: automation
+    order: 20
+    icon: make.png
+    icon_is_official: true
+  homepage: https://www.make.com
+  setup:
+    documentation_url: https://developers.make.com/mcp-server/connect-using-api-key/usage-with-cursor.md
+    help:
+      en: Copy the MCP endpoint from your account settings. Use a publicly reachable HTTPS address.
+      zh: 从账户设置复制 MCP 地址，使用可公开访问的 HTTPS 地址。
+    endpoint:
+      placeholder: https://your-zone.make.com/mcp/v2
+      path_pattern: ^/mcp/v2/?$
+      host_suffix: make.com
+    auth_header: authorization
+    auth_scheme: Bearer
+  prerequisites:
+    - Use your account’s zone and an API key with mcp:use permissions.
+- schema_version: 1
+  id: mcp/n8n
+  kind: mcp
+  name:
+    en: n8n
+    zh: n8n
+  summary:
+    en: Find and run enabled workflows.
+    zh: 查找并运行已开放的工作流。
+  when_to_use:
+    en: Use when the task needs to find and run enabled workflows.
+    zh: 当任务需要查找并运行已开放的工作流时使用。
+  keywords:
+    - n8n
+    - Workflow automation
+  capabilities:
+    - workflow-automation
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: automation
+    order: 30
+    icon: n8n.png
+    icon_is_official: true
+  homepage: https://n8n.io
+  setup:
+    documentation_url: https://docs.n8n.io/connect/connect-to-n8n-mcp-server/mcp-client-examples.md
+    help:
+      en: Copy the MCP endpoint from your account settings. Use a publicly reachable HTTPS address.
+      zh: 从账户设置复制 MCP 地址，使用可公开访问的 HTTPS 地址。
+    endpoint:
+      placeholder: https://your-instance.app.n8n.cloud/mcp-server/http
+      path_pattern: ^/mcp-server/http/?$
+    auth_header: authorization
+    auth_scheme: Bearer
+  prerequisites:
+    - Enable instance MCP and the workflows you want to expose; the instance must be reachable over public HTTPS.
+- schema_version: 1
+  id: mcp/storyblok
+  kind: mcp
+  name:
+    en: Storyblok
+    zh: Storyblok
+  summary:
+    en: Manage stories, spaces and content.
+    zh: 管理内容、空间和页面。
+  when_to_use:
+    en: Use when the task needs to manage stories, spaces and content.
+    zh: 当任务需要管理内容、空间和页面时使用。
+  keywords:
+    - storyblok
+    - Headless CMS
+  capabilities:
+    - manage-content
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+    bearer:
+      url: https://mcp.storyblok.com/mcp
+      auth_header: authorization
+      auth_scheme: Bearer
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: docs
+    order: 100
+    icon: storyblok.svg
+    icon_is_official: true
+  homepage: https://www.storyblok.com
+  remotes:
+    - type: streamable-http
+      url: https://mcp.storyblok.com/mcp
+- schema_version: 1
+  id: mcp/lemlist
+  kind: mcp
+  name:
+    en: lemlist
+    zh: lemlist
+  summary:
+    en: Manage leads and outreach campaigns.
+    zh: 管理线索和销售触达活动。
+  when_to_use:
+    en: Use when the task needs to manage leads and outreach campaigns.
+    zh: 当任务需要管理线索和销售触达活动时使用。
+  keywords:
+    - lemlist
+    - Sales outreach
+  capabilities:
+    - sales-outreach
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+    bearer:
+      url: https://app.lemlist.com/mcp
+      auth_header: x-api-key
+      auth_scheme: ""
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: sales
+    order: 90
+    icon: connector.svg
+    icon_is_official: false
+  homepage: https://www.lemlist.com
+  remotes:
+    - type: streamable-http
+      url: https://app.lemlist.com/mcp
+- schema_version: 1
+  id: mcp/vidiq
+  kind: mcp
+  name:
+    en: vidIQ
+    zh: vidIQ
+  summary:
+    en: Research YouTube keywords and channels.
+    zh: 研究视频关键词和频道。
+  when_to_use:
+    en: Use when the task needs to research YouTube keywords and channels.
+    zh: 当任务需要研究视频关键词和频道时使用。
+  keywords:
+    - vidiq
+    - YouTube research
+  capabilities:
+    - youtube-research
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+    bearer:
+      url: https://mcp.vidiq.com/mcp
+      auth_header: authorization
+      auth_scheme: Bearer
+  risk:
+    side_effects: none
+    data_access: public
+  catalog:
+    category: sales
+    order: 100
+    icon: vidiq.png
+    icon_is_official: true
+  homepage: https://vidiq.com
+  remotes:
+    - type: streamable-http
+      url: https://mcp.vidiq.com/mcp
+  prerequisites:
+    - API-key access is read-only. Editing owned videos requires a different OAuth route.
+- schema_version: 1
+  id: mcp/close
+  kind: mcp
+  name:
+    en: Close
+    zh: Close
+  summary:
+    en: Read leads, contacts and opportunities.
+    zh: 查询线索、联系人和销售机会。
+  when_to_use:
+    en: Use when the task needs to read leads, contacts and opportunities.
+    zh: 当任务需要查询线索、联系人和销售机会时使用。
+  keywords:
+    - close
+    - Sales CRM
+  capabilities:
+    - sales-crm
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+    bearer:
+      url: https://mcp.close.com/mcp
+      auth_header: close-api-key
+      auth_scheme: ""
+  risk:
+    side_effects: none
+    data_access: private
+  catalog:
+    category: sales
+    order: 110
+    icon: close.png
+    icon_is_official: true
+  homepage: https://close.com
+  remotes:
+    - type: streamable-http
+      url: https://mcp.close.com/mcp
+      headers:
+        - name: close-scope
+          role: extra
+          value: mcp.read
+- schema_version: 1
+  id: mcp/pipedrive
+  kind: mcp
+  name:
+    en: Pipedrive
+    zh: Pipedrive
+  summary:
+    en: Manage deals and sales activities.
+    zh: 管理商机和销售活动。
+  when_to_use:
+    en: Use when the task needs to manage deals and sales activities.
+    zh: 当任务需要管理商机和销售活动时使用。
+  keywords:
+    - pipedrive
+    - Sales CRM
+  capabilities:
+    - sales-crm
+  status: active
+  auth:
+    methods:
+      - oauth
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: sales
+    order: 120
+    icon: pipedrive.png
+    icon_is_official: true
+  homepage: https://www.pipedrive.com
+  remotes:
+    - type: streamable-http
+      url: https://mcp.pipedrive.ai/mcp
+- schema_version: 1
+  id: mcp/granola
+  kind: mcp
+  name:
+    en: Granola
+    zh: Granola
+  summary:
+    en: Search meeting notes and transcripts.
+    zh: 搜索会议笔记和转写。
+  when_to_use:
+    en: Use when the task needs to search meeting notes and transcripts.
+    zh: 当任务需要搜索会议笔记和转写时使用。
+  keywords:
+    - granola
+    - Meeting notes
+  capabilities:
+    - read-meetings
+  status: active
+  auth:
+    methods:
+      - oauth
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: communication
+    order: 70
+    icon: granola.png
+    icon_is_official: true
+  homepage: https://www.granola.ai
+  remotes:
+    - type: streamable-http
+      url: https://mcp.granola.ai/mcp
+- schema_version: 1
+  id: mcp/higgsfield
+  kind: mcp
+  name:
+    en: Higgsfield
+    zh: Higgsfield
+  summary:
+    en: Generate images, video and audio.
+    zh: 生成图片、视频和音频。
+  when_to_use:
+    en: Use when the task needs to generate images, video and audio.
+    zh: 当任务需要生成图片、视频和音频时使用。
+  keywords:
+    - higgsfield
+    - Generative media
+  capabilities:
+    - generate-media
+  status: active
+  auth:
+    methods:
+      - oauth
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: design
+    order: 70
+    icon: higgsfield.png
+    icon_is_official: true
+  homepage: https://higgsfield.ai
+  remotes:
+    - type: streamable-http
+      url: https://mcp.higgsfield.ai/mcp
+- schema_version: 1
+  id: mcp/tally
+  kind: mcp
+  name:
+    en: Tally
+    zh: Tally
+  summary:
+    en: Create forms and read submissions.
+    zh: 创建表单并查询提交数据。
+  when_to_use:
+    en: Use when the task needs to create forms and read submissions.
+    zh: 当任务需要创建表单并查询提交数据时使用。
+  keywords:
+    - tally
+    - Forms and surveys
+  capabilities:
+    - manage-forms
+  status: active
+  auth:
+    methods:
+      - bearer
+    default_kind: bearer
+    bearer:
+      url: https://api.tally.so/mcp
+      auth_header: authorization
+      auth_scheme: Bearer
+  risk:
+    side_effects: destructive
+    data_access: private
+  catalog:
+    category: data
+    order: 80
+    icon: tally.svg
+    icon_is_official: true
+  homepage: https://tally.so
+  remotes:
+    - type: streamable-http
+      url: https://api.tally.so/mcp
+  prerequisites:
+    - The remote MCP service is Beta.

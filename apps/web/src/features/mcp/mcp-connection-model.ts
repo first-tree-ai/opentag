@@ -41,7 +41,9 @@ function methodHeadersMatch(entry: MCPAgentServer, method: ReturnType<typeof pre
 
 /** Presets expose only configured methods; custom connections choose explicitly. */
 export function presetAuthKinds(preset: McpInstallableCatalogEntry): MCPAuthKind[] {
-  return preset.keyAuth ? [preset.defaultAuthKind, "bearer"] : [preset.defaultAuthKind];
+  return preset.keyAuth && preset.defaultAuthKind !== "bearer"
+    ? [preset.defaultAuthKind, "bearer"]
+    : [preset.defaultAuthKind];
 }
 export function presetAuthConfig(preset: McpInstallableCatalogEntry, kind: MCPAuthKind) {
   const method = kind === "bearer" ? preset.keyAuth : preset;

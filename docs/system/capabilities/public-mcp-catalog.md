@@ -66,7 +66,7 @@ block, and it is a JSON-RPC error.
 
 | Tool | Arguments | Result |
 | --- | --- | --- |
-| `search_mcp_servers` | `query?`, `category?`, `locale?` (`en` or `zh`, default `en`), `limit?` (1–50, default 10, clamped rather than refused) | `{ total, results: Entry[] }`; an empty `query` lists every active Server in catalog order, and `total` is the match count before `limit` |
+| `search_mcp_servers` | `query?`, `category?`, `locale?` (`en` or `zh`, default `en`), `limit?` (1–50, default 10, clamped rather than refused) | `{ total, results: Entry[] }`; an empty `query` returns the first bounded page of active Servers in catalog order, and `total` is the match count before `limit` |
 | `get_mcp_server` | `id` (required; `notion` and `mcp/notion` both resolve), `locale?` | one entry plus `prerequisites`, `platforms`, `remotes`, and `tools` |
 | `list_mcp_categories` | none | `{ categories: [{ id, label, order, activeCount, installableCount }] }` |
 
@@ -79,6 +79,7 @@ block, and it is a JSON-RPC error.
 - Localized fields are resolved to the requested locale.
 - `url` is present only for an installable Server, which is one with a streamable-http remote. `config`
   and `installCommand` are `null` when it is not, and `installable` says which case applies.
+  Customer-endpoint recipes require setup in Discover and are not runnable public configurations.
 - `config` is `{ "mcpServers": { "<name>": { "type": "http", "url": "<url>" } } }`, plus `headers`
   when the entry declares static `role: extra` headers, and `installCommand` is
   `claude mcp add --transport http <name> <url>`, POSIX-shell quoted so a URL that carries a query
@@ -110,6 +111,7 @@ whole and split at hyphens, so `search-docs` is reachable as `search` or `docs`.
 a run contributes its characters and character bigrams. Every word is split at script boundaries
 first, because `notion笔记` is how a Chinese user names a product and a task at once: the query yields
 both the token `notion` and the bigram `笔记`, and so does any copy that mixes the two scripts.
+An exact product name in one of those script runs retains name-match priority over generic task terms.
 
 Only `status: active` entries are returned or resolved by name. A `deprecated`, `archived`, or
 `removed` entry is invisible here, exactly as it is in Discover.

@@ -270,7 +270,7 @@ export async function settleUnreportableTurn(
   const report: TurnReportRequest = { ...body, resultHash: computeTurnResultHash(body) };
   const status = await deps.custody.recordTurn(report, {
     computerId: row.computer.id,
-    installationId: "",
+    installationId: row.computer.currentInstallationId,
     instanceId: ownerInstanceId,
     signal: new AbortController().signal,
   });

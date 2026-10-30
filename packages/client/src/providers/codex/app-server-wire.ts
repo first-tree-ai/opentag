@@ -233,7 +233,8 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
         signal?.removeEventListener("abort", onAbort);
       };
       const onAbort = () => {
-        cleanup();
+        // Native requests can still reply after local cancellation. Keep their bounded slot until
+        // the reply or request timeout so it cannot poison the next Run as an unknown response.
         reject(new CodexAppServerError("aborted", "Codex request was aborted"));
       };
       const timer = setTimeout(() => {

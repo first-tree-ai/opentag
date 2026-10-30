@@ -1082,36 +1082,45 @@ Native MCP startup and tool limits remain Claude's responsibility, including the
 
 ### Codex: rebinding the thread per run
 
-Codex spawns its App Server once per Session runtime from a frozen argument vector, while the bearer
-is minted per execution, so the bearer cannot be written into that argument vector. Codex applies a
-thread's `config` overrides only when it loads the thread, so before each run that carries a gateway
-the Codex runtime reloads the thread with that run's `mcp_servers`:
+Codex spawns one App Server per Session runtime. Native direct and plugin-discovered MCP services
+load from Codex's user/project configuration; OpenTag does not supply `mcp_servers={}` or replace
+the native table. Each runtime chooses a private 11-character `g<random-hex>` gateway name,
+preserving the original tool-name budget and avoiding fixed-name collisions with user services.
 
-- **A persisted thread** is unloaded (`thread/unsubscribe`) and resumed (`thread/resume`) with the
-  gateway as its only MCP server. Codex connects and lists the catalogue during the resume.
-- **A thread that has never started a turn** has no rollout to resume and no history to lose, so it is
-  replaced by a new `thread/start` with the same parameters and hosted tools, and the Session binding
-  moves to the new thread through `binding_changed`. The previous thread stays loaded until the
-  replacement exists.
-- **The bearer only ever travels over the App Server's stdio** and is held in its memory. It never
-  appears in the argument vector, the environment, or a config file, so what a model command can
-  reach is at most the live execution's own bearer, which the Server revokes when the execution ends.
-  The launch arguments keep `mcp_servers={}`, and the override replaces the whole table, so the
-  user's own Codex servers stay excluded.
-- **One deadline** (15 s) covers the whole rebind, attach and restore alike, and a run cancelled
-  before its turn starts ends without waiting for one. The attach may use two thirds of the deadline;
-  the rest is reserved for the restore. An attach that is not confirmed restores the thread with no
-  MCP server — losing the gateway costs the turn its MCP tools, never the turn, and never leaves the
-  run's bearer attached to a catalogue it did not confirm. A later run without a gateway rebinds once
-  so revoked tools disappear. Only a thread Codex cannot reload at all within the deadline fails that
-  run, since no thread is left to start the turn on; the next run rebinds it.
-- **Conversation history survives the rebind.** `excludeTurns` only keeps the turn list out of the
-  `thread/resume` response; Codex reloads the thread's full model context from its rollout.
-- Gateway tools are pre-approved as a server (`default_tools_approval_mode = "approve"`), matching the
-  Claude Code allow rule; Codex otherwise rejects every MCP call under the `never` approval policy.
+Before a Run carrying a gateway, OpenTag reloads the thread with a single dot-key override,
+`mcp_servers.<private-name>`, containing that execution's URL, bearer, startup limit, and tool approval
+mode. Native plugin MCP discovery remains Codex's responsibility; OpenTag does not enumerate or
+reconstruct that catalog through `config/read`.
 
-Codex always defers MCP tools behind its built-in `tool_search`, so the model sees the
-`opentag-mcp` server and discovers individual tools on demand rather than in its initial tool list.
+- A persisted thread is unloaded (`thread/unsubscribe`) and resumed (`thread/resume`). An
+  unpersisted thread has no rollout/history to restore and is replaced through `thread/start` with
+  the same parameters and hosted tools. The binding moves only when the replacement exists.
+- The bearer travels only over App Server stdio and remains in memory. It is absent from launch
+  arguments, environment, and configuration files. Server revokes it when the execution ends.
+- The private entry is `required` during native initialization so a rejected handshake is observable.
+  Gateway availability remains optional at the adapter: failed attachment restores native-only
+  configuration without the private entry. A Run without a gateway similarly removes the previous
+  override. Empty `config` reloads native settings; it does not delete user services.
+- One 15-second deadline covers attach and restoration. Attachment gets two thirds of that budget;
+  native gateway startup gets at most half the attach budget (capped at 10 seconds), leaving time
+  for a native failure response before restoration. Only failure to restore a usable thread fails
+  the Run. Cancellation returns promptly; bounded pending RPC slots consume late native replies so
+  a cancelled handshake cannot poison the next Run.
+- An unpersisted replacement's creation stays observable after local cancellation. A successful
+  reply that was not adopted into the binding triggers `thread/unsubscribe`, including replies
+  arriving after a newer Run succeeds. Cleanup uses its own bounded deadline rather than the
+  cancelled Run's signal. Native no-subscriber inactivity cleanup may keep an unsubscribed thread
+  temporarily loaded; continued subscription is not part of that grace period.
+- History survives a persisted rebind: `excludeTurns` omits the response's turn list, while Codex
+  reloads model context from its rollout. App Server processes are not restarted per Turn.
+- Only the private gateway gets `default_tools_approval_mode = "approve"` for `never`, or `"writes"`
+  otherwise. Native user/plugin MCP approval settings are preserved.
+- Execution socket profiles remain mandatory and fail closed. Their dot-key overrides modify only
+  `features.network_proxy` and `permissions.opentag-execution`; rotation/removal rebinds the thread
+  without clobbering native feature choices or other permission profiles.
+
+Use the current native catalog for gateway tool names. Tool discovery and deferral depend on the
+installed Codex version; a fixed `opentag-mcp` service name is not part of the runtime contract.
 
 ### What the gateway speaks
 

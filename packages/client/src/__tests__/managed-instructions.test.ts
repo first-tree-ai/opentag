@@ -36,6 +36,16 @@ const cloudSession: ManagedSessionContext = {
 };
 
 describe("renderManagedSystemPrompt Agent Home", () => {
+  it("describes native configuration only for Local Codex, independently of Server self-configuration", () => {
+    const prompt = renderManagedSystemPrompt(snapshot, { ...session, selfConfigurationEnabled: false });
+    expect(prompt).toContain("## Native Codex configuration");
+    expect(prompt).toContain("Prefer Agent Home's project configuration");
+    expect(prompt).toContain("Native local and stdio MCP configuration does not use opentag self mcp");
+    expect(renderManagedSystemPrompt({ ...snapshot, provider: "pi" }, session)).not.toContain(
+      "## Native Codex configuration",
+    );
+    expect(renderManagedSystemPrompt(snapshot, cloudSession)).not.toContain("## Native Codex configuration");
+  });
   it("describes native configuration only for Local Claude, independently of Server self-configuration", () => {
     const claude = { ...snapshot, provider: "claude-code" as const };
     const prompt = renderManagedSystemPrompt(claude, { ...session, selfConfigurationEnabled: false });

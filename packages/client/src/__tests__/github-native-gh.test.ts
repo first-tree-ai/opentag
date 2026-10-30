@@ -430,8 +430,8 @@ async function verifyCodexSandbox(
       approvals: "on-request",
       tools: { mode: "provider-default" },
     },
-  ) as { permissions: Record<string, { filesystem: Record<string, string> }> };
-  const profile = socketConfig.permissions[CODEX_EXECUTION_PERMISSIONS];
+  ) as Record<`permissions.${string}`, { filesystem: Record<string, string> }>;
+  const profile = socketConfig[`permissions.${CODEX_EXECUTION_PERMISSIONS}`];
   if (!profile) throw Error("Missing execution profile");
   profile.filesystem[configDir] = "read";
   const wire = new CodexAppServerProcess({
@@ -454,7 +454,7 @@ async function verifyCodexSandbox(
   }
   await writeFile(
     join(codexHome, "config.toml"),
-    `features={network_proxy=true}\npermissions=${inlineToml(socketConfig.permissions)}\n`,
+    `features.network_proxy=true\npermissions.${CODEX_EXECUTION_PERMISSIONS}=${inlineToml(profile)}\n`,
   );
   const native = await run(
     process.env.OPENTAG_TEST_CODEX_BINARY,

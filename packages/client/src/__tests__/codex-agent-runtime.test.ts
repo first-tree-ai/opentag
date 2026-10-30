@@ -230,16 +230,19 @@ describe("CodexAgentRuntime", () => {
     });
   });
 
-  it("passes only provider-owned environment variables to Codex", () => {
-    expect(
-      codexAgentRuntimeEnvironment({
-        HOME: "/home/provider",
-        PATH: "/bin",
-        OPENAI_API_KEY: "provider-key",
-        OPENTAG_ACCESS_TOKEN: "opentag-secret",
-        RANDOM_SECRET: "other-secret",
-      }),
-    ).toEqual({ HOME: "/home/provider", PATH: "/bin" });
+  it("preserves native plugin variables and does not mutate the source environment", () => {
+    const source = {
+      HOME: "/home/provider",
+      PATH: "/bin",
+      CODEX_HOME: "/home/provider/.codex",
+      PLUGIN_API_KEY: "fixture-plugin-key",
+      CUSTOM_PLUGIN_OPTION: "fixture-option",
+    };
+    const environment = codexAgentRuntimeEnvironment(source);
+    expect(environment).toEqual(source);
+    expect(environment).not.toBe(source);
+    environment.PLUGIN_API_KEY = "replacement";
+    expect(source.PLUGIN_API_KEY).toBe("fixture-plugin-key");
   });
 });
 

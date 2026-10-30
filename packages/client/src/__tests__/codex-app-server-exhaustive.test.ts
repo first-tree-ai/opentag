@@ -172,6 +172,19 @@ describe("CodexAppServerProcess exhaustive behavior", () => {
     await expect(process.notify("fixture/closed", {})).rejects.toMatchObject({ code: "write" });
   });
 
+  it("consumes a late response after cancellation without breaking the next request", async () => {
+    const child = new FakeChild();
+    const process = processWith(child);
+    const controller = new AbortController();
+    const aborted = process.request("fixture/abort", {}, controller.signal);
+    controller.abort();
+    await expect(aborted).rejects.toMatchObject({ code: "aborted" });
+    child.respond(1, { late: true });
+    child.handle = (message) => child.respond(message.id, { next: true });
+    await expect(process.request("fixture/next", {})).resolves.toEqual({ next: true });
+    await process.close();
+  });
+
   it("handles unavailable stdin, oversized requests, and write callback errors", async () => {
     const unavailable = new FakeChild();
     const unavailableProcess = processWith(unavailable);

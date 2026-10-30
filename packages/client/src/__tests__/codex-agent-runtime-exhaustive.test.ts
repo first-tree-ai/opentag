@@ -2156,6 +2156,7 @@ it.each(["visible", "internal"])(
     const manifests: Array<string | undefined> = [];
     const managedMarkers: Array<string | undefined> = [];
     const shellPolicies: Array<string | undefined> = [];
+    const shellInheritance: Array<string | undefined> = [];
     const basePath = `/provider/bin${delimiter}/usr/bin`;
     const runtime = await new CodexAgentRuntimeFactory({
       clientVersion: "0.0.1-test",
@@ -2166,6 +2167,7 @@ it.each(["visible", "internal"])(
           manifests.push(options.env?.OPENTAG_CONTEXT_TREE_MANIFEST);
           managedMarkers.push(options.env?.OPENTAG_CONTEXT_TREE_MANAGED);
           shellPolicies.push(args.find((arg) => arg.startsWith("shell_environment_policy.filters=")));
+          shellInheritance.push(args.find((arg) => arg.startsWith("shell_environment_policy.inherit=")));
           return spawn(process.execPath, [fixture], { ...options, stdio: "pipe" });
         },
       },
@@ -2190,8 +2192,8 @@ it.each(["visible", "internal"])(
     ]);
     expect(manifests).toEqual(["/opentag/session/current.json"]);
     expect(managedMarkers).toEqual(["1"]);
-    expect(shellPolicies[0]).toContain('OPENTAG_CONTEXT_TREE_MANIFEST = "include"');
-    expect(shellPolicies[0]).toContain('OPENTAG_CONTEXT_TREE_MANAGED = "include"');
+    expect(shellPolicies[0]).toBeUndefined();
+    expect(shellInheritance).toEqual(['shell_environment_policy.inherit="all"']);
   },
 );
 
@@ -2216,7 +2218,7 @@ it("isolates managed zsh initialization so public CLI paths cannot shadow the Tu
     await runtime.close();
   }
   expect(launches[0]).toContain(`shell_environment_policy.set.ZDOTDIR=${JSON.stringify(home)}`);
-  expect(launches[0]?.some((arg) => arg.includes('ZDOTDIR = "include"'))).toBe(true);
+  expect(launches[0]?.some((arg) => arg.startsWith("shell_environment_policy.filters="))).toBe(false);
   const snapshotFlag = launches[0]?.indexOf("shell_snapshot") ?? -1;
   expect(snapshotFlag).toBeGreaterThan(0);
   expect(launches[0]?.[snapshotFlag - 1]).toBe("--disable");

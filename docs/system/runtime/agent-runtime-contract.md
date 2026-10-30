@@ -166,6 +166,34 @@ an Agent project's authentication or plugin loading. Check those with native com
 Home and the current Run's actual tool/Skill catalog. Project-only credentials do not establish
 Computer-level readiness.
 
+### Local Codex native configuration and trust
+
+Local Codex reads native user and project configuration, including plugins, hooks, Skills, direct
+MCP servers, and dynamically discovered plugin MCP servers. OpenTag does not force native feature
+flags on or off. Availability, hook trust, plugin installation, and reload behavior follow the
+installed Codex version. OpenTag does not approve native hook definitions or bypass their trust
+checks. Agents manage and check native resources through the Codex CLI and files from Agent Home;
+prefer project configuration for one Agent. User-wide settings and plugin caches remain shared.
+
+The App Server inherits the operator-provided environment, including custom plugin variables and
+long-lived credentials. Native helpers, trusted hooks, plugins, and stdio MCP processes can execute
+outside model tool approvals and sandbox boundaries. User-managed credentials do not acquire
+OpenTag execution fencing or revocation. Native configuration remains local; Server stores no
+native plugin inventory. Existing cwd, Provider Home, login, and history locations stay unchanged.
+
+OpenTag keeps one App Server per Session runtime. It disables shell snapshots and login shells and
+sets managed `ZDOTDIR` when needed to preserve Session CLI routing; it does not replace native shell
+environment filters. Shell inheritance is pinned to `all` so Session metadata and custom plugin
+variables do not depend on the native default; configured exclusions still apply. Environment
+changes require a new runtime. OpenTag overlays only its private
+execution MCP key and necessary execution socket profile in memory, retaining other native
+configuration. See [MCP integration](../capabilities/mcp-server-integration.md#codex-rebinding-the-thread-per-run).
+
+Provider readiness and `computer runtime-inspect` establish Provider availability, not project
+plugin loading, native hook trust, or working tool calls. Inspect native configuration and the
+current tool/Skill catalog from Agent Home and exercise the relevant resource before reporting
+success. A native reload or new Session runtime may be necessary for a changed resource.
+
 ### Pi binding lifecycle
 
 A new Pi binding records the provider Session UUID before Run admission. Its

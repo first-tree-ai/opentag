@@ -19,6 +19,7 @@ const candidateColumns = {
   steerTargetDeliveryId: imMessageDeliveries.steerTargetDeliveryId,
   lastErrorCode: imMessageDeliveries.lastErrorCode,
   reportedAt: imMessageDeliveries.reportedAt,
+  attemptCount: imMessageDeliveries.attemptCount,
   nextAttemptAt: imMessageDeliveries.nextAttemptAt,
   // Preserve PostgreSQL microseconds in the keyset; JS Date only preserves milliseconds.
   cursorTime: sql<string>`${imMessageDeliveries.nextAttemptAt}::text`,

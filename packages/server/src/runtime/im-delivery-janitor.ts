@@ -4,6 +4,7 @@ import type { BackgroundFailureSupervisor } from "../observability/background-fa
 import { expireInboundReceiptWork } from "../services/im/inbound-receipt-work-store.js";
 import { SessionService } from "../services/sessions/session-service.js";
 import { lockSteeredRecoverySessions, requeueSteeredDeliveries } from "./im-delivery-recovery.js";
+import type { ImDeliveryDiagnosticReporter } from "./im-delivery-worker.types.js";
 
 const DEFAULT_JANITOR_INTERVAL_MS = 5_000;
 const DEFAULT_RETENTION_INTERVAL_MS = 60_000;
@@ -143,7 +144,7 @@ export function resolveImDeliveryJanitorConfig(input: ImDeliveryJanitorInput): I
 export function createImDeliveryMaintenanceScheduler(
   run: () => Promise<void>,
   supervisor: BackgroundFailureSupervisor | undefined,
-  onDiagnostic: (code: string) => void,
+  onDiagnostic: ImDeliveryDiagnosticReporter,
   failureCode: string,
   operationName: string,
 ): () => void {
@@ -168,7 +169,7 @@ export function createImDeliveryMaintenanceSchedulers(input: {
   expiryRun: () => Promise<void>;
   retentionRun: () => Promise<void>;
   supervisor: BackgroundFailureSupervisor | undefined;
-  onDiagnostic: (code: string) => void;
+  onDiagnostic: ImDeliveryDiagnosticReporter;
 }): { expiry: () => void; retention: () => void } {
   return {
     expiry: createImDeliveryMaintenanceScheduler(
@@ -191,12 +192,12 @@ export function createImDeliveryMaintenanceSchedulers(input: {
 function scheduleImDeliveryMaintenance(
   run: () => Promise<void>,
   supervisor: BackgroundFailureSupervisor | undefined,
-  onDiagnostic: (code: string) => void,
+  onDiagnostic: ImDeliveryDiagnosticReporter,
   failureCode: string,
   operationName: string,
 ): void {
   const operation = run().catch((error: unknown) => {
-    onDiagnostic(failureCode);
+    onDiagnostic(failureCode, { phase: "maintenance" });
     throw error;
   });
   if (supervisor) {

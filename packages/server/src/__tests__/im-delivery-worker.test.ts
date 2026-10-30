@@ -52,7 +52,7 @@ describe("ImDeliveryWorker diagnostics", () => {
     worker.start();
     await expect.poll(() => diagnostic.mock.calls.length).toBe(1);
     worker.stop();
-    expect(diagnostic).toHaveBeenCalledWith("IM_DELIVERY_WORKER_SCHEDULING_FAILED");
+    expect(diagnostic).toHaveBeenCalledWith("IM_DELIVERY_WORKER_SCHEDULING_FAILED", { phase: "worker" });
     expect(JSON.stringify(diagnostic.mock.calls)).not.toContain("secret provider response");
   });
 
@@ -147,8 +147,8 @@ describe("ImDeliveryWorker database workflow", () => {
       expect(request.content.text).toContain('"file_id":"F_NATIVE"');
       expect(request.content.providerRef.provider).toBe("slack");
       expect(request.content.resources?.[0]?.filename).toBe("图😀.png");
-      expect(diagnostic).not.toHaveBeenCalledWith("IM_DELIVERY_RUNTIME_FAILED");
-      expect(diagnostic).not.toHaveBeenCalledWith("IM_DELIVERY_STEER_FAILED");
+      expect(diagnosticCodes(diagnostic)).not.toContain("IM_DELIVERY_RUNTIME_FAILED");
+      expect(diagnosticCodes(diagnostic)).not.toContain("IM_DELIVERY_STEER_FAILED");
     },
   );
 
@@ -184,7 +184,7 @@ describe("ImDeliveryWorker database workflow", () => {
     expect(domain.requestReconcile).not.toHaveBeenCalled();
     expect(domain.requestDelivery).not.toHaveBeenCalled();
     expect(assembler.assembleForSession).not.toHaveBeenCalled();
-    expect(diagnostic).toHaveBeenCalledExactlyOnceWith("IM_DELIVERY_CONTENT_INVALID");
+    expect(diagnostic).toHaveBeenCalledExactlyOnceWith("IM_DELIVERY_CONTENT_INVALID", expect.any(Object));
   });
 
   it("rejects malformed stored resource metadata before external calls without leaking its contents", async () => {
@@ -222,7 +222,7 @@ describe("ImDeliveryWorker database workflow", () => {
     await worker.runOnce();
     await worker.runOnce();
     expect(domain.requestReconcile).not.toHaveBeenCalled();
-    expect(diagnostic).toHaveBeenCalledExactlyOnceWith("IM_DELIVERY_CONTENT_INVALID");
+    expect(diagnostic).toHaveBeenCalledExactlyOnceWith("IM_DELIVERY_CONTENT_INVALID", expect.any(Object));
     expect(JSON.stringify(diagnostic.mock.calls)).not.toContain("secret");
     const [row] = await unit.database
       .select()
@@ -298,7 +298,7 @@ describe("ImDeliveryWorker database workflow", () => {
     });
 
     await worker.runOnce();
-    expect(diagnostic).toHaveBeenCalledWith("IM_DELIVERY_AGENT_NOT_ACTIVE");
+    expect(diagnosticCodes(diagnostic)).toContain("IM_DELIVERY_AGENT_NOT_ACTIVE");
     const [row] = await unit.database
       .select({ code: imMessageDeliveries.lastErrorCode })
       .from(imMessageDeliveries)
@@ -626,7 +626,7 @@ describe("ImDeliveryWorker database workflow", () => {
       await expect(first).resolves.toBeUndefined();
       await vi.waitFor(() => expect(secondSettled).toBe(true), { timeout: 50, interval: 1 });
       expect(requestDelivery).toHaveBeenCalledTimes(2);
-      expect(diagnostic).toHaveBeenCalledWith("IM_DELIVERY_OPERATION_ABANDONED");
+      expect(diagnosticCodes(diagnostic)).toContain("IM_DELIVERY_OPERATION_ABANDONED");
       worker.stop();
     } finally {
       vi.useRealTimers();
@@ -803,7 +803,13 @@ describe("ImDeliveryWorker database workflow", () => {
       onDiagnostic: absentDiagnostic,
     });
     await absentWorker.runOnce();
-    expect(absentDiagnostic).toHaveBeenCalledWith("IM_DELIVERY_RUNTIME_UNAVAILABLE");
+    expect(absentDiagnostic).toHaveBeenCalledWith("IM_DELIVERY_RUNTIME_UNAVAILABLE", {
+      phase: "deliver",
+      deliveryId: absent.deliveryId,
+      agentId: absent.agentId,
+      computerId: absent.computerId,
+      attemptCount: 1,
+    });
 
     const stale = await workerFixture(unit);
     await unit.database
@@ -850,7 +856,7 @@ describe("ImDeliveryWorker database workflow", () => {
       registry: malformed.registry,
       onDiagnostic: malformedDiagnostic,
     }).runOnce();
-    expect(malformedDiagnostic).toHaveBeenCalledWith("IM_DELIVERY_DISPATCH_PAYLOAD_INVALID");
+    expect(diagnosticCodes(malformedDiagnostic)).toContain("IM_DELIVERY_DISPATCH_PAYLOAD_INVALID");
 
     const terminal = await workerFixture(unit);
     const terminalRequest = { ...terminal.request, requestId: randomUUID() };
@@ -907,7 +913,7 @@ describe("ImDeliveryWorker database workflow", () => {
       .from(imMessageDeliveries)
       .where(eq(imMessageDeliveries.id, fixture.deliveryId));
     expect(row).toMatchObject({ dispatchRequestId: null, code: "IM_DELIVERY_EXPIRED" });
-    expect(diagnostic).toHaveBeenCalledWith("IM_DELIVERY_EXPIRED");
+    expect(diagnosticCodes(diagnostic)).toContain("IM_DELIVERY_EXPIRED");
   });
 
   it.each([
@@ -980,7 +986,7 @@ describe("ImDeliveryWorker database workflow", () => {
         expect(domain.requestReconcile).not.toHaveBeenCalled();
       }
       if (scenario.endsWith("tampered"))
-        expect(diagnostic).toHaveBeenCalledWith("IM_DELIVERY_RECOVERY_PAYLOAD_INVALID");
+        expect(diagnosticCodes(diagnostic)).toContain("IM_DELIVERY_RECOVERY_PAYLOAD_INVALID");
     },
   );
 
@@ -1064,7 +1070,7 @@ describe("ImDeliveryWorker database workflow", () => {
       }
       if (abnormal) expect(diagnostic).toHaveBeenCalledTimes(6);
       else expect(diagnostic).not.toHaveBeenCalled();
-      if (abnormal) expect(diagnostic).toHaveBeenCalledWith(code);
+      if (abnormal) expect(diagnosticCodes(diagnostic)).toContain(code);
       expect(domain.requestDelivery).not.toHaveBeenCalled();
       expect(domain.requestSteer).not.toHaveBeenCalled();
     },
@@ -1186,7 +1192,7 @@ describe("ImDeliveryWorker database workflow", () => {
       registry: legacy.registry,
       onDiagnostic: legacyDiagnostic,
     }).runOnce();
-    expect(legacyDiagnostic).not.toHaveBeenCalledWith("IM_DELIVERY_RECOVERY_LEGACY_SNAPSHOT_FALLBACK");
+    expect(diagnosticCodes(legacyDiagnostic)).not.toContain("IM_DELIVERY_RECOVERY_LEGACY_SNAPSHOT_FALLBACK");
     expect(legacyAssembler).not.toHaveBeenCalled();
 
     const invalid = await workerFixture(unit);
@@ -1211,7 +1217,7 @@ describe("ImDeliveryWorker database workflow", () => {
       registry: invalid.registry,
       onDiagnostic: invalidDiagnostic,
     }).runOnce();
-    expect(invalidDiagnostic).toHaveBeenCalledWith("IM_DELIVERY_RECOVERY_PAYLOAD_INVALID");
+    expect(diagnosticCodes(invalidDiagnostic)).toContain("IM_DELIVERY_RECOVERY_PAYLOAD_INVALID");
 
     const failed = await workerFixture(unit);
     await unit.database
@@ -1232,7 +1238,7 @@ describe("ImDeliveryWorker database workflow", () => {
       registry: failed.registry,
       onDiagnostic: failureDiagnostic,
     }).runOnce();
-    expect(failureDiagnostic).toHaveBeenCalledWith("IM_DELIVERY_RECOVERY_FAILED");
+    expect(diagnosticCodes(failureDiagnostic)).toContain("IM_DELIVERY_RECOVERY_FAILED");
   });
 
   it("turns assembler failures into terminal rejection or retry diagnostics", async () => {
@@ -1258,7 +1264,7 @@ describe("ImDeliveryWorker database workflow", () => {
           .where(eq(imMessageDeliveries.id, fixture.deliveryId));
         expect(row?.state).toBe("terminal_rejected");
       } else {
-        expect(diagnostic).toHaveBeenCalledWith(expected);
+        expect(diagnosticCodes(diagnostic)).toContain(expected);
       }
     }
   });
@@ -2745,4 +2751,9 @@ function fakeDomain(
       },
     ),
   };
+}
+
+/** The diagnostic codes a reporter emitted, so a context assertion cannot hide a missing or extra code. */
+function diagnosticCodes(reporter: { mock: { calls: unknown[][] } }): string[] {
+  return reporter.mock.calls.map(([code]) => code as string);
 }

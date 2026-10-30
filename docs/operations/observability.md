@@ -376,6 +376,9 @@ host. Entries carry the label `service=opentag-server`. The agent config is `/et
 - The agent reads new lines only. A restart does not replay older logs.
 - `IM_DELIVERY_RUNTIME_UNAVAILABLE` is excluded from the new-error alert because it fires continuously. Remove the
   exclusion once its cause is fixed, so that its return is visible.
+- Every delivery diagnostic carries `phase` plus the durable identifiers `deliveryId`, `agentId`, `computerId`, and
+  `attemptCount` in `jsonPayload`, so one production error can be attributed to one delivery. No message body, prompt,
+  credential, or provider payload is included.
 - The agent collects host metrics only. The Docker engine metrics endpoint that the staging VM scrapes needs a Docker
   daemon restart, which restarts the Server container, so it is not enabled on production.
 

@@ -2153,13 +2153,17 @@ it.each(["visible", "internal"])(
   "preserves bundled Context Tree in the actual %s process environment",
   async (kind) => {
     const paths: Array<string | undefined> = [];
+    const manifests: Array<string | undefined> = [];
+    const shellPolicies: Array<string | undefined> = [];
     const basePath = `/provider/bin${delimiter}/usr/bin`;
     const runtime = await new CodexAgentRuntimeFactory({
       clientVersion: "0.0.1-test",
       process: {
         env: { PATH: basePath },
-        spawnProcess: (_command, _args, options) => {
+        spawnProcess: (_command, args, options) => {
           paths.push(options.env?.PATH);
+          manifests.push(options.env?.OPENTAG_CONTEXT_TREE_MANIFEST);
+          shellPolicies.push(args.find((arg) => arg.startsWith("shell_environment_policy.filters=")));
           return spawn(process.execPath, [fixture], { ...options, stdio: "pipe" });
         },
       },
@@ -2167,7 +2171,11 @@ it.each(["visible", "internal"])(
       ...createRequest(() => undefined),
       workspace: {
         cwd: process.cwd(),
-        environment: { OPENTAG_HOME: "/opentag", PATH: `/ambient/bin${delimiter}/usr/bin` },
+        environment: {
+          OPENTAG_HOME: "/opentag",
+          OPENTAG_CONTEXT_TREE_MANIFEST: "/opentag/session/current.json",
+          PATH: `/ambient/bin${delimiter}/usr/bin`,
+        },
         pathPrepend:
           kind === "visible" ? `/session/tools${delimiter}/opentag/context-tree/bin` : "/opentag/context-tree/bin",
       },
@@ -2177,6 +2185,8 @@ it.each(["visible", "internal"])(
     expect(paths).toEqual([
       `${kind === "visible" ? `/session/tools${delimiter}` : ""}/opentag/context-tree/bin${delimiter}/ambient/bin${delimiter}/usr/bin`,
     ]);
+    expect(manifests).toEqual(["/opentag/session/current.json"]);
+    expect(shellPolicies[0]).toContain('OPENTAG_CONTEXT_TREE_MANIFEST = "include"');
   },
 );
 

@@ -39,6 +39,40 @@ async function directory() {
 }
 
 describe("Context Tree command boundary", () => {
+  it.each(["OPENTAG_HOME", "OPENTAG_PROVIDER_ENV_FILE"])(
+    "does not invoke the standalone CLI when %s identifies a managed Session without a Context manifest",
+    async (markerName) => {
+      const root = await directory();
+      const client = join(root, "client.mjs");
+      const cli = join(root, "standalone.mjs");
+      const marker = join(root, "invoked");
+      await writeFile(client, CONTEXT_TREE_COMMAND_CLIENT_SOURCE);
+      await writeFile(
+        cli,
+        `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(marker)}, 'invoked');`,
+      );
+      for (const args of [["sync"], ["write", "prepare"]])
+        await expect(
+          executeFile(process.execPath, [client, cli, ...args], {
+            env: { [markerName]: join(root, "provider.json") },
+          }),
+        ).rejects.toMatchObject({ stderr: expect.stringContaining("Context Tree execution unavailable") });
+      await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
+
+  it("keeps local verification and standalone CLI invocations available without a gateway", async () => {
+    const root = await directory();
+    const client = join(root, "client.mjs");
+    const cli = join(root, "standalone.mjs");
+    await writeFile(client, CONTEXT_TREE_COMMAND_CLIENT_SOURCE);
+    await writeFile(cli, "process.stdout.write(process.argv.slice(2).join(' '));");
+    expect((await executeFile(process.execPath, [client, cli, "verify"], { env: { OPENTAG_HOME: root } })).stdout).toBe(
+      "verify",
+    );
+    expect((await executeFile(process.execPath, [client, cli, "sync"], { env: {} })).stdout).toBe("sync");
+  });
+
   it("rejects arbitrary commands, foreign projects and ambiguous selectors before obtaining credentials", async () => {
     const root = await directory();
     const owner = parent();

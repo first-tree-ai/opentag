@@ -150,3 +150,6 @@ an unresolved Turn must settle first.
 Local Sessions prepend the bundled Context Tree CLI at the final Provider launch boundary,
 after executable discovery and per-execution environment composition. This applies to
 visible and internal Sessions, so an older global CLI cannot take precedence.
+Codex shell commands retain the execution's Context Tree manifest path. A managed Session
+without that manifest rejects sync and write commands rather than running the standalone CLI;
+read and verification commands keep their existing local behavior.

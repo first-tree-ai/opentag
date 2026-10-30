@@ -166,8 +166,10 @@ export async function runImDeliveryOverdueSettlement(
     if (!row) continue;
     /*
      * Both branches recheck the complete maintenance authority inside the transaction that writes the
-     * report: the current-generation branch through `recordTurn`'s write predicate, the superseded
-     * branch under its own row lock. A binding reactivated after the scan therefore wins.
+     * report, under row locks on the authorizing Agent and binding: the current-generation branch
+     * through `recordTurn`, the superseded branch through its own reload. A reactivation that is
+     * still uncommitted therefore blocks the settlement instead of losing to it, and a committed one
+     * refuses it.
      */
     const placementCurrent = row.delivery.placementGeneration === row.placement.generation;
     const settled = placementCurrent

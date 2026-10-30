@@ -6,7 +6,7 @@ import type {
   TurnReportRequest,
   TurnReportResult,
 } from "@opentag/shared";
-import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
 import {
   agents,
@@ -22,7 +22,7 @@ import { finishSlackWorkingTurn } from "../services/im/slack-working-store.js";
 import { SessionService } from "../services/sessions/session-service.js";
 import { releaseImBatch, reserveImBatch, settleImBatch } from "./im-delivery-batch.js";
 import { lockSteeredRecoverySessions, requeueSteeredDeliveries, type SessionEnsurer } from "./im-delivery-recovery.js";
-import { ACCEPTED_REPORT_WINDOW_MS } from "./im-delivery-retry.js";
+import { acceptedReportDeadlineMs } from "./im-delivery-retry.js";
 import type { RuntimeCustodyStoreDispatchRelease } from "./runtime-custody-store.types.js";
 import type { RuntimeBusinessContext } from "./runtime-session.js";
 
@@ -114,8 +114,8 @@ export interface RuntimeCustodyStore extends RuntimeCustodyStoreDispatchRelease 
 export interface RecordTurnOptions {
   /**
    * Maintenance only: refuse the write unless the authority that justified a synthetic report is
-   * still absent, evaluated by the same statement that writes the report. A genuine report never
-   * passes this.
+   * still absent, rechecked under row locks in this transaction. A genuine report never passes
+   * this.
    */
   requireAbsentAuthority?: boolean;
 }
@@ -140,7 +140,8 @@ interface DeliveryScope {
  * Slack working turn reaching `terminal` with its lease expired and its target dirtied, and — for a
  * non-completed outcome — the steered children returning to the queue exactly once.
  *
- * Callers own the custody fence (which report may land on which row); every other obligation of a
+ * Callers own the custody fence (which report may land on which row) and the recovery-Session lock,
+ * because that lock must precede every placement and delivery lock. Every other obligation of a
  * terminal report lives here, so the fenced `recordTurn` path and the historical-generation
  * settlement cannot drift. Returns the terminalized child ids, or `undefined` when the write matched
  * no row (a concurrent settlement or a refused maintenance authority).
@@ -152,6 +153,8 @@ export async function writeTerminalReport(
   sessions: SessionEnsurer,
   options: TerminalReportWriteOptions = {},
 ): Promise<string[] | undefined> {
+  if (options.requireAbsentAuthority && !(await authorityStillAbsent(transaction, report.deliveryId, now)))
+    return undefined;
   const [written] = await transaction
     .update(imMessageDeliveries)
     .set({
@@ -162,12 +165,7 @@ export async function writeTerminalReport(
       lastErrorCode: null,
       ...(options.reason ? { reason: options.reason } : {}),
     })
-    .where(
-      and(
-        eq(imMessageDeliveries.id, report.deliveryId),
-        ...(options.requireAbsentAuthority ? [maintenanceAuthorityAbsent(now)] : []),
-      ),
-    )
+    .where(eq(imMessageDeliveries.id, report.deliveryId))
     .returning({ id: imMessageDeliveries.id });
   if (!written) return undefined;
   await finishSlackWorkingTurn(transaction, report.deliveryId, now);
@@ -177,24 +175,47 @@ export async function writeTerminalReport(
 }
 
 /**
- * The maintenance authorization as SQL: the Session is over, the binding is inactive, or the Agent
- * is deleted, and the report-acceptance window has closed. Evaluating it in the same statement as
- * the write is what keeps a reactivated authority from losing to the synthetic report.
+ * Whether the authority that authorizes a maintenance settlement is still gone, decided under row
+ * locks rather than by a read.
+ *
+ * A cross-table `EXISTS` in the report `UPDATE` is not a guard: under Read Committed an uncommitted
+ * reactivation is invisible to the statement's snapshot, and the reactivation touches other rows, so
+ * both transactions commit and the persisted `unknown` beats the real owner. Taking `FOR NO KEY
+ * UPDATE` on the Agent and then the binding makes a reactivation wait for this settlement (or this
+ * settlement wait for it), and the recheck then reads the committed outcome. Order: the Agent before
+ * the binding, matching `assertCanManageForMutation`, and after the recovery-Session lock the caller
+ * already holds, matching `lockSteeredRecoverySessions`' documented order.
  */
-function maintenanceAuthorityAbsent(now: Date) {
-  const cutoff = new Date(now.getTime() - ACCEPTED_REPORT_WINDOW_MS).toISOString();
-  return sql`exists (
-    select 1
-    from ${sessions} as authority_session
-    inner join ${imBindings} as authority_binding on authority_binding.id = authority_session.im_binding_id
-    inner join ${agents} as authority_agent on authority_agent.id = authority_binding.agent_id
-    where authority_session.id = ${imMessageDeliveries.sessionId}
-      and (
-        authority_session.ended_at is not null
-        or authority_binding.status <> 'active'
-        or authority_agent.status = 'deleted'
-      )
-  ) and ${imMessageDeliveries.acceptedAt} <= ${cutoff}::timestamptz`;
+async function authorityStillAbsent(transaction: DatabaseTransaction, deliveryId: string, now: Date): Promise<boolean> {
+  const [delivery] = await transaction
+    .select({ sessionId: imMessageDeliveries.sessionId, acceptedAt: imMessageDeliveries.acceptedAt })
+    .from(imMessageDeliveries)
+    .where(eq(imMessageDeliveries.id, deliveryId))
+    .limit(1);
+  if (!delivery?.acceptedAt) return false;
+  if (now.getTime() < acceptedReportDeadlineMs(delivery.acceptedAt.getTime())) return false;
+  const [session] = await transaction
+    .select({ endedAt: sessions.endedAt, bindingId: imBindings.id, agentId: agents.id })
+    .from(sessions)
+    .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+    .innerJoin(agents, eq(agents.id, imBindings.agentId))
+    .where(eq(sessions.id, delivery.sessionId))
+    .limit(1);
+  if (!session) return false;
+  const [agent] = await transaction
+    .select({ status: agents.status })
+    .from(agents)
+    .where(eq(agents.id, session.agentId))
+    .for("no key update")
+    .limit(1);
+  const [binding] = await transaction
+    .select({ status: imBindings.status })
+    .from(imBindings)
+    .where(eq(imBindings.id, session.bindingId))
+    .for("no key update")
+    .limit(1);
+  if (!agent || !binding) return false;
+  return session.endedAt !== null || binding.status !== "active" || agent.status === "deleted";
 }
 
 export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {

@@ -672,6 +672,71 @@ describe("steered IM delivery recovery", () => {
     }
   });
 
+  it("blocks a maintenance settlement behind an uncommitted reactivation and then refuses it", async () => {
+    const fixture = await createFixture(client.database);
+    const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });
+    await acceptAndSteer(fixture, custody);
+    await client.database
+      .update(imBindings)
+      .set({ status: "reauthorization_required", updatedAt: fixture.now })
+      .where(eq(imBindings.id, fixture.bindingId));
+    const overdue = new Date(fixture.now.getTime() + 26 * 60 * 60_000);
+    // Second connection: reactivates the binding and keeps it uncommitted, which the settlement's
+    // snapshot cannot see and which no read-only predicate can exclude.
+    const other = createDatabaseClient(testDatabase.databaseUrl);
+    let releaseReactivation!: () => void;
+    const holdReactivation = new Promise<void>((resolve) => {
+      releaseReactivation = resolve;
+    });
+    let reactivated!: () => void;
+    const reactivationApplied = new Promise<void>((resolve) => {
+      reactivated = resolve;
+    });
+    try {
+      const reactivation = other.sql.begin(async (tx) => {
+        await tx.unsafe("update im_bindings set status = 'active', updated_at = $1::timestamptz where id = $2::uuid", [
+          fixture.now.toISOString(),
+          fixture.bindingId,
+        ]);
+        reactivated();
+        await holdReactivation;
+      });
+      await reactivationApplied;
+
+      const settlement = runImDeliveryOverdueSettlement(client.database, {
+        clock: () => overdue,
+        expiryBatchSize: 10,
+      });
+      // The settlement must wait for the uncommitted reactivation, not commit an `unknown` past it.
+      await expect(Promise.race([settlement.then(() => "settled" as const), sleep(400)])).resolves.toBeUndefined();
+      const [whileBlocked] = await client.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+      expect(whileBlocked).toMatchObject({ reportedAt: null, turnReport: null, resultHash: null, reason: null });
+
+      releaseReactivation();
+      await reactivation;
+      await expect(settlement).resolves.toBeUndefined();
+      const [afterSweep] = await client.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+      // The committed reactivation was seen by the recheck, so the synthetic report was refused.
+      expect(afterSweep).toMatchObject({ reportedAt: null, turnReport: null, resultHash: null, reason: null });
+      // The live owner's report then records, and nothing synthetic was ever persisted.
+      await expect(custody.recordTurn(turnReport(fixture, "completed"), fixture.context)).resolves.toBe("recorded");
+      const [reported] = await client.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+      expect(reported?.turnReport).toMatchObject({ outcome: "completed" });
+      expect(reported?.reason).toBeNull();
+    } finally {
+      await other.sql.end();
+    }
+  });
+
   it("leaves a rolled-over delivery alone while its report-acceptance window is open", async () => {
     const fixture = await createFixture(client.database);
     const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });

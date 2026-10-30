@@ -63,7 +63,9 @@ an inactive binding, a deleted Agent, or a superseded placement generation puts 
 `#recover`'s query, outside the selector, or behind a custody fence a report can no longer satisfy.
 That sweep is bounded by the same batch size, requires the row to be provably past the
 report-acceptance window, skips a row that another worker currently claims, and writes the same
-`unknown` report, so it settles the rows it selects. It covers
+`unknown` report, so it settles the rows it selects. Before it writes, it re-reads the authority it
+selected the row for under row locks on the Agent and the binding: an uncommitted reactivation then
+blocks the settlement instead of being invisible to it, and a committed one refuses it. It covers
 Local custody only; Cloud custody stays with the Cloud owner's own acceptance cutoff.
 
 A superseded placement needs one difference. `PostgresRuntimeCustodyStore` requires the delivery's

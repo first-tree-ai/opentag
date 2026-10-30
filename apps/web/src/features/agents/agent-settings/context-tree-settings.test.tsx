@@ -49,7 +49,9 @@ afterEach(() => {
 });
 async function openForm(mode: "connect" | "create" = "connect") {
   const name = mode === "connect" ? "Connect Context Tree" : "Create Context Tree";
-  const button = screen.queryByRole("button", { name });
+  const button = screen.queryByRole("button", {
+    name: mode === "connect" ? "Connect an existing tree" : "create a new one",
+  });
   if (button) fireEvent.click(button);
   else {
     fireEvent.click(screen.getByRole("button", { name: "Connect another Context Tree" }));
@@ -78,7 +80,7 @@ it("starts with two clear choices and opens only the chosen form, returning focu
   expect(screen.getByRole("heading", { name: "No Context Trees yet" })).toBeTruthy();
   expect(screen.queryByRole("textbox")).toBeNull();
   expect(screen.queryByRole("button", { name: "Add tree" })).toBeNull();
-  const trigger = screen.getByRole("button", { name: "Create Context Tree" });
+  const trigger = screen.getByRole("button", { name: "create a new one" });
   trigger.focus();
   const dialog = await openForm("create");
   expect(within(dialog).getByText(/new private repository/)).toBeTruthy();
@@ -442,7 +444,7 @@ it.each([false, true])("restores a surviving target after disconnect; neighbour=
   const updated = config("agent-a", hasNeighbour ? "acme/next" : null);
   view.rerender(<ContextTreeSettings config={updated} online onChanged={vi.fn()} />);
   const target = screen.getByRole("button", {
-    name: hasNeighbour ? "More actions for next" : "Connect Context Tree",
+    name: hasNeighbour ? "More actions for next" : "Connect an existing tree",
   });
   await waitFor(() => expect(document.activeElement).toBe(target));
 });

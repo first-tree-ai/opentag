@@ -587,7 +587,7 @@ function ContextTreeEmptyState({
   return (
     <section className="flex flex-col items-center gap-5 px-4 py-12 text-center sm:py-16">
       <Icon name="memory" weight="light" className="size-8 text-kumo-inactive" />
-      <div className="flex max-w-sm flex-col gap-2">
+      <div className="flex max-w-sm flex-col gap-2 text-balance">
         <Text as="h2" size="lg" variant="heading">
           {m.agent_settings_context_tree_empty_title()}
         </Text>
@@ -599,12 +599,12 @@ function ContextTreeEmptyState({
                 key={part}
                 variant="inline"
                 disabled={pending}
-                className="inline! h-auto! min-h-0! rounded-sm! p-0! align-baseline font-normal! text-kumo-brand hover:bg-transparent! hover:underline underline-offset-4"
+                className="inline! h-auto! min-h-0! rounded-sm! p-0! align-baseline whitespace-nowrap font-normal! text-kumo-brand hover:bg-transparent! hover:underline underline-offset-4"
                 onClick={(event) => onChoose(part === "\uFFFC" ? "connect" : "create", event.currentTarget)}
               >
                 {part === "\uFFFC"
-                  ? m.agent_settings_context_tree_connect_existing()
-                  : m.agent_settings_context_tree_create_new()}
+                  ? m.agent_settings_context_tree_empty_connect()
+                  : m.agent_settings_context_tree_empty_create()}
               </Button>
             ) : (
               part

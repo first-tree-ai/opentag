@@ -1064,16 +1064,19 @@ the endpoint URL against the Server origin it already pinned; only the fixed pat
 ### Claude Code native configuration
 
 Local Claude reads its native user, project, local, and plugin MCP configuration. OpenTag supplements
-it through `.mcp.json` inside the existing private `opentag` plugin, rather than an exclusive
-`--mcp-config`. The gateway's native name is `plugin:opentag:opentag-mcp`; its tool prefix is
-`mcp__plugin_opentag_opentag-mcp__`. Hosted tools use `plugin:opentag:opentag`. Their permission grants
-refer only to these plugin namespaces, so a user server named `opentag-mcp` retains its own endpoint
-and never receives OpenTag's pre-approval.
+it through `.mcp.json` inside the existing private plugin directory, rather than an exclusive
+`--mcp-config`. Each Run writes a manifest naming that plugin `opentag-<random-id>`. The gateway's
+native name is `plugin:<private-name>:opentag-mcp`; its tool prefix is
+`mcp__plugin_<private-name>_opentag-mcp__`. Hosted tools use `plugin:<private-name>:opentag`. Permission
+grants refer only to that Run's exact plugin namespace. Both a user server named `opentag-mcp` and
+a user plugin named `opentag` keep their own endpoints and never inherit the platform's grant rules.
 
 Each Run receives a fresh private plugin configuration with that execution's bearer. Cleanup removes
 only that temporary plugin; it never rewrites user MCP files. Upstream credentials and Server-side
 authorization still use the existing gateway. Native local MCP services use their own configuration
 and credentials, without being registered in the platform catalog or sent to the Server.
+Native MCP startup and tool limits remain Claude's responsibility, including the operator's
+`MCP_TIMEOUT` setting. Run deadlines and cancellation continue to bound the owned Provider process.
 
 ### Codex: rebinding the thread per run
 

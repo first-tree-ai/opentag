@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -75,5 +75,25 @@ describe("Claude native skill links", () => {
     expect(await readdir(join(f.plugin, "skills"))).toEqual(["memory"]);
     expect(await readFile(join(project, "SKILL.md"), "utf8")).toContain("name: project");
     expect(await realpath(join(f.plugin, "skills", "memory"))).toBe(await realpath(packaged));
+  });
+
+  it("deduplicates project Skills when the cwd or selected path uses a symlink alias", async () => {
+    const f = await fixture();
+    const project = await skill(join(f.skills, "project"), "project");
+    const packaged = await skill(join(f.home, "packaged", "memory"), "memory");
+    const alias = join(f.home, "alias");
+    await symlink(join(f.home, "workspace"), alias, "junction");
+    await linkClaudeSkills(f.plugin, [project, packaged], alias);
+    expect(await readdir(join(f.plugin, "skills"))).toEqual(["memory"]);
+    const otherPlugin = join(f.home, "other-plugin");
+    await linkClaudeSkills(otherPlugin, [join(alias, ".claude", "skills", "project")], join(f.home, "workspace"));
+    expect(await readdir(join(otherPlugin, "skills"))).toEqual([]);
+  });
+
+  it("retains packaged Skills when the workspace has no native Skill root", async () => {
+    const f = await fixture();
+    const packaged = await skill(join(f.home, "packaged", "memory"), "memory");
+    await linkClaudeSkills(f.plugin, [packaged], join(f.home, "missing-workspace"));
+    expect(await readdir(join(f.plugin, "skills"))).toEqual(["memory"]);
   });
 });

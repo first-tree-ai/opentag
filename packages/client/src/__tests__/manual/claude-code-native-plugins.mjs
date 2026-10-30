@@ -14,12 +14,12 @@ const sibling = join(home, "sibling");
 const configHome = join(home, "claude-config");
 const market = join(home, "marketplace");
 const plugin = join(market, "native-fixture");
+const sameNamePlugin = join(market, "opentag");
 const command = process.env.OPENTAG_CLAUDE_COMMAND ?? "claude";
 const tools = {
   user: "mcp__opentag-mcp__user_echo",
   plugin: "mcp__plugin_native-fixture_plugin-tools__plugin_echo",
-  managed: "mcp__plugin_opentag_opentag-mcp__managed_echo",
-  hosted: "mcp__plugin_opentag_opentag__hosted_echo",
+  collision: "mcp__plugin_opentag_opentag-mcp__collision_echo",
 };
 const mcpCalls = [];
 const hostedCalls = [];
@@ -58,6 +58,14 @@ function sendMessage(response, content, stopReason) {
 function serveMcp(request, response, body) {
   if (request.method !== "POST") return response.writeHead(405).end();
   const kind = request.url.split("/").at(-1);
+  if (kind === "hanging") {
+    state.hangingConnections = (state.hangingConnections ?? 0) + 1;
+    return;
+  }
+  if (kind === "unauthorized") {
+    state.unauthorizedConnections = (state.unauthorizedConnections ?? 0) + 1;
+    return response.writeHead(401).end();
+  }
   if (kind === "managed" && request.headers.authorization !== `Bearer ${state.token}`) {
     return response.writeHead(401).end();
   }
@@ -83,15 +91,18 @@ function serveModel(response, body) {
     state.catalog = names;
     const serialized = JSON.stringify(body);
     state.projectSkill = serialized.includes("project-fixture");
-    state.packagedSkill = serialized.includes("opentag:packaged-fixture");
-    state.duplicateProjectSkill = serialized.includes("opentag:project-fixture");
+    state.packagedSkill = /opentag-[a-f0-9]{16}:packaged-fixture/.test(serialized);
+    state.duplicateProjectSkill = /opentag-[a-f0-9]{16}:project-fixture/.test(serialized);
+    state.managedTool = names.find((name) => /^mcp__plugin_opentag-[a-f0-9]{16}_opentag-mcp__managed_echo$/.test(name));
+    state.hostedTool = names.find((name) => /^mcp__plugin_opentag-[a-f0-9]{16}_opentag__hosted_echo$/.test(name));
   }
   if (state.phase.startsWith("enabled") && !state.issued) {
-    for (const name of Object.values(tools)) assert.ok(names.includes(name), `Missing native tool: ${name}`);
+    const targets = [...Object.values(tools), state.managedTool, state.hostedTool];
+    for (const name of targets) assert.ok(names.includes(name), `Missing native tool: ${name}`);
     state.issued = true;
     sendMessage(
       response,
-      Object.values(tools).map((name, index) => ({
+      targets.map((name, index) => ({
         type: "tool_use",
         id: `tool_${state.phase}_${index}`,
         name,
@@ -136,6 +147,7 @@ const environment = {
   DISABLE_AUTOUPDATER: "1",
   PLUGIN_CUSTOM_OPTION: "native-option",
   CI: "1",
+  MCP_TIMEOUT: "1000",
 };
 const writeJson = (path, value) => writeFile(path, JSON.stringify(value));
 const endpoint = (kind) => ({ type: "http", url: `${origin}/mcp/${kind}` });
@@ -167,15 +179,17 @@ async function run(target, phase, token) {
     runId: phase,
     input: { items: [{ type: "text", text: "Run the local fixture." }] },
     configuration: { provider: { mcpGateway: { url: `${origin}/mcp/managed`, token } } },
-    signal: AbortSignal.timeout(90_000),
+    signal: AbortSignal.timeout(phase === "unavailable-mcp" ? 20_000 : 90_000),
   });
   assert.equal(fixtureError, undefined);
   assert.equal(result.status, "completed", JSON.stringify(result.error));
-  assert.ok(state.catalog.includes(tools.managed));
+  assert.ok(state.managedTool);
+  assert.ok(state.hostedTool);
   reports.push({
     phase,
     nativePluginLoaded: state.catalog.includes(tools.plugin),
     userMcpLoaded: state.catalog.includes(tools.user),
+    sameNamePluginLoaded: state.catalog.includes(tools.collision),
   });
   return state;
 }
@@ -189,6 +203,7 @@ try {
     join(plugin, ".claude-plugin"),
     join(plugin, "hooks"),
     join(plugin, "skills", "native-fixture"),
+    join(sameNamePlugin, ".claude-plugin"),
     join(workspace, ".claude", "skills", "project-fixture"),
     join(home, "packaged-fixture"),
   ])
@@ -207,10 +222,15 @@ try {
     },
   });
   await writeJson(join(plugin, ".mcp.json"), { mcpServers: { "plugin-tools": endpoint("plugin") } });
+  await writeJson(join(sameNamePlugin, ".claude-plugin", "plugin.json"), { name: "opentag", version: "1.0.0" });
+  await writeJson(join(sameNamePlugin, ".mcp.json"), { mcpServers: { "opentag-mcp": endpoint("collision") } });
   await writeJson(join(market, ".claude-plugin", "marketplace.json"), {
     name: "native-fixture-market",
     owner: { name: "OpenTag test" },
-    plugins: [{ name: "native-fixture", source: "./native-fixture" }],
+    plugins: [
+      { name: "native-fixture", source: "./native-fixture" },
+      { name: "opentag", source: "./opentag" },
+    ],
   });
   for (const [path, name] of [
     [join(plugin, "skills", "native-fixture"), "native-fixture"],
@@ -226,6 +246,7 @@ try {
   const execution = { cwd: workspace, env: environment, timeout: 30_000 };
   await exec(command, ["plugin", "marketplace", "add", market, "--scope", "project"], execution);
   await exec(command, ["plugin", "install", "native-fixture@native-fixture-market", "--scope", "project"], execution);
+  await exec(command, ["plugin", "install", "opentag@native-fixture-market", "--scope", "project"], execution);
   const originalSettings = await readFile(settingsPath, "utf8");
   const originalMcp = await readFile(mcpPath, "utf8");
   const factory = new ClaudeCodeAgentRuntimeFactory({ process: { command, env: environment } });
@@ -243,7 +264,7 @@ try {
     mcpCalls.filter((call) => call.kind === "managed").map((call) => call.token),
     ["otmg_fixture_one", "otmg_fixture_two"],
   );
-  for (const kind of ["user", "plugin", "managed"])
+  for (const kind of ["user", "plugin", "collision", "managed"])
     assert.equal(mcpCalls.filter((call) => call.kind === kind).length, 2);
   assert.equal(await readFile(settingsPath, "utf8"), originalSettings);
   assert.equal(await readFile(mcpPath, "utf8"), originalMcp);
@@ -252,20 +273,37 @@ try {
   assert.equal(hookBeforeDisable.option, "native-option");
   await writeJson(settingsPath, {
     ...JSON.parse(originalSettings),
-    enabledPlugins: { "native-fixture@native-fixture-market": false },
+    enabledPlugins: { ...JSON.parse(originalSettings).enabledPlugins, "native-fixture@native-fixture-market": false },
   });
   const disabled = await run(runtime, "disabled", "otmg_fixture_disabled");
   assert.equal(disabled.catalog.includes(tools.plugin), false);
+  assert.ok(disabled.catalog.includes(tools.collision));
   assert.deepEqual(JSON.parse(await readFile(hookPath, "utf8")), hookBeforeDisable);
+  await writeJson(mcpPath, {
+    mcpServers: {
+      ...JSON.parse(originalMcp).mcpServers,
+      hanging: endpoint("hanging"),
+      unauthorized: endpoint("unauthorized"),
+    },
+  });
+  const unavailableStarted = Date.now();
+  const unavailable = await run(runtime, "unavailable-mcp", "otmg_fixture_unavailable");
+  const unavailableDurationMs = Date.now() - unavailableStarted;
+  assert.ok(unavailable.hangingConnections > 0);
+  assert.ok(unavailable.unauthorizedConnections > 0);
+  assert.ok(unavailable.catalog.includes(tools.user));
+  assert.ok(unavailable.catalog.includes(tools.collision));
+  await writeFile(mcpPath, originalMcp);
   await runtime.close();
   siblingRuntime = await openRuntime(factory, sibling);
   const isolated = await run(siblingRuntime, "sibling", "otmg_fixture_sibling");
   assert.equal(isolated.catalog.includes(tools.user), false);
   assert.equal(isolated.catalog.includes(tools.plugin), false);
+  assert.equal(isolated.catalog.includes(tools.collision), false);
   assert.equal(await readFile(mcpPath, "utf8"), originalMcp);
   const version = (await exec(command, ["--version"], { env: environment })).stdout.trim();
   process.stdout.write(
-    `${JSON.stringify({ ok: true, version, reports, nativeMcpCalls: mcpCalls.length, hostedCalls: hostedCalls.length, projectSkillLoadedOnce: true, hookCount: hookBeforeDisable.count, sharedFilesUnchanged: true })}\n`,
+    `${JSON.stringify({ ok: true, version, reports, nativeMcpCalls: mcpCalls.length, hostedCalls: hostedCalls.length, projectSkillLoadedOnce: true, hookCount: hookBeforeDisable.count, sharedFilesUnchanged: true, unavailableDurationMs })}\n`,
   );
 } finally {
   await runtime?.close();

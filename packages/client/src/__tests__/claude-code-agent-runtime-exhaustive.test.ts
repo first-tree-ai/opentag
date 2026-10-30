@@ -816,13 +816,13 @@ echo '{"loggedIn":true}'
     });
   });
 
-  it("probes the same native setting sources as runtime execution", async () => {
+  it("keeps Provider readiness independent of project credentials in the caller cwd", async () => {
     const directory = await temporaryDirectory("opentag-claude-probe-");
     const authArguments = join(directory, "auth-arguments");
     const userCredentialCommand = join(directory, "claude-user-credential");
     await writeFile(
       userCredentialCommand,
-      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "auto" --append-system-prompt\\n"; exit 0; fi\nprintf '%s\\n' "$*" > '${authArguments}'\nif [ "$1" = "--setting-sources" ] && [ "$2" = "user,project,local" ]; then printf '{"loggedIn":false}\\n'; exit 1; fi\nprintf '{"loggedIn":true}\\n'\n`,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "auto" --append-system-prompt\\n"; exit 0; fi\nprintf '%s\\n' "$*" > '${authArguments}'\nif [ "$1" = "--setting-sources" ] && [ "$2" = "user" ]; then printf '{"loggedIn":false}\\n'; exit 1; fi\nprintf '{"loggedIn":true}\\n'\n`,
       "utf8",
     );
     await chmod(userCredentialCommand, 0o755);
@@ -834,15 +834,13 @@ echo '{"loggedIn":true}'
       version: "2.1.210 (Claude Code)",
       issues: [{ code: "credential_missing" }],
     });
-    await expect(readFile(authArguments, "utf8")).resolves.toBe(
-      "--setting-sources user,project,local auth status --json\n",
-    );
+    await expect(readFile(authArguments, "utf8")).resolves.toBe("--setting-sources user auth status --json\n");
 
-    // Subscription or API credentials that do not require settings still report ready.
+    // User-scoped credentials still report ready; project authentication is checked natively in Agent Home.
     const nativeCredentialCommand = join(directory, "claude-native-credential");
     await writeFile(
       nativeCredentialCommand,
-      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "auto" --append-system-prompt\\n"; exit 0; fi\nif [ "$1" = "--setting-sources" ] && [ "$2" = "user,project,local" ]; then printf '{"loggedIn":true}\\n'; exit 0; fi\nprintf '{"loggedIn":false}\\n'; exit 1\n`,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "auto" --append-system-prompt\\n"; exit 0; fi\nif [ "$1" = "--setting-sources" ] && [ "$2" = "user" ]; then printf '{"loggedIn":true}\\n'; exit 0; fi\nprintf '{"loggedIn":false}\\n'; exit 1\n`,
       "utf8",
     );
     await chmod(nativeCredentialCommand, 0o755);

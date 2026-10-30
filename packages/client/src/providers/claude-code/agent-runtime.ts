@@ -945,7 +945,8 @@ async function probeClaudeCodeCredential(
 ): Promise<Readonly<Record<string, unknown>> | undefined> {
   let output: string;
   try {
-    output = (await execFileAsync(command, [...CLAUDE_CODE_SETTING_SOURCES, "auth", "status", "--json"], execution))
+    // Readiness is cached per Provider, so an unrelated daemon project cannot supply its credentials.
+    output = (await execFileAsync(command, ["--setting-sources", "user", "auth", "status", "--json"], execution))
       .stdout;
   } catch (error) {
     if (signal?.aborted) throw error;

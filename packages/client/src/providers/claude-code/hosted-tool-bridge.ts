@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,7 +14,6 @@ const MCP_PROTOCOL_VERSION = "2025-03-26";
 const logger = createLogger("provider-claude-mcp");
 /** The loopback server carrying OpenTag's own hosted tools. */
 const LOCAL_SERVER_NAME = "opentag";
-const PLUGIN_TOOL_PREFIX = "mcp__plugin_opentag_";
 
 /** The remote MCP gateway for this execution; both fields are opaque to this module. */
 export interface ClaudeCodeMcpGatewayEndpoint {
@@ -45,10 +44,16 @@ export async function startClaudeCodeHostedToolBridge(
 
   const directory = await mkdtemp(join(tmpdir(), "opentag-claude-mcp-"));
   const pluginPath = join(directory, "opentag");
+  const pluginName = `opentag-${randomBytes(8).toString("hex")}`;
+  const toolPrefix = `mcp__plugin_${pluginName}_`;
   const configPath = join(pluginPath, ".mcp.json");
   let server: Server | undefined;
   try {
     await linkClaudeSkills(pluginPath, skillPaths, cwd);
+    await mkdir(join(pluginPath, ".claude-plugin"), { mode: 0o700 });
+    await writeFile(join(pluginPath, ".claude-plugin", "plugin.json"), JSON.stringify({ name: pluginName }), {
+      mode: 0o600,
+    });
     /*
      * The two entries are independent. The loopback bridge exists only when this run has hosted
      * tools; the remote gateway only when the execution holds a bearer. An MCP-only run must still
@@ -119,8 +124,8 @@ export async function startClaudeCodeHostedToolBridge(
      * that server.
      */
     allowedTools: [
-      ...[...definitions.keys()].map((name) => `${PLUGIN_TOOL_PREFIX}${LOCAL_SERVER_NAME}__${name}`),
-      ...(mcpGateway ? [`${PLUGIN_TOOL_PREFIX}${MCP_GATEWAY_SERVER_NAME}`] : []),
+      ...[...definitions.keys()].map((name) => `${toolPrefix}${LOCAL_SERVER_NAME}__${name}`),
+      ...(mcpGateway ? [`${toolPrefix}${MCP_GATEWAY_SERVER_NAME}`] : []),
     ],
     configPath,
     pluginPath,

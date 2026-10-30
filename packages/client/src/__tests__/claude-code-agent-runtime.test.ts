@@ -199,8 +199,10 @@ describe("ClaudeCodeAgentRuntime", () => {
 
     await runtime.prompt({ runId: "run-hosted", input: input("reply") });
     expect(processes[0]?.args).toContain("--allowedTools");
-    expect(processes[0]?.args).toContain("mcp__plugin_opentag_opentag__example_tool");
-    expect(processes[0]?.args).not.toContain("mcp__plugin_opentag_opentag__Read");
+    expect(processes[0]?.args).toContainEqual(
+      expect.stringMatching(/^mcp__plugin_opentag-[a-f0-9]{16}_opentag__example_tool$/),
+    );
+    expect(processes[0]?.args).not.toContainEqual(expect.stringMatching(/_opentag__Read$/));
     expect(argumentAfter(processes[0]?.args ?? [], "--permission-mode")).toBe("bypassPermissions");
     expect(processes[0]?.args).not.toContain("--disallowedTools");
     await runtime.close();

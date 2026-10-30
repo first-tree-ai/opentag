@@ -500,7 +500,7 @@ describe("Agent Runtime Client Turn vertical", () => {
     expect(args).not.toContain("--mcp-config");
     expect(args[args.indexOf("--plugin-dir") + 1]).toBeTruthy();
     expect(args).toContain("--allowedTools");
-    expect(args).toContain("mcp__plugin_opentag_opentag-mcp");
+    expect(args).toContain(`mcp__plugin_${launched?.pluginName}_opentag-mcp`);
   });
 
   it("writes no gateway entry when the Server granted no MCP service", async () => {
@@ -510,7 +510,7 @@ describe("Agent Runtime Client Turn vertical", () => {
     await fixture.waitForReport(0);
     const launched = fixture.claudeProcesses[0];
     expect(JSON.parse(launched?.mcpConfig ?? "{}")).toEqual({ mcpServers: {} });
-    expect(launched?.args ?? []).not.toContain("mcp__plugin_opentag_opentag-mcp");
+    expect(launched?.args ?? []).not.toContainEqual(expect.stringMatching(/_opentag-mcp$/));
   });
 });
 
@@ -988,6 +988,7 @@ class ScriptedClaudeCodeProcess implements ClaudeCodeProcessClient {
   readonly args: readonly string[];
   /** Capture the private plugin configuration before per-run cleanup deletes it. */
   readonly mcpConfig: string | undefined;
+  readonly pluginName: string;
   readonly #failSpawn: boolean;
   readonly #terminalGate: Promise<void>;
 
@@ -997,6 +998,9 @@ class ScriptedClaudeCodeProcess implements ClaudeCodeProcessClient {
     this.#terminalGate = terminalGate;
     const pluginPath = args[args.indexOf("--plugin-dir") + 1];
     this.mcpConfig = pluginPath ? readFileSync(resolve(pluginPath, ".mcp.json"), "utf8") : undefined;
+    this.pluginName = JSON.parse(
+      readFileSync(resolve(pluginPath as string, ".claude-plugin", "plugin.json"), "utf8"),
+    ).name;
   }
 
   async execute(

@@ -392,8 +392,8 @@ export function renderManagedSystemPrompt(snapshot: EffectiveRuntimeSnapshot, co
           "## Native Claude configuration",
           "",
           "Use the native claude CLI and configuration files to install, configure, and inspect plugins, hooks, Skills, and local MCP servers. Prefer project scope under Agent Home; change user-wide configuration only when explicitly requested.",
-          "Run native checks from Agent Home with the current environment. Use claude plugin --help and claude mcp --help for the installed version. An installed plugin is not proof that it loaded or that its tools work; report the checks actually performed and whether a new provider process is needed.",
-          "OpenTag supplements native configuration through its private opentag plugin. Native local and stdio MCP configuration does not use opentag self mcp; the platform MCP instructions apply to platform-managed connections.",
+          "Run native checks from Agent Home with the current environment. Use claude plugin --help and claude mcp --help for the installed version. Check project credentials with claude --setting-sources user,project,local auth status --json; computer runtime-inspect checks Provider-level user credentials only. An installed plugin is not proof that it loaded or that its tools work; report the checks actually performed and whether a new provider process is needed.",
+          "OpenTag supplements native configuration through a private plugin with a unique name for each Run. Use the names in the current native tool and Skill catalog. Native local and stdio MCP configuration does not use opentag self mcp; the platform MCP instructions apply to platform-managed connections.",
           "",
         ]
       : []),

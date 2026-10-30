@@ -27,16 +27,20 @@ Checks:
 
 - Native project plugin hooks run and see a custom operator environment variable.
 - A project Skill is discovered once; an external packaged Skill remains available through the
-  `opentag` plugin.
+  private plugin's current namespace. Unit regression tests also cover symlink aliases of Agent Home.
 - A user MCP server named `opentag-mcp` keeps its endpoint, while the platform gateway is loaded as
-  `plugin:opentag:opentag-mcp`. The plugin's own MCP server also remains callable.
-- Each of two Runs calls the user MCP, plugin MCP, platform gateway, and hosted tool. The two Runs
+  `plugin:<private-name>:opentag-mcp`. A separate user plugin named `opentag`, including a server named
+  `opentag-mcp`, remains callable alongside the platform plugin.
+- Each of two Runs calls the user MCP, both plugin MCP services, platform gateway, and hosted tool. The two Runs
   use different fixture gateway tokens through the same adapter instance.
 - Disabling the native plugin in project settings stops its hook and removes its tool on the next
   Run, while the user and platform MCP services remain available.
 - A sibling working directory does not inherit the first project's plugin or local MCP service.
 - The adapter does not rewrite the user's project settings or MCP configuration. All fixture
   resources are removed after the test.
+- With `MCP_TIMEOUT=1000`, a nonresponding MCP endpoint and a separate HTTP 401 endpoint do not prevent
+  a Run from completing with its healthy platform and native tools. This verifies the installed CLI's
+  bounded startup behavior under that setting, not every operator-selected timeout.
 
 ### Recorded local result
 
@@ -47,16 +51,43 @@ Checks:
   "ok": true,
   "version": "2.1.210 (Claude Code)",
   "reports": [
-    { "phase": "enabled-one", "nativePluginLoaded": true, "userMcpLoaded": true },
-    { "phase": "enabled-two", "nativePluginLoaded": true, "userMcpLoaded": true },
-    { "phase": "disabled", "nativePluginLoaded": false, "userMcpLoaded": true },
-    { "phase": "sibling", "nativePluginLoaded": false, "userMcpLoaded": false }
+    {
+      "phase": "enabled-one",
+      "nativePluginLoaded": true,
+      "userMcpLoaded": true,
+      "sameNamePluginLoaded": true
+    },
+    {
+      "phase": "enabled-two",
+      "nativePluginLoaded": true,
+      "userMcpLoaded": true,
+      "sameNamePluginLoaded": true
+    },
+    {
+      "phase": "disabled",
+      "nativePluginLoaded": false,
+      "userMcpLoaded": true,
+      "sameNamePluginLoaded": true
+    },
+    {
+      "phase": "unavailable-mcp",
+      "nativePluginLoaded": false,
+      "userMcpLoaded": true,
+      "sameNamePluginLoaded": true
+    },
+    {
+      "phase": "sibling",
+      "nativePluginLoaded": false,
+      "userMcpLoaded": false,
+      "sameNamePluginLoaded": false
+    }
   ],
-  "nativeMcpCalls": 6,
+  "nativeMcpCalls": 8,
   "hostedCalls": 2,
   "projectSkillLoadedOnce": true,
   "hookCount": 2,
-  "sharedFilesUnchanged": true
+  "sharedFilesUnchanged": true,
+  "unavailableDurationMs": 1935
 }
 ```
 
@@ -66,7 +97,7 @@ Server gateway revocation, or every third-party plugin's headless compatibility.
 
 ## Regression scope
 
-- Claude runtime, native setting sources, environment preservation, permission callbacks, hosted
+- Claude runtime, user-only Provider readiness, native setting sources, environment preservation, permission callbacks, hosted
   bridge namespace, project Skill deduplication, and native model-option tests.
 - Local composition, including default/custom Claude homes and unchanged Codex/Pi paths.
 - Existing CLI `runtime-inspect`, including preserved custom plugin variables and unchanged

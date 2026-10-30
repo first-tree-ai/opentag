@@ -9,13 +9,29 @@ Local Codex Agents use `workspace-write` with `on-request` approvals and disable
 access. Local Claude Code Agents use `auto`: its native classifier reviews actions and its permission
 callback sends remaining requests to the task sender. Claude Code must support `auto` and
 `--permission-prompt-tool`. Claude's native gate does not provide an OS sandbox.
-Claude loads no user or project settings and disables hooks and dynamic skill shell execution.
-Only explicitly synced skills and packaged Context Tree skills are linked into a private skills-only
-plugin as `opentag:<skill-name>`. Unavailable skills are skipped. Skills retain their native metadata
-and use their original instructions and resources; edits remain visible during a run. Claude honors
+Local Claude loads native user, project, and local settings, plugins, hooks, and Skill shell execution.
+Its environment preserves operator-provided plugin variables. Users and Agents manage these through
+native configuration and commands, preferably at project scope under the existing Agent Home.
+Provider homes, native login, and Session history locations stay unchanged. Global settings retain
+their native scope; project directories do not isolate them.
+Claude discovers synced project Skills natively. External packaged Skills, including Context Tree
+Skills, are linked into a private plugin with a fresh explicit `opentag-<random-id>` name per Run,
+without linking project Skills a second time. Skill names use that Run's namespace, as listed in
+the native catalog. Unavailable external Skills are skipped. Skills retain native metadata
+and original resources; edits remain visible during a run. Claude honors
 skill `allowed-tools` grants, which can pre-approve commands otherwise subject to approval. Approvals
 are practical guardrails, not isolation from writable skills or approval-free file reads and uploads.
-Subscription login is preserved.
+OpenTag's supplementary temporary MCP configuration uses fresh service names per Run, keeping
+platform tools and their grant rules separate from native user servers. The gateway name stays
+short enough to preserve its original tool-name budget. Native plugins and hooks execute as trusted local code and can run outside tool
+approvals, and a model-written project configuration can enable them on the next Run. The inherited
+daemon environment can include long-lived operator credentials; these are not fenced or revoked
+with an execution. See the [native trust contract](agent-runtime-contract.md#local-claude-native-configuration-and-trust).
+Subscription login is preserved. Provider readiness checks user-scoped authentication only, while
+Agent-project authentication must be checked natively from Agent Home. Routine model-option queries
+suppress hooks and MCP connections but still read native settings and may execute credential helpers;
+their success does not establish that an installed plugin loaded or its tools worked. Chrome integration
+also follows native configuration; OpenTag supplies no browser UI or additional browser isolation.
 Pi always runs without approvals and has no permission settings or permission extension.
 
 Native command rules allow Feishu and Slack message reads, sends, edits, reactions, conversation

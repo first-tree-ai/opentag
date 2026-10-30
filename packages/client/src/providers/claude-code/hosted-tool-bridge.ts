@@ -1,9 +1,8 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MCP_GATEWAY_ALLOWED_TOOL_RULE, MCP_GATEWAY_SERVER_NAME } from "@opentag/shared";
 import type { AgentHostedTools, JsonValue } from "../../agent-runtime/types.js";
 import { assertJsonValue } from "../../agent-runtime/validation.js";
 import { createLogger } from "../../observability/logger.js";
@@ -12,8 +11,6 @@ import { linkClaudeSkills } from "./skill-plugin.js";
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const logger = createLogger("provider-claude-mcp");
-/** The loopback server carrying OpenTag's own hosted tools. */
-const LOCAL_SERVER_NAME = "opentag";
 
 /** The remote MCP gateway for this execution; both fields are opaque to this module. */
 export interface ClaudeCodeMcpGatewayEndpoint {
@@ -34,6 +31,7 @@ export async function startClaudeCodeHostedToolBridge(
   signal: AbortSignal,
   skillPaths: readonly string[],
   mcpGateway?: ClaudeCodeMcpGatewayEndpoint,
+  cwd?: string,
 ): Promise<ClaudeCodeHostedToolBridge> {
   signal.throwIfAborted();
   const definitions = new Map((hostedTools?.definitions ?? []).map((definition) => [definition.name, definition]));
@@ -42,11 +40,20 @@ export async function startClaudeCodeHostedToolBridge(
   }
 
   const directory = await mkdtemp(join(tmpdir(), "opentag-claude-mcp-"));
-  const configPath = join(directory, "mcp.json");
   const pluginPath = join(directory, "opentag");
+  const pluginName = `opentag-${randomBytes(8).toString("hex")}`;
+  const serverId = randomBytes(5).toString("hex");
+  const localServerName = `h${serverId}`;
+  const gatewayServerName = `g${serverId}`;
+  // Keep the gateway prefix no longer than the original 11-character server name.
+  const configPath = join(directory, "mcp.json");
   let server: Server | undefined;
   try {
-    await linkClaudeSkills(pluginPath, skillPaths);
+    await linkClaudeSkills(pluginPath, skillPaths, cwd);
+    await mkdir(join(pluginPath, ".claude-plugin"), { mode: 0o700 });
+    await writeFile(join(pluginPath, ".claude-plugin", "plugin.json"), JSON.stringify({ name: pluginName }), {
+      mode: 0o600,
+    });
     /*
      * The two entries are independent. The loopback bridge exists only when this run has hosted
      * tools; the remote gateway only when the execution holds a bearer. An MCP-only run must still
@@ -80,14 +87,14 @@ export async function startClaudeCodeHostedToolBridge(
         throw new Error("Claude Code hosted tool bridge did not bind a TCP port");
       }
       /* v8 ignore stop */
-      mcpServers[LOCAL_SERVER_NAME] = {
+      mcpServers[localServerName] = {
         type: "http",
         url: `http://127.0.0.1:${address.port}/mcp`,
         headers: { Authorization: `Bearer ${token}` },
       };
     }
     if (mcpGateway) {
-      mcpServers[MCP_GATEWAY_SERVER_NAME] = {
+      mcpServers[gatewayServerName] = {
         type: "http",
         url: mcpGateway.url,
         headers: { Authorization: `Bearer ${mcpGateway.token}` },
@@ -117,8 +124,8 @@ export async function startClaudeCodeHostedToolBridge(
      * that server.
      */
     allowedTools: [
-      ...[...definitions.keys()].map((name) => `mcp__${LOCAL_SERVER_NAME}__${name}`),
-      ...(mcpGateway ? [MCP_GATEWAY_ALLOWED_TOOL_RULE] : []),
+      ...[...definitions.keys()].map((name) => `mcp__${localServerName}__${name}`),
+      ...(mcpGateway ? [`mcp__${gatewayServerName}`] : []),
     ],
     configPath,
     pluginPath,

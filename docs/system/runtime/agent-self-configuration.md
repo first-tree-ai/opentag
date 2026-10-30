@@ -33,6 +33,13 @@ prompt shows.
 
 ## Owner control
 
+Local Claude can also use native commands and files to manage plugins, hooks, Skills, and local MCP
+servers under its existing Agent Home. These are local operations, not the Server `self` API, and
+`selfConfigurationEnabled` does not control them. Prefer native project scope when configuring one
+Agent; global changes retain their native effect on other projects. Inspect native loading and tool
+availability before reporting success. See [Agent permissions](agent-permissions.md) for the native
+configuration and execution boundary.
+
 Self-configuration is enabled by default. New Agents start with `selfConfigurationEnabled` set to true, and migration
 `0072_self_configuration_default_enabled` turned it on for every Agent that was not deleted. That migration cannot
 tell an earlier owner opt-out from the earlier default, so it turned both on.

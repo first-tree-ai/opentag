@@ -137,6 +137,35 @@ Packaged Context Tree skills are passed explicitly. Model credentials come from 
 operator's configured Pi environment; Local E1 does not introduce a hosted secret
 proxy or Cloud sandbox.
 
+### Local Claude native configuration and trust
+
+Local Claude admits native user, project, and local configuration, including plugins, hooks,
+Skills, MCP servers, environment overrides, and credential helpers. Agents may configure these in
+their existing Agent Home. Because that directory is model-writable, a file write can enable code
+that runs on the next Run before any tool approval. Native hooks, helpers, plugins, and stdio MCP
+processes execute as trusted local code; native tool approvals do not isolate them.
+
+Claude inherits the operator-provided daemon environment, including custom variables and any
+long-lived credentials present there. Those credentials do not acquire execution fencing or
+revocation by entering Claude. The existing execution-bound lifecycle applies to OpenTag-issued
+platform bearers, not to user-managed native credentials. Native configuration remains local and
+does not become Server plugin state or a platform-managed MCP registration. User-wide configuration
+keeps its native effect across projects; an Agent cwd does not isolate global settings.
+
+OpenTag adds its own MCP services through a supplementary temporary MCP configuration with fresh
+service names for each Run. The gateway name stays at 11 characters, preserving its existing
+model-facing tool-name budget. External packaged Skills use a private plugin with an explicit,
+randomly generated name per Run. A native user plugin named `opentag` remains loadable alongside
+platform resources. Tool grants use that Run's exact service names; Skill names come from the
+current native catalog. Existing cwd, Provider Home, login, and conversation
+history locations do not change. Codex, Pi, and Cloud resource policies retain their own rules.
+
+Claude Provider readiness is cached for the Computer and reads user-scoped authentication only.
+It must not derive shared readiness from whichever project is the daemon's cwd. It is not proof of
+an Agent project's authentication or plugin loading. Check those with native commands from Agent
+Home and the current Run's actual tool/Skill catalog. Project-only credentials do not establish
+Computer-level readiness.
+
 ### Pi binding lifecycle
 
 A new Pi binding records the provider Session UUID before Run admission. Its

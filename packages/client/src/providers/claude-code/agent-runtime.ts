@@ -54,16 +54,7 @@ const execFileAsync = promisify(execFile);
 const CLAUDE_CODE_BINDING_SCHEMA_VERSION = 1;
 const CLAUDE_CODE_PROVIDER_ID = "claude-code";
 
-/**
- * The setting sources every Claude Code invocation loads. Runtime turns and the credential probe
- * must interrogate exactly the same configuration: probing the CLI defaults would read user-level
- * settings the runtime never loads and report a false-positive `ready` while every turn fails
- * authentication.
- *
- * Agent Home is model-writable, so none of its settings may execute hooks, credential helpers,
- * or environment overrides. Skills are loaded separately through an owned skills-only plugin.
- */
-const CLAUDE_CODE_SETTING_SOURCES = ["--setting-sources", ""] as const;
+const CLAUDE_CODE_SETTING_SOURCES = ["--setting-sources", "user,project,local"] as const;
 const logger = createLogger("provider-claude-code-runtime");
 
 export const CLAUDE_CODE_AGENT_RUNTIME_MANIFEST: AgentRuntimeManifest = Object.freeze({
@@ -92,6 +83,7 @@ interface ClaudeCodeProviderConfiguration {
 }
 
 interface ClaudeCodeRuntimeOptions {
+  readonly cwd: string;
   readonly policy: AgentRuntimePolicy;
   readonly binding: AgentRuntimeBinding;
   readonly configuration?: AgentRunConfiguration;
@@ -164,6 +156,7 @@ interface ToolState {
 }
 
 export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
+  readonly #cwd: string;
   readonly #policy: AgentRuntimePolicy;
   readonly #permissions = new Map<string, Readonly<Record<string, unknown>>>();
   readonly #sessionId: string;
@@ -197,6 +190,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       binding: options.binding,
     });
     this.#sessionId = parseClaudeCodeBinding(options.binding);
+    this.#cwd = options.cwd;
     this.#policy = options.policy;
     this.#configuration = options.configuration;
     this.#createProcess = options.createProcess;
@@ -241,6 +235,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
           context.signal,
           this.#skillPaths,
           mcpGateway,
+          this.#cwd,
         );
         process = this.#createProcess(this.#arguments(request, hostedToolBridge));
       } catch (error) {
@@ -324,11 +319,9 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       "stream-json",
       "--verbose",
       "--include-partial-messages",
-      "--no-chrome",
       ...CLAUDE_CODE_SETTING_SOURCES,
       "--plugin-dir",
       hostedToolBridge.pluginPath,
-      "--strict-mcp-config",
       "--mcp-config",
       hostedToolBridge.configPath,
       ...(this.#policy.approvals === "never" && hostedToolBridge.allowedTools.length > 0
@@ -340,8 +333,6 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       ...(this.#policy.approvals === "never" ? [] : ["--permission-prompt-tool", "stdio"]),
       "--settings",
       JSON.stringify({
-        disableAllHooks: true,
-        disableSkillShellExecution: true,
         ...(this.#policy.approvals === "never"
           ? {}
           : { permissions: claudePermissionRules(this.#policy.allowedCommands ?? [], this.#policy.managedCli) }),
@@ -867,6 +858,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
     try {
       await request.eventSink({ type: "binding_changed", binding });
       return new ClaudeCodeAgentRuntime({
+        cwd: request.workspace.cwd,
         policy: request.policy,
         binding,
         configuration: request.configuration,
@@ -895,53 +887,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
 }
 
 export function claudeCodeAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const exact = new Set([
-    "APPDATA",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "CLAUDE_CONFIG_DIR",
-    "CLAUDE_CODE_USE_BEDROCK",
-    "CLAUDE_CODE_USE_FOUNDRY",
-    "CLAUDE_CODE_USE_VERTEX",
-    "CLOUD_ML_REGION",
-    "COMSPEC",
-    "GCLOUD_PROJECT",
-    "HOME",
-    "HTTPS_PROXY",
-    "HTTP_PROXY",
-    "LANG",
-    "LC_ALL",
-    "LOCALAPPDATA",
-    "LOGNAME",
-    "NODE_EXTRA_CA_CERTS",
-    "NO_PROXY",
-    "OPENTAG_PROVIDER_ENV_FILE",
-    "OPENTAG_HOME",
-    "OPENTAG_SESSION_PROOF_FILE",
-    "OPENTAG_EXECUTION_ID",
-    "PATH",
-    "PATHEXT",
-    "SHELL",
-    "SSL_CERT_DIR",
-    "SSL_CERT_FILE",
-    "SystemRoot",
-    "TEMP",
-    "TMP",
-    "TMPDIR",
-    "USER",
-    "USERPROFILE",
-    "WINDIR",
-    "https_proxy",
-    "http_proxy",
-    "no_proxy",
-  ]);
-  const prefixes = ["ANTHROPIC_", "AWS_", "GOOGLE_"];
-  const environment: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(source)) {
-    if (value !== undefined && (exact.has(key) || prefixes.some((prefix) => key.startsWith(prefix)))) {
-      environment[key] = value;
-    }
-  }
-  return environment;
+  return { ...source };
 }
 
 async function probeClaudeCode(
@@ -1001,7 +947,8 @@ async function probeClaudeCodeCredential(
 ): Promise<Readonly<Record<string, unknown>> | undefined> {
   let output: string;
   try {
-    output = (await execFileAsync(command, [...CLAUDE_CODE_SETTING_SOURCES, "auth", "status", "--json"], execution))
+    // Readiness is cached per Provider, so an unrelated daemon project cannot supply its credentials.
+    output = (await execFileAsync(command, ["--setting-sources", "user", "auth", "status", "--json"], execution))
       .stdout;
   } catch (error) {
     if (signal?.aborted) throw error;

@@ -163,7 +163,8 @@ The entry is validated against `packages/mcp-presets/schema/mcp-catalog-entry.sc
 
 `setup` contains a localized `help` and HTTPS `documentation_url`. An `endpoint` recipe declares
 `placeholder`, anchored `path_pattern`, optional `host_suffix`, and allowed `query_parameters`.
-It must not coexist with a fixed Streamable HTTP remote. Setup headers have `name`, localized
+It must not coexist with a fixed Streamable HTTP remote. Endpoint recipes require
+`auth.default_kind: bearer`; the current setup form does not implement anonymous or OAuth recipes. Setup headers have `name`, localized
 `label`, `required`, and optionally `format: integer`; these fields are public instance/environment
 identifiers, never secrets. The separate masked input collects the key. Resolved values pass the
 existing shared create contract and outbound policy, without a new Server API or database change.

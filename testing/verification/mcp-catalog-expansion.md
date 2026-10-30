@@ -126,3 +126,21 @@ Final repair validation: Server build and typecheck pass; the six directory-budg
 15 executable lines and 16 branches. The 20-case connector expansion and three GitHub/Memory
 browser smoke cases pass (23 total). `pnpm check` passes. No diagnostic source files or logging
 remain in the repository.
+
+## Non-blocking review follow-up
+
+The public MCP catalog guide describes category-by-category enumeration with `limit: 50` and
+explicit truncation detection; no pagination contract is added. Generation rejects anonymous or
+OAuth defaults for customer endpoint recipes because the existing setup form supports bearer keys.
+Header feedback and resolved connection settings share the same validation helper. Required values,
+positive integers, and invalid header values have per-field messages, and header failures do not
+mark a valid URL invalid. ARIA descriptions reference the rendered error or hint, including when
+the shared Field replaces its hint with an error.
+
+Validation: generator 56 tests, catalog package 100 tests, focused setup/directory 37 tests, and
+the MCP Web module 32 files / 400 tests pass. The 24-case browser expansion suite passes; four
+English/Chinese mobile/desktop cases check required/format feedback, live ARIA descriptions, Axe,
+and overflow. Independent review found no actionable issue. Root build/typecheck and E2E typecheck
+pass. The final complete Web suite passes 185 files / 2,349 tests, and the 40 public catalog
+consumer tests pass. The final four field-feedback browser cases also pass after checking live
+ARIA targets. `pnpm check` passes before commit.

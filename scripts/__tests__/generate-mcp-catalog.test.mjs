@@ -573,6 +573,25 @@ test("records customer setup without publishing an unresolved executable endpoin
   assert.doesNotMatch(block, /^\s{4}url:/m);
 });
 
+for (const kind of ["none", "oauth"]) {
+  test(`rejects a customer endpoint recipe with unsupported ${kind} authentication`, (t) => {
+    const { remotes: _remotes, ...base } = entry();
+    assertRejected(t, /setup\.endpoint: requires auth\.default_kind bearer/, {
+      entries: [
+        {
+          ...base,
+          auth: { methods: [kind], default_kind: kind, ...(kind === "oauth" ? { oauth: {} } : {}) },
+          setup: {
+            documentation_url: "https://example.com/docs",
+            help: { en: "Copy your endpoint.", zh: "复制实例地址。" },
+            endpoint: { placeholder: "https://your-instance.example.com/mcp", path_pattern: "^/mcp$" },
+          },
+        },
+      ],
+    });
+  });
+}
+
 test("refuses invalid customer endpoint patterns and reserved setup headers", (t) => {
   const base = entry({
     setup: {

@@ -41,5 +41,10 @@ export {
   mcpCatalogSearch,
   searchMcpCatalog,
 } from "./search.js";
-export { formatMcpCatalogKey, matchesMcpCatalogEndpoint, resolveMcpCatalogSetup } from "./setup.js";
+export {
+  formatMcpCatalogKey,
+  matchesMcpCatalogEndpoint,
+  mcpCatalogSetupHeaderError,
+  resolveMcpCatalogSetup,
+} from "./setup.js";
 export { type McpCatalogViolation, validateMcpCatalog, validateMcpCatalogEntry } from "./validate.js";

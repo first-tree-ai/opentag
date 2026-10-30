@@ -1,5 +1,5 @@
-import { CreateMCPServerRequestSchema, MCPServerUrlSchema } from "@opentag/shared/browser";
-import type { McpCatalogEntry, McpInstallableCatalogEntry } from "./mcp-catalog.gen.js";
+import { CreateMCPServerRequestSchema, MCPExtraHeadersSchema, MCPServerUrlSchema } from "@opentag/shared/browser";
+import type { McpCatalogEntry, McpCatalogSetup, McpInstallableCatalogEntry } from "./mcp-catalog.gen.js";
 
 /** A setup-only card becomes a connection only after a user supplies a real endpoint. */
 export function matchesMcpCatalogEndpoint(entry: McpCatalogEntry, value: string): boolean {
@@ -21,6 +21,18 @@ export function matchesMcpCatalogEndpoint(entry: McpCatalogEntry, value: string)
   }
 }
 
+/** Shared by connection resolution and field feedback so both enforce the same header rules. */
+export function mcpCatalogSetupHeaderError(
+  field: NonNullable<McpCatalogSetup["headers"]>[number],
+  input: string,
+): "required" | "integer" | "invalid" | undefined {
+  const value = input.trim();
+  if (!value) return field.required ? "required" : undefined;
+  if (field.format === "integer" && !/^[1-9]\d*$/.test(value)) return "integer";
+  if (!MCPExtraHeadersSchema.safeParse({ [field.name]: value }).success) return "invalid";
+  return undefined;
+}
+
 export function resolveMcpCatalogSetup(
   entry: McpCatalogEntry,
   url: string,
@@ -30,8 +42,7 @@ export function resolveMcpCatalogSetup(
   const extraHeaders: Record<string, string> = {};
   for (const field of entry.setup?.headers ?? []) {
     const value = headerValues[field.name]?.trim() ?? "";
-    if (field.required && !value) return undefined;
-    if (value && field.format === "integer" && !/^[1-9]\d*$/.test(value)) return undefined;
+    if (mcpCatalogSetupHeaderError(field, value)) return undefined;
     if (value) extraHeaders[field.name] = value;
   }
   const result = CreateMCPServerRequestSchema.safeParse({

@@ -1525,6 +1525,12 @@ endpoint cards keep Add available for connecting another instance.
 Failures preserve the current form or card for retry. Cancelling an unfinished attempt removes only
 its provisional mount; an already authorized mount is retained.
 
+The customer endpoint setup form marks required fields and positive integer IDs, and reports
+validation errors beside the affected field with accessible descriptions. Header validation uses
+the same catalog helper as connection resolution, so a missing or malformed environment ID does
+not incorrectly mark a valid endpoint as invalid. Endpoint recipes currently support bearer
+credentials only; generation rejects `none` or `oauth` defaults for this form.
+
 Customer-hosted services use a catalog `setup.endpoint` recipe rather than a fabricated global URL.
 Dynatrace, Elastic Agent Builder, Snowflake, Databricks, dbt platform, Make, and n8n ask for the actual
 HTTPS MCP address before any write. The recipe constrains its path, optional hostname suffix, and

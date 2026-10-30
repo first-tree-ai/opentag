@@ -160,6 +160,9 @@ test("dbt setup validates before writing and retries the same installation", asy
   const form = await setupDbt(page, agentId, "invalid");
   await form.getByRole("button", { name: "Connect", exact: true }).click();
   await expect(form.getByRole("alert")).toBeVisible();
+  await expect(form.getByLabel("Connector address", { exact: true })).toHaveAttribute("aria-invalid", "false");
+  await expect(form.locator('input[id="mcp-setup-x-dbt-prod-environment-id"]')).toHaveAttribute("aria-invalid", "true");
+  await expect(form.getByRole("alert")).toHaveText("Enter a positive whole number.");
   expect(fixture.writes).toHaveLength(0);
   await form.locator('input[id="mcp-setup-x-dbt-prod-environment-id"]').fill("123");
   await form
@@ -191,6 +194,58 @@ test("dbt setup validates before writing and retries the same installation", asy
       .every((write) => write.body.kind === "bearer" && write.body.bearerKey === "fixture-dbt-key"),
   ).toBe(true);
 });
+
+for (const locale of ["en", "zh"] as const) {
+  for (const width of [320, 1440]) {
+    test(`customer field validation is accessible in ${locale} at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.addInitScript((value) => localStorage.setItem("PARAGLIDE_LOCALE", value), locale);
+      const agentId = await createAgent(page, "Field validation");
+      const fixture = await mcpFixture(page);
+      await page.goto(`/agents/${agentId}/mcp`);
+      await page.getByRole("button", { name: locale === "en" ? "Discover" : "发现", exact: true }).click();
+      const directory = page.getByRole("dialog");
+      await directory.getByLabel(locale === "en" ? "Search connectors" : "搜索连接器").fill("dbt");
+      await directory
+        .getByRole("button", { name: locale === "en" ? "Add: dbt platform" : "添加: dbt platform", exact: true })
+        .click();
+      const form = page.getByRole("dialog");
+      const address = form.getByLabel(locale === "en" ? "Connector address" : "连接器地址", { exact: true });
+      const environment = form.getByLabel(locale === "en" ? "Production environment ID" : "生产环境 ID", {
+        exact: true,
+      });
+      const key = form.getByLabel(locale === "en" ? "API key or token" : "API 密钥或令牌", { exact: true });
+      await address.fill("https://tenant.example.com/api/ai/v1/mcp/");
+      await key.fill("fixture-key");
+      await form.getByRole("button", { name: locale === "en" ? "Connect" : "连接", exact: true }).click();
+      await expect(environment).toHaveAttribute("aria-required", "true");
+      await expect(environment).toHaveAttribute("aria-invalid", "true");
+      await expect(address).toHaveAttribute("aria-invalid", "false");
+      await expect(form.getByRole("alert")).toHaveText(locale === "en" ? "Required" : "必填");
+      await environment.fill("1.5");
+      await expect(form.getByRole("alert")).toHaveText(
+        locale === "en" ? "Enter a positive whole number." : "请输入正整数。",
+      );
+      await expect(environment).toHaveAttribute("aria-describedby", /mcp-setup-x-dbt-prod-environment-id-error/);
+      expect(
+        await environment.evaluate((input) =>
+          (input.getAttribute("aria-describedby") ?? "")
+            .split(/\s+/)
+            .every((id) => Boolean(document.getElementById(id))),
+        ),
+      ).toBe(true);
+      await environment.scrollIntoViewIfNeeded();
+      await expectAccessible(page);
+      await expectNoPageOverflow(page);
+      await form.screenshot({ path: test.info().outputPath(`setup-error-${locale}-${width}.png`) });
+      await environment.fill("123");
+      await expect(environment).toHaveAttribute("aria-invalid", "false");
+      await expect(form.getByRole("alert")).toHaveCount(0);
+      await expect(environment).not.toHaveAttribute("aria-describedby", /mcp-setup-x-dbt-prod-environment-id-error/);
+      expect(fixture.writes).toHaveLength(0);
+    });
+  }
+}
 
 for (const kind of ["none", "oauth", "bearer"] as const) {
   test(`dbt setup isolates an existing ${kind} mount with a different environment or method`, async ({ page }) => {

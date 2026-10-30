@@ -3,6 +3,7 @@ import {
   formatMcpCatalogKey,
   MCP_CATALOG_ENTRIES,
   matchesMcpCatalogEndpoint,
+  mcpCatalogSetupHeaderError,
   resolveMcpCatalogSetup,
 } from "../index.js";
 
@@ -13,6 +14,23 @@ function entry(id: string) {
 }
 
 describe("customer endpoint setup", () => {
+  it("reports header errors consistently with connection validation", () => {
+    const field = {
+      name: "x-environment-id",
+      label: { en: "Environment", zh: "环境" },
+      required: true,
+      format: "integer" as const,
+    };
+    expect(mcpCatalogSetupHeaderError(field, " ")).toBe("required");
+    for (const value of ["zero", "0", "-1", "1.5", "1\r\n2"])
+      expect(mcpCatalogSetupHeaderError(field, value)).toBe("integer");
+    expect(mcpCatalogSetupHeaderError(field, " 42 ")).toBeUndefined();
+    expect(mcpCatalogSetupHeaderError({ ...field, required: false }, " ")).toBeUndefined();
+    const text = { ...field, format: undefined };
+    expect(mcpCatalogSetupHeaderError(text, "line\r\nbreak")).toBe("invalid");
+    expect(mcpCatalogSetupHeaderError(text, "x".repeat(100_000))).toBe("invalid");
+    expect(mcpCatalogSetupHeaderError(text, "valid")).toBeUndefined();
+  });
   it("keeps all seven unresolved endpoints out of ready-to-run connection fields", () => {
     const configured = MCP_CATALOG_ENTRIES.filter((value) => value.setup?.endpoint);
     expect(configured.map((value) => value.id).sort()).toEqual([

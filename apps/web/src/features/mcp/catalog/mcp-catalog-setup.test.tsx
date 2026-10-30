@@ -29,6 +29,7 @@ vi.mock("@opentag/mcp-presets", async (importOriginal) => {
       authScheme: "Token",
       headers: [
         { name: "x-environment-id", label: { en: "Environment ID", zh: "环境 ID" }, required: true, format: "integer" },
+        { name: "x-workspace", label: { en: "Workspace (optional)", zh: "工作区（选填）" }, required: false },
       ],
     },
   };
@@ -140,7 +141,9 @@ describe("customer connector setup", () => {
     );
     fill("https://tenant.example.com/mcp?token=secret", "bad");
     connect();
-    await screen.findByRole("alert");
+    expect(await screen.findAllByRole("alert")).toHaveLength(2);
+    expect(screen.getByLabelText("Connector address").getAttribute("aria-invalid")).toBe("true");
+    expect(screen.getByLabelText("Environment ID").getAttribute("aria-invalid")).toBe("true");
     expect(calls.create).not.toHaveBeenCalled();
     fill();
     connect();
@@ -158,6 +161,57 @@ describe("customer connector setup", () => {
       bearerKey: "fixture-key",
     });
     expect(calls.create.mock.calls[0]?.[0]).not.toHaveProperty("bearerKey");
+  });
+
+  it("identifies required and malformed environment IDs without marking a valid address invalid", async () => {
+    const calls = fixture();
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openSetup();
+    fill("https://tenant.example.com/mcp", "");
+    const address = screen.getByLabelText("Connector address");
+    const environment = screen.getByLabelText("Environment ID");
+    expect(environment.getAttribute("aria-required")).toBe("true");
+    expect(document.getElementById("mcp-setup-x-environment-id-hint")?.textContent).toBe(
+      "Required · Positive whole number",
+    );
+    connect();
+    await screen.findByRole("alert");
+    expect(environment.getAttribute("aria-invalid")).toBe("true");
+    expect(environment.getAttribute("aria-describedby")).toContain("mcp-setup-x-environment-id-error");
+    for (const id of environment.getAttribute("aria-describedby")?.split(/\s+/) ?? [])
+      expect(document.getElementById(id)).not.toBeNull();
+    expect(document.getElementById("mcp-setup-x-environment-id-error")?.textContent).toBe("Required");
+    expect(address.getAttribute("aria-invalid")).toBe("false");
+    change("Environment ID", "1.5");
+    expect(document.getElementById("mcp-setup-x-environment-id-error")?.textContent).toBe(
+      "Enter a positive whole number.",
+    );
+    change("Environment ID", "42");
+    expect(environment.getAttribute("aria-invalid")).toBe("false");
+    expect(environment.getAttribute("aria-describedby")).not.toContain("mcp-setup-x-environment-id-error");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(calls.create).not.toHaveBeenCalled();
+  });
+
+  it("reports unsafe optional header values on that field and accepts clearing the field", async () => {
+    const calls = fixture();
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openSetup();
+    fill();
+    const workspace = screen.getByLabelText("Workspace (optional)");
+    expect(workspace.getAttribute("aria-required")).toBe("false");
+    change("Workspace (optional)", "unsafe\tvalue");
+    connect();
+    await screen.findByRole("alert");
+    expect(document.getElementById("mcp-setup-x-workspace-error")?.textContent).toBe("Enter a valid value.");
+    expect(workspace.getAttribute("aria-invalid")).toBe("true");
+    expect(screen.getByLabelText("Connector address").getAttribute("aria-invalid")).toBe("false");
+    expect(screen.getByLabelText("Environment ID").getAttribute("aria-invalid")).toBe("false");
+    expect(calls.create).not.toHaveBeenCalled();
+    change("Workspace (optional)", "");
+    connect();
+    await directory();
+    expect(calls.create).toHaveBeenCalledWith(expect.objectContaining({ extraHeaders: { "x-environment-id": "123" } }));
   });
 
   it("cancels an untouched form without creating a connection", async () => {

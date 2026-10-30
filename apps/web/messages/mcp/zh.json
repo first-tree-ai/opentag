@@ -282,5 +282,9 @@
   "mcp_checking_connection": "正在检查连接…",
   "mcp_update_credentials": "更新凭证",
   "mcp_setup_instructions": "查看配置说明",
-  "mcp_setup_invalid": "请填写服务商提供的 MCP 地址和必填配置。"
+  "mcp_setup_invalid": "请填写服务商提供的 MCP 地址和必填配置。",
+  "mcp_setup_address_invalid": "请输入服务商配置中的 HTTPS MCP 地址。",
+  "mcp_setup_integer_hint": "正整数",
+  "mcp_setup_integer_error": "请输入正整数。",
+  "mcp_setup_value_invalid": "请输入有效值。"
 }

@@ -70,6 +70,26 @@ block, and it is a JSON-RPC error.
 | `get_mcp_server` | `id` (required; `notion` and `mcp/notion` both resolve), `locale?` | one entry plus `prerequisites`, `platforms`, `remotes`, and `tools` |
 | `list_mcp_categories` | none | `{ categories: [{ id, label, order, activeCount, installableCount }] }` |
 
+### Enumerating the complete catalog
+
+Search returns at most 50 entries per call and has no offset or cursor. An empty query alone must
+not be treated as a complete listing. To enumerate the current catalog:
+
+1. Call `list_mcp_categories`.
+2. For each category with `activeCount > 0`, call `search_mcp_servers` with an empty `query`, that
+   category's `id`, and `limit: 50`.
+3. Check that each response's `total` equals its `results.length`, then combine results by `id`.
+
+For example, a category call uses:
+
+```json
+{ "name": "search_mcp_servers", "arguments": { "query": "", "category": "docs", "limit": 50 } }
+```
+
+Every current category fits within one response, so this covers all active entries. If a category's
+`total` exceeds the returned count, this API cannot enumerate it completely; report the truncation
+rather than claiming completeness. Pagination would require a separate contract extension.
+
 ## Entry shape
 
 `id`, `name`, `title`, `description`, `whenToUse`, `category`, `capabilities`, `risk`, `status`,

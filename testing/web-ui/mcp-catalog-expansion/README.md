@@ -15,3 +15,16 @@ The screenshots contain local test data only.
 | 1440 | [Directory](catalog-en-1440.png) | [Directory](catalog-zh-1440.png) |
 
 [Verification scope and provider-contract evidence](../../verification/mcp-catalog-expansion.md).
+
+## Customer setup field feedback
+
+English and Chinese setup forms mark required fields and positive integer IDs. Invalid fields
+reference their own rendered error message; valid fields reference their hint. A valid address
+stays unmarked when only an environment ID fails validation. Required/format errors clear as the
+value is corrected. The browser checks include Axe, live description targets, and no horizontal
+overflow at desktop and narrow mobile widths.
+
+| Width | English | Chinese |
+| --- | --- | --- |
+| 320 | [Field error](setup-error-en-320.png) | [Field error](setup-error-zh-320.png) |
+| 1440 | [Field error](setup-error-en-1440.png) | [Field error](setup-error-zh-1440.png) |

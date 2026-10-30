@@ -263,6 +263,9 @@ function validateSetup(row, at, violations) {
     );
   }
   if (setup.endpoint) {
+    if (row.auth.default_kind !== "bearer") {
+      violations.push(`${at}.setup.endpoint: requires auth.default_kind bearer`);
+    }
     try {
       new RegExp(setup.endpoint.path_pattern);
     } catch {

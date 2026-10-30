@@ -41,6 +41,7 @@ import {
 } from "../../db/schema/index.js";
 import type { CloudUsageService } from "../cloud-usage.js";
 import { disableImBindingInTransaction } from "../im-bindings/index.js";
+import { type GitHubMcpAuthorityFence, matchesGitHubMcpFence } from "../mcp/github-authorization.js";
 import { removeMcpLocalAuthorization } from "../mcp/mcp-authorization-graph.js";
 import { lockMcpAccounts, lockMcpBindings } from "../mcp/mcp-binding-locks.js";
 import type { McpCredentialCipher } from "../mcp/mcp-credential-cipher.js";
@@ -913,8 +914,10 @@ export class AgentService {
     agentId: string,
     expected: Pick<AgentAdminConfig, "revision" | "computerId" | "status"> & { runtimeConfigRevision: number },
     connections: ContextTreeConnection[],
+    authority?: GitHubMcpAuthorityFence,
   ): Promise<AgentAdminConfig> {
     return this.#database.transaction(async (transaction) => {
+      if (authority) await lockMcpAccounts(transaction, [callerUserId]);
       const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
       this.#requireManagePermission(scope);
       const runtimeConfig = await this.#lockRuntimeConfig(transaction, agentId);
@@ -934,6 +937,18 @@ export class AgentService {
       if (runtimeConfig.contextTrees.length > 0 && scope.agent.status !== "suspended") {
         throw this.#lifecycleConflict("Pause the Agent before changing its Context Tree");
       }
+      if (
+        authority &&
+        (authority.accountId !== callerUserId ||
+          authority.agentId !== agentId ||
+          !(await matchesGitHubMcpFence(transaction, authority)))
+      )
+        throw new AgentServiceError(
+          "AGENT_REVISION_CONFLICT",
+          "deterministic",
+          "GitHub MCP authorization changed",
+          409,
+        );
       const now = this.#now();
       const [updated] = await transaction
         .update(agents)

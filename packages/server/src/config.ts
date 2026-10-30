@@ -4,7 +4,6 @@ import {
   type ChannelConfig,
   type ChannelName,
   ChannelNameSchema,
-  GITHUB_OAUTH_CALLBACK_PATH,
   getChannelConfig,
   MCP_STATIC_OAUTH_BRANDS,
   type McpStaticOAuthBrand,
@@ -292,41 +291,6 @@ function resolveMcpGoogleOAuth(parsed: {
   };
 }
 
-function validateGitHubOAuthConfiguration(
-  value: {
-    OPENTAG_GITHUB_OAUTH_CLIENT_ID?: string | undefined;
-    OPENTAG_GITHUB_OAUTH_CLIENT_SECRET?: string | undefined;
-    OPENTAG_GITHUB_OAUTH_REDIRECT_URL?: string | undefined;
-    OPENTAG_PUBLIC_URL: string;
-    OPENTAG_ENV: ChannelName;
-  },
-  context: z.RefinementCtx,
-): void {
-  const githubOAuthValues = [value.OPENTAG_GITHUB_OAUTH_CLIENT_ID, value.OPENTAG_GITHUB_OAUTH_CLIENT_SECRET];
-  const githubOAuthConfiguredCount = githubOAuthValues.filter(Boolean).length;
-  if (githubOAuthConfiguredCount > 0 && githubOAuthConfiguredCount < githubOAuthValues.length) {
-    context.addIssue({
-      code: "custom",
-      message: "OPENTAG_GITHUB_OAUTH_CLIENT_ID and OPENTAG_GITHUB_OAUTH_CLIENT_SECRET must be configured together",
-    });
-  }
-  if (value.OPENTAG_GITHUB_OAUTH_REDIRECT_URL) {
-    const redirectUrl = parseGitHubOAuthRedirectUrl(value.OPENTAG_GITHUB_OAUTH_REDIRECT_URL, value.OPENTAG_PUBLIC_URL);
-    if (!redirectUrl) {
-      context.addIssue({
-        code: "custom",
-        message:
-          "OPENTAG_GITHUB_OAUTH_REDIRECT_URL must be this server's public origin or the exact GitHub OAuth callback URL",
-      });
-    } else if (isHostedEnvironment(value.OPENTAG_ENV) && !redirectUrl.startsWith("https://")) {
-      context.addIssue({
-        code: "custom",
-        message: "OPENTAG_GITHUB_OAUTH_REDIRECT_URL must use HTTPS in hosted environments",
-      });
-    }
-  }
-}
-
 export function isHostedEnvironment(environment: ChannelName): boolean {
   return environment !== "dev";
 }
@@ -396,15 +360,6 @@ const ServerEnvironmentSchema = z
     OPENTAG_SLACK_CLIENT_SECRET: z.string().min(1).optional(),
     OPENTAG_SLACK_SIGNING_SECRET: z.string().min(1).optional(),
     OPENTAG_SLACK_REDIRECT_URL: z.string().min(1).optional(),
-    /*
-     * Deployment-level GitHub OAuth App. Both client values are configured together or not at all;
-     * an absent group disables the integration with explicit availability metadata rather than a
-     * half-configured one. The App must issue expiring user access tokens — the management plane
-     * refuses the non-expiring kind instead of silently accepting a credential it cannot maintain.
-     */
-    OPENTAG_GITHUB_OAUTH_CLIENT_ID: z.string().trim().min(1).max(255).optional(),
-    OPENTAG_GITHUB_OAUTH_CLIENT_SECRET: z.string().min(1).max(255).optional(),
-    OPENTAG_GITHUB_OAUTH_REDIRECT_URL: z.string().min(1).optional(),
     OPENTAG_HOST: z.string().min(1).default("127.0.0.1"),
     OPENTAG_JWT_SECRET: z.string().min(32),
     /*
@@ -552,7 +507,6 @@ const ServerEnvironmentSchema = z
         });
       }
     }
-    validateGitHubOAuthConfiguration(value, context);
     if (isHostedEnvironment(value.OPENTAG_ENV) && !value.OPENTAG_PUBLIC_URL.startsWith("https://")) {
       context.addIssue({ code: "custom", message: "OPENTAG_PUBLIC_URL must use HTTPS in hosted environments" });
     }
@@ -744,28 +698,6 @@ function emptyToUndefined(value: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
-/**
- * The GitHub OAuth callback always lives on this server's public origin; a deployment may spell
- * the setting as the bare origin (the canonical callback path is appended) or as the exact
- * callback URL. Anything else — another origin, credentials, query, fragment — is rejected.
- */
-export function parseGitHubOAuthRedirectUrl(value: string, publicOrigin: string): string | undefined {
-  try {
-    const url = new URL(value);
-    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
-      return undefined;
-    }
-    if (url.origin !== publicOrigin) return undefined;
-    if (url.pathname === "/" || url.pathname === "") {
-      return new URL(GITHUB_OAUTH_CALLBACK_PATH, publicOrigin).toString();
-    }
-    if (url.pathname !== GITHUB_OAUTH_CALLBACK_PATH) return undefined;
-    return url.toString();
-  } catch {
-    return undefined;
-  }
-}
-
 export function parseSlackRedirectUrl(value: string, publicOrigin: string): string | undefined {
   try {
     const url = new URL(value);
@@ -815,12 +747,6 @@ export interface ServerConfig {
   emailPasswordAuth: boolean;
   google?: { clientId: string; clientSecret: string };
   slackOAuth?: { clientId: string; clientSecret: string; signingSecret: string; redirectUrl: string };
-  /**
-   * The deployment-level GitHub OAuth App the management plane connects Accounts to, present only when
-   * coherently configured (all values together). Secrets stay in this object; they are never
-   * logged. `oauthCallbackUrl` is the resolved exact callback on this server's public origin.
-   */
-  githubOAuth?: GitHubOAuthConfig;
   host: string;
   /** Signs Slack OAuth state. No longer signs any Account credential; Better Auth owns those. */
   jwtSecret: string;
@@ -938,12 +864,6 @@ export type WebToolsConfig =
 
 export type CloudIdentitiesConfig = { enabled: false } | { enabled: true; storageBase: string; runnerVersion: string };
 
-export interface GitHubOAuthConfig {
-  clientId: string;
-  clientSecret: string;
-  oauthCallbackUrl: string;
-}
-
 export interface DatabaseConfig {
   databaseUrl: string;
   migrationsDirectory: string;
@@ -1024,9 +944,6 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_SLACK_CLIENT_SECRET: emptyToUndefined(environment.OPENTAG_SLACK_CLIENT_SECRET),
     OPENTAG_SLACK_SIGNING_SECRET: emptyToUndefined(environment.OPENTAG_SLACK_SIGNING_SECRET),
     OPENTAG_SLACK_REDIRECT_URL: emptyToUndefined(environment.OPENTAG_SLACK_REDIRECT_URL),
-    OPENTAG_GITHUB_OAUTH_CLIENT_ID: emptyToUndefined(environment.OPENTAG_GITHUB_OAUTH_CLIENT_ID),
-    OPENTAG_GITHUB_OAUTH_CLIENT_SECRET: emptyToUndefined(environment.OPENTAG_GITHUB_OAUTH_CLIENT_SECRET),
-    OPENTAG_GITHUB_OAUTH_REDIRECT_URL: emptyToUndefined(environment.OPENTAG_GITHUB_OAUTH_REDIRECT_URL),
     OPENTAG_HOST: environment.OPENTAG_HOST,
     OPENTAG_JWT_SECRET: environment.OPENTAG_JWT_SECRET,
     OPENTAG_PORTABLE_DOWNLOAD_BASE_URL: environment.OPENTAG_PORTABLE_DOWNLOAD_BASE_URL,
@@ -1112,20 +1029,6 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
       : {}),
     host: parsed.OPENTAG_HOST,
     jwtSecret: parsed.OPENTAG_JWT_SECRET,
-    ...(parsed.OPENTAG_GITHUB_OAUTH_CLIENT_ID && parsed.OPENTAG_GITHUB_OAUTH_CLIENT_SECRET
-      ? {
-          githubOAuth: {
-            clientId: parsed.OPENTAG_GITHUB_OAUTH_CLIENT_ID,
-            clientSecret: parsed.OPENTAG_GITHUB_OAUTH_CLIENT_SECRET,
-            oauthCallbackUrl: parsed.OPENTAG_GITHUB_OAUTH_REDIRECT_URL
-              ? (parseGitHubOAuthRedirectUrl(
-                  parsed.OPENTAG_GITHUB_OAUTH_REDIRECT_URL,
-                  parsed.OPENTAG_PUBLIC_URL,
-                ) as string)
-              : new URL(GITHUB_OAUTH_CALLBACK_PATH, parsed.OPENTAG_PUBLIC_URL).toString(),
-          },
-        }
-      : {}),
     migrationsDirectory: parseDatabaseConfig(environment).migrationsDirectory,
     logLevel: parsed.OPENTAG_LOG_LEVEL,
     mcpOAuthReuse: parsed.OPENTAG_MCP_OAUTH_REUSE,

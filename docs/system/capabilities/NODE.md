@@ -22,6 +22,6 @@ to the Provider.
 - **[Context Tree integration](context-tree-integration.md)** — durable memory
   through named Context Tree connections.
 - **[GitHub platform integration](github-platform-integration.md)** —
-  Account OAuth for Context Tree and per-Agent GitHub MCP.
+  Agent GitHub MCP OAuth reused by restricted Context Tree transport.
 - **[Web tools](web-tools.md)** — platform `web_search` and `web_fetch` for Pi
   Agents.

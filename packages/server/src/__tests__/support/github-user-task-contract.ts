@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { GitHubConnectionStatusSchema, type RuntimeExecutionSource, type RuntimeUserTaskSource } from "@opentag/shared";
+import type { RuntimeExecutionSource, RuntimeUserTaskSource } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import type { DatabaseClient } from "../../db/client.js";
@@ -17,7 +17,7 @@ import type { RuntimeProxyAuthorization } from "../../runtime-credentials/creden
 import { RuntimeExecutionRegistry } from "../../runtime-credentials/execution-registry.js";
 import type { ProviderProxyRequest } from "../../runtime-credentials/provider-proxy-adapter.js";
 import { DatabaseAgentOwnerResolver } from "../../services/agents/agent-self-service.js";
-import type { GitHubManagementService } from "../../services/github/github-management-service.js";
+import type { AgentGitHubConnection } from "../../services/github/agent-github-credential-service.js";
 import { GitHubProviderAdapter } from "../../services/github-proxy/github-provider-adapter.js";
 import { GitHubRuntimePolicy } from "../../services/github-proxy/runtime-policy.js";
 import { ScheduleScheduler } from "../../services/schedules/scheduler.js";
@@ -97,28 +97,15 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
       .returning();
     if (!delivery?.turnId) throw new Error("Delivery fixture missing");
     const source: RuntimeExecutionSource = { kind: "delivery", deliveryId: delivery.id, turnId: delivery.turnId };
-    const connection = GitHubConnectionStatusSchema.parse({
+    const connection: AgentGitHubConnection = {
       id: randomUUID(),
       accountId: account.id,
-      githubHost: "github.com",
-      oauthClientId: "88",
-      githubUserId: "42",
-      githubLogin: "owner",
-      status: "active",
-      authorizationVersion: "7",
+      authorizationVersion: "mcp:fixture",
       credentialGeneration: "3",
-      accessExpiresAt: new Date(Date.now() + 60000).toISOString(),
-      refreshExpiresAt: null,
-      recheckRequired: false,
-      nextRecheckAt: null,
-      lastVerifiedAt: null,
-      lastErrorCode: null,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
+    };
     const policy = new GitHubRuntimePolicy({
       database: db,
-      management: { getOverview: vi.fn(async () => ({ connection })) } as unknown as GitHubManagementService,
+      management: { getOverview: vi.fn(async () => ({ connection })) },
     });
     const admit = (
       sessionId = session.id,
@@ -161,7 +148,6 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
     denied = false,
     statusRead = false,
   ) {
-    f.connection.githubUserId = userId;
     const management = {
       getExecutionUserCredential: vi.fn(async () => ({
         accessToken: `ghu_parent_${userId}`,
@@ -190,15 +176,7 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
       database: f.db,
       management: {
         getOverview: async () => ({ connection: f.connection }),
-        resolveRepository: async () => ({
-          repositoryId: "123",
-          installationId: "456",
-          fullName: "owner/repository",
-          defaultBranch: "main",
-          authorizationVersion: 7n,
-          credentialGeneration: 3n,
-        }),
-      } as unknown as GitHubManagementService,
+      },
     });
     const authorization: RuntimeProxyAuthorization = {
       executionId: record.executionId,
@@ -209,7 +187,7 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
       provider: "github",
       purpose: "execution",
       scopeHash: "a".repeat(64),
-      authorizationRevision: "github:7",
+      authorizationRevision: "github:mcp:fixture",
       credentialGeneration: "3",
       cli: { provider: "github", connectionId: f.connection.id, authority: "user-task" },
       recheck: async () => {
@@ -251,8 +229,9 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
       expect(response.status).toBe(200);
       expect(management.getExecutionUserCredential).toHaveBeenCalledWith({
         accountId: f.account.id,
+        agentId: f.agent.id,
         connectionId: f.connection.id,
-        authorizationRevision: "github:7",
+        authorizationRevision: "github:mcp:fixture",
       });
       expect(upstream).toHaveBeenCalled();
     } finally {
@@ -351,7 +330,7 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
 
   describe.each(["local", "cloud"] as const)("%s GitHub user-task SQL authority", (origin) => {
     it.each(["im", "schedule", "collaboration"] as const)(
-      "executes %s through each owning user's token on one shared installation",
+      "executes %s through the acting Agent's GitHub credential",
       async (kind) => {
         for (const userId of ["42", "43"]) {
           const f = await fixture(origin);

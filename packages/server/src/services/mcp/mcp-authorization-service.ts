@@ -419,6 +419,17 @@ export class McpAuthorizationService {
     mcpServerId: string,
   ): Promise<ResolvedMcpCredential | undefined> {
     const context = await this.#servers.readProbeContext(accountId, agentId, mcpServerId);
+    return this.#resolveContextCredential(context);
+  }
+
+  resolveAccessCredential(context: McpAuthorizationContext): { accessToken: string; clientId?: string } | undefined {
+    const credential = this.#resolveContextCredential(context)?.credential;
+    return credential
+      ? { accessToken: credential.accessToken, ...(credential.clientId ? { clientId: credential.clientId } : {}) }
+      : undefined;
+  }
+
+  #resolveContextCredential(context: McpAuthorizationContext): ResolvedMcpCredential | undefined {
     const authorization = context.authorization;
     if (authorization?.status !== "active") return undefined;
     const base = { binding: context.binding, server: context.server, authorization };
@@ -426,8 +437,8 @@ export class McpAuthorizationService {
     if (!authorization.ciphertext || !authorization.keyId) return undefined;
     const credential = this.#cipher.decryptAuthorizationCredential(
       {
-        mcpServerId,
-        agentId: context.credentialAuthorization?.agentId ?? agentId,
+        mcpServerId: context.server.id,
+        agentId: context.credentialAuthorization?.agentId ?? context.agent.id,
         authorizationServer: authorization.authorizationServer,
       },
       { ciphertext: authorization.ciphertext, keyId: authorization.keyId },

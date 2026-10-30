@@ -39,7 +39,7 @@ import { registerComputerSkillRoutes } from "./api/computer-skills.js";
 import { registerComputerRoutes } from "./api/computers.js";
 import { type ErrorReportRoutesOptions, registerErrorReportRoutes } from "./api/error-reports.js";
 import { registerExecutionWebSocketRoutes } from "./api/execution-websockets.js";
-import { type GitHubIntegrationsRouteOptions, registerGitHubIntegrationsRoutes } from "./api/github-integrations.js";
+import { registerGitHubIntegrationsRoutes } from "./api/github-integrations.js";
 import { registerImBindingRoutes } from "./api/im-bindings.js";
 import { registerImResourceRoute } from "./api/im-resources.js";
 import { type McpGatewayRoutesOptions, registerMcpGatewayRoutes } from "./api/mcp-gateway.js";
@@ -218,7 +218,6 @@ export interface CreateAppOptions {
   slackOAuth?: SlackOAuthRouteOptions;
   slackConfiguration?: SlackConfigurationRouteOptions;
   /** GitHub integration management; always registered so the UI can read availability. */
-  githubIntegrations?: Omit<GitHubIntegrationsRouteOptions, "authService" | "authOptions">;
   loggerStream?: FastifyLoggerOptions["stream"];
   loggerLevel?: FastifyLoggerOptions["level"];
   /** Passed to Fastify; `false` (the default) ignores `X-Forwarded-*` entirely. */
@@ -790,9 +789,7 @@ export function createApp(options: CreateAppOptions = {}) {
       registerImBindingRoutes(app, authService, options.imBindingService, options.feishuSetupService, authOptions);
     }
     registerSlackSetupRoutes(app, authService, options, authOptions);
-    if (options.githubIntegrations) {
-      registerGitHubIntegrationsRoutes(app, { ...options.githubIntegrations, authService, authOptions });
-    }
+    registerGitHubIntegrationsRoutes(app);
     if (options.mcp) {
       registerMcpServerRoutes(app, authService, { ...options.mcp, authOptions });
       registerMcpOAuthRoutes(app, {

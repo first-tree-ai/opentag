@@ -9,7 +9,7 @@ Context Tree stores durable knowledge in Markdown. OpenTag supplies Agent settin
 GitHub authorization, and runtime preparation. The packaged Context Tree CLI owns
 content validation, read snapshots, and isolated write sessions.
 
-Memory is optional. An unavailable tree is reported to the Agent without stopping its task.
+Memory is optional. An unavailable tree is reported to the Agent without stopping its task. Its navigation entry stays visible without GitHub authorization; users resolve authorization in the current Agent’s Connectors. Account settings has no independent GitHub authorization.
 
 ## Connections
 
@@ -47,19 +47,19 @@ Create accepts an owner and repository name and uses GitHub's default branch.
 Neither dialog asks for a branch.
 Both Local and Cloud Computers can create private repositories: OpenTag creates the repository,
 generates the initial page with the pinned `context-tree init`, and commits it through
-GitHub's contents API. Connection verification and creation run exclusively on the Server with the Account's current GitHub
+GitHub's contents API. Connection verification and creation run exclusively on the Server with the current Agent's GitHub MCP OAuth
 credential; it does not require Computer-side GitHub credentials. The OAuth authorization must allow private repositories, and the connected user
 and organization policy must permit creation and content writes. Permission failures
 ask the user to check access; only missing or invalid authorization asks them to reconnect.
 
 Initial settings read failures retain the page identity and offer explicit retry for transient failures.
 A transient refresh failure retains the existing collection and form draft, marks the data unconfirmed,
-and disables writes until a successful read. Account and restriction-recovery links open a new tab so
+and disables writes until a successful read. Connector and restriction-recovery links open a new tab so
 an in-progress form stays available in the original tab. Terminal authorization/resource failures hide stale settings.
 Invalid directories associate their error with the field. Restriction notices describe pause and offline
 requirements together and link to existing Agent/Computer settings without automatically pausing an Agent.
 
-Failed settings operations display an error banner and a relevant Account or repository destination. When the server has no GitHub OAuth App
+Failed settings operations display an error banner and the current Agent's Connector or repository destination. When the server has no GitHub MCP OAuth client
 configured, the message asks the server administrator to configure it; this does not
 mean the bound Computer needs an update.
 
@@ -87,7 +87,7 @@ OpenTag writes authorized selections to its own configuration at
 Repository-owned `.context-tree.json` files are left alone. Those files can describe
 local directory trees used through the normal repository workflow.
 
-Managed synchronization and write commands route through a per-execution Context Tree command gateway in the trusted Local Daemon or Cloud Runner. Only its pinned CLI child receives a GitHub handle; the Agent receives a Unix socket or fixed Cloud loopback endpoint. The Server separately admits each command against the live parent, current Account authorization and exact selected tree. See [GitHub platform integration](github-platform-integration.md#context-tree-command-boundary).
+Managed synchronization and write commands route through a per-execution Context Tree command gateway in the trusted Local Daemon or Cloud Runner. Only its pinned CLI child receives a GitHub handle; the Agent receives a Unix socket or fixed Cloud loopback endpoint. The Server separately admits each command against the live parent, current Agent GitHub MCP authorization and exact selected tree. See [GitHub platform integration](github-platform-integration.md#context-tree-command-boundary).
 
 Preparation uses `context-tree sync --project-path PROJECT` through this gateway. Responses are parsed
 with the package's public contracts; OpenTag never reads the package's internal registry.
@@ -111,7 +111,7 @@ Credentials come from the current execution and are never stored there.
 ## Authorization and writes
 
 Server-side connection verification checks the selected directory and branch at an exact
-remote commit, using the Account's current GitHub authorization. It rechecks authorization
+remote commit, using the current Agent's GitHub MCP authorization. It rechecks authorization
 and remote state before accepting the connection. Unrelated repository infrastructure does
 not affect subtree validation. Selected content cannot traverse symlinks or submodules.
 

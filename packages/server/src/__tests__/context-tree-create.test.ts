@@ -28,12 +28,10 @@ function fixture(repository = "acme/memory") {
   const management = {
     getOverview: vi.fn(async () => ({
       availability: { available: true as const, githubHost: "github.com" as const, oauthClientId: "1" },
-      connection,
+      connection: connection.status === "active" ? connection : null,
     })),
     getExecutionUserCredential: vi.fn<ContextTreeGitHubManagement["getExecutionUserCredential"]>(async () => ({
       accessToken: "ghu_server_only",
-      githubUserId: "42",
-      accessExpiresAt: new Date(Date.now() + 3_600_000),
       credentialGeneration: 1n,
     })),
     resolveRepository: vi.fn(),
@@ -52,7 +50,12 @@ function fixture(repository = "acme/memory") {
     clientId: "client",
     clientSecret: "secret",
     redirectUri: "http://localhost/callback",
-    fetch,
+    fetch: (url, init) =>
+      String(url) === "https://api.github.com/user"
+        ? Promise.resolve(
+            Response.json({ id: 42, login: "alice", type: "User" }, { headers: { "x-oauth-scopes": "repo" } }),
+          )
+        : fetch(url, init),
   });
   const workspace = new GitWorkspace();
   const credentials = { acquire: vi.fn() };
@@ -87,11 +90,11 @@ function fixture(repository = "acme/memory") {
     expectedRuntimeConfigRevision: 1,
   };
   const run = () => service.run(accountId, config.id, input);
-  return { accountId, management, fetch, workspace, runner, credentials, config, agents, input, run };
+  return { accountId, connection, management, fetch, api, workspace, runner, credentials, config, agents, input, run };
 }
 
 it.each(["acme/memory", "Alice/memory"])(
-  "creates %s with the Account credential and GitHub default branch",
+  "creates %s with the Agent GitHub MCP credential and GitHub default branch",
   async (repository) => {
     const f = fixture(repository);
     expect(await f.run()).toEqual({ status: "completed", repository, ref: "trunk" });
@@ -112,7 +115,8 @@ it.each(["acme/memory", "Alice/memory"])(
     }
     expect(f.management.getExecutionUserCredential).toHaveBeenCalledWith({
       accountId: f.accountId,
-      connectionId: (await f.management.getOverview()).connection.id,
+      agentId: f.config.id,
+      connectionId: (await f.management.getOverview()).connection?.id,
       authorizationRevision: "github:1",
     });
     expect(f.agents.updateContextTreeSelection).toHaveBeenCalledWith(f.accountId, f.config.id, expect.any(Object), [
@@ -125,12 +129,23 @@ it.each(["acme/memory", "Alice/memory"])(
   },
 );
 
-it("requires reconnection only when the Account connection is not active", async () => {
+it("requires reconnection when the Agent authorization is unavailable", async () => {
   const f = fixture();
-  (await f.management.getOverview()).connection.status = "reauthorization_required";
+  f.connection.status = "reauthorization_required";
   expect(await f.run()).toEqual({ status: "failed", code: "authentication_required" });
   expect(f.fetch).not.toHaveBeenCalled();
   expect(f.workspace.root).toBeUndefined();
+  expect(f.agents.updateContextTreeSelection).not.toHaveBeenCalled();
+});
+
+it("does not create a repository when authorization changes during GitHub identity lookup", async () => {
+  const f = fixture();
+  vi.spyOn(f.api, "getAuthenticatedUser").mockImplementation(async () => {
+    f.connection.authorizationVersion = "2";
+    return { id: "42", login: "alice" };
+  });
+  expect(await f.run()).toEqual({ status: "failed", code: "stale_configuration" });
+  expect(f.fetch).not.toHaveBeenCalled();
   expect(f.agents.updateContextTreeSelection).not.toHaveBeenCalled();
 });
 
@@ -184,10 +199,9 @@ it("rechecks authorization before initializing the new repository", async () => 
   f.management.getExecutionUserCredential
     .mockResolvedValueOnce({
       accessToken: "ghu_server_only",
-      githubUserId: "42",
-      accessExpiresAt: new Date(Date.now() + 3_600_000),
       credentialGeneration: 1n,
     })
+    .mockResolvedValueOnce({ accessToken: "ghu_server_only", credentialGeneration: 1n })
     .mockResolvedValueOnce(null);
   expect(await f.run()).toEqual({ status: "failed", code: "publication_uncertain" });
   expect(f.fetch).toHaveBeenCalledTimes(1);

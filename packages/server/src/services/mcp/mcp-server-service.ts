@@ -543,6 +543,7 @@ export class McpServerService {
         .where(and(eq(agentMcpServers.agentId, agentId), eq(agentMcpServers.mcpServerId, mcpServerId)))
         .returning();
       if (!row) throw mcpBindingNotFound();
+      await invalidateEnableChange(transaction, agentId, mcpServerId, binding.enabled, input.enabled);
       if (changed) {
         const endpointChanged = before.url !== after.url;
         await this.markProbesPending(
@@ -1012,4 +1013,18 @@ function toServerAgentDto(
     protocolVersion: authorization?.protocolVersion ?? null,
     authorization: toAuthorizationSummary(authorization),
   };
+}
+
+async function invalidateEnableChange(
+  transaction: DatabaseTransaction,
+  agentId: string,
+  mcpServerId: string,
+  before: boolean,
+  after: boolean | undefined,
+) {
+  if (after === undefined || after === before) return;
+  await transaction
+    .update(mcpServerAuthorizations)
+    .set({ revision: sql`${mcpServerAuthorizations.revision} + 1` })
+    .where(and(eq(mcpServerAuthorizations.agentId, agentId), eq(mcpServerAuthorizations.mcpServerId, mcpServerId)));
 }

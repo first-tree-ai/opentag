@@ -8,7 +8,6 @@ import { Button, Field, KumoInputControl, Select, SettingsList, SettingsRow, Tex
 import { Page } from "../layout/page.js";
 import { useAccount } from "../session/session-context.js";
 import { CloudBillingSettings } from "./cloud-billing-settings.js";
-import { GitHubIntegrationSettings } from "./github-integration-settings.js";
 import {
   clearProfileNavigationDraft,
   preserveProfileNavigationDraft,
@@ -28,7 +27,6 @@ export function AccountPage({ slackProvision = false }: { slackProvision?: boole
   return (
     <Page title={m.account_page_title()} description={m.account_page_description()}>
       <AccountSettings key={me.user.id} navigationGuardRef={profileNavigation} refreshMe={refreshMe} user={me.user} />
-      <GitHubIntegrationSettings beforeAuthorize={() => profileNavigation.current?.()} />
       <CloudBillingSettings key={me.user.id} accountId={me.user.id} />
     </Page>
   );

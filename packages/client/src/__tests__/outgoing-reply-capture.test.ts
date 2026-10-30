@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -13,6 +13,7 @@ import {
   spawnCapturedProcess,
   withOutgoingReplyInflight,
 } from "../runtime/provider-cli/outgoing-reply-capture.js";
+import * as replyStore from "../runtime/provider-cli/outgoing-reply-store.js";
 import { cleanupOutgoingReplyRun, collectOutgoingReplyReceipts } from "../runtime/provider-cli/outgoing-reply-store.js";
 import {
   installTurnTarget,
@@ -763,32 +764,37 @@ describe("Provider CLI outgoing reply capture", () => {
     });
     const receiptsDir = join(prepared.sessionDir, "runs", deriveProviderCliRunKey("run-1"), "outgoing-replies");
     const argv = ["im", "+messages-send", "--text", "hi"];
-    const captured = captureFeishuOutgoingReply({
-      plan: prepared.plan,
-      planPath: prepared.planPath,
-      plansRoot: layout.plans,
-      userArgv: argv,
-      spawnArgs: argv,
-      env: {
-        ...process.env,
-        OPENTAG_TEST_TARGET_MODE: "lark-cli",
-        OPENTAG_TEST_LARK_ENVELOPE: sendEnvelope(),
-        OPENTAG_TEST_LARK_GET_ENVELOPE: getEnvelope(),
-        OPENTAG_TEST_LARK_GET_DELAY_om_sent: "1000",
-      },
-      code: 0,
-      stdout: Buffer.from(sendEnvelope()),
+    const writeReceipt = replyStore.writeOutgoingReplyReceipt;
+    const writer = vi.spyOn(replyStore, "writeOutgoingReplyReceipt").mockImplementationOnce(async (options) => {
+      await writeReceipt(options);
+      // Fail only enrichment, after the accepted receipt has finished its durable write.
+      await rm(receiptsDir, { recursive: true, force: true });
+      await writeFile(receiptsDir, "not a directory\n");
     });
-    // The accepted receipt is durable first; break the directory while the content read is
-    // still in flight so the enrichment rewrite is the write that fails.
-    await expect
-      .poll(async () => (await readdir(receiptsDir).catch(() => [])).length, { timeout: 5_000 })
-      .toBeGreaterThan(0);
-    await rm(receiptsDir, { recursive: true, force: true });
-    await writeFile(receiptsDir, "not a directory\n");
-    await expect(captured).resolves.toBe("recorded");
-    const statusPath = join(prepared.sessionDir, "runs", deriveProviderCliRunKey("run-1"), "capture-status.json");
-    expect(JSON.parse(await readFile(statusPath, "utf8"))).toEqual({ schemaVersion: 1, status: "incomplete" });
+    try {
+      await expect(
+        captureFeishuOutgoingReply({
+          plan: prepared.plan,
+          planPath: prepared.planPath,
+          plansRoot: layout.plans,
+          userArgv: argv,
+          spawnArgs: argv,
+          env: {
+            ...process.env,
+            OPENTAG_TEST_TARGET_MODE: "lark-cli",
+            OPENTAG_TEST_LARK_ENVELOPE: sendEnvelope(),
+            OPENTAG_TEST_LARK_GET_ENVELOPE: getEnvelope(),
+          },
+          code: 0,
+          stdout: Buffer.from(sendEnvelope()),
+        }),
+      ).resolves.toBe("recorded");
+      expect(writer).toHaveBeenCalledTimes(2);
+      const statusPath = join(prepared.sessionDir, "runs", deriveProviderCliRunKey("run-1"), "capture-status.json");
+      expect(JSON.parse(await readFile(statusPath, "utf8"))).toEqual({ schemaVersion: 1, status: "incomplete" });
+    } finally {
+      writer.mockRestore();
+    }
   });
 
   it("marks a send incomplete when the content read cannot be parsed", async () => {

@@ -1,4 +1,4 @@
-import { type GitHubConnectionStatus, type RuntimeExecutionSource, RuntimeUserTaskSourceSchema } from "@opentag/shared";
+import { type RuntimeExecutionSource, RuntimeUserTaskSourceSchema } from "@opentag/shared";
 import { and, eq } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import {
@@ -11,7 +11,8 @@ import {
 } from "../../db/schema/index.js";
 import type { RuntimeGitHubAdmission } from "../../runtime-credentials/github-admission.js";
 import type { RuntimeTaskPolicy, RuntimeTaskPolicyInput } from "../../runtime-credentials/task-policy.js";
-import type { GitHubManagementService } from "../github/github-management-service.js";
+import type { AgentGitHubConnection, AgentGitHubCredentialService } from "../github/agent-github-credential-service.js";
+import { AgentGitHubAuthorizationError } from "../github/agent-github-credential-service.js";
 
 interface AdmissionInput {
   accountId: string;
@@ -26,7 +27,7 @@ export class GitHubRuntimePolicy implements RuntimeGitHubAdmission, RuntimeTaskP
   constructor(
     readonly options: {
       database: DatabaseClient;
-      management: GitHubManagementService;
+      management: Pick<AgentGitHubCredentialService, "getOverview">;
     },
   ) {}
 
@@ -47,17 +48,15 @@ export class GitHubRuntimePolicy implements RuntimeGitHubAdmission, RuntimeTaskP
       : undefined;
   }
 
-  async #load(input: AdmissionInput): Promise<GitHubConnectionStatus | undefined> {
+  async #load(input: AdmissionInput): Promise<AgentGitHubConnection | undefined> {
     input.signal?.throwIfAborted();
     if (!(await this.#userTask(input.accountId, input.sessionId, input.source, new Set(), input.agentId)))
       return undefined;
-    const { connection } = await this.options.management.getOverview(input.accountId);
-    return connection?.accountId === input.accountId &&
-      connection.status === "active" &&
-      connection.accessExpiresAt &&
-      Date.parse(connection.accessExpiresAt) > Date.now()
-      ? connection
-      : undefined;
+    const { connection } = await this.options.management.getOverview(input.accountId, input.agentId).catch((error) => {
+      if (error instanceof AgentGitHubAuthorizationError) return { connection: null };
+      throw error;
+    });
+    return connection?.accountId === input.accountId ? connection : undefined;
   }
 
   /** Follow immutable, Server-recorded collaboration provenance; never infer it from Session text. */

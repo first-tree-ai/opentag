@@ -7,7 +7,6 @@ import { registerRuntimeSessionRoutes } from "../api/runtime-sessions.js";
 import { computers, imBindings, imMessageDeliveries, imMessages } from "../db/schema/index.js";
 import type { RuntimeExecutionRecord } from "../runtime-credentials/types.js";
 import { AgentService } from "../services/agents/index.js";
-import type { GitHubManagementService } from "../services/github/github-management-service.js";
 import { GitHubRuntimePolicy } from "../services/github-proxy/runtime-policy.js";
 import { SessionCliProofService } from "../services/sessions/session-cli-proof-service.js";
 import { SessionService } from "../services/sessions/session-service.js";
@@ -123,21 +122,21 @@ it("carries the Session CLI execution marker through source capture to next-roun
     placementGeneration: 1,
     connectionInstanceId: instanceId,
   });
-  let status = "active";
+  let connected = true;
   const policy = new GitHubRuntimePolicy({
     database,
     management: {
       getOverview: async () => ({
-        connection: {
-          id: randomUUID(),
-          accountId: userId,
-          status,
-          accessExpiresAt: new Date(Date.now() + 60_000).toISOString(),
-          authorizationVersion: "1",
-          credentialGeneration: "1",
-        },
+        connection: connected
+          ? {
+              id: randomUUID(),
+              accountId: userId,
+              authorizationVersion: "1",
+              credentialGeneration: "1",
+            }
+          : null,
       }),
-    } as unknown as GitHubManagementService,
+    },
   });
   const app = Fastify();
   registerRuntimeSessionRoutes(app, {
@@ -196,7 +195,7 @@ it("carries the Session CLI execution marker through source capture to next-roun
     executionLive = false;
     expect(await nextAdmission(execution.executionId)).toBeUndefined();
     executionLive = true;
-    status = "revoked";
+    connected = false;
     expect(await nextAdmission(execution.executionId)).toBeUndefined();
   } finally {
     await app.close();

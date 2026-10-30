@@ -47,6 +47,7 @@ export interface RuntimeExecutionRecord {
   source: RuntimeExecutionSource;
   purpose: RuntimeExecutionPurpose;
   contextTree?: RuntimeContextTreeExecution;
+  contextTreeAuthorityHash?: string;
   computerKind: "local" | "cloud";
   /** Server-owned admission for a negotiated Cloud internal Session; never supplies an IM provider. */
   internalAuthority?: "cloud-session-collaboration";

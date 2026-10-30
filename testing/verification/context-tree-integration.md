@@ -50,3 +50,63 @@ CLI is refreshed from the checked package build; no remote tree is changed by th
 The selection reset migration clears saved tree selections and advances affected Agent and
 runtime configuration revisions. Users reconnect with repository, directory, and branch;
 repository contents, cached checkouts, and unpublished work remain in place.
+
+## Agent GitHub MCP credential source (2026-10-30)
+
+Context Tree consumes the current Agent's official GitHub MCP OAuth credential through its
+existing restricted Git transport. There is no schema, token copy, separate refresh worker or
+runtime protocol upgrade. Account GitHub routes and callbacks return 410, and Account has no
+independent GitHub section. Historical credential rows remain inert.
+
+Independent review resolved final-commit exclusion, repository-scope classification, authority
+changes during identity lookup, disable/re-enable ABA, capability renewal switching identity,
+and disabled/unsupported authorization being reported as retryable infrastructure failure.
+The Context child now pins authority on its live Server-only registry record; refresh generation
+alone can rotate without changing authority. Reacquisition and renewal cannot replace the pin.
+
+Validation on Node 24.20.0 and pnpm 10.12.1:
+
+- Shared: 48 files / 779 tests. Affected Server suites: 13 files / 436 tests; final review
+  regressions in broker, owner, policy and startup: 4 files / 78 tests (overlapping batches).
+- Actual MCP root/cipher tests verify same-token consumption, no credential copies or extra
+  token exchange, shared references, rotation, client/resource/ownership, readonly policy,
+  earliest-mount selection without fallback, enable ABA and final-write rejection.
+- Real PostgreSQL: 2 files / 22 tests. Independent connections prove both race orderings:
+  a prior raw invalidation makes selection fail; a selection holding authentication row locks
+  commits before a waiting invalidation, which then takes effect. Existing shared refresh and
+  holder-handoff tests also pass.
+- Client Local/Cloud Context suites: 5 files / 40 tests using the real pinned CLI and local Git.
+  The Server settings verification suite passes 27 tests, including Local/Cloud operations
+  that resolve the actual shared MCP root and rotate credentials between trusted Git calls.
+- Web: 3 files / 35 tests. Browser: 3 smoke cases with zero retries against built Web/Server,
+  isolated PostgreSQL and an authenticated test session. Memory remains visible without a
+  GitHub connection; Account makes no legacy GitHub query. English/Chinese widths
+  320/390/768/1440 and accessibility checks pass. [UI evidence](../web-ui/context-mcp-authorization/README.md).
+- Workspace build/typecheck/check and final affected Server build pass.
+
+API/OAuth responses are offline fixtures. These checks do not establish deployed Cloud or live
+GitHub acceptance. No real token, Agent message, repository, Issue or PR business fixture was
+created. The full PostgreSQL and cross-package regression matrix remains CI-owned. Client Agent
+Runtime coverage implementation/configuration is unchanged, so that separate gate was not rerun.
+
+The subsequent independent review also found that repository admission could query a replacement
+identity before comparing the operation's authorization version. Repository lookups now require the
+initial version and compare it before API I/O. Actual shared-root regressions prove zero calls with
+the replacement token during initial admission and recheck; ordinary refresh remains usable.
+The failing CI fixtures were updated to the Agent credential port (including `agentId`), locale keys
+were sorted, and a baseline receipt test now injects failure after its first durable write completes.
+The affected Server batch passes 204 tests (16 native-tool cases skipped without the pinned binaries),
+PostgreSQL passes 48, reply capture passes 24 and the locale catalog passes 3. The affected Server build,
+workspace typecheck and repository check pass. Complete CI results remain separate from these local checks.
+
+Deployment review removed the unused Account OAuth parser and setup examples. Old environment
+variables are ignored with a names-only warning; only the MCP client settings enable GitHub access.
+Config, startup and Session CLI continuation regressions pass 78 tests. The actual MCP/CLI suite
+passes 27 tests under v8 instrumentation; its two database-plus-CLI cases use a 30-second test budget
+without changing any product deadline or assertion.
+
+The merge of main `8528f7ab` retains the current Memory layout and its read/operation recovery
+behavior. Authorization-specific messages and the existing recovery link target the current Agent's
+Connectors rather than the retired Account integration. The merged Web build and all 12 typecheck
+tasks pass; four affected Web suites pass 52 tests and the three existing Chromium smoke cases pass
+with zero retries. The no-GitHub Memory screenshot is refreshed to the merged layout.

@@ -26,7 +26,7 @@ import {
   KumoInputControl,
   Text,
 } from "../../../ui/design-system.js";
-import { agentSettingsSectionLink } from "../agent-routes.js";
+import { agentMcpLink, agentSettingsSectionLink } from "../agent-routes.js";
 
 type TreeAction = "connect" | "create";
 
@@ -236,7 +236,7 @@ function ContextTreeSettingsForm({
       />
       <div className="min-h-6 text-sm" aria-live="polite">
         {result && !mode && !disconnectTarget ? (
-          <ContextTreeResult result={result} cloud={cloud} repository={resultSource?.repository} />
+          <ContextTreeResult agentId={config.id} result={result} cloud={cloud} repository={resultSource?.repository} />
         ) : null}
       </div>
       <Dialog
@@ -293,6 +293,7 @@ function ContextTreeSettingsForm({
           {pending ? <p role="status">{m.agent_settings_context_tree_pending()}</p> : null}
           {formResult ? (
             <ContextTreeResult
+              agentId={config.id}
               result={formResult}
               cloud={cloud}
               repository={recoverySource?.repository}
@@ -312,6 +313,7 @@ function ContextTreeSettingsForm({
         </form>
       </Dialog>
       <DisconnectTreeDialog
+        agentId={config.id}
         target={disconnectTarget}
         pending={pending}
         disabled={pauseRequired || unconfirmed}
@@ -387,6 +389,7 @@ function removeUncertainCreation(previous: ContextTreeConnection[], repository: 
   return previous.filter((attempt) => repositoryIdentity(attempt.repository) !== identity);
 }
 function DisconnectTreeDialog({
+  agentId,
   target,
   pending,
   disabled,
@@ -396,6 +399,7 @@ function DisconnectTreeDialog({
   onClose,
   onConfirm,
 }: {
+  agentId: string;
   target?: ContextTreeConnection;
   pending: boolean;
   disabled: boolean;
@@ -423,7 +427,9 @@ function DisconnectTreeDialog({
           {target.path === "." ? "" : `/${target.path}`}
         </p>
       ) : null}
-      {result ? <ContextTreeResult result={result} cloud={cloud} repository={target?.repository} /> : null}
+      {result ? (
+        <ContextTreeResult agentId={agentId} result={result} cloud={cloud} repository={target?.repository} />
+      ) : null}
       {pending ? (
         <p role="status" className="my-3 text-sm">
           {m.agent_settings_context_tree_disconnecting()}
@@ -841,11 +847,13 @@ function repositoryFromUrl(value: string): string | undefined {
 }
 
 function ContextTreeResult({
+  agentId,
   result,
   cloud,
   repository,
   onConnect,
 }: {
+  agentId: string;
   result: ContextTreeOperationResponse;
   cloud: boolean;
   repository?: string;
@@ -868,13 +876,13 @@ function ContextTreeResult({
       <div className="flex flex-wrap items-center gap-3 text-sm">
         {result.code === "authentication_required" ? (
           <Link
-            to="/account"
+            {...agentMcpLink(agentId)}
             target="_blank"
             rel="noopener noreferrer"
             title={m.agent_settings_context_tree_settings_link_hint()}
             className="text-kumo-link underline underline-offset-4"
           >
-            {m.agent_settings_context_tree_account_settings()}
+            {m.agent_settings_context_tree_connector_settings()}
           </Link>
         ) : null}
         {repository ? (
@@ -906,6 +914,10 @@ function failureMessage(
       return m.agent_settings_context_tree_authentication_required();
     case "github_not_configured":
       return m.agent_settings_context_tree_github_not_configured();
+    case "github_connector_disabled":
+      return m.agent_settings_context_tree_github_connector_disabled();
+    case "github_connector_unsupported":
+      return m.agent_settings_context_tree_github_connector_unsupported();
     case "permission_denied":
       return cloud
         ? m.agent_settings_context_tree_cloud_permission_denied()

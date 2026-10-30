@@ -18,7 +18,7 @@ import {
 import { AuthServiceError } from "./services/auth/index.js";
 import type { ComputerAuthContext, ComputerAuthVerifier } from "./services/computers/index.js";
 import type { ApplicationCipher } from "./services/crypto.js";
-import type { GitHubIntegrationComposition } from "./services/github/composition.js";
+import type { AgentGitHubCredentialService } from "./services/github/agent-github-credential-service.js";
 import { GitHubProviderAdapter } from "./services/github-proxy/github-provider-adapter.js";
 import { GitHubRuntimePolicy } from "./services/github-proxy/runtime-policy.js";
 
@@ -51,7 +51,7 @@ export async function createPlatformRuntime(options: {
    * keeps it fully off, with no grant, no token, and no route.
    */
   mcpMounts?: McpUsableMountReader;
-  github?: GitHubIntegrationComposition;
+  github?: { management: AgentGitHubCredentialService };
   /**
    * Explicit trusted Cloud control verifier/activity port, owned by Computer/Cloud
    * orchestration. The default startup injects no verifier/activity checker: Cloud control

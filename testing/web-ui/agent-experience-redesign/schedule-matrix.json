@@ -1,0 +1,11 @@
+{
+  "scope": "Real application shell and production components, synthetic API",
+  "cases": 40,
+  "errors": [],
+  "checkedWidths": [320, 390, 768, 1440],
+  "locales": ["en", "zh"],
+  "states": ["normal", "empty", "long", "exhausted", "paging"],
+  "detailsChecked": 8,
+  "noEagerDetailReads": true,
+  "unexpectedNetworkRequests": []
+}

@@ -1,0 +1,81 @@
+{
+  "scope": "Production App/router/shell/components with synthetic API",
+  "entry": "Resumed direct authorized turn; prior interrupted flow output unavailable",
+  "checks": {
+    "noEagerDetailRead": true,
+    "oneLazyDetailRead": true,
+    "detailFocusTrap": true,
+    "detailEscapeReturnsName": true,
+    "observedRevisionsForPauseResume": true,
+    "deleteCancelInitialFocus": true,
+    "busyConfirmationControlsDisabled": true,
+    "busyEscapeBlocked": true,
+    "deleteLastRowReturnsHeading": true,
+    "refusedDeleteStaysOpen": true,
+    "refusedDeleteCancelReturnsActions": true,
+    "listErrorDoesNotClaimEmpty": true,
+    "listRetryRecoversRows": true
+  },
+  "axe": {
+    "scheduleList": [],
+    "taskDialog": [],
+    "deleteConfirmation": []
+  },
+  "operations": [
+    {
+      "action": "pause",
+      "id": "schedule-0",
+      "revision": 2
+    },
+    {
+      "action": "resume",
+      "id": "schedule-0",
+      "revision": 3
+    }
+  ],
+  "stage": "complete",
+  "deletedOperations": [
+    {
+      "action": "delete",
+      "id": "schedule-0",
+      "revision": 2
+    }
+  ],
+  "unexpectedRequests": [],
+  "recoveryPagingMobile": {
+    "checks": {
+      "detailErrorKeepsPromptPrivate": true,
+      "detailRetryRecovers": true,
+      "inaccessibleDeepLinkDoesNotLeakTask": true,
+      "inaccessibleDeepLinkNotRetried": true,
+      "deepLinkCloseReturnsSection": true,
+      "pagingRetainsAndAppendsSummaries": true,
+      "pagingDoesNotFetchPrivateTasks": true,
+      "reducedMotionRespected": true,
+      "mobileMenuKeyboardAndReturnFocus": true,
+      "loadingDoesNotClaimEmpty": true,
+      "loadingHasAccessibleStatus": true,
+      "Chinese320DetailFitsAndVisible": true,
+      "ChineseMobileKeyboardCloseReturnsName": true
+    },
+    "details": {
+      "reducedMotionTransition": {
+        "duration": "0.1s",
+        "property": "none"
+      },
+      "zh320": {
+        "width": 288,
+        "documentOverflow": false,
+        "dialogOverflow": false,
+        "opacity": "1"
+      }
+    },
+    "stage": "complete",
+    "unexpectedRequests": []
+  },
+  "observationNotes": [
+    "Initial fixture navigation failed because the previous local static server had ended; restarted the same server.",
+    "A first driver sampled the task dialog during entry animation and focus-guard movement. Waiting for opacity=1 and settled focus removed the transient contrast/focus failures.",
+    "Reduced motion is checked by transition-property:none; the shared duration token can remain 0.1s without a running transition."
+  ]
+}

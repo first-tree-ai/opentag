@@ -1,0 +1,597 @@
+{
+  "scope": "Production App synthetic API, fixed Mon2026-10-26 16:00 Shanghai; valid weekday next Tue09:30",
+  "cases": [
+    {
+      "locale": "en",
+      "width": 320,
+      "state": "normal",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [101, 135, 118],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "en",
+      "width": 320,
+      "state": "empty",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "en",
+      "width": 320,
+      "state": "one",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [88],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "en",
+      "width": 320,
+      "state": "exhausted",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [101, 135, 118],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "en",
+      "width": 320,
+      "state": "long",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [101, 135, 118],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "en",
+      "width": 390,
+      "state": "normal",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [79, 113, 100],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "en",
+      "width": 390,
+      "state": "empty",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "en",
+      "width": 390,
+      "state": "one",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [66],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "en",
+      "width": 390,
+      "state": "exhausted",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [101, 113, 100],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "en",
+      "width": 390,
+      "state": "long",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [79, 113, 100],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "en",
+      "width": 768,
+      "state": "normal",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [67, 101, 88],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "en",
+      "width": 768,
+      "state": "empty",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "en",
+      "width": 768,
+      "state": "one",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [54],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "en",
+      "width": 768,
+      "state": "exhausted",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [67, 101, 88],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "en",
+      "width": 768,
+      "state": "long",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [67, 101, 88],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "state": "normal",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [67, 101, 88],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "state": "empty",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "state": "one",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [54],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "state": "exhausted",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [67, 101, 88],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "state": "long",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [67, 101, 88],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 320,
+      "state": "normal",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [101, 135, 100],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 320,
+      "state": "empty",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 320,
+      "state": "one",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [88],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 320,
+      "state": "exhausted",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [101, 135, 100],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 320,
+      "state": "long",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [101, 135, 100],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 390,
+      "state": "normal",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [79, 113, 100],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 390,
+      "state": "empty",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 390,
+      "state": "one",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [66],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 390,
+      "state": "exhausted",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [101, 113, 100],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 390,
+      "state": "long",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [79, 113, 100],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 768,
+      "state": "normal",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [67, 101, 88],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 768,
+      "state": "empty",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 768,
+      "state": "one",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [54],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 768,
+      "state": "exhausted",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [67, 101, 88],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 768,
+      "state": "long",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [67, 101, 88],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 1440,
+      "state": "normal",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [67, 101, 88],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 1440,
+      "state": "empty",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 1440,
+      "state": "one",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [54],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 1440,
+      "state": "exhausted",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [67, 101, 88],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 1440,
+      "state": "long",
+      "documentOverflow": false,
+      "mainOverflow": false,
+      "sectionOverflow": false,
+      "rowHeights": [67, 101, 88],
+      "privateDetailReads": 0,
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    }
+  ],
+  "details": [
+    {
+      "locale": "en",
+      "width": 320,
+      "defaultCollapsed": true,
+      "fit": {
+        "overflow": false,
+        "documentOverflow": false,
+        "scrollHeight": 560,
+        "clientHeight": 560
+      },
+      "keyboardDisclosure": true,
+      "bottom": {
+        "remainingScroll": 0,
+        "paddingBottom": 24
+      },
+      "detailReads": 1
+    },
+    {
+      "locale": "en",
+      "width": 390,
+      "defaultCollapsed": true,
+      "fit": {
+        "overflow": false,
+        "documentOverflow": false,
+        "scrollHeight": 550,
+        "clientHeight": 550
+      },
+      "keyboardDisclosure": true,
+      "bottom": {
+        "remainingScroll": 0,
+        "paddingBottom": 24
+      },
+      "detailReads": 1
+    },
+    {
+      "locale": "en",
+      "width": 768,
+      "defaultCollapsed": true,
+      "fit": {
+        "overflow": false,
+        "documentOverflow": false,
+        "scrollHeight": 481,
+        "clientHeight": 481
+      },
+      "keyboardDisclosure": true,
+      "bottom": {
+        "remainingScroll": 0.5,
+        "paddingBottom": 24
+      },
+      "detailReads": 1
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "defaultCollapsed": true,
+      "fit": {
+        "overflow": false,
+        "documentOverflow": false,
+        "scrollHeight": 481,
+        "clientHeight": 481
+      },
+      "keyboardDisclosure": true,
+      "bottom": {
+        "remainingScroll": 0.5,
+        "paddingBottom": 24
+      },
+      "detailReads": 1
+    },
+    {
+      "locale": "zh",
+      "width": 320,
+      "defaultCollapsed": true,
+      "fit": {
+        "overflow": false,
+        "documentOverflow": false,
+        "scrollHeight": 550,
+        "clientHeight": 550
+      },
+      "keyboardDisclosure": true,
+      "bottom": {
+        "remainingScroll": 0,
+        "paddingBottom": 24
+      },
+      "detailReads": 1
+    },
+    {
+      "locale": "zh",
+      "width": 390,
+      "defaultCollapsed": true,
+      "fit": {
+        "overflow": false,
+        "documentOverflow": false,
+        "scrollHeight": 550,
+        "clientHeight": 550
+      },
+      "keyboardDisclosure": true,
+      "bottom": {
+        "remainingScroll": 0,
+        "paddingBottom": 24
+      },
+      "detailReads": 1
+    },
+    {
+      "locale": "zh",
+      "width": 768,
+      "defaultCollapsed": true,
+      "fit": {
+        "overflow": false,
+        "documentOverflow": false,
+        "scrollHeight": 481,
+        "clientHeight": 481
+      },
+      "keyboardDisclosure": true,
+      "bottom": {
+        "remainingScroll": 0,
+        "paddingBottom": 24
+      },
+      "detailReads": 1
+    },
+    {
+      "locale": "zh",
+      "width": 1440,
+      "defaultCollapsed": true,
+      "fit": {
+        "overflow": false,
+        "documentOverflow": false,
+        "scrollHeight": 481,
+        "clientHeight": 481
+      },
+      "keyboardDisclosure": true,
+      "bottom": {
+        "remainingScroll": 0,
+        "paddingBottom": 24
+      },
+      "detailReads": 1
+    }
+  ],
+  "axe": [
+    {
+      "locale": "en",
+      "width": 1440,
+      "state": "default details",
+      "violations": []
+    },
+    {
+      "locale": "zh",
+      "width": 320,
+      "state": "default details",
+      "violations": []
+    }
+  ]
+}

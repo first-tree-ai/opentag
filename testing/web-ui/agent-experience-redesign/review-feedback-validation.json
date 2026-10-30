@@ -1,0 +1,307 @@
+{
+  "scope": "Production App and real components, synthetic APIs, fixed 2026-10-26 clock; no live operations",
+  "layouts": [
+    {
+      "locale": "en",
+      "width": 320,
+      "pageOverflow": false,
+      "sectionOverflow": false,
+      "detailReads": 0
+    },
+    {
+      "locale": "en",
+      "width": 390,
+      "pageOverflow": false,
+      "sectionOverflow": false,
+      "detailReads": 0
+    },
+    {
+      "locale": "en",
+      "width": 768,
+      "pageOverflow": false,
+      "sectionOverflow": false,
+      "detailReads": 0
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "pageOverflow": false,
+      "sectionOverflow": false,
+      "detailReads": 0
+    },
+    {
+      "locale": "zh",
+      "width": 320,
+      "pageOverflow": false,
+      "sectionOverflow": false,
+      "detailReads": 0
+    },
+    {
+      "locale": "zh",
+      "width": 390,
+      "pageOverflow": false,
+      "sectionOverflow": false,
+      "detailReads": 0
+    },
+    {
+      "locale": "zh",
+      "width": 768,
+      "pageOverflow": false,
+      "sectionOverflow": false,
+      "detailReads": 0
+    },
+    {
+      "locale": "zh",
+      "width": 1440,
+      "pageOverflow": false,
+      "sectionOverflow": false,
+      "detailReads": 0
+    }
+  ],
+  "instructions": [
+    {
+      "locale": "en",
+      "width": 320,
+      "state": "default",
+      "clipped": true,
+      "expandVisible": true
+    },
+    {
+      "locale": "en",
+      "width": 320,
+      "state": "long",
+      "expanded": true,
+      "collapsed": true
+    },
+    {
+      "locale": "en",
+      "width": 390,
+      "state": "default",
+      "clipped": false,
+      "expandVisible": false
+    },
+    {
+      "locale": "en",
+      "width": 390,
+      "state": "long",
+      "expanded": true,
+      "collapsed": true
+    },
+    {
+      "locale": "en",
+      "width": 768,
+      "state": "default",
+      "clipped": false,
+      "expandVisible": false
+    },
+    {
+      "locale": "en",
+      "width": 768,
+      "state": "long",
+      "expanded": true,
+      "collapsed": true
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "state": "default",
+      "clipped": false,
+      "expandVisible": false
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "state": "long",
+      "expanded": true,
+      "collapsed": true
+    },
+    {
+      "locale": "zh",
+      "width": 320,
+      "state": "default",
+      "clipped": true,
+      "expandVisible": true
+    },
+    {
+      "locale": "zh",
+      "width": 320,
+      "state": "long",
+      "expanded": true,
+      "collapsed": true
+    },
+    {
+      "locale": "zh",
+      "width": 390,
+      "state": "default",
+      "clipped": false,
+      "expandVisible": false
+    },
+    {
+      "locale": "zh",
+      "width": 390,
+      "state": "long",
+      "expanded": true,
+      "collapsed": true
+    },
+    {
+      "locale": "zh",
+      "width": 768,
+      "state": "default",
+      "clipped": false,
+      "expandVisible": false
+    },
+    {
+      "locale": "zh",
+      "width": 768,
+      "state": "long",
+      "expanded": true,
+      "collapsed": true
+    },
+    {
+      "locale": "zh",
+      "width": 1440,
+      "state": "default",
+      "clipped": false,
+      "expandVisible": false
+    },
+    {
+      "locale": "zh",
+      "width": 1440,
+      "state": "long",
+      "expanded": true,
+      "collapsed": true
+    }
+  ],
+  "dueRefresh": [
+    {
+      "locale": "en",
+      "width": 320,
+      "initial": 1,
+      "advanced": {
+        "listReads": 2,
+        "detailReads": 0
+      },
+      "unchanged": {
+        "listReads": 3,
+        "detailReads": 0
+      }
+    },
+    {
+      "locale": "en",
+      "width": 390,
+      "initial": 1,
+      "advanced": {
+        "listReads": 2,
+        "detailReads": 0
+      },
+      "unchanged": {
+        "listReads": 3,
+        "detailReads": 0
+      }
+    },
+    {
+      "locale": "en",
+      "width": 768,
+      "initial": 1,
+      "advanced": {
+        "listReads": 2,
+        "detailReads": 0
+      },
+      "unchanged": {
+        "listReads": 3,
+        "detailReads": 0
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "initial": 1,
+      "advanced": {
+        "listReads": 2,
+        "detailReads": 0
+      },
+      "unchanged": {
+        "listReads": 3,
+        "detailReads": 0
+      }
+    },
+    {
+      "locale": "zh",
+      "width": 320,
+      "initial": 1,
+      "advanced": {
+        "listReads": 2,
+        "detailReads": 0
+      },
+      "unchanged": {
+        "listReads": 3,
+        "detailReads": 0
+      }
+    },
+    {
+      "locale": "zh",
+      "width": 390,
+      "initial": 1,
+      "advanced": {
+        "listReads": 2,
+        "detailReads": 0
+      },
+      "unchanged": {
+        "listReads": 3,
+        "detailReads": 0
+      }
+    },
+    {
+      "locale": "zh",
+      "width": 768,
+      "initial": 1,
+      "advanced": {
+        "listReads": 2,
+        "detailReads": 0
+      },
+      "unchanged": {
+        "listReads": 3,
+        "detailReads": 0
+      }
+    },
+    {
+      "locale": "zh",
+      "width": 1440,
+      "initial": 1,
+      "advanced": {
+        "listReads": 2,
+        "detailReads": 0
+      },
+      "unchanged": {
+        "listReads": 3,
+        "detailReads": 0
+      }
+    }
+  ],
+  "axe": [
+    {
+      "locale": "en",
+      "width": 320,
+      "state": "long collapsed details",
+      "violations": []
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "state": "default details",
+      "violations": []
+    },
+    {
+      "locale": "zh",
+      "width": 320,
+      "state": "default details",
+      "violations": []
+    },
+    {
+      "locale": "zh",
+      "width": 320,
+      "state": "long collapsed details",
+      "violations": []
+    }
+  ]
+}

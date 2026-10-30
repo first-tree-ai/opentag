@@ -1,0 +1,95 @@
+{
+  "cases": 56,
+  "overflows": [],
+  "wrongRestriction": [
+    {
+      "locale": "en",
+      "width": 320,
+      "state": "offline-active",
+      "scrollWidth": 320,
+      "clientWidth": 320,
+      "cards": 1,
+      "disabledButtons": ["Add tree"],
+      "status": [
+        "Bring the Computer online to connect or create a Context Tree. Disconnect remains available while offline."
+      ]
+    },
+    {
+      "locale": "en",
+      "width": 390,
+      "state": "offline-active",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "cards": 1,
+      "disabledButtons": ["Add tree"],
+      "status": [
+        "Bring the Computer online to connect or create a Context Tree. Disconnect remains available while offline."
+      ]
+    },
+    {
+      "locale": "en",
+      "width": 768,
+      "state": "offline-active",
+      "scrollWidth": 768,
+      "clientWidth": 768,
+      "cards": 1,
+      "disabledButtons": ["Add tree"],
+      "status": [
+        "Bring the Computer online to connect or create a Context Tree. Disconnect remains available while offline."
+      ]
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "state": "offline-active",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "cards": 1,
+      "disabledButtons": ["Add tree"],
+      "status": [
+        "Bring the Computer online to connect or create a Context Tree. Disconnect remains available while offline."
+      ]
+    },
+    {
+      "locale": "zh",
+      "width": 320,
+      "state": "offline-active",
+      "scrollWidth": 320,
+      "clientWidth": 320,
+      "cards": 1,
+      "disabledButtons": ["添加知识树"],
+      "status": ["连接或创建 Context Tree 需要电脑在线。电脑离线时仍可断开连接。"]
+    },
+    {
+      "locale": "zh",
+      "width": 390,
+      "state": "offline-active",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "cards": 1,
+      "disabledButtons": ["添加知识树"],
+      "status": ["连接或创建 Context Tree 需要电脑在线。电脑离线时仍可断开连接。"]
+    },
+    {
+      "locale": "zh",
+      "width": 768,
+      "state": "offline-active",
+      "scrollWidth": 768,
+      "clientWidth": 768,
+      "cards": 1,
+      "disabledButtons": ["添加知识树"],
+      "status": ["连接或创建 Context Tree 需要电脑在线。电脑离线时仍可断开连接。"]
+    },
+    {
+      "locale": "zh",
+      "width": 1440,
+      "state": "offline-active",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "cards": 1,
+      "disabledButtons": ["添加知识树"],
+      "status": ["连接或创建 Context Tree 需要电脑在线。电脑离线时仍可断开连接。"]
+    }
+  ],
+  "cardCounts": [0, 1, 32]
+}

@@ -281,11 +281,33 @@ Every module-owned stylesheet must:
 ## Schedule handoff feedback
 
 Schedule rows keep configuration state (Enabled, Paused, or an exhausted one-time schedule) separate from the
-latest handoff result. When a handoff summary exists, its recorded outcome and scheduled time remain visible
-without opening the full task. The list uses its existing summary fields and does not fetch the private prompt
-until details are opened.
+latest handoff result. Rows prioritize the task name, friendly time rule and relative next occurrence.
+Normal runtime receipt does not occupy a separate row. Exceptional or unconfirmed triggers show a concise
+relative-time warning that opens details; they do not claim task failure or completion. Exact timestamps
+and timezones remain available in time titles and details. Relative labels update locally once per minute
+without fetching private details. On a minute tick at or after a loaded enabled occurrence's due time,
+the list revalidates summaries once per schedule and observed occurrence. An unchanged past occurrence
+does not cause repeated reads; a failed refresh retains rows and exposes Retry. The list uses summary
+fields and fetches the private prompt only on open.
 
-Details explain the recorded outcome and retain its reason code and next scheduled time. An accepted handoff
+The list stays in one card with compact divided rows; pagination remains an explicit Load more action.
+The schedule name opens a focused detail dialog, including when reached through the existing schedule deep link.
+The row action menu contains pause/resume and delete. A pending mutation prevents overlapping writes, while
+read-only details remain available. Deletion confirms the schedule and its impact, initially focuses Cancel,
+retains a refused operation inside the dialog, and returns focus to the section after a confirmed removal.
+After a revision conflict, refreshed summaries update the confirmation target before the user explicitly
+confirms again. If the target disappears, the confirmation closes and focus returns to the section.
+A failed refresh disables deletion until an explicit read recovers; stale data cannot be resubmitted.
+Closing details returns focus to the name, or the section for a deep link without a surviving trigger.
+Switching Agents closes any open detail or confirmation. Failed list refreshes retain loaded rows and expose
+Retry. A failed initial read does not masquerade as an empty list. The empty state explains that schedules are
+created by asking the Agent in its existing chat; the page does not introduce a separate creation form.
+
+Details prioritize the instructions, the same friendly rule with its timezone, next occurrence and a
+provider/conversation description. Instructions offer expansion only when the rendered paragraph is clipped, including after a resize. Existing channel/thread identifiers
+remain available as technical references; the API does not supply a human-readable destination name.
+Recorded trigger diagnostics are collapsed by default and retain exact times, reason codes and explanations.
+Times omit seconds and repeated GMT offsets; expanded content remains in the dialog's scroll container. An accepted handoff
 confirms runtime receipt, never task completion. An unknown handoff may still be in flight or may already have started work; users check
 Tasks before starting it again. Unreachable and rejected handoffs direct users to the Agent's Computer status,
 without diagnosing the cause from current presence. Skipped occurrences retain their reason code. The schedule

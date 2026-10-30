@@ -459,7 +459,7 @@ if (managed && (socketPath || url)) {
   });
   request.on('error', () => { console.error('Context Tree execution unavailable; do not fall back to GitHub CLI.'); process.exitCode = 1; });
   request.on('timeout', () => request.destroy()); request.end(JSON.stringify({ args }));
-} else if (managed && (manifest || process.env.OPENTAG_HOME || process.env.OPENTAG_PROVIDER_ENV_FILE)) {
+} else if (managed && (manifest || process.env.OPENTAG_CONTEXT_TREE_MANAGED === '1')) {
   console.error('Context Tree execution unavailable; retain unpublished work.'); process.exitCode = 1;
 } else {
   const child = spawn(process.execPath, [cli, ...args], { stdio: 'inherit' });

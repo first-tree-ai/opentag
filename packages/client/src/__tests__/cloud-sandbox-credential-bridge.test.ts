@@ -372,6 +372,7 @@ describe("CloudSandboxCredentialBridge trust boundary", () => {
       environment: Record<string, string>;
     };
     expect(environmentFile.executionId).toBe(EXECUTION_ID);
+    expect(environmentFile.environment.OPENTAG_CONTEXT_TREE_MANAGED).toBe("1");
     expect(environmentFile.environment.GH_TOKEN).toBeUndefined();
     expect(environmentFile.environment.SLACK_BOT_TOKEN).toMatch(/^otrh_/);
     // The manifest publishes only the execution-scoped routing inputs; the Agent runtime

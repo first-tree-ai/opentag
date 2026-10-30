@@ -114,9 +114,14 @@ with zero retries. The no-GitHub Memory screenshot is refreshed to the merged la
 ## Codex Context Tree command routing
 
 The Codex adapter tests capture the real spawned process environment and shell-filter arguments
-for visible and internal launches, including the per-execution Context Tree manifest path.
-Command-client process tests reject managed sync and write commands before invoking a standalone
-CLI when the manifest is absent. Separate cases retain local verification and standalone use.
+for visible and internal launches, including the per-execution Context Tree manifest path and explicit
+proxy-managed marker. Local credential-manager and Cloud bridge tests check that the shared proxy
+environment publishes this marker, including when no Context Tree service is granted; legacy mode
+does not publish a proxy environment.
+Command-client process tests reject proxy sync and write commands before invoking a standalone
+CLI when the manifest is absent, missing, invalid, or lacks routing. Separate cases retain legacy
+visible/internal offline sync and local write commands, local reads and verification during proxy
+routing loss, and standalone use outside a Session. A manifest alone still prevents fallback.
 Existing Local/Cloud command-gateway tests retain credential rotation and interrupted-write coverage.
 
 A live invocation against a public repository is not proof of MCP credential reuse when its routing

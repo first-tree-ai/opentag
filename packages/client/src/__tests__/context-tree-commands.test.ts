@@ -39,38 +39,84 @@ async function directory() {
 }
 
 describe("Context Tree command boundary", () => {
-  it.each(["OPENTAG_HOME", "OPENTAG_PROVIDER_ENV_FILE"])(
-    "does not invoke the standalone CLI when %s identifies a managed Session without a Context manifest",
-    async (markerName) => {
+  it.each(["internal", "visible"])("preserves standalone commands in a legacy %s Session", async (kind) => {
+    const root = await directory();
+    const client = join(root, "client.mjs");
+    const cli = join(root, "standalone.mjs");
+    await writeFile(client, CONTEXT_TREE_COMMAND_CLIENT_SOURCE);
+    await writeFile(cli, "process.stdout.write(process.argv.slice(2).join(' '));");
+    const environment = {
+      HOME: root,
+      OPENTAG_HOME: root,
+      ...(kind === "visible" ? { OPENTAG_PROVIDER_ENV_FILE: join(root, "provider.sh") } : {}),
+    };
+    for (const args of [
+      ["sync", "--offline"],
+      ["write", "prepare"],
+      ["write", "finish", "retained-session"],
+      ["write", "abort", "retained-session"],
+    ]) {
+      expect((await executeFile(process.execPath, [client, cli, ...args], { env: environment })).stdout).toBe(
+        args.join(" "),
+      );
+    }
+  });
+
+  it.each(["absent", "missing", "invalid", "empty"])(
+    "does not invoke the standalone CLI in proxy mode with manifest state %s",
+    async (manifestState) => {
       const root = await directory();
       const client = join(root, "client.mjs");
       const cli = join(root, "standalone.mjs");
       const marker = join(root, "invoked");
+      const manifest = join(root, "current.json");
       await writeFile(client, CONTEXT_TREE_COMMAND_CLIENT_SOURCE);
       await writeFile(
         cli,
         `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(marker)}, 'invoked');`,
       );
-      for (const args of [["sync"], ["write", "prepare"]])
+      if (manifestState === "invalid") await writeFile(manifest, "not JSON");
+      if (manifestState === "empty") await writeFile(manifest, JSON.stringify({ environment: {} }));
+      for (const args of [
+        ["sync", "--offline"],
+        ["write", "prepare"],
+      ])
         await expect(
           executeFile(process.execPath, [client, cli, ...args], {
-            env: { [markerName]: join(root, "provider.json") },
+            env: {
+              OPENTAG_CONTEXT_TREE_MANAGED: "1",
+              ...(manifestState === "absent" ? {} : { OPENTAG_CONTEXT_TREE_MANIFEST: manifest }),
+            },
           }),
         ).rejects.toMatchObject({ stderr: expect.stringContaining("Context Tree execution unavailable") });
       await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
     },
   );
 
-  it("keeps local verification and standalone CLI invocations available without a gateway", async () => {
+  it("keeps local reads and verification available during proxy routing loss", async () => {
     const root = await directory();
     const client = join(root, "client.mjs");
     const cli = join(root, "standalone.mjs");
     await writeFile(client, CONTEXT_TREE_COMMAND_CLIENT_SOURCE);
     await writeFile(cli, "process.stdout.write(process.argv.slice(2).join(' '));");
-    expect((await executeFile(process.execPath, [client, cli, "verify"], { env: { OPENTAG_HOME: root } })).stdout).toBe(
-      "verify",
-    );
-    expect((await executeFile(process.execPath, [client, cli, "sync"], { env: {} })).stdout).toBe("sync");
+    for (const command of ["read", "verify"])
+      expect(
+        (
+          await executeFile(process.execPath, [client, cli, command], {
+            env: { OPENTAG_CONTEXT_TREE_MANAGED: "1", OPENTAG_CONTEXT_TREE_MANIFEST: join(root, "missing.json") },
+          })
+        ).stdout,
+      ).toBe(command);
+    for (const args of [
+      ["sync", "--offline"],
+      ["write", "prepare"],
+    ])
+      expect((await executeFile(process.execPath, [client, cli, ...args], { env: {} })).stdout).toBe(args.join(" "));
+    await expect(
+      executeFile(process.execPath, [client, cli, "sync"], {
+        env: { OPENTAG_CONTEXT_TREE_MANIFEST: join(root, "missing.json") },
+      }),
+    ).rejects.toMatchObject({ stderr: expect.stringContaining("Context Tree execution unavailable") });
   });
 
   it("rejects arbitrary commands, foreign projects and ambiguous selectors before obtaining credentials", async () => {
@@ -273,6 +319,7 @@ describe("Context Tree command boundary", () => {
       await writeFile(manifest, JSON.stringify({ environment: { OPENTAG_CONTEXT_TREE_SOCKET: later.socketPath } }));
       const providerEnvironment = {
         ...environment,
+        OPENTAG_CONTEXT_TREE_MANAGED: "1",
         OPENTAG_CONTEXT_TREE_SOCKET: gateway.socketPath,
         OPENTAG_CONTEXT_TREE_MANIFEST: manifest,
       };

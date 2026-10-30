@@ -56,9 +56,10 @@ import { type PostgresRuntimeCustodyStore, writeTerminalReport } from "./runtime
  * What these transitions do not cover, so that nothing here reads as a total bound: an operation that
  * never settles keeps its correlated dispatch and is only parked out of the work set (see
  * `parkDelivery`), so it is neither retried on the schedule nor settled and the ingress deadline is
- * its one remaining bound; a superseded placement that already carries a retained `result_hash` is
- * refused by both settlement paths; and a crash between a claim and its failure record loses the
- * consecutive-timeout count.
+ * its one remaining bound; and a crash between a claim and its failure record loses the
+ * consecutive-timeout count. A superseded placement that already carries a retained `result_hash` is
+ * not settled here at all: `recordTurn` accepts the report that proves that commitment, so the only
+ * honest recovery is the report itself.
  */
 
 const BOUNDED_CODE = /^IM_DELIVERY_[A-Z0-9_]{1,100}$/;
@@ -416,8 +417,9 @@ export interface UnreportableTurnSettlement {
  * real report uses, so the row leaves the work predicate.
  *
  * This covers the shapes it is called for; it is not a bound on every accepted row. A superseded
- * placement generation is refused by that fence and settles through `settleSupersededPlacement`
- * instead, and a rollover that already carries a retained `result_hash` is refused by both.
+ * placement generation is refused by that fence: without a retained commitment it settles through
+ * `settleSupersededPlacement`, and with one the recovery is `recordTurn` accepting the report that
+ * proves the commitment, never an `unknown` settlement.
  */
 export async function settleUnreportableTurn(
   deps: Pick<DeliveryFailureDeps, "custody" | "onDiagnostic">,

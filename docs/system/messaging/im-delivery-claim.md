@@ -193,8 +193,26 @@ fabricated and the correlation is intact.
 
 What parking does not guarantee: the consecutive-timeout counter is still not crash-durable (a worker
 that exits between a claim and its failure record loses it, so the worst case is a slower park rather
-than an endless loop), and a rollover that already carries a retained `result_hash` is still refused
-by both settlement paths.
+than an endless loop).
+
+### A retained commitment after a rollover
+
+`claimRetainedReports` persists only `turnId`, `reportOwnerInstanceId`, `resultHash`, `acceptedAt`, and
+`inputHash`; the report body itself lives in the Client's journal. `resultHash` is
+`computeTurnResultHash(<complete report body>)`, so it is a commitment: a body with exactly that content
+exists on that Client's disk. After a rollover the ordinary placement fence rejected the report that
+satisfies it, and `settleSupersededPlacement` deliberately refuses any non-null `resultHash`, so the row
+was stranded.
+
+`recordTurn` now accepts that report, and only that report: when the placement fence fails **only** on
+the generation axis and the delivery's retained `resultHash` equals the report's, with `turnId`,
+`sessionId`, `agentId`, the dispatch correlation, and the same Computer still matching, and the
+`reportOwnerInstanceId` still equal to the reporting instance, the report is recorded under the
+delivery's own historical `placement_generation` (never the current one) and `reported_at` is written.
+The hash proves the body, never the sender, so authorization is unchanged and no check is dropped in
+exchange for it. A report without a matching commitment keeps failing the placement fence, an
+already-recorded report still wins first, `settleSupersededPlacement` is untouched, and such a Turn is
+never settled as `unknown`: that would convert a recoverable loss into a permanent one.
 
 Each of these paths emits one diagnostic per failure run instead of one per attempt: a repeat of
 the failure code already recorded for the delivery adds nothing an operator can act on. Only the

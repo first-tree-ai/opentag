@@ -696,7 +696,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       const scope = await this.#deliveryScope(transaction, report.deliveryId);
       if (!scope) return undefined;
       if (!recordTurnIdentityMatches(scope, report)) return "conflict";
-      if (!placementMatches(scope, context.computerId, report.placementGeneration)) return "stale_generation";
+      if (!reportPlacementAccepted(scope, context, report)) return "stale_generation";
       const replay = recordedReportStatus(scope.delivery, report);
       if (replay) return replay;
       if (!recordTurnFenceMatches(scope, context, report)) return undefined;
@@ -946,6 +946,65 @@ function recordedReportStatus(
   return delivery.resultHash === report.resultHash && sameReport(delivery.turnReport as TurnReportRequest, report)
     ? "already_recorded"
     : "conflict";
+}
+
+/**
+ * The placement gate a report must pass: the ordinary fence, or — only when everything else still
+ * matches — a proven retained commitment. Kept as one predicate so the transaction's decision stays a
+ * single branch and the relaxation cannot be applied by accident anywhere else.
+ */
+function reportPlacementAccepted(
+  scope: DeliveryScope,
+  context: RuntimeBusinessContext,
+  report: TurnReportRequest,
+): boolean {
+  return (
+    placementMatches(scope, context.computerId, report.placementGeneration) ||
+    retainedCommitmentMatches(scope, context, report)
+  );
+}
+
+/**
+ * A report that proves the retained commitment of a superseded placement.
+ *
+ * After a placement rollover the delivery keeps its own historical `placementGeneration` while
+ * `session_placements.generation` moves on, so `placementMatches` fails on that one axis. The Server
+ * never stored the report body — the Client's journal holds it — and `claimRetainedReports` persisted
+ * only `turnId`, `reportOwnerInstanceId`, `resultHash`, `acceptedAt`, and `inputHash`. `resultHash` is
+ * `computeTurnResultHash(<complete report body>)`, so it is a *commitment*: a body with exactly this
+ * content exists on that Client's disk. Accepting the report that satisfies it is the only way to
+ * recover such a Turn; settling it as `unknown` would turn a recoverable loss into a permanent one.
+ *
+ * The hash proves the BODY, never the SENDER: authorization still comes from the report owner
+ * instance plus every correlation field, so no authorization check may be dropped in exchange for the
+ * hash match. Only the generation axis of the placement fence is relaxed, and only here: a report
+ * without a matching commitment keeps failing `placementMatches` exactly as before, `acceptDelivery`
+ * and `retainedClaimMatches` keep the strict fence, and `settleSupersededPlacement` keeps refusing a
+ * non-null `resultHash`. Everything is evaluated on the row read under the transaction's locks.
+ */
+function retainedCommitmentMatches(
+  scope: DeliveryScope,
+  context: RuntimeBusinessContext,
+  report: TurnReportRequest,
+): boolean {
+  const { delivery } = scope;
+  return (
+    // The commitment: the retained hash names exactly this body.
+    delivery.resultHash !== null &&
+    delivery.resultHash === report.resultHash &&
+    // The report is the one this delivery was dispatched for, under its own historical generation.
+    delivery.turnId === report.turnId &&
+    delivery.sessionId === report.sessionId &&
+    scope.agentId === report.agentId &&
+    delivery.dispatchRequestId !== null &&
+    delivery.inputHash !== null &&
+    delivery.placementGeneration === report.placementGeneration &&
+    // Only the placement's generation moved: the Computer is the same, and the fence fails nowhere else.
+    scope.workspaceComputer.id === context.computerId &&
+    scope.placement.generation !== report.placementGeneration &&
+    // Authorization, unchanged: the owner instance the report claims to be.
+    delivery.reportOwnerInstanceId === context.instanceId
+  );
 }
 
 function recordTurnFenceMatches(

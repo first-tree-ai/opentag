@@ -131,7 +131,7 @@ function serveModel(response, body) {
     targets.push({ name: "hosted_echo", arguments: "{}" });
     const script = state.socketPath
       ? `const net=require("node:net");const s=net.createConnection(${JSON.stringify(state.socketPath)});s.on("data",d=>process.stdout.write(d));s.on("error",e=>{console.error(e.code);process.exitCode=1});s.setTimeout(1500,()=>s.destroy());`
-      : 'process.stdout.write("EXEC_ENV="+process.env.PLUGIN_CUSTOM_OPTION)';
+      : 'process.stdout.write("EXEC_ENV="+process.env.PLUGIN_CUSTOM_OPTION+";TREE_MANAGED="+process.env.OPENTAG_CONTEXT_TREE_MANAGED+";TREE_MANIFEST="+process.env.OPENTAG_CONTEXT_TREE_MANIFEST+";HIDDEN="+process.env.PLUGIN_HIDDEN_OPTION)';
     targets.push({
       name: "exec_command",
       arguments: JSON.stringify({
@@ -155,6 +155,15 @@ function serveModel(response, body) {
     JSON.stringify(body.input).includes(state.socketPath ? `SOCKET=${state.phase}` : "EXEC_ENV=native-option"),
     "Native shell environment or exact socket permission missing",
   );
+  if (!state.socketPath) {
+    const outputs = JSON.stringify(body.input);
+    assert.ok(outputs.includes("TREE_MANAGED=1"), "Context Tree managed marker was lost in the native shell");
+    assert.ok(
+      outputs.includes(`TREE_MANIFEST=${join(home, "current.json")}`),
+      "Context Tree manifest path was lost in the native shell",
+    );
+    assert.ok(outputs.includes("HIDDEN=undefined"), "The native user environment filter was replaced");
+  }
   sendResponse(response, [
     {
       type: "message",
@@ -196,6 +205,9 @@ const environment = codexAgentRuntimeEnvironment({
   TMPDIR: process.env.TMPDIR,
   LANG: "en_US.UTF-8",
   PLUGIN_CUSTOM_OPTION: "native-option",
+  PLUGIN_HIDDEN_OPTION: "must-be-excluded",
+  OPENTAG_CONTEXT_TREE_MANAGED: "1",
+  OPENTAG_CONTEXT_TREE_MANIFEST: join(home, "current.json"),
 });
 const shellQuote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
 const writeJson = (path, value) => writeFile(path, JSON.stringify(value));
@@ -387,7 +399,7 @@ try {
   const userConfigPath = join(configHome, "config.toml");
   await writeFile(
     userConfigPath,
-    `model="gpt-5.1-codex"\nmodel_provider="fixture"\nweb_search="disabled"\n[features]\nplugins=true\nremote_plugin=false\nhooks=true\n[model_providers.fixture]\nname="fixture"\nbase_url="${origin}/v1"\nwire_api="responses"\nrequires_openai_auth=false\n[mcp_servers.opentag-mcp]\nurl="${origin}/mcp/user"\nstartup_timeout_sec=2\ndefault_tools_approval_mode="approve"\n`,
+    `model="gpt-5.1-codex"\nmodel_provider="fixture"\nweb_search="disabled"\n[features]\nplugins=true\nremote_plugin=false\nhooks=true\n[model_providers.fixture]\nname="fixture"\nbase_url="${origin}/v1"\nwire_api="responses"\nrequires_openai_auth=false\n[mcp_servers.opentag-mcp]\nurl="${origin}/mcp/user"\nstartup_timeout_sec=2\ndefault_tools_approval_mode="approve"\n[shell_environment_policy.filters]\nPLUGIN_HIDDEN_OPTION="exclude"\n`,
   );
   await appendFile(
     userConfigPath,
@@ -503,6 +515,8 @@ try {
       stdioCalls: stdioCalls.length,
       bindingPreserved: true,
       cancelledFirstRunsCleaned: 3,
+      managedContextTreeEnvironmentPreserved: true,
+      nativeShellFilterPreserved: true,
       userConfigurationUnchanged: true,
       bearerPersisted: false,
     })}\n`,

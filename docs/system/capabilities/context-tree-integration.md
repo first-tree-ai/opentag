@@ -150,3 +150,12 @@ an unresolved Turn must settle first.
 Local Sessions prepend the bundled Context Tree CLI at the final Provider launch boundary,
 after executable discovery and per-execution environment composition. This applies to
 visible and internal Sessions, so an older global CLI cannot take precedence.
+The shared Local/Cloud proxy environment sets `OPENTAG_CONTEXT_TREE_MANAGED=1`.
+Codex shell commands retain this non-secret marker and the execution's Context Tree manifest path.
+The Codex adapter uses native shell environment rules without replacing the operator's filter table.
+Custom environment policies must retain this routing metadata for managed commands.
+When either identifies a proxy-managed execution, sync and write commands without a usable gateway
+route are rejected rather than running the standalone CLI, including when the manifest is missing.
+Local legacy mode does not set this marker or publish a manifest; its sync and write commands
+retain their existing pinned-CLI behavior. General Session variables such as `OPENTAG_HOME` do not
+identify proxy mode. Read and verification commands remain local even when routing is unavailable.

@@ -27,6 +27,9 @@ Checks:
   the user MCP but does not inherit this project's plugin or Skill context.
 - Call the user MCP named `opentag-mcp`, dynamic plugin HTTP MCP, plugin stdio MCP, private execution
   gateway, and hosted tool. Native stdio MCP and shell execution receive a custom environment variable.
+- Native shell execution also retains `OPENTAG_CONTEXT_TREE_MANAGED` and the Context Tree manifest
+  path while honoring a user-configured exclusion for an unrelated fixture variable. No forced
+  shell filter table or include allowlist is needed to retain the managed routing metadata.
 - Discover a unique native plugin Skill marker in the model context. Existing history may retain
   its earlier text after disablement; this is not evidence of current plugin activation.
 - Rotate execution gateway tokens across Runs on the same runtime/binding. A Run without a gateway
@@ -86,6 +89,7 @@ Server-side gateway revocation, every Codex version, or every plugin's headless 
 - Client Agent Runtime coverage: 781 tests passed, with statements, branches, functions, and lines at 100%.
 - CLI runtime probe/preparation: 49 tests passed; managed-instruction and MCP credential environment: 30 passed.
 - Native Git/gh sandbox fixtures with real Codex and gh: 9 passed, 2 Linux-only cases skipped on macOS.
+- Context Tree command/worker, Local credential routing, and Cloud bridge regressions: 84 tests passed.
 - Client/CLI type checks, Client build, and `pnpm check` passed.
 
 CI owns the complete repository matrix. This record is not a deployment or merge receipt.

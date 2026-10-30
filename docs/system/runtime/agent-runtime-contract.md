@@ -152,10 +152,12 @@ platform bearers, not to user-managed native credentials. Native configuration r
 does not become Server plugin state or a platform-managed MCP registration. User-wide configuration
 keeps its native effect across projects; an Agent cwd does not isolate global settings.
 
-OpenTag adds its own MCP services and external packaged Skills through a private plugin with an
-explicit, randomly generated name for each Run. This keeps a native user plugin named `opentag`
-loadable alongside platform resources. Tool grants use that Run's exact plugin namespace; Skill
-names come from the current native catalog. Existing cwd, Provider Home, login, and conversation
+OpenTag adds its own MCP services through a supplementary temporary MCP configuration with fresh
+service names for each Run. The gateway name stays at 11 characters, preserving its existing
+model-facing tool-name budget. External packaged Skills use a private plugin with an explicit,
+randomly generated name per Run. A native user plugin named `opentag` remains loadable alongside
+platform resources. Tool grants use that Run's exact service names; Skill names come from the
+current native catalog. Existing cwd, Provider Home, login, and conversation
 history locations do not change. Codex, Pi, and Cloud resource policies retain their own rules.
 
 Claude Provider readiness is cached for the Computer and reads user-scoped authentication only.

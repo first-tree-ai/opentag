@@ -322,6 +322,8 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       ...CLAUDE_CODE_SETTING_SOURCES,
       "--plugin-dir",
       hostedToolBridge.pluginPath,
+      "--mcp-config",
+      hostedToolBridge.configPath,
       ...(this.#policy.approvals === "never" && hostedToolBridge.allowedTools.length > 0
         ? ["--allowedTools", ...hostedToolBridge.allowedTools]
         : []),

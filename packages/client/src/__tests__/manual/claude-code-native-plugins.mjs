@@ -24,6 +24,7 @@ const tools = {
 const mcpCalls = [];
 const hostedCalls = [];
 const reports = [];
+const longToolNames = ["x".repeat(85), "x".repeat(110)];
 let state;
 let fixtureError;
 let runtime;
@@ -74,10 +75,21 @@ function serveMcp(request, response, body) {
   if (body.method === "initialize") {
     result = { protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: kind, version: "1" } };
   } else if (body.method === "tools/list") {
-    result = { tools: [{ name: `${kind}_echo`, description: `${kind} fixture`, inputSchema: { type: "object" } }] };
+    result = {
+      tools: [`${kind}_echo`, ...(kind === "managed" ? longToolNames : [])].map((name) => ({
+        name,
+        description: `${kind} fixture`,
+        inputSchema: { type: "object" },
+      })),
+    };
   } else {
     assert.equal(body.method, "tools/call");
-    mcpCalls.push({ kind, phase: state.phase, token: kind === "managed" ? state.token : undefined });
+    mcpCalls.push({
+      kind,
+      phase: state.phase,
+      name: body.params.name,
+      token: kind === "managed" ? state.token : undefined,
+    });
     result = { content: [{ type: "text", text: `${kind}-ok` }] };
   }
   response
@@ -87,17 +99,24 @@ function serveMcp(request, response, body) {
 
 function serveModel(response, body) {
   const names = (body.tools ?? []).map((tool) => tool.name);
+  if (names.some((name) => name.length > 128)) {
+    fixtureError = new Error("Model-facing tool name exceeds 128 characters");
+    return response
+      .writeHead(400, { "content-type": "application/json" })
+      .end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: fixtureError.message } }));
+  }
   if (!state.catalog) {
     state.catalog = names;
     const serialized = JSON.stringify(body);
     state.projectSkill = serialized.includes("project-fixture");
     state.packagedSkill = /opentag-[a-f0-9]{16}:packaged-fixture/.test(serialized);
     state.duplicateProjectSkill = /opentag-[a-f0-9]{16}:project-fixture/.test(serialized);
-    state.managedTool = names.find((name) => /^mcp__plugin_opentag-[a-f0-9]{16}_opentag-mcp__managed_echo$/.test(name));
-    state.hostedTool = names.find((name) => /^mcp__plugin_opentag-[a-f0-9]{16}_opentag__hosted_echo$/.test(name));
+    state.managedTool = names.find((name) => /^mcp__g[a-f0-9]{10}__managed_echo$/.test(name));
+    state.hostedTool = names.find((name) => /^mcp__h[a-f0-9]{10}__hosted_echo$/.test(name));
   }
   if (state.phase.startsWith("enabled") && !state.issued) {
-    const targets = [...Object.values(tools), state.managedTool, state.hostedTool];
+    const longTools = longToolNames.map((name) => state.managedTool.replace("managed_echo", name));
+    const targets = [...Object.values(tools), state.managedTool, state.hostedTool, ...longTools];
     for (const name of targets) assert.ok(names.includes(name), `Missing native tool: ${name}`);
     state.issued = true;
     sendMessage(
@@ -261,11 +280,13 @@ try {
   await run(runtime, "enabled-two", "otmg_fixture_two");
   assert.equal(hostedCalls.length, 2);
   assert.deepEqual(
-    mcpCalls.filter((call) => call.kind === "managed").map((call) => call.token),
+    [...new Set(mcpCalls.filter((call) => call.kind === "managed").map((call) => call.token))],
     ["otmg_fixture_one", "otmg_fixture_two"],
   );
   for (const kind of ["user", "plugin", "collision", "managed"])
-    assert.equal(mcpCalls.filter((call) => call.kind === kind).length, 2);
+    assert.equal(mcpCalls.filter((call) => call.kind === kind).length, kind === "managed" ? 6 : 2);
+  for (const name of longToolNames)
+    assert.equal(mcpCalls.filter((call) => call.kind === "managed" && call.name === name).length, 2);
   assert.equal(await readFile(settingsPath, "utf8"), originalSettings);
   assert.equal(await readFile(mcpPath, "utf8"), originalMcp);
   const hookBeforeDisable = JSON.parse(await readFile(hookPath, "utf8"));
@@ -303,7 +324,7 @@ try {
   assert.equal(await readFile(mcpPath, "utf8"), originalMcp);
   const version = (await exec(command, ["--version"], { env: environment })).stdout.trim();
   process.stdout.write(
-    `${JSON.stringify({ ok: true, version, reports, nativeMcpCalls: mcpCalls.length, hostedCalls: hostedCalls.length, projectSkillLoadedOnce: true, hookCount: hookBeforeDisable.count, sharedFilesUnchanged: true, unavailableDurationMs })}\n`,
+    `${JSON.stringify({ ok: true, version, reports, nativeMcpCalls: mcpCalls.length, hostedCalls: hostedCalls.length, longToolCalls: 4, maxModelToolNameLength: 128, projectSkillLoadedOnce: true, hookCount: hookBeforeDisable.count, sharedFilesUnchanged: true, unavailableDurationMs })}\n`,
   );
 } finally {
   await runtime?.close();

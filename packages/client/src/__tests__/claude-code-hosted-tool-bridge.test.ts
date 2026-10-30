@@ -28,7 +28,7 @@ describe("Claude Code hosted tool bridge", () => {
       join(skills, "example"),
     ]);
     try {
-      expect(await readdir(bridge.pluginPath)).toEqual([".claude-plugin", ".mcp.json", "skills"]);
+      expect(await readdir(bridge.pluginPath)).toEqual([".claude-plugin", "skills"]);
       expect(await realpath(join(bridge.pluginPath, "skills", "example"))).toBe(
         await realpath(join(skills, "example")),
       );
@@ -45,7 +45,7 @@ describe("Claude Code hosted tool bridge", () => {
     }
   });
 
-  it("supplies a private namespaced plugin MCP configuration and removes it idempotently", async () => {
+  it("supplies a private supplementary MCP configuration and removes it idempotently", async () => {
     const bridge = await startClaudeCodeHostedToolBridge(undefined, "run-empty", new AbortController().signal, []);
     expect(bridge.allowedTools).toEqual([]);
     await expect(readFile(bridge.configPath, "utf8")).resolves.toBe('{"mcpServers":{}}\n');
@@ -90,9 +90,10 @@ describe("Claude Code hosted tool bridge", () => {
       [],
     );
     const configuration = JSON.parse(await readFile(bridge.configPath, "utf8")) as {
-      mcpServers: { opentag: { headers: Record<string, string>; url: string } };
+      mcpServers: Record<string, { headers: Record<string, string>; url: string }>;
     };
-    const endpoint = configuration.mcpServers.opentag;
+    const serverName = Object.keys(configuration.mcpServers)[0] as string;
+    const endpoint = configuration.mcpServers[serverName] as { headers: Record<string, string>; url: string };
     const rpc = async (body: unknown, headers = endpoint.headers) =>
       fetch(endpoint.url, {
         method: "POST",
@@ -100,8 +101,8 @@ describe("Claude Code hosted tool bridge", () => {
         body: typeof body === "string" ? body : JSON.stringify(body),
       });
 
-    const prefix = await pluginToolPrefix(bridge);
-    expect(bridge.allowedTools).toEqual([`${prefix}opentag__example_success`, `${prefix}opentag__example_failure`]);
+    expect(serverName).toMatch(/^h[a-f0-9]{10}$/);
+    expect(bridge.allowedTools).toEqual([`mcp__${serverName}__example_success`, `mcp__${serverName}__example_failure`]);
     await expect(
       rpc({ jsonrpc: "2.0", id: 1, method: "initialize" }).then((response) => response.json()),
     ).resolves.toMatchObject({ result: { capabilities: { tools: {} }, serverInfo: { name: "OpenTag" } } });
@@ -206,11 +207,12 @@ describe("Claude Code hosted tool bridge", () => {
       [],
     );
     const configuration = JSON.parse(await readFile(bridge.configPath, "utf8")) as {
-      mcpServers: { opentag: { headers: Record<string, string>; url: string } };
+      mcpServers: Record<string, { headers: Record<string, string>; url: string }>;
     };
-    const response = await fetch(configuration.mcpServers.opentag.url, {
+    const endpoint = Object.values(configuration.mcpServers)[0] as { headers: Record<string, string>; url: string };
+    const response = await fetch(endpoint.url, {
       method: "POST",
-      headers: { "content-type": "application/json", ...configuration.mcpServers.opentag.headers },
+      headers: { "content-type": "application/json", ...endpoint.headers },
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: "failing-call",
@@ -243,8 +245,10 @@ describe("Claude Code MCP gateway entry", () => {
       const configuration = JSON.parse(await readFile(bridge.configPath, "utf8")) as {
         mcpServers: Record<string, { type: string; url: string; headers: Record<string, string> }>;
       };
-      expect(Object.keys(configuration.mcpServers)).toEqual(["opentag-mcp"]);
-      expect(configuration.mcpServers["opentag-mcp"]).toEqual({
+      const serverName = Object.keys(configuration.mcpServers)[0] as string;
+      expect(serverName).toMatch(/^g[a-f0-9]{10}$/);
+      expect(serverName.length).toBeLessThanOrEqual(11);
+      expect(configuration.mcpServers[serverName]).toEqual({
         type: "http",
         url: gateway.url,
         headers: { Authorization: `Bearer ${gateway.token}` },
@@ -268,7 +272,8 @@ describe("Claude Code MCP gateway entry", () => {
       gateway,
     );
     try {
-      expect(bridge.allowedTools).toEqual([`${await pluginToolPrefix(bridge)}opentag-mcp`]);
+      const config = JSON.parse(await readFile(bridge.configPath, "utf8"));
+      expect(bridge.allowedTools).toEqual([`mcp__${Object.keys(config.mcpServers)[0]}`]);
     } finally {
       await bridge.close();
     }
@@ -286,9 +291,9 @@ describe("Claude Code MCP gateway entry", () => {
       const configuration = JSON.parse(await readFile(bridge.configPath, "utf8")) as {
         mcpServers: Record<string, unknown>;
       };
-      expect(Object.keys(configuration.mcpServers).sort()).toEqual(["opentag", "opentag-mcp"]);
-      const prefix = await pluginToolPrefix(bridge);
-      expect(bridge.allowedTools).toEqual([`${prefix}opentag__example`, `${prefix}opentag-mcp`]);
+      const names = Object.keys(configuration.mcpServers);
+      expect(names).toEqual([expect.stringMatching(/^h[a-f0-9]{10}$/), expect.stringMatching(/^g[a-f0-9]{10}$/)]);
+      expect(bridge.allowedTools).toEqual([`mcp__${names[0]}__example`, `mcp__${names[1]}`]);
     } finally {
       await bridge.close();
     }

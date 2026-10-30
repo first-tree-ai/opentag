@@ -29,10 +29,13 @@ Checks:
 - A project Skill is discovered once; an external packaged Skill remains available through the
   private plugin's current namespace. Unit regression tests also cover symlink aliases of Agent Home.
 - A user MCP server named `opentag-mcp` keeps its endpoint, while the platform gateway is loaded as
-  `plugin:<private-name>:opentag-mcp`. A separate user plugin named `opentag`, including a server named
+  a fresh private `g<10 hex characters>` service. A separate user plugin named `opentag`, including a server named
   `opentag-mcp`, remains callable alongside the platform plugin.
 - Each of two Runs calls the user MCP, both plugin MCP services, platform gateway, and hosted tool. The two Runs
   use different fixture gateway tokens through the same adapter instance.
+- Each Run also calls platform tools with 85- and 110-character upstream names. The fixture model
+  endpoint rejects any model-facing name over 128 characters, including the exact 128-character
+  boundary case in these Runs. This guards against a plugin prefix silently shrinking the native budget.
 - Disabling the native plugin in project settings stops its hook and removes its tool on the next
   Run, while the user and platform MCP services remain available.
 - A sibling working directory does not inherit the first project's plugin or local MCP service.
@@ -82,12 +85,14 @@ Checks:
       "sameNamePluginLoaded": false
     }
   ],
-  "nativeMcpCalls": 8,
+  "nativeMcpCalls": 12,
   "hostedCalls": 2,
+  "longToolCalls": 4,
+  "maxModelToolNameLength": 128,
   "projectSkillLoadedOnce": true,
   "hookCount": 2,
   "sharedFilesUnchanged": true,
-  "unavailableDurationMs": 1935
+  "unavailableDurationMs": 1922
 }
 ```
 

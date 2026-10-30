@@ -1064,15 +1064,19 @@ the endpoint URL against the Server origin it already pinned; only the fixed pat
 ### Claude Code native configuration
 
 Local Claude reads its native user, project, local, and plugin MCP configuration. OpenTag supplements
-it through `.mcp.json` inside the existing private plugin directory, rather than an exclusive
-`--mcp-config`. Each Run writes a manifest naming that plugin `opentag-<random-id>`. The gateway's
-native name is `plugin:<private-name>:opentag-mcp`; its tool prefix is
-`mcp__plugin_<private-name>_opentag-mcp__`. Hosted tools use `plugin:<private-name>:opentag`. Permission
-grants refer only to that Run's exact plugin namespace. Both a user server named `opentag-mcp` and
-a user plugin named `opentag` keep their own endpoints and never inherit the platform's grant rules.
+it through a private temporary `--mcp-config`, without `--strict-mcp-config`. The file supplements
+native discovery; it does not replace user configuration. Each Run generates fresh 11-character
+service names: `g<10 hex characters>` for the gateway and `h<10 hex characters>` for hosted tools.
+Grant rules use those exact names. Keeping the gateway name no longer than its original
+`opentag-mcp` name preserves the model-facing name budget: the 18-character `mcp__<server>__`
+prefix leaves 110 characters within Claude's 128-character tool-name limit. Longer gateway names
+were already outside that native budget; this does not add a general tool aliasing layer.
+Both a user server named `opentag-mcp` and a user plugin named `opentag` keep their own endpoints
+and never inherit the platform's grant rules. The separately loaded private Skill plugin has a
+fresh explicit `opentag-<random-id>` manifest name, avoiding a fixed plugin-name collision.
 
-Each Run receives a fresh private plugin configuration with that execution's bearer. Cleanup removes
-only that temporary plugin; it never rewrites user MCP files. Upstream credentials and Server-side
+Each Run receives a fresh private MCP configuration with that execution's bearer. Cleanup removes
+only that temporary configuration and Skill plugin; it never rewrites user MCP files. Upstream credentials and Server-side
 authorization still use the existing gateway. Native local MCP services use their own configuration
 and credentials, without being registered in the platform catalog or sent to the Server.
 Native MCP startup and tool limits remain Claude's responsibility, including the operator's

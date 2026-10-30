@@ -21,9 +21,9 @@ the native catalog. Unavailable external Skills are skipped. Skills retain nativ
 and original resources; edits remain visible during a run. Claude honors
 skill `allowed-tools` grants, which can pre-approve commands otherwise subject to approval. Approvals
 are practical guardrails, not isolation from writable skills or approval-free file reads and uploads.
-The same private plugin contains OpenTag's supplemental MCP configuration. Its native plugin
-namespace keeps platform tools and pre-approval rules separate from user MCP servers with the same
-unqualified names. Native plugins and hooks execute as trusted local code and can run outside tool
+OpenTag's supplementary temporary MCP configuration uses fresh service names per Run, keeping
+platform tools and their grant rules separate from native user servers. The gateway name stays
+short enough to preserve its original tool-name budget. Native plugins and hooks execute as trusted local code and can run outside tool
 approvals, and a model-written project configuration can enable them on the next Run. The inherited
 daemon environment can include long-lived operator credentials; these are not fenced or revoked
 with an execution. See the [native trust contract](agent-runtime-contract.md#local-claude-native-configuration-and-trust).

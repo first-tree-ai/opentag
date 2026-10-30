@@ -175,10 +175,9 @@ describe("ClaudeCodeAgentRuntime", () => {
     expect(argumentAfter(processes[0]?.args ?? [], "--permission-mode")).toBe("bypassPermissions");
     expect(argumentAfter(processes[0]?.args ?? [], "--append-system-prompt")).toBe("OpenTag managed system prompt");
     expect(processes[0]?.args).not.toContain("--strict-mcp-config");
-    expect(processes[0]?.args).not.toContain("--mcp-config");
+    expect(processes[0]?.args).toContain("--mcp-config");
     expect(processes[0]?.args).not.toContain("--no-chrome");
-    const plugin = argumentAfter(processes[0]?.args ?? [], "--plugin-dir");
-    const mcpConfig = `${plugin}/.mcp.json`;
+    const mcpConfig = argumentAfter(processes[0]?.args ?? [], "--mcp-config");
     expect(mcpConfig).toContain("opentag-claude-mcp-");
     await expect(readFile(mcpConfig ?? "", "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     expect(processes[0]?.args).not.toContain("--allowedTools");
@@ -199,10 +198,8 @@ describe("ClaudeCodeAgentRuntime", () => {
 
     await runtime.prompt({ runId: "run-hosted", input: input("reply") });
     expect(processes[0]?.args).toContain("--allowedTools");
-    expect(processes[0]?.args).toContainEqual(
-      expect.stringMatching(/^mcp__plugin_opentag-[a-f0-9]{16}_opentag__example_tool$/),
-    );
-    expect(processes[0]?.args).not.toContainEqual(expect.stringMatching(/_opentag__Read$/));
+    expect(processes[0]?.args).toContainEqual(expect.stringMatching(/^mcp__h[a-f0-9]{10}__example_tool$/));
+    expect(processes[0]?.args).not.toContainEqual(expect.stringMatching(/^mcp__h[a-f0-9]{10}__Read$/));
     expect(argumentAfter(processes[0]?.args ?? [], "--permission-mode")).toBe("bypassPermissions");
     expect(processes[0]?.args).not.toContain("--disallowedTools");
     await runtime.close();

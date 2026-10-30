@@ -1,11 +1,19 @@
+import { randomUUID } from "node:crypto";
+import { computeTurnResultHash, type TurnReportRequest } from "@opentag/shared";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
-import { imMessageDeliveries } from "../db/schema/index.js";
+import {
+  type agents,
+  type computers,
+  imMessageDeliveries,
+  type sessionPlacements,
+  type sessions,
+} from "../db/schema/index.js";
 import { outcomeAttrs, setActiveSpanAttributes } from "../observability/index.js";
 import { releaseImBatch } from "./im-delivery-batch.js";
 import { ImDeliveryInputError, rejectInvalidImDelivery } from "./im-delivery-content.js";
 import { isCloudReadinessRetry } from "./im-delivery-ready-wakeup.js";
-import { cappedRetryDelayMs } from "./im-delivery-retry.js";
+import { cappedRetryDelayMs, deliveryRetryDelayMs, operationTimeoutExhausted } from "./im-delivery-retry.js";
 import type {
   DeliveryAttempt,
   ImDeliveryDiagnosticContext,
@@ -16,13 +24,15 @@ import type { PostgresRuntimeCustodyStore } from "./runtime-custody-store.js";
 
 /**
  * Every transition that gives up on a claimed delivery attempt, in one place: backoff, dispatch
- * release, terminal rejection. The worker owns claiming and dispatching; keeping these transitions
- * here gives each one the delivery identity a diagnostic needs, and keeps no write able to touch a
- * row that a newer attempt has already claimed.
+ * release, terminal rejection, and the settlement of custody whose report can no longer arrive.
+ *
+ * The worker owns claiming and dispatching. Keeping the failure transitions here keeps one retry
+ * and termination policy across the dispatch, steer, and recovery paths instead of a per-path copy.
+ * Nothing in this module invents a report for a Turn that could still report, and no write here
+ * touches a row that a newer attempt has already claimed.
  */
 
 const BOUNDED_CODE = /^IM_DELIVERY_[A-Z0-9_]{1,100}$/;
-const RETRY_DELAY_MS = 2_000;
 
 /** Reconcile statuses that are expected waiting states, not operator-facing failures. */
 export const EXPECTED_RECOVERY_CODES = new Set([
@@ -54,7 +64,11 @@ export function diagnosticContext(attempt: DeliveryAttempt): ImDeliveryDiagnosti
   };
 }
 
-/** Record one failed attempt and when the delivery becomes due again. */
+/**
+ * Record one failed attempt: bounded backoff from the attempt counter plus the placement
+ * Computer's silence, or — for a dispatch that already spent the whole runtime budget on the same
+ * frozen input — a terminal rejection instead of another attempt.
+ */
 export async function recordDeliveryFailure(
   deps: DeliveryFailureDeps,
   attempt: DeliveryAttempt,
@@ -63,7 +77,15 @@ export async function recordDeliveryFailure(
 ): Promise<void> {
   const bounded = BOUNDED_CODE.test(code) ? code : "IM_DELIVERY_FAILED";
   setActiveSpanAttributes(outcomeAttrs("failed", bounded));
-  const delayMs = retryDelayMs ?? RETRY_DELAY_MS;
+  if (bounded === "IM_DELIVERY_OPERATION_TIMEOUT" && operationTimeoutExhausted(attempt.attemptCount)) {
+    // The same input is offered to the same runtime with the same deadline every time, so another
+    // attempt is not progress. `rejectDelivery` is the existing terminal settlement.
+    if (await rejectDelivery(deps, attempt.deliveryId, "retry_exhausted", attempt.claimToken)) {
+      deps.onDiagnostic("IM_DELIVERY_RETRY_EXHAUSTED", diagnosticContext(attempt));
+      return;
+    }
+  }
+  const delayMs = retryDelayMs ?? deliveryRetryDelayMs(attempt.attemptCount, attempt.offlineMs);
   const [updated] = await deps.database
     .update(imMessageDeliveries)
     .set({ lastErrorCode: bounded, nextAttemptAt: new Date(deps.now() + delayMs) })
@@ -76,7 +98,8 @@ export async function recordDeliveryFailure(
     )
     .returning({ id: imMessageDeliveries.id });
   if (!updated) return;
-  deps.onDiagnostic(bounded, diagnosticContext(attempt));
+  // One line per failure run, not one per attempt: a repeated code adds nothing an operator can act on.
+  if (attempt.previousErrorCode !== bounded) deps.onDiagnostic(bounded, diagnosticContext(attempt));
   deps.onMetric({ name: "retry", value: 1 });
   if (isCloudReadinessRetry(bounded) && (!attempt.claimToken || !deps.readyRetryClaims.has(attempt.claimToken))) {
     // A ready event may have seen this row's claim marker before the backoff was recorded.
@@ -103,7 +126,7 @@ export async function releaseDeliveryDispatch(
         dispatchInputHash: null,
         dispatchPayload: null,
         lastErrorCode: bounded,
-        nextAttemptAt: new Date(deps.now() + RETRY_DELAY_MS),
+        nextAttemptAt: new Date(deps.now() + deliveryRetryDelayMs(attempt.attemptCount, attempt.offlineMs)),
       })
       .where(
         and(
@@ -118,7 +141,7 @@ export async function releaseDeliveryDispatch(
     return released;
   });
   if (released) {
-    deps.onDiagnostic(bounded, diagnosticContext(attempt));
+    if (attempt.previousErrorCode !== bounded) deps.onDiagnostic(bounded, diagnosticContext(attempt));
     deps.onMetric({ name: "retry", value: 1 });
   }
 }
@@ -208,6 +231,56 @@ export async function deferRecoveryRetry(
     .returning({ id: imMessageDeliveries.id });
   if (!updated) return;
   setActiveSpanAttributes(outcomeAttrs("deferred", code));
-  if (!EXPECTED_RECOVERY_CODES.has(code)) deps.onDiagnostic(code, diagnosticContext(attempt));
+  if (!EXPECTED_RECOVERY_CODES.has(code) && attempt.previousErrorCode !== code)
+    deps.onDiagnostic(code, diagnosticContext(attempt));
   deps.onMetric({ name: "retry", value: 1 });
+}
+
+/**
+ * Settle owed custody whose report can no longer arrive, exactly as the Cloud owner settles an
+ * unreportable accepted Turn: an `unknown` report with `may_have_occurred` evidence. It writes
+ * `reported_at`, so the row leaves the work predicate and the retry loop ends here.
+ */
+export async function settleUnreportableTurn(
+  deps: DeliveryFailureDeps,
+  row: {
+    delivery: typeof imMessageDeliveries.$inferSelect;
+    session: typeof sessions.$inferSelect;
+    placement: typeof sessionPlacements.$inferSelect;
+    agent: typeof agents.$inferSelect;
+    computer: typeof computers.$inferSelect;
+  },
+): Promise<boolean> {
+  const turnId = row.delivery.turnId;
+  const ownerInstanceId = row.delivery.reportOwnerInstanceId;
+  if (!turnId || !ownerInstanceId) return false;
+  const body = {
+    type: "turn:report" as const,
+    requestId: randomUUID(),
+    deliveryId: row.delivery.id,
+    turnId,
+    sessionId: row.session.id,
+    agentId: row.agent.id,
+    placementGeneration: row.placement.generation,
+    outcome: "unknown" as const,
+    executionEffects: "may_have_occurred" as const,
+    errorReason: "turn_state_unknown" as const,
+    traceSummary: { droppedEvents: 0, lastSequence: 0 },
+  };
+  const report: TurnReportRequest = { ...body, resultHash: computeTurnResultHash(body) };
+  const status = await deps.custody.recordTurn(report, {
+    computerId: row.computer.id,
+    installationId: "",
+    instanceId: ownerInstanceId,
+    signal: new AbortController().signal,
+  });
+  if (status !== "recorded" && status !== "already_recorded") return false;
+  deps.onDiagnostic("IM_DELIVERY_TURN_STATE_UNKNOWN", {
+    phase: "recover",
+    deliveryId: row.delivery.id,
+    agentId: row.agent.id,
+    computerId: row.computer.id,
+    attemptCount: row.delivery.attemptCount,
+  });
+  return true;
 }

@@ -66,6 +66,7 @@ import {
   rejectDelivery,
   rejectInvalidDeliveryInput,
   releaseDeliveryDispatch,
+  settleUnreportableTurn,
 } from "./im-delivery-failure.js";
 import {
   createImDeliveryMaintenanceSchedulers,
@@ -77,7 +78,7 @@ import {
 } from "./im-delivery-janitor.js";
 import { matchPinnedDirectInputHash } from "./im-delivery-pinned-hash.js";
 import { ImDeliveryReadyWakeup } from "./im-delivery-ready-wakeup.js";
-import { cappedRetryDelayMs } from "./im-delivery-retry.js";
+import { acceptedReportDeadlineMs } from "./im-delivery-retry.js";
 import { ImDeliverySelector, lockEligibleDelivery } from "./im-delivery-selector.js";
 import type {
   CloudSessionAllocationPort,
@@ -96,6 +97,8 @@ import type { RuntimeDomainOwner } from "./runtime-domain-owner.js";
 const DEFAULT_INTERVAL_MS = 500;
 const RETRY_DELAY_MS = 2_000;
 const CLAIM_LEASE_MS = 15_000;
+/** A reconnect only advances retries the offline backoff parked beyond a normal retry interval. */
+const RECONNECT_ADVANCE_THRESHOLD_MS = 60_000;
 const CLAIM_RENEW_MS = 5_000;
 const RECOVERY_RETRY_CODES: Record<SessionReconcileResult["status"], string> = {
   ready: "IM_DELIVERY_RECOVERY_AWAITING_REPORT",
@@ -389,6 +392,25 @@ export class ImDeliveryWorker {
 
   notifyCloudRunnerReady(allocation: ReadyRunnerAllocation): Promise<void> {
     return this.#readyWakeup.notify(allocation);
+  }
+
+  /**
+   * A Computer's runtime became usable again, so its parked retries are due again. Only rows the
+   * offline backoff pushed well past the base interval are advanced, which keeps this wakeup
+   * self-limiting: a client that reconnects in a loop cannot turn the backoff into a hot retry,
+   * because a row that is already due soon is left alone.
+   */
+  async notifyComputerReady(computerId: string): Promise<void> {
+    if (this.#closed) return;
+    await this.#database.execute(sql`
+      update im_message_deliveries as delivery
+      set next_attempt_at = ${this.#clock().toISOString()}::timestamptz
+      from session_placements as placement
+      where placement.session_id = delivery.session_id
+        and placement.computer_id = ${computerId}::uuid
+        and delivery.state in ('pending', 'accepted')
+        and delivery.next_attempt_at > ${new Date(this.#now() + RECONNECT_ADVANCE_THRESHOLD_MS).toISOString()}::timestamptz
+    `);
   }
 
   #schedule(): void {
@@ -990,7 +1012,7 @@ export class ImDeliveryWorker {
       if (reconcile.status === "rejected") {
         // A rejection is answered immediately and may persist (e.g. a durable binding conflict),
         // so back off instead of re-reconciling on the fixed cadence until the message expires.
-        await this.#recordFailure(attempt, "IM_DELIVERY_RECONCILE_REJECTED", cappedRetryDelayMs(attempt.attemptCount));
+        await this.#recordFailure(attempt, "IM_DELIVERY_RECONCILE_REJECTED");
         return;
       }
       if (reconcile.status !== "ready") {
@@ -1143,6 +1165,16 @@ export class ImDeliveryWorker {
       await this.#cloudCoordinator.recover(attempt);
       return;
     }
+    /*
+     * A Local Turn Report can only be written while the execution window plus its grace is open.
+     * Past that cutoff no report can still be truthful, so the owed custody settles exactly once as
+     * unknown instead of being retried for the retention lifetime (#821/#1079). Every window in
+     * which the Turn could have run has closed, so this never replaces a genuine in-flight result.
+     */
+    const acceptedAt = row.delivery.acceptedAt?.getTime();
+    if (acceptedAt !== undefined && this.#now() >= acceptedReportDeadlineMs(acceptedAt)) {
+      if (await this.#settleUnknownTurn(row)) return;
+    }
     const instanceId = this.#registry.currentInstanceId(row.computer.id);
     if (!instanceId || row.computer.currentInstanceId !== instanceId) {
       await this.#recordFailure(
@@ -1167,6 +1199,11 @@ export class ImDeliveryWorker {
     } catch {
       await this.#deferRecovery(attempt, row.delivery.attemptCount, "IM_DELIVERY_RECOVERY_FAILED");
     }
+  }
+
+  /** Settle owed custody once no report can still be truthful; see the failure module for the policy. */
+  #settleUnknownTurn(row: Parameters<typeof settleUnreportableTurn>[1]): Promise<boolean> {
+    return settleUnreportableTurn(this.#failures, row);
   }
 
   /** A reconcile response is not a report; preserve custody until the actual report settles it. */

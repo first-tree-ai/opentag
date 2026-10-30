@@ -8,6 +8,7 @@ import {
   RUNTIME_CAPABILITY,
   type RuntimeImSteerRequest,
   type SessionReconcileResult,
+  type TurnReportRequest,
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1068,7 +1069,8 @@ describe("ImDeliveryWorker database workflow", () => {
           .where(eq(imMessageDeliveries.id, seeded.deliveryId));
         expect(afterJanitor).toEqual(child);
       }
-      if (abnormal) expect(diagnostic).toHaveBeenCalledTimes(6);
+      // One ERROR line per failure run, never one per attempt, however long the deferral lasts.
+      if (abnormal) expect(diagnostic).toHaveBeenCalledTimes(1);
       else expect(diagnostic).not.toHaveBeenCalled();
       if (abnormal) expect(diagnosticCodes(diagnostic)).toContain(code);
       expect(domain.requestDelivery).not.toHaveBeenCalled();
@@ -2052,12 +2054,13 @@ describe("ImDeliveryWorker database workflow", () => {
     expect(failedEvents).toContain("IM_DELIVERY_RUNTIME_FAILED");
   });
 
-  it("backs off rejected reconciles exponentially up to a cap while not-ready keeps the fixed retry", async () => {
+  it("backs off every failed reconcile exponentially up to the cap, never at a fixed interval", async () => {
     const cases = [
       { reconcileStatus: "rejected", priorAttempts: 0, delayMs: 2_000 },
       { reconcileStatus: "rejected", priorAttempts: 2, delayMs: 8_000 },
       { reconcileStatus: "rejected", priorAttempts: 50, delayMs: 30_000 },
-      { reconcileStatus: "busy", priorAttempts: 50, delayMs: 2_000 },
+      { reconcileStatus: "busy", priorAttempts: 0, delayMs: 2_000 },
+      { reconcileStatus: "busy", priorAttempts: 50, delayMs: 30_000 },
     ] as const;
     for (const { reconcileStatus, priorAttempts, delayMs } of cases) {
       await unit.reset();
@@ -2329,6 +2332,160 @@ describe("ImDeliveryWorker database workflow", () => {
       await worker.stop();
     },
   );
+
+  it("retries an always-timing-out delivery a bounded number of times, then settles it once", async () => {
+    vi.useFakeTimers({ now: new Date("2026-09-01T00:00:00.000Z") });
+    try {
+      const fixture = await workerFixture(unit);
+      const diagnostic = vi.fn();
+      const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, { deliveryHang: true });
+      const worker = new ImDeliveryWorker({
+        database: unit.database,
+        domain: domain as never,
+        assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+        registry: fixture.registry,
+        operationTimeoutMs: 100,
+        onDiagnostic: diagnostic,
+      });
+      // One more iteration than the cap proves the settled row is never claimed again.
+      for (let attempt = 0; attempt < 12; attempt += 1) {
+        const running = worker.runOnce();
+        await vi.advanceTimersByTimeAsync(1_100);
+        await running;
+        await vi.advanceTimersByTimeAsync(31_000);
+      }
+      const [row] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      expect(row).toMatchObject({
+        state: "terminal_rejected",
+        reason: "retry_exhausted",
+        lastErrorCode: "IM_DELIVERY_TERMINAL",
+        dispatchRequestId: null,
+      });
+      expect(domain.requestDelivery).toHaveBeenCalledTimes(8);
+      const codes = diagnosticCodes(diagnostic);
+      // One line per failure run plus the single terminal line, however many attempts it took.
+      expect(codes.filter((code) => code === "IM_DELIVERY_OPERATION_TIMEOUT")).toHaveLength(1);
+      expect(codes.filter((code) => code === "IM_DELIVERY_RETRY_EXHAUSTED")).toHaveLength(1);
+      expect(codes.filter((code) => code === "IM_DELIVERY_OPERATION_LATE_SETTLE").length).toBeLessThanOrEqual(8);
+      expect(codes).toHaveLength(codes.filter((code) => code.startsWith("IM_DELIVERY_")).length);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("backs off a permanently absent runtime and settles the owed Turn when no report can be truthful", async () => {
+    const fixture = await workerFixture(unit);
+    const clock = Date.now();
+    await unit.database
+      .update(computers)
+      .set({ currentInstanceId: null, lastSeenAt: new Date(clock - 3 * 60 * 60_000) })
+      .where(eq(computers.id, fixture.computerId));
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        state: "accepted",
+        inputHash: "frozen-hash",
+        turnId: "turn-offline",
+        reportOwnerInstanceId: fixture.instanceId,
+        acceptedAt: new Date(clock),
+        nextAttemptAt: new Date(clock - 1),
+      })
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture);
+    const diagnostic = vi.fn();
+    let now = clock;
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: domain as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+      registry: new ConnectionRegistry(),
+      now: () => new Date(now),
+      onDiagnostic: diagnostic,
+    });
+    const delays: number[] = [];
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      await worker.runOnce();
+      const [row] = await unit.database
+        .select({ nextAttemptAt: imMessageDeliveries.nextAttemptAt, lastErrorCode: imMessageDeliveries.lastErrorCode })
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      expect(row?.lastErrorCode).toBe("IM_DELIVERY_RUNTIME_UNAVAILABLE");
+      delays.push((row?.nextAttemptAt.getTime() ?? 0) - now);
+      now = row?.nextAttemptAt.getTime() ?? now;
+    }
+    // The rate falls with the silence instead of holding a fixed interval.
+    expect(delays).toEqual([...delays].sort((left, right) => left - right));
+    expect(delays[0]).toBeLessThan(delays.at(-1) as number);
+    expect(domain.requestReconcile).not.toHaveBeenCalled();
+    expect(diagnosticCodes(diagnostic)).toEqual(["IM_DELIVERY_RUNTIME_UNAVAILABLE"]);
+
+    // Past the report-acceptance cutoff the owed custody settles once as unknown, never replayed.
+    now = clock + 25 * 60 * 60_000;
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(now - 1) })
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    await worker.runOnce();
+    const [settled] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    expect(settled).toMatchObject({ state: "accepted", lastErrorCode: null });
+    expect(settled?.reportedAt).not.toBeNull();
+    const report = settled?.turnReport as TurnReportRequest;
+    expect(report).toMatchObject({
+      outcome: "unknown",
+      executionEffects: "may_have_occurred",
+      errorReason: "turn_state_unknown",
+      turnId: "turn-offline",
+    });
+    expect(diagnosticCodes(diagnostic)).toContain("IM_DELIVERY_TURN_STATE_UNKNOWN");
+    now += 25 * 60 * 60_000;
+    await worker.runOnce();
+    expect(diagnosticCodes(diagnostic).filter((code) => code === "IM_DELIVERY_TURN_STATE_UNKNOWN")).toHaveLength(1);
+    expect(domain.requestReconcile).not.toHaveBeenCalled();
+  });
+
+  it("makes offline-parked retries due again when the placement Computer registers", async () => {
+    const fixture = await workerFixture(unit);
+    const clock = Date.now();
+    const park = async (nextAttemptAt: Date) => {
+      await unit.database
+        .update(imMessageDeliveries)
+        .set({ nextAttemptAt, lastErrorCode: "IM_DELIVERY_RUNTIME_UNAVAILABLE" })
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    };
+    const readDue = async () => {
+      const [row] = await unit.database
+        .select({ nextAttemptAt: imMessageDeliveries.nextAttemptAt })
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      return row?.nextAttemptAt.getTime() ?? 0;
+    };
+    const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture);
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: domain as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+      registry: fixture.registry,
+      now: () => new Date(clock),
+    });
+
+    await park(new Date(clock + 20 * 60_000));
+    await worker.notifyComputerReady(fixture.computerId);
+    expect(await readDue()).toBeLessThanOrEqual(clock + 1_000);
+    await worker.runOnce();
+    expect(domain.requestDelivery).toHaveBeenCalledTimes(1);
+
+    // A row that the schedule already retried soon stays parked: a reconnecting client cannot
+    // turn the offline backoff into a hot retry.
+    await park(new Date(clock + 30_000));
+    await worker.notifyComputerReady(fixture.computerId);
+    expect(await readDue()).toBe(clock + 30_000);
+  });
 });
 
 async function workerFixture(unit: UnitDatabase) {

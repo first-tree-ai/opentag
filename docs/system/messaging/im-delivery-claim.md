@@ -1,6 +1,6 @@
 ---
 title: IM delivery claim queries
-description: Indexed delivery selection, in-memory eligibility hints, and transactional custody checks.
+description: Indexed delivery selection, in-memory eligibility hints, transactional custody checks, and the offline retry and termination policy.
 ---
 
 # IM delivery claim queries
@@ -67,9 +67,9 @@ Turn through the existing report identity and ownership checks.
 A recorded `completed` report keeps the children steered. Recording a valid `failed`, `cancelled`,
 or `unknown` report requeues them once in the same transaction; replaying the report cannot requeue
 them again. The janitor can recover children of an already recorded non-completed report or an
-explicitly disposed target. A missing report can therefore retain custody indefinitely, including
-after Session closure. Abandonment and ownership fencing require a separate policy; maintenance
-does not synthesize a terminal report.
+explicitly disposed target. A missing report therefore retains custody only until the
+report-acceptance cutoff below, which the delivery worker then settles as `unknown`; maintenance
+itself never synthesizes a report, and ownership fencing keeps its separate policy.
 
 Non-completed report recovery locks the target and steered children's Sessions in ID order with
 `FOR NO KEY UPDATE` before acquiring placement and delivery locks. It rechecks report identity,
@@ -86,7 +86,42 @@ commit or roll back together, without automatically retrying deadlocked transact
 
 `busy / active_turn` can include report custody. An empty retained-report manifest does not prove
 that the Client has no report on disk: live activity can prevent recovery from enumerating it.
-Offline Computer retry and final-abandonment policy are separate from this response backoff.
+
+## Offline Computer retry and delivery termination
+
+Both failing paths — a dispatch operation that exhausts its deadline and recovery of accepted
+custody with no live runtime — share one retry policy. The delay is the capped exponential attempt
+schedule (2, 4, 8, 16, then 30 seconds) raised, whenever the failure is an absent runtime, by a
+linear term in how long the placement Computer has been silent (`computers.last_seen_at`), adding
+one second of delay per eight seconds of silence up to a 30-minute ceiling. A Computer that was never seen counts as
+fully silent. The term resets on its own: registration and every heartbeat rewrite `last_seen_at`,
+so the first failure after a reconnect is scheduled at the 2-second floor again.
+
+A reconnect also makes parked retries due immediately. Registration advances `next_attempt_at` for
+that Computer's pending and accepted deliveries, but only for rows parked more than one minute into
+the future. A client that reconnects in a loop therefore cannot turn the backoff into a hot retry,
+because a row that is already due soon is left alone.
+
+Two terminal outcomes bound the paths, and neither needs a schema change:
+
+- A dispatch whose frozen input exhausts the whole 30-second operation budget eight times settles
+  through the existing terminal rejection as `state = terminal_rejected`,
+  `reason = retry_exhausted`, `lastErrorCode = IM_DELIVERY_TERMINAL`, with the dispatch columns
+  cleared and the IM batch released. The same input is offered to the same runtime with the same
+  deadline on every attempt, so another attempt is not progress. Every other failure keeps
+  retrying inside the ingress deadline, because it waits for an external state change such as a
+  Client upgrade, an allocation, or capacity.
+- Accepted, unreported custody settles as an `unknown` Turn Report with
+  `executionEffects: may_have_occurred` and `errorReason: turn_state_unknown` once no report can
+  still be truthful: the platform maximum runtime from acceptance plus a one-hour grace. This
+  mirrors the Cloud report-acceptance cutoff, writes `reported_at`, and therefore removes the row
+  from the work set. It is a cutoff on report acceptance, not evidence that no Turn ran, so it
+  never overwrites a report recorded earlier.
+
+Each of these paths emits one diagnostic per failure run instead of one per attempt: a repeat of
+the failure code already recorded for the delivery adds nothing an operator can act on. Only the
+terminal settlement always emits its own line. The pre-claim code is read in the claim, so no
+extra query is needed.
 
 Undispatched Cloud inputs retain provider order within a Session, including an earlier input in
 retry backoff or locked by another worker. A narrow `LATERAL` lookup reads each pending input's

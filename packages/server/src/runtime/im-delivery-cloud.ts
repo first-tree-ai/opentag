@@ -178,11 +178,7 @@ export class CloudDeliveryCoordinator {
       // Model-disabled configuration: report the transient inability instead of provisioning a
       // Cloud environment that could never execute the delivery. This is a transient dispatch
       // failure too, so it backs off with the existing attempt counter instead of a 2 s hot retry.
-      await this.#options.recordFailure(
-        attempt,
-        "IM_DELIVERY_CLOUD_MODEL_UNAVAILABLE",
-        cloudDispatchRetryDelayMs(attempt.attemptCount),
-      );
+      await this.#options.recordFailure(attempt, "IM_DELIVERY_CLOUD_MODEL_UNAVAILABLE");
       return { kind: "stop" };
     }
     const persisted = readPersistedDeliveryRequest({
@@ -205,11 +201,7 @@ export class CloudDeliveryCoordinator {
     if (!assembledRuntime) return { kind: "stop" };
     const runtime = persistedRequest ? assembledRuntime : await cloudDelivery.resolveRuntimeModel(assembledRuntime);
     if (!runtime) {
-      await this.#options.recordFailure(
-        attempt,
-        "IM_DELIVERY_CLOUD_MODEL_UNAVAILABLE",
-        cloudDispatchRetryDelayMs(attempt.attemptCount),
-      );
+      await this.#options.recordFailure(attempt, "IM_DELIVERY_CLOUD_MODEL_UNAVAILABLE");
       return { kind: "stop" };
     }
     return { kind: "continue", persistedRequest, replyRole, runtime };
@@ -417,11 +409,7 @@ export class CloudDeliveryCoordinator {
       if (error instanceof CloudCapacityExceededError) {
         // Capacity is transient for IM: the input stays in the existing bounded queue ("waiting
         // for cloud resources") with the same capped backoff and ingress TTL.
-        await this.#options.recordFailure(
-          attempt,
-          "IM_DELIVERY_CLOUD_CAPACITY_WAITING",
-          cloudDispatchRetryDelayMs(attempt.attemptCount),
-        );
+        await this.#options.recordFailure(attempt, "IM_DELIVERY_CLOUD_CAPACITY_WAITING");
         return false;
       }
       await this.#options.recordFailure(attempt, "IM_DELIVERY_CLOUD_ALLOCATION_FAILED");

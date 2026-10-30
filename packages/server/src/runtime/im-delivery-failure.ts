@@ -44,9 +44,17 @@ import type { PostgresRuntimeCustodyStore } from "./runtime-custody-store.js";
  * claim, so a delivery that failed seven times for unrelated reasons would otherwise be terminalized
  * on its first timeout. There is no dedicated column, so the count rides in the existing
  * `last_error_code`: the canonical `IM_DELIVERY_OPERATION_TIMEOUT` for the first timeout and
- * `IM_DELIVERY_OPERATION_TIMEOUT_<n>` from the second on. Any other failure code replaces it and
- * resets the streak, which is exactly the semantics the cap needs. Diagnostics and the alerting
- * pipeline always see the canonical code, never the suffixed one.
+ * `IM_DELIVERY_OPERATION_TIMEOUT_<n>` from the second on. A different *failure* code replaces it and
+ * resets the streak; a dispatch release carries it forward, because releasing an unusable frozen
+ * dispatch is a lifecycle step of the same input rather than a failed attempt. Diagnostics and the
+ * alerting pipeline always see the canonical code, never the suffixed one.
+ *
+ * Invariant — never terminally reject a dispatch that may be executing. The Server persists the
+ * dispatch correlation before the delivery frame leaves, so a correlated row can still produce a
+ * Turn and a report; rejecting it would strand that report against a terminal row. Exhaustion
+ * rejections therefore require `dispatch_request_id IS NULL` and are retried after the outcome
+ * arrives, and an operation that never settles is abandoned instead of settled. The deadline also
+ * owns the attempt's one failure record: an aborted operation must not write a second one.
  */
 
 const BOUNDED_CODE = /^IM_DELIVERY_[A-Z0-9_]{1,100}$/;
@@ -108,8 +116,13 @@ export async function recordDeliveryFailure(
   const streak = bounded === OPERATION_TIMEOUT_CODE ? operationTimeoutStreak(attempt.previousErrorCode) + 1 : 0;
   if (streak > 0 && options.allowTerminal !== false && operationTimeoutExhausted(streak)) {
     // The same input is offered to the same runtime with the same deadline every time, so another
-    // attempt is not progress. `rejectDelivery` is the existing terminal settlement.
-    if (await rejectDelivery(deps, attempt.deliveryId, "retry_exhausted", attempt.claimToken)) {
+    // attempt is not progress. `rejectDelivery` is the existing terminal settlement; it refuses
+    // while a dispatch correlation exists because that dispatch may still be executing.
+    if (
+      await rejectDelivery(deps, attempt.deliveryId, "retry_exhausted", attempt.claimToken, {
+        requireNoDispatchCorrelation: true,
+      })
+    ) {
       deps.onDiagnostic("IM_DELIVERY_RETRY_EXHAUSTED", diagnosticContext(attempt));
       return;
     }
@@ -152,12 +165,22 @@ export async function settleExhaustedTimeoutRun(deps: DeliveryFailureDeps, attem
     .limit(1);
   const streak = operationTimeoutStreak(row?.lastErrorCode);
   if (!operationTimeoutExhausted(streak) || !row?.lastErrorCode) return false;
-  if (!(await rejectDelivery(deps, attempt.deliveryId, "retry_exhausted", row.lastErrorCode))) return false;
+  const rejected = await rejectDelivery(deps, attempt.deliveryId, "retry_exhausted", row.lastErrorCode, {
+    requireNoDispatchCorrelation: true,
+  });
+  if (!rejected) return false;
   deps.onDiagnostic("IM_DELIVERY_RETRY_EXHAUSTED", diagnosticContext(attempt));
   return true;
 }
 
-/** Release a frozen dispatch so the input can be prepared again, without inventing a result. */
+/**
+ * Release a frozen dispatch so the input can be prepared again, without inventing a result.
+ *
+ * A release is not a failure, so it must not end the consecutive-timeout run of the input: the
+ * stuck shape alternates "timeout on the frozen dispatch" and "release, prepare a fresh dispatch",
+ * and resetting there would make the cap unreachable. The release reason still reaches the
+ * diagnostic and the span; the durable counter keeps the streak code.
+ */
 export async function releaseDeliveryDispatch(
   deps: DeliveryFailureDeps,
   attempt: DeliveryAttempt,
@@ -166,6 +189,7 @@ export async function releaseDeliveryDispatch(
 ): Promise<void> {
   const bounded = BOUNDED_CODE.test(code) ? code : "IM_DELIVERY_FAILED";
   setActiveSpanAttributes(outcomeAttrs("released", bounded));
+  const streak = operationTimeoutStreak(attempt.previousErrorCode);
   const released = await deps.database.transaction(async (transaction) => {
     const [released] = await transaction
       .update(imMessageDeliveries)
@@ -174,7 +198,7 @@ export async function releaseDeliveryDispatch(
         dispatchRequestId: null,
         dispatchInputHash: null,
         dispatchPayload: null,
-        lastErrorCode: bounded,
+        lastErrorCode: streak > 0 ? operationTimeoutCode(streak) : bounded,
         nextAttemptAt: new Date(deps.now() + deliveryRetryDelayMs(attempt.attemptCount, attempt.offlineMs)),
       })
       .where(
@@ -208,12 +232,23 @@ export async function handleDeliveryFailure(
   await recordDeliveryFailure(deps, attempt, code);
 }
 
+export interface RejectOptions {
+  /**
+   * Refuse the rejection while a dispatch correlation exists. `RuntimeDomainOwner` persists that
+   * correlation before it sends the frame, so a correlated row may already be executing: settling it
+   * would strand a Turn that can still report. The correlation is cleared by the ordinary dispatch
+   * release, after which the rejection is safe.
+   */
+  requireNoDispatchCorrelation?: boolean;
+}
+
 /** Terminally reject a pending input; the only path that clears a frozen dispatch and its batch. */
 export async function rejectDelivery(
   deps: DeliveryFailureDeps,
   deliveryId: string,
   reason: string,
-  claimToken?: string,
+  ownershipFence?: string,
+  options: RejectOptions = {},
 ): Promise<boolean> {
   setActiveSpanAttributes(outcomeAttrs("terminal_rejected", reason));
   const rejected = await deps.database.transaction(async (transaction) => {
@@ -232,7 +267,8 @@ export async function rejectDelivery(
         and(
           eq(imMessageDeliveries.id, deliveryId),
           eq(imMessageDeliveries.state, "pending"),
-          ...(claimToken ? [eq(imMessageDeliveries.lastErrorCode, claimToken)] : []),
+          ...(ownershipFence ? [eq(imMessageDeliveries.lastErrorCode, ownershipFence)] : []),
+          ...(options.requireNoDispatchCorrelation ? [isNull(imMessageDeliveries.dispatchRequestId)] : []),
         ),
       )
       .returning({ id: imMessageDeliveries.id });

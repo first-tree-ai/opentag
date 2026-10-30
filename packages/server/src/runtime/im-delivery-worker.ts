@@ -68,6 +68,7 @@ import {
   rejectDelivery,
   rejectInvalidDeliveryInput,
   releaseDeliveryDispatch,
+  settleExhaustedTimeoutRun,
   settleUnreportableTurn,
 } from "./im-delivery-failure.js";
 import {
@@ -80,8 +81,9 @@ import {
 } from "./im-delivery-janitor.js";
 import { matchPinnedDirectInputHash } from "./im-delivery-pinned-hash.js";
 import { ImDeliveryReadyWakeup } from "./im-delivery-ready-wakeup.js";
-import { acceptedReportDeadlineMs } from "./im-delivery-retry.js";
+import { acceptedReportClosed } from "./im-delivery-retry.js";
 import { ImDeliverySelector, lockEligibleDelivery } from "./im-delivery-selector.js";
+import { advanceParkedRetries } from "./im-delivery-work-query.js";
 import type {
   CloudSessionAllocationPort,
   DeliveryAttempt,
@@ -98,8 +100,6 @@ import type { RuntimeDomainOwner } from "./runtime-domain-owner.js";
 const DEFAULT_INTERVAL_MS = 500;
 const RETRY_DELAY_MS = 2_000;
 const CLAIM_LEASE_MS = 15_000;
-/** A reconnect only advances retries the offline backoff parked beyond a normal retry interval. */
-const RECONNECT_ADVANCE_THRESHOLD_MS = 60_000;
 const CLAIM_RENEW_MS = 5_000;
 const RECOVERY_RETRY_CODES: Record<SessionReconcileResult["status"], string> = {
   ready: "IM_DELIVERY_RECOVERY_AWAITING_REPORT",
@@ -349,11 +349,19 @@ export class ImDeliveryWorker {
           },
           async () => {
             this.#onMetric({ name: "timeout", value: 1, agentId: claimed.agentId });
+            /*
+             * The timed-out operation is still in flight, so a terminal state is only written when
+             * the row carries no dispatch correlation: `RuntimeDomainOwner` persists that
+             * correlation before the frame leaves, so an uncorrelated row has no Turn that could
+             * still report, and a correlated row is left pending for the late-settle callback.
+             */
             await this.#recordFailure(attempt, "IM_DELIVERY_OPERATION_TIMEOUT");
           },
-          () => {
+          async () => {
             this.#onDiagnostic("IM_DELIVERY_OPERATION_LATE_SETTLE", diagnosticContext(attempt));
             this.#onMetric({ name: "late_settle", value: 1, agentId: claimed.agentId });
+            // The outcome is known now, so the terminal decision can no longer contradict it.
+            await settleExhaustedTimeoutRun(this.#failures, attempt);
           },
           () => this.#onDiagnostic("IM_DELIVERY_OPERATION_ABANDONED", diagnosticContext(attempt)),
         );
@@ -386,23 +394,10 @@ export class ImDeliveryWorker {
     return this.#readyWakeup.notify(allocation);
   }
 
-  /**
-   * A Computer's runtime became usable again, so its parked retries are due again. Only rows the
-   * offline backoff pushed well past the base interval are advanced, which keeps this wakeup
-   * self-limiting: a client that reconnects in a loop cannot turn the backoff into a hot retry,
-   * because a row that is already due soon is left alone.
-   */
+  /** A Computer's runtime became usable again, so its offline-parked retries are due again. */
   async notifyComputerReady(computerId: string): Promise<void> {
     if (this.#closed) return;
-    await this.#database.execute(sql`
-      update im_message_deliveries as delivery
-      set next_attempt_at = ${this.#clock().toISOString()}::timestamptz
-      from session_placements as placement
-      where placement.session_id = delivery.session_id
-        and placement.computer_id = ${computerId}::uuid
-        and delivery.state in ('pending', 'accepted')
-        and delivery.next_attempt_at > ${new Date(this.#now() + RECONNECT_ADVANCE_THRESHOLD_MS).toISOString()}::timestamptz
-    `);
+    await advanceParkedRetries(this.#database, computerId, this.#now());
   }
 
   #schedule(): void {
@@ -814,7 +809,7 @@ export class ImDeliveryWorker {
         );
       }
     } catch (error) {
-      await this.#handleDeliveryFailure(attempt, "IM_DELIVERY_STEER_FAILED", error);
+      await this.#recordOperationFailure(attempt, "IM_DELIVERY_STEER_FAILED", error, signal);
     } finally {
       await lease.stop();
     }
@@ -1073,7 +1068,7 @@ export class ImDeliveryWorker {
         await this.#releaseDispatch(attempt, request.requestId, "IM_DELIVERY_RUNTIME_REJECTED");
       }
     } catch (error) {
-      await this.#handleDeliveryFailure(attempt, "IM_DELIVERY_RUNTIME_FAILED", error);
+      await this.#recordOperationFailure(attempt, "IM_DELIVERY_RUNTIME_FAILED", error, signal);
     }
   }
 
@@ -1163,8 +1158,8 @@ export class ImDeliveryWorker {
     const liveOwner = instanceId !== undefined && row.computer.currentInstanceId === instanceId;
     const placementCurrent = row.delivery.placementGeneration === row.placement.generation;
     if (!placementCurrent || !liveOwner) {
-      if (placementCurrent && this.#reportAcceptanceClosed(row)) {
-        if (await this.#settleUnknownTurn(row)) return;
+      if (placementCurrent && acceptedReportClosed(row.delivery.acceptedAt, this.#now())) {
+        if (await settleUnreportableTurn(this.#failures, row)) return;
       }
       if (!placementCurrent) {
         await this.#recordFailure(attempt, "IM_DELIVERY_PLACEMENT_STALE");
@@ -1192,20 +1187,6 @@ export class ImDeliveryWorker {
     } catch {
       await this.#deferRecovery(attempt, row.delivery.attemptCount, "IM_DELIVERY_RECOVERY_FAILED");
     }
-  }
-
-  /**
-   * Whether no Turn Report can still be truthful for this accepted delivery: the platform maximum
-   * runtime from acceptance plus its grace has passed.
-   */
-  #reportAcceptanceClosed(row: { delivery: typeof imMessageDeliveries.$inferSelect }): boolean {
-    const acceptedAt = row.delivery.acceptedAt?.getTime();
-    return acceptedAt !== undefined && this.#now() >= acceptedReportDeadlineMs(acceptedAt);
-  }
-
-  /** Settle owed custody once no report can still be truthful; see the failure module for the policy. */
-  #settleUnknownTurn(row: Parameters<typeof settleUnreportableTurn>[1]): Promise<boolean> {
-    return settleUnreportableTurn(this.#failures, row);
   }
 
   /** A reconcile response is not a report; preserve custody until the actual report settles it. */
@@ -1336,6 +1317,15 @@ export class ImDeliveryWorker {
 
   #handleDeliveryFailure(attempt: DeliveryAttempt, code: string, error: unknown): Promise<void> {
     return handleDeliveryFailure(this.#failures, attempt, code, error);
+  }
+
+  /**
+   * Record the failure of an operation that the deadline may have aborted. The deadline already
+   * recorded that attempt, and a second write would reset the consecutive-timeout count it produced.
+   */
+  #recordOperationFailure(attempt: DeliveryAttempt, code: string, error: unknown, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return Promise.resolve();
+    return this.#handleDeliveryFailure(attempt, code, error);
   }
 
   #rejectInvalidInput(attempt: DeliveryAttempt, error: ImDeliveryInputError): Promise<void> {

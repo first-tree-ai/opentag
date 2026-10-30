@@ -111,6 +111,12 @@ Two terminal outcomes bound the paths, and neither needs a schema change:
   deadline on every attempt, so another attempt is not progress. Every other failure keeps
   retrying inside the ingress deadline, because it waits for an external state change such as a
   Client upgrade, an allocation, or capacity.
+  The terminal rejection is only written while the row carries no dispatch correlation. The Server
+  persists that correlation before the delivery frame leaves, so a correlated row may already be
+  executing: it stays pending and is settled only after its outcome arrives, and an operation that
+  never settles is abandoned without any terminal decision. A dispatch release keeps the run going
+  (it is a lifecycle step, not a failure) so the cap stays reachable for an input that alternates
+  "timeout on the frozen dispatch" and "release, prepare a fresh dispatch".
   The count is consecutive timeouts, never total claims: `attempt_count` grows on every claim, so a
   delivery that already failed seven times for unrelated reasons must still get its whole timeout
   budget. The count has no column of its own and rides in the existing `last_error_code`: the
@@ -133,6 +139,10 @@ Each of these paths emits one diagnostic per failure run instead of one per atte
 the failure code already recorded for the delivery adds nothing an operator can act on. Only the
 terminal settlement always emits its own line. The pre-claim code is read in the claim, so no
 extra query is needed.
+
+A timed-out attempt is recorded once, by the deadline. The aborted operation does not record a
+second, contradictory failure: that write would describe the same attempt and would reset the
+consecutive-timeout count the deadline just produced.
 
 Undispatched Cloud inputs retain provider order within a Session, including an earlier input in
 retry backoff or locked by another worker. A narrow `LATERAL` lookup reads each pending input's

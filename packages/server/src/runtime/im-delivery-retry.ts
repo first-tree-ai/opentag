@@ -85,3 +85,8 @@ export const ACCEPTED_REPORT_GRACE_MS = 60 * 60_000;
 export function acceptedReportDeadlineMs(acceptedAtMs: number): number {
   return acceptedAtMs + RUNTIME_MAX_DURATION_MS + ACCEPTED_REPORT_GRACE_MS;
 }
+
+/** Whether no Turn Report can still be truthful for a Turn accepted at `acceptedAt`. */
+export function acceptedReportClosed(acceptedAt: Date | null, nowMs: number): boolean {
+  return acceptedAt !== null && nowMs >= acceptedReportDeadlineMs(acceptedAt.getTime());
+}

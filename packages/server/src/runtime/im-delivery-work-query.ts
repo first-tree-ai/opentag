@@ -228,3 +228,24 @@ export async function readPendingHead(database: DeliveryWorkQuery, sessionId: st
   const [row] = await database.execute<{ id: string }>(pendingHeadQuery(sessionId));
   return row?.id;
 }
+
+/** A reconnect only advances retries the offline backoff parked beyond a normal retry interval. */
+export const RECONNECT_ADVANCE_THRESHOLD_MS = 60_000;
+
+/**
+ * A Computer's runtime became usable again, so its parked retries are due again. Only rows the
+ * offline backoff pushed well past the base interval are advanced, which keeps this wakeup
+ * self-limiting: a client that reconnects in a loop cannot turn the backoff into a hot retry,
+ * because a row that is already due soon is left alone.
+ */
+export async function advanceParkedRetries(database: DeliveryWorkQuery, computerId: string, nowMs: number) {
+  await database.execute(sql`
+    update im_message_deliveries as delivery
+    set next_attempt_at = ${new Date(nowMs).toISOString()}::timestamptz
+    from session_placements as placement
+    where placement.session_id = delivery.session_id
+      and placement.computer_id = ${computerId}::uuid
+      and delivery.state in ('pending', 'accepted')
+      and delivery.next_attempt_at > ${new Date(nowMs + RECONNECT_ADVANCE_THRESHOLD_MS).toISOString()}::timestamptz
+  `);
+}

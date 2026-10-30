@@ -4,6 +4,7 @@ import {
   computeLegacyDirectInputHash,
   computeRuntimeImMessageSemanticHash,
   computeRuntimeImSteerInputHash,
+  computeTurnResultHash,
   type DirectImMessageDeliveryRequest,
   RUNTIME_CAPABILITY,
   type RuntimeImSteerRequest,
@@ -2376,6 +2377,169 @@ describe("ImDeliveryWorker database workflow", () => {
     }
   });
 
+  it("keeps a correlated timed-out dispatch pending so a late acceptance can still record its Turn", async () => {
+    const fixture = await workerFixture(unit);
+    const custody = new PostgresRuntimeCustodyStore(unit.database);
+    const clock = Date.now();
+    // The input is already at the cap: seven consecutive timeouts with one attempt to go.
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        attemptCount: 7,
+        lastErrorCode: "IM_DELIVERY_OPERATION_TIMEOUT_7",
+        nextAttemptAt: new Date(clock - 1),
+      })
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    // A dispatch that reached the Client: the correlation is persisted before the frame leaves, and
+    // the Client answers `accepted` only after the deadline and its grace.
+    let correlated = false;
+    const requestDelivery = vi.fn(
+      async (
+        _computerId: string,
+        _instanceId: string,
+        request: DirectImMessageDeliveryRequest,
+        onDispatched?: () => void,
+      ) => {
+        onDispatched?.();
+        const hash = computeDirectInputHash(request);
+        const dispatch = await custody.beginDeliveryDispatch(request, hash, {
+          computerId: fixture.computerId,
+          instanceId: fixture.instanceId,
+        });
+        expect(dispatch).toBe("dispatched");
+        correlated = true;
+        await new Promise<void>((resolve) => setTimeout(resolve, 1_400));
+        await custody.acceptDelivery(request, hash, "turn-late", {
+          computerId: fixture.computerId,
+          installationId: randomUUID(),
+          instanceId: fixture.instanceId,
+          signal: new AbortController().signal,
+        });
+        return {
+          type: "im:deliver:result" as const,
+          requestId: request.requestId,
+          deliveryId: request.deliveryId,
+          sessionId: request.sessionId,
+          placementGeneration: request.placementGeneration,
+          status: "accepted" as const,
+          turnId: "turn-late",
+        };
+      },
+    );
+    const diagnostic = vi.fn();
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: {
+        requestReconcile: vi.fn(
+          async (_computerId: string, _instanceId: string, request: unknown, onDispatched?: () => void) => {
+            onDispatched?.();
+            return {
+              type: "session:reconcile:result" as const,
+              requestId: (request as { requestId: string }).requestId,
+              sessionId: fixture.sessionId,
+              placementGeneration: 1,
+              status: "ready" as const,
+            };
+          },
+        ),
+        requestDelivery,
+      } as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+      registry: fixture.registry,
+      operationTimeoutMs: 40,
+      onDiagnostic: diagnostic,
+    });
+
+    const running = worker.runOnce();
+    await vi.waitFor(() => expect(correlated).toBe(true), { timeout: 2_000, interval: 10 });
+    // The deadline passes with a correlated dispatch, so the row stays pending: the Turn may still
+    // execute and report, and a terminal row would make that report unrecordable.
+    await running;
+    const [inFlight] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    expect(inFlight?.state).toBe("pending");
+    expect(inFlight?.lastErrorCode).toBe("IM_DELIVERY_OPERATION_TIMEOUT_8");
+    expect(diagnosticCodes(diagnostic)).not.toContain("IM_DELIVERY_RETRY_EXHAUSTED");
+
+    // The late acceptance lands after the grace and keeps its custody.
+    await vi.waitFor(
+      async () => {
+        const [row] = await unit.database
+          .select()
+          .from(imMessageDeliveries)
+          .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+        expect(row).toMatchObject({ state: "accepted", turnId: "turn-late" });
+      },
+      { timeout: 3_000, interval: 25 },
+    );
+    // The executed Turn can still record its report.
+    await expect(
+      custody.recordTurn(completedReport(fixture.deliveryId, "turn-late", fixture.sessionId, fixture.agentId), {
+        computerId: fixture.computerId,
+        installationId: randomUUID(),
+        instanceId: fixture.instanceId,
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toBe("recorded");
+    expect(diagnosticCodes(diagnostic)).not.toContain("IM_DELIVERY_RETRY_EXHAUSTED");
+  });
+
+  it("keeps the consecutive-timeout run across a dispatch release and settles on the next timeout", async () => {
+    vi.useFakeTimers({ now: new Date("2026-09-04T00:00:00.000Z") });
+    try {
+      const fixture = await workerFixture(unit);
+      const clock = Date.now();
+      const hash = computeDirectInputHash(fixture.request);
+      // One timed-out dispatch is still frozen, and the run stands at seven.
+      await unit.database
+        .update(imMessageDeliveries)
+        .set({
+          attemptCount: 7,
+          lastErrorCode: "IM_DELIVERY_OPERATION_TIMEOUT_7",
+          dispatchRequestId: fixture.request.requestId,
+          dispatchInputHash: hash,
+          dispatchPayload: fixture.request,
+          nextAttemptAt: new Date(clock - 1),
+        })
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, { deliveryHang: true });
+      const diagnostic = vi.fn();
+      const worker = new ImDeliveryWorker({
+        database: unit.database,
+        domain: domain as never,
+        assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+        registry: fixture.registry,
+        operationTimeoutMs: 100,
+        onDiagnostic: diagnostic,
+      });
+      const attempt = async () => {
+        const running = worker.runOnce();
+        await vi.advanceTimersByTimeAsync(1_100);
+        await running;
+        await vi.advanceTimersByTimeAsync(31_000);
+        const [row] = await unit.database
+          .select()
+          .from(imMessageDeliveries)
+          .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+        return row;
+      };
+
+      // The reconcile releases the unusable dispatch, and the release keeps the timeout run.
+      expect(await attempt()).toMatchObject({
+        state: "pending",
+        dispatchRequestId: null,
+        lastErrorCode: "IM_DELIVERY_OPERATION_TIMEOUT_7",
+      });
+      // The next attempt spends the eighth budget and settles.
+      expect(await attempt()).toMatchObject({ state: "terminal_rejected", reason: "retry_exhausted" });
+      expect(diagnosticCodes(diagnostic)).toContain("IM_DELIVERY_RETRY_EXHAUSTED");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("counts consecutive operation timeouts instead of claims before it settles a delivery", async () => {
     vi.useFakeTimers({ now: new Date("2026-09-02T00:00:00.000Z") });
     try {
@@ -3076,4 +3240,19 @@ function fakeDomain(
 /** The diagnostic codes a reporter emitted, so a context assertion cannot hide a missing or extra code. */
 function diagnosticCodes(reporter: { mock: { calls: unknown[][] } }): string[] {
   return reporter.mock.calls.map(([code]) => code as string);
+}
+
+/** A completed Turn Report for one delivery, hashed the way the Server checks it. */
+function completedReport(deliveryId: string, turnId: string, sessionId: string, agentId: string): TurnReportRequest {
+  const body = {
+    deliveryId,
+    turnId,
+    sessionId,
+    agentId,
+    placementGeneration: 1,
+    outcome: "completed" as const,
+    executionEffects: "completed" as const,
+    traceSummary: { lastSequence: 0, droppedEvents: 0 },
+  };
+  return { type: "turn:report", requestId: randomUUID(), ...body, resultHash: computeTurnResultHash(body) };
 }

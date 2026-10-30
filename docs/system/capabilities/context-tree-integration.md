@@ -26,11 +26,20 @@ case-insensitive; directory and branch names are case-sensitive. Names shown in
 settings come from the directory or repository. Multiple directories or branches
 in one repository are allowed. Array order gives no tree precedence.
 
-Memory shows each connected tree in its own card, with its repository, directory,
-branch, and a direct link to the GitHub folder. Disconnect is in the card's action menu.
-With no trees connected, the page offers **Connect Context Tree** and
-**Create Context Tree**. After the first connection, **Add tree** offers those
-choices. Each choice opens a focused dialog; the collection does not show an inline form.
+Memory uses the same page header and collection layout as other Agent resources, without a primary
+header action or capacity counter. The centered empty state offers lightweight **Connect Context Tree**
+and **Create Context Tree** shortcuts for both Local and Cloud Agents. Connected Context Trees appear as divided rows in one
+surface, with repository/directory, branch, and a direct GitHub-folder link. A trailing secondary
+**Connect another Context Tree** action keeps additional connections available inside the collection.
+The trailing action is absent at the connection limit rather than presenting an unexplained disabled control.
+These are saved selections, not runtime-ready indicators. Each choice opens a focused dialog; the
+collection does not show an inline form. Disconnect lives in the Context Tree action menu and confirms
+the exact Context Tree and preservation impact.
+Cancel receives initial focus, pending requests block dismissal and repeated submissions, and failures
+stay inside the confirmation. A confirmed removal returns focus to a surviving neighbour or the empty-state
+connection shortcut. Successful first connections return focus to the collection's trailing connection action
+and leave visible, concise feedback.
+
 Connect accepts a GitHub repository link and an optional relative directory; an empty
 directory means the repository root. GitHub’s default branch is resolved during verification
 and saved with the connection. Both Local and Cloud can connect existing trees.
@@ -43,7 +52,14 @@ credential; it does not require Computer-side GitHub credentials. The OAuth auth
 and organization policy must permit creation and content writes. Permission failures
 ask the user to check access; only missing or invalid authorization asks them to reconnect.
 
-Failed settings operations display an error banner. When the server has no GitHub OAuth App
+Initial settings read failures retain the page identity and offer explicit retry for transient failures.
+A transient refresh failure retains the existing collection and form draft, marks the data unconfirmed,
+and disables writes until a successful read. Connector and restriction-recovery links open a new tab so
+an in-progress form stays available in the original tab. Terminal authorization/resource failures hide stale settings.
+Invalid directories associate their error with the field. Restriction notices describe pause and offline
+requirements together and link to existing Agent/Computer settings without automatically pausing an Agent.
+
+Failed settings operations display an error banner and the current Agent's Connector or repository destination. When the server has no GitHub MCP OAuth client
 configured, the message asks the server administrator to configure it; this does not
 mean the bound Computer needs an update.
 
@@ -55,7 +71,14 @@ Repository creation never adopts or overwrites an existing repository. Remote wr
 not retried automatically. Rejected repository names prompt the user to choose another name or
 connect an existing tree. An uncertain creation asks the user to inspect GitHub: connect a valid
 tree, initialize and push the files if the repository is empty, or delete the empty repository
-before retrying creation. Retrying an already connected tree is idempotent.
+before retrying creation. Every unresolved creation is retained by case-insensitive repository identity.
+While an outcome remains uncertain, creation of that repository is disabled, including after trying another
+repository or closing and reopening the dialog. A successful connection clears only the matching unresolved
+repository. Open repository and Connect existing are explicit recovery actions; the latter prefills the matching
+repository without issuing a request and moves focus to its input. Recovery guidance is secondary to those actions.
+An uncertain create response is recorded even if a background config refresh changes the revision while the request
+is pending; other stale response state is still discarded.
+Retrying an already connected tree is idempotent.
 
 ## Preparation
 

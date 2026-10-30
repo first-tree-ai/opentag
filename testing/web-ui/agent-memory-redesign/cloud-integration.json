@@ -1,0 +1,531 @@
+{
+  "scope": "Production App/router; synthetic Cloud API, uncommitted main integration; no real repositories created",
+  "cases": [
+    {
+      "locale": "en",
+      "width": 320,
+      "state": "empty",
+      "ownerFocused": true,
+      "requests": [
+        {
+          "kind": "git",
+          "repository": "example/cloud-knowledge",
+          "path": ".",
+          "ref": "HEAD",
+          "action": "create",
+          "expectedRevision": 2,
+          "expectedRuntimeConfigRevision": 3
+        }
+      ],
+      "before": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      },
+      "after": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      }
+    },
+    {
+      "locale": "en",
+      "width": 320,
+      "state": "connected",
+      "ownerFocused": true,
+      "requests": [
+        {
+          "kind": "git",
+          "repository": "example/cloud-knowledge",
+          "path": ".",
+          "ref": "HEAD",
+          "action": "create",
+          "expectedRevision": 2,
+          "expectedRuntimeConfigRevision": 3
+        }
+      ],
+      "before": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      },
+      "after": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      }
+    },
+    {
+      "locale": "en",
+      "width": 390,
+      "state": "empty",
+      "ownerFocused": true,
+      "requests": [
+        {
+          "kind": "git",
+          "repository": "example/cloud-knowledge",
+          "path": ".",
+          "ref": "HEAD",
+          "action": "create",
+          "expectedRevision": 2,
+          "expectedRuntimeConfigRevision": 3
+        }
+      ],
+      "before": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      },
+      "after": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      }
+    },
+    {
+      "locale": "en",
+      "width": 390,
+      "state": "connected",
+      "ownerFocused": true,
+      "requests": [
+        {
+          "kind": "git",
+          "repository": "example/cloud-knowledge",
+          "path": ".",
+          "ref": "HEAD",
+          "action": "create",
+          "expectedRevision": 2,
+          "expectedRuntimeConfigRevision": 3
+        }
+      ],
+      "before": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      },
+      "after": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      }
+    },
+    {
+      "locale": "en",
+      "width": 768,
+      "state": "empty",
+      "ownerFocused": true,
+      "requests": [
+        {
+          "kind": "git",
+          "repository": "example/cloud-knowledge",
+          "path": ".",
+          "ref": "HEAD",
+          "action": "create",
+          "expectedRevision": 2,
+          "expectedRuntimeConfigRevision": 3
+        }
+      ],
+      "before": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      },
+      "after": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      }
+    },
+    {
+      "locale": "en",
+      "width": 768,
+      "state": "connected",
+      "ownerFocused": true,
+      "requests": [
+        {
+          "kind": "git",
+          "repository": "example/cloud-knowledge",
+          "path": ".",
+          "ref": "HEAD",
+          "action": "create",
+          "expectedRevision": 2,
+          "expectedRuntimeConfigRevision": 3
+        }
+      ],
+      "before": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      },
+      "after": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "state": "empty",
+      "ownerFocused": true,
+      "requests": [
+        {
+          "kind": "git",
+          "repository": "example/cloud-knowledge",
+          "path": ".",
+          "ref": "HEAD",
+          "action": "create",
+          "expectedRevision": 2,
+          "expectedRuntimeConfigRevision": 3
+        }
+      ],
+      "before": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      },
+      "after": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "state": "connected",
+      "ownerFocused": true,
+      "requests": [
+        {
+          "kind": "git",
+          "repository": "example/cloud-knowledge",
+          "path": ".",
+          "ref": "HEAD",
+          "action": "create",
+          "expectedRevision": 2,
+          "expectedRuntimeConfigRevision": 3
+        }
+      ],
+      "before": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      },
+      "after": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      }
+    },
+    {
+      "locale": "zh",
+      "width": 320,
+      "state": "empty",
+      "ownerFocused": true,
+      "requests": [
+        {
+          "kind": "git",
+          "repository": "example/cloud-knowledge",
+          "path": ".",
+          "ref": "HEAD",
+          "action": "create",
+          "expectedRevision": 2,
+          "expectedRuntimeConfigRevision": 3
+        }
+      ],
+      "before": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      },
+      "after": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      }
+    },
+    {
+      "locale": "zh",
+      "width": 320,
+      "state": "connected",
+      "ownerFocused": true,
+      "requests": [
+        {
+          "kind": "git",
+          "repository": "example/cloud-knowledge",
+          "path": ".",
+          "ref": "HEAD",
+          "action": "create",
+          "expectedRevision": 2,
+          "expectedRuntimeConfigRevision": 3
+        }
+      ],
+      "before": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      },
+      "after": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      }
+    },
+    {
+      "locale": "zh",
+      "width": 390,
+      "state": "empty",
+      "ownerFocused": true,
+      "requests": [
+        {
+          "kind": "git",
+          "repository": "example/cloud-knowledge",
+          "path": ".",
+          "ref": "HEAD",
+          "action": "create",
+          "expectedRevision": 2,
+          "expectedRuntimeConfigRevision": 3
+        }
+      ],
+      "before": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      },
+      "after": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      }
+    },
+    {
+      "locale": "zh",
+      "width": 390,
+      "state": "connected",
+      "ownerFocused": true,
+      "requests": [
+        {
+          "kind": "git",
+          "repository": "example/cloud-knowledge",
+          "path": ".",
+          "ref": "HEAD",
+          "action": "create",
+          "expectedRevision": 2,
+          "expectedRuntimeConfigRevision": 3
+        }
+      ],
+      "before": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      },
+      "after": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      }
+    },
+    {
+      "locale": "zh",
+      "width": 768,
+      "state": "empty",
+      "ownerFocused": true,
+      "requests": [
+        {
+          "kind": "git",
+          "repository": "example/cloud-knowledge",
+          "path": ".",
+          "ref": "HEAD",
+          "action": "create",
+          "expectedRevision": 2,
+          "expectedRuntimeConfigRevision": 3
+        }
+      ],
+      "before": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      },
+      "after": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      }
+    },
+    {
+      "locale": "zh",
+      "width": 768,
+      "state": "connected",
+      "ownerFocused": true,
+      "requests": [
+        {
+          "kind": "git",
+          "repository": "example/cloud-knowledge",
+          "path": ".",
+          "ref": "HEAD",
+          "action": "create",
+          "expectedRevision": 2,
+          "expectedRuntimeConfigRevision": 3
+        }
+      ],
+      "before": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      },
+      "after": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      }
+    },
+    {
+      "locale": "zh",
+      "width": 1440,
+      "state": "empty",
+      "ownerFocused": true,
+      "requests": [
+        {
+          "kind": "git",
+          "repository": "example/cloud-knowledge",
+          "path": ".",
+          "ref": "HEAD",
+          "action": "create",
+          "expectedRevision": 2,
+          "expectedRuntimeConfigRevision": 3
+        }
+      ],
+      "before": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      },
+      "after": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      }
+    },
+    {
+      "locale": "zh",
+      "width": 1440,
+      "state": "connected",
+      "ownerFocused": true,
+      "requests": [
+        {
+          "kind": "git",
+          "repository": "example/cloud-knowledge",
+          "path": ".",
+          "ref": "HEAD",
+          "action": "create",
+          "expectedRevision": 2,
+          "expectedRuntimeConfigRevision": 3
+        }
+      ],
+      "before": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      },
+      "after": {
+        "pageOverflow": false,
+        "dialogOverflow": false,
+        "unexpectedRequests": []
+      }
+    }
+  ],
+  "recovery": [
+    {
+      "locale": "en",
+      "width": 320,
+      "locked": true,
+      "prefill": true,
+      "focused": true,
+      "noAutomaticRetry": true,
+      "pageOverflow": false,
+      "dialogOverflow": false,
+      "unexpectedRequests": []
+    },
+    {
+      "locale": "en",
+      "width": 390,
+      "locked": true,
+      "prefill": true,
+      "focused": true,
+      "noAutomaticRetry": true,
+      "pageOverflow": false,
+      "dialogOverflow": false,
+      "unexpectedRequests": []
+    },
+    {
+      "locale": "en",
+      "width": 768,
+      "locked": true,
+      "prefill": true,
+      "focused": true,
+      "noAutomaticRetry": true,
+      "pageOverflow": false,
+      "dialogOverflow": false,
+      "unexpectedRequests": []
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "locked": true,
+      "prefill": true,
+      "focused": true,
+      "noAutomaticRetry": true,
+      "pageOverflow": false,
+      "dialogOverflow": false,
+      "unexpectedRequests": []
+    },
+    {
+      "locale": "zh",
+      "width": 320,
+      "locked": true,
+      "prefill": true,
+      "focused": true,
+      "noAutomaticRetry": true,
+      "pageOverflow": false,
+      "dialogOverflow": false,
+      "unexpectedRequests": []
+    },
+    {
+      "locale": "zh",
+      "width": 390,
+      "locked": true,
+      "prefill": true,
+      "focused": true,
+      "noAutomaticRetry": true,
+      "pageOverflow": false,
+      "dialogOverflow": false,
+      "unexpectedRequests": []
+    },
+    {
+      "locale": "zh",
+      "width": 768,
+      "locked": true,
+      "prefill": true,
+      "focused": true,
+      "noAutomaticRetry": true,
+      "pageOverflow": false,
+      "dialogOverflow": false,
+      "unexpectedRequests": []
+    },
+    {
+      "locale": "zh",
+      "width": 1440,
+      "locked": true,
+      "prefill": true,
+      "focused": true,
+      "noAutomaticRetry": true,
+      "pageOverflow": false,
+      "dialogOverflow": false,
+      "unexpectedRequests": []
+    }
+  ],
+  "sourceSHA256": "ec4cbf539f20377dd245c129f79aa2713b9ff7aa88a4ef836dcee5ba04d9dfff",
+  "capturedAt": "2026-10-26T12:33:45.626240+00:00",
+  "baseHead": "e9a9e478bd2aec32e142b6aef788f2af4cc6377b",
+  "integratedMain": "4cf2978b64f74a3b3fcaddf37ef3e57558a207d5"
+}

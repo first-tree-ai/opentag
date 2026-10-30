@@ -104,3 +104,9 @@ variables are ignored with a names-only warning; only the MCP client settings en
 Config, startup and Session CLI continuation regressions pass 78 tests. The actual MCP/CLI suite
 passes 27 tests under v8 instrumentation; its two database-plus-CLI cases use a 30-second test budget
 without changing any product deadline or assertion.
+
+The merge of main `8528f7ab` retains the current Memory layout and its read/operation recovery
+behavior. Authorization-specific messages and the existing recovery link target the current Agent's
+Connectors rather than the retired Account integration. The merged Web build and all 12 typecheck
+tasks pass; four affected Web suites pass 52 tests and the three existing Chromium smoke cases pass
+with zero retries. The no-GitHub Memory screenshot is refreshed to the merged layout.

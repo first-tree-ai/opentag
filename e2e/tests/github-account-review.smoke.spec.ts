@@ -34,8 +34,8 @@ test("Memory remains reachable without GitHub authorization", async ({ page }) =
   await page.goto(`/agents/${agentId}/context-tree`);
   await expect(page.getByRole("heading", { level: 1, name: "Memory" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Memory", exact: true })).toHaveAttribute("aria-current", "page");
-  await expect(page.getByRole("button", { name: "Connect Context Tree", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Create Context Tree", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Connect an existing tree", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "create a new one", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /Authorize GitHub/ })).toHaveCount(0);
   await expectAccessible(page);
   await page.setViewportSize({ width: 1440, height: 1000 });

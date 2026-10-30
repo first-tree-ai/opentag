@@ -422,6 +422,13 @@ describe("steered IM delivery recovery", () => {
         if (failure !== "session-ended") {
           expect(diagnostic).toHaveBeenCalledWith(
             failure === "offline" ? "IM_DELIVERY_RUNTIME_UNAVAILABLE" : "IM_DELIVERY_RECOVERY_FAILED",
+            {
+              phase: "recover",
+              deliveryId: fixture.rootDeliveryId,
+              agentId: fixture.agentId,
+              computerId: fixture.context.computerId,
+              attemptCount: 1,
+            },
           );
         }
         const unreported = await deliveryRows(client.database, fixture);
@@ -433,6 +440,10 @@ describe("steered IM delivery recovery", () => {
         await worker.runOnce();
         disconnected = false;
         await connect();
+        // Production resumes a parked retry through the registration hook (`onRegistered`), which a
+        // direct registry registration in this test does not carry. Without it the offline backoff
+        // would hold the custody for its full ceiling and the reconnect would not be observable.
+        await worker.notifyComputerReady(fixture.context.computerId);
         clock += 30_000;
         await worker.runOnce();
         expect((await deliveryRows(client.database, fixture)).children).toEqual(original.children);

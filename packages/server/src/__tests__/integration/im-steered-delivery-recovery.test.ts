@@ -21,7 +21,7 @@ import {
   slackWorkingTurns,
 } from "../../db/schema/index.js";
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
-import { runImDeliveryExpiry } from "../../runtime/im-delivery-janitor.js";
+import { runImDeliveryExpiry, runImDeliveryOverdueSettlement } from "../../runtime/im-delivery-janitor.js";
 import { STEER_TARGET_ENDED_ERROR_CODE } from "../../runtime/im-delivery-recovery.js";
 import { ImDeliveryWorker } from "../../runtime/im-delivery-worker.js";
 import { PostgresRuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
@@ -604,6 +604,56 @@ describe("steered IM delivery recovery", () => {
     expect(new Set(settled.mock.calls.map(([id]) => id as string))).toEqual(
       new Set([fixture.rootDeliveryId, ...fixture.steerRequests.map((request) => request.deliveryId)]),
     );
+  });
+
+  it("refuses a current-placement settlement when the maintenance authority returned before the write", async () => {
+    const fixture = await createFixture(client.database);
+    const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });
+    await acceptAndSteer(fixture, custody);
+    await client.database
+      .update(imBindings)
+      .set({ status: "reauthorization_required", updatedAt: fixture.now })
+      .where(eq(imBindings.id, fixture.bindingId));
+
+    // Controlled interleaving: the binding comes back to life after the candidate scan returned the
+    // row and before the settlement writes it, which is the window the scan alone cannot close.
+    let reactivated = false;
+    const executeScan = client.database.execute.bind(client.database);
+    const gated = new Proxy(client.database, {
+      get(delegate, property, receiver) {
+        if (property !== "execute") return Reflect.get(delegate, property, receiver);
+        return async (...args: Parameters<typeof executeScan>) => {
+          // The sweep's first statement is the candidate scan, so reacting here lands the
+          // reactivation exactly between the scan and the settlement write.
+          const rows = await executeScan(...args);
+          if (!reactivated) {
+            reactivated = true;
+            await client.database
+              .update(imBindings)
+              .set({ status: "active", updatedAt: fixture.now })
+              .where(eq(imBindings.id, fixture.bindingId));
+          }
+          return rows;
+        };
+      },
+    }) as typeof client.database;
+    const overdue = new Date(fixture.now.getTime() + 26 * 60 * 60_000);
+
+    await runImDeliveryOverdueSettlement(gated, { clock: () => overdue, expiryBatchSize: 10 });
+
+    expect(reactivated).toBe(true);
+    const [afterSweep] = await client.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+    expect(afterSweep).toMatchObject({ reportedAt: null, turnReport: null, resultHash: null, reason: null });
+    // The owner is live again, so its report wins the row the settlement refused.
+    await expect(
+      new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now }).recordTurn(
+        turnReport(fixture, "completed"),
+        fixture.context,
+      ),
+    ).resolves.toBe("recorded");
   });
 
   it("leaves a rolled-over delivery alone while its report-acceptance window is open", async () => {

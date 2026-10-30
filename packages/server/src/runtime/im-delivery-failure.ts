@@ -347,6 +347,16 @@ function unknownTurnReport(input: {
   return { ...body, resultHash: computeTurnResultHash(body) };
 }
 
+export interface UnreportableTurnSettlement {
+  phase?: ImDeliveryDiagnosticContext["phase"];
+  /**
+   * Maintenance only: recheck the complete maintenance authority — the same Session-ended,
+   * inactive-binding, deleted-Agent and cutoff conditions that selected the row — inside the report
+   * transaction, so a reactivated authority cannot lose to the synthetic report.
+   */
+  requireAbsentAuthority?: boolean;
+}
+
 /**
  * Settle accepted custody whose report can no longer arrive, on a placement generation that is
  * still current, exactly as the Cloud owner settles an unreportable accepted Turn: an `unknown`
@@ -366,7 +376,7 @@ export async function settleUnreportableTurn(
     agent: typeof agents.$inferSelect;
     computer: typeof computers.$inferSelect;
   },
-  phase: ImDeliveryDiagnosticContext["phase"] = "recover",
+  options: UnreportableTurnSettlement = {},
 ): Promise<boolean> {
   const ownerInstanceId = row.delivery.reportOwnerInstanceId;
   if (!ownerInstanceId) return false;
@@ -377,15 +387,19 @@ export async function settleUnreportableTurn(
     placementGeneration: row.placement.generation,
   });
   if (!report) return false;
-  const status = await deps.custody.recordTurn(report, {
-    computerId: row.computer.id,
-    installationId: row.computer.currentInstallationId,
-    instanceId: ownerInstanceId,
-    signal: new AbortController().signal,
-  });
+  const status = await deps.custody.recordTurn(
+    report,
+    {
+      computerId: row.computer.id,
+      installationId: row.computer.currentInstallationId,
+      instanceId: ownerInstanceId,
+      signal: new AbortController().signal,
+    },
+    { ...(options.requireAbsentAuthority ? { requireAbsentAuthority: true } : {}) },
+  );
   if (status !== "recorded" && status !== "already_recorded") return false;
   deps.onDiagnostic("IM_DELIVERY_TURN_STATE_UNKNOWN", {
-    phase,
+    phase: options.phase ?? "recover",
     deliveryId: row.delivery.id,
     agentId: row.agent.id,
     computerId: row.computer.id,

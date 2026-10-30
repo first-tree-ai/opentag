@@ -6,7 +6,7 @@ import type {
   TurnReportRequest,
   TurnReportResult,
 } from "@opentag/shared";
-import { and, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
 import {
   agents,
@@ -22,6 +22,7 @@ import { finishSlackWorkingTurn } from "../services/im/slack-working-store.js";
 import { SessionService } from "../services/sessions/session-service.js";
 import { releaseImBatch, reserveImBatch, settleImBatch } from "./im-delivery-batch.js";
 import { lockSteeredRecoverySessions, requeueSteeredDeliveries, type SessionEnsurer } from "./im-delivery-recovery.js";
+import { ACCEPTED_REPORT_WINDOW_MS } from "./im-delivery-retry.js";
 import type { RuntimeCustodyStoreDispatchRelease } from "./runtime-custody-store.types.js";
 import type { RuntimeBusinessContext } from "./runtime-session.js";
 
@@ -106,12 +107,23 @@ export interface RuntimeCustodyStore extends RuntimeCustodyStoreDispatchRelease 
   recordTurn(
     report: TurnReportRequest,
     context: RuntimeBusinessContext,
+    options?: RecordTurnOptions,
   ): Promise<TurnReportResult["status"] | undefined>;
+}
+
+export interface RecordTurnOptions {
+  /**
+   * Maintenance only: refuse the write unless the authority that justified a synthetic report is
+   * still absent, evaluated by the same statement that writes the report. A genuine report never
+   * passes this.
+   */
+  requireAbsentAuthority?: boolean;
 }
 
 export interface TerminalReportWriteOptions {
   /** The reason a settlement records beside the report; a real report writes none. */
   reason?: string;
+  requireAbsentAuthority?: boolean;
 }
 
 interface DeliveryScope {
@@ -150,13 +162,39 @@ export async function writeTerminalReport(
       lastErrorCode: null,
       ...(options.reason ? { reason: options.reason } : {}),
     })
-    .where(eq(imMessageDeliveries.id, report.deliveryId))
+    .where(
+      and(
+        eq(imMessageDeliveries.id, report.deliveryId),
+        ...(options.requireAbsentAuthority ? [maintenanceAuthorityAbsent(now)] : []),
+      ),
+    )
     .returning({ id: imMessageDeliveries.id });
   if (!written) return undefined;
   await finishSlackWorkingTurn(transaction, report.deliveryId, now);
   if (report.outcome === "completed") return [];
   const recovered = await requeueSteeredDeliveries(transaction, report.deliveryId, now, sessions);
   return recovered.terminalizedIds;
+}
+
+/**
+ * The maintenance authorization as SQL: the Session is over, the binding is inactive, or the Agent
+ * is deleted, and the report-acceptance window has closed. Evaluating it in the same statement as
+ * the write is what keeps a reactivated authority from losing to the synthetic report.
+ */
+function maintenanceAuthorityAbsent(now: Date) {
+  const cutoff = new Date(now.getTime() - ACCEPTED_REPORT_WINDOW_MS).toISOString();
+  return sql`exists (
+    select 1
+    from ${sessions} as authority_session
+    inner join ${imBindings} as authority_binding on authority_binding.id = authority_session.im_binding_id
+    inner join ${agents} as authority_agent on authority_agent.id = authority_binding.agent_id
+    where authority_session.id = ${imMessageDeliveries.sessionId}
+      and (
+        authority_session.ended_at is not null
+        or authority_binding.status <> 'active'
+        or authority_agent.status = 'deleted'
+      )
+  ) and ${imMessageDeliveries.acceptedAt} <= ${cutoff}::timestamptz`;
 }
 
 export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
@@ -546,6 +584,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
   async recordTurn(
     report: TurnReportRequest,
     context: RuntimeBusinessContext,
+    options: RecordTurnOptions = {},
   ): Promise<TurnReportResult["status"] | undefined> {
     const terminalizedIds: string[] = [];
     const status = await this.#database.transaction(async (transaction) => {
@@ -557,7 +596,9 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       const replay = recordedReportStatus(scope.delivery, report);
       if (replay) return replay;
       if (!recordTurnFenceMatches(scope, context, report)) return undefined;
-      const terminalized = await writeTerminalReport(transaction, report, this.#now(), this.#sessions);
+      const terminalized = await writeTerminalReport(transaction, report, this.#now(), this.#sessions, {
+        ...(options.requireAbsentAuthority ? { requireAbsentAuthority: true } : {}),
+      });
       if (!terminalized) return "conflict";
       terminalizedIds.push(...terminalized);
       return "recorded" as const;

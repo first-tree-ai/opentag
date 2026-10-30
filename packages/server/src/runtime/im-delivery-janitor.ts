@@ -101,15 +101,15 @@ export async function runImDeliverySteerRecovery(
 }
 
 /**
- * Settle accepted custody whose report-acceptance window has closed and whose authority chain the
- * work paths can no longer reach: an ended Session, an inactive binding, or a deleted Agent. Those
- * rows are outside `#recover`'s query and outside the selector, so nothing else would ever settle
- * them and they would be retried — or simply strand — for the retention lifetime.
+ * Settle accepted custody whose report-acceptance window has closed and that the work paths can no
+ * longer reach: an ended Session, an inactive binding, a deleted Agent, or a placement generation
+ * that was superseded. Such rows are outside `#recover`'s query, outside the selector, or behind a
+ * custody fence a report can no longer satisfy, so nothing else moves them.
  *
- * The fence is deliberately narrow: the row must be provably past the window (`accepted_at` older
- * than the platform maximum runtime plus its grace), unclaimed, and on a placement generation that
- * still matches, so the settlement goes through the same custody fence as a real report. A superseded
- * placement generation is out of reach here — see the proposal recorded for the placement rollover.
+ * The fences are deliberately narrow: the row must be provably past the window (`accepted_at` older
+ * than the platform maximum runtime plus its grace) and unclaimed, and the settlement rechecks its
+ * own authorization — the maintenance authority for a current generation, the superseded generation
+ * for a rollover — inside the transaction that writes the report.
  */
 export async function runImDeliveryOverdueSettlement(
   database: DatabaseClient,
@@ -164,9 +164,17 @@ export async function runImDeliveryOverdueSettlement(
       .where(eq(imMessageDeliveries.id, candidate.id))
       .limit(1);
     if (!row) continue;
+    /*
+     * Both branches recheck the complete maintenance authority inside the transaction that writes the
+     * report: the current-generation branch through `recordTurn`'s write predicate, the superseded
+     * branch under its own row lock. A binding reactivated after the scan therefore wins.
+     */
     const placementCurrent = row.delivery.placementGeneration === row.placement.generation;
     const settled = placementCurrent
-      ? await settleUnreportableTurn({ custody, onDiagnostic }, row, "maintenance")
+      ? await settleUnreportableTurn({ custody, onDiagnostic }, row, {
+          phase: "maintenance",
+          requireAbsentAuthority: true,
+        })
       : await settleSupersededPlacement(
           { database, now: () => now.getTime(), onDiagnostic, sessions: sessionService, onDeliverySettled },
           row.delivery.id,

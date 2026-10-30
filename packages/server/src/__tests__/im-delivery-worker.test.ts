@@ -2420,7 +2420,14 @@ describe("ImDeliveryWorker database workflow", () => {
     expect(delays).toEqual([...delays].sort((left, right) => left - right));
     expect(delays[0]).toBeLessThan(delays.at(-1) as number);
     expect(domain.requestReconcile).not.toHaveBeenCalled();
-    expect(diagnosticCodes(diagnostic)).toEqual(["IM_DELIVERY_RUNTIME_UNAVAILABLE"]);
+    // AC3: the recovery-path diagnostic names the delivery, Agent, Computer, attempt, and phase.
+    expect(diagnostic).toHaveBeenCalledExactlyOnceWith("IM_DELIVERY_RUNTIME_UNAVAILABLE", {
+      phase: "recover",
+      deliveryId: fixture.deliveryId,
+      agentId: fixture.agentId,
+      computerId: fixture.computerId,
+      attemptCount: 1,
+    });
 
     // Past the report-acceptance cutoff the owed custody settles once as unknown, never replayed.
     now = clock + 25 * 60 * 60_000;

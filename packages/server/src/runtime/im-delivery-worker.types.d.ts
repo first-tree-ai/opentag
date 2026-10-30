@@ -13,27 +13,64 @@ export interface RuntimeDeliveryWorkerMetric {
   agentId?: string;
 }
 
+/** Which worker operation recorded a per-delivery diagnostic. */
+export type ImDeliveryFailurePhase = "claim" | "deliver" | "steer" | "recover";
+
+/**
+ * Structured context for one Server diagnostic. Durable identifiers and counters only: no message
+ * body, prompt, credential, or provider payload ever enters a diagnostic. A declared type alias (not
+ * an interface) so it is directly assignable to the reporter's generic log context.
+ */
+export type ImDeliveryDiagnosticContext = {
+  phase: ImDeliveryFailurePhase | "worker" | "maintenance";
+  deliveryId?: string;
+  agentId?: string;
+  computerId?: string;
+  attemptCount?: number;
+};
+
+export type ImDeliveryDiagnosticReporter = (code: string, context?: ImDeliveryDiagnosticContext) => void;
+
+/** One claimed delivery attempt: the identity every retry decision and diagnostic is attributed to. */
+export interface DeliveryAttempt {
+  deliveryId: string;
+  agentId: string;
+  computerId: string;
+  /** Post-claim attempt number, i.e. `im_message_deliveries.attempt_count` at failure time. */
+  attemptCount: number;
+  phase: ImDeliveryFailurePhase;
+  claimToken?: string;
+  /** Placement Computer silence, set only where the runtime was found absent. */
+  offlineMs?: number;
+  /**
+   * The durable failure code this attempt replaced. A repeat of the same code is not a new signal,
+   * so it does not produce another ERROR line.
+   */
+  previousErrorCode?: string | null;
+}
+
+type WorkerClaimIdentity = {
+  id: string;
+  agentId: string;
+  computerId: string;
+  /** Post-claim attempt number, so a timeout is attributed without re-reading the row. */
+  attemptCount: number;
+  /** The row's failure code before this claim replaced it with the claim marker. */
+  previousErrorCode: string | null;
+  /** In-process scheduler lane: the delivery's occupancy scope (Agent for Local, Session for Cloud). */
+  laneKey: string;
+  queuedAt: number;
+};
+
 export type WorkerClaim =
-  | {
-      id: string;
-      agentId: string;
-      /** In-process scheduler lane: the delivery's occupancy scope (Agent for Local, Session for Cloud). */
-      laneKey: string;
-      queuedAt: number;
-      kind: "pending";
-      claimToken: string;
-    }
-  | {
-      id: string;
-      agentId: string;
-      laneKey: string;
-      queuedAt: number;
+  | (WorkerClaimIdentity & { kind: "pending"; claimToken: string })
+  | (WorkerClaimIdentity & {
       kind: "steer";
       claimToken: string;
       rootDeliveryId: string;
       expectedTurnId: string;
-    }
-  | { id: string; agentId: string; laneKey: string; queuedAt: number; kind: "recovery" };
+    })
+  | (WorkerClaimIdentity & { kind: "recovery" });
 
 /** A narrowly injected Cloud sandbox allocation port so real Cloud API seams stay outside the worker. */
 export interface CloudSessionAllocationPort {
@@ -83,7 +120,7 @@ export interface ImDeliveryWorkerInput {
   claimRenewMs?: number;
   afterClaimRowLocked?: () => Promise<void>;
   beforeDeliveryAdmission?: (signal: AbortSignal) => Promise<void>;
-  onDiagnostic?: (code: string) => void;
+  onDiagnostic?: ImDeliveryDiagnosticReporter;
   onDeliverySettled?: (deliveryId: string) => void;
   supervisor?: BackgroundFailureSupervisor;
   now?: () => Date;

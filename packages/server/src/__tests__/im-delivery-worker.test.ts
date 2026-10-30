@@ -4,10 +4,12 @@ import {
   computeLegacyDirectInputHash,
   computeRuntimeImMessageSemanticHash,
   computeRuntimeImSteerInputHash,
+  computeTurnResultHash,
   type DirectImMessageDeliveryRequest,
   RUNTIME_CAPABILITY,
   type RuntimeImSteerRequest,
   type SessionReconcileResult,
+  type TurnReportRequest,
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -52,7 +54,7 @@ describe("ImDeliveryWorker diagnostics", () => {
     worker.start();
     await expect.poll(() => diagnostic.mock.calls.length).toBe(1);
     worker.stop();
-    expect(diagnostic).toHaveBeenCalledWith("IM_DELIVERY_WORKER_SCHEDULING_FAILED");
+    expect(diagnostic).toHaveBeenCalledWith("IM_DELIVERY_WORKER_SCHEDULING_FAILED", { phase: "worker" });
     expect(JSON.stringify(diagnostic.mock.calls)).not.toContain("secret provider response");
   });
 
@@ -147,8 +149,8 @@ describe("ImDeliveryWorker database workflow", () => {
       expect(request.content.text).toContain('"file_id":"F_NATIVE"');
       expect(request.content.providerRef.provider).toBe("slack");
       expect(request.content.resources?.[0]?.filename).toBe("图😀.png");
-      expect(diagnostic).not.toHaveBeenCalledWith("IM_DELIVERY_RUNTIME_FAILED");
-      expect(diagnostic).not.toHaveBeenCalledWith("IM_DELIVERY_STEER_FAILED");
+      expect(diagnosticCodes(diagnostic)).not.toContain("IM_DELIVERY_RUNTIME_FAILED");
+      expect(diagnosticCodes(diagnostic)).not.toContain("IM_DELIVERY_STEER_FAILED");
     },
   );
 
@@ -184,7 +186,7 @@ describe("ImDeliveryWorker database workflow", () => {
     expect(domain.requestReconcile).not.toHaveBeenCalled();
     expect(domain.requestDelivery).not.toHaveBeenCalled();
     expect(assembler.assembleForSession).not.toHaveBeenCalled();
-    expect(diagnostic).toHaveBeenCalledExactlyOnceWith("IM_DELIVERY_CONTENT_INVALID");
+    expect(diagnostic).toHaveBeenCalledExactlyOnceWith("IM_DELIVERY_CONTENT_INVALID", expect.any(Object));
   });
 
   it("rejects malformed stored resource metadata before external calls without leaking its contents", async () => {
@@ -222,7 +224,7 @@ describe("ImDeliveryWorker database workflow", () => {
     await worker.runOnce();
     await worker.runOnce();
     expect(domain.requestReconcile).not.toHaveBeenCalled();
-    expect(diagnostic).toHaveBeenCalledExactlyOnceWith("IM_DELIVERY_CONTENT_INVALID");
+    expect(diagnostic).toHaveBeenCalledExactlyOnceWith("IM_DELIVERY_CONTENT_INVALID", expect.any(Object));
     expect(JSON.stringify(diagnostic.mock.calls)).not.toContain("secret");
     const [row] = await unit.database
       .select()
@@ -298,7 +300,7 @@ describe("ImDeliveryWorker database workflow", () => {
     });
 
     await worker.runOnce();
-    expect(diagnostic).toHaveBeenCalledWith("IM_DELIVERY_AGENT_NOT_ACTIVE");
+    expect(diagnosticCodes(diagnostic)).toContain("IM_DELIVERY_AGENT_NOT_ACTIVE");
     const [row] = await unit.database
       .select({ code: imMessageDeliveries.lastErrorCode })
       .from(imMessageDeliveries)
@@ -626,7 +628,7 @@ describe("ImDeliveryWorker database workflow", () => {
       await expect(first).resolves.toBeUndefined();
       await vi.waitFor(() => expect(secondSettled).toBe(true), { timeout: 50, interval: 1 });
       expect(requestDelivery).toHaveBeenCalledTimes(2);
-      expect(diagnostic).toHaveBeenCalledWith("IM_DELIVERY_OPERATION_ABANDONED");
+      expect(diagnosticCodes(diagnostic)).toContain("IM_DELIVERY_OPERATION_ABANDONED");
       worker.stop();
     } finally {
       vi.useRealTimers();
@@ -803,7 +805,13 @@ describe("ImDeliveryWorker database workflow", () => {
       onDiagnostic: absentDiagnostic,
     });
     await absentWorker.runOnce();
-    expect(absentDiagnostic).toHaveBeenCalledWith("IM_DELIVERY_RUNTIME_UNAVAILABLE");
+    expect(absentDiagnostic).toHaveBeenCalledWith("IM_DELIVERY_RUNTIME_UNAVAILABLE", {
+      phase: "deliver",
+      deliveryId: absent.deliveryId,
+      agentId: absent.agentId,
+      computerId: absent.computerId,
+      attemptCount: 1,
+    });
 
     const stale = await workerFixture(unit);
     await unit.database
@@ -850,7 +858,7 @@ describe("ImDeliveryWorker database workflow", () => {
       registry: malformed.registry,
       onDiagnostic: malformedDiagnostic,
     }).runOnce();
-    expect(malformedDiagnostic).toHaveBeenCalledWith("IM_DELIVERY_DISPATCH_PAYLOAD_INVALID");
+    expect(diagnosticCodes(malformedDiagnostic)).toContain("IM_DELIVERY_DISPATCH_PAYLOAD_INVALID");
 
     const terminal = await workerFixture(unit);
     const terminalRequest = { ...terminal.request, requestId: randomUUID() };
@@ -907,7 +915,7 @@ describe("ImDeliveryWorker database workflow", () => {
       .from(imMessageDeliveries)
       .where(eq(imMessageDeliveries.id, fixture.deliveryId));
     expect(row).toMatchObject({ dispatchRequestId: null, code: "IM_DELIVERY_EXPIRED" });
-    expect(diagnostic).toHaveBeenCalledWith("IM_DELIVERY_EXPIRED");
+    expect(diagnosticCodes(diagnostic)).toContain("IM_DELIVERY_EXPIRED");
   });
 
   it.each([
@@ -980,7 +988,7 @@ describe("ImDeliveryWorker database workflow", () => {
         expect(domain.requestReconcile).not.toHaveBeenCalled();
       }
       if (scenario.endsWith("tampered"))
-        expect(diagnostic).toHaveBeenCalledWith("IM_DELIVERY_RECOVERY_PAYLOAD_INVALID");
+        expect(diagnosticCodes(diagnostic)).toContain("IM_DELIVERY_RECOVERY_PAYLOAD_INVALID");
     },
   );
 
@@ -1062,9 +1070,10 @@ describe("ImDeliveryWorker database workflow", () => {
           .where(eq(imMessageDeliveries.id, seeded.deliveryId));
         expect(afterJanitor).toEqual(child);
       }
-      if (abnormal) expect(diagnostic).toHaveBeenCalledTimes(6);
+      // One ERROR line per failure run, never one per attempt, however long the deferral lasts.
+      if (abnormal) expect(diagnostic).toHaveBeenCalledTimes(1);
       else expect(diagnostic).not.toHaveBeenCalled();
-      if (abnormal) expect(diagnostic).toHaveBeenCalledWith(code);
+      if (abnormal) expect(diagnosticCodes(diagnostic)).toContain(code);
       expect(domain.requestDelivery).not.toHaveBeenCalled();
       expect(domain.requestSteer).not.toHaveBeenCalled();
     },
@@ -1186,7 +1195,7 @@ describe("ImDeliveryWorker database workflow", () => {
       registry: legacy.registry,
       onDiagnostic: legacyDiagnostic,
     }).runOnce();
-    expect(legacyDiagnostic).not.toHaveBeenCalledWith("IM_DELIVERY_RECOVERY_LEGACY_SNAPSHOT_FALLBACK");
+    expect(diagnosticCodes(legacyDiagnostic)).not.toContain("IM_DELIVERY_RECOVERY_LEGACY_SNAPSHOT_FALLBACK");
     expect(legacyAssembler).not.toHaveBeenCalled();
 
     const invalid = await workerFixture(unit);
@@ -1211,7 +1220,7 @@ describe("ImDeliveryWorker database workflow", () => {
       registry: invalid.registry,
       onDiagnostic: invalidDiagnostic,
     }).runOnce();
-    expect(invalidDiagnostic).toHaveBeenCalledWith("IM_DELIVERY_RECOVERY_PAYLOAD_INVALID");
+    expect(diagnosticCodes(invalidDiagnostic)).toContain("IM_DELIVERY_RECOVERY_PAYLOAD_INVALID");
 
     const failed = await workerFixture(unit);
     await unit.database
@@ -1232,7 +1241,7 @@ describe("ImDeliveryWorker database workflow", () => {
       registry: failed.registry,
       onDiagnostic: failureDiagnostic,
     }).runOnce();
-    expect(failureDiagnostic).toHaveBeenCalledWith("IM_DELIVERY_RECOVERY_FAILED");
+    expect(diagnosticCodes(failureDiagnostic)).toContain("IM_DELIVERY_RECOVERY_FAILED");
   });
 
   it("turns assembler failures into terminal rejection or retry diagnostics", async () => {
@@ -1258,7 +1267,7 @@ describe("ImDeliveryWorker database workflow", () => {
           .where(eq(imMessageDeliveries.id, fixture.deliveryId));
         expect(row?.state).toBe("terminal_rejected");
       } else {
-        expect(diagnostic).toHaveBeenCalledWith(expected);
+        expect(diagnosticCodes(diagnostic)).toContain(expected);
       }
     }
   });
@@ -1467,7 +1476,8 @@ describe("ImDeliveryWorker database workflow", () => {
 
       worker.start();
       await vi.advanceTimersByTimeAsync(10);
-      expect(maintenanceExecute).toHaveBeenCalledTimes(2);
+      // One expiry pass: steer recovery, the overdue-custody sweep, and the bounded TTL expiry.
+      expect(maintenanceExecute).toHaveBeenCalledTimes(3);
       expect(database.transaction).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(10);
@@ -2046,12 +2056,13 @@ describe("ImDeliveryWorker database workflow", () => {
     expect(failedEvents).toContain("IM_DELIVERY_RUNTIME_FAILED");
   });
 
-  it("backs off rejected reconciles exponentially up to a cap while not-ready keeps the fixed retry", async () => {
+  it("backs off every failed reconcile exponentially up to the cap, never at a fixed interval", async () => {
     const cases = [
       { reconcileStatus: "rejected", priorAttempts: 0, delayMs: 2_000 },
       { reconcileStatus: "rejected", priorAttempts: 2, delayMs: 8_000 },
       { reconcileStatus: "rejected", priorAttempts: 50, delayMs: 30_000 },
-      { reconcileStatus: "busy", priorAttempts: 50, delayMs: 2_000 },
+      { reconcileStatus: "busy", priorAttempts: 0, delayMs: 2_000 },
+      { reconcileStatus: "busy", priorAttempts: 50, delayMs: 30_000 },
     ] as const;
     for (const { reconcileStatus, priorAttempts, delayMs } of cases) {
       await unit.reset();
@@ -2323,6 +2334,496 @@ describe("ImDeliveryWorker database workflow", () => {
       await worker.stop();
     },
   );
+
+  it("retries an always-timing-out delivery a bounded number of times, then settles it once", async () => {
+    vi.useFakeTimers({ now: new Date("2026-09-01T00:00:00.000Z") });
+    try {
+      const fixture = await workerFixture(unit);
+      const diagnostic = vi.fn();
+      const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, { deliveryHang: true });
+      const worker = new ImDeliveryWorker({
+        database: unit.database,
+        domain: domain as never,
+        assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+        registry: fixture.registry,
+        operationTimeoutMs: 100,
+        onDiagnostic: diagnostic,
+      });
+      // One more iteration than the cap proves the settled row is never claimed again.
+      for (let attempt = 0; attempt < 12; attempt += 1) {
+        const running = worker.runOnce();
+        await vi.advanceTimersByTimeAsync(1_100);
+        await running;
+        await vi.advanceTimersByTimeAsync(31_000);
+      }
+      const [row] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      expect(row).toMatchObject({
+        state: "terminal_rejected",
+        reason: "retry_exhausted",
+        lastErrorCode: "IM_DELIVERY_TERMINAL",
+        dispatchRequestId: null,
+      });
+      expect(domain.requestDelivery).toHaveBeenCalledTimes(8);
+      const codes = diagnosticCodes(diagnostic);
+      // One line per failure run plus the single terminal line, however many attempts it took.
+      expect(codes.filter((code) => code === "IM_DELIVERY_OPERATION_TIMEOUT")).toHaveLength(1);
+      expect(codes.filter((code) => code === "IM_DELIVERY_RETRY_EXHAUSTED")).toHaveLength(1);
+      expect(codes.filter((code) => code === "IM_DELIVERY_OPERATION_LATE_SETTLE").length).toBeLessThanOrEqual(8);
+      expect(codes).toHaveLength(codes.filter((code) => code.startsWith("IM_DELIVERY_")).length);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("parks a correlated timed-out dispatch so a late acceptance can still record its Turn", async () => {
+    const fixture = await workerFixture(unit);
+    const custody = new PostgresRuntimeCustodyStore(unit.database);
+    const clock = Date.now();
+    // The input is already at the cap: seven consecutive timeouts with one attempt to go.
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        attemptCount: 7,
+        lastErrorCode: "IM_DELIVERY_OPERATION_TIMEOUT_7",
+        nextAttemptAt: new Date(clock - 1),
+      })
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    // A dispatch that reached the Client: the correlation is persisted before the frame leaves, and
+    // the Client answers `accepted` only after the deadline and its grace.
+    let correlated = false;
+    const requestDelivery = vi.fn(
+      async (
+        _computerId: string,
+        _instanceId: string,
+        request: DirectImMessageDeliveryRequest,
+        onDispatched?: () => void,
+      ) => {
+        onDispatched?.();
+        const hash = computeDirectInputHash(request);
+        const dispatch = await custody.beginDeliveryDispatch(request, hash, {
+          computerId: fixture.computerId,
+          instanceId: fixture.instanceId,
+        });
+        expect(dispatch).toBe("dispatched");
+        correlated = true;
+        await new Promise<void>((resolve) => setTimeout(resolve, 1_400));
+        await custody.acceptDelivery(request, hash, "turn-late", {
+          computerId: fixture.computerId,
+          installationId: randomUUID(),
+          instanceId: fixture.instanceId,
+          signal: new AbortController().signal,
+        });
+        return {
+          type: "im:deliver:result" as const,
+          requestId: request.requestId,
+          deliveryId: request.deliveryId,
+          sessionId: request.sessionId,
+          placementGeneration: request.placementGeneration,
+          status: "accepted" as const,
+          turnId: "turn-late",
+        };
+      },
+    );
+    const diagnostic = vi.fn();
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: {
+        requestReconcile: vi.fn(
+          async (_computerId: string, _instanceId: string, request: unknown, onDispatched?: () => void) => {
+            onDispatched?.();
+            return {
+              type: "session:reconcile:result" as const,
+              requestId: (request as { requestId: string }).requestId,
+              sessionId: fixture.sessionId,
+              placementGeneration: 1,
+              status: "ready" as const,
+            };
+          },
+        ),
+        requestDelivery,
+      } as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+      registry: fixture.registry,
+      operationTimeoutMs: 40,
+      onDiagnostic: diagnostic,
+    });
+
+    const running = worker.runOnce();
+    await vi.waitFor(() => expect(correlated).toBe(true), { timeout: 2_000, interval: 10 });
+    // The deadline passes with a correlated dispatch, so the row is parked rather than rejected: it
+    // stays pending with its correlation, the Turn may still execute and report, and a terminal row
+    // would make that report unrecordable.
+    await running;
+    const [inFlight] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    expect(inFlight).toMatchObject({
+      state: "pending",
+      lastErrorCode: "IM_DELIVERY_PARKED",
+      reason: null,
+      reportedAt: null,
+      turnReport: null,
+      resultHash: null,
+    });
+    expect(inFlight?.dispatchRequestId).not.toBeNull();
+    expect(inFlight?.nextAttemptAt).toEqual(inFlight?.expiresAt);
+    expect(diagnosticCodes(diagnostic)).not.toContain("IM_DELIVERY_RETRY_EXHAUSTED");
+    expect(diagnosticCodes(diagnostic).filter((code) => code === "IM_DELIVERY_DISPATCH_PARKED")).toHaveLength(1);
+
+    // The late acceptance lands after the grace and keeps its custody.
+    await vi.waitFor(
+      async () => {
+        const [row] = await unit.database
+          .select()
+          .from(imMessageDeliveries)
+          .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+        expect(row).toMatchObject({ state: "accepted", turnId: "turn-late" });
+      },
+      { timeout: 3_000, interval: 25 },
+    );
+    // The executed Turn can still record its report.
+    await expect(
+      custody.recordTurn(completedReport(fixture.deliveryId, "turn-late", fixture.sessionId, fixture.agentId), {
+        computerId: fixture.computerId,
+        installationId: randomUUID(),
+        instanceId: fixture.instanceId,
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toBe("recorded");
+    expect(diagnosticCodes(diagnostic)).not.toContain("IM_DELIVERY_RETRY_EXHAUSTED");
+  });
+
+  it("keeps the consecutive-timeout run across a dispatch release and settles on the next timeout", async () => {
+    vi.useFakeTimers({ now: new Date("2026-09-04T00:00:00.000Z") });
+    try {
+      const fixture = await workerFixture(unit);
+      const clock = Date.now();
+      const hash = computeDirectInputHash(fixture.request);
+      // One timed-out dispatch is still frozen, and the run stands at seven.
+      await unit.database
+        .update(imMessageDeliveries)
+        .set({
+          attemptCount: 7,
+          lastErrorCode: "IM_DELIVERY_OPERATION_TIMEOUT_7",
+          dispatchRequestId: fixture.request.requestId,
+          dispatchInputHash: hash,
+          dispatchPayload: fixture.request,
+          nextAttemptAt: new Date(clock - 1),
+        })
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, { deliveryHang: true });
+      const diagnostic = vi.fn();
+      const worker = new ImDeliveryWorker({
+        database: unit.database,
+        domain: domain as never,
+        assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+        registry: fixture.registry,
+        operationTimeoutMs: 100,
+        onDiagnostic: diagnostic,
+      });
+      const attempt = async () => {
+        const running = worker.runOnce();
+        await vi.advanceTimersByTimeAsync(1_100);
+        await running;
+        await vi.advanceTimersByTimeAsync(31_000);
+        const [row] = await unit.database
+          .select()
+          .from(imMessageDeliveries)
+          .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+        return row;
+      };
+
+      // The reconcile releases the unusable dispatch, and the release keeps the timeout run.
+      expect(await attempt()).toMatchObject({
+        state: "pending",
+        dispatchRequestId: null,
+        lastErrorCode: "IM_DELIVERY_OPERATION_TIMEOUT_7",
+      });
+      // The next attempt spends the eighth budget and settles.
+      expect(await attempt()).toMatchObject({ state: "terminal_rejected", reason: "retry_exhausted" });
+      expect(diagnosticCodes(diagnostic)).toContain("IM_DELIVERY_RETRY_EXHAUSTED");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("counts consecutive operation timeouts instead of claims before it settles a delivery", async () => {
+    vi.useFakeTimers({ now: new Date("2026-09-02T00:00:00.000Z") });
+    try {
+      const fixture = await workerFixture(unit);
+      // Seven unrelated failures already spent the attempt counter; none of them was a timeout.
+      await unit.database
+        .update(imMessageDeliveries)
+        .set({
+          attemptCount: 7,
+          lastErrorCode: "IM_DELIVERY_CLOUD_CAPACITY_WAITING",
+          nextAttemptAt: new Date(Date.now() - 1),
+        })
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, { deliveryHang: true });
+      const diagnostic = vi.fn();
+      const worker = new ImDeliveryWorker({
+        database: unit.database,
+        domain: domain as never,
+        assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+        registry: fixture.registry,
+        operationTimeoutMs: 100,
+        onDiagnostic: diagnostic,
+      });
+      const attempt = async () => {
+        const running = worker.runOnce();
+        await vi.advanceTimersByTimeAsync(1_100);
+        await running;
+        await vi.advanceTimersByTimeAsync(31_000);
+        const [row] = await unit.database
+          .select({ state: imMessageDeliveries.state, code: imMessageDeliveries.lastErrorCode })
+          .from(imMessageDeliveries)
+          .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+        return row;
+      };
+
+      // The first timeout of this delivery is not the eighth consecutive timeout.
+      expect(await attempt()).toMatchObject({
+        state: "pending",
+        code: "IM_DELIVERY_OPERATION_TIMEOUT",
+      });
+      // The streak is durable and keeps counting, and the diagnostic stays canonical.
+      expect(await attempt()).toMatchObject({
+        state: "pending",
+        code: "IM_DELIVERY_OPERATION_TIMEOUT_2",
+      });
+      for (let rest = 0; rest < 4; rest += 1) await attempt();
+      expect(await attempt()).toMatchObject({
+        state: "pending",
+        code: "IM_DELIVERY_OPERATION_TIMEOUT_7",
+      });
+      expect(await attempt()).toMatchObject({
+        state: "terminal_rejected",
+      });
+      const [settled] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      expect(settled).toMatchObject({
+        state: "terminal_rejected",
+        reason: "retry_exhausted",
+        lastErrorCode: "IM_DELIVERY_TERMINAL",
+      });
+      expect(domain.requestDelivery).toHaveBeenCalledTimes(8);
+      expect(diagnosticCodes(diagnostic).filter((code) => code === "IM_DELIVERY_OPERATION_TIMEOUT")).toHaveLength(1);
+      expect(diagnosticCodes(diagnostic).filter((code) => code === "IM_DELIVERY_RETRY_EXHAUSTED")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("backs off a permanently absent runtime and settles the owed Turn when no report can be truthful", async () => {
+    const fixture = await workerFixture(unit);
+    const clock = Date.now();
+    await unit.database
+      .update(computers)
+      .set({ currentInstanceId: null, lastSeenAt: new Date(clock - 3 * 60 * 60_000) })
+      .where(eq(computers.id, fixture.computerId));
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        state: "accepted",
+        inputHash: "frozen-hash",
+        turnId: "turn-offline",
+        reportOwnerInstanceId: fixture.instanceId,
+        acceptedAt: new Date(clock),
+        nextAttemptAt: new Date(clock - 1),
+      })
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture);
+    const diagnostic = vi.fn();
+    let now = clock;
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: domain as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+      registry: new ConnectionRegistry(),
+      now: () => new Date(now),
+      onDiagnostic: diagnostic,
+    });
+    const delays: number[] = [];
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      await worker.runOnce();
+      const [row] = await unit.database
+        .select({ nextAttemptAt: imMessageDeliveries.nextAttemptAt, lastErrorCode: imMessageDeliveries.lastErrorCode })
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      expect(row?.lastErrorCode).toBe("IM_DELIVERY_RUNTIME_UNAVAILABLE");
+      delays.push((row?.nextAttemptAt.getTime() ?? 0) - now);
+      now = row?.nextAttemptAt.getTime() ?? now;
+    }
+    // The rate falls with the silence instead of holding a fixed interval.
+    expect(delays).toEqual([...delays].sort((left, right) => left - right));
+    expect(delays[0]).toBeLessThan(delays.at(-1) as number);
+    expect(domain.requestReconcile).not.toHaveBeenCalled();
+    // AC3: the recovery-path diagnostic names the delivery, Agent, Computer, attempt, and phase.
+    expect(diagnostic).toHaveBeenCalledExactlyOnceWith("IM_DELIVERY_RUNTIME_UNAVAILABLE", {
+      phase: "recover",
+      deliveryId: fixture.deliveryId,
+      agentId: fixture.agentId,
+      computerId: fixture.computerId,
+      attemptCount: 1,
+    });
+
+    // Past the report-acceptance cutoff the owed custody settles once as unknown, never replayed.
+    now = clock + 25 * 60 * 60_000;
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(now - 1) })
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    await worker.runOnce();
+    const [settled] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    expect(settled).toMatchObject({ state: "accepted", lastErrorCode: null });
+    expect(settled?.reportedAt).not.toBeNull();
+    const report = settled?.turnReport as TurnReportRequest;
+    expect(report).toMatchObject({
+      outcome: "unknown",
+      executionEffects: "may_have_occurred",
+      errorReason: "turn_state_unknown",
+      turnId: "turn-offline",
+    });
+    expect(diagnosticCodes(diagnostic)).toContain("IM_DELIVERY_TURN_STATE_UNKNOWN");
+    now += 25 * 60 * 60_000;
+    await worker.runOnce();
+    expect(diagnosticCodes(diagnostic).filter((code) => code === "IM_DELIVERY_TURN_STATE_UNKNOWN")).toHaveLength(1);
+    expect(domain.requestReconcile).not.toHaveBeenCalled();
+  });
+
+  it("reconciles a live report owner even after the report-acceptance cutoff", async () => {
+    const fixture = await workerFixture(unit);
+    const clock = Date.now();
+    // Past `accepted_at + platform maximum runtime + grace`, but the owner is live and current.
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        state: "accepted",
+        inputHash: "frozen-hash",
+        turnId: "turn-live",
+        reportOwnerInstanceId: fixture.instanceId,
+        acceptedAt: new Date(clock - 25 * 60 * 60_000 - 1),
+        nextAttemptAt: new Date(clock - 1),
+      })
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, { reconcileStatus: "busy" });
+    const diagnostic = vi.fn();
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: domain as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+      registry: fixture.registry,
+      now: () => new Date(clock),
+      onDiagnostic: diagnostic,
+    });
+
+    await worker.runOnce();
+
+    expect(domain.requestReconcile).toHaveBeenCalledTimes(1);
+    const [row] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    expect(row).toMatchObject({
+      state: "accepted",
+      reportedAt: null,
+      lastErrorCode: "IM_DELIVERY_RECOVERY_BUSY",
+    });
+    expect(diagnosticCodes(diagnostic)).not.toContain("IM_DELIVERY_TURN_STATE_UNKNOWN");
+  });
+
+  it("settles an absent report owner that is past the cutoff", async () => {
+    const fixture = await workerFixture(unit);
+    const clock = Date.now();
+    await unit.database
+      .update(computers)
+      .set({ currentInstanceId: null, lastSeenAt: new Date(clock - 60_000) })
+      .where(eq(computers.id, fixture.computerId));
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        state: "accepted",
+        inputHash: "frozen-hash",
+        turnId: "turn-absent",
+        reportOwnerInstanceId: fixture.instanceId,
+        acceptedAt: new Date(clock - 25 * 60 * 60_000 - 1),
+        nextAttemptAt: new Date(clock - 1),
+      })
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture);
+    const diagnostic = vi.fn();
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: domain as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+      registry: new ConnectionRegistry(),
+      now: () => new Date(clock),
+      onDiagnostic: diagnostic,
+    });
+
+    await worker.runOnce();
+
+    expect(domain.requestReconcile).not.toHaveBeenCalled();
+    const [row] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    expect(row?.reportedAt).not.toBeNull();
+    expect(row?.turnReport as TurnReportRequest).toMatchObject({
+      outcome: "unknown",
+      executionEffects: "may_have_occurred",
+      errorReason: "turn_state_unknown",
+    });
+    expect(diagnosticCodes(diagnostic)).toEqual(["IM_DELIVERY_TURN_STATE_UNKNOWN"]);
+  });
+
+  it("makes offline-parked retries due again when the placement Computer registers", async () => {
+    const fixture = await workerFixture(unit);
+    const clock = Date.now();
+    const park = async (nextAttemptAt: Date) => {
+      await unit.database
+        .update(imMessageDeliveries)
+        .set({ nextAttemptAt, lastErrorCode: "IM_DELIVERY_RUNTIME_UNAVAILABLE" })
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    };
+    const readDue = async () => {
+      const [row] = await unit.database
+        .select({ nextAttemptAt: imMessageDeliveries.nextAttemptAt })
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      return row?.nextAttemptAt.getTime() ?? 0;
+    };
+    const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture);
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: domain as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+      registry: fixture.registry,
+      now: () => new Date(clock),
+    });
+
+    await park(new Date(clock + 20 * 60_000));
+    await worker.notifyComputerReady(fixture.computerId);
+    expect(await readDue()).toBeLessThanOrEqual(clock + 1_000);
+    await worker.runOnce();
+    expect(domain.requestDelivery).toHaveBeenCalledTimes(1);
+
+    // A row that the schedule already retried soon stays parked: a reconnecting client cannot
+    // turn the offline backoff into a hot retry.
+    await park(new Date(clock + 30_000));
+    await worker.notifyComputerReady(fixture.computerId);
+    expect(await readDue()).toBe(clock + 30_000);
+  });
 });
 
 async function workerFixture(unit: UnitDatabase) {
@@ -2745,4 +3246,24 @@ function fakeDomain(
       },
     ),
   };
+}
+
+/** The diagnostic codes a reporter emitted, so a context assertion cannot hide a missing or extra code. */
+function diagnosticCodes(reporter: { mock: { calls: unknown[][] } }): string[] {
+  return reporter.mock.calls.map(([code]) => code as string);
+}
+
+/** A completed Turn Report for one delivery, hashed the way the Server checks it. */
+function completedReport(deliveryId: string, turnId: string, sessionId: string, agentId: string): TurnReportRequest {
+  const body = {
+    deliveryId,
+    turnId,
+    sessionId,
+    agentId,
+    placementGeneration: 1,
+    outcome: "completed" as const,
+    executionEffects: "completed" as const,
+    traceSummary: { lastSequence: 0, droppedEvents: 0 },
+  };
+  return { type: "turn:report", requestId: randomUUID(), ...body, resultHash: computeTurnResultHash(body) };
 }

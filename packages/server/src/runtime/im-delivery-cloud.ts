@@ -30,8 +30,13 @@ import { loadSandboxRecordBySessionId } from "../services/sandboxes/owned-sandbo
 import { appendPendingImBatch } from "./im-delivery-batch.js";
 import { ImDeliveryInputError, validateFreshImRequest } from "./im-delivery-content.js";
 import type { DeliveryOccupancySubject } from "./im-delivery-custody.js";
+import type { DeliveryFailureOptions } from "./im-delivery-failure.js";
 import { cappedRetryDelayMs } from "./im-delivery-retry.js";
-import type { CloudSessionAllocationPort } from "./im-delivery-worker.types.js";
+import type {
+  CloudSessionAllocationPort,
+  DeliveryAttempt,
+  ImDeliveryDiagnosticReporter,
+} from "./im-delivery-worker.types.js";
 
 /**
  * Cohesive E4 Cloud admission/allocation/recovery for the IM delivery worker. Kept out of the
@@ -42,6 +47,17 @@ import type { CloudSessionAllocationPort } from "./im-delivery-worker.types.js";
 
 export const STOPPED_CLOUD_RECONCILE_BATCH = 25;
 export const STOPPED_CLOUD_RECONCILE_INTERVAL_MS = 30_000;
+
+/** A stopped Cloud row keeps its identity in every diagnostic it reports. */
+function stoppedRowContext(row: { id: string; agentId: string; computerId: string; attemptCount: number }) {
+  return {
+    phase: "deliver" as const,
+    deliveryId: row.id,
+    agentId: row.agentId,
+    computerId: row.computerId,
+    attemptCount: row.attemptCount,
+  };
+}
 
 export type CloudDeliveryClaimRow = {
   delivery: typeof imMessageDeliveries.$inferSelect;
@@ -69,13 +85,12 @@ export interface CloudDeliveryCoordinatorOptions {
   cloudDelivery?: CloudDeliveryOwner;
   cloudAllocation?: CloudSessionAllocationPort;
   now: () => number;
-  onDiagnostic: (code: string) => void;
+  onDiagnostic: ImDeliveryDiagnosticReporter;
   beforeDeliveryAdmission?: (signal: AbortSignal) => Promise<void>;
   assembleRuntime: (
-    deliveryId: string,
+    attempt: DeliveryAttempt,
     sessionId: string,
     mode: "delivery" | "recovery",
-    claimToken?: string,
   ) => Promise<EffectiveRuntimeSnapshot | undefined>;
   replyRole: (
     messageId: string,
@@ -91,8 +106,8 @@ export interface CloudDeliveryCoordinatorOptions {
   }) => Promise<RuntimeImDeliveryContent>;
   /** Occupancy recheck at the last boundary: a competing owner of the delivery's scope. */
   hasOtherCustody: (subject: DeliveryOccupancySubject) => Promise<boolean>;
-  recordFailure: (deliveryId: string, code: string, claimToken?: string, retryDelayMs?: number) => Promise<void>;
-  releaseDispatch: (deliveryId: string, requestId: string, code: string, claimToken: string) => Promise<void>;
+  recordFailure: (attempt: DeliveryAttempt, code: string, options?: DeliveryFailureOptions) => Promise<void>;
+  releaseDispatch: (attempt: DeliveryAttempt, requestId: string, code: string) => Promise<void>;
   rejectInput: (deliveryId: string, reason: string, claimToken?: string) => Promise<void>;
   withActiveAgentAdmission: ActiveAgentAdmission;
 }
@@ -105,24 +120,23 @@ export class CloudDeliveryCoordinator {
   }
 
   /** One claimed Cloud delivery: validate/refresh the dispatch and send it through the owner. */
-  async deliver(row: CloudDeliveryClaimRow, claimToken: string, lease: CloudClaimLease, signal: AbortSignal) {
-    const deliveryId = row.delivery.id;
+  async deliver(row: CloudDeliveryClaimRow, attempt: DeliveryAttempt, lease: CloudClaimLease, signal: AbortSignal) {
     // Release a stale/expired dispatch FIRST: a dispatched row is outside the janitor's TTL bound,
     // so this is the only path back to the bounded deadline, and it must not depend on the model
     // path being configured.
     if (!(await lease.assertOwned())) return;
-    if (await this.#releaseUnusableDispatch(row, deliveryId, claimToken)) return;
-    const prepared = await this.#prepareDispatch(row, claimToken);
+    if (await this.#releaseUnusableDispatch(row, attempt)) return;
+    const prepared = await this.#prepareDispatch(row, attempt);
     if (prepared.kind !== "continue") return;
     if (
       await this.#options.hasOtherCustody({
-        deliveryId,
+        deliveryId: attempt.deliveryId,
         agentId: row.agent.id,
         sessionId: row.session.id,
         computerKind: row.computer.kind,
       })
     ) {
-      await this.#options.recordFailure(deliveryId, "IM_DELIVERY_AGENT_CUSTODY_FENCED", claimToken);
+      await this.#options.recordFailure(attempt, "IM_DELIVERY_AGENT_CUSTODY_FENCED");
       return;
     }
     if (!(await lease.assertOwned())) return;
@@ -130,13 +144,13 @@ export class CloudDeliveryCoordinator {
       const built =
         prepared.persistedRequest ?? (await this.#buildFreshDispatch(row, prepared.replyRole, prepared.runtime));
       if (!(await lease.assertOwned())) return;
-      if (!(await this.#ensureEnvironment(deliveryId, row, claimToken))) return;
+      if (!(await this.#ensureEnvironment(row, attempt))) return;
       if (!(await lease.assertOwned())) return;
       const cloudDelivery = this.#options.cloudDelivery;
       if (!cloudDelivery) return;
-      await this.#dispatchToRunner(row, cloudDelivery, built, claimToken, signal);
+      await this.#dispatchToRunner(row, cloudDelivery, built, attempt, signal);
     } catch (error) {
-      await this.#recordDispatchError(deliveryId, row.delivery.attemptCount, error, claimToken);
+      await this.#recordDispatchError(attempt, error);
     }
   }
 
@@ -146,7 +160,7 @@ export class CloudDeliveryCoordinator {
    */
   async #prepareDispatch(
     row: CloudDeliveryClaimRow,
-    claimToken: string,
+    attempt: DeliveryAttempt,
   ): Promise<
     | { kind: "stop" }
     | {
@@ -156,22 +170,16 @@ export class CloudDeliveryCoordinator {
         runtime: EffectiveRuntimeSnapshot;
       }
   > {
-    const deliveryId = row.delivery.id;
     const cloudDelivery = this.#options.cloudDelivery;
     if (!cloudDelivery) {
-      await this.#options.recordFailure(deliveryId, "IM_DELIVERY_CLOUD_UNAVAILABLE", claimToken);
+      await this.#options.recordFailure(attempt, "IM_DELIVERY_CLOUD_UNAVAILABLE");
       return { kind: "stop" };
     }
     if (!cloudDelivery.isModelPathConfigured()) {
       // Model-disabled configuration: report the transient inability instead of provisioning a
       // Cloud environment that could never execute the delivery. This is a transient dispatch
       // failure too, so it backs off with the existing attempt counter instead of a 2 s hot retry.
-      await this.#options.recordFailure(
-        deliveryId,
-        "IM_DELIVERY_CLOUD_MODEL_UNAVAILABLE",
-        claimToken,
-        cloudDispatchRetryDelayMs(row.delivery.attemptCount),
-      );
+      await this.#options.recordFailure(attempt, "IM_DELIVERY_CLOUD_MODEL_UNAVAILABLE");
       return { kind: "stop" };
     }
     const persisted = readPersistedDeliveryRequest({
@@ -182,7 +190,7 @@ export class CloudDeliveryCoordinator {
       placementGeneration: row.placement.generation,
     });
     if (persisted.status === "invalid") {
-      await this.#options.recordFailure(deliveryId, "IM_DELIVERY_DISPATCH_PAYLOAD_INVALID", claimToken);
+      await this.#options.recordFailure(attempt, "IM_DELIVERY_DISPATCH_PAYLOAD_INVALID");
       return { kind: "stop" };
     }
     const persistedRequest = persisted.status === "valid" ? persisted.request : undefined;
@@ -190,17 +198,11 @@ export class CloudDeliveryCoordinator {
       ? persistedRequest.replyRole
       : await this.#options.replyRole(row.message.id, row.session.kind, row.message.threadKey);
     const assembledRuntime =
-      persistedRequest?.runtime ??
-      (await this.#options.assembleRuntime(deliveryId, row.session.id, "delivery", claimToken));
+      persistedRequest?.runtime ?? (await this.#options.assembleRuntime(attempt, row.session.id, "delivery"));
     if (!assembledRuntime) return { kind: "stop" };
     const runtime = persistedRequest ? assembledRuntime : await cloudDelivery.resolveRuntimeModel(assembledRuntime);
     if (!runtime) {
-      await this.#options.recordFailure(
-        deliveryId,
-        "IM_DELIVERY_CLOUD_MODEL_UNAVAILABLE",
-        claimToken,
-        cloudDispatchRetryDelayMs(row.delivery.attemptCount),
-      );
+      await this.#options.recordFailure(attempt, "IM_DELIVERY_CLOUD_MODEL_UNAVAILABLE");
       return { kind: "stop" };
     }
     return { kind: "continue", persistedRequest, replyRole, runtime };
@@ -211,7 +213,7 @@ export class CloudDeliveryCoordinator {
    * passed. A pending row never held execution permission, so a stale window is released for a
    * fresh attempt rather than faked forward.
    */
-  async #releaseUnusableDispatch(row: CloudDeliveryClaimRow, deliveryId: string, claimToken: string): Promise<boolean> {
+  async #releaseUnusableDispatch(row: CloudDeliveryClaimRow, attempt: DeliveryAttempt): Promise<boolean> {
     const persisted = readPersistedDeliveryRequest({
       delivery: row.delivery,
       message: row.message,
@@ -223,17 +225,12 @@ export class CloudDeliveryCoordinator {
     if (row.delivery.state === "expired") {
       // Same rule as Local: an expired dispatch is released, never executed.
       if (persistedRequest) {
-        await this.#options.releaseDispatch(deliveryId, persistedRequest.requestId, "IM_DELIVERY_EXPIRED", claimToken);
+        await this.#options.releaseDispatch(attempt, persistedRequest.requestId, "IM_DELIVERY_EXPIRED");
       }
       return true;
     }
     if (persistedRequest && cloudDispatchWindowExpired(persistedRequest, this.#options.now())) {
-      await this.#options.releaseDispatch(
-        deliveryId,
-        persistedRequest.requestId,
-        "IM_DELIVERY_CLOUD_DISPATCH_EXPIRED",
-        claimToken,
-      );
+      await this.#options.releaseDispatch(attempt, persistedRequest.requestId, "IM_DELIVERY_CLOUD_DISPATCH_EXPIRED");
       return true;
     }
     return false;
@@ -283,7 +280,7 @@ export class CloudDeliveryCoordinator {
     row: CloudDeliveryClaimRow,
     cloudDelivery: CloudDeliveryOwner,
     built: DirectImMessageDeliveryRequest,
-    claimToken: string,
+    attempt: DeliveryAttempt,
     signal: AbortSignal,
   ): Promise<void> {
     await this.#options.beforeDeliveryAdmission?.(signal);
@@ -309,18 +306,13 @@ export class CloudDeliveryCoordinator {
       signal,
     );
     if (!admitted.admitted) {
-      await this.#options.recordFailure(row.delivery.id, "IM_DELIVERY_AGENT_NOT_ACTIVE", claimToken);
+      await this.#options.recordFailure(attempt, "IM_DELIVERY_AGENT_NOT_ACTIVE");
       return;
     }
     await admitted.result;
   }
 
-  async #recordDispatchError(
-    deliveryId: string,
-    attemptCount: number,
-    error: unknown,
-    claimToken: string,
-  ): Promise<void> {
+  async #recordDispatchError(attempt: DeliveryAttempt, error: unknown): Promise<void> {
     if (error instanceof ImDeliveryInputError) throw error;
     if (error instanceof CloudDeliveryDispatchError) {
       const code = cloudDispatchFailureCode(error);
@@ -329,13 +321,13 @@ export class CloudDeliveryCoordinator {
       // temporarily unavailable must not pin the worker to a 2 s hot retry until the frozen
       // window runs out: back off with the existing attempt counter, capped well below the
       // dispatch deadline. Every other failure keeps the immediate bounded retry.
-      const retryDelayMs = TRANSIENT_CLOUD_DISPATCH_CODES.has(code)
-        ? cloudDispatchRetryDelayMs(attemptCount)
+      const options = TRANSIENT_CLOUD_DISPATCH_CODES.has(code)
+        ? { retryDelayMs: cloudDispatchRetryDelayMs(attempt.attemptCount) }
         : undefined;
-      await this.#options.recordFailure(deliveryId, code, claimToken, retryDelayMs);
+      await this.#options.recordFailure(attempt, code, options);
       return;
     }
-    await this.#options.recordFailure(deliveryId, "IM_DELIVERY_RUNTIME_FAILED", claimToken);
+    await this.#options.recordFailure(attempt, "IM_DELIVERY_RUNTIME_FAILED");
   }
 
   /**
@@ -345,41 +337,33 @@ export class CloudDeliveryCoordinator {
    * so a cold create never holds another delivery's lock or an agent lane indefinitely.
    */
   async #ensureEnvironment(
-    deliveryId: string,
     row: Pick<CloudDeliveryClaimRow, "delivery" | "session" | "agent">,
-    claimToken: string,
+    attempt: DeliveryAttempt,
   ): Promise<boolean> {
-    const sandboxId = await this.#ensureSandboxRow(deliveryId, row, claimToken);
+    const sandboxId = await this.#ensureSandboxRow(row, attempt);
     if (!sandboxId) return false;
     if (!this.#options.cloudAllocation) return true;
-    return this.#convergeAllocation(
-      deliveryId,
-      row.agent.createdByUserId,
-      sandboxId,
-      claimToken,
-      row.delivery.attemptCount,
-    );
+    return this.#convergeAllocation(attempt, row.agent.createdByUserId, sandboxId);
   }
 
   /** Create the Session Sandbox through the existing SandboxService when it is missing. */
   async #ensureSandboxRow(
-    deliveryId: string,
     row: Pick<CloudDeliveryClaimRow, "session" | "agent">,
-    claimToken: string,
+    attempt: DeliveryAttempt,
   ): Promise<string | undefined> {
     const existing = await loadSandboxRecordBySessionId(this.#options.database, row.session.id);
     if (existing) return existing.id;
     const port = this.#options.cloudAllocation;
     if (!port) {
-      await this.#options.recordFailure(deliveryId, "IM_DELIVERY_CLOUD_ALLOCATION_UNAVAILABLE", claimToken);
+      await this.#options.recordFailure(attempt, "IM_DELIVERY_CLOUD_ALLOCATION_UNAVAILABLE");
       return undefined;
     }
     if (row.session.kind !== "channel" && row.session.kind !== "thread") {
-      await this.#options.recordFailure(deliveryId, "IM_DELIVERY_CLOUD_SESSION_KIND_UNSUPPORTED", claimToken);
+      await this.#options.recordFailure(attempt, "IM_DELIVERY_CLOUD_SESSION_KIND_UNSUPPORTED");
       return undefined;
     }
     if (row.session.kind === "thread" && !row.session.threadKey) {
-      await this.#options.recordFailure(deliveryId, "IM_DELIVERY_CLOUD_ALLOCATION_FAILED", claimToken);
+      await this.#options.recordFailure(attempt, "IM_DELIVERY_CLOUD_ALLOCATION_FAILED");
       return undefined;
     }
     const ensureInput = {
@@ -395,36 +379,30 @@ export class CloudDeliveryCoordinator {
           : { ...ensureInput, kind: "channel" },
       );
     } catch {
-      await this.#options.recordFailure(deliveryId, "IM_DELIVERY_CLOUD_ALLOCATION_FAILED", claimToken);
+      await this.#options.recordFailure(attempt, "IM_DELIVERY_CLOUD_ALLOCATION_FAILED");
       return undefined;
     }
     const created = await loadSandboxRecordBySessionId(this.#options.database, row.session.id);
     if (!created) {
-      await this.#options.recordFailure(deliveryId, "IM_DELIVERY_CLOUD_ALLOCATION_FAILED", claimToken);
+      await this.#options.recordFailure(attempt, "IM_DELIVERY_CLOUD_ALLOCATION_FAILED");
       return undefined;
     }
     return created.id;
   }
 
-  async #convergeAllocation(
-    deliveryId: string,
-    accountId: string,
-    sandboxId: string,
-    claimToken: string,
-    attemptCount: number,
-  ): Promise<boolean> {
+  async #convergeAllocation(attempt: DeliveryAttempt, accountId: string, sandboxId: string): Promise<boolean> {
     try {
       const outcome = await this.#options.cloudAllocation?.ensureEnvironmentAllocated({ accountId, sandboxId });
       if (outcome === "restore_required") {
         // E5 guard: never allocate a blank replacement for previously used storage. This is a
         // permanent condition for the input, so it terminates explicitly instead of retrying.
-        await this.#options.rejectInput(deliveryId, "restore_required", claimToken);
+        await this.#options.rejectInput(attempt.deliveryId, "restore_required", attempt.claimToken);
         return false;
       }
       if (outcome === "stopped") {
         // The environment is being released; this input can never run on it. Terminal, not a
         // 2 s retry loop.
-        await this.#options.rejectInput(deliveryId, "environment_stopped", claimToken);
+        await this.#options.rejectInput(attempt.deliveryId, "environment_stopped", attempt.claimToken);
         return false;
       }
       return true;
@@ -432,15 +410,10 @@ export class CloudDeliveryCoordinator {
       if (error instanceof CloudCapacityExceededError) {
         // Capacity is transient for IM: the input stays in the existing bounded queue ("waiting
         // for cloud resources") with the same capped backoff and ingress TTL.
-        await this.#options.recordFailure(
-          deliveryId,
-          "IM_DELIVERY_CLOUD_CAPACITY_WAITING",
-          claimToken,
-          cloudDispatchRetryDelayMs(attemptCount),
-        );
+        await this.#options.recordFailure(attempt, "IM_DELIVERY_CLOUD_CAPACITY_WAITING");
         return false;
       }
-      await this.#options.recordFailure(deliveryId, "IM_DELIVERY_CLOUD_ALLOCATION_FAILED", claimToken);
+      await this.#options.recordFailure(attempt, "IM_DELIVERY_CLOUD_ALLOCATION_FAILED");
       return false;
     }
   }
@@ -465,7 +438,7 @@ export class CloudDeliveryCoordinator {
       try {
         await this.#options.rejectInput(row.id, row.reason);
       } catch {
-        this.#options.onDiagnostic("IM_DELIVERY_CLOUD_STOPPED_REJECT_FAILED");
+        this.#options.onDiagnostic("IM_DELIVERY_CLOUD_STOPPED_REJECT_FAILED", stoppedRowContext(row));
       }
     }
     const accepted = await this.#stoppedRows("accepted");
@@ -473,28 +446,33 @@ export class CloudDeliveryCoordinator {
       try {
         await owner.recoverAccepted(row.id);
       } catch {
-        this.#options.onDiagnostic("IM_DELIVERY_CLOUD_STOPPED_RECONCILE_FAILED");
+        this.#options.onDiagnostic("IM_DELIVERY_CLOUD_STOPPED_RECONCILE_FAILED", stoppedRowContext(row));
       }
       await this.#throttleStoppedRow(row.id);
     }
   }
 
   /** Accepted Cloud work for one delivery: owner recovery with the pending retry signal. */
-  async recover(deliveryId: string): Promise<void> {
+  async recover(attempt: DeliveryAttempt): Promise<void> {
     const owner = this.#options.cloudDelivery;
     if (!owner) {
-      await this.#options.recordFailure(deliveryId, "IM_DELIVERY_CLOUD_UNAVAILABLE");
+      await this.#options.recordFailure(attempt, "IM_DELIVERY_CLOUD_UNAVAILABLE");
       return;
     }
-    const outcome = await owner.recoverAccepted(deliveryId);
-    if (outcome === "pending") await this.#options.recordFailure(deliveryId, "IM_DELIVERY_CLOUD_REPORT_PENDING");
+    const outcome = await owner.recoverAccepted(attempt.deliveryId);
+    if (outcome === "pending") await this.#options.recordFailure(attempt, "IM_DELIVERY_CLOUD_REPORT_PENDING");
   }
 
-  async #stoppedRows(state: "pending" | "accepted"): Promise<{ id: string; reason: string }[]> {
+  async #stoppedRows(
+    state: "pending" | "accepted",
+  ): Promise<Array<{ id: string; reason: string; agentId: string; computerId: string; attemptCount: number }>> {
     const rows = await this.#options.database
       .select({
         id: imMessageDeliveries.id,
         ended: isNotNull(sessions.endedAt),
+        agentId: agents.id,
+        computerId: computers.id,
+        attemptCount: imMessageDeliveries.attemptCount,
       })
       .from(imMessageDeliveries)
       .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
@@ -530,7 +508,13 @@ export class CloudDeliveryCoordinator {
       )
       .orderBy(asc(imMessageDeliveries.id))
       .limit(STOPPED_CLOUD_RECONCILE_BATCH);
-    return rows.map((row) => ({ id: row.id, reason: row.ended ? "session_ended" : "authority_stopped" }));
+    return rows.map((row) => ({
+      id: row.id,
+      reason: row.ended ? "session_ended" : "authority_stopped",
+      agentId: row.agentId,
+      computerId: row.computerId,
+      attemptCount: row.attemptCount,
+    }));
   }
 
   async #throttleStoppedRow(deliveryId: string): Promise<void> {
@@ -546,7 +530,10 @@ export class CloudDeliveryCoordinator {
           ),
         );
     } catch {
-      this.#options.onDiagnostic("IM_DELIVERY_CLOUD_STOPPED_RECONCILE_THROTTLE_FAILED");
+      this.#options.onDiagnostic("IM_DELIVERY_CLOUD_STOPPED_RECONCILE_THROTTLE_FAILED", {
+        phase: "deliver",
+        deliveryId,
+      });
     }
   }
 }

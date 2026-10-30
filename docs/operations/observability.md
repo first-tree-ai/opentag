@@ -374,8 +374,15 @@ host. Entries carry the label `service=opentag-server`. The agent config is `/et
   `severity`. Validate any edit before restarting with
   `google_cloud_ops_agent_engine -service=fluentbit -in <file> -logs <dir> -state <dir>`.
 - The agent reads new lines only. A restart does not replay older logs.
-- `IM_DELIVERY_RUNTIME_UNAVAILABLE` is excluded from the new-error alert because it fires continuously. Remove the
-  exclusion once its cause is fixed, so that its return is visible.
+- `IM_DELIVERY_RUNTIME_UNAVAILABLE` is still excluded from the new-error alert. The exclusion exists because an offline
+  Computer was retried at a fixed interval; the delivery worker now retries at a falling rate and reports a repeated
+  failure once, so the exclusion is no longer what keeps the alert quiet, and it hides a genuine return of the code.
+  Dropping it is a pending operational step in the Cloud Monitoring policy, not a change this repository can make: the
+  table above states the policy after that step. Remove the exclusion in the console and delete this bullet in the same
+  change. A temporary exclusion may only be added with a written exit condition, never as the permanent state.
+- Every delivery diagnostic carries `phase` plus the durable identifiers `deliveryId`, `agentId`, `computerId`, and
+  `attemptCount` in `jsonPayload`, so one production error can be attributed to one delivery. No message body, prompt,
+  credential, or provider payload is included.
 - The agent collects host metrics only. The Docker engine metrics endpoint that the staging VM scrapes needs a Docker
   daemon restart, which restarts the Server container, so it is not enabled on production.
 

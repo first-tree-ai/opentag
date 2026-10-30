@@ -3,18 +3,31 @@ import {
   computeDirectInputHash,
   computeRuntimeImMessageSemanticHash,
   computeRuntimeImSteerInputHash,
+  type DirectImMessageDeliveryRequest,
   type SessionReconcileRequest,
+  type TurnReportRequest,
 } from "@opentag/shared";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
-import { computers, imBindings, imMessageDeliveries, sessions } from "../../db/schema/index.js";
+import {
+  agents,
+  computers,
+  imBindings,
+  imMessageDeliveries,
+  sessionPlacements,
+  sessions,
+  slackInstallations,
+  slackWorkingTargets,
+  slackWorkingTurns,
+} from "../../db/schema/index.js";
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
-import { runImDeliveryExpiry } from "../../runtime/im-delivery-janitor.js";
+import { runImDeliveryExpiry, runImDeliveryOverdueSettlement } from "../../runtime/im-delivery-janitor.js";
 import { STEER_TARGET_ENDED_ERROR_CODE } from "../../runtime/im-delivery-recovery.js";
 import { ImDeliveryWorker } from "../../runtime/im-delivery-worker.js";
 import { PostgresRuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
 import { ImMessageInbox } from "../../services/im/im-message-inbox.js";
+import { disableImBindingInTransaction } from "../../services/im-bindings/disable-im-binding.js";
 import {
   acceptAndSteer,
   createFixture,
@@ -422,6 +435,13 @@ describe("steered IM delivery recovery", () => {
         if (failure !== "session-ended") {
           expect(diagnostic).toHaveBeenCalledWith(
             failure === "offline" ? "IM_DELIVERY_RUNTIME_UNAVAILABLE" : "IM_DELIVERY_RECOVERY_FAILED",
+            {
+              phase: "recover",
+              deliveryId: fixture.rootDeliveryId,
+              agentId: fixture.agentId,
+              computerId: fixture.context.computerId,
+              attemptCount: 1,
+            },
           );
         }
         const unreported = await deliveryRows(client.database, fixture);
@@ -433,6 +453,10 @@ describe("steered IM delivery recovery", () => {
         await worker.runOnce();
         disconnected = false;
         await connect();
+        // Production resumes a parked retry through the registration hook (`onRegistered`), which a
+        // direct registry registration in this test does not carry. Without it the offline backoff
+        // would hold the custody for its full ceiling and the reconnect would not be observable.
+        await worker.notifyComputerReady(fixture.context.computerId);
         clock += 30_000;
         await worker.runOnce();
         expect((await deliveryRows(client.database, fixture)).children).toEqual(original.children);
@@ -475,6 +499,446 @@ describe("steered IM delivery recovery", () => {
       }
     },
   );
+
+  it("settles custody superseded by a placement rollover exactly once and keeps its generation", async () => {
+    const fixture = await createFixture(client.database);
+    const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });
+    await acceptAndSteer(fixture, custody);
+    // The Session is re-placed after the Turn was accepted: the delivery keeps the generation the
+    // Turn ran under, and no report can satisfy the custody fence any more.
+    await client.database
+      .update(sessionPlacements)
+      .set({ generation: fixture.placementGeneration + 1 })
+      .where(eq(sessionPlacements.sessionId, fixture.sessionId));
+    const overdue = new Date(fixture.now.getTime() + 26 * 60 * 60_000);
+
+    await runImDeliveryExpiry(client.database, janitorOptions(overdue));
+
+    const settled = await deliveryRows(client.database, fixture);
+    const report = settled.root.turnReport as TurnReportRequest;
+    expect(settled.root).toMatchObject({
+      state: "accepted",
+      placementGeneration: fixture.placementGeneration,
+      reason: "placement_superseded",
+      turnId: fixture.rootTurnId,
+      reportedAt: overdue,
+      resultHash: report.resultHash,
+    });
+    expect(report).toMatchObject({
+      type: "turn:report",
+      deliveryId: fixture.rootDeliveryId,
+      turnId: fixture.rootTurnId,
+      sessionId: fixture.sessionId,
+      agentId: fixture.agentId,
+      placementGeneration: fixture.placementGeneration,
+      outcome: "unknown",
+      executionEffects: "may_have_occurred",
+      errorReason: "turn_state_unknown",
+    });
+
+    // The second sweep leaves the settlement alone: the row is reported, so it is out of the set.
+    await runImDeliveryExpiry(client.database, janitorOptions(new Date(overdue.getTime() + 60_000)));
+    expect((await deliveryRows(client.database, fixture)).root).toEqual(settled.root);
+  });
+
+  it("settles a superseded placement with the whole terminal-report contract", async () => {
+    const fixture = await createFixture(client.database);
+    const settled = vi.fn();
+    const custody = new PostgresRuntimeCustodyStore(client.database, {
+      now: () => fixture.now,
+      onDeliverySettled: settled,
+    });
+    await acceptAndSteer(fixture, custody);
+    settled.mockClear();
+    const slack = await seedSlackWorkingTurn(client.database, fixture);
+    // Suspending the Agent makes the steered children unplaceable, so the settlement has to
+    // terminalize them exactly as a real terminal report does.
+    await client.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, fixture.agentId));
+    await client.database
+      .update(sessionPlacements)
+      .set({ generation: fixture.placementGeneration + 1 })
+      .where(eq(sessionPlacements.sessionId, fixture.sessionId));
+    const overdue = new Date(fixture.now.getTime() + 26 * 60 * 60_000);
+
+    await runImDeliveryExpiry(client.database, janitorOptions(overdue), settled);
+
+    const rollover = await deliveryRows(client.database, fixture);
+    expect(rollover.root.reason).toBe("placement_superseded");
+    expect(rollover.root.turnReport).toMatchObject({ outcome: "unknown", errorReason: "turn_state_unknown" });
+    // The children reach the outcome a real terminal report gives them (the next test settles a
+    // control fixture through `recordTurn` and asserts this same shape).
+    expect(rollover.children.map(terminalizedChildContract)).toEqual([TERMINALIZED_CHILD, TERMINALIZED_CHILD]);
+    // The settled callback covers the delivery and every child it terminalized.
+    expect(new Set(settled.mock.calls.map(([id]) => id as string))).toEqual(
+      new Set([fixture.rootDeliveryId, ...fixture.steerRequests.map((request) => request.deliveryId)]),
+    );
+    // No Slack working turn survives the settlement: it is terminal, its lease expired at the
+    // settlement instant, and its target was dirtied for the cleanup pass.
+    const [turn] = await client.database
+      .select()
+      .from(slackWorkingTurns)
+      .where(eq(slackWorkingTurns.deliveryId, fixture.rootDeliveryId));
+    expect(turn).toMatchObject({ phase: "terminal", leaseExpiresAt: overdue });
+    const [target] = await client.database
+      .select()
+      .from(slackWorkingTargets)
+      .where(eq(slackWorkingTargets.id, slack.targetId));
+    expect(target).toMatchObject({ nextAttemptAt: overdue, revision: slack.revision + 1 });
+  });
+
+  it("gives a settled parent's steered children the same outcome a real terminal report gives them", async () => {
+    const fixture = await createFixture(client.database);
+    const settled = vi.fn();
+    const custody = new PostgresRuntimeCustodyStore(client.database, {
+      now: () => fixture.now,
+      onDeliverySettled: settled,
+    });
+    await acceptAndSteer(fixture, custody);
+    settled.mockClear();
+    await client.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, fixture.agentId));
+
+    await expect(
+      custody.recordTurn(turnReport(fixture, "unknown", "turn_state_unknown"), fixture.context),
+    ).resolves.toBe("recorded");
+
+    const control = await deliveryRows(client.database, fixture);
+    expect(control.children.map(terminalizedChildContract)).toEqual([TERMINALIZED_CHILD, TERMINALIZED_CHILD]);
+    expect(new Set(settled.mock.calls.map(([id]) => id as string))).toEqual(
+      new Set([fixture.rootDeliveryId, ...fixture.steerRequests.map((request) => request.deliveryId)]),
+    );
+  });
+
+  it("takes the recovery-Session lock before the delivery lock so a concurrent report cannot deadlock", async () => {
+    const fixture = await createFixture(client.database);
+    const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });
+    await acceptAndSteer(fixture, custody);
+    await client.database
+      .update(sessionPlacements)
+      .set({ generation: fixture.placementGeneration + 1 })
+      .where(eq(sessionPlacements.sessionId, fixture.sessionId));
+    const overdue = new Date(fixture.now.getTime() + 26 * 60 * 60_000);
+    // Second connection: it plays the concurrent non-completed report, whose first lock is the
+    // recovery Session (`lockSteeredRecoverySessions`), exactly as `recordTurn` documents.
+    const other = createDatabaseClient(testDatabase.databaseUrl);
+    let releaseSession!: () => void;
+    const holdSession = new Promise<void>((resolve) => {
+      releaseSession = resolve;
+    });
+    let sessionHeld!: () => void;
+    const sessionIsHeld = new Promise<void>((resolve) => {
+      sessionHeld = resolve;
+    });
+    try {
+      const reportSide = other.sql.begin(async (tx) => {
+        await tx.unsafe("select id from sessions where id = $1::uuid for no key update", [fixture.sessionId]);
+        sessionHeld();
+        await holdSession;
+        // The report's next locks, in `recordTurn`'s order: placement, then delivery. With the
+        // settlement holding the delivery before the Session, this is where the cycle would form.
+        await tx.unsafe("select session_id from session_placements where session_id = $1::uuid for update", [
+          fixture.sessionId,
+        ]);
+        await tx.unsafe("select id from im_message_deliveries where id = $1::uuid for update", [
+          fixture.rootDeliveryId,
+        ]);
+        return "locks-taken" as const;
+      });
+      await sessionIsHeld;
+
+      const settlement = runImDeliveryOverdueSettlement(client.database, {
+        clock: () => overdue,
+        expiryBatchSize: 10,
+      });
+      // The settlement must wait on the Session lock and therefore hold no delivery lock.
+      await expect(Promise.race([settlement.then(() => "settled" as const), sleep(300)])).resolves.toBeUndefined();
+      const [whileBlocked] = await client.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+      expect(whileBlocked).toMatchObject({ reportedAt: null, reason: null });
+
+      // The reporting side reaches its delivery lock without a 40P01 or a timeout: the ordering is
+      // broken, not the fences.
+      releaseSession();
+      await expect(reportSide).resolves.toBe("locks-taken");
+      // One deterministic outcome: the settlement takes the released Session and settles the row.
+      await expect(settlement).resolves.toBeUndefined();
+      const [settled] = await client.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+      expect(settled).toMatchObject({ reason: "placement_superseded" });
+      expect(settled?.turnReport).toMatchObject({ errorReason: "turn_state_unknown" });
+    } finally {
+      await other.sql.end();
+    }
+  });
+
+  it("shares one lock order with the binding disable path", async () => {
+    const fixture = await createFixture(client.database);
+    const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });
+    await acceptAndSteer(fixture, custody);
+    // A binding that needs reauthorization is a maintenance candidate whose Session is still live,
+    // so the real disable below has a Session row to end.
+    await client.database
+      .update(imBindings)
+      .set({ status: "reauthorization_required", updatedAt: fixture.now })
+      .where(eq(imBindings.id, fixture.bindingId));
+    const overdue = new Date(fixture.now.getTime() + 26 * 60 * 60_000);
+
+    // Two independent pools: one holds the lifecycle transaction, one runs the settlement.
+    const lifecycle = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
+    const maintenance = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
+    try {
+      const authorityHeld = deferred();
+      const resumeLifecycle = deferred();
+      const disabling = lifecycle.database.transaction(async (transaction) => {
+        // `ImBindingService.disable`: the Agent lock, then the binding lock, then the Session update.
+        await transaction.execute(sql`select id from agents where id = ${fixture.agentId}::uuid for update`);
+        await transaction.execute(sql`select id from im_bindings where id = ${fixture.bindingId}::uuid for update`);
+        authorityHeld.resolve();
+        await resumeLifecycle.promise;
+        await disableImBindingInTransaction(transaction, fixture.bindingId, overdue);
+      });
+      await authorityHeld.promise;
+
+      const settlement = runImDeliveryOverdueSettlement(maintenance.database, {
+        clock: () => overdue,
+        expiryBatchSize: 10,
+      });
+      // The settlement waits at the Agent lock, so it holds no Session lock the disable needs.
+      await expect(Promise.race([settlement.then(() => "settled" as const), sleep(300)])).resolves.toBeUndefined();
+      const [whileBlocked] = await client.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+      expect(whileBlocked).toMatchObject({ reportedAt: null, turnReport: null, reason: null });
+
+      resumeLifecycle.resolve();
+      // Neither side is aborted with 40P01: the lifecycle commits its disable, then the settlement
+      // re-reads the committed authority before it writes anything.
+      await expect(disabling).resolves.toBeUndefined();
+      await expect(settlement).resolves.toBeUndefined();
+
+      const [binding] = await client.database
+        .select({ status: imBindings.status })
+        .from(imBindings)
+        .where(eq(imBindings.id, fixture.bindingId));
+      const [session] = await client.database
+        .select({ endedAt: sessions.endedAt })
+        .from(sessions)
+        .where(eq(sessions.id, fixture.sessionId));
+      expect(binding?.status).toBe("disabled");
+      expect(session?.endedAt).toEqual(overdue);
+      // One deterministic winner: the disable. The settlement then settles the row exactly once
+      // because the authority it re-read is still gone.
+      const [settled] = await client.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+      expect(settled?.reportedAt).toEqual(overdue);
+      expect(settled?.turnReport).toMatchObject({ outcome: "unknown", errorReason: "turn_state_unknown" });
+    } finally {
+      await lifecycle.sql.end();
+      await maintenance.sql.end();
+    }
+  });
+
+  it("blocks a maintenance settlement behind an uncommitted reactivation and then refuses it", async () => {
+    const fixture = await createFixture(client.database);
+    const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });
+    await acceptAndSteer(fixture, custody);
+    await client.database
+      .update(imBindings)
+      .set({ status: "reauthorization_required", updatedAt: fixture.now })
+      .where(eq(imBindings.id, fixture.bindingId));
+    const overdue = new Date(fixture.now.getTime() + 26 * 60 * 60_000);
+    // Second connection: reactivates the binding and keeps it uncommitted, which the settlement's
+    // snapshot cannot see and which no read-only predicate can exclude.
+    const other = createDatabaseClient(testDatabase.databaseUrl);
+    let releaseReactivation!: () => void;
+    const holdReactivation = new Promise<void>((resolve) => {
+      releaseReactivation = resolve;
+    });
+    let reactivated!: () => void;
+    const reactivationApplied = new Promise<void>((resolve) => {
+      reactivated = resolve;
+    });
+    try {
+      const reactivation = other.sql.begin(async (tx) => {
+        await tx.unsafe("update im_bindings set status = 'active', updated_at = $1::timestamptz where id = $2::uuid", [
+          fixture.now.toISOString(),
+          fixture.bindingId,
+        ]);
+        reactivated();
+        await holdReactivation;
+      });
+      await reactivationApplied;
+
+      const settlement = runImDeliveryOverdueSettlement(client.database, {
+        clock: () => overdue,
+        expiryBatchSize: 10,
+      });
+      // The settlement must wait for the uncommitted reactivation, not commit an `unknown` past it.
+      await expect(Promise.race([settlement.then(() => "settled" as const), sleep(400)])).resolves.toBeUndefined();
+      const [whileBlocked] = await client.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+      expect(whileBlocked).toMatchObject({ reportedAt: null, turnReport: null, resultHash: null, reason: null });
+
+      releaseReactivation();
+      await reactivation;
+      await expect(settlement).resolves.toBeUndefined();
+      const [afterSweep] = await client.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+      // The committed reactivation was seen by the recheck, so the synthetic report was refused.
+      expect(afterSweep).toMatchObject({ reportedAt: null, turnReport: null, resultHash: null, reason: null });
+      // The live owner's report then records, and nothing synthetic was ever persisted.
+      await expect(custody.recordTurn(turnReport(fixture, "completed"), fixture.context)).resolves.toBe("recorded");
+      const [reported] = await client.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+      expect(reported?.turnReport).toMatchObject({ outcome: "completed" });
+      expect(reported?.reason).toBeNull();
+    } finally {
+      await other.sql.end();
+    }
+  });
+
+  it("parks a correlated dispatch whose operation never settles and never offers it again", async () => {
+    const fixture = await createFixture(client.database);
+    const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });
+    const parked = await parkThroughNeverSettlingDispatch(client.database, fixture, custody);
+
+    const [row] = await client.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+    // Parked: still pending, still correlated, still unreported, nothing fabricated.
+    expect(row).toMatchObject({
+      state: "pending",
+      reason: null,
+      lastErrorCode: "IM_DELIVERY_PARKED",
+      reportedAt: null,
+      turnReport: null,
+      resultHash: null,
+      turnId: null,
+    });
+    expect(row?.dispatchRequestId).not.toBeNull();
+    expect(row?.dispatchInputHash).not.toBeNull();
+    expect(row?.dispatchPayload).not.toBeNull();
+    // The ingress deadline is the only remaining bound, and it is where the row is due again.
+    expect(row?.nextAttemptAt).toEqual(row?.expiresAt);
+    expect(parked.diagnosticCodes.filter((code) => code === "IM_DELIVERY_DISPATCH_PARKED")).toHaveLength(1);
+    const reconcileCalls = parked.requestReconcile.mock.calls.length;
+
+    // The park is a predicate, not a delay: even a row that is due again is not claimed. The delay is
+    // moved back deliberately so the sweep would pick it up if the selector still offered it.
+    const dueAgain = new Date(Date.now() - 1_000);
+    await client.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: dueAgain })
+      .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+    await parked.worker.runOnce();
+    await parked.worker.runOnce();
+    expect(parked.requestReconcile.mock.calls.length).toBe(reconcileCalls);
+    expect(parked.requestDelivery).toHaveBeenCalledTimes(1);
+    expect(parked.diagnosticCodes.filter((code) => code === "IM_DELIVERY_DISPATCH_PARKED")).toHaveLength(1);
+    const [afterSweeps] = await client.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+    expect(afterSweeps).toEqual({ ...row, nextAttemptAt: dueAgain });
+
+    // The ingress deadline still expires it, which is the only outer bound the park leaves.
+    const expiredAt = new Date((row?.expiresAt.getTime() ?? 0) + 60_000);
+    await runImDeliveryExpiry(client.database, janitorOptions(expiredAt));
+    const [expired] = await client.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+    expect(expired).toMatchObject({ state: "expired", reason: "ttl" });
+  });
+
+  it("records a late authentic report for a parked dispatch", async () => {
+    const fixture = await createFixture(client.database);
+    const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });
+    const parked = await parkThroughNeverSettlingDispatch(client.database, fixture, custody);
+    const dispatched = parked.requestDelivery.mock.calls[0]?.[2];
+    if (!dispatched) throw new Error("The parked dispatch was never sent");
+
+    // The Client answers after the park, exactly as a slow Turn would: the acceptance clears the
+    // park marker and the report records through the normal fence.
+    await expect(
+      custody.acceptDelivery(dispatched, computeDirectInputHash(dispatched), fixture.rootTurnId, fixture.context),
+    ).resolves.toBe("accepted");
+    await expect(custody.recordTurn(turnReport(fixture, "completed"), fixture.context)).resolves.toBe("recorded");
+
+    const [reported] = await client.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+    expect(reported).toMatchObject({ state: "accepted", lastErrorCode: null, turnId: fixture.rootTurnId });
+    expect(reported?.reportedAt).not.toBeNull();
+    expect(reported?.turnReport).toMatchObject({ outcome: "completed" });
+  });
+
+  it("leaves a rolled-over delivery alone while its report-acceptance window is open", async () => {
+    const fixture = await createFixture(client.database);
+    const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });
+    await acceptAndSteer(fixture, custody);
+    await client.database
+      .update(sessionPlacements)
+      .set({ generation: fixture.placementGeneration + 1 })
+      .where(eq(sessionPlacements.sessionId, fixture.sessionId));
+
+    // One hour after acceptance, an hour-long grace and a day-long runtime are still open.
+    await runImDeliveryExpiry(client.database, janitorOptions(new Date(fixture.now.getTime() + 60 * 60_000)));
+
+    const untouched = await deliveryRows(client.database, fixture);
+    expect(untouched.root).toMatchObject({
+      state: "accepted",
+      reportedAt: null,
+      turnReport: null,
+      reason: null,
+      resultHash: null,
+    });
+  });
+
+  it("refuses a later genuine report for a superseded placement without overwriting the settlement", async () => {
+    const fixture = await createFixture(client.database);
+    const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });
+    await acceptAndSteer(fixture, custody);
+    await client.database
+      .update(sessionPlacements)
+      .set({ generation: fixture.placementGeneration + 1 })
+      .where(eq(sessionPlacements.sessionId, fixture.sessionId));
+    await runImDeliveryExpiry(client.database, janitorOptions(new Date(fixture.now.getTime() + 26 * 60 * 60_000)));
+    const settled = await deliveryRows(client.database, fixture);
+
+    // A genuine report cannot be recorded for a superseded placement: `recordTurn`'s placement fence
+    // refuses it before the recorded-report comparison, for the delivery's own generation and for the
+    // current one alike. The refusal is `stale_generation` here, not `conflict`; what the settlement
+    // needs is that the report loses and the recorded outcome is untouched.
+    await expect(custody.recordTurn(turnReport(fixture, "completed"), fixture.context)).resolves.toBe(
+      "stale_generation",
+    );
+    await expect(
+      custody.recordTurn(
+        { ...turnReport(fixture, "completed"), placementGeneration: fixture.placementGeneration + 1 },
+        fixture.context,
+      ),
+    ).resolves.toBe("stale_generation");
+    const after = await deliveryRows(client.database, fixture);
+    expect(after.root.turnReport).toEqual(settled.root.turnReport);
+    expect(after.root.resultHash).toEqual(settled.root.resultHash);
+    expect(after.root.reason).toBe("placement_superseded");
+    expect(after.root.reportedAt).toEqual(settled.root.reportedAt);
+  });
 
   it("requeues a timed-out target", async () => {
     const timedOut = await createFixture(client.database);
@@ -568,3 +1032,155 @@ describe("steered IM delivery recovery", () => {
     );
   });
 });
+
+/** A promise plus its resolver, for holding a transaction open at a chosen point. */
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+/** Resolves after `ms`, so a barrier test can observe that a statement is still waiting. */
+function sleep(ms: number): Promise<undefined> {
+  return new Promise((resolve) => setTimeout(() => resolve(undefined), ms));
+}
+
+/** The contract a settled parent owes its steered children, asserted by both settlement paths. */
+const TERMINALIZED_CHILD = {
+  state: "terminal_rejected",
+  reason: "steer_target_ended_unplaceable",
+  lastErrorCode: "IM_DELIVERY_STEER_TARGET_UNPLACEABLE",
+  steerTargetDeliveryId: null,
+  attemptCount: 1,
+  reportedAt: null,
+  acceptedAt: null,
+  turnId: null,
+};
+
+function terminalizedChildContract(row: typeof imMessageDeliveries.$inferSelect) {
+  return {
+    state: row.state,
+    reason: row.reason,
+    lastErrorCode: row.lastErrorCode,
+    steerTargetDeliveryId: row.steerTargetDeliveryId,
+    attemptCount: row.attemptCount,
+    reportedAt: row.reportedAt,
+    acceptedAt: row.acceptedAt,
+    turnId: row.turnId,
+  };
+}
+
+/**
+ * One open Slack working turn for the fixture's root delivery. `finishSlackWorkingTurn` is keyed by
+ * delivery id and never reads the binding's provider, so the fixture's non-Slack binding is enough
+ * to exercise the cleanup contract.
+ */
+async function seedSlackWorkingTurn(
+  database: ReturnType<typeof createDatabaseClient>["database"],
+  fixture: Awaited<ReturnType<typeof createFixture>>,
+) {
+  const [session] = await database
+    .select({ imBindingId: sessions.imBindingId })
+    .from(sessions)
+    .where(eq(sessions.id, fixture.sessionId));
+  if (!session) throw new Error("Fixture Session is missing");
+  const installationId = randomUUID();
+  const targetId = `slack-target-${randomUUID()}`;
+  await database.insert(slackInstallations).values({
+    id: installationId,
+    agentId: fixture.agentId,
+    status: "active",
+    externalAppId: `app-${installationId}`,
+    externalTeamId: `team-${installationId}`,
+    externalBotId: `bot-${installationId}`,
+    credentialSchemaVersion: 1,
+    credentialGeneration: 1,
+    encryptedCredential: "unit-only-unused",
+    activatedAt: fixture.now,
+  });
+  await database.insert(slackWorkingTargets).values({
+    id: targetId,
+    bindingId: session.imBindingId,
+    installationId,
+    credentialGeneration: 1,
+    channelId: "channel",
+    threadTs: "thread-1",
+    revision: 4,
+    working: true,
+    nextAttemptAt: fixture.now,
+    notBeforeAt: fixture.now,
+  });
+  await database.insert(slackWorkingTurns).values({
+    deliveryId: fixture.rootDeliveryId,
+    targetId,
+    turnId: fixture.rootTurnId,
+    sequence: 1,
+    phase: "running",
+    leaseExpiresAt: new Date(fixture.now.getTime() + 90_000),
+    deadlineAt: new Date(fixture.now.getTime() + 30 * 60_000),
+  });
+  return { installationId, targetId, revision: 4 };
+}
+
+/**
+ * Seed the delivery one timeout short of the cap, then dispatch it into an operation that persists the
+ * dispatch correlation and never settles, which is the shape that must park instead of retry.
+ */
+async function parkThroughNeverSettlingDispatch(
+  database: ReturnType<typeof createDatabaseClient>["database"],
+  fixture: Awaited<ReturnType<typeof createFixture>>,
+  custody: PostgresRuntimeCustodyStore,
+) {
+  await database
+    .update(imMessageDeliveries)
+    .set({
+      attemptCount: 7,
+      lastErrorCode: "IM_DELIVERY_OPERATION_TIMEOUT_7",
+      nextAttemptAt: new Date(Date.now() - 1_000),
+    })
+    .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+  const diagnosticCodes: string[] = [];
+  const requestReconcile = vi.fn(
+    async (_computerId: string, _instanceId: string, request: unknown, onDispatched?: () => void) => {
+      onDispatched?.();
+      return {
+        type: "session:reconcile:result" as const,
+        requestId: (request as { requestId: string }).requestId,
+        sessionId: fixture.sessionId,
+        placementGeneration: fixture.placementGeneration,
+        status: "ready" as const,
+      };
+    },
+  );
+  const requestDelivery = vi.fn(
+    async (
+      _computerId: string,
+      _instanceId: string,
+      request: DirectImMessageDeliveryRequest,
+      onDispatched?: () => void,
+    ) => {
+      onDispatched?.();
+      await custody.beginDeliveryDispatch(request, computeDirectInputHash(request), fixture.dispatchContext);
+      return new Promise<never>(() => undefined);
+    },
+  );
+  const worker = new ImDeliveryWorker({
+    database,
+    domain: { requestReconcile, requestDelivery } as never,
+    assembler: { assembleForSession: vi.fn(async () => fixture.runtime) },
+    registry: {
+      canReceiveSnapshot: vi.fn(() => true),
+      currentInstanceId: vi.fn(() => fixture.dispatchContext.instanceId),
+      capabilityVersion: vi.fn(() => 2),
+    } as never,
+    intervalMs: 60_000,
+    operationTimeoutMs: 40,
+    onDiagnostic: (code: string) => diagnosticCodes.push(code),
+  });
+  // One iteration: the deadline aborts the hang, the exhaustion path parks, then the grace expires.
+  // The worker is left running so the later sweeps in the test actually scan for work.
+  await worker.runOnce();
+  return { diagnosticCodes, requestDelivery, requestReconcile, worker };
+}

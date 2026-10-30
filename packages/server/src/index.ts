@@ -1272,6 +1272,11 @@ export async function startServer(): Promise<void> {
         slackAutoSetupOwner,
         agentRuntimeOptionsOwner,
         providerCliReconcileOwner,
+        // A Computer that just became usable makes its offline-parked retries due again, so an
+        // offline backoff can never delay work behind a live runtime.
+        onRegistered: async ({ computerId }) => {
+          await imDeliveryWorker?.notifyComputerReady(computerId);
+        },
         channelTarget: () => channelTargetPoller.get(),
       },
       runtimeDurableWork: { machineAuth: platformRuntime.auth, store: durableWorkStore },

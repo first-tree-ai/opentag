@@ -1,0 +1,29 @@
+{
+  "scope": "Production App synthetic API, current single-tree layout; scoped WCAG A/AA scans",
+  "cases": [
+    {
+      "locale": "en",
+      "width": 1440,
+      "state": "empty",
+      "violations": []
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "state": "connected",
+      "violations": []
+    },
+    {
+      "locale": "zh",
+      "width": 390,
+      "state": "empty",
+      "violations": []
+    },
+    {
+      "locale": "zh",
+      "width": 390,
+      "state": "connected",
+      "violations": []
+    }
+  ]
+}

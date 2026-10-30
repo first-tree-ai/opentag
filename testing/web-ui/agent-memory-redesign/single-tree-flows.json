@@ -1,0 +1,133 @@
+{
+  "scope": "Production App/router/components; synthetic API; owner single-tree revision",
+  "cases": [
+    {
+      "locale": "en",
+      "width": 320,
+      "uncertainRepositoriesRetained": true,
+      "unknownCreateRequests": 2,
+      "recoveryPrefillAndFocus": true,
+      "noAutoRetry": true,
+      "firstConnectFocus": true,
+      "lastDisconnectFocus": true,
+      "secondaryMenuKeyboard": true,
+      "expandedHelpFit": {
+        "overflow": false,
+        "documentOverflow": false
+      },
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "en",
+      "width": 390,
+      "uncertainRepositoriesRetained": true,
+      "unknownCreateRequests": 2,
+      "recoveryPrefillAndFocus": true,
+      "noAutoRetry": true,
+      "firstConnectFocus": true,
+      "lastDisconnectFocus": true,
+      "secondaryMenuKeyboard": true,
+      "expandedHelpFit": {
+        "overflow": false,
+        "documentOverflow": false
+      },
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "en",
+      "width": 768,
+      "uncertainRepositoriesRetained": true,
+      "unknownCreateRequests": 2,
+      "recoveryPrefillAndFocus": true,
+      "noAutoRetry": true,
+      "firstConnectFocus": true,
+      "lastDisconnectFocus": true,
+      "secondaryMenuKeyboard": true,
+      "expandedHelpFit": {
+        "overflow": false,
+        "documentOverflow": false
+      },
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "uncertainRepositoriesRetained": true,
+      "unknownCreateRequests": 2,
+      "recoveryPrefillAndFocus": true,
+      "noAutoRetry": true,
+      "firstConnectFocus": true,
+      "lastDisconnectFocus": true,
+      "secondaryMenuKeyboard": true,
+      "expandedHelpFit": {
+        "overflow": false,
+        "documentOverflow": false
+      },
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 320,
+      "uncertainRepositoriesRetained": true,
+      "unknownCreateRequests": 2,
+      "recoveryPrefillAndFocus": true,
+      "noAutoRetry": true,
+      "firstConnectFocus": true,
+      "lastDisconnectFocus": true,
+      "secondaryMenuKeyboard": true,
+      "expandedHelpFit": {
+        "overflow": false,
+        "documentOverflow": false
+      },
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 390,
+      "uncertainRepositoriesRetained": true,
+      "unknownCreateRequests": 2,
+      "recoveryPrefillAndFocus": true,
+      "noAutoRetry": true,
+      "firstConnectFocus": true,
+      "lastDisconnectFocus": true,
+      "secondaryMenuKeyboard": true,
+      "expandedHelpFit": {
+        "overflow": false,
+        "documentOverflow": false
+      },
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 768,
+      "uncertainRepositoriesRetained": true,
+      "unknownCreateRequests": 2,
+      "recoveryPrefillAndFocus": true,
+      "noAutoRetry": true,
+      "firstConnectFocus": true,
+      "lastDisconnectFocus": true,
+      "secondaryMenuKeyboard": true,
+      "expandedHelpFit": {
+        "overflow": false,
+        "documentOverflow": false
+      },
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 1440,
+      "uncertainRepositoriesRetained": true,
+      "unknownCreateRequests": 2,
+      "recoveryPrefillAndFocus": true,
+      "noAutoRetry": true,
+      "firstConnectFocus": true,
+      "lastDisconnectFocus": true,
+      "secondaryMenuKeyboard": true,
+      "expandedHelpFit": {
+        "overflow": false,
+        "documentOverflow": false
+      },
+      "unexpectedRequests": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    }
+  ]
+}

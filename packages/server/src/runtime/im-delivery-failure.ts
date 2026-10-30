@@ -51,6 +51,11 @@ import { type PostgresRuntimeCustodyStore, writeTerminalReport } from "./runtime
  * rejections therefore require `dispatch_request_id IS NULL` and are retried after the outcome
  * arrives, and an operation that never settles is abandoned instead of settled. The deadline also
  * owns the attempt's one failure record: an aborted operation must not write a second one.
+ *
+ * What these transitions do not cover, so that nothing here reads as a total bound: an operation
+ * that never settles keeps its correlated dispatch and is reclaimed again on the retry schedule; a
+ * superseded placement that already carries a retained `result_hash` is refused by both settlement
+ * paths; and a crash between a claim and its failure record loses the consecutive-timeout count.
  */
 
 const BOUNDED_CODE = /^IM_DELIVERY_[A-Z0-9_]{1,100}$/;

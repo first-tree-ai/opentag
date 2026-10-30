@@ -63,8 +63,8 @@ an inactive binding, a deleted Agent, or a superseded placement generation puts 
 `#recover`'s query, outside the selector, or behind a custody fence a report can no longer satisfy.
 That sweep is bounded by the same batch size, requires the row to be provably past the
 report-acceptance window, skips a row that another worker currently claims, and writes the same
-`unknown` report, so it settles exactly the rows a real report could no longer describe. It covers
-Local custody only; Cloud custody stays with the Cloud owner's own acceptance cutoff.
+`unknown` report, so it settles the rows it selects. It covers Local custody only; Cloud custody
+stays with the Cloud owner's own acceptance cutoff.
 
 A superseded placement needs one difference. `PostgresRuntimeCustodyStore` requires the delivery's
 generation, the report's generation, and the current `session_placements.generation` to agree, and a
@@ -160,6 +160,12 @@ Two terminal outcomes bound the paths, and neither needs a schema change:
   with no live runtime, or a placement generation that was superseded. The superseded case is the one
   the delivery worker cannot write at all; the expiry sweep settles it and records
   `reason = placement_superseded` (see the expiry-sweep paragraph above).
+
+These settlements cover the shapes described above. They are not a total bound on every delivery,
+and three shapes stay outside them: an operation that never settles keeps its correlated dispatch and
+is reclaimed again on the retry schedule, a rollover that already carries a retained `result_hash` is
+refused by both settlement paths, and a crash between a claim and its failure record loses the
+consecutive-timeout count.
 
 Each of these paths emits one diagnostic per failure run instead of one per attempt: a repeat of
 the failure code already recorded for the delivery adds nothing an operator can act on. Only the

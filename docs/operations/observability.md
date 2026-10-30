@@ -300,7 +300,7 @@ console. Cloud Monitoring watches the Server from outside and through the platfo
 | VM memory used (Ops Agent) | VM memory | Above 90% for 10 minutes | Email |
 | VM root disk `/dev/sda1` used (Ops Agent) | VM root disk | Above 85% for 10 minutes | Email |
 | Server log at `CRITICAL` (Pino `fatal`); no server code emits it yet, see Known gaps | Fatal log | Any entry; at most one notice per 10 minutes | Email and SMS |
-| Server log at `ERROR` or above | New error type | Any entry; at most one notice per 30 minutes | Email |
+| Server log at `ERROR` or above, other than `IM_DELIVERY_RUNTIME_UNAVAILABLE` | New error type | Any entry; at most one notice per 30 minutes | Email |
 
 `/readyz` is the probe target because it answers `503` until bootstrap readiness has completed all four stages
 (`configuration`, `migration`, `application`, `listen`), and again whenever the database probe fails. `/healthz` only
@@ -374,10 +374,12 @@ host. Entries carry the label `service=opentag-server`. The agent config is `/et
   `severity`. Validate any edit before restarting with
   `google_cloud_ops_agent_engine -service=fluentbit -in <file> -logs <dir> -state <dir>`.
 - The agent reads new lines only. A restart does not replay older logs.
-- The new-error alert has no exclusions. `IM_DELIVERY_RUNTIME_UNAVAILABLE` was excluded while an offline Computer was
-  retried at a fixed interval; the delivery worker now retries at a falling rate and reports a repeated failure once,
-  so its return is visible again. The Cloud Monitoring policy must drop that exclusion to match the table above, and a
-  temporary exclusion may only be re-added with a written exit condition, never as the permanent state.
+- `IM_DELIVERY_RUNTIME_UNAVAILABLE` is still excluded from the new-error alert. The exclusion exists because an offline
+  Computer was retried at a fixed interval; the delivery worker now retries at a falling rate and reports a repeated
+  failure once, so the exclusion is no longer what keeps the alert quiet, and it hides a genuine return of the code.
+  Dropping it is a pending operational step in the Cloud Monitoring policy, not a change this repository can make: the
+  table above states the policy after that step. Remove the exclusion in the console and delete this bullet in the same
+  change. A temporary exclusion may only be added with a written exit condition, never as the permanent state.
 - Every delivery diagnostic carries `phase` plus the durable identifiers `deliveryId`, `agentId`, `computerId`, and
   `attemptCount` in `jsonPayload`, so one production error can be attributed to one delivery. No message body, prompt,
   credential, or provider payload is included.

@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
+import { parkedDelivery } from "../db/im-delivery-work.js";
 import { DISPATCH_CLAIM_PREFIX } from "./im-delivery-claim.js";
 import { isCloudReadinessRetry } from "./im-delivery-ready-wakeup.js";
 import {
@@ -30,6 +31,8 @@ export function eligibleDeliveryCandidate(
   custody: DeliveryCustodySnapshot,
   targeted = false,
 ): context is DeliveryContext & { computerId: string; computerKind: "local" | "cloud"; generation: number } {
+  // A parked pending dispatch stays out of the work set; the scan excludes it in SQL as well.
+  if (parkedDelivery(row)) return false;
   if (
     !activeDeliveryContext(context) ||
     !context.computerId ||

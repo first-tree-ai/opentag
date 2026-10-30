@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { computeTurnResultHash, type TurnReportRequest } from "@opentag/shared";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
+import { PARKED_DELIVERY_CODE } from "../db/im-delivery-work.js";
 import { agents, computers, imBindings, imMessageDeliveries, sessionPlacements, sessions } from "../db/schema/index.js";
 import { outcomeAttrs, setActiveSpanAttributes } from "../observability/index.js";
 import { releaseImBatch } from "./im-delivery-batch.js";
@@ -52,10 +53,12 @@ import { type PostgresRuntimeCustodyStore, writeTerminalReport } from "./runtime
  * arrives, and an operation that never settles is abandoned instead of settled. The deadline also
  * owns the attempt's one failure record: an aborted operation must not write a second one.
  *
- * What these transitions do not cover, so that nothing here reads as a total bound: an operation
- * that never settles keeps its correlated dispatch and is reclaimed again on the retry schedule; a
- * superseded placement that already carries a retained `result_hash` is refused by both settlement
- * paths; and a crash between a claim and its failure record loses the consecutive-timeout count.
+ * What these transitions do not cover, so that nothing here reads as a total bound: an operation that
+ * never settles keeps its correlated dispatch and is only parked out of the work set (see
+ * `parkDelivery`), so it is neither retried on the schedule nor settled and the ingress deadline is
+ * its one remaining bound; a superseded placement that already carries a retained `result_hash` is
+ * refused by both settlement paths; and a crash between a claim and its failure record loses the
+ * consecutive-timeout count.
  */
 
 const BOUNDED_CODE = /^IM_DELIVERY_[A-Z0-9_]{1,100}$/;
@@ -116,17 +119,7 @@ export async function recordDeliveryFailure(
   setActiveSpanAttributes(outcomeAttrs("failed", bounded));
   const streak = bounded === OPERATION_TIMEOUT_CODE ? operationTimeoutStreak(attempt.previousErrorCode) + 1 : 0;
   if (streak > 0 && options.allowTerminal !== false && operationTimeoutExhausted(streak)) {
-    // The same input is offered to the same runtime with the same deadline every time, so another
-    // attempt is not progress. `rejectDelivery` is the existing terminal settlement; it refuses
-    // while a dispatch correlation exists because that dispatch may still be executing.
-    if (
-      await rejectDelivery(deps, attempt.deliveryId, "retry_exhausted", attempt.claimToken, {
-        requireNoDispatchCorrelation: true,
-      })
-    ) {
-      deps.onDiagnostic("IM_DELIVERY_RETRY_EXHAUSTED", diagnosticContext(attempt));
-      return;
-    }
+    if (await settleExhaustedRun(deps, attempt)) return;
   }
   const durableCode = streak > 0 ? operationTimeoutCode(streak) : bounded;
   const delayMs = options.retryDelayMs ?? deliveryRetryDelayMs(attempt.attemptCount, attempt.offlineMs);
@@ -231,6 +224,60 @@ export async function handleDeliveryFailure(
     return;
   }
   await recordDeliveryFailure(deps, attempt, code);
+}
+
+/**
+ * The durable code a parked dispatch carries; see `PARKED_DELIVERY_CODE` for why it is not `reason`.
+ */
+export const DISPATCH_PARKED_CODE = "IM_DELIVERY_DISPATCH_PARKED";
+
+/**
+ * Park a correlated dispatch whose operation never settled: keep the pending state, the `reason`,
+ * the dispatch correlation, and the unreported custody, and take the row out of the work set so the
+ * runtime is not offered it again. Nothing is fabricated — no `turn_report`, no `result_hash`, no
+ * `reported_at`, no terminal state — so a late authentic report still settles the row through its
+ * normal path, and the ingress deadline stays the only outer bound (`next_attempt_at` is set to that
+ * deadline, and the TTL sweep still needs `reason is null`).
+ *
+ * Exactly one row can be parked per delivery: the scan excludes a parked row, so the exhaustion path
+ * cannot reach it again, and the diagnostic below is emitted only for the update that applied.
+ */
+export async function parkDelivery(deps: DeliveryFailureDeps, attempt: DeliveryAttempt): Promise<boolean> {
+  const [parked] = await deps.database
+    .update(imMessageDeliveries)
+    .set({
+      lastErrorCode: PARKED_DELIVERY_CODE,
+      nextAttemptAt: sql`${imMessageDeliveries.expiresAt}`,
+    })
+    .where(
+      and(
+        eq(imMessageDeliveries.id, attempt.deliveryId),
+        eq(imMessageDeliveries.state, "pending"),
+        isNotNull(imMessageDeliveries.dispatchRequestId),
+        ...(attempt.claimToken ? [eq(imMessageDeliveries.lastErrorCode, attempt.claimToken)] : []),
+      ),
+    )
+    .returning({ id: imMessageDeliveries.id });
+  if (!parked) return false;
+  deps.onDiagnostic(DISPATCH_PARKED_CODE, diagnosticContext(attempt));
+  return true;
+}
+
+/**
+ * The end of a consecutive-timeout run: the same input is offered to the same runtime with the same
+ * deadline every time, so another attempt is not progress. An uncorrelated dispatch is terminally
+ * rejected; a correlated one may still be executing and is parked instead, so it is never rejected.
+ * Returns whether the row was settled or parked, i.e. whether this attempt ends here.
+ */
+async function settleExhaustedRun(deps: DeliveryFailureDeps, attempt: DeliveryAttempt): Promise<boolean> {
+  const rejected = await rejectDelivery(deps, attempt.deliveryId, "retry_exhausted", attempt.claimToken, {
+    requireNoDispatchCorrelation: true,
+  });
+  if (rejected) {
+    deps.onDiagnostic("IM_DELIVERY_RETRY_EXHAUSTED", diagnosticContext(attempt));
+    return true;
+  }
+  return parkDelivery(deps, attempt);
 }
 
 export interface RejectOptions {

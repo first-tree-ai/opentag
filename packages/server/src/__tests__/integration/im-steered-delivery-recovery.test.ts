@@ -3,6 +3,7 @@ import {
   computeDirectInputHash,
   computeRuntimeImMessageSemanticHash,
   computeRuntimeImSteerInputHash,
+  type DirectImMessageDeliveryRequest,
   type SessionReconcileRequest,
   type TurnReportRequest,
 } from "@opentag/shared";
@@ -808,6 +809,84 @@ describe("steered IM delivery recovery", () => {
     }
   });
 
+  it("parks a correlated dispatch whose operation never settles and never offers it again", async () => {
+    const fixture = await createFixture(client.database);
+    const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });
+    const parked = await parkThroughNeverSettlingDispatch(client.database, fixture, custody);
+
+    const [row] = await client.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+    // Parked: still pending, still correlated, still unreported, nothing fabricated.
+    expect(row).toMatchObject({
+      state: "pending",
+      reason: null,
+      lastErrorCode: "IM_DELIVERY_PARKED",
+      reportedAt: null,
+      turnReport: null,
+      resultHash: null,
+      turnId: null,
+    });
+    expect(row?.dispatchRequestId).not.toBeNull();
+    expect(row?.dispatchInputHash).not.toBeNull();
+    expect(row?.dispatchPayload).not.toBeNull();
+    // The ingress deadline is the only remaining bound, and it is where the row is due again.
+    expect(row?.nextAttemptAt).toEqual(row?.expiresAt);
+    expect(parked.diagnosticCodes.filter((code) => code === "IM_DELIVERY_DISPATCH_PARKED")).toHaveLength(1);
+    const reconcileCalls = parked.requestReconcile.mock.calls.length;
+
+    // The park is a predicate, not a delay: even a row that is due again is not claimed. The delay is
+    // moved back deliberately so the sweep would pick it up if the selector still offered it.
+    const dueAgain = new Date(Date.now() - 1_000);
+    await client.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: dueAgain })
+      .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+    await parked.worker.runOnce();
+    await parked.worker.runOnce();
+    expect(parked.requestReconcile.mock.calls.length).toBe(reconcileCalls);
+    expect(parked.requestDelivery).toHaveBeenCalledTimes(1);
+    expect(parked.diagnosticCodes.filter((code) => code === "IM_DELIVERY_DISPATCH_PARKED")).toHaveLength(1);
+    const [afterSweeps] = await client.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+    expect(afterSweeps).toEqual({ ...row, nextAttemptAt: dueAgain });
+
+    // The ingress deadline still expires it, which is the only outer bound the park leaves.
+    const expiredAt = new Date((row?.expiresAt.getTime() ?? 0) + 60_000);
+    await runImDeliveryExpiry(client.database, janitorOptions(expiredAt));
+    const [expired] = await client.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+    expect(expired).toMatchObject({ state: "expired", reason: "ttl" });
+  });
+
+  it("records a late authentic report for a parked dispatch", async () => {
+    const fixture = await createFixture(client.database);
+    const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });
+    const parked = await parkThroughNeverSettlingDispatch(client.database, fixture, custody);
+    const dispatched = parked.requestDelivery.mock.calls[0]?.[2];
+    if (!dispatched) throw new Error("The parked dispatch was never sent");
+
+    // The Client answers after the park, exactly as a slow Turn would: the acceptance clears the
+    // park marker and the report records through the normal fence.
+    await expect(
+      custody.acceptDelivery(dispatched, computeDirectInputHash(dispatched), fixture.rootTurnId, fixture.context),
+    ).resolves.toBe("accepted");
+    await expect(custody.recordTurn(turnReport(fixture, "completed"), fixture.context)).resolves.toBe("recorded");
+
+    const [reported] = await client.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+    expect(reported).toMatchObject({ state: "accepted", lastErrorCode: null, turnId: fixture.rootTurnId });
+    expect(reported?.reportedAt).not.toBeNull();
+    expect(reported?.turnReport).toMatchObject({ outcome: "completed" });
+  });
+
   it("leaves a rolled-over delivery alone while its report-acceptance window is open", async () => {
     const fixture = await createFixture(client.database);
     const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });
@@ -1043,4 +1122,65 @@ async function seedSlackWorkingTurn(
     deadlineAt: new Date(fixture.now.getTime() + 30 * 60_000),
   });
   return { installationId, targetId, revision: 4 };
+}
+
+/**
+ * Seed the delivery one timeout short of the cap, then dispatch it into an operation that persists the
+ * dispatch correlation and never settles, which is the shape that must park instead of retry.
+ */
+async function parkThroughNeverSettlingDispatch(
+  database: ReturnType<typeof createDatabaseClient>["database"],
+  fixture: Awaited<ReturnType<typeof createFixture>>,
+  custody: PostgresRuntimeCustodyStore,
+) {
+  await database
+    .update(imMessageDeliveries)
+    .set({
+      attemptCount: 7,
+      lastErrorCode: "IM_DELIVERY_OPERATION_TIMEOUT_7",
+      nextAttemptAt: new Date(Date.now() - 1_000),
+    })
+    .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+  const diagnosticCodes: string[] = [];
+  const requestReconcile = vi.fn(
+    async (_computerId: string, _instanceId: string, request: unknown, onDispatched?: () => void) => {
+      onDispatched?.();
+      return {
+        type: "session:reconcile:result" as const,
+        requestId: (request as { requestId: string }).requestId,
+        sessionId: fixture.sessionId,
+        placementGeneration: fixture.placementGeneration,
+        status: "ready" as const,
+      };
+    },
+  );
+  const requestDelivery = vi.fn(
+    async (
+      _computerId: string,
+      _instanceId: string,
+      request: DirectImMessageDeliveryRequest,
+      onDispatched?: () => void,
+    ) => {
+      onDispatched?.();
+      await custody.beginDeliveryDispatch(request, computeDirectInputHash(request), fixture.dispatchContext);
+      return new Promise<never>(() => undefined);
+    },
+  );
+  const worker = new ImDeliveryWorker({
+    database,
+    domain: { requestReconcile, requestDelivery } as never,
+    assembler: { assembleForSession: vi.fn(async () => fixture.runtime) },
+    registry: {
+      canReceiveSnapshot: vi.fn(() => true),
+      currentInstanceId: vi.fn(() => fixture.dispatchContext.instanceId),
+      capabilityVersion: vi.fn(() => 2),
+    } as never,
+    intervalMs: 60_000,
+    operationTimeoutMs: 40,
+    onDiagnostic: (code: string) => diagnosticCodes.push(code),
+  });
+  // One iteration: the deadline aborts the hang, the exhaustion path parks, then the grace expires.
+  // The worker is left running so the later sweeps in the test actually scan for work.
+  await worker.runOnce();
+  return { diagnosticCodes, requestDelivery, requestReconcile, worker };
 }

@@ -2378,7 +2378,7 @@ describe("ImDeliveryWorker database workflow", () => {
     }
   });
 
-  it("keeps a correlated timed-out dispatch pending so a late acceptance can still record its Turn", async () => {
+  it("parks a correlated timed-out dispatch so a late acceptance can still record its Turn", async () => {
     const fixture = await workerFixture(unit);
     const custody = new PostgresRuntimeCustodyStore(unit.database);
     const clock = Date.now();
@@ -2453,16 +2453,26 @@ describe("ImDeliveryWorker database workflow", () => {
 
     const running = worker.runOnce();
     await vi.waitFor(() => expect(correlated).toBe(true), { timeout: 2_000, interval: 10 });
-    // The deadline passes with a correlated dispatch, so the row stays pending: the Turn may still
-    // execute and report, and a terminal row would make that report unrecordable.
+    // The deadline passes with a correlated dispatch, so the row is parked rather than rejected: it
+    // stays pending with its correlation, the Turn may still execute and report, and a terminal row
+    // would make that report unrecordable.
     await running;
     const [inFlight] = await unit.database
       .select()
       .from(imMessageDeliveries)
       .where(eq(imMessageDeliveries.id, fixture.deliveryId));
-    expect(inFlight?.state).toBe("pending");
-    expect(inFlight?.lastErrorCode).toBe("IM_DELIVERY_OPERATION_TIMEOUT_8");
+    expect(inFlight).toMatchObject({
+      state: "pending",
+      lastErrorCode: "IM_DELIVERY_PARKED",
+      reason: null,
+      reportedAt: null,
+      turnReport: null,
+      resultHash: null,
+    });
+    expect(inFlight?.dispatchRequestId).not.toBeNull();
+    expect(inFlight?.nextAttemptAt).toEqual(inFlight?.expiresAt);
     expect(diagnosticCodes(diagnostic)).not.toContain("IM_DELIVERY_RETRY_EXHAUSTED");
+    expect(diagnosticCodes(diagnostic).filter((code) => code === "IM_DELIVERY_DISPATCH_PARKED")).toHaveLength(1);
 
     // The late acceptance lands after the grace and keeps its custody.
     await vi.waitFor(

@@ -148,10 +148,11 @@ Two terminal outcomes bound the paths, and neither needs a schema change:
   Client upgrade, an allocation, or capacity.
   The terminal rejection is only written while the row carries no dispatch correlation. The Server
   persists that correlation before the delivery frame leaves, so a correlated row may already be
-  executing: it stays pending and is settled only after its outcome arrives, and an operation that
-  never settles is abandoned without any terminal decision. A dispatch release keeps the run going
-  (it is a lifecycle step, not a failure) so the cap stays reachable for an input that alternates
-  "timeout on the frozen dispatch" and "release, prepare a fresh dispatch".
+  executing: it stays pending and is settled only after its outcome arrives. When the same run then
+  finds the correlation still in place, the row is **parked** instead of rejected — see below. A
+  dispatch release keeps the run going (it is a lifecycle step, not a failure) so the cap stays
+  reachable for an input that alternates "timeout on the frozen dispatch" and "release, prepare a
+  fresh dispatch".
   The count is consecutive timeouts, never total claims: `attempt_count` grows on every claim, so a
   delivery that already failed seven times for unrelated reasons must still get its whole timeout
   budget. The count has no column of its own and rides in the existing `last_error_code`: the
@@ -172,11 +173,28 @@ Two terminal outcomes bound the paths, and neither needs a schema change:
   the delivery worker cannot write at all; the expiry sweep settles it and records
   `reason = placement_superseded` (see the expiry-sweep paragraph above).
 
-These settlements cover the shapes described above. They are not a total bound on every delivery,
-and three shapes stay outside them: an operation that never settles keeps its correlated dispatch and
-is reclaimed again on the retry schedule, a rollover that already carries a retained `result_hash` is
-refused by both settlement paths, and a crash between a claim and its failure record loses the
-consecutive-timeout count.
+These settlements cover the shapes described above. They are not a total bound on every delivery.
+
+### Parking a correlated dispatch
+
+A correlated dispatch whose operation never settles is neither retried forever nor rejected. Once the
+same consecutive-timeout run reaches the cap, the worker **parks** the row: it records
+`lastErrorCode = IM_DELIVERY_PARKED`, sets `next_attempt_at` to the ingress deadline, and emits one
+`IM_DELIVERY_DISPATCH_PARKED` diagnostic with the delivery identity. Parking keeps everything that
+records what may have happened — the pending state, `reason`, the dispatch correlation
+(`dispatch_request_id`, `dispatch_input_hash`, `dispatch_payload`), the execution origin, and the
+unreported custody — and writes no `turn_report`, no `result_hash`, and no `reported_at`. The claim
+scans exclude a parked *pending* row in SQL and in the in-memory eligibility, so the runtime is never
+offered it again; a row that is due is still not claimable, because the exclusion is a predicate and
+not a delay. Once the ingress deadline passes, the TTL sweep expires it as usual, and an expired row
+resumes the ordinary expired-dispatch release path (the exclusion is scoped to pending rows). A late
+authentic acceptance and report still settle a parked row through the normal path, because nothing was
+fabricated and the correlation is intact.
+
+What parking does not guarantee: the consecutive-timeout counter is still not crash-durable (a worker
+that exits between a claim and its failure record loses it, so the worst case is a slower park rather
+than an endless loop), and a rollover that already carries a retained `result_hash` is still refused
+by both settlement paths.
 
 Each of these paths emits one diagnostic per failure run instead of one per attempt: a repeat of
 the failure code already recorded for the delivery adds nothing an operator can act on. Only the

@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, lte, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
-import { deliveryCandidatePredicate, deliveryWorkPredicate } from "../db/im-delivery-work.js";
+import { deliveryCandidatePredicate, deliveryWorkPredicate, notParkedPredicate } from "../db/im-delivery-work.js";
 import { agents, computers, imBindings, imMessageDeliveries, sessionPlacements, sessions } from "../db/schema/index.js";
 
 export type DeliveryWorkQuery = Pick<DatabaseClient | DatabaseTransaction, "select" | "execute">;
@@ -40,6 +40,7 @@ export function deliveryCandidatePage(
       and(
         deliveryWorkPredicate(imMessageDeliveries),
         deliveryCandidatePredicate(imMessageDeliveries),
+        notParkedPredicate(imMessageDeliveries),
         lte(imMessageDeliveries.nextAttemptAt, now),
         cursor
           ? sql`(${imMessageDeliveries.nextAttemptAt}, ${imMessageDeliveries.id}) > (${cursor.time}::timestamptz, ${cursor.id}::uuid)`
@@ -61,7 +62,13 @@ export async function lockDeliveryCandidate(database: DatabaseTransaction, id: s
       dispatchPayload: imMessageDeliveries.dispatchPayload,
     })
     .from(imMessageDeliveries)
-    .where(and(eq(imMessageDeliveries.id, id), lte(imMessageDeliveries.nextAttemptAt, now)))
+    .where(
+      and(
+        eq(imMessageDeliveries.id, id),
+        notParkedPredicate(imMessageDeliveries),
+        lte(imMessageDeliveries.nextAttemptAt, now),
+      ),
+    )
     .for("update", { of: imMessageDeliveries, skipLocked: true });
   return row;
 }

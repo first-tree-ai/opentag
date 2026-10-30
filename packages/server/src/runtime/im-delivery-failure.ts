@@ -13,7 +13,15 @@ import { outcomeAttrs, setActiveSpanAttributes } from "../observability/index.js
 import { releaseImBatch } from "./im-delivery-batch.js";
 import { ImDeliveryInputError, rejectInvalidImDelivery } from "./im-delivery-content.js";
 import { isCloudReadinessRetry } from "./im-delivery-ready-wakeup.js";
-import { cappedRetryDelayMs, deliveryRetryDelayMs, operationTimeoutExhausted } from "./im-delivery-retry.js";
+import {
+  canonicalFailureCode,
+  cappedRetryDelayMs,
+  deliveryRetryDelayMs,
+  OPERATION_TIMEOUT_CODE,
+  operationTimeoutCode,
+  operationTimeoutExhausted,
+  operationTimeoutStreak,
+} from "./im-delivery-retry.js";
 import type {
   DeliveryAttempt,
   ImDeliveryDiagnosticContext,
@@ -30,6 +38,15 @@ import type { PostgresRuntimeCustodyStore } from "./runtime-custody-store.js";
  * and termination policy across the dispatch, steer, and recovery paths instead of a per-path copy.
  * Nothing in this module invents a report for a Turn that could still report, and no write here
  * touches a row that a newer attempt has already claimed.
+ *
+ * Invariant — one durable code per attempt, and the timeout streak is its own axis. The operation
+ * timeout cap must count *consecutive* operation timeouts, not claims: `attempt_count` grows on every
+ * claim, so a delivery that failed seven times for unrelated reasons would otherwise be terminalized
+ * on its first timeout. There is no dedicated column, so the count rides in the existing
+ * `last_error_code`: the canonical `IM_DELIVERY_OPERATION_TIMEOUT` for the first timeout and
+ * `IM_DELIVERY_OPERATION_TIMEOUT_<n>` from the second on. Any other failure code replaces it and
+ * resets the streak, which is exactly the semantics the cap needs. Diagnostics and the alerting
+ * pipeline always see the canonical code, never the suffixed one.
  */
 
 const BOUNDED_CODE = /^IM_DELIVERY_[A-Z0-9_]{1,100}$/;
@@ -64,20 +81,32 @@ export function diagnosticContext(attempt: DeliveryAttempt): ImDeliveryDiagnosti
   };
 }
 
+export interface DeliveryFailureOptions {
+  retryDelayMs?: number;
+  /**
+   * Whether this record may settle the delivery terminally. A timed-out operation can still settle
+   * after the deadline, so the callback that runs *at* the deadline passes `false` and the terminal
+   * decision waits for the outcome (see `settleExhaustedTimeoutRun`).
+   */
+  allowTerminal?: boolean;
+}
+
 /**
  * Record one failed attempt: bounded backoff from the attempt counter plus the placement
- * Computer's silence, or — for a dispatch that already spent the whole runtime budget on the same
- * frozen input — a terminal rejection instead of another attempt.
+ * Computer's silence, or — for a dispatch that has now spent the whole runtime budget on the same
+ * frozen input `MAX_OPERATION_TIMEOUT_ATTEMPTS` times in a row — a terminal rejection instead of
+ * another attempt.
  */
 export async function recordDeliveryFailure(
   deps: DeliveryFailureDeps,
   attempt: DeliveryAttempt,
   code: string,
-  retryDelayMs?: number,
+  options: DeliveryFailureOptions = {},
 ): Promise<void> {
   const bounded = BOUNDED_CODE.test(code) ? code : "IM_DELIVERY_FAILED";
   setActiveSpanAttributes(outcomeAttrs("failed", bounded));
-  if (bounded === "IM_DELIVERY_OPERATION_TIMEOUT" && operationTimeoutExhausted(attempt.attemptCount)) {
+  const streak = bounded === OPERATION_TIMEOUT_CODE ? operationTimeoutStreak(attempt.previousErrorCode) + 1 : 0;
+  if (streak > 0 && options.allowTerminal !== false && operationTimeoutExhausted(streak)) {
     // The same input is offered to the same runtime with the same deadline every time, so another
     // attempt is not progress. `rejectDelivery` is the existing terminal settlement.
     if (await rejectDelivery(deps, attempt.deliveryId, "retry_exhausted", attempt.claimToken)) {
@@ -85,10 +114,11 @@ export async function recordDeliveryFailure(
       return;
     }
   }
-  const delayMs = retryDelayMs ?? deliveryRetryDelayMs(attempt.attemptCount, attempt.offlineMs);
+  const durableCode = streak > 0 ? operationTimeoutCode(streak) : bounded;
+  const delayMs = options.retryDelayMs ?? deliveryRetryDelayMs(attempt.attemptCount, attempt.offlineMs);
   const [updated] = await deps.database
     .update(imMessageDeliveries)
-    .set({ lastErrorCode: bounded, nextAttemptAt: new Date(deps.now() + delayMs) })
+    .set({ lastErrorCode: durableCode, nextAttemptAt: new Date(deps.now() + delayMs) })
     .where(
       and(
         eq(imMessageDeliveries.id, attempt.deliveryId),
@@ -99,13 +129,32 @@ export async function recordDeliveryFailure(
     .returning({ id: imMessageDeliveries.id });
   if (!updated) return;
   // One line per failure run, not one per attempt: a repeated code adds nothing an operator can act on.
-  if (attempt.previousErrorCode !== bounded) deps.onDiagnostic(bounded, diagnosticContext(attempt));
+  const previousCode = attempt.previousErrorCode ? canonicalFailureCode(attempt.previousErrorCode) : undefined;
+  if (previousCode !== bounded) deps.onDiagnostic(bounded, diagnosticContext(attempt));
   deps.onMetric({ name: "retry", value: 1 });
   if (isCloudReadinessRetry(bounded) && (!attempt.claimToken || !deps.readyRetryClaims.has(attempt.claimToken))) {
     // A ready event may have seen this row's claim marker before the backoff was recorded.
     // Recheck AFTER the write; a ready-triggered retry itself keeps normal bounded backoff.
     deps.recheckReady(attempt.deliveryId);
   }
+}
+
+/**
+ * The timed-out operation has settled, so a terminal decision can no longer race a late acceptance:
+ * settle the delivery once the durable timeout streak reached the cap. The observed streak code is
+ * the ownership fence, so a newer claim or a recorded report wins.
+ */
+export async function settleExhaustedTimeoutRun(deps: DeliveryFailureDeps, attempt: DeliveryAttempt): Promise<boolean> {
+  const [row] = await deps.database
+    .select({ lastErrorCode: imMessageDeliveries.lastErrorCode })
+    .from(imMessageDeliveries)
+    .where(eq(imMessageDeliveries.id, attempt.deliveryId))
+    .limit(1);
+  const streak = operationTimeoutStreak(row?.lastErrorCode);
+  if (!operationTimeoutExhausted(streak) || !row?.lastErrorCode) return false;
+  if (!(await rejectDelivery(deps, attempt.deliveryId, "retry_exhausted", row.lastErrorCode))) return false;
+  deps.onDiagnostic("IM_DELIVERY_RETRY_EXHAUSTED", diagnosticContext(attempt));
+  return true;
 }
 
 /** Release a frozen dispatch so the input can be prepared again, without inventing a result. */

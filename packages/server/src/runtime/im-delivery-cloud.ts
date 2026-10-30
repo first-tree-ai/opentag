@@ -30,6 +30,7 @@ import { loadSandboxRecordBySessionId } from "../services/sandboxes/owned-sandbo
 import { appendPendingImBatch } from "./im-delivery-batch.js";
 import { ImDeliveryInputError, validateFreshImRequest } from "./im-delivery-content.js";
 import type { DeliveryOccupancySubject } from "./im-delivery-custody.js";
+import type { DeliveryFailureOptions } from "./im-delivery-failure.js";
 import { cappedRetryDelayMs } from "./im-delivery-retry.js";
 import type {
   CloudSessionAllocationPort,
@@ -105,7 +106,7 @@ export interface CloudDeliveryCoordinatorOptions {
   }) => Promise<RuntimeImDeliveryContent>;
   /** Occupancy recheck at the last boundary: a competing owner of the delivery's scope. */
   hasOtherCustody: (subject: DeliveryOccupancySubject) => Promise<boolean>;
-  recordFailure: (attempt: DeliveryAttempt, code: string, retryDelayMs?: number) => Promise<void>;
+  recordFailure: (attempt: DeliveryAttempt, code: string, options?: DeliveryFailureOptions) => Promise<void>;
   releaseDispatch: (attempt: DeliveryAttempt, requestId: string, code: string) => Promise<void>;
   rejectInput: (deliveryId: string, reason: string, claimToken?: string) => Promise<void>;
   withActiveAgentAdmission: ActiveAgentAdmission;
@@ -320,10 +321,10 @@ export class CloudDeliveryCoordinator {
       // temporarily unavailable must not pin the worker to a 2 s hot retry until the frozen
       // window runs out: back off with the existing attempt counter, capped well below the
       // dispatch deadline. Every other failure keeps the immediate bounded retry.
-      const retryDelayMs = TRANSIENT_CLOUD_DISPATCH_CODES.has(code)
-        ? cloudDispatchRetryDelayMs(attempt.attemptCount)
+      const options = TRANSIENT_CLOUD_DISPATCH_CODES.has(code)
+        ? { retryDelayMs: cloudDispatchRetryDelayMs(attempt.attemptCount) }
         : undefined;
-      await this.#options.recordFailure(attempt, code, retryDelayMs);
+      await this.#options.recordFailure(attempt, code, options);
       return;
     }
     await this.#options.recordFailure(attempt, "IM_DELIVERY_RUNTIME_FAILED");

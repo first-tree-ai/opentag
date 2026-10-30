@@ -2376,6 +2376,76 @@ describe("ImDeliveryWorker database workflow", () => {
     }
   });
 
+  it("counts consecutive operation timeouts instead of claims before it settles a delivery", async () => {
+    vi.useFakeTimers({ now: new Date("2026-09-02T00:00:00.000Z") });
+    try {
+      const fixture = await workerFixture(unit);
+      // Seven unrelated failures already spent the attempt counter; none of them was a timeout.
+      await unit.database
+        .update(imMessageDeliveries)
+        .set({
+          attemptCount: 7,
+          lastErrorCode: "IM_DELIVERY_CLOUD_CAPACITY_WAITING",
+          nextAttemptAt: new Date(Date.now() - 1),
+        })
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, { deliveryHang: true });
+      const diagnostic = vi.fn();
+      const worker = new ImDeliveryWorker({
+        database: unit.database,
+        domain: domain as never,
+        assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+        registry: fixture.registry,
+        operationTimeoutMs: 100,
+        onDiagnostic: diagnostic,
+      });
+      const attempt = async () => {
+        const running = worker.runOnce();
+        await vi.advanceTimersByTimeAsync(1_100);
+        await running;
+        await vi.advanceTimersByTimeAsync(31_000);
+        const [row] = await unit.database
+          .select({ state: imMessageDeliveries.state, code: imMessageDeliveries.lastErrorCode })
+          .from(imMessageDeliveries)
+          .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+        return row;
+      };
+
+      // The first timeout of this delivery is not the eighth consecutive timeout.
+      expect(await attempt()).toMatchObject({
+        state: "pending",
+        code: "IM_DELIVERY_OPERATION_TIMEOUT",
+      });
+      // The streak is durable and keeps counting, and the diagnostic stays canonical.
+      expect(await attempt()).toMatchObject({
+        state: "pending",
+        code: "IM_DELIVERY_OPERATION_TIMEOUT_2",
+      });
+      for (let rest = 0; rest < 4; rest += 1) await attempt();
+      expect(await attempt()).toMatchObject({
+        state: "pending",
+        code: "IM_DELIVERY_OPERATION_TIMEOUT_7",
+      });
+      expect(await attempt()).toMatchObject({
+        state: "terminal_rejected",
+      });
+      const [settled] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      expect(settled).toMatchObject({
+        state: "terminal_rejected",
+        reason: "retry_exhausted",
+        lastErrorCode: "IM_DELIVERY_TERMINAL",
+      });
+      expect(domain.requestDelivery).toHaveBeenCalledTimes(8);
+      expect(diagnosticCodes(diagnostic).filter((code) => code === "IM_DELIVERY_OPERATION_TIMEOUT")).toHaveLength(1);
+      expect(diagnosticCodes(diagnostic).filter((code) => code === "IM_DELIVERY_RETRY_EXHAUSTED")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("backs off a permanently absent runtime and settles the owed Turn when no report can be truthful", async () => {
     const fixture = await workerFixture(unit);
     const clock = Date.now();

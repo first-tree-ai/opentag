@@ -104,13 +104,20 @@ because a row that is already due soon is left alone.
 
 Two terminal outcomes bound the paths, and neither needs a schema change:
 
-- A dispatch whose frozen input exhausts the whole 30-second operation budget eight times settles
-  through the existing terminal rejection as `state = terminal_rejected`,
+- A dispatch whose frozen input exhausts the whole 30-second operation budget eight **consecutive**
+  times settles through the existing terminal rejection as `state = terminal_rejected`,
   `reason = retry_exhausted`, `lastErrorCode = IM_DELIVERY_TERMINAL`, with the dispatch columns
   cleared and the IM batch released. The same input is offered to the same runtime with the same
   deadline on every attempt, so another attempt is not progress. Every other failure keeps
   retrying inside the ingress deadline, because it waits for an external state change such as a
   Client upgrade, an allocation, or capacity.
+  The count is consecutive timeouts, never total claims: `attempt_count` grows on every claim, so a
+  delivery that already failed seven times for unrelated reasons must still get its whole timeout
+  budget. The count has no column of its own and rides in the existing `last_error_code`: the
+  canonical `IM_DELIVERY_OPERATION_TIMEOUT` for the first timeout and
+  `IM_DELIVERY_OPERATION_TIMEOUT_<n>` from the second on, replaced by any other failure code, which
+  is the reset. Diagnostics, the span outcome, and the alerting pipeline always see the canonical
+  code without the suffix.
 - Accepted, unreported custody settles as an `unknown` Turn Report with
   `executionEffects: may_have_occurred` and `errorReason: turn_state_unknown` once no report can
   still be truthful: the platform maximum runtime from acceptance plus a one-hour grace. This

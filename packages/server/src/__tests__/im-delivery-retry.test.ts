@@ -4,10 +4,13 @@ import { cloudDispatchRetryDelayMs } from "../runtime/im-delivery-cloud.js";
 import {
   ACCEPTED_REPORT_GRACE_MS,
   acceptedReportDeadlineMs,
+  canonicalFailureCode,
   cappedRetryDelayMs,
   deliveryRetryDelayMs,
   MAX_OPERATION_TIMEOUT_ATTEMPTS,
+  operationTimeoutCode,
   operationTimeoutExhausted,
+  operationTimeoutStreak,
 } from "../runtime/im-delivery-retry.js";
 
 const MINUTE = 60_000;
@@ -70,6 +73,42 @@ describe("operation timeout exhaustion", () => {
     expect(MAX_OPERATION_TIMEOUT_ATTEMPTS).toBe(8);
     expect([1, 7].map(operationTimeoutExhausted)).toEqual([false, false]);
     expect([8, 9, 100].map(operationTimeoutExhausted)).toEqual([true, true, true]);
+  });
+
+  it("keeps the consecutive-timeout count in the durable code", () => {
+    expect([1, 2, 8, 42].map(operationTimeoutCode)).toEqual([
+      "IM_DELIVERY_OPERATION_TIMEOUT",
+      "IM_DELIVERY_OPERATION_TIMEOUT_2",
+      "IM_DELIVERY_OPERATION_TIMEOUT_8",
+      "IM_DELIVERY_OPERATION_TIMEOUT_42",
+    ]);
+    expect(
+      ["IM_DELIVERY_OPERATION_TIMEOUT", "IM_DELIVERY_OPERATION_TIMEOUT_2", "IM_DELIVERY_OPERATION_TIMEOUT_8"].map(
+        operationTimeoutStreak,
+      ),
+    ).toEqual([1, 2, 8]);
+  });
+
+  it("reads a non-timeout or malformed code as no timeout run", () => {
+    expect(
+      [
+        undefined,
+        null,
+        "",
+        "IM_DELIVERY_RUNTIME_UNAVAILABLE",
+        "IM_DELIVERY_OPERATION_TIMEOUT_",
+        "IM_DELIVERY_OPERATION_TIMEOUT_x",
+        "IM_DELIVERY_OPERATION_TIMEOUT_1",
+        "IM_DELIVERY_OPERATION_TIMEOUT_TIMEOUT",
+        "IM_DELIVERY_CLAIM_1a2b",
+      ].map((code) => operationTimeoutStreak(code as string | null | undefined)),
+    ).toEqual([0, 0, 0, 0, 0, 0, 1, 0, 0]);
+  });
+
+  it("reports the canonical code whatever the streak suffix is", () => {
+    expect(canonicalFailureCode("IM_DELIVERY_OPERATION_TIMEOUT_7")).toBe("IM_DELIVERY_OPERATION_TIMEOUT");
+    expect(canonicalFailureCode("IM_DELIVERY_OPERATION_TIMEOUT")).toBe("IM_DELIVERY_OPERATION_TIMEOUT");
+    expect(canonicalFailureCode("IM_DELIVERY_RUNTIME_UNAVAILABLE")).toBe("IM_DELIVERY_RUNTIME_UNAVAILABLE");
   });
 });
 

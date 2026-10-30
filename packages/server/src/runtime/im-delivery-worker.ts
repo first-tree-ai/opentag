@@ -60,6 +60,7 @@ import {
 import { withOperationDeadline } from "./im-delivery-deadline.js";
 import {
   type DeliveryFailureDeps,
+  type DeliveryFailureOptions,
   deferRecoveryRetry,
   diagnosticContext,
   handleDeliveryFailure,
@@ -248,7 +249,7 @@ export class ImDeliveryWorker {
       replyRole: (messageId, sessionKind, threadKey) => this.#replyRole(messageId, sessionKind, threadKey),
       buildDeliveryContent: (contentInput) => this.#buildDeliveryContent(contentInput),
       hasOtherCustody: (subject) => hasOtherCustody(this.#database, subject),
-      recordFailure: (attempt, code, retryDelayMs) => this.#recordFailure(attempt, code, retryDelayMs),
+      recordFailure: (attempt, code, options) => this.#recordFailure(attempt, code, options),
       releaseDispatch: (attempt, requestId, code) => this.#releaseDispatch(attempt, requestId, code),
       rejectInput: async (deliveryId, reason, claimToken) => {
         await this.#reject(deliveryId, reason, claimToken);
@@ -1315,8 +1316,8 @@ export class ImDeliveryWorker {
     return { admitted: true, result };
   }
 
-  #recordFailure(attempt: DeliveryAttempt, code: string, retryDelayMs?: number): Promise<void> {
-    return recordDeliveryFailure(this.#failures, attempt, code, retryDelayMs);
+  #recordFailure(attempt: DeliveryAttempt, code: string, options?: DeliveryFailureOptions): Promise<void> {
+    return recordDeliveryFailure(this.#failures, attempt, code, options);
   }
 
   #releaseDispatch(attempt: DeliveryAttempt, requestId: string, code: string): Promise<void> {

@@ -28,16 +28,49 @@ export function deliveryRetryDelayMs(attemptCount: number, offlineMs = 0): numbe
   return Math.min(Math.max(cappedRetryDelayMs(attemptCount), offline), OFFLINE_RETRY_MAX_DELAY_MS);
 }
 
+export const OPERATION_TIMEOUT_CODE = "IM_DELIVERY_OPERATION_TIMEOUT";
+
 /**
- * A frozen dispatch that exhausts the whole operation budget this many times cannot progress: the
- * same input is offered to the same runtime with the same deadline, and every attempt ends in the
- * same timeout (#1079). The cap is deliberately small because one attempt already costs the full
- * 30 s budget; 8 attempts is ~6 min of runtime time.
+ * A frozen dispatch that exhausts the whole operation budget this many *consecutive* times cannot
+ * progress: the same input is offered to the same runtime with the same deadline, and every attempt
+ * ends in the same timeout (#1079). The cap is deliberately small because one attempt already costs
+ * the full 30 s budget; 8 attempts is ~6 min of runtime time.
+ *
+ * The count is consecutive timeouts, never total claims: a delivery that failed seven times for
+ * unrelated reasons (capacity, a Client upgrade, a busy reconcile) has not spent eight operation
+ * budgets and must still get its full timeout budget.
  */
 export const MAX_OPERATION_TIMEOUT_ATTEMPTS = 8;
 
-export function operationTimeoutExhausted(attemptCount: number): boolean {
-  return attemptCount >= MAX_OPERATION_TIMEOUT_ATTEMPTS;
+/**
+ * How many operation timeouts the durable failure code records, on the timeout axis alone.
+ *
+ * `last_error_code` carries the canonical code for the first timeout and `…_<n>` from the second on,
+ * so the streak survives a claim (the claim marker is written to another row read) without a new
+ * column. Any other failure code replaces it and resets the streak to zero.
+ */
+export function operationTimeoutStreak(code: string | null | undefined): number {
+  if (!code) return 0;
+  if (code === OPERATION_TIMEOUT_CODE) return 1;
+  if (!code.startsWith(`${OPERATION_TIMEOUT_CODE}_`)) return 0;
+  const suffix = code.slice(OPERATION_TIMEOUT_CODE.length + 1);
+  if (!/^\d{1,6}$/.test(suffix)) return 0;
+  const streak = Number(suffix);
+  return streak >= 2 ? streak : 1;
+}
+
+/** The durable code that carries `streak` consecutive operation timeouts; canonical for the first. */
+export function operationTimeoutCode(streak: number): string {
+  return streak <= 1 ? OPERATION_TIMEOUT_CODE : `${OPERATION_TIMEOUT_CODE}_${Math.trunc(streak)}`;
+}
+
+/** The code an operator and the alerting pipeline must see, without the streak suffix. */
+export function canonicalFailureCode(code: string): string {
+  return operationTimeoutStreak(code) > 0 ? OPERATION_TIMEOUT_CODE : code;
+}
+
+export function operationTimeoutExhausted(streak: number): boolean {
+  return streak >= MAX_OPERATION_TIMEOUT_ATTEMPTS;
 }
 
 /** A report written as the execution window closes must still be accepted. */

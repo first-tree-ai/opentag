@@ -254,6 +254,11 @@ uses canonical filesystem paths so aliases of Agent Home do not offer a project 
 This preserves the original resources. Native user plugins and Skills are separate from the
 platform's archive ownership and marker-based synchronization.
 
+Local Pi also discovers native user/project Skills. Platform paths stay explicit additions to
+that discovery; Pi owns canonical-path deduplication and native exclusion rules. The managed
+model-option query suppresses Skills and extensions and is not a loaded-Skill check. Inspect
+Pi's actual `get_commands` catalog from the Agent cwd to verify availability.
+
 **Codex materialization must be Agent-scoped.** The only acceptable targets are the workspace's
 `.agents/skills` or a per-Agent `CODEX_HOME`. The OS account home's `.agents/skills` is shared by
 every Agent on the Computer and is **never** a target or a fallback — writing there would expose one

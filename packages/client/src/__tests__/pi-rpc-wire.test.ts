@@ -33,6 +33,69 @@ describe("PiRpcProcess", () => {
     await process.close();
   });
 
+  it("marks the ACK synchronously before following events in the same JSONL chunk", async () => {
+    const child = fakeChild();
+    const process = fakeProcess(child);
+    const order: string[] = [];
+    process.subscribe((event) => order.push(String(event.type)));
+    const request = process
+      .request({ type: "prompt" }, undefined, {
+        onResponse: () => {
+          order.push("ack");
+        },
+      })
+      .then(() => {
+        order.push("promise");
+      });
+    child.stdout.emit(
+      "data",
+      Buffer.from(
+        [
+          { type: "response", id: "opentag-1", command: "prompt", success: true },
+          { type: "agent_start" },
+          { type: "agent_settled" },
+        ]
+          .map((message) => JSON.stringify(message))
+          .join("\n") + "\n",
+      ),
+    );
+    expect(order).toEqual(["ack", "agent_start", "agent_settled"]);
+    await request;
+    expect(order.at(-1)).toBe("promise");
+    const closed = process.close();
+    child.emit("close", 0, null);
+    await closed;
+  });
+
+  it("rejects a throwing ACK observer and never calls it for a command rejection", async () => {
+    const child = fakeChild();
+    const process = fakeProcess(child);
+    const error = new Error("observer failed");
+    const failed = process.request({ type: "prompt" }, undefined, {
+      onResponse: () => {
+        throw error;
+      },
+    });
+    child.stdout.emit(
+      "data",
+      Buffer.from(JSON.stringify({ type: "response", id: "opentag-1", command: "prompt", success: true }) + "\n"),
+    );
+    await expect(failed).rejects.toBe(error);
+    const observer = vi.fn();
+    const rejected = process.request({ type: "prompt" }, undefined, { onResponse: observer });
+    child.stdout.emit(
+      "data",
+      Buffer.from(
+        JSON.stringify({ type: "response", id: "opentag-2", command: "prompt", success: false, error: "no" }) + "\n",
+      ),
+    );
+    await expect(rejected).rejects.toMatchObject({ code: "command" });
+    expect(observer).not.toHaveBeenCalled();
+    const closed = process.close();
+    child.emit("close", 0, null);
+    await closed;
+  });
+
   it.each(["malformed", "non-object", "missing-type", "invalid-utf8", "oversized", "truncated"])(
     "fails closed for %s output",
     async (scenario) => {

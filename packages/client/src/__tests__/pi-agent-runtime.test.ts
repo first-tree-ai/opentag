@@ -6,7 +6,12 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentRuntimeBinding, AgentRuntimeEvent, CreateAgentRuntimeRequest } from "../agent-runtime/types.js";
 import type { PiDiagnosticEvent, PiDiagnosticSink } from "../observability/pi-diagnostics.js";
-import { PiAgentRuntime, PiAgentRuntimeFactory, piAgentRuntimeEnvironment } from "../providers/pi/agent-runtime.js";
+import {
+  PiAgentRuntime,
+  PiAgentRuntimeFactory,
+  piAgentRuntimeEnvironment,
+  piCloudAgentRuntimeEnvironment,
+} from "../providers/pi/agent-runtime.js";
 import { type PiRpcClient, PiRpcError, type PiRpcRequestOptions } from "../providers/pi/rpc-wire.js";
 
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
@@ -31,6 +36,168 @@ describe("PiAgentRuntime", () => {
     client.emit({ type: "agent_end", messages: [message], willRetry: false });
     client.emit({ type: "agent_settled" });
     await expect(run).resolves.toMatchObject({ status: "failed", error: { code } });
+    await runtime.close();
+  });
+
+  it("preserves Local plugin environment while Cloud keeps its controlled filter", () => {
+    const source = { HOME: "/native", PLUGIN_SECRET: "local", PATH: undefined };
+    expect(piAgentRuntimeEnvironment(source)).toEqual(source);
+    expect(piAgentRuntimeEnvironment(source)).not.toBe(source);
+  });
+
+  it("enables native resources only for Local runs and tolerates headless notifications", async () => {
+    const client = new ScriptedPiClient("hold");
+    const events: AgentRuntimeEvent[] = [];
+    const factory = new PiAgentRuntimeFactory({
+      nativeResources: true,
+      createClient: (_cwd, args) => {
+        client.args = args;
+        return client;
+      },
+      createSessionId: () => SESSION_ID,
+    });
+    const runtime = await factory.create(
+      createRequest((event) => {
+        events.push(event);
+      }),
+    );
+    const run = runtime.prompt({ runId: "native", input: input("hello") });
+    await vi.waitFor(() => expect(client.commands).toHaveLength(3));
+    for (const method of ["notify", "setStatus", "setWidget", "setTitle", "set_editor_text"]) {
+      client.emit({ type: "extension_ui_request", method, message: "native notice" });
+    }
+    client.emit({ type: "message_start", message: { role: "custom", customType: "native", content: "custom" } });
+    client.emit({ type: "message_end", message: { role: "custom", customType: "native", content: "custom" } });
+    client.complete();
+    await expect(run).resolves.toMatchObject({ status: "completed" });
+    expect(client.args).toContain("--approve");
+    for (const flag of [
+      "--offline",
+      "--no-extensions",
+      "--no-skills",
+      "--no-prompt-templates",
+      "--no-themes",
+      "--no-context-files",
+      "--no-approve",
+    ])
+      expect(client.args).not.toContain(flag);
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "provider_event" && (event.payload as { type?: string }).type === "extension_ui_request",
+      ),
+    ).toHaveLength(5);
+    await runtime.close();
+  });
+
+  it("rejects native interactive UI with a headless compatibility error", async () => {
+    const client = new ScriptedPiClient("hold");
+    const runtime = await new PiAgentRuntimeFactory({
+      nativeResources: true,
+      createClient: () => client,
+      createSessionId: () => SESSION_ID,
+    }).create(createRequest(() => undefined));
+    const run = runtime.prompt({ runId: "native-ui", input: input("hello") });
+    await vi.waitFor(() => expect(client.commands).toHaveLength(3));
+    client.emit({ type: "extension_ui_request", method: "select" });
+    await expect(run).resolves.toMatchObject({
+      status: "failed",
+      error: { message: expect.stringContaining("interactive UI") },
+    });
+    await runtime.close();
+  });
+
+  it("does not guess command completion from an idle legacy prompt acknowledgement", async () => {
+    const client = new ScriptedPiClient("hold");
+    client.nativeStreaming = false;
+    const runtime = await new PiAgentRuntimeFactory({
+      nativeResources: true,
+      createClient: () => client,
+      createSessionId: () => SESSION_ID,
+    }).create(createRequest(() => undefined));
+    await expect(runtime.prompt({ runId: "command", input: input("/native-command") })).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_request_rejected", message: expect.stringContaining("side effects") },
+    });
+    expect(client.closed).toBe(true);
+    await runtime.close();
+  });
+
+  it("waits for agent_settled when a native model run is idle during extension cleanup", async () => {
+    const client = new ScriptedPiClient("hold");
+    client.nativeStreaming = false;
+    const request = client.request.bind(client);
+    client.request = async (command, signal, options) => {
+      if (command.type === "prompt") {
+        options?.onResponse?.();
+        client.emit({ type: "agent_start" });
+      }
+      return request(command, signal, options);
+    };
+    const runtime = await new PiAgentRuntimeFactory({
+      nativeResources: true,
+      createClient: () => client,
+      createSessionId: () => SESSION_ID,
+    }).create(createRequest(() => undefined));
+    let settled = false;
+    const run = runtime.prompt({ runId: "cleanup", input: input("hello") }).then((result) => {
+      settled = true;
+      return result;
+    });
+    await vi.waitFor(() => expect(client.commands).toHaveLength(3));
+    expect(settled).toBe(false);
+    client.complete();
+    await expect(run).resolves.toMatchObject({ status: "completed" });
+    await runtime.close();
+  });
+
+  it.each(["compacting", "event-failure", "gateway"])("handles native prompt fencing: %s", async (scenario) => {
+    const client = new ScriptedPiClient("hold");
+    client.nativeStreaming = false;
+    const request = client.request.bind(client);
+    client.request = async (command, signal, options) => {
+      if (command.type === "prompt" && scenario === "compacting") {
+        options?.onResponse?.();
+        client.emit({ type: "agent_start" });
+      }
+      if (command.type === "prompt" && scenario === "event-failure") {
+        options?.onResponse?.();
+        client.emit({ type: "turn_end" });
+      }
+      const result = await request(command, signal, options);
+      return command.type === "get_state" &&
+        client.commands.some((entry) => entry.type === "prompt") &&
+        scenario === "compacting"
+        ? { ...(result as object), isCompacting: true }
+        : result;
+    };
+    let environment: Readonly<Record<string, string>> | undefined;
+    const runtime = await new PiAgentRuntimeFactory({
+      nativeResources: true,
+      createClient: (_cwd, _args, extra) => {
+        environment = extra;
+        return client;
+      },
+      createSessionId: () => SESSION_ID,
+    }).create(
+      createRequest(
+        () => undefined,
+        scenario === "gateway"
+          ? { provider: { mcpGateway: { url: "https://opentag.example/api/v1/mcp", token: "otmg_fixture" } } }
+          : undefined,
+      ),
+    );
+    const run = runtime.prompt({ runId: scenario, input: input("hello") });
+    if (scenario === "event-failure")
+      await expect(run).resolves.toMatchObject({ status: "failed", error: { code: "provider_protocol_error" } });
+    else if (scenario === "gateway") {
+      await expect(run).resolves.toMatchObject({ status: "failed", error: { code: "provider_request_rejected" } });
+      expect(environment).toMatchObject({ OPENTAG_PI_NATIVE_RESOURCES: "1" });
+    } else {
+      await vi.waitFor(() => expect(client.commands).toHaveLength(3));
+      client.complete();
+      await expect(run).resolves.toMatchObject({ status: "completed" });
+    }
     await runtime.close();
   });
 
@@ -1074,7 +1241,7 @@ describe("PiAgentRuntime", () => {
     controller.abort(new Error("stop Pi probe"));
     await expect(hanging).rejects.toThrow("stop Pi probe");
     expect(
-      piAgentRuntimeEnvironment({
+      piCloudAgentRuntimeEnvironment({
         HOME: "/home/provider",
         PATH: "/bin",
         DEEPSEEK_API_KEY: "provider-key",
@@ -1139,6 +1306,7 @@ class ScriptedPiClient implements PiRpcClient {
   readonly #sessionId: string;
   closed = false;
   messageCount = 0;
+  nativeStreaming = true;
   persistSession = false;
   historyBeforeError?: string;
   promptError?: Error;
@@ -1149,10 +1317,15 @@ class ScriptedPiClient implements PiRpcClient {
     this.#sessionId = sessionId;
   }
 
-  async request(command: Readonly<Record<string, unknown>>): Promise<unknown> {
+  async request(
+    command: Readonly<Record<string, unknown>>,
+    _signal?: AbortSignal,
+    options?: PiRpcRequestOptions,
+  ): Promise<unknown> {
     this.commands.push(command);
     if (command.type === "get_state") {
       return {
+        isStreaming: this.commands.some((entry) => entry.type === "prompt") && this.nativeStreaming,
         sessionId: this.#sessionId,
         sessionFile: this.sessionFile,
         messageCount: this.messageCount,
@@ -1165,6 +1338,7 @@ class ScriptedPiClient implements PiRpcClient {
       return undefined;
     }
     if (command.type !== "prompt") throw new Error(`unexpected Pi command: ${String(command.type)}`);
+    options?.onResponse?.();
     if (this.promptError) {
       if (this.persistSession) {
         writeFileSync(

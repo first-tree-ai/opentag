@@ -19,6 +19,7 @@ contents, and machine-specific operational logs outside the repository.
 
 - [Agent Runtime contract](verification/agent-runtime-contract.md)
 - [Claude native plugins](verification/claude-native-plugins.md)
+- [Codex native plugins](verification/codex-native-plugins.md)
 - [Agent Skills](verification/agent-skills.md)
 - [Cloud billing](verification/cloud-billing.md)
 - [Cloud Computer](verification/cloud-computer.md)

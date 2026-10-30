@@ -33,7 +33,7 @@ prompt shows.
 
 ## Owner control
 
-Local Claude can also use native commands and files to manage plugins, hooks, Skills, and local MCP
+Local Claude and Codex can also use native commands and files to manage plugins, hooks, Skills, and local MCP
 servers under its existing Agent Home. These are local operations, not the Server `self` API, and
 `selfConfigurationEnabled` does not control them. Prefer native project scope when configuring one
 Agent; global changes retain their native effect on other projects. Inspect native loading and tool

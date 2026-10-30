@@ -11,17 +11,22 @@ import { assertCodexSocketProfile, codexSocketPermissions } from "../providers/c
 vi.setConfig({ testTimeout: 10_000 });
 
 const GATEWAY = { url: "https://server.example.test/api/v1/mcp", token: "otmg_secret" };
-const ATTACHED_CONFIG = {
-  mcp_servers: {
-    "opentag-mcp": {
+function attachedConfig(client: ScriptedCodexClient, approval = "approve") {
+  const key = client.params
+    .flatMap(({ params }) => Object.keys((params.config as Record<string, unknown>) ?? {}))
+    .find((key) => key.startsWith("mcp_servers."));
+  expect(key).toMatch(/^mcp_servers\.g[a-f0-9]{10}$/);
+  return {
+    [key as string]: {
       url: GATEWAY.url,
-      http_headers: { Authorization: "Bearer otmg_secret" },
-      default_tools_approval_mode: "approve",
-      startup_timeout_sec: 10,
+      http_headers: { Authorization: `Bearer ${GATEWAY.token}` },
+      default_tools_approval_mode: approval,
+      startup_timeout_sec: 5,
+      required: true,
     },
-  },
-};
-const DETACHED_CONFIG = { mcp_servers: {} };
+  };
+}
+const DETACHED_CONFIG = {};
 const THREAD_PARAMS = {
   cwd: "/workspace",
   developerInstructions: "OpenTag managed system prompt",
@@ -116,7 +121,9 @@ class ScriptedCodexClient implements InteractiveCodexAppServerClient {
 }
 
 function mcpState(params: Record<string, unknown>): "attached" | "detached" {
-  return Object.keys((params.config as { mcp_servers: object }).mcp_servers).length > 0 ? "attached" : "detached";
+  return Object.keys(params.config as Record<string, unknown>).some((key) => key.startsWith("mcp_servers."))
+    ? "attached"
+    : "detached";
 }
 
 /** A request that settles only when its signal aborts, like the App Server wire does. */
@@ -175,13 +182,46 @@ async function persistedRuntime(options: { mcpAttachTimeoutMs?: number } = {}) {
 }
 
 describe("Codex MCP gateway delivery", () => {
+  it("updates only its private MCP key with each execution's bearer and drops it on detach", async () => {
+    const { client, runtime } = await persistedRuntime();
+    await runtime.prompt(prompt("first-token", true));
+    const first = client.last("thread/resume")?.config as Record<string, unknown>;
+    const key = Object.keys(first)[0] as string;
+    expect(key).toMatch(/^mcp_servers\.g[a-f0-9]{10}$/);
+    expect(first).not.toHaveProperty("mcp_servers");
+    await runtime.prompt({
+      ...prompt("next-token"),
+      configuration: { provider: { mcpGateway: { ...GATEWAY, token: "otmg_next" } } },
+    });
+    const next = client.last("thread/resume")?.config as Record<string, unknown>;
+    expect(Object.keys(next)).toEqual([key]);
+    expect(next[key]).toMatchObject({ http_headers: { Authorization: "Bearer otmg_next" }, required: true });
+    expect(JSON.stringify(next)).not.toContain(GATEWAY.token);
+    await runtime.prompt(prompt("detach"));
+    expect(client.last("thread/resume")?.config).toEqual({});
+    await runtime.close();
+  });
+
+  it("does not reserve a fixed user MCP name across runtimes", async () => {
+    const { client, factory } = setup();
+    const first = await factory.create(createRequest());
+    await first.prompt(prompt("first", true));
+    const firstKey = Object.keys(client.last("thread/start")?.config as object)[0];
+    await first.close();
+    const second = await factory.create(createRequest());
+    await second.prompt(prompt("second", true));
+    const secondKey = Object.keys(client.last("thread/start")?.config as object)[0];
+    expect(secondKey).not.toBe(firstKey);
+    expect(secondKey).not.toBe("mcp_servers.opentag-mcp");
+    await second.close();
+  });
   it("keeps local MCP write tools behind native approvals", async () => {
     const { client, factory } = setup();
     const request = createRequest();
     const runtime = await factory.create({ ...request, policy: { ...request.policy, approvals: "on-request" } });
     await runtime.prompt(prompt("local", true));
     expect(client.last("thread/start")).toMatchObject({
-      config: { mcp_servers: { "opentag-mcp": { default_tools_approval_mode: "writes" } } },
+      config: attachedConfig(client, "writes"),
     });
     await runtime.close();
   });
@@ -205,7 +245,7 @@ describe("Codex MCP gateway delivery", () => {
       ...THREAD_PARAMS,
       ephemeral: false,
       dynamicTools: [expect.objectContaining({ name: "example_tool" })],
-      config: ATTACHED_CONFIG,
+      config: attachedConfig(client),
     });
     expect(runtime.binding?.payload).toMatchObject({ threadId: "thread-2", hostedToolsHash: expect.any(String) });
     expect(events).toContainEqual(
@@ -223,7 +263,7 @@ describe("Codex MCP gateway delivery", () => {
       ...THREAD_PARAMS,
       threadId: "thread-1",
       excludeTurns: true,
-      config: ATTACHED_CONFIG,
+      config: attachedConfig(client),
     });
 
     // The next execution brings its own bearer.
@@ -481,7 +521,7 @@ describe("Codex MCP gateway delivery", () => {
     const { client, factory } = setup();
     const runtime = await factory.create(createRequest([], { provider: { mcpGateway: { ...GATEWAY } } }));
     await runtime.prompt(prompt("session-config"));
-    expect(client.last("thread/start")?.config).toEqual(ATTACHED_CONFIG);
+    expect(client.last("thread/start")?.config).toEqual(attachedConfig(client));
     await runtime.close();
   });
 
@@ -512,12 +552,12 @@ describe("Codex execution socket permissions", () => {
     const reloads = client.params.filter((p) => p.method === "thread/resume").slice(-3);
     expect(reloads[0]?.params).toMatchObject({
       permissions: "opentag-execution",
-      config: { permissions: { "opentag-execution": { network: { unix_sockets: { "/tmp/first.sock": "allow" } } } } },
+      config: { "permissions.opentag-execution": { network: { unix_sockets: { "/tmp/first.sock": "allow" } } } },
     });
     expect(reloads[0]?.params).not.toHaveProperty("sandbox");
     expect(JSON.stringify(reloads[1]?.params)).not.toContain("first.sock");
     expect(JSON.stringify(reloads[1]?.params)).toContain("second.sock");
-    expect(reloads[2]?.params).toMatchObject({ sandbox: "workspace-write", config: { mcp_servers: {} } });
+    expect(reloads[2]?.params).toMatchObject({ sandbox: "workspace-write", config: {} });
     expect(reloads[2]?.params).not.toHaveProperty("permissions");
     const turns = client.params.filter((p) => p.method === "turn/start").slice(-3);
     expect(turns[0]?.params).toMatchObject({ permissions: "opentag-execution" });
@@ -540,8 +580,8 @@ describe("Codex execution socket permissions", () => {
     await runtime.prompt({ ...prompt("combined", true), allowedUnixSockets: ["/tmp/current.sock"] });
     expect(client.params.filter((p) => p.method === "thread/resume").at(-1)?.params).toMatchObject({
       config: {
-        ...ATTACHED_CONFIG,
-        permissions: { "opentag-execution": { network: { unix_sockets: { "/tmp/current.sock": "allow" } } } },
+        ...attachedConfig(client),
+        "permissions.opentag-execution": { network: { unix_sockets: { "/tmp/current.sock": "allow" } } },
       },
     });
   });
@@ -600,34 +640,34 @@ describe("Codex socket permission boundary", () => {
         policy,
       ),
     ).toEqual({
-      features: { network_proxy: true },
-      permissions: {
-        "opentag-execution": {
-          extends: ":workspace",
-          filesystem: { "/workspace": "write", "/safe/replies": "write" },
-          network: {
-            enabled: true,
-            mode: "limited",
-            domains: {},
-            allow_local_binding: false,
-            unix_sockets: { "/tmp/current.sock": "allow" },
-          },
+      "features.network_proxy": true,
+      "permissions.opentag-execution": {
+        extends: ":workspace",
+        filesystem: { "/workspace": "write", "/safe/replies": "write" },
+        network: {
+          enabled: true,
+          mode: "limited",
+          domains: {},
+          allow_local_binding: false,
+          unix_sockets: { "/tmp/current.sock": "allow" },
         },
       },
     });
     expect(
       codexSocketPermissions(["/tmp/current.sock"], workspace, { ...policy, fileSystem: "read-only" }),
-    ).toMatchObject({ permissions: { "opentag-execution": { extends: ":read-only" } } });
+    ).toMatchObject({ "permissions.opentag-execution": { extends: ":read-only" } });
     expect(
-      codexSocketPermissions(["/tmp/current.sock"], workspace, { ...policy, fileSystem: "read-only" }),
-    ).not.toHaveProperty("permissions.opentag-execution.filesystem");
+      codexSocketPermissions(["/tmp/current.sock"], workspace, { ...policy, fileSystem: "read-only" })?.[
+        "permissions.opentag-execution"
+      ],
+    ).not.toHaveProperty("filesystem");
   });
   it.each([undefined, null, "opentag-execution", { id: "wrong" }])(
     "requires explicit profile acknowledgement %j",
     (profile) => {
-      expect(() => assertCodexSocketProfile({ activePermissionProfile: profile }, { permissions: {} })).toThrow(
-        "did not acknowledge",
-      );
+      expect(() =>
+        assertCodexSocketProfile({ activePermissionProfile: profile }, { "permissions.opentag-execution": {} }),
+      ).toThrow("did not acknowledge");
     },
   );
 });

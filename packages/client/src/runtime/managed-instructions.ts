@@ -397,6 +397,16 @@ export function renderManagedSystemPrompt(snapshot: EffectiveRuntimeSnapshot, co
           "",
         ]
       : []),
+    ...(context?.environment === "local" && snapshot.provider === "codex"
+      ? [
+          "## Native Codex configuration",
+          "",
+          "Use the native codex CLI and configuration files to install, configure, and inspect plugins, hooks, Skills, and local MCP servers. Prefer Agent Home's project configuration for per-Agent settings; native plugin caches and user-wide configuration retain their shared scope.",
+          "Run native checks from Agent Home with the current environment. Use codex plugin --help, codex mcp --help, and codex features --help for the installed version. Native hook trust remains Codex's responsibility; inspect and approve definitions through its native /hooks flow when required. Computer runtime-inspect checks Provider availability; it does not establish that this project's plugins loaded or their tools work. Report actual loading and tool checks and whether a native reload or a new Session runtime is needed.",
+          "OpenTag adds only its private execution MCP entry and required socket permissions in memory. Use the current native catalog for platform tool names. Native local and stdio MCP configuration does not use opentag self mcp; platform MCP instructions apply to platform-managed connections.",
+          "",
+        ]
+      : []),
     "## Platform",
     "",
     snapshot.instructions.platform,

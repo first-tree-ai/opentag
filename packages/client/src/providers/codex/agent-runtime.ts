@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -6,7 +7,6 @@ import { promisify } from "node:util";
 import {
   AgentRuntimeOptionsSchema,
   hashTuple,
-  MCP_GATEWAY_SERVER_NAME,
   RuntimeModelSchema,
   RuntimeReasoningEffortSchema,
 } from "@opentag/shared";
@@ -92,51 +92,9 @@ export const CODEX_AGENT_RUNTIME_APP_SERVER_ARGS = [
   "app-server",
   "--stdio",
   "--disable",
-  "apps",
-  "--disable",
-  "auth_elicitation",
-  "--disable",
-  "browser_use",
-  "--disable",
-  "browser_use_external",
-  "--disable",
-  "browser_use_full_cdp_access",
-  "--disable",
-  "computer_use",
-  "--disable",
-  "goals",
-  "--disable",
-  "hooks",
-  "--disable",
-  "image_generation",
-  "--disable",
-  "in_app_browser",
-  "--disable",
-  "multi_agent",
-  "--disable",
-  "plugins",
-  "--disable",
-  "remote_plugin",
-  "--disable",
   "shell_snapshot",
-  "--disable",
-  "skill_mcp_dependency_install",
-  "-c",
-  "mcp_servers={}",
-  "-c",
-  'web_search="disabled"',
-  "-c",
-  "tools.view_image=true",
-  "-c",
-  "memories.use_memories=false",
-  "-c",
-  "memories.generate_memories=false",
   "-c",
   "allow_login_shell=false",
-  "-c",
-  'shell_environment_policy.inherit="all"',
-  "-c",
-  'shell_environment_policy.filters={ PATH = "include", ZDOTDIR = "include", LANG = "include", LC_ALL = "include", OPENTAG_HOME = "include", OPENTAG_PROVIDER_ENV_FILE = "include", OPENTAG_SESSION_PROOF_FILE = "include", OPENTAG_EXECUTION_ID = "include" }',
 ] as const;
 const TOOL_ITEM_TYPES = new Set([
   "collabToolCall",
@@ -221,6 +179,7 @@ interface ParsedTurn {
 }
 
 export class CodexAgentRuntime extends BaseAgentRuntime {
+  readonly #gatewayServerName = `g${randomBytes(5).toString("hex")}`;
   readonly #client: InteractiveCodexAppServerClient;
   #threadId: string;
   readonly #workspace: AgentRuntimeWorkspace;
@@ -425,8 +384,8 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
    *
    * One deadline covers the whole rebind, attach and restore alike. The attach may use only part of
    * it, so a timed-out attach still leaves the restore time to finish. Losing the gateway never costs
-   * the Agent its turn: an unconfirmed attach leaves the thread with no MCP server rather than with
-   * the run's bearer attached to a catalogue it did not confirm. Only a thread Codex cannot reload at
+   * the Agent its turn: an unconfirmed attach removes the platform entry while retaining native
+   * servers, rather than keeping the run's bearer on an unconfirmed catalogue. Only a thread Codex cannot reload at
    * all within the deadline fails the run, because there is no thread left to start the turn on.
    */
   async #attachRunConfiguration(
@@ -448,7 +407,15 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     const attachBudgetMs = Math.floor(this.#mcpAttachTimeoutMs * CODEX_MCP_ATTACH_BUDGET_SHARE);
     try {
       await this.#rebindThread(
-        { ...codexMcpServersConfig(endpoint, this.#policy.approvals), ...socketConfig },
+        {
+          ...codexMcpServersConfig(
+            this.#gatewayServerName,
+            endpoint,
+            this.#policy.approvals,
+            Math.min(CODEX_MCP_STARTUP_TIMEOUT_SEC, attachBudgetMs / 2000),
+          ),
+          ...socketConfig,
+        },
         context,
         AbortSignal.any([deadline, AbortSignal.timeout(attachBudgetMs)]),
       );
@@ -462,7 +429,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       if (signal.aborted) throw error;
       logger.warn(
         { code: "provider_launch_attach_failed", error: String(error), durationMs: Date.now() - startedAt },
-        "Codex could not attach execution services; retrying required permissions without MCP tools",
+        "Codex could not attach execution services; retrying required permissions without the platform gateway",
       );
     }
     // An unpersisted thread is only ever replaced, so the loaded one kept its previous MCP state.
@@ -471,7 +438,11 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       return;
     }
     // Socket attachment/removal is mandatory. Failure must never run with stale permissions.
-    await this.#rebindThread({ ...codexMcpServersConfig(undefined), ...socketConfig }, context, deadline);
+    await this.#rebindThread(
+      { ...codexMcpServersConfig(this.#gatewayServerName, undefined), ...socketConfig },
+      context,
+      deadline,
+    );
     this.#mcpThreadDirty = false;
   }
 
@@ -489,7 +460,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       await this.#client.request(
         "thread/resume",
         {
-          ...codexThreadPermissions(this.#threadParams, config.permissions ? config : undefined),
+          ...codexThreadPermissions(this.#threadParams, config),
           threadId: this.#threadId,
           excludeTurns: true,
           config,
@@ -517,7 +488,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     const response = requireRecord(
       await this.#client.request(
         "thread/start",
-        { ...codexThreadPermissions(this.#threadStartParams, config.permissions ? config : undefined), config },
+        { ...codexThreadPermissions(this.#threadStartParams, config), config },
         signal,
       ),
       "thread/start returned an invalid response",
@@ -1336,29 +1307,7 @@ export function codexBindingRequiresHostedToolReplacement(
 }
 
 export function codexAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const keys = [
-    "CODEX_HOME",
-    "HOME",
-    "LANG",
-    "LC_ALL",
-    "LOGNAME",
-    "OPENTAG_PROVIDER_ENV_FILE",
-    "OPENTAG_HOME",
-    "OPENTAG_SESSION_PROOF_FILE",
-    "OPENTAG_EXECUTION_ID",
-    "PATH",
-    "PATHEXT",
-    "SHELL",
-    "SystemRoot",
-    "TMPDIR",
-    "USER",
-    "WINDIR",
-  ] as const;
-  const environment: NodeJS.ProcessEnv = {};
-  for (const key of keys) {
-    if (source[key] !== undefined) environment[key] = source[key];
-  }
-  return environment;
+  return { ...source };
 }
 
 function probeIssue(error: unknown): AgentRuntimeProbeResult["issues"][number] | undefined {
@@ -1492,25 +1441,23 @@ function parseMcpGatewayConfiguration(value: unknown): CodexMcpGatewayEndpoint |
 }
 
 /**
- * The thread `config` override naming a run's MCP servers: the gateway alone, or none.
- *
- * It replaces the whole `mcp_servers` table, so the user's own Codex servers stay excluded exactly as
- * the launch arguments exclude them. Gateway tools are pre-approved as a server, matching the Claude
- * Code allow rule; Codex otherwise rejects every MCP call under the `never` approval policy.
+ * Override only the private gateway key; native direct and plugin MCP entries remain intact.
  */
 function codexMcpServersConfig(
+  serverName: string,
   endpoint: CodexMcpGatewayEndpoint | undefined,
   approvals: AgentRuntimePolicy["approvals"] = "never",
+  startupTimeoutSec = CODEX_MCP_STARTUP_TIMEOUT_SEC,
 ): Record<string, unknown> {
-  if (!endpoint) return { mcp_servers: {} };
+  if (!endpoint) return {};
   return {
-    mcp_servers: {
-      [MCP_GATEWAY_SERVER_NAME]: {
-        url: endpoint.url,
-        http_headers: { Authorization: `Bearer ${endpoint.token}` },
-        default_tools_approval_mode: approvals === "never" ? "approve" : "writes",
-        startup_timeout_sec: CODEX_MCP_STARTUP_TIMEOUT_SEC,
-      },
+    [`mcp_servers.${serverName}`]: {
+      url: endpoint.url,
+      http_headers: { Authorization: `Bearer ${endpoint.token}` },
+      default_tools_approval_mode: approvals === "never" ? "approve" : "writes",
+      startup_timeout_sec: startupTimeoutSec,
+      // Confirm this attach before starting a Turn; failure falls back to native-only configuration.
+      required: true,
     },
   };
 }

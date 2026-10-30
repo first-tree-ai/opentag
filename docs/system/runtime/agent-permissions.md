@@ -32,6 +32,16 @@ Agent-project authentication must be checked natively from Agent Home. Routine m
 suppress hooks and MCP connections but still read native settings and may execute credential helpers;
 their success does not establish that an installed plugin loaded or its tools worked. Chrome integration
 also follows native configuration; OpenTag supplies no browser UI or additional browser isolation.
+Local Codex also admits native user/project settings, plugins, hooks, Skills, and direct or
+plugin-provided MCP services. Native feature choices and hook trust checks remain Codex's own;
+OpenTag supplies no hook trust bypass. It preserves custom environment variables and native shell
+filters. Shell snapshots and login shells remain disabled, with managed `ZDOTDIR` retained for
+Session CLI routing. File-system/network policy and approval mappings remain unchanged. Required
+per-execution Unix socket exceptions override only their own network-proxy feature key and named
+permission profile. Other native feature choices and profiles remain intact. Native helpers,
+trusted hooks, and stdio MCP subprocesses are trusted local code outside model tool isolation.
+See the [Codex native trust contract](agent-runtime-contract.md#local-codex-native-configuration-and-trust).
+
 Pi always runs without approvals and has no permission settings or permission extension.
 
 Native command rules allow Feishu and Slack message reads, sends, edits, reactions, conversation

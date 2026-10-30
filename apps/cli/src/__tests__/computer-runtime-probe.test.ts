@@ -140,17 +140,20 @@ describe("selected Runtime full-probe adapter", () => {
     expect(claude).toHaveBeenCalledWith(expect.objectContaining({ environment: resolved.environment }));
   });
 
-  it("preserves exact custom Codex home through the daemon's canonical environment filter", async () => {
+  it("preserves custom Codex home and plugin variables through the daemon's environment preparation", async () => {
     const home = await isolatedHome();
     const custom = join(home, "codex-config");
     const environment = await resolveRuntimeProbeEnvironment("codex", {
       HOME: home,
       CODEX_HOME: custom,
-      OPENTAG_SERVER_URL: "https://private.example",
+      PLUGIN_API_KEY: "fixture-plugin-key",
     });
     expect(environment.home).toBe(custom);
     expect(environment.environment.CODEX_HOME).toBe(custom);
-    expect(environment.environment.OPENTAG_SERVER_URL).toBeUndefined();
+    expect(environment.environment.PLUGIN_API_KEY).toBe("fixture-plugin-key");
+    expect(environment.environment).toEqual(
+      client.codexAgentRuntimeEnvironment({ HOME: home, CODEX_HOME: custom, PLUGIN_API_KEY: "fixture-plugin-key" }),
+    );
   });
 
   it("bounds even a non-settling probe, aborts owned work, and returns a repairable failure", async () => {

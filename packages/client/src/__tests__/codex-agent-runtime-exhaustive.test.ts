@@ -2201,7 +2201,7 @@ it("isolates managed zsh initialization so public CLI paths cannot shadow the Tu
     await runtime.close();
   }
   expect(launches[0]).toContain(`shell_environment_policy.set.ZDOTDIR=${JSON.stringify(home)}`);
-  expect(launches[0]?.some((arg) => arg.includes('ZDOTDIR = "include"'))).toBe(true);
+  expect(launches[0]?.some((arg) => arg.startsWith("shell_environment_policy.filters="))).toBe(false);
   const snapshotFlag = launches[0]?.indexOf("shell_snapshot") ?? -1;
   expect(snapshotFlag).toBeGreaterThan(0);
   expect(launches[0]?.[snapshotFlag - 1]).toBe("--disable");

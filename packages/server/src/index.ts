@@ -502,14 +502,18 @@ function reportIgnoredCloudBilling(config: ServerConfig, log: { warn(payload: ob
   );
 }
 
-function reportIgnoredGitHubAppConfiguration(log: { warn(payload: object, message: string): void }) {
+function reportIgnoredGitHubConfiguration(log: { warn(payload: object, message: string): void }) {
   const variables = Object.keys(process.env)
-    .filter((name) => name.startsWith("OPENTAG_GITHUB_APP_") && process.env[name]?.trim())
+    .filter(
+      (name) =>
+        (name.startsWith("OPENTAG_GITHUB_APP_") || name.startsWith("OPENTAG_GITHUB_OAUTH_")) &&
+        process.env[name]?.trim(),
+    )
     .sort();
   if (variables.length === 0) return;
   log.warn(
     { event: "github_app_configuration_ignored", variables },
-    "Legacy GitHub App configuration is ignored; configure OPENTAG_MCP_GITHUB_CLIENT_ID and OPENTAG_MCP_GITHUB_CLIENT_SECRET for Agent connectors",
+    "Legacy GitHub Account/App configuration is ignored; configure OPENTAG_MCP_GITHUB_CLIENT_ID and OPENTAG_MCP_GITHUB_CLIENT_SECRET for Agent connectors",
   );
 }
 
@@ -1379,7 +1383,7 @@ export async function startServer(): Promise<void> {
     app.log.info(serverEnvironmentSummary(config), "Resolved OpenTag environment");
     app.log.info({ databaseTimeouts: config.databaseTimeouts }, "Resolved database timeouts");
     reportIgnoredCloudBilling(config, app.log);
-    reportIgnoredGitHubAppConfiguration(app.log);
+    reportIgnoredGitHubConfiguration(app.log);
     readiness.complete("application");
     await app.listen({ host: config.host, port: config.port });
     readiness.complete("listen");

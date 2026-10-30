@@ -699,6 +699,7 @@ describe("Cloud Context Tree verification with the pinned CLI", () => {
         await unit.close();
       }
     },
+    30_000,
   );
 
   it("verifies a subtree on a selected branch despite unrelated repository symlinks", async () => {

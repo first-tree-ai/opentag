@@ -98,3 +98,9 @@ were sorted, and a baseline receipt test now injects failure after its first dur
 The affected Server batch passes 204 tests (16 native-tool cases skipped without the pinned binaries),
 PostgreSQL passes 48, reply capture passes 24 and the locale catalog passes 3. The affected Server build,
 workspace typecheck and repository check pass. Complete CI results remain separate from these local checks.
+
+Deployment review removed the unused Account OAuth parser and setup examples. Old environment
+variables are ignored with a names-only warning; only the MCP client settings enable GitHub access.
+Config, startup and Session CLI continuation regressions pass 78 tests. The actual MCP/CLI suite
+passes 27 tests under v8 instrumentation; its two database-plus-CLI cases use a 30-second test budget
+without changing any product deadline or assertion.

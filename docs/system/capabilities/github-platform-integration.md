@@ -45,7 +45,9 @@ Account integration routes, including callbacks, return 410 before credential re
 
 Configure `OPENTAG_MCP_GITHUB_CLIENT_ID` and `OPENTAG_MCP_GITHUB_CLIENT_SECRET` and register
 `<OPENTAG_PUBLIC_URL>/api/v1/mcp-servers/oauth/callback` on the existing OAuth App. The old Account
-client configuration does not enable Context Tree. Users with a usable Agent MCP connection need no
+client configuration is ignored and does not enable Context Tree. Retired `OPENTAG_GITHUB_OAUTH_*`
+and `OPENTAG_GITHUB_APP_*` settings only produce a startup warning listing their names, never values.
+Users with a usable Agent MCP connection need no
 new authorization. Users with only an old Account connection must connect GitHub through the normal
 Agent Connector flow; there is no automatic mount or token import. GitHub sign-in is not introduced.
 

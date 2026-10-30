@@ -653,39 +653,19 @@ describe("parseServerConfig", () => {
     }
   });
 
-  it("requires an OAuth client pair and the exact local callback origin", () => {
-    const github = {
-      OPENTAG_GITHUB_OAUTH_CLIENT_ID: "Ov23testclient",
-      OPENTAG_GITHUB_OAUTH_CLIENT_SECRET: "client-secret",
-    };
-    expect(parseServerConfig({ ...required, ...github }).githubOAuth).toEqual({
-      clientId: "Ov23testclient",
-      clientSecret: "client-secret",
-      oauthCallbackUrl: "http://localhost:8000/api/v2/integrations/github/oauth/callback",
-    });
-    expect(parseServerConfig(required).githubOAuth).toBeUndefined();
-    expect(
-      parseServerConfig({ ...required, OPENTAG_GITHUB_APP_ID: "871235", OPENTAG_GITHUB_APP_CLIENT_ID: "old" })
-        .githubOAuth,
-    ).toBeUndefined();
-    for (const invalid of [
-      { OPENTAG_GITHUB_OAUTH_CLIENT_ID: "Ov23testclient" },
-      { OPENTAG_GITHUB_OAUTH_CLIENT_SECRET: "client-secret" },
+  it("ignores retired Account GitHub OAuth settings without enabling MCP", () => {
+    for (const legacy of [
+      { OPENTAG_GITHUB_OAUTH_CLIENT_ID: "retired-client" },
+      { OPENTAG_GITHUB_OAUTH_CLIENT_SECRET: "retired-secret" },
+      { OPENTAG_GITHUB_OAUTH_REDIRECT_URL: "not-a-live-callback" },
       {
-        ...github,
-        OPENTAG_GITHUB_OAUTH_REDIRECT_URL: "https://evil.example/api/v2/integrations/github/oauth/callback",
+        OPENTAG_GITHUB_OAUTH_CLIENT_ID: "retired-client",
+        OPENTAG_GITHUB_OAUTH_CLIENT_SECRET: "retired-secret",
       },
-      {
-        ...github,
-        OPENTAG_GITHUB_OAUTH_REDIRECT_URL: "http://localhost:8000/api/v1/integrations/github/oauth/callback",
-      },
-    ])
-      expect(() => parseServerConfig({ ...required, ...invalid })).toThrow();
-    try {
-      parseServerConfig({ ...required, OPENTAG_GITHUB_OAUTH_CLIENT_SECRET: "client-secret" });
-      expect.unreachable("partial OAuth configuration must fail");
-    } catch (error) {
-      expect(String(error)).not.toContain("client-secret");
+    ]) {
+      const config = parseServerConfig({ ...required, ...legacy });
+      expect(config).not.toHaveProperty("githubOAuth");
+      expect(config.mcpStaticOAuth).toBeUndefined();
     }
   });
 
@@ -791,7 +771,7 @@ describe("parseServerConfig", () => {
     },
   );
 
-  it("keeps GitHub MCP credentials separate from the Account GitHub integration", () => {
+  it("only enables GitHub MCP with its current client settings", () => {
     const config = parseServerConfig({
       ...required,
       OPENTAG_GITHUB_OAUTH_CLIENT_ID: "account-client",

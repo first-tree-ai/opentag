@@ -7,7 +7,8 @@ Supports [MCP Server integration](../../docs/system/capabilities/mcp-server-inte
 51 approved additions bring the directory to 79 entries. The existing ten category IDs use the
 agreed English/Chinese labels and fixed order. 43 additions use catalog defaults, seven ask for a
 customer endpoint and a key, and PagerDuty formats its documented key prefix in the browser.
-Server implementation, API contracts, database schemas, and OAuth machinery are unchanged.
+The connector expansion keeps existing API contracts, database schemas, and OAuth machinery.
+The separately approved CI repair below also corrects one Server filesystem guard.
 
 The provider documents and public unauthenticated discovery evidence establish the selected
 authentication contracts and the absence of manual OpenTag app registration. They do not establish
@@ -104,3 +105,24 @@ coverage. Browser fixtures enforce duplicate-attach conflicts so that they canno
 The test-only follow-up received independent review; fixture cleanup removes definitions and waits
 for pending authorization to settle before cancellation. Production behavior and the validated
 browser build are unchanged.
+
+## Approved CI repair: transient Git staging entries
+
+The initial Server coverage measurement failed twice in existing Context Tree verification tests,
+while ordinary tests passed. A diagnostic replay of the real Git/CLI suite increased budget-scan
+frequency and delayed lock-file inspection. It reproduced five failures with ENOENT on Git's
+transient config.lock and HEAD.lock. The directory-budget monitor treated disappearing entries as
+fatal and aborted the verification. The diagnostic copy and logging were removed after replay.
+
+The user approved a minimal Server filesystem exception to the original catalog/frontend scope.
+The directory walker now ignores only ENOENT for previously discovered child entries; the requested
+root remains required, and permission errors and size limits remain failures. No DB, API, or auth
+logic changes. Two real filesystem race regressions failed before the correction, with four safety
+checks passing. All six regression checks and adjacent real Git/CLI tests pass after the correction.
+The same amplified real Git/CLI replay passes all 27 tests after the correction, and the four
+adjacent suites pass all 43 tests. Independent review found no actionable issue in the helper or tests.
+
+Final repair validation: Server build and typecheck pass; the six directory-budget cases cover all
+15 executable lines and 16 branches. The 20-case connector expansion and three GitHub/Memory
+browser smoke cases pass (23 total). `pnpm check` passes. No diagnostic source files or logging
+remain in the repository.

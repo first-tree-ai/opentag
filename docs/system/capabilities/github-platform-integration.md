@@ -85,6 +85,10 @@ Repository verification retains exact branch/directory checks and the pinned CLI
 invocation resolves current credentials. Repository creation obtains `/user` identity, checks authority
 again before POST, and uses existing private-repository creation and initialization behavior.
 
+Staging-directory size checks tolerate a discovered child that Git removes between enumeration
+and inspection. A missing requested root, permission failure, or exceeded size budget still fails
+the operation; transient lock-file deletion does not invalidate an otherwise valid tree.
+
 Before saving a verified tree selection, the short transaction locks Account, Agent and runtime config,
 then selected local/root authentication rows in ID order. It rereads the exact MCP authority with the
 same transaction and commits only if both authentication and Agent/runtime revisions still match.

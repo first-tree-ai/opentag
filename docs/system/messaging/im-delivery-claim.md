@@ -191,6 +191,13 @@ resumes the ordinary expired-dispatch release path (the exclusion is scoped to p
 authentic acceptance and report still settle a parked row through the normal path, because nothing was
 fabricated and the correlation is intact.
 
+A parked **Cloud** row needs one more condition, because the sweep never expires input a Runner may
+still be executing: it expires only once the frozen execution window recorded in
+`dispatch_payload.deadlineAt` has also passed, so both bounds must close. After that it is an ordinary
+expired Cloud row, and the Cloud coordinator's expired-dispatch release clears the correlation without
+ever rebuilding the input. A correlated Cloud row that was not parked keeps its existing owner: the
+frozen window and the coordinator's release, never the sweep.
+
 What parking does not guarantee: the consecutive-timeout counter is still not crash-durable (a worker
 that exits between a claim and its failure record loses it, so the worst case is a slower park rather
 than an endless loop).

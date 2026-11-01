@@ -1,5 +1,6 @@
 import { eq, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
+import { PARKED_DELIVERY_CODE } from "../db/im-delivery-work.js";
 import { agents, computers, imBindings, imMessageDeliveries, sessionPlacements, sessions } from "../db/schema/index.js";
 import type { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
 import { expireInboundReceiptWork } from "../services/im/inbound-receipt-work-store.js";
@@ -327,6 +328,12 @@ export async function runImDeliveryExpiry(
   // Cloud rows that were never dispatched expire there too; a DISPATCHED Cloud row is owned by its
   // frozen execution window instead (the worker releases it when that window passed, after which
   // the ingress deadline applies), so this never expires input a Runner may still be executing.
+  // The one exception is a PARKED correlated Cloud row: the worker already gave up on it, the claim
+  // scans keep it from the coordinator that would release the dispatch, so without the expiry below
+  // nothing would ever bound it. It expires only once the ingress deadline AND the frozen window
+  // (`dispatch_payload.deadlineAt`) have both passed, which keeps the Runner rule intact; the
+  // correlation stays, so the coordinator's ordinary expired-dispatch release runs next and never
+  // rebuilds the input.
   // Accepted-unreported custody is never pending and is never expired. A missing placement or
   // Computer row fails conservative. The guard precedes the batch limit so a dispatched Cloud
   // backlog cannot starve Local expiry.
@@ -347,6 +354,18 @@ export async function runImDeliveryExpiry(
           )
           or (
             delivery.dispatch_request_id is null
+            and exists (
+              select 1
+              from session_placements as placement
+              inner join computers as computer on computer.id = placement.computer_id
+              where placement.session_id = delivery.session_id
+                and computer.kind = 'cloud'
+            )
+          )
+          or (
+            delivery.last_error_code = ${PARKED_DELIVERY_CODE}
+            and delivery.dispatch_request_id is not null
+            and coalesce((delivery.dispatch_payload ->> 'deadlineAt')::timestamptz, ${expiryNow}::timestamptz) <= ${expiryNow}::timestamptz
             and exists (
               select 1
               from session_placements as placement

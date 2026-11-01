@@ -1338,8 +1338,21 @@ async function parkThroughNeverSettlingDispatch(
       request: DirectImMessageDeliveryRequest,
       onDispatched?: () => void,
     ) => {
+      /*
+       * Production (`RuntimeDomainOwner.#startDelivery`) awaits durable custody before the frame leaves and throws on
+       * conflict, so the correlation is already in the row when the operation might hang. Acquire it the same way and
+       * refuse to pretend a frame was sent otherwise: a helper that signals `onDispatched` first can reach the timeout
+       * with no correlation, which lets the unparked path write `terminal_rejected` — a state production cannot reach.
+       */
+      const custodyStatus = await custody.beginDeliveryDispatch(
+        request,
+        computeDirectInputHash(request),
+        fixture.dispatchContext,
+      );
+      if (custodyStatus !== "dispatched" && custodyStatus !== "already_dispatched") {
+        throw new Error(`IM_DELIVERY_TEST_CUSTODY_NOT_ACQUIRED: ${custodyStatus}`);
+      }
       onDispatched?.();
-      await custody.beginDeliveryDispatch(request, computeDirectInputHash(request), fixture.dispatchContext);
       return new Promise<never>(() => undefined);
     },
   );
@@ -1353,7 +1366,10 @@ async function parkThroughNeverSettlingDispatch(
       capabilityVersion: vi.fn(() => 2),
     } as never,
     intervalMs: 60_000,
-    operationTimeoutMs: 40,
+    // The deadline must not race the durable custody write that production awaits before sending: 250 ms is an order of
+    // magnitude above that write (single-digit milliseconds locally, tens under CI load) and stays far below the retry
+    // schedule, so the correlated precondition is always established before the timeout can fire.
+    operationTimeoutMs: 250,
     onDiagnostic: (code: string) => diagnosticCodes.push(code),
   });
   // One iteration: the deadline aborts the hang, the exhaustion path parks, then the grace expires.

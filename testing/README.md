@@ -37,6 +37,7 @@ contents, and machine-specific operational logs outside the repository.
 - [Feishu setup observation consistency](verification/feishu-setup-observation.md)
 - [Feishu user MCP authorization](verification/feishu-user-mcp-authorization.md)
 - [GitHub platform integration](verification/github-platform-integration.md)
+- [Ownership gate reconciliation](verification/ownership-gate.md)
 - [GitHub MCP connector](verification/github-mcp.md)
 - [Agent GitHub access through MCP](verification/agent-github-mcp-only.md)
 - [GitHub OAuth cutover](verification/github-oauth-cutover.md)

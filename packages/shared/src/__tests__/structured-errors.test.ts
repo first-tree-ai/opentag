@@ -753,6 +753,8 @@ describe("token metrics whitelist and bare token scrubbing", () => {
 
     const pemKey = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0Y...\n-----END RSA PRIVATE KEY-----";
     expect(redactSensitive(`key: ${pemKey}`)).toBe("key: [REDACTED]");
+    expect(redactSensitive(`secret: ${pemKey}`)).toBe("secret: [REDACTED]");
+    expect(redactSensitive(`token=${pemKey}`)).toBe("token=[REDACTED]");
 
     const urlWithCredentials = "https://user:supersecretpass@api.example.com/v1/endpoint";
     expect(redactSensitive(`connecting to ${urlWithCredentials}`)).toBe(

@@ -756,6 +756,17 @@ describe("token metrics whitelist and bare token scrubbing", () => {
     expect(redactSensitive(`secret: ${pemKey}`)).toBe("secret: [REDACTED]");
     expect(redactSensitive(`token=${pemKey}`)).toBe("token=[REDACTED]");
 
+    const pkcs8Key =
+      "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC...\n-----END PRIVATE KEY-----";
+    expect(redactSensitive(pkcs8Key)).toBe("[REDACTED]");
+    expect(redactSensitive(`load failed ${pkcs8Key}`)).toBe("load failed [REDACTED]");
+    expect(redactSensitive(JSON.stringify({ type: "service_account", private_key: pkcs8Key }))).toBe(
+      JSON.stringify({ type: "service_account", private_key: "[REDACTED]" }),
+    );
+
+    const ecKey = "-----BEGIN EC PRIVATE KEY-----\nMHcCAQEEI...\n-----END EC PRIVATE KEY-----";
+    expect(redactSensitive(`ec: ${ecKey}`)).toBe("ec: [REDACTED]");
+
     const urlWithCredentials = "https://user:supersecretpass@api.example.com/v1/endpoint";
     expect(redactSensitive(`connecting to ${urlWithCredentials}`)).toBe(
       "connecting to https://[REDACTED]@api.example.com/v1/endpoint",

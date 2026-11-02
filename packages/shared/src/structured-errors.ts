@@ -696,7 +696,7 @@ function scrubCredentialHeaders(value: string): string {
 
 function scrubString(value: string): string {
   return scrubCredentialHeaders(value)
-    .replace(/-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]+?-----END [A-Z ]+PRIVATE KEY-----/gu, "[REDACTED]")
+    .replace(/-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----[\s\S]+?-----END (?:[A-Z]+ )*PRIVATE KEY-----/gu, "[REDACTED]")
     .replace(/([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s:@]+@/giu, "$1[REDACTED]@")
     .replace(/\bslack-provision\.[A-Za-z0-9_-]{32,}/gu, "[REDACTED]")
     .replace(/\bBearer\s+(?!\[REDACTED\])[^\s,;}[\]]+/giu, "Bearer [REDACTED]")

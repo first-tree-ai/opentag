@@ -329,7 +329,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
         : []),
       ...(this.#sessionExists ? ["--resume", this.#sessionId] : ["--session-id", this.#sessionId]),
       "--permission-mode",
-      this.#policy.approvals === "never" ? "bypassPermissions" : "auto",
+      this.#policy.approvals === "never" ? "bypassPermissions" : "default",
       ...(this.#policy.approvals === "never" ? [] : ["--permission-prompt-tool", "stdio"]),
       "--settings",
       JSON.stringify({

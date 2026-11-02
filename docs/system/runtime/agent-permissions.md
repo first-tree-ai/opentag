@@ -6,9 +6,10 @@ description: "Per-Provider permission modes, native command rules, and the Slack
 # Agent permissions
 
 Local Codex Agents use `workspace-write` with `on-request` approvals and disabled sandbox network
-access. Local Claude Code Agents use `auto`: its native classifier reviews actions and its permission
-callback sends remaining requests to the task sender. Claude Code must support `auto` and
-`--permission-prompt-tool`. Claude's native gate does not provide an OS sandbox.
+access. Local Claude Code Agents use `default`: managed allow rules and native permission grants
+auto-approve configured actions, and its permission callback sends remaining requests to the task
+sender. Claude Code must support `--permission-prompt-tool`. Claude's native gate does not provide
+an OS sandbox.
 Local Claude loads native user, project, and local settings, plugins, hooks, and Skill shell execution.
 Its environment preserves operator-provided plugin variables. Users and Agents manage these through
 native configuration and commands, preferably at project scope under the existing Agent Home.
@@ -63,10 +64,10 @@ rule with literal execution proxy/CA arguments and the returned handle path. Onl
 routing fields are read from the environment file; the shell does not source it.
 
 Local Codex and Claude Code Agent Model settings let an owner turn off approvals for future work
-or add command prefixes, including arguments after the prefix. Claude auto mode can still review
-broad execution rules. Built-in commands are not shown in the list. Approval requests go to the
-Slack or Feishu user who sent the task; no approver ID or account linking is needed. Cloud Agents
-always run with full permissions and have no permission settings.
+or add command prefixes, including arguments after the prefix. Built-in commands are not shown in
+the list. Approval requests go to the Slack or Feishu user who sent the task; no approver ID or
+account linking is needed. Cloud Agents always run with full permissions and have no permission
+settings.
 
 The Agent's self-configuration API cannot modify permission settings.
 

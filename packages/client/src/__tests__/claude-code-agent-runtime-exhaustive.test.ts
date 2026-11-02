@@ -557,6 +557,18 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
         },
       },
       {
+        request: withPolicy({ approvals: "on-request", allowedCommands: ["git status"] }),
+        expected: (args) => {
+          expect(argumentAfter(args, "--permission-mode")).toBe("default");
+          expect(argumentAfter(args, "--permission-prompt-tool")).toBe("stdio");
+          expect(JSON.parse(argumentAfter(args, "--settings") as string)).toEqual({
+            permissions: {
+              allow: expect.arrayContaining(["Bash(git status *)"]),
+            },
+          });
+        },
+      },
+      {
         request: withPolicy({ tools: { mode: "allow-list", names: [] } }),
         expected: (args) => {
           expect(argumentAfter(args, "--tools")).toBe("");

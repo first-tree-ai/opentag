@@ -26,7 +26,17 @@ describe("ClaudeCodeAgentRuntime", () => {
       });
       const run = runtime.prompt({ runId: "local-run", input: input("work") });
       await vi.waitFor(() => expect(events.some((event) => event.type === "interaction_requested")).toBe(true));
-      expect(argumentAfter(processes[0]?.args ?? [], "--permission-mode")).toBe("auto");
+      expect(events).toContainEqual({
+        type: "interaction_requested",
+        runId: "local-run",
+        request: {
+          requestId: "permission-1",
+          kind: "approval",
+          title: "Approve Bash",
+          details: { command: "git push" },
+        },
+      });
+      expect(argumentAfter(processes[0]?.args ?? [], "--permission-mode")).toBe("default");
       expect(argumentAfter(processes[0]?.args ?? [], "--permission-prompt-tool")).toBe("stdio");
       expect(argumentAfter(processes[0]?.args ?? [], "--setting-sources")).toBe("user,project,local");
       expect(argumentAfter(processes[0]?.args ?? [], "--plugin-dir")).toMatch(/opentag$/);

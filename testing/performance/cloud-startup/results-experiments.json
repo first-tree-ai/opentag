@@ -1,0 +1,490 @@
+{
+  "experiments": [
+    {
+      "experiment": "command-loading-1",
+      "attempts": 364,
+      "summary": {
+        "before/fresh-session": {
+          "n": 30,
+          "successes": 30,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 845.0263339999947,
+          "inputAtModelP95Ms": 1004.6127089999936,
+          "workerReadyP50Ms": 158.7069580000025,
+          "totalP95Ms": 1021.0950000000012,
+          "cgroupCpuP50Us": 778092
+        },
+        "before/sequential": {
+          "n": 30,
+          "successes": 30,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 850.9725840000028,
+          "inputAtModelP95Ms": 918.6161250000005,
+          "workerReadyP50Ms": 144.4930839999979,
+          "totalP95Ms": 934.9192500000063,
+          "cgroupCpuP50Us": 777527
+        },
+        "before/scheduled-input": {
+          "n": 30,
+          "successes": 30,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 849.184500000003,
+          "inputAtModelP95Ms": 911.8945830000011,
+          "workerReadyP50Ms": 143.7650829999984,
+          "totalP95Ms": 928.1177089999983,
+          "cgroupCpuP50Us": 775910
+        },
+        "after/fresh-session": {
+          "n": 30,
+          "successes": 30,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 835.8465419999993,
+          "inputAtModelP95Ms": 1111.0347499999916,
+          "workerReadyP50Ms": 141.24508299999798,
+          "totalP95Ms": 1130.5168339999946,
+          "cgroupCpuP50Us": 769137
+        },
+        "after/sequential": {
+          "n": 30,
+          "successes": 30,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 839.1097920000029,
+          "inputAtModelP95Ms": 993.0732090000238,
+          "workerReadyP50Ms": 148.1047499999986,
+          "totalP95Ms": 1009.281209000008,
+          "cgroupCpuP50Us": 768530
+        },
+        "after/scheduled-input": {
+          "n": 30,
+          "successes": 30,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 845.8964580000029,
+          "inputAtModelP95Ms": 960.3125419999997,
+          "workerReadyP50Ms": 130.9256250000035,
+          "totalP95Ms": 976.0000419999997,
+          "cgroupCpuP50Us": 768186
+        },
+        "before/restored-files": {
+          "n": 30,
+          "successes": 30,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 876.8607510000002,
+          "inputAtModelP95Ms": 991.0462920000136,
+          "workerReadyP50Ms": 188.9814999999944,
+          "totalP95Ms": 1033.914791999996,
+          "cgroupCpuP50Us": 786372
+        },
+        "before/concurrent-history": {
+          "n": 60,
+          "successes": 60,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 1680.9915010000113,
+          "inputAtModelP95Ms": 2898.927126000024,
+          "workerReadyP50Ms": 334.39804100000765,
+          "totalP95Ms": 2920.929250999994,
+          "cgroupCpuP50Us": 1660790
+        },
+        "after/restored-files": {
+          "n": 30,
+          "successes": 30,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 862.7234999999928,
+          "inputAtModelP95Ms": 1034.9769589999923,
+          "workerReadyP50Ms": 176.92720900001586,
+          "totalP95Ms": 1052.476209000015,
+          "cgroupCpuP50Us": 770657
+        },
+        "after/concurrent-history": {
+          "n": 60,
+          "successes": 60,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 1656.975501000008,
+          "inputAtModelP95Ms": 1721.1908340000082,
+          "workerReadyP50Ms": 302.5284170000232,
+          "totalP95Ms": 1749.5321260000055,
+          "cgroupCpuP50Us": 1634842
+        },
+        "before/model-rejection": {
+          "n": 1,
+          "successes": 0,
+          "failures": 1,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 917.0585420000134,
+          "inputAtModelP95Ms": 917.0585420000134,
+          "workerReadyP50Ms": 139.42975000001024,
+          "totalP95Ms": 933.4778759999899,
+          "cgroupCpuP50Us": 818930
+        },
+        "before/model-timeout": {
+          "n": 1,
+          "successes": 0,
+          "failures": 1,
+          "timeouts": 1,
+          "inputAtModelP50Ms": 814.7848750000121,
+          "inputAtModelP95Ms": 814.7848750000121,
+          "workerReadyP50Ms": 124.94983300002059,
+          "totalP95Ms": 5041.101293999993,
+          "cgroupCpuP50Us": 790304
+        },
+        "after/model-rejection": {
+          "n": 1,
+          "successes": 0,
+          "failures": 1,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 867.7605000000331,
+          "inputAtModelP95Ms": 867.7605000000331,
+          "workerReadyP50Ms": 170.8145830000285,
+          "totalP95Ms": 886.0857090000063,
+          "cgroupCpuP50Us": 795864
+        },
+        "after/model-timeout": {
+          "n": 1,
+          "successes": 0,
+          "failures": 1,
+          "timeouts": 1,
+          "inputAtModelP50Ms": 875.5167499999516,
+          "inputAtModelP95Ms": 875.5167499999516,
+          "workerReadyP50Ms": 175.99037499999395,
+          "totalP95Ms": 5030.958459999994,
+          "cgroupCpuP50Us": 777500
+        }
+      },
+      "decision": "Rejected: predefined p50 and p95 gates not met; source reverted."
+    },
+    {
+      "experiment": "command-loading-2",
+      "attempts": 364,
+      "summary": {
+        "before/fresh-session": {
+          "n": 30,
+          "successes": 30,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 878.9530840000007,
+          "inputAtModelP95Ms": 1516.8640840000007,
+          "workerReadyP50Ms": 166.20275000000402,
+          "totalP95Ms": 1549.074833999999,
+          "cgroupCpuP50Us": 796486
+        },
+        "before/sequential": {
+          "n": 30,
+          "successes": 30,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 915.2538340000028,
+          "inputAtModelP95Ms": 1559.5093330000236,
+          "workerReadyP50Ms": 170.03875000000698,
+          "totalP95Ms": 1604.5495000000228,
+          "cgroupCpuP50Us": 817947
+        },
+        "before/scheduled-input": {
+          "n": 30,
+          "successes": 30,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 882.3522930000036,
+          "inputAtModelP95Ms": 1005.9522500000021,
+          "workerReadyP50Ms": 149.4424999999901,
+          "totalP95Ms": 1021.8757079999923,
+          "cgroupCpuP50Us": 796304
+        },
+        "after/fresh-session": {
+          "n": 30,
+          "successes": 30,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 867.0480840000091,
+          "inputAtModelP95Ms": 1114.6762920000183,
+          "workerReadyP50Ms": 159.11874999999418,
+          "totalP95Ms": 1131.4846250000119,
+          "cgroupCpuP50Us": 783465
+        },
+        "after/sequential": {
+          "n": 30,
+          "successes": 30,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 871.5163339999999,
+          "inputAtModelP95Ms": 1225.6693760000053,
+          "workerReadyP50Ms": 162.26362499999232,
+          "totalP95Ms": 1241.1363760000022,
+          "cgroupCpuP50Us": 790446
+        },
+        "after/scheduled-input": {
+          "n": 30,
+          "successes": 30,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 866.8859999999986,
+          "inputAtModelP95Ms": 975.9880000000121,
+          "workerReadyP50Ms": 141.90320799999972,
+          "totalP95Ms": 992.0477499999979,
+          "cgroupCpuP50Us": 786500
+        },
+        "before/restored-files": {
+          "n": 30,
+          "successes": 30,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 891.0007080000069,
+          "inputAtModelP95Ms": 1910.7855010000058,
+          "workerReadyP50Ms": 189.58729200001108,
+          "totalP95Ms": 1938.6480839999858,
+          "cgroupCpuP50Us": 812929
+        },
+        "before/concurrent-history": {
+          "n": 60,
+          "successes": 60,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 1753.8153760000132,
+          "inputAtModelP95Ms": 2951.944377000007,
+          "workerReadyP50Ms": 337.7312909999746,
+          "totalP95Ms": 3016.0359600000083,
+          "cgroupCpuP50Us": 1744836
+        },
+        "after/restored-files": {
+          "n": 30,
+          "successes": 30,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 906.7515419999836,
+          "inputAtModelP95Ms": 2260.3107509999827,
+          "workerReadyP50Ms": 181.31241700000828,
+          "totalP95Ms": 2280.5575430000026,
+          "cgroupCpuP50Us": 808591
+        },
+        "after/concurrent-history": {
+          "n": 60,
+          "successes": 60,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 1766.8312089999963,
+          "inputAtModelP95Ms": 2475.896710000001,
+          "workerReadyP50Ms": 330.70516700000735,
+          "totalP95Ms": 2500.9007100000163,
+          "cgroupCpuP50Us": 1764358
+        },
+        "before/model-rejection": {
+          "n": 1,
+          "successes": 0,
+          "failures": 1,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 881.8237499999814,
+          "inputAtModelP95Ms": 881.8237499999814,
+          "workerReadyP50Ms": 193.24316700000782,
+          "totalP95Ms": 938.9162089999882,
+          "cgroupCpuP50Us": 802775
+        },
+        "before/model-timeout": {
+          "n": 1,
+          "successes": 0,
+          "failures": 1,
+          "timeouts": 1,
+          "inputAtModelP50Ms": 848.5923750000075,
+          "inputAtModelP95Ms": 848.5923750000075,
+          "workerReadyP50Ms": 142.99620799999684,
+          "totalP95Ms": 5038.3881689999835,
+          "cgroupCpuP50Us": 815483
+        },
+        "after/model-rejection": {
+          "n": 1,
+          "successes": 0,
+          "failures": 1,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 881.0083340000128,
+          "inputAtModelP95Ms": 881.0083340000128,
+          "workerReadyP50Ms": 133.79183300002478,
+          "totalP95Ms": 898.3555840000045,
+          "cgroupCpuP50Us": 761887
+        },
+        "after/model-timeout": {
+          "n": 1,
+          "successes": 0,
+          "failures": 1,
+          "timeouts": 1,
+          "inputAtModelP50Ms": 858.5452919999952,
+          "inputAtModelP95Ms": 858.5452919999952,
+          "workerReadyP50Ms": 125.1355840000324,
+          "totalP95Ms": 5016.72716900002,
+          "cgroupCpuP50Us": 788334
+        }
+      },
+      "decision": "Rejected: predefined gates not met, including restored-file regression; source reverted."
+    },
+    {
+      "experiment": "adapter-with-host-mount",
+      "attempts": 244,
+      "summary": {
+        "before/fresh-session": {
+          "n": 30,
+          "successes": 30,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 1031.0152920000037,
+          "inputAtModelP95Ms": 1436.3727500000023,
+          "workerReadyP50Ms": 303.4555419999815,
+          "adapterReadyP50Ms": 136.441709,
+          "adapterReadyP95Ms": 298.73129199999676,
+          "totalP95Ms": 1487.2173750000002,
+          "cgroupCpuP50Us": 937654
+        },
+        "before/sequential": {
+          "n": 30,
+          "successes": 30,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 962.0212920000049,
+          "inputAtModelP95Ms": 1692.5608760000032,
+          "workerReadyP50Ms": 271.6129590000055,
+          "adapterReadyP50Ms": 99.42287499998929,
+          "adapterReadyP95Ms": 258.2082499999997,
+          "totalP95Ms": 1710.9393759999948,
+          "cgroupCpuP50Us": 888648
+        },
+        "before/scheduled-input": {
+          "n": 30,
+          "successes": 30,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 1033.128291999994,
+          "inputAtModelP95Ms": 1329.3890419999952,
+          "workerReadyP50Ms": 304.73300000000745,
+          "adapterReadyP50Ms": 131.50529200000165,
+          "adapterReadyP95Ms": 284.2302920000002,
+          "totalP95Ms": 1350.15875100001,
+          "cgroupCpuP50Us": 960188
+        },
+        "after/fresh-session": {
+          "n": 30,
+          "successes": 30,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 868.916292000009,
+          "inputAtModelP95Ms": 1802.2788759999967,
+          "workerReadyP50Ms": 175.1284169999999,
+          "adapterReadyP50Ms": 4.6091250000026776,
+          "adapterReadyP95Ms": 8.913584000023548,
+          "totalP95Ms": 1823.3082920000015,
+          "cgroupCpuP50Us": 791905
+        },
+        "after/sequential": {
+          "n": 30,
+          "successes": 30,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 885.3100000000122,
+          "inputAtModelP95Ms": 1497.019792999985,
+          "workerReadyP50Ms": 168.28087500000038,
+          "adapterReadyP50Ms": 4.743084000001545,
+          "adapterReadyP95Ms": 9.742417000001296,
+          "totalP95Ms": 1523.5629590000026,
+          "cgroupCpuP50Us": 800371
+        },
+        "after/scheduled-input": {
+          "n": 30,
+          "successes": 30,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 874.1827499999999,
+          "inputAtModelP95Ms": 1449.5135840000003,
+          "workerReadyP50Ms": 177.56808399999863,
+          "adapterReadyP50Ms": 4.664583999998285,
+          "adapterReadyP95Ms": 10.450916000001598,
+          "totalP95Ms": 1477.6917930000054,
+          "cgroupCpuP50Us": 788094
+        },
+        "before/restored-files": {
+          "n": 30,
+          "successes": 30,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 989.6778340000019,
+          "inputAtModelP95Ms": 1847.0724999999802,
+          "workerReadyP50Ms": 278.03008299999055,
+          "adapterReadyP50Ms": 107.08687499997905,
+          "adapterReadyP95Ms": 299.3753330000036,
+          "totalP95Ms": 1863.5049169999838,
+          "cgroupCpuP50Us": 924658
+        },
+        "after/restored-files": {
+          "n": 30,
+          "successes": 30,
+          "failures": 0,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 895.6092089999875,
+          "inputAtModelP95Ms": 1889.3396680000005,
+          "workerReadyP50Ms": 171.60929199997918,
+          "adapterReadyP50Ms": 4.789083000010578,
+          "adapterReadyP95Ms": 14.520458000013605,
+          "totalP95Ms": 1907.0162929999933,
+          "cgroupCpuP50Us": 817725
+        },
+        "before/model-rejection": {
+          "n": 1,
+          "successes": 0,
+          "failures": 1,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 1008.5402919999906,
+          "inputAtModelP95Ms": 1008.5402919999906,
+          "workerReadyP50Ms": 310.30349999998,
+          "adapterReadyP50Ms": 138.7564999999886,
+          "adapterReadyP95Ms": 138.7564999999886,
+          "totalP95Ms": 1028.5583340000012,
+          "cgroupCpuP50Us": 907928
+        },
+        "before/model-timeout": {
+          "n": 1,
+          "successes": 0,
+          "failures": 1,
+          "timeouts": 1,
+          "inputAtModelP50Ms": 970.4980420000211,
+          "inputAtModelP95Ms": 970.4980420000211,
+          "workerReadyP50Ms": 276.6388750000042,
+          "adapterReadyP50Ms": 134.1414999999979,
+          "adapterReadyP95Ms": 134.1414999999979,
+          "totalP95Ms": 5044.3885860000155,
+          "cgroupCpuP50Us": 922897
+        },
+        "after/model-rejection": {
+          "n": 1,
+          "successes": 0,
+          "failures": 1,
+          "timeouts": 0,
+          "inputAtModelP50Ms": 923.3902919999964,
+          "inputAtModelP95Ms": 923.3902919999964,
+          "workerReadyP50Ms": 187.57925000000978,
+          "adapterReadyP50Ms": 14.149375000008149,
+          "adapterReadyP95Ms": 14.149375000008149,
+          "totalP95Ms": 940.0897080000141,
+          "cgroupCpuP50Us": 814918
+        },
+        "after/model-timeout": {
+          "n": 1,
+          "successes": 0,
+          "failures": 1,
+          "timeouts": 1,
+          "inputAtModelP50Ms": 851.2090839999728,
+          "inputAtModelP95Ms": 851.2090839999728,
+          "workerReadyP50Ms": 151.2211669999815,
+          "adapterReadyP50Ms": 4.539915999979712,
+          "adapterReadyP95Ms": 4.539915999979712,
+          "totalP95Ms": 5018.012001999974,
+          "cgroupCpuP50Us": 799939
+        }
+      },
+      "decision": "Not accepted: p50 passes, fresh/scheduled p95 fails. Retained without dropping outliers."
+    }
+  ],
+  "rawPolicy": "Complete raw records and rejected source patch remain in the task-owned local evidence directory; these summaries do not replace them."
+}

@@ -12,6 +12,8 @@ Baseline `e4f7cb1d0ca038c13368c7be90f4e7058105a329`, Node 24.20.0, pnpm 10.12.1,
 local Docker PostgreSQL. The full no-loss, correctly targeted, ordered-input goal is **not met**.
 No production data, historical messages, external IM sends, external model service calls or Cloud deployments
 are involved in the checks below. No production implementation changes accompany these test additions.
+The native Runner SIGKILL probe below also runs after integrating main `ca326157`, including its
+workspace recovery changes; Server receipt/admission/recovery source is unchanged between these baselines.
 
 A signed Slack request was acknowledged with HTTP 200 after its durable receipt committed. A synthetic
 PostgreSQL trigger raised `40001` on the actual Inbox message insert. After removing the trigger, a
@@ -133,6 +135,7 @@ migrated PostgreSQL; Client file tests use real local files. Synthetic native/tr
 | Local ACK send failure / accepted process death | Client custody, runtime-durability, report recovery tests | Unknown/not_started must not count as delivered |
 | Cloud received then real process SIGKILL | New `cloud-turns-process.test.ts` | Re-announces same receipt; zero worker calls until fresh verification |
 | Cloud started then real process SIGKILL | Same new process test | Replays same unknown report, zero new worker calls; real Pi/model not used |
+| Native Pi consumed, then Runner SIGKILL | New signed-ingress/native-Pi negative probe below | Local watchdog stops old Pi; Server's documented unknown-Root recovery still replays consumed inputs |
 | Cloud reported then SIGKILL / ACK absent | Same new process test | Replays exact report, zero new worker calls; Server ACK path covered separately |
 | Changed content or allocation under same identity | Journal/Cloud Runner/custody tests | Live allocation lifecycle acceptance remains separate |
 | Cold start / allocation timeout / restart | PG cloud-dispatch-custody and allocation suites | Real Cloud cold start not run; adjacent RSI owns performance |
@@ -302,6 +305,38 @@ A failed Root report does not establish that a child was unreceived or had no ef
 This test proves repeated native input under the stated fixture seams; it does not prove repeated external
 side effects, successful processing, or real Cloud behavior. The production repair needs a separate concrete,
 human-confirmed read/write and recovery contract. The receipt admission fence alone cannot resolve it.
+
+### Negative acceptance probe: native input before Runner SIGKILL
+
+The [native SIGKILL probe](../im-input-ledger/native-sigkill-steer-replay.patch) exercises the same two-Agent
+signed-ingress ledger with real Pi, fsynced Runner journals and migrated PostgreSQL. It holds the third
+model response after each Pi has consumed its three batches (32, 32, 1 originals), so all 130 originals
+have native input observations while both Root journals are `started` and neither Root has reported.
+It observes the actual watchdog/Pi process-group PIDs, sends SIGKILL to each Runner, waits for process exit,
+and verifies both observed groups stop before fixture cleanup. The local observations took 526 and 547 ms;
+the test permits five seconds and does not infer termination merely from the Runner's exit.
+
+Replacement Runner processes reopen the same journals and reconcile. They execute no native worker and
+replay identical `unknown / may_have_occurred / turn_state_unknown` reports with the original Root/Turn,
+Agent and Session identities. Lost report ACKs exercise the matching replay and clear the journals.
+The Server follows its documented policy and requeues 66 steers. Two ordinary worker scans then produce
+64 additional native observations, giving 194 observations of 130 distinct originals. The no-duplicate
+assertion fails with 64 duplicate findings. The replacement Runner does not itself replay the old execution;
+the fresh input attempts arise from Server recovery after terminal settlement.
+
+Apply this patch on a clean test baseline, with the other optional probes reversed, then run:
+
+```sh
+pnpm --filter @opentag/server exec vitest run src/__tests__/integration/im-native-input-ledger.test.ts -t 'does not replay native-consumed inputs after Runner SIGKILL' --maxWorkers=1
+```
+
+This is another opt-in failing acceptance reproduction of the current recovery-contract conflict,
+not a normal passing CI case or an expected-failure test. The saved patch was applied, run and reversed;
+its active TypeScript test also passes the Server typecheck. It uses production `PiRpcProcess` process
+ownership, but the Pi worker runs directly under the local fixture. Actual Cloud Sandbox transport,
+guest-process termination, physical Instance replacement, tools that escape a process group and external
+side effects are outside this test. Local PID observations are not a durable Server stop proof and cannot
+authorize recovery of an unknown physical Cloud execution.
 
 Full real Feishu, Slack and Cloud acceptance remains incomplete. Local passing tests cannot authorize merge,
 deployment, historical replay, live-user messages or resource expansion.

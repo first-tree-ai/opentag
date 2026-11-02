@@ -140,7 +140,7 @@ migrated PostgreSQL; Client file tests use real local files. Synthetic native/tr
 | Lost Cloud verification / report ACK | Signed-ingress/native-Pi ledger below, actual custody and Runner journal | Explicit reconciliation and exact-frame replay; control transport is IPC, not WebSocket |
 | Native Pi burst, success and permanent model error | Manual `pi-input-burst.mjs`: real Pi 0.84.2, four 65-input ledgers | Provider-only evidence; Server routing, native Sandbox and recovered re-dispatch are outside this harness |
 | Native send succeeds, response lost | Local steer uncertainty + Cloud steer journal tests | At-least-once transport is distinct from deduplicated Agent processing |
-| Root fails while steers are in flight | PG steered-delivery recovery and recovery-lock suites | Unknown execution cannot be safely auto-replayed without further evidence |
+| Root fails after native steer consumption | PG recovery suites; new signed-ingress/native-Pi negative probe below | Confirmed duplicate injection after automatic requeue; separate human-confirmed recovery design required |
 | Credential unreadable / permission revoked | PG receipt recovery and Cloud reauthorization tests | Current permanent dispositions and best-effort reaction lack complete user resolution |
 | Poison/invalid input, TTL/retention cleanup | Content validation, Janitor, PG retention tests | Must agree on hold/resume/cancel policy; do not automatically skip predecessor |
 
@@ -269,6 +269,34 @@ are deterministic loopback SSE, and no actual Cloud allocation or Slack API is u
 receipt normalization failure, a late predecessor after dispatch, process death during native execution, model
 errors, retention/capacity overflow, attachment input or thread/rebind lifecycle. The confirmed receipt/Inbox
 ordering defect and the other product-boundary conflicts above remain unresolved.
+
+### Negative acceptance probe: failed Root replays consumed steers
+
+The [failed-Root probe](../im-input-ledger/failed-root-steer-replay.patch) changes only this controlled
+test and its native fixture. The first held model response succeeds; every later response returns 401.
+It uses the production `completionForResult` mapping so the Runner reports the actual failed outcome.
+Before retry, all 130 originals have already appeared in native Pi user events, but the two failed Root
+reports cause 66 steered messages to return to `pending`. Two normal `ImDeliveryWorker.runOnce()` scans
+then produce 64 additional native input observations, 32 per Agent. The saved ledger contains 194
+observations of 130 distinct originals and the oracle reports 64 `DUPLICATE_PROVIDER_INPUT` findings.
+The oracle's `received` total counts distinct identities, so it remains 130 while the duplicate findings fail.
+
+Apply the patch to this test baseline, then run:
+
+```sh
+pnpm --filter @opentag/server exec vitest run src/__tests__/integration/im-native-input-ledger.test.ts -t 'does not replay already consumed steered inputs' --maxWorkers=1
+```
+
+The no-duplicate acceptance assertion is expected to fail on current production behavior. This is an
+opt-in reproduction, not a quarantined test or an expected-failure CI assertion. Remove the patch after
+the investigation; after an approved repair, promote the assertion into normal regression coverage.
+
+`writeTerminalReport` in `runtime/runtime-custody-store.ts` invokes `requeueSteeredDeliveries` for every
+non-completed Root report. That recovery clears the child's dispatch/turn correlation and permits a fresh
+input attempt. A failed Root report does not establish that a child was unreceived or had no effect.
+This test proves repeated native input under the stated fixture seams; it does not prove repeated external
+side effects, successful processing, or real Cloud behavior. The production repair needs a separate concrete,
+human-confirmed read/write and recovery contract. The receipt admission fence alone cannot resolve it.
 
 Full real Feishu, Slack and Cloud acceptance remains incomplete. Local passing tests cannot authorize merge,
 deployment, historical replay, live-user messages or resource expansion.

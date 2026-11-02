@@ -15,6 +15,30 @@ const ready = {
 };
 afterEach(() => vi.restoreAllMocks());
 describe("connector list recovery", () => {
+  it("offers reauthorization for an OAuth credential rejected by the probe", async () => {
+    stub([
+      entry({
+        authorization: {
+          ...authorization(),
+          kind: "oauth",
+          probeState: "failed",
+          probeError: `${MCP_ERROR_CODES.UPSTREAM_ERROR}: ${MCP_AUTH_REJECTION_SUMMARY}`,
+        },
+      }),
+    ]);
+    vi.spyOn(window, "open").mockReturnValue(null);
+    const start = vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "Unavailable"));
+    const probe = vi.spyOn(browserApi, "probeMcpServer");
+    wrap(<McpPage agentId={AGENT_ID} />);
+
+    expect(await screen.findByText("Authorization failed")).toBeTruthy();
+    expect(screen.queryByText("Couldn't load tools")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry: linear" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Reauthorize: linear" }));
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+    expect(probe).not.toHaveBeenCalled();
+  });
+
   it("offers authorization directly when no credential has been configured", async () => {
     stub([entry({ authorization: null })]);
     wrap(<McpPage agentId={AGENT_ID} />);

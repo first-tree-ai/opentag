@@ -126,14 +126,31 @@ per-action approval settings.
 
 ### Pi and Cloud runtime delivery
 
-Pi has no native MCP configuration surface. openTag pins `pi-mcp-adapter` 2.36.0 and explicitly
-loads one openTag wrapper extension while Pi's implicit extension discovery remains disabled. The
-wrapper supplies an isolated programmatic configuration containing only `opentag-mcp`; Pi's global
-and project MCP files are never merged. The gateway bearer travels in the Pi process environment,
-not its arguments or persisted Session binding. The adapter uses the gateway's supported legacy
-MCP handshake and exposes only the bounded `mcp` proxy tool. Direct tools, per-server namespace
-proxies, resources, Tasks and scripting are disabled. A missing Agent mount or rejected service grant
-leaves the Turn without MCP tools.
+Pi uses extensions for MCP. OpenTag pins `pi-mcp-adapter` 2.36.0 and explicitly loads its gateway
+wrapper only for actual execution. The gateway bearer travels in the process environment, not
+arguments or persisted Session bindings. It uses the supported legacy MCP handshake with direct
+tools, resources, Tasks, and scripting disabled for the managed server.
+
+Local Pi keeps native resource discovery enabled. After all native extension factories load, the
+wrapper registers a fresh private server name through the adapter's public runtime registration
+API. The native adapter retains its own configuration and tool/command namespace, including any
+user server named `opentag-mcp`. Runtime registrations never write native MCP settings. Discover
+the private server in the native `mcp` directory and connect it before calling its tools; a newly
+registered server need not have cached metadata. Native adapter settings still control its own
+services and tool surface.
+
+When no native MCP tool or command occupies the namespace, the wrapper initializes one adapter
+with an isolated, platform-only programmatic configuration. It does not read ambient MCP files or
+enable a disabled native adapter. An incompatible native adapter occupying the namespace produces
+a warning and leaves platform MCP unavailable, preserving native resources. OpenTag does not load
+a second competing `mcp` proxy or overwrite user configuration. Each Run owns a new Pi process and
+private registration; closing it discards that Run's credentials, and a following Run receives its
+own grant or no platform gateway.
+
+Cloud retains disabled implicit discovery and the isolated adapter configuration containing only
+`opentag-mcp`, with per-server namespace proxies disabled. Native global and project MCP files are
+not merged into that configuration. A missing Agent mount or rejected service grant leaves the
+Turn without platform MCP tools.
 
 For Cloud, the trusted Runner requests the existing `mcp` execution service after verified custody,
 acquires a bearer over the existing credential control tunnel, and passes the Server URL and bearer

@@ -56,6 +56,21 @@ const logger = createLogger("provider-pi-runtime");
 const PI_MINIMUM_VERSION = [0, 80, 6] as const;
 const PI_READ_ONLY_TOOLS = ["read", "grep", "find", "ls"] as const;
 const PI_STOP_REASONS = new Set(["stop", "length", "toolUse", "error", "aborted"]);
+const PI_MODEL_EVENTS = new Set([
+  "agent_start",
+  "agent_end",
+  "agent_settled",
+  "turn_start",
+  "turn_end",
+  "message_update",
+  "tool_execution_start",
+  "tool_execution_update",
+  "tool_execution_end",
+  "compaction_start",
+  "compaction_end",
+  "auto_retry_start",
+  "auto_retry_end",
+]);
 const PI_RESOURCE_DISABLE_ARGUMENTS = [
   "--offline",
   "--no-extensions",
@@ -83,8 +98,8 @@ interface PiProviderConfiguration {
   readonly mcpGateway?: PiMcpGatewayConfiguration;
   /**
    * Trusted web tools launch (runtime opt-in, negotiated, execution-authorized). When present,
-   * the fixed trusted extension artifact is loaded explicitly with `-e` for this run (implicit
-   * discovery stays disabled via `--no-extensions`), and the nonsecret gateway endpoint is
+   * the fixed trusted extension artifact is loaded explicitly with `-e` for this run, and the
+   * nonsecret gateway endpoint is
    * injected into the process environment. Never read from Server content; the trusted Turn
    * runner sets it from the prepared execution.
    */
@@ -108,6 +123,7 @@ const PI_MCP_GATEWAY_EXTENSION = fileURLToPath(new URL("../../pi-extensions/mcp-
 const PI_MCP_GATEWAY_BUNDLED_EXTENSION = fileURLToPath(new URL("./pi-extensions/mcp-gateway.mjs", import.meta.url));
 
 interface PiRuntimeOptions {
+  readonly nativeResources?: boolean;
   readonly onDiagnostic?: PiDiagnosticSink;
   readonly mcpAdapterEntry?: string;
   readonly binding: AgentRuntimeBinding;
@@ -124,6 +140,8 @@ interface PiRuntimeOptions {
 }
 
 export interface PiAgentRuntimeFactoryOptions {
+  /** Local execution only. Probes and Cloud keep discovery disabled. */
+  readonly nativeResources?: boolean;
   readonly onDiagnostic?: PiDiagnosticSink;
   /** Trusted Cloud image path; Local resolves its pinned Client dependency. */
   readonly mcpAdapterEntry?: string;
@@ -203,6 +221,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   readonly #onDiagnostic: PiDiagnosticSink | undefined;
   #diagnostics = new PiRunDiagnostics();
   readonly #mcpAdapterEntry?: string;
+  readonly #nativeResources: boolean;
   readonly #sessionId: string;
   readonly #policy: AgentRuntimePolicy;
   readonly #configuration?: AgentRunConfiguration;
@@ -236,6 +255,8 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   #compacting = false;
   #closingForAbort = false;
   #mcpEnabled = false;
+  #agentStarted = false;
+  #promptPhase: "startup" | "awaiting-ack" | "owned" = "startup";
 
   constructor(options: PiRuntimeOptions) {
     super({
@@ -245,6 +266,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       binding: options.binding,
     });
     this.#onDiagnostic = options.onDiagnostic;
+    this.#nativeResources = options.nativeResources === true;
     const binding = parsePiBinding(options.binding);
     this.#sessionId = binding.sessionId;
     this.#sessionFileHash = binding.sessionFileHash;
@@ -275,7 +297,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       this.#diagnostics.start("pi_spawn");
       client = this.#createClient(
         this.#arguments(request),
-        piExtensionEnvironment(request, this.#configuration, this.#mcpAdapterEntry),
+        piExtensionEnvironment(request, this.#configuration, this.#mcpAdapterEntry, this.#nativeResources),
       );
       this.#diagnostics.end();
       this.#client = client;
@@ -290,6 +312,8 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       this.#diagnostics.start("prompt_acceptance", this.#promptAcceptanceTimeoutMs);
       const accepted = await this.#requestPrompt(client, piInput(request), context.signal);
       if (accepted) {
+        await this.#checkNativePrompt(client, context.signal);
+        this.#promptAccepted?.resolve();
         this.#diagnostics.end();
         this.#diagnostics.start("await_terminal");
       }
@@ -332,6 +356,8 @@ export class PiAgentRuntime extends BaseAgentRuntime {
    * acceptance is not a Provider failure: `abortProvider` owns the aborted terminal instead.
    */
   async #requestPrompt(client: PiRpcClient, message: unknown, signal: AbortSignal): Promise<boolean> {
+    await this.#eventTail;
+    if (this.#providerFailure) throw this.#providerFailure;
     const expired = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const pause = (): void => {
@@ -348,8 +374,18 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     this.#promptAcceptanceClock = { arm, pause };
     arm();
     try {
-      await client.request({ type: "prompt", message }, AbortSignal.any([signal, expired.signal]), { timeoutMs: null });
-      this.#promptAccepted?.resolve();
+      this.#promptPhase = "awaiting-ack";
+      await client.request({ type: "prompt", message }, AbortSignal.any([signal, expired.signal]), {
+        timeoutMs: null,
+        ...(this.#nativeResources
+          ? {
+              onResponse: () => {
+                this.#promptPhase = "owned";
+              },
+            }
+          : {}),
+      });
+      this.#promptPhase = "owned";
       return true;
     } catch (error) {
       if (this.#closingForAbort && error instanceof PiRpcError && error.code === "aborted") {
@@ -367,10 +403,33 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     }
   }
 
+  async #checkNativePrompt(client: PiRpcClient, signal: AbortSignal): Promise<void> {
+    if (!this.#nativeResources) return;
+    // The ordered state response fences prompt preflight; idle alone is never a terminal.
+    const state = requireRecord(
+      await client.request({ type: "get_state" }, signal),
+      "Pi get_state returned invalid data",
+    );
+    await this.#eventTail;
+    if (this.#providerFailure) throw this.#providerFailure;
+    if (this.#agentStarted || state.isStreaming === true) return;
+    throw new AgentProviderError(
+      "provider_request_rejected",
+      "Pi accepted input without a model run. This Pi RPC protocol cannot confirm extension command or handled-input completion. Extension side effects may already have occurred; inspect them before retrying.",
+    );
+  }
+
   async #restoreSessionState(
     state: Readonly<Record<string, unknown>>,
     context: AgentProviderRunContext,
   ): Promise<void> {
+    if (
+      this.#nativeResources &&
+      (state.isStreaming === true ||
+        state.isCompacting === true ||
+        (typeof state.pendingMessageCount === "number" && state.pendingMessageCount > 0))
+    )
+      throw protocolError("Pi has model activity before the requested prompt");
     const sessionId = requireUuid(state.sessionId, "Pi get_state sessionId");
     if (sessionId !== this.#sessionId) throw protocolError("Pi opened another session");
     const sessionFile = requireAbsolutePath(state.sessionFile, "Pi get_state sessionFile is not absolute");
@@ -427,10 +486,21 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     /* v8 ignore next -- BaseAgentRuntime admits steer only while executeRun owns an active prompt. */
     if (!this.#promptAccepted) throw new AgentRuntimeError("run_mismatch", "there is no active Pi prompt");
     await this.#promptAccepted.promise;
+    if (this.#nativeResources && this.#terminalClaimed) {
+      throw new AgentRuntimeError("run_mismatch", "Pi settled before steer was accepted");
+    }
     const client = this.#client;
     /* v8 ignore next -- the client remains owned until the active Provider Run leaves executeRun. */
     if (!client) throw new AgentRuntimeError("run_mismatch", "there is no active Pi process");
     await client.request({ type: "steer", message: piItems(request.input.items) });
+    if (!this.#nativeResources) return;
+    await this.#eventTail;
+    if (this.#terminalClaimed) throw new AgentRuntimeError("run_mismatch", "Pi settled before steer was accepted");
+    const state = requireRecord(await client.request({ type: "get_state" }), "Pi get_state returned invalid data");
+    await this.#eventTail;
+    if (this.#terminalClaimed || this.#providerFailure || state.isStreaming !== true) {
+      throw new AgentRuntimeError("run_mismatch", "Pi settled before steer was accepted");
+    }
   }
 
   protected override async abortProvider(_request: AgentAbortRequest): Promise<void> {
@@ -480,6 +550,8 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     this.#terminalClaimed = false;
     this.#compacting = false;
     this.#closingForAbort = false;
+    this.#agentStarted = false;
+    this.#promptPhase = "startup";
   }
 
   #arguments(request: AgentPromptRequest): readonly string[] {
@@ -488,7 +560,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     return [
       "--mode",
       "rpc",
-      ...PI_RESOURCE_DISABLE_ARGUMENTS,
+      ...(this.#nativeResources ? ["--approve"] : PI_RESOURCE_DISABLE_ARGUMENTS),
       ...this.#skillArgs,
       "--session-id",
       this.#sessionId,
@@ -496,8 +568,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       ...piPolicyArguments(this.#policy),
       ...(configuration?.model ? ["--model", configuration.model] : []),
       ...(configuration?.reasoningEffort ? ["--thinking", configuration.reasoningEffort] : []),
-      // Explicit `-e` extension load for actual execution only; probes/help never receive it and
-      // `--no-extensions` (in PI_RESOURCE_DISABLE_ARGUMENTS) keeps implicit discovery disabled.
+      // Platform resources are additive and execution-only; probes never receive them.
       ...(provider.webTools ? ["--extension", provider.webTools.extensionPath] : []),
       ...(provider.mcpGateway
         ? [
@@ -514,7 +585,15 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   }
 
   #enqueue(message: Readonly<Record<string, unknown>>): void {
+    const preflightCompaction =
+      this.#promptPhase === "awaiting-ack" &&
+      (message.type === "compaction_start" || message.type === "compaction_end");
+    if (this.#nativeResources && this.#promptPhase !== "owned" && piModelActivity(message) && !preflightCompaction) {
+      this.#failProvider(protocolError("Pi emitted model activity before the requested prompt was acknowledged"));
+      return;
+    }
     this.#claimTerminalAtIngress(message);
+    if (message.type === "agent_start") this.#agentStarted = true;
     if (message.type === "compaction_start") {
       this.#compacting = true;
       this.#diagnostics.compactionStart();
@@ -561,6 +640,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       await this.#endTurn();
       return;
     }
+    if (await this.#handleNativeMessage(type, message)) return;
     if (type === "message_start") {
       this.#requireActiveTurn("Pi started a message outside an active turn");
       await this.#startMessage(requireRecord(message.message, "Pi message_start has no message"));
@@ -622,7 +702,22 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     await this.#emitProviderEvent(message);
   }
 
+  async #handleNativeMessage(type: string, message: Readonly<Record<string, unknown>>): Promise<boolean> {
+    if (!this.#nativeResources || (type !== "message_start" && type !== "message_end")) return false;
+    const nativeMessage = requireRecord(message.message, `Pi ${type} has no message`);
+    if (nativeMessage.role !== "custom") return false;
+    await this.#emitProviderEvent(message);
+    return true;
+  }
+
   async #handleExtensionUiRequest(message: Readonly<Record<string, unknown>>): Promise<void> {
+    if (this.#nativeResources) {
+      if (["notify", "setStatus", "setWidget", "setTitle", "set_editor_text"].includes(String(message.method))) {
+        await this.#emitProviderEvent(message);
+        return;
+      }
+      throw protocolError("This Pi extension requires interactive UI unavailable in the headless runtime");
+    }
     // pi-mcp-adapter reports status through Pi's fire-and-forget UI channel even in RPC mode.
     // Interactive dialogs remain forbidden: this headless runtime cannot safely answer them.
     if (
@@ -911,6 +1006,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
 export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
   readonly #onDiagnostic: PiDiagnosticSink | undefined;
   readonly #mcpAdapterEntry?: string;
+  readonly #nativeResources: boolean;
   readonly manifest = PI_AGENT_RUNTIME_MANIFEST;
   readonly #createSessionId: () => string;
   readonly #createClient: (
@@ -929,13 +1025,15 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
 
   constructor(options: PiAgentRuntimeFactoryOptions = {}) {
     this.#onDiagnostic = options.onDiagnostic;
+    this.#nativeResources = options.nativeResources ?? false;
     if (options.mcpAdapterEntry && !isAbsolute(options.mcpAdapterEntry)) {
       throw new AgentRuntimeError("configuration_invalid", "Pi mcpAdapterEntry must be an absolute path");
     }
     this.#mcpAdapterEntry = options.mcpAdapterEntry;
     this.#createSessionId = options.createSessionId ?? randomUUID;
     this.#promptAcceptanceTimeoutMs = options.process?.requestTimeoutMs;
-    const environment = piAgentRuntimeEnvironment(options.process?.env ?? process.env);
+    const environment =
+      options.process?.env ?? (this.#nativeResources ? piAgentRuntimeEnvironment() : piCloudAgentRuntimeEnvironment());
     const command = options.process?.command ?? "pi";
     const prefix = options.process?.args ?? [];
     const resourceFlags = ["--skill", "-e", "--extension", "--prompt-template", "--theme"];
@@ -1066,6 +1164,7 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
       await request.eventSink({ type: "binding_changed", binding });
       return new PiAgentRuntime({
         onDiagnostic: this.#onDiagnostic,
+        nativeResources: this.#nativeResources,
         binding,
         ...(this.#mcpAdapterEntry ? { mcpAdapterEntry: this.#mcpAdapterEntry } : {}),
         configuration: request.configuration,
@@ -1098,6 +1197,10 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
 }
 
 export function piAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return { ...source };
+}
+
+export function piCloudAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const exact = new Set([
     "AI_GATEWAY_API_KEY",
     "ANTHROPIC_API_KEY",
@@ -1379,13 +1482,15 @@ function parseWebToolsConfiguration(value: unknown): PiWebToolsConfiguration {
 function piExtensionEnvironment(
   request: AgentPromptRequest,
   base: AgentRunConfiguration | undefined,
-  mcpAdapterEntry?: string,
+  mcpAdapterEntry: string | undefined,
+  nativeResources: boolean,
 ): Readonly<Record<string, string>> | undefined {
   const configuration = mergeConfiguration(base, request.configuration);
   const provider = parseProviderConfiguration(configuration?.provider);
   const environment: Record<string, string> = {};
   if (provider.webTools) environment[PI_WEB_TOOLS_SOCKET_ENV] = provider.webTools.socketPath;
   if (provider.mcpGateway) {
+    environment.OPENTAG_PI_NATIVE_RESOURCES = nativeResources ? "1" : "0";
     environment.OPENTAG_MCP_GATEWAY_URL = provider.mcpGateway.url;
     environment.OPENTAG_MCP_GATEWAY_TOKEN = provider.mcpGateway.token;
     environment.OPENTAG_PI_MCP_ADAPTER_ENTRY = mcpAdapterEntry ?? fileURLToPath(import.meta.resolve("pi-mcp-adapter"));
@@ -1638,4 +1743,11 @@ function fingerprint(value: string): string {
 /** Local event reference only; the original provider ID stays unchanged in Pi's Session and model requests. */
 function piToolEventId(id: string): string {
   return Buffer.byteLength(id, "utf8") <= AGENT_RUNTIME_ID_MAX_BYTES ? id : `pi-tool-${fingerprint(id)}`;
+}
+
+function piModelActivity(message: Readonly<Record<string, unknown>>): boolean {
+  if (PI_MODEL_EVENTS.has(String(message.type))) return true;
+  return (
+    (message.type === "message_start" || message.type === "message_end") && record(message.message)?.role !== "custom"
+  );
 }

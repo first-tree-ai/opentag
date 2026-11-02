@@ -6,10 +6,11 @@ description: "Per-Provider permission modes, native command rules, and the Slack
 # Agent permissions
 
 Local Codex Agents use `workspace-write` with `on-request` approvals and disabled sandbox network
-access. Local Claude Code Agents use `default`: managed allow rules and native permission grants
-auto-approve configured actions, and its permission callback sends remaining requests to the task
-sender. Claude Code must support `--permission-prompt-tool`. Claude's native gate does not provide
-an OS sandbox.
+access. Local Claude Code Agents use `acceptEdits`: allowlisted commands, native permission grants,
+and file edits in the working directory run without approval, while non-allowlisted commands and
+edits outside the working directory prompt the task sender through `can_use_tool`. Claude Code must
+support `acceptEdits` and `--permission-prompt-tool`. Claude's native gate does not provide an OS
+sandbox.
 Local Claude loads native user, project, and local settings, plugins, hooks, and Skill shell execution.
 Its environment preserves operator-provided plugin variables. Users and Agents manage these through
 native configuration and commands, preferably at project scope under the existing Agent Home.

@@ -36,7 +36,7 @@ describe("ClaudeCodeAgentRuntime", () => {
           details: { command: "git push" },
         },
       });
-      expect(argumentAfter(processes[0]?.args ?? [], "--permission-mode")).toBe("default");
+      expect(argumentAfter(processes[0]?.args ?? [], "--permission-mode")).toBe("acceptEdits");
       expect(argumentAfter(processes[0]?.args ?? [], "--permission-prompt-tool")).toBe("stdio");
       expect(argumentAfter(processes[0]?.args ?? [], "--setting-sources")).toBe("user,project,local");
       expect(argumentAfter(processes[0]?.args ?? [], "--plugin-dir")).toMatch(/opentag$/);

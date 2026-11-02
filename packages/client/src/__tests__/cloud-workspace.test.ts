@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
-import { link, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, open, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunnerWorkspaceObject } from "@opentag/shared";
 import { afterEach, describe, expect, it } from "vitest";
 import { CloudWorkspace } from "../runner/cloud-workspace.js";
+import { WORKSPACE_MAX_BYTES } from "../runner/workspace-archive.js";
 
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
@@ -122,14 +123,46 @@ describe("Cloud workspace transfer", () => {
     const previous = store.object();
     await writeFile(join(runner.workspace, "work"), "unsaved work");
     await link(join(runner.workspace, "work"), join(runner.workspace, "hard-link"));
-    await expect(runner.client.save()).rejects.toMatchObject({ code: "save_failed", retryable: false });
+    await expect(runner.client.save()).rejects.toMatchObject({
+      code: "save_failed",
+      retryable: false,
+      archiveErrorCode: "unsafe-entry",
+      message: "Cloud workspace save_failed (unsafe-entry)",
+      cause: { code: "unsafe-entry" },
+    });
     expect(runner.client.terminalFailure).toBe(true);
     expect(runner.client.pendingSave).toBe(true);
     const requests = store.requests.length;
-    await expect(runner.client.save(true)).rejects.toMatchObject({ retryable: false });
+    await expect(runner.client.save(true)).rejects.toMatchObject({
+      retryable: false,
+      archiveErrorCode: "unsafe-entry",
+    });
     expect(store.requests).toHaveLength(requests);
     expect(store.object()).toEqual(previous);
     expect(await readFile(join(runner.workspace, "work"), "utf8")).toBe("unsaved work");
+  });
+
+  it("includes Context Tree caches in the archive ceiling and preserves the saved baseline on overflow", async () => {
+    const store = storageFixture();
+    const runner = await client(store);
+    await runner.client.initialize();
+    const baseline = store.object();
+    const cache = join(runner.workspace, ".opentag/context-tree/home/.context-tree/repositories");
+    await mkdir(cache, { recursive: true });
+    const path = join(cache, "oversized.pack");
+    const file = await open(path, "wx");
+    try {
+      await file.truncate(WORKSPACE_MAX_BYTES + 1);
+    } finally {
+      await file.close();
+    }
+    await expect(runner.client.save()).rejects.toMatchObject({
+      retryable: false,
+      archiveErrorCode: "workspace-too-large",
+    });
+    expect(store.object()).toEqual(baseline);
+    expect(runner.client.pendingSave).toBe(true);
+    expect(await readdir(cache)).toEqual(["oversized.pack"]);
   });
 
   it("recovers files and Pi binding/history into a replacement and excludes trusted parent state", async () => {

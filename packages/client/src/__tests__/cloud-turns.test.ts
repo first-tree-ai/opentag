@@ -28,7 +28,9 @@ import {
 } from "../runner/cloud-journal.js";
 import { cloudSteerResult } from "../runner/cloud-steer-control.js";
 import { CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS, CloudTurnRunner, type CloudTurnScope } from "../runner/cloud-turns.js";
+import { CloudWorkspaceError } from "../runner/cloud-workspace.js";
 import { NativeSandboxError } from "../runner/native-sandbox.js";
+import { WorkspaceArchiveError } from "../runner/workspace-archive.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
 
 // The delivery:report failure vocabulary from d70d270a, before runtime report v3.
@@ -953,6 +955,39 @@ describe("CloudTurnRunner", () => {
     });
     expect(reportsOf(h.sent)[0]?.report.finalText).toContain("not durably saved");
     // Reconciliation publishes the failure even when saving cannot recover.
+    await h.runner.reconcile();
+    expect(reportsOf(h.sent)).toHaveLength(2);
+    expect(h.workerInputs).toHaveLength(1);
+    await h.runner.close();
+  });
+
+  it("logs the archive failure without disconnecting or exposing workspace paths", async () => {
+    const log = vi.fn();
+    const failed = vi.fn();
+    const h = harness({
+      runnerOptions: {
+        checkpoint: async () => {
+          throw new CloudWorkspaceError("save_failed", false, {
+            cause: new WorkspaceArchiveError("workspace-too-large", "private workspace filename"),
+          });
+        },
+        log,
+        onPersistenceError: failed,
+      },
+    });
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+    await h.runner.waitForActive();
+    expect(log).toHaveBeenCalledWith(
+      "cloud workspace checkpoint failed: Cloud workspace save_failed (workspace-too-large)",
+    );
+    expect(JSON.stringify(log.mock.calls)).not.toContain("private workspace filename");
+    expect(failed).not.toHaveBeenCalled();
+    expect(reportsOf(h.sent)[0]?.report).toMatchObject({
+      outcome: "failed",
+      errorReason: "workspace_failed",
+      executionEffects: "completed",
+    });
     await h.runner.reconcile();
     expect(reportsOf(h.sent)).toHaveLength(2);
     expect(h.workerInputs).toHaveLength(1);

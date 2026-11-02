@@ -13,16 +13,28 @@ import {
   createWorkspaceArchive,
   restoreWorkspaceArchive,
   WorkspaceArchiveError,
+  type WorkspaceArchiveErrorCode,
   type WorkspaceArchiveInfo,
 } from "./workspace-archive.js";
 
 export class CloudWorkspaceError extends Error {
+  readonly archiveErrorCode?: WorkspaceArchiveErrorCode;
+
   constructor(
     readonly code: "restore_failed" | "save_failed" | "scope_unavailable",
     readonly retryable = true,
+    options?: ErrorOptions,
   ) {
-    super(`Cloud workspace ${code}`);
+    const cause = options?.cause;
+    const archiveErrorCode =
+      cause instanceof WorkspaceArchiveError
+        ? cause.code
+        : cause instanceof CloudWorkspaceError
+          ? cause.archiveErrorCode
+          : undefined;
+    super(`Cloud workspace ${code}${archiveErrorCode ? ` (${archiveErrorCode})` : ""}`, options);
     this.name = "CloudWorkspaceError";
+    this.archiveErrorCode = archiveErrorCode;
   }
 }
 
@@ -90,7 +102,7 @@ export class CloudWorkspace {
   #object?: RunnerWorkspaceObject;
   #restored = false;
   #pendingSave = false;
-  #terminalFailure = false;
+  #terminalFailure?: CloudWorkspaceError;
   #serial: Promise<unknown> = Promise.resolve();
 
   constructor(options: CloudWorkspaceOptions) {
@@ -110,7 +122,7 @@ export class CloudWorkspace {
   }
   /** An unchanged directory cannot recover from an archive format/size violation by retrying. */
   get terminalFailure(): boolean {
-    return this.#terminalFailure;
+    return this.#terminalFailure !== undefined;
   }
   get sealed(): boolean {
     return this.#object?.sealed === true;
@@ -139,8 +151,8 @@ export class CloudWorkspace {
         // Even a saved restore commits once before readiness. This CAS fences an upload still
         // in flight from a prior process of the SAME allocation, without a second runtime epoch.
         await this.#save(false);
-      } catch {
-        throw new CloudWorkspaceError("restore_failed");
+      } catch (error) {
+        throw new CloudWorkspaceError("restore_failed", true, { cause: error });
       }
     });
   }
@@ -150,7 +162,7 @@ export class CloudWorkspace {
   }
 
   async #save(sealed: boolean): Promise<void> {
-    if (this.#terminalFailure) throw new CloudWorkspaceError("save_failed", false);
+    if (this.#terminalFailure) throw this.#terminalFailure;
     if (this.sealed) {
       if (sealed) return;
       throw new CloudWorkspaceError("save_failed");
@@ -171,9 +183,9 @@ export class CloudWorkspace {
           error.code,
         )
       ) {
-        this.#terminalFailure = true;
+        this.#terminalFailure = new CloudWorkspaceError("save_failed", false, { cause: error });
       }
-      throw new CloudWorkspaceError("save_failed", !this.#terminalFailure);
+      throw this.#terminalFailure ?? new CloudWorkspaceError("save_failed", true, { cause: error });
     }
   }
 

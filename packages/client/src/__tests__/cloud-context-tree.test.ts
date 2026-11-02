@@ -1,4 +1,6 @@
+import { once } from "node:events";
 import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -80,6 +82,39 @@ it("recovers offline with a fresh budget after refresh times out, and succeeds n
   });
   expect(execFile.mock.calls.map((call) => call[1].slice(1)[0])).toEqual(["sync", "sync", "sync"]);
 });
+it("uses the offline recovery budget after a managed HTTP refresh times out", async () => {
+  const f = await fixture();
+  const commands: string[][] = [];
+  const server = http.createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const { args } = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { args: string[] };
+    commands.push(args);
+    if (args.includes("--offline")) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ code: 0, stdout: JSON.stringify(f.payload), stderr: "" }));
+    }
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  try {
+    const port = (server.address() as { port: number }).port;
+    const result = await prepareCloudContextTree(
+      { ...f.input, environment: { ...GRANT, OPENTAG_CONTEXT_TREE_URL: `http://127.0.0.1:${port}` } },
+      { contextTreePackage: f.pack, preparationBudgetMs: 250, recoveryBudgetMs: 1000 },
+    );
+    expect(result.status).toMatchObject({
+      connections: [{ status: "stale", reason: "TIMEOUT", treePath: f.treeRoot }],
+    });
+    expect(commands).toHaveLength(2);
+    expect(commands[0]).not.toContain("--offline");
+    expect(commands[1]).toContain("--offline");
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 it("preserves healthy entries from a nonzero sync result", async () => {
   const f = await fixture();
   const other = { ...source, path: "notes" };

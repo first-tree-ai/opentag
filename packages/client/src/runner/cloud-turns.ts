@@ -1603,12 +1603,7 @@ export class CloudTurnRunner {
     if (!recorded.report) return;
     this.#notifyJournalChanged();
     this.#send({ type: "delivery:report", report: recorded.report, requestId: randomUUID() });
-    if (
-      checkpointError !== undefined &&
-      !(checkpointError instanceof CloudWorkspaceError && !checkpointError.retryable)
-    ) {
-      this.#reportPersistenceError(checkpointError);
-    }
+    if (checkpointError !== undefined) this.#reportCheckpointError(checkpointError);
   }
 
   #buildReport(
@@ -1801,12 +1796,7 @@ export class CloudTurnRunner {
     if (!recorded.settlement) return;
     this.#notifyJournalChanged();
     this.#sendSessionSettled(recorded);
-    if (
-      checkpointError !== undefined &&
-      !(checkpointError instanceof CloudWorkspaceError && !checkpointError.retryable)
-    ) {
-      this.#reportPersistenceError(checkpointError);
-    }
+    if (checkpointError !== undefined) this.#reportCheckpointError(checkpointError);
   }
 
   async #runSessionInSandbox(
@@ -2268,6 +2258,14 @@ export class CloudTurnRunner {
       () => undefined,
     );
     return run;
+  }
+
+  #reportCheckpointError(error: unknown): void {
+    if (error instanceof CloudWorkspaceError && !error.retryable) {
+      this.#log(`cloud workspace checkpoint failed: ${error.message}`);
+      return;
+    }
+    this.#reportPersistenceError(error);
   }
 
   #reportPersistenceError(error: unknown): void {

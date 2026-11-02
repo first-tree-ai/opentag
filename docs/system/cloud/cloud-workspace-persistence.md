@@ -58,6 +58,11 @@ execution blocked, but retain the control/report connection. Transient storage f
 reconnection. A crash during the save, before journaling the terminal report, is reconciled as
 unknown execution effects and never automatically replayed.
 
+Checkpoint diagnostics retain the archive failure code and the original error cause. Both IM
+Turns and internal Session messages log deterministic archive failures without cycling the control
+connection. Log messages include the error code, not workspace filenames or the raw error cause.
+Context Tree caches participate in the same archive limits as other workspace files.
+
 Normal release first closes admission through `releasing`, then asks the Runner to quiesce,
 receive durable Server acknowledgments for terminal reports, and save a sealed archive. The
 Server verifies that archive for the exact current environment before deleting the Instance.

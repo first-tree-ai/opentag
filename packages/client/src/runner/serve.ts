@@ -422,10 +422,10 @@ function createCloudTurnRunner(input: {
     },
     ...(input.workspacePersistence
       ? {
-          checkpoint: async () => {
+          checkpoint: async (options) => {
             const workspace = input.state()?.workspace;
             if (!workspace) throw new Error("Workspace persistence is not initialized");
-            await workspace.checkpoint();
+            await workspace.checkpoint(options);
           },
         }
       : {}),

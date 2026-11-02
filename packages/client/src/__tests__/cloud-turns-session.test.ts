@@ -19,6 +19,8 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudJournal } from "../runner/cloud-journal.js";
 import { CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS, CloudTurnRunner, type CloudTurnScope } from "../runner/cloud-turns.js";
+import { CloudWorkspaceError } from "../runner/cloud-workspace.js";
+import { WorkspaceArchiveError } from "../runner/workspace-archive.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
 
 const MODEL_GRANT: RunnerCloudModelGrant = {
@@ -1307,6 +1309,53 @@ describe("CloudTurnRunner Session collaboration", () => {
     });
     await h.runner.close();
   });
+
+  it("logs a deterministic Session save failure while retaining the report channel", async () => {
+    const log = vi.fn();
+    const failed = vi.fn();
+    const h = harness({
+      runnerOptions: {
+        checkpoint: async () => {
+          throw new CloudWorkspaceError("save_failed", false, {
+            cause: new WorkspaceArchiveError("unsafe-entry", "private workspace filename"),
+          });
+        },
+        log,
+        onPersistenceError: failed,
+      },
+    });
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+    await h.runner.waitForActive();
+    expect(log).toHaveBeenCalledWith("cloud workspace checkpoint failed: Cloud workspace save_failed (unsafe-entry)");
+    expect(JSON.stringify(log.mock.calls)).not.toContain("private workspace filename");
+    expect(failed).not.toHaveBeenCalled();
+    expect(settledOf(h.sent)[0]?.outcome).toBe("failed");
+    expect(h.workerInputs).toHaveLength(1);
+    await h.runner.close();
+  });
+
+  it.each([401, 403, 409, 412])(
+    "surfaces a non-retryable Session HTTP %s checkpoint failure through onPersistenceError",
+    async (status) => {
+      const failed = vi.fn();
+      const h = harness({
+        runnerOptions: {
+          checkpoint: async () => {
+            throw new CloudWorkspaceError("save_failed", false, { httpStatus: status });
+          },
+          onPersistenceError: failed,
+        },
+      });
+      await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+      await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+      await h.runner.waitForActive();
+      expect(failed).toHaveBeenCalledOnce();
+      expect(settledOf(h.sent)[0]?.outcome).toBe("failed");
+      expect(h.workerInputs).toHaveLength(1);
+      await h.runner.close();
+    },
+  );
 
   it("anchors the worker timeout and the parent exec backstop to one execution deadline", async () => {
     const budgetMs = 60_000;

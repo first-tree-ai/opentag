@@ -82,3 +82,12 @@ Native validation overlays the generated adapter modules and gateway wrapper int
 Runner image's disposable rootfs. It verifies native loading and fixture MCP execution; it
 does not establish a rebuilt image release, staging deployment, or recovery of a user's IM Task.
 The first `get_state` timeout remains 60 seconds throughout this change.
+
+Recorded native fixture validation on 2026-11-02: with the bounded CPU-pressure child, the
+source path returned `get_state` after 80.491s (the 60s deadline had already fired), while the
+compiled lazy path returned in 44.076s without deadline expiry. Gateway module import fell
+from 29.394s to 2.610s. In a separate fresh native namespace without pressure, the complete
+fixture Turn finished in 7.861s: `get_state` took 6.788s, prompt acceptance took 82ms, and two
+fixture model responses completed one MCP `tools/call`. Diagnostics still reported the
+original 60,000ms RPC budget. The native fixture's overall Run bound was 90s, separate from
+the unchanged per-RPC budget.

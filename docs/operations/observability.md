@@ -26,7 +26,7 @@ synonyms:
 | Agent, Computer, Session, Delivery | `agentId`, `computerId`, `sessionId`, `deliveryId` | Stable resource identifiers. |
 | Provider | `provider` | A provider name such as `feishu` or `slack`. |
 | Outcome | `outcome` | A stable state transition such as `accepted`, `failed`, or `rejected`. |
-| Error identity | `errorCode`, `code` | Structured error code. Dual-written as `errorCode` and `code` for dashboard and alert compatibility. |
+| Error identity | `errorCode`, `code` | Use the structured error code (dual-written as `errorCode` and `code` for compatibility). Do not invent `reason`, `errorReason`, `failureReason`, `dropReason`, or `detail` for the same concept. |
 | Attempt | `attempt` | Numeric retry or execution attempt. |
 | Duration | `durationMs` | Elapsed time in milliseconds. |
 | Status | `status` | Protocol or provider status when it is not an outcome. |

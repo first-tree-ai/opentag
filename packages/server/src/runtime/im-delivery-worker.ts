@@ -1388,7 +1388,6 @@ export class ImDeliveryWorker {
           code: error.code,
           errorCode: error.code,
           deliveryId,
-          reason: "invalid_input",
           paths: error.paths,
         },
         "IM delivery input rejected",
@@ -1432,9 +1431,8 @@ export class ImDeliveryWorker {
           code: "IM_DELIVERY_TERMINAL",
           errorCode: "IM_DELIVERY_TERMINAL",
           deliveryId,
-          reason,
         },
-        "IM delivery rejected terminally",
+        `IM delivery rejected terminally: ${reason}`,
       );
       this.#onDeliverySettled?.(deliveryId);
     }

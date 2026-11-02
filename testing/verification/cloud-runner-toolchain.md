@@ -52,3 +52,33 @@ on signals before removing containers. Malformed config JSON is reported with th
 `Authorization`/`Bearer` values as well as structured fields and known key prefixes.
 
 Default `opentag-runner` with no command exits nonzero. It does not hang waiting for a server.
+
+
+## Pi MCP first-RPC startup
+
+The image build compiles the pinned adapter before rootfs assembly. Regression checks cover
+static and lazy TypeScript imports without a runtime TypeScript loader, adjacent assets,
+native loading of the real pinned adapter without root-level optional peers, and inclusion
+of the compiler in the staged image build context:
+
+~~~bash
+node --test --test-concurrency=1 scripts/__tests__/runner-pi-mcp-build.test.mjs scripts/__tests__/runner-build-context.test.mjs scripts/__tests__/runner-runtime-closure.test.mjs
+pnpm --filter @opentag/client test src/__tests__/cloud-turn-worker.test.ts src/__tests__/pi-mcp-gateway.test.ts src/__tests__/pi-mcp-gateway-smoke.test.ts
+pnpm --filter @opentag/client typecheck
+pnpm exec turbo run build --filter=@opentag/client --concurrency=2
+pnpm check
+~~~
+
+A controlled native Sandbox comparison uses the pinned Pi 0.84.2 / adapter 2.36.0 installation,
+1 vCPU and 1 GiB, a fresh namespace per case, and a bounded CPU-pressure child. The MCP and
+model endpoints are loopback fixtures with no upstream credentials or external actions.
+CPU profiles of the source adapter show Jiti/Babel traversal, module reads and garbage
+collection before the first MCP request; the compiled path removes adapter transformation.
+Merely compiling one monolithic file is insufficient: Jiti also transforms dynamic `.mjs`
+imports, and flattening lazy modules eagerly loads unnecessary dependency graphs. The final
+path preserves lazy imports and uses Node's native loader with the SDK's own peer paths.
+
+Native validation overlays the generated adapter modules and gateway wrapper into an existing
+Runner image's disposable rootfs. It verifies native loading and fixture MCP execution; it
+does not establish a rebuilt image release, staging deployment, or recovery of a user's IM Task.
+The first `get_state` timeout remains 60 seconds throughout this change.

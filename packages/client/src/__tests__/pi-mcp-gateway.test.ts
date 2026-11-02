@@ -12,10 +12,10 @@ afterEach(async () => {
 });
 
 type Handler = (event: SessionStartEvent, context: ExtensionContext) => Promise<unknown> | unknown;
-async function load(native: boolean, installed: boolean) {
+async function load(native: boolean, installed: boolean, compiled = false) {
   const root = await mkdtemp(join(tmpdir(), "ot-pi-gateway-"));
   roots.push(root);
-  const adapter = join(root, "adapter.mjs");
+  const adapter = join(root, compiled ? "opentag-runtime.mjs" : "adapter.mjs");
   await writeFile(
     adapter,
     `
@@ -58,8 +58,8 @@ async function load(native: boolean, installed: boolean) {
   return { extension: () => extension(api), api, tools, commands, emit, notify, fire };
 }
 
-it("keeps Cloud's one isolated programmatic adapter", async () => {
-  const fixture = await load(false, false);
+it.each([false, true])("keeps Cloud's one isolated adapter (precompiled: %s)", async (compiled) => {
+  const fixture = await load(false, false, compiled);
   fixture.extension();
   expect(fixture.emit).toHaveBeenCalledWith(
     "installed",

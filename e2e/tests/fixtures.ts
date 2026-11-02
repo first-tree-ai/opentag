@@ -72,6 +72,8 @@ async function psql(url: string, sql: string): Promise<string> {
       `PGPASSWORD=${password}`,
       "postgres",
       "psql",
+      "-h",
+      "127.0.0.1",
       "-U",
       username,
       "-d",

@@ -226,6 +226,23 @@ published port binds to `127.0.0.1`; remote Docker endpoints retain Docker's def
 query fails, check Docker port forwarding: an open TCP port alone does not prove that PostgreSQL traffic reaches the
 container. The fixture closes the probe connection and removes the container on failure.
 
+### Container PostgreSQL probes
+
+Run `psql` and `pg_isready` inside containers with an explicit TCP host, normally `-h 127.0.0.1` or
+`--host=127.0.0.1`. The official Postgres image starts a socket-only server during initialization; only the final
+server answers TCP. This relies on the image setting `listen_addresses = '*'` in `postgresql.conf.sample`.
+Revisit the probes when mounting a custom `postgresql.conf` or changing the image family.
+
+`pnpm check` enforces this with `scripts/check-container-postgres-tcp.mjs`. It checks literal Docker argument lists
+and local argv-forwarding functions declared with `function` in JS/TS, simple Docker shell commands in `.sh` and
+workflow `run` steps, workflow service `options`, and Compose/Docker health commands. Keep these invocations explicit;
+dynamically assembled commands or imported wrappers
+need the checker extended alongside them. Host-side clients (including URL-based connections), image initialization
+scripts that intentionally use the temporary server, and `--help`/`--version` calls remain valid without this flag.
+Ordinary text and comments are not commands. This static check does not prove runtime readiness or validate custom
+Postgres configuration.
+Only `-h`/`--host` satisfies the container-side rule; `PGHOST` and connection-string host settings do not replace it.
+
 ### CI and full-suite reproduction
 
 CI runs formatting, builds, type checks, repository script tests, PostgreSQL integration tests, and Agent Runtime

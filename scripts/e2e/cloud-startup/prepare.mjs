@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { cpSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { assembleClientRuntimeClosure } from "../../../scripts/runner/runtime-closure.mjs";
+import { assembleClientRuntimeClosure } from "../../runner/runtime-closure.mjs";
 
 const [before, after, destination] = process.argv.slice(2).map((path) => resolve(path));
 assert.ok(

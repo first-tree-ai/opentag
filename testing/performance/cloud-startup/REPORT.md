@@ -111,6 +111,17 @@ are required to resolve performance qualification in the actual target environme
 - Client typecheck, Client build, affected CLI build and repository `pnpm check` pass locally.
   Agent Runtime coverage is not required: none of its covered implementation/tests/config changes.
   CI remains a separate, required merge check.
+- Four harness-entry regressions pass on Linux: the container guard prevents unguarded writes,
+  fixture preparation preserves distinct build provenance and synthetic input, mismatched Pi locks
+  cannot publish a complete fixture, and every concurrent rejection remains recorded without
+  exposing free-text errors. The relocated adapter/worker/Pi harness also passes its local smoke.
+
+The first CI patch gate reported 4/550 covered lines: the four product lines were covered, while
+the three E2E executors had been placed in an unmeasured `testing/` source directory. The executors
+now follow the repository's existing `scripts/e2e/` layout; plans and evidence stay here. A local
+evaluation against that exact-head CI coverage map gives 4/4 for unchanged product source. The
+80% threshold, coverage configuration and performance gates are unchanged; successor CI must
+still independently pass.
 
 No deployment, Cloud allocation, production input replay, real IM delivery or paid provider was
 used. No-instance cold starts, ready Cloud Instances, real idle reclamation/restoration, Cloud

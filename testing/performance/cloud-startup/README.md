@@ -72,7 +72,7 @@ readiness. Missing phase diagnostics are missing evidence, never zero duration.
 
 ## Repeatable local worker comparison
 
-`worker-benchmark.mjs` runs the real built Runner CLI and Cloud worker with pinned Pi against a
+`scripts/e2e/cloud-startup/worker-benchmark.mjs` runs the real built Runner CLI and Cloud worker with pinned Pi against a
 loopback-only OpenAI-compatible model fixture. The transport endpoints use a synthetic execution
 CA and fixed status responses; no real provider, credential service or native Sandbox is involved.
 The model fixture observes a random marker in the actual request to prove the exact input arrived.
@@ -99,7 +99,7 @@ After building both checkouts, `prepare.mjs` creates that layout and records sou
 build-module hashes. Its destination must not exist:
 
 ```sh
-node testing/performance/cloud-startup/prepare.mjs \
+node scripts/e2e/cloud-startup/prepare.mjs \
   /absolute/built-before-checkout /absolute/built-after-checkout /absolute/owned/fixture
 ```
 
@@ -116,7 +116,7 @@ docker run --rm --network none --cpus=1 --memory=1g \
   --env OPENTAG_STARTUP_FIXTURE=1 \
   --env OPENTAG_STARTUP_STAGE_LOCAL=1 \
   --mount type=bind,source=/absolute/owned/fixture,target=/fixture \
-  --mount type=bind,source=/absolute/checkout/testing/performance/cloud-startup,target=/harness,readonly \
+  --mount type=bind,source=/absolute/checkout/scripts/e2e/cloud-startup,target=/harness,readonly \
   <recorded-node-image-id> \
   node /harness/worker-benchmark.mjs /fixture /fixture/results.json 30
 ```

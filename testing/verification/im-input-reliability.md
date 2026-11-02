@@ -293,7 +293,12 @@ the investigation; after an approved repair, promote the assertion into normal r
 
 `writeTerminalReport` in `runtime/runtime-custody-store.ts` invokes `requeueSteeredDeliveries` for every
 non-completed Root report. That recovery clears the child's dispatch/turn correlation and permits a fresh
-input attempt. A failed Root report does not establish that a child was unreceived or had no effect.
+input attempt. This follows the current documented recovery contract in
+[IM delivery claim queries](../../docs/system/messaging/im-delivery-claim.md#runtime-budget-and-accepted-recovery) and
+[IM Channel and Thread Sessions](../../docs/system/messaging/thread-sessions.md#lazy-thread-continuity).
+The probe exposes a conflict between that replay policy and the requested ordered-input/no-duplicate
+acceptance contract; it is not evidence of a regression against the documented replay policy.
+A failed Root report does not establish that a child was unreceived or had no effect.
 This test proves repeated native input under the stated fixture seams; it does not prove repeated external
 side effects, successful processing, or real Cloud behavior. The production repair needs a separate concrete,
 human-confirmed read/write and recovery contract. The receipt admission fence alone cannot resolve it.

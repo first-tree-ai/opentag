@@ -159,6 +159,8 @@ const CLOUD_MODEL_GRANT_TRANSPORT_MS = 30_000;
  * outcome, so a report written exactly as the window closes still counts.
  */
 const ACCEPTED_REPORT_GRACE_MS = 60 * 60 * 1_000;
+const REPORT_REPLAY_WARNING_INTERVAL_MS = 60 * 60 * 1_000;
+const MAX_REPORT_REPLAY_WARNINGS = 1_024;
 
 export type CloudSessionCancelOutcome = {
   deliveryId: string;
@@ -178,6 +180,7 @@ export class CloudDeliveryOwner {
   readonly #allocationStatus?: (sandboxId: string) => Promise<SandboxAllocationReconciliation | undefined>;
   readonly #noteActivity?: (sandboxId: string) => Promise<void>;
   readonly #sessionProofs?: Pick<SessionCliProofService, "mintCloud">;
+  readonly #reportReplayWarnings = new Map<string, { connectionId: string; warnedAt: number }>();
   /**
    * Live model-grant ownership per turn: which connection is allowed to hand out or revoke this
    * turn's permission. `generation` distinguishes concurrent mint attempts on the same connection
@@ -783,6 +786,7 @@ export class CloudDeliveryOwner {
     const mapped: "recorded" | "already_recorded" | "conflict" | "stale_generation" =
       status === "recorded" || status === "already_recorded" || status === "stale_generation" ? status : "conflict";
     if (mapped === "recorded" || mapped === "already_recorded") {
+      this.#reportReplayWarnings.delete(report.deliveryId);
       this.#revokeTurnGrants(report.turnId);
       await this.#recordActivity(connection.scope.sandboxId);
     }
@@ -1034,11 +1038,22 @@ export class CloudDeliveryOwner {
     delivery: typeof imMessageDeliveries.$inferSelect,
     answer: "none" | "received" | "started" | "reported" | undefined,
   ): "pending" {
-    if (Date.now() >= this.#acceptedReportDeadlineMs(delivery)) {
+    const now = Date.now();
+    if (now >= this.#acceptedReportDeadlineMs(delivery)) {
+      const previous = this.#reportReplayWarnings.get(delivery.id);
+      if (previous?.connectionId === record.connectionId && now - previous.warnedAt < REPORT_REPLAY_WARNING_INTERVAL_MS)
+        return "pending";
+      this.#reportReplayWarnings.delete(delivery.id);
+      if (this.#reportReplayWarnings.size >= MAX_REPORT_REPLAY_WARNINGS) {
+        const oldest = this.#reportReplayWarnings.keys().next().value;
+        if (oldest !== undefined) this.#reportReplayWarnings.delete(oldest);
+      }
+      this.#reportReplayWarnings.set(delivery.id, { connectionId: record.connectionId, warnedAt: now });
       this.#logger?.warn(
         {
           code: "CLOUD_DELIVERY_REPORT_REPLAY_OVERDUE",
           computerId: record.computerId,
+          connectionId: record.connectionId,
           deliveryId: delivery.id,
           phase: answer ?? "no_answer",
           turnId: delivery.turnId,
@@ -1067,6 +1082,7 @@ export class CloudDeliveryOwner {
       signal: new AbortController().signal,
     });
     if (recorded !== "recorded" && recorded !== "already_recorded") return "noop";
+    this.#reportReplayWarnings.delete(deliveryId);
     // A turn settled as unknown must lose its execution permission immediately, even when the
     // granting Server already restarted (revocation is by execution/turn id).
     if (scope.delivery.turnId) this.#revokeTurnGrants(scope.delivery.turnId);
@@ -1216,6 +1232,9 @@ export class CloudDeliveryOwner {
 
   #teardownConnection(connectionId: string): void {
     this.#steering.detach(connectionId);
+    for (const [deliveryId, warning] of this.#reportReplayWarnings) {
+      if (warning.connectionId === connectionId) this.#reportReplayWarnings.delete(deliveryId);
+    }
     this.#signals.get(connectionId)?.abort();
     this.#signals.delete(connectionId);
     for (const [requestId, pending] of [...this.#pendingQueries.entries()]) {

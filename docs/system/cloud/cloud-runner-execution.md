@@ -154,8 +154,13 @@ authenticated late report is answered `conflict`, the `unknown` outcome stays te
 children returned to the queue by that settlement are not re-absorbed into the turn. A live Runner
 that answers `reported` is never settled that way, because it replays the journaled report on the
 same socket; an overdue replay is logged as `CLOUD_DELIVERY_REPORT_REPLAY_OVERDUE` for the report
-path to explain. Without E5 persistence, `restore_required` rejects replacement explicitly. With E5,
-replacement allocation is permitted but cannot execute before verified restoration. A stopped
+path to explain. The first overdue recovery warns immediately with the delivery, Turn, connection
+and query phase; repeats on that connection warn at most once per hour while queries and report
+replays continue normally. A replacement connection gets a fresh warning. This process-local
+throttle retains at most 1,024 deliveries, evicting the oldest warning when full; an evicted
+delivery or a Server restart can warn again sooner. Recording a report or detaching its connection
+clears the corresponding warning state. Without E5 persistence, `restore_required` rejects replacement
+explicitly. With E5, replacement allocation is permitted but cannot execute before verified restoration. A stopped
 environment rejects input explicitly. Transient model/Runner unavailability remains retryable within the input
 deadline, with exponential delays from two seconds to a thirty-second cap using the existing
 attempt counter.

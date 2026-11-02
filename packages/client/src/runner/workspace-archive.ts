@@ -628,56 +628,11 @@ async function isReachableFromPublishedTips(
   return false;
 }
 
-function extractOriginUrlFromConfig(rawConfig: string): string | undefined {
-  let inOriginSection = false;
-  for (const rawLine of rawConfig.split("\n")) {
-    const line = rawLine.trim();
-    if (line.startsWith("[") && line.endsWith("]")) {
-      inOriginSection = /^\[remote\s+"origin"\]$/i.test(line);
-      continue;
-    }
-    if (!inOriginSection) continue;
-    const match = /^url\s*=\s*(.+)$/i.exec(line);
-    if (match?.[1]) return match[1].trim();
-  }
-  return undefined;
-}
-
-async function resolveLocalOriginHeadTips(commonDir: string): Promise<Set<string> | undefined> {
-  const configBuf = await readBoundedRegularFile(join(commonDir, "config"), GIT_FILE_MAX_BYTES * 4);
-  const rawUrl = configBuf ? extractOriginUrlFromConfig(configBuf.toString("utf8")) : undefined;
-  if (!rawUrl || /^https?:\/\//i.test(rawUrl) || /^git@/i.test(rawUrl) || /^ssh:\/\//i.test(rawUrl)) {
-    return undefined;
-  }
-  const candidatePath = rawUrl.startsWith("file://") ? rawUrl.slice("file://".length) : rawUrl;
-  const resolvedOrigin = resolve(commonDir, candidatePath);
-  const dotGitStats = await lstat(join(resolvedOrigin, ".git")).catch(() => undefined);
-  const originGitDir =
-    dotGitStats && !dotGitStats.isSymbolicLink() && dotGitStats.isDirectory()
-      ? join(resolvedOrigin, ".git")
-      : resolvedOrigin;
-  const originStats = await lstat(originGitDir).catch(() => undefined);
-  if (!originStats || originStats.isSymbolicLink() || !originStats.isDirectory()) return undefined;
-  const packed = await parsePackedRefs(originGitDir);
-  const tips = new Set<string>();
-  for (const [refName, sha] of packed) {
-    if (refName.startsWith("refs/heads/")) tips.add(sha);
-  }
-  for (const rawRef of await collectLooseRefValues(join(originGitDir, "refs", "heads"))) {
-    const resolved = await resolveGitRef(originGitDir, originGitDir, rawRef, packed);
-    if (resolved) tips.add(resolved);
-  }
-  return tips.size > 0 ? tips : undefined;
-}
-
 async function collectUpstreamPublishedTips(
   commonDir: string,
   packed: ReadonlyMap<string, string>,
   bareHeadRef: string,
 ): Promise<Set<string> | undefined> {
-  for (const refName of packed.keys()) {
-    if (refName.startsWith("refs/heads/") && refName !== bareHeadRef) return undefined;
-  }
   const remoteTips = new Set<string>();
   for (const [refName, sha] of packed) {
     if (refName.startsWith("refs/remotes/")) remoteTips.add(sha);
@@ -687,6 +642,9 @@ async function collectUpstreamPublishedTips(
     if (resolved) remoteTips.add(resolved);
   }
   if (remoteTips.size > 0) return remoteTips;
+  for (const refName of packed.keys()) {
+    if (refName.startsWith("refs/heads/") && refName !== bareHeadRef) return undefined;
+  }
   const fallback = packed.get(bareHeadRef);
   return fallback ? new Set<string>([fallback]) : undefined;
 }
@@ -715,10 +673,6 @@ async function resolvePublishedSnapshotHead(
   const packed = await parsePackedRefs(commonDir);
   const published = await collectUpstreamPublishedTips(commonDir, packed, bareHeadRef);
   if (!published || !(await isReachableFromPublishedTips(store, headSha, published))) return undefined;
-  const localOriginTips = await resolveLocalOriginHeadTips(commonDir);
-  if (localOriginTips && !(await isReachableFromPublishedTips(store, headSha, localOriginTips))) {
-    return undefined;
-  }
   return headSha;
 }
 

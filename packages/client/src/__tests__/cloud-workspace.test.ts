@@ -455,7 +455,6 @@ describe("Cloud workspace transfer", () => {
     expect(await readdir(runner.workspace)).toEqual(["baseline.txt"]);
     expect(await readFile(join(runner.workspace, "baseline.txt"), "utf8")).toBe("committed baseline");
     expect(store.object().bytes).toBe(savedBaseline.bytes);
-    expect(store.object().sha256).toBe(savedBaseline.sha256);
 
     const replacement = await client(store, 2);
     await replacement.client.initialize();

@@ -136,7 +136,8 @@ migrated PostgreSQL; Client file tests use real local files. Synthetic native/tr
 | Cloud reported then SIGKILL / ACK absent | Same new process test | Replays exact report, zero new worker calls; Server ACK path covered separately |
 | Changed content or allocation under same identity | Journal/Cloud Runner/custody tests | Live allocation lifecycle acceptance remains separate |
 | Cold start / allocation timeout / restart | PG cloud-dispatch-custody and allocation suites | Real Cloud cold start not run; adjacent RSI owns performance |
-| Run-time append / duplicate steer / steer result lost | Client cloud-turns + PG cloud-dispatch-custody and steered recovery | Need complete multi-input Provider ledger across both Server and worker |
+| Run-time append / duplicate steer / steer result lost | Client cloud-turns + PG custody/recovery; signed-ingress/native-Pi ledger below | Controlled full ledger passes; automatic timeout/reconnect replay and live transport remain unverified |
+| Lost Cloud verification / report ACK | Signed-ingress/native-Pi ledger below, actual custody and Runner journal | Explicit reconciliation and exact-frame replay; control transport is IPC, not WebSocket |
 | Native Pi burst, success and permanent model error | Manual `pi-input-burst.mjs`: real Pi 0.84.2, four 65-input ledgers | Provider-only evidence; Server routing, native Sandbox and recovered re-dispatch are outside this harness |
 | Native send succeeds, response lost | Local steer uncertainty + Cloud steer journal tests | At-least-once transport is distinct from deduplicated Agent processing |
 | Root fails while steers are in flight | PG steered-delivery recovery and recovery-lock suites | Unknown execution cannot be safely auto-replayed without further evidence |
@@ -172,7 +173,8 @@ death, or replacement of the physical Instance that held the journal.
 
 `integration/inbound-process-recovery.test.ts` starts a separate Fastify process with the production signed
 Slack route, receipt store, adapter and Inbox against migrated PostgreSQL. A real insert trigger rejects
-Inbox after HTTP 200; the test kills the Server with SIGKILL, starts a fresh process and waits for its normal
+Inbox after HTTP 200; the test kills the Server with SIGKILL while the failure trigger is still installed,
+then removes the trigger, starts a fresh process and waits for its normal
 five-second receipt sweep. It requires one recovered message and delivery, stable receipt receive time and
 identity, and no duplicate on webhook redelivery. All HTTP traffic is loopback and all input/credentials are
 synthetic. This verifies Server-process replacement with the same database; it does not dispatch a runtime.
@@ -221,8 +223,52 @@ them successfully. The native Session identity is retained in the summary for tr
 
 This harness verifies one Provider lane with an explicit synthetic sender ordinal. Its Agent/OpenTag Session
 labels identify the harness lane; they do not independently verify Server routing. It exercises neither
-the native Cloud Sandbox nor the Server receipt/claim/report path. Complete signed-ingress-to-Provider ledger
-integration, recovered-input deduplication and real Feishu/Slack/Cloud acceptance remain required.
+the native Cloud Sandbox nor the Server receipt/claim/report path. The controlled integration below connects
+those Server stages to native input observations; real Feishu/Slack/Cloud acceptance remains required.
+
+## Signed-ingress to native Pi ledger
+
+`integration/im-native-input-ledger.test.ts` connects signed loopback Slack HTTP, the real receipt store,
+normalizer and Inbox, migrated PostgreSQL, `ImDeliveryWorker` claim/batching, `CloudDeliveryOwner` custody,
+and a separate process running `CloudTurnRunner` with its fsynced journal. Its worker seam parses the real
+worker request and uses production input projection, `PiAgentRuntimeFactory`, `PiRpcProcess` and the locked
+Pi executable. The observer requires each native user event's complete text to equal the projected input
+before mapping its synthetic source markers back to the ledger. Server dispatch payloads and input hashes
+must match their frozen database values.
+
+Two Agents, with distinct accounts, Computers, Slack apps, DM channels and Sessions, each receive 65 unique
+inputs. The 130 originals arrive in reverse provider-timestamp order, with eight duplicate callbacks
+(138 signed HTTP requests total). All receipts normalize before dispatch. The ledger requires every original
+input exactly once, in its declared stream order, with its original Agent and Session. Each Session stays
+below the current 99-input capacity limit; this does not validate the conflicting overflow policy.
+
+The test deliberately loses three kinds of confirmation:
+
+- Agent A's first Server verification is dropped. Durable Server custody alone starts no native input;
+  explicit Runner reconciliation resends the receipt, and fresh verification permits execution.
+- Agent B's first steer result is dropped. The harness immediately retransmits the identical stored steer
+  frame; the real journal returns its recorded result without another native injection. This verifies exact
+  replay, not the production timeout/backoff scheduler.
+- Both first report acknowledgements are dropped. Explicit reconciliation replays the identical reports;
+  the Server replies `recorded`, then `already_recorded`, and the matching acknowledgements clear the journals.
+
+```sh
+pnpm --filter @opentag/server exec vitest run src/__tests__/integration/im-native-input-ledger.test.ts --maxWorkers=1
+```
+
+Set `OPENTAG_INPUT_LEDGER_OUTPUT` to an absolute file path to save the complete synthetic ledger, verifier
+verdict and transmission trace. The trace retains source revision/message/delivery IDs, target generation,
+batch membership, dispatch hashes, native input hashes and observed drops/ACK statuses; it excludes model
+grants and credentials. Without the variable, temporary evidence is removed after assertions.
+
+The local run passes with 130 accepted and 130 observed inputs, correct targets/order and no duplicates.
+Each native input event can contain a batch of original messages. Allocation readiness and the Hub connection
+are prepared fixtures; Server/Runner control frames travel over IPC instead of WebSocket. Credential bridging,
+native Sandbox transport and the worker-launch boundary are replaced by the native-Pi fixture. Model responses
+are deterministic loopback SSE, and no actual Cloud allocation or Slack API is used. This case does not exercise
+receipt normalization failure, a late predecessor after dispatch, process death during native execution, model
+errors, retention/capacity overflow, attachment input or thread/rebind lifecycle. The confirmed receipt/Inbox
+ordering defect and the other product-boundary conflicts above remain unresolved.
 
 Full real Feishu, Slack and Cloud acceptance remains incomplete. Local passing tests cannot authorize merge,
 deployment, historical replay, live-user messages or resource expansion.

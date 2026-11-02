@@ -123,15 +123,17 @@ it.skipIf(process.platform === "win32")(
     try {
       expect((await send(first.url)).status).toBe(200);
       await expect.poll(async () => (await receipt())?.status).toBe("failed");
+      expect(first.child.kill("SIGKILL")).toBe(true);
+      expect(await first.exited).toBe("SIGKILL");
+      children.delete(first.child);
     } finally {
       await f.client.sql.unsafe("drop trigger fail_process_inbox on im_messages");
       await f.client.sql.unsafe("drop function fail_process_inbox()");
     }
     const accepted = await receipt();
+    expect(accepted?.status).toBe("failed");
     expect(accepted?.workPayload).not.toBeNull();
-    expect(first.child.kill("SIGKILL")).toBe(true);
-    expect(await first.exited).toBe("SIGKILL");
-    children.delete(first.child);
+    expect(await f.client.database.select().from(imMessages)).toHaveLength(0);
 
     const replacement = await startServer();
     await expect.poll(async () => (await receipt())?.status, { timeout: 12_000 }).toBe("processed");

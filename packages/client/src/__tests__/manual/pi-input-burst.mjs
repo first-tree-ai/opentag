@@ -177,7 +177,7 @@ async function scenario(nativeResources, modelFailure) {
     const identity = (text, order) => ({
       inputId: text,
       agentId: "synthetic-agent",
-      sessionId: nativeResources ? "local-pi-session" : "cloud-pi-session",
+      sessionId: `pi-session-${name}`,
       streamId: "synthetic-sender-stream",
       contentHash: hash(text),
       order,

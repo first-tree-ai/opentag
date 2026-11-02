@@ -2282,7 +2282,7 @@ export class CloudTurnRunner {
   }
 
   #reportCheckpointError(error: unknown): void {
-    if (error instanceof CloudWorkspaceError && !error.retryable) {
+    if (error instanceof CloudWorkspaceError && !error.retryable && error.archiveErrorCode !== undefined) {
       this.#log(`cloud workspace checkpoint failed: ${error.message}`);
       return;
     }

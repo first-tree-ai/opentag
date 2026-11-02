@@ -435,6 +435,17 @@ interface GitObjectRecord {
   readonly payload: Buffer;
 }
 
+interface LoadedPack {
+  readonly idxBuf: Buffer;
+  readonly packPath: string;
+  packBuf?: Buffer;
+}
+
+interface GitObjectStore {
+  readonly commonDir: string;
+  packs?: LoadedPack[];
+}
+
 async function hasDirectoryEntries(path: string): Promise<boolean> {
   try {
     const stats = await lstat(path);
@@ -570,17 +581,33 @@ async function hasCleanSnapshotReflog(gitDir: string): Promise<boolean> {
   }
 }
 
-async function resolvePublishedSnapshotHead(gitDir: string, commonDir: string): Promise<string | undefined> {
+function matchesOptionalSnapshotIdentity(
+  snapshotDir: string,
+  origHeadRaw: string | undefined,
+  headSha: string,
+): boolean {
+  if (origHeadRaw !== undefined && origHeadRaw !== headSha) return false;
+  const suffix = /-([0-9a-f]{40})$/.exec(basename(snapshotDir));
+  return !suffix?.[1] || suffix[1] === headSha;
+}
+
+async function resolvePublishedSnapshotHead(
+  snapshotDir: string,
+  gitDir: string,
+  commonDir: string,
+): Promise<string | undefined> {
   if (!(await hasCleanSnapshotReflog(gitDir))) return undefined;
+  if (commonDir !== gitDir && !(await hasCleanSnapshotReflog(commonDir))) return undefined;
+  if ((await collectLooseRefValues(join(commonDir, "refs", "heads"))).length > 0) return undefined;
+  const headSha = (await readBoundedRegularFile(join(gitDir, "HEAD"), GIT_FILE_MAX_BYTES))?.toString("utf8").trim();
+  if (!headSha || !SHA1_HEX.test(headSha)) return undefined;
+  const origHeadRaw = (await readBoundedRegularFile(join(gitDir, "ORIG_HEAD"), GIT_FILE_MAX_BYTES))
+    ?.toString("utf8")
+    .trim();
+  if (!matchesOptionalSnapshotIdentity(snapshotDir, origHeadRaw, headSha)) return undefined;
   const packed = await parsePackedRefs(commonDir);
-  const headRaw = (await readBoundedRegularFile(join(gitDir, "HEAD"), GIT_FILE_MAX_BYTES))?.toString("utf8");
-  const headSha = await resolveGitRef(gitDir, commonDir, headRaw, packed);
-  if (!headSha) return undefined;
   const published = new Set<string>(packed.values());
-  const commonHeadRaw = (await readBoundedRegularFile(join(commonDir, "HEAD"), GIT_FILE_MAX_BYTES))?.toString("utf8");
-  const commonHeadSha = await resolveGitRef(commonDir, commonDir, commonHeadRaw, packed);
-  if (commonHeadSha) published.add(commonHeadSha);
-  for (const rawRef of await collectLooseRefValues(join(commonDir, "refs"))) {
+  for (const rawRef of await collectLooseRefValues(join(commonDir, "refs", "remotes"))) {
     const resolved = await resolveGitRef(commonDir, commonDir, rawRef, packed);
     if (resolved) published.add(resolved);
   }
@@ -755,7 +782,7 @@ function combineDeltaObject(
 }
 
 async function decodePackEntry(
-  commonDir: string,
+  store: GitObjectStore,
   packBuf: Buffer,
   offset: number,
   depth: number,
@@ -771,45 +798,49 @@ async function decodePackEntry(
   if (header.typeCode === 6) {
     const ofs = readOfsDeltaOffset(packBuf, header.pos, offset);
     if (!ofs) return undefined;
-    const base = await decodePackEntry(commonDir, packBuf, ofs.baseOffset, depth + 1);
+    const base = await decodePackEntry(store, packBuf, ofs.baseOffset, depth + 1);
     return combineDeltaObject(base, packBuf.subarray(ofs.pos), header.size);
   }
   if (header.typeCode === 7 && header.pos + 20 <= packBuf.length) {
     const baseSha = packBuf.subarray(header.pos, header.pos + 20).toString("hex");
-    const base = await readGitObject(commonDir, baseSha, depth + 1);
+    const base = await readGitObject(store, baseSha, depth + 1);
     return combineDeltaObject(base, packBuf.subarray(header.pos + 20), header.size);
   }
   return undefined;
 }
 
-async function readPackedGitObject(
-  commonDir: string,
-  sha: string,
-  depth: number,
-): Promise<GitObjectRecord | undefined> {
-  const packDir = join(commonDir, "objects", "pack");
-  let names: string[];
-  try {
-    names = await readdir(packDir);
-  } catch {
-    return undefined;
-  }
+async function loadRepositoryPacks(store: GitObjectStore): Promise<readonly LoadedPack[]> {
+  if (store.packs) return store.packs;
+  const packDir = join(store.commonDir, "objects", "pack");
+  const names = await readdir(packDir).catch(() => [] as string[]);
+  const loaded: LoadedPack[] = [];
   for (const name of names) {
     if (!name.endsWith(".idx")) continue;
     const idxBuf = await readBoundedRegularFile(join(packDir, name), GIT_INDEX_MAX_BYTES);
-    const offset = idxBuf ? findPackIndexOffset(idxBuf, sha) : undefined;
+    if (idxBuf) loaded.push({ idxBuf, packPath: join(packDir, `${name.slice(0, -4)}.pack`) });
+  }
+  store.packs = loaded;
+  return loaded;
+}
+
+async function readPackedGitObject(
+  store: GitObjectStore,
+  sha: string,
+  depth: number,
+): Promise<GitObjectRecord | undefined> {
+  for (const pack of await loadRepositoryPacks(store)) {
+    const offset = findPackIndexOffset(pack.idxBuf, sha);
     if (offset === undefined) continue;
-    const packPath = join(packDir, `${name.slice(0, -4)}.pack`);
-    const packBuf = await readBoundedRegularFile(packPath, GIT_PACK_MAX_BYTES);
-    if (!packBuf) return undefined;
-    return await decodePackEntry(commonDir, packBuf, offset, depth);
+    pack.packBuf ??= await readBoundedRegularFile(pack.packPath, GIT_PACK_MAX_BYTES);
+    if (!pack.packBuf) return undefined;
+    return await decodePackEntry(store, pack.packBuf, offset, depth);
   }
   return undefined;
 }
 
-async function readGitObject(commonDir: string, sha: string, depth = 0): Promise<GitObjectRecord | undefined> {
+async function readGitObject(store: GitObjectStore, sha: string, depth = 0): Promise<GitObjectRecord | undefined> {
   if (!SHA1_HEX.test(sha) || depth > GIT_MAX_DELTA_DEPTH) return undefined;
-  return (await readLooseGitObject(commonDir, sha)) ?? (await readPackedGitObject(commonDir, sha, depth));
+  return (await readLooseGitObject(store.commonDir, sha)) ?? (await readPackedGitObject(store, sha, depth));
 }
 
 function parseTreeObjectEntries(
@@ -856,7 +887,8 @@ async function readCommitHeadTree(
   commonDir: string,
   commitSha: string,
 ): Promise<Map<string, { readonly executable: boolean; readonly sha1: string }> | undefined> {
-  const commitObj = await readGitObject(commonDir, commitSha);
+  const store: GitObjectStore = { commonDir };
+  const commitObj = await readGitObject(store, commitSha);
   if (commitObj?.type !== "commit") return undefined;
   const treeMatch = /^tree ([0-9a-f]{40})\n/.exec(commitObj.payload.toString("utf8"));
   if (!treeMatch?.[1]) return undefined;
@@ -865,7 +897,7 @@ async function readCommitHeadTree(
   while (pending.length > 0) {
     const current = pending.pop();
     if (!current) break;
-    const treeObj = await readGitObject(commonDir, current.sha);
+    const treeObj = await readGitObject(store, current.sha);
     const parsed = treeObj?.type === "tree" ? parseTreeObjectEntries(treeObj.payload) : undefined;
     if (!parsed || !applyTreeEntriesToWalk(current.prefix, parsed, files, pending)) return undefined;
   }
@@ -953,7 +985,7 @@ async function resolveSnapshotHeadTree(
   if (!dirs) return undefined;
   const indexBuf = await readBoundedRegularFile(join(dirs.gitDir, "index"), GIT_INDEX_MAX_BYTES);
   if (!indexBuf) return undefined;
-  const headSha = await resolvePublishedSnapshotHead(dirs.gitDir, dirs.commonDir);
+  const headSha = await resolvePublishedSnapshotHead(snapshotDir, dirs.gitDir, dirs.commonDir);
   if (!headSha) return undefined;
   const headTree = await readCommitHeadTree(dirs.commonDir, headSha);
   if (!headTree) return undefined;

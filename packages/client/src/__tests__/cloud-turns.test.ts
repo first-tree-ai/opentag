@@ -1028,6 +1028,35 @@ describe("CloudTurnRunner", () => {
     await h.runner.close();
   });
 
+  it.each([401, 403, 409, 412])(
+    "surfaces non-retryable HTTP %s checkpoint failures through onPersistenceError without rerunning the worker",
+    async (status) => {
+      const failed = vi.fn();
+      const h = harness({
+        runnerOptions: {
+          checkpoint: async () => {
+            throw new CloudWorkspaceError("save_failed", false, { httpStatus: status });
+          },
+          onPersistenceError: failed,
+        },
+      });
+      await h.runner.handleDeliveryRun(runFrame(h.delivery));
+      await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+      await h.runner.waitForActive();
+      expect(failed).toHaveBeenCalledOnce();
+      expect(reportsOf(h.sent)).toHaveLength(1);
+      expect(reportsOf(h.sent)[0]?.report).toMatchObject({
+        outcome: "failed",
+        errorReason: "workspace_failed",
+        executionEffects: "completed",
+      });
+      await h.runner.reconcile();
+      expect(reportsOf(h.sent)).toHaveLength(2);
+      expect(h.workerInputs).toHaveLength(1);
+      await h.runner.close();
+    },
+  );
+
   it("preserves a not_started completion and resets the sandbox when checkpoint fails before prompt_acceptance", async () => {
     const log = vi.fn();
     const sandboxReset = vi.fn(async () => undefined);

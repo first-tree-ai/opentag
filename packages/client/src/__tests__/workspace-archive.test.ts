@@ -471,6 +471,40 @@ describe("createWorkspaceArchive + restoreWorkspaceArchive roundtrip", () => {
     await expect(
       lstat(join(restoredFsmonitor, ".opentag", "context-tree", "home", ".context-tree", "snapshots")),
     ).rejects.toMatchObject({ code: "ENOENT" });
+
+    // 8. Local branch commit in snapshot with core.logAllRefUpdates=false is retained.
+    const noReflogBranch = await setupContextTreeFixture("no-reflog-branch");
+    const branchContent = `${"f".repeat(1023)}\n`;
+    await execFileAsync(
+      "git",
+      ["-C", noReflogBranch.snapshotDir, "-c", "core.logAllRefUpdates=false", "switch", "-c", "local-work"],
+      { env: gitEnv },
+    );
+    await writeFile(join(noReflogBranch.snapshotDir, "NODE.md"), branchContent);
+    await execFileAsync(
+      "git",
+      ["-C", noReflogBranch.snapshotDir, "-c", "core.logAllRefUpdates=false", "commit", "-am", "local branch edit"],
+      { env: gitEnv },
+    );
+    const archiveNoReflogBranch = join(root, "no-reflog-branch.tar.gz");
+    const infoNoReflogBranch = await createWorkspaceArchive(noReflogBranch.workspace, archiveNoReflogBranch);
+    const restoredNoReflogBranch = join(root, "restored-no-reflog-branch");
+    await restoreWorkspaceArchive(archiveNoReflogBranch, restoredNoReflogBranch, infoNoReflogBranch);
+    expect(
+      await readFile(
+        join(
+          restoredNoReflogBranch,
+          ".opentag",
+          "context-tree",
+          "home",
+          ".context-tree",
+          "snapshots",
+          "repo-main",
+          "NODE.md",
+        ),
+        "utf8",
+      ),
+    ).toBe(branchContent);
   });
 
   it("round-trips safe relative symlinks, including chained node_modules layouts", async () => {

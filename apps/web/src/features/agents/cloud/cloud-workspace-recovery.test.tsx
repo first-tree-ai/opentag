@@ -144,6 +144,28 @@ it("requires a second confirmation to discard and preserves the selected generat
   );
 });
 
+it.each([false, true])("refreshes the save-failure notice after recovery (discard: %s)", async (discard) => {
+  const fixture = setup();
+  let page = overview([row({ lifecycle: "releasing", lastErrorCode: "workspace_save_failed", canDiscard: true })]);
+  fixture.read.mockImplementation(async () => page);
+  fixture.release.mockImplementation(async () => {
+    page = overview([row({ lifecycle: "unallocated", canRelease: false })]);
+    return status({ lifecycle: "unallocated", currentResourceName: null });
+  });
+  const item = await renderPanel();
+  await screen.findByRole("alert");
+  fireEvent.click(
+    within(item).getByRole("button", { name: discard ? "Discard changes and release" : "Retry save and release" }),
+  );
+  if (discard) {
+    const dialog = await screen.findByRole("alertdialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Discard unsaved changes and release" }));
+  }
+  await screen.findAllByText("Environment released");
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  expect(fixture.release).toHaveBeenCalledOnce();
+});
+
 it.each(["running", "queued", "unknown"] as const)(
   "confirms before saving and releasing a %s conversation",
   async (taskState) => {

@@ -27,7 +27,9 @@ violation from an incident without its original error or prove real GCS/native r
   capture, duplicate-click prevention, discard confirmation/cancellation, a replacement during
   confirmation, status-read failures, uncertain mutations without automatic resubmission,
   pagination and revoked access. Running, queued and unknown work requires an interruption
-  confirmation before save/release.
+  confirmation before save/release. Save/release and discard/release both refresh the separate
+  progress-notice query: two regression cases fail before that refresh is added and pass after it,
+  so a successful recovery removes the previously visible save-failure banner without polling.
 - `api-cloud-workspace.test.ts` checks the existing Account status/stop paths, exact generation and
   discard bodies, CSRF, denial and response deadlines without a second mutation.
 - [Browser evidence](../web-ui/cloud-workspace-recovery/README.md) covers responsive layout,

@@ -1,5 +1,5 @@
 import type { CloudSessionSummary } from "@opentag/shared/browser";
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState } from "react";
 import { browserApi } from "../../../api.js";
 import { formatDateTime } from "../../../i18n/format.js";
@@ -58,6 +58,7 @@ async function requestWorkspaceRelease(target: CloudSessionSummary, discardUnsav
 
 function WorkspaceRecoveryPanel({ agentId, onClose }: { agentId: string; onClose: () => void }) {
   const headingId = useId();
+  const queryClient = useQueryClient();
   const queryKey = queryKeys.agents.workspaceRecovery(agentId);
   const query = useInfiniteQuery({
     queryKey,
@@ -84,7 +85,10 @@ function WorkspaceRecoveryPanel({ agentId, onClose }: { agentId: string; onClose
     } catch {
       setFeedback({ error: true, text: m.cloud_recovery_read_failed() });
     } finally {
-      await query.refetch();
+      await Promise.all([
+        query.refetch(),
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.progressNotice(agentId) }),
+      ]);
       setConfirmation(undefined);
       setBusy(false);
       active.current = false;

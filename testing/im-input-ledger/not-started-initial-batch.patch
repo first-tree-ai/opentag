@@ -1,8 +1,22 @@
 diff --git a/packages/client/src/__tests__/fixtures/cloud-native-input-ledger.mjs b/packages/client/src/__tests__/fixtures/cloud-native-input-ledger.mjs
-index e71a0585..c9ae9489 100644
+index e71a0585..3e4450b2 100644
 --- a/packages/client/src/__tests__/fixtures/cloud-native-input-ledger.mjs
 +++ b/packages/client/src/__tests__/fixtures/cloud-native-input-ledger.mjs
-@@ -19,6 +19,7 @@ let runId;
+@@ -1,4 +1,5 @@
+ import assert from "node:assert/strict";
++import { spawn } from "node:child_process";
+ import { createHash } from "node:crypto";
+ import { mkdir, writeFile } from "node:fs/promises";
+ import { createServer } from "node:http";
+@@ -8,6 +9,7 @@ import { RunnerCloudTurnWorkerRequestSchema } from "@opentag/shared";
+ import { PiAgentRuntimeFactory } from "../../providers/pi/agent-runtime.ts";
+ import { PiRpcProcess } from "../../providers/pi/rpc-wire.ts";
+ import { CloudJournal } from "../../runner/cloud-journal.ts";
++import { runCloudTurnWorker } from "../../runner/cloud-turn-worker.ts";
+ import { CloudTurnRunner } from "../../runner/cloud-turns.ts";
+ import { buildAgentInput } from "../../runtime/agent-turn-runner.ts";
+
+@@ -19,6 +21,7 @@ let runId;
  let held;
  let endpoint;
  let nativeEvents = 0;
@@ -10,24 +24,88 @@ index e71a0585..c9ae9489 100644
  const expectedInputs = [];
  const emit = (message) => process.send(message);
  const textOf = (items) =>
-@@ -149,6 +150,15 @@ async function initialize({ directory, scope }) {
+@@ -63,6 +66,63 @@ function inputFor(request) {
+   expectedInputs.push({ request, text: textOf(input.items) });
+   return input;
+ }
++async function failPiSpawn(directory, worker) {
++  const commands = [];
++  let errorCode;
++  let nativeInputs = 0;
++  await writeFile(join(directory, "ca.pem"), "-----BEGIN CERTIFICATE-----fixture-----END CERTIFICATE-----\n");
++  await writeFile(
++    join(directory, "environment.json"),
++    JSON.stringify({ executionId: worker.steering.turnId, environment: {} }),
++  );
++  const completion = await runCloudTurnWorker(worker, {
++    workspace: directory,
++    executionMount: dirname(directory),
++    localProxyLoopbackSeam: true,
++    prepareContextTree: async () => ({ status: { status: "unavailable", reason: "TIMEOUT" } }),
++    createPiFactory: ({ environment, sessionDirectory }) =>
++      new PiAgentRuntimeFactory({
++        process: { sessionDirectory },
++        createClient: (cwd, args, extra) => {
++          const raw = new PiRpcProcess({
++            command: join(directory, "absent-pi"),
++            args,
++            cwd,
++            env: { ...environment, ...extra },
++            spawnProcess: (command, args, options) => {
++              const child = spawn(command, args, options);
++              child.once("error", (error) => {
++                errorCode = error.code;
++              });
++              return child;
++            },
++          });
++          return {
++            request: (command, ...args) => {
++              commands.push(command.type);
++              return raw.request(command, ...args);
++            },
++            close: () => raw.close(),
++            subscribe: (listener) =>
++              raw.subscribe((event) => {
++                if (event.type === "message_start" && event.message?.role === "user") nativeInputs += 1;
++                listener(event);
++              }),
++          };
++        },
++      }),
++  });
++  assert.deepEqual(completion, {
++    outcome: "failed",
++    errorReason: "provider_start_failed",
++    executionEffects: "not_started",
++  });
++  assert.equal(errorCode, "ENOENT");
++  assert.deepEqual(commands, ["get_state"]);
++  assert.equal(nativeInputs, 0);
++  emit({ kind: "preprompt_failure", errorCode, commands, nativeInputs });
++  return completion;
++}
+ async function openRuntime(directory, delivery) {
+   const piHome = join(directory, "pi-home");
+   const sessionDirectory = join(directory, "pi-sessions");
+@@ -149,6 +209,15 @@ async function initialize({ directory, scope }) {
      runWorker: async ({ stdin }, signal) => {
        const worker = RunnerCloudTurnWorkerRequestSchema.parse(JSON.parse(stdin));
        assert(worker.steering, "Native input ledger requires a negotiated steer channel");
 +      if (!preparationFailed) {
 +        preparationFailed = true;
-+        emit({ kind: "preprompt_failure", deliveryId: worker.delivery.deliveryId });
++        const completion = await failPiSpawn(directory, worker);
 +        return {
 +          code: 1,
 +          stderr: "",
-+          stdout: `${JSON.stringify({ kind: "result", completion: { outcome: "failed", errorReason: "provider_start_failed", executionEffects: "not_started" } })}\n`,
++          stdout: `${JSON.stringify({ kind: "result", completion })}\n`,
 +        };
 +      }
        rootDelivery = worker.delivery;
        runId = worker.steering.turnId;
        runtime = await openRuntime(directory, rootDelivery);
 diff --git a/packages/server/src/__tests__/integration/im-native-input-ledger.test.ts b/packages/server/src/__tests__/integration/im-native-input-ledger.test.ts
-index 1aa61ebc..c3912c88 100644
+index 1aa61ebc..15456b14 100644
 --- a/packages/server/src/__tests__/integration/im-native-input-ledger.test.ts
 +++ b/packages/server/src/__tests__/integration/im-native-input-ledger.test.ts
 @@ -1,5 +1,5 @@
@@ -53,32 +131,31 @@ index 1aa61ebc..c3912c88 100644
  import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
  const nativeFixture = fileURLToPath(
-@@ -76,7 +78,7 @@ type NativeInput = {
- type PeerEvent =
+@@ -77,6 +79,7 @@ type PeerEvent =
    | { kind: "frame"; frame: RunnerClientFrame }
    | ({ kind: "native_input" } & NativeInput)
--  | { kind: "ready" | "model_ready" }
-+  | { kind: "ready" | "model_ready" | "preprompt_failure" }
+   | { kind: "ready" | "model_ready" }
++  | { kind: "preprompt_failure"; errorCode: string; commands: string[]; nativeInputs: number }
    | { kind: "journal"; entries: unknown[] }
    | { kind: "error"; message: string };
  class NativePeer {
-@@ -86,6 +88,7 @@ class NativePeer {
+@@ -86,6 +89,7 @@ class NativePeer {
    readonly exited: Promise<void>;
    ready = false;
    modelReady = false;
-+  preparationFailures = 0;
++  readonly preparationFailures: Extract<PeerEvent, { kind: "preprompt_failure" }>[] = [];
    entries: unknown[] | undefined;
    #tail = Promise.resolve();
    constructor(
-@@ -104,6 +107,7 @@ class NativePeer {
+@@ -104,6 +108,7 @@ class NativePeer {
        const event = value as PeerEvent;
        if (event.kind === "ready") this.ready = true;
        else if (event.kind === "model_ready") this.modelReady = true;
-+      else if (event.kind === "preprompt_failure") this.preparationFailures += 1;
++      else if (event.kind === "preprompt_failure") this.preparationFailures.push(event);
        else if (event.kind === "native_input") this.inputs.push(event);
        else if (event.kind === "journal") this.entries = event.entries;
        else if (event.kind === "error") this.errors.push(event.message);
-@@ -189,6 +193,7 @@ async function lane(tag: "A" | "B", service: ImBindingService) {
+@@ -189,6 +194,7 @@ async function lane(tag: "A" | "B", service: ImBindingService) {
      .where(eq(sandboxes.id, sandbox.sandboxId));
    return {
      tag,
@@ -86,7 +163,7 @@ index 1aa61ebc..c3912c88 100644
      agentId: agent.id,
      computerId: cloud.computerId,
      sessionId: sandbox.sessionId,
-@@ -367,7 +372,7 @@ function connectPeer(target: Lane, directory: string, control: ReturnType<typeof
+@@ -367,7 +373,7 @@ function connectPeer(target: Lane, directory: string, control: ReturnType<typeof
  }
 
  it.skipIf(process.platform === "win32")(
@@ -95,7 +172,7 @@ index 1aa61ebc..c3912c88 100644
    async () => {
      const directory = await mkdtemp(join(tmpdir(), "opentag-full-ledger-"));
      const service = new ImBindingService(client.database, new ApplicationCipher(Buffer.alloc(32, 7)));
-@@ -427,6 +432,39 @@ it.skipIf(process.platform === "win32")(
+@@ -427,6 +433,39 @@ it.skipIf(process.platform === "win32")(
        await expect.poll(() => a.dropped.includes("verified")).toBe(true);
        expect(a.peer.inputs).toHaveLength(0);
        a.peer.send({ kind: "reconcile" });
@@ -119,7 +196,7 @@ index 1aa61ebc..c3912c88 100644
 +        .toBe(true);
 +      expect(
 +        peers.map(({ peer }) => ({
-+          failures: peer.preparationFailures,
++          failures: peer.preparationFailures.length,
 +          modelReady: peer.modelReady,
 +          inputs: peer.inputs.length,
 +        })),
@@ -135,7 +212,7 @@ index 1aa61ebc..c3912c88 100644
        await expect.poll(() => peers.every(({ peer }) => peer.modelReady), { timeout: 15_000 }).toBe(true);
        await deliverPending(worker, targets);
        await expect
-@@ -435,7 +473,7 @@ it.skipIf(process.platform === "win32")(
+@@ -435,7 +474,7 @@ it.skipIf(process.platform === "win32")(
              (await client.database.select().from(imMessageDeliveries)).filter((row) => row.state === "steered").length,
            { timeout: 10_000 },
          )
@@ -144,7 +221,7 @@ index 1aa61ebc..c3912c88 100644
        for (const { peer } of peers) peer.send({ kind: "release" });
        await expect
          .poll(
-@@ -443,17 +481,61 @@ it.skipIf(process.platform === "win32")(
+@@ -443,17 +482,62 @@ it.skipIf(process.platform === "win32")(
              (await client.database.select().from(imMessageDeliveries)).filter((row) => row.reportedAt !== null).length,
            { timeout: 15_000 },
          )
@@ -197,6 +274,7 @@ index 1aa61ebc..c3912c88 100644
 +        { statuses: ["completed"], turnCount: 65, unstartedReports: 1 },
 +      ]);
 +      const recoveryObservation = {
++        startupFailures: peers.map(({ peer }) => peer.preparationFailures),
 +        taskProjection,
 +        knownUnstartedRoots: 2,
 +        retainedBatchInitialChildren: unstartedChildren.length,
@@ -208,7 +286,7 @@ index 1aa61ebc..c3912c88 100644
        const accepted = targets.flatMap((target) =>
          Array.from({ length: 65 }, (_, order) => {
            const inputId = envelope(target, order + 1, seconds).event.text;
-@@ -503,10 +585,11 @@ it.skipIf(process.platform === "win32")(
+@@ -503,10 +587,11 @@ it.skipIf(process.platform === "win32")(
          received,
        };
        await writeFile(file, JSON.stringify(ledger));
@@ -223,7 +301,7 @@ index 1aa61ebc..c3912c88 100644
        if (process.env.OPENTAG_INPUT_LEDGER_OUTPUT) {
          const transmissions = peers.map(({ target, sent, dropped }) => ({
            agentId: target.agentId,
-@@ -548,22 +631,11 @@ it.skipIf(process.platform === "win32")(
+@@ -548,22 +633,11 @@ it.skipIf(process.platform === "win32")(
          }));
          await writeFile(
            process.env.OPENTAG_INPUT_LEDGER_OUTPUT,

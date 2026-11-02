@@ -137,7 +137,7 @@ migrated PostgreSQL; Client file tests use real local files. Synthetic native/tr
 | Local ACK send failure / accepted process death | Client custody, runtime-durability, report recovery tests | Unknown/not_started must not count as delivered |
 | Cloud received then real process SIGKILL | New `cloud-turns-process.test.ts` | Re-announces same receipt; zero worker calls until fresh verification |
 | Cloud started then real process SIGKILL | Same new process test | Replays same unknown report, zero new worker calls; real Pi/model not used |
-| Initial batch reports definitely not_started | Signed-ingress/PG/native-Pi opt-in probe below | Synthetic pre-Pi worker result leaves 64 originals undelivered; normal scans and Janitor do not requeue them |
+| Initial batch reports definitely not_started | Signed-ingress/PG/native-Pi opt-in probe below | Real OS Pi-spawn ENOENT leaves 64 originals undelivered; normal scans and Janitor do not requeue them |
 | Native Pi consumed, then Runner SIGKILL | New signed-ingress/native-Pi negative probe below | Local watchdog stops old Pi; Server's documented unknown-Root recovery still replays consumed inputs |
 | Cloud reported then SIGKILL / ACK absent | Same new process test | Replays exact report, zero new worker calls; Server ACK path covered separately |
 | Changed content or allocation under same identity | Journal/Cloud Runner/custody tests | Live allocation lifecycle acceptance remains separate |
@@ -346,11 +346,15 @@ deployment, historical replay, live-user messages or resource expansion.
 
 ### Negative acceptance probe: initial batch never starts
 
-The [not-started initial-batch probe](../im-input-ledger/not-started-initial-batch.patch) replaces the first
-worker result in each Runner fixture with `failed / provider_start_failed / not_started`, before the
-fixture opens a Pi runtime. The production Runner parses and journals that result, and the Server records
-the authentic terminal report. This is a synthetic worker preparation-result seam, not a real provider
-startup failure or proof that every actual startup error is classified `not_started`. A thrown
+The [not-started initial-batch probe](../im-input-ledger/not-started-initial-batch.patch) runs the production
+`runCloudTurnWorker` for the first execution in each Runner fixture. Its real `PiAgentRuntimeFactory`
+and `PiRpcProcess` attempt to spawn a deliberately absent executable in the private fixture directory.
+Both operating-system attempts report `ENOENT`; each recorded RPC command list contains only `get_state`,
+no `prompt`, and zero native user events. The production worker returns
+`failed / provider_start_failed / not_started`; the Runner parses and journals that result, and the Server
+records the authentic terminal report. No completion is fabricated. The local mount, prepared manifest,
+skipped proxy-readiness probe and unavailable Context Tree result remain explicit seams. This is not a
+physical Cloud cold start or proof that every startup error is classified `not_started`. A thrown
 `openExecution` error has a different uncertainty mapping and is not the injected fault.
 
 Both first batches contain 32 originals: the two Roots and their 62 `batch_initial` children never enter
@@ -364,7 +368,8 @@ Authenticated `TaskService.list` reads return `completed` for both synthetic DM 
 suffix. A bounded detail read of all 65 turns in each task still contains its one old `not_started`
 report. Task status describes the latest execution; it does not certify completion of the accepted input
 set. The grouped-message caption/tooltip clarification above changes neither that status contract nor
-recovery behavior. The 31 existing conversation/status tests and Web typecheck pass after catalog generation.
+recovery behavior. The 122 existing task-page/conversation/status tests and Web typecheck pass after
+catalog generation; the task-page assertions explicitly check the revised caption and tooltip.
 
 Apply this patch alone on a clean test baseline, then run:
 
@@ -375,7 +380,8 @@ pnpm --filter @opentag/server exec vitest run src/__tests__/integration/im-nativ
 The saved patch was applied, executed and reversed. Its pre-Pi, terminal-report, retained-batch,
 post-recovery and task-projection assertions pass before the desired complete-input assertion fails;
 the active test passes Server typecheck and Biome. This is an opt-in failing acceptance reproduction,
-not an expected-failure CI case. The same IPC, launch, credential and loopback model seams apply.
+not an expected-failure CI case. The healthy suffix still uses actual locked Pi with deterministic
+loopback responses; IPC, native Sandbox launch and credential bridge seams remain.
 
 `writeTerminalReport` clears the Root dispatch payload, while `readSteeredCandidates` in
 `runtime/im-delivery-recovery.ts` excludes `batch_initial` children from ordinary steer recovery.
@@ -384,6 +390,22 @@ entire initial batch and preserve terminal attempt/ACK identity. A definite pre-
 a safe retry candidate only for the inputs it actually covers, with fresh authorization and disposition
 checks; it does not negate an independent child's positive or uncertain steer receipt. No blind row reset,
 automatic replay or production read/write repair is implemented by this evidence work.
+
+### Pre-input evidence and conservative report classification
+
+The real ENOENT case above establishes one production source of `not_started`; the label is not a
+general promise about startup errors. `providerProcessFailureCode("spawn")` maps to
+`provider_start_failed`, which the Pi adapter and worker preserve through `completionForError`.
+An ordinary `openExecution` exception instead becomes `unknown / may_have_occurred`, and a worker
+preparation exception escaping `runCloudTurnWorker` is emitted as a generic worker error by `worker.ts`.
+Do not infer a known-unstarted batch from its error text or the absence of a native observation alone.
+
+Two focused existing worker tests also establish zero Pi factory invocation when execution timeout or
+caller cancellation happens during Context Tree preparation. Temporary completion capture, subsequently
+removed, observes `failed / turn_timeout / may_have_occurred` and
+`cancelled / client_shutdown / may_have_occurred`. These are conservative classifications despite the
+known pre-Pi control point. They are not evidence of successful delivery, nor grounds for automatic
+replay under the current recovery contract. No report-classification behavior is changed here.
 
 ## Late predecessor and sender-order completeness
 

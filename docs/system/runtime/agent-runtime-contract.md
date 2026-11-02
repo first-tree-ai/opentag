@@ -127,7 +127,7 @@ advertised only after explicit readiness v2 negotiation. See
 [Runtime protocol compatibility](runtime-protocol.md).
 
 Local Pi keeps enabled network and always runs without approvals or a permission
-extension. Claude Code uses `auto` with its native permission callback; Codex uses
+extension. Claude Code uses `acceptEdits` with its native permission callback; Codex uses
 `workspace-write` and `on-request` approvals. Cloud runs always use full permissions.
 See [Agent permissions](agent-permissions.md) for allowed-command settings and the
 Slack/Feishu approval flow. Pi's read-only adapter mode limits exposed tools without

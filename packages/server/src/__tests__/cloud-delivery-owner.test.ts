@@ -1289,6 +1289,156 @@ describe("CloudDeliveryOwner", () => {
     );
   });
 
+  it("throttles overdue warnings while failed report replays keep retrying and can still recover", async () => {
+    const { scope, agent, cloud } = await cloudScope();
+    const logger = { debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() };
+    const { hub, fence, owner, custody } = makeOwner({ logger });
+    const sent: RunnerServerFrame[] = [];
+    const { socket, connection } = attachReady(hub, fence, scope, sent, cloud.computerId);
+    const { deliveryId, request, turnId } = await dispatchAndAccept({
+      owner,
+      fence,
+      scope,
+      agentId: agent.id,
+      computerId: cloud.computerId,
+    });
+    const now = Date.now();
+    const report = turnReport(request, turnId);
+    const failure = new Error("report storage unavailable");
+    const recordTurn = vi.spyOn(custody, "recordTurn").mockRejectedValue(failure);
+    const replayFailures: unknown[] = [];
+    const replays: Promise<void>[] = [];
+    const send = socket.send.bind(socket);
+    socket.send = (frame) => {
+      send(frame);
+      if (frame.type !== "delivery:query") return;
+      owner.handleQueryResult(connection, { requestId: frame.requestId, phase: "reported" });
+      replays.push(
+        owner.handleDeliveryReport(connection, { requestId: randomUUID(), report }).catch((error) => {
+          replayFailures.push(error);
+        }),
+      );
+    };
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    try {
+      await expect(owner.recoverAccepted(deliveryId)).resolves.toBe("pending");
+      expect(logger.warn).not.toHaveBeenCalled();
+      await unit.database
+        .update(imMessageDeliveries)
+        .set({ dispatchPayload: { ...request, deadlineAt: new Date(now - 2 * 60 * 60 * 1_000).toISOString() } })
+        .where(eq(imMessageDeliveries.id, deliveryId));
+      for (let pass = 0; pass < 3; pass += 1) {
+        await expect(owner.recoverAccepted(deliveryId)).resolves.toBe("pending");
+      }
+      clock.mockReturnValue(now + 60 * 60 * 1_000 - 1);
+      await expect(owner.recoverAccepted(deliveryId)).resolves.toBe("pending");
+      await Promise.all(replays);
+      expect(recordTurn).toHaveBeenCalledTimes(5);
+      expect(replayFailures).toEqual([failure, failure, failure, failure, failure]);
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          code: "CLOUD_DELIVERY_REPORT_REPLAY_OVERDUE",
+          connectionId: connection.connectionId,
+          deliveryId,
+          phase: "reported",
+          turnId,
+        }),
+        expect.any(String),
+      );
+      expect(await deliveryRow(deliveryId)).toMatchObject({ state: "accepted", reportedAt: null, turnReport: null });
+
+      // A failed query uses the same throttle as a reported answer.
+      socket.send = () => {
+        throw new Error("socket send failed");
+      };
+      await expect(owner.recoverAccepted(deliveryId)).resolves.toBe("pending");
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      clock.mockReturnValue(now + 60 * 60 * 1_000);
+      await expect(owner.recoverAccepted(deliveryId)).resolves.toBe("pending");
+      expect(logger.warn).toHaveBeenCalledTimes(2);
+      expect(logger.warn).toHaveBeenLastCalledWith(expect.objectContaining({ phase: "no_answer" }), expect.any(String));
+    } finally {
+      clock.mockRestore();
+      recordTurn.mockRestore();
+      socket.send = send;
+    }
+
+    await owner.handleDeliveryReport(connection, { requestId: randomUUID(), report });
+    expect(await deliveryRow(deliveryId)).toMatchObject({ turnReport: { outcome: "completed" } });
+    expect(sent.at(-1)).toMatchObject({ type: "delivery:report:ack", status: "recorded" });
+    await expect(owner.recoverAccepted(deliveryId)).resolves.toBe("noop");
+    expect(logger.warn).toHaveBeenCalledTimes(2);
+  });
+
+  it("warns independently for overdue deliveries and immediately after a Runner connection changes", async () => {
+    const { scope, cloud } = await cloudScope();
+    const logger = { debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() };
+    const { hub, fence, owner } = makeOwner({ logger });
+    const sent: RunnerServerFrame[] = [];
+    const first = attachReady(hub, fence, scope, sent, cloud.computerId);
+    const deliveries = await acceptedUnreportedDeliveries({
+      sessionId: scope.sessionId,
+      count: 2,
+      reportOwnerInstanceId: first.connection.instanceId,
+    });
+    await unit.database.update(imMessageDeliveries).set({ acceptedAt: new Date(0) });
+    first.socket.send = (frame) => {
+      if (frame.type === "delivery:query") {
+        owner.handleQueryResult(first.connection, { requestId: frame.requestId, phase: "reported" });
+      }
+    };
+    for (const deliveryId of deliveries) {
+      await expect(owner.recoverAccepted(deliveryId)).resolves.toBe("pending");
+      await expect(owner.recoverAccepted(deliveryId)).resolves.toBe("pending");
+    }
+    expect(logger.warn.mock.calls.map(([fields]) => fields.deliveryId)).toEqual(deliveries);
+
+    hub.detach(scope.sandboxId, first.socket);
+    const replacement = attachReady(hub, fence, scope, sent, cloud.computerId);
+    replacement.socket.send = (frame) => {
+      if (frame.type === "delivery:query") {
+        owner.handleQueryResult(replacement.connection, { requestId: frame.requestId, phase: "reported" });
+      }
+    };
+    for (const deliveryId of deliveries) {
+      await expect(owner.recoverAccepted(deliveryId)).resolves.toBe("pending");
+      await expect(owner.recoverAccepted(deliveryId)).resolves.toBe("pending");
+    }
+    owner.detachConnection(first.connection.connectionId);
+    for (const deliveryId of deliveries) await owner.recoverAccepted(deliveryId);
+    expect(logger.warn.mock.calls.map(([fields]) => fields.connectionId)).toEqual([
+      first.connection.connectionId,
+      first.connection.connectionId,
+      replacement.connection.connectionId,
+      replacement.connection.connectionId,
+    ]);
+  });
+
+  it("keeps first warnings visible when overdue delivery volume exceeds throttle capacity", async () => {
+    const { scope, cloud } = await cloudScope();
+    const logger = { debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() };
+    const { hub, fence, owner } = makeOwner({ logger });
+    const { socket, connection } = attachReady(hub, fence, scope, [], cloud.computerId);
+    const deliveries = await acceptedUnreportedDeliveries({
+      sessionId: scope.sessionId,
+      count: 1_025,
+      reportOwnerInstanceId: connection.instanceId,
+    });
+    await unit.database.update(imMessageDeliveries).set({ acceptedAt: new Date(0) });
+    socket.send = (frame) => {
+      if (frame.type === "delivery:query") {
+        owner.handleQueryResult(connection, { requestId: frame.requestId, phase: "reported" });
+      }
+    };
+    for (const deliveryId of deliveries) await owner.recoverAccepted(deliveryId);
+    expect(logger.warn).toHaveBeenCalledTimes(deliveries.length);
+    await owner.recoverAccepted(deliveries.at(-1) as string);
+    expect(logger.warn).toHaveBeenCalledTimes(deliveries.length);
+    await owner.recoverAccepted(deliveries[0] as string);
+    expect(logger.warn).toHaveBeenCalledTimes(deliveries.length + 1);
+  }, 30_000);
+
   it("refuses a late authentic report after the acceptance cutoff and keeps the terminal unknown", async () => {
     const { scope, agent, cloud } = await cloudScope();
     const { hub, fence, owner } = makeOwner();

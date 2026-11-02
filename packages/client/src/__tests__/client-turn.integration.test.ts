@@ -608,12 +608,6 @@ async function runtimeFixture(
   await reconciler.reconcile(reconcile);
   const recovery = new MvpTurnReportRecovery({ bindingStore: store, reconciler, reportOwner });
 
-  const waitForReport = async (index: number): Promise<TurnReportRequest> => {
-    await vi.waitFor(() => expect(connection.reports().length).toBeGreaterThan(index));
-    const report = connection.reports()[index];
-    if (!report) throw new Error("Expected a Turn Report");
-    return report;
-  };
   const record = (report: TurnReportRequest) =>
     reportOwner.handleResult({
       type: "turn:report:result",
@@ -637,7 +631,7 @@ async function runtimeFixture(
     runtimeManager,
     runtime,
     store,
-    waitForReport,
+    waitForReport: (index: number) => connection.waitForReport(index),
     workspace,
   };
 }

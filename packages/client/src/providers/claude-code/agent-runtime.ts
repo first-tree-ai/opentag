@@ -329,7 +329,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
         : []),
       ...(this.#sessionExists ? ["--resume", this.#sessionId] : ["--session-id", this.#sessionId]),
       "--permission-mode",
-      this.#policy.approvals === "never" ? "bypassPermissions" : "auto",
+      this.#policy.approvals === "never" ? "bypassPermissions" : "acceptEdits",
       ...(this.#policy.approvals === "never" ? [] : ["--permission-prompt-tool", "stdio"]),
       "--settings",
       JSON.stringify({
@@ -747,7 +747,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
       if (!result.streamJson) {
         issues.push({
           code: "version_incompatible",
-          message: "Claude Code requires stream-json, auto mode, and stdio permission prompts",
+          message: "Claude Code requires stream-json, acceptEdits mode, and stdio permission prompts",
         });
       }
       if (result.credentialIssue) {
@@ -915,7 +915,7 @@ async function probeClaudeCode(
     helpResult.stdout.includes("--mcp-config") &&
     helpResult.stdout.includes("--strict-mcp-config") &&
     helpResult.stdout.includes("--allowedTools") &&
-    /\bauto\b/.test(helpResult.stdout) &&
+    /\bacceptEdits\b/.test(helpResult.stdout) &&
     helpResult.stdout.includes("--permission-prompt-tool") &&
     helpResult.stdout.includes("--append-system-prompt");
   const authentication = await probeClaudeCodeCredential(command, execution, signal);

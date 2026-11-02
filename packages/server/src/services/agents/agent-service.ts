@@ -1564,7 +1564,7 @@ export class AgentService {
       permissions: input?.permissions ?? projection.permissions,
       model: input?.model !== undefined ? input.model : projection.model,
       reasoningEffort: input?.reasoningEffort !== undefined ? input.reasoningEffort : projection.reasoningEffort,
-      instructions: input?.instructions ?? projection.instructions,
+      instructions: input?.instructions !== undefined ? (input.instructions ?? "") : projection.instructions,
       maxDurationMs: input?.maxDurationMs !== undefined ? input.maxDurationMs : projection.maxDurationMs,
     });
     if (!selfConfigurationChanged && runtimeConfigsEqual(current, next)) return current;

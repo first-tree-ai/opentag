@@ -69,7 +69,7 @@ export const UpdateAgentRuntimeConfigSchema = z
     permissions: AgentPermissionsSchema.optional(),
     model: RuntimeModelSchema.nullable().optional(),
     reasoningEffort: RuntimeReasoningEffortSchema.nullable().optional(),
-    instructions: AgentInstructionsSchema.optional(),
+    instructions: AgentInstructionsSchema.nullable().optional(),
     maxDurationMs: RuntimeMaxDurationMsSchema.nullable().optional(),
   })
   .strict()

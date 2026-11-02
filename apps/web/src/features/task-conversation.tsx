@@ -4,13 +4,14 @@ import {
   type TaskTurn,
   type TurnFailureReason,
 } from "@opentag/shared/browser";
-import type { ReactNode } from "react";
-import { formatDateTime, initials } from "../i18n/format.js";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { formatDateTime, formatRelativeTime, initials } from "../i18n/format.js";
 import * as m from "../paraglide/messages.js";
-import { Text } from "../ui/design-system.js";
+import { Button, Icon, StatusIndicator, Text } from "../ui/design-system.js";
 import { AgentAvatar } from "./agents/agent-avatar.js";
 import { TaskActivityTimeline } from "./task-activity-timeline.js";
 import { TaskAttachments } from "./task-attachments.js";
+import type { TaskInternalSessionItem } from "./task-detail-view.js";
 import { TaskMessageBody } from "./task-message-body.js";
 import {
   TaskCapturedReply,
@@ -18,17 +19,20 @@ import {
   TaskOutgoingReply,
   TaskOutgoingReplyMeta,
 } from "./task-outgoing-replies.js";
+import { taskStatusGroup, taskStatusGroupLabel, taskStatusGroupTone } from "./task-status.js";
 import { buildTaskTimeline, type CapturedTaskReply, type TaskReport, type TaskTimelineEntry } from "./task-timeline.js";
 
 export function TaskActivity({
   task,
   turns,
+  internalSessions,
   replies,
   pagination,
   repliesStatus,
 }: {
   task: TaskSummary;
   turns: TaskTurn[];
+  internalSessions?: TaskInternalSessionItem[];
   replies?: CapturedTaskReply[];
   pagination: ReactNode;
   repliesStatus?: ReactNode;
@@ -39,11 +43,78 @@ export function TaskActivity({
    */
   const capturedFeedSupplied = replies !== undefined;
   const entries = buildTaskTimeline(turns, task.source.provider, replies ?? []);
+  const hasInternalSessions = (internalSessions?.length ?? 0) > 0;
+  const sectionRef = useRef<HTMLElement>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const autoScrolledTaskIdRef = useRef<string | null>(null);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+
+  const resolveScrollContainer = useCallback((candidate?: EventTarget | null): HTMLElement | null => {
+    if (candidate instanceof HTMLElement && candidate.scrollHeight > 0) return candidate;
+    const content = sectionRef.current?.closest<HTMLElement>('[data-ui="content"]');
+    if (content && content.scrollHeight > 0) return content;
+    if (document.scrollingElement instanceof HTMLElement && document.scrollingElement.scrollHeight > 0) {
+      return document.scrollingElement;
+    }
+    return content ?? sectionRef.current ?? (document.scrollingElement as HTMLElement | null);
+  }, []);
+
+  const updateScrollState = useCallback(
+    (candidate?: EventTarget | null) => {
+      const target = resolveScrollContainer(candidate);
+      if (!target) return;
+      const distanceFromBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
+      setShowJumpToLatest(distanceFromBottom > 48);
+    },
+    [resolveScrollContainer],
+  );
+
+  useEffect(() => {
+    if (entries.length === 0 || autoScrolledTaskIdRef.current === task.id) return;
+    autoScrolledTaskIdRef.current = task.id;
+    const target = resolveScrollContainer();
+    if (target) {
+      target.scrollTo?.({ top: target.scrollHeight, behavior: "instant" as ScrollBehavior });
+      if (target.scrollHeight > 0) {
+        target.scrollTop = target.scrollHeight;
+      }
+    }
+    bottomRef.current?.scrollIntoView?.({ block: "end" });
+  }, [entries.length, resolveScrollContainer, task.id]);
+
+  useEffect(() => {
+    const content = sectionRef.current?.closest<HTMLElement>('[data-ui="content"]');
+    const onScroll = (event: Event) => updateScrollState(event.currentTarget ?? event.target);
+    content?.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      content?.removeEventListener("scroll", onScroll);
+      window.removeEventListener("scroll", onScroll);
+    };
+  }, [updateScrollState]);
+
+  const scrollToLatest = () => {
+    const target = resolveScrollContainer();
+    if (target) {
+      target.scrollTo?.({ top: target.scrollHeight, behavior: "smooth" });
+      target.scrollTop = target.scrollHeight;
+    }
+    bottomRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" });
+    setShowJumpToLatest(false);
+  };
+
   return (
-    <section className="grid w-full max-w-3xl gap-5" aria-labelledby="task-activity-title" data-ui="task-thread">
+    <section
+      ref={sectionRef}
+      className="relative grid w-full max-w-3xl gap-5"
+      aria-labelledby="task-activity-title"
+      data-ui="task-thread"
+      onScroll={(event) => updateScrollState(event.currentTarget)}
+    >
       <Text as="h2" id="task-activity-title" variant="heading" DANGEROUS_className="sr-only">
         {m.tasks_activity()}
       </Text>
+      {hasInternalSessions && internalSessions ? <TaskInternalSessionsList sessions={internalSessions} /> : null}
       <TaskActivityTimeline key={task.id} entryIds={entries.map((entry) => entry.id)}>
         {pagination}
         {entries.length > 0 ? (
@@ -54,7 +125,7 @@ export function TaskActivity({
               </div>
             ))}
           </div>
-        ) : (
+        ) : !hasInternalSessions ? (
           <div className="grid gap-2">
             <Text as="h3" variant="heading">
               {m.tasks_no_activity()}
@@ -63,10 +134,64 @@ export function TaskActivity({
               {m.tasks_no_activity_detail()}
             </Text>
           </div>
-        )}
+        ) : null}
         {repliesStatus}
+        <div ref={bottomRef} aria-hidden="true" />
       </TaskActivityTimeline>
+      {showJumpToLatest && entries.length > 0 ? (
+        <div className="sticky bottom-4 flex justify-center pointer-events-none">
+          <Button
+            type="button"
+            size="compact"
+            variant="secondary"
+            className="pointer-events-auto rounded-full shadow-md"
+            data-ui="task-activity-jump-latest"
+            onClick={scrollToLatest}
+          >
+            <Icon name="chevron-down" />
+            <span>Jump to latest</span>
+          </Button>
+        </div>
+      ) : null}
     </section>
+  );
+}
+
+function TaskInternalSessionsList({ sessions }: { sessions: TaskInternalSessionItem[] }) {
+  return (
+    <div className="grid gap-2 rounded-lg border border-kumo-line bg-kumo-base p-4" data-ui="task-internal-sessions">
+      <ul className="grid divide-y divide-kumo-line">
+        {sessions.map((session) => {
+          const status = session.status ? taskStatusGroup(session.status) : session.endedAt ? "completed" : "running";
+          const activityAt = session.endedAt ?? session.createdAt;
+          const preview = session.title?.trim() || session.runtimeModel || session.id;
+          return (
+            <li
+              key={session.id}
+              className="flex flex-wrap items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0 text-sm"
+              data-ui="task-internal-session-row"
+            >
+              <div className="flex min-w-0 flex-1 items-center gap-2">
+                <span className="min-w-0 truncate font-medium text-kumo-default">{preview}</span>
+                {preview !== session.id ? (
+                  <span className="truncate text-xs text-kumo-subtle">{session.id}</span>
+                ) : null}
+              </div>
+              <div className="flex items-center gap-3">
+                <StatusIndicator label={taskStatusGroupLabel(status)} tone={taskStatusGroupTone(status)} />
+                <time
+                  className="whitespace-nowrap text-xs text-kumo-subtle"
+                  dateTime={activityAt}
+                  title={formatDateTime(activityAt)}
+                >
+                  {formatRelativeTime(activityAt)}
+                </time>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 
@@ -147,7 +272,10 @@ function TaskRequest({ turn, id }: { turn: TaskTurn; id: string }) {
       data-ui="task-message-request"
       data-task-entry-id={id}
     >
-      <span className="grid size-8 place-items-center rounded-md bg-kumo-tint text-xs font-medium" aria-hidden="true">
+      <span
+        className="grid size-8 place-items-center rounded-md bg-kumo-tint text-xs font-medium ring-1 ring-inset ring-kumo-line/60"
+        aria-hidden="true"
+      >
         {initials(author)}
       </span>
       <div className="grid min-w-0 gap-2">
@@ -157,7 +285,7 @@ function TaskRequest({ turn, id }: { turn: TaskTurn; id: string }) {
             {attentionLabel(turn.attention)} · {formatDateTime(turn.message.occurredAt)}
           </small>
         </header>
-        <div className="grid min-w-0 gap-3 rounded-lg bg-kumo-recessed p-4">
+        <div className="grid min-w-0 gap-3 rounded-xl bg-kumo-recessed p-4 ring-1 ring-inset ring-kumo-line/60 shadow-2xs">
           {turn.message.fallbackText || attachments.length === 0 ? (
             <TaskMessageBody format="plain_text" text={turn.message.fallbackText} />
           ) : null}
@@ -232,7 +360,12 @@ function TaskReplyNotice({ report, capturedFeedSupplied }: { report: TaskReport;
 function TaskExecutionSummary({ text }: { text: string }) {
   return (
     // biome-ignore lint/a11y/useSemanticElements: This groups summary content, not form controls.
-    <div className="grid gap-2" data-ui="task-execution-summary" role="group" aria-label={m.tasks_execution_summary()}>
+    <div
+      className="grid gap-2 rounded-xl bg-kumo-base/80 p-3.5 ring-1 ring-inset ring-kumo-line/50"
+      data-ui="task-execution-summary"
+      role="group"
+      aria-label={m.tasks_execution_summary()}
+    >
       <TaskMessageBody format="markdown" text={text} />
     </div>
   );

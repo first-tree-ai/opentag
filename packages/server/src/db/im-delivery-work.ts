@@ -26,3 +26,24 @@ export function deliveryWorkPredicate(d: DeliveryWorkColumns) {
   // Keep one BooleanTest: expanding this OR can combine indexes full of historical entries.
   return sql`((${deliveryCandidatePredicate(d)} or ${deliveryCustodyPredicate(d)}) is true)`;
 }
+
+/**
+ * The durable marker a parked dispatch carries in `last_error_code`.
+ *
+ * A correlated dispatch whose operation never settles is not terminally rejected (that would strand a
+ * Turn that may still report) and must not be offered to the runtime again. Parking keeps the pending
+ * state, `reason`, the dispatch correlation, and the unreported custody, and takes the row out of the
+ * work set; only the ingress deadline still bounds it, and the TTL expiry path needs `reason is null`.
+ * Deliberately not part of the partial-index predicates: parking is a row predicate, not an index.
+ */
+export const PARKED_DELIVERY_CODE = "IM_DELIVERY_PARKED";
+
+/** Excludes a parked pending dispatch from the claim scans; an expired row resumes its normal path. */
+export function notParkedPredicate(d: DeliveryWorkColumns) {
+  return sql`not (${d.state} = 'pending' and coalesce(${d.lastErrorCode}, '') = ${PARKED_DELIVERY_CODE})`;
+}
+
+/** The same exclusion for a row already read, so the in-memory eligibility cannot disagree. */
+export function parkedDelivery(row: { state: string; lastErrorCode: string | null }): boolean {
+  return row.state === "pending" && row.lastErrorCode === PARKED_DELIVERY_CODE;
+}

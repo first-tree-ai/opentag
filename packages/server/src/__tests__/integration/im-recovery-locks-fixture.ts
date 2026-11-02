@@ -30,6 +30,7 @@ type Fixture = {
   rootDeliveryId: string;
   rootTurnId: string;
   sessionId: string;
+  bindingId: string;
   agentId: string;
   placementGeneration: number;
   rootRequest: DirectImMessageDeliveryRequest;
@@ -187,6 +188,7 @@ async function createFixture(
     rootDeliveryId,
     rootTurnId,
     sessionId,
+    bindingId,
     agentId,
     placementGeneration: 1,
     runtime,

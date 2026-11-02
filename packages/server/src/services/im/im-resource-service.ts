@@ -20,6 +20,7 @@ import { ExternalCallPolicy, limitReadableStream } from "./external-call-policy.
 const MAX_RESOURCE_BYTES = 25 * 1024 * 1024;
 const MAX_AVATAR_BYTES = 5 * 1024 * 1024;
 const ALLOWED_AVATAR_MEDIA_TYPES = new Set(["image/avif", "image/gif", "image/jpeg", "image/png", "image/webp"]);
+const MISSING_AVATAR_STATUSES = new Set([403, 404, 410]);
 
 export interface AuthorizedImResource extends ReadableResource {
   kind: "image" | "file" | "audio" | "video";
@@ -57,6 +58,7 @@ export class ImResourceService {
       throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent avatar was not found");
     }
 
+    const upstreamHost = safeUpstreamHost(binding.providerUrl);
     let response: Response;
     try {
       response = await this.#policy.fetch(
@@ -76,8 +78,15 @@ export class ImResourceService {
         503,
         "The Agent avatar is temporarily unavailable",
         "transient",
-        { cause: error },
+        { cause: wrapAvatarUpstreamError(upstreamHost, agentId, error) },
       );
+    }
+
+    if (MISSING_AVATAR_STATUSES.has(response.status)) {
+      await discardResponseBody(response);
+      throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent avatar was not found", "deterministic", {
+        cause: new Error(`Avatar upstream (${upstreamHost}) answered ${response.status} for agent ${agentId}`),
+      });
     }
 
     if (!response.ok || !response.body) {
@@ -87,7 +96,7 @@ export class ImResourceService {
         503,
         "The Agent avatar is temporarily unavailable",
         "transient",
-        { cause: new Error(`Avatar upstream answered ${response.status}`) },
+        { cause: new Error(`Avatar upstream (${upstreamHost}) answered ${response.status} for agent ${agentId}`) },
       );
     }
 
@@ -102,7 +111,7 @@ export class ImResourceService {
       );
     }
 
-    const body = await readAvatarBody(response.body);
+    const body = await readAvatarBody(response.body, upstreamHost, agentId);
 
     return {
       stream: Readable.from(body),
@@ -218,6 +227,35 @@ export class ImResourceService {
   }
 }
 
+function safeUpstreamHost(rawUrl: string): string {
+  try {
+    return new URL(rawUrl).hostname || "invalid-url";
+  } catch {
+    return "invalid-url";
+  }
+}
+
+function describeError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
+  const head = code && !error.message.includes(code) ? `${code}: ${error.message}` : error.message;
+  if (error.cause instanceof Error) {
+    const causeCode = "code" in error.cause && typeof error.cause.code === "string" ? error.cause.code : undefined;
+    const causeText =
+      causeCode && !error.cause.message.includes(causeCode)
+        ? `${causeCode}: ${error.cause.message}`
+        : error.cause.message;
+    return `${head} (${causeText})`;
+  }
+  return head;
+}
+
+function wrapAvatarUpstreamError(upstreamHost: string, agentId: string, error: unknown): Error {
+  return new Error(`Avatar upstream (${upstreamHost}) request failed for agent ${agentId}: ${describeError(error)}`, {
+    cause: error,
+  });
+}
+
 function imageMediaType(value: string | null): string | undefined {
   const mediaType = value?.split(";", 1)[0]?.trim().toLowerCase();
   return mediaType && ALLOWED_AVATAR_MEDIA_TYPES.has(mediaType) ? mediaType : undefined;
@@ -231,7 +269,11 @@ async function discardResponseBody(response: Response): Promise<void> {
   }
 }
 
-async function readAvatarBody(body: ReadableStream<Uint8Array>): Promise<Buffer> {
+async function readAvatarBody(
+  body: ReadableStream<Uint8Array>,
+  upstreamHost: string,
+  agentId: string,
+): Promise<Buffer> {
   const stream = Readable.fromWeb(body);
   const chunks: Buffer[] = [];
   let totalBytes = 0;
@@ -252,6 +294,7 @@ async function readAvatarBody(body: ReadableStream<Uint8Array>): Promise<Buffer>
       503,
       "The Agent avatar is temporarily unavailable",
       "transient",
+      { cause: wrapAvatarUpstreamError(upstreamHost, agentId, error) },
     );
   }
   return Buffer.concat(chunks, totalBytes);

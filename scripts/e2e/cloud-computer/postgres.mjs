@@ -42,9 +42,13 @@ export async function startDisposablePostgres() {
       "disposable Postgres to accept connections",
       async () => {
         try {
-          await execFileAsync("docker", ["exec", name, "pg_isready", "-U", POSTGRES_USER, "-d", POSTGRES_DB], {
-            timeout: 5_000,
-          });
+          await execFileAsync(
+            "docker",
+            ["exec", name, "pg_isready", "-h", "127.0.0.1", "-U", POSTGRES_USER, "-d", POSTGRES_DB],
+            {
+              timeout: 5_000,
+            },
+          );
           return true;
         } catch {
           return false;
@@ -87,7 +91,21 @@ function runPsql(container, sql) {
   return new Promise((settle, fail) => {
     const child = spawn(
       "docker",
-      ["exec", "-i", container, "psql", "-U", POSTGRES_USER, "-d", POSTGRES_DB, "-v", "ON_ERROR_STOP=1", "-At"],
+      [
+        "exec",
+        "-i",
+        container,
+        "psql",
+        "-h",
+        "127.0.0.1",
+        "-U",
+        POSTGRES_USER,
+        "-d",
+        POSTGRES_DB,
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-At",
+      ],
       { stdio: ["pipe", "pipe", "pipe"] },
     );
     let stdout = "";

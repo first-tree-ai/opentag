@@ -630,6 +630,28 @@ describe("Tasks view", () => {
     );
   });
 
+  it("opens the Task detail link when clicking a non-title cell in the Task row", async () => {
+    vi.spyOn(browserApi, "tasks").mockResolvedValue({ tasks: [task], nextCursor: null });
+
+    await renderInRouter(<TasksPage agentId={agentId} />);
+    const link = await screen.findByRole("link", { name: task.title });
+    const row = link.closest("tr");
+    if (!row) throw new Error("Expected the Task link to be inside a row");
+    expect(row.className).toContain("cursor-pointer");
+
+    const linkClicks = vi.fn();
+    link.addEventListener("click", linkClicks);
+
+    fireEvent.click(within(row).getByText("Lark · Direct message"));
+    expect(linkClicks).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(within(row).getByText("Completed"));
+    expect(linkClicks).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(link);
+    expect(linkClicks).toHaveBeenCalledTimes(3);
+  });
+
   it("uses a user-facing author role when a sender name is unavailable", async () => {
     const root = detail.turns[0];
     if (!root) throw new Error("Expected the Task fixture to include a root Turn");
@@ -1311,6 +1333,51 @@ describe("Tasks view", () => {
     const sourceValue = sourceTerm.parentElement?.querySelector("dd");
     expect(sourceValue?.textContent).toContain("Lark");
     expect(sourceValue?.textContent).not.toMatch(/feishu/);
+  });
+
+  it("renders internal child Sessions when returned on the Task detail page", async () => {
+    vi.spyOn(browserApi, "taskDetail").mockResolvedValue({
+      task: detail.task,
+      turns: { items: detail.turns, nextCursor: null },
+      internalSessions: {
+        items: [
+          {
+            id: "55555555-5555-4555-8555-555555555555",
+            createdBySessionId: sessionId,
+            createdAt: "2026-08-27T01:10:00.000Z",
+            endedAt: null,
+            runtimeModel: "gpt-5",
+            runtimeReasoningEffort: null,
+          },
+          {
+            id: "66666666-6666-4666-8666-666666666666",
+            createdBySessionId: sessionId,
+            createdAt: "2026-08-27T01:15:00.000Z",
+            endedAt: "2026-08-27T01:25:00.000Z",
+            runtimeModel: null,
+            runtimeReasoningEffort: null,
+          },
+        ],
+        nextCursor: null,
+      },
+    });
+
+    const { container } = await renderInRouter(<TaskDetailPage taskId={sessionId} />, {
+      path: `/tasks/${sessionId}`,
+    });
+
+    const list = await waitFor(() => {
+      const node = container.querySelector('[data-ui="task-internal-sessions"]');
+      expect(node).not.toBeNull();
+      return node as HTMLElement;
+    });
+    const rows = list.querySelectorAll('[data-ui="task-internal-session-row"]');
+    expect(rows).toHaveLength(2);
+    expect(within(list).getByText("gpt-5")).toBeTruthy();
+    expect(within(list).getByText("55555555-5555-4555-8555-555555555555")).toBeTruthy();
+    expect(within(list).getByText("66666666-6666-4666-8666-666666666666")).toBeTruthy();
+    expect(within(list).getByText("Running")).toBeTruthy();
+    expect(within(list).getByText("Completed")).toBeTruthy();
   });
 });
 

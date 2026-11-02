@@ -1,6 +1,6 @@
 import type { TaskReply, TaskSummary, TaskTurn } from "@opentag/shared/browser";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { TaskActivity } from "./task-conversation.js";
 
 const task: TaskSummary = {
@@ -366,4 +366,32 @@ it("keeps a standalone captured reply without a Turn, and two same-text native i
   expect(screen.getAllByRole("group", { name: "Agent response" })).toHaveLength(2);
   expect(screen.queryByRole("region", { name: "Agent response" })).toBeNull();
   expect(screen.queryByText("No activity recorded")).toBeNull();
+});
+
+it("auto-scrolls to the latest entry on mount and shows a jump-to-latest button when scrolled up", () => {
+  const scrollIntoView = vi.fn();
+  const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+  HTMLElement.prototype.scrollIntoView = scrollIntoView;
+  try {
+    const { container } = render(<TaskActivity task={task} turns={[turn()]} pagination={null} />);
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "end" });
+    expect(container.querySelector('[data-ui="task-activity-jump-latest"]')).toBeNull();
+
+    const thread = container.querySelector<HTMLElement>('[data-ui="task-thread"]');
+    if (!thread) throw new Error("Expected task-thread element");
+    Object.defineProperty(thread, "scrollHeight", { configurable: true, value: 1200 });
+    Object.defineProperty(thread, "clientHeight", { configurable: true, value: 400 });
+    thread.scrollTop = 100;
+
+    fireEvent.scroll(thread);
+    const jumpButton = container.querySelector<HTMLButtonElement>('[data-ui="task-activity-jump-latest"]');
+    expect(jumpButton).not.toBeNull();
+
+    fireEvent.click(jumpButton as HTMLButtonElement);
+    expect(scrollIntoView).toHaveBeenLastCalledWith({ behavior: "smooth", block: "end" });
+    expect(thread.scrollTop).toBe(1200);
+    expect(container.querySelector('[data-ui="task-activity-jump-latest"]')).toBeNull();
+  } finally {
+    HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
+  }
 });

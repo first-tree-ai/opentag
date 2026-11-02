@@ -24,9 +24,15 @@ export type DiagnosticReporterOptions = {
 };
 
 const DEFAULT_COOLDOWN_MS = 30_000;
+const STALE_ASSET_RELOAD_KEY = "opentag:stale-asset-reload";
+const STALE_ASSET_RELOAD_COOLDOWN_MS = 60_000;
 const UUID_SEGMENT = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const INTEGER_SEGMENT = /^\d+$/;
 const SAFE_CODE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
+const VITE_CSS_PRELOAD_FAILURE = /Unable to preload CSS for\s+([^\s)'"]+)/i;
+const DYNAMIC_IMPORT_FAILURE =
+  /(?:Failed to fetch dynamically imported module|error loading dynamically imported module|Importing a module script failed)/i;
+const ASSET_URL_OR_PATH = /(https?:\/\/[^\s)'"]+|\/assets\/[^\s)'"]+)/i;
 
 /**
  * The flat expression this module matches `name: value` shapes with.
@@ -186,14 +192,19 @@ export class DiagnosticReporter {
   clear(): void {
     this.lastReportedAt.clear();
   }
+
+  readNow(): number {
+    return this.now();
+  }
 }
 
 /** The already-redacted message and stack of an envelope, or a description built from its stable fields. */
 function diagnosticErrorText(safe: DiagnosticEnvelope): { message: string; stack?: string; dedupeKey?: string } {
   const error = safe.error as { message?: unknown; stack?: unknown } | undefined;
   const stack = typeof error?.stack === "string" && error.stack ? { stack: error.stack } : {};
-  if (typeof error?.message === "string" && error.message) return { message: error.message, ...stack };
-  if (typeof safe.resourcePath !== "string") return { message: safe.code };
+  const dedupe = safe.code === "resource_load_failed" ? { dedupeKey: safe.code } : {};
+  if (typeof error?.message === "string" && error.message) return { message: error.message, ...stack, ...dedupe };
+  if (typeof safe.resourcePath !== "string") return { message: safe.code, ...dedupe };
   /*
    * A stale client after a deploy hunts for every chunk hash that no longer exists; one relayed
    * report per cooldown says that, one per path would only say it louder.
@@ -210,6 +221,22 @@ export function installWindowDiagnosticHandlers(
   reporter: DiagnosticReporter = windowDiagnosticReporter,
 ): () => void {
   const onUnhandledRejection = (event: PromiseRejectionEvent) => {
+    const staleAssetPath = extractStaleAssetPath(event.reason, target);
+    if (staleAssetPath) {
+      if (tryReloadOnStaleAsset(target, staleAssetPath, () => reporter.readNow())) return;
+      const normalized = normalizeError(event.reason, "resource_load_failed");
+      reporter.report(
+        {
+          source: "window",
+          code: "resource_load_failed",
+          routeTemplate: "window",
+          resourcePath: staleAssetPath,
+          error: { name: normalized.error.name, message: normalized.error.message, stack: normalized.error.stack },
+        },
+        "error",
+      );
+      return;
+    }
     const normalized = normalizeError(event.reason, "unhandled_rejection");
     reporter.report(
       {
@@ -217,6 +244,28 @@ export function installWindowDiagnosticHandlers(
         code: normalized.code,
         routeTemplate: "window",
         error: { name: normalized.error.name, message: normalized.error.message, stack: normalized.error.stack },
+      },
+      "error",
+    );
+  };
+
+  const onVitePreloadError = (event: Event) => {
+    const payload = (event as { payload?: unknown }).payload;
+    const resourcePath = extractStaleAssetPath(payload, target);
+    if (tryReloadOnStaleAsset(target, resourcePath ?? "/assets/", () => reporter.readNow())) {
+      event.preventDefault();
+      return;
+    }
+    const normalized = payload !== undefined ? normalizeError(payload, "resource_load_failed") : undefined;
+    reporter.report(
+      {
+        source: "window",
+        code: "resource_load_failed",
+        routeTemplate: "window",
+        ...(resourcePath ? { resourcePath } : {}),
+        ...(normalized
+          ? { error: { name: normalized.error.name, message: normalized.error.message, stack: normalized.error.stack } }
+          : {}),
       },
       "error",
     );
@@ -239,35 +288,105 @@ export function installWindowDiagnosticHandlers(
       );
       return;
     }
-    const element = event.target;
-    if (!(element instanceof HTMLScriptElement) && !(element instanceof HTMLLinkElement)) return;
-    const resourceType = element instanceof HTMLScriptElement ? "script" : "link";
-    const source = element instanceof HTMLScriptElement ? element.src : element.href;
+    const resource = readResourceTarget(event.target);
     /*
      * Only this origin's own resources are this application's failures. A third-party resource that
      * does not load is routinely a content blocker, an extension, or a network policy — a choice
      * somebody made rather than a defect — and reporting it would turn that choice into an error on
      * every page load, including in suites that fail a run on any console error at all.
      */
-    if (!isSameOrigin(source, target)) return;
+    if (!resource || !isSameOrigin(resource.source, target)) return;
+    const resourcePath = resourcePathWithoutQuery(resource.source, target);
+    if (tryReloadOnStaleAsset(target, resourcePath, () => reporter.readNow())) return;
     reporter.report(
       {
         source: "window",
         code: "resource_load_failed",
         routeTemplate: "window",
-        resourceType,
-        resourcePath: resourcePathWithoutQuery(source),
+        resourceType: resource.resourceType,
+        resourcePath,
       },
       "error",
     );
   };
 
   target.addEventListener("unhandledrejection", onUnhandledRejection);
+  target.addEventListener("vite:preloadError", onVitePreloadError);
   target.addEventListener("error", onWindowError, true);
   return () => {
     target.removeEventListener("unhandledrejection", onUnhandledRejection);
+    target.removeEventListener("vite:preloadError", onVitePreloadError);
     target.removeEventListener("error", onWindowError, true);
   };
+}
+
+function readResourceTarget(
+  target: EventTarget | null,
+): { resourceType: "script" | "link"; source: string } | undefined {
+  if (target instanceof HTMLScriptElement) return { resourceType: "script", source: target.src };
+  if (target instanceof HTMLLinkElement) return { resourceType: "link", source: target.href };
+  return undefined;
+}
+
+/**
+ * Reload once per route within a 60-second window when a hashed `/assets/*` chunk or stylesheet
+ * disappears after a deployment. If the reload fails or repeats within the window, fall back to
+ * reporting `resource_load_failed` so genuine broken assets still surface.
+ */
+function tryReloadOnStaleAsset(target: Window, resourcePath: string | undefined, now: () => number): boolean {
+  if (!resourcePath?.startsWith("/assets/")) return false;
+  try {
+    const reload = target.location?.reload;
+    const storage = target.sessionStorage;
+    if (typeof reload !== "function" || !storage) return false;
+    const pathname = target.location?.pathname || "/";
+    const currentTime = now();
+    if (hasRecentReload(storage.getItem(STALE_ASSET_RELOAD_KEY), pathname, currentTime)) return false;
+    storage.setItem(STALE_ASSET_RELOAD_KEY, JSON.stringify({ pathname, at: currentTime }));
+    reload.call(target.location);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function hasRecentReload(raw: string | null, pathname: string, currentTime: number): boolean {
+  if (!raw) return false;
+  try {
+    const parsed = JSON.parse(raw) as { pathname?: unknown; at?: unknown };
+    return (
+      parsed?.pathname === pathname &&
+      typeof parsed.at === "number" &&
+      currentTime >= parsed.at &&
+      currentTime - parsed.at < STALE_ASSET_RELOAD_COOLDOWN_MS
+    );
+  } catch {
+    return false;
+  }
+}
+
+function extractStaleAssetPath(reason: unknown, target: Window): string | undefined {
+  const text = readReasonText(reason);
+  if (!text) return undefined;
+  const cssPreload = VITE_CSS_PRELOAD_FAILURE.exec(text)?.[1];
+  if (cssPreload) return assetPath(cssPreload, target);
+  if (!DYNAMIC_IMPORT_FAILURE.test(text)) return undefined;
+  const candidate = ASSET_URL_OR_PATH.exec(text)?.[1];
+  return candidate && isSameOrigin(candidate, target) ? assetPath(candidate, target) : undefined;
+}
+
+function readReasonText(reason: unknown): string {
+  if (typeof reason === "string") return reason;
+  if (!reason || typeof reason !== "object") return "";
+  const { message, stack } = reason as { message?: unknown; stack?: unknown };
+  const head = typeof message === "string" ? message : "";
+  const tail = typeof stack === "string" ? `\n${stack}` : "";
+  return `${head}${tail}`;
+}
+
+function assetPath(source: string, target: Window): string | undefined {
+  const pathname = resourcePathWithoutQuery(source, target);
+  return pathname?.startsWith("/assets/") ? pathname : undefined;
 }
 
 function isSameOrigin(source: string, target: Window): boolean {
@@ -279,10 +398,10 @@ function isSameOrigin(source: string, target: Window): boolean {
   }
 }
 
-function resourcePathWithoutQuery(source: string): string | undefined {
+function resourcePathWithoutQuery(source: string, target: Window = window): string | undefined {
   if (!source) return undefined;
   try {
-    return new URL(source, window.location.href).pathname;
+    return new URL(source, target.location.href).pathname;
   } catch {
     return undefined;
   }

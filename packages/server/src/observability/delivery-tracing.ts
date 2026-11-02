@@ -7,9 +7,9 @@ export type DeliveryClaim =
   | { id: string; kind: "recovery" }
   | undefined;
 
-export async function traceDeliveryClaim(
-  claim: DeliveryClaim,
-  dispatch: (claim: Exclude<DeliveryClaim, undefined>) => Promise<void>,
+export async function traceDeliveryClaim<T extends DeliveryClaim>(
+  claim: T,
+  dispatch: (claim: NonNullable<T>) => Promise<void>,
 ): Promise<void> {
   if (!claim) return;
   const name =

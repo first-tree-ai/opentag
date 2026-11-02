@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, lte, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
-import { deliveryCandidatePredicate, deliveryWorkPredicate } from "../db/im-delivery-work.js";
+import { deliveryCandidatePredicate, deliveryWorkPredicate, notParkedPredicate } from "../db/im-delivery-work.js";
 import { agents, computers, imBindings, imMessageDeliveries, sessionPlacements, sessions } from "../db/schema/index.js";
 
 export type DeliveryWorkQuery = Pick<DatabaseClient | DatabaseTransaction, "select" | "execute">;
@@ -19,6 +19,7 @@ const candidateColumns = {
   steerTargetDeliveryId: imMessageDeliveries.steerTargetDeliveryId,
   lastErrorCode: imMessageDeliveries.lastErrorCode,
   reportedAt: imMessageDeliveries.reportedAt,
+  attemptCount: imMessageDeliveries.attemptCount,
   nextAttemptAt: imMessageDeliveries.nextAttemptAt,
   // Preserve PostgreSQL microseconds in the keyset; JS Date only preserves milliseconds.
   cursorTime: sql<string>`${imMessageDeliveries.nextAttemptAt}::text`,
@@ -39,6 +40,7 @@ export function deliveryCandidatePage(
       and(
         deliveryWorkPredicate(imMessageDeliveries),
         deliveryCandidatePredicate(imMessageDeliveries),
+        notParkedPredicate(imMessageDeliveries),
         lte(imMessageDeliveries.nextAttemptAt, now),
         cursor
           ? sql`(${imMessageDeliveries.nextAttemptAt}, ${imMessageDeliveries.id}) > (${cursor.time}::timestamptz, ${cursor.id}::uuid)`
@@ -60,7 +62,13 @@ export async function lockDeliveryCandidate(database: DatabaseTransaction, id: s
       dispatchPayload: imMessageDeliveries.dispatchPayload,
     })
     .from(imMessageDeliveries)
-    .where(and(eq(imMessageDeliveries.id, id), lte(imMessageDeliveries.nextAttemptAt, now)))
+    .where(
+      and(
+        eq(imMessageDeliveries.id, id),
+        notParkedPredicate(imMessageDeliveries),
+        lte(imMessageDeliveries.nextAttemptAt, now),
+      ),
+    )
     .for("update", { of: imMessageDeliveries, skipLocked: true });
   return row;
 }
@@ -226,4 +234,25 @@ export function pendingHeadQuery(sessionId: string) {
 export async function readPendingHead(database: DeliveryWorkQuery, sessionId: string) {
   const [row] = await database.execute<{ id: string }>(pendingHeadQuery(sessionId));
   return row?.id;
+}
+
+/** A reconnect only advances retries the offline backoff parked beyond a normal retry interval. */
+export const RECONNECT_ADVANCE_THRESHOLD_MS = 60_000;
+
+/**
+ * A Computer's runtime became usable again, so its parked retries are due again. Only rows the
+ * offline backoff pushed well past the base interval are advanced, which keeps this wakeup
+ * self-limiting: a client that reconnects in a loop cannot turn the backoff into a hot retry,
+ * because a row that is already due soon is left alone.
+ */
+export async function advanceParkedRetries(database: DeliveryWorkQuery, computerId: string, nowMs: number) {
+  await database.execute(sql`
+    update im_message_deliveries as delivery
+    set next_attempt_at = ${new Date(nowMs).toISOString()}::timestamptz
+    from session_placements as placement
+    where placement.session_id = delivery.session_id
+      and placement.computer_id = ${computerId}::uuid
+      and delivery.state in ('pending', 'accepted')
+      and delivery.next_attempt_at > ${new Date(nowMs + RECONNECT_ADVANCE_THRESHOLD_MS).toISOString()}::timestamptz
+  `);
 }

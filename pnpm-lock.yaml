@@ -25,6 +25,9 @@ importers:
 
   .:
     devDependencies:
+      '@babel/parser':
+        specifier: 8.0.5
+        version: 8.0.5
       '@biomejs/biome':
         specifier: ^2.5.14
         version: 2.5.14

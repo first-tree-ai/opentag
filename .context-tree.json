@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 3,
+  "trees": [
+    {
+      "kind": "directory",
+      "path": "docs"
+    }
+  ]
+}

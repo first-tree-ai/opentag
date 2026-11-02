@@ -9,7 +9,7 @@ export const STEER_TARGET_UNPLACEABLE_ERROR_CODE = "IM_DELIVERY_STEER_TARGET_UNP
 
 const STEER_TARGET_UNPLACEABLE_REASON = "steer_target_ended_unplaceable";
 
-type SessionEnsurer = Pick<SessionService, "ensureChatSessionInTransaction">;
+export type SessionEnsurer = Pick<SessionService, "ensureChatSessionInTransaction">;
 
 type Candidate = {
   id: string;

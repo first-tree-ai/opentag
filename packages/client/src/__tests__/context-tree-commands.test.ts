@@ -265,6 +265,62 @@ describe("Context Tree command boundary", () => {
     expect(execute).toHaveBeenCalledOnce();
   });
 
+  it("aborts in-flight gateway command when the HTTP client times out and recovers offline", async () => {
+    const root = await directory();
+    const pack = resolveContextTreePackage();
+    if (!pack) throw new Error("Missing pinned CLI");
+    const owner = parent();
+    const calls: string[][] = [];
+    let abortedOnline = false;
+    const gateway = new ContextTreeCommandGateway({
+      parent: owner.relay,
+      sources: [source],
+      workspace: root,
+      stateDirectory: join(root, "state"),
+      environment: () => ({}),
+      execute: async (args, _environment, signal) => {
+        calls.push([...args]);
+        if (!args.includes("--offline")) {
+          await new Promise<void>((resolve) => {
+            signal.addEventListener(
+              "abort",
+              () => {
+                abortedOnline = true;
+                resolve();
+              },
+              { once: true },
+            );
+          });
+          throw new Error("aborted online sync");
+        }
+        return {
+          code: 0,
+          stdout: JSON.stringify({ schemaVersion: 3, connections: [] }),
+          stderr: "",
+        };
+      },
+    });
+    await gateway.listen("tcp");
+    cleanups.push(() => gateway.close());
+    const env = { OPENTAG_CONTEXT_TREE_URL: `http://127.0.0.1:${gateway.port}` };
+    const timedOut = await runContextTreeCli(pack, ["sync"], {
+      cwd: root,
+      env,
+      signal: AbortSignal.timeout(20),
+    });
+    expect(timedOut).toEqual({ payload: undefined, failureCode: "TIMEOUT" });
+    const offline = await runContextTreeCli(pack, ["sync", "--offline"], {
+      cwd: root,
+      env,
+      signal: AbortSignal.timeout(2_000),
+    });
+    expect(abortedOnline).toBe(true);
+    expect(offline).toEqual({ payload: { schemaVersion: 3, connections: [] } });
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).not.toContain("--offline");
+    expect(calls[1]).toContain("--offline");
+  });
+
   it.each(["local", "cloud"])(
     "runs real CLI sync and publication through the %s worker, including a later execution",
     async (mode) => {

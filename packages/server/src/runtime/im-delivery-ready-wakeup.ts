@@ -3,7 +3,7 @@ import type { DatabaseClient } from "../db/client.js";
 import { imMessageDeliveries, sandboxes } from "../db/schema/index.js";
 import type { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
 import type { ReadyRunnerAllocation } from "../services/sandboxes/sandbox-runner-service.js";
-import type { CloudSessionAllocationPort } from "./im-delivery-worker.types.js";
+import type { CloudSessionAllocationPort, ImDeliveryDiagnosticReporter } from "./im-delivery-worker.types.js";
 
 const CLOUD_READINESS_RETRY_CODES = ["IM_DELIVERY_CLOUD_ENVIRONMENT_NOT_READY", "IM_DELIVERY_CLOUD_RUNNER_NOT_READY"];
 
@@ -17,7 +17,7 @@ interface ReadyWakeupInput {
   runSession: (sessionId: string) => Promise<void>;
   now: () => Date;
   supervisor?: BackgroundFailureSupervisor;
-  onDiagnostic: (code: string) => void;
+  onDiagnostic: ImDeliveryDiagnosticReporter;
 }
 
 /** A transient notification bridge; the persisted queue and regular retry remain authoritative. */
@@ -119,7 +119,7 @@ export class ImDeliveryReadyWakeup {
         phase: "worker",
         operation: "im-delivery-worker.ready-recheck",
       });
-    else void operation.catch(() => this.#input.onDiagnostic("IM_DELIVERY_READY_WAKEUP_FAILED"));
+    else void operation.catch(() => this.#input.onDiagnostic("IM_DELIVERY_READY_WAKEUP_FAILED", { phase: "worker" }));
   }
 
   async #recheck(deliveryId: string): Promise<void> {

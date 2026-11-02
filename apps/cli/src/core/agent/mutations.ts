@@ -36,6 +36,7 @@ export interface AgentBindResult {
 }
 
 export interface AgentUpdateOptions extends AgentCommandDependencies {
+  clearInstructions?: boolean;
   clearMaxDuration?: boolean;
   clearModel?: boolean;
   clearReasoningEffort?: boolean;
@@ -161,19 +162,16 @@ async function updateMutation(options: AgentUpdateOptions): Promise<Omit<UpdateA
     "--reasoning-effort",
     "--clear-reasoning-effort",
   );
-  assertExclusive(options.maxDurationMs, options.clearMaxDuration, "--max-duration-ms", "--clear-max-duration");
+  const instructions = await resolveInstructionsUpdate(options);
+  const maxDurationMs = resolveMaxDurationUpdate(options);
 
   const runtimeConfigInput = {
     ...(options.model !== undefined || options.clearModel ? { model: options.clearModel ? null : options.model } : {}),
     ...(options.reasoningEffort !== undefined || options.clearReasoningEffort
       ? { reasoningEffort: options.clearReasoningEffort ? null : options.reasoningEffort }
       : {}),
-    ...(options.instructions !== undefined || options.instructionsFile !== undefined
-      ? { instructions: await readInstructions(options) }
-      : {}),
-    ...(options.maxDurationMs !== undefined || options.clearMaxDuration
-      ? { maxDurationMs: options.clearMaxDuration ? null : parseMaxDuration(options.maxDurationMs) }
-      : {}),
+    ...(instructions !== undefined ? { instructions } : {}),
+    ...(maxDurationMs !== undefined ? { maxDurationMs } : {}),
   };
   const runtimeConfig =
     Object.keys(runtimeConfigInput).length > 0 ? UpdateAgentRuntimeConfigSchema.parse(runtimeConfigInput) : undefined;
@@ -187,6 +185,23 @@ async function updateMutation(options: AgentUpdateOptions): Promise<Omit<UpdateA
   });
   const { expectedRevision: _expectedRevision, ...mutation } = preflight;
   return mutation;
+}
+
+async function resolveInstructionsUpdate(options: AgentUpdateOptions): Promise<string | null | undefined> {
+  assertExclusive(options.instructions, options.clearInstructions, "--instructions", "--clear-instructions");
+  assertExclusive(options.instructionsFile, options.clearInstructions, "--instructions-file", "--clear-instructions");
+  if (options.clearInstructions) return null;
+  if (options.instructions !== undefined || options.instructionsFile !== undefined) {
+    return readInstructions(options);
+  }
+  return undefined;
+}
+
+function resolveMaxDurationUpdate(options: AgentUpdateOptions): number | null | undefined {
+  assertExclusive(options.maxDurationMs, options.clearMaxDuration, "--max-duration-ms", "--clear-max-duration");
+  if (options.clearMaxDuration) return null;
+  if (options.maxDurationMs !== undefined) return parseMaxDuration(options.maxDurationMs);
+  return undefined;
 }
 
 export function assertInstructionsSource(options: { instructions?: string; instructionsFile?: string }): void {

@@ -194,14 +194,14 @@ describe("Agent HTTP API", () => {
       payload: {
         displayName: " Reviewer ",
         expectedRevision: 1,
-        runtimeConfig: { maxDurationMs: null, model: null },
+        runtimeConfig: { instructions: null, maxDurationMs: null, model: null },
       },
     });
     expect(update.statusCode).toBe(200);
     expect(service.updateById).toHaveBeenCalledWith(userId, agentId, {
       displayName: "Reviewer",
       expectedRevision: 1,
-      runtimeConfig: { maxDurationMs: null, model: null },
+      runtimeConfig: { instructions: null, maxDurationMs: null, model: null },
     });
     const suspended = await app.inject({ method: "POST", url: agentSuspendPath(agentId), headers: authorization });
     expect(suspended.statusCode).toBe(200);

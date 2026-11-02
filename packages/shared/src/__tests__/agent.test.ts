@@ -124,11 +124,11 @@ describe("Agent contracts", () => {
     expect(
       UpdateAgentRequestSchema.parse({
         expectedRevision: 1,
-        runtimeConfig: { maxDurationMs: null, model: null, reasoningEffort: null },
+        runtimeConfig: { instructions: null, maxDurationMs: null, model: null, reasoningEffort: null },
       }),
     ).toEqual({
       expectedRevision: 1,
-      runtimeConfig: { maxDurationMs: null, model: null, reasoningEffort: null },
+      runtimeConfig: { instructions: null, maxDurationMs: null, model: null, reasoningEffort: null },
     });
   });
 

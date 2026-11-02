@@ -156,10 +156,9 @@ export class ContextTreeCommandGateway {
     const abortIfIncomplete = () => {
       if (!response.writableEnded) abort.abort();
     };
-    request.once("aborted", abortIfIncomplete);
-    request.socket.once("close", abortIfIncomplete);
+    request.socket?.once("close", abortIfIncomplete);
     response.once("close", abortIfIncomplete);
-    if (request.destroyed || response.destroyed) abort.abort();
+    if (response.destroyed || request.socket?.destroyed) abort.abort();
     if (this.#busy && this.#httpAbort) {
       await Promise.race([this.#settled, new Promise<void>((done) => setTimeout(done, 50))]);
       if (this.#httpAbort?.signal.aborted && this.#settled) await this.#settled;

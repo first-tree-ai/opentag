@@ -15,6 +15,8 @@ interface MountSpec {
   probeState?: "succeeded" | "failed" | "pending";
   tools?: { name: string; description?: string | null; inputSchema?: unknown }[];
   url?: string;
+  extraHeaders?: Record<string, string>;
+  extraHeadersOverride?: Record<string, string> | null;
 }
 
 /**
@@ -27,7 +29,15 @@ function mount(spec: MountSpec): McpJoinedBinding {
     agent: { id: AGENT, name: "agent", displayName: "Agent" },
     localAuthorization: null,
     credentialAuthorization: null,
-    binding: { agentId: AGENT, mcpServerId: id, enabled: spec.enabled ?? true } as McpJoinedBinding["binding"],
+    binding: {
+      agentId: AGENT,
+      mcpServerId: id,
+      enabled: spec.enabled ?? true,
+      urlOverride: null,
+      authHeaderOverride: null,
+      authSchemeOverride: null,
+      extraHeadersOverride: spec.extraHeadersOverride ?? null,
+    } as McpJoinedBinding["binding"],
     server: {
       id,
       name: spec.name,
@@ -35,7 +45,7 @@ function mount(spec: MountSpec): McpJoinedBinding {
       url: spec.url ?? `https://${spec.name}.example.com/mcp`,
       authHeader: "authorization",
       authScheme: "Bearer",
-      extraHeaders: {},
+      extraHeaders: spec.extraHeaders ?? {},
     } as McpJoinedBinding["server"],
     authorization: {
       mcpServerId: id,
@@ -361,6 +371,77 @@ describe("callTool", () => {
     expect(upstreamCall).toHaveBeenCalledWith(
       expect.objectContaining({ cachedEra: "modern", cachedVersion: "2026-07-28" }),
     );
+  });
+
+  it("enforces X-Lark-MCP-Allowed-Tools six-tool restriction at both catalog discovery and callTool time", async () => {
+    const allowedSix = ["search-user", "fetch-file", "search-doc", "create-doc", "fetch-doc", "update-doc"];
+    const feishuMount = mount({
+      name: "feishu",
+      url: "https://mcp.feishu.cn/mcp",
+      extraHeaders: {
+        "X-Lark-MCP-Allowed-Tools": allowedSix.join(", "),
+      },
+      tools: [
+        ...allowedSix.map((name) => ({ name, description: `Feishu ${name}` })),
+        { name: "delete-doc", description: "Forbidden write tool" },
+        { name: "create-bitable-record", description: "Forbidden bitable write tool" },
+        { name: "send-message", description: "Forbidden IM write tool" },
+      ],
+    });
+    const { service, upstreamCall } = build([feishuMount]);
+
+    const catalog = await service.catalog(ACCOUNT, AGENT);
+    expect(catalog.tools.map((tool) => tool.name)).toEqual(allowedSix.map((name) => `feishu__${name}`));
+    expect(catalog.notes).toEqual([]);
+
+    for (const forbidden of ["feishu__delete-doc", "feishu__create-bitable-record", "feishu__send-message"]) {
+      await expect(service.callTool({ accountId: ACCOUNT, agentId: AGENT, name: forbidden })).rejects.toMatchObject({
+        code: "MCP_BINDING_NOT_FOUND",
+      });
+    }
+    expect(upstreamCall).not.toHaveBeenCalled();
+
+    await service.callTool({
+      accountId: ACCOUNT,
+      agentId: AGENT,
+      name: "feishu__fetch-doc",
+      arguments: { doc_id: "doccn123" },
+    });
+    expect(upstreamCall).toHaveBeenCalledTimes(1);
+    expect(upstreamCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: "https://mcp.feishu.cn/mcp",
+        name: "fetch-doc",
+        params: { name: "fetch-doc", arguments: { doc_id: "doccn123" } },
+      }),
+    );
+  });
+
+  it("rejects a forbidden write tool at callTool time when agent binding extraHeadersOverride narrows X-Lark-MCP-Allowed-Tools", async () => {
+    const initialMount = mount({
+      name: "feishu",
+      url: "https://mcp.feishu.cn/mcp",
+      extraHeaders: {
+        "x-lark-mcp-allowed-tools": "fetch-doc,update-doc",
+      },
+      tools: [{ name: "fetch-doc" }, { name: "update-doc" }],
+    });
+    const { service, upstreamCall } = build([initialMount], {
+      resolveActiveCredential: (async () => ({
+        ...initialMount,
+        binding: {
+          ...initialMount.binding,
+          extraHeadersOverride: { "x-lark-mcp-allowed-tools": "fetch-doc" },
+        },
+      })) as unknown as McpAuthorizationService["resolveActiveCredential"],
+    });
+
+    await expect(
+      service.callTool({ accountId: ACCOUNT, agentId: AGENT, name: "feishu__update-doc" }),
+    ).rejects.toMatchObject({
+      code: "MCP_BINDING_NOT_FOUND",
+    });
+    expect(upstreamCall).not.toHaveBeenCalled();
   });
 });
 

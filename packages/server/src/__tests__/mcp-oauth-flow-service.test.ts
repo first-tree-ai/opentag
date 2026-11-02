@@ -753,6 +753,198 @@ describe("McpOAuthFlowService.start", () => {
     });
   });
 
+  describe("the deployment feishu client", () => {
+    const feishuMcpUrl = "https://mcp.feishu.cn/mcp";
+    const feishuPrmUrl = "https://mcp.feishu.cn/.well-known/oauth-protected-resource/mcp";
+    const feishuIssuer = "https://open.feishu.cn";
+    const feishuAuthorizeUrl = "https://accounts.feishu.cn/open-apis/authen/v1/authorize";
+    const feishuTokenUrl = "https://open.feishu.cn/open-apis/authen/v2/oauth/token";
+    const feishuClient = { clientId: "feishu-app-id", clientSecret: "feishu-app-secret" };
+
+    it("bypasses accounts.feishu.cn/mcp blocked DCR, exchanges code, and rotates tokens with X-Lark-MCP-UAT header", async () => {
+      const ids = await seed(feishuMcpUrl);
+      await unit.database
+        .update(mcpServers)
+        .set({
+          authHeader: "x-lark-mcp-uat",
+          authScheme: "",
+          extraHeaders: {
+            "x-lark-mcp-allowed-tools": "search-user,fetch-file,search-doc,create-doc,fetch-doc,update-doc",
+          },
+        })
+        .where(eq(mcpServers.id, ids.mcpServerId));
+
+      let tokenCallCount = 0;
+      const { calls, cipher, flows, servers } = build(
+        {
+          [feishuPrmUrl]: doc({
+            resource: feishuMcpUrl,
+            authorization_servers: ["https://accounts.feishu.cn/mcp"],
+          }),
+          [feishuTokenUrl]: (init) => {
+            tokenCallCount += 1;
+            const form = new URLSearchParams(String(init.body));
+            expect(form.get("client_id")).toBe(feishuClient.clientId);
+            expect(form.get("client_secret")).toBe(feishuClient.clientSecret);
+            if (tokenCallCount === 1) {
+              expect(form.get("grant_type")).toBe("authorization_code");
+              return doc({
+                code: 0,
+                access_token: "u-feishu-at-1",
+                refresh_token: "ur-feishu-rt-1",
+                token_type: "Bearer",
+                expires_in: 7200,
+                scope: "docx:document:readonly offline_access",
+              });
+            }
+            expect(form.get("grant_type")).toBe("refresh_token");
+            expect(form.get("refresh_token")).toBe("ur-feishu-rt-1");
+            return doc({
+              code: 0,
+              data: {
+                access_token: "u-feishu-at-2",
+                refresh_token: "ur-feishu-rt-2",
+                token_type: "Bearer",
+                expires_in: 7200,
+                scope: "docx:document:readonly offline_access",
+              },
+            });
+          },
+        },
+        { staticMcpClients: { feishu: feishuClient } },
+      );
+
+      const started = await flows.start(
+        ids.accountId,
+        ids.agentId,
+        ids.mcpServerId,
+        ["docx:document:readonly", "offline_access"],
+        FLOW_SECRET,
+      );
+      const authUrl = new URL(started.authorizationUrl);
+      expect(`${authUrl.origin}${authUrl.pathname}`).toBe(feishuAuthorizeUrl);
+      expect(authUrl.searchParams.get("client_id")).toBe(feishuClient.clientId);
+      expect(authUrl.searchParams.get("code_challenge_method")).toBe("S256");
+      expect(calls.some((call) => call.url.includes("accounts.feishu.cn"))).toBe(false);
+
+      await flows.callback({ code: "feishu-code-1", state: stateOf(started.authorizationUrl) }, FLOW_SECRET);
+      const afterCallback = await readAuthorization(ids);
+      expect(afterCallback).toMatchObject({
+        status: "active",
+        authorizationServer: feishuIssuer,
+        scopes: ["docx:document:readonly", "offline_access"],
+      });
+
+      const authorizationService = new McpAuthorizationService({
+        database: unit.database,
+        cipher,
+        servers,
+        probe: { probe: vi.fn() } as unknown as McpProbe,
+      });
+      expect(await authorizationService.buildHeaders(ids.accountId, ids.agentId, ids.mcpServerId)).toEqual({
+        "x-lark-mcp-uat": "u-feishu-at-1",
+        "x-lark-mcp-allowed-tools": "search-user,fetch-file,search-doc,create-doc,fetch-doc,update-doc",
+      });
+
+      await flows.refreshAuthorization(afterCallback?.id as string);
+      const afterRefresh = await readAuthorization(ids);
+      expect(afterRefresh).toMatchObject({
+        status: "active",
+        failureCode: null,
+        refreshGeneration: 2,
+      });
+      expect(
+        cipher.decryptAuthorizationCredential(
+          { mcpServerId: ids.mcpServerId, agentId: ids.agentId, authorizationServer: feishuIssuer },
+          { ciphertext: afterRefresh?.ciphertext as string, keyId: afterRefresh?.keyId as string },
+        ),
+      ).toEqual({
+        accessToken: "u-feishu-at-2",
+        refreshToken: "ur-feishu-rt-2",
+        tokenType: "Bearer",
+      });
+      expect(await authorizationService.buildHeaders(ids.accountId, ids.agentId, ids.mcpServerId)).toEqual({
+        "x-lark-mcp-uat": "u-feishu-at-2",
+        "x-lark-mcp-allowed-tools": "search-user,fetch-file,search-doc,create-doc,fetch-doc,update-doc",
+      });
+    });
+
+    it("transitions a Feishu authorization to revoked when refresh_token is terminally expired or invalid", async () => {
+      const ids = await seed(feishuMcpUrl);
+      const { row } = await authorizedRow(
+        ids,
+        { accessToken: "u-feishu-at-1", refreshToken: "ur-expired" },
+        { authorizationServer: feishuIssuer, flowAuthorizationServer: feishuIssuer, oauthResource: feishuMcpUrl },
+      );
+      const cipher = new McpCredentialCipher(new ApplicationCipher(new Uint8Array(32).fill(7)));
+      const sealed = cipher.encryptAuthorizationCredential(
+        { mcpServerId: ids.mcpServerId, agentId: ids.agentId, authorizationServer: feishuIssuer },
+        { accessToken: "u-feishu-at-1", refreshToken: "ur-expired" },
+      );
+      await unit.database
+        .update(mcpServerAuthorizations)
+        .set({ ciphertext: sealed.ciphertext, keyId: sealed.keyId })
+        .where(eq(mcpServerAuthorizations.id, row?.id as string));
+
+      const { flows } = build(
+        {
+          [feishuTokenUrl]: doc({
+            code: 20003,
+            error: "invalid_grant",
+            error_description: "refresh_token is invalid or expired",
+          }),
+        },
+        { staticMcpClients: { feishu: feishuClient } },
+      );
+      await flows.refreshAuthorization(row?.id as string);
+      expect(await readAuthorization(ids)).toMatchObject({
+        status: "revoked",
+        ciphertext: null,
+        keyId: null,
+        accessTokenExpiresAt: null,
+        refreshClaimId: null,
+      });
+    });
+
+    it("clears potentially consumed Feishu refresh credentials on 5xx or transport failure without blind reuse", async () => {
+      const ids = await seed(feishuMcpUrl);
+      const cipher = new McpCredentialCipher(new ApplicationCipher(new Uint8Array(32).fill(7)));
+      const sealed = cipher.encryptAuthorizationCredential(
+        { mcpServerId: ids.mcpServerId, agentId: ids.agentId, authorizationServer: feishuIssuer },
+        { accessToken: "u-feishu-at-1", refreshToken: "ur-feishu-rt-1" },
+      );
+      const [row] = await unit.database
+        .insert(mcpServerAuthorizations)
+        .values({
+          agentId: ids.agentId,
+          mcpServerId: ids.mcpServerId,
+          kind: "oauth",
+          status: "active",
+          authorizationServer: feishuIssuer,
+          oauthResource: feishuMcpUrl,
+          ciphertext: sealed.ciphertext,
+          keyId: sealed.keyId,
+          probeState: "succeeded",
+        })
+        .returning();
+
+      const { flows } = build(
+        {
+          [feishuTokenUrl]: { status: 502, body: "<html>502 Bad Gateway</html>" },
+        },
+        { staticMcpClients: { feishu: feishuClient } },
+      );
+      await flows.refreshAuthorization(row?.id as string);
+      expect(await readAuthorization(ids)).toMatchObject({
+        status: "error",
+        failureCode: MCP_ERROR_CODES.REFRESH_OUTCOME_UNKNOWN,
+        ciphertext: null,
+        keyId: null,
+        refreshClaimId: null,
+      });
+    });
+  });
+
   it("keeps the waitlist endpoint on CIMD even when a deployment Canva client is configured", async () => {
     /*
      * The waitlist endpoint belongs to another authorization server, which never issued the

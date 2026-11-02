@@ -32,10 +32,12 @@ import {
 import { lockMcpAccounts, lockMcpCredentialBinding } from "./mcp-binding-locks.js";
 import type { McpCredentialCipher } from "./mcp-credential-cipher.js";
 import {
+  FEISHU_MCP_ISSUER,
   MCP_OAUTH_STATE_TTL_MS,
   type McpAuthorizationServerMetadata,
   type McpClientCredentials,
   McpOAuthClient,
+  type McpProtectedResourceMetadata,
   mcpCallbackRedirect,
   normalizeAuthorizationServerIssuer,
   normalizeResource,
@@ -488,10 +490,33 @@ export class McpOAuthFlowService {
    * document (RFC 8414 §3.3) instead of being rewritten into a mismatch.
    */
   #advertisedIssuer(effectiveUrl: string, issuer: string): string {
+    if (this.#deploymentClient(effectiveUrl, FEISHU_MCP_ISSUER) && isFeishuAdvertisedIssuer(issuer)) {
+      return FEISHU_MCP_ISSUER;
+    }
     if (!isGoogleWorkspaceMcpEndpoint(effectiveUrl)) return issuer;
     const canonical = normalizeAuthorizationServerIssuer(issuer);
     if (canonical !== GOOGLE_WORKSPACE_MCP_AUTHORIZATION_SERVER) return issuer;
     return canonical;
+  }
+
+  async #protectedResourceForStart(
+    accountId: string,
+    url: string,
+  ): Promise<{ metadata: McpProtectedResourceMetadata; challengeScope?: string }> {
+    try {
+      return await this.#oauth.protectedResourceMetadata(accountId, url);
+    } catch (error) {
+      if (isMissingPrmError(error) && this.#deploymentClient(url, FEISHU_MCP_ISSUER)) {
+        return {
+          metadata: {
+            resource: normalizeResource(undefined, url),
+            authorizationServers: [FEISHU_MCP_ISSUER],
+            scopesSupported: [],
+          },
+        };
+      }
+      throw error;
+    }
   }
 
   /**
@@ -510,7 +535,7 @@ export class McpOAuthFlowService {
     resource: string;
     prmScopes: readonly string[];
   }> {
-    const { metadata: prm, challengeScope } = await this.#oauth.protectedResourceMetadata(accountId, url);
+    const { metadata: prm, challengeScope } = await this.#protectedResourceForStart(accountId, url);
     /*
      * Each advertised identifier is requested as published, except for Google's own identifier on a
      * Google Workspace origin (see `#advertisedIssuer`). The metadata reader compares exactly, so an
@@ -1474,9 +1499,14 @@ export class McpOAuthFlowService {
     const now = this.#now();
     const detail = error instanceof McpServiceError ? error.detail : undefined;
     const upstreamError = typeof detail?.error === "string" ? detail.error : undefined;
+    const status = typeof detail?.status === "number" ? detail.status : undefined;
     const terminal = upstreamError === "invalid_grant" || upstreamError === "invalid_client";
     const unknownOutcome =
-      requestDispatched && (!(error instanceof McpServiceError) || error.code === MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE);
+      requestDispatched &&
+      (!(error instanceof McpServiceError) ||
+        error.code === MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE ||
+        error.code === MCP_ERROR_CODES.UPSTREAM_ERROR ||
+        (status !== undefined && status >= 500));
     await executor
       .update(mcpServerAuthorizations)
       .set({
@@ -1606,9 +1636,33 @@ function requireMcpFlowRoot(
   return root;
 }
 
+function isMissingPrmError(error: unknown): boolean {
+  if (!(error instanceof McpServiceError) || error.code !== MCP_ERROR_CODES.UPSTREAM_ERROR) return false;
+  return Array.isArray(error.detail?.tried) && error.detail.tried.length === 0;
+}
+
+const FEISHU_ADVERTISED_AUTH_ORIGINS = new Set([
+  "https://accounts.feishu.cn",
+  "https://open.feishu.cn",
+  "https://accounts.larksuite.com",
+  "https://open.larksuite.com",
+]);
+
+function isFeishuAdvertisedIssuer(issuer: string): boolean {
+  try {
+    const parsed = new URL(issuer);
+    return parsed.protocol === "https:" && !parsed.username && !parsed.password && !parsed.port
+      ? FEISHU_ADVERTISED_AUTH_ORIGINS.has(parsed.origin)
+      : false;
+  } catch {
+    return false;
+  }
+}
+
 function grantedMcpScopes(value: string, issuer: string) {
   const github = MCP_STATIC_OAUTH_PROVIDERS.find((provider) => provider.brand === "github");
-  return value.split(issuer === github?.issuer ? /[,\s]+/ : /\s+/).filter(Boolean);
+  const feishu = MCP_STATIC_OAUTH_PROVIDERS.find((provider) => provider.brand === "feishu");
+  return value.split(issuer === github?.issuer || issuer === feishu?.issuer ? /[,\s]+/ : /\s+/).filter(Boolean);
 }
 
 function sameScopeSet(previous: string[] | null, next: string[]) {

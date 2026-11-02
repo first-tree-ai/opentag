@@ -415,16 +415,16 @@ describe("McpAuthorizationService.resolveActiveCredential", () => {
 });
 
 describe("McpAuthorizationService header construction", () => {
-  it("always uses Authorization: Bearer for OAuth, whatever the definition names", async () => {
+  it("always uses Authorization: Bearer for OAuth when authHeader is authorization", async () => {
     /*
-     * The specification fixes the OAuth header name and forbids the token in the query string, so the
-     * effective `auth_header` is not consulted for this kind. The Agent's extra-header override is.
+     * Standard OAuth uses `Authorization: Bearer <token>` even if `authScheme` was overridden, while
+     * honoring a custom `authHeader` when explicitly configured (such as Feishu's `x-lark-mcp-uat`).
      */
     const ids = await seed();
     const { authorization, cipher } = build();
     await unit.database
       .update(mcpServers)
-      .set({ authHeader: "x-api-key", authScheme: "Token", extraHeaders: { "x-team": "shared" } })
+      .set({ authHeader: "authorization", authScheme: "Token", extraHeaders: { "x-team": "shared" } })
       .where(eq(mcpServers.id, ids.mcpServerId));
     await unit.database
       .update(agentMcpServers)
@@ -444,6 +444,19 @@ describe("McpAuthorizationService header construction", () => {
     });
     expect(await authorization.buildHeaders(ids.accountId, ids.agentId, ids.mcpServerId)).toEqual({
       authorization: "Bearer at_1",
+      "x-team": "agent",
+    });
+
+    await unit.database
+      .update(mcpServers)
+      .set({ authHeader: "x-lark-mcp-uat", authScheme: "" })
+      .where(eq(mcpServers.id, ids.mcpServerId));
+    await unit.database
+      .update(agentMcpServers)
+      .set({ authSchemeOverride: null })
+      .where(eq(agentMcpServers.agentId, ids.agentId));
+    expect(await authorization.buildHeaders(ids.accountId, ids.agentId, ids.mcpServerId)).toEqual({
+      "x-lark-mcp-uat": "at_1",
       "x-team": "agent",
     });
   });

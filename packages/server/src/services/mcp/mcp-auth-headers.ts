@@ -13,7 +13,7 @@ import { MCP_ERROR_CODES, McpServiceError } from "./errors.js";
 
 export interface McpAuthHeaderInput {
   kind: z.infer<typeof MCPAuthKindSchema>;
-  /** `auth_header` from the effective configuration. Only read for `kind='bearer'`. */
+  /** `auth_header` from the effective configuration. */
   authHeader: string;
   /**
    * `auth_scheme` from the effective configuration. An empty string is a legitimate value meaning
@@ -37,8 +37,8 @@ function invalid(message: string): McpServiceError {
 /**
  * Build the exact header set for one outbound request.
  *
- * - `oauth` always uses `Authorization: Bearer <token>`; the specification requires the token to
- *   travel in that header and forbids it in the query string.
+ * - `oauth` uses `Authorization: Bearer <token>` when `auth_header` is `authorization`, and honors
+ *   a custom `auth_header` and `auth_scheme` (such as `X-Lark-MCP-UAT: <token>`) when overridden.
  * - `bearer` uses the effective `auth_header` and `auth_scheme`; an empty scheme sends the value
  *   unchanged.
  * - `none` sends no authorization header at all.
@@ -48,23 +48,36 @@ function invalid(message: string): McpServiceError {
  * resolved authorization header and an extra header is rejected here rather than silently losing one.
  * Comparison is case-insensitive: HTTP field names are.
  */
+function formatSchemeCredential(scheme: string, secret: string): string {
+  return scheme === "" ? secret : `${scheme} ${secret}`;
+}
+
+function resolveAuthorizationHeader(input: McpAuthHeaderInput): [string, string] | undefined {
+  if (input.kind === "oauth") {
+    if (!input.accessToken) throw invalid("An OAuth authorization has no access token");
+    const name = validateAuthHeaderName(input.authHeader);
+    const value =
+      name === MCP_OAUTH_AUTHORIZATION_HEADER
+        ? `Bearer ${input.accessToken}`
+        : formatSchemeCredential(input.authScheme, input.accessToken);
+    return [name, value];
+  }
+  if (input.kind === "bearer") {
+    if (!input.bearerKey) throw invalid("A bearer authorization has no key");
+    return [validateAuthHeaderName(input.authHeader), formatSchemeCredential(input.authScheme, input.bearerKey)];
+  }
+  return undefined;
+}
+
 export function buildMcpAuthHeaders(input: McpAuthHeaderInput): Record<string, string> {
-  const kind = MCPAuthKindSchema.parse(input.kind);
+  MCPAuthKindSchema.parse(input.kind);
   const extraHeaders = parseExtraHeaders(input.extraHeaders);
   const headers: Record<string, string> = {};
-  let authHeaderName: string | undefined;
+  const resolved = resolveAuthorizationHeader(input);
 
-  if (kind === "oauth") {
-    if (!input.accessToken) throw invalid("An OAuth authorization has no access token");
-    authHeaderName = MCP_OAUTH_AUTHORIZATION_HEADER;
-    headers[authHeaderName] = `Bearer ${input.accessToken}`;
-  } else if (kind === "bearer") {
-    if (!input.bearerKey) throw invalid("A bearer authorization has no key");
-    authHeaderName = validateAuthHeaderName(input.authHeader);
-    headers[authHeaderName] = input.authScheme === "" ? input.bearerKey : `${input.authScheme} ${input.bearerKey}`;
-  }
-
-  if (authHeaderName) {
+  if (resolved) {
+    const [authHeaderName, authHeaderValue] = resolved;
+    headers[authHeaderName] = authHeaderValue;
     const colliding = Object.keys(extraHeaders).find((name) => name === authHeaderName);
     if (colliding) {
       throw invalid("An extra header may not repeat the authorization header name");

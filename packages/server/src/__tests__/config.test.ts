@@ -750,7 +750,7 @@ describe("parseServerConfig", () => {
     }
   });
 
-  it.each(["HUBSPOT", "ASANA", "ZOOM", "GITHUB"])(
+  it.each(["HUBSPOT", "ASANA", "ZOOM", "GITHUB", "FEISHU"])(
     "requires the MCP %s client pair to be configured together",
     (brand) => {
       const id = `OPENTAG_MCP_${brand}_CLIENT_ID`;

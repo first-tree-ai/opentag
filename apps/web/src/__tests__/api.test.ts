@@ -9,6 +9,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, BrowserApi } from "../api.js";
 import { DiagnosticReporter } from "../observability/diagnostics.js";
+import { createErrorReportSink, setErrorReportSink } from "../observability/error-reporting.js";
 
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const taskSummary = {
@@ -717,6 +718,106 @@ describe("BrowserApi", () => {
       ),
     ).rejects.toMatchObject({ name: "AbortError", code: "cancelled" });
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("preserves requestId and traceId through the real error relay on 500 response", async () => {
+    const relayPosts: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const relayFetch = vi.fn<typeof fetch>(async (input, init) => {
+      relayPosts.push({
+        url: String(input),
+        body: JSON.parse(String(init?.body)),
+      });
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+
+    const sink = createErrorReportSink({
+      fetchImpl: relayFetch,
+      cooldownMs: 0,
+      reportId: () => "rep-test-123",
+    });
+    setErrorReportSink(sink);
+
+    try {
+      const fetchImpl = vi.fn<typeof fetch>(async (_input, init) => {
+        const headers = new Headers(init?.headers);
+        const outgoingRequestId = headers.get("x-request-id") ?? "req-fallback";
+        return new Response(JSON.stringify({ error: { message: "Internal server error" } }), {
+          status: 500,
+          headers: {
+            "content-type": "application/json",
+            "x-request-id": outgoingRequestId,
+            "x-trace-id": "trace-test-456",
+          },
+        });
+      });
+
+      const api = new BrowserApi(fetchImpl, new DiagnosticReporter());
+      await expect(api.me()).rejects.toThrow("Request failed");
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(relayPosts).toHaveLength(1);
+      const [relayPost] = relayPosts;
+      expect(relayPost?.url).toBe("/api/v1/error-reports");
+      expect(relayPost?.body).toMatchObject({
+        source: "web",
+        code: "http_500",
+        message: "http_500",
+        traceId: "trace-test-456",
+      });
+      expect(typeof relayPost?.body.requestId).toBe("string");
+      expect(relayPost?.body.requestId).toMatch(/^[0-9a-f-]{36}$/);
+    } finally {
+      setErrorReportSink(undefined);
+    }
+  });
+
+  it("threads requestId and traceId through error relay on invalid_response_schema", async () => {
+    const relayPosts: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const relayFetch = vi.fn<typeof fetch>(async (input, init) => {
+      relayPosts.push({
+        url: String(input),
+        body: JSON.parse(String(init?.body)),
+      });
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+
+    const sink = createErrorReportSink({
+      fetchImpl: relayFetch,
+      cooldownMs: 0,
+      reportId: () => "rep-test-456",
+    });
+    setErrorReportSink(sink);
+
+    try {
+      const fetchImpl = vi.fn<typeof fetch>(async () => {
+        return new Response(JSON.stringify({ invalid: "data" }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "x-request-id": "req-schema-789",
+            traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+          },
+        });
+      });
+
+      const api = new BrowserApi(fetchImpl, new DiagnosticReporter());
+      await expect(api.me()).rejects.toMatchObject({ code: "invalid_response_schema" });
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(relayPosts).toHaveLength(1);
+      const [relayPost] = relayPosts;
+      expect(relayPost?.url).toBe("/api/v1/error-reports");
+      expect(relayPost?.body).toMatchObject({
+        source: "web",
+        code: "invalid_response_schema",
+        requestId: "req-schema-789",
+        traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
+      });
+    } finally {
+      setErrorReportSink(undefined);
+    }
   });
 });
 

@@ -5,7 +5,7 @@ import type {
   ProviderReadinessStatus,
   RuntimeCredentialServerFrame,
 } from "@opentag/shared";
-import { MCP_OAUTH_CALLBACK_PATH, RUNTIME_CAPABILITY } from "@opentag/shared";
+import { MCP_OAUTH_CALLBACK_PATH, RUNTIME_CAPABILITY, redactForLog } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { createApp } from "./app.js";
 import { createBetterAuth } from "./auth/better-auth.js";
@@ -531,27 +531,38 @@ function formatStartupFailure(error: unknown, knownSecrets: string[]): string {
   return details.join("\n");
 }
 
+const MAX_FATAL_RECORD_LENGTH = 8_192;
+
+function redactFatalString(value: string): string {
+  const redacted = redactForLog(value);
+  return (typeof redacted === "string" ? redacted : String(redacted)).slice(0, MAX_FATAL_RECORD_LENGTH);
+}
+
+function formatFatalErrorPayload(error: unknown): Record<string, unknown> {
+  if (error instanceof Error) {
+    return {
+      type: redactFatalString(error.name),
+      message: redactFatalString(error.message),
+      stack: redactFatalString(error.stack ?? `${error.name}: ${error.message}`),
+    };
+  }
+  const summary = redactFatalString(String(error));
+  return {
+    type: typeof error,
+    message: summary,
+    stack: summary,
+  };
+}
+
 export function installProcessFatalHandlers(
   getLogger: () => { fatal(bindings: Record<string, unknown>, message?: string): void } | undefined,
   exit: (code: number) => void = (code) => process.exit(code),
 ): () => void {
   const handleFatal = (error: unknown, origin: string) => {
     try {
-      const errPayload =
-        error instanceof Error
-          ? {
-              type: error.name,
-              message: error.message,
-              stack: error.stack ?? `${error.name}: ${error.message}`,
-            }
-          : {
-              type: typeof error,
-              message: String(error),
-              stack: String(error),
-            };
-
+      const errPayload = formatFatalErrorPayload(error);
       const payload = {
-        origin,
+        origin: redactFatalString(origin),
         module: "process",
         operation: "server.fatal",
         outcome: "failed",

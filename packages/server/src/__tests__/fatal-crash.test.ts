@@ -66,7 +66,31 @@ describe("installProcessFatalHandlers", () => {
     }
   });
 
-  it("falls back to single-line JSON on stderr when logger is unavailable", () => {
+  it("redacts and bounds credentials in logger-present fatal handling", () => {
+    const fatal = vi.fn();
+    const exit = vi.fn();
+    const uninstall = installProcessFatalHandlers(() => ({ fatal }), exit);
+
+    try {
+      const error = new Error("fatal crash token=SYNTHETIC_BOOT_SECRET_NOT_A_CREDENTIAL Bearer sk-ant-secret");
+      error.stack = "Error: fatal crash token=SYNTHETIC_BOOT_SECRET_NOT_A_CREDENTIAL\n    at boot.ts:1:1";
+
+      process.emit("uncaughtException", error);
+
+      expect(fatal).toHaveBeenCalledTimes(1);
+      const [payload] = fatal.mock.calls[0] as [Record<string, unknown>, string];
+      const err = payload.err as Record<string, unknown>;
+      expect(err.message).toBe("fatal crash token=[REDACTED] Bearer [REDACTED]");
+      expect(err.message).not.toContain("SYNTHETIC_BOOT_SECRET_NOT_A_CREDENTIAL");
+      expect(err.message).not.toContain("sk-ant-secret");
+      expect(err.stack).not.toContain("SYNTHETIC_BOOT_SECRET_NOT_A_CREDENTIAL");
+      expect(exit).toHaveBeenCalledWith(1);
+    } finally {
+      uninstall();
+    }
+  });
+
+  it("redacts credentials and bounds length in stderr fallback when logger is unavailable", () => {
     const stderrChunks: string[] = [];
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
       stderrChunks.push(String(chunk));
@@ -76,7 +100,9 @@ describe("installProcessFatalHandlers", () => {
     const uninstall = installProcessFatalHandlers(() => undefined, exit);
 
     try {
-      process.emit("uncaughtException", new Error("stderr fatal test"));
+      const error = new Error("stderr fatal token=SYNTHETIC_BOOT_SECRET_NOT_A_CREDENTIAL");
+      error.stack = `Error: stderr fatal token=SYNTHETIC_BOOT_SECRET_NOT_A_CREDENTIAL\n${"x".repeat(10_000)}`;
+      process.emit("uncaughtException", error);
 
       expect(stderrSpy).toHaveBeenCalled();
       expect(stderrChunks).toHaveLength(1);
@@ -92,9 +118,12 @@ describe("installProcessFatalHandlers", () => {
         errorCode: "SERVER_PROCESS_FATAL",
         err: {
           type: "Error",
-          message: "stderr fatal test",
+          message: "stderr fatal token=[REDACTED]",
         },
       });
+      expect(parsed.err.message).not.toContain("SYNTHETIC_BOOT_SECRET_NOT_A_CREDENTIAL");
+      expect(parsed.err.stack).not.toContain("SYNTHETIC_BOOT_SECRET_NOT_A_CREDENTIAL");
+      expect(parsed.err.stack.length).toBeLessThanOrEqual(8_192);
       expect(exit).toHaveBeenCalledWith(1);
     } finally {
       stderrSpy.mockRestore();

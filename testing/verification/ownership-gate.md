@@ -25,6 +25,11 @@ call GitHub or wait through real rate-limit delays.
 - Existing review dismissal, author self-review, bot/external-author, and
   shared-head rules remain covered.
 
+The pinned actionlint version predates `concurrency.queue`. Its configuration
+filters only that exact unknown-key diagnostic for the ownership gate workflow;
+the parsed-YAML regression test strictly checks the queue configuration and the
+narrow diagnostic filter. Other workflow diagnostics remain enabled.
+
 ## Platform boundary
 
 These tests validate the workflow configuration and synthetic interleavings,

@@ -9,6 +9,7 @@ import { evaluate, loadPolicy } from "../ownership-gate.mjs";
 
 const root = join(import.meta.dirname, "..", "..");
 const workflow = parse(await readFile(join(root, ".github/workflows/ownership-gate.yml"), "utf8"));
+const actionlint = parse(await readFile(join(root, ".github/actionlint.yaml"), "utf8"));
 const policy = await loadPolicy(root);
 const logger = { info() {}, debug() {}, warn() {}, error() {} };
 const repository = "first-tree-ai/opentag";
@@ -121,6 +122,16 @@ function fixture(pulls = [pull(7)]) {
 test("every gate trigger shares a workflow-level writer queue", () => {
   assertWriterQueue();
   assert.deepEqual(Object.keys(workflow.on).sort(), ["pull_request_target", "push", "schedule", "workflow_run"]);
+});
+
+test("actionlint only suppresses its unsupported queue diagnostic for the gate workflow", () => {
+  const patterns = actionlint.paths[".github/workflows/ownership-gate.yml"].ignore;
+  assert.equal(patterns.length, 1);
+  const diagnostic = 'unexpected key "queue" for "concurrency" section. expected one of "cancel-in-progress", "group"';
+  assert.ok(new RegExp(patterns[0]).test(diagnostic));
+  assert.ok(!new RegExp(patterns[0]).test(diagnostic.replace('"queue"', '"typo"')));
+  assert.ok(!new RegExp(patterns[0]).test(`other error: ${diagnostic}`));
+  assertWriterQueue();
 });
 
 for (const status of [403, 429]) {

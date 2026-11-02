@@ -758,5 +758,11 @@ describe("token metrics whitelist and bare token scrubbing", () => {
     expect(redactSensitive(`connecting to ${urlWithCredentials}`)).toBe(
       "connecting to https://[REDACTED]@api.example.com/v1/endpoint",
     );
+
+    // Verify Bearer and header values do not produce double brackets when followed by token-like strings
+    expect(redactSensitive("Bearer sk-ant-api03-abcdefghijklmnop")).toBe("Bearer [REDACTED]");
+    expect(redactSensitive("call failed: Bearer ghp_abcdefghijklmnopqrstuvwx, retry")).toBe(
+      "call failed: Bearer [REDACTED], retry",
+    );
   });
 });

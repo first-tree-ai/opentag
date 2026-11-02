@@ -80,7 +80,6 @@ function checkRateLimit(
   limiter: BrowserAuthRateLimiter,
   key: string,
   keyKind: RateLimitFailureMetadata["keyKind"],
-  request?: FastifyRequest,
 ): void {
   try {
     limiter.check(key);
@@ -92,17 +91,6 @@ function checkRateLimit(
         configurable: true,
         value: { keyKind, limiter, windowMs },
       });
-      request?.log.warn(
-        {
-          module: "auth",
-          operation: "auth.rate_limited",
-          outcome: "failed",
-          code: "RATE_LIMITED",
-          errorCode: "RATE_LIMITED",
-          keyKind,
-        },
-        "Browser auth rate limited",
-      );
     }
     throw error;
   }
@@ -314,7 +302,7 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
   });
 
   app.get(HTTP_PATHS.authDevCallback, async (request, reply) => {
-    checkRateLimit(limiter, `${request.ip}:dev`, "ip", request);
+    checkRateLimit(limiter, `${request.ip}:dev`, "ip");
     const betterAuth = options.betterAuth;
     if (!devSignInAvailable(request) || !betterAuth) {
       throw new AuthServiceError(
@@ -361,7 +349,7 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
   });
 
   app.get(HTTP_PATHS.authGoogleStart, async (request, reply) => {
-    checkRateLimit(limiter, `${request.ip}:start`, "ip", request);
+    checkRateLimit(limiter, `${request.ip}:start`, "ip");
     const betterAuth = options.betterAuth;
     if (!options.googleSignIn || !betterAuth) {
       throw new AuthServiceError("AUTH_PROVIDER_DISABLED", "deterministic", "Google sign-in is not configured", 404);
@@ -429,7 +417,7 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
   app.post(HTTP_PATHS.authEmailSignUp, async (request, reply) => {
     const betterAuth = requirePasswordAuth();
     requireBrowserOrigin(request, options.publicOrigin);
-    checkRateLimit(limiter, `${request.ip}:sign-up`, "ip", request);
+    checkRateLimit(limiter, `${request.ip}:sign-up`, "ip");
     const body = parseRequest(EmailSignUpRequestSchema, request.body);
     const response = await callBetterAuth(betterAuth.instance, betterAuth.publicUrl, request, {
       method: "POST",
@@ -459,14 +447,14 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
   app.post(HTTP_PATHS.authEmailSignIn, async (request, reply) => {
     const betterAuth = requirePasswordAuth();
     requireBrowserOrigin(request, options.publicOrigin);
-    checkRateLimit(limiter, `${request.ip}:sign-in`, "ip", request);
+    checkRateLimit(limiter, `${request.ip}:sign-in`, "ip");
     const body = parseRequest(EmailSignInRequestSchema, request.body);
     /*
      * Also bounded per address, so guessing one Account's password cannot be spread across many source addresses.
      * The cost is that an attacker can spend a victim's budget and lock them out for the window; against unbounded
      * distributed guessing at a single known address, that is the better failure.
      */
-    checkRateLimit(limiter, `sign-in:${body.email}`, "email", request);
+    checkRateLimit(limiter, `sign-in:${body.email}`, "email");
     const response = await callBetterAuth(betterAuth.instance, betterAuth.publicUrl, request, {
       method: "POST",
       path: "/sign-in/email",

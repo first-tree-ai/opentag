@@ -278,16 +278,29 @@ export async function runImDeliveryExpiry(
   `)) as Array<{ id: string }>;
   for (const delivery of expired) onDeliverySettled?.(delivery.id);
   const durationMs = Date.now() - start;
-  options.logger?.info(
-    {
-      module: "im-delivery-janitor",
-      operation: "im.delivery.expiry_pass",
-      outcome: "completed",
-      expiredCount: expired.length,
-      durationMs,
-    },
-    "IM delivery expiry pass completed",
-  );
+  if (expired.length > 0) {
+    options.logger?.info(
+      {
+        module: "im-delivery-janitor",
+        operation: "im.delivery.expiry_pass",
+        outcome: "completed",
+        expiredCount: expired.length,
+        durationMs,
+      },
+      "IM delivery expiry pass completed",
+    );
+  } else {
+    options.logger?.debug(
+      {
+        module: "im-delivery-janitor",
+        operation: "im.delivery.expiry_pass",
+        outcome: "completed",
+        expiredCount: 0,
+        durationMs,
+      },
+      "IM delivery expiry pass completed",
+    );
+  }
 }
 
 export async function runImDeliveryRetention(

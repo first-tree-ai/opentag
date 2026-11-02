@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import os from "node:os";
 import fastifyOpenTelemetry from "@autotelic/fastify-opentelemetry";
 import type { ChannelName } from "@opentag/shared";
 import {
@@ -559,9 +560,13 @@ function createFastifyLoggerOptions(options: CreateAppOptions): NonNullable<Fast
   return {
     level: options.loggerLevel ?? "info",
     base: {
+      pid: process.pid,
+      hostname: os.hostname(),
       service: "opentag-server",
-      environment: options.environment ?? "production",
-      revision: options.revision ?? options.deployment?.revision,
+      ...(options.environment !== undefined ? { environment: options.environment } : {}),
+      ...((options.revision ?? options.deployment?.revision)
+        ? { revision: options.revision ?? options.deployment?.revision }
+        : {}),
     },
     mixin: () => {
       const traceId = currentTraceId();

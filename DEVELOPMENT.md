@@ -234,12 +234,14 @@ server answers TCP. This relies on the image setting `listen_addresses = '*'` in
 Revisit the probes when mounting a custom `postgresql.conf` or changing the image family.
 
 `pnpm check` enforces this with `scripts/check-container-postgres-tcp.mjs`. It checks literal Docker argument lists
-and local argv-forwarding helpers in JS/TS, simple Docker shell commands in `.sh` and workflow `run` steps, and
-Compose/Docker health commands. Keep these invocations explicit; dynamically assembled commands or imported wrappers
+and local argv-forwarding functions declared with `function` in JS/TS, simple Docker shell commands in `.sh` and
+workflow `run` steps, workflow service `options`, and Compose/Docker health commands. Keep these invocations explicit;
+dynamically assembled commands or imported wrappers
 need the checker extended alongside them. Host-side clients (including URL-based connections), image initialization
 scripts that intentionally use the temporary server, and `--help`/`--version` calls remain valid without this flag.
 Ordinary text and comments are not commands. This static check does not prove runtime readiness or validate custom
 Postgres configuration.
+Only `-h`/`--host` satisfies the container-side rule; `PGHOST` and connection-string host settings do not replace it.
 
 ### CI and full-suite reproduction
 

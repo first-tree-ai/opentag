@@ -223,10 +223,12 @@ Turbo 的 web typecheck 任务已包含此步骤。文件路径相对于选定�
 挂载自定义 `postgresql.conf` 或更换镜像系列时，需要重新检查这些探针。
 
 `pnpm check` 通过 `scripts/check-container-postgres-tcp.mjs` 执行此规则。检查覆盖 JS/TS 中的 Docker
-参数字面量与本地参数转发函数、`.sh` 和 workflow `run` 步骤中的简单 Docker shell 命令，以及
-Compose/Docker 健康检查命令。保持这些调用显式；动态拼接命令或导入封装函数时，需同步扩展检查器。
+参数字面量与通过 `function` 声明的本地参数转发函数、`.sh` 和 workflow `run` 步骤中的简单 Docker shell
+命令、workflow service `options`，以及 Compose/Docker 健康检查命令。保持这些调用显式；
+动态拼接命令或导入封装函数时，需同步扩展检查器。
 宿主机客户端（包括通过 URL 连接）、有意使用临时服务器的镜像初始化脚本，以及 `--help`/`--version`
 调用无需此参数。普通文本和注释不视为命令。静态检查不能证明运行时就绪，也不验证自定义 Postgres 配置。
+容器内规则只认可 `-h`/`--host`；`PGHOST` 和连接字符串中的主机设置不能替代它。
 
 ### CI 与完整套件复现
 

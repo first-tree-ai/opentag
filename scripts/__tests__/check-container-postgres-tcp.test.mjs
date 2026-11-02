@@ -106,6 +106,36 @@ test("checks all compose healthcheck forms and Docker health command options", (
   );
 });
 
+test("checks workflow service health options without treating unrelated options as Docker commands", () => {
+  const workflow = (host) => `jobs:
+  test:
+    services:
+      postgres:
+        image: postgres:17
+        options: >-
+          --shm-size 256m
+          --health-cmd "pg_isready ${host} -U opentag"
+          --health-interval 5s
+`;
+  assert.equal(check(workflow(""), ".github/workflows/test.yml").length, 1);
+  assert.deepEqual(check(workflow("--host=localhost"), ".github/workflows/test.yml"), []);
+  assert.deepEqual(check("options: '--health-cmd \"pg_isready -U opentag\"'\n", "settings.yml"), []);
+});
+
+test("parses TypeScript without JSX ambiguity and still supports JSX files", () => {
+  for (const source of ["const id = <T>(x: T) => x; // psql", "const value = <number>input; // pg_isready"]) {
+    assert.deepEqual(check(source), []);
+    assert.equal(check(`${source}\n${docker(["exec", "postgres", "psql"])}`).length, 1);
+  }
+  assert.deepEqual(check("const view = <div>psql</div>;", "view.tsx"), []);
+  assert.deepEqual(check("const view = <div>psql</div>;", "view.jsx"), []);
+});
+
+test("parser failures identify their source file", () => {
+  assert.throws(() => check("const broken = ; // psql", "broken.ts"), /broken\.ts: .*Unexpected token/u);
+  assert.throws(() => check("name: psql\n---\nname: other\n", "multiple.yml"), /multiple\.yml: .*multiple documents/u);
+});
+
 test("checks shell wrappers and multiline Docker commands without borrowing another command's host", () => {
   assert.equal(check(docker(["exec", "container", "sh", "-c", "psql -U opentag; pg_isready -h localhost"])).length, 1);
   assert.equal(

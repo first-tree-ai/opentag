@@ -145,11 +145,15 @@ function inspectDocker(args, report) {
   const tail = args.slice(operation + 1);
   const [target, ...command] = afterDockerOptions(tail);
   const options = tail.slice(0, tail.length - command.length - 1);
+  inspectHealthOptions(options, report);
+  if (target) inspectCommand(command, true, report);
+}
+
+function inspectHealthOptions(options, report) {
   for (let index = 0; index < options.length; index += 1) {
     if (options[index] === "--health-cmd") inspectShell(options[index + 1] ?? "", true, report);
     if (options[index].startsWith("--health-cmd=")) inspectShell(options[index].slice(13), true, report);
   }
-  if (target) inspectCommand(command, true, report);
 }
 
 function walk(node, callback) {
@@ -212,8 +216,11 @@ function dockerWrappers(ast) {
   return wrappers;
 }
 
-function inspectSource(source, report) {
-  const ast = parse(source, { sourceType: "unambiguous", plugins: ["typescript", "jsx"], attachComment: false });
+function inspectSource(path, source, report) {
+  const plugins = [];
+  if (/\.[cm]?tsx?$/u.test(path)) plugins.push("typescript");
+  if (/\.(?:jsx?|tsx)$/u.test(path)) plugins.push("jsx");
+  const ast = parse(source, { sourceType: "unambiguous", plugins, attachComment: false });
   const wrappers = dockerWrappers(ast);
   walk(ast, (node) => {
     if (node.type !== "CallExpression") return;
@@ -233,18 +240,27 @@ function inspectYaml(source, report) {
   const document = parseDocument(source, { lineCounter });
   if (document.errors.length > 0) throw document.errors[0];
   visit(document, {
-    Pair(_key, pair) {
+    Pair(_key, pair, ancestors) {
       const key = pair.key?.value;
       const line = lineCounter.linePos(pair.value?.range?.[0] ?? 0).line;
       const atValue = (command) => report(line, command);
       if (key === "run" && typeof pair.value?.value === "string") inspectShell(pair.value.value, false, atValue);
-      if (key !== "healthcheck") return;
-      const test = pair.value?.toJSON()?.test;
-      if (typeof test === "string") inspectShell(test, true, atValue);
-      else if (test?.[0] === "CMD-SHELL") inspectShell(test[1], true, atValue);
-      else if (test?.[0] === "CMD") inspectCommand(test.slice(1), true, atValue);
+      if (isServiceOptions(key, ancestors) && typeof pair.value?.value === "string") {
+        for (const options of shellCommands(pair.value.value)) inspectHealthOptions(options, atValue);
+      }
+      if (key === "healthcheck") inspectHealthcheck(pair.value?.toJSON()?.test, atValue);
     },
   });
+}
+
+function inspectHealthcheck(test, report) {
+  if (typeof test === "string") inspectShell(test, true, report);
+  else if (test?.[0] === "CMD-SHELL") inspectShell(test[1], true, report);
+  else if (test?.[0] === "CMD") inspectCommand(test.slice(1), true, report);
+}
+
+function isServiceOptions(key, ancestors) {
+  return key === "options" && ancestors.some((ancestor) => ancestor.key?.value === "services");
 }
 
 export function checkContainerPostgresTcp(path, source) {
@@ -252,9 +268,13 @@ export function checkContainerPostgresTcp(path, source) {
   const report = (line, command) =>
     violations.push(`${path}:${line}: container ${command} requires -h/--host with a TCP host`);
   if (!/\b(?:psql|pg_isready)\b/u.test(source)) return violations;
-  if (/\.[cm]?[jt]sx?$/u.test(path)) inspectSource(source, report);
-  else if (/\.ya?ml$/u.test(path)) inspectYaml(source, report);
-  else if (extname(path) === ".sh") inspectShell(source, false, (command) => report(1, command));
+  try {
+    if (/\.[cm]?[jt]sx?$/u.test(path)) inspectSource(path, source, report);
+    else if (/\.ya?ml$/u.test(path)) inspectYaml(source, report);
+    else if (extname(path) === ".sh") inspectShell(source, false, (command) => report(1, command));
+  } catch (error) {
+    throw new Error(`${path}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+  }
   return violations;
 }
 

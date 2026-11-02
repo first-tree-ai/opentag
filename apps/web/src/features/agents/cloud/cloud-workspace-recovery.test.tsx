@@ -89,7 +89,7 @@ it("offers recovery without a release-failure marker and does not mutate on open
   expect(screen.queryByRole("region", { name: "Workspace recovery" })).toBeNull();
   fireEvent.click(await screen.findByRole("button", { name: "Recover workspace" }));
   await screen.findByRole("region", { name: "Workspace recovery" });
-  await screen.findByRole("button", { name: "Retry save and release" });
+  await screen.findByRole("button", { name: "Save and release" });
   expect(fixture.read).toHaveBeenCalledWith(AGENT, { limit: 20 });
   expect(fixture.readStatus).not.toHaveBeenCalled();
   expect(fixture.release).not.toHaveBeenCalled();
@@ -105,7 +105,7 @@ it("captures the allocation generation and accepts only one release while busy",
       }),
   );
   const item = await renderPanel();
-  const button = within(item).getByRole("button", { name: "Retry save and release" });
+  const button = within(item).getByRole("button", { name: "Save and release" });
   act(() => {
     fireEvent.click(button);
     fireEvent.click(button);
@@ -144,6 +144,27 @@ it("requires a second confirmation to discard and preserves the selected generat
   );
 });
 
+it.each(["running", "queued", "unknown"] as const)(
+  "confirms before saving and releasing a %s conversation",
+  async (taskState) => {
+    const fixture = setup([row({ taskState })]);
+    const item = await renderPanel();
+    const save = within(item).getByRole("button", { name: "Save and release" });
+    fireEvent.click(save);
+    let dialog = await screen.findByRole("alertdialog");
+    expect(dialog.textContent).toContain("interrupts its current execution");
+    expect(fixture.readStatus).not.toHaveBeenCalled();
+    expect(fixture.release).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(fixture.release).not.toHaveBeenCalled();
+    fireEvent.click(save);
+    dialog = await screen.findByRole("alertdialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save and release" }));
+    await waitFor(() => expect(fixture.release).toHaveBeenCalledExactlyOnceWith(SANDBOX, { environmentGeneration: 2 }));
+  },
+);
+
 it("refuses a replacement environment even when an old discard confirmation stays open", async () => {
   const fixture = setup([row({ lifecycle: "releasing", lastErrorCode: "workspace_save_failed", canDiscard: true })]);
   const item = await renderPanel();
@@ -161,15 +182,15 @@ it("reads back after an uncertain mutation and never automatically resends it", 
   const fixture = setup();
   fixture.release.mockRejectedValueOnce(new TypeError("private upstream detail"));
   const item = await renderPanel();
-  fireEvent.click(within(item).getByRole("button", { name: "Retry save and release" }));
+  fireEvent.click(within(item).getByRole("button", { name: "Save and release" }));
   await screen.findByText(/recovery result could not be confirmed/);
   await waitFor(() => expect(fixture.readStatus).toHaveBeenCalledTimes(2));
   expect(fixture.release).toHaveBeenCalledOnce();
   expect(document.body.textContent).not.toContain("private upstream detail");
   await waitFor(() =>
-    expect(within(item).getByRole("button", { name: "Retry save and release" })).toHaveProperty("disabled", false),
+    expect(within(item).getByRole("button", { name: "Save and release" })).toHaveProperty("disabled", false),
   );
-  fireEvent.click(within(item).getByRole("button", { name: "Retry save and release" }));
+  fireEvent.click(within(item).getByRole("button", { name: "Save and release" }));
   await waitFor(() => expect(fixture.release).toHaveBeenCalledTimes(2));
   expect(fixture.readStatus).toHaveBeenCalledTimes(3);
 });
@@ -178,7 +199,7 @@ it("does not mutate when the fresh allocation status cannot be read", async () =
   const fixture = setup();
   fixture.readStatus.mockRejectedValue(new Error("private status detail"));
   const item = await renderPanel();
-  fireEvent.click(within(item).getByRole("button", { name: "Retry save and release" }));
+  fireEvent.click(within(item).getByRole("button", { name: "Save and release" }));
   await screen.findByText(/Workspace status could not be read/);
   expect(fixture.release).not.toHaveBeenCalled();
   expect(document.body.textContent).not.toContain("private status detail");
@@ -189,7 +210,7 @@ it("reports unavailable status after an uncertain release without inventing succ
   fixture.readStatus.mockResolvedValueOnce(status()).mockRejectedValue(new Error("private readback"));
   fixture.release.mockRejectedValue(new Error("private timeout"));
   const item = await renderPanel();
-  fireEvent.click(within(item).getByRole("button", { name: "Retry save and release" }));
+  fireEvent.click(within(item).getByRole("button", { name: "Save and release" }));
   await screen.findByText(/result and current status could not be confirmed/);
   expect(fixture.release).toHaveBeenCalledOnce();
   expect(screen.queryByText("Environment released")).toBeNull();
@@ -205,7 +226,7 @@ it("does not treat a failed overview read as an empty workspace inventory", asyn
   await renderInRouter(<CloudWorkspaceRecovery agentId={AGENT} initialOpen />);
   await screen.findByText(/Workspace status could not be read/);
   expect(screen.queryByText("No conversation workspaces are available.")).toBeNull();
-  expect(screen.queryByRole("button", { name: "Retry save and release" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Save and release" })).toBeNull();
   expect(document.body.textContent).not.toContain("private inventory detail");
 });
 
@@ -231,21 +252,21 @@ it("loads later pages and honors the server's available actions", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Load more conversations" }));
   const next = await screen.findByRole("listitem", { name: "Internal conversation · 55555555" });
   expect(fixture.read).toHaveBeenCalledWith(AGENT, { limit: 20, cursor: SESSION });
-  expect(within(next).getByRole("button", { name: "Retry save and release" })).toHaveProperty("disabled", true);
+  expect(within(next).getByRole("button", { name: "Save and release" })).toHaveProperty("disabled", true);
 });
 
 it("keeps a release in progress noninteractive", async () => {
   setup([row({ lifecycle: "releasing" })]);
   const item = await renderPanel();
   expect(within(item).getByText("Release in progress")).toBeTruthy();
-  expect(within(item).getByRole("button", { name: "Retry save and release" })).toHaveProperty("disabled", true);
+  expect(within(item).getByRole("button", { name: "Save and release" })).toHaveProperty("disabled", true);
 });
 
 it("does not submit another release for an already released allocation", async () => {
   const fixture = setup();
   fixture.readStatus.mockResolvedValue(status({ lifecycle: "unallocated", currentResourceName: null }));
   const item = await renderPanel();
-  fireEvent.click(within(item).getByRole("button", { name: "Retry save and release" }));
+  fireEvent.click(within(item).getByRole("button", { name: "Save and release" }));
   await screen.findByText("Environment released");
   expect(fixture.release).not.toHaveBeenCalled();
 });

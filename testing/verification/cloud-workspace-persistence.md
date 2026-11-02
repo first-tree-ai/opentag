@@ -26,7 +26,8 @@ violation from an incident without its original error or prove real GCS/native r
 - `cloud-workspace-recovery.test.tsx` checks access without a release-failure marker, generation
   capture, duplicate-click prevention, discard confirmation/cancellation, a replacement during
   confirmation, status-read failures, uncertain mutations without automatic resubmission,
-  pagination and revoked access.
+  pagination and revoked access. Running, queued and unknown work requires an interruption
+  confirmation before save/release.
 - `api-cloud-workspace.test.ts` checks the existing Account status/stop paths, exact generation and
   discard bodies, CSRF, denial and response deadlines without a second mutation.
 - [Browser evidence](../web-ui/cloud-workspace-recovery/README.md) covers responsive layout,

@@ -78,6 +78,8 @@ The Cloud Agent page offers a collapsed **Recover workspace** panel. Its direct 
 state using the existing paginated Account overview. It remains available when a Turn checkpoint
 failure has no release-error marker. Opening it does not allocate, release or discard anything.
 **Retry save and release** stops current work, saves the workspace, then releases the environment.
+Rows without a recorded save failure use **Save and release** rather than implying a previous
+failure. Running, queued and unknown work requires confirmation that release interrupts execution.
 **Discard changes and release** is available only when the Server permits it and requires a second
 confirmation of permanent unsaved-file loss. Neither action replays a task or undoes external effects.
 

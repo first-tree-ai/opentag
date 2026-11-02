@@ -120,7 +120,8 @@ Cloud Agent home keeps workspace recovery collapsed until explicitly opened or r
 offers only Server-authorized save/release or explicit discard/release. A captured environment
 generation stays fixed through confirmation and is checked again before the request. Busy actions
 cannot be repeated; failed or uncertain mutations cause status reads rather than automatic retries.
-Discard confirmation explains unsaved-file loss and that external effects are not undone. A
+Running, queued and unknown work also requires confirmation before save/release interrupts it;
+rows without a recorded save failure use a plain save/release label. Discard confirmation explains unsaved-file loss and that external effects are not undone. A
 failed inventory read never becomes an empty list, and revoked access hides cached resources.
 
 ## Layout and responsive acceptance

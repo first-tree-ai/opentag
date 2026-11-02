@@ -8,8 +8,10 @@ allocation, deletion, storage, IM notification or external task action.
 English and Simplified Chinese each passed at 320, 390, 768 and 1440 pixels:
 
 - No page or discard-dialog horizontal overflow.
-- No axe WCAG A/AA violations in the panel or confirmation dialog.
+- No axe WCAG 2.0/2.1/2.2 A/AA violations in the panel or confirmation dialogs.
 - Discard opens a second confirmation; opening or cancelling it issues no mutation.
+- Save/release on a conversation with unknown work opens an interruption confirmation and
+  cancelling it issues no mutation; unit cases also cover running and queued work.
 - Escape closes the confirmation and restores keyboard focus to its original button.
 - The desktop network-failure fixture issues one stop request, reads current status and waits
   for another explicit click. A later successful request releases the fixture environment.
@@ -27,3 +29,4 @@ contract tests in `apps/web/src/__tests__/api-cloud-workspace.test.ts`.
 - [Desktop, English](en-1440.png)
 - [Minimum width, Simplified Chinese](zh-320.png)
 - [Discard confirmation, Simplified Chinese](zh-390-discard.png)
+- [Current-work interruption confirmation, Simplified Chinese](zh-390-save-confirm.png)

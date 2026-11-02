@@ -30,6 +30,7 @@ export function CloudWorkspaceRecovery({ agentId, initialOpen = false }: { agent
 }
 
 type Feedback = { error: boolean; text: string };
+type WorkspaceConfirmation = { target: CloudSessionSummary; discard: boolean };
 
 async function requestWorkspaceRelease(target: CloudSessionSummary, discardUnsavedChanges: boolean): Promise<Feedback> {
   const current = await browserApi.cloudWorkspaceStatus(target.sandboxId);
@@ -68,7 +69,7 @@ function WorkspaceRecoveryPanel({ agentId, onClose }: { agentId: string; onClose
   });
   const settledError = usePersistedSettledError(queryKey, query);
   const terminalError = settledError && isTerminalResourceError(settledError);
-  const [discard, setDiscard] = useState<CloudSessionSummary>();
+  const [confirmation, setConfirmation] = useState<WorkspaceConfirmation>();
   const [feedback, setFeedback] = useState<Feedback>();
   const [busy, setBusy] = useState(false);
   const active = useRef(false);
@@ -84,10 +85,18 @@ function WorkspaceRecoveryPanel({ agentId, onClose }: { agentId: string; onClose
       setFeedback({ error: true, text: m.cloud_recovery_read_failed() });
     } finally {
       await query.refetch();
-      setDiscard(undefined);
+      setConfirmation(undefined);
       setBusy(false);
       active.current = false;
     }
+  }
+
+  function save(target: CloudSessionSummary) {
+    if (target.taskState !== "idle") {
+      setConfirmation({ target, discard: false });
+      return;
+    }
+    void release(target);
   }
 
   const rows = terminalError ? [] : (query.data?.pages.flatMap((page) => page.sessions) ?? []);
@@ -125,8 +134,8 @@ function WorkspaceRecoveryPanel({ agentId, onClose }: { agentId: string; onClose
             key={`${row.sandboxId}:${row.environmentGeneration}`}
             row={row}
             disabled={!canAct}
-            onSave={() => void release(row)}
-            onDiscard={() => setDiscard(row)}
+            onSave={() => save(row)}
+            onDiscard={() => setConfirmation({ target: row, discard: true })}
           />
         ))}
       </ul>
@@ -141,12 +150,12 @@ function WorkspaceRecoveryPanel({ agentId, onClose }: { agentId: string; onClose
         </Button>
       ) : null}
       {busy ? <p role="status">{m.cloud_recovery_saving()}</p> : null}
-      {discard && !terminalError ? (
-        <DiscardWorkspaceDialog
-          target={discard}
+      {confirmation && !terminalError ? (
+        <WorkspaceReleaseDialog
+          confirmation={confirmation}
           busy={busy}
-          onClose={() => setDiscard(undefined)}
-          onConfirm={() => void release(discard, true)}
+          onClose={() => setConfirmation(undefined)}
+          onConfirm={() => void release(confirmation.target, confirmation.discard)}
         />
       ) : null}
     </section>
@@ -226,7 +235,7 @@ function WorkspaceRow({
       </div>
       <div className="flex flex-wrap gap-3">
         <Button size="compact" variant="secondary" disabled={disabled || !row.canRelease || pending} onClick={onSave}>
-          {m.cloud_recovery_save_release()}
+          {row.lastErrorCode === "workspace_save_failed" ? m.cloud_recovery_save_release() : m.cloud_recovery_save()}
         </Button>
         <Button size="compact" variant="danger" disabled={disabled || !row.canDiscard || pending} onClick={onDiscard}>
           {m.cloud_recovery_discard_release()}
@@ -236,13 +245,13 @@ function WorkspaceRow({
   );
 }
 
-function DiscardWorkspaceDialog({
-  target,
+function WorkspaceReleaseDialog({
+  confirmation,
   busy,
   onClose,
   onConfirm,
 }: {
-  target: CloudSessionSummary;
+  confirmation: WorkspaceConfirmation;
   busy: boolean;
   onClose: () => void;
   onConfirm: () => void;
@@ -250,8 +259,12 @@ function DiscardWorkspaceDialog({
   return (
     <Dialog
       busy={busy}
-      title={m.cloud_recovery_discard_title({ session: sessionLabel(target) })}
-      description={m.cloud_recovery_discard_description()}
+      title={
+        confirmation.discard
+          ? m.cloud_recovery_discard_title({ session: sessionLabel(confirmation.target) })
+          : m.cloud_recovery_save_title({ session: sessionLabel(confirmation.target) })
+      }
+      description={confirmation.discard ? m.cloud_recovery_discard_description() : m.cloud_recovery_save_description()}
       onClose={onClose}
       role="alertdialog"
     >
@@ -259,8 +272,8 @@ function DiscardWorkspaceDialog({
         <Button variant="ghost" disabled={busy} onClick={onClose}>
           {m.common_cancel()}
         </Button>
-        <Button variant="danger" disabled={busy} onClick={onConfirm}>
-          {m.cloud_recovery_discard_confirm()}
+        <Button variant={confirmation.discard ? "danger" : "secondary"} disabled={busy} onClick={onConfirm}>
+          {confirmation.discard ? m.cloud_recovery_discard_confirm() : m.cloud_recovery_save()}
         </Button>
       </div>
     </Dialog>

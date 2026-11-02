@@ -231,12 +231,17 @@ const browserTest = base.extend({
     page.on("console", (message) => {
       // Chromium reports this CSP fallback as console.error even though it is emitted by the
       // development server's policy and is not an application failure.
-      if (
-        message.type() === "error" &&
-        !/script-src.*not explicitly set/u.test(message.text()) &&
-        !message.text().startsWith("Failed to load resource:")
-      ) {
-        browserErrors.push(`console.error: ${message.text()}`);
+      const text = message.text();
+      const isExpectedCsp = /script-src.*not explicitly set/u.test(text);
+      const isResourceLoad = text.startsWith("Failed to load resource:");
+      // Synthetic 502/503 recovery scenarios deliberately exercise backend unavailability;
+      // their diagnostics are logged at error level under the 5xx policy but represent tested recovery paths.
+      const isExpectedSyntheticDiagnostic =
+        /\[OpenTag\] Diagnostic/u.test(text) &&
+        /\b(?:status:\s*50[23]|code:\s*(?:http_50[23]|MCP_OAUTH_FAILED|CLOUD_BILLING_UNAVAILABLE))\b/u.test(text);
+
+      if (message.type() === "error" && !isExpectedCsp && !isResourceLoad && !isExpectedSyntheticDiagnostic) {
+        browserErrors.push(`console.error: ${text}`);
       }
     });
     page.on("pageerror", (error) => browserErrors.push(`pageerror: ${error.message}`));

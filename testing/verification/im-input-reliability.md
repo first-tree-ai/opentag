@@ -340,3 +340,39 @@ authorize recovery of an unknown physical Cloud execution.
 
 Full real Feishu, Slack and Cloud acceptance remains incomplete. Local passing tests cannot authorize merge,
 deployment, historical replay, live-user messages or resource expansion.
+
+## Late predecessor and sender-order completeness
+
+The [late-predecessor probe](../im-input-ledger/late-predecessor-order.patch) supplies sender ordinals
+1..65 to each of the two synthetic Slack streams, observes original 1..32 at native Pi, and only then
+supplies ordinal 0 with an earlier provider timestamp. All receipts finish before further dispatch.
+Every original reaches the correct target once: 132 accepted and 132 native observations. Each stream
+is observed as `1..32, 0, 33..65`; the strict source-order oracle fails with 64 `OUT_OF_ORDER` findings.
+It therefore separates set/target completeness from ordering. Apply this patch alone on a clean test
+baseline, then run:
+
+```sh
+pnpm --filter @opentag/server exec vitest run src/__tests__/integration/im-native-input-ledger.test.ts -t 'keeps an unseen earlier sender input' --maxWorkers=1
+```
+
+The saved patch was applied, executed and reversed; its active test passes Server typecheck and Biome.
+It retains the controlled native-Pi harness seams above. This reproduces an unmet sender-completeness
+contract, not a regression against a documented universal in-order delivery promise. The proposed
+receipt fence only sees already accepted receipts and cannot undo earlier native injection.
+
+[Slack's Events API](https://docs.slack.dev/apis/events-api/#delayed-events-retry) documents best-effort,
+potentially delayed delivery and optional delayed retries. A message's
+[`ts` is unique per channel](https://docs.slack.dev/reference/events/message/); that does not itself
+establish a sender-completeness watermark. The
+[Feishu event overview](https://open.feishu.cn/document/ukTMukTMukTM/uUTNz4SN1MjL1UzM) describes ordered
+delivery for some event types and defers the guarantee to each event's page. The reviewed
+[receive-message page](https://open.feishu.cn/document/server-docs/im-v1/message/events/receive) specifically
+requires message-ID-based deduplication; it did not establish the required message-specific completeness
+guarantee. Both Feishu pages were read as rendered official pages when text extraction was unavailable.
+
+Inference: sorting known timestamps or adding a debounce window is insufficient proof that earlier
+sender actions have all arrived. Strict sender order needs a verified sequence/completeness contract;
+alternatively, handling a detected late predecessor through visible recovery is an explicit exception
+requiring a product decision. Neither arrival order nor a late-input exception has been adopted by this
+verification work. The sender-order authority/late-input decision remains separate from stream scope,
+retention and the human confirmation required for any concrete read/write implementation.

@@ -20,7 +20,14 @@ The Server's existing durable delivery custody remains authoritative for executi
 
 Platform credential exclusion relies on the directory boundary. It is not secret detection for
 files an Agent or user independently creates in the workspace. Other Session directories are not
-mounted or synchronized. Agent-wide Context Tree integration remains E8.
+mounted or synchronized. Agent-wide Context Tree integration remains E8. Under
+`.opentag/context-tree/home/.context-tree`, `cleanup` logs are always omitted, and reconstructable
+read-only Git caches (`repositories` and `snapshots`) are omitted when no active `sessions` or
+`worktrees` entries exist and every snapshot worktree is verified clean in-process against a
+detached commit reachable from published upstream refs in its bare repository (without spawning
+`git` over workspace config). Whenever loose or packed local branch refs, unpublished commits,
+rewritten/force-pushed upstream history, staged changes, unstaged edits, or untracked files
+exist—or when Git cleanliness cannot be verified—those directories are preserved in the archive.
 
 ## Save and restore boundaries
 
@@ -49,14 +56,30 @@ settles through the existing custody recovery as unknown, never automatic task r
 
 At a Turn boundary, the Runner keeps the Session execution slot occupied, stops native Sandbox
 writers, saves the workspace, and then reopens execution. Native deletion also removes orphaned
-background processes. The workspace survives that namespace reset. A completed external action
-does not become safe to replay merely because persistence failed. A failed save produces an honest
-`workspace_failed` Turn report while preserving the execution-effects classification and local files.
-Reconciliation sends that report before attempting another save. Deterministic archive violations
-(size/count limits, unsupported entries, unsafe paths) stop retries of unchanged files and keep
-execution blocked, but retain the control/report connection. Transient storage failures retry on
-reconnection. A crash during the save, before journaling the terminal report, is reconciled as
-unknown execution effects and never automatically replayed.
+background processes. The workspace survives that namespace reset. If a Turn fails before prompt
+acceptance (`executionEffects: "not_started"`) and its checkpoint save fails, the Runner validates
+the last committed archive in a sibling staging directory before replacing the dirty workspace (and
+resets the native Sandbox namespace when configured) instead of wiping local files up front or
+latching a terminal `workspace_failed` block over unaccepted work; if that rollback itself fails,
+recovery re-restores the saved baseline rather than uploading the unverified directory. A completed
+external action does not become safe to replay merely because persistence failed. A failed save
+produces an honest `workspace_failed` Turn report while preserving the execution-effects
+classification and local files. Reconciliation sends that report before attempting another save.
+Deterministic archive violations (size/count limits, unsupported entries, unsafe paths) stop
+retries of unchanged files and keep execution blocked, but retain the control/report connection.
+Transient storage failures receive up to three uploads of the same archive, with one- and
+two-second backoff, within one shared 120-second upload/readback budget. Network failures, HTTP
+408/429 and 5xx are retryable; other HTTP failures, authorization loss, invalid protocol responses
+and CAS conflicts are not. Before another upload, readback must confirm the original object
+generation, metageneration, owner and contents. A matching committed write succeeds without another
+upload; unavailable readback stops the batch. Retries never rebase local files onto an unrelated
+newer object. Exhausted transient saves retain local files and can retry on reconnection. A crash
+before journaling the terminal report is reconciled as unknown execution effects and never
+automatically replayed.
+
+Checkpoint diagnostics retain the archive failure code and the original error cause. Both IM
+Turns and internal Session messages log deterministic archive failures without cycling the control
+connection. Log messages include the error code, not workspace filenames or the raw error cause.
 
 Normal release first closes admission through `releasing`, then asks the Runner to quiesce,
 receive durable Server acknowledgments for terminal reports, and save a sealed archive. The

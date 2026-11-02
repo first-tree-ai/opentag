@@ -43,8 +43,8 @@ conversation ID is the Agent identity.
 Connections explicitly select a repository, directory, and branch for each Agent. An empty
 selection is normal. Cloud settings connect existing authorized trees. Server verification
 checks Account ownership, repository admission, and the selected subtree at the requested
-branch before saving. Agent/runtime revisions guard the final update; changing a nonempty
-selection requires a paused Agent.
+branch before saving. Agent/runtime revisions guard the final update. A running Agent can
+change its selection; the change applies from the next turn.
 
 Each Cloud Sandbox owns its cached snapshots and write sessions. Before fetching, preparation
 saves the current authorized selection in an OpenTag-owned project configuration. Removed

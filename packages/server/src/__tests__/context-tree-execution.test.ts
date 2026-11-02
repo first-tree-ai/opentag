@@ -91,6 +91,17 @@ describe("Context Tree execution scope", () => {
       ),
     ).toBe(false);
   });
+  it("denies a running turn every tree once its Agent's selection changes mid-turn", () => {
+    const { parent, child, snapshot } = fixture();
+    const added = { kind: "git", repository: "acme/notes", path: ".", ref: "main" } as const;
+    // A saved selection change advances the Agent revision, so a child opened afterwards
+    // carries the new revision while the running turn's parent keeps the one it started with.
+    const parentExecutionId = parent.executionId;
+    for (const tree of [target, added]) {
+      const later = { ...child, agentRevision: parent.agentRevision + 1, contextTree: { ...tree, parentExecutionId } };
+      expect(contextTreeExecutionIsCurrent(later, parent, { ...snapshot, contextTrees: [target, added] })).toBe(false);
+    }
+  });
   it("closing the parent closes dependent executions without touching an unrelated execution", () => {
     const { parent, child, executions } = fixture();
     const other = executions.open({ ...parent, runId: randomUUID() });

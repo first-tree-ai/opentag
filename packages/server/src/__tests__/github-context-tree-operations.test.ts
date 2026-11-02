@@ -495,8 +495,8 @@ describe("ContextTreeOperationService dispatch", () => {
     );
   });
 
-  it("requires pausing before a Cloud selection change and reports a lost revision race", async () => {
-    const paused = dispatchFixture(
+  it("changes a running Cloud Agent's selection and reports a lost revision race", async () => {
+    const running = dispatchFixture(
       "cloud",
       agentConfig({
         status: "active",
@@ -506,8 +506,14 @@ describe("ContextTreeOperationService dispatch", () => {
         },
       }),
     );
-    expect(await paused.service.run(ACCOUNT, AGENT, request())).toEqual({ status: "failed", code: "pause_required" });
-    expect(paused.cloud.run).not.toHaveBeenCalled();
+    expect(await running.service.run(ACCOUNT, AGENT, request())).toMatchObject({ status: "completed" });
+    expect(running.cloud.run).toHaveBeenCalledOnce();
+    expect(running.agents.updateContextTreeSelection).toHaveBeenCalledWith(
+      ACCOUNT,
+      AGENT,
+      expect.objectContaining({ status: "active" }),
+      expect.arrayContaining([{ kind: "git", path: ".", ref: "main", repository: "acme/old" }]),
+    );
 
     const raced = dispatchFixture("cloud");
     raced.agents.updateContextTreeSelection.mockRejectedValue(

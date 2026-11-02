@@ -43,6 +43,7 @@ import { createLogger } from "../../observability/logger.js";
 import { type PiDiagnosticSink, PiRunDiagnostics } from "../../observability/pi-diagnostics.js";
 import {
   PI_RPC_REQUEST_TIMEOUT_MS,
+  PI_RPC_STARTUP_GET_STATE_TIMEOUT_MS,
   type PiRpcClient,
   PiRpcError,
   PiRpcProcess,
@@ -229,6 +230,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   readonly #skillArgs: readonly string[];
   readonly #systemPrompt: string;
   readonly #createClient: (args: readonly string[], extraEnvironment?: Readonly<Record<string, string>>) => PiRpcClient;
+  readonly #getStateTimeoutMs: number;
   readonly #promptAcceptanceTimeoutMs: number;
   readonly #tools = new Map<string, PiTool>();
   #client?: PiRpcClient;
@@ -277,6 +279,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     this.#skillArgs = (options.skillPaths ?? []).flatMap((path) => ["--skill", path]);
     this.#systemPrompt = options.systemPrompt;
     this.#createClient = options.createClient;
+    this.#getStateTimeoutMs = options.promptAcceptanceTimeoutMs ?? PI_RPC_STARTUP_GET_STATE_TIMEOUT_MS;
     this.#promptAcceptanceTimeoutMs = options.promptAcceptanceTimeoutMs ?? PI_RPC_REQUEST_TIMEOUT_MS;
     this.#sessionExists = options.resume;
   }
@@ -302,8 +305,10 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       this.#diagnostics.end();
       this.#client = client;
       this.#unsubscribe = client.subscribe((message) => this.#enqueue(message));
-      this.#diagnostics.start("get_state", this.#promptAcceptanceTimeoutMs);
-      const rawState = await client.request({ type: "get_state" }, context.signal);
+      this.#diagnostics.start("get_state", this.#getStateTimeoutMs);
+      const rawState = await client.request({ type: "get_state" }, context.signal, {
+        timeoutMs: this.#getStateTimeoutMs,
+      });
       this.#diagnostics.end();
       this.#diagnostics.start("session_restore");
       const state = requireRecord(rawState, "Pi get_state returned invalid data");

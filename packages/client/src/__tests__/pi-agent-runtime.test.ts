@@ -877,15 +877,39 @@ describe("PiAgentRuntime", () => {
     );
     expect(request).toHaveBeenCalledTimes(1);
     expect(request.mock.calls[0]?.[0]).toEqual({ type: "get_state" });
+    expect(request.mock.calls[0]?.[2]).toEqual({ timeoutMs: PROMPT_ACCEPTANCE_TIMEOUT_MS });
     const failure = diagnostics.find((event) => event.event === "failure");
     expect(failure).toMatchObject({
       phase: "get_state",
+      timeoutMs: PROMPT_ACCEPTANCE_TIMEOUT_MS,
       error: { name: "PiRpcError", errorCode: "timeout", message: "Pi RPC request timed out: get_state" },
     });
     expect(failure?.durationMs).toBeGreaterThanOrEqual(8);
     expect(diagnostics.at(-1)).toMatchObject({ phase: "cleanup", event: "end" });
     expect(JSON.stringify(diagnostics)).not.toContain("private prompt");
     await runtime.close();
+
+    const defaultDiagnostics: PiDiagnosticEvent[] = [];
+    const defaultClient = new ScriptedPiClient("complete");
+    const defaultRequest = vi.spyOn(defaultClient, "request");
+    const defaultRuntime = await new PiAgentRuntimeFactory({
+      createSessionId: () => SESSION_ID,
+      createClient: () => defaultClient,
+      probeRunner: async () => ({ credential: true, rpc: true, version: "fixture" }),
+      onDiagnostic: (event) => defaultDiagnostics.push(event),
+    }).create(createRequest(() => undefined));
+    await expect(
+      defaultRuntime.prompt({ runId: "default-get-state-timeout", input: input("ok") }),
+    ).resolves.toMatchObject({ status: "completed" });
+    expect(defaultRequest.mock.calls[0]?.[0]).toEqual({ type: "get_state" });
+    expect(defaultRequest.mock.calls[0]?.[2]).toEqual({ timeoutMs: 180_000 });
+    expect(defaultDiagnostics).toContainEqual(
+      expect.objectContaining({ phase: "get_state", event: "start", timeoutMs: 180_000 }),
+    );
+    expect(defaultDiagnostics).toContainEqual(
+      expect.objectContaining({ phase: "prompt_acceptance", event: "start", timeoutMs: 60_000 }),
+    );
+    await defaultRuntime.close();
   });
 
   it("keeps execution unchanged when the diagnostic callback throws", async () => {

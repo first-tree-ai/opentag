@@ -190,10 +190,11 @@ function workerStopDiagnostic(
   else if (error instanceof NativeSandboxError && error.message === "Sandbox execution deadline exceeded")
     stopType = "exec_timeout";
   else if (failed) stopType = "exec_rejected";
+  const expectedShutdown = aborted && !bridgeFailed;
   return {
-    severity: failed || exitCode !== 0 ? "ERROR" : "INFO",
+    severity: !expectedShutdown && (failed || exitCode !== 0) ? "ERROR" : "INFO",
     workerExitCode: exitCode,
-    errorCode: error instanceof NativeSandboxError ? error.code : undefined,
+    errorCode: !expectedShutdown && error instanceof NativeSandboxError ? error.code : undefined,
     stopType,
   };
 }

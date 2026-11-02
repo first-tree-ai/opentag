@@ -40,6 +40,7 @@ export class ContextTreeCommandGateway {
   #server?: http.Server;
   #directory?: string;
   #relay?: RuntimeCredentialRelay;
+  #httpAbort?: AbortController;
   #busy = false;
   #settled?: Promise<void>;
   #settle?: () => void;
@@ -90,10 +91,7 @@ export class ContextTreeCommandGateway {
           chunks.push(Buffer.from(chunk));
         }
         const input = RequestSchema.parse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
-        const abort = new AbortController();
-        response.once("close", () => {
-          if (!response.writableEnded) abort.abort();
-        });
+        const abort = await this.#prepareHttpRun(request, response);
         const result = await this.run(input.args, abort.signal);
         response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(result));
       })().catch(() => {
@@ -130,7 +128,7 @@ export class ContextTreeCommandGateway {
   }
 
   async run(raw: readonly string[], callerSignal?: AbortSignal): Promise<ContextTreeCommandResult> {
-    if (this.#closed || this.#busy || this.#options.parent.signal.aborted)
+    if (this.#closed || this.#busy || this.#options.parent.signal.aborted || callerSignal?.aborted)
       throw new Error("Context Tree execution unavailable");
     const args = RequestSchema.parse({ args: raw }).args;
     const command = this.#command(args);
@@ -151,6 +149,22 @@ export class ContextTreeCommandGateway {
       this.#settle = undefined;
       this.#busy = false;
     }
+  }
+
+  async #prepareHttpRun(request: http.IncomingMessage, response: http.ServerResponse): Promise<AbortController> {
+    const abort = new AbortController();
+    const abortIfIncomplete = () => {
+      if (!response.writableEnded) abort.abort();
+    };
+    request.socket?.once("close", abortIfIncomplete);
+    response.once("close", abortIfIncomplete);
+    if (response.destroyed || request.socket?.destroyed) abort.abort();
+    if (this.#busy && this.#httpAbort) {
+      await Promise.race([this.#settled, new Promise<void>((done) => setTimeout(done, 50))]);
+      if (this.#httpAbort?.signal.aborted && this.#settled) await this.#settled;
+    }
+    this.#httpAbort = abort;
+    return abort;
   }
 
   async #runCommand(command: ManagedCommand, signal: AbortSignal): Promise<ContextTreeCommandResult> {

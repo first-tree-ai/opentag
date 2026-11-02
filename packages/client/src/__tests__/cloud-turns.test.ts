@@ -829,6 +829,40 @@ describe("CloudTurnRunner", () => {
     await h.runner.close();
   });
 
+  it("emits an INFO worker_end diagnostic without exec_failed on client_shutdown cancellation", async () => {
+    const diagnostics: Readonly<Record<string, unknown>>[] = [];
+    const started = deferred<void>();
+    const h = harness({
+      runnerOptions: { onDiagnostic: (record) => diagnostics.push(record) },
+      worker: async (input, signal) => {
+        const writer = createPiDiagnosticWriter((line) => input.onStderr?.(Buffer.from(line)));
+        writer.emit({ phase: "await_terminal", event: "start", durationMs: 0 });
+        started.resolve();
+        await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+        writer.emit({ phase: "cleanup", event: "start", durationMs: 0 });
+        writer.emit({ phase: "cleanup", event: "end", durationMs: 5 });
+        writer.finish();
+        throw new NativeSandboxError("exec_failed", "Sandbox execution cancelled");
+      },
+    });
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+    await started.promise;
+    h.runner.handleCancel(h.delivery.deliveryId);
+    await h.runner.waitForActive();
+    expect(diagnostics.at(-1)).toMatchObject({
+      event: "worker_end",
+      stopType: "client_shutdown",
+      severity: "INFO",
+      phase: "cleanup",
+      phaseComplete: true,
+      diagnosticIncomplete: false,
+    });
+    expect(diagnostics.at(-1)?.errorCode).toBeUndefined();
+    expect(reportsOf(h.sent)[0]?.report).toMatchObject({ outcome: "cancelled", errorReason: "client_shutdown" });
+    await h.runner.close();
+  });
+
   it("publishes liveness only after verification starts the Slack worker", async () => {
     const delivery = cloudDeliveryFixture();
     delivery.content.providerRef = {

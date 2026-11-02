@@ -6,6 +6,7 @@ import { signalWatchedProcess, spawnWatchedProcess } from "../process-owner.js";
 export const PI_RPC_MAX_LINE_BYTES = 8 * 1024 * 1024;
 export const PI_RPC_MAX_STDERR_BYTES = 64 * 1024;
 export const PI_RPC_REQUEST_TIMEOUT_MS = 60_000;
+export const PI_RPC_STARTUP_GET_STATE_TIMEOUT_MS = 180_000;
 
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
 

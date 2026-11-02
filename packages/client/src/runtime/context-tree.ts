@@ -297,10 +297,27 @@ function managedContextTreeCommand(
     { socketPath: environment.OPENTAG_CONTEXT_TREE_SOCKET, url: environment.OPENTAG_CONTEXT_TREE_URL },
     args,
     signal,
-  ).then((result) => {
-    const payload: unknown = JSON.parse(result.stdout || "{}");
-    return { payload, ...(result.code !== 0 ? { failureCode: contextTreeFailureCode(payload) ?? "CLI_FAILED" } : {}) };
-  });
+  ).then(
+    (result) => {
+      let payload: unknown;
+      try {
+        payload = JSON.parse(result.stdout || "{}");
+      } catch {
+        return { payload: undefined, failureCode: "CLI_FAILED" };
+      }
+      return {
+        payload,
+        ...(result.code !== 0 ? { failureCode: contextTreeFailureCode(payload) ?? "CLI_FAILED" } : {}),
+      };
+    },
+    (error: unknown) => ({
+      payload: undefined,
+      failureCode:
+        signal?.aborted || (error instanceof Error && (error.name === "AbortError" || /timed out/i.test(error.message)))
+          ? "TIMEOUT"
+          : "CLI_FAILED",
+    }),
+  );
 }
 
 export interface ContextTreeManagerOptions {

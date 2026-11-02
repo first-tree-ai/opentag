@@ -1,7 +1,7 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
   "tasks_activity": "活动记录",
-  "tasks_added_to_active_work": "已加入进行中的工作",
+  "tasks_added_to_active_work": "已归入执行轮次",
   "tasks_agent_filter_value": "Agent：{agent}",
   "tasks_agent_label": "智能体",
   "tasks_agent_response": "Agent 响应",
@@ -64,7 +64,7 @@
   "tasks_filter_by_status": "按状态筛选",
   "tasks_filter_tasks": "筛选任务",
   "tasks_in_progress": "进行中",
-  "tasks_included_in_active_work": "此消息已加入 Agent 的进行中工作。",
+  "tasks_included_in_active_work": "请查看对应执行结果，确认这条消息是否处理完成。",
   "tasks_last_activity_label": "最近活动",
   "tasks_load_earlier_activity": "加载更早的活动",
   "tasks_load_earlier_replies": "加载更早的回信",

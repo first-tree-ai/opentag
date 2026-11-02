@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
-import { verifyInputLedger } from "../../testing/im-input-ledger/verify.mjs";
+import { fileURLToPath } from "node:url";
+import { verifyInputLedger } from "../verify-im-input-ledger.mjs";
 
 const input = (order, overrides = {}) => ({
   inputId: `source-revision-${order}`,
@@ -66,6 +71,9 @@ test("checks content identity and refuses an ambiguous order or identity", () =>
     verifyInputLedger(ledger([input(1), input(1, { contentHash: "changed" })], [])).findings[0]?.code,
     "IDENTITY_CONFLICT",
   );
+  for (const override of [{ order: 2 }, { streamId: "changed" }]) {
+    assert.equal(verifyInputLedger(ledger([input(1), input(1, override)], [])).findings[0]?.code, "IDENTITY_CONFLICT");
+  }
   assert.throws(() => verifyInputLedger(ledger([input(1), input(1, { inputId: "distinct" })], [])));
 });
 
@@ -93,5 +101,27 @@ test("does not silently split one ordered stream when its Session changes", () =
 test("requires an explicit evidence environment and ordering authority", () => {
   assert.throws(() => verifyInputLedger(ledger([], [], { orderingBasis: undefined })));
   assert.throws(() => verifyInputLedger(ledger([input(1, { inputId: "" })], [])));
+  assert.throws(() => verifyInputLedger(ledger([input(1, { order: 0.5 })], [])));
+  assert.throws(() => verifyInputLedger(ledger([input(1)], [], { environment: "unspecified" })));
+  assert.throws(() => verifyInputLedger(ledger(undefined, [])));
+  assert.throws(() => verifyInputLedger(ledger([input(1)], undefined)));
   assert.throws(() => verifyInputLedger(ledger([], [])));
+});
+
+test("CLI reads the actual artifact and returns failure when Provider input is missing", () => {
+  const directory = mkdtempSync(join(tmpdir(), "opentag-input-ledger-"));
+  const file = join(directory, "ledger.json");
+  const script = fileURLToPath(new URL("../verify-im-input-ledger.mjs", import.meta.url));
+  try {
+    for (const received of [[receipt(input(1))], []]) {
+      writeFileSync(file, JSON.stringify(ledger([input(1)], received)));
+      const child = spawnSync(process.execPath, [script, file], { encoding: "utf8", timeout: 5_000 });
+      assert.equal(child.error, undefined);
+      const result = JSON.parse(child.stdout);
+      assert.equal(result.ok, received.length === 1);
+      assert.equal(child.status, result.ok ? 0 : 1);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

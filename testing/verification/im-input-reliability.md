@@ -10,7 +10,7 @@ Contracts: [message domains](../../docs/system/messaging/message-domains.md),
 
 Baseline `e4f7cb1d0ca038c13368c7be90f4e7058105a329`, Node 24.20.0, pnpm 10.12.1,
 local Docker PostgreSQL. The full no-loss, correctly targeted, ordered-input goal is **not met**.
-No production data, historical messages, external IM sends, real model executions or Cloud deployments
+No production data, historical messages, external IM sends, external model service calls or Cloud deployments
 are involved in the checks below. No production implementation changes accompany these test additions.
 
 A signed Slack request was acknowledged with HTTP 200 after its durable receipt committed. A synthetic
@@ -137,6 +137,7 @@ migrated PostgreSQL; Client file tests use real local files. Synthetic native/tr
 | Changed content or allocation under same identity | Journal/Cloud Runner/custody tests | Live allocation lifecycle acceptance remains separate |
 | Cold start / allocation timeout / restart | PG cloud-dispatch-custody and allocation suites | Real Cloud cold start not run; adjacent RSI owns performance |
 | Run-time append / duplicate steer / steer result lost | Client cloud-turns + PG cloud-dispatch-custody and steered recovery | Need complete multi-input Provider ledger across both Server and worker |
+| Native Pi burst, success and permanent model error | Manual `pi-input-burst.mjs`: real Pi 0.84.2, four 65-input ledgers | Provider-only evidence; Server routing, native Sandbox and recovered re-dispatch are outside this harness |
 | Native send succeeds, response lost | Local steer uncertainty + Cloud steer journal tests | At-least-once transport is distinct from deduplicated Agent processing |
 | Root fails while steers are in flight | PG steered-delivery recovery and recovery-lock suites | Unknown execution cannot be safely auto-replayed without further evidence |
 | Credential unreadable / permission revoked | PG receipt recovery and Cloud reauthorization tests | Current permanent dispositions and best-effort reaction lack complete user resolution |
@@ -144,7 +145,7 @@ migrated PostgreSQL; Client file tests use real local files. Synthetic native/tr
 
 ## Ledger oracle and process tests
 
-[`../im-input-ledger/verify.mjs`](../im-input-ledger/verify.mjs) checks an exported synthetic/live JSON ledger.
+[`scripts/verify-im-input-ledger.mjs`](../../scripts/verify-im-input-ledger.mjs) checks an exported synthetic/live JSON ledger.
 Each accepted input names `inputId`, `agentId`, `sessionId`, `streamId`, `contentHash`, and integer `order`.
 The capture must declare `environment` and `orderingBasis`, including how the authoritative source order
 was mapped to integers. It must collect the complete accepted set, including failures and late callbacks.
@@ -159,7 +160,7 @@ An observed input does not prove the Agent completed its task or avoided every e
 
 ```sh
 node --test scripts/__tests__/im-input-ledger.test.mjs
-node testing/im-input-ledger/verify.mjs /absolute/path/to/captured-ledger.json
+node scripts/verify-im-input-ledger.mjs /absolute/path/to/captured-ledger.json
 pnpm --filter @opentag/client exec vitest run src/__tests__/cloud-turns-process.test.ts
 ```
 
@@ -176,9 +177,52 @@ five-second receipt sweep. It requires one recovered message and delivery, stabl
 identity, and no duplicate on webhook redelivery. All HTTP traffic is loopback and all input/credentials are
 synthetic. This verifies Server-process replacement with the same database; it does not dispatch a runtime.
 
-The ledger's nine negative/positive checks run through the existing root script-test discovery. The Cloud
+The ledger's ten negative/positive checks run through the existing root script-test discovery, including
+real CLI invocation and exit status. The repository verification command lives in `scripts/` alongside the
+existing repository tools. Package-only Vitest coverage does not collect root scripts; Node's own coverage
+measures the verifier without changing the repository's coverage scopes or thresholds:
+
+```sh
+node --experimental-test-coverage --test-coverage-include='scripts/verify-im-input-ledger.mjs' --test-coverage-lines=80 --test-coverage-branches=80 --test-coverage-functions=80 --test scripts/__tests__/im-input-ledger.test.mjs
+```
+
+The focused run measures 100% lines, branches and functions. The Cloud
 process matrix and PostgreSQL Server-process test use the owning packages' normal Vitest discovery. The new
 tests do not change Agent Runtime coverage configuration or its covered implementation/test set.
+
+## Native Pi input-consumption ledger
+
+`packages/client/src/__tests__/manual/pi-input-burst.mjs` runs the actual locked Pi executable through
+`PiAgentRuntimeFactory` and `PiRpcProcess`. It uses fresh workspace/config/session directories, synthetic
+credentials and a loopback OpenAI-compatible endpoint. The endpoint holds the first response until all
+64 concurrent steer calls are acknowledged. The observer records actual native `message_start` events
+with role `user`, rather than treating the adapter's `input_accepted` event as consumption.
+
+```sh
+node packages/client/src/__tests__/manual/pi-input-burst.mjs /absolute/path/to/evidence-directory
+```
+
+Build `@opentag/client` and its workspace dependencies first if its public package export is absent.
+The optional output directory receives complete synthetic JSON ledgers and summaries; without it the
+script prints summaries only. It deletes its private temporary directories and closes its native process
+and loopback endpoint after the run. No external model/IM request is made.
+
+| Pi resource mode | Model behavior after the held first response | Native input / sender set | Whole Run result |
+| --- | --- | --- | --- |
+| Resources disabled | Successful deterministic SSE | 65/65, ordered, no duplicates | completed |
+| Native resources enabled | Successful deterministic SSE | 65/65, ordered, no duplicates | completed |
+| Resources disabled | Every later model request returns 401 | 65/65, ordered, no duplicates | failed |
+| Native resources enabled | Every later model request returns 401 | 65/65, ordered, no duplicates | failed |
+
+All four cases observed 64 successful steer acknowledgements, 65 native user events and 65 model requests.
+The failed cases show why a failed Root report does not reveal which steered inputs the Provider already
+consumed. They do not establish that automatically replaying those inputs is safe or that the Agent processed
+them successfully. The native Session identity is retained in the summary for traceability.
+
+This harness verifies one Provider lane with an explicit synthetic sender ordinal. Its Agent/OpenTag Session
+labels identify the harness lane; they do not independently verify Server routing. It exercises neither
+the native Cloud Sandbox nor the Server receipt/claim/report path. Complete signed-ingress-to-Provider ledger
+integration, recovered-input deduplication and real Feishu/Slack/Cloud acceptance remain required.
 
 Full real Feishu, Slack and Cloud acceptance remains incomplete. Local passing tests cannot authorize merge,
 deployment, historical replay, live-user messages or resource expansion.

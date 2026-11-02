@@ -407,6 +407,38 @@ removed, observes `failed / turn_timeout / may_have_occurred` and
 known pre-Pi control point. They are not evidence of successful delivery, nor grounds for automatic
 replay under the current recovery contract. No report-classification behavior is changed here.
 
+### Retry identity and allocation-stop evidence
+
+Recovery needs to distinguish transport redelivery from a new authorized execution attempt. A new
+`admission-custody.test.ts` case records a synthetic `not_started` report through the real Local binding
+store, acknowledges the matching result, and reopens the store, workspace, reconciler and custody owner.
+The identical original under a new request ID returns the old Turn, with no start callback, live Turn
+or reserved slot. Changed content under that delivery ID is rejected as `session_binding_conflict`;
+the original report/result identity remains on disk. This is a real-file custody test, not another
+provider-startup or actual daemon-restart test. It preserves transport deduplication; it does not
+establish a fresh retry path. Resetting only the Server delivery row cannot supply that path.
+
+Cloud has a different acknowledgement boundary: a reported journal entry remains keyed by delivery ID
+until an exact Turn/result ACK removes it. A different request cannot replace that retained direct
+entry. A recovery design must preserve old report reconciliation while explicitly identifying a fresh
+attempt; a new transport request ID alone is insufficient across Local and Cloud.
+
+The existing `sandbox-idle-instance-reuse.test.ts` transfer case now also checks the old Session's
+sealed archive metadata and stops its unallocated Sandbox through a freshly constructed Server service.
+No provider delete occurs, and the same physical UID stays bound to the borrowing Session. This uses
+the embedded PostgreSQL engine, fake Cloud admin and fake object store; it is not physical termination
+acceptance. It verifies why a historical UID alone must never authorize deleting a currently borrowed
+resource. Existing E5 release verifies sealed owner-generation metadata before UID-checked deletion;
+E7 can instead transfer the sealed physical Instance and clear the old binding.
+
+Design consequence: retain the original batch, dispatch/Turn/result identities and exact allocation
+owner, with owner-bound seal/release evidence captured before clearing or transferring its binding.
+Reuse the existing allocation authority path and distinguish a sealed old generation from the current
+physical owner. New attempt storage/protocol, Local stop proof and final query/lock/retention semantics
+still need a concrete human-confirmed design. These guard tests implement no retry, stop-proof writer,
+schema change or recovery resolution. The focused Client custody suites pass 43 tests, the Cloud
+reuse/reclamation suite passes 30, and both package typechecks pass.
+
 ## Late predecessor and sender-order completeness
 
 The [late-predecessor probe](../im-input-ledger/late-predecessor-order.patch) supplies sender ordinals

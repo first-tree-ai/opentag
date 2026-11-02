@@ -82,6 +82,23 @@ describe("Agent avatar HTTP API", () => {
     expect(response.json()).toMatchObject({ error: { code: "IM_BINDING_NOT_FOUND" } });
   });
 
+  it("returns 404 when the upstream avatar is missing or expired without leaking upstream details", async () => {
+    const openAvatar = vi.fn().mockRejectedValue(
+      new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent avatar was not found", "deterministic", {
+        cause: new Error(`Avatar upstream (a.slack-edge.com) answered 404 for agent ${agentId}`),
+      }),
+    );
+    const app = appWith(openAvatar);
+
+    const response = await app.inject({ method: "GET", url: agentAvatarPath(agentId), headers: authorization });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({
+      error: { code: "IM_BINDING_NOT_FOUND", category: "deterministic" },
+    });
+    expect(response.body).not.toContain("a.slack-edge.com");
+  });
+
   it("returns a graceful upstream failure for the browser fallback", async () => {
     const openAvatar = vi
       .fn()

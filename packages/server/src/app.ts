@@ -382,7 +382,7 @@ function isPlainObjectError(error: unknown): error is Record<string, unknown> {
   return typeof error === "object" && error !== null && ("message" in error || "stack" in error);
 }
 
-function serializeDrizzleQueryError(error: DrizzleQueryError): SerializedError {
+function serializeDrizzleQueryError(error: DrizzleQueryError | (Error & DrizzleQueryErrorLike)): SerializedError {
   const parameterCount = Array.isArray(error.params) ? error.params.length : undefined;
   const summary = redactLogString(
     `Database query failed${parameterCount === undefined ? "" : ` (${parameterCount} parameter${parameterCount === 1 ? "" : "s"})`}`,

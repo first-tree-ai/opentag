@@ -30,6 +30,12 @@ function fixture() {
       workspace.initialized = true;
       workspace.pendingSave = false;
     }),
+    rollback: vi.fn(async () => {
+      events.push("rollback");
+      workspace.initialized = true;
+      workspace.pendingSave = false;
+      workspace.terminalFailure = false;
+    }),
     save: vi.fn(async (seal = false) => {
       events.push(seal ? "seal" : "save");
       workspace.sealed = seal;
@@ -116,6 +122,24 @@ describe("Runner workspace occupation", () => {
     expect(f.workspace.initialize).toHaveBeenCalledTimes(restores);
     expect(f.controller.ready).toBe(false);
     expect(f.state.present).toBe(false);
+  });
+
+  it("self-heals from the saved baseline and relaunches the sandbox when a not_started Turn checkpoint fails", async () => {
+    const f = fixture();
+    await f.controller.prepare();
+    f.events.length = 0;
+    f.workspace.save.mockImplementationOnce(async () => {
+      f.workspace.terminalFailure = true;
+      f.workspace.pendingSave = true;
+      throw new Error("archive-too-large");
+    });
+    await f.controller.checkpoint({ executionEffects: "not_started" });
+    expect(f.workspace.rollback).toHaveBeenCalledOnce();
+    expect(f.workspace.terminalFailure).toBe(false);
+    expect(f.workspace.pendingSave).toBe(false);
+    expect(f.state.present).toBe(true);
+    expect(f.controller.ready).toBe(true);
+    expect(f.events).toEqual(["destroy", "rollback", "launch", "probe"]);
   });
 
   it("waits for result acknowledgment before sealing and never relaunches a sealed allocation", async () => {

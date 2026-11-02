@@ -239,6 +239,67 @@ describe("createWorkspaceArchive + restoreWorkspaceArchive roundtrip", () => {
     expect(JSON.parse(binding)).toEqual({ sessionId: "9f86d081", workspaceFingerprint: "abc123" });
   });
 
+  it("excludes read-only Context Tree caches when no write session exists and keeps them when a write session is active", async () => {
+    const root = await makeRoot();
+    const workspace = join(root, "workspace");
+    const projectDir = join(workspace, ".opentag", "context-tree", "project");
+    const ctHome = join(workspace, ".opentag", "context-tree", "home", ".context-tree");
+    await mkdir(projectDir, { recursive: true });
+    await mkdir(join(ctHome, "repositories", "repo.git", "objects", "pack"), { recursive: true });
+    await mkdir(join(ctHome, "snapshots", "repo-main"), { recursive: true });
+    await mkdir(join(ctHome, "cleanup", "logs"), { recursive: true });
+    await writeFile(join(projectDir, ".context-tree.json"), '{"schemaVersion":3,"trees":[]}\n');
+    await writeFile(join(ctHome, "repositories", "repo.git", "objects", "pack", "pack-1.pack"), randomBytes(4096));
+    await writeFile(join(ctHome, "snapshots", "repo-main", "NODE.md"), "# Snapshot\n");
+    await writeFile(join(ctHome, "cleanup", "logs", "events.jsonl"), "{}\n");
+
+    const archiveWithoutSession = join(root, "without-session.tar.gz");
+    const infoWithout = await createWorkspaceArchive(workspace, archiveWithoutSession, { maxBytes: 1024 });
+    const restoredWithout = join(root, "restored-without");
+    await restoreWorkspaceArchive(archiveWithoutSession, restoredWithout, infoWithout);
+
+    expect(
+      await readFile(join(restoredWithout, ".opentag", "context-tree", "project", ".context-tree.json"), "utf8"),
+    ).toBe('{"schemaVersion":3,"trees":[]}\n');
+    await expect(
+      lstat(join(restoredWithout, ".opentag", "context-tree", "home", ".context-tree", "repositories")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      lstat(join(restoredWithout, ".opentag", "context-tree", "home", ".context-tree", "snapshots")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      lstat(join(restoredWithout, ".opentag", "context-tree", "home", ".context-tree", "cleanup")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+
+    // Once an unpublished write session exists under sessions/ or worktrees/, repositories and
+    // snapshots are preserved (while cleanup remains excluded).
+    await mkdir(join(ctHome, "sessions"), { recursive: true });
+    await mkdir(join(ctHome, "worktrees", "session-1"), { recursive: true });
+    await writeFile(join(ctHome, "sessions", "session-1.json"), '{"id":"session-1"}\n');
+    await writeFile(join(ctHome, "worktrees", "session-1", "draft.md"), "unpublished draft\n");
+
+    const archiveWithSession = join(root, "with-session.tar.gz");
+    const infoWith = await createWorkspaceArchive(workspace, archiveWithSession);
+    const restoredWith = join(root, "restored-with");
+    await restoreWorkspaceArchive(archiveWithSession, restoredWith, infoWith);
+
+    expect(
+      await readFile(
+        join(restoredWith, ".opentag", "context-tree", "home", ".context-tree", "worktrees", "session-1", "draft.md"),
+        "utf8",
+      ),
+    ).toBe("unpublished draft\n");
+    expect(
+      await readFile(
+        join(restoredWith, ".opentag", "context-tree", "home", ".context-tree", "snapshots", "repo-main", "NODE.md"),
+        "utf8",
+      ),
+    ).toBe("# Snapshot\n");
+    await expect(
+      lstat(join(restoredWith, ".opentag", "context-tree", "home", ".context-tree", "cleanup")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("round-trips safe relative symlinks, including chained node_modules layouts", async () => {
     const root = await makeRoot();
     const workspace = join(root, "workspace");

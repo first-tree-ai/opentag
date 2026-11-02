@@ -6,6 +6,7 @@ import {
   mkdir,
   mkdtemp,
   readdir,
+  readFile,
   readlink,
   realpath,
   rename,
@@ -407,23 +408,182 @@ async function scanWorkspaceEntry(
   fail("unsupported-entry", `Workspace entry is not a file, directory, or symlink: ${bounded(rel)}`);
 }
 
+const CONTEXT_TREE_STATE_REL = ".opentag/context-tree/home/.context-tree";
+const CONTEXT_TREE_CLEANUP_REL = `${CONTEXT_TREE_STATE_REL}/cleanup`;
+const CONTEXT_TREE_CACHE_RELS = new Set([
+  `${CONTEXT_TREE_STATE_REL}/repositories`,
+  `${CONTEXT_TREE_STATE_REL}/snapshots`,
+  CONTEXT_TREE_CLEANUP_REL,
+]);
+const GIT_FILE_MAX_BYTES = 4096;
+const SNAPSHOT_HASH_CHECK_MAX_BYTES = 64 * 1024;
+
+async function hasDirectoryEntries(path: string): Promise<boolean> {
+  try {
+    const stats = await lstat(path);
+    if (stats.isSymbolicLink() || !stats.isDirectory()) return false;
+    return (await readdir(path)).length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function parseGitIndex(buffer: Buffer): Map<string, { readonly size: number; readonly sha1: string }> | undefined {
+  if (buffer.length < 12 || buffer.subarray(0, 4).toString("ascii") !== "DIRC") return undefined;
+  const version = buffer.readUInt32BE(4);
+  if (version !== 2 && version !== 3) return undefined;
+  const count = buffer.readUInt32BE(8);
+  const entries = new Map<string, { readonly size: number; readonly sha1: string }>();
+  let offset = 12;
+  for (let i = 0; i < count; i += 1) {
+    if (offset + 62 > buffer.length) return undefined;
+    const size = buffer.readUInt32BE(offset + 36);
+    const sha1 = buffer.subarray(offset + 40, offset + 60).toString("hex");
+    const flags = buffer.readUInt16BE(offset + 60);
+    const nameStart = offset + (version === 3 && (flags & 0x4000) !== 0 ? 64 : 62);
+    const nameEnd = buffer.indexOf(0, nameStart);
+    if (nameEnd < 0) return undefined;
+    entries.set(buffer.subarray(nameStart, nameEnd).toString("utf8"), { size, sha1 });
+    offset += Math.ceil((nameEnd - offset + 1) / 8) * 8;
+  }
+  return entries;
+}
+
+async function resolveSnapshotIndex(
+  contextTreeRoot: string,
+  snapshotDir: string,
+): Promise<Map<string, { readonly size: number; readonly sha1: string }> | undefined> {
+  const gitDotfile = join(snapshotDir, ".git");
+  const dotfileStats = await lstat(gitDotfile);
+  if (dotfileStats.isSymbolicLink() || !dotfileStats.isFile() || dotfileStats.size > GIT_FILE_MAX_BYTES) {
+    return undefined;
+  }
+  const raw = (await readFile(gitDotfile, "utf8")).trim();
+  if (!raw.startsWith("gitdir:")) return undefined;
+  const gitDir = resolve(snapshotDir, raw.slice("gitdir:".length).trim());
+  const relToRepos = relative(resolve(contextTreeRoot, "repositories"), gitDir);
+  if (relToRepos === "" || relToRepos === ".." || relToRepos.startsWith(`..${sep}`) || isAbsolute(relToRepos)) {
+    return undefined;
+  }
+  return parseGitIndex(await readFile(join(gitDir, "index")));
+}
+
+async function isSnapshotFileDirty(
+  absPath: string,
+  stats: Stats,
+  expected: { readonly size: number; readonly sha1: string } | undefined,
+): Promise<boolean> {
+  if (!expected || expected.size !== stats.size) return true;
+  if (stats.size > SNAPSHOT_HASH_CHECK_MAX_BYTES) return false;
+  const content = await readFile(absPath);
+  const sha1 = createHash("sha1").update(`blob ${stats.size}\0`).update(content).digest("hex");
+  return sha1 !== expected.sha1;
+}
+
+async function inspectSnapshotEntry(
+  snapshotDir: string,
+  relDir: string,
+  name: string,
+  indexed: ReadonlyMap<string, { readonly size: number; readonly sha1: string }>,
+): Promise<{ readonly kind: "skip" | "dirty" | "file" } | { readonly kind: "dir"; readonly relPath: string }> {
+  if (relDir === "" && name === ".git") return { kind: "skip" };
+  const relPath = relDir === "" ? name : `${relDir}/${name}`;
+  const absPath = join(snapshotDir, ...relPath.split("/"));
+  const stats = await lstat(absPath);
+  if (stats.isSymbolicLink()) return { kind: "dirty" };
+  if (stats.isDirectory()) return { kind: "dir", relPath };
+  if (!stats.isFile() || (await isSnapshotFileDirty(absPath, stats, indexed.get(relPath)))) {
+    return { kind: "dirty" };
+  }
+  return { kind: "file" };
+}
+
+async function walkSnapshotWorktree(
+  snapshotDir: string,
+  indexed: ReadonlyMap<string, { readonly size: number; readonly sha1: string }>,
+): Promise<boolean> {
+  let fileCount = 0;
+  const pending: string[] = [""];
+  while (pending.length > 0) {
+    const relDir = pending.pop() ?? "";
+    const absDir = relDir === "" ? snapshotDir : join(snapshotDir, ...relDir.split("/"));
+    for (const name of await readdir(absDir)) {
+      const outcome = await inspectSnapshotEntry(snapshotDir, relDir, name, indexed);
+      if (outcome.kind === "dirty") return true;
+      if (outcome.kind === "dir") pending.push(outcome.relPath);
+      if (outcome.kind === "file") fileCount += 1;
+    }
+  }
+  return fileCount !== indexed.size;
+}
+
+async function isSnapshotWorktreeDirty(contextTreeRoot: string, snapshotDir: string): Promise<boolean> {
+  try {
+    const indexed = await resolveSnapshotIndex(contextTreeRoot, snapshotDir);
+    if (!indexed) return false;
+    return await walkSnapshotWorktree(snapshotDir, indexed);
+  } catch {
+    return false;
+  }
+}
+
+async function shouldPreserveContextTreeCache(workspacePath: string): Promise<boolean> {
+  const contextTreeRoot = join(workspacePath, ...CONTEXT_TREE_STATE_REL.split("/"));
+  if (
+    (await hasDirectoryEntries(join(contextTreeRoot, "sessions"))) ||
+    (await hasDirectoryEntries(join(contextTreeRoot, "worktrees")))
+  ) {
+    return true;
+  }
+  const snapshotsRoot = join(contextTreeRoot, "snapshots");
+  try {
+    const stats = await lstat(snapshotsRoot);
+    if (stats.isSymbolicLink() || !stats.isDirectory()) return false;
+    for (const name of await readdir(snapshotsRoot)) {
+      const candidate = join(snapshotsRoot, name);
+      const entryStats = await lstat(candidate);
+      if (!entryStats.isSymbolicLink() && entryStats.isDirectory()) {
+        if (await isSnapshotWorktreeDirty(contextTreeRoot, candidate)) return true;
+      }
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+function shouldSkipContextTreeEntry(dirRel: string, name: string, preserveContextTreeCache: boolean): boolean {
+  const rel = dirRel === "" ? name : `${dirRel}/${name}`;
+  return rel === CONTEXT_TREE_CLEANUP_REL || (!preserveContextTreeCache && CONTEXT_TREE_CACHE_RELS.has(rel));
+}
+
+async function readScannableDirectoryNames(
+  workspacePath: string,
+  dirRel: string,
+  preserveContextTreeCache: boolean,
+): Promise<string[]> {
+  const absDir = dirRel === "" ? workspacePath : join(workspacePath, ...dirRel.split("/"));
+  let names: string[];
+  try {
+    names = await readdir(absDir);
+  } catch (error) {
+    throw toArchiveError(error, "io-failed", `Cannot read workspace directory ${bounded(dirRel || ".")}`);
+  }
+  names.sort();
+  return names.filter((name) => !shouldSkipContextTreeEntry(dirRel, name, preserveContextTreeCache));
+}
+
 async function scanWorkspace(workspacePath: string, limits: ResolvedLimits): Promise<WorkspaceScan> {
   const records: WalkRecord[] = [];
   const namespace = new Map<string, NamespaceEntry>();
   const state: ScanState = { bytes: 0 };
+  const preserveContextTreeCache = await shouldPreserveContextTreeCache(workspacePath);
   const pendingDirs: string[] = [""];
   let cursor = 0;
   while (cursor < pendingDirs.length) {
     const dirRel = pendingDirs[cursor] ?? "";
     cursor += 1;
-    const absDir = dirRel === "" ? workspacePath : join(workspacePath, ...dirRel.split("/"));
-    let names: string[];
-    try {
-      names = await readdir(absDir);
-    } catch (error) {
-      throw toArchiveError(error, "io-failed", `Cannot read workspace directory ${bounded(dirRel || ".")}`);
-    }
-    names.sort();
+    const names = await readScannableDirectoryNames(workspacePath, dirRel, preserveContextTreeCache);
     for (const name of names) {
       if (records.length >= limits.maxEntries) {
         fail("too-many-entries", `Workspace exceeds the ${limits.maxEntries} entry ceiling`);

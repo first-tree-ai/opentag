@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
-import { link, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, open, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunnerWorkspaceObject } from "@opentag/shared";
 import { afterEach, describe, expect, it } from "vitest";
 import { CloudWorkspace } from "../runner/cloud-workspace.js";
+import { WORKSPACE_MAX_BYTES } from "../runner/workspace-archive.js";
 
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
@@ -122,14 +123,117 @@ describe("Cloud workspace transfer", () => {
     const previous = store.object();
     await writeFile(join(runner.workspace, "work"), "unsaved work");
     await link(join(runner.workspace, "work"), join(runner.workspace, "hard-link"));
-    await expect(runner.client.save()).rejects.toMatchObject({ code: "save_failed", retryable: false });
+    await expect(runner.client.save()).rejects.toMatchObject({
+      code: "save_failed",
+      retryable: false,
+      archiveErrorCode: "unsafe-entry",
+      message: "Cloud workspace save_failed (unsafe-entry)",
+      cause: { code: "unsafe-entry" },
+    });
     expect(runner.client.terminalFailure).toBe(true);
     expect(runner.client.pendingSave).toBe(true);
     const requests = store.requests.length;
-    await expect(runner.client.save(true)).rejects.toMatchObject({ retryable: false });
+    await expect(runner.client.save(true)).rejects.toMatchObject({
+      retryable: false,
+      archiveErrorCode: "unsafe-entry",
+    });
     expect(store.requests).toHaveLength(requests);
     expect(store.object()).toEqual(previous);
     expect(await readFile(join(runner.workspace, "work"), "utf8")).toBe("unsaved work");
+  });
+
+  it("skips oversized read-only Context Tree caches on save and enforces the ceiling when a write session is active", async () => {
+    const store = storageFixture();
+    const runner = await client(store);
+    await runner.client.initialize();
+    const cache = join(runner.workspace, ".opentag/context-tree/home/.context-tree/repositories");
+    await mkdir(cache, { recursive: true });
+    const path = join(cache, "oversized.pack");
+    const file = await open(path, "wx");
+    try {
+      await file.truncate(WORKSPACE_MAX_BYTES + 1);
+    } finally {
+      await file.close();
+    }
+    // Without an active write session, the read-only cache is skipped and save succeeds.
+    await runner.client.save();
+    expect(runner.client.pendingSave).toBe(false);
+    expect(runner.client.terminalFailure).toBe(false);
+
+    // With an active write session under sessions/, the cache is included and hits the ceiling.
+    const baseline = store.object();
+    const sessions = join(runner.workspace, ".opentag/context-tree/home/.context-tree/sessions");
+    await mkdir(sessions, { recursive: true });
+    await writeFile(join(sessions, "active.json"), '{"id":"active"}\n');
+    await expect(runner.client.save()).rejects.toMatchObject({
+      retryable: false,
+      archiveErrorCode: "workspace-too-large",
+      message: "Cloud workspace save_failed (workspace-too-large)",
+    });
+    expect(store.object()).toEqual(baseline);
+    expect(runner.client.pendingSave).toBe(true);
+    expect(runner.client.terminalFailure).toBe(true);
+  });
+
+  it("retries transient upload failures with exponential backoff before succeeding or failing", async () => {
+    const store = storageFixture();
+    const delays: number[] = [];
+    const root = await mkdtemp(join(tmpdir(), "ot-e5-retry-"));
+    roots.push(root);
+    const workspace = join(root, "workspace");
+    const stateDirectory = join(root, "private");
+    let remainingPutFailures = 2;
+    const retryClient = new CloudWorkspace({
+      workspace,
+      stateDirectory,
+      backendUrl: "wss://server.example.com/api/v1/sandbox-runners/ws",
+      token: () => "fixture-1",
+      environmentGeneration: () => 1,
+      retryDelayMs: 100,
+      sleep: async (ms) => {
+        delays.push(ms);
+      },
+      fetchImpl: async (input, init) => {
+        if (init?.method === "PUT" && remainingPutFailures > 0) {
+          remainingPutFailures -= 1;
+          return new Response(null, { status: 503 });
+        }
+        return store.fetchImpl(input, init);
+      },
+    });
+    await retryClient.initialize();
+    expect(delays).toEqual([100, 200]);
+    expect(retryClient.pendingSave).toBe(false);
+
+    // When all 3 attempts fail, save() rejects as retryable after 2 backoff waits.
+    delays.length = 0;
+    remainingPutFailures = 3;
+    await writeFile(join(workspace, "next.txt"), "data");
+    await expect(retryClient.save()).rejects.toMatchObject({ code: "save_failed", retryable: true });
+    expect(delays).toEqual([100, 200]);
+    expect(retryClient.pendingSave).toBe(true);
+  });
+
+  it("rolls back unsaved pre-prompt dirt to the last saved baseline and clears terminalFailure", async () => {
+    const store = storageFixture();
+    const runner = await client(store);
+    await runner.client.initialize();
+    await writeFile(join(runner.workspace, "baseline.txt"), "committed baseline");
+    await runner.client.save();
+    await writeFile(join(runner.workspace, "dirty.txt"), "pre-prompt temp");
+    await link(join(runner.workspace, "dirty.txt"), join(runner.workspace, "hard-link"));
+    await expect(runner.client.save()).rejects.toMatchObject({
+      retryable: false,
+      archiveErrorCode: "unsafe-entry",
+    });
+    expect(runner.client.terminalFailure).toBe(true);
+    expect(runner.client.pendingSave).toBe(true);
+
+    await runner.client.rollback();
+    expect(runner.client.terminalFailure).toBe(false);
+    expect(runner.client.pendingSave).toBe(false);
+    expect(await readdir(runner.workspace)).toEqual(["baseline.txt"]);
+    expect(await readFile(join(runner.workspace, "baseline.txt"), "utf8")).toBe("committed baseline");
   });
 
   it("recovers files and Pi binding/history into a replacement and excludes trusted parent state", async () => {

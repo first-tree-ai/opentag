@@ -62,11 +62,18 @@ export class ServeWorkspace {
     });
   }
 
-  checkpoint(): Promise<void> {
+  checkpoint(options?: {
+    readonly executionEffects?: "completed" | "may_have_occurred" | "not_started";
+  }): Promise<void> {
     this.#blocked = true;
     return this.#enqueue(async () => {
       await this.#quiesce();
-      await this.#workspace.save();
+      try {
+        await this.#workspace.save();
+      } catch (error) {
+        if (options?.executionEffects !== "not_started") throw error;
+        await this.#workspace.rollback();
+      }
       await this.#launch();
       this.#blocked = this.#sealing || this.#state().stopping;
     });

@@ -13,16 +13,31 @@ import {
   createWorkspaceArchive,
   restoreWorkspaceArchive,
   WorkspaceArchiveError,
+  type WorkspaceArchiveErrorCode,
   type WorkspaceArchiveInfo,
 } from "./workspace-archive.js";
 
+const CLOUD_WORKSPACE_SAVE_MAX_ATTEMPTS = 3;
+const CLOUD_WORKSPACE_RETRY_DELAY_MS = 20;
+
 export class CloudWorkspaceError extends Error {
+  readonly archiveErrorCode?: WorkspaceArchiveErrorCode;
+
   constructor(
     readonly code: "restore_failed" | "save_failed" | "scope_unavailable",
     readonly retryable = true,
+    options?: ErrorOptions,
   ) {
-    super(`Cloud workspace ${code}`);
+    const cause = options?.cause;
+    const archiveErrorCode =
+      cause instanceof WorkspaceArchiveError
+        ? cause.code
+        : cause instanceof CloudWorkspaceError
+          ? cause.archiveErrorCode
+          : undefined;
+    super(`Cloud workspace ${code}${archiveErrorCode ? ` (${archiveErrorCode})` : ""}`, options);
     this.name = "CloudWorkspaceError";
+    this.archiveErrorCode = archiveErrorCode;
   }
 }
 
@@ -35,6 +50,8 @@ export interface CloudWorkspaceOptions {
   environmentGeneration: () => number | undefined;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  retryDelayMs?: number;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 function outside(root: string, target: string): boolean {
@@ -90,7 +107,7 @@ export class CloudWorkspace {
   #object?: RunnerWorkspaceObject;
   #restored = false;
   #pendingSave = false;
-  #terminalFailure = false;
+  #terminalFailure?: CloudWorkspaceError;
   #serial: Promise<unknown> = Promise.resolve();
 
   constructor(options: CloudWorkspaceOptions) {
@@ -110,7 +127,7 @@ export class CloudWorkspace {
   }
   /** An unchanged directory cannot recover from an archive format/size violation by retrying. */
   get terminalFailure(): boolean {
-    return this.#terminalFailure;
+    return this.#terminalFailure !== undefined;
   }
   get sealed(): boolean {
     return this.#object?.sealed === true;
@@ -139,8 +156,36 @@ export class CloudWorkspace {
         // Even a saved restore commits once before readiness. This CAS fences an upload still
         // in flight from a prior process of the SAME allocation, without a second runtime epoch.
         await this.#save(false);
-      } catch {
-        throw new CloudWorkspaceError("restore_failed");
+      } catch (error) {
+        throw new CloudWorkspaceError("restore_failed", true, { cause: error });
+      }
+    });
+  }
+
+  /**
+   * Discard unsaved pre-prompt workspace dirt and restore the last committed archive baseline.
+   * Only valid when a Turn failed before prompt acceptance (`executionEffects === "not_started"`).
+   */
+  rollback(): Promise<void> {
+    return this.#enqueue(async () => {
+      if (this.sealed) return;
+      try {
+        const object = await this.#claim();
+        this.#object = object;
+        if (object.sealed) return;
+        await rm(this.#options.workspace, { recursive: true, force: true });
+        await mkdir(this.#options.workspace, { recursive: true, mode: 0o700 });
+        if (object.saved) {
+          await this.#temporaryArchive(async (path) => {
+            await this.#download(object, path);
+            await restoreWorkspaceArchive(path, this.#options.workspace, object);
+          });
+        }
+        this.#restored = true;
+        this.#pendingSave = false;
+        this.#terminalFailure = undefined;
+      } catch (error) {
+        throw new CloudWorkspaceError("restore_failed", true, { cause: error });
       }
     });
   }
@@ -150,7 +195,7 @@ export class CloudWorkspace {
   }
 
   async #save(sealed: boolean): Promise<void> {
-    if (this.#terminalFailure) throw new CloudWorkspaceError("save_failed", false);
+    if (this.#terminalFailure) throw this.#terminalFailure;
     if (this.sealed) {
       if (sealed) return;
       throw new CloudWorkspaceError("save_failed");
@@ -161,7 +206,7 @@ export class CloudWorkspace {
     try {
       await this.#temporaryArchive(async (path) => {
         const info = await createWorkspaceArchive(this.#options.workspace, path);
-        this.#object = await this.#upload(path, previous, info, sealed);
+        this.#object = await this.#uploadWithRetry(path, previous, info, sealed);
       });
       this.#pendingSave = false;
     } catch (error) {
@@ -171,10 +216,32 @@ export class CloudWorkspace {
           error.code,
         )
       ) {
-        this.#terminalFailure = true;
+        this.#terminalFailure = new CloudWorkspaceError("save_failed", false, { cause: error });
       }
-      throw new CloudWorkspaceError("save_failed", !this.#terminalFailure);
+      throw this.#terminalFailure ?? new CloudWorkspaceError("save_failed", true, { cause: error });
     }
+  }
+
+  async #uploadWithRetry(
+    path: string,
+    previous: RunnerWorkspaceObject,
+    info: WorkspaceArchiveInfo,
+    sealed: boolean,
+  ): Promise<RunnerWorkspaceObject> {
+    const baseDelayMs = this.#options.retryDelayMs ?? CLOUD_WORKSPACE_RETRY_DELAY_MS;
+    const sleep = this.#options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= CLOUD_WORKSPACE_SAVE_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        return await this.#upload(path, previous, info, sealed);
+      } catch (error) {
+        lastError = error;
+        if (attempt < CLOUD_WORKSPACE_SAVE_MAX_ATTEMPTS) {
+          await sleep(baseDelayMs * 2 ** (attempt - 1));
+        }
+      }
+    }
+    throw lastError;
   }
 
   async #temporaryArchive<T>(operation: (path: string) => Promise<T>): Promise<T> {

@@ -109,7 +109,7 @@ const CLOUD_PI_IMAGE_INPUT_MODELS = new Set([
   "claude-opus-5.5",
 ]);
 /** The locked adapter lives with the Cloud image's Pi installation. */
-const CLOUD_PI_MCP_ADAPTER_ENTRY = "/opt/opentag/pi/node_modules/pi-mcp-adapter/index.ts";
+const CLOUD_PI_MCP_ADAPTER_ENTRY = "/opt/opentag/pi/node_modules/pi-mcp-adapter/opentag-runtime.mjs";
 
 const TURN_POLICY = {
   approvals: "never" as const,

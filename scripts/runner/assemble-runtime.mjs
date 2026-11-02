@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { CHANNEL_CONFIG } from "../channel-config.mjs";
 import { materializeRuntimeDependencyClosure, writeDependencyClosureFile } from "../portable/runtime-dependencies.mjs";
+import { buildPiMcpAdapter } from "./build-pi-mcp-adapter.mjs";
 import { installCatalogProviderClis } from "./docker-install-provider-clis.mjs";
 import {
   downloadVerified,
@@ -82,6 +83,11 @@ export async function assembleRunnerRuntime({ src = SRC, out = OUT } = {}) {
   cpSync(join(src, "scripts/runner/pi/package.json"), join(piDir, "package.json"));
   cpSync(join(src, "scripts/runner/pi/package-lock.json"), join(piDir, "package-lock.json"));
   run("npm", ["ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"], { cwd: piDir });
+
+  await buildPiMcpAdapter(
+    join(piDir, "node_modules/pi-mcp-adapter"),
+    join(piDir, "node_modules/@earendil-works/pi-coding-agent"),
+  );
 
   await installCatalogProviderClis({
     dest: toolsDir,

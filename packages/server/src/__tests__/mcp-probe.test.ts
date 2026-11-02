@@ -123,6 +123,34 @@ describe("MCP probe success path", () => {
     [403, "application/json"],
     [401, "text/event-stream"],
     [403, "text/event-stream"],
+  ])("reports OAuth-shaped HTTP %i with %s as rejected authorization", async (status, contentType) => {
+    const { probe, calls } = node({
+      status,
+      contentType,
+      raw: ({ id }) => {
+        const error = { error: status === 401 ? "invalid_token" : "insufficient_scope", error_description: "private" };
+        return contentType === "application/json"
+          ? JSON.stringify(error)
+          : `data: ${JSON.stringify({ jsonrpc: "2.0", id, ...error })}\n\n`;
+      },
+    });
+    const result = await probe.probe(request());
+
+    expect(result).toMatchObject({
+      probeState: "failed",
+      probeError: `${MCP_ERROR_CODES.UPSTREAM_ERROR}: ${MCP_AUTH_REJECTION_SUMMARY}`,
+      tools: [],
+      toolsCount: 0,
+      eraInvalidated: false,
+    });
+    expect(calls.map((call) => parseBody(call).method)).toEqual(["server/discover", "server/discover"]);
+  });
+
+  it.each([
+    [401, "application/json"],
+    [403, "application/json"],
+    [401, "text/event-stream"],
+    [403, "text/event-stream"],
   ])("retains the authentication-rejection contract for HTTP %i with %s", async (status, contentType) => {
     const { probe } = node({
       status,
@@ -970,50 +998,55 @@ describe("MCP probe era handling", () => {
     expect(result.toolsTruncated).toBe(true);
   });
 
-  it("retries with an advertised version instead of downgrading when a modern error answers 400", async () => {
-    const versions: string[] = [];
-    const fetchImpl = vi.fn(async (_url: URL | string, init?: RequestInit) => {
-      const headers = new Headers(init?.headers);
-      versions.push(headers.get("mcp-protocol-version") ?? "");
-      const method = (JSON.parse(String(init?.body)) as { method?: string }).method ?? "";
-      if (method === "server/discover" && versions.length === 1) {
-        return new Response(
-          JSON.stringify({
+  it.each(["application/json", "text/event-stream"])(
+    "retries an advertised version without downgrading for a 400 %s JSON-RPC error",
+    async (contentType) => {
+      const versions: string[] = [];
+      const fetchImpl = vi.fn(async (_url: URL | string, init?: RequestInit) => {
+        const headers = new Headers(init?.headers);
+        versions.push(headers.get("mcp-protocol-version") ?? "");
+        const request = JSON.parse(String(init?.body)) as { method?: string; id: string };
+        const method = request.method ?? "";
+        if (method === "server/discover" && versions.length === 1) {
+          const body = JSON.stringify({
             jsonrpc: "2.0",
-            id: "1",
+            id: request.id,
             error: { code: -32022, message: "unsupported", data: { supported: ["2025-11-25"] } },
-          }),
-          { status: 400, headers: { "content-type": "application/json" } },
-        );
-      }
-      if (method === "server/discover") {
-        return new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", result: { capabilities: {} } }), {
+          });
+          return new Response(contentType === "application/json" ? body : `data: ${body}\n\n`, {
+            status: 400,
+            headers: { "content-type": contentType },
+          });
+        }
+        if (method === "server/discover") {
+          return new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", result: { capabilities: {} } }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", result: { tools: [] } }), {
           status: 200,
           headers: { "content-type": "application/json" },
         });
-      }
-      return new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", result: { tools: [] } }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
+      }) as unknown as typeof globalThis.fetch;
+      const probe = new McpProbe({
+        fetcher: new McpOutboundFetcher({ ...PUBLIC_RESOLVE, allowLoopback: false, fetch: fetchImpl }),
       });
-    }) as unknown as typeof globalThis.fetch;
-    const probe = new McpProbe({
-      fetcher: new McpOutboundFetcher({ ...PUBLIC_RESOLVE, allowLoopback: false, fetch: fetchImpl }),
-    });
-    const result = await probe.probe({
-      accountId: ACCOUNT,
-      url: ENDPOINT,
-      authHeaders: {},
-      cachedEra: null,
-      cachedVersion: null,
-    });
-    expect(versions[0]).toBe("2026-07-28");
-    expect(versions[1]).toBe("2025-11-25");
-    expect(result.probeState).toBe("succeeded");
-    // The retry kept the modern per-request model at the version the peer advertised: no
-    // `initialize` handshake was attempted, which is the whole point of inspecting the body first.
-    expect(result.protocolVersion).toBe("2025-11-25");
-  });
+      const result = await probe.probe({
+        accountId: ACCOUNT,
+        url: ENDPOINT,
+        authHeaders: {},
+        cachedEra: null,
+        cachedVersion: null,
+      });
+      expect(versions[0]).toBe("2026-07-28");
+      expect(versions[1]).toBe("2025-11-25");
+      expect(result.probeState).toBe("succeeded");
+      // The retry kept the modern per-request model at the version the peer advertised: no
+      // `initialize` handshake was attempted, which is the whole point of inspecting the body first.
+      expect(result.protocolVersion).toBe("2025-11-25");
+    },
+  );
 
   it("honours a cached legacy era and never sends a modern discovery request", async () => {
     const methods: string[] = [];

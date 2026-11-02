@@ -760,6 +760,11 @@ describe("AgentService", () => {
       runtimeConfig: { instructions: "Changed", maxDurationMs: 5_000 },
     });
     expect(changed).toMatchObject({ revision: 3, runtimeConfig: { instructions: "Changed", maxDurationMs: 5_000 } });
+    const cleared = await service.updateById(bootstrap.userId, created.id, {
+      expectedRevision: 3,
+      runtimeConfig: { instructions: null },
+    });
+    expect(cleared).toMatchObject({ revision: 4, runtimeConfig: { instructions: "", maxDurationMs: 5_000 } });
     await expect(
       service.updateById(bootstrap.userId, created.id, { expectedRevision: 2, displayName: "Stale" }),
     ).rejects.toMatchObject({ code: "AGENT_REVISION_CONFLICT", statusCode: 409 });

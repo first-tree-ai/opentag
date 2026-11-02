@@ -20,7 +20,7 @@
   "agent_settings_codex": "Codex",
   "agent_settings_command_add": "Add",
   "agent_settings_command_allowlist": "Additional allowed commands",
-  "agent_settings_command_allowlist_description": "Commands you add use native permission rules, including arguments after them. Claude auto mode may still review broad execution rules. Built-in messaging commands are not shown.",
+  "agent_settings_command_allowlist_description": "Commands you add use native permission rules, including arguments after them. Built-in messaging commands are not shown.",
   "agent_settings_command_duplicate": "This command is already added.",
   "agent_settings_command_input": "Command to allow",
   "agent_settings_command_input_placeholder": "Add a command",

@@ -231,8 +231,14 @@ probe would otherwise record a Server that answered nothing as a healthy one wit
 gateway `tools/call` would answer with an envelope that carries no `result`. A `202` or `204` answers
 a notification only: `tools/call`, `tools/list`, and `initialize` each require a result, so an
 acknowledgement of one is `MCP_UPSTREAM_ERROR` as well. A present but unreadable `error` member —
-`null`, a scalar, an array, or a wrong-typed `code` or `message` — is also `MCP_UPSTREAM_ERROR`, with
-the real HTTP status and a fixed message, never a raw type error. Valid answers still pass: an
+`null`, a scalar, an array, or a wrong-typed `code` or `message` — on a 2xx response is also
+`MCP_UPSTREAM_ERROR`, with the real HTTP status and a fixed message, never a raw type error.
+On non-2xx responses, an unreadable error member keeps the HTTP failure classification. In JSON
+and SSE, OAuth-shaped `401` and `403` errors such as `{"error":"invalid_token"}` and
+`{"error":"insufficient_scope"}` therefore use `MCP_AUTH_REJECTION_SUMMARY`, so Web offers
+authorization recovery. Upstream error descriptions are not exposed. Readable JSON-RPC errors
+retain their code, message, and data at any status, including version-negotiation refusals.
+Valid answers still pass: an
 explicit `"result": null`, a `202`/`204` notification acknowledgement, and a JSON-RPC error whose
 `code` the caller branches on.
 

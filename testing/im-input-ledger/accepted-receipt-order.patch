@@ -1,0 +1,67 @@
+diff --git a/packages/server/src/__tests__/integration/inbound-receipt-recovery.test.ts b/packages/server/src/__tests__/integration/inbound-receipt-recovery.test.ts
+index ac3c6745..2b18b6dc 100644
+--- a/packages/server/src/__tests__/integration/inbound-receipt-recovery.test.ts
++++ b/packages/server/src/__tests__/integration/inbound-receipt-recovery.test.ts
+@@ -15,6 +15,7 @@ import {
+   slackWebhookReceipts,
+ } from "../../db/schema/index.js";
+ import { resolveImDeliveryJanitorConfig, runImDeliveryRetention } from "../../runtime/im-delivery-janitor.js";
++import { ImDeliverySelector, lockEligibleDelivery } from "../../runtime/im-delivery-selector.js";
+ import { ApplicationCipher } from "../../services/crypto.js";
+ import { InboundWorkSchema, slackWorkEvent } from "../../services/im/inbound-work.js";
+ import { ImMessageInbox } from "../../services/im/index.js";
+@@ -152,6 +153,54 @@ async function fixture() {
+   };
+ }
+ 
++it("keeps a newer input behind an already acknowledged older receipt awaiting Inbox recovery", async () => {
++  const f = await fixture();
++  const app = f.app();
++  await f.client.sql.unsafe(
++    "create function fail_rsi_inbound_message() returns trigger language plpgsql as $$ begin raise exception 'synthetic failure' using errcode='40001'; end $$",
++  );
++  await f.client.sql.unsafe(
++    "create trigger fail_rsi_inbound_message before insert on im_messages for each row execute function fail_rsi_inbound_message()",
++  );
++  try {
++    expect((await f.send(app.server)).statusCode).toBe(200);
++    await expect.poll(async () => (await f.receipt()).status).toBe("failed");
++  } finally {
++    await f.client.sql.unsafe("drop trigger fail_rsi_inbound_message on im_messages");
++    await f.client.sql.unsafe("drop function fail_rsi_inbound_message()");
++  }
++  const olderReceipt = await f.receipt();
++  expect(olderReceipt.workPayload).not.toBeNull();
++  const newer = {
++    ...f.event,
++    event_id: "Ev_NEWER",
++    event: { ...f.event.event, text: "newer input", ts: f.event.event.ts.replace("000001", "000002") },
++  };
++  expect((await f.send(app.server, newer)).statusCode).toBe(200);
++  await expect
++    .poll(async () => (await f.client.database.select().from(imMessages)).length)
++    .toBe(1);
++  const selector = new ImDeliverySelector(f.client.database);
++  const candidate = (await selector.candidates(f.clock.now).next()).value;
++  const claimed = candidate
++    ? await f.client.database.transaction((tx) =>
++        lockEligibleDelivery(tx, candidate.row.id, f.agent.id, f.clock.now),
++      )
++    : undefined;
++  console.info(
++    JSON.stringify({
++      probe: "accepted_receipt_order",
++      acceptedEvents: [f.event.event_id, newer.event_id],
++      olderReceiptStatus: olderReceipt.status,
++      olderRetainsRecoverableInput: olderReceipt.workPayload !== null,
++      newerEligible: !!claimed,
++      newerMessageId: claimed?.row.messageId,
++      boundary: "real signed HTTP + migrated PostgreSQL + production selector and claim; no runtime dispatched",
++    }),
++  );
++  expect(claimed, "newer input must wait for an already accepted older receipt").toBeUndefined();
++});
++
+ it("recovers an acknowledged Slack Inbox failure without provider redelivery", async () => {
+   const f = await fixture();
+   const normalize = vi.spyOn(f.adapter, "normalizeInbound");

@@ -1,0 +1,184 @@
+# User input reliability: evidence and acceptance boundaries
+
+Contracts: [message domains](../../docs/system/messaging/message-domains.md),
+[Channel and Thread Sessions](../../docs/system/messaging/thread-sessions.md),
+[delivery claims](../../docs/system/messaging/im-delivery-claim.md),
+[content delivery](../../docs/system/messaging/im-content-delivery.md), and
+[Cloud Runner execution](../../docs/system/cloud/cloud-runner-execution.md).
+
+## Baseline and result
+
+Baseline `e4f7cb1d0ca038c13368c7be90f4e7058105a329`, Node 24.20.0, pnpm 10.12.1,
+local Docker PostgreSQL. The full no-loss, correctly targeted, ordered-input goal is **not met**.
+No production data, historical messages, external IM sends, real model executions or Cloud deployments
+are involved in the checks below. No production implementation changes accompany these test additions.
+
+A signed Slack request was acknowledged with HTTP 200 after its durable receipt committed. A synthetic
+PostgreSQL trigger raised `40001` on the actual Inbox message insert. After removing the trigger, a
+newer signed message committed to Inbox. The production `ImDeliverySelector` and transactional
+`lockEligibleDelivery` admitted that newer input while the older receipt remained failed and recoverable.
+This proves an admission-order defect across receipt and Inbox; no runtime was dispatched by that probe.
+The desired no-overtaking assertion failed. The [negative acceptance probe](../im-input-ledger/accepted-receipt-order.patch)
+is retained as an opt-in patch because the read/write repair requires a separate human-confirmed design.
+From a clean checkout of this baseline, apply that patch, then run:
+
+```sh
+pnpm --filter @opentag/server exec vitest run src/__tests__/integration/inbound-receipt-recovery.test.ts -t 'keeps a newer input behind' --maxWorkers=1
+```
+
+Expected baseline failure: the older receipt has recoverable input, but `newerEligible` is `true` and the
+no-overtaking assertion fails. This is not a quarantined or expected-failure test in CI. Once the approved
+repair is implemented, promote the assertion to the normal test suite and remove the patch.
+
+Existing baseline tests passed: 20 focused Server tests, 148 Client journal/custody/Runner tests, and
+33 real PostgreSQL receipt/queue-policy tests. A further 49 PostgreSQL custody, concurrent queue, retention
+and steered-input recovery cases passed. Their passing result did not detect this cross-stage gap.
+
+## Stages and responsible components
+
+```mermaid
+stateDiagram-v2
+    [*] --> ProviderEvent
+    ProviderEvent --> Verified: Slack HMAC / Feishu authenticated SDK connection
+    Verified --> ReceiptWork: commit recoverable projected input
+    ReceiptWork --> InboxCommitted: normalize + authorize + route, atomic message/delivery commit
+    ReceiptWork --> ReceiptRetry: Inbox error or abandoned processing lease
+    ReceiptRetry --> InboxCommitted: current generation/owner recovery
+    InboxCommitted --> Pending: eligible target Session
+    Pending --> FrozenDispatch: claim lease + authority + immutable input/hash/batch
+    FrozenDispatch --> LocalCustody: Client binding persisted
+    FrozenDispatch --> CloudReceived: Runner journal fsynced
+    CloudReceived --> CloudVerified: Server persists custody, returns fresh authority
+    LocalCustody --> ProviderInput: start / native steer
+    CloudVerified --> ProviderInput: started journal + native worker
+    ProviderInput --> ReportPending: actual terminal outcome, durable report
+    ReportPending --> Settled: exact Server acknowledgement
+    ReportPending --> ReportPending: lost ACK, replay same report identity
+    LocalCustody --> RecoveryRequired: process dies before outcome
+    CloudVerified --> RecoveryRequired: started process dies
+    RecoveryRequired --> ReportPending: honest not_started or unknown, no blind replay
+    Pending --> ExplicitTerminal: TTL, capacity, invalid input, retry exhaustion
+```
+
+| Stage | Source and responsibility | What the state proves | Recovery owner |
+| --- | --- | --- | --- |
+| Slack ingress | `api/slack-events.ts`, Slack signature/adapter | HMAC and App/Team/Bot route identity; HTTP 200 after receipt commit | Existing receipt work sweep |
+| Feishu ingress | `services/im-bindings/feishu/adapter.ts`, `connection-manager.ts` | Current SDK connection and holder/epoch; normalized saved input before Inbox | Current durable connection holder; no-event-ID inputs retain synchronous path |
+| Receipt work | Both receipt stores; `im/inbound-receipt-work-store.ts` | Recoverable bounded input, not Agent input | 60 s lease, attempt-fenced settlement, 2/4/8/16/30 s backoff, seven-day eligibility |
+| Inbox/routing | `im/im-message-inbox.ts` | Immutable revision, deduplication and eligible delivery facts committed | Receipt replay is message/delivery-idempotent |
+| Queue/claim | `runtime/im-delivery-selector.ts`, worker, work-query and batch helpers | Eligibility and leased attempt, not transmission or Provider receipt | Leased retry with current authority; Agent advisory fence; Cloud Session/Local Agent custody |
+| Dispatch | `runtime/runtime-custody-store.ts`, runtime domain / Cloud delivery owner | Frozen exact input and correlation before send | Reconcile that correlation before release; no repackaging on uncertainty |
+| Local custody | Client `turn-custody-owner.ts`, `session-binding-store.ts`, `client-runtime.ts` | Accepted input/Turn binding persisted before result send | Reconcile saved binding/report; accepted differs from Provider start |
+| Cloud custody | Client `runner/cloud-journal.ts`, `cloud-turns.ts`; Server Cloud delivery owner | received journal persisted, then Server custody verified | received re-verifies; started becomes unknown after process death; reported replays |
+| Provider input | Client `agent-turn-runner.ts` and provider adapters; Cloud native worker | Native prompt/steer acceptance at the adapter boundary | Native result plus honest uncertainty; no distributed exactly-once claim |
+| Settlement | Local report owner / Cloud report journal + Server custody store | Recorded actual outcome; completed/failed/unknown are distinct | Matching result identity and ACK; late attempts cannot replace terminal results |
+
+Only Feishu and Slack call the production IM Inbox. Runtime Session collaboration and schedules have
+separate ingress/authorization semantics; they are not evidence for user IM delivery. Discovery of an
+additional human input entry must extend this inventory rather than silently reuse best-effort guarantees.
+
+## Acceptance invariants and unresolved product boundaries
+
+| Invariant | Required assertion / current limit |
+| --- | --- |
+| Accepted set | Every distinct accepted, route-eligible input revision remains accountable through delivery or visible recovery. HTTP success, receipt processed and claimed are not final delivery. |
+| Stable identity | Provider message/revision + target identity survives duplicate callbacks, receipt retry, frozen dispatch, restart, batching and steering. Same content under distinct provider IDs is not automatically the same user action. |
+| Correct target | Agent, immutable conversation/thread scope, Session, placement generation and authority match every actual Provider input. Observer and owner copies have explicit separate responsibilities. |
+| Order | The declared stream and authoritative sender/provider order must be captured before injection. An accepted, undelivered predecessor blocks a successor; SQL query order alone is insufficient. |
+| Uncertainty | Unknown send, started-process death and lost ACK never imply success, no effect, permission to replay, or permission to advance an ordered stream. |
+| Recovery | Recoverable failures can resume from durable evidence; permanent/credential failures remain visible with a safe resolution path. A missing reaction is not evidence of receipt or successful recovery. |
+
+Current conflicts remain acceptance failures:
+
+- Capacity evicts older eligible inputs once a Session exceeds 99; same-content adjacent distinct messages
+  can become `expired / duplicate_pending`. Their source rows survive, but they do not reach the Agent.
+- Direct/continuity and ambient deadlines are seven days and one day. Receipt work also loses recoverable
+  payload after its seven-day eligibility window. Durable message history does not itself provide replay.
+- Fresh dispatch timeout exhaustion can terminally reject an undispatched input; uncertain correlated
+  dispatches can park until expiry. Terminal reason/reaction is not a complete user recovery path.
+- Supported Slack subtypes are regular message, message_changed, message_deleted, bot_message and file_share;
+  other subtypes and malformed supported events can produce no normalized event while receipt processing ends.
+  Bound-bot self events are intentionally excluded. All these filters need explicit classification.
+- `mention_only` ignores unaddressed channel input and thread traffic without trusted continuity;
+  `all_message` admits ambient thread work and a separate Channel observer. Ended threads are not revived
+  by ambient evidence. These are current routing rules, not permission to classify failed eligible input away.
+- Inactive Agents, absent Computer binding, ownership/rebind failures and unknown conversation kinds can
+  persist message history without creating a delivery. Whether such accepted user input must queue needs
+  explicit product confirmation, with no implicit resurrection of removed authority.
+- Both pending-input paths now use `(occurred_at, provider_revision_key, im_messages.id)` within a Session.
+  The last key is a database UUID, not a sender sequence. Claimed/frozen work is not reordered when an earlier
+  provider event arrives late. Receipt-only earlier input is absent from this head query (reproduced above).
+- Independent Cloud Sessions can execute concurrently; Local custody is Agent-wide. Cross-provider order,
+  cross-Session order after explicit Session end, edit/delete supersession, and late provider input need an
+  explicit stream/completeness contract. No passing test below settles those product choices.
+
+## Fault matrix
+
+The middle column identifies existing executable coverage, not a blanket acceptance claim. PG means real
+migrated PostgreSQL; Client file tests use real local files. Synthetic native/transport seams remain explicit.
+
+| Fault | Executable evidence / source | Remaining boundary |
+| --- | --- | --- |
+| Receipt commit then Inbox failure | PG `inbound-receipt-recovery`, `feishu-receipt-recovery` | Live provider acceptance not run |
+| Older failed receipt overtaken | New signed HTTP + PG negative acceptance probe | Confirmed defect; read/write proposal pending |
+| Receipt lease abandonment / replacement owner | Same PG suites, independent connections; new actual Server SIGKILL test below | Full Provider-input ledger not yet combined |
+| Inbox commit, settlement response lost | Same PG suites | End-to-end runtime set/order still needed |
+| Duplicate webhook / same event | Receipt store and PG ingress suites | Live provider retry delivery not run |
+| Reversed webhook order / late thread root | Inbox/thread and pending-order suites | Already claimed successor cannot be reordered; global sending order unresolved |
+| DB commit uncertainty / transaction rollback | Existing idempotent receipt replay; injected `40001` rollback | Actual COMMIT response-drop injection remains unverified |
+| Offline / reconnect / 429 / 5xx | Worker retry and provider policy tests | Full accepted-to-Provider ledger not yet combined |
+| Retry backoff / exhaust / parked dispatch | Worker/deadline + PG Cloud parking tests | Current terminal policies conflict with no-loss recovery goal |
+| Capacity / rapid burst / same-content input | PG queue-policy/pending-queue; Cloud overflow unit tests | Current accepted-set completeness fails by policy |
+| Claim expiry / two workers / locked older row | Selector and PG query/pending suites | Extend receipt fence races after human-approved design |
+| Local ACK send failure / accepted process death | Client custody, runtime-durability, report recovery tests | Unknown/not_started must not count as delivered |
+| Cloud received then real process SIGKILL | New `cloud-turns-process.test.ts` | Re-announces same receipt; zero worker calls until fresh verification |
+| Cloud started then real process SIGKILL | Same new process test | Replays same unknown report, zero new worker calls; real Pi/model not used |
+| Cloud reported then SIGKILL / ACK absent | Same new process test | Replays exact report, zero new worker calls; Server ACK path covered separately |
+| Changed content or allocation under same identity | Journal/Cloud Runner/custody tests | Live allocation lifecycle acceptance remains separate |
+| Cold start / allocation timeout / restart | PG cloud-dispatch-custody and allocation suites | Real Cloud cold start not run; adjacent RSI owns performance |
+| Run-time append / duplicate steer / steer result lost | Client cloud-turns + PG cloud-dispatch-custody and steered recovery | Need complete multi-input Provider ledger across both Server and worker |
+| Native send succeeds, response lost | Local steer uncertainty + Cloud steer journal tests | At-least-once transport is distinct from deduplicated Agent processing |
+| Root fails while steers are in flight | PG steered-delivery recovery and recovery-lock suites | Unknown execution cannot be safely auto-replayed without further evidence |
+| Credential unreadable / permission revoked | PG receipt recovery and Cloud reauthorization tests | Current permanent dispositions and best-effort reaction lack complete user resolution |
+| Poison/invalid input, TTL/retention cleanup | Content validation, Janitor, PG retention tests | Must agree on hold/resume/cancel policy; do not automatically skip predecessor |
+
+## Ledger oracle and process tests
+
+[`../im-input-ledger/verify.mjs`](../im-input-ledger/verify.mjs) checks an exported synthetic/live JSON ledger.
+Each accepted input names `inputId`, `agentId`, `sessionId`, `streamId`, `contentHash`, and integer `order`.
+The capture must declare `environment` and `orderingBasis`, including how the authoritative source order
+was mapped to integers. It must collect the complete accepted set, including failures and late callbacks.
+The oracle cannot establish authenticity or completeness of its own input evidence.
+
+`received` is an ordered list of observed **Provider inputs**, with the same identity/target/content and
+`boundary: "provider_input"`. Earlier Server ACK, claim and journal observations are rejected as final receipt.
+The oracle rejects missing, unknown, mistargeted, changed, duplicated and overtaking input. `unresolved`
+entries keep uncertain outcomes failing. One stream is not automatically split when its Session changes;
+independent streams must be explicitly named. Never compare transport retry frames as repeated Agent processing.
+An observed input does not prove the Agent completed its task or avoided every external side effect.
+
+```sh
+node --test scripts/__tests__/im-input-ledger.test.mjs
+node testing/im-input-ledger/verify.mjs /absolute/path/to/captured-ledger.json
+pnpm --filter @opentag/client exec vitest run src/__tests__/cloud-turns-process.test.ts
+```
+
+The process test starts a separate Node process running the production CloudTurnRunner and fsynced CloudJournal,
+waits for an exact boundary, kills it with SIGKILL, waits for process exit, then recovers from the same directory.
+It checks received/started/reported identity and replay behavior; the synthetic worker seam performs no model,
+provider, credential, cloud or network operation. It does not test power loss, filesystem loss, native Sandbox
+death, or replacement of the physical Instance that held the journal.
+
+`integration/inbound-process-recovery.test.ts` starts a separate Fastify process with the production signed
+Slack route, receipt store, adapter and Inbox against migrated PostgreSQL. A real insert trigger rejects
+Inbox after HTTP 200; the test kills the Server with SIGKILL, starts a fresh process and waits for its normal
+five-second receipt sweep. It requires one recovered message and delivery, stable receipt receive time and
+identity, and no duplicate on webhook redelivery. All HTTP traffic is loopback and all input/credentials are
+synthetic. This verifies Server-process replacement with the same database; it does not dispatch a runtime.
+
+The ledger's nine negative/positive checks run through the existing root script-test discovery. The Cloud
+process matrix and PostgreSQL Server-process test use the owning packages' normal Vitest discovery. The new
+tests do not change Agent Runtime coverage configuration or its covered implementation/test set.
+
+Full real Feishu, Slack and Cloud acceptance remains incomplete. Local passing tests cannot authorize merge,
+deployment, historical replay, live-user messages or resource expansion.

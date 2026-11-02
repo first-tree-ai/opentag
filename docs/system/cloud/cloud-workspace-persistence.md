@@ -54,9 +54,15 @@ does not become safe to replay merely because persistence failed. A failed save 
 `workspace_failed` Turn report while preserving the execution-effects classification and local files.
 Reconciliation sends that report before attempting another save. Deterministic archive violations
 (size/count limits, unsupported entries, unsafe paths) stop retries of unchanged files and keep
-execution blocked, but retain the control/report connection. Transient storage failures retry on
-reconnection. A crash during the save, before journaling the terminal report, is reconciled as
-unknown execution effects and never automatically replayed.
+execution blocked, but retain the control/report connection. Transient storage failures receive up
+to three uploads of the same archive, with one- and two-second backoff, within one shared
+120-second upload/readback budget. Network failures, HTTP 408/429 and 5xx are retryable; other HTTP
+failures, authorization loss, invalid protocol responses and CAS conflicts are not. Before another
+upload, readback must confirm the original object generation, metageneration, owner and contents.
+A matching committed write succeeds without another upload; unavailable readback stops the batch.
+Retries never rebase local files onto an unrelated newer object. Exhausted transient saves retain
+local files and can retry on reconnection. A crash before journaling the terminal report is
+reconciled as unknown execution effects and never automatically replayed.
 
 Checkpoint diagnostics retain the archive failure code and the original error cause. Both IM
 Turns and internal Session messages log deterministic archive failures without cycling the control

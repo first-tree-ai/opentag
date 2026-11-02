@@ -2,6 +2,7 @@ import { createReadStream } from "node:fs";
 import { type FileHandle, mkdir, mkdtemp, open, readdir, rm } from "node:fs/promises";
 import { isIP } from "node:net";
 import { join, relative, resolve, sep } from "node:path";
+import { setTimeout as retryDelay } from "node:timers/promises";
 import {
   RUNNER_WORKSPACE_ARCHIVE_MAX_BYTES,
   RUNNER_WORKSPACE_PATH,
@@ -19,11 +20,12 @@ import {
 
 export class CloudWorkspaceError extends Error {
   readonly archiveErrorCode?: WorkspaceArchiveErrorCode;
+  readonly httpStatus?: number;
 
   constructor(
     readonly code: "restore_failed" | "save_failed" | "scope_unavailable",
     readonly retryable = true,
-    options?: ErrorOptions,
+    options?: ErrorOptions & { httpStatus?: number },
   ) {
     const cause = options?.cause;
     const archiveErrorCode =
@@ -32,9 +34,14 @@ export class CloudWorkspaceError extends Error {
         : cause instanceof CloudWorkspaceError
           ? cause.archiveErrorCode
           : undefined;
-    super(`Cloud workspace ${code}${archiveErrorCode ? ` (${archiveErrorCode})` : ""}`, options);
+    const httpStatus = options?.httpStatus ?? (cause instanceof CloudWorkspaceError ? cause.httpStatus : undefined);
+    super(
+      `Cloud workspace ${code}${archiveErrorCode ? ` (${archiveErrorCode})` : httpStatus ? ` (HTTP ${httpStatus})` : ""}`,
+      options,
+    );
     this.name = "CloudWorkspaceError";
     this.archiveErrorCode = archiveErrorCode;
+    this.httpStatus = httpStatus;
   }
 }
 
@@ -68,10 +75,13 @@ function workspaceOrigin(raw: string): string {
 }
 
 async function boundedJson(response: Response): Promise<unknown> {
-  if (!response.ok || !response.body) {
+  if (!response.ok) {
     await response.body?.cancel();
-    throw new CloudWorkspaceError("save_failed");
+    throw new CloudWorkspaceError("save_failed", [408, 429].includes(response.status) || response.status >= 500, {
+      httpStatus: response.status,
+    });
   }
+  if (!response.body) throw new CloudWorkspaceError("save_failed", false);
   const chunks: Uint8Array[] = [];
   let total = 0;
   const reader = response.body.getReader();
@@ -80,13 +90,19 @@ async function boundedJson(response: Response): Promise<unknown> {
       const item = await reader.read();
       if (item.done) break;
       total += item.value.byteLength;
-      if (total > 16 * 1024) throw new CloudWorkspaceError("save_failed");
+      if (total > 16 * 1024) throw new CloudWorkspaceError("save_failed", false);
       chunks.push(item.value);
     }
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch (error) {
+    throw error instanceof CloudWorkspaceError ? error : new CloudWorkspaceError("save_failed", true, { cause: error });
   } finally {
     await reader.cancel().catch(() => undefined);
     reader.releaseLock();
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch (error) {
+    throw new CloudWorkspaceError("save_failed", false, { cause: error });
   }
 }
 
@@ -185,7 +201,10 @@ export class CloudWorkspace {
       ) {
         this.#terminalFailure = new CloudWorkspaceError("save_failed", false, { cause: error });
       }
-      throw this.#terminalFailure ?? new CloudWorkspaceError("save_failed", true, { cause: error });
+      throw (
+        this.#terminalFailure ??
+        (error instanceof CloudWorkspaceError ? error : new CloudWorkspaceError("save_failed", true, { cause: error }))
+      );
     }
   }
 
@@ -203,7 +222,7 @@ export class CloudWorkspace {
     const generation = this.#options.environmentGeneration();
     const token = this.#options.token();
     if (!token || generation === undefined || !Number.isSafeInteger(generation) || generation < 1) {
-      throw new CloudWorkspaceError("scope_unavailable");
+      throw new CloudWorkspaceError("scope_unavailable", false);
     }
     return { authorization: `Bearer ${token}` };
   }
@@ -213,20 +232,23 @@ export class CloudWorkspace {
   }
 
   #parseObject(value: unknown): RunnerWorkspaceObject {
-    const object = RunnerWorkspaceObjectSchema.parse(value);
+    const parsed = RunnerWorkspaceObjectSchema.safeParse(value);
+    if (!parsed.success) throw new CloudWorkspaceError("save_failed", false, { cause: parsed.error });
+    const object = parsed.data;
     if (object.ownerGeneration !== this.#options.environmentGeneration()) {
-      throw new CloudWorkspaceError("scope_unavailable");
+      throw new CloudWorkspaceError("scope_unavailable", false);
     }
     return object;
   }
 
-  async #claim(): Promise<RunnerWorkspaceObject> {
+  async #claim(signal = this.#signal()): Promise<RunnerWorkspaceObject> {
+    signal.throwIfAborted();
     const response = await this.#fetch(`${this.#url}/claim`, {
       method: "POST",
       headers: { ...this.#headers(), "content-type": "application/json" },
       body: "{}",
       redirect: "error",
-      signal: this.#signal(),
+      signal,
     });
     return this.#parseObject(await boundedJson(response));
   }
@@ -270,12 +292,59 @@ export class CloudWorkspace {
     info: WorkspaceArchiveInfo,
     sealed: boolean,
   ): Promise<RunnerWorkspaceObject> {
+    const signal = this.#signal();
+    for (let attempt = 0; ; attempt += 1) {
+      signal.throwIfAborted();
+      try {
+        const object = await this.#putArchive(path, previous, info, sealed, signal);
+        if (!this.#confirmsWrite(object, previous, info, sealed)) throw new CloudWorkspaceError("save_failed", false);
+        return object;
+      } catch (error) {
+        const confirmed = await this.#verifyFailedUpload(error, previous, info, sealed, signal);
+        if (confirmed) return confirmed;
+        if (attempt === 2) throw error;
+        await retryDelay(1000 * 2 ** attempt, undefined, { signal });
+      }
+    }
+  }
+
+  async #verifyFailedUpload(
+    error: unknown,
+    previous: RunnerWorkspaceObject,
+    info: WorkspaceArchiveInfo,
+    sealed: boolean,
+    signal: AbortSignal,
+  ): Promise<RunnerWorkspaceObject | undefined> {
+    if (
+      error instanceof CloudWorkspaceError &&
+      (error.code === "scope_unavailable" || (error.httpStatus !== undefined && !error.retryable))
+    )
+      throw error;
+    // A missing response may hide a committed write. Only an unchanged original object
+    // permits another conditional upload; an unrelated newer object is never a new base.
+    const current = await this.#claim(signal);
+    if (this.#confirmsWrite(current, previous, info, sealed)) return current;
+    if (!this.#sameObject(current, previous)) throw new CloudWorkspaceError("save_failed", false, { cause: error });
+    if (!(error instanceof CloudWorkspaceError && error.retryable)) throw error;
+    return undefined;
+  }
+
+  async #putArchive(
+    path: string,
+    previous: RunnerWorkspaceObject,
+    info: WorkspaceArchiveInfo,
+    sealed: boolean,
+    signal: AbortSignal,
+  ): Promise<RunnerWorkspaceObject> {
+    if (previous.ownerGeneration !== this.#options.environmentGeneration())
+      throw new CloudWorkspaceError("scope_unavailable", false);
+    const headers = this.#headers();
     const body = createReadStream(path);
     try {
       const init: RequestInit & { duplex: "half" } = {
         method: "PUT",
         headers: {
-          ...this.#headers(),
+          ...headers,
           "content-type": "application/octet-stream",
           "content-length": String(info.bytes),
           "x-opentag-storage-generation": previous.generation,
@@ -287,20 +356,31 @@ export class CloudWorkspace {
         body: body as unknown as NonNullable<RequestInit["body"]>,
         duplex: "half",
         redirect: "error",
-        signal: this.#signal(),
+        signal,
       };
-      const object = this.#parseObject(await boundedJson(await this.#fetch(`${this.#url}/archive`, init)));
-      if (!this.#confirmsWrite(object, previous, info, sealed)) throw new CloudWorkspaceError("save_failed");
-      return object;
-    } catch {
-      // An unavailable response is not evidence of failure. Verify the intended write, but never
-      // adopt an unrelated newer object as the base for uploading stale local bytes.
-      const current = await this.#claim();
-      if (!this.#confirmsWrite(current, previous, info, sealed)) throw new CloudWorkspaceError("save_failed");
-      return current;
+      let response: Response;
+      try {
+        response = await this.#fetch(`${this.#url}/archive`, init);
+      } catch (error) {
+        throw new CloudWorkspaceError("save_failed", true, { cause: error });
+      }
+      return this.#parseObject(await boundedJson(response));
     } finally {
       body.destroy();
     }
+  }
+
+  #sameObject(object: RunnerWorkspaceObject, previous: RunnerWorkspaceObject): boolean {
+    return (
+      object.generation === previous.generation &&
+      object.metageneration === previous.metageneration &&
+      object.ownerGeneration === previous.ownerGeneration &&
+      object.saved === previous.saved &&
+      object.sealed === previous.sealed &&
+      object.bytes === previous.bytes &&
+      object.sha256 === previous.sha256 &&
+      object.md5 === previous.md5
+    );
   }
 
   #confirmsWrite(
@@ -311,6 +391,7 @@ export class CloudWorkspace {
   ): boolean {
     return (
       object.generation !== previous.generation &&
+      object.ownerGeneration === previous.ownerGeneration &&
       object.saved &&
       object.sealed === sealed &&
       object.bytes === info.bytes &&

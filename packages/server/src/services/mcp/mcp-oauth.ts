@@ -760,7 +760,7 @@ export class McpOAuthClient {
   }
 }
 
-const FEISHU_INVALID_GRANT_CODES = new Set([20003, 20004, 20024, 20025, 20026, 20037, 20063, 20073, 20074]);
+const FEISHU_INVALID_GRANT_CODES = new Set([20003, 20004, 20024, 20025, 20026, 20037, 20063, 20064, 20073, 20074]);
 const FEISHU_INVALID_CLIENT_CODES = new Set([20014, 20015, 20027]);
 
 function normalizeTokenErrorCode(document: Record<string, unknown>): string | undefined {

@@ -879,42 +879,52 @@ describe("McpOAuthFlowService.start", () => {
       });
     });
 
-    it("transitions a Feishu authorization to revoked when refresh_token is terminally expired or invalid", async () => {
-      const ids = await seed(feishuMcpUrl);
-      const { row } = await authorizedRow(
-        ids,
-        { accessToken: "u-feishu-at-1", refreshToken: "ur-expired" },
-        { authorizationServer: feishuIssuer, flowAuthorizationServer: feishuIssuer, oauthResource: feishuMcpUrl },
-      );
-      const cipher = new McpCredentialCipher(new ApplicationCipher(new Uint8Array(32).fill(7)));
-      const sealed = cipher.encryptAuthorizationCredential(
-        { mcpServerId: ids.mcpServerId, agentId: ids.agentId, authorizationServer: feishuIssuer },
-        { accessToken: "u-feishu-at-1", refreshToken: "ur-expired" },
-      );
-      await unit.database
-        .update(mcpServerAuthorizations)
-        .set({ ciphertext: sealed.ciphertext, keyId: sealed.keyId })
-        .where(eq(mcpServerAuthorizations.id, row?.id as string));
+    it.each([
+      {
+        label: "with error field (20003)",
+        payload: { code: 20003, error: "invalid_grant", error_description: "expired" },
+        status: 200,
+      },
+      { label: "numeric-only 20026", payload: { code: 20026, msg: "refresh_token invalid" }, status: 400 },
+      { label: "numeric-only 20037", payload: { code: 20037, msg: "refresh_token expired" }, status: 400 },
+      { label: "numeric-only 20064 (revoked)", payload: { code: 20064, msg: "refresh_token revoked" }, status: 400 },
+      { label: "numeric-only 20073", payload: { code: 20073, msg: "refresh_token consumed" }, status: 400 },
+    ])(
+      "transitions a Feishu authorization to revoked when refresh_token is terminally rejected ($label)",
+      async ({ payload, status }) => {
+        const ids = await seed(feishuMcpUrl);
+        const { row } = await authorizedRow(
+          ids,
+          { accessToken: "u-feishu-at-1", refreshToken: "ur-expired" },
+          { authorizationServer: feishuIssuer, flowAuthorizationServer: feishuIssuer, oauthResource: feishuMcpUrl },
+        );
+        const cipher = new McpCredentialCipher(new ApplicationCipher(new Uint8Array(32).fill(7)));
+        const sealed = cipher.encryptAuthorizationCredential(
+          { mcpServerId: ids.mcpServerId, agentId: ids.agentId, authorizationServer: feishuIssuer },
+          { accessToken: "u-feishu-at-1", refreshToken: "ur-expired" },
+        );
+        await unit.database
+          .update(mcpServerAuthorizations)
+          .set({ ciphertext: sealed.ciphertext, keyId: sealed.keyId })
+          .where(eq(mcpServerAuthorizations.id, row?.id as string));
 
-      const { flows } = build(
-        {
-          [feishuTokenUrl]: doc({
-            code: 20003,
-            error: "invalid_grant",
-            error_description: "refresh_token is invalid or expired",
-          }),
-        },
-        { staticMcpClients: { feishu: feishuClient } },
-      );
-      await flows.refreshAuthorization(row?.id as string);
-      expect(await readAuthorization(ids)).toMatchObject({
-        status: "revoked",
-        ciphertext: null,
-        keyId: null,
-        accessTokenExpiresAt: null,
-        refreshClaimId: null,
-      });
-    });
+        const { flows } = build(
+          {
+            [feishuTokenUrl]: doc(payload, status),
+          },
+          { staticMcpClients: { feishu: feishuClient } },
+        );
+        await flows.refreshAuthorization(row?.id as string);
+        expect(await readAuthorization(ids)).toMatchObject({
+          status: "revoked",
+          failureCode: null,
+          ciphertext: null,
+          keyId: null,
+          accessTokenExpiresAt: null,
+          refreshClaimId: null,
+        });
+      },
+    );
 
     it("clears potentially consumed Feishu refresh credentials on 5xx or transport failure without blind reuse", async () => {
       const ids = await seed(feishuMcpUrl);

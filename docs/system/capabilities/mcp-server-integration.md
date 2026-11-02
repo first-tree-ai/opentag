@@ -758,7 +758,9 @@ also derives the variable names; the Canva client above is a row of the same tab
 Operator setup, for every brand: register `<OPENTAG_PUBLIC_URL>/api/v1/mcp-servers/oauth/callback` as
 the redirect URL. Create a HubSpot **MCP Auth App** (Development > MCP Auth Apps), an Asana app of
 type **MCP app**, a Zoom **General app** with user-level OAuth, and a Feishu self-built application
-with OAuth 2.0 redirect URLs and `offline_access` + required read-only MCP scopes enabled. HubSpot assigns scopes at
+with OAuth 2.0 redirect URLs and `FEISHU_DEFAULT_OAUTH_SCOPES` (`docx:document:readonly`,
+`drive:drive:readonly`, `wiki:wiki:readonly`, `im:chat:readonly`, `im:message:readonly`,
+`search:message`, and `offline_access`) enabled. HubSpot assigns scopes at
 installation and advertises none in its metadata. Zoom's challenge carries no `scope`, so the flow
 requests every `scopes_supported` entry its protected resource metadata advertises; a Zoom app grants
 only the scopes listed on its **Scopes** page, so add the full advertised list there.

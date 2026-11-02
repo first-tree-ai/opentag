@@ -115,6 +115,14 @@ The completion screen stays visible until the user navigates away. Its primary a
 (**查看 Agent** in Chinese), opens that Agent's overview. Global navigation provides the return to the Agent list;
 the completion screen does not repeat that destination as a secondary action or redirect automatically.
 
+Cloud Agent home keeps workspace recovery collapsed until explicitly opened or reached through
+`?recovery=true`. The recovery panel pages the existing Account-owned conversation inventory and
+offers only Server-authorized save/release or explicit discard/release. A captured environment
+generation stays fixed through confirmation and is checked again before the request. Busy actions
+cannot be repeated; failed or uncertain mutations cause status reads rather than automatic retries.
+Discard confirmation explains unsaved-file loss and that external effects are not undone. A
+failed inventory read never becomes an empty list, and revoked access hides cached resources.
+
 ## Layout and responsive acceptance
 
 Authenticated pages use the named `content` container and the shared content frame documented in `KUMO.md`. Prefer

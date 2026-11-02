@@ -65,6 +65,8 @@ contents, and machine-specific operational logs outside the repository.
 
 Screenshots and browser checks for Web UI changes, one directory per change:
 
+- [Cloud workspace recovery](web-ui/cloud-workspace-recovery/README.md)
+
 - [Context Tree GitHub MCP authorization](web-ui/context-mcp-authorization/README.md)
 - [Agent status layout](web-ui/agent-status/README.md)
 - [computer-recovery](web-ui/computer-recovery/README.md)

@@ -21,6 +21,20 @@ Test and acceptance material for [Cloud workspace persistence](../../docs/system
 These checks establish reproducible failure handling. They do not identify the exact archive
 violation from an incident without its original error or prove real GCS/native recovery.
 
+## Web recovery
+
+- `cloud-workspace-recovery.test.tsx` checks access without a release-failure marker, generation
+  capture, duplicate-click prevention, discard confirmation/cancellation, a replacement during
+  confirmation, status-read failures, uncertain mutations without automatic resubmission,
+  pagination and revoked access.
+- `api-cloud-workspace.test.ts` checks the existing Account status/stop paths, exact generation and
+  discard bodies, CSRF, denial and response deadlines without a second mutation.
+- [Browser evidence](../web-ui/cloud-workspace-recovery/README.md) covers responsive layout,
+  both locales, keyboard confirmation behavior and accessibility with mocked Account APIs.
+
+These checks do not establish real GCS, Instance deletion, or same-Session restoration. The live
+acceptance below remains separate and requires authorization for its owned disposable resources.
+
 ## Live acceptance before rollout
 
 Use a disposable Account/Session and an owned GCS prefix in staging (us-west1). The existing

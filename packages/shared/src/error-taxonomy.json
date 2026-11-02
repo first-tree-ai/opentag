@@ -1,0 +1,611 @@
+[
+  {
+    "code": "AUTH_INVALID_TOKEN",
+    "category": "auth",
+    "description": "Provided authentication token is missing, expired, or cryptographically invalid.",
+    "retryability": "after_auth",
+    "troubleshooting": "Verify user credentials, renew bearer token, or initiate browser sign-in flow."
+  },
+  {
+    "code": "AUTH_CODE_EXPIRED",
+    "category": "auth",
+    "description": "One-time authorization code or link has expired.",
+    "retryability": "after_auth",
+    "troubleshooting": "Request a new authorization code or verification email."
+  },
+  {
+    "code": "AUTH_CODE_CONSUMED",
+    "category": "auth",
+    "description": "One-time authorization code has already been redeemed.",
+    "retryability": "after_auth",
+    "troubleshooting": "Initiate a new authentication attempt; one-time codes cannot be reused."
+  },
+  {
+    "code": "AUTH_CODE_PURPOSE_MISMATCH",
+    "category": "auth",
+    "description": "Authorization code presented does not match the requested purpose.",
+    "retryability": "never",
+    "troubleshooting": "Ensure code exchange matches the original OAuth or verification intent."
+  },
+  {
+    "code": "AUTH_DEV_USER_UNAVAILABLE",
+    "category": "auth",
+    "description": "Configured local development sign-in user is missing or ambiguous.",
+    "retryability": "backoff",
+    "troubleshooting": "Check database seed state and ensure development user is present."
+  },
+  {
+    "code": "AUTH_INVALID_CODE",
+    "category": "auth",
+    "description": "Provided authorization code is malformed or invalid.",
+    "retryability": "after_auth",
+    "troubleshooting": "Check code input for transcription errors and try again."
+  },
+  {
+    "code": "AUTH_OAUTH_FAILED",
+    "category": "auth",
+    "description": "OAuth token exchange or verification with external provider failed.",
+    "retryability": "after_auth",
+    "troubleshooting": "Verify OAuth app client ID, secret, callback URL, and provider service status."
+  },
+  {
+    "code": "AUTH_PROVIDER_DISABLED",
+    "category": "auth",
+    "description": "Requested authentication provider is not enabled on this server instance.",
+    "retryability": "never",
+    "troubleshooting": "Check server environment configuration for enabled auth providers."
+  },
+  {
+    "code": "AUTH_IDENTITY_CONFLICT",
+    "category": "auth",
+    "description": "External identity is already linked to another user account.",
+    "retryability": "never",
+    "troubleshooting": "Sign in to the existing account holding this external identity or unlink it first."
+  },
+  {
+    "code": "AUTH_EMAIL_CONFLICT",
+    "category": "auth",
+    "description": "An account already exists for the specified email address.",
+    "retryability": "never",
+    "troubleshooting": "Sign in using existing credentials or use password reset."
+  },
+  {
+    "code": "AUTH_USER_SUSPENDED",
+    "category": "auth",
+    "description": "Target user account has been suspended.",
+    "retryability": "never",
+    "troubleshooting": "Contact workspace administrator to review account status."
+  },
+  {
+    "code": "AUTH_USER_MISMATCH",
+    "category": "auth",
+    "description": "Authenticated user does not match required resource owner.",
+    "retryability": "after_auth",
+    "troubleshooting": "Sign in with an account that possesses access permissions for this resource."
+  },
+  {
+    "code": "RATE_LIMITED",
+    "category": "auth",
+    "description": "Too many requests submitted within rate limit window.",
+    "retryability": "backoff",
+    "troubleshooting": "Wait for the rate limit duration to elapse before making additional attempts."
+  },
+  {
+    "code": "IM_DELIVERY_FAILED",
+    "category": "im",
+    "description": "Delivery of instant messaging payload failed during dispatch.",
+    "retryability": "backoff",
+    "troubleshooting": "Check target runtime connectivity, IM binding status, and worker logs."
+  },
+  {
+    "code": "IM_DELIVERY_OPERATION_TIMEOUT",
+    "category": "im",
+    "description": "Delivery execution exceeded configured operation deadline.",
+    "retryability": "backoff",
+    "troubleshooting": "Inspect computer runtime performance and check for slow model responses or blocking operations."
+  },
+  {
+    "code": "IM_DELIVERY_QUEUE_AGE_EXCEEDED",
+    "category": "im",
+    "description": "Queued delivery message exceeded maximum allowed queue age.",
+    "retryability": "backoff",
+    "troubleshooting": "Examine delivery worker throughput and scaling limits."
+  },
+  {
+    "code": "IM_DELIVERY_WORKER_SATURATED",
+    "category": "im",
+    "description": "Delivery worker queue capacity saturated.",
+    "retryability": "backoff",
+    "troubleshooting": "Scale delivery worker concurrency or reduce concurrent active agent lane count."
+  },
+  {
+    "code": "IM_DELIVERY_STEER_UNKNOWN",
+    "category": "im",
+    "description": "Steer target delivery outcome is uncertain or cannot be correlated.",
+    "retryability": "never",
+    "troubleshooting": "Verify root turn status and check whether previous turn settled cleanly."
+  },
+  {
+    "code": "IM_DELIVERY_TERMINAL",
+    "category": "im",
+    "description": "Message delivery reached terminal rejection and will not be re-attempted.",
+    "retryability": "never",
+    "troubleshooting": "Inspect delivery payload schema and verify target agent binding validity."
+  },
+  {
+    "code": "IM_DELIVERY_CUSTODY_DEFERRED",
+    "category": "im",
+    "description": "Delivery deferred due to active execution custody by another worker.",
+    "retryability": "immediate",
+    "troubleshooting": "Normal concurrency behavior; candidate will be re-evaluated on next scheduler pass."
+  },
+  {
+    "code": "IM_DELIVERY_STEER_DEFERRED",
+    "category": "im",
+    "description": "Steer delivery deferred because turn execution has not reached admissible phase.",
+    "retryability": "immediate",
+    "troubleshooting": "Wait for active turn to reach steerable state."
+  },
+  {
+    "code": "IM_DELIVERY_PLACEMENT_STALE",
+    "category": "im",
+    "description": "Delivery computer placement is stale or generation has advanced.",
+    "retryability": "backoff",
+    "troubleshooting": "Check session computer placement table for updated runner instances."
+  },
+  {
+    "code": "IM_BINDING_TEMPORARILY_UNAVAILABLE",
+    "category": "im",
+    "description": "IM provider integration is temporarily unavailable or unreachable.",
+    "retryability": "backoff",
+    "troubleshooting": "Check outbound network connectivity and external IM platform status."
+  },
+  {
+    "code": "IM_BINDING_CONFIGURATION_CONFLICT",
+    "category": "im",
+    "description": "IM binding configuration conflicts with existing channel or workspace mapping.",
+    "retryability": "never",
+    "troubleshooting": "Review channel and team bindings in workspace settings."
+  },
+  {
+    "code": "IM_BINDING_FORBIDDEN",
+    "category": "im",
+    "description": "IM provider rejected interaction due to permission or authorization constraints.",
+    "retryability": "never",
+    "troubleshooting": "Ensure OpenTag app has required scopes and permissions in Slack or Lark/Feishu."
+  },
+  {
+    "code": "IM_BINDING_GENERATION_STALE",
+    "category": "im",
+    "description": "IM binding credential generation is superseded by a newer version.",
+    "retryability": "backoff",
+    "troubleshooting": "Fetch the latest binding state and use current generation credentials."
+  },
+  {
+    "code": "IM_BINDING_NOT_FOUND",
+    "category": "im",
+    "description": "Specified IM binding record does not exist.",
+    "retryability": "never",
+    "troubleshooting": "Verify binding ID and ensure integration was not uninstalled."
+  },
+  {
+    "code": "IM_BINDING_PROVIDER_IMMUTABLE",
+    "category": "im",
+    "description": "Cannot alter immutable provider type on an existing IM binding.",
+    "retryability": "never",
+    "troubleshooting": "Create a new binding for the desired provider instead of modifying an existing one."
+  },
+  {
+    "code": "IM_BINDING_SCOPE_REAUTH_REQUIRED",
+    "category": "im",
+    "description": "IM provider requires workspace re-authorization due to updated scopes.",
+    "retryability": "after_auth",
+    "troubleshooting": "Navigate to integration settings and complete OAuth re-authorization."
+  },
+  {
+    "code": "IM_BINDING_UNBIND_REQUIRED",
+    "category": "im",
+    "description": "Action requires unbinding existing IM integration first.",
+    "retryability": "never",
+    "troubleshooting": "Unbind current provider before attaching a new configuration."
+  },
+  {
+    "code": "FEISHU_APP_ALREADY_BOUND",
+    "category": "im",
+    "description": "Target Feishu/Lark app is already bound to another agent.",
+    "retryability": "never",
+    "troubleshooting": "Use a distinct Feishu app or unbind it from previous agent."
+  },
+  {
+    "code": "FEISHU_BINDING_IDENTITY_MISMATCH",
+    "category": "im",
+    "description": "Feishu tenant or app identity does not match existing binding record.",
+    "retryability": "never",
+    "troubleshooting": "Verify app ID, app secret, and workspace tenant."
+  },
+  {
+    "code": "FEISHU_UPSTREAM_UNAVAILABLE",
+    "category": "im",
+    "description": "Feishu/Lark API endpoint returned 5xx error or connection failed.",
+    "retryability": "backoff",
+    "troubleshooting": "Check Feishu platform status and retry with backoff."
+  },
+  {
+    "code": "SLACK_APP_TEAM_ALREADY_BOUND",
+    "category": "im",
+    "description": "Slack app team workspace is already bound to an agent.",
+    "retryability": "never",
+    "troubleshooting": "Select an unbound Slack team or reconfigure existing agent."
+  },
+  {
+    "code": "SLACK_AUTH_IDENTITY_INCOMPLETE",
+    "category": "im",
+    "description": "Slack OAuth payload is missing required team or user identification.",
+    "retryability": "after_auth",
+    "troubleshooting": "Re-run Slack OAuth installation flow ensuring all required scopes are granted."
+  },
+  {
+    "code": "SLACK_AUTH_INVALID",
+    "category": "im",
+    "description": "Slack API rejected bot or user token.",
+    "retryability": "after_auth",
+    "troubleshooting": "Re-authenticate Slack integration to obtain fresh token."
+  },
+  {
+    "code": "SLACK_BINDING_IDENTITY_MISMATCH",
+    "category": "im",
+    "description": "Slack team ID does not match expected binding tenant.",
+    "retryability": "never",
+    "troubleshooting": "Ensure OAuth connection was made to the correct Slack workspace."
+  },
+  {
+    "code": "SLACK_CONFIGURATION_CONFLICT",
+    "category": "im",
+    "description": "Slack integration configuration conflicts with existing settings.",
+    "retryability": "never",
+    "troubleshooting": "Review channel and team configuration for duplicate records."
+  },
+  {
+    "code": "SLACK_OAUTH_FAILED",
+    "category": "im",
+    "description": "Slack OAuth token exchange failed.",
+    "retryability": "after_auth",
+    "troubleshooting": "Check Slack client ID, client secret, redirect URI, and network connectivity."
+  },
+  {
+    "code": "SLACK_SCOPE_REAUTH_REQUIRED",
+    "category": "im",
+    "description": "Slack integration requires re-authorization to acquire missing scopes.",
+    "retryability": "after_auth",
+    "troubleshooting": "Re-install Slack app to update permissions."
+  },
+  {
+    "code": "SLACK_UPSTREAM_UNAVAILABLE",
+    "category": "im",
+    "description": "Slack API is unreachable or returned server error.",
+    "retryability": "backoff",
+    "troubleshooting": "Check Slack status page and retry with exponential backoff."
+  },
+  {
+    "code": "SERVER_PROCESS_FATAL",
+    "category": "system",
+    "description": "Uncaught exception or unhandled rejection triggered immediate process termination.",
+    "retryability": "never",
+    "troubleshooting": "Inspect fatal error stack in Cloud Logging to identify root cause."
+  },
+  {
+    "code": "INTERNAL_ERROR",
+    "category": "system",
+    "description": "Unhandled internal server condition encountered.",
+    "retryability": "backoff",
+    "troubleshooting": "Check server diagnostic logs and error report relay for detailed traces."
+  },
+  {
+    "code": "SERVICE_UNAVAILABLE",
+    "category": "system",
+    "description": "Server or upstream dependency is temporarily unavailable.",
+    "retryability": "backoff",
+    "troubleshooting": "Verify database health, network connectivity, and external dependencies."
+  },
+  {
+    "code": "DESTINATION_BLOCKED",
+    "category": "security",
+    "description": "Outbound HTTP request was blocked by SSRF egress policy (private or loopback IP).",
+    "retryability": "never",
+    "troubleshooting": "Verify destination URL resolves to a public routable IP address."
+  },
+  {
+    "code": "MCP_NOT_FOUND",
+    "category": "mcp",
+    "description": "Requested Model Context Protocol server configuration not found.",
+    "retryability": "never",
+    "troubleshooting": "Verify MCP server ID and ensure it is registered in catalog."
+  },
+  {
+    "code": "MCP_TIMEOUT",
+    "category": "mcp",
+    "description": "MCP operation exceeded configured timeout deadline.",
+    "retryability": "backoff",
+    "troubleshooting": "Check MCP server response latency and increase timeout if necessary."
+  },
+  {
+    "code": "MCP_AUTHORIZATION_FAILED",
+    "category": "mcp",
+    "description": "MCP server refused authentication credentials.",
+    "retryability": "after_auth",
+    "troubleshooting": "Verify API key, OAuth token, or basic auth credentials for the target MCP server."
+  },
+  {
+    "code": "MCP_AUTHORIZATION_SCOPE_REQUIRED",
+    "category": "mcp",
+    "description": "MCP server requires additional authorization scopes.",
+    "retryability": "after_auth",
+    "troubleshooting": "Re-authorize MCP server with requested permission scopes."
+  },
+  {
+    "code": "MCP_AUTHORIZATION_KIND_INVALID",
+    "category": "mcp",
+    "description": "Unsupported authorization type configured for MCP server.",
+    "retryability": "never",
+    "troubleshooting": "Configure a supported authorization method (OAuth2, bearer token, API key)."
+  },
+  {
+    "code": "MCP_CREDENTIAL_INPUT_INVALID",
+    "category": "mcp",
+    "description": "MCP credential input validation failed.",
+    "retryability": "never",
+    "troubleshooting": "Verify format and character limits of submitted MCP credentials."
+  },
+  {
+    "code": "MCP_AUTH_HEADER_INVALID",
+    "category": "mcp",
+    "description": "Configured MCP authentication header format is invalid.",
+    "retryability": "never",
+    "troubleshooting": "Use standard HTTP header formatting without forbidden characters."
+  },
+  {
+    "code": "MCP_OAUTH_FLOW_INVALID",
+    "category": "mcp",
+    "description": "MCP OAuth authorization flow is corrupt or invalid.",
+    "retryability": "never",
+    "troubleshooting": "Restart MCP OAuth flow from the beginning."
+  },
+  {
+    "code": "MCP_OAUTH_FLOW_EXPIRED",
+    "category": "mcp",
+    "description": "MCP OAuth session expired before user completed authorization.",
+    "retryability": "after_auth",
+    "troubleshooting": "Initiate a new OAuth authorization flow and complete promptly."
+  },
+  {
+    "code": "MCP_OAUTH_DENIED",
+    "category": "mcp",
+    "description": "User or administrator denied MCP OAuth authorization request.",
+    "retryability": "never",
+    "troubleshooting": "Accept requested scopes on OAuth consent screen to enable integration."
+  },
+  {
+    "code": "MCP_OAUTH_FAILED",
+    "category": "mcp",
+    "description": "MCP OAuth token exchange failed.",
+    "retryability": "after_auth",
+    "troubleshooting": "Verify OAuth endpoint settings and provider operational status."
+  },
+  {
+    "code": "MCP_REGISTRATION_UNSUPPORTED",
+    "category": "mcp",
+    "description": "Dynamic client registration is not supported by target MCP server.",
+    "retryability": "never",
+    "troubleshooting": "Manually register client credentials with the MCP provider."
+  },
+  {
+    "code": "MCP_REGISTRATION_FAILED",
+    "category": "mcp",
+    "description": "Dynamic client registration with MCP server failed.",
+    "retryability": "backoff",
+    "troubleshooting": "Inspect MCP server error response and check registration parameters."
+  },
+  {
+    "code": "MCP_TRANSPORT_UNSUPPORTED",
+    "category": "mcp",
+    "description": "Requested transport protocol is not supported for MCP connection.",
+    "retryability": "never",
+    "troubleshooting": "Use standard SSE or HTTP POST transport as supported by MCP gateway."
+  },
+  {
+    "code": "MCP_PROTOCOL_UNSUPPORTED",
+    "category": "mcp",
+    "description": "MCP protocol version incompatibility detected.",
+    "retryability": "never",
+    "troubleshooting": "Upgrade MCP server implementation to supported protocol specification."
+  },
+  {
+    "code": "MCP_UPSTREAM_UNAVAILABLE",
+    "category": "mcp",
+    "description": "Target MCP server endpoint is unreachable.",
+    "retryability": "backoff",
+    "troubleshooting": "Verify MCP server network availability and DNS resolution."
+  },
+  {
+    "code": "MCP_UPSTREAM_ERROR",
+    "category": "mcp",
+    "description": "Target MCP server returned an upstream HTTP 5xx error.",
+    "retryability": "backoff",
+    "troubleshooting": "Review MCP server logs to determine cause of server-side failure."
+  },
+  {
+    "code": "MCP_PROBE_FAILED",
+    "category": "mcp",
+    "description": "Health probe or capability discovery failed for MCP server.",
+    "retryability": "backoff",
+    "troubleshooting": "Verify MCP endpoint responds to standard discovery requests."
+  },
+  {
+    "code": "MCP_REFRESH_OUTCOME_UNKNOWN",
+    "category": "mcp",
+    "description": "Credential refresh outcome could not be reliably verified.",
+    "retryability": "backoff",
+    "troubleshooting": "Inspect database connection and retry credential refresh."
+  },
+  {
+    "code": "SKILL_NOT_FOUND",
+    "category": "skill",
+    "description": "Requested agent skill definition not found.",
+    "retryability": "never",
+    "troubleshooting": "Verify skill identifier and check agent skill assignment."
+  },
+  {
+    "code": "SKILL_PRESET_NOT_FOUND",
+    "category": "skill",
+    "description": "Specified skill preset is not installed or available in catalog.",
+    "retryability": "never",
+    "troubleshooting": "Check skill preset registry and ensure preset package is deployed."
+  },
+  {
+    "code": "SKILL_NAME_CONFLICT",
+    "category": "skill",
+    "description": "Skill name conflicts with an existing skill on this agent.",
+    "retryability": "never",
+    "troubleshooting": "Choose a unique name for the skill."
+  },
+  {
+    "code": "SKILL_REVISION_CONFLICT",
+    "category": "skill",
+    "description": "Concurrent modification conflict detected on skill revision.",
+    "retryability": "never",
+    "troubleshooting": "Reload skill definition and reapply edits on latest revision."
+  },
+  {
+    "code": "SKILL_LIMIT_REACHED",
+    "category": "skill",
+    "description": "Agent has reached the maximum allowed number of skills.",
+    "retryability": "never",
+    "troubleshooting": "Remove unused skills before attaching new ones."
+  },
+  {
+    "code": "SKILL_NAME_RESERVED",
+    "category": "skill",
+    "description": "Specified skill name uses a reserved system identifier.",
+    "retryability": "never",
+    "troubleshooting": "Choose a different name that does not collide with built-in commands."
+  },
+  {
+    "code": "SKILL_SOURCE_INVALID",
+    "category": "skill",
+    "description": "Skill source payload or manifest failed validation.",
+    "retryability": "never",
+    "troubleshooting": "Validate SKILL.md format and manifest metadata."
+  },
+  {
+    "code": "SKILL_SOURCE_UNREACHABLE",
+    "category": "skill",
+    "description": "External repository or source URL for skill could not be reached.",
+    "retryability": "backoff",
+    "troubleshooting": "Verify network access to git repository or HTTP skill source."
+  },
+  {
+    "code": "SKILL_SOURCE_BLOCKED",
+    "category": "skill",
+    "description": "Skill source destination blocked by egress security policy.",
+    "retryability": "never",
+    "troubleshooting": "Ensure source URL points to public repository and not private network."
+  },
+  {
+    "code": "SKILL_SOURCE_TOO_LARGE",
+    "category": "skill",
+    "description": "Skill source archive or file size exceeds maximum limit.",
+    "retryability": "never",
+    "troubleshooting": "Reduce size of skill assets and dependencies."
+  },
+  {
+    "code": "SKILL_SOURCE_NO_SKILLS",
+    "category": "skill",
+    "description": "No valid skill definitions discovered in source target.",
+    "retryability": "never",
+    "troubleshooting": "Ensure source repository contains SKILL.md files in recognized locations."
+  },
+  {
+    "code": "SKILL_STORAGE_UNAVAILABLE",
+    "category": "skill",
+    "description": "Skill storage or database table temporarily inaccessible.",
+    "retryability": "backoff",
+    "troubleshooting": "Check database connectivity and retry skill operation."
+  },
+  {
+    "code": "PROTOCOL_VERSION_UNSUPPORTED",
+    "category": "protocol",
+    "description": "Client or runner runtime protocol version is incompatible with server.",
+    "retryability": "never",
+    "troubleshooting": "Update OpenTag client or server so protocol versions align."
+  },
+  {
+    "code": "PROTOCOL_CAPABILITY_UNSUPPORTED",
+    "category": "protocol",
+    "description": "Requested capability is not supported by target runtime connection.",
+    "retryability": "never",
+    "troubleshooting": "Verify computer capabilities and update client CLI."
+  },
+  {
+    "code": "PROTOCOL_ERROR",
+    "category": "protocol",
+    "description": "Malformed or out-of-sequence protocol frame received.",
+    "retryability": "never",
+    "troubleshooting": "Inspect websocket frames for schema non-compliance or unexpected sequence numbers."
+  },
+  {
+    "code": "RUNTIME_AUTH_TIMEOUT",
+    "category": "protocol",
+    "description": "Runtime connection handshake authentication timed out.",
+    "retryability": "backoff",
+    "troubleshooting": "Ensure computer daemon connects and authenticates within timeout window."
+  },
+  {
+    "code": "RUNTIME_REGISTER_TIMEOUT",
+    "category": "protocol",
+    "description": "Runtime session registration exceeded deadline.",
+    "retryability": "backoff",
+    "troubleshooting": "Check runner container launch latency and network latency to server."
+  },
+  {
+    "code": "SESSION_CURSOR_INVALID",
+    "category": "protocol",
+    "description": "Session pagination cursor is invalid or expired.",
+    "retryability": "never",
+    "troubleshooting": "Reset cursor and fetch from latest known checkpoint."
+  },
+  {
+    "code": "SESSION_PROOF_INVALID",
+    "category": "protocol",
+    "description": "Cryptographic proof presented for session admission is invalid.",
+    "retryability": "after_auth",
+    "troubleshooting": "Re-issue session proof from authorized controller."
+  },
+  {
+    "code": "invalid_response_schema",
+    "category": "client",
+    "description": "Client received an HTTP response that failed schema validation.",
+    "retryability": "never",
+    "troubleshooting": "Inspect server API response for unexpected structure or version mismatch."
+  },
+  {
+    "code": "csrf_token_missing",
+    "category": "client",
+    "description": "Client attempted mutating request without required double-submit CSRF cookie.",
+    "retryability": "after_auth",
+    "troubleshooting": "Ensure browser cookies are enabled and refresh page to obtain CSRF cookie."
+  },
+  {
+    "code": "network_error",
+    "category": "client",
+    "description": "Client network transport failed before receiving response.",
+    "retryability": "backoff",
+    "troubleshooting": "Check client internet connectivity and verify server reachable."
+  },
+  {
+    "code": "cancelled",
+    "category": "client",
+    "description": "Client request was aborted or cancelled by user.",
+    "retryability": "immediate",
+    "troubleshooting": "Retry the operation if the cancellation was unintended."
+  }
+]

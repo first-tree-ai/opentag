@@ -164,6 +164,14 @@ const SAFE_STRUCTURAL_KEYS = new Set([
   "access_token_expires_at",
   // A boolean-ish presence flag rather than a value.
   "has_credential",
+  // Telemetry and token metric names that contain "token", "payload", or "body" but are safe metric values.
+  "input_tokens",
+  "output_tokens",
+  "max_tokens",
+  "token_count",
+  "total_tokens",
+  "payload_type",
+  "body_bytes",
 ]);
 
 /**
@@ -688,6 +696,10 @@ function scrubCredentialHeaders(value: string): string {
 
 function scrubString(value: string): string {
   return scrubCredentialHeaders(value)
+    .replace(/\b(?:sk-|rk-|ghp_|gho_|github_pat_|xox[baprs]-)[A-Za-z0-9_.-]{8,}\b/gu, "[REDACTED]")
+    .replace(/\bAKIA[0-9A-Z]{16}\b/gu, "[REDACTED]")
+    .replace(/-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]+?-----END [A-Z ]+PRIVATE KEY-----/gu, "[REDACTED]")
+    .replace(/([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s:@]+@/giu, "$1[REDACTED]@")
     .replace(/\bslack-provision\.[A-Za-z0-9_-]{32,}/gu, "[REDACTED]")
     .replace(/\bBearer\s+[^\s,;}\]]+/giu, "Bearer [REDACTED]")
     .replace(/\b(Basic|Digest|Negotiate)\s+[^\s,;}\]]+/giu, "$1 [REDACTED]")

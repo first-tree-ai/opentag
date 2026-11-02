@@ -1157,8 +1157,15 @@ export class BrowserApi {
    * is genuinely gone, and the retry this used to make could only ever have failed a second time.
    */
   private async fetchWithRefresh(path: string, init: RequestInit = {}): Promise<Response> {
+    const requestId = globalThis.crypto?.randomUUID
+      ? globalThis.crypto.randomUUID()
+      : `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    const headers = new Headers(init.headers);
+    if (!headers.has("x-request-id")) {
+      headers.set("x-request-id", requestId);
+    }
     const method = (init.method ?? "GET").toString().toUpperCase();
-    if (!init.signal?.aborted && !isSafeMethod(method) && !isTokenMintingPath(path) && !hasCsrfHeader(init.headers)) {
+    if (!init.signal?.aborted && !isSafeMethod(method) && !isTokenMintingPath(path) && !hasCsrfHeader(headers)) {
       this.diagnosticReporter.report({
         source: "api",
         code: "csrf_token_missing",
@@ -1168,22 +1175,26 @@ export class BrowserApi {
     }
 
     try {
-      const response = await this.fetchImpl(path, { ...init, credentials: "same-origin" });
+      const response = await this.fetchImpl(path, { ...init, headers, credentials: "same-origin" });
       if (!response.ok) {
         const body = await response
           .clone()
           .json()
           .catch(() => undefined);
         const error = this.apiError(response, body);
-        this.diagnosticReporter.report({
-          source: "api",
-          code: error.code ?? `http_${response.status}`,
-          routeTemplate: routeTemplate(path),
-          status: response.status,
-          category: error.category,
-          requestId: error.requestId,
-          retryAfterSeconds: error.retryAfterSeconds,
-        });
+        const level = response.status >= 500 ? "error" : "warn";
+        this.diagnosticReporter.report(
+          {
+            source: "api",
+            code: error.code ?? `http_${response.status}`,
+            routeTemplate: routeTemplate(path),
+            status: response.status,
+            category: error.category,
+            requestId: error.requestId ?? requestId,
+            retryAfterSeconds: error.retryAfterSeconds,
+          },
+          level,
+        );
       }
       return response;
     } catch (cause) {
@@ -1226,12 +1237,15 @@ export class BrowserApi {
       path: issuePath.map((segment) => (typeof segment === "symbol" ? segment.toString() : segment)),
       code,
     }));
-    this.diagnosticReporter.report({
-      source: "api",
-      code: "invalid_response_schema",
-      routeTemplate: routeTemplate(path),
-      issues: issues.map(({ path: issuePath, code }) => ({ path: issuePath, code })),
-    });
+    this.diagnosticReporter.report(
+      {
+        source: "api",
+        code: "invalid_response_schema",
+        routeTemplate: routeTemplate(path),
+        issues: issues.map(({ path: issuePath, code }) => ({ path: issuePath, code })),
+      },
+      "error",
+    );
     throw new ResponseSchemaError(routeTemplate(path), issues);
   }
 

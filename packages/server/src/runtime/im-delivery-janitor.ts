@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
 import type { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
+import type { ServiceLogger } from "../observability/service-logger.js";
 import { expireInboundReceiptWork } from "../services/im/inbound-receipt-work-store.js";
 import { SessionService } from "../services/sessions/session-service.js";
 import { lockSteeredRecoverySessions, requeueSteeredDeliveries } from "./im-delivery-recovery.js";
@@ -220,6 +221,7 @@ export interface ImDeliveryJanitorOptions {
   imMessageDeliveriesRetentionMs: number;
   slackWebhookReceiptsRetentionMs: number;
   feishuInboundReceiptsRetentionMs: number;
+  logger?: ServiceLogger;
 }
 
 export async function runImDeliveryExpiry(
@@ -227,6 +229,7 @@ export async function runImDeliveryExpiry(
   options: ImDeliveryJanitorOptions,
   onDeliverySettled?: (deliveryId: string) => void,
 ): Promise<void> {
+  const start = Date.now();
   await runImDeliverySteerRecovery(database, options, onDeliverySettled);
   const now = options.clock().getTime();
   const expiryNow = new Date(now).toISOString();
@@ -274,6 +277,17 @@ export async function runImDeliveryExpiry(
     returning delivery.id
   `)) as Array<{ id: string }>;
   for (const delivery of expired) onDeliverySettled?.(delivery.id);
+  const durationMs = Date.now() - start;
+  options.logger?.info(
+    {
+      module: "im-delivery-janitor",
+      operation: "im.delivery.expiry_pass",
+      outcome: "completed",
+      expiredCount: expired.length,
+      durationMs,
+    },
+    "IM delivery expiry pass completed",
+  );
 }
 
 export async function runImDeliveryRetention(

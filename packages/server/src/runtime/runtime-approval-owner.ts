@@ -6,6 +6,7 @@ import {
   RuntimeApprovalResultSchema,
 } from "@opentag/shared";
 import { z } from "zod";
+import type { ServiceLogger } from "../observability/service-logger.js";
 import type { loadApprovalAuthority } from "./approval-authority.js";
 import type { ApprovalStore, PendingApproval } from "./approval-store.js";
 import type { ConnectionRegistry } from "./connection-registry.js";
@@ -37,6 +38,7 @@ interface Options {
   };
   onError(): void;
   now?: () => number;
+  logger?: ServiceLogger;
 }
 
 export class RuntimeApprovalOwner {
@@ -87,6 +89,17 @@ export class RuntimeApprovalOwner {
     const status = parsed.status === "applied" ? (row.status === "accept" ? "approved" : "denied") : "stale";
     if (await this.options.store.update(id, row.status, { status })) {
       this.#sent.delete(id);
+      this.options.logger?.info(
+        {
+          module: "runtime-approval",
+          operation: "approval.transition",
+          outcome: status,
+          approvalId: row.id,
+          previousStatus: row.status,
+          status,
+        },
+        "Runtime approval transitioned",
+      );
     }
   }
 
@@ -146,9 +159,22 @@ export class RuntimeApprovalOwner {
     // with the replica holding the runtime socket; authority is checked on both sides.
     const scope = await this.options.authority(row.request, row);
     if (!scope || !sameAuthority(row, scope)) return "unavailable";
-    return (await this.options.store.update(row.id, "pending", { status: action.decision }))
-      ? "recorded"
-      : "unavailable";
+    const updated = await this.options.store.update(row.id, "pending", { status: action.decision });
+    if (updated) {
+      this.options.logger?.info(
+        {
+          module: "runtime-approval",
+          operation: "approval.transition",
+          outcome: action.decision,
+          approvalId: row.id,
+          previousStatus: row.status,
+          status: action.decision,
+        },
+        "Runtime approval decided",
+      );
+      return "recorded";
+    }
+    return "unavailable";
   }
 
   async poll(): Promise<void> {
@@ -205,6 +231,17 @@ export class RuntimeApprovalOwner {
   private async invalidate(row: PendingApproval, current: boolean): Promise<void> {
     if (!(await this.options.store.update(row.id, row.status, { status: "stale" }))) return;
     this.#sent.delete(row.id);
+    this.options.logger?.info(
+      {
+        module: "runtime-approval",
+        operation: "approval.transition",
+        outcome: "stale",
+        approvalId: row.id,
+        previousStatus: row.status,
+        status: "stale",
+      },
+      "Runtime approval invalidated",
+    );
     if (current)
       await this.options.registry.send(row.computerId, row.instanceId, decline(row.request), row.connectionId);
   }

@@ -709,3 +709,54 @@ it("redacts a full operation code without erasing source filenames", () => {
   });
   expect(redactSensitive("/server/runtime-agent-slack-provision.ts")).toBe("/server/runtime-agent-slack-provision.ts");
 });
+
+describe("token metrics whitelist and bare token scrubbing", () => {
+  it("preserves token metric and byte count keys across camelCase and snake_case", () => {
+    const metrics = {
+      input_tokens: 1500,
+      output_tokens: 420,
+      max_tokens: 4096,
+      token_count: 12,
+      total_tokens: 1920,
+      payload_type: "completion",
+      body_bytes: 8192,
+      inputTokens: 1500,
+      outputTokens: 420,
+      maxTokens: 4096,
+      tokenCount: 12,
+      totalTokens: 1920,
+      payloadType: "completion",
+      bodyBytes: 8192,
+    };
+
+    expect(redactSensitive(metrics)).toEqual(metrics);
+    expect(redactForLog(metrics)).toEqual(metrics);
+  });
+
+  it("scrubs bare provider tokens, AWS keys, private keys, and URL credentials from strings", () => {
+    const rawTokens = [
+      "ghp_1234567890abcdefghijklmnopqrst",
+      "gho_1234567890abcdefghijklmnopqrst",
+      "github_pat_1234567890abcdefghijklmnopqrst",
+      "sk-ant-api03-1234567890abcdef",
+      "rk-1234567890abcdef",
+      "xoxb-123456789012-1234567890123-abcdefghijkl",
+      "xoxp-123456789012-1234567890123-abcdefghijkl",
+      "AKIAIOSFODNN7EXAMPLE",
+    ];
+
+    for (const token of rawTokens) {
+      const redacted = redactSensitive(`error occurred with token ${token} in request`);
+      expect(redacted).toBe("error occurred with token [REDACTED] in request");
+      expect(redacted).not.toContain(token);
+    }
+
+    const pemKey = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0Y...\n-----END RSA PRIVATE KEY-----";
+    expect(redactSensitive(`key: ${pemKey}`)).toBe("key: [REDACTED]");
+
+    const urlWithCredentials = "https://user:supersecretpass@api.example.com/v1/endpoint";
+    expect(redactSensitive(`connecting to ${urlWithCredentials}`)).toBe(
+      "connecting to https://[REDACTED]@api.example.com/v1/endpoint",
+    );
+  });
+});

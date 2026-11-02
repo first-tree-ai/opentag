@@ -80,6 +80,7 @@ function checkRateLimit(
   limiter: BrowserAuthRateLimiter,
   key: string,
   keyKind: RateLimitFailureMetadata["keyKind"],
+  request?: FastifyRequest,
 ): void {
   try {
     limiter.check(key);
@@ -91,6 +92,17 @@ function checkRateLimit(
         configurable: true,
         value: { keyKind, limiter, windowMs },
       });
+      request?.log.warn(
+        {
+          module: "auth",
+          operation: "auth.rate_limited",
+          outcome: "failed",
+          code: "RATE_LIMITED",
+          errorCode: "RATE_LIMITED",
+          keyKind,
+        },
+        "Browser auth rate limited",
+      );
     }
     throw error;
   }
@@ -302,7 +314,7 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
   });
 
   app.get(HTTP_PATHS.authDevCallback, async (request, reply) => {
-    checkRateLimit(limiter, `${request.ip}:dev`, "ip");
+    checkRateLimit(limiter, `${request.ip}:dev`, "ip", request);
     const betterAuth = options.betterAuth;
     if (!devSignInAvailable(request) || !betterAuth) {
       throw new AuthServiceError(
@@ -325,6 +337,17 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
       body: {},
     });
     if (!response.ok) {
+      request.log.warn(
+        {
+          module: "auth",
+          operation: "auth.sign_in",
+          outcome: "failed",
+          code: "AUTH_DEV_USER_UNAVAILABLE",
+          errorCode: "AUTH_DEV_USER_UNAVAILABLE",
+          provider: "dev",
+        },
+        "Browser dev sign in failed",
+      );
       // Better Auth's error body is not OpenTag's envelope, so the failure is restated rather than forwarded.
       throw new AuthServiceError(
         "AUTH_DEV_USER_UNAVAILABLE",
@@ -333,17 +356,12 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
         503,
       );
     }
-    copyBetterAuthCookies(reply, response);
-    // The session cookie alone cannot write: every browser mutation also carries OpenTag's double-submit token.
-    setBrowserCsrfCookie(reply, {
-      maxAgeSeconds: options.sessionTtlSeconds,
-      secure: options.secureCookies,
-    });
+    establishBrowserSession(reply, response, "dev", request);
     return reply.header("Cache-Control", "no-store").redirect(destination, 302);
   });
 
   app.get(HTTP_PATHS.authGoogleStart, async (request, reply) => {
-    checkRateLimit(limiter, `${request.ip}:start`, "ip");
+    checkRateLimit(limiter, `${request.ip}:start`, "ip", request);
     const betterAuth = options.betterAuth;
     if (!options.googleSignIn || !betterAuth) {
       throw new AuthServiceError("AUTH_PROVIDER_DISABLED", "deterministic", "Google sign-in is not configured", 404);
@@ -374,12 +392,26 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
    * Better Auth issues the session cookie; the double-submit token is OpenTag's and is minted here, because every
    * later mutation requires it and a browser that arrived with none would otherwise be able to read and nothing else.
    */
-  const establishBrowserSession = (reply: Parameters<typeof setBrowserCsrfCookie>[0], response: Response): void => {
+  const establishBrowserSession = (
+    reply: Parameters<typeof setBrowserCsrfCookie>[0],
+    response: Response,
+    provider: string,
+    request?: FastifyRequest,
+  ): void => {
     copyBetterAuthCookies(reply, response);
     setBrowserCsrfCookie(reply, {
       maxAgeSeconds: options.sessionTtlSeconds,
       secure: options.secureCookies,
     });
+    request?.log.info(
+      {
+        module: "auth",
+        operation: "auth.session_created",
+        outcome: "success",
+        provider,
+      },
+      "Browser auth session created",
+    );
   };
 
   const requirePasswordAuth = (): NonNullable<BrowserAuthRoutesOptions["betterAuth"]> => {
@@ -397,7 +429,7 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
   app.post(HTTP_PATHS.authEmailSignUp, async (request, reply) => {
     const betterAuth = requirePasswordAuth();
     requireBrowserOrigin(request, options.publicOrigin);
-    checkRateLimit(limiter, `${request.ip}:sign-up`, "ip");
+    checkRateLimit(limiter, `${request.ip}:sign-up`, "ip", request);
     const body = parseRequest(EmailSignUpRequestSchema, request.body);
     const response = await callBetterAuth(betterAuth.instance, betterAuth.publicUrl, request, {
       method: "POST",
@@ -406,32 +438,56 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
       body: { email: body.email, name: body.displayName, password: body.password },
     });
     if (!response.ok) {
-      throw await signUpFailure(response);
+      const failure = await signUpFailure(response);
+      request.log.warn(
+        {
+          module: "auth",
+          operation: "auth.sign_up",
+          outcome: "failed",
+          code: failure.code,
+          errorCode: failure.code,
+          statusCode: failure.statusCode,
+        },
+        "Browser email sign up failed",
+      );
+      throw failure;
     }
-    establishBrowserSession(reply, response);
+    establishBrowserSession(reply, response, "email", request);
     return reply.header("Cache-Control", "no-store").code(204).send();
   });
 
   app.post(HTTP_PATHS.authEmailSignIn, async (request, reply) => {
     const betterAuth = requirePasswordAuth();
     requireBrowserOrigin(request, options.publicOrigin);
-    checkRateLimit(limiter, `${request.ip}:sign-in`, "ip");
+    checkRateLimit(limiter, `${request.ip}:sign-in`, "ip", request);
     const body = parseRequest(EmailSignInRequestSchema, request.body);
     /*
      * Also bounded per address, so guessing one Account's password cannot be spread across many source addresses.
      * The cost is that an attacker can spend a victim's budget and lock them out for the window; against unbounded
      * distributed guessing at a single known address, that is the better failure.
      */
-    checkRateLimit(limiter, `sign-in:${body.email}`, "email");
+    checkRateLimit(limiter, `sign-in:${body.email}`, "email", request);
     const response = await callBetterAuth(betterAuth.instance, betterAuth.publicUrl, request, {
       method: "POST",
       path: "/sign-in/email",
       body: { email: body.email, password: body.password },
     });
     if (!response.ok) {
-      throw await signInFailure(response);
+      const failure = await signInFailure(response);
+      request.log.warn(
+        {
+          module: "auth",
+          operation: "auth.sign_in",
+          outcome: "failed",
+          code: failure.code,
+          errorCode: failure.code,
+          statusCode: failure.statusCode,
+        },
+        "Browser email sign in failed",
+      );
+      throw failure;
     }
-    establishBrowserSession(reply, response);
+    establishBrowserSession(reply, response, "email", request);
     return reply.header("Cache-Control", "no-store").code(204).send();
   });
 

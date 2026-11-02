@@ -10,7 +10,13 @@ import {
   StructuredErrorCodeSchema,
 } from "@opentag/shared";
 import { DrizzleQueryError, sql } from "drizzle-orm";
-import Fastify, { type FastifyInstance, type FastifyLoggerOptions, type FastifyRequest, LogController } from "fastify";
+import Fastify, {
+  type FastifyInstance,
+  type FastifyLoggerOptions,
+  type FastifyRequest,
+  type FastifyServerOptions,
+  LogController,
+} from "fastify";
 import {
   type AccountRoutesOptions,
   type InternalNavigationVisibilityService,
@@ -223,6 +229,8 @@ export interface CreateAppOptions {
   /** Passed to Fastify; `false` (the default) ignores `X-Forwarded-*` entirely. */
   trustProxy?: boolean | string[];
   readiness?: BootstrapReadiness;
+  environment?: string;
+  revision?: string;
   /** Non-secret deployment proof from the responding process, independent of control-plane state. */
   deployment?: { revision?: string; runner?: { image: string; version: string } };
   runtime?: RuntimeRoutesOptions;
@@ -343,7 +351,14 @@ const MAX_ERROR_STACK_LENGTH = 8_192;
 const READINESS_ATTEMPT_MAX_AGE_MS = 10_000;
 const READINESS_MAX_LIVE_ATTEMPTS = 2;
 
-type SerializedError = { type: string; message: string; stack: string; code?: string; cause?: SerializedError };
+type SerializedError = {
+  type: string;
+  message: string;
+  stack: string;
+  code?: string;
+  errorCode?: string;
+  cause?: SerializedError;
+};
 type DrizzleQueryErrorLike = { params?: unknown; query?: unknown };
 /** Bounds the deserialized cause chain so a cyclic or deep wrap cannot grow one log line without limit. */
 const SERIALIZED_ERROR_CAUSE_DEPTH = 3;
@@ -363,19 +378,51 @@ function redactLogString(value: string): string {
   return (typeof redacted === "string" ? redacted : String(redacted)).slice(0, MAX_ERROR_STACK_LENGTH);
 }
 
+function isPlainObjectError(error: unknown): error is Record<string, unknown> {
+  return typeof error === "object" && error !== null && ("message" in error || "stack" in error);
+}
+
+function serializeDrizzleQueryError(error: DrizzleQueryError): SerializedError {
+  const parameterCount = Array.isArray(error.params) ? error.params.length : undefined;
+  const summary = redactLogString(
+    `Database query failed${parameterCount === undefined ? "" : ` (${parameterCount} parameter${parameterCount === 1 ? "" : "s"})`}`,
+  );
+  return {
+    type: "DrizzleQueryError",
+    message: summary,
+    stack: redactLogString(`DrizzleQueryError: ${summary}`),
+  };
+}
+
+function serializePlainObjectError(candidate: Record<string, unknown>, depth: number): SerializedError {
+  const name = typeof candidate.name === "string" ? candidate.name : "Error";
+  const message = typeof candidate.message === "string" ? redactLogString(candidate.message) : "";
+  const stack = typeof candidate.stack === "string" ? redactLogString(candidate.stack) : `${name}: ${message}`;
+  const code =
+    typeof candidate.code === "string" &&
+    StructuredErrorCodeSchema.safeParse(candidate.code).success &&
+    redactLogString(candidate.code) === candidate.code
+      ? candidate.code
+      : undefined;
+  const cause =
+    candidate.cause !== undefined && depth < SERIALIZED_ERROR_CAUSE_DEPTH
+      ? serializeError(candidate.cause, depth + 1)
+      : undefined;
+  return {
+    type: name,
+    message: message || name,
+    stack,
+    ...(code ? { code, errorCode: code } : {}),
+    ...(cause ? { cause } : {}),
+  };
+}
+
 function serializeError(error: unknown, depth = 0): SerializedError {
-  if (isDrizzleQueryError(error)) {
-    const parameterCount = Array.isArray(error.params) ? error.params.length : undefined;
-    const summary = redactLogString(
-      `Database query failed${parameterCount === undefined ? "" : ` (${parameterCount} parameter${parameterCount === 1 ? "" : "s"})`}`,
-    );
-    return {
-      type: "DrizzleQueryError",
-      message: summary,
-      stack: redactLogString(`DrizzleQueryError: ${summary}`),
-    };
-  }
+  if (isDrizzleQueryError(error)) return serializeDrizzleQueryError(error);
   if (!(error instanceof Error)) {
+    if (isPlainObjectError(error)) {
+      return serializePlainObjectError(error, depth);
+    }
     const summary = redactLogString(String(error));
     return { type: typeof error, message: summary, stack: summary };
   }
@@ -388,7 +435,7 @@ function serializeError(error: unknown, depth = 0): SerializedError {
     type: error.name,
     message: redactLogString(error.message),
     stack: redactLogString(error.stack ?? `${error.name}: ${error.message}`),
-    ...(code ? { code } : {}),
+    ...(code ? { code, errorCode: code } : {}),
     ...(cause ? { cause } : {}),
   };
 }
@@ -483,9 +530,43 @@ function createDatabaseReadinessProbe(run: (() => Promise<unknown>) | undefined)
   };
 }
 
-function createFastifyLoggerOptions(options: CreateAppOptions): FastifyLoggerOptions {
+function truncateClientIp(ip: string | undefined): string | undefined {
+  if (!ip || typeof ip !== "string") return ip;
+  if (ip.startsWith("::ffff:") && ip.includes(".")) {
+    return `::ffff:${ip.slice(7).replace(/\.\d+$/, ".0")}`;
+  }
+  if (ip.includes(".")) {
+    return ip.replace(/\.\d+$/, ".0");
+  }
+  if (ip.includes(":")) {
+    const parts = ip.split("::");
+    let hextets: string[];
+    if (parts.length === 2) {
+      const left = parts[0] ? parts[0].split(":") : [];
+      const right = parts[1] ? parts[1].split(":") : [];
+      const missing = 8 - (left.length + right.length);
+      hextets = [...left, ...Array(missing).fill("0"), ...right];
+    } else {
+      hextets = ip.split(":");
+    }
+    const prefix = hextets.slice(0, 3).map((h) => h || "0");
+    return `${prefix.join(":")}::`;
+  }
+  return ip;
+}
+
+function createFastifyLoggerOptions(options: CreateAppOptions): NonNullable<FastifyServerOptions["logger"]> & object {
   return {
     level: options.loggerLevel ?? "info",
+    base: {
+      service: "opentag-server",
+      environment: options.environment ?? "production",
+      revision: options.revision ?? options.deployment?.revision,
+    },
+    mixin: () => {
+      const traceId = currentTraceId();
+      return traceId ? { traceId } : {};
+    },
     ...(options.loggerStream ? { stream: options.loggerStream } : {}),
     serializers: {
       err: serializeError,
@@ -493,7 +574,7 @@ function createFastifyLoggerOptions(options: CreateAppOptions): FastifyLoggerOpt
         method: request.method,
         url: sanitizeRequestUrl(request.url),
         host: request.hostname,
-        remoteAddress: request.ip,
+        remoteAddress: truncateClientIp(request.ip),
         remotePort: request.socket.remotePort,
       }),
     },
@@ -528,6 +609,7 @@ function logClassifiedFailure(request: FastifyRequest, failure: ClassifiedFailur
     {
       category: failure.category,
       code: failure.code,
+      errorCode: failure.code,
       err: error,
       requestId: request.id,
       statusCode: failure.statusCode,

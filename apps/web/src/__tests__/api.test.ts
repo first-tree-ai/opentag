@@ -650,8 +650,8 @@ describe("BrowserApi", () => {
 
   it("records schema issue paths and codes without response detail", async () => {
     setDocumentCookie("opentag_csrf=schema-csrf; Path=/");
-    const warn = vi.fn();
-    const reporter = new DiagnosticReporter({ warn });
+    const error = vi.fn();
+    const reporter = new DiagnosticReporter({ error });
     const fetchImpl = vi.fn<typeof fetch>(
       async () =>
         new Response(JSON.stringify({ status: "passed", output: "secret-model-text" }), {
@@ -667,8 +667,8 @@ describe("BrowserApi", () => {
       }),
     ).rejects.toMatchObject({ code: "invalid_response_schema" });
 
-    expect(warn).toHaveBeenCalledOnce();
-    const diagnostic = warn.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(error).toHaveBeenCalledOnce();
+    const diagnostic = error.mock.calls[0]?.[1] as Record<string, unknown>;
     expect(diagnostic).toMatchObject({
       code: "invalid_response_schema",
       routeTemplate: "/api/v1/agents/:id/runtime-test",

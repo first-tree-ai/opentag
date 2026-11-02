@@ -440,7 +440,7 @@ immediately.
 | --- | --- |
 | `none` | No authorization header. Extra headers still apply |
 | `bearer` | `<auth_header>: <auth_scheme> <key>`, where an **empty scheme sends the key verbatim** (`X-API-Key: <key>`) |
-| `oauth` | `Authorization: Bearer <access token>` when `auth_header` is `authorization`; when a custom `auth_header` is configured (for example `X-Lark-MCP-UAT` with an empty `auth_scheme` for Feishu), `<auth_header>: <auth_scheme> <access token>` (or `<access token>` when `auth_scheme` is empty) |
+| `oauth` | `Authorization: Bearer <access token>` by default; when `auth_header` is `x-lark-mcp-uat`, `X-Lark-MCP-UAT: <auth_scheme> <access token>` (or `<access token>` when `auth_scheme` is empty) |
 
 `extra_headers` are additional static headers sent for all three kinds, since they are configuration
 rather than credentials.
@@ -753,12 +753,12 @@ also derives the variable names; the Canva client above is a row of the same tab
 | Asana | `OPENTAG_MCP_ASANA_CLIENT_*` | `https://mcp.asana.com` | `https://app.asana.com` | `client_secret_basic` |
 | Zoom | `OPENTAG_MCP_ZOOM_CLIENT_*` | `https://mcp.zoom.us` | `https://zoom.us` | `client_secret_basic` |
 | GitHub | `OPENTAG_MCP_GITHUB_CLIENT_*` | `https://api.githubcopilot.com` | `https://github.com/login/oauth` | `client_secret_post` |
-| Feishu | `OPENTAG_MCP_FEISHU_CLIENT_*` | `https://mcp.feishu.cn`, `https://mcp.larksuite.com` | `https://open.feishu.cn` | `client_secret_post` |
+| Feishu | `OPENTAG_MCP_FEISHU_CLIENT_*` | `https://mcp.feishu.cn` | `https://open.feishu.cn` | `client_secret_post` |
 
 Operator setup, for every brand: register `<OPENTAG_PUBLIC_URL>/api/v1/mcp-servers/oauth/callback` as
 the redirect URL. Create a HubSpot **MCP Auth App** (Development > MCP Auth Apps), an Asana app of
 type **MCP app**, a Zoom **General app** with user-level OAuth, and a Feishu self-built application
-with OAuth 2.0 redirect URLs and `offline_access` + required MCP scopes enabled. HubSpot assigns scopes at
+with OAuth 2.0 redirect URLs and `offline_access` + required read-only MCP scopes enabled. HubSpot assigns scopes at
 installation and advertises none in its metadata. Zoom's challenge carries no `scope`, so the flow
 requests every `scopes_supported` entry its protected resource metadata advertises; a Zoom app grants
 only the scopes listed on its **Scopes** page, so add the full advertised list there.
@@ -770,7 +770,11 @@ refreshing an existing row whose `authorization_server` is `https://open.feishu.
 resolves Feishu's OAuth v2 metadata directly (`authorization_endpoint`:
 `https://accounts.feishu.cn/open-apis/authen/v1/authorize`, `token_endpoint`:
 `https://open.feishu.cn/open-apis/authen/v2/oauth/token`) instead of failing on
-`https://accounts.feishu.cn/mcp`'s blocked dynamic client registration. Refresh rotates both the access
+`https://accounts.feishu.cn/mcp`'s blocked dynamic client registration. When no explicit scopes are
+supplied on start, the Feishu flow requests its default ordinary read-only scope set plus
+`offline_access` (`docx:document:readonly`, `drive:drive:readonly`, `wiki:wiki:readonly`,
+`im:chat:readonly`, `im:message:readonly`, `search:message`, `offline_access`) rather than the hosted
+MCP `mcp-tool:*` scopes advertised in the PRM or challenge. Refresh rotates both the access
 token and refresh token inside `mcp_server_authorizations`, maps invalid or expired Feishu refresh
 tokens to `invalid_grant` (terminal reauthorization required), and clears potentially consumed refresh
 material on unknown transport or 5xx outcomes. Broader application grants are not advertised as read-only credentials; tool restrictions declared in `X-Lark-MCP-Allowed-Tools` are enforced by the gateway at both catalog and call time.

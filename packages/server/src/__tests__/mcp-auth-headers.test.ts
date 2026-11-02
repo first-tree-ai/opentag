@@ -28,10 +28,10 @@ function failure(run: () => unknown): McpServiceError {
 }
 
 describe("buildMcpAuthHeaders", () => {
-  it("uses Authorization: Bearer for OAuth when authHeader is authorization", () => {
+  it("uses Authorization: Bearer for OAuth unless authHeader is x-lark-mcp-uat", () => {
     const headers = buildMcpAuthHeaders({
       kind: "oauth",
-      authHeader: "authorization",
+      authHeader: "x-custom",
       authScheme: "Token",
       extraHeaders: {},
       accessToken: "at_123",
@@ -39,7 +39,7 @@ describe("buildMcpAuthHeaders", () => {
     expect(headers).toEqual({ [MCP_OAUTH_AUTHORIZATION_HEADER]: "Bearer at_123" });
   });
 
-  it("honors a custom authHeader and empty authScheme for OAuth (such as Feishu X-Lark-MCP-UAT)", () => {
+  it("honors X-Lark-MCP-UAT and empty authScheme for Feishu OAuth", () => {
     const headers = buildMcpAuthHeaders({
       kind: "oauth",
       authHeader: "X-Lark-MCP-UAT",
@@ -53,18 +53,7 @@ describe("buildMcpAuthHeaders", () => {
     });
   });
 
-  it("prefixes a custom OAuth authHeader with authScheme when non-empty", () => {
-    const headers = buildMcpAuthHeaders({
-      kind: "oauth",
-      authHeader: "x-custom",
-      authScheme: "Token",
-      extraHeaders: {},
-      accessToken: "at_123",
-    });
-    expect(headers).toEqual({ "x-custom": "Token at_123" });
-  });
-
-  it("refuses an extra header that repeats a custom OAuth authHeader, case-insensitively", () => {
+  it("refuses an extra header that repeats X-Lark-MCP-UAT on OAuth, case-insensitively", () => {
     const error = failure(() =>
       buildMcpAuthHeaders({
         kind: "oauth",

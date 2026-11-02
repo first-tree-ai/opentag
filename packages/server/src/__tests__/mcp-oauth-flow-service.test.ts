@@ -21,7 +21,7 @@ import { ApplicationCipher } from "../services/crypto.js";
 import { MCP_ERROR_CODES } from "../services/mcp/errors.js";
 import { McpAuthorizationService } from "../services/mcp/mcp-authorization-service.js";
 import { McpCredentialCipher } from "../services/mcp/mcp-credential-cipher.js";
-import { MCP_OAUTH_STATE_TTL_MS, McpOAuthClient } from "../services/mcp/mcp-oauth.js";
+import { FEISHU_DEFAULT_OAUTH_SCOPES, MCP_OAUTH_STATE_TTL_MS, McpOAuthClient } from "../services/mcp/mcp-oauth.js";
 import { McpOAuthFlowService, orderIssuers } from "../services/mcp/mcp-oauth-flow-service.js";
 import type { McpProbe } from "../services/mcp/mcp-probe.js";
 import { McpServerService } from "../services/mcp/mcp-server-service.js";
@@ -780,6 +780,20 @@ describe("McpOAuthFlowService.start", () => {
           [feishuPrmUrl]: doc({
             resource: feishuMcpUrl,
             authorization_servers: ["https://accounts.feishu.cn/mcp"],
+            scopes_supported: [
+              "mcp-tool:common:fetch-file-v2",
+              "mcp-tool:common:get-user",
+              "mcp-tool:common:search-user",
+              "mcp-tool:docs:search-doc",
+              "mcp-tool:docs:create-doc",
+              "mcp-tool:docs:fetch-doc",
+              "mcp-tool:docs:update-doc",
+              "mcp-tool:docs:get-comments",
+              "mcp-tool:docs:add-comments",
+              "mcp-tool:docs:list-docs-v2",
+              "mcp-tool:im:search-groups",
+              "offline_access",
+            ],
           }),
           [feishuTokenUrl]: (init) => {
             tokenCallCount += 1;
@@ -794,7 +808,7 @@ describe("McpOAuthFlowService.start", () => {
                 refresh_token: "ur-feishu-rt-1",
                 token_type: "Bearer",
                 expires_in: 7200,
-                scope: "docx:document:readonly offline_access",
+                scope: FEISHU_DEFAULT_OAUTH_SCOPES.join(" "),
               });
             }
             expect(form.get("grant_type")).toBe("refresh_token");
@@ -806,7 +820,7 @@ describe("McpOAuthFlowService.start", () => {
                 refresh_token: "ur-feishu-rt-2",
                 token_type: "Bearer",
                 expires_in: 7200,
-                scope: "docx:document:readonly offline_access",
+                scope: FEISHU_DEFAULT_OAUTH_SCOPES.join(" "),
               },
             });
           },
@@ -814,17 +828,13 @@ describe("McpOAuthFlowService.start", () => {
         { staticMcpClients: { feishu: feishuClient } },
       );
 
-      const started = await flows.start(
-        ids.accountId,
-        ids.agentId,
-        ids.mcpServerId,
-        ["docx:document:readonly", "offline_access"],
-        FLOW_SECRET,
-      );
+      const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
       const authUrl = new URL(started.authorizationUrl);
       expect(`${authUrl.origin}${authUrl.pathname}`).toBe(feishuAuthorizeUrl);
       expect(authUrl.searchParams.get("client_id")).toBe(feishuClient.clientId);
       expect(authUrl.searchParams.get("code_challenge_method")).toBe("S256");
+      expect(authUrl.searchParams.get("scope")).toBe(FEISHU_DEFAULT_OAUTH_SCOPES.join(" "));
+      expect(authUrl.searchParams.get("scope")).not.toContain("mcp-tool:");
       expect(calls.some((call) => call.url.includes("accounts.feishu.cn"))).toBe(false);
 
       await flows.callback({ code: "feishu-code-1", state: stateOf(started.authorizationUrl) }, FLOW_SECRET);
@@ -832,7 +842,7 @@ describe("McpOAuthFlowService.start", () => {
       expect(afterCallback).toMatchObject({
         status: "active",
         authorizationServer: feishuIssuer,
-        scopes: ["docx:document:readonly", "offline_access"],
+        scopes: [...FEISHU_DEFAULT_OAUTH_SCOPES],
       });
 
       const authorizationService = new McpAuthorizationService({
@@ -942,6 +952,24 @@ describe("McpOAuthFlowService.start", () => {
         keyId: null,
         refreshClaimId: null,
       });
+    });
+
+    it("does not offer the Feishu client to a Lark origin or rewrite Lark authorization servers", async () => {
+      const larkMcpUrl = "https://mcp.larksuite.com/mcp";
+      const ids = await seed(larkMcpUrl);
+      const { calls, flows } = build(
+        {
+          "https://mcp.larksuite.com/.well-known/oauth-protected-resource/mcp": doc({
+            resource: larkMcpUrl,
+            authorization_servers: ["https://accounts.larksuite.com/mcp"],
+          }),
+        },
+        { staticMcpClients: { feishu: feishuClient } },
+      );
+      await expect(flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET)).rejects.toMatchObject({
+        code: MCP_ERROR_CODES.OAUTH_FAILED,
+      });
+      expect(JSON.stringify(calls)).not.toContain(feishuClient.clientSecret);
     });
   });
 

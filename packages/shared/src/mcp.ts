@@ -888,7 +888,7 @@ export const MCP_STATIC_OAUTH_PROVIDERS: readonly McpStaticOAuthProvider[] = [
   },
   {
     brand: "feishu",
-    origins: ["https://mcp.feishu.cn", "https://mcp.larksuite.com"],
+    origins: ["https://mcp.feishu.cn"],
     issuer: "https://open.feishu.cn",
     tokenEndpointAuthMethod: "client_secret_post",
   },

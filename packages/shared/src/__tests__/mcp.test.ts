@@ -262,7 +262,7 @@ describe("MCP static OAuth providers", () => {
     expect(isMcpStaticOAuthEndpoint(provider("asana"), "https://mcp.asana.com/v2/mcp")).toBe(true);
     expect(isMcpStaticOAuthEndpoint(provider("github"), "https://api.githubcopilot.com/mcp/")).toBe(true);
     expect(isMcpStaticOAuthEndpoint(provider("feishu"), "https://mcp.feishu.cn/mcp")).toBe(true);
-    expect(isMcpStaticOAuthEndpoint(provider("feishu"), "https://mcp.larksuite.com/mcp")).toBe(true);
+    expect(isMcpStaticOAuthEndpoint(provider("feishu"), "https://mcp.larksuite.com/mcp")).toBe(false);
     expect(isMcpStaticOAuthEndpoint(provider("feishu"), "https://open.feishu.cn/mcp")).toBe(false);
     expect(isMcpStaticOAuthEndpoint(provider("feishu"), "https://mcp.feishu.cn.evil.example/mcp")).toBe(false);
     expect(isMcpStaticOAuthEndpoint(provider("github"), "https://api.github.com/mcp/")).toBe(false);

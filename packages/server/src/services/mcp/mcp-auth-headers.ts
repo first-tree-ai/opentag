@@ -27,8 +27,10 @@ export interface McpAuthHeaderInput {
   accessToken?: string;
 }
 
-/** The `Authorization: Bearer <token>` header OAuth always uses, per the specification. */
+/** The `Authorization: Bearer <token>` header OAuth uses by default, per the specification. */
 export const MCP_OAUTH_AUTHORIZATION_HEADER = "authorization";
+/** Feishu's hosted MCP endpoint requires user OAuth access tokens in `X-Lark-MCP-UAT`. */
+export const MCP_FEISHU_OAUTH_UAT_HEADER = "x-lark-mcp-uat";
 
 function invalid(message: string): McpServiceError {
   return new McpServiceError(MCP_ERROR_CODES.AUTH_HEADER_INVALID, message);
@@ -37,8 +39,9 @@ function invalid(message: string): McpServiceError {
 /**
  * Build the exact header set for one outbound request.
  *
- * - `oauth` uses `Authorization: Bearer <token>` when `auth_header` is `authorization`, and honors
- *   a custom `auth_header` and `auth_scheme` (such as `X-Lark-MCP-UAT: <token>`) when overridden.
+ * - `oauth` uses `Authorization: Bearer <token>` unless `auth_header` is `x-lark-mcp-uat`, in which
+ *   case it honors `x-lark-mcp-uat` and `auth_scheme` while keeping other definitions (such as a
+ *   shared definition with `x-api-key` for a bearer Agent) on `Authorization: Bearer <token>`.
  * - `bearer` uses the effective `auth_header` and `auth_scheme`; an empty scheme sends the value
  *   unchanged.
  * - `none` sends no authorization header at all.
@@ -55,12 +58,11 @@ function formatSchemeCredential(scheme: string, secret: string): string {
 function resolveAuthorizationHeader(input: McpAuthHeaderInput): [string, string] | undefined {
   if (input.kind === "oauth") {
     if (!input.accessToken) throw invalid("An OAuth authorization has no access token");
-    const name = validateAuthHeaderName(input.authHeader);
-    const value =
-      name === MCP_OAUTH_AUTHORIZATION_HEADER
-        ? `Bearer ${input.accessToken}`
-        : formatSchemeCredential(input.authScheme, input.accessToken);
-    return [name, value];
+    const configured = validateAuthHeaderName(input.authHeader);
+    if (configured === MCP_FEISHU_OAUTH_UAT_HEADER) {
+      return [configured, formatSchemeCredential(input.authScheme, input.accessToken)];
+    }
+    return [MCP_OAUTH_AUTHORIZATION_HEADER, `Bearer ${input.accessToken}`];
   }
   if (input.kind === "bearer") {
     if (!input.bearerKey) throw invalid("A bearer authorization has no key");

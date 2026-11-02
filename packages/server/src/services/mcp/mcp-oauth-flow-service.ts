@@ -1641,12 +1641,7 @@ function isMissingPrmError(error: unknown): boolean {
   return Array.isArray(error.detail?.tried) && error.detail.tried.length === 0;
 }
 
-const FEISHU_ADVERTISED_AUTH_ORIGINS = new Set([
-  "https://accounts.feishu.cn",
-  "https://open.feishu.cn",
-  "https://accounts.larksuite.com",
-  "https://open.larksuite.com",
-]);
+const FEISHU_ADVERTISED_AUTH_ORIGINS = new Set(["https://accounts.feishu.cn", "https://open.feishu.cn"]);
 
 function isFeishuAdvertisedIssuer(issuer: string): boolean {
   try {

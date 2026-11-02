@@ -43,12 +43,21 @@ export interface McpAuthorizationServerMetadata {
 export const FEISHU_MCP_ISSUER = "https://open.feishu.cn";
 export const FEISHU_AUTHORIZATION_ENDPOINT = "https://accounts.feishu.cn/open-apis/authen/v1/authorize";
 export const FEISHU_TOKEN_ENDPOINT = "https://open.feishu.cn/open-apis/authen/v2/oauth/token";
+export const FEISHU_DEFAULT_OAUTH_SCOPES = [
+  "docx:document:readonly",
+  "drive:drive:readonly",
+  "wiki:wiki:readonly",
+  "im:chat:readonly",
+  "im:message:readonly",
+  "search:message",
+  "offline_access",
+] as const;
 
 export const FEISHU_OAUTH_METADATA: McpAuthorizationServerMetadata = {
   issuer: FEISHU_MCP_ISSUER,
   authorizationEndpoint: FEISHU_AUTHORIZATION_ENDPOINT,
   tokenEndpoint: FEISHU_TOKEN_ENDPOINT,
-  scopesSupported: [],
+  scopesSupported: [...FEISHU_DEFAULT_OAUTH_SCOPES],
   codeChallengeMethodsSupported: ["S256"],
   grantTypesSupported: ["authorization_code", "refresh_token"],
   clientIdMetadataDocumentSupported: false,
@@ -648,6 +657,9 @@ export class McpOAuthClient {
     metadata: McpAuthorizationServerMetadata,
     requested: readonly string[] = [],
   ): string[] {
+    if (metadata.issuer === FEISHU_MCP_ISSUER && requested.length === 0) {
+      return [...FEISHU_DEFAULT_OAUTH_SCOPES];
+    }
     const base =
       requested.length > 0 ? requested : challengeScope ? challengeScope.split(/\s+/).filter(Boolean) : [...prmScopes];
     const scopes = new Set(base);

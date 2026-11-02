@@ -415,16 +415,16 @@ describe("McpAuthorizationService.resolveActiveCredential", () => {
 });
 
 describe("McpAuthorizationService header construction", () => {
-  it("always uses Authorization: Bearer for OAuth when authHeader is authorization", async () => {
+  it("always uses Authorization: Bearer for OAuth unless authHeader is x-lark-mcp-uat", async () => {
     /*
-     * Standard OAuth uses `Authorization: Bearer <token>` even if `authScheme` was overridden, while
-     * honoring a custom `authHeader` when explicitly configured (such as Feishu's `x-lark-mcp-uat`).
+     * Standard OAuth uses `Authorization: Bearer <token>` even when a shared definition sets
+     * `authHeader: "x-api-key"` for a bearer Agent, while honoring Feishu's `x-lark-mcp-uat`.
      */
     const ids = await seed();
     const { authorization, cipher } = build();
     await unit.database
       .update(mcpServers)
-      .set({ authHeader: "authorization", authScheme: "Token", extraHeaders: { "x-team": "shared" } })
+      .set({ authHeader: "x-api-key", authScheme: "Token", extraHeaders: { "x-team": "shared" } })
       .where(eq(mcpServers.id, ids.mcpServerId));
     await unit.database
       .update(agentMcpServers)

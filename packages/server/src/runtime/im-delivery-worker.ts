@@ -29,6 +29,7 @@ import {
   setActiveSpanAttributes,
   traceDeliveryClaim,
 } from "../observability/index.js";
+import type { ServiceLogger } from "../observability/service-logger.js";
 import {
   type EffectiveRuntimeSnapshotAssembler,
   EffectiveRuntimeSnapshotAssemblerError,
@@ -135,6 +136,7 @@ export class ImDeliveryWorker {
   readonly #maxQueueAgeMs?: number;
   readonly #scheduler: KeyedTaskScheduler;
   readonly #onMetric: (metric: RuntimeDeliveryWorkerMetric) => void;
+  readonly #logger?: ServiceLogger;
   #timer?: ReturnType<typeof setInterval>;
   #janitorTimer?: ReturnType<typeof setInterval>;
   #retentionTimer?: ReturnType<typeof setInterval>;
@@ -171,6 +173,7 @@ export class ImDeliveryWorker {
       supervisor: this.#supervisor,
     });
     this.#onMetric = input.onMetric ?? (() => undefined);
+    this.#logger = input.logger;
     this.#cloudCoordinator = new CloudDeliveryCoordinator({
       database: this.#database,
       ...(this.#cloudDelivery ? { cloudDelivery: this.#cloudDelivery } : {}),
@@ -204,7 +207,11 @@ export class ImDeliveryWorker {
     });
     const schedulers = createImDeliveryMaintenanceSchedulers({
       expiryRun: async () => {
-        const options = { ...this.#janitorConfig, clock: this.#clock };
+        const options = {
+          ...this.#janitorConfig,
+          clock: this.#clock,
+          ...(this.#logger ? { logger: this.#logger } : {}),
+        };
         await runImDeliveryExpiry(this.#database, options, this.#onDeliverySettled);
         await this.#cloudCoordinator.reconcileStoppedWork();
       },
@@ -241,7 +248,11 @@ export class ImDeliveryWorker {
   }
 
   async runJanitorOnce(): Promise<void> {
-    await runImDeliveryJanitor(this.#database, { ...this.#janitorConfig, clock: this.#clock });
+    await runImDeliveryJanitor(this.#database, {
+      ...this.#janitorConfig,
+      clock: this.#clock,
+      ...(this.#logger ? { logger: this.#logger } : {}),
+    });
     await this.#cloudCoordinator.reconcileStoppedWork();
   }
 
@@ -253,6 +264,18 @@ export class ImDeliveryWorker {
     if (this.#closed) return;
     const claimed = await this.#claim(sessionId);
     if (!claimed) return;
+    this.#logger?.info(
+      {
+        module: "im-delivery",
+        operation: "im.delivery.claim",
+        outcome: "claimed",
+        deliveryId: claimed.id,
+        agentId: claimed.agentId,
+        kind: claimed.kind,
+        laneKey: claimed.laneKey,
+      },
+      "IM delivery claimed",
+    );
     const queueAge = Math.max(0, this.#now() - claimed.queuedAt);
     this.#onMetric({ name: "queue_age_ms", value: queueAge, agentId: claimed.agentId });
     if (this.#maxQueueAgeMs !== undefined && queueAge > this.#maxQueueAgeMs) {
@@ -398,6 +421,7 @@ export class ImDeliveryWorker {
     sessionId?: string,
   ): Promise<WorkerClaim | undefined> {
     let uncertainDeliveryId: string | undefined;
+    let uncertainAgentId: string | undefined;
     const claim = await this.#database.transaction(async (transaction) => {
       const now = this.#clock();
       const locked = await lockEligibleDelivery(transaction, deliveryId, expectedAgentId, now, sessionId);
@@ -497,6 +521,7 @@ export class ImDeliveryWorker {
             ),
           );
         uncertainDeliveryId = row.id;
+        uncertainAgentId = row.agentId;
         return undefined;
       }
       if (retiredSteerCorrelation && row.lastErrorCode === "IM_DELIVERY_STEER_UNKNOWN") {
@@ -537,7 +562,21 @@ export class ImDeliveryWorker {
             claimToken,
           };
     });
-    if (uncertainDeliveryId) this.#onDeliverySettled?.(uncertainDeliveryId);
+    if (uncertainDeliveryId) {
+      this.#logger?.warn(
+        {
+          module: "im-delivery",
+          operation: "im.custody.release",
+          outcome: "uncertain",
+          code: "IM_DELIVERY_STEER_UNKNOWN",
+          errorCode: "IM_DELIVERY_STEER_UNKNOWN",
+          deliveryId: uncertainDeliveryId,
+          ...(uncertainAgentId ? { agentId: uncertainAgentId } : {}),
+        },
+        "IM delivery custody released as uncertain",
+      );
+      this.#onDeliverySettled?.(uncertainDeliveryId);
+    }
     return claim;
   }
 
@@ -1262,6 +1301,18 @@ export class ImDeliveryWorker {
       )
       .returning({ id: imMessageDeliveries.id });
     if (updated) {
+      this.#logger?.warn(
+        {
+          module: "im-delivery",
+          operation: "im.delivery.dispatch",
+          outcome: "retry",
+          code: bounded,
+          errorCode: bounded,
+          deliveryId,
+          retryDelayMs,
+        },
+        "IM delivery dispatch retry scheduled",
+      );
       this.#onDiagnostic(bounded);
       this.#onMetric({ name: "retry", value: 1 });
       if (isCloudReadinessRetry(bounded) && (!claimToken || !this.#readyRetryClaims.has(claimToken))) {
@@ -1299,6 +1350,18 @@ export class ImDeliveryWorker {
       return released;
     });
     if (released) {
+      this.#logger?.warn(
+        {
+          module: "im-delivery",
+          operation: "im.delivery.dispatch",
+          outcome: "retry",
+          code: bounded,
+          errorCode: bounded,
+          deliveryId,
+          requestId,
+        },
+        "IM delivery dispatch released for retry",
+      );
       this.#onDiagnostic(bounded);
       this.#onMetric({ name: "retry", value: 1 });
     }
@@ -1317,6 +1380,18 @@ export class ImDeliveryWorker {
     });
     const rejected = await rejectInvalidImDelivery(this.#database, deliveryId, error, claimToken);
     if (rejected) {
+      this.#logger?.error(
+        {
+          module: "im-delivery",
+          operation: "im.delivery.dispatch",
+          outcome: "terminal_rejected",
+          code: error.code,
+          errorCode: error.code,
+          deliveryId,
+          paths: error.paths,
+        },
+        "IM delivery input rejected",
+      );
       this.#onDiagnostic(error.code);
       this.#onDeliverySettled?.(deliveryId);
     }
@@ -1347,7 +1422,20 @@ export class ImDeliveryWorker {
       if (rejected) await releaseImBatch(transaction, deliveryId);
       return rejected;
     });
-    if (rejected) this.#onDeliverySettled?.(deliveryId);
+    if (rejected) {
+      this.#logger?.error(
+        {
+          module: "im-delivery",
+          operation: "im.delivery.dispatch",
+          outcome: "terminal_rejected",
+          code: "IM_DELIVERY_TERMINAL",
+          errorCode: "IM_DELIVERY_TERMINAL",
+          deliveryId,
+        },
+        `IM delivery rejected terminally: ${reason}`,
+      );
+      this.#onDeliverySettled?.(deliveryId);
+    }
   }
 
   #maintainClaimLease(deliveryId: string, claimToken: string): ClaimLease {

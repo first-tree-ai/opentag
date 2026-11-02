@@ -321,6 +321,64 @@ export class ApiError extends Error {
   }
 }
 
+function generateRequestId(): string {
+  return globalThis.crypto?.randomUUID
+    ? globalThis.crypto.randomUUID()
+    : `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function extractTraceId(headers: Headers): string | undefined {
+  return headers.get("x-trace-id") ?? headers.get("traceparent")?.split("-")[1] ?? undefined;
+}
+
+async function reportHttpFailure(
+  reporter: DiagnosticReporter,
+  apiError: (response: Response, body: unknown) => ApiError,
+  path: string,
+  response: Response,
+  requestId: string,
+): Promise<void> {
+  const body = await response
+    .clone()
+    .json()
+    .catch(() => undefined);
+  const error = apiError(response, body);
+  const level = response.status >= 500 ? "error" : "warn";
+  const traceId = extractTraceId(response.headers);
+  reporter.report(
+    {
+      source: "api",
+      code: error.code ?? `http_${response.status}`,
+      routeTemplate: routeTemplate(path),
+      status: response.status,
+      category: error.category,
+      requestId: error.requestId ?? requestId,
+      ...(traceId ? { traceId } : {}),
+      retryAfterSeconds: error.retryAfterSeconds,
+    },
+    level,
+  );
+}
+
+function handleFetchException(
+  reporter: DiagnosticReporter,
+  cause: unknown,
+  signal: AbortSignal | null | undefined,
+  path: string,
+): never {
+  if (signal?.aborted || (cause instanceof Error && cause.name === "AbortError")) {
+    throw new CancelledRequestError(cause);
+  }
+  const normalized = normalizeError(cause, "network_error");
+  reporter.report({
+    source: "api",
+    code: normalized.code,
+    routeTemplate: routeTemplate(path),
+    error: { name: normalized.error.name },
+  });
+  throw cause;
+}
+
 export class BrowserApi {
   constructor(
     readonly fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis),
@@ -1132,7 +1190,7 @@ export class BrowserApi {
     const response = await this.fetchWithRefresh(path, init);
     const body = await response.json().catch(() => undefined);
     if (!response.ok) throw this.apiError(response, body);
-    return this.parseResponse(path, schema, body);
+    return this.parseResponse(path, schema, body, response);
   }
 
   private async requestOptional<T>(
@@ -1144,7 +1202,7 @@ export class BrowserApi {
     if (response.status === 204) return undefined;
     const body = await response.json().catch(() => undefined);
     if (!response.ok) throw this.apiError(response, body);
-    return this.parseResponse(path, schema, body);
+    return this.parseResponse(path, schema, body, response);
   }
 
   private async requestNoContent(path: string, init: RequestInit): Promise<void> {
@@ -1157,8 +1215,13 @@ export class BrowserApi {
    * is genuinely gone, and the retry this used to make could only ever have failed a second time.
    */
   private async fetchWithRefresh(path: string, init: RequestInit = {}): Promise<Response> {
+    const requestId = generateRequestId();
+    const headers = new Headers(init.headers);
+    if (!headers.has("x-request-id")) {
+      headers.set("x-request-id", requestId);
+    }
     const method = (init.method ?? "GET").toString().toUpperCase();
-    if (!init.signal?.aborted && !isSafeMethod(method) && !isTokenMintingPath(path) && !hasCsrfHeader(init.headers)) {
+    if (!init.signal?.aborted && !isSafeMethod(method) && !isTokenMintingPath(path) && !hasCsrfHeader(headers)) {
       this.diagnosticReporter.report({
         source: "api",
         code: "csrf_token_missing",
@@ -1168,36 +1231,13 @@ export class BrowserApi {
     }
 
     try {
-      const response = await this.fetchImpl(path, { ...init, credentials: "same-origin" });
+      const response = await this.fetchImpl(path, { ...init, headers, credentials: "same-origin" });
       if (!response.ok) {
-        const body = await response
-          .clone()
-          .json()
-          .catch(() => undefined);
-        const error = this.apiError(response, body);
-        this.diagnosticReporter.report({
-          source: "api",
-          code: error.code ?? `http_${response.status}`,
-          routeTemplate: routeTemplate(path),
-          status: response.status,
-          category: error.category,
-          requestId: error.requestId,
-          retryAfterSeconds: error.retryAfterSeconds,
-        });
+        await reportHttpFailure(this.diagnosticReporter, (res, b) => this.apiError(res, b), path, response, requestId);
       }
       return response;
     } catch (cause) {
-      if (init.signal?.aborted || (cause instanceof Error && cause.name === "AbortError")) {
-        throw new CancelledRequestError(cause);
-      }
-      const normalized = normalizeError(cause, "network_error");
-      this.diagnosticReporter.report({
-        source: "api",
-        code: normalized.code,
-        routeTemplate: routeTemplate(path),
-        error: { name: normalized.error.name },
-      });
-      throw cause;
+      handleFetchException(this.diagnosticReporter, cause, init.signal, path);
     }
   }
 
@@ -1219,19 +1259,26 @@ export class BrowserApi {
     );
   }
 
-  private parseResponse<T>(path: string, schema: RuntimeSchema<T>, body: unknown): T {
+  private parseResponse<T>(path: string, schema: RuntimeSchema<T>, body: unknown, response?: Response): T {
     const parsed = schema.safeParse(body);
     if (parsed.success) return parsed.data;
     const issues = parsed.error.issues.map(({ path: issuePath, code }) => ({
       path: issuePath.map((segment) => (typeof segment === "symbol" ? segment.toString() : segment)),
       code,
     }));
-    this.diagnosticReporter.report({
-      source: "api",
-      code: "invalid_response_schema",
-      routeTemplate: routeTemplate(path),
-      issues: issues.map(({ path: issuePath, code }) => ({ path: issuePath, code })),
-    });
+    const requestId = response?.headers.get("x-request-id") ?? undefined;
+    const traceId = response ? extractTraceId(response.headers) : undefined;
+    this.diagnosticReporter.report(
+      {
+        source: "api",
+        code: "invalid_response_schema",
+        routeTemplate: routeTemplate(path),
+        ...(requestId ? { requestId } : {}),
+        ...(traceId ? { traceId } : {}),
+        issues: issues.map(({ path: issuePath, code }) => ({ path: issuePath, code })),
+      },
+      "error",
+    );
     throw new ResponseSchemaError(routeTemplate(path), issues);
   }
 

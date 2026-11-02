@@ -4,7 +4,7 @@ import type { MCPAgentServer, MCPAuthKind } from "@opentag/shared/browser";
 import type { Page, Route } from "@playwright/test";
 import { baseURL } from "../playwright.config.js";
 import { expectAccessible, expectNoPageOverflow, expectWithinViewport } from "./browser-contract.js";
-import { expect, smokeTest as test } from "./fixtures.js";
+import { allowExpectedDiagnostic, expect, smokeTest as test } from "./fixtures.js";
 import { respondMcpReuseDisabled } from "./mcp-browser-fixture.js";
 
 // Real API scenarios share the Account's definition-name namespace.
@@ -541,6 +541,10 @@ for (const kind of ["oauth", "bearer", "none"] as const) {
   test(`catalog additions and existing ${kind} list connections retain their authentication behavior`, async ({
     page,
   }) => {
+    allowExpectedDiagnostic(page, {
+      routeTemplate: "/api/v1/agents/:id/mcp-servers/:id/authorization/oauth",
+      status: 503,
+    });
     const first = await agent(page);
     const second = await agent(page);
     const third = await agent(page);
@@ -1027,6 +1031,10 @@ async function expectAddContrast(button: import("@playwright/test").Locator) {
 for (const locale of ["en", "zh"] as const) {
   for (const width of [320, 390, 768, 1440]) {
     test(`Discover visual and interaction states in ${locale} at ${width}px`, async ({ page }) => {
+      allowExpectedDiagnostic(page, {
+        routeTemplate: "/api/v1/agents/:id/mcp-servers/:id/authorization/oauth",
+        status: 502,
+      });
       const upstream = await peer("oauth");
       let release = () => {};
       try {

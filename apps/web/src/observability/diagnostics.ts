@@ -165,7 +165,14 @@ export class DiagnosticReporter {
      * applies its own code-and-message cooldown. Only the error level is relayed; a warning is a
      * handled or degraded path, not a defect.
      */
-    if (level === "error") forwardErrorReport({ code: safe.code, ...diagnosticErrorText(safe) });
+    if (level === "error") {
+      forwardErrorReport({
+        code: safe.code,
+        ...diagnosticErrorText(safe),
+        ...(typeof safe.requestId === "string" ? { requestId: safe.requestId } : {}),
+        ...(typeof safe.traceId === "string" ? { traceId: safe.traceId } : {}),
+      });
+    }
     const key = `${safe.routeTemplate}\u0000${safe.code}`;
     const now = this.now();
     const previous = this.lastReportedAt.get(key);

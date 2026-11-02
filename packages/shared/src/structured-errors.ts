@@ -696,7 +696,10 @@ function scrubCredentialHeaders(value: string): string {
 
 function scrubString(value: string): string {
   return scrubCredentialHeaders(value)
-    .replace(/\b(?:sk-|rk-|ghp_|gho_|github_pat_|xox[baprs]-)[A-Za-z0-9_.-]{8,}\b/gu, "[REDACTED]")
+    .replace(/\b(?:ghp_|gho_|github_pat_)[A-Za-z0-9_]{16,}\b/gu, "[REDACTED]")
+    .replace(/\bxox[baprs]-[0-9A-Za-z-]{16,}\b/gu, "[REDACTED]")
+    .replace(/\b(?:sk-(?:ant|proj)-|rk-)[A-Za-z0-9_.-]{12,}\b/gu, "[REDACTED]")
+    .replace(/\bsk-[A-Za-z0-9]{32,}\b/gu, "[REDACTED]")
     .replace(/\bAKIA[0-9A-Z]{16}\b/gu, "[REDACTED]")
     .replace(/-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]+?-----END [A-Z ]+PRIVATE KEY-----/gu, "[REDACTED]")
     .replace(/([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s:@]+@/giu, "$1[REDACTED]@")
@@ -707,7 +710,10 @@ function scrubString(value: string): string {
       /([?&](?:access_token|refresh_token|client_secret|token|secret|password|api[_-]?key)=)[^&#\s]+/giu,
       "$1[REDACTED]",
     )
-    .replace(/(\b(?:token|secret|password|credential|api[_-]?key)\s*[:=]\s*)[^\s,;}\]]+/giu, "$1[REDACTED]")
+    .replace(
+      /(\b(?:token|secret|password|credential|api[_-]?key)\s*[:=]\s*)(?!\[REDACTED\])[^\s,;}[\]]+/giu,
+      "$1[REDACTED]",
+    )
     .replace(/(postgres(?:ql)?:\/\/)[^\s/@]+(?::[^\s/@]*)?@/giu, "$1[REDACTED]@");
 }
 

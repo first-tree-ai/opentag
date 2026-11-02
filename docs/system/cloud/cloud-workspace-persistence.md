@@ -20,7 +20,12 @@ The Server's existing durable delivery custody remains authoritative for executi
 
 Platform credential exclusion relies on the directory boundary. It is not secret detection for
 files an Agent or user independently creates in the workspace. Other Session directories are not
-mounted or synchronized. Agent-wide Context Tree integration remains E8.
+mounted or synchronized. Agent-wide Context Tree integration remains E8. Under
+`.opentag/context-tree/home/.context-tree`, `cleanup` logs are always omitted, and reconstructable
+read-only Git caches (`repositories` and `snapshots`) are omitted when no active `sessions` or
+`worktrees` entries exist and every snapshot worktree is verified clean against its committed
+`HEAD` state. Whenever unpublished staged, unstaged, or untracked changes exist—or when Git
+cleanliness cannot be verified—those directories are preserved in the archive.
 
 ## Save and restore boundaries
 
@@ -49,7 +54,12 @@ settles through the existing custody recovery as unknown, never automatic task r
 
 At a Turn boundary, the Runner keeps the Session execution slot occupied, stops native Sandbox
 writers, saves the workspace, and then reopens execution. Native deletion also removes orphaned
-background processes. The workspace survives that namespace reset. A completed external action
+background processes. The workspace survives that namespace reset. Transient archive upload
+failures retry up to three attempts with exponential backoff before failing the checkpoint. If a
+Turn fails before prompt acceptance (`executionEffects: "not_started"`) and its checkpoint save
+fails, the Runner rolls the local workspace back to the last committed archive baseline (and resets
+the native Sandbox namespace when configured) instead of latching a terminal `workspace_failed`
+block over unaccepted work. A completed external action
 does not become safe to replay merely because persistence failed. A failed save produces an honest
 `workspace_failed` Turn report while preserving the execution-effects classification and local files.
 Reconciliation sends that report before attempting another save. Deterministic archive violations

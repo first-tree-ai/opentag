@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream, type Stats } from "node:fs";
 import {
@@ -17,8 +18,11 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { PassThrough, type Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { promisify } from "node:util";
 import { createGunzip, createGzip } from "node:zlib";
 import { type Pack, type Headers as TarHeaders, extract as tarExtract, pack as tarPack } from "tar-stream";
+
+const execFileAsync = promisify(execFile);
 
 /**
  * Streams the complete workspace, including Git and Pi state. Callers must stop every writer
@@ -416,40 +420,34 @@ const CONTEXT_TREE_CACHE_RELS = new Set([
   CONTEXT_TREE_CLEANUP_REL,
 ]);
 const GIT_FILE_MAX_BYTES = 4096;
-const SNAPSHOT_HASH_CHECK_MAX_BYTES = 64 * 1024;
+const GIT_INSPECT_TIMEOUT_MS = 5_000;
+const GIT_INSPECT_MAX_BUFFER_BYTES = 8 * 1024 * 1024;
+const LS_TREE_RECORD_PATTERN = /^([0-7]+) blob ([0-9a-f]{40})\s+(\d+)\t([\s\S]+)$/;
 
 async function hasDirectoryEntries(path: string): Promise<boolean> {
   try {
     const stats = await lstat(path);
-    if (stats.isSymbolicLink() || !stats.isDirectory()) return false;
+    if (stats.isSymbolicLink() || !stats.isDirectory()) return true;
     return (await readdir(path)).length > 0;
-  } catch {
-    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ENOENT";
   }
 }
 
-function parseGitIndex(buffer: Buffer): Map<string, { readonly size: number; readonly sha1: string }> | undefined {
-  if (buffer.length < 12 || buffer.subarray(0, 4).toString("ascii") !== "DIRC") return undefined;
-  const version = buffer.readUInt32BE(4);
-  if (version !== 2 && version !== 3) return undefined;
-  const count = buffer.readUInt32BE(8);
+function parseGitHeadTree(buffer: Buffer): Map<string, { readonly size: number; readonly sha1: string }> | undefined {
   const entries = new Map<string, { readonly size: number; readonly sha1: string }>();
-  let offset = 12;
-  for (let i = 0; i < count; i += 1) {
-    if (offset + 62 > buffer.length) return undefined;
-    const size = buffer.readUInt32BE(offset + 36);
-    const sha1 = buffer.subarray(offset + 40, offset + 60).toString("hex");
-    const flags = buffer.readUInt16BE(offset + 60);
-    const nameStart = offset + (version === 3 && (flags & 0x4000) !== 0 ? 64 : 62);
-    const nameEnd = buffer.indexOf(0, nameStart);
-    if (nameEnd < 0) return undefined;
-    entries.set(buffer.subarray(nameStart, nameEnd).toString("utf8"), { size, sha1 });
-    offset += Math.ceil((nameEnd - offset + 1) / 8) * 8;
+  for (const record of buffer.toString("utf8").split("\0")) {
+    if (record === "") continue;
+    const match = LS_TREE_RECORD_PATTERN.exec(record);
+    if (!match) return undefined;
+    const [, mode, sha1, rawSize, relPath] = match;
+    if ((mode !== "100644" && mode !== "100755") || !sha1 || !rawSize || !relPath) return undefined;
+    entries.set(relPath, { size: Number(rawSize), sha1 });
   }
   return entries;
 }
 
-async function resolveSnapshotIndex(
+async function resolveSnapshotHeadTree(
   contextTreeRoot: string,
   snapshotDir: string,
 ): Promise<Map<string, { readonly size: number; readonly sha1: string }> | undefined> {
@@ -465,7 +463,36 @@ async function resolveSnapshotIndex(
   if (relToRepos === "" || relToRepos === ".." || relToRepos.startsWith(`..${sep}`) || isAbsolute(relToRepos)) {
     return undefined;
   }
-  return parseGitIndex(await readFile(join(gitDir, "index")));
+  const indexStats = await lstat(join(gitDir, "index"));
+  if (indexStats.isSymbolicLink() || !indexStats.isFile()) return undefined;
+  const gitOptions = {
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    encoding: "buffer" as const,
+    timeout: GIT_INSPECT_TIMEOUT_MS,
+    maxBuffer: GIT_INSPECT_MAX_BUFFER_BYTES,
+  };
+  const status = await execFileAsync(
+    "git",
+    [
+      "-c",
+      "safe.bareRepository=all",
+      "-C",
+      snapshotDir,
+      "status",
+      "--porcelain=v1",
+      "-z",
+      "--untracked-files=all",
+      "--ignored=matching",
+    ],
+    gitOptions,
+  );
+  if (status.stdout.length > 0) return undefined;
+  const tree = await execFileAsync(
+    "git",
+    ["-c", "safe.bareRepository=all", "-C", snapshotDir, "ls-tree", "-r", "-z", "--long", "HEAD"],
+    gitOptions,
+  );
+  return parseGitHeadTree(tree.stdout);
 }
 
 async function isSnapshotFileDirty(
@@ -473,10 +500,9 @@ async function isSnapshotFileDirty(
   stats: Stats,
   expected: { readonly size: number; readonly sha1: string } | undefined,
 ): Promise<boolean> {
-  if (!expected || expected.size !== stats.size) return true;
-  if (stats.size > SNAPSHOT_HASH_CHECK_MAX_BYTES) return false;
+  if (!expected || expected.size !== stats.size || stats.size > WORKSPACE_MAX_BYTES) return true;
   const content = await readFile(absPath);
-  const sha1 = createHash("sha1").update(`blob ${stats.size}\0`).update(content).digest("hex");
+  const sha1 = createHash("sha1").update(`blob ${content.length}\0`).update(content).digest("hex");
   return sha1 !== expected.sha1;
 }
 
@@ -519,11 +545,11 @@ async function walkSnapshotWorktree(
 
 async function isSnapshotWorktreeDirty(contextTreeRoot: string, snapshotDir: string): Promise<boolean> {
   try {
-    const indexed = await resolveSnapshotIndex(contextTreeRoot, snapshotDir);
-    if (!indexed) return false;
-    return await walkSnapshotWorktree(snapshotDir, indexed);
+    const headTree = await resolveSnapshotHeadTree(contextTreeRoot, snapshotDir);
+    if (!headTree) return true;
+    return await walkSnapshotWorktree(snapshotDir, headTree);
   } catch {
-    return false;
+    return true;
   }
 }
 
@@ -538,18 +564,17 @@ async function shouldPreserveContextTreeCache(workspacePath: string): Promise<bo
   const snapshotsRoot = join(contextTreeRoot, "snapshots");
   try {
     const stats = await lstat(snapshotsRoot);
-    if (stats.isSymbolicLink() || !stats.isDirectory()) return false;
+    if (stats.isSymbolicLink() || !stats.isDirectory()) return true;
     for (const name of await readdir(snapshotsRoot)) {
       const candidate = join(snapshotsRoot, name);
       const entryStats = await lstat(candidate);
-      if (!entryStats.isSymbolicLink() && entryStats.isDirectory()) {
-        if (await isSnapshotWorktreeDirty(contextTreeRoot, candidate)) return true;
-      }
+      if (entryStats.isSymbolicLink() || !entryStats.isDirectory()) return true;
+      if (await isSnapshotWorktreeDirty(contextTreeRoot, candidate)) return true;
     }
-  } catch {
     return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ENOENT";
   }
-  return false;
 }
 
 function shouldSkipContextTreeEntry(dirRel: string, name: string, preserveContextTreeCache: boolean): boolean {

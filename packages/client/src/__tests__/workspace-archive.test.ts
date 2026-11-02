@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
   chmod,
@@ -8,6 +9,7 @@ import {
   readdir,
   readFile,
   readlink,
+  realpath,
   rm,
   stat,
   symlink,
@@ -16,6 +18,7 @@ import {
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { pack as tarPack } from "tar-stream";
 import { afterEach, describe, expect, it } from "vitest";
@@ -30,6 +33,7 @@ import {
   type WorkspaceArchiveInfo,
 } from "../runner/workspace-archive.js";
 
+const execFileAsync = promisify(execFile);
 const roots: string[] = [];
 
 afterEach(async () => {
@@ -239,22 +243,50 @@ describe("createWorkspaceArchive + restoreWorkspaceArchive roundtrip", () => {
     expect(JSON.parse(binding)).toEqual({ sessionId: "9f86d081", workspaceFingerprint: "abc123" });
   });
 
-  it("excludes read-only Context Tree caches when no write session exists and keeps them when a write session is active", async () => {
-    const root = await makeRoot();
-    const workspace = join(root, "workspace");
-    const projectDir = join(workspace, ".opentag", "context-tree", "project");
-    const ctHome = join(workspace, ".opentag", "context-tree", "home", ".context-tree");
-    await mkdir(projectDir, { recursive: true });
-    await mkdir(join(ctHome, "repositories", "repo.git", "objects", "pack"), { recursive: true });
-    await mkdir(join(ctHome, "snapshots", "repo-main"), { recursive: true });
-    await mkdir(join(ctHome, "cleanup", "logs"), { recursive: true });
-    await writeFile(join(projectDir, ".context-tree.json"), '{"schemaVersion":3,"trees":[]}\n');
-    await writeFile(join(ctHome, "repositories", "repo.git", "objects", "pack", "pack-1.pack"), randomBytes(4096));
-    await writeFile(join(ctHome, "snapshots", "repo-main", "NODE.md"), "# Snapshot\n");
-    await writeFile(join(ctHome, "cleanup", "logs", "events.jsonl"), "{}\n");
+  it("excludes read-only Context Tree caches when proven clean and retains unpublished or unverifiable snapshot state", async () => {
+    const root = await realpath(await makeRoot());
+    const seed = join(root, "seed");
+    await mkdir(seed, { recursive: true });
+    const gitEnv = {
+      ...process.env,
+      GIT_AUTHOR_NAME: "Test",
+      GIT_AUTHOR_EMAIL: "test@example.com",
+      GIT_COMMITTER_NAME: "Test",
+      GIT_COMMITTER_EMAIL: "test@example.com",
+    };
+    await execFileAsync("git", ["init", "-b", "main", seed], { env: gitEnv });
+    const initialSmall = `${"a".repeat(1023)}\n`;
+    const initialLarge = `${"x".repeat(69_999)}\n`;
+    await writeFile(join(seed, "NODE.md"), initialSmall);
+    await writeFile(join(seed, "large.txt"), initialLarge);
+    await execFileAsync("git", ["-C", seed, "add", "NODE.md", "large.txt"], { env: gitEnv });
+    await execFileAsync("git", ["-C", seed, "commit", "-m", "init"], { env: gitEnv });
 
+    async function setupContextTreeFixture(name: string) {
+      const workspace = join(root, `workspace-${name}`);
+      const projectDir = join(workspace, ".opentag", "context-tree", "project");
+      const ctHome = join(workspace, ".opentag", "context-tree", "home", ".context-tree");
+      const bareRepo = join(ctHome, "repositories", "repo.git");
+      const snapshotDir = join(ctHome, "snapshots", "repo-main");
+      await mkdir(projectDir, { recursive: true });
+      await mkdir(join(ctHome, "repositories"), { recursive: true });
+      await mkdir(join(ctHome, "snapshots"), { recursive: true });
+      await mkdir(join(ctHome, "cleanup", "logs"), { recursive: true });
+      await writeFile(join(projectDir, ".context-tree.json"), '{"schemaVersion":3,"trees":[]}\n');
+      await writeFile(join(ctHome, "cleanup", "logs", "events.jsonl"), "{}\n");
+      await execFileAsync("git", ["clone", "--bare", "--no-hardlinks", seed, bareRepo], { env: gitEnv });
+      await execFileAsync(
+        "git",
+        ["-c", "safe.bareRepository=all", "--git-dir", bareRepo, "worktree", "add", "--detach", snapshotDir, "HEAD"],
+        { env: gitEnv },
+      );
+      return { workspace, ctHome, bareRepo, snapshotDir };
+    }
+
+    // 1. Clean snapshot is omitted when no write session exists.
+    const clean = await setupContextTreeFixture("clean");
     const archiveWithoutSession = join(root, "without-session.tar.gz");
-    const infoWithout = await createWorkspaceArchive(workspace, archiveWithoutSession, { maxBytes: 1024 });
+    const infoWithout = await createWorkspaceArchive(clean.workspace, archiveWithoutSession, { maxBytes: 1024 });
     const restoredWithout = join(root, "restored-without");
     await restoreWorkspaceArchive(archiveWithoutSession, restoredWithout, infoWithout);
 
@@ -273,13 +305,13 @@ describe("createWorkspaceArchive + restoreWorkspaceArchive roundtrip", () => {
 
     // Once an unpublished write session exists under sessions/ or worktrees/, repositories and
     // snapshots are preserved (while cleanup remains excluded).
-    await mkdir(join(ctHome, "sessions"), { recursive: true });
-    await mkdir(join(ctHome, "worktrees", "session-1"), { recursive: true });
-    await writeFile(join(ctHome, "sessions", "session-1.json"), '{"id":"session-1"}\n');
-    await writeFile(join(ctHome, "worktrees", "session-1", "draft.md"), "unpublished draft\n");
+    await mkdir(join(clean.ctHome, "sessions"), { recursive: true });
+    await mkdir(join(clean.ctHome, "worktrees", "session-1"), { recursive: true });
+    await writeFile(join(clean.ctHome, "sessions", "session-1.json"), '{"id":"session-1"}\n');
+    await writeFile(join(clean.ctHome, "worktrees", "session-1", "draft.md"), "unpublished draft\n");
 
     const archiveWithSession = join(root, "with-session.tar.gz");
-    const infoWith = await createWorkspaceArchive(workspace, archiveWithSession);
+    const infoWith = await createWorkspaceArchive(clean.workspace, archiveWithSession);
     const restoredWith = join(root, "restored-with");
     await restoreWorkspaceArchive(archiveWithSession, restoredWith, infoWith);
 
@@ -294,10 +326,108 @@ describe("createWorkspaceArchive + restoreWorkspaceArchive roundtrip", () => {
         join(restoredWith, ".opentag", "context-tree", "home", ".context-tree", "snapshots", "repo-main", "NODE.md"),
         "utf8",
       ),
-    ).toBe("# Snapshot\n");
+    ).toBe(initialSmall);
     await expect(
       lstat(join(restoredWith, ".opentag", "context-tree", "home", ".context-tree", "cleanup")),
     ).rejects.toMatchObject({ code: "ENOENT" });
+
+    // 2. Unstaged 1 KiB modification is retained.
+    const unstagedSmall = await setupContextTreeFixture("unstaged-small");
+    const modifiedSmall = `${"b".repeat(1023)}\n`;
+    await writeFile(join(unstagedSmall.snapshotDir, "NODE.md"), modifiedSmall);
+    const archiveUnstagedSmall = join(root, "unstaged-small.tar.gz");
+    const infoUnstagedSmall = await createWorkspaceArchive(unstagedSmall.workspace, archiveUnstagedSmall);
+    const restoredUnstagedSmall = join(root, "restored-unstaged-small");
+    await restoreWorkspaceArchive(archiveUnstagedSmall, restoredUnstagedSmall, infoUnstagedSmall);
+    expect(
+      await readFile(
+        join(
+          restoredUnstagedSmall,
+          ".opentag",
+          "context-tree",
+          "home",
+          ".context-tree",
+          "snapshots",
+          "repo-main",
+          "NODE.md",
+        ),
+        "utf8",
+      ),
+    ).toBe(modifiedSmall);
+
+    // 3. 70,000-byte same-size modification is retained.
+    const sameSizeLarge = await setupContextTreeFixture("same-size-large");
+    const modifiedLarge = `${"y".repeat(69_999)}\n`;
+    await writeFile(join(sameSizeLarge.snapshotDir, "large.txt"), modifiedLarge);
+    const archiveSameSizeLarge = join(root, "same-size-large.tar.gz");
+    const infoSameSizeLarge = await createWorkspaceArchive(sameSizeLarge.workspace, archiveSameSizeLarge);
+    const restoredSameSizeLarge = join(root, "restored-same-size-large");
+    await restoreWorkspaceArchive(archiveSameSizeLarge, restoredSameSizeLarge, infoSameSizeLarge);
+    expect(
+      await readFile(
+        join(
+          restoredSameSizeLarge,
+          ".opentag",
+          "context-tree",
+          "home",
+          ".context-tree",
+          "snapshots",
+          "repo-main",
+          "large.txt",
+        ),
+        "utf8",
+      ),
+    ).toBe(modifiedLarge);
+
+    // 4. Staged 1 KiB modification is retained.
+    const stagedSmall = await setupContextTreeFixture("staged-small");
+    const stagedContent = `${"c".repeat(1023)}\n`;
+    await writeFile(join(stagedSmall.snapshotDir, "NODE.md"), stagedContent);
+    await execFileAsync("git", ["-C", stagedSmall.snapshotDir, "add", "NODE.md"], { env: gitEnv });
+    const archiveStagedSmall = join(root, "staged-small.tar.gz");
+    const infoStagedSmall = await createWorkspaceArchive(stagedSmall.workspace, archiveStagedSmall);
+    const restoredStagedSmall = join(root, "restored-staged-small");
+    await restoreWorkspaceArchive(archiveStagedSmall, restoredStagedSmall, infoStagedSmall);
+    expect(
+      await readFile(
+        join(
+          restoredStagedSmall,
+          ".opentag",
+          "context-tree",
+          "home",
+          ".context-tree",
+          "snapshots",
+          "repo-main",
+          "NODE.md",
+        ),
+        "utf8",
+      ),
+    ).toBe(stagedContent);
+
+    // 5. Dirty snapshot with a corrupt index is retained.
+    const corruptIndex = await setupContextTreeFixture("corrupt-index");
+    const corruptContent = `${"d".repeat(1023)}\n`;
+    await writeFile(join(corruptIndex.snapshotDir, "NODE.md"), corruptContent);
+    await writeFile(join(corruptIndex.bareRepo, "worktrees", "repo-main", "index"), "corrupt-index-bytes");
+    const archiveCorruptIndex = join(root, "corrupt-index.tar.gz");
+    const infoCorruptIndex = await createWorkspaceArchive(corruptIndex.workspace, archiveCorruptIndex);
+    const restoredCorruptIndex = join(root, "restored-corrupt-index");
+    await restoreWorkspaceArchive(archiveCorruptIndex, restoredCorruptIndex, infoCorruptIndex);
+    expect(
+      await readFile(
+        join(
+          restoredCorruptIndex,
+          ".opentag",
+          "context-tree",
+          "home",
+          ".context-tree",
+          "snapshots",
+          "repo-main",
+          "NODE.md",
+        ),
+        "utf8",
+      ),
+    ).toBe(corruptContent);
   });
 
   it("round-trips safe relative symlinks, including chained node_modules layouts", async () => {

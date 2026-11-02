@@ -331,6 +331,54 @@ function extractTraceId(headers: Headers): string | undefined {
   return headers.get("x-trace-id") ?? headers.get("traceparent")?.split("-")[1] ?? undefined;
 }
 
+async function reportHttpFailure(
+  reporter: DiagnosticReporter,
+  apiError: (response: Response, body: unknown) => ApiError,
+  path: string,
+  response: Response,
+  requestId: string,
+): Promise<void> {
+  const body = await response
+    .clone()
+    .json()
+    .catch(() => undefined);
+  const error = apiError(response, body);
+  const level = response.status >= 500 ? "error" : "warn";
+  const traceId = extractTraceId(response.headers);
+  reporter.report(
+    {
+      source: "api",
+      code: error.code ?? `http_${response.status}`,
+      routeTemplate: routeTemplate(path),
+      status: response.status,
+      category: error.category,
+      requestId: error.requestId ?? requestId,
+      ...(traceId ? { traceId } : {}),
+      retryAfterSeconds: error.retryAfterSeconds,
+    },
+    level,
+  );
+}
+
+function handleFetchException(
+  reporter: DiagnosticReporter,
+  cause: unknown,
+  signal: AbortSignal | null | undefined,
+  path: string,
+): never {
+  if (signal?.aborted || (cause instanceof Error && cause.name === "AbortError")) {
+    throw new CancelledRequestError(cause);
+  }
+  const normalized = normalizeError(cause, "network_error");
+  reporter.report({
+    source: "api",
+    code: normalized.code,
+    routeTemplate: routeTemplate(path),
+    error: { name: normalized.error.name },
+  });
+  throw cause;
+}
+
 export class BrowserApi {
   constructor(
     readonly fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis),
@@ -1162,43 +1210,6 @@ export class BrowserApi {
     if (!response.ok) throw this.apiError(response, await response.json().catch(() => undefined));
   }
 
-  private async reportHttpFailure(path: string, response: Response, requestId: string): Promise<void> {
-    const body = await response
-      .clone()
-      .json()
-      .catch(() => undefined);
-    const error = this.apiError(response, body);
-    const level = response.status >= 500 ? "error" : "warn";
-    const traceId = extractTraceId(response.headers);
-    this.diagnosticReporter.report(
-      {
-        source: "api",
-        code: error.code ?? `http_${response.status}`,
-        routeTemplate: routeTemplate(path),
-        status: response.status,
-        category: error.category,
-        requestId: error.requestId ?? requestId,
-        ...(traceId ? { traceId } : {}),
-        retryAfterSeconds: error.retryAfterSeconds,
-      },
-      level,
-    );
-  }
-
-  private handleFetchException(cause: unknown, signal: AbortSignal | null | undefined, path: string): never {
-    if (signal?.aborted || (cause instanceof Error && cause.name === "AbortError")) {
-      throw new CancelledRequestError(cause);
-    }
-    const normalized = normalizeError(cause, "network_error");
-    this.diagnosticReporter.report({
-      source: "api",
-      code: normalized.code,
-      routeTemplate: routeTemplate(path),
-      error: { name: normalized.error.name },
-    });
-    throw cause;
-  }
-
   /*
    * A session renews itself as it is used, so there is nothing left to exchange a `401` for: it now means the session
    * is genuinely gone, and the retry this used to make could only ever have failed a second time.
@@ -1222,11 +1233,11 @@ export class BrowserApi {
     try {
       const response = await this.fetchImpl(path, { ...init, headers, credentials: "same-origin" });
       if (!response.ok) {
-        await this.reportHttpFailure(path, response, requestId);
+        await reportHttpFailure(this.diagnosticReporter, (res, b) => this.apiError(res, b), path, response, requestId);
       }
       return response;
     } catch (cause) {
-      this.handleFetchException(cause, init.signal, path);
+      handleFetchException(this.diagnosticReporter, cause, init.signal, path);
     }
   }
 

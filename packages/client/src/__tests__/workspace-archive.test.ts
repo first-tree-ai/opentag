@@ -428,6 +428,49 @@ describe("createWorkspaceArchive + restoreWorkspaceArchive roundtrip", () => {
         "utf8",
       ),
     ).toBe(corruptContent);
+
+    // 6. Committed-but-unpublished snapshot change is retained.
+    const localCommit = await setupContextTreeFixture("local-commit");
+    const committedContent = `${"e".repeat(1023)}\n`;
+    await writeFile(join(localCommit.snapshotDir, "NODE.md"), committedContent);
+    await execFileAsync("git", ["-C", localCommit.snapshotDir, "commit", "-am", "local edit"], { env: gitEnv });
+    const archiveLocalCommit = join(root, "local-commit.tar.gz");
+    const infoLocalCommit = await createWorkspaceArchive(localCommit.workspace, archiveLocalCommit);
+    const restoredLocalCommit = join(root, "restored-local-commit");
+    await restoreWorkspaceArchive(archiveLocalCommit, restoredLocalCommit, infoLocalCommit);
+    expect(
+      await readFile(
+        join(
+          restoredLocalCommit,
+          ".opentag",
+          "context-tree",
+          "home",
+          ".context-tree",
+          "snapshots",
+          "repo-main",
+          "NODE.md",
+        ),
+        "utf8",
+      ),
+    ).toBe(committedContent);
+
+    // 7. Malicious core.fsmonitor in workspace Git config is never executed in the Runner.
+    const fsmonitor = await setupContextTreeFixture("fsmonitor");
+    const markerPath = join(root, "fsmonitor-executed-marker");
+    const hookPath = join(fsmonitor.workspace, "hook.sh");
+    await writeFile(hookPath, `#!/bin/sh\necho pwned > "${markerPath}"\n`);
+    await chmod(hookPath, 0o755);
+    await execFileAsync("git", ["--git-dir", fsmonitor.bareRepo, "config", "core.fsmonitor", hookPath], {
+      env: gitEnv,
+    });
+    const archiveFsmonitor = join(root, "fsmonitor.tar.gz");
+    const infoFsmonitor = await createWorkspaceArchive(fsmonitor.workspace, archiveFsmonitor);
+    await expect(lstat(markerPath)).rejects.toMatchObject({ code: "ENOENT" });
+    const restoredFsmonitor = join(root, "restored-fsmonitor");
+    await restoreWorkspaceArchive(archiveFsmonitor, restoredFsmonitor, infoFsmonitor);
+    await expect(
+      lstat(join(restoredFsmonitor, ".opentag", "context-tree", "home", ".context-tree", "snapshots")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("round-trips safe relative symlinks, including chained node_modules layouts", async () => {

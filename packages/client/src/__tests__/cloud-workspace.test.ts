@@ -2,13 +2,18 @@ import { createHash } from "node:crypto";
 import { link, mkdir, mkdtemp, open, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as retryDelay } from "node:timers/promises";
 import type { RunnerWorkspaceObject } from "@opentag/shared";
-import { afterEach, describe, expect, it } from "vitest";
-import { CloudWorkspace } from "../runner/cloud-workspace.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { CloudWorkspace, type CloudWorkspaceOptions } from "../runner/cloud-workspace.js";
 import { WORKSPACE_MAX_BYTES } from "../runner/workspace-archive.js";
 
 const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+vi.mock("node:timers/promises", () => ({ setTimeout: vi.fn(async () => undefined) }));
+afterEach(async () => {
+  vi.clearAllMocks();
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
 
 function digest(bytes: Buffer) {
   return {
@@ -31,12 +36,18 @@ function storageFixture() {
     ...digest(bytes),
   };
   let failure: "none" | "before" | "after" | "corrupt-read" = "none";
+  let failures: (number | "network" | "after")[] = [];
+  const uploads: { bytes: Buffer; headers: Headers }[] = [];
   const requests: { method: string; url: string; token: string | null }[] = [];
   const upload = async (headers: Headers, init: RequestInit): Promise<Response> => {
     if (failure === "before") return new Response(null, { status: 503 });
     const chunks: Uint8Array[] = [];
     for await (const chunk of init.body as unknown as AsyncIterable<Uint8Array>) chunks.push(chunk);
     const uploaded = Buffer.concat(chunks);
+    uploads.push({ bytes: uploaded, headers });
+    const next = failures.shift();
+    if (next === "network") throw new TypeError("fetch failed");
+    if (typeof next === "number") return new Response(null, { status: next });
     if (
       headers.get("x-opentag-storage-generation") !== object.generation ||
       headers.get("x-opentag-storage-metageneration") !== object.metageneration ||
@@ -55,7 +66,7 @@ function storageFixture() {
       saved: true,
       sealed: headers.get("x-opentag-workspace-sealed") === "true",
     };
-    if (failure === "after") throw new Error("connection lost after commit");
+    if (failure === "after" || next === "after") throw new Error("connection lost after commit");
     return Response.json(object);
   };
   const download = (url: URL) => {
@@ -88,6 +99,10 @@ function storageFixture() {
   return {
     fetchImpl,
     requests,
+    uploads,
+    failUploads: (...values: typeof failures) => {
+      failures = values;
+    },
     object: () => ({ ...object }),
     fail: (value: typeof failure) => {
       failure = value;
@@ -95,7 +110,11 @@ function storageFixture() {
   };
 }
 
-async function client(fixture: ReturnType<typeof storageFixture>, generation = 1) {
+async function client(
+  fixture: ReturnType<typeof storageFixture>,
+  generation = 1,
+  options: Partial<CloudWorkspaceOptions> = {},
+) {
   const root = await mkdtemp(join(tmpdir(), "ot-e5-client-"));
   roots.push(root);
   const workspace = join(root, "workspace");
@@ -111,11 +130,221 @@ async function client(fixture: ReturnType<typeof storageFixture>, generation = 1
       token: () => `fixture-${generation}`,
       environmentGeneration: () => generation,
       fetchImpl: fixture.fetchImpl,
+      ...options,
     }),
   };
 }
 
+function invalidUploadResponse(kind: string, object: RunnerWorkspaceObject): Response {
+  if (kind === "json") return new Response("not JSON");
+  if (kind === "missing-body") return new Response(null);
+  if (kind === "oversized-json") return Response.json({ value: "x".repeat(17 * 1024) });
+  return Response.json(kind === "schema" ? {} : object);
+}
+
 describe("Cloud workspace transfer", () => {
+  it("retries identical archive bytes and original CAS preconditions with bounded backoff", async () => {
+    const store = storageFixture();
+    const runner = await client(store);
+    await runner.client.initialize();
+    const baseline = store.object();
+    await writeFile(join(runner.workspace, "progress"), "keep this exact archive");
+    store.uploads.length = 0;
+    vi.mocked(retryDelay).mockClear();
+    store.failUploads("network", 503);
+    await runner.client.save();
+    expect(store.uploads).toHaveLength(3);
+    const [first] = store.uploads;
+    for (const upload of store.uploads) {
+      expect(upload.bytes).toEqual(first?.bytes);
+      expect(upload.headers.get("x-opentag-storage-generation")).toBe(baseline.generation);
+      expect(upload.headers.get("x-opentag-storage-metageneration")).toBe(baseline.metageneration);
+    }
+    expect(vi.mocked(retryDelay).mock.calls.map(([delay]) => delay)).toEqual([1000, 2000]);
+    expect(runner.client.pendingSave).toBe(false);
+  });
+
+  it.each([408, 429, 500, 502, 504])(
+    "retries a transient HTTP %s only after readback confirms the base",
+    async (status) => {
+      const store = storageFixture();
+      const runner = await client(store);
+      await runner.client.initialize();
+      const start = store.requests.length;
+      store.failUploads(status);
+      await runner.client.save();
+      expect(store.requests.slice(start).map((request) => request.method)).toEqual(["PUT", "POST", "PUT"]);
+    },
+  );
+
+  it.each([400, 401, 403, 409, 412, 413, 422])("does not retry or claim after HTTP %s", async (status) => {
+    const store = storageFixture();
+    const runner = await client(store);
+    await runner.client.initialize();
+    const start = store.requests.length;
+    const baseline = store.object();
+    store.failUploads(status);
+    await expect(runner.client.save()).rejects.toMatchObject({ retryable: false, httpStatus: status });
+    expect(store.requests.slice(start).map((request) => request.method)).toEqual(["PUT"]);
+    expect(store.object()).toEqual(baseline);
+    expect(runner.client.pendingSave).toBe(true);
+  });
+
+  it("stops after three failed uploads while retaining local progress and the previous archive", async () => {
+    const store = storageFixture();
+    const runner = await client(store);
+    await runner.client.initialize();
+    const baseline = store.object();
+    await writeFile(join(runner.workspace, "progress"), "unsaved progress");
+    const start = store.requests.length;
+    store.failUploads(503, 503, 503);
+    await expect(runner.client.save()).rejects.toMatchObject({ retryable: true, httpStatus: 503 });
+    expect(store.requests.slice(start).map((request) => request.method)).toEqual([
+      "PUT",
+      "POST",
+      "PUT",
+      "POST",
+      "PUT",
+      "POST",
+    ]);
+    expect(store.object()).toEqual(baseline);
+    expect(runner.client.pendingSave).toBe(true);
+    expect(await readFile(join(runner.workspace, "progress"), "utf8")).toBe("unsaved progress");
+    await runner.client.initialize();
+    expect(runner.client.pendingSave).toBe(false);
+  });
+
+  it("accepts a committed upload with a lost response without uploading it again", async () => {
+    const store = storageFixture();
+    const runner = await client(store);
+    await runner.client.initialize();
+    const start = store.requests.length;
+    store.failUploads("after");
+    await runner.client.save(true);
+    expect(store.requests.slice(start).map((request) => request.method)).toEqual(["PUT", "POST"]);
+    expect(runner.client.sealed).toBe(true);
+    expect(retryDelay).not.toHaveBeenCalled();
+  });
+
+  it("never adopts an unrelated write discovered during transient-error readback", async () => {
+    const store = storageFixture();
+    const newer = await client(store);
+    let intercept = false;
+    const fetchImpl: typeof fetch = async (input, init) => {
+      if (intercept && init?.method === "PUT") {
+        await newer.client.initialize();
+        await writeFile(join(newer.workspace, "progress"), "newer process");
+        await newer.client.save();
+        return new Response(null, { status: 503 });
+      }
+      return store.fetchImpl(input, init);
+    };
+    const old = await client(store, 1, { fetchImpl });
+    await old.client.initialize();
+    await writeFile(join(old.workspace, "progress"), "old process");
+    intercept = true;
+    await expect(old.client.save()).rejects.toMatchObject({ retryable: false });
+    expect(retryDelay).not.toHaveBeenCalled();
+    const restored = await client(store, 2);
+    await restored.client.initialize();
+    expect(await readFile(join(restored.workspace, "progress"), "utf8")).toBe("newer process");
+    expect(await readFile(join(old.workspace, "progress"), "utf8")).toBe("old process");
+  });
+
+  it("bounds upload and verification with one deadline", async () => {
+    const store = storageFixture();
+    let hang = false;
+    const runner = await client(store, 1, {
+      timeoutMs: 30,
+      fetchImpl: async (input, init) => {
+        if (hang)
+          return new Promise<never>((_, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+          });
+        return store.fetchImpl(input, init);
+      },
+    });
+    await runner.client.initialize();
+    hang = true;
+    await expect(runner.client.save()).rejects.toMatchObject({ code: "save_failed" });
+    expect(retryDelay).not.toHaveBeenCalled();
+    expect(runner.client.pendingSave).toBe(true);
+  });
+
+  it("does not retry when readback itself is unavailable", async () => {
+    const store = storageFixture();
+    let fail = false;
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) =>
+      fail ? new Response(null, { status: 503 }) : store.fetchImpl(input, init),
+    );
+    const runner = await client(store, 1, { fetchImpl });
+    await runner.client.initialize();
+    const baseline = store.object();
+    fetchImpl.mockClear();
+    fail = true;
+    await expect(runner.client.save()).rejects.toMatchObject({ httpStatus: 503 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(retryDelay).not.toHaveBeenCalled();
+    expect(store.object()).toEqual(baseline);
+  });
+
+  it("refuses a changed allocation before sending old workspace bytes", async () => {
+    const store = storageFixture();
+    let generation = 1;
+    const runner = await client(store, 1, { environmentGeneration: () => generation });
+    await runner.client.initialize();
+    const baseline = store.object();
+    const count = store.requests.length;
+    generation = 2;
+    await expect(runner.client.save()).rejects.toMatchObject({ code: "scope_unavailable", retryable: false });
+    expect(store.requests).toHaveLength(count);
+    expect(store.object()).toEqual(baseline);
+  });
+
+  it.each(["json", "schema", "unchanged-object", "missing-body", "oversized-json"])(
+    "verifies but does not retry an invalid upload response (%s)",
+    async (kind) => {
+      const store = storageFixture();
+      let invalid = false;
+      const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+        if (invalid && init?.method === "PUT") return invalidUploadResponse(kind, store.object());
+        return store.fetchImpl(input, init);
+      });
+      const runner = await client(store, 1, { fetchImpl });
+      await runner.client.initialize();
+      fetchImpl.mockClear();
+      invalid = true;
+      await expect(runner.client.save()).rejects.toMatchObject({ retryable: false });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(retryDelay).not.toHaveBeenCalled();
+    },
+  );
+
+  it("retries a broken response stream after checking the original base", async () => {
+    const store = storageFixture();
+    let broken = false;
+    const runner = await client(store, 1, {
+      fetchImpl: async (input, init) => {
+        if (broken && init?.method === "PUT") {
+          broken = false;
+          return new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.error(new Error("connection lost"));
+              },
+            }),
+          );
+        }
+        return store.fetchImpl(input, init);
+      },
+    });
+    await runner.client.initialize();
+    broken = true;
+    await runner.client.save();
+    expect(retryDelay).toHaveBeenCalledOnce();
+    expect(runner.client.pendingSave).toBe(false);
+  });
+
   it("classifies unsaveable hard links as terminal without overwriting the saved object", async () => {
     const store = storageFixture();
     const runner = await client(store);
@@ -175,45 +404,6 @@ describe("Cloud workspace transfer", () => {
     expect(runner.client.terminalFailure).toBe(true);
   });
 
-  it("retries transient upload failures with exponential backoff before succeeding or failing", async () => {
-    const store = storageFixture();
-    const delays: number[] = [];
-    const root = await mkdtemp(join(tmpdir(), "ot-e5-retry-"));
-    roots.push(root);
-    const workspace = join(root, "workspace");
-    const stateDirectory = join(root, "private");
-    let remainingPutFailures = 2;
-    const retryClient = new CloudWorkspace({
-      workspace,
-      stateDirectory,
-      backendUrl: "wss://server.example.com/api/v1/sandbox-runners/ws",
-      token: () => "fixture-1",
-      environmentGeneration: () => 1,
-      retryDelayMs: 100,
-      sleep: async (ms) => {
-        delays.push(ms);
-      },
-      fetchImpl: async (input, init) => {
-        if (init?.method === "PUT" && remainingPutFailures > 0) {
-          remainingPutFailures -= 1;
-          return new Response(null, { status: 503 });
-        }
-        return store.fetchImpl(input, init);
-      },
-    });
-    await retryClient.initialize();
-    expect(delays).toEqual([100, 200]);
-    expect(retryClient.pendingSave).toBe(false);
-
-    // When all 3 attempts fail, save() rejects as retryable after 2 backoff waits.
-    delays.length = 0;
-    remainingPutFailures = 3;
-    await writeFile(join(workspace, "next.txt"), "data");
-    await expect(retryClient.save()).rejects.toMatchObject({ code: "save_failed", retryable: true });
-    expect(delays).toEqual([100, 200]);
-    expect(retryClient.pendingSave).toBe(true);
-  });
-
   it("rolls back unsaved pre-prompt dirt to the last saved baseline and clears terminalFailure", async () => {
     const store = storageFixture();
     const runner = await client(store);
@@ -234,6 +424,43 @@ describe("Cloud workspace transfer", () => {
     expect(runner.client.pendingSave).toBe(false);
     expect(await readdir(runner.workspace)).toEqual(["baseline.txt"]);
     expect(await readFile(join(runner.workspace, "baseline.txt"), "utf8")).toBe("committed baseline");
+  });
+
+  it("never wipes the workspace or overwrites the saved baseline when a pre-prompt rollback fails before recovery", async () => {
+    const store = storageFixture();
+    const runner = await client(store);
+    await runner.client.initialize();
+    await writeFile(join(runner.workspace, "baseline.txt"), "committed baseline");
+    await runner.client.save();
+    const savedBaseline = store.object();
+
+    await writeFile(join(runner.workspace, "dirty.txt"), "pre-prompt dirt");
+    store.fail("before");
+    await expect(runner.client.save()).rejects.toThrow("save_failed");
+    expect(runner.client.pendingSave).toBe(true);
+
+    store.fail("corrupt-read");
+    await expect(runner.client.rollback()).rejects.toThrow("restore_failed");
+    // The failed rollback staged in a sibling directory: local files are not wiped, and
+    // pendingSave is cleared so recovery re-restores the baseline instead of uploading dirt/empty.
+    expect(runner.client.initialized).toBe(false);
+    expect(runner.client.pendingSave).toBe(false);
+    expect((await readdir(runner.workspace)).sort()).toEqual(["baseline.txt", "dirty.txt"]);
+    expect(store.object()).toEqual(savedBaseline);
+
+    store.fail("none");
+    await runner.client.initialize();
+    expect(runner.client.initialized).toBe(true);
+    expect(runner.client.pendingSave).toBe(false);
+    expect(await readdir(runner.workspace)).toEqual(["baseline.txt"]);
+    expect(await readFile(join(runner.workspace, "baseline.txt"), "utf8")).toBe("committed baseline");
+    expect(store.object().bytes).toBe(savedBaseline.bytes);
+    expect(store.object().sha256).toBe(savedBaseline.sha256);
+
+    const replacement = await client(store, 2);
+    await replacement.client.initialize();
+    expect(await readdir(replacement.workspace)).toEqual(["baseline.txt"]);
+    expect(await readFile(join(replacement.workspace, "baseline.txt"), "utf8")).toBe("committed baseline");
   });
 
   it("recovers files and Pi binding/history into a replacement and excludes trusted parent state", async () => {

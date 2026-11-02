@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream, type Stats } from "node:fs";
 import {
@@ -18,11 +17,8 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { PassThrough, type Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { promisify } from "node:util";
-import { createGunzip, createGzip } from "node:zlib";
+import { createGunzip, createGzip, inflateSync } from "node:zlib";
 import { type Pack, type Headers as TarHeaders, extract as tarExtract, pack as tarPack } from "tar-stream";
-
-const execFileAsync = promisify(execFile);
 
 /**
  * Streams the complete workspace, including Git and Pi state. Callers must stop every writer
@@ -420,9 +416,24 @@ const CONTEXT_TREE_CACHE_RELS = new Set([
   CONTEXT_TREE_CLEANUP_REL,
 ]);
 const GIT_FILE_MAX_BYTES = 4096;
-const GIT_INSPECT_TIMEOUT_MS = 5_000;
-const GIT_INSPECT_MAX_BUFFER_BYTES = 8 * 1024 * 1024;
-const LS_TREE_RECORD_PATTERN = /^([0-7]+) blob ([0-9a-f]{40})\s+(\d+)\t([\s\S]+)$/;
+const GIT_INDEX_MAX_BYTES = 16 * 1024 * 1024;
+const GIT_OBJECT_MAX_BYTES = 32 * 1024 * 1024;
+const GIT_PACK_MAX_BYTES = 256 * 1024 * 1024;
+const GIT_MAX_REF_HOPS = 8;
+const GIT_MAX_DELTA_DEPTH = 64;
+const SHA1_HEX = /^[0-9a-f]{40}$/;
+const REFLOG_MUTATION_PREFIX = /^(commit|merge|rebase|cherry-pick|reset|am)\b/i;
+
+interface SnapshotFileExpectation {
+  readonly size: number;
+  readonly sha1: string;
+  readonly executable: boolean;
+}
+
+interface GitObjectRecord {
+  readonly type: string;
+  readonly payload: Buffer;
+}
 
 async function hasDirectoryEntries(path: string): Promise<boolean> {
   try {
@@ -434,73 +445,528 @@ async function hasDirectoryEntries(path: string): Promise<boolean> {
   }
 }
 
-function parseGitHeadTree(buffer: Buffer): Map<string, { readonly size: number; readonly sha1: string }> | undefined {
-  const entries = new Map<string, { readonly size: number; readonly sha1: string }>();
-  for (const record of buffer.toString("utf8").split("\0")) {
-    if (record === "") continue;
-    const match = LS_TREE_RECORD_PATTERN.exec(record);
-    if (!match) return undefined;
-    const [, mode, sha1, rawSize, relPath] = match;
-    if ((mode !== "100644" && mode !== "100755") || !sha1 || !rawSize || !relPath) return undefined;
-    entries.set(relPath, { size: Number(rawSize), sha1 });
+async function readBoundedRegularFile(path: string, maxBytes: number): Promise<Buffer | undefined> {
+  try {
+    const stats = await lstat(path);
+    if (stats.isSymbolicLink() || !stats.isFile() || stats.size > maxBytes) return undefined;
+    const content = await readFile(path);
+    return content.length <= maxBytes ? content : undefined;
+  } catch {
+    return undefined;
   }
-  return entries;
+}
+
+async function resolveContainedDirectory(rootCanonical: string, targetPath: string): Promise<string | undefined> {
+  try {
+    const stats = await lstat(targetPath);
+    if (stats.isSymbolicLink() || !stats.isDirectory()) return undefined;
+    const canonical = await canonicalPath(targetPath);
+    const rel = relative(rootCanonical, canonical);
+    if (rel === "" || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return undefined;
+    return canonical;
+  } catch {
+    return undefined;
+  }
+}
+
+async function resolveSnapshotGitDirs(
+  contextTreeRoot: string,
+  snapshotDir: string,
+): Promise<{ readonly gitDir: string; readonly commonDir: string } | undefined> {
+  const dotGit = await readBoundedRegularFile(join(snapshotDir, ".git"), GIT_FILE_MAX_BYTES);
+  const rawGitDir = dotGit?.toString("utf8").trim();
+  if (!rawGitDir?.startsWith("gitdir:")) return undefined;
+  const reposCanonical = await canonicalPath(join(contextTreeRoot, "repositories"));
+  const gitDir = await resolveContainedDirectory(
+    reposCanonical,
+    resolve(snapshotDir, rawGitDir.slice("gitdir:".length).trim()),
+  );
+  if (!gitDir) return undefined;
+  const commonRaw = (await readBoundedRegularFile(join(gitDir, "commondir"), GIT_FILE_MAX_BYTES))
+    ?.toString("utf8")
+    .trim();
+  const commonDir = commonRaw ? await resolveContainedDirectory(reposCanonical, resolve(gitDir, commonRaw)) : gitDir;
+  return commonDir ? { gitDir, commonDir } : undefined;
+}
+
+async function parsePackedRefs(commonDir: string): Promise<Map<string, string>> {
+  const refs = new Map<string, string>();
+  const raw = await readBoundedRegularFile(join(commonDir, "packed-refs"), GIT_INDEX_MAX_BYTES);
+  if (!raw) return refs;
+  for (const line of raw.toString("utf8").split("\n")) {
+    const trimmed = line.trim();
+    const match = /^([0-9a-f]{40})\s+(refs\/\S+)$/.exec(trimmed);
+    if (match?.[1] && match[2]) refs.set(match[2], match[1]);
+  }
+  return refs;
+}
+
+async function readRefTarget(
+  baseDir: string,
+  commonDir: string,
+  refName: string,
+  packed: ReadonlyMap<string, string>,
+): Promise<string | undefined> {
+  if (refName.includes("..") || refName.startsWith("/") || refName.includes("\\")) return undefined;
+  for (const root of [baseDir, commonDir]) {
+    const buf = await readBoundedRegularFile(join(root, ...refName.split("/")), GIT_FILE_MAX_BYTES);
+    if (buf) return buf.toString("utf8").trim();
+  }
+  return packed.get(refName);
+}
+
+async function resolveGitRef(
+  baseDir: string,
+  commonDir: string,
+  rawValue: string | undefined,
+  packed: ReadonlyMap<string, string>,
+): Promise<string | undefined> {
+  let current = rawValue?.trim();
+  for (let hop = 0; hop <= GIT_MAX_REF_HOPS && current; hop += 1) {
+    if (SHA1_HEX.test(current)) return current;
+    if (!current.startsWith("ref:")) return undefined;
+    current = await readRefTarget(baseDir, commonDir, current.slice("ref:".length).trim(), packed);
+  }
+  return undefined;
+}
+
+async function visitLooseRefEntry(fullPath: string): Promise<string | { readonly dir: string } | undefined> {
+  const stats = await lstat(fullPath).catch(() => undefined);
+  if (!stats || stats.isSymbolicLink()) return undefined;
+  if (stats.isDirectory()) return { dir: fullPath };
+  if (!stats.isFile() || stats.size > GIT_FILE_MAX_BYTES) return undefined;
+  const buf = await readBoundedRegularFile(fullPath, GIT_FILE_MAX_BYTES);
+  return buf?.toString("utf8").trim();
+}
+
+async function collectLooseRefValues(refsRoot: string): Promise<string[]> {
+  const values: string[] = [];
+  const pending: string[] = [refsRoot];
+  while (pending.length > 0) {
+    const dir = pending.pop() ?? "";
+    const names = await readdir(dir).catch(() => [] as string[]);
+    for (const name of names) {
+      const visited = await visitLooseRefEntry(join(dir, name));
+      if (typeof visited === "string") values.push(visited);
+      else if (visited) pending.push(visited.dir);
+    }
+  }
+  return values;
+}
+
+async function hasCleanSnapshotReflog(gitDir: string): Promise<boolean> {
+  const logPath = join(gitDir, "logs", "HEAD");
+  try {
+    const stats = await lstat(logPath);
+    if (stats.isSymbolicLink() || !stats.isFile() || stats.size > GIT_INDEX_MAX_BYTES) return false;
+    const raw = await readFile(logPath, "utf8");
+    for (const line of raw.split("\n")) {
+      const tab = line.indexOf("\t");
+      if (tab >= 0 && REFLOG_MUTATION_PREFIX.test(line.slice(tab + 1).trim())) return false;
+    }
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  }
+}
+
+async function resolvePublishedSnapshotHead(gitDir: string, commonDir: string): Promise<string | undefined> {
+  if (!(await hasCleanSnapshotReflog(gitDir))) return undefined;
+  const packed = await parsePackedRefs(commonDir);
+  const headRaw = (await readBoundedRegularFile(join(gitDir, "HEAD"), GIT_FILE_MAX_BYTES))?.toString("utf8");
+  const headSha = await resolveGitRef(gitDir, commonDir, headRaw, packed);
+  if (!headSha) return undefined;
+  const published = new Set<string>(packed.values());
+  const commonHeadRaw = (await readBoundedRegularFile(join(commonDir, "HEAD"), GIT_FILE_MAX_BYTES))?.toString("utf8");
+  const commonHeadSha = await resolveGitRef(commonDir, commonDir, commonHeadRaw, packed);
+  if (commonHeadSha) published.add(commonHeadSha);
+  for (const rawRef of await collectLooseRefValues(join(commonDir, "refs"))) {
+    const resolved = await resolveGitRef(commonDir, commonDir, rawRef, packed);
+    if (resolved) published.add(resolved);
+  }
+  return published.has(headSha) ? headSha : undefined;
+}
+
+async function readLooseGitObject(commonDir: string, sha: string): Promise<GitObjectRecord | undefined> {
+  const compressed = await readBoundedRegularFile(
+    join(commonDir, "objects", sha.slice(0, 2), sha.slice(2)),
+    GIT_OBJECT_MAX_BYTES,
+  );
+  if (!compressed) return undefined;
+  const raw = inflateSync(compressed, { maxOutputLength: GIT_OBJECT_MAX_BYTES });
+  if (createHash("sha1").update(raw).digest("hex") !== sha) return undefined;
+  const nul = raw.indexOf(0);
+  if (nul <= 0) return undefined;
+  const [type, sizeStr] = raw.subarray(0, nul).toString("ascii").split(" ");
+  const payload = raw.subarray(nul + 1);
+  if (!type || Number(sizeStr) !== payload.length) return undefined;
+  return { type, payload };
+}
+
+function resolvePackIndexEntryOffset(
+  idxBuf: Buffer,
+  offsetTableOffset: number,
+  count: number,
+  index: number,
+): number | undefined {
+  const rawOffset = idxBuf.readUInt32BE(offsetTableOffset + index * 4);
+  if ((rawOffset & 0x80000000) === 0) return rawOffset;
+  const largeOffsetPos = offsetTableOffset + count * 4 + (rawOffset & 0x7fffffff) * 8;
+  return largeOffsetPos + 8 <= idxBuf.length ? Number(idxBuf.readBigUInt64BE(largeOffsetPos)) : undefined;
+}
+
+function findPackIndexOffset(idxBuf: Buffer, shaHex: string): number | undefined {
+  if (idxBuf.length < 1032 + 40 || idxBuf.readUInt32BE(0) !== 0xff744f63 || idxBuf.readUInt32BE(4) !== 2) {
+    return undefined;
+  }
+  const count = idxBuf.readUInt32BE(8 + 255 * 4);
+  const firstByte = Number.parseInt(shaHex.slice(0, 2), 16);
+  let lo = firstByte === 0 ? 0 : idxBuf.readUInt32BE(8 + (firstByte - 1) * 4);
+  let hi = idxBuf.readUInt32BE(8 + firstByte * 4);
+  const target = Buffer.from(shaHex, "hex");
+  const shaTableOffset = 1032;
+  const offsetTableOffset = shaTableOffset + count * 24;
+  if (offsetTableOffset + count * 4 > idxBuf.length) return undefined;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    const cmp = target.compare(idxBuf, shaTableOffset + mid * 20, shaTableOffset + (mid + 1) * 20);
+    if (cmp === 0) return resolvePackIndexEntryOffset(idxBuf, offsetTableOffset, count, mid);
+    if (cmp < 0) hi = mid;
+    else lo = mid + 1;
+  }
+  return undefined;
+}
+
+function readPackHeader(
+  packBuf: Buffer,
+  offset: number,
+): { readonly typeCode: number; readonly size: number; readonly pos: number } | undefined {
+  if (offset < 12 || offset >= packBuf.length) return undefined;
+  let pos = offset;
+  let byte = packBuf[pos++] ?? 0;
+  const typeCode = (byte >> 4) & 0x7;
+  let size = byte & 0x0f;
+  let shift = 4;
+  while ((byte & 0x80) !== 0) {
+    if (pos >= packBuf.length) return undefined;
+    byte = packBuf[pos++] ?? 0;
+    size += (byte & 0x7f) * 2 ** shift;
+    shift += 7;
+  }
+  return size <= GIT_OBJECT_MAX_BYTES ? { typeCode, size, pos } : undefined;
+}
+
+function readDeltaVarint(buf: Buffer, start: number): { readonly value: number; readonly pos: number } | undefined {
+  let pos = start;
+  let value = 0;
+  let shift = 0;
+  for (;;) {
+    if (pos >= buf.length) return undefined;
+    const byte = buf[pos++] ?? 0;
+    value += (byte & 0x7f) * 2 ** shift;
+    if ((byte & 0x80) === 0) return { value, pos };
+    shift += 7;
+  }
+}
+
+function readCopyInstruction(
+  cmd: number,
+  base: Buffer,
+  delta: Buffer,
+  start: number,
+): { readonly slice: Buffer; readonly pos: number } | undefined {
+  let pos = start;
+  let cpOff = 0;
+  let cpSize = 0;
+  for (let bit = 0; bit < 4; bit += 1) {
+    if ((cmd & (1 << bit)) !== 0) cpOff |= (delta[pos++] ?? 0) << (bit * 8);
+  }
+  for (let bit = 0; bit < 3; bit += 1) {
+    if ((cmd & (0x10 << bit)) !== 0) cpSize |= (delta[pos++] ?? 0) << (bit * 8);
+  }
+  const unsignedOff = cpOff >>> 0;
+  const finalSize = cpSize === 0 ? 0x10000 : cpSize;
+  if (pos > delta.length || unsignedOff + finalSize > base.length) return undefined;
+  return { slice: base.subarray(unsignedOff, unsignedOff + finalSize), pos };
+}
+
+function stepGitDeltaInstruction(
+  cmd: number,
+  base: Buffer,
+  delta: Buffer,
+  pos: number,
+): { readonly slice: Buffer; readonly pos: number } | undefined {
+  if ((cmd & 0x80) !== 0) return readCopyInstruction(cmd, base, delta, pos);
+  if (cmd > 0 && pos + cmd <= delta.length) return { slice: delta.subarray(pos, pos + cmd), pos: pos + cmd };
+  return undefined;
+}
+
+function applyGitDelta(base: Buffer, delta: Buffer): Buffer | undefined {
+  const srcHeader = readDeltaVarint(delta, 0);
+  if (!srcHeader || srcHeader.value !== base.length) return undefined;
+  const dstHeader = readDeltaVarint(delta, srcHeader.pos);
+  if (!dstHeader || dstHeader.value > GIT_OBJECT_MAX_BYTES) return undefined;
+  const out = Buffer.allocUnsafe(dstHeader.value);
+  let outPos = 0;
+  let pos = dstHeader.pos;
+  while (pos < delta.length) {
+    const step = stepGitDeltaInstruction(delta[pos++] ?? 0, base, delta, pos);
+    if (!step || outPos + step.slice.length > out.length) return undefined;
+    step.slice.copy(out, outPos);
+    outPos += step.slice.length;
+    pos = step.pos;
+  }
+  return outPos === out.length ? out : undefined;
+}
+
+const PACK_OBJECT_TYPES: Readonly<Record<number, string>> = {
+  1: "commit",
+  2: "tree",
+  3: "blob",
+  4: "tag",
+};
+
+function readOfsDeltaOffset(
+  packBuf: Buffer,
+  start: number,
+  entryOffset: number,
+): { readonly baseOffset: number; readonly pos: number } | undefined {
+  let pos = start;
+  let byte = packBuf[pos++] ?? 0;
+  let relOffset = byte & 0x7f;
+  while ((byte & 0x80) !== 0) {
+    if (pos >= packBuf.length) return undefined;
+    byte = packBuf[pos++] ?? 0;
+    relOffset = (relOffset + 1) * 128 + (byte & 0x7f);
+  }
+  return relOffset > 0 && relOffset < entryOffset ? { baseOffset: entryOffset - relOffset, pos } : undefined;
+}
+
+function combineDeltaObject(
+  base: GitObjectRecord | undefined,
+  compressedDelta: Buffer,
+  expectedDeltaSize: number,
+): GitObjectRecord | undefined {
+  if (!base) return undefined;
+  const delta = inflateSync(compressedDelta, { maxOutputLength: Math.max(expectedDeltaSize, 1) });
+  if (delta.length !== expectedDeltaSize) return undefined;
+  const applied = applyGitDelta(base.payload, delta);
+  return applied ? { type: base.type, payload: applied } : undefined;
+}
+
+async function decodePackEntry(
+  commonDir: string,
+  packBuf: Buffer,
+  offset: number,
+  depth: number,
+): Promise<GitObjectRecord | undefined> {
+  if (depth > GIT_MAX_DELTA_DEPTH) return undefined;
+  const header = readPackHeader(packBuf, offset);
+  if (!header) return undefined;
+  const directType = PACK_OBJECT_TYPES[header.typeCode];
+  if (directType) {
+    const payload = inflateSync(packBuf.subarray(header.pos), { maxOutputLength: Math.max(header.size, 1) });
+    return payload.length === header.size ? { type: directType, payload } : undefined;
+  }
+  if (header.typeCode === 6) {
+    const ofs = readOfsDeltaOffset(packBuf, header.pos, offset);
+    if (!ofs) return undefined;
+    const base = await decodePackEntry(commonDir, packBuf, ofs.baseOffset, depth + 1);
+    return combineDeltaObject(base, packBuf.subarray(ofs.pos), header.size);
+  }
+  if (header.typeCode === 7 && header.pos + 20 <= packBuf.length) {
+    const baseSha = packBuf.subarray(header.pos, header.pos + 20).toString("hex");
+    const base = await readGitObject(commonDir, baseSha, depth + 1);
+    return combineDeltaObject(base, packBuf.subarray(header.pos + 20), header.size);
+  }
+  return undefined;
+}
+
+async function readPackedGitObject(
+  commonDir: string,
+  sha: string,
+  depth: number,
+): Promise<GitObjectRecord | undefined> {
+  const packDir = join(commonDir, "objects", "pack");
+  let names: string[];
+  try {
+    names = await readdir(packDir);
+  } catch {
+    return undefined;
+  }
+  for (const name of names) {
+    if (!name.endsWith(".idx")) continue;
+    const idxBuf = await readBoundedRegularFile(join(packDir, name), GIT_INDEX_MAX_BYTES);
+    const offset = idxBuf ? findPackIndexOffset(idxBuf, sha) : undefined;
+    if (offset === undefined) continue;
+    const packPath = join(packDir, `${name.slice(0, -4)}.pack`);
+    const packBuf = await readBoundedRegularFile(packPath, GIT_PACK_MAX_BYTES);
+    if (!packBuf) return undefined;
+    return await decodePackEntry(commonDir, packBuf, offset, depth);
+  }
+  return undefined;
+}
+
+async function readGitObject(commonDir: string, sha: string, depth = 0): Promise<GitObjectRecord | undefined> {
+  if (!SHA1_HEX.test(sha) || depth > GIT_MAX_DELTA_DEPTH) return undefined;
+  return (await readLooseGitObject(commonDir, sha)) ?? (await readPackedGitObject(commonDir, sha, depth));
+}
+
+function parseTreeObjectEntries(
+  payload: Buffer,
+): { readonly mode: string; readonly name: string; readonly sha1: string }[] | undefined {
+  const out: { readonly mode: string; readonly name: string; readonly sha1: string }[] = [];
+  let pos = 0;
+  while (pos < payload.length) {
+    const nul = payload.indexOf(0, pos);
+    if (nul <= pos || nul + 21 > payload.length) return undefined;
+    const header = payload.subarray(pos, nul).toString("utf8");
+    const space = header.indexOf(" ");
+    if (space <= 0) return undefined;
+    const mode = header.slice(0, space);
+    const name = header.slice(space + 1);
+    if (!name || name === "." || name === ".." || name.includes("/")) return undefined;
+    const sha1 = payload.subarray(nul + 1, nul + 21).toString("hex");
+    out.push({ mode, name, sha1 });
+    pos = nul + 21;
+  }
+  return out;
+}
+
+function applyTreeEntriesToWalk(
+  prefix: string,
+  parsed: readonly { readonly mode: string; readonly name: string; readonly sha1: string }[],
+  files: Map<string, { readonly executable: boolean; readonly sha1: string }>,
+  pending: { readonly prefix: string; readonly sha: string }[],
+): boolean {
+  for (const entry of parsed) {
+    const relPath = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
+    if (entry.mode === "40000") {
+      pending.push({ prefix: relPath, sha: entry.sha1 });
+    } else if ((entry.mode === "100644" || entry.mode === "100755") && files.size < WORKSPACE_MAX_ENTRIES) {
+      files.set(relPath, { executable: entry.mode === "100755", sha1: entry.sha1 });
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function readCommitHeadTree(
+  commonDir: string,
+  commitSha: string,
+): Promise<Map<string, { readonly executable: boolean; readonly sha1: string }> | undefined> {
+  const commitObj = await readGitObject(commonDir, commitSha);
+  if (commitObj?.type !== "commit") return undefined;
+  const treeMatch = /^tree ([0-9a-f]{40})\n/.exec(commitObj.payload.toString("utf8"));
+  if (!treeMatch?.[1]) return undefined;
+  const files = new Map<string, { readonly executable: boolean; readonly sha1: string }>();
+  const pending: { readonly prefix: string; readonly sha: string }[] = [{ prefix: "", sha: treeMatch[1] }];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current) break;
+    const treeObj = await readGitObject(commonDir, current.sha);
+    const parsed = treeObj?.type === "tree" ? parseTreeObjectEntries(treeObj.payload) : undefined;
+    if (!parsed || !applyTreeEntriesToWalk(current.prefix, parsed, files, pending)) return undefined;
+  }
+  return files;
+}
+
+function hasValidOptionalIndexExtensions(indexBuf: Buffer, startOffset: number, trailerStart: number): boolean {
+  let offset = startOffset;
+  while (offset < trailerStart) {
+    if (offset + 8 > trailerStart) return false;
+    const sig = indexBuf.subarray(offset, offset + 4).toString("ascii");
+    if (!/^[A-Z]{4}$/.test(sig)) return false;
+    const extSize = indexBuf.readUInt32BE(offset + 4);
+    offset += 8 + extSize;
+  }
+  return offset === trailerStart;
+}
+
+function parseSingleIndexEntry(
+  indexBuf: Buffer,
+  offset: number,
+  version: number,
+  trailerStart: number,
+):
+  | {
+      readonly relPath: string;
+      readonly entry: SnapshotFileExpectation;
+      readonly nextOffset: number;
+    }
+  | undefined {
+  if (offset + 62 > trailerStart) return undefined;
+  const mode = indexBuf.readUInt32BE(offset + 24);
+  const size = indexBuf.readUInt32BE(offset + 36);
+  const sha1 = indexBuf.subarray(offset + 40, offset + 60).toString("hex");
+  const flags = indexBuf.readUInt16BE(offset + 60);
+  if (((flags >> 12) & 0x3) !== 0 || (mode !== 0o100644 && mode !== 0o100755)) return undefined;
+  const headerLen = version === 3 && (flags & 0x4000) !== 0 ? 64 : 62;
+  const nameEnd = indexBuf.indexOf(0, offset + headerLen);
+  if (nameEnd < 0 || nameEnd >= trailerStart) return undefined;
+  const relPath = indexBuf.subarray(offset + headerLen, nameEnd).toString("utf8");
+  const nextOffset = offset + Math.ceil((nameEnd - offset + 1) / 8) * 8;
+  if (!relPath || nextOffset > trailerStart) return undefined;
+  return { relPath, entry: { size, sha1, executable: mode === 0o100755 }, nextOffset };
+}
+
+function parseVerifiedGitIndex(
+  indexBuf: Buffer,
+  headTree: ReadonlyMap<string, { readonly executable: boolean; readonly sha1: string }>,
+): Map<string, SnapshotFileExpectation> | undefined {
+  if (indexBuf.length < 32 || indexBuf.subarray(0, 4).toString("ascii") !== "DIRC") return undefined;
+  const trailerStart = indexBuf.length - 20;
+  const digest = createHash("sha1").update(indexBuf.subarray(0, trailerStart)).digest();
+  if (!digest.equals(indexBuf.subarray(trailerStart))) return undefined;
+  const version = indexBuf.readUInt32BE(4);
+  const count = indexBuf.readUInt32BE(8);
+  if ((version !== 2 && version !== 3) || count !== headTree.size || count > WORKSPACE_MAX_ENTRIES) {
+    return undefined;
+  }
+  const entries = new Map<string, SnapshotFileExpectation>();
+  let offset = 12;
+  for (let i = 0; i < count; i += 1) {
+    const parsed = parseSingleIndexEntry(indexBuf, offset, version, trailerStart);
+    const committed = parsed ? headTree.get(parsed.relPath) : undefined;
+    if (
+      !parsed ||
+      !committed ||
+      committed.sha1 !== parsed.entry.sha1 ||
+      committed.executable !== parsed.entry.executable
+    ) {
+      return undefined;
+    }
+    entries.set(parsed.relPath, parsed.entry);
+    offset = parsed.nextOffset;
+  }
+  return entries.size === headTree.size && hasValidOptionalIndexExtensions(indexBuf, offset, trailerStart)
+    ? entries
+    : undefined;
 }
 
 async function resolveSnapshotHeadTree(
   contextTreeRoot: string,
   snapshotDir: string,
-): Promise<Map<string, { readonly size: number; readonly sha1: string }> | undefined> {
-  const gitDotfile = join(snapshotDir, ".git");
-  const dotfileStats = await lstat(gitDotfile);
-  if (dotfileStats.isSymbolicLink() || !dotfileStats.isFile() || dotfileStats.size > GIT_FILE_MAX_BYTES) {
-    return undefined;
-  }
-  const raw = (await readFile(gitDotfile, "utf8")).trim();
-  if (!raw.startsWith("gitdir:")) return undefined;
-  const gitDir = resolve(snapshotDir, raw.slice("gitdir:".length).trim());
-  const relToRepos = relative(resolve(contextTreeRoot, "repositories"), gitDir);
-  if (relToRepos === "" || relToRepos === ".." || relToRepos.startsWith(`..${sep}`) || isAbsolute(relToRepos)) {
-    return undefined;
-  }
-  const indexStats = await lstat(join(gitDir, "index"));
-  if (indexStats.isSymbolicLink() || !indexStats.isFile()) return undefined;
-  const gitOptions = {
-    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-    encoding: "buffer" as const,
-    timeout: GIT_INSPECT_TIMEOUT_MS,
-    maxBuffer: GIT_INSPECT_MAX_BUFFER_BYTES,
-  };
-  const status = await execFileAsync(
-    "git",
-    [
-      "-c",
-      "safe.bareRepository=all",
-      "-C",
-      snapshotDir,
-      "status",
-      "--porcelain=v1",
-      "-z",
-      "--untracked-files=all",
-      "--ignored=matching",
-    ],
-    gitOptions,
-  );
-  if (status.stdout.length > 0) return undefined;
-  const tree = await execFileAsync(
-    "git",
-    ["-c", "safe.bareRepository=all", "-C", snapshotDir, "ls-tree", "-r", "-z", "--long", "HEAD"],
-    gitOptions,
-  );
-  return parseGitHeadTree(tree.stdout);
+): Promise<Map<string, SnapshotFileExpectation> | undefined> {
+  const dirs = await resolveSnapshotGitDirs(contextTreeRoot, snapshotDir);
+  if (!dirs) return undefined;
+  const indexBuf = await readBoundedRegularFile(join(dirs.gitDir, "index"), GIT_INDEX_MAX_BYTES);
+  if (!indexBuf) return undefined;
+  const headSha = await resolvePublishedSnapshotHead(dirs.gitDir, dirs.commonDir);
+  if (!headSha) return undefined;
+  const headTree = await readCommitHeadTree(dirs.commonDir, headSha);
+  if (!headTree) return undefined;
+  return parseVerifiedGitIndex(indexBuf, headTree);
 }
 
 async function isSnapshotFileDirty(
   absPath: string,
   stats: Stats,
-  expected: { readonly size: number; readonly sha1: string } | undefined,
+  expected: SnapshotFileExpectation | undefined,
 ): Promise<boolean> {
   if (!expected || expected.size !== stats.size || stats.size > WORKSPACE_MAX_BYTES) return true;
+  if (((stats.mode & 0o111) !== 0) !== expected.executable) return true;
   const content = await readFile(absPath);
   const sha1 = createHash("sha1").update(`blob ${content.length}\0`).update(content).digest("hex");
   return sha1 !== expected.sha1;
@@ -510,7 +976,7 @@ async function inspectSnapshotEntry(
   snapshotDir: string,
   relDir: string,
   name: string,
-  indexed: ReadonlyMap<string, { readonly size: number; readonly sha1: string }>,
+  indexed: ReadonlyMap<string, SnapshotFileExpectation>,
 ): Promise<{ readonly kind: "skip" | "dirty" | "file" } | { readonly kind: "dir"; readonly relPath: string }> {
   if (relDir === "" && name === ".git") return { kind: "skip" };
   const relPath = relDir === "" ? name : `${relDir}/${name}`;
@@ -526,7 +992,7 @@ async function inspectSnapshotEntry(
 
 async function walkSnapshotWorktree(
   snapshotDir: string,
-  indexed: ReadonlyMap<string, { readonly size: number; readonly sha1: string }>,
+  indexed: ReadonlyMap<string, SnapshotFileExpectation>,
 ): Promise<boolean> {
   let fileCount = 0;
   const pending: string[] = [""];

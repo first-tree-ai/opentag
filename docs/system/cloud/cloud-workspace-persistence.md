@@ -24,9 +24,10 @@ mounted or synchronized. Agent-wide Context Tree integration remains E8. Under
 `.opentag/context-tree/home/.context-tree`, `cleanup` logs are always omitted, and reconstructable
 read-only Git caches (`repositories` and `snapshots`) are omitted when no active `sessions` or
 `worktrees` entries exist and every snapshot worktree is verified clean in-process against a
-published commit in its bare repository (without spawning `git` over workspace config). Whenever
-unpublished commits, staged changes, unstaged edits, or untracked files exist—or when Git
-cleanliness cannot be verified—those directories are preserved in the archive.
+detached commit reachable from published upstream refs in its bare repository (without spawning
+`git` over workspace config). Whenever loose or packed local branch refs, unpublished commits,
+rewritten/force-pushed upstream history, staged changes, unstaged edits, or untracked files
+exist—or when Git cleanliness cannot be verified—those directories are preserved in the archive.
 
 ## Save and restore boundaries
 

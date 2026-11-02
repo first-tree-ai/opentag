@@ -603,6 +603,64 @@ describe("createWorkspaceArchive + restoreWorkspaceArchive roundtrip", () => {
     await expect(
       lstat(join(restoredMultiSync, ".opentag", "context-tree", "home", ".context-tree", "snapshots")),
     ).rejects.toMatchObject({ code: "ENOENT" });
+
+    // 10. Packed local branch commit with detached HEAD, pack-refs --all, and reset --hard HEAD
+    // (aligned ORIG_HEAD and absent reflogs) is still retained.
+    const packedLocalBranch = await setupContextTreeFixture("packed-local-branch");
+    const packedBranchContent = `${"g".repeat(1023)}\n`;
+    await execFileAsync(
+      "git",
+      ["-C", packedLocalBranch.snapshotDir, "-c", "core.logAllRefUpdates=false", "switch", "-c", "local-work"],
+      { env: gitEnv },
+    );
+    await writeFile(join(packedLocalBranch.snapshotDir, "NODE.md"), packedBranchContent);
+    await execFileAsync(
+      "git",
+      [
+        "-C",
+        packedLocalBranch.snapshotDir,
+        "-c",
+        "core.logAllRefUpdates=false",
+        "commit",
+        "-am",
+        "packed local branch edit",
+      ],
+      { env: gitEnv },
+    );
+    await execFileAsync(
+      "git",
+      ["-C", packedLocalBranch.snapshotDir, "-c", "core.logAllRefUpdates=false", "switch", "--detach", "HEAD"],
+      { env: gitEnv },
+    );
+    await execFileAsync(
+      "git",
+      ["-c", "safe.bareRepository=all", "--git-dir", packedLocalBranch.bareRepo, "pack-refs", "--all"],
+      { env: gitEnv },
+    );
+    await execFileAsync(
+      "git",
+      ["-C", packedLocalBranch.snapshotDir, "-c", "core.logAllRefUpdates=false", "reset", "--hard", "HEAD"],
+      { env: gitEnv },
+    );
+    const archivePackedBranch = join(root, "packed-local-branch.tar.gz");
+    const infoPackedBranch = await createWorkspaceArchive(packedLocalBranch.workspace, archivePackedBranch);
+    const restoredPackedBranch = join(root, "restored-packed-local-branch");
+    await restoreWorkspaceArchive(archivePackedBranch, restoredPackedBranch, infoPackedBranch);
+    expect(
+      await readFile(
+        join(
+          restoredPackedBranch,
+          ".opentag",
+          "context-tree",
+          "home",
+          ".context-tree",
+          "snapshots",
+          "repo-main",
+          "NODE.md",
+        ),
+        "utf8",
+      ),
+    ).toBe(packedBranchContent);
   });
 
   it("round-trips safe relative symlinks, including chained node_modules layouts", async () => {

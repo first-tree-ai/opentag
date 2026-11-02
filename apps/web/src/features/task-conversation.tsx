@@ -7,7 +7,7 @@ import {
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { formatDateTime, formatRelativeTime, initials } from "../i18n/format.js";
 import * as m from "../paraglide/messages.js";
-import { Icon, StatusIndicator, Text } from "../ui/design-system.js";
+import { Button, Icon, StatusIndicator, Text } from "../ui/design-system.js";
 import { AgentAvatar } from "./agents/agent-avatar.js";
 import { TaskActivityTimeline } from "./task-activity-timeline.js";
 import { TaskAttachments } from "./task-attachments.js";
@@ -140,15 +140,17 @@ export function TaskActivity({
       </TaskActivityTimeline>
       {showJumpToLatest && entries.length > 0 ? (
         <div className="sticky bottom-4 flex justify-center pointer-events-none">
-          <button
+          <Button
             type="button"
-            className="pointer-events-auto inline-flex items-center gap-1.5 rounded-full bg-kumo-base px-3.5 py-1.5 text-xs font-medium text-kumo-default shadow-md ring-1 ring-kumo-line transition-colors hover:bg-kumo-tint"
+            size="compact"
+            variant="secondary"
+            className="pointer-events-auto rounded-full shadow-md"
             data-ui="task-activity-jump-latest"
             onClick={scrollToLatest}
           >
             <Icon name="chevron-down" />
             <span>Jump to latest</span>
-          </button>
+          </Button>
         </div>
       ) : null}
     </section>

@@ -1,7 +1,7 @@
 import type { ListTasksResponse, TaskSummary } from "@opentag/shared/browser";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, type Ref, useMemo, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
 import { compareText, foldCase, formatDateTime, formatRelativeTime } from "../i18n/format.js";
@@ -474,6 +474,7 @@ export function TaskDetailPage({
 
       <TaskActivity
         task={task}
+        internalSessions={first.internalSessions}
         replies={repliesQuery.supplied ? repliesQuery.replies : undefined}
         repliesStatus={repliesStatus}
         turns={turns}
@@ -762,14 +763,24 @@ function TaskRow({
   showExamples?: boolean;
   task: TaskSummary;
 }) {
+  const linkRef = useRef<HTMLAnchorElement>(null);
   const status = taskStatusGroup(task.status);
   return (
     <Table.Row
-      className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 border-b border-kumo-line last:border-b-0 @min-[40rem]/content:table-row @min-[40rem]/content:border-b-0"
+      className="cursor-pointer transition-colors hover:bg-kumo-tint/50 grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 border-b border-kumo-line last:border-b-0 @min-[40rem]/content:table-row @min-[40rem]/content:border-b-0"
       data-ui="task-table-row"
+      onClick={(event) => {
+        if (
+          event.defaultPrevented ||
+          (event.target instanceof Element && event.target.closest('a, button, input, [role="button"]'))
+        ) {
+          return;
+        }
+        (linkRef.current ?? event.currentTarget.querySelector<HTMLAnchorElement>("a"))?.click();
+      }}
     >
       <Table.Cell className="col-start-1 row-start-1 min-w-0" data-label={m.tasks_task_label()}>
-        <TaskTitleLink showExamples={showExamples} task={task} />
+        <TaskTitleLink linkRef={linkRef} showExamples={showExamples} task={task} />
       </Table.Cell>
       {showAgent ? (
         <Table.Cell className="col-span-2 row-start-3" data-label={m.tasks_agent_label()}>
@@ -808,7 +819,15 @@ function TaskRow({
   );
 }
 
-function TaskTitleLink({ showExamples, task }: { showExamples: boolean; task: TaskSummary }) {
+function TaskTitleLink({
+  linkRef,
+  showExamples,
+  task,
+}: {
+  linkRef?: Ref<HTMLAnchorElement>;
+  showExamples: boolean;
+  task: TaskSummary;
+}) {
   const className =
     "line-clamp-2 max-w-[40rem] wrap-anywhere text-sm font-normal text-kumo-default hover:text-kumo-link @min-[40rem]/content:line-clamp-1";
   if (showExamples) {
@@ -816,6 +835,7 @@ function TaskTitleLink({ showExamples, task }: { showExamples: boolean; task: Ta
       <Link
         className={className}
         params={{ taskId: task.id }}
+        ref={linkRef}
         search={{ examples: true }}
         title={task.title}
         to="/tasks/$taskId"
@@ -825,7 +845,7 @@ function TaskTitleLink({ showExamples, task }: { showExamples: boolean; task: Ta
     );
   }
   return (
-    <Link className={className} {...agentTaskDetailLink(task.agent.id, task.id)} title={task.title}>
+    <Link className={className} {...agentTaskDetailLink(task.agent.id, task.id)} ref={linkRef} title={task.title}>
       {task.title}
     </Link>
   );
@@ -948,6 +968,7 @@ async function readTaskDetail(
   return {
     task: page.task,
     turns: page.turns?.items ?? [],
+    internalSessions: page.internalSessions?.items ?? [],
     nextCursor: page.turns?.nextCursor ?? null,
   };
 }

@@ -11,7 +11,8 @@ Contracts: [message domains](../../docs/system/messaging/message-domains.md),
 Baseline `e4f7cb1d0ca038c13368c7be90f4e7058105a329`, Node 24.20.0, pnpm 10.12.1,
 local Docker PostgreSQL. The full no-loss, correctly targeted, ordered-input goal is **not met**.
 No production data, historical messages, external IM sends, external model service calls or Cloud deployments
-are involved in the checks below. Production delivery/read-write behavior is unchanged. The Web caption
+are involved in the checks below. Message custody, retention and replay policy are unchanged. The Local
+Runtime cleanup repair below propagates retained Provider close failures. The Web caption
 for a grouped message now says "Grouped for execution" and asks the reader to check its execution result;
 group membership alone does not establish current activity or successful processing.
 The native Runner SIGKILL probe below also runs after integrating main `ca326157`, including its
@@ -438,6 +439,35 @@ physical owner. New attempt storage/protocol, Local stop proof and final query/l
 still need a concrete human-confirmed design. These guard tests implement no retry, stop-proof writer,
 schema change or recovery resolution. The focused Client custody suites pass 43 tests, the Cloud
 reuse/reclamation suite passes 30, and both package typechecks pass.
+
+### Local Session stop must retain Provider cleanup failures
+
+`BaseAgentRuntime.close()` keeps an idempotent completion promise. It enters phase `closed` after
+joining the Run and attempting Provider cleanup, but rejects that retained promise with `close_failed`
+when cleanup fails. The phase prevents new input; it is not evidence that the Provider's resources
+were successfully released. Previously `SessionRuntimeManager` skipped an already closed handle,
+could report its Session `stopped`, forget its failure during preparation or resume a new Runtime.
+Reconfiguration also removed its managed-owner reference before a failing close completed.
+
+Five new regression cases use the actual Base Runtime, real private binding files and a synthetic
+failing Provider cleanup callback. Stop, direct same-configuration preparation, reconfiguration,
+lazy restart and manager shutdown all fail their desired assertions against the original source.
+The repair joins the retained `close()` result before clearing a closed handle, keeps the managed
+owner until replacement cleanup succeeds, and propagates the original failure. No replacement
+Provider starts in those cases. The existing lifecycle case also verifies that a successfully
+closed handle still lazily resumes its exact durable binding without another reconcile.
+
+This is a normal regression and runtime cleanup fix, not an optional failing acceptance patch.
+It changes no database schema/query, message identity, report/receipt persistence, retention or
+automatic retry policy. The focused Manager/Reconciler/ClientComposition suites pass 131 tests;
+Client typecheck passes. The complete Agent Runtime gate passes 823 tests with 100% statements,
+branches, functions and lines.
+
+The cleanup callback is injected; no actual native kill failure or leaked process is claimed.
+A current same-instance stop reply still lacks a persisted per-attempt recovery proof, and a new
+Client instance's stop cannot prove the previous instance's native execution stopped. Offline
+targets skipped by the Agent stop helper also supply no termination proof. This repair strengthens
+the existing close barrier; original-batch recovery and unknown-input disposition remain unresolved.
 
 ## Late predecessor and sender-order completeness
 

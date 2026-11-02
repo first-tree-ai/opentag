@@ -229,11 +229,10 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
       current.binding = prepared.binding;
       current.proofId = request.sessionCliProof?.proofId;
       current.proofPath = proofPath;
-      if (current.runtime?.state.phase === "closed") current.runtime = undefined;
+      if (current.runtime?.state.phase === "closed") await this.#closeManaged(current);
       return prepared;
     }
     if (current) {
-      this.#sessions.delete(request.sessionId);
       try {
         await this.#closeManaged(current);
       } catch (error) {
@@ -245,6 +244,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
         if (this.#closing) this.#closeFailures.push(error);
         throw error;
       }
+      this.#sessions.delete(request.sessionId);
       this.#assertOpen();
     }
 
@@ -276,7 +276,11 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
       cwd: managed.cwd,
       sources: managed.snapshot.contextTrees,
     });
-    if (managed.runtime && managed.runtime.state.phase !== "closed") return managed.runtime;
+    if (managed.runtime?.state.phase === "closed") {
+      await this.#closeManaged(managed);
+      this.#assertOpen();
+    }
+    if (managed.runtime) return managed.runtime;
     if (managed.start) return waitForStart(managed.start, signal);
 
     const start = this.#startRuntime(managed, contextTreeEnvironment).finally(() => {
@@ -534,7 +538,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
           "Pending Session Runtime start failed",
         );
       });
-    if (!managed.runtime || managed.runtime.state.phase === "closed") return;
+    if (!managed.runtime) return;
     await managed.runtime.close();
     managed.runtime = undefined;
   }

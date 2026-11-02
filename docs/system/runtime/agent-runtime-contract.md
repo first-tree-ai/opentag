@@ -36,6 +36,10 @@ Provider-specific configuration, binding, and protocol validation.
   public settlement still waits for the Provider execution to finish.
 - `close` is idempotent, cancels queued work, joins the active Run, closes the
   Provider process, and emits `runtime_closed` when the event sink is healthy.
+  The `closed` phase rejects new input even when Provider cleanup failed; it is
+  not proof of successful cleanup. Session stop, reuse and replacement await the
+  retained `close()` result and propagate its failure instead of reporting a
+  successful stop or silently starting another Runtime.
 
 ## Provider Event Grammar
 

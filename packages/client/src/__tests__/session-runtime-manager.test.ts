@@ -11,6 +11,7 @@ import {
   type SessionReconcileRequest,
 } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { BaseAgentRuntime } from "../agent-runtime/base-agent-runtime.js";
 import { composeRuntimeEnvironment } from "../agent-runtime/environment.js";
 import type {
   AgentAbortRequest,
@@ -1045,6 +1046,7 @@ describe("SessionRuntimeManager", () => {
     ).rejects.toMatchObject({ name: "SessionBindingConflictError" });
     expect((await store.read("agent-1", "session-1"))?.runtimeBinding).toEqual(binding("thread-2"));
     await factory.runtimes[1]?.close();
+    await manager.ensureRuntime("session-1");
     await manager.prepareSession(upgraded, computeRuntimeSnapshotHashes(upgraded.runtime as never));
     await manager.ensureRuntime("session-1");
     expect(factory.resumed).toEqual([binding("thread-2")]);
@@ -1280,6 +1282,84 @@ describe("SessionRuntimeManager", () => {
     await expect(manager.ensureRuntime("session-1")).rejects.toThrow("creation and cleanup both failed");
     expect(factory.runtimes[0]?.closeCalls).toBe(1);
   });
+
+  it.each(["stop", "prepare", "reconfigure", "restart", "shutdown"] as const)(
+    "retains a closed Runtime's Provider cleanup failure through %s",
+    async (operation) => {
+      const home = await mkdtemp(resolve(tmpdir(), "opentag-session-stop-close-failed-"));
+      homes.push(home);
+      const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+      const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
+      const base = new FakeFactory();
+      const closeProvider = vi.fn(async () => {
+        throw new Error("synthetic Provider cleanup failure");
+      });
+      class FailingCloseRuntime extends BaseAgentRuntime {
+        constructor(request: CreateAgentRuntimeRequest) {
+          super({
+            manifest: base.manifest,
+            capabilities: { steer: "unsupported", interactions: "unsupported" },
+            eventSink: request.eventSink,
+            binding: binding("thread-close-failed"),
+          });
+        }
+        protected async executeRun() {
+          return { status: "completed" as const, output: [] };
+        }
+        protected override async abortProvider() {}
+        protected closeProvider() {
+          return closeProvider();
+        }
+      }
+      const create = vi.fn(async (request: CreateAgentRuntimeRequest) => new FailingCloseRuntime(request));
+      const resume = vi.fn(async () => {
+        throw new Error("Unexpected resume in cleanup failure test");
+      });
+      const factory: AgentRuntimeFactory = {
+        manifest: base.manifest,
+        probe: () => base.probe(),
+        create,
+        resume,
+      };
+      const computerId = randomUUID();
+      const manager = new SessionRuntimeManager({
+        bindingStore: store,
+        providers: await providerRegistry(factory),
+        providerEnvironmentPath: () => "/tmp/provider-env.sh",
+        workspace,
+      });
+      const reconciler = new SessionReconciler({
+        installationId: computerId,
+        preparation: manager,
+        localPolicy: manager,
+      });
+      const request = reconcile(computerId, snapshot(1));
+      await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
+      const runtime = await manager.ensureRuntime(request.sessionId);
+      await expect(runtime.close()).rejects.toMatchObject({ code: "close_failed" });
+      expect(runtime.state.phase).toBe("closed");
+
+      const run = {
+        stop: () =>
+          reconciler.reconcile({ ...request, requestId: randomUUID(), desired: "stopped", runtime: undefined }),
+        prepare: () =>
+          manager.prepareSession(request, computeRuntimeSnapshotHashes(request.runtime as EffectiveRuntimeSnapshot)),
+        reconfigure: () => reconciler.reconcile(reconcile(computerId, snapshot(2))),
+        restart: () => manager.ensureRuntime(request.sessionId),
+        shutdown: () => manager.close(),
+      }[operation];
+      if (operation === "shutdown") await expect(run()).rejects.toBeInstanceOf(AggregateError);
+      else {
+        await expect(run()).rejects.toMatchObject({ code: "close_failed" });
+        expect(reconciler.getSession(request.sessionId)?.status).toBe("ready");
+        expect(manager.hasAgentSessions(request.agentId)).toBe(true);
+        await expect(manager.close()).rejects.toBeInstanceOf(AggregateError);
+      }
+      expect(closeProvider).toHaveBeenCalledOnce();
+      expect(create).toHaveBeenCalledOnce();
+      expect(resume).not.toHaveBeenCalled();
+    },
+  );
 
   it("returns one joinable close operation while Provider shutdown is in flight", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-session-runtime-close-"));

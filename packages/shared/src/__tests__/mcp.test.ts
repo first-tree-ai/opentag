@@ -250,6 +250,10 @@ describe("MCP static OAuth providers", () => {
       clientId: "OPENTAG_MCP_HUBSPOT_CLIENT_ID",
       clientSecret: "OPENTAG_MCP_HUBSPOT_CLIENT_SECRET",
     });
+    expect(mcpStaticOAuthEnvNames("feishu")).toEqual({
+      clientId: "OPENTAG_MCP_FEISHU_CLIENT_ID",
+      clientSecret: "OPENTAG_MCP_FEISHU_CLIENT_SECRET",
+    });
   });
 
   it("matches only each provider's own origins", () => {
@@ -257,6 +261,10 @@ describe("MCP static OAuth providers", () => {
     expect(isMcpStaticOAuthEndpoint(provider("hubspot"), "https://mcp.hubspot.com")).toBe(true);
     expect(isMcpStaticOAuthEndpoint(provider("asana"), "https://mcp.asana.com/v2/mcp")).toBe(true);
     expect(isMcpStaticOAuthEndpoint(provider("github"), "https://api.githubcopilot.com/mcp/")).toBe(true);
+    expect(isMcpStaticOAuthEndpoint(provider("feishu"), "https://mcp.feishu.cn/mcp")).toBe(true);
+    expect(isMcpStaticOAuthEndpoint(provider("feishu"), "https://mcp.larksuite.com/mcp")).toBe(false);
+    expect(isMcpStaticOAuthEndpoint(provider("feishu"), "https://open.feishu.cn/mcp")).toBe(false);
+    expect(isMcpStaticOAuthEndpoint(provider("feishu"), "https://mcp.feishu.cn.evil.example/mcp")).toBe(false);
     expect(isMcpStaticOAuthEndpoint(provider("github"), "https://api.github.com/mcp/")).toBe(false);
     expect(isMcpStaticOAuthEndpoint(provider("github"), "https://api.githubcopilot.com.evil.example/mcp/")).toBe(false);
     expect(isMcpStaticOAuthEndpoint(provider("github"), "https://user:secret@api.githubcopilot.com/mcp/")).toBe(false);

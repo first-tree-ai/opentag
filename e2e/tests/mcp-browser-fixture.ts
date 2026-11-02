@@ -3,7 +3,7 @@ import type { MCPAgentServer, MCPAuthKind, MCPServer } from "@opentag/shared/bro
 import { UpdateMCPBindingRequestSchema } from "@opentag/shared/browser";
 import type { Page, Route } from "@playwright/test";
 import { baseURL } from "../playwright.config.js";
-import { expect } from "./fixtures.js";
+import { allowExpectedDiagnostic, expect } from "./fixtures.js";
 
 const timestamp = "2026-10-10T00:00:00.000Z";
 export function server(name: string, kind: MCPAuthKind = "none"): MCPServer {
@@ -260,12 +260,22 @@ export async function mcpFixture(page: Page, servers: MCPServer[] = []) {
     writes,
     failAuthorization: (value: boolean) => {
       failAuthorization = value;
+      if (value) {
+        allowExpectedDiagnostic(page, {
+          routeTemplate: "/api/v1/agents/:id/mcp-servers/:id/authorization",
+          status: 503,
+        });
+      }
     },
     failProbe: (value: boolean) => {
       failProbe = value;
     },
     failOAuth: () => {
       failOAuth = true;
+      allowExpectedDiagnostic(page, {
+        routeTemplate: "/api/v1/agents/:id/mcp-servers/:id/authorization/oauth",
+        status: 502,
+      });
     },
     allowOAuth: () => {
       failOAuth = false;

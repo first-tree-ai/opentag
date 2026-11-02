@@ -103,6 +103,67 @@ describe("runImDeliveryExpiry", () => {
     expect(await deliveryRow(unit, local.deliveryId)).toMatchObject({ state: "expired", reason: "ttl" });
     expect(await deliveryRow(unit, cloud.deliveryId)).toMatchObject({ state: "pending", reason: null });
   });
+
+  it("expires a parked correlated Cloud delivery only when dispatch_payload.deadlineAt is present and past", async () => {
+    const now = new Date();
+    const pastDeadline = await seedScope(unit, {
+      kind: "cloud",
+      occurredAt: aged(now),
+      expiresAt: aged(now),
+      dispatched: true,
+    });
+    const futureDeadline = await seedScope(unit, {
+      kind: "cloud",
+      occurredAt: aged(now),
+      expiresAt: aged(now),
+      dispatched: true,
+    });
+    const missingDeadline = await seedScope(unit, {
+      kind: "cloud",
+      occurredAt: aged(now),
+      expiresAt: aged(now),
+      dispatched: true,
+    });
+
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        lastErrorCode: "IM_DELIVERY_PARKED",
+        dispatchPayload: {
+          deliveryId: pastDeadline.deliveryId,
+          requestId: randomUUID(),
+          deadlineAt: aged(now).toISOString(),
+        } as never,
+      })
+      .where(eq(imMessageDeliveries.id, pastDeadline.deliveryId));
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        lastErrorCode: "IM_DELIVERY_PARKED",
+        dispatchPayload: {
+          deliveryId: futureDeadline.deliveryId,
+          requestId: randomUUID(),
+          deadlineAt: new Date(now.getTime() + 60_000).toISOString(),
+        } as never,
+      })
+      .where(eq(imMessageDeliveries.id, futureDeadline.deliveryId));
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        lastErrorCode: "IM_DELIVERY_PARKED",
+        dispatchPayload: {
+          deliveryId: missingDeadline.deliveryId,
+          requestId: randomUUID(),
+        } as never,
+      })
+      .where(eq(imMessageDeliveries.id, missingDeadline.deliveryId));
+
+    await runImDeliveryExpiry(unit.database, janitorOptions(now));
+
+    expect(await deliveryRow(unit, pastDeadline.deliveryId)).toMatchObject({ state: "expired", reason: "ttl" });
+    expect(await deliveryRow(unit, futureDeadline.deliveryId)).toMatchObject({ state: "pending", reason: null });
+    expect(await deliveryRow(unit, missingDeadline.deliveryId)).toMatchObject({ state: "pending", reason: null });
+  });
 });
 
 describe("runImDeliveryOverdueSettlement", () => {

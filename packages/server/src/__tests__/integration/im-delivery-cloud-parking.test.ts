@@ -75,8 +75,26 @@ describe("Cloud dispatch parking", () => {
       .where(eq(imMessageDeliveries.id, fixture.deliveryId));
     expect(beforeBound).toMatchObject({ state: "pending", dispatchRequestId: row?.dispatchRequestId });
 
-    // Past the frozen window and past the ingress deadline: the parked row leaves pending.
+    // A parked payload with no deadlineAt fails closed, matching cloudDispatchWindowExpired.
+    const originalPayload = row?.dispatchPayload;
+    const { deadlineAt: _omitted, ...payloadWithoutDeadline } = (originalPayload ?? {}) as Record<string, unknown>;
+    await client.database
+      .update(imMessageDeliveries)
+      .set({ dispatchPayload: payloadWithoutDeadline as never })
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
     const afterBound = new Date((row?.expiresAt.getTime() ?? 0) + 60_000);
+    await runImDeliveryExpiry(client.database, janitorOptions(afterBound));
+    const [withoutDeadline] = await client.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    expect(withoutDeadline).toMatchObject({ state: "pending", dispatchRequestId: row?.dispatchRequestId });
+    await client.database
+      .update(imMessageDeliveries)
+      .set({ dispatchPayload: originalPayload ?? null })
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+
+    // Past the frozen window and past the ingress deadline: the parked row leaves pending.
     await runImDeliveryExpiry(client.database, janitorOptions(afterBound));
     const [expired] = await client.database
       .select()

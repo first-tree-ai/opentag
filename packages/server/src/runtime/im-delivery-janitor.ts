@@ -368,7 +368,8 @@ export async function runImDeliveryExpiry(
           or (
             delivery.last_error_code = ${PARKED_DELIVERY_CODE}
             and delivery.dispatch_request_id is not null
-            and coalesce((delivery.dispatch_payload ->> 'deadlineAt')::timestamptz, ${expiryNow}::timestamptz) <= ${expiryNow}::timestamptz
+            and (delivery.dispatch_payload ->> 'deadlineAt') is not null
+            and (delivery.dispatch_payload ->> 'deadlineAt')::timestamptz <= ${expiryNow}::timestamptz
             and exists (
               select 1
               from session_placements as placement

@@ -68,11 +68,17 @@ binding and re-reads the authority it selected the row for under those locks: an
 reactivation then blocks the settlement instead of being invisible to it, and a committed one refuses
 it. It covers Local custody only; Cloud custody stays with the Cloud owner's own acceptance cutoff.
 
-A superseded placement needs one difference. `PostgresRuntimeCustodyStore` requires the delivery's
-generation, the report's generation, and the current `session_placements.generation` to agree, and a
-rollover makes the delivery's historical generation differ from the current one for good — so
-`recordTurn` refuses a report for it (measured: `stale_generation`) and cannot settle it. The sweep
-therefore settles that case with a fenced write of its own: in one transaction it locks the delivery
+A superseded placement needs one difference. In current code `session_placements.generation` moves
+only when the Session's Computer changes (`AgentService#moveSessionPlacements` and
+`SessionService.movePlacement`), and both paths first reject any accepted, unreported custody
+(`#assertSessionsCanRebind` / `SESSION_PLACEMENT_CUSTODY_PENDING`) while holding `FOR UPDATE` on the
+placements. A runtime restart or a sleeping laptop never advances the generation. An accepted,
+unreported row with a superseded generation can therefore exist only as a legacy row written before
+that rebind guard existed. `PostgresRuntimeCustodyStore` requires the delivery's generation, the
+report's generation, and the current `session_placements.generation` to agree, and a rollover makes
+the delivery's historical generation differ from the current one for good — so `recordTurn` refuses a
+report for it (measured: `stale_generation`) and cannot settle it. `settleSupersededPlacement` exists
+to clean up those legacy rows with a fenced write of its own: in one transaction it locks the delivery
 with `select … for update` and requires accepted and unreported state, no recorded `result_hash`, the
 acceptance window closed, a superseded generation, no live claim marker, and Local custody — then
 writes the same report body, keeps the delivery's own historical `placement_generation` (it is never
@@ -193,33 +199,17 @@ fabricated and the correlation is intact.
 
 A parked **Cloud** row needs one more condition, because the sweep never expires input a Runner may
 still be executing: it expires only once the frozen execution window recorded in
-`dispatch_payload.deadlineAt` has also passed, so both bounds must close. After that it is an ordinary
+`dispatch_payload.deadlineAt` is present and has also passed (a missing `deadlineAt` fails closed,
+matching `cloudDispatchWindowExpired`), so both bounds must close. After that it is an ordinary
 expired Cloud row, and the Cloud coordinator's expired-dispatch release clears the correlation without
 ever rebuilding the input. A correlated Cloud row that was not parked keeps its existing owner: the
 frozen window and the coordinator's release, never the sweep.
 
-What parking does not guarantee: the consecutive-timeout counter is still not crash-durable (a worker
-that exits between a claim and its failure record loses it, so the worst case is a slower park rather
-than an endless loop).
-
-### A retained commitment after a rollover
-
-`claimRetainedReports` persists only `turnId`, `reportOwnerInstanceId`, `resultHash`, `acceptedAt`, and
-`inputHash`; the report body itself lives in the Client's journal. `resultHash` is
-`computeTurnResultHash(<complete report body>)`, so it is a commitment: a body with exactly that content
-exists on that Client's disk. After a rollover the ordinary placement fence rejected the report that
-satisfies it, and `settleSupersededPlacement` deliberately refuses any non-null `resultHash`, so the row
-was stranded.
-
-`recordTurn` now accepts that report, and only that report: when the placement fence fails **only** on
-the generation axis and the delivery's retained `resultHash` equals the report's, with `turnId`,
-`sessionId`, `agentId`, the dispatch correlation, and the same Computer still matching, and the
-`reportOwnerInstanceId` still equal to the reporting instance, the report is recorded under the
-delivery's own historical `placement_generation` (never the current one) and `reported_at` is written.
-The hash proves the body, never the sender, so authorization is unchanged and no check is dropped in
-exchange for it. A report without a matching commitment keeps failing the placement fence, an
-already-recorded report still wins first, `settleSupersededPlacement` is untouched, and such a Turn is
-never settled as `unknown`: that would convert a recoverable loss into a permanent one.
+What parking and the overdue settlements do not guarantee: the consecutive-timeout counter is still
+not crash-durable (a worker that exits between a claim and its failure record loses it, so the worst
+case is a slower park rather than an endless loop), and a legacy cross-Computer rollover row that
+already carries a retained `result_hash` remains an open limitation (refused by both `recordTurn`'s
+Computer/generation fence and `settleSupersededPlacement`'s `result_hash is null` guard).
 
 Each of these paths emits one diagnostic per failure run instead of one per attempt: a repeat of
 the failure code already recorded for the delivery adds nothing an operator can act on. Only the

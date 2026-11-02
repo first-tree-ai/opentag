@@ -421,6 +421,7 @@ const GIT_OBJECT_MAX_BYTES = 32 * 1024 * 1024;
 const GIT_PACK_MAX_BYTES = 256 * 1024 * 1024;
 const GIT_MAX_REF_HOPS = 8;
 const GIT_MAX_DELTA_DEPTH = 64;
+const GIT_MAX_ANCESTOR_COMMITS = 4096;
 const SHA1_HEX = /^[0-9a-f]{40}$/;
 const REFLOG_MUTATION_PREFIX = /^(commit|merge|rebase|cherry-pick|reset|am)\b/i;
 
@@ -591,10 +592,47 @@ function matchesOptionalSnapshotIdentity(
   return !suffix?.[1] || suffix[1] === headSha;
 }
 
+function parseCommitParents(payload: Buffer): string[] {
+  const text = payload.toString("utf8");
+  const headerEnd = text.indexOf("\n\n");
+  const headerBlock = headerEnd >= 0 ? text.slice(0, headerEnd) : text;
+  const parents: string[] = [];
+  for (const line of headerBlock.split("\n")) {
+    const match = /^parent ([0-9a-f]{40})$/.exec(line);
+    if (match?.[1]) parents.push(match[1]);
+  }
+  return parents;
+}
+
+async function isReachableFromPublishedTips(
+  store: GitObjectStore,
+  targetSha: string,
+  publishedTips: ReadonlySet<string>,
+): Promise<boolean> {
+  if (publishedTips.has(targetSha)) return true;
+  const visited = new Set<string>(publishedTips);
+  const queue = [...publishedTips];
+  let cursor = 0;
+  while (cursor < queue.length && visited.size <= GIT_MAX_ANCESTOR_COMMITS) {
+    const current = queue[cursor++];
+    const commitObj = current ? await readGitObject(store, current) : undefined;
+    if (commitObj?.type !== "commit") continue;
+    for (const parentSha of parseCommitParents(commitObj.payload)) {
+      if (parentSha === targetSha) return true;
+      if (!visited.has(parentSha)) {
+        visited.add(parentSha);
+        queue.push(parentSha);
+      }
+    }
+  }
+  return false;
+}
+
 async function resolvePublishedSnapshotHead(
   snapshotDir: string,
   gitDir: string,
   commonDir: string,
+  store: GitObjectStore,
 ): Promise<string | undefined> {
   if (!(await hasCleanSnapshotReflog(gitDir))) return undefined;
   if (commonDir !== gitDir && !(await hasCleanSnapshotReflog(commonDir))) return undefined;
@@ -611,7 +649,7 @@ async function resolvePublishedSnapshotHead(
     const resolved = await resolveGitRef(commonDir, commonDir, rawRef, packed);
     if (resolved) published.add(resolved);
   }
-  return published.has(headSha) ? headSha : undefined;
+  return (await isReachableFromPublishedTips(store, headSha, published)) ? headSha : undefined;
 }
 
 async function readLooseGitObject(commonDir: string, sha: string): Promise<GitObjectRecord | undefined> {
@@ -884,10 +922,9 @@ function applyTreeEntriesToWalk(
 }
 
 async function readCommitHeadTree(
-  commonDir: string,
+  store: GitObjectStore,
   commitSha: string,
 ): Promise<Map<string, { readonly executable: boolean; readonly sha1: string }> | undefined> {
-  const store: GitObjectStore = { commonDir };
   const commitObj = await readGitObject(store, commitSha);
   if (commitObj?.type !== "commit") return undefined;
   const treeMatch = /^tree ([0-9a-f]{40})\n/.exec(commitObj.payload.toString("utf8"));
@@ -985,9 +1022,10 @@ async function resolveSnapshotHeadTree(
   if (!dirs) return undefined;
   const indexBuf = await readBoundedRegularFile(join(dirs.gitDir, "index"), GIT_INDEX_MAX_BYTES);
   if (!indexBuf) return undefined;
-  const headSha = await resolvePublishedSnapshotHead(snapshotDir, dirs.gitDir, dirs.commonDir);
+  const store: GitObjectStore = { commonDir: dirs.commonDir };
+  const headSha = await resolvePublishedSnapshotHead(snapshotDir, dirs.gitDir, dirs.commonDir, store);
   if (!headSha) return undefined;
-  const headTree = await readCommitHeadTree(dirs.commonDir, headSha);
+  const headTree = await readCommitHeadTree(store, headSha);
   if (!headTree) return undefined;
   return parseVerifiedGitIndex(indexBuf, headTree);
 }

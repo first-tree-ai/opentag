@@ -505,6 +505,104 @@ describe("createWorkspaceArchive + restoreWorkspaceArchive roundtrip", () => {
         "utf8",
       ),
     ).toBe(branchContent);
+
+    // 9. Multiple synced commits (<id>-<sha> worktrees + fetch +refs/heads/main:refs/remotes/origin/main)
+    // remain omitted across >=3 advances because superseded snapshots are ancestors of the remote tip.
+    const multiSyncWorkspace = join(root, "workspace-multi-sync");
+    const multiProjectDir = join(multiSyncWorkspace, ".opentag", "context-tree", "project");
+    const multiCtHome = join(multiSyncWorkspace, ".opentag", "context-tree", "home", ".context-tree");
+    const multiBareRepo = join(multiCtHome, "repositories", "repo.git");
+    const multiSnapshotsDir = join(multiCtHome, "snapshots");
+    await mkdir(multiProjectDir, { recursive: true });
+    await mkdir(join(multiCtHome, "repositories"), { recursive: true });
+    await mkdir(multiSnapshotsDir, { recursive: true });
+    await writeFile(join(multiProjectDir, ".context-tree.json"), '{"schemaVersion":3,"trees":[]}\n');
+
+    const multiSeed = join(root, "multi-seed");
+    await mkdir(multiSeed, { recursive: true });
+    await execFileAsync("git", ["init", "-b", "main", multiSeed], { env: gitEnv });
+    await writeFile(join(multiSeed, "NODE.md"), "commit-1\n");
+    await execFileAsync("git", ["-C", multiSeed, "add", "NODE.md"], { env: gitEnv });
+    await execFileAsync("git", ["-C", multiSeed, "commit", "-m", "c1"], { env: gitEnv });
+    const sha1 = (await execFileAsync("git", ["-C", multiSeed, "rev-parse", "HEAD"], { env: gitEnv })).stdout.trim();
+
+    await execFileAsync("git", ["clone", "--bare", "--no-hardlinks", multiSeed, multiBareRepo], { env: gitEnv });
+    await execFileAsync(
+      "git",
+      [
+        "--git-dir",
+        multiBareRepo,
+        "fetch",
+        "--quiet",
+        "--no-tags",
+        "origin",
+        "+refs/heads/main:refs/remotes/origin/main",
+      ],
+      { env: gitEnv },
+    );
+    await execFileAsync(
+      "git",
+      [
+        "-c",
+        "safe.bareRepository=all",
+        "--git-dir",
+        multiBareRepo,
+        "worktree",
+        "add",
+        "--detach",
+        join(multiSnapshotsDir, `tree-${sha1}`),
+        sha1,
+      ],
+      { env: gitEnv },
+    );
+
+    for (const label of ["commit-2", "commit-3"]) {
+      await writeFile(join(multiSeed, "NODE.md"), `${label}\n`);
+      await execFileAsync("git", ["-C", multiSeed, "commit", "-am", label], { env: gitEnv });
+      const nextSha = (
+        await execFileAsync("git", ["-C", multiSeed, "rev-parse", "HEAD"], { env: gitEnv })
+      ).stdout.trim();
+      await execFileAsync(
+        "git",
+        [
+          "--git-dir",
+          multiBareRepo,
+          "fetch",
+          "--quiet",
+          "--no-tags",
+          "origin",
+          "+refs/heads/main:refs/remotes/origin/main",
+        ],
+        { env: gitEnv },
+      );
+      await execFileAsync(
+        "git",
+        [
+          "-c",
+          "safe.bareRepository=all",
+          "--git-dir",
+          multiBareRepo,
+          "worktree",
+          "add",
+          "--detach",
+          join(multiSnapshotsDir, `tree-${nextSha}`),
+          nextSha,
+        ],
+        { env: gitEnv },
+      );
+    }
+
+    expect((await readdir(multiSnapshotsDir)).length).toBe(3);
+    const archiveMultiSync = join(root, "multi-sync.tar.gz");
+    const infoMultiSync = await createWorkspaceArchive(multiSyncWorkspace, archiveMultiSync, { maxBytes: 1024 });
+    const restoredMultiSync = join(root, "restored-multi-sync");
+    await restoreWorkspaceArchive(archiveMultiSync, restoredMultiSync, infoMultiSync);
+    await expect(
+      lstat(join(restoredMultiSync, ".opentag", "context-tree", "home", ".context-tree", "repositories")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      lstat(join(restoredMultiSync, ".opentag", "context-tree", "home", ".context-tree", "snapshots")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("round-trips safe relative symlinks, including chained node_modules layouts", async () => {

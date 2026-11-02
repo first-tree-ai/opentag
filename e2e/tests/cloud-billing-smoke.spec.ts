@@ -1,9 +1,10 @@
 import { CLOUD_BILLING_PATH, type CloudBillingSummary } from "@opentag/shared/browser";
 import { expectAccessible, expectNoPageOverflow } from "./browser-contract.js";
-import { expect, smokeTest as test } from "./fixtures.js";
+import { allowExpectedDiagnostic, expect, smokeTest as test } from "./fixtures.js";
 
 for (const width of [320, 390]) {
   test(`cloud credit banner actions retain mobile touch targets at ${width}px`, async ({ page }, testInfo) => {
+    allowExpectedDiagnostic(page, { routeTemplate: CLOUD_BILLING_PATH, status: 503 });
     await page.setViewportSize({ width, height: 844 });
     const me = await page.request.get("/api/v1/me");
     expect(me.ok()).toBe(true);

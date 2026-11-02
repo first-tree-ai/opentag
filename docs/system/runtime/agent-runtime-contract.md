@@ -131,10 +131,11 @@ extension. Claude Code uses `auto` with its native permission callback; Codex us
 `workspace-write` and `on-request` approvals. Cloud runs always use full permissions.
 See [Agent permissions](agent-permissions.md) for allowed-command settings and the
 Slack/Feishu approval flow. Pi's read-only adapter mode limits exposed tools without
-providing an OS isolation boundary. Automatic extensions,
-ambient skills, prompt templates, themes, and context-file discovery are disabled.
-Packaged Context Tree skills are passed explicitly. Model credentials come from the
-operator's configured Pi environment; Local E1 does not introduce a hosted secret
+providing an OS isolation boundary. Actual Local Runs enable native extensions,
+ambient Skills, prompt templates, themes, and context files. Cloud execution and
+readiness/help/model-option queries disable implicit resource discovery. Packaged
+Context Tree Skills remain explicit additions to actual execution. Model credentials come
+from the operator's configured Pi environment; Local E1 does not introduce a hosted secret
 proxy or Cloud sandbox.
 
 ### Local Claude native configuration and trust
@@ -193,6 +194,55 @@ Provider readiness and `computer runtime-inspect` establish Provider availabilit
 plugin loading, native hook trust, or working tool calls. Inspect native configuration and the
 current tool/Skill catalog from Agent Home and exercise the relevant resource before reporting
 success. A native reload or new Session runtime may be necessary for a changed resource.
+
+### Local Pi native resources and trust
+
+Local Pi discovers native user and project extensions, packages, Skills, prompt templates, context
+files, and themes. OpenTag does not force offline mode or disable those resources during a Run.
+Native enablement, exclusion rules, installation, and updates follow the installed Pi CLI. Agents
+can use `pi install -l <source> --approve`, `pi list`, and project settings from Agent Home to manage
+and inspect their resources. Prefer project settings for one Agent; global configuration retains
+its native scope. Existing cwd, Pi Home, login, and Session history locations stay unchanged.
+Server stores no native resource inventory or configuration.
+
+OpenTag passes `--approve` to the actual Local process, trusting that invocation's selected cwd.
+It does not write `trust.json`, trust parent directories, or approve unrelated projects. Native
+extensions are trusted local code and may run outside model tool restrictions. The Local process
+inherits custom environment variables and operator credentials. These credentials do not acquire
+OpenTag execution fencing or revocation. Explicitly prepared factory environments are not filtered
+again. Cloud retains its controlled environment and disabled implicit resource discovery.
+
+Platform Skills and Web extensions remain explicit additions to native discovery. Native Pi owns
+resource deduplication and exclusions. Platform MCP uses a private runtime registration alongside
+native MCP configuration; see [Pi MCP composition](../capabilities/mcp-server-integration.md#pi-and-cloud-runtime-delivery).
+Readiness, help, and model-option queries keep resource discovery and project trust disabled, and
+receive no explicit platform resources. Their success does not establish project plugin loading.
+Check the current native command/tool catalog and exercise the resource before reporting success.
+
+Headless execution accepts fire-and-forget `notify`, `setStatus`, `setWidget`, `setTitle`, and
+`set_editor_text` events as Provider events. Custom extension messages may occur outside model turns
+and are retained as Provider events. Interactive dialogs fail with a headless compatibility error;
+Pi RPC does not provide the TUI or theme switching.
+
+Startup model activity is rejected before submitting the managed prompt, including active or queued
+native state whose start events were not observed. Startup notifications and custom messages remain
+allowed. Model ownership starts at the decoded successful prompt ACK, before later events in the same
+RPC batch. Agent/turn/message/terminal lifecycle before that ACK is rejected; threshold-compaction
+events remain allowed during prompt preflight and never own a terminal or authorize steer alone.
+Steer waits for that acknowledgement and the ordered state/event check to establish model ownership; consumed
+inputs reject waiting steer without an acceptance event. A settled model cannot accept a late steer. After the steer RPC, the runtime drains its event queue
+and checks native active state and settlement again before emitting input acceptance. Native
+idle cleanup is not an active model, even if extension handlers have delayed `agent_settled`.
+
+Pi 0.84.2 acknowledges extension commands and handled input without a completion disposition or
+`agent_settled` event. After an ordered state query, an acknowledged input with no model lifecycle
+and no active run is reported as `provider_request_rejected`, with an explicit protocol
+compatibility explanation. Extension side effects may already have happened; inspect them before
+retrying. OpenTag never reports successful completion from idle state or a timeout. Model runs
+still require `agent_settled`, including while native extension cleanup is pending. Consequently
+this path opens native resources but does not promise complete plugin command or interactive UI
+compatibility. Upgrading Cloud's pinned Pi dependency or implementing a general TUI bridge is
+outside this Local resource policy.
 
 ### Pi binding lifecycle
 

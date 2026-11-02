@@ -334,6 +334,7 @@ describe("server diagnostics", () => {
         computerId: "computer-1",
         attemptCount: 3,
         code: "IM_DELIVERY_OPERATION_TIMEOUT",
+        errorCode: "IM_DELIVERY_OPERATION_TIMEOUT",
       },
       "Server diagnostic",
     );

@@ -27,8 +27,10 @@ settings come from the directory or repository. Multiple directories or branches
 in one repository are allowed. Array order gives no tree precedence.
 
 Memory uses the same page header and collection layout as other Agent resources, without a primary
-header action or capacity counter. The centered empty state offers lightweight **Connect Context Tree**
-and **Create Context Tree** shortcuts for both Local and Cloud Agents. Connected Context Trees appear as divided rows in one
+header action or capacity counter. The centered empty state offers a short sentence with blue inline
+**Connect an existing tree** and **create a new one** actions for both Local and Cloud Agents.
+Each complete action phrase stays together when wrapping. Private repository creation is explained
+in the creation dialog. Connected Context Trees appear as divided rows in one
 surface, with repository/directory, branch, and a direct GitHub-folder link. A trailing secondary
 **Connect another Context Tree** action keeps additional connections available inside the collection.
 The trailing action is absent at the connection limit rather than presenting an unexplained disabled control.

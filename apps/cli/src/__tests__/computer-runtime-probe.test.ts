@@ -113,17 +113,19 @@ describe("selected Runtime full-probe adapter", () => {
     expect(customEnvironment.environment.CLAUDE_CONFIG_DIR).toBe(custom);
   });
 
-  it("preserves exact custom Pi home through the daemon's canonical environment filter", async () => {
+  it("preserves custom Pi home and plugin variables through daemon environment preparation", async () => {
     const home = await isolatedHome();
     const custom = join(home, "pi-config");
     const environment = await resolveRuntimeProbeEnvironment("pi", {
       HOME: home,
       PI_CODING_AGENT_DIR: custom,
+      PI_PLUGIN_SECRET: "plugin-value",
       OPENTAG_SERVER_URL: "https://private.example",
     });
+    expect(environment.environment.PI_PLUGIN_SECRET).toBe("plugin-value");
     expect(environment.home).toBe(custom);
     expect(environment.environment.PI_CODING_AGENT_DIR).toBe(custom);
-    expect(environment.environment.OPENTAG_SERVER_URL).toBeUndefined();
+    expect(environment.environment.OPENTAG_SERVER_URL).toBe("https://private.example");
   });
 
   it("preserves Claude native plugin variables with the same home and environment as the daemon", async () => {

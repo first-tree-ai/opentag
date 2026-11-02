@@ -5,6 +5,7 @@ import type { DatabaseClient } from "../db/client.js";
 import { PARKED_DELIVERY_CODE } from "../db/im-delivery-work.js";
 import { agents, computers, imBindings, imMessageDeliveries, sessionPlacements, sessions } from "../db/schema/index.js";
 import { outcomeAttrs, setActiveSpanAttributes } from "../observability/index.js";
+import type { ServiceLogger } from "../observability/service-logger.js";
 import { releaseImBatch } from "./im-delivery-batch.js";
 import { ImDeliveryInputError, rejectInvalidImDelivery } from "./im-delivery-content.js";
 import { isCloudReadinessRetry } from "./im-delivery-ready-wakeup.js";
@@ -76,11 +77,32 @@ export interface DeliveryFailureDeps {
   now: () => number;
   onDiagnostic: ImDeliveryDiagnosticReporter;
   onMetric: (metric: RuntimeDeliveryWorkerMetric) => void;
+  logger?: ServiceLogger;
   onDeliverySettled?: (deliveryId: string) => void;
   custody: Pick<PostgresRuntimeCustodyStore, "recordTurn">;
   /** Claim tokens already serving a Cloud readiness retry, which must not re-arm themselves. */
   readyRetryClaims: ReadonlySet<string>;
   recheckReady: (deliveryId: string) => void;
+}
+
+function logDispatchRetryScheduled(
+  logger: ServiceLogger | undefined,
+  deliveryId: string,
+  code: string,
+  retryDelayMs: number,
+): void {
+  logger?.warn(
+    {
+      module: "im-delivery",
+      operation: "im.delivery.dispatch",
+      outcome: "retry",
+      code,
+      errorCode: code,
+      deliveryId,
+      retryDelayMs,
+    },
+    "IM delivery dispatch retry scheduled",
+  );
 }
 
 /** The identity and counters a diagnostic carries; never a message body or provider payload. */
@@ -136,6 +158,7 @@ export async function recordDeliveryFailure(
     )
     .returning({ id: imMessageDeliveries.id });
   if (!updated) return;
+  logDispatchRetryScheduled(deps.logger, attempt.deliveryId, bounded, delayMs);
   // One line per failure run, not one per attempt: a repeated code adds nothing an operator can act on.
   const previousCode = attempt.previousErrorCode ? canonicalFailureCode(attempt.previousErrorCode) : undefined;
   if (previousCode !== bounded) deps.onDiagnostic(bounded, diagnosticContext(attempt));
@@ -209,6 +232,18 @@ export async function releaseDeliveryDispatch(
     return released;
   });
   if (released) {
+    deps.logger?.warn(
+      {
+        module: "im-delivery",
+        operation: "im.delivery.dispatch",
+        outcome: "retry",
+        code: bounded,
+        errorCode: bounded,
+        deliveryId: attempt.deliveryId,
+        requestId,
+      },
+      "IM delivery dispatch released for retry",
+    );
     if (attempt.previousErrorCode !== bounded) deps.onDiagnostic(bounded, diagnosticContext(attempt));
     deps.onMetric({ name: "retry", value: 1 });
   }
@@ -324,7 +359,20 @@ export async function rejectDelivery(
     if (rejected) await releaseImBatch(transaction, deliveryId);
     return rejected;
   });
-  if (rejected) deps.onDeliverySettled?.(deliveryId);
+  if (rejected) {
+    deps.logger?.error(
+      {
+        module: "im-delivery",
+        operation: "im.delivery.dispatch",
+        outcome: "terminal_rejected",
+        code: "IM_DELIVERY_TERMINAL",
+        errorCode: "IM_DELIVERY_TERMINAL",
+        deliveryId,
+      },
+      `IM delivery rejected terminally: ${reason}`,
+    );
+    deps.onDeliverySettled?.(deliveryId);
+  }
   return rejected !== undefined;
 }
 
@@ -340,6 +388,18 @@ export async function rejectInvalidDeliveryInput(
   });
   const rejected = await rejectInvalidImDelivery(deps.database, attempt.deliveryId, error, attempt.claimToken ?? "");
   if (!rejected) return;
+  deps.logger?.error(
+    {
+      module: "im-delivery",
+      operation: "im.delivery.dispatch",
+      outcome: "terminal_rejected",
+      code: error.code,
+      errorCode: error.code,
+      deliveryId: attempt.deliveryId,
+      paths: error.paths,
+    },
+    "IM delivery input rejected",
+  );
   deps.onDiagnostic(error.code, diagnosticContext(attempt));
   deps.onDeliverySettled?.(attempt.deliveryId);
 }

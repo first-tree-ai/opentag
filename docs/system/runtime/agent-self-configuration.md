@@ -33,12 +33,18 @@ prompt shows.
 
 ## Owner control
 
-Local Claude and Codex can also use native commands and files to manage plugins, hooks, Skills, and local MCP
+Local Claude, Codex, and Pi can also use native commands and files to manage plugins, hooks, Skills, and local MCP
 servers under its existing Agent Home. These are local operations, not the Server `self` API, and
 `selfConfigurationEnabled` does not control them. Prefer native project scope when configuring one
 Agent; global changes retain their native effect on other projects. Inspect native loading and tool
 availability before reporting success. See [Agent permissions](agent-permissions.md) for the native
 configuration and execution boundary.
+
+For Pi, use project-scoped native package installation (`pi install -l <source> --approve`),
+`pi list`, and `.pi/settings.json` from Agent Home. Changes load on the next Run. OpenTag does not
+persist native package or MCP configuration on Server. Native non-model commands and interactive
+UI have [headless compatibility limits](agent-runtime-contract.md#local-pi-native-resources-and-trust);
+an installed package alone is not proof that its commands can complete through a managed Run.
 
 Self-configuration is enabled by default. New Agents start with `selfConfigurationEnabled` set to true, and migration
 `0072_self_configuration_default_enabled` turned it on for every Agent that was not deleted. That migration cannot

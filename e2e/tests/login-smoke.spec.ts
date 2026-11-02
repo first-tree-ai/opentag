@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { expectAccessible, expectNoPageOverflow } from "./browser-contract.js";
-import { expect, smokeTest as test } from "./fixtures.js";
+import { allowExpectedDiagnostic, expect, smokeTest as test } from "./fixtures.js";
 
 test.describe.configure({ mode: "parallel" });
 test.use({ storageState: { cookies: [], origins: [] } });
@@ -76,6 +76,7 @@ test("mobile visitors can switch language and reveal a password with the keyboar
 });
 
 test("a failed provider request can retry against the real server", async ({ page }) => {
+  allowExpectedDiagnostic(page, { routeTemplate: "/api/v1/auth/providers", status: 503 });
   await page.route(
     "**/api/v1/auth/providers",
     async (route) => {

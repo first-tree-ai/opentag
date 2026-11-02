@@ -29,6 +29,7 @@ import {
   setActiveSpanAttributes,
   traceDeliveryClaim,
 } from "../observability/index.js";
+import type { ServiceLogger } from "../observability/service-logger.js";
 import {
   type EffectiveRuntimeSnapshotAssembler,
   EffectiveRuntimeSnapshotAssemblerError,
@@ -136,10 +137,12 @@ function failureDepsFor(
     now: ports.now,
     onDiagnostic: ports.onDiagnostic,
     onMetric: ports.onMetric,
+    ...(input.logger ? { logger: input.logger } : {}),
     ...(settled ? { onDeliverySettled: settled } : {}),
     custody: new PostgresRuntimeCustodyStore(input.database, {
       now: ports.clock,
       ...(settled ? { onDeliverySettled: settled } : {}),
+      ...(input.logger ? { logger: input.logger } : {}),
     }),
     readyRetryClaims: ports.readyRetryClaims,
     recheckReady: ports.recheckReady,
@@ -194,6 +197,7 @@ export class ImDeliveryWorker {
   readonly #maxQueueAgeMs?: number;
   readonly #scheduler: KeyedTaskScheduler;
   readonly #onMetric: (metric: RuntimeDeliveryWorkerMetric) => void;
+  readonly #logger?: ServiceLogger;
   #timer?: ReturnType<typeof setInterval>;
   #janitorTimer?: ReturnType<typeof setInterval>;
   #retentionTimer?: ReturnType<typeof setInterval>;
@@ -238,6 +242,7 @@ export class ImDeliveryWorker {
       supervisor: this.#supervisor,
     });
     this.#onMetric = input.onMetric ?? (() => undefined);
+    this.#logger = input.logger;
     this.#cloudCoordinator = new CloudDeliveryCoordinator({
       database: this.#database,
       ...(this.#cloudDelivery ? { cloudDelivery: this.#cloudDelivery } : {}),
@@ -270,7 +275,11 @@ export class ImDeliveryWorker {
     });
     const schedulers = createImDeliveryMaintenanceSchedulers({
       expiryRun: async () => {
-        const options = { ...this.#janitorConfig, clock: this.#clock };
+        const options = {
+          ...this.#janitorConfig,
+          clock: this.#clock,
+          ...(this.#logger ? { logger: this.#logger } : {}),
+        };
         await runImDeliveryExpiry(this.#database, options, this.#onDeliverySettled, this.#onDiagnostic);
         await this.#cloudCoordinator.reconcileStoppedWork();
       },
@@ -309,7 +318,11 @@ export class ImDeliveryWorker {
   async runJanitorOnce(): Promise<void> {
     await runImDeliveryJanitor(
       this.#database,
-      { ...this.#janitorConfig, clock: this.#clock },
+      {
+        ...this.#janitorConfig,
+        clock: this.#clock,
+        ...(this.#logger ? { logger: this.#logger } : {}),
+      },
       this.#onDeliverySettled,
       this.#onDiagnostic,
     );
@@ -324,6 +337,18 @@ export class ImDeliveryWorker {
     if (this.#closed) return;
     const claimed = await this.#claim(sessionId);
     if (!claimed) return;
+    this.#logger?.info(
+      {
+        module: "im-delivery",
+        operation: "im.delivery.claim",
+        outcome: "claimed",
+        deliveryId: claimed.id,
+        agentId: claimed.agentId,
+        kind: claimed.kind,
+        laneKey: claimed.laneKey,
+      },
+      "IM delivery claimed",
+    );
     const queueAge = Math.max(0, this.#now() - claimed.queuedAt);
     this.#onMetric({ name: "queue_age_ms", value: queueAge, agentId: claimed.agentId });
     if (this.#maxQueueAgeMs !== undefined && queueAge > this.#maxQueueAgeMs) {
@@ -468,6 +493,7 @@ export class ImDeliveryWorker {
     sessionId?: string,
   ): Promise<WorkerClaim | undefined> {
     let uncertainDeliveryId: string | undefined;
+    let uncertainAgentId: string | undefined;
     const claim = await this.#database.transaction(async (transaction) => {
       const now = this.#clock();
       const locked = await lockEligibleDelivery(transaction, deliveryId, expectedAgentId, now, sessionId);
@@ -570,6 +596,7 @@ export class ImDeliveryWorker {
             ),
           );
         uncertainDeliveryId = row.id;
+        uncertainAgentId = row.agentId;
         return undefined;
       }
       if (retiredSteerCorrelation && row.lastErrorCode === "IM_DELIVERY_STEER_UNKNOWN") {
@@ -616,7 +643,21 @@ export class ImDeliveryWorker {
             claimToken,
           };
     });
-    if (uncertainDeliveryId) this.#onDeliverySettled?.(uncertainDeliveryId);
+    if (uncertainDeliveryId) {
+      this.#logger?.warn(
+        {
+          module: "im-delivery",
+          operation: "im.custody.release",
+          outcome: "uncertain",
+          code: "IM_DELIVERY_STEER_UNKNOWN",
+          errorCode: "IM_DELIVERY_STEER_UNKNOWN",
+          deliveryId: uncertainDeliveryId,
+          ...(uncertainAgentId ? { agentId: uncertainAgentId } : {}),
+        },
+        "IM delivery custody released as uncertain",
+      );
+      this.#onDeliverySettled?.(uncertainDeliveryId);
+    }
     return claim;
   }
 

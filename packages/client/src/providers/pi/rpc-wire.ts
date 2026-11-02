@@ -49,6 +49,8 @@ export interface PiRpcRequestOptions {
    * `close()` still back up.
    */
   readonly timeoutMs?: number | null;
+  /** Runs synchronously at a successful correlated response, before following wire events. */
+  readonly onResponse?: () => void;
 }
 
 export interface PiRpcClient {
@@ -188,7 +190,12 @@ export class PiRpcProcess implements PiRpcClient {
         timer,
         resolve: (value) => {
           cleanup();
-          resolve(value);
+          try {
+            options?.onResponse?.();
+            resolve(value);
+          } catch (error) {
+            reject(error);
+          }
         },
         reject: (error) => {
           cleanup();

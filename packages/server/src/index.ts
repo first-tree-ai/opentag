@@ -5,7 +5,7 @@ import type {
   ProviderReadinessStatus,
   RuntimeCredentialServerFrame,
 } from "@opentag/shared";
-import { MCP_OAUTH_CALLBACK_PATH, RUNTIME_CAPABILITY } from "@opentag/shared";
+import { MCP_OAUTH_CALLBACK_PATH, RUNTIME_CAPABILITY, redactForLog } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { createApp } from "./app.js";
 import { createBetterAuth } from "./auth/better-auth.js";
@@ -531,9 +531,87 @@ function formatStartupFailure(error: unknown, knownSecrets: string[]): string {
   return details.join("\n");
 }
 
+const MAX_FATAL_RECORD_LENGTH = 8_192;
+
+function redactFatalString(value: string): string {
+  const redacted = redactForLog(value);
+  return (typeof redacted === "string" ? redacted : String(redacted)).slice(0, MAX_FATAL_RECORD_LENGTH);
+}
+
+function formatFatalErrorPayload(error: unknown): Record<string, unknown> {
+  if (error instanceof Error) {
+    return {
+      type: redactFatalString(error.name),
+      message: redactFatalString(error.message),
+      stack: redactFatalString(error.stack ?? `${error.name}: ${error.message}`),
+    };
+  }
+  const summary = redactFatalString(String(error));
+  return {
+    type: typeof error,
+    message: summary,
+    stack: summary,
+  };
+}
+
+export function installProcessFatalHandlers(
+  getLogger: () => { fatal(bindings: Record<string, unknown>, message?: string): void } | undefined,
+  exit: (code: number) => void = (code) => process.exit(code),
+): () => void {
+  const handleFatal = (error: unknown, origin: string) => {
+    try {
+      const errPayload = formatFatalErrorPayload(error);
+      const payload = {
+        origin: redactFatalString(origin),
+        module: "process",
+        operation: "server.fatal",
+        outcome: "failed",
+        code: "SERVER_PROCESS_FATAL",
+        errorCode: "SERVER_PROCESS_FATAL",
+        err: errPayload,
+      };
+
+      const logger = getLogger();
+      if (logger && typeof logger.fatal === "function") {
+        logger.fatal(payload, "Server process fatal crash");
+      } else {
+        const fallback = {
+          level: 60,
+          time: Date.now(),
+          pid: process.pid,
+          ...payload,
+          msg: "Server process fatal crash",
+        };
+        process.stderr.write(`${JSON.stringify(fallback)}\n`);
+      }
+    } catch {
+      // Best-effort fatal logging must never block process termination.
+    } finally {
+      exit(1);
+    }
+  };
+
+  const onUncaughtException = (error: Error, origin: string) => {
+    handleFatal(error, origin || "uncaughtException");
+  };
+
+  const onUnhandledRejection = (reason: unknown) => {
+    handleFatal(reason, "unhandledRejection");
+  };
+
+  process.on("uncaughtException", onUncaughtException);
+  process.on("unhandledRejection", onUnhandledRejection);
+
+  return () => {
+    process.off("uncaughtException", onUncaughtException);
+    process.off("unhandledRejection", onUnhandledRejection);
+  };
+}
+
 export async function startServer(): Promise<void> {
   const readiness = new BootstrapReadiness();
   let app: ReturnType<typeof createApp> | undefined;
+  const uninstallFatalHandlers = installProcessFatalHandlers(() => app?.log);
   let databaseSql: ReturnType<typeof createDatabaseClient>["sql"] | undefined;
   let cloudBilling: CloudBilling | undefined;
   let cloudModelService: CloudModelService | undefined;
@@ -628,7 +706,10 @@ export async function startServer(): Promise<void> {
     const applicationCipher = createApplicationCipher(config);
     let imFailureReactions: ImFailureReactions | undefined;
     const onDeliverySettled = (deliveryId: string) => imFailureReactions?.notify(deliveryId);
-    const custody = new PostgresRuntimeCustodyStore(database, { onDeliverySettled });
+    const custody = new PostgresRuntimeCustodyStore(database, {
+      onDeliverySettled,
+      logger: serviceLogger("runtime-custody"),
+    });
     let cloudSessionOwner: CloudSessionCollaborationOwner | undefined;
     let imDeliveryWorker: ImDeliveryWorker | undefined;
     const cloudSessionWork = new CloudSessionWorkTracker();
@@ -905,6 +986,7 @@ export async function startServer(): Promise<void> {
       authority: (request, context) => loadApprovalAuthority(database, request, context),
       messenger: new ApprovalMessenger(imBindingService, imCallPolicy, config.publicUrl),
       onError: () => reportDiagnostic("RUNTIME_APPROVAL_FAILED"),
+      logger: serviceLogger("runtime-approval"),
     });
     const durableWorkStore = new PostgresRuntimeDurableWorkStore(database);
     providerCliReconcileOwner = new ProviderCliReconcileOwner(registry, {
@@ -1157,6 +1239,8 @@ export async function startServer(): Promise<void> {
       sessions: sessionService,
     });
     app = createApp({
+      environment: config.environment,
+      revision: config.buildRevision,
       databaseReadinessProbe: createApplicationDatabaseReadinessProbe(sql, databaseReadinessProbe),
       deployment: deploymentProof(config),
       loggerLevel: config.logLevel,
@@ -1362,6 +1446,7 @@ export async function startServer(): Promise<void> {
       cloudModelRuntime?.tester.close();
     });
     app.addHook("onClose", async () => {
+      uninstallFatalHandlers();
       process.off("SIGINT", closeForSignal);
       process.off("SIGTERM", closeForSignal);
       const imagePrewarmStopped = runnerImagePrewarmWorker?.stop();
@@ -1394,6 +1479,7 @@ export async function startServer(): Promise<void> {
     readiness.complete("listen");
     runnerImagePrewarmWorker?.start();
   } catch (error) {
+    uninstallFatalHandlers();
     const failure = await closeServerResources([
       ["application", () => app?.close()],
       ["cloud model service", () => cloudModelService?.close()],

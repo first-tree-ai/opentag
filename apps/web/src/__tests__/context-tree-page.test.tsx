@@ -45,7 +45,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("heading", { name: "No Context Trees yet" })).toBeNull();
     read.mockRestore();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(await screen.findByRole("button", { name: "Connect Context Tree" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Connect an existing tree" })).toBeTruthy();
   });
 
   it("preserves the open draft through a transient refresh failure and reenables writes after recovery", async () => {
@@ -54,7 +54,7 @@ describe("OpenTag Web App Shell", () => {
     vi.spyOn(queryModule, "createQueryClient").mockReturnValue(client);
     window.history.replaceState({}, "", `/agents/${agentId}/context-tree`);
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Connect Context Tree" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Connect an existing tree" }));
     const input = screen.getByRole("textbox", { name: "GitHub repository link" });
     fireEvent.change(input, { target: { value: "https://github.com/example/preserved-draft" } });
     const read = vi.spyOn(browserApi, "agentConfig").mockRejectedValue(new Error("Transient refresh failure"));
@@ -90,7 +90,7 @@ describe("OpenTag Web App Shell", () => {
     vi.spyOn(queryModule, "createQueryClient").mockReturnValue(client);
     window.history.replaceState({}, "", `/agents/${agentId}/context-tree`);
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Connect Context Tree" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Connect an existing tree" }));
     vi.spyOn(browserApi, "agentConfig").mockRejectedValue(new ApiError(403, "Forbidden"));
     await act(async () => {
       await client.refetchQueries({ queryKey: queryKeys.agents.config(agentId) });

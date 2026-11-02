@@ -3,6 +3,7 @@ import type { DatabaseClient } from "../db/client.js";
 import { PARKED_DELIVERY_CODE } from "../db/im-delivery-work.js";
 import { agents, computers, imBindings, imMessageDeliveries, sessionPlacements, sessions } from "../db/schema/index.js";
 import type { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
+import type { ServiceLogger } from "../observability/service-logger.js";
 import { expireInboundReceiptWork } from "../services/im/inbound-receipt-work-store.js";
 import { SessionService } from "../services/sessions/session-service.js";
 import { settleSupersededPlacement, settleUnreportableTurn } from "./im-delivery-failure.js";
@@ -312,6 +313,7 @@ export interface ImDeliveryJanitorOptions {
   imMessageDeliveriesRetentionMs: number;
   slackWebhookReceiptsRetentionMs: number;
   feishuInboundReceiptsRetentionMs: number;
+  logger?: ServiceLogger;
 }
 
 export async function runImDeliveryExpiry(
@@ -320,6 +322,7 @@ export async function runImDeliveryExpiry(
   onDeliverySettled?: (deliveryId: string) => void,
   onDiagnostic?: ImDeliveryDiagnosticReporter,
 ): Promise<void> {
+  const start = Date.now();
   await runImDeliverySteerRecovery(database, options, onDeliverySettled);
   await runImDeliveryOverdueSettlement(database, options, onDiagnostic, onDeliverySettled);
   const now = options.clock().getTime();
@@ -386,6 +389,30 @@ export async function runImDeliveryExpiry(
     returning delivery.id
   `)) as Array<{ id: string }>;
   for (const delivery of expired) onDeliverySettled?.(delivery.id);
+  const durationMs = Date.now() - start;
+  if (expired.length > 0) {
+    options.logger?.info(
+      {
+        module: "im-delivery-janitor",
+        operation: "im.delivery.expiry_pass",
+        outcome: "completed",
+        expiredCount: expired.length,
+        durationMs,
+      },
+      "IM delivery expiry pass completed",
+    );
+  } else {
+    options.logger?.debug(
+      {
+        module: "im-delivery-janitor",
+        operation: "im.delivery.expiry_pass",
+        outcome: "completed",
+        expiredCount: 0,
+        durationMs,
+      },
+      "IM delivery expiry pass completed",
+    );
+  }
 }
 
 export async function runImDeliveryRetention(

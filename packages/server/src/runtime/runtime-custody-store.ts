@@ -18,6 +18,7 @@ import {
   sessionPlacements,
   sessions,
 } from "../db/schema/index.js";
+import type { ServiceLogger } from "../observability/service-logger.js";
 import { finishSlackWorkingTurn } from "../services/im/slack-working-store.js";
 import { SessionService } from "../services/sessions/session-service.js";
 import { releaseImBatch, reserveImBatch, settleImBatch } from "./im-delivery-batch.js";
@@ -298,15 +299,21 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
   readonly #sessions: SessionService;
   readonly #now: () => Date;
   readonly #onDeliverySettled?: (deliveryId: string) => void;
+  readonly #logger?: ServiceLogger;
 
   constructor(
     database: DatabaseClient,
-    options: { now?: () => Date; onDeliverySettled?: (deliveryId: string) => void } = {},
+    options: {
+      now?: () => Date;
+      onDeliverySettled?: (deliveryId: string) => void;
+      logger?: ServiceLogger;
+    } = {},
   ) {
     this.#database = database;
     this.#sessions = new SessionService(database);
     this.#now = options.now ?? (() => new Date());
     this.#onDeliverySettled = options.onDeliverySettled;
+    this.#logger = options.logger;
   }
 
   async beginDeliveryDispatch(
@@ -495,6 +502,19 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
           .update(imMessageDeliveries)
           .set({ lastErrorCode: "IM_DELIVERY_STEER_UNKNOWN", nextAttemptAt: new Date(this.#now().getTime() + 30_000) })
           .where(eq(imMessageDeliveries.id, request.deliveryId));
+        this.#logger?.warn(
+          {
+            module: "runtime-custody",
+            operation: "im.custody.release",
+            outcome: "uncertain",
+            code: "IM_DELIVERY_STEER_UNKNOWN",
+            errorCode: "IM_DELIVERY_STEER_UNKNOWN",
+            deliveryId: request.deliveryId,
+            sessionId: request.sessionId,
+            rootDeliveryId: request.rootDeliveryId,
+          },
+          "IM steer custody released as uncertain",
+        );
         return "released";
       }
       const [released] = await transaction

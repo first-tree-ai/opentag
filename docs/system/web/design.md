@@ -72,6 +72,9 @@ Schedules retain their card layout. Tasks preserve server paging and Load more; 
 remains available through View all. Long Agent names, handles, and Computer identities outside the compact Overview status card wrap within
 their available space rather than widening the page.
 
+Memory's empty state uses one short sentence with blue inline connection and creation actions.
+Balanced wrapping keeps each complete action phrase together, with repository details in the creation dialog.
+
 Soul keeps the page subtitle and Browse templates action. Saved content uses the same white document frame
 and typography as editing, with a quiet Edit action below the document on the right. Editing exposes Cancel and
 Save changes in that position; no persistent edit hint or prominent header action is added. Success feedback

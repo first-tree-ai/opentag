@@ -1,5 +1,38 @@
 # Agent Memory redesign acceptance record
 
+## Empty-state copy and hierarchy (2026-10-30)
+
+The empty state retains the original blue inline actions and heading. Its shorter sentence reads
+“Connect an existing tree, or create a new one.” (Chinese: “连接已有知识树，或新建一棵。”).
+Each action phrase remains together when the sentence wraps. Private GitHub repository details
+remain in the creation dialog, and the page subtitle continues to explain shared knowledge.
+
+These captures render the production `ContextTreeSettings` component and application styles in an
+isolated Vite preview, with a synthetic empty Agent config and router context. They do not include
+the application navigation shell or perform real GitHub operations:
+
+- [English, 1440px viewport](memory-copy-en-1440.png)
+- [English, 390px viewport](memory-copy-en-390.png)
+- [Chinese, 1440px viewport](memory-copy-zh-1440.png)
+- [Chinese, 390px viewport](memory-copy-zh-390.png)
+
+Playwright measured no page overflow at 320, 390, 768, and 1440px in either locale, and every
+inline action occupies a single line box within the viewport. Four scoped axe scans (both locales
+at 390 and 1440px; WCAG A/AA, 2.1 AA, and 2.2 AA tags) reported no violations.
+Tab and Enter open the connection dialog and focus its repository input; Escape returns focus to
+the connection action. The creation dialog also closes with Escape and restores its trigger focus.
+
+Focused local validation covers the changed Web component and its owning page:
+
+- `pnpm --filter @opentag/web test src/features/agents/agent-settings/context-tree-settings.test.tsx src/__tests__/context-tree-page.test.tsx`
+  — 38 tests passed.
+- `pnpm --filter @opentag/web typecheck` — passed after Vitest generated Paraglide messages.
+- `pnpm --filter @opentag/web build` — passed, retaining existing browser externalization and chunk-size warnings.
+- `pnpm check` — passed.
+
+The full application E2E journey, server tests, and PostgreSQL integration tests were not run for
+this Web copy/layout change. This focused preview does not establish full CI or deployed acceptance.
+
 ## Cloud creation integration (local, not yet published)
 
 The working tree integrates main `4cf2978b64f74a3b3fcaddf37ef3e57558a207d5` into

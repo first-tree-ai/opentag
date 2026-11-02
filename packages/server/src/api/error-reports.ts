@@ -57,9 +57,13 @@ export function registerErrorReportRoutes(app: FastifyInstance, options: ErrorRe
       {
         module: "error-reporting",
         source: event.source,
+        code: event.code,
         errorCode: event.code,
         reportId: errorReport.reportId,
         userId: errorReport.userId,
+        requestId: errorReport.requestId,
+        traceId: errorReport.traceId,
+        untrusted: true,
         errorReport,
       },
       "Client error reported",

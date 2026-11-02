@@ -3,7 +3,7 @@ import { randomInt } from "node:crypto";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentRunResult, AgentRuntime, AgentRuntimeEvent, AgentRuntimeFactory } from "../agent-runtime/types.js";
-import { PiAgentRuntimeFactory } from "../providers/pi/agent-runtime.js";
+import { PiAgentRuntimeFactory, piCloudAgentRuntimeEnvironment } from "../providers/pi/agent-runtime.js";
 import { PiRpcProcess, type PiRpcProcessSpawnOptions } from "../providers/pi/rpc-wire.js";
 import { expectedFromIdentity, probeRunnerTools, type RunnerToolProbe, runnerToolsReady } from "./probe.js";
 import { collectDescendantPids, processExists, waitForProcessTreeGone } from "./processes.js";
@@ -116,7 +116,7 @@ export function createTrackedFactory(
     process: {
       args: skillArgsOf(skillPaths),
       command: "pi",
-      env: runtimeEnvironment(options),
+      env: piCloudAgentRuntimeEnvironment(runtimeEnvironment(options)),
       probeTimeoutMs: RUNNER_PI_PROBE_TIMEOUT_MS,
       sessionDirectory: options.sessionDirectory,
       spawnProcess: trackedSpawn(pids),

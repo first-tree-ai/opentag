@@ -606,7 +606,7 @@ describe("Server startup", () => {
 
     (state.workerOptions as { onDiagnostic(code: string): void }).onDiagnostic("IM_DELIVERY_FAILED");
     expect((state.app as { log: { error: ReturnType<typeof vi.fn> } }).log.error).toHaveBeenCalledWith(
-      { code: "IM_DELIVERY_FAILED" },
+      { code: "IM_DELIVERY_FAILED", errorCode: "IM_DELIVERY_FAILED" },
       "Server diagnostic",
     );
 

@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentRuntimeEvent, CreateAgentRuntimeRequest } from "../agent-runtime/types.js";
 import type { PiDiagnosticEvent, PiDiagnosticSink, PiProcessExit } from "../observability/pi-diagnostics.js";
-import { PiAgentRuntimeFactory, piAgentRuntimeEnvironment } from "../providers/pi/agent-runtime.js";
+import { PiAgentRuntimeFactory, piCloudAgentRuntimeEnvironment } from "../providers/pi/agent-runtime.js";
 import { type PiRpcClient, PiRpcError } from "../providers/pi/rpc-wire.js";
 
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
@@ -1187,10 +1187,10 @@ exec '${process.execPath}' -e 'setInterval(() => undefined, 1000)'
     });
     await vi.waitFor(() => expect(eventFailureRuntime.state.phase).toBe("closed"));
 
-    expect(piAgentRuntimeEnvironment({ AWS_REGION: "test", RANDOM_SECRET: "drop", PATH: undefined })).toEqual({
+    expect(piCloudAgentRuntimeEnvironment({ AWS_REGION: "test", RANDOM_SECRET: "drop", PATH: undefined })).toEqual({
       AWS_REGION: "test",
     });
-    expect(piAgentRuntimeEnvironment()).toHaveProperty("PATH");
+    expect(piCloudAgentRuntimeEnvironment()).toHaveProperty("PATH");
   }, 15_000);
 });
 

@@ -51,6 +51,8 @@ saves the current authorized selection in an OpenTag-owned project configuration
 selections do not delete cached content or unpublished work. One sync refreshes the selected
 sources; a separate recovery budget permits offline cached reads after a timeout. Modified
 snapshots are unavailable. Partial results remain independent and no tree takes precedence.
+Managed command timeouts return a `TIMEOUT` status so preparation can attempt its bounded offline
+recovery; a transport failure returns `CLI_FAILED` instead of escaping the optional preparation.
 
 The [Context Tree integration](../capabilities/context-tree-integration.md) uses the current
 execution's managed GitHub environment. It never falls back to ambient host credentials.

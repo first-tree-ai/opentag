@@ -12,6 +12,10 @@ export function agentDetailLink(agentId: string) {
   return { params: { agentId }, to: "/agents/$agentId" } as const;
 }
 
+export function agentWorkspaceRecoveryLink(agentId: string) {
+  return { params: { agentId }, search: { recovery: true }, to: "/agents/$agentId" } as const;
+}
+
 export function agentScheduleDetailLink(agentId: string, scheduleId: string) {
   return { params: { agentId }, search: { schedule: scheduleId }, to: "/agents/$agentId" } as const;
 }

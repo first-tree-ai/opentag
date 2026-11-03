@@ -12,9 +12,17 @@ import { useAgentDetailView } from "./agent-queries.js";
 import { agentDetailLink, agentSettingsLink } from "./agent-routes.js";
 import { AgentSchedulesSection } from "./agent-schedules-section.js";
 import { AgentStatusCard } from "./agent-status-card.js";
-import { CloudProgressNotice } from "./cloud/cloud-progress-notice.js";
+import { CloudWorkspaceRecovery } from "./cloud/cloud-workspace-recovery.js";
 
-export function AgentDetailPage({ agentId, scheduleId }: { agentId: string; scheduleId?: string }) {
+export function AgentDetailPage({
+  agentId,
+  scheduleId,
+  workspaceRecovery,
+}: {
+  agentId: string;
+  scheduleId?: string;
+  workspaceRecovery?: boolean;
+}) {
   const { me } = useAccount();
   const state = useAgentDetailView(agentId, { watched: true, accountId: me.user.id });
   return (
@@ -32,7 +40,9 @@ export function AgentDetailPage({ agentId, scheduleId }: { agentId: string; sche
               <AgentUsageOverview accountId={me.user.id} agentId={agent.id} />
               <AgentStatusCard agent={agent} />
             </div>
-            {agent.computerKind === "cloud" ? <CloudProgressNotice agentId={agent.id} /> : null}
+            {agent.computerKind === "cloud" ? (
+              <CloudWorkspaceRecovery key={agent.id} agentId={agent.id} initialOpen={workspaceRecovery} />
+            ) : null}
             <AgentSchedulesSection agentId={agent.id} scheduleId={scheduleId} />
             <AgentTasksSection agentId={agent.id} />
           </div>

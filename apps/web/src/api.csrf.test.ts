@@ -105,6 +105,8 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   cloudCreditCheckout: [{ amountCents: 1000, idempotencyKey: ID }],
   ensureCloudComputer: [],
   agentCloudOverview: [ID],
+  cloudWorkspaceStatus: [ID],
+  releaseCloudWorkspace: [ID, { environmentGeneration: 1 }],
   internalNavigationVisibility: [],
   updateInternalNavigationVisibility: [{ tasks: true }],
   updateTaskTitle: [ID, { title: "A task" }],

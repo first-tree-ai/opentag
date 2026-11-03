@@ -3,7 +3,8 @@ import { AgentDetailPage } from "../../../../features/agents/agent-detail-page.j
 
 export const Route = createFileRoute("/_authenticated/_resources/_shell/agents/$agentId/")({
   component: AgentDetailRoute,
-  validateSearch: (search: Record<string, unknown>): { schedule?: string } => ({
+  validateSearch: (search: Record<string, unknown>): { schedule?: string; recovery?: boolean } => ({
+    ...(search.recovery === true || search.recovery === "true" || search.recovery === "1" ? { recovery: true } : {}),
     ...(typeof search.schedule === "string" &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(search.schedule)
       ? { schedule: search.schedule }
@@ -13,6 +14,6 @@ export const Route = createFileRoute("/_authenticated/_resources/_shell/agents/$
 
 function AgentDetailRoute() {
   const { agentId } = Route.useParams();
-  const { schedule } = Route.useSearch();
-  return <AgentDetailPage agentId={agentId} scheduleId={schedule} />;
+  const { schedule, recovery } = Route.useSearch();
+  return <AgentDetailPage agentId={agentId} scheduleId={schedule} workspaceRecovery={recovery} />;
 }

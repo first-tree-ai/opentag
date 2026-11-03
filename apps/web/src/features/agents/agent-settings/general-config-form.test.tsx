@@ -154,7 +154,7 @@ describe("GeneralConfigForm", () => {
       render(<GeneralConfigForm initialConfig={config} onAgentChanged={vi.fn()} />);
       expect(screen.getByRole("switch", { name: "自助配置" }).getAttribute("aria-checked")).toBe("false");
       expect(
-        screen.getByText("允许此 Agent 修改自己的指令、模型和推理强度，并在对话中添加、启用和授权 MCP Server。"),
+        screen.getByText("允许此 Agent 修改自己的指令、模型和推理强度，并在对话中添加、启用和授权 MCP 连接器。"),
       ).toBeTruthy();
     });
   });

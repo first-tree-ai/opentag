@@ -49,9 +49,8 @@ const allowedUntranslatedValues = new Set([
   "OAuth & Permissions → Bot User OAuth Token",
   "Token",
   "Tokens",
-  "Context Tree",
-  "Context Tree GitHub",
-  "Soul",
+  // The product term is shared by both locales.
+  "Agent",
   "MCP",
   "refs/heads/master",
 ]);

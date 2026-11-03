@@ -399,13 +399,10 @@ describe("AgentSetupPage messaging recovery", () => {
   it.each([
     [{ phase: "preparing_cli" }, "Confirming the computer can connect to Slack…"],
     [{ phase: "checking_credentials" }, "Checking credentials"],
-    [
-      { phase: "needs_attention" },
-      "Repair the Slack connection in your coding assistant on this computer, then check again.",
-    ],
+    [{ phase: "needs_attention" }, "Repair the Slack connection in your Agent on this computer, then check again."],
     [
       { phase: "needs_attention", reason: "upgrade_required" },
-      "Repair the Slack connection in your coding assistant on this computer, then check again.",
+      "Repair the Slack connection in your Agent on this computer, then check again.",
     ],
     [
       { phase: "needs_attention", reason: "credential_rejected" },

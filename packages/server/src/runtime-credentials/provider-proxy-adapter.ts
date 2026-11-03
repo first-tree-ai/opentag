@@ -102,6 +102,8 @@ export interface ImProviderProxyAdapterOptions {
   urlHandles: RuntimeUrlHandleStore;
   fetchImpl?: typeof fetch;
   capabilityTtlSeconds?: number;
+  /** Public web origin used to append a clickable Session ID footer to outbound IM messages. */
+  publicOrigin?: string;
   /** Optional confirmed-send capture (IM adapters in production); absent keeps the proxy read-only. */
   outboundCapture?: OutboundWriteCapture;
   /** Test/deployment override for the bounded capture-port wait; defaults to the proxy budget. */
@@ -169,7 +171,7 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
       throw error;
     }
     try {
-      const response = await this.#fetchUpstream(operation, prepared, headers, request, material);
+      const response = await this.#fetchUpstream(operation, prepared, headers, request, authorization, material);
       return operation.response === "stream"
         ? this.#streamResponse(match, response)
         : await this.#jsonResponse(match, request, authorization, material, prepared, response);
@@ -240,6 +242,7 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     prepared: { bytes: Uint8Array; parsed: unknown },
     headers: Record<string, string>,
     request: ProviderProxyRequest,
+    authorization: RuntimeProxyAuthorization,
     material: RuntimeProviderMaterial,
   ): Promise<Response> {
     const url = `${material.origin}${request.path.startsWith("/") ? request.path : `/${request.path}`}`;
@@ -255,11 +258,12 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
       signal: AbortSignal.any([request.signal, AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)]),
       headers: upstreamHeaders(operation.body, upstreamRequestHeaders, material.token),
     };
+    const bodyBytes = this.#upstreamBodyBytes(operation, prepared, headers, request, authorization);
     if (operation.body === "stream") {
       init.body = Readable.from(request.body);
       init.duplex = "half";
-    } else if (operation.body !== "none" && prepared.bytes.byteLength > 0) {
-      init.body = prepared.bytes;
+    } else if (operation.body !== "none" && bodyBytes.byteLength > 0) {
+      init.body = bodyBytes;
     }
     try {
       return await this.#fetch(url, init);
@@ -267,6 +271,28 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
       if (request.signal.aborted) throw new RuntimeProxyError("cancelled");
       throw error;
     }
+  }
+
+  #upstreamBodyBytes(
+    operation: ProviderOperation,
+    prepared: { bytes: Uint8Array; parsed: unknown },
+    headers: Record<string, string>,
+    request: ProviderProxyRequest,
+    authorization: RuntimeProxyAuthorization,
+  ): Uint8Array {
+    const footer = buildSessionFooter(this.#options.publicOrigin, authorization, request);
+    if (!footer) return prepared.bytes;
+    let annotated: Uint8Array | undefined;
+    if (operation.provider === "slack" && operation.operationId === "chat.postMessage") {
+      annotated = annotateSlackPostMessage(prepared.parsed, footer.shortId, footer.sessionUrl, headers);
+    } else if (
+      operation.provider === "feishu" &&
+      (operation.operationId === "feishu.im.messages.create" || operation.operationId === "feishu.im.messages.reply")
+    ) {
+      annotated = annotateFeishuSend(prepared.parsed, footer.shortId, footer.sessionUrl);
+    }
+    const maxBytes = operation.maxBodyBytes ?? 128 * 1024;
+    return annotated && annotated.byteLength <= maxBytes ? annotated : prepared.bytes;
   }
 
   #streamResponse(match: ProviderOperationMatch, response: Response): ProviderProxyResponse {
@@ -456,4 +482,158 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     }
     throw new RuntimeProxyError("handle_invalid");
   }
+}
+
+function buildSessionFooter(
+  publicOrigin: string | undefined,
+  authorization: RuntimeProxyAuthorization,
+  request: ProviderProxyRequest,
+): { shortId: string; sessionUrl: string } | undefined {
+  const origin = publicOrigin?.trim().replace(/\/+$/, "");
+  if (!origin || authorization.purpose === "validation" || !request.sessionId || !authorization.agentId) {
+    return undefined;
+  }
+  return {
+    shortId: request.sessionId.slice(0, 8),
+    sessionUrl: `${origin}/agents/${encodeURIComponent(authorization.agentId)}/tasks/${encodeURIComponent(request.sessionId)}`,
+  };
+}
+
+function annotateSlackBlocks(blocks: unknown, shortId: string, sessionUrl: string): unknown {
+  const footerBlock = {
+    type: "context",
+    elements: [{ type: "mrkdwn", text: `<${sessionUrl}|Session ${shortId}>` }],
+  };
+  if (Array.isArray(blocks)) {
+    if (blocks.length >= 50 || JSON.stringify(blocks).includes(sessionUrl)) return undefined;
+    return [...blocks, footerBlock];
+  }
+  if (typeof blocks === "string") {
+    if (blocks.includes(sessionUrl)) return undefined;
+    try {
+      const parsed = JSON.parse(blocks) as unknown;
+      if (!Array.isArray(parsed) || parsed.length >= 50) return undefined;
+      return JSON.stringify([...parsed, footerBlock]);
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+function annotateSlackPostMessage(
+  parsed: unknown,
+  shortId: string,
+  sessionUrl: string,
+  headers: Record<string, string>,
+): Uint8Array | undefined {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+  const record = parsed as Record<string, unknown>;
+  const next: Record<string, unknown> = { ...record };
+  let changed = false;
+  const annotatedBlocks = annotateSlackBlocks(record.blocks, shortId, sessionUrl);
+  if (annotatedBlocks !== undefined) {
+    next.blocks = annotatedBlocks;
+    changed = true;
+  }
+  if (typeof record.text === "string" && record.text.trim().length > 0 && !record.text.includes(sessionUrl)) {
+    next.text = `${record.text}\n\n_<${sessionUrl}|Session ${shortId}>_`;
+    changed = true;
+  }
+  if (
+    typeof record.markdown_text === "string" &&
+    record.markdown_text.trim().length > 0 &&
+    !record.markdown_text.includes(sessionUrl)
+  ) {
+    next.markdown_text = `${record.markdown_text}\n\n_[Session ${shortId}](${sessionUrl})_`;
+    changed = true;
+  }
+  if (!changed) return undefined;
+  if (slackBufferedBodyKind(headers["content-type"]) === "form") {
+    const form = new URLSearchParams();
+    for (const [key, value] of Object.entries(next)) {
+      form.set(key, typeof value === "string" ? value : JSON.stringify(value));
+    }
+    return new TextEncoder().encode(form.toString());
+  }
+  return new TextEncoder().encode(JSON.stringify(next));
+}
+
+function annotateFeishuPostContent(
+  contentObj: Record<string, unknown>,
+  shortId: string,
+  sessionUrl: string,
+): Record<string, unknown> | undefined {
+  const footerParagraph = [{ tag: "a", text: `Session ${shortId}`, href: sessionUrl }];
+  if (Array.isArray(contentObj.content)) {
+    if (JSON.stringify(contentObj.content).includes(sessionUrl)) return undefined;
+    return { ...contentObj, content: [...contentObj.content, footerParagraph] };
+  }
+  let changed = false;
+  const next: Record<string, unknown> = { ...contentObj };
+  for (const [key, value] of Object.entries(contentObj)) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const locale = value as Record<string, unknown>;
+    if (!Array.isArray(locale.content) || JSON.stringify(locale.content).includes(sessionUrl)) continue;
+    next[key] = { ...locale, content: [...locale.content, footerParagraph] };
+    changed = true;
+  }
+  return changed ? next : undefined;
+}
+
+function annotateFeishuInteractiveContent(
+  contentObj: Record<string, unknown>,
+  shortId: string,
+  sessionUrl: string,
+): Record<string, unknown> | undefined {
+  const link = `[Session ${shortId}](${sessionUrl})`;
+  if (contentObj.schema === "2.0") {
+    const body =
+      contentObj.body && typeof contentObj.body === "object" && !Array.isArray(contentObj.body)
+        ? (contentObj.body as Record<string, unknown>)
+        : undefined;
+    if (!body || !Array.isArray(body.elements) || JSON.stringify(body.elements).includes(sessionUrl)) return undefined;
+    return {
+      ...contentObj,
+      body: {
+        ...body,
+        elements: [...body.elements, { tag: "markdown", text_size: "notation", content: link }],
+      },
+    };
+  }
+  if (!Array.isArray(contentObj.elements) || JSON.stringify(contentObj.elements).includes(sessionUrl)) return undefined;
+  return {
+    ...contentObj,
+    elements: [...contentObj.elements, { tag: "note", elements: [{ tag: "lark_md", content: link }] }],
+  };
+}
+
+function annotateFeishuSend(parsed: unknown, shortId: string, sessionUrl: string): Uint8Array | undefined {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+  const record = parsed as Record<string, unknown>;
+  if (typeof record.content !== "string") return undefined;
+  let contentObj: Record<string, unknown>;
+  try {
+    const raw = JSON.parse(record.content) as unknown;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+    contentObj = raw as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+  let nextContent: Record<string, unknown> | undefined;
+  if (record.msg_type === "text") {
+    if (
+      typeof contentObj.text === "string" &&
+      contentObj.text.trim().length > 0 &&
+      !contentObj.text.includes(sessionUrl)
+    ) {
+      nextContent = { ...contentObj, text: `${contentObj.text}\n\nSession ${shortId}: ${sessionUrl}` };
+    }
+  } else if (record.msg_type === "post") {
+    nextContent = annotateFeishuPostContent(contentObj, shortId, sessionUrl);
+  } else if (record.msg_type === "interactive") {
+    nextContent = annotateFeishuInteractiveContent(contentObj, shortId, sessionUrl);
+  }
+  if (!nextContent) return undefined;
+  return new TextEncoder().encode(JSON.stringify({ ...record, content: JSON.stringify(nextContent) }));
 }

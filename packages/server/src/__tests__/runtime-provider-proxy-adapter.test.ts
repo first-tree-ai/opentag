@@ -6,6 +6,8 @@ import { FEISHU_OPERATIONS } from "../runtime-credentials/feishu-operations.js";
 import { ProviderOperationRegistry } from "../runtime-credentials/operation-registry.js";
 import {
   ImProviderProxyAdapter,
+  type OutboundWriteCapture,
+  type OutboundWriteCaptureEvent,
   type ProviderProxyRequest,
   RuntimeProxyError,
 } from "../runtime-credentials/provider-proxy-adapter.js";
@@ -60,7 +62,13 @@ function authorization(overrides: Partial<RuntimeProxyAuthorization> = {}): Runt
 }
 
 function adapter(
-  options: { provider?: "slack" | "feishu"; fetchImpl?: typeof fetch; urlHandles?: RuntimeUrlHandleStore } = {},
+  options: {
+    provider?: "slack" | "feishu";
+    fetchImpl?: typeof fetch;
+    urlHandles?: RuntimeUrlHandleStore;
+    publicOrigin?: string;
+    outboundCapture?: OutboundWriteCapture;
+  } = {},
 ) {
   const provider = options.provider ?? "slack";
   const urlHandles = options.urlHandles ?? new RuntimeUrlHandleStore();
@@ -68,6 +76,8 @@ function adapter(
     provider,
     registry: new ProviderOperationRegistry(provider === "slack" ? SLACK_OPERATIONS : FEISHU_OPERATIONS),
     urlHandles,
+    ...(options.publicOrigin ? { publicOrigin: options.publicOrigin } : {}),
+    ...(options.outboundCapture ? { outboundCapture: options.outboundCapture } : {}),
     ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
   });
   return { instance, urlHandles };
@@ -775,5 +785,175 @@ describe("ImProviderProxyAdapter upload handles", () => {
       instance.handle(uploadRequest(handleId, bodyOf(new TextEncoder().encode("bytes"))), stale),
     ).rejects.toMatchObject({ code: "credential_stale" });
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe("ImProviderProxyAdapter Session ID footer", () => {
+  const AGENT_ID = "11111111-2222-3333-4444-555555555555";
+  const SESSION_ID = "12345678-aaaa-bbbb-cccc-ddddeeeeffff";
+  const SHORT_ID = "12345678";
+  const PUBLIC_ORIGIN = "https://opentag.example.com/";
+  const SESSION_URL = `https://opentag.example.com/agents/${AGENT_ID}/tasks/${SESSION_ID}`;
+
+  it("appends the Session ID footer to Slack text, markdown_text, and blocks while keeping captured requestBody untouched", async () => {
+    const capturedEvents: OutboundWriteCaptureEvent[] = [];
+    const { calls, fetchImpl } = captureFetch({ ok: true, ts: "1710000000.000100" });
+    const { instance } = adapter({
+      fetchImpl,
+      publicOrigin: PUBLIC_ORIGIN,
+      outboundCapture: {
+        capture: async (event) => {
+          capturedEvents.push(event);
+        },
+      },
+    });
+    const originalBody = {
+      channel: "C1",
+      text: "Hello from Slack",
+      markdown_text: "**Hello** from Slack",
+      blocks: [{ type: "section", text: { type: "mrkdwn", text: "Section text" } }],
+    };
+
+    await instance.handle(
+      request({ sessionId: SESSION_ID, body: jsonBody(originalBody) }),
+      authorization({ sessionId: SESSION_ID, agentId: AGENT_ID }),
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(calls[0]?.body ?? "{}")).toEqual({
+      channel: "C1",
+      text: `Hello from Slack\n\n_<${SESSION_URL}|Session ${SHORT_ID}>_`,
+      markdown_text: `**Hello** from Slack\n\n_[Session ${SHORT_ID}](${SESSION_URL})_`,
+      blocks: [
+        { type: "section", text: { type: "mrkdwn", text: "Section text" } },
+        { type: "context", elements: [{ type: "mrkdwn", text: `<${SESSION_URL}|Session ${SHORT_ID}>` }] },
+      ],
+    });
+    expect(capturedEvents).toHaveLength(1);
+    expect(capturedEvents[0]?.requestBody).toEqual(originalBody);
+  });
+
+  it("appends the Session ID footer to Slack form-encoded chat.postMessage requests", async () => {
+    const { calls, fetchImpl } = captureFetch({ ok: true, ts: "1710000000.000100" });
+    const { instance } = adapter({ fetchImpl, publicOrigin: PUBLIC_ORIGIN });
+    const form = new URLSearchParams({
+      channel: "C1",
+      text: "Form reply",
+      blocks: JSON.stringify([{ type: "section", text: { type: "mrkdwn", text: "Form block" } }]),
+    }).toString();
+
+    await instance.handle(
+      request({
+        sessionId: SESSION_ID,
+        headers: FORM_HEADERS,
+        body: bodyOf(new TextEncoder().encode(form)),
+      }),
+      authorization({ sessionId: SESSION_ID, agentId: AGENT_ID }),
+    );
+
+    const params = new URLSearchParams(calls[0]?.body ?? "");
+    expect(params.get("text")).toBe(`Form reply\n\n_<${SESSION_URL}|Session ${SHORT_ID}>_`);
+    expect(JSON.parse(params.get("blocks") ?? "[]")).toEqual([
+      { type: "section", text: { type: "mrkdwn", text: "Form block" } },
+      { type: "context", elements: [{ type: "mrkdwn", text: `<${SESSION_URL}|Session ${SHORT_ID}>` }] },
+    ]);
+  });
+
+  it("appends the Session ID footer to Feishu text, post, and interactive v1/v2 messages", async () => {
+    const { calls, fetchImpl } = captureFetch({ code: 0, data: { message_id: "om_1" } });
+    const { instance } = adapter({ provider: "feishu", fetchImpl, publicOrigin: PUBLIC_ORIGIN });
+    const feishuAuth = authorization({
+      provider: "feishu",
+      sessionId: SESSION_ID,
+      agentId: AGENT_ID,
+      cli: { provider: "feishu", appId: "cli_a", teamBrand: "feishu" },
+      resolveMaterial: async () => ({ kind: "bearer", token: "t-token", origin: "https://open.feishu.cn" }),
+    });
+
+    // 1. Feishu text
+    await instance.handle(
+      request({
+        provider: "feishu",
+        sessionId: SESSION_ID,
+        path: "/open-apis/im/v1/messages?receive_id_type=chat_id",
+        body: jsonBody({ receive_id: "oc_1", msg_type: "text", content: JSON.stringify({ text: "Hello Feishu" }) }),
+      }),
+      feishuAuth,
+    );
+    expect(JSON.parse(JSON.parse(calls[0]?.body ?? "{}").content)).toEqual({
+      text: `Hello Feishu\n\nSession ${SHORT_ID}: ${SESSION_URL}`,
+    });
+
+    // 2. Feishu post (top-level and locale-wrapped)
+    await instance.handle(
+      request({
+        provider: "feishu",
+        sessionId: SESSION_ID,
+        path: "/open-apis/im/v1/messages/om_parent/reply",
+        body: jsonBody({
+          msg_type: "post",
+          content: JSON.stringify({
+            zh_cn: { title: "Title", content: [[{ tag: "text", text: "Line 1" }]] },
+          }),
+        }),
+      }),
+      feishuAuth,
+    );
+    expect(JSON.parse(JSON.parse(calls[1]?.body ?? "{}").content)).toEqual({
+      zh_cn: {
+        title: "Title",
+        content: [[{ tag: "text", text: "Line 1" }], [{ tag: "a", text: `Session ${SHORT_ID}`, href: SESSION_URL }]],
+      },
+    });
+
+    // 3. Feishu interactive Card v2
+    await instance.handle(
+      request({
+        provider: "feishu",
+        sessionId: SESSION_ID,
+        path: "/open-apis/im/v1/messages?receive_id_type=chat_id",
+        body: jsonBody({
+          receive_id: "oc_1",
+          msg_type: "interactive",
+          content: JSON.stringify({
+            schema: "2.0",
+            body: { elements: [{ tag: "markdown", content: "Card v2 body" }] },
+          }),
+        }),
+      }),
+      feishuAuth,
+    );
+    expect(JSON.parse(JSON.parse(calls[2]?.body ?? "{}").content)).toEqual({
+      schema: "2.0",
+      body: {
+        elements: [
+          { tag: "markdown", content: "Card v2 body" },
+          { tag: "markdown", text_size: "notation", content: `[Session ${SHORT_ID}](${SESSION_URL})` },
+        ],
+      },
+    });
+
+    // 4. Feishu interactive Card v1
+    await instance.handle(
+      request({
+        provider: "feishu",
+        sessionId: SESSION_ID,
+        path: "/open-apis/im/v1/messages?receive_id_type=chat_id",
+        body: jsonBody({
+          receive_id: "oc_1",
+          msg_type: "interactive",
+          content: JSON.stringify({
+            elements: [{ tag: "div", text: { tag: "lark_md", content: "Card v1 body" } }],
+          }),
+        }),
+      }),
+      feishuAuth,
+    );
+    expect(JSON.parse(JSON.parse(calls[3]?.body ?? "{}").content)).toEqual({
+      elements: [
+        { tag: "div", text: { tag: "lark_md", content: "Card v1 body" } },
+        { tag: "note", elements: [{ tag: "lark_md", content: `[Session ${SHORT_ID}](${SESSION_URL})` }] },
+      ],
+    });
   });
 });

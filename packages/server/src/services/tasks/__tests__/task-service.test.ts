@@ -1690,4 +1690,146 @@ describe("TaskService bounded detail at topic scale", () => {
     expect(legacy.internalSessions).toHaveLength(count);
     expect(legacy.collaborationMessages).toHaveLength(count);
   }, 180_000);
+
+  it("resolves detail, get, listTurns, listReplies, listInternalSessions, and listCollaborationMessages by sessionId for DM, thread, and group channel Sessions", async () => {
+    const { binding, bootstrap, service } = await fixture();
+
+    // 1. DM Session
+    const dmSession = await createSession(binding.id, { channelId: DM, conversationKind: "dm" });
+    const dmMsg = await createMessage(binding.id, {
+      channelId: DM,
+      text: "DM question",
+      occurredAt: minutes(0),
+      providerContext: { provider: "feishu", chatType: "p2p" },
+    });
+    await createDelivery(dmSession.id, dmMsg.id, { at: minutes(1), reported: true });
+    await unitDatabase.database.insert(imMessages).values({
+      imBindingId: binding.id,
+      providerEventId: null,
+      channelId: DM,
+      externalMessageId: "om_dm_reply",
+      providerRevisionKey: "outbound:created:v1",
+      operation: "created",
+      direction: "outbound",
+      threadKey: null,
+      authorKind: "bot",
+      authorExternalId: "ou_bot",
+      content: {
+        version: 1,
+        fallbackText: "DM answer",
+        blocks: [{ type: "text", text: "DM answer" }],
+        truncated: false,
+        outbound: { messageType: "text", contentAvailable: true, timeSource: "provider" },
+      },
+      providerContext: { provider: "feishu" },
+      occurredAt: minutes(2),
+    });
+
+    expect((await service.detail(bootstrap.userId, dmSession.id)).task.id).toBe(dmMsg.id);
+    expect((await service.get(bootstrap.userId, dmSession.id, { limit: 10 })).task.id).toBe(dmMsg.id);
+    expect((await service.listTurns(bootstrap.userId, dmSession.id, {})).items.map((t) => t.message.id)).toEqual([
+      dmMsg.id,
+    ]);
+    expect((await service.listReplies(bootstrap.userId, dmSession.id, { limit: 10 })).items[0]?.fallbackText).toBe(
+      "DM answer",
+    );
+
+    // 2. Group thread Session
+    const { channel, thread, root, reply } = await groupTopic(binding.id, "om_thread_root");
+    await createDelivery(channel.id, root.id, { at: minutes(3), reported: true });
+    await createDelivery(thread.id, reply.id, { at: minutes(11), reported: true });
+    const internal = await createSession(binding.id, {
+      channelId: GROUP,
+      kind: "internal",
+      threadKey: "om_thread_root",
+      createdBySessionId: thread.id,
+      createdAt: minutes(12),
+    });
+    await unitDatabase.database.insert(sessionMessages).values({
+      id: crypto.randomUUID(),
+      sourceSessionId: thread.id,
+      targetSessionId: internal.id,
+      content: "Check thread",
+      contentHash: "a".repeat(64),
+      lastOutcome: "accepted",
+      attemptCount: 1,
+      lastAttemptAt: BASE_TIME,
+    });
+    await unitDatabase.database.insert(imMessages).values({
+      imBindingId: binding.id,
+      providerEventId: null,
+      channelId: GROUP,
+      externalMessageId: "om_thread_reply",
+      providerRevisionKey: "outbound:created:v1",
+      operation: "created",
+      direction: "outbound",
+      threadKey: "om_thread_root",
+      authorKind: "bot",
+      authorExternalId: "ou_bot",
+      content: {
+        version: 1,
+        fallbackText: "Thread answer",
+        blocks: [{ type: "text", text: "Thread answer" }],
+        truncated: false,
+        outbound: { messageType: "text", contentAvailable: true, timeSource: "provider" },
+      },
+      providerContext: { provider: "feishu", rootId: "om_thread_root" },
+      occurredAt: minutes(13),
+    });
+
+    expect((await service.detail(bootstrap.userId, thread.id)).task.id).toBe(root.id);
+    expect((await service.get(bootstrap.userId, thread.id, { limit: 10 })).task.id).toBe(root.id);
+    expect((await service.listTurns(bootstrap.userId, thread.id, {})).items.map((t) => t.message.id)).toEqual([
+      reply.id,
+      root.id,
+    ]);
+    expect((await service.listInternalSessions(bootstrap.userId, thread.id, {})).items.map((s) => s.id)).toEqual([
+      internal.id,
+    ]);
+    expect(
+      (await service.listCollaborationMessages(bootstrap.userId, thread.id, {})).items.map((m) => m.content),
+    ).toEqual(["Check thread"]);
+    expect((await service.listReplies(bootstrap.userId, thread.id, { limit: 10 })).items[0]?.fallbackText).toBe(
+      "Thread answer",
+    );
+
+    // 3. Group channel Session (resolves to the latest direct execution's topic)
+    const groupAlone = await createMessage(binding.id, {
+      channelId: GROUP,
+      externalMessageId: "om_group_alone",
+      text: "Top-level group request",
+      occurredAt: minutes(20),
+    });
+    await createDelivery(channel.id, groupAlone.id, { at: minutes(21), reported: true });
+    await unitDatabase.database.insert(imMessages).values({
+      imBindingId: binding.id,
+      providerEventId: null,
+      channelId: GROUP,
+      externalMessageId: "om_group_alone_reply",
+      providerRevisionKey: "outbound:created:v1",
+      operation: "created",
+      direction: "outbound",
+      threadKey: "om_group_alone",
+      authorKind: "bot",
+      authorExternalId: "ou_bot",
+      content: {
+        version: 1,
+        fallbackText: "Group channel answer",
+        blocks: [{ type: "text", text: "Group channel answer" }],
+        truncated: false,
+        outbound: { messageType: "text", contentAvailable: true, timeSource: "provider" },
+      },
+      providerContext: { provider: "feishu", rootId: "om_group_alone" },
+      occurredAt: minutes(22),
+    });
+
+    expect((await service.detail(bootstrap.userId, channel.id)).task.id).toBe(groupAlone.id);
+    expect((await service.get(bootstrap.userId, channel.id, { limit: 10 })).task.id).toBe(groupAlone.id);
+    expect((await service.listTurns(bootstrap.userId, channel.id, {})).items.map((t) => t.message.id)).toEqual([
+      groupAlone.id,
+    ]);
+    expect((await service.listReplies(bootstrap.userId, channel.id, { limit: 10 })).items[0]?.fallbackText).toBe(
+      "Group channel answer",
+    );
+  });
 });

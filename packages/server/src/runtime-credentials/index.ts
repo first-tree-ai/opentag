@@ -73,6 +73,7 @@ export * from "./write-outcome.js";
 
 export interface RuntimeCredentialServicesOptions {
   slackWorkingStatus?: boolean;
+  publicOrigin?: string;
   database: DatabaseClient;
   cipher: ApplicationCipher;
   registry: ConnectionRegistry;
@@ -407,6 +408,7 @@ function createImAdapters(
         registry: new ProviderOperationRegistry(operations),
         urlHandles,
         outboundCapture,
+        ...(options.publicOrigin ? { publicOrigin: options.publicOrigin } : {}),
         ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
         ...(options.logger ? { logger: options.logger } : {}),
       }),

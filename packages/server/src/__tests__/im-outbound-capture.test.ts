@@ -887,3 +887,85 @@ describe("ImOutboundCapture bounded persistence", () => {
     );
   });
 });
+
+describe("parseCapturedOutbound Session ID footer stripping", () => {
+  const SESSION_URL = "https://opentag.example.com/agents/11111111-2222-3333-4444-555555555555/tasks/12345678-aaaa";
+
+  it("strips the injected Session ID footer from echoed Slack text and blocks", () => {
+    const fromText = captured(
+      event({
+        responsePayload: {
+          ok: true,
+          channel: "C0123ABCD",
+          ts: "1790042400.000100",
+          message: {
+            type: "message",
+            text: `Confirmed reply body\n\n_<${SESSION_URL}|Session 12345678>_`,
+            ts: "1790042400.000100",
+          },
+        },
+      }),
+    );
+    expect(fromText.content.fallbackText).toBe("Confirmed reply body");
+
+    const fromBlocks = captured(
+      event({
+        responsePayload: {
+          ok: true,
+          channel: "C0123ABCD",
+          ts: "1790042400.000100",
+          message: {
+            type: "message",
+            blocks: [
+              { type: "section", text: { type: "mrkdwn", text: "Block body" } },
+              { type: "context", elements: [{ type: "mrkdwn", text: `<${SESSION_URL}|Session 12345678>` }] },
+            ],
+          },
+        },
+      }),
+    );
+    expect(fromBlocks.content.fallbackText).toBe("Block body");
+  });
+
+  it("strips the injected Session ID footer from echoed Feishu text and post bodies", () => {
+    const fromText = captured(
+      feishuEvent({
+        responsePayload: {
+          code: 0,
+          data: {
+            message_id: "om_confirmed",
+            chat_id: "oc_confirmed_chat",
+            msg_type: "text",
+            create_time: "1790042400000",
+            body: { content: JSON.stringify({ text: `Confirmed reply body\n\nSession 12345678: ${SESSION_URL}` }) },
+          },
+        },
+      }),
+    );
+    expect(fromText.content.fallbackText).toBe("Confirmed reply body");
+
+    const fromPost = captured(
+      feishuEvent({
+        responsePayload: {
+          code: 0,
+          data: {
+            message_id: "om_post",
+            chat_id: "oc_confirmed_chat",
+            msg_type: "post",
+            create_time: "1790042400000",
+            body: {
+              content: JSON.stringify({
+                title: "Deploy report",
+                content: [
+                  [{ tag: "text", text: "Finished runbook" }],
+                  [{ tag: "a", text: "Session 12345678", href: SESSION_URL }],
+                ],
+              }),
+            },
+          },
+        },
+      }),
+    );
+    expect(fromPost.content.fallbackText).toBe("Deploy report\nFinished runbook");
+  });
+});

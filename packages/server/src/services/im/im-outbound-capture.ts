@@ -259,6 +259,37 @@ function buildContent(input: ContentInput): ImContentV1 {
   });
 }
 
+const SESSION_TASK_URL_RE = /^https?:\/\/[^\s<>|)]+\/agents\/[^/\s<>|)]+\/tasks\/[^/\s<>|)]+$/;
+const SLACK_SESSION_FOOTER_RE =
+  /(?:\r?\n){2}_(?:<https?:\/\/[^\s<>|)]+\/agents\/[^/\s<>|)]+\/tasks\/[^/\s<>|)]+\|Session [^\s<>|]+>|\[Session [^\s\]]+\]\(https?:\/\/[^\s<>|)]+\/agents\/[^/\s<>|)]+\/tasks\/[^/\s<>|)]+\))_\s*$/;
+const SLACK_SESSION_FOOTER_ONLY_RE =
+  /^_?(?:<https?:\/\/[^\s<>|)]+\/agents\/[^/\s<>|)]+\/tasks\/[^/\s<>|)]+\|Session [^\s<>|]+>|\[Session [^\s\]]+\]\(https?:\/\/[^\s<>|)]+\/agents\/[^/\s<>|)]+\/tasks\/[^/\s<>|)]+\))_?$/;
+const FEISHU_TEXT_SESSION_FOOTER_RE =
+  /(?:\r?\n){2}Session [^\s:]+: https?:\/\/[^\s<>|)]+\/agents\/[^/\s<>|)]+\/tasks\/[^/\s<>|)]+\s*$/;
+const FEISHU_MD_SESSION_FOOTER_RE =
+  /(?:\r?\n){1,2}\[Session [^\s\]]+\]\(https?:\/\/[^\s<>|)]+\/agents\/[^/\s<>|)]+\/tasks\/[^/\s<>|)]+\)\s*$/;
+
+function stripSlackSessionFooter(value: string): string {
+  if (SLACK_SESSION_FOOTER_ONLY_RE.test(value.trim())) return "";
+  return value.replace(SLACK_SESSION_FOOTER_RE, "");
+}
+
+function stripFeishuTextSessionFooter(value: string): string {
+  return value.replace(FEISHU_TEXT_SESSION_FOOTER_RE, "").replace(FEISHU_MD_SESSION_FOOTER_RE, "");
+}
+
+function isFeishuSessionFooterParagraph(paragraph: unknown): boolean {
+  if (!Array.isArray(paragraph) || paragraph.length !== 1) return false;
+  const record = asRecord(paragraph[0]);
+  return (
+    record?.tag === "a" &&
+    typeof record.text === "string" &&
+    /^Session [^\s]+$/.test(record.text) &&
+    typeof record.href === "string" &&
+    SESSION_TASK_URL_RE.test(record.href)
+  );
+}
+
 /** One Feishu post paragraph is a sequence of tagged segments; only their text runs display. */
 function feishuPostLine(paragraph: unknown): string {
   if (!Array.isArray(paragraph)) return "";
@@ -288,6 +319,7 @@ function feishuPostParagraphs(paragraphs: unknown): string {
   if (!Array.isArray(paragraphs)) return "";
   const lines: string[] = [];
   for (const paragraph of paragraphs) {
+    if (isFeishuSessionFooterParagraph(paragraph)) continue;
     const line = feishuPostLine(paragraph);
     if (line.length > 0) lines.push(line);
   }
@@ -302,7 +334,8 @@ function feishuPostText(body: Record<string, unknown>): string | undefined {
   const title = feishuPostField(body, "title");
   const tagged = feishuPostParagraphs(feishuPostField(body, "content"));
   const markdown = feishuPostField(body, "content_v2");
-  const bodyText = tagged.length > 0 ? tagged : typeof markdown === "string" ? markdown.trim() : "";
+  const bodyText =
+    tagged.length > 0 ? tagged : typeof markdown === "string" ? stripFeishuTextSessionFooter(markdown).trim() : "";
   const parts = [typeof title === "string" ? title.trim() : "", bodyText].filter((part) => part.length > 0);
   return parts.length > 0 ? parts.join("\n") : undefined;
 }
@@ -349,7 +382,9 @@ function feishuBodyContent(
 ) {
   const resource = msgType ? feishuResource(msgType, body) : undefined;
   return buildContent({
-    ...(msgType === "text" ? { text: typeof body?.text === "string" ? body.text : undefined } : {}),
+    ...(msgType === "text"
+      ? { text: typeof body?.text === "string" ? stripFeishuTextSessionFooter(body.text) : undefined }
+      : {}),
     ...(msgType === "post" ? { text: body ? feishuPostText(body) : undefined } : {}),
     ...(resource ? { blocks: [resource.block], resources: [resource.resource] } : {}),
     ...(msgType && !resource && msgType !== "text" && msgType !== "post" ? { unsupportedType: msgType } : {}),
@@ -404,7 +439,8 @@ function slackBlockText(message: Record<string, unknown>): string[] {
     const record = asRecord(block);
     if (!record) continue;
     const text = asRecord(record.text);
-    if (typeof text?.text === "string" && text.text.trim().length > 0) parts.push(text.text.trim());
+    const cleaned = typeof text?.text === "string" ? stripSlackSessionFooter(text.text).trim() : "";
+    if (cleaned.length > 0) parts.push(cleaned);
     collectSlackRichText(record.elements, parts, 2);
   }
   return parts;
@@ -416,7 +452,8 @@ function collectSlackRichText(elements: unknown, parts: string[], depth: number)
     if (parts.length >= SLACK_PROJECTION_MAX_ITEMS) return;
     const record = asRecord(element);
     if (!record) continue;
-    if (typeof record.text === "string" && record.text.trim().length > 0) parts.push(record.text.trim());
+    const cleaned = typeof record.text === "string" ? stripSlackSessionFooter(record.text).trim() : "";
+    if (cleaned.length > 0) parts.push(cleaned);
     collectSlackRichText(record.elements, parts, depth - 1);
   }
 }
@@ -424,7 +461,7 @@ function collectSlackRichText(elements: unknown, parts: string[], depth: number)
 /** The display body Slack confirms: message text plus bounded attachment/rich-text descriptions. */
 function slackMessageText(message: Record<string, unknown> | undefined): string | undefined {
   if (!message) return undefined;
-  const primary = typeof message.text === "string" ? message.text : "";
+  const primary = typeof message.text === "string" ? stripSlackSessionFooter(message.text) : "";
   const parts = primary.trim().length > 0 ? [primary] : [];
   parts.push(...slackAttachmentText(message));
   if (primary.trim().length === 0) parts.push(...slackBlockText(message));

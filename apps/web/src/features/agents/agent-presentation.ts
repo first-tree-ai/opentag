@@ -14,9 +14,8 @@ import {
 import type { AgentSettingsSection } from "./agent-settings/sections.js";
 
 /**
- * The card states what is true and how urgent it is. It carries no recovery of its own, because
- * what to do about a broken dependency depends on which one broke, and that explanation lives on
- * the Agent. The one exception is setup that never finished — see `agentSetupContinuation`.
+ * The card states what is true and how urgent it is. Its single next step, when the reader can fix
+ * the state, comes separately from `agentRowAction`.
  */
 type AgentCardStatus = {
   detail?: string;
@@ -410,6 +409,35 @@ export function agentSetupContinuation(agent: {
   id: string;
 }): AgentDependencyStatus["action"] {
   return SETUP_REASONS.has(agent.availability.reason) ? continueSetupAction(agent.id) : undefined;
+}
+
+/**
+ * The one action a list row offers: the place where the state it shows gets fixed.
+ *
+ * Every blocked state the reader can repair carries the same single link, so no fixable row reads as
+ * a dead end beside one that offers a way out. Setup-owned reasons continue setup; messaging that
+ * needs new permissions or a reconnect opens the Agent's messaging settings; an offline Computer
+ * opens its connection recovery. A paused Agent was paused on purpose and states that fact without
+ * an action, and states that resolve on their own (checks, unknown evidence) offer nothing.
+ */
+export function agentRowAction(agent: {
+  availability: AgentAvailability;
+  computer: AgentListItem["computer"];
+  id: string;
+}): AgentDependencyStatus["action"] {
+  const setup = agentSetupContinuation(agent);
+  if (setup) return setup;
+  const { reason } = agent.availability;
+  if (reason === "im_reauthorization_required") {
+    return settingsAction(agent.id, m.agents_status_action_update_permissions(), "messaging");
+  }
+  if (reason === "im_error" || reason === "im_disabled") {
+    return settingsAction(agent.id, m.agents_status_action_reconnect_channel(), "messaging");
+  }
+  if (reason === "computer_offline") {
+    return { label: m.computer_recovery_heading(), link: accountComputerLink(agent.computer?.computerId, agent.id) };
+  }
+  return undefined;
 }
 
 function settingsAction(

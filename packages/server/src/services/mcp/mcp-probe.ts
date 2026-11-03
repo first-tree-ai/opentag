@@ -126,11 +126,28 @@ export class McpProbe {
   }
 
   async probe(input: McpProbeInput): Promise<McpProbeResult> {
-    const deadline = this.#now().getTime() + this.#budgetMs;
+    const startedAtMs = this.#now().getTime();
+    const deadline = startedAtMs + this.#budgetMs;
     try {
-      return input.cachedEra === "legacy"
-        ? await this.#probeLegacy(input, deadline)
-        : await this.#probeModern(input, deadline);
+      const result =
+        input.cachedEra === "legacy"
+          ? await this.#probeLegacy(input, deadline)
+          : await this.#probeModern(input, deadline);
+      this.#logger?.info(
+        {
+          accountId: input.accountId,
+          endpoint: endpointOrigin(input.url),
+          cachedEra: input.cachedEra,
+          protocolEra: result.protocolEra,
+          protocolVersion: result.protocolVersion,
+          toolsCount: result.toolsCount,
+          toolsTruncated: result.toolsTruncated,
+          toolsSkipped: result.toolsSkipped,
+          durationMs: Math.max(0, this.#now().getTime() - startedAtMs),
+        },
+        "MCP probe succeeded",
+      );
+      return result;
     } catch (error) {
       /*
        * The probe API answers 200 whether or not the probe succeeded, and the upstream status never
@@ -145,6 +162,7 @@ export class McpProbe {
           errorCode: error instanceof McpServiceError ? error.code : undefined,
           upstreamStatus: error instanceof McpTransportError ? error.status : undefined,
           rpcCode: error instanceof McpTransportError ? error.rpcError?.code : undefined,
+          durationMs: Math.max(0, this.#now().getTime() - startedAtMs),
         },
         "MCP probe failed",
       );

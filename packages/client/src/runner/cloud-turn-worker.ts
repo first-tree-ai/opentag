@@ -464,17 +464,21 @@ export async function runCloudTurnWorker(
     const bindingFile = join(continuityDirectory, BINDING_FILE_NAME);
 
     // Per-execution proxy material published by the trusted Runner (read-only mount).
+    const proxyStartStarted = performance.now();
     const manifest = ProxyEnvironmentManifestSchema.parse(
       JSON.parse(await readFile(join(request.executionDir, "environment.json"), "utf8")),
     );
     await verifyProxyTransport(request.executionDir, manifest.environment, options);
     await prepareCliDirectories(manifest.environment, scratch);
+    const proxyStartMs = Math.max(0, performance.now() - proxyStartStarted);
 
     // The effective execution deadline and caller cancellation bound everything below, including
     // optional Context Tree preparation (which additionally has its own small budget).
     const execution = createTurnExecutionContext(request, options);
     const diagnostics = cloudPiDiagnostics(options.onDiagnostic, execution, preparationStarted);
+    const contextTreeSyncStarted = performance.now();
     const contextTree = await prepareTurnContextTree(request, options, execution, scratch, manifest.environment);
+    const contextTreeSyncMs = Math.max(0, performance.now() - contextTreeSyncStarted);
     if (execution.signal.aborted) {
       // The execution deadline or caller stop fired during preparation. The preparation child
       // (including any nested git) was stopped and awaited, so Pi must not start now.
@@ -484,6 +488,8 @@ export async function runCloudTurnWorker(
         event: "end",
         outcome: "aborted",
         durationMs: Math.max(0, performance.now() - preparationStarted),
+        proxyStartMs,
+        contextTreeSyncMs,
         abortSource,
       });
       return completionForError(new Error("The Turn stopped during Context Tree preparation"), abortSource);
@@ -531,9 +537,11 @@ export async function runCloudTurnWorker(
     // Reuse the packaged Context Tree skills and the E3 Runner tool skills (`git`/`gh`/
     // `lark-cli`/`slack`) through the same assembly and argument helper; a missing skill set is
     // the honest host-dev case, never a different runtime.
+    const skillsAssembleStarted = performance.now();
     const contextTreeSkills = await assembleContextTreeSkills().catch(() => undefined);
     const toolSkills = await assembleRunnerToolSkills();
     const skillPaths = [...(contextTreeSkills?.skillPaths ?? []), ...toolSkills.skills.map((skill) => skill.directory)];
+    const skillsAssembleMs = Math.max(0, performance.now() - skillsAssembleStarted);
     const factory =
       options.createPiFactory?.({
         environment: runtimeEnvironment,
@@ -577,6 +585,9 @@ export async function runCloudTurnWorker(
       phase: "worker_preparation",
       event: "end",
       durationMs: Math.max(0, performance.now() - preparationStarted),
+      proxyStartMs,
+      contextTreeSyncMs,
+      skillsAssembleMs,
     });
 
     const onAbort = () => terminateTrackedProcesses(pids);

@@ -197,3 +197,16 @@ describe("Agent list activity", () => {
     expect(row("Open Reviewer")).toContain("Waiting");
   });
 });
+
+describe("Agent list row actions", () => {
+  it("links a messaging permission problem to the messaging settings, like setup problems link to setup", async () => {
+    const permissions: AgentListItem = {
+      ...readyAgent,
+      availability: { ...readyAgent.availability, state: "action_required", reason: "im_reauthorization_required" },
+    };
+    await renderInRouter(<AgentList agents={[permissions]} />);
+    expect(screen.getByRole("link", { name: "Update permissions" }).getAttribute("href")).toBe(
+      `/agents/${readyAgent.id}/settings/messaging`,
+    );
+  });
+});

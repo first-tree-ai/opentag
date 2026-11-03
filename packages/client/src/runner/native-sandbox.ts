@@ -4,6 +4,7 @@ import { lstat, mkdtemp, open, readFile, rm, stat, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Duplex } from "node:stream";
+import { type RunnerPerformanceSink, traceRunnerOperation } from "./perf-log.js";
 
 /**
  * Native Cloud Run sandbox orchestration. The sandbox supervisor binary lives at a fixed
@@ -77,6 +78,7 @@ export interface NativeSandboxOptions {
    */
   readonly extraMounts?: readonly { source: string; destination: string }[];
   readonly sleep?: (ms: number) => Promise<void>;
+  readonly onPerformanceLog?: RunnerPerformanceSink;
 }
 
 export interface SandboxProbeResult {
@@ -337,6 +339,7 @@ export class NativeSandbox {
   readonly #sleep: (ms: number) => Promise<void>;
   readonly #resolverSource: string;
   readonly #extraMounts: readonly { source: string; destination: string }[];
+  readonly #onPerformanceLog?: RunnerPerformanceSink;
   // Retained across delete/relaunch, so readiness also proves the previous writable layer vanished.
   readonly #rootfsCanary = `/tmp/opentag-rootfs-${randomUUID()}`;
   #resolverSnapshot?: { readonly directory: string; readonly copy: string };
@@ -358,6 +361,7 @@ export class NativeSandbox {
     this.#binary = options.sandboxBinary ?? SANDBOX_BINARY;
     this.#resolverSource = options.resolverSource ?? SANDBOX_RESOLVER_SOURCE;
     this.#extraMounts = options.extraMounts ?? [];
+    this.#onPerformanceLog = options.onPerformanceLog;
     assertSafeOperand(this.#resolverSource, "resolver source path");
     if (!this.#resolverSource.startsWith("/"))
       throw new NativeSandboxError("launch_failed", "Unsafe resolver source path");
@@ -374,32 +378,39 @@ export class NativeSandbox {
 
   /** run --detach; resolves once the CLI accepted the launch, then verifies the sandbox answers exec. */
   async launch(): Promise<void> {
-    const resolver = await this.#ensureResolverSnapshot();
-    const argv = buildSandboxRunArgv({
-      name: this.#name,
-      workspace: this.#workspace,
-      resolverCopy: resolver.copy,
-      rootfs: this.#rootfs,
-      sandboxBinary: this.#binary,
-      extraMounts: this.#extraMounts,
-    });
-    const [command, ...args] = argv as [string, ...string[]];
-    try {
-      const result = await this.#runToExit(command, args, { timeoutMs: 30_000 });
-      if (result.code !== 0) {
-        const stderr = result.stderr.trim();
-        if (/permission denied|operation not permitted|must be run as root|requires root/i.test(stderr)) {
-          throw new NativeSandboxError("requires_root", "Native sandbox launch requires platform privileges");
+    await traceRunnerOperation(
+      this.#onPerformanceLog,
+      "runner.native_sandbox.start",
+      async () => {
+        const resolver = await this.#ensureResolverSnapshot();
+        const argv = buildSandboxRunArgv({
+          name: this.#name,
+          workspace: this.#workspace,
+          resolverCopy: resolver.copy,
+          rootfs: this.#rootfs,
+          sandboxBinary: this.#binary,
+          extraMounts: this.#extraMounts,
+        });
+        const [command, ...args] = argv as [string, ...string[]];
+        try {
+          const result = await this.#runToExit(command, args, { timeoutMs: 30_000 });
+          if (result.code !== 0) {
+            const stderr = result.stderr.trim();
+            if (/permission denied|operation not permitted|must be run as root|requires root/i.test(stderr)) {
+              throw new NativeSandboxError("requires_root", "Native sandbox launch requires platform privileges");
+            }
+            throw new NativeSandboxError("launch_failed", `Sandbox launch failed (exit ${result.code})`);
+          }
+          this.#sandboxAlive = true;
+        } catch (error) {
+          // A launch that never produced a live sandbox must not leave its resolver copy behind. After
+          // a failed delete the previous sandbox still owns the mount, so keep that snapshot instead.
+          if (!this.#sandboxAlive) await this.#removeResolverSnapshot().catch(() => undefined);
+          throw error;
         }
-        throw new NativeSandboxError("launch_failed", `Sandbox launch failed (exit ${result.code})`);
-      }
-      this.#sandboxAlive = true;
-    } catch (error) {
-      // A launch that never produced a live sandbox must not leave its resolver copy behind. After
-      // a failed delete the previous sandbox still owns the mount, so keep that snapshot instead.
-      if (!this.#sandboxAlive) await this.#removeResolverSnapshot().catch(() => undefined);
-      throw error;
-    }
+      },
+      { sandboxName: this.#name },
+    );
   }
 
   /**
@@ -445,18 +456,23 @@ export class NativeSandbox {
    * filesystem/credential/lower-rootfs isolation canaries still run fresh on every probe.
    */
   async probe(): Promise<SandboxProbeResult> {
-    const node = await this.exec(SANDBOX_NODE, ["--version"], { timeoutMs: 30_000 });
-    if (node.code !== 0 || !/^v\d+\.\d+\.\d+$/.test(node.stdout.trim())) {
-      throw new NativeSandboxError("probe_failed", "The sandbox rootfs does not provide a working node runtime");
-    }
-    const metadata = parseSandboxMetadata(
-      await this.exec(SANDBOX_NODE, ["-e", SANDBOX_METADATA_SCRIPT], { timeoutMs: 30_000 }),
-    );
-    const canaryRoot = await mkdtemp(join(tmpdir(), "opentag-parent-canary-"));
-    const canary = join(canaryRoot, "parent-only");
-    try {
-      await writeFile(canary, "parent", { mode: 0o600 });
-      const code = `const fs=require('node:fs'); const p=${JSON.stringify(canary)};
+    return traceRunnerOperation(
+      this.#onPerformanceLog,
+      "runner.native_sandbox.probe",
+      async (addMetrics) => {
+        const node = await this.exec(SANDBOX_NODE, ["--version"], { timeoutMs: 30_000 });
+        if (node.code !== 0 || !/^v\d+\.\d+\.\d+$/.test(node.stdout.trim())) {
+          throw new NativeSandboxError("probe_failed", "The sandbox rootfs does not provide a working node runtime");
+        }
+        const metadata = parseSandboxMetadata(
+          await this.exec(SANDBOX_NODE, ["-e", SANDBOX_METADATA_SCRIPT], { timeoutMs: 30_000 }),
+        );
+        addMetrics({ runnerVersion: metadata.runnerVersion });
+        const canaryRoot = await mkdtemp(join(tmpdir(), "opentag-parent-canary-"));
+        const canary = join(canaryRoot, "parent-only");
+        try {
+          await writeFile(canary, "parent", { mode: 0o600 });
+          const code = `const fs=require('node:fs'); const p=${JSON.stringify(canary)};
         const rootfsCanary=${JSON.stringify(this.#rootfsCanary)};
         if(fs.existsSync(rootfsCanary))process.exit(12);
         fs.writeFileSync(rootfsCanary,'sandbox-layer');
@@ -467,27 +483,37 @@ export class NativeSandbox {
         }
         fs.mkdirSync(require('node:path').dirname(p),{recursive:true});fs.writeFileSync(p,'sandbox');
         process.stdout.write('isolated');`;
-      const isolation = await this.exec(SANDBOX_NODE, ["-e", code], { timeoutMs: 30_000 });
-      if (isolation.code !== 0 || isolation.stdout !== "isolated" || (await readFile(canary, "utf8")) !== "parent") {
-        throw new NativeSandboxError("probe_failed", "Native sandbox failed filesystem or credential isolation checks");
-      }
-      const lowerLayerCanary = await lstat(join(this.#rootfs, this.#rootfsCanary)).catch(
-        (error: NodeJS.ErrnoException) => {
-          if (error.code === "ENOENT") return undefined;
-          throw error;
-        },
-      );
-      if (lowerLayerCanary) {
-        throw new NativeSandboxError("probe_failed", "Native sandbox modified the immutable root filesystem");
-      }
-    } finally {
-      await rm(canaryRoot, { recursive: true, force: true });
-    }
-    return {
-      nodeVersion: node.stdout.trim(),
-      piVersion: metadata.piVersion,
-      runnerVersion: metadata.runnerVersion,
-    };
+          const isolation = await this.exec(SANDBOX_NODE, ["-e", code], { timeoutMs: 30_000 });
+          if (
+            isolation.code !== 0 ||
+            isolation.stdout !== "isolated" ||
+            (await readFile(canary, "utf8")) !== "parent"
+          ) {
+            throw new NativeSandboxError(
+              "probe_failed",
+              "Native sandbox failed filesystem or credential isolation checks",
+            );
+          }
+          const lowerLayerCanary = await lstat(join(this.#rootfs, this.#rootfsCanary)).catch(
+            (error: NodeJS.ErrnoException) => {
+              if (error.code === "ENOENT") return undefined;
+              throw error;
+            },
+          );
+          if (lowerLayerCanary) {
+            throw new NativeSandboxError("probe_failed", "Native sandbox modified the immutable root filesystem");
+          }
+        } finally {
+          await rm(canaryRoot, { recursive: true, force: true });
+        }
+        return {
+          nodeVersion: node.stdout.trim(),
+          piVersion: metadata.piVersion,
+          runnerVersion: metadata.runnerVersion,
+        };
+      },
+      { sandboxName: this.#name },
+    );
   }
 
   /** Exec a command inside the sandbox with bounded capture and optional stdin payload. */

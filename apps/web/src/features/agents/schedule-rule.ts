@@ -75,7 +75,10 @@ function cronText(expression: string): string | undefined {
 function subHourlyText(minute: string): string | undefined {
   const step = /^\*\/(\d+)$/.exec(minute);
   if (step) {
+    // A minute step restarts each hour, so it is a uniform interval only when it divides 60:
+    // `*/45` fires at :00 and :45, gaps of 45 then 15 minutes, and keeps its exact form.
     const count = Number(step[1]);
+    if (count < 1 || count >= 60 || 60 % count !== 0) return undefined;
     return count === 1 ? m.agents_schedules_every_minute() : m.agents_schedules_every_minutes({ count: String(count) });
   }
   return inRange(minute, 59) ? m.agents_schedules_hourly({ minute: minute.padStart(2, "0") }) : undefined;

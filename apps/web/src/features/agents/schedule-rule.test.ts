@@ -25,6 +25,8 @@ describe("scheduleRuleText", () => {
     [cron("0 9-17 * * 1-5"), "Weekdays, hourly 9:00–17:00", "工作日 9:00–17:00 每小时"],
     [cron("30 8-20 * * *"), "Daily, hourly 8:30–20:30", "每天 8:30–20:30 每小时"],
     [cron("*/15 * * * *"), "Every 15 minutes", "每 15 分钟"],
+    [cron("*/30 * * * *"), "Every 30 minutes", "每 30 分钟"],
+    [every(2_700), "Every 45 minutes", "每 45 分钟"],
     [every(60), "Every minute", "每分钟"],
     [every(7_200), "Every 2 hours", "每 2 小时"],
     [every(86_400), "Every day", "每天"],
@@ -33,12 +35,20 @@ describe("scheduleRuleText", () => {
     withLocale("zh", () => expect(scheduleRuleText(rule, "Asia/Shanghai")).toBe(chinese));
   });
 
-  it.each(["0 9 1 1 *", "0 9-17 * * 1,3", "0 17-9 * * *", "0 9-17 1 * *", "0 9 * * MON", "0 9 1 * 1", "@daily"])(
-    "keeps the exact expression for %j instead of guessing",
-    (expression) => {
-      withLocale("en", () => expect(scheduleRuleText(cron(expression), "UTC")).toBe(`Cron: ${expression}`));
-    },
-  );
+  it.each([
+    "*/45 * * * *",
+    "*/7 * * * *",
+    "*/0 * * * *",
+    "0 9 1 1 *",
+    "0 9-17 * * 1,3",
+    "0 17-9 * * *",
+    "0 9-17 1 * *",
+    "0 9 * * MON",
+    "0 9 1 * 1",
+    "@daily",
+  ])("keeps the exact expression for %j instead of guessing", (expression) => {
+    withLocale("en", () => expect(scheduleRuleText(cron(expression), "UTC")).toBe(`Cron: ${expression}`));
+  });
 });
 
 describe("shortScheduleTime", () => {

@@ -175,6 +175,27 @@ jsonPayload.operation="pi.diagnostic"
 jsonPayload.turnId="<turn UUID>"
 ```
 
+## Cloud response-time evaluation
+
+Evaluate Cloud latency with separate ingress-to-first-useful-send-receipt,
+ingress-to-terminal-cleanup, ingress-to-checkpoint-commit and ingress-to-durable-report-ack
+endpoints. Client-send-to-rendered-response is a separate user-perceived metric that needs client
+or provider evidence. A custody acknowledgement, Pi spawn or first model token does not establish
+useful output; a provider send receipt does not establish client rendering or a read receipt.
+
+Retain attempted, successful, failed, timed-out and incomplete counts alongside successful-duration
+quantiles and missing-stage coverage. Use process-local monotonic durations, and do not subtract
+unrelated process clocks or sum overlapping phase envelopes. Allocation state, source/image,
+trigger, workspace and resource limits define separate cohorts. Missing diagnostics are unavailable
+evidence, not zero duration or a proven timeout.
+
+The [Cloud evaluation suite](https://github.com/first-tree-ai/opentag/blob/main/testing/performance/cloud-latency/README.md) provides a repeatable
+offline synthetic fixture, report generator and comparison guard. Its subprocess/model/tool/IM
+replacements do not measure production Cloud latency. Existing spans and Pi diagnostics do not
+form a complete end-to-end dataset, especially for allocation/restore, outbound CLI receipts and
+checkpoint/report acknowledgement. New collection, export or retention paths require their own
+approved read/write design.
+
 ## Configuration
 
 Tracing is disabled when `OPENTAG_OTEL_ENDPOINT` is empty. The exporter sends traces to the configured URL exactly as written and accepts any valid OTLP collector headers.

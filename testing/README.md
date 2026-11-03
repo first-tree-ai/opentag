@@ -12,6 +12,7 @@ contents, and machine-specific operational logs outside the repository.
 - [Managed CLI installation acceptance](managed-cli-entry/README.md)
 - [Slack local live acceptance](slack-live-acceptance.md)
 - [Agent usage and internal Session page benchmark](performance/agent-session/REPORT.md)
+- [Cloud response-time evaluation and offline baseline](performance/cloud-latency/README.md)
 
 ## Verification by feature
 

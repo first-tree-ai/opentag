@@ -1013,15 +1013,16 @@ export class SandboxRunnerService {
       return "ready";
     }
     if (current.lifecycle !== "preparing") return "stale";
-    // No verified UID is tracked yet: stay deferred. Allocation I/O belongs to start/stop only.
-    if (current.currentResourceUid === null) return "deferred";
-    if (!this.#allocationStartMeta.has(current.id)) {
+    const existingStartMeta = this.#allocationStartMeta.get(current.id);
+    if (!existingStartMeta || existingStartMeta.generation !== current.environmentGeneration) {
       this.#allocationStartMeta.set(current.id, {
         generation: current.environmentGeneration,
         mode: "cold_start",
         startedAtMs: current.lastActivityAt.getTime(),
       });
     }
+    // No verified UID is tracked yet: stay deferred. Allocation I/O belongs to start/stop only.
+    if (current.currentResourceUid === null) return "deferred";
     return (await this.#promoteReadyIfReported(scope.sandboxId)) ? "ready" : "deferred";
   }
 

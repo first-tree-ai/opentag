@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { once } from "node:events";
 import { getCurrentPerformanceLogger } from "../../observability/performance-logger.js";
 import { GitPublicationError } from "./git-packets.js";
@@ -61,12 +61,18 @@ export async function runTrustedProcess(
     category: "service",
     operation: resolveSubprocessOperation(binary, args),
   });
-  const child = spawn(binary, args, {
-    cwd: options.cwd,
-    env: options.environment,
-    stdio: ["pipe", "pipe", "pipe"],
-    detached: true,
-  });
+  let child: ChildProcessWithoutNullStreams;
+  try {
+    child = spawn(binary, args, {
+      cwd: options.cwd,
+      env: options.environment,
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: true,
+    });
+  } catch (error) {
+    perfHandle?.fail(error, { errorCode: "unavailable" }, "unavailable");
+    throw error;
+  }
   const output: Buffer[] = [];
   const max = options.maxOutputBytes ?? 1024 * 1024;
   let bytes = 0;

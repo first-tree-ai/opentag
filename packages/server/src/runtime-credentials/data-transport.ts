@@ -610,7 +610,7 @@ function completeProxyStreamPerf(
   perfHandle.complete({
     statusCode,
     ...(stream.authorization?.sessionId ? { sessionId: stream.authorization.sessionId } : {}),
-    attributes: proxyStreamAttributes(stream, provider),
+    ...proxyStreamAttributes(stream, provider),
   });
 }
 
@@ -626,7 +626,7 @@ function failProxyStreamPerf(
     error,
     {
       ...(stream.authorization?.sessionId ? { sessionId: stream.authorization.sessionId } : {}),
-      attributes: proxyStreamAttributes(stream, provider),
+      ...proxyStreamAttributes(stream, provider),
     },
     code,
   );

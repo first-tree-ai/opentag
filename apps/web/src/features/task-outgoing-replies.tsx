@@ -51,7 +51,7 @@ export function TaskCapturedReply({ reply, legacyReply }: { reply: CapturedTaskR
   }
   return (
     <article className="grid gap-2" data-ui="task-sent-reply" data-msg-type={reply.messageType ?? "unknown"}>
-      {reply.fallbackText ? <TaskMessageBody format="plain_text" text={reply.fallbackText} /> : null}
+      {reply.fallbackText ? <TaskMessageBody format="chat_markdown" text={reply.fallbackText} /> : null}
       <TaskAttachments attachments={reply.attachments ?? []} />
       {reply.truncated ? (
         <p className="text-sm text-kumo-subtle" data-ui="task-reply-content-truncated">
@@ -92,12 +92,12 @@ function OutgoingReplyBody({ reply }: { reply: OutgoingReply }) {
     );
   }
   if (content.msgType === "text" && content.text !== undefined) {
-    return <TaskMessageBody format="plain_text" text={content.text} />;
+    return <TaskMessageBody format="chat_markdown" text={content.text} />;
   }
   if (content.msgType === "post") {
     return (
       <div className="grid min-w-0 gap-2">
-        {content.text ? <TaskMessageBody format="plain_text" text={content.text} /> : null}
+        {content.text ? <TaskMessageBody format="chat_markdown" text={content.text} /> : null}
         <RawPayload payload={content.post ?? content.raw} />
       </div>
     );

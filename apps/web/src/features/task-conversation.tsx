@@ -42,7 +42,9 @@ export function TaskActivity({
    * state authoritative. Legacy-only callers omit `replies` and keep the old per-report notices.
    */
   const capturedFeedSupplied = replies !== undefined;
-  const entries = buildTaskTimeline(turns, task.source.provider, replies ?? []);
+  const entries = buildTaskTimeline(turns, task.source.provider, replies ?? []).filter((entry) =>
+    taskEntryVisible(entry, task.source.provider, capturedFeedSupplied),
+  );
   const hasInternalSessions = (internalSessions?.length ?? 0) > 0;
   const sectionRef = useRef<HTMLElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -310,6 +312,23 @@ function TaskReportMeta({ report }: { report: TaskReport }) {
   );
 }
 
+/**
+ * A report entry carries only what the conversation itself cannot show: a failure, or a notice about
+ * the reply history. The runtime's final text repeats the reply the Agent already sent, so it is
+ * never shown, and a report with nothing else to say leaves no entry.
+ */
+function taskEntryVisible(
+  entry: TaskTimelineEntry,
+  provider: TaskSummary["source"]["provider"],
+  capturedFeedSupplied: boolean,
+): boolean {
+  if (entry.kind !== "report") return true;
+  return (
+    Boolean(entry.report.errorReason) ||
+    (provider === "feishu" && replyNotice(entry.report, capturedFeedSupplied) !== null)
+  );
+}
+
 function TaskReportBody({
   report,
   hasReplies,
@@ -325,10 +344,6 @@ function TaskReportBody({
     <>
       {hasReplies ? <TaskReportMeta report={report} /> : null}
       {provider === "feishu" ? <TaskReplyNotice capturedFeedSupplied={capturedFeedSupplied} report={report} /> : null}
-      {report.finalText ? <TaskExecutionSummary text={report.finalText} /> : null}
-      {report.outgoingReplies?.runtimeSummaryTruncated ? (
-        <p className="text-sm text-kumo-subtle">{m.tasks_summary_truncated()}</p>
-      ) : null}
       {report.errorReason ? <p className="text-sm text-kumo-danger">{turnFailureLabel(report.errorReason)}</p> : null}
     </>
   );
@@ -340,35 +355,28 @@ function TaskReportBody({
  * missing or unavailable cases the feed itself now reports. Legacy-only callers keep those notices;
  * an empty snapshot needs no notice.
  */
-function TaskReplyNotice({ report, capturedFeedSupplied }: { report: TaskReport; capturedFeedSupplied: boolean }) {
+function replyNotice(report: TaskReport, capturedFeedSupplied: boolean): "unavailable" | "incomplete" | null {
   const snapshot = report.outgoingReplies;
-  if (!snapshot || snapshot.status === "unavailable")
-    return capturedFeedSupplied ? null : (
+  if (!snapshot || snapshot.status === "unavailable") return capturedFeedSupplied ? null : "unavailable";
+  if (snapshot.status === "incomplete" || (snapshot.omittedCount ?? 0) > 0) return "incomplete";
+  return null;
+}
+
+function TaskReplyNotice({ report, capturedFeedSupplied }: { report: TaskReport; capturedFeedSupplied: boolean }) {
+  const notice = replyNotice(report, capturedFeedSupplied);
+  if (notice === "unavailable")
+    return (
       <p className="text-sm text-kumo-subtle" data-ui="task-reply-unavailable">
         {m.tasks_reply_data_unavailable()}
       </p>
     );
-  if (snapshot.status === "incomplete" || (snapshot.omittedCount ?? 0) > 0)
+  if (notice === "incomplete")
     return (
       <p className="text-sm text-kumo-subtle" data-ui="task-reply-incomplete">
         {m.tasks_reply_incomplete()}
       </p>
     );
   return null;
-}
-
-function TaskExecutionSummary({ text }: { text: string }) {
-  return (
-    // biome-ignore lint/a11y/useSemanticElements: This groups summary content, not form controls.
-    <div
-      className="grid gap-2 rounded-xl bg-kumo-base/80 p-3.5 ring-1 ring-inset ring-kumo-line/50"
-      data-ui="task-execution-summary"
-      role="group"
-      aria-label={m.tasks_execution_summary()}
-    >
-      <TaskMessageBody format="markdown" text={text} />
-    </div>
-  );
 }
 
 function TaskUnreportedBody({ delivery }: { delivery: TaskTurn["delivery"] }) {

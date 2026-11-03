@@ -13,7 +13,7 @@ import { useAccount } from "../session/session-context.js";
 import { AgentAvatar } from "./agent-avatar.js";
 import { type AgentListStatusMemory, observeAgentListStatus } from "./agent-list-status.js";
 import type { AgentListItem } from "./agent-model.js";
-import { agentCardStatus, agentSetupContinuation } from "./agent-presentation.js";
+import { agentCardStatus, agentRowAction } from "./agent-presentation.js";
 import { useAgentListView } from "./agent-queries.js";
 import { agentDetailLink } from "./agent-routes.js";
 
@@ -94,7 +94,7 @@ export function AgentList({ agents }: { agents: AgentListItem[] }) {
 
 export function AgentRow({ agent, refreshing = false }: { agent: AgentListItem; refreshing?: boolean }) {
   const status = agentCardStatus(agent);
-  const continueSetup = agentSetupContinuation(agent);
+  const action = agentRowAction(agent);
   const channel = agent.availability.dependencies.channel.provider;
   return (
     <article
@@ -140,13 +140,13 @@ export function AgentRow({ agent, refreshing = false }: { agent: AgentListItem; 
           Lifted above the card's own overlay link, which covers everything and is painted last.
           Without it this would be a link the pointer can see and never reach.
         */}
-        {continueSetup ? (
+        {action ? (
           <Link
             className="relative z-10 inline-flex min-h-6 w-fit items-center gap-1 text-sm text-kumo-link"
-            data-ui="agent-row-continue-setup"
-            {...continueSetup.link}
+            data-ui="agent-row-action"
+            {...action.link}
           >
-            {continueSetup.label}
+            {action.label}
             <Icon className="size-3.5" name="arrow-right" />
           </Link>
         ) : null}

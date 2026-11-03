@@ -2,6 +2,9 @@ import {
   type AccountCloudComputerEnsureResponse,
   AccountCloudComputerEnsureResponseSchema,
   type AccountComputerConnectCodeIssueRequest,
+  type AccountSandboxRunnerStatusResponse,
+  AccountSandboxRunnerStatusResponseSchema,
+  type AccountSandboxRunnerStopRequest,
   type AccountSetupCompletion,
   AccountSetupCompletionSchema,
   type AccountSetupResetMode,
@@ -31,6 +34,8 @@ import {
   accountComputerByIdPath,
   accountComputerConnectCodePath,
   accountComputerDisconnectPath,
+  accountSandboxRunnerPath,
+  accountSandboxRunnerStopPath,
   agentByIdPath,
   agentCloudPath,
   agentComputerRebindPath,
@@ -264,6 +269,8 @@ export class CancelledRequestError extends Error {
 
 /** Covers one Agent setup snapshot read: fetch, body, and diagnostic clones. */
 export const AGENT_SETUP_READ_TIMEOUT_MS = 10_000;
+/** Covers the Server's 480-second seal wait and the final response. */
+export const CLOUD_WORKSPACE_RELEASE_TIMEOUT_MS = 510_000;
 
 /**
  * Bounds `run` in elapsed time even when the AbortSignal is ignored. Fetch cancellation is
@@ -797,6 +804,26 @@ export class BrowserApi {
   agentCloudOverview(agentId: string, options: { cursor?: string; limit?: number } = {}): Promise<AgentCloudOverview> {
     return withDeadline(AGENT_SETUP_READ_TIMEOUT_MS, (signal) =>
       this.request(agentCloudPath(agentId, options), AgentCloudOverviewSchema, { signal }),
+    );
+  }
+
+  cloudWorkspaceStatus(sandboxId: string): Promise<AccountSandboxRunnerStatusResponse> {
+    return withDeadline(AGENT_SETUP_READ_TIMEOUT_MS, (signal) =>
+      this.request(accountSandboxRunnerPath(sandboxId), AccountSandboxRunnerStatusResponseSchema, { signal }),
+    );
+  }
+
+  releaseCloudWorkspace(
+    sandboxId: string,
+    input: AccountSandboxRunnerStopRequest,
+  ): Promise<AccountSandboxRunnerStatusResponse> {
+    return withDeadline(CLOUD_WORKSPACE_RELEASE_TIMEOUT_MS, (signal) =>
+      this.request(accountSandboxRunnerStopPath(sandboxId), AccountSandboxRunnerStatusResponseSchema, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...this.csrfHeaders() },
+        body: JSON.stringify(input),
+        signal,
+      }),
     );
   }
 

@@ -195,19 +195,21 @@ function ScheduleRow({
   const lastFailed = last ? last.outcome !== "accepted" : false;
   return (
     <li className="grid gap-1 py-4 first:pt-0 last:pb-0">
-      <div className="flex items-start justify-between gap-3">
-        <Text as="h3" headingSize="body" variant="heading">
-          <button
-            aria-expanded={expanded}
-            className="flex min-w-0 cursor-pointer items-center gap-2 rounded-sm border-0 bg-transparent p-0 text-left text-inherit focus-visible:outline-2 focus-visible:outline-kumo-brand"
-            onClick={() => onToggle(item.id)}
-            type="button"
-          >
-            <Icon className="size-4 shrink-0 text-kumo-subtle" name={expanded ? "chevron-down" : "chevron-right"} />
-            <span className="wrap-anywhere">{item.name}</span>
-          </button>
-        </Text>
-        <div className="flex shrink-0 items-center gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
+        <div className="min-w-0 flex-1 basis-48">
+          <Text as="h3" headingSize="body" variant="heading">
+            <button
+              aria-expanded={expanded}
+              className="flex min-w-0 cursor-pointer items-center gap-2 rounded-sm border-0 bg-transparent p-0 text-left text-inherit focus-visible:outline-2 focus-visible:outline-kumo-brand"
+              onClick={() => onToggle(item.id)}
+              type="button"
+            >
+              <Icon className="size-4 shrink-0 text-kumo-subtle" name={expanded ? "chevron-down" : "chevron-right"} />
+              <span className="wrap-anywhere">{item.name}</span>
+            </button>
+          </Text>
+        </div>
+        <div className="ml-auto flex shrink-0 items-center gap-3">
           <StatusIndicator
             label={scheduleStatus(item)}
             tone={item.enabled && item.nextTriggerAt ? "success" : "neutral"}

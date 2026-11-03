@@ -19,6 +19,7 @@ import {
   sessions,
 } from "../db/schema/index.js";
 import type { ServiceLogger } from "../observability/service-logger.js";
+import { finishImFeedback, startImFeedback } from "../services/im/im-feedback-store.js";
 import { lockImAgentCustody, readInboundPendingAgents } from "../services/im/inbound-admission.js";
 import { finishSlackWorkingTurn } from "../services/im/slack-working-store.js";
 import { SessionService } from "../services/sessions/session-service.js";
@@ -184,8 +185,11 @@ export async function writeTerminalReport(
     .returning({ id: imMessageDeliveries.id });
   if (!written) return undefined;
   await finishSlackWorkingTurn(transaction, report.deliveryId, now);
-  if (report.outcome === "completed") return [];
-  const recovered = await requeueSteeredDeliveries(transaction, report.deliveryId, now, sessions);
+  const recovered =
+    report.outcome === "completed"
+      ? { terminalizedIds: [] }
+      : await requeueSteeredDeliveries(transaction, report.deliveryId, now, sessions);
+  await finishImFeedback(transaction, report, now);
   return recovered.terminalizedIds;
 }
 
@@ -467,7 +471,10 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       }
       if (!(await this.#steerTargetMatches(transaction, scope, request, context, true))) return "conflict";
       const written = await this.#writeSteered(transaction, request.deliveryId, semanticHash, request.rootDeliveryId);
-      if (written) await settleImBatch(transaction, request, request.rootDeliveryId, this.#now());
+      if (written) {
+        await settleImBatch(transaction, request, request.rootDeliveryId, this.#now());
+        await startImFeedback(transaction, request.rootDeliveryId, this.#now());
+      }
       return written ? "steered" : "conflict";
     });
     if (status === "steered" || status === "already_steered") this.#onDeliverySettled?.(request.rootDeliveryId);
@@ -491,7 +498,10 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       if (!steerTransitionMatches(scope.delivery, request.requestId, inputHash)) return "conflict";
       if (!(await this.#absorbedTargetMatches(transaction, scope, rootDeliveryId, turnId, context))) return "conflict";
       const written = await this.#writeSteered(transaction, request.deliveryId, semanticHash, rootDeliveryId);
-      if (written) await settleImBatch(transaction, request, rootDeliveryId, this.#now());
+      if (written) {
+        await settleImBatch(transaction, request, rootDeliveryId, this.#now());
+        await startImFeedback(transaction, rootDeliveryId, this.#now());
+      }
       return written ? "steered" : "conflict";
     });
   }
@@ -589,7 +599,10 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
           ),
         )
         .returning({ id: imMessageDeliveries.id });
-      if (accepted) await settleImBatch(transaction, request, request.deliveryId, this.#now(), true);
+      if (accepted) {
+        await settleImBatch(transaction, request, request.deliveryId, this.#now(), true);
+        await startImFeedback(transaction, request.deliveryId, this.#now());
+      }
       return accepted ? "accepted" : "conflict";
     });
   }
@@ -618,38 +631,50 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       for (const claim of claims) {
         const scope = await this.#deliveryScope(transaction, claim.deliveryId);
         if (!scope || !retainedClaimMatches(scope, claim, request, context)) continue;
-        if (scope.delivery.state === "pending" || scope.delivery.state === "expired") {
-          await settleRetainedBatch(transaction, scope.delivery, this.#now());
-          await transaction
-            .update(imMessageDeliveries)
-            .set({
-              state: "accepted",
-              inputHash: claim.inputHash,
-              turnId: claim.turnId,
-              reportOwnerInstanceId: context.instanceId,
-              resultHash: claim.resultHash,
-              acceptedAt: this.#now(),
-              steerTargetDeliveryId: null,
-              reason: null,
-              lastErrorCode: null,
-            })
-            .where(
-              and(
-                eq(imMessageDeliveries.id, claim.deliveryId),
-                inArray(imMessageDeliveries.state, ["pending", "expired"]),
-                eq(imMessageDeliveries.dispatchRequestId, claim.dispatchRequestId),
-                eq(imMessageDeliveries.dispatchInputHash, claim.inputHash),
-              ),
-            );
-          continue;
-        }
-        if (scope.delivery.state !== "accepted" || scope.delivery.turnId !== claim.turnId) continue;
-        await transaction
-          .update(imMessageDeliveries)
-          .set({ reportOwnerInstanceId: context.instanceId, resultHash: claim.resultHash })
-          .where(eq(imMessageDeliveries.id, claim.deliveryId));
+        await this.#restoreRetainedDelivery(transaction, scope, claim, context);
       }
     });
+  }
+
+  async #restoreRetainedDelivery(
+    transaction: DatabaseTransaction,
+    scope: DeliveryScope,
+    claim: NonNullable<SessionReconcileResult["retainedReports"]>[number],
+    context: RuntimeBusinessContext,
+  ): Promise<void> {
+    if (scope.delivery.state === "pending" || scope.delivery.state === "expired") {
+      await settleRetainedBatch(transaction, scope.delivery, this.#now());
+      const restored = await transaction
+        .update(imMessageDeliveries)
+        .set({
+          state: "accepted",
+          inputHash: claim.inputHash,
+          turnId: claim.turnId,
+          reportOwnerInstanceId: context.instanceId,
+          resultHash: claim.resultHash,
+          acceptedAt: this.#now(),
+          steerTargetDeliveryId: null,
+          reason: null,
+          lastErrorCode: null,
+        })
+        .where(
+          and(
+            eq(imMessageDeliveries.id, claim.deliveryId),
+            inArray(imMessageDeliveries.state, ["pending", "expired"]),
+            eq(imMessageDeliveries.dispatchRequestId, claim.dispatchRequestId),
+            eq(imMessageDeliveries.dispatchInputHash, claim.inputHash),
+          ),
+        )
+        .returning({ id: imMessageDeliveries.id });
+      if (restored.length) await startImFeedback(transaction, claim.deliveryId, this.#now());
+      return;
+    }
+    if (scope.delivery.state !== "accepted" || scope.delivery.turnId !== claim.turnId) return;
+    await transaction
+      .update(imMessageDeliveries)
+      .set({ reportOwnerInstanceId: context.instanceId, resultHash: claim.resultHash })
+      .where(eq(imMessageDeliveries.id, claim.deliveryId));
+    if (!scope.delivery.reportedAt) await startImFeedback(transaction, claim.deliveryId, this.#now());
   }
 
   async getDelivery(deliveryId: string): Promise<AcceptedDeliveryRecord | undefined> {

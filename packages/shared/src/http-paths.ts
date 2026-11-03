@@ -600,3 +600,19 @@ export function agentSkillPresetInstallPath(agentId: string, presetName: string)
 export function runtimeSkillPresetInstallPath(presetName: string): string {
   return `${RUNTIME_SKILL_PRESETS_PATH}/${encodeURIComponent(presetName)}/install`;
 }
+
+export const IM_FEEDBACK_PATH = `${API_V1_PREFIX}/im-feedback`;
+export const IM_FEEDBACK_TEMPLATE = `${IM_FEEDBACK_PATH}/:feedbackId`;
+export const IM_FEEDBACK_ACTIONS_TEMPLATE = `${IM_FEEDBACK_TEMPLATE}/actions`;
+export function imFeedbackPath(feedbackId: string): string {
+  return `${IM_FEEDBACK_PATH}/${encodeURIComponent(feedbackId)}`;
+}
+export function imFeedbackActionsPath(feedbackId: string): string {
+  return `${imFeedbackPath(feedbackId)}/actions`;
+}
+
+export const AGENT_IM_FEEDBACK_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-feedback`;
+export function agentImFeedbackPath(agentId: string, cursor?: string): string {
+  const path = `${agentByIdPath(agentId)}/im-feedback`;
+  return cursor ? `${path}?${new URLSearchParams({ cursor })}` : path;
+}

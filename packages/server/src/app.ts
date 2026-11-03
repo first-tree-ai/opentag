@@ -49,6 +49,7 @@ import { type ErrorReportRoutesOptions, registerErrorReportRoutes } from "./api/
 import { registerExecutionWebSocketRoutes } from "./api/execution-websockets.js";
 import { registerGitHubIntegrationsRoutes } from "./api/github-integrations.js";
 import { registerImBindingRoutes } from "./api/im-bindings.js";
+import { registerImFeedbackRoutes } from "./api/im-feedback.js";
 import { registerImResourceRoute } from "./api/im-resources.js";
 import { type McpGatewayRoutesOptions, registerMcpGatewayRoutes } from "./api/mcp-gateway.js";
 import { registerMcpOAuthRoutes } from "./api/mcp-oauth.js";
@@ -98,6 +99,7 @@ import {
 import { AuthServiceError, type ConnectCodeIssuer, type UserAuthService } from "./services/auth/index.js";
 import type { ComputerAuthVerifier, ComputerService, MachineAuthService } from "./services/computers/index.js";
 import { GitHubConnectionServiceError } from "./services/github/index.js";
+import { type ImFeedbackActionsService, ImFeedbackServiceError } from "./services/im/im-feedback-actions.js";
 import type { ImResourceService } from "./services/im/index.js";
 import { type FeishuSetupService, feishuPublicFailure } from "./services/im-bindings/feishu/index.js";
 import {
@@ -146,6 +148,7 @@ export interface CreateAppOptions {
   computerService?: ComputerService;
   sandboxService?: SandboxService;
   sandboxRunnerService?: SandboxRunnerService;
+  imFeedback?: ImFeedbackActionsService;
   cloudAvailability?: AccountRoutesOptions["cloudAvailability"];
   /** The one shared Router model catalog; backs the authenticated account Cloud model list route. */
   cloudModelCatalog?: CloudModelCatalog;
@@ -291,6 +294,7 @@ function deploymentHeaders(deployment: CreateAppOptions["deployment"]): Record<s
 
 type AccountFacingError =
   | AuthServiceError
+  | ImFeedbackServiceError
   | AgentServiceError
   | ImBindingServiceError
   | OnboardingResetError
@@ -306,6 +310,7 @@ type AccountFacingError =
 function isAccountFacingError(error: unknown): error is AccountFacingError {
   return (
     error instanceof AuthServiceError ||
+    error instanceof ImFeedbackServiceError ||
     error instanceof AgentServiceError ||
     error instanceof ImBindingServiceError ||
     error instanceof OnboardingResetError ||
@@ -900,7 +905,7 @@ export function createApp(options: CreateAppOptions = {}) {
     if (options.imBindingService) {
       registerImBindingRoutes(app, authService, options.imBindingService, options.feishuSetupService, authOptions);
     }
-    registerSlackSetupRoutes(app, authService, options, authOptions);
+    registerImAccountRoutes(app, authService, options, authOptions);
     registerGitHubIntegrationsRoutes(app);
     if (options.mcp) {
       registerMcpServerRoutes(app, authService, { ...options.mcp, authOptions });
@@ -1057,12 +1062,13 @@ export function createApp(options: CreateAppOptions = {}) {
   return app;
 }
 
-function registerSlackSetupRoutes(
+function registerImAccountRoutes(
   app: Parameters<typeof registerAccountRoutes>[0],
   authService: UserAuthService,
   options: CreateAppOptions,
   authOptions: NonNullable<AccountRoutesOptions["authOptions"]>,
 ): void {
+  if (options.imFeedback) registerImFeedbackRoutes(app, authService, options.imFeedback, authOptions);
   if (options.slackOAuth) registerSlackOAuthRoutes(app, { ...options.slackOAuth, authOptions });
   if (options.slackConfiguration)
     registerSlackConfigurationRoutes(app, authService, options.slackConfiguration, authOptions);

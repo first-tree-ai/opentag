@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import * as m from "../../paraglide/messages.js";
 import { buttonClassName, Icon, StatusIndicator, Text } from "../../ui/design-system.js";
 import { AgentUsageOverview } from "../agent-usage.js";
+import { ImFeedbackList } from "../im-feedback-list.js";
 import { AsyncState } from "../resource/resource-state.js";
 import { useAccount } from "../session/session-context.js";
 import { AgentTasksSection } from "../tasks-page.js";
@@ -45,6 +46,7 @@ export function AgentDetailPage({
             ) : null}
             <AgentSchedulesSection agentId={agent.id} scheduleId={scheduleId} />
             <AgentTasksSection agentId={agent.id} />
+            <ImFeedbackList agentId={agent.id} />
           </div>
         </section>
       )}

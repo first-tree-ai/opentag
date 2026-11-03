@@ -109,6 +109,7 @@ describe("Connector failure reasons with a next step", () => {
     expect(failureCodeFeedback(MCP_ERROR_CODES.REGISTRATION_UNSUPPORTED)).toBe(
       "This service doesn't support account sign-in. Use an API key.",
     );
+    expect(failureCodeFeedback(MCP_ERROR_CODES.REGISTRATION_FAILED)).toBe("Authorization didn't finish. Try again.");
     expect(failureCodeFeedback(MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE)).toBe("Can't reach the service. Try again later.");
     expect(failureCodeFeedback("SOMETHING_ELSE")).toBeUndefined();
     expect(failureCodeFeedback(null)).toBeUndefined();

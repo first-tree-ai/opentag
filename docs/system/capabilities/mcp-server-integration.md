@@ -1413,7 +1413,8 @@ and collapsed Advanced settings.
 
 Every connector failure the reader sees is one short line that names the next step, chosen from the
 code the Server reports: an unreachable or blocked address asks to check the connector address, a
-service without account sign-in suggests an API key, a rejected key asks for an update, an
+service that explicitly does not support account sign-in suggests an API key (a failed registration is
+retried by authorizing again), a rejected key asks for an update, an
 unfinished authorization asks to try again, and an unreachable service asks to try again later.
 Upstream details stay private. The row's action matches the line: an address the reader typed opens
 **Edit address**, a rejected key offers **Update key**, and **Retry** remains only for transient causes

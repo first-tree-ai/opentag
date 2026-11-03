@@ -57,9 +57,12 @@ export function failureCodeFeedback(code: string | null | undefined): string | u
     case MCP_ERROR_CODES.URL_BLOCKED:
     case MCP_ERROR_CODES.SERVER_URL_INVALID:
       return m.mcp_feedback_address_blocked();
+    // Only an explicit "unsupported" says the service lacks account sign-in. A failed registration
+    // (a temporary error, a malformed result, or a client that changed) is retried by authorizing again.
     case MCP_ERROR_CODES.REGISTRATION_UNSUPPORTED:
-    case MCP_ERROR_CODES.REGISTRATION_FAILED:
       return m.mcp_feedback_sign_in_unsupported();
+    case MCP_ERROR_CODES.REGISTRATION_FAILED:
+      return m.mcp_authorization_issue();
     case MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE:
       return m.mcp_feedback_unreachable();
     default:

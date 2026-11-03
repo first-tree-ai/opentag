@@ -20,19 +20,20 @@ function createLogCollector() {
 }
 
 describe("external call performance logging", () => {
-  it("strips query credentials, userinfo, and opaque token path segments from logged URLs", () => {
+  it("logs targetHost only by default and includes sanitized targetPath only for fixed API templates", () => {
+    expect(sanitizeExternalUrl("https://mcp.pipedream.net/6f1c2a4e-9b7d-4e1a-8c3f-2d5e6a7b8c9d/gmail")).toEqual({
+      targetHost: "mcp.pipedream.net",
+    });
+    expect(sanitizeExternalUrl("https://files.slack.com/files-pri/T0123-F0456/salary_review_2026.pdf")).toEqual({
+      targetHost: "files.slack.com",
+    });
     expect(
-      sanitizeExternalUrl("https://api.github.com/login/oauth/access_token?client_secret=super-secret&code=abc"),
+      sanitizeExternalUrl("https://api.github.com/login/oauth/access_token?client_secret=super-secret&code=abc", {
+        includePath: true,
+      }),
     ).toEqual({
       targetHost: "api.github.com",
       targetPath: "/login/oauth/access_token",
-    });
-
-    expect(
-      sanitizeExternalUrl("https://files.slack.com/files-pri/T1/xoxb-1234567890-secret-token/avatar.png?token=xyz"),
-    ).toEqual({
-      targetHost: "files.slack.com",
-      targetPath: "/files-pri/T1/:redacted/avatar.png",
     });
   });
 
@@ -183,7 +184,7 @@ describe("external call performance logging", () => {
     expect(logs[1]?.payload.durationMs).toBeGreaterThanOrEqual(0);
   });
 
-  it("logs started and completed records for McpOutboundFetcher requests", async () => {
+  it("logs started and completed records for McpOutboundFetcher without exposing secret-bearing path segments", async () => {
     const { logs, perfLogger } = createLogCollector();
     const fetcher = new McpOutboundFetcher({
       allowLoopback: false,
@@ -192,27 +193,36 @@ describe("external call performance logging", () => {
       fetch: vi.fn(async () => new Response(JSON.stringify({ jsonrpc: "2.0" }), { status: 200 })),
     });
 
-    const response = await fetcher.fetchOutbound("acc-mcp-1", "https://mcp.example.com/v1/rpc?secret=hidden", {
-      method: "POST",
-    });
-    expect(response.status).toBe(200);
+    const secretUrls = [
+      "https://mcp.pipedream.net/6f1c2a4e-9b7d-4e1a-8c3f-2d5e6a7b8c9d/gmail?secret=hidden",
+      "https://mcp.example.com/0123456789abcdef0123456789abcdef/sse",
+      "https://mcp.example.com/api/sk-proj-AbCdEf0123456789/mcp",
+    ];
+    for (const url of secretUrls) {
+      const response = await fetcher.fetchOutbound("acc-mcp-1", url, { method: "POST" });
+      expect(response.status).toBe(200);
+    }
 
-    expect(logs).toHaveLength(2);
+    expect(logs).toHaveLength(6);
     expect(logs[0]?.payload).toMatchObject({
       perfCategory: "external",
       provider: "mcp",
       operation: "external.mcp.http",
       accountId: "acc-mcp-1",
       httpMethod: "POST",
-      targetHost: "mcp.example.com",
-      targetPath: "/v1/rpc",
+      targetHost: "mcp.pipedream.net",
       outcome: "started",
     });
+    expect(logs[0]?.payload.targetPath).toBeUndefined();
     expect(logs[1]?.payload).toMatchObject({
       callId: logs[0]?.payload.callId,
       status: 200,
       outcome: "completed",
     });
-    expect(JSON.stringify(logs)).not.toContain("hidden");
+    const serialized = JSON.stringify(logs);
+    expect(serialized).not.toContain("hidden");
+    expect(serialized).not.toContain("6f1c2a4e-9b7d-4e1a-8c3f-2d5e6a7b8c9d");
+    expect(serialized).not.toContain("0123456789abcdef0123456789abcdef");
+    expect(serialized).not.toContain("sk-proj-AbCdEf0123456789");
   });
 });

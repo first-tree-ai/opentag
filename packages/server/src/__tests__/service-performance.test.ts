@@ -187,4 +187,59 @@ describe("service and HTTP performance instrumentation", () => {
       outcome: "completed",
     });
   });
+
+  it("isolates context across sequential keep-alive HTTP requests over a live listener", async () => {
+    const chunks: string[] = [];
+    const authService = {
+      getAuthenticatedUser: vi.fn().mockResolvedValue({
+        me: {
+          user: {
+            id: "00000000-0000-4000-8000-000000000001",
+            email: "u@example.com",
+            displayName: "Demo User",
+          },
+          setupCompletedAt: null,
+        },
+        tokenExpiresAt: new Date("2030-01-01T00:00:00.000Z"),
+      }),
+    };
+    const app = createApp({
+      authService: authService as never,
+      loggerLevel: "debug",
+      loggerStream: { write: (chunk) => chunks.push(String(chunk)) },
+    });
+
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    try {
+      for (const reqId of ["req-keepalive-1", "req-keepalive-2", "req-keepalive-3"]) {
+        const res = await fetch(`${address}/api/v1/me`, {
+          headers: {
+            authorization: "Bearer valid-access-token",
+            "x-request-id": reqId,
+          },
+        });
+        expect(res.status).toBe(200);
+        await res.json();
+        const health = await fetch(`${address}/healthz`);
+        expect(health.status).toBe(200);
+        await health.json();
+      }
+    } finally {
+      await app.close();
+    }
+
+    const perfRecords = chunks
+      .flatMap((c) => c.trim().split("\n"))
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((line) => typeof line.perfCategory === "string");
+
+    const httpStarts = perfRecords.filter((r) => r.perfCategory === "http" && r.outcome === "started");
+    expect(httpStarts).toHaveLength(3);
+    for (const start of httpStarts) {
+      expect(start.parentCallId).toBeUndefined();
+      expect(start.callerOperation).toBeUndefined();
+    }
+    expect(httpStarts.map((s) => s.requestId)).toEqual(["req-keepalive-1", "req-keepalive-2", "req-keepalive-3"]);
+  });
 });

@@ -1,10 +1,11 @@
 import type { FastifyBaseLogger } from "fastify";
 import {
   createPerformanceLogger,
-  enterPerformanceContext,
+  exitPerformanceContext,
   type PerformanceCategory,
   type PerformanceLogger,
   type PerformanceLoggingConfig,
+  runWithPerformanceContext,
 } from "./performance-logger.js";
 
 const DEFAULT_EXCLUDED_METHODS = new Set([
@@ -141,7 +142,21 @@ function isWebSocketUpgradeRequest(request: { headers?: Record<string, unknown> 
 export function registerHttpPerformanceHooks(
   app: {
     addHook(
-      name: "onRequest" | "onResponse" | "onRequestAbort",
+      name: "onRequest",
+      hook: (
+        request: {
+          id: string;
+          method: string;
+          url: string;
+          headers?: Record<string, unknown>;
+          routeOptions?: { url?: string };
+        },
+        reply: unknown,
+        done: () => void,
+      ) => void,
+    ): unknown;
+    addHook(
+      name: "onResponse" | "onRequestAbort",
       hook: (
         request: {
           id: string;
@@ -163,8 +178,11 @@ export function registerHttpPerformanceHooks(
   if (!perfLogger?.config.enabled) return;
   const handles = new WeakMap<object, ReturnType<PerformanceLogger["startOperation"]>>();
 
-  app.addHook("onRequest", async (request) => {
-    if (options.shouldIgnore(request) || isWebSocketUpgradeRequest(request)) return;
+  app.addHook("onRequest", (request, _reply, done) => {
+    if (options.shouldIgnore(request) || isWebSocketUpgradeRequest(request)) {
+      exitPerformanceContext(done);
+      return;
+    }
     const route = request.routeOptions?.url ?? options.sanitizeUrl(request.url);
     const handle = perfLogger.startOperation({
       module: "http",
@@ -177,7 +195,7 @@ export function registerHttpPerformanceHooks(
       },
     });
     handles.set(request, handle);
-    enterPerformanceContext(handle.context);
+    runWithPerformanceContext(handle.context, done);
   });
 
   app.addHook("onResponse", (request, reply) => {

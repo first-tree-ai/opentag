@@ -22,16 +22,25 @@ const ALLOWED_TRANSPORT_CODES = new Set([
   "AbortError",
 ]);
 
+const FIXED_ROUTE_PROVIDERS = new Set(["github", "cloud-router", "web-router", "cloud-run", "gcp-metadata"]);
+
 function sanitizePathSegment(segment: string): string {
   if (!segment) return "";
-  // Scrub long opaque tokens or credential-like path segments while keeping API route structure.
-  if (segment.length > 40 || /^(?:xox[abp]-|cli_|gh[pousr]_|Bearer)/i.test(segment)) {
+  if (
+    segment.length > 32 ||
+    /^(?:xox[abp]-|cli_|gh[pousr]_|sk-|Bearer)/i.test(segment) ||
+    /^[0-9a-f]{16,}$/i.test(segment) ||
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(segment)
+  ) {
     return ":redacted";
   }
   return segment.replace(/[^A-Za-z0-9._:@~-]/g, "_");
 }
 
-export function sanitizeExternalUrl(input: unknown): {
+export function sanitizeExternalUrl(
+  input: unknown,
+  options?: { includePath?: boolean },
+): {
   targetHost?: string;
   targetPath?: string;
 } {
@@ -47,6 +56,9 @@ export function sanitizeExternalUrl(input: unknown): {
     if (!raw) return {};
     const parsed = new URL(raw);
     const targetHost = parsed.hostname.slice(0, 128) || undefined;
+    if (options?.includePath !== true) {
+      return targetHost ? { targetHost } : {};
+    }
     const rawSegments = parsed.pathname.split("/").slice(0, 16);
     const sanitizedPath = rawSegments.map(sanitizePathSegment).join("/").slice(0, 128) || "/";
     return {
@@ -193,14 +205,16 @@ export function createInstrumentedFetch(
     provider: string;
     operation?: string;
     baseFetch?: typeof fetch;
+    includePath?: boolean;
   },
 ): typeof fetch {
   const baseFetch = options.baseFetch ?? globalThis.fetch;
   if (!perfLogger?.config.enabled) return baseFetch;
   const operation = options.operation ?? `external.${options.provider}.http`;
+  const includePath = options.includePath ?? FIXED_ROUTE_PROVIDERS.has(options.provider);
   return (async (input: string | URL | Request, init?: RequestInit) => {
     const httpMethod = resolveHttpMethod(input, init);
-    const urlMeta = sanitizeExternalUrl(input);
+    const urlMeta = sanitizeExternalUrl(input, { includePath });
     const handle = perfLogger.startOperation({
       module: "external",
       category: "external",

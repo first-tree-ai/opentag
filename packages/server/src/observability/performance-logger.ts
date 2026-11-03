@@ -85,8 +85,8 @@ export function runWithPerformanceContext<T>(context: PerformanceExecutionContex
   return performanceContextStorage.run(context, fn);
 }
 
-export function enterPerformanceContext(context: PerformanceExecutionContext): void {
-  performanceContextStorage.enterWith(context);
+export function exitPerformanceContext<T>(fn: () => T): T {
+  return performanceContextStorage.exit(fn);
 }
 
 export function updateCurrentPerformanceContext(
@@ -204,6 +204,10 @@ function isPromiseLike<T>(value: unknown): value is Promise<T> {
   return typeof value === "object" && value !== null && typeof (value as { then?: unknown }).then === "function";
 }
 
+function isEntrypointCategory(category: PerformanceCategory): boolean {
+  return category === "http" || category === "ws" || category === "worker";
+}
+
 export function createPerformanceLogger(
   getLogger: () => FastifyBaseLogger | undefined,
   configOverride?: Partial<PerformanceLoggingConfig>,
@@ -225,7 +229,7 @@ export function createPerformanceLogger(
   };
 
   const startOperation = (input: PerformanceStartInput): PerformanceOperationHandle => {
-    const parent = getCurrentPerformanceContext();
+    const parent = isEntrypointCategory(input.category) ? undefined : getCurrentPerformanceContext();
     const callId = randomUUID();
     const startedAt = new Date().toISOString();
     const childContext = buildChildContext(callId, input, parent);

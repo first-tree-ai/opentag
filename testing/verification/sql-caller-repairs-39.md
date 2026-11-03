@@ -19,7 +19,7 @@ gates pass.** These are lifecycle/diagnostic controls, not new native PostgreSQL
 claims. The existing four actual Server process controls remain the evidence for
 unchanged physical shutdown behavior. Logs retain both the red reproduction and
 successful checks. Independent source review found no actionable regression;
-exact committed review is pending. Batch 38 exact review at 73d7e0a6 found none.
+exact committed review at da000b91 found no actionable defect. Batch 38 exact review at 73d7e0a6 found none.
 
 IM-R2 native scale/selection-equivalence measurement and final broad owning
 checks remain before declaring the full remediation complete.

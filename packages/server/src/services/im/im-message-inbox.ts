@@ -1,6 +1,6 @@
 import type { ImContentV1 } from "@opentag/shared";
 import { ImContentV1Schema, type NormalizedInboundImEvent, NormalizedInboundImEventSchema } from "@opentag/shared";
-import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   agents,
@@ -618,8 +618,22 @@ export class ImMessageInbox {
               now,
             );
             if (direct && threadKey === null) {
-              const pendingThreadMessages = await transaction
-                .select()
+              const rootExternalId = sql<
+                string | null
+              >`nullif(case when ${imMessages.providerContext}->>'provider' = 'slack'
+                then ${imMessages.providerContext}->>'threadTs' else ${imMessages.providerContext}->>'rootId' end, '')`;
+              const newestFirst = sql`${imMessages.occurredAt} desc, ${imMessages.providerRevisionKey} desc, ${imMessages.id} desc`;
+              const rankedMessages = transaction
+                .select({
+                  id: imMessages.id,
+                  threadKey: imMessages.threadKey,
+                  revisionRank: sql<number>`row_number() over (
+                    partition by ${imMessages.externalMessageId} order by ${newestFirst})`.as("revision_rank"),
+                  rootExternalId: sql<string | null>`first_value(${rootExternalId}) over (
+                    partition by ${imMessages.threadKey} order by (${rootExternalId} is null), ${newestFirst})`.as(
+                    "root_external_id",
+                  ),
+                })
                 .from(imMessages)
                 .where(
                   and(
@@ -627,28 +641,32 @@ export class ImMessageInbox {
                     eq(imMessages.channelId, event.conversation.externalId),
                     eq(imMessages.direction, "inbound"),
                     isNotNull(imMessages.threadKey),
-                    or(gt(imMessages.occurredAt, created.occurredAt), eq(imMessages.occurredAt, created.occurredAt)),
+                    gte(imMessages.occurredAt, created.occurredAt),
                   ),
                 )
-                .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id));
-              const reliableRootsByThreadKey = new Map<string, string>();
+                .as("ranked_thread_messages");
+              const pendingThreadMessages = await transaction
+                .select()
+                .from(imMessages)
+                .where(
+                  inArray(
+                    imMessages.id,
+                    transaction
+                      .select({ id: rankedMessages.id })
+                      .from(rankedMessages)
+                      .where(
+                        and(
+                          eq(rankedMessages.revisionRank, 1),
+                          eq(rankedMessages.rootExternalId, event.message.externalId),
+                          ne(rankedMessages.threadKey, ""),
+                        ),
+                      ),
+                  ),
+                )
+                .orderBy(asc(imMessages.occurredAt), asc(imMessages.providerRevisionKey), asc(imMessages.id));
               for (const pending of pendingThreadMessages) {
-                if (!pending.threadKey || reliableRootsByThreadKey.has(pending.threadKey)) continue;
-                const reliableRootExternalId = threadRootExternalId(pending.providerContext);
-                if (reliableRootExternalId) {
-                  reliableRootsByThreadKey.set(pending.threadKey, reliableRootExternalId);
-                }
-              }
-              const seenExternalMessageIds = new Set<string>();
-              const latestThreadMessages = pendingThreadMessages.filter((pending) => {
-                if (seenExternalMessageIds.has(pending.externalMessageId)) return false;
-                seenExternalMessageIds.add(pending.externalMessageId);
-                return true;
-              });
-              for (const pending of latestThreadMessages.reverse()) {
                 if (
                   !pending.threadKey ||
-                  reliableRootsByThreadKey.get(pending.threadKey) !== event.message.externalId ||
                   (await this.#hasEndedThreadSession(
                     transaction,
                     imBindingId,

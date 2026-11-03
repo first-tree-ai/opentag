@@ -39,7 +39,7 @@ A repaired original case does not close another extension of the same finding.
 | 8b — Git subtree verification | AG-F6 | [Verified locally](verification/sql-caller-repairs-20.md): literal selected-path and separate ancestor entry listing; 41 host/Docker cases, existing process bounds retained. |
 | 8c — Operator cleanup | OP-F1 | [Verified locally](verification/sql-caller-repairs-21.md): shared client defaults and native five-second close; 102 Vitest cases and both actual Docker benchmark CLIs, owned containers removed. |
 | 6d — Remaining simplification | AG-S3, AG-S4, AG-S5, AG-S6, DW-S1 | [Verified locally](verification/sql-caller-repairs-16.md): direct Settings credential read, Local-only query removal, one owner read, locked MCP check and unreachable quota deletion; 225 distinct cases (94 native PG). |
-| Observations | AA-R1, CR-R1, IM-R1, IM-R2, TK-R1 | AA-R1 [fixed locally](verification/sql-caller-repairs-38.md) with native token-exchange budget. CR/IM measured costs do not establish a required rewrite; TK legacy projection requires consumer migration before retirement. IM-R2 representative measurement is still pending. |
+| Observations | AA-R1, CR-R1, IM-R1, IM-R2, TK-R1 | AA-R1 [fixed locally](verification/sql-caller-repairs-38.md) with native token-exchange budget. CR/IM measured costs do not establish a required rewrite; TK legacy projection requires consumer migration before retirement. IM-R2 [fixed locally](verification/sql-caller-repairs-40.md): same-output SQL selection avoids unrelated full payloads after native scale/equivalence checks. |
 | Private billing | Unavailable implementation | Blocked by absent source; public adapter review is not an implementation audit. |
 
 The table accounts for all 37 defect IDs, nine simplification IDs and five
@@ -518,3 +518,13 @@ Twenty-two host and Docker component cases pass, including simultaneous schedule
 worker and pool-close errors. No SQL/ownership behavior changes. Batch 38 exact
 review found no actionable defect; batch 39 source review found none. IM-R2 scale
 measurement and final broad owning validation remain.
+
+
+[Late-root SQL selection](verification/sql-caller-repairs-40.md) addresses IM-R2:
+50,000 unrelated messages previously returned about 134 MB of JSON objects;
+only matching full rows now cross the database boundary. Two native provider
+oracles preserve exact ordered results, including global revision masking and
+root fallback. The owning matrix passes 155 distinct cases, 121 native PostgreSQL.
+No new cap, index or transaction semantics are introduced. Batch 39 exact review
+found none; batch 40 source review found none. The 37 defect and nine
+simplification fixes remain locally complete; final broad regression is pending.

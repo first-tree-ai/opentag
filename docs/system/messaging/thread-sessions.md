@@ -21,6 +21,13 @@ binding/Channel/Thread's inbound history. It retains occurrence-time, provider-r
 ordering, projecting one root in SQL instead of materializing every stored context. No root keeps
 the existing continuity fallback.
 
+If a direct Channel root arrives after its Thread replies, SQL selects the latest
+external-message revisions across the original binding/Channel/time scope and
+matches each Thread's latest nonempty root before reading full message content.
+Cross-Thread revisions still supersede older input; unrelated payloads are not
+materialized. Existing ended-Thread fences, delivery retention and queue capacity
+remain in effect.
+
 The Thread Session owns the provider reply and the task execution for a message delivered to both scopes. The Channel observer copy is ambient channel context only: it must not reply, react, or perform another provider mutation for that message, and it must not investigate, execute or repeat, delegate, or create artifacts for that task — the observer Turn finishes without tool calls or task work. Reply role does not remove the Channel Session's normal IM credentials or CLI capabilities. If an ended-session fence prevents an ambient Thread delivery, the remaining Channel delivery is an ordinary owner delivery, not an observer copy.
 
 A visible Session that starts a lengthy user task first adds one emoji reaction meaning "received, working on it" to the original user message via the provider CLI (for example, Feishu OnIt or the provider's equivalent), before starting task work. Approval or completion reactions such as thumbs-up or check marks must not be used. It skips the reaction only for a duplicate acknowledgment or an observer delivery. When a message is delivered to both scopes, only the Thread owner acknowledges it; the Channel observer copy never acknowledges that message. Internal Sessions do not acknowledge in IM.

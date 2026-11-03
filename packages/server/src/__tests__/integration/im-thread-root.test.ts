@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { type NormalizedInboundImEvent, type ProviderInboundContext, SLACK_REQUIRED_BOT_SCOPES } from "@opentag/shared";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
@@ -9,6 +9,7 @@ import { computers, imBindings, imMessageDeliveries, imMessages, sessions } from
 import { AgentService } from "../../services/agents/index.js";
 import { ApplicationCipher } from "../../services/crypto.js";
 import { ImMessageInbox } from "../../services/im/im-message-inbox.js";
+import { threadRootExternalId } from "../../services/im/provider-thread-context.js";
 import { ImBindingService } from "../../services/im-bindings/im-binding-service.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
@@ -116,6 +117,140 @@ async function fixture(provider: "slack" | "feishu") {
   });
   return { bindingId, context, event };
 }
+
+it.each(["slack", "feishu"] as const)(
+  "preserves the complete late-root selection and ordering for %s",
+  async (provider) => {
+    const f = await fixture(provider);
+    const root = "arriving-root";
+    const rows: (typeof imMessages.$inferInsert)[] = [];
+    const add = (
+      threadKey: string | null,
+      externalMessageId: string,
+      at: number,
+      rootId?: string,
+      overrides: Partial<typeof imMessages.$inferInsert> = {},
+    ) => {
+      rows.push({
+        id: `00000000-0000-4000-8000-${String(rows.length + 1).padStart(12, "0")}`,
+        imBindingId: f.bindingId,
+        channelId: "channel",
+        externalMessageId,
+        providerRevisionKey: "1",
+        direction: "inbound",
+        operation: "created",
+        authorKind: "human",
+        authorExternalId: "human",
+        content: f.event(externalMessageId, false, threadKey).message.content,
+        providerContext: f.context(rootId),
+        threadKey,
+        occurredAt: new Date(now.getTime() + at),
+        receivedAt: now,
+        ...overrides,
+      });
+    };
+    add("fallback", "fallback-anchor", 1, root);
+    add("fallback", "fallback-missing", 2);
+    add("fallback", "fallback-empty", 3, "");
+    add("moved-root", "moved-old", 1, root);
+    add("moved-root", "moved-new", 4, "other-root");
+    add("cross", "cross-revision", 1, root);
+    add("cross", "cross-anchor", 2, root);
+    add("other-thread", "cross-revision", 4, "other-root", { providerRevisionKey: "2" });
+    add("empty-shadow", "empty-revision", 1, root);
+    add("", "empty-revision", 4, "other-root", { providerRevisionKey: "2" });
+    add("uuid-root", "uuid-low", 10, root);
+    add("uuid-root", "uuid-high", 10, "other-root");
+    add("revision-root", "revision-low", 10, root, { providerRevisionKey: "10" });
+    add("revision-root", "revision-high", 10, "other-root", { providerRevisionKey: "2" });
+    add("ordered", "ordered-two", 10, root, { providerRevisionKey: "2" });
+    add("ordered", "ordered-ten", 10, root, { providerRevisionKey: "10" });
+    add("ordered", "ordered-tie", 10, root, { providerRevisionKey: "2" });
+    add("whitespace", "whitespace-old", 1, root);
+    add("whitespace", "whitespace-new", 4, ` ${root} `);
+    add("before", "before-root", -1, root);
+    add("before", "before-missing", 4);
+    add("keep", "kept", 5, root);
+    add("keep", "kept", 20, "other-root", { providerRevisionKey: "outbound", direction: "outbound" });
+    add(null, "kept", 21, "other-root", { providerRevisionKey: "no-thread" });
+    add("keep", "kept", 22, "other-root", { channelId: "other-channel" });
+    const [binding] = await client.database.select().from(imBindings).where(eq(imBindings.id, f.bindingId));
+    assert(binding);
+    const [otherBinding] = await client.database
+      .insert(imBindings)
+      .values({ ...binding, id: randomUUID(), status: "disabled", encryptedCredential: null, disabledAt: now })
+      .returning();
+    assert(otherBinding);
+    add("keep", "kept", 23, "other-root", { imBindingId: otherBinding.id });
+    await client.database.insert(imMessages).values(rows);
+
+    // Preserve the old selection as an independent oracle over the original SQL order.
+    const original = await client.database
+      .select()
+      .from(imMessages)
+      .where(
+        and(
+          eq(imMessages.imBindingId, f.bindingId),
+          eq(imMessages.channelId, "channel"),
+          eq(imMessages.direction, "inbound"),
+          isNotNull(imMessages.threadKey),
+          gte(imMessages.occurredAt, now),
+        ),
+      )
+      .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id));
+    const roots = new Map<string, string>();
+    for (const row of original) {
+      if (!row.threadKey || roots.has(row.threadKey)) continue;
+      const value = threadRootExternalId(row.providerContext);
+      if (value) roots.set(row.threadKey, value);
+    }
+    const seen = new Set<string>();
+    const expected = original
+      .filter((row) => {
+        if (seen.has(row.externalMessageId)) return false;
+        seen.add(row.externalMessageId);
+        return true;
+      })
+      .reverse()
+      .filter((row) => row.threadKey && roots.get(row.threadKey) === root);
+    expect(expected.map((row) => row.externalMessageId)).toEqual([
+      "fallback-anchor",
+      "fallback-missing",
+      "cross-anchor",
+      "fallback-empty",
+      "kept",
+      "ordered-ten",
+      "ordered-two",
+      "ordered-tie",
+    ]);
+    const observed: { text: string; params: (string | number)[] }[] = [];
+    const debug = client.sql.options.debug;
+    client.sql.options.debug = (_id, text, parameters) => {
+      if (text.includes('"im_messages"."thread_key" is not null')) {
+        observed.push({ text, params: [...parameters] as (string | number)[] });
+      }
+    };
+    const inbox = new ImMessageInbox(client.database, { now: () => now });
+    try {
+      await inbox.ingest(f.bindingId, 1, f.event(root, true, null));
+    } finally {
+      await inbox.close();
+      client.sql.options.debug = debug;
+    }
+    expect(observed).toHaveLength(1);
+    const query = observed[0];
+    assert(query);
+    const selected = await client.sql.unsafe<{ id: string }[]>(query.text, query.params);
+    expect(selected.map((row) => row.id)).toEqual(expected.map((row) => row.id));
+    const delivered = await client.database
+      .select({ messageId: imMessageDeliveries.messageId, attention: imMessageDeliveries.attention })
+      .from(imMessageDeliveries)
+      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+      .where(and(eq(sessions.imBindingId, f.bindingId), eq(sessions.kind, "thread")));
+    expect(delivered.map((row) => row.messageId).sort()).toEqual(expected.map((row) => row.id).sort());
+    expect(delivered.every((row) => row.attention === "ambient")).toBe(true);
+  },
+);
 
 it.each(["slack", "feishu"] as const)(
   "selects one materialized root under large %s history and tied ordering",
@@ -316,3 +451,54 @@ async function checkLookup(f: Awaited<ReturnType<typeof fixture>>, expectedThrea
   );
   expect(plan?.["QUERY PLAN"][0]?.Plan["Actual Rows"]).toBe(materialized);
 }
+
+it.each([0, 50000])(
+  "materializes five late-root matches with %i unrelated payloads",
+  async (size) => {
+    const f = await fixture("feishu");
+    const content = {
+      ...f.event("sample", false, "thread").message.content,
+      fallbackText: "x".repeat(1024),
+      blocks: [{ type: "text", text: "x".repeat(1024) }],
+    };
+    await client.sql`insert into im_messages (im_binding_id, channel_id, external_message_id,
+      provider_revision_key, operation, direction, thread_key, author_kind, author_external_id,
+      content, provider_context, occurred_at, received_at)
+    select ${f.bindingId}::uuid, 'channel', 'message-' || g::text, '1',
+      'created'::im_message_operation, 'inbound'::im_message_direction,
+      case when g <= 5 then 'matching-thread' else 'thread-' || g::text end,
+      'human'::im_author_kind, 'human', ${JSON.stringify(content)}::jsonb,
+      jsonb_build_object('provider', 'feishu', 'chatType', 'group', 'rootId',
+        case when g <= 5 then 'arriving-root' else 'other-root-' || g::text end),
+      ${now.toISOString()}::timestamptz + g * interval '1 millisecond', ${now.toISOString()}::timestamptz
+    from generate_series(1, ${size + 5}::int) as g`;
+    const observed: { text?: string; params?: (string | number)[]; control?: Promise<unknown> } = {};
+    const debug = client.sql.options.debug;
+    client.sql.options.debug = (_id, text, parameters) => {
+      if (text.includes('"im_messages"."thread_key" is not null')) {
+        observed.text = text;
+        observed.params = [...parameters] as (string | number)[];
+        observed.control = client.sql`select 1 as healthy`.then((rows) => rows);
+      }
+    };
+    const inbox = new ImMessageInbox(client.database, { now: () => now });
+    try {
+      await inbox.ingest(f.bindingId, 1, f.event("arriving-root", true, null));
+      expect(await observed.control).toEqual([{ healthy: 1 }]);
+    } finally {
+      await inbox.close();
+      client.sql.options.debug = debug;
+    }
+    assert(observed.text && observed.params);
+    const selected = await client.sql.unsafe<{ external_message_id: string }[]>(observed.text, observed.params);
+    expect(selected.map((row) => row.external_message_id)).toEqual(
+      Array.from({ length: 5 }, (_, index) => `message-${index + 1}`),
+    );
+    const threads = await client.database
+      .select({ id: sessions.id })
+      .from(sessions)
+      .where(and(eq(sessions.imBindingId, f.bindingId), eq(sessions.kind, "thread")));
+    expect(threads).toHaveLength(1);
+  },
+  40000,
+);

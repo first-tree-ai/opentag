@@ -85,7 +85,8 @@ function soleComputer(computers: readonly AccountComputerSummary[] | undefined):
  * binding on list order would hand an Agent a durable home on the strength of an array index. With
  * exactly one Computer, Setup can reuse it automatically; Settings requires an explicit selection.
  * Connection status determines whether that Computer needs recovery, not whether it exists.
- * Only an empty Local inventory offers a new connection.
+ * Only an empty Local inventory connects inline; beside existing Computers, Settings may supply a
+ * link that starts the shared connection flow on the Account Computers page.
  *
  * It is shared because the two places an Agent can be found without a Computer -- its Settings, and
  * an onboarding run that resumed into it -- must resolve it the same way; the second copy is how the
@@ -96,6 +97,7 @@ export function AgentComputerChoice({
   autoBindSole = true,
   agentId,
   children,
+  connectAnother,
   inventoryAdapter,
   onBound,
 }: {
@@ -106,6 +108,8 @@ export function AgentComputerChoice({
   agentId: string;
   /** Setup places its heading and summary around the choice using this same confirmed inventory. */
   children?: (choice: ReactNode, multiple: boolean) => ReactNode;
+  /** Settings offers a new connection beside an existing choice; an empty inventory connects inline instead. */
+  connectAnother?: ReactNode;
   /** Keeps Internal Tools on its in-memory Account instead of reading or mutating the Server. */
   inventoryAdapter?: AgentComputerInventoryAdapter;
   /**
@@ -246,6 +250,7 @@ export function AgentComputerChoice({
           onSelect={(computer) => void bind(computer)}
         />
       ) : null}
+      {connected.length > 0 && connectAnother ? <div>{connectAnother}</div> : null}
       {connected.length === 0 ? (
         <div className="grid gap-2">
           {/*

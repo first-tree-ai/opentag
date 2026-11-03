@@ -115,13 +115,14 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
    * a delayed confirmation reached the wrong one.
    */
   const uploadArchive = async (archive: PendingReplace, replace: boolean) => {
-    await upload.mutateAsync({
+    const installed = await upload.mutateAsync({
       agentId: archive.agentId,
       file: archive.file,
       sha256: archive.sha256,
       format: archive.format,
       replace,
     });
+    if (alive.current) setInstallationNotice(m.skills_upload_success({ name: installed.name }));
   };
 
   /**
@@ -221,7 +222,7 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
       ref={pageRef}
       tabIndex={-1}
     >
-      <PageHeader description={m.skills_page_description()} title={m.skills_page_title()} titleId="skills-page-title">
+      <PageHeader title={m.skills_page_title()} titleId="skills-page-title">
         {/*
          * A native file input is the only way to open the browser's file chooser; it stays hidden
          * and is triggered by the button. `type` precedes the change handler so the Kumo contract's

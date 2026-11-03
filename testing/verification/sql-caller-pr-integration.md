@@ -167,3 +167,40 @@ cases (64 native PostgreSQL, 51 Server unit) across the affected DTO/API/CLI,
 credential rotation, registration drain and proof-authority paths. Independent
 review verifies the archived combination against every Git blob; no production
 fix or new database design is required for this base change.
+
+## MCP feedback integration
+
+Main `b8c6afbb30fc5e850f2b927ff3522c0a251bc744` changes connector failure copy and
+conflicts with the Discover locale expectations. The resolution keeps main's new
+English and Chinese failure messages, the existing `Reauthorize` action, and the
+exact single-element `oauth` / `error` / credentialless / `MCP_OAUTH_FAILED`
+assertion. Other browser assertions and tracked fixtures remain intact. The
+accepted test blob is `770ffda5bafbc43c29fa803dfe28951ff0f9014a`.
+
+- Docker browser acceptance: **42/42 pass**, one worker, no retries (1.1 minutes):
+  all 32 cases in `mcp-connect.smoke.spec.ts` and all 10 cases in
+  `mcp-discover-continuation-smoke.spec.ts`. Coverage includes failed preparation,
+  cancellation and late callbacks, shared authorization, cross-surface recovery,
+  keyboard navigation, and both Discover languages at all four widths.
+- Web MCP unit acceptance: **80/80 pass across seven files** covering feedback,
+  catalog discovery, authorization dialogs, recovery and shared authorization.
+- Frozen dependency refresh, eight build tasks, Web and E2E typechecks, and
+  `pnpm check` pass.
+
+Server, Client, shared code, manifests and the lockfile are identical to the
+previously checked `dc2735d6` plus `c00fe838` combination (tree
+`f8f1b67b52775dfa54a18779aa0ebb6e0b28aef2`). That combination passes 188 Docker
+Client cases, 144 Docker Server cases (including 11 native PostgreSQL lifecycle
+cases), and 35 Web auth cases. Unchanged SQL/Runner suites and Agent Runtime
+coverage are not repeated for this browser conflict.
+
+The browser run uses current built artifacts, Linux Node 24.22.1, Chromium
+156.0.8078.79, PostgreSQL 17 and all 74 migrations. It reuses the recorded external
+native-psql transport with unchanged SQL/options; the tracked stack and fixture
+source hashes match its original inputs. Only the owned Compose project, runner
+and database volumes are removed. Inputs, commands, logs, screenshots and cleanup
+evidence are retained as `heartbeat-b8-*` and `browser-b8-*` workspace artifacts.
+
+The original native full-command failure and early Cloud steer timing limitation
+above remain unchanged. These bounded local passes do not establish CI or approval
+for the new merge commit.

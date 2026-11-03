@@ -38,7 +38,8 @@ const CREATE_STEPS: FlowState["steps"] = [
  * open the wrong Agent would be worse than no offer at all.
  */
 async function agentHoldingName(name: string): Promise<{ id: string; name: string } | undefined> {
-  const wanted = name.trim().toLowerCase();
+  // The Server stores names trimmed and NFC-normalized, and compares them without case.
+  const wanted = name.trim().normalize("NFC").toLowerCase();
   return browserApi.agents().then(
     ({ agents }) => {
       const holder = agents.find((candidate) => candidate.name.toLowerCase() === wanted);
@@ -102,7 +103,10 @@ interface PendingCreation {
 const CREATION_DRAFT_KEY = "agent-create";
 const CREATION_PENDING_KEY = "agent-create-pending";
 
-function creationErrorMessage(cause: unknown): string {
+export function creationErrorMessage(cause: unknown): string {
+  // A taken name is the reader's to fix, so it is said in their language rather than the Server's.
+  if (cause instanceof ApiError && cause.code === "AGENT_NAME_CONFLICT")
+    return m.onboarding_v2_agent_name_taken_error();
   return cause instanceof Error && cause.message ? cause.message : m.agent_create_failed();
 }
 
@@ -263,7 +267,21 @@ function AgentCreatePage({
   );
   const { draft, destinationConfirmed } = creation;
   const setDraft = (next: AgentDraft) => setCreation({ ...creation, draft: next });
-  const confirmDestination = () => setCreation({ ...creation, destinationConfirmed: true });
+  const stepFrame = useRef<HTMLDivElement>(null);
+  const focusNextStep = useRef(false);
+  const confirmDestination = () => {
+    focusNextStep.current = true;
+    setCreation({ ...creation, destinationConfirmed: true });
+  };
+  // Moving to the next step replaces the form the keyboard was in, so focus follows to its heading.
+  useEffect(() => {
+    if (!destinationConfirmed || !focusNextStep.current) return;
+    focusNextStep.current = false;
+    const heading = stepFrame.current?.querySelector<HTMLElement>("h1");
+    if (!heading) return;
+    heading.tabIndex = -1;
+    heading.focus();
+  }, [destinationConfirmed]);
   const [pending, setPending] = useState<PendingCreation | undefined>(
     () => memory?.values.get(CREATION_PENDING_KEY) as PendingCreation | undefined,
   );
@@ -429,7 +447,7 @@ function AgentCreatePage({
       )}
       <Main className={`otv2-frame mx-auto flex w-full flex-1 flex-col items-center gap-6 ${embedded ? "" : "p-6"}`}>
         {destinationConfirmed ? <StepRail steps={CREATE_STEPS} /> : null}
-        <div className="flex w-full flex-col gap-4">
+        <div className="flex w-full flex-col gap-4" ref={stepFrame}>
           {error ? (
             <div className="flex flex-col items-start gap-2" data-ui="agent-create-error">
               <Banner description={error} role="alert" variant="error" />

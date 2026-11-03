@@ -19,7 +19,7 @@ import {
   TaskOutgoingReply,
   TaskOutgoingReplyMeta,
 } from "./task-outgoing-replies.js";
-import { taskStatusGroup, taskStatusGroupLabel, taskStatusGroupTone } from "./task-status.js";
+import { taskStatusLabel, taskStatusTone } from "./task-status.js";
 import { buildTaskTimeline, type CapturedTaskReply, type TaskReport, type TaskTimelineEntry } from "./task-timeline.js";
 
 export function TaskActivity({
@@ -42,7 +42,9 @@ export function TaskActivity({
    * state authoritative. Legacy-only callers omit `replies` and keep the old per-report notices.
    */
   const capturedFeedSupplied = replies !== undefined;
-  const entries = buildTaskTimeline(turns, task.source.provider, replies ?? []);
+  const entries = buildTaskTimeline(turns, task.source.provider, replies ?? []).filter((entry) =>
+    taskEntryVisible(entry, task.source.provider, capturedFeedSupplied),
+  );
   const hasInternalSessions = (internalSessions?.length ?? 0) > 0;
   const sectionRef = useRef<HTMLElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -106,7 +108,7 @@ export function TaskActivity({
   return (
     <section
       ref={sectionRef}
-      className="relative grid w-full max-w-3xl gap-5"
+      className="relative grid w-full gap-5"
       aria-labelledby="task-activity-title"
       data-ui="task-thread"
       onScroll={(event) => updateScrollState(event.currentTarget)}
@@ -149,7 +151,7 @@ export function TaskActivity({
             onClick={scrollToLatest}
           >
             <Icon name="chevron-down" />
-            <span>Jump to latest</span>
+            <span>{m.tasks_jump_to_latest()}</span>
           </Button>
         </div>
       ) : null}
@@ -162,7 +164,7 @@ function TaskInternalSessionsList({ sessions }: { sessions: TaskInternalSessionI
     <div className="grid gap-2 rounded-lg border border-kumo-line bg-kumo-base p-4" data-ui="task-internal-sessions">
       <ul className="grid divide-y divide-kumo-line">
         {sessions.map((session) => {
-          const status = session.status ? taskStatusGroup(session.status) : session.endedAt ? "completed" : "running";
+          const status = session.status ?? (session.endedAt ? "completed" : "running");
           const activityAt = session.endedAt ?? session.createdAt;
           const preview = session.title?.trim() || session.runtimeModel || session.id;
           return (
@@ -178,7 +180,7 @@ function TaskInternalSessionsList({ sessions }: { sessions: TaskInternalSessionI
                 ) : null}
               </div>
               <div className="flex items-center gap-3">
-                <StatusIndicator label={taskStatusGroupLabel(status)} tone={taskStatusGroupTone(status)} />
+                <StatusIndicator label={taskStatusLabel(status)} tone={taskStatusTone(status)} />
                 <time
                   className="whitespace-nowrap text-xs text-kumo-subtle"
                   dateTime={activityAt}
@@ -240,7 +242,6 @@ function TaskEntry({
           ) : entry.kind === "report" ? (
             <TaskReportBody
               capturedFeedSupplied={capturedFeedSupplied}
-              hasReplies={entry.hasReplies}
               provider={task.source.provider}
               report={entry.report}
             />
@@ -253,12 +254,10 @@ function TaskEntry({
   );
 }
 
+/** A message header names its author and time only; the body already says how the work went. */
 function TaskAgentMeta({ entry }: { entry: TaskTimelineEntry }) {
   if (entry.kind === "reply") return <TaskOutgoingReplyMeta reply={entry.reply} />;
   if (entry.kind === "report") return <TaskReportMeta report={entry.report} />;
-  if (entry.kind === "status") {
-    return <small className="text-xs text-kumo-subtle">{deliveryStateLabel(entry.turn.delivery)}</small>;
-  }
   return null;
 }
 
@@ -281,9 +280,7 @@ function TaskRequest({ turn, id }: { turn: TaskTurn; id: string }) {
       <div className="grid min-w-0 gap-2">
         <header className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1" data-ui="task-message-author">
           <strong className="min-w-0 wrap-anywhere text-sm font-medium">{author}</strong>
-          <small className="text-xs text-kumo-subtle">
-            {attentionLabel(turn.attention)} · {formatDateTime(turn.message.occurredAt)}
-          </small>
+          <small className="text-xs text-kumo-subtle">{formatDateTime(turn.message.occurredAt)}</small>
         </header>
         <div className="grid min-w-0 gap-3 rounded-xl bg-kumo-recessed p-4 ring-1 ring-inset ring-kumo-line/60 shadow-2xs">
           {turn.message.fallbackText || attachments.length === 0 ? (
@@ -303,32 +300,41 @@ function TaskRequest({ turn, id }: { turn: TaskTurn; id: string }) {
 }
 
 function TaskReportMeta({ report }: { report: TaskReport }) {
+  return <small className="text-xs text-kumo-subtle">{formatDateTime(report.reportedAt)}</small>;
+}
+
+/**
+ * A report entry carries only what the conversation itself cannot show: a failure, or a notice about
+ * the reply history. The runtime's final text repeats the reply the Agent already sent, so it is
+ * never shown, and a report with nothing else to say leaves no entry. A Turn still running gets no
+ * entry either until it sends a real reply: the Task status already says it is running.
+ */
+function taskEntryVisible(
+  entry: TaskTimelineEntry,
+  provider: TaskSummary["source"]["provider"],
+  capturedFeedSupplied: boolean,
+): boolean {
+  // A running Turn already reads as running in the Task status; an entry saying so repeats it.
+  if (entry.kind === "status") return entry.turn.delivery.isRunning !== true;
+  if (entry.kind !== "report") return true;
   return (
-    <small className="text-xs text-kumo-subtle">
-      {m.tasks_report_summary({ outcome: humanizeEnum(report.outcome), time: formatDateTime(report.reportedAt) })}
-    </small>
+    Boolean(entry.report.errorReason) ||
+    (provider === "feishu" && replyNotice(entry.report, capturedFeedSupplied) !== null)
   );
 }
 
 function TaskReportBody({
   report,
-  hasReplies,
   provider,
   capturedFeedSupplied,
 }: {
   report: TaskReport;
-  hasReplies: boolean;
   provider: TaskSummary["source"]["provider"];
   capturedFeedSupplied: boolean;
 }) {
   return (
     <>
-      {hasReplies ? <TaskReportMeta report={report} /> : null}
       {provider === "feishu" ? <TaskReplyNotice capturedFeedSupplied={capturedFeedSupplied} report={report} /> : null}
-      {report.finalText ? <TaskExecutionSummary text={report.finalText} /> : null}
-      {report.outgoingReplies?.runtimeSummaryTruncated ? (
-        <p className="text-sm text-kumo-subtle">{m.tasks_summary_truncated()}</p>
-      ) : null}
       {report.errorReason ? <p className="text-sm text-kumo-danger">{turnFailureLabel(report.errorReason)}</p> : null}
     </>
   );
@@ -340,15 +346,22 @@ function TaskReportBody({
  * missing or unavailable cases the feed itself now reports. Legacy-only callers keep those notices;
  * an empty snapshot needs no notice.
  */
-function TaskReplyNotice({ report, capturedFeedSupplied }: { report: TaskReport; capturedFeedSupplied: boolean }) {
+function replyNotice(report: TaskReport, capturedFeedSupplied: boolean): "unavailable" | "incomplete" | null {
   const snapshot = report.outgoingReplies;
-  if (!snapshot || snapshot.status === "unavailable")
-    return capturedFeedSupplied ? null : (
+  if (!snapshot || snapshot.status === "unavailable") return capturedFeedSupplied ? null : "unavailable";
+  if (snapshot.status === "incomplete" || (snapshot.omittedCount ?? 0) > 0) return "incomplete";
+  return null;
+}
+
+function TaskReplyNotice({ report, capturedFeedSupplied }: { report: TaskReport; capturedFeedSupplied: boolean }) {
+  const notice = replyNotice(report, capturedFeedSupplied);
+  if (notice === "unavailable")
+    return (
       <p className="text-sm text-kumo-subtle" data-ui="task-reply-unavailable">
         {m.tasks_reply_data_unavailable()}
       </p>
     );
-  if (snapshot.status === "incomplete" || (snapshot.omittedCount ?? 0) > 0)
+  if (notice === "incomplete")
     return (
       <p className="text-sm text-kumo-subtle" data-ui="task-reply-incomplete">
         {m.tasks_reply_incomplete()}
@@ -357,32 +370,21 @@ function TaskReplyNotice({ report, capturedFeedSupplied }: { report: TaskReport;
   return null;
 }
 
-function TaskExecutionSummary({ text }: { text: string }) {
-  return (
-    // biome-ignore lint/a11y/useSemanticElements: This groups summary content, not form controls.
-    <div
-      className="grid gap-2 rounded-xl bg-kumo-base/80 p-3.5 ring-1 ring-inset ring-kumo-line/50"
-      data-ui="task-execution-summary"
-      role="group"
-      aria-label={m.tasks_execution_summary()}
-    >
-      <TaskMessageBody format="markdown" text={text} />
-    </div>
-  );
-}
-
 function TaskUnreportedBody({ delivery }: { delivery: TaskTurn["delivery"] }) {
-  const running = delivery.isRunning === true;
   if (delivery.state === "terminal_rejected" && delivery.reason === "restore_required") {
     return <p className="text-sm text-kumo-danger">{m.tasks_failure_progress_restore_failed()}</p>;
   }
+  // A rejected message is a failure the reader may need to act on, so it reads as one.
+  if (delivery.state === "terminal_rejected") {
+    return (
+      <p className="text-sm text-kumo-danger" data-state="failed">
+        {deliveryStateMessage(delivery)}
+      </p>
+    );
+  }
   return (
-    <p className="text-sm text-kumo-subtle" data-state={running ? "progress" : "attention"}>
-      {running
-        ? m.tasks_work_in_progress()
-        : delivery.state === "accepted"
-          ? m.tasks_execution_report_unavailable()
-          : m.tasks_message_state({ state: deliveryStateLabel(delivery).toLocaleLowerCase() })}
+    <p className="text-sm text-kumo-subtle" data-state="attention">
+      {delivery.state === "accepted" ? m.tasks_execution_report_unavailable() : deliveryStateMessage(delivery)}
     </p>
   );
 }
@@ -434,19 +436,16 @@ function taskAuthorLabel(value: TaskTurn["message"]["authorKind"]): string {
   return m.tasks_author_system();
 }
 
-function attentionLabel(value: TaskTurn["attention"]): string {
-  if (value === "direct") return m.tasks_direct_message();
-  if (value === "ambient") return m.tasks_ambient_message();
-  return humanizeEnum(value);
-}
-
-function deliveryStateLabel(delivery: TaskTurn["delivery"]): string {
-  if (delivery.isRunning === true) return m.tasks_in_progress();
+/** Why an unreported message has no execution, in the reader's language. */
+function deliveryStateMessage(delivery: TaskTurn["delivery"]): string {
   // A withdrawn delivery is stored as expired; the reader asked for it and is told so.
   if (delivery.state === "expired" && delivery.reason === TASK_CANCELLED_DELIVERY_REASON) {
-    return m.tasks_status_cancelled();
+    return m.tasks_message_cancelled();
   }
-  return humanizeEnum(delivery.state);
+  if (delivery.state === "pending") return m.tasks_message_pending();
+  if (delivery.state === "expired") return m.tasks_message_expired();
+  if (delivery.state === "terminal_rejected") return m.tasks_message_rejected();
+  return m.tasks_execution_report_unavailable();
 }
 
 /*

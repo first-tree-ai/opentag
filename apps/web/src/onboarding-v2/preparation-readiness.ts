@@ -245,6 +245,7 @@ function runtimeRow(snapshot: AgentSetupSnapshot): CheckRow {
         statusLabel: m.onboarding_v2_prep_needs_attention(),
         detail: m.computer_runtime_sign_in_help({ providerName: runtime, computerName: computer }),
         detailLabel,
+        signIn: { provider: snapshot.runtime.provider, computerName: computer },
       };
     case "observation-failed":
       return {

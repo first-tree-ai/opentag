@@ -113,12 +113,15 @@ export function InstructionBlock({
   readonly preview?: string;
   readonly label: string;
   readonly expansion?: { readonly show: string; readonly hide: string };
+  /** Masks the dead instructions and shows this (one action) across the block. */
+  readonly expiredNotice?: ReactNode;
 }) {
   const [expanded, setExpanded] = useState(false);
   const id = useId();
   const visible = expansion && !expanded && preview ? preview : instructions;
   const paragraphEnd = visible.indexOf("\n\n");
-  const split = paragraphEnd === -1 ? visible.length : paragraphEnd;
+  // A one-sentence preview is the task itself, not a lead-in comment.
+  const split = paragraphEnd === -1 ? 0 : paragraphEnd;
   return (
     <div className="grid min-w-0 gap-2">
       <div id={id}>
@@ -127,7 +130,7 @@ export function InstructionBlock({
           payload={instructions}
           plainText
           expanded={expanded}
-          flowing={Boolean(preview && expansion)}
+          flowing={Boolean(preview)}
           onCopyFailed={preview && expansion ? () => setExpanded(true) : undefined}
         >
           <span className="ots-command__comment">{visible.slice(0, split)}</span>

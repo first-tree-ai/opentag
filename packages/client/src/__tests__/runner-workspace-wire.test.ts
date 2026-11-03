@@ -10,6 +10,7 @@ import { type WebSocket, WebSocketServer } from "ws";
 import type { CloudTurnRunnerOptions } from "../runner/cloud-turns.js";
 import type { NativeSandbox } from "../runner/native-sandbox.js";
 import { runRunnerServe } from "../runner/serve.js";
+import type { RunnerShutdownRecord } from "../runner/shutdown-observer.js";
 import type { NativeWebExecutionChannel } from "../runner/web-gateway.js";
 import { createWorkspaceArchive, restoreWorkspaceArchive } from "../runner/workspace-archive.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
@@ -958,6 +959,7 @@ async function runRebindScenario(input: {
   destroy?: () => Promise<void>;
   /** Test seam replacing the reconnect backoff so reconnects are observable, not timed. */
   sleep?: (ms: number) => Promise<void>;
+  diagnosticSessions?: readonly string[];
 }) {
   const workspace = join(input.root, "workspace");
   const stderr: string[] = [];
@@ -986,6 +988,15 @@ async function runRebindScenario(input: {
       installSignalHandlers: false,
       signal: input.stop.signal,
       stderr: { write: (chunk: string) => stderr.push(chunk) },
+      ...(input.diagnosticSessions
+        ? {
+            env: {
+              OPENTAG_ENV: "staging",
+              OPENTAG_CLOUD_LATENCY_DIAGNOSTICS: "true",
+              OPENTAG_CLOUD_LATENCY_SESSION_IDS: input.diagnosticSessions.join(","),
+            },
+          }
+        : {}),
       sandboxFactory: () => native as unknown as NativeSandbox,
       ...(input.sleep ? { sleep: input.sleep } : {}),
       ...(input.web
@@ -1462,41 +1473,67 @@ it("fails fatally and stops reconnecting when rebind cleanup cannot delete the n
   }
 });
 
-it("fails closed when a new assignment arrives without a sealed workspace", async () => {
-  const root = await mkdtemp(join(tmpdir(), "opentag-e7-unsealed-"));
-  let httpToken = "fixture-a";
-  const peer = await protocolPeer({
-    httpToken: () => httpToken,
-    authReply: (frame, attempt) => {
-      if (attempt === 1) return undefined;
-      httpToken = "fixture-b";
-      return rebindWelcomeReply(frame);
-    },
-  });
-  const stop = new AbortController();
-  const state = { destroyed: 0, launched: 0 };
-  const { running, stderr } = await runRebindScenario({ root, peer, stop, state });
-  try {
-    expect((await peer.wait("runner:ready")).workspaceRestored).toBe(true);
-    // No seal: the old assignment may still hold unsaved work, so B must never execute. The
-    // refusal is observed on the Runner's own log, with no sleep-based timing assumption.
-    peer.advance();
-    peer.disconnect();
-    await vi.waitFor(
-      () => {
-        expect(stderr.join("")).toContain("refusing a new assignment: the previous workspace was not sealed");
+it.each([
+  { selection: "disabled", diagnosticSessions: [], recordsExpected: false },
+  { selection: "held Session only", diagnosticSessions: [sessionId], recordsExpected: true },
+  { selection: "both Sessions", diagnosticSessions: [sessionId, REBIND_SESSION_B], recordsExpected: true },
+  { selection: "refused Session only", diagnosticSessions: [REBIND_SESSION_B], recordsExpected: false },
+])(
+  "fails closed on unsealed rebind and attributes shutdown to the held Session: $selection",
+  async ({ diagnosticSessions, recordsExpected }) => {
+    const root = await mkdtemp(join(tmpdir(), "opentag-e7-unsealed-"));
+    let httpToken = "fixture-a";
+    const peer = await protocolPeer({
+      httpToken: () => httpToken,
+      authReply: (frame, attempt) => {
+        if (attempt === 1) return undefined;
+        httpToken = "fixture-b";
+        return rebindWelcomeReply(frame);
       },
-      { timeout: 5_000, interval: 50 },
-    );
-    expect(peer.claimTokens).toEqual(["Bearer fixture-a"]);
-    expect(peer.count("runner:ready")).toBe(0);
-  } finally {
-    stop.abort();
-    await running;
-    await peer.close();
-    await rm(root, { recursive: true, force: true });
-  }
-});
+    });
+    const stop = new AbortController();
+    const state = { destroyed: 0, launched: 0 };
+    const { running, stderr } = await runRebindScenario({ root, peer, stop, state, diagnosticSessions });
+    try {
+      expect((await peer.wait("runner:ready")).workspaceRestored).toBe(true);
+      // No seal: the old assignment may still hold unsaved work, so B must never execute. The
+      // refusal is observed on the Runner's own log, with no sleep-based timing assumption.
+      peer.advance();
+      peer.disconnect();
+      await vi.waitFor(
+        () => {
+          expect(stderr.join("")).toContain("refusing a new assignment: the previous workspace was not sealed");
+        },
+        { timeout: 5_000, interval: 50 },
+      );
+      expect(peer.claimTokens).toEqual(["Bearer fixture-a"]);
+      expect(peer.count("runner:ready")).toBe(0);
+    } finally {
+      stop.abort();
+      await running;
+      await peer.close();
+      await rm(root, { recursive: true, force: true });
+    }
+    const records = stderr
+      .join("")
+      .split("\n")
+      .filter((line) => line.startsWith("{"))
+      .map((line) => JSON.parse(line) as RunnerShutdownRecord)
+      .filter((record) => record.operation === "shutdown.diagnostic");
+    if (!recordsExpected) {
+      expect(records).toEqual([]);
+      return;
+    }
+    expect(records.map((record) => record.seq)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(
+      records.every(
+        (record) =>
+          record.sessionId === sessionId && record.sandboxId === sandboxId && record.environmentGeneration === 1,
+      ),
+    ).toBe(true);
+    expect(records.at(-1)).toMatchObject({ outcome: "completed", diagnosticIncomplete: false });
+  },
+);
 
 it("fails closed when rebind cleanup cannot close the previous web execution", { timeout: 20_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "opentag-e7-cleanup-fail-"));

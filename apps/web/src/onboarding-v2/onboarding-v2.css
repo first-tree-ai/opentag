@@ -332,9 +332,11 @@
   overflow: hidden;
 }
 
+/* The marker aligns with the check's title row, so content below it (such as sign-in steps) reads as
+   that check's own, not as a sibling of the running number. */
 .otv2-readiness__line {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.75rem;
   padding: 1rem;
   box-sizing: border-box;

@@ -84,6 +84,7 @@ export const ErrorCodeSchema = z.enum([
   /* Agent Skill failures; kept in step with SKILL_ERROR_CODES. */
   ...Object.values(SKILL_ERROR_CODES),
   "COMPUTER_IDENTITY_CONFLICT",
+  "COMPUTER_ACCOUNT_CONFLICT",
   "COMPUTER_IN_USE",
   "COMPUTER_NOT_DELETABLE",
   "COMPUTER_NOT_DISCONNECTABLE",

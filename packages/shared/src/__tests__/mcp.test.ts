@@ -12,6 +12,7 @@ import {
   MCP_TOOL_NAME_MAX_BYTES,
   MCP_TOOL_SNAPSHOT_DESCRIPTION_MAX_BYTES,
   MCPCatalogEndpointsResponseSchema,
+  MCPServerAgentSchema,
   MCPToolSnapshotSchema,
   mcpStaticOAuthEnvNames,
   probedServerDescription,
@@ -279,5 +280,13 @@ describe("MCP static OAuth providers", () => {
       expect(isMcpStaticOAuthEndpoint(provider("zoom"), url)).toBe(false);
     }
     expect(isMcpStaticOAuthEndpoint(provider("asana"), "https://mcp.zoom.us/mcp")).toBe(false);
+  });
+});
+
+describe("MCPServerAgentSchema", () => {
+  // The Server detail's Agent list carries Agent names, so it follows the Agent name rule rather
+  // than the lowercase Server name rule; otherwise one uppercase or Chinese Agent breaks the page.
+  it.each(["Reviewer", "代码审查-2"])("accepts the Agent name %j", (agentName) => {
+    expect(MCPServerAgentSchema.shape.agentName.parse(agentName)).toBe(agentName);
   });
 });

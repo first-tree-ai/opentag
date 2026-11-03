@@ -242,7 +242,10 @@ function AgentNameField({
   const nameId = useId();
   const hintId = `${nameId}-hint`;
   const errorId = `${nameId}-error`;
-  const error = showError ? validateAgentName(draft.name) : undefined;
+  const problem = validateAgentName(draft.name);
+  // A name past the limit can't become valid by typing more, so say so while typing. Other
+  // problems wait for blur or Create, so an empty field isn't flagged before anyone types.
+  const error = showError || problem === "too-long" ? problem : undefined;
   const errorText =
     error === "empty"
       ? m.onboarding_v2_agent_name_empty_error()
@@ -312,8 +315,7 @@ function RuntimePicker({
   if (draft.destination === "cloud") return null;
   return (
     <fieldset className={FIELDSET}>
-      <legend className="font-medium text-kumo-strong">{m.onboarding_v2_agent_runtime_label()}</legend>
-      <p className={HINT}>{m.onboarding_v2_agent_runtime_hint()}</p>
+      <legend className="mb-2 font-medium text-kumo-strong">{m.onboarding_v2_agent_runtime_label()}</legend>
       <ul className={CHOICE_GRID} data-ui="onboarding-v2-choices">
         {RUNTIMES.map((runtime) => (
           <li key={runtime}>
@@ -330,7 +332,6 @@ function RuntimePicker({
           </li>
         ))}
       </ul>
-      <p className="text-xs text-kumo-subtle m-0">{m.onboarding_v2_agent_runtime_footnote()}</p>
     </fieldset>
   );
 }

@@ -268,7 +268,7 @@ test("the installer only commits a release after it verifies and smoke-tests the
   assert.match(source, /"\$VALIDATION_DIR\/node\/bin\/node" "\$VALIDATION_DIR\/\$INSTALL_ENTRY" --version/);
 
   // The up-to-date short-circuit must decide before the payload download, or it saves nothing.
-  const shortCircuitIndex = source.indexOf("already installed and up to date");
+  const shortCircuitIndex = source.indexOf("is already installed");
   const payloadDownloadIndex = source.indexOf('download_to "$ASSET_URL" "$TARBALL"');
   assert.ok(shortCircuitIndex > 0 && shortCircuitIndex < payloadDownloadIndex);
   assert.match(source, /if \[ "\$FORCE" -eq 0 \] && portable_install_is_current "\$VERSION" "\$BIN_NAME"; then/);

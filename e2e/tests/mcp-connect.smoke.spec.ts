@@ -307,8 +307,8 @@ for (const kind of ["bearer", "none"] as const) {
       if (kind === "bearer") {
         await dialog.locator('input[type="password"]').fill("wrong-key");
         await dialog.getByRole("button", { name: "Save", exact: true }).click();
-        await expect(dialog).toContainText("Authorization failed");
-      } else await expect(dialog).toContainText("Couldn't load tools");
+        await expect(dialog).toContainText("The key was rejected. Update it.");
+      } else await expect(dialog).toContainText("Couldn't load tools. Try again.");
       const initial = await mounts(page, current.id);
       expect(initial).toHaveLength(1);
       await dialog.getByRole("button", { name: /^Close / }).click();
@@ -380,7 +380,7 @@ test("real local OAuth popup cancellation removes new setup and reconnect retain
     upstream.tokenFailure(true);
     await (await failureWindow).getByRole("link", { name: "Approve", exact: true }).click();
     await expect(
-      page.locator('[data-ui="mcp-server-list"]').getByText("Authorization failed", { exact: true }),
+      page.locator('[data-ui="mcp-server-list"]').getByText("Authorization didn't finish. Try again.", { exact: true }),
     ).toBeVisible();
     upstream.tokenFailure(false);
     const finalWindow = page.waitForEvent("popup");
@@ -679,9 +679,9 @@ for (const kind of ["oauth", "bearer", "none"] as const) {
       });
     }
     const oauthFailureCopy = {
-      add: "Authorization failed",
-      discover: "Authorization failed",
-      list: "Authorization failed",
+      add: "Authorization didn't finish. Try again.",
+      discover: "Authorization didn't finish. Try again.",
+      list: "Authorization didn't finish. Try again.",
     };
     const sources = mcpEntrySources(kind, first.id, second.id, third.id);
     const addedCount = Number(kind === "oauth") * 2;
@@ -880,7 +880,7 @@ test("changing Add custom input preserves the submitted installation when the di
     const current = await agent(page);
     upstream.unavailable(true);
     const dialog = await openAdd(page, current.id, upstream.url, "none");
-    await expect(dialog).toContainText("Couldn't load tools");
+    await expect(dialog).toContainText("Couldn't load tools. Try again.");
     expect(await mounts(page, current.id)).toHaveLength(1);
     await dialog.getByLabel("Connector address", { exact: true }).fill("https://another.example/mcp");
     await dialog.getByRole("button", { name: "Close Add custom connector", exact: true }).click();
@@ -898,7 +898,7 @@ test("editing Add custom away and back retries the submitted installation withou
     const current = await agent(page);
     upstream.unavailable(true);
     const dialog = await openAdd(page, current.id, upstream.url, "none");
-    await expect(dialog).toContainText("Couldn't load tools");
+    await expect(dialog).toContainText("Couldn't load tools. Try again.");
     const initial = await mounts(page, current.id);
     expect(initial).toHaveLength(1);
     await dialog.getByLabel("Connector address", { exact: true }).fill(`${upstream.url}x`);
@@ -985,7 +985,7 @@ const discoverCopy = {
     preparing: "Authorizing…",
     cancel: "Cancel: Linear",
     reauthorize: "Reauthorize: Linear",
-    failed: "Authorization failed",
+    failed: "Authorization didn't finish. Try again.",
   },
   zh: {
     title: "发现",
@@ -996,7 +996,7 @@ const discoverCopy = {
     preparing: "正在授权…",
     cancel: "取消: Linear",
     reauthorize: "重新授权: Linear",
-    failed: "授权失败",
+    failed: "授权未完成，请重试",
   },
 } as const;
 

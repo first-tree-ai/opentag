@@ -453,7 +453,7 @@ describe("machine authentication and Computer services", () => {
     expect(unchanged?.computerId).toBe(existing.computerId);
   });
 
-  it("reports expiry, duplicate installation, and repaired ownership conflicts", async () => {
+  it("reports expiry, repairs a rerun installation in place, and rejects repaired ownership conflicts", async () => {
     const value = await machineFixture();
     const expired = await value.machine.issueForAccount(value.bootstrap.userId, {});
     await unit.database
@@ -466,12 +466,11 @@ describe("machine authentication and Computer services", () => {
       ),
     ).rejects.toMatchObject({ code: "AUTH_CODE_EXPIRED" });
     const first = await value.machine.exchangeConnectCode(exchangeInput(value.issued.code));
-    const duplicate = await value.machine.issueForAccount(value.bootstrap.userId, {});
-    // The embedded engine reports driver-shaped unique violations; the mapped 409 is covered by the
-    // integration suite against a real PostgreSQL. Here the fail-closed rejection is what matters.
+    const rerun = await value.machine.issueForAccount(value.bootstrap.userId, {});
+    // A create code redeemed again by the same installation repairs that Computer in place.
     await expect(
-      value.machine.exchangeConnectCode(exchangeInput(duplicate.code, first.installationId as TestUuid)),
-    ).rejects.toThrow();
+      value.machine.exchangeConnectCode(exchangeInput(rerun.code, first.installationId as TestUuid)),
+    ).resolves.toMatchObject({ computerId: first.computerId, installationId: first.installationId });
     const repairCode = await value.machine.issueForAccount(value.bootstrap.userId, {
       mode: "repair",
       targetComputerId: first.computerId,
@@ -587,7 +586,7 @@ describe("machine authentication and Computer services", () => {
       }),
     ).toBe(
       'opentag_installer="$(mktemp)" && curl -fsSL https://mirror.example/releases/staging/install.sh -o "$opentag_installer"' +
-        ' && sh "$opentag_installer"' +
+        ' && sh "$opentag_installer" --quiet' +
         ' && PATH="$HOME/.local/bin${PATH:+:$PATH}" "$HOME/.local/bin/opentag-staging" connect --server https://dev.example.com -- abc',
     );
     expect(

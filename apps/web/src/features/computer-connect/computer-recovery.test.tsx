@@ -72,12 +72,15 @@ describe("shared Computer recovery", () => {
     );
     await settle();
     expect(adapter.issue).toHaveBeenCalledExactlyOnceWith({ mode: "repair", target: computer });
-    expect(screen.getByText("Copy the task to your AI assistant on Ada's Mac to restore the connection.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
+    expect(screen.getByText("Copy the task to your Agent on Ada's Mac to restore the connection.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy for Agent" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Get connection help" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Assistant requested a repair?" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();
-    expect(screen.queryByText(/Turn on or wake|Expires in|Waiting for/)).toBeNull();
+    expect(screen.queryByText(/Turn on or wake/)).toBeNull();
+    // The shared command window: expiry beside the command and one connection status.
+    expect(screen.getByText(/^Expires in /)).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toContain("Waiting for Ada's Mac to reconnect…");
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
@@ -89,7 +92,7 @@ describe("shared Computer recovery", () => {
     await settle();
     const region = screen.getByRole("region", { name: "Restore connection" });
     expect(region.textContent).not.toContain(command);
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy for AI assistant" })));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy for Agent" })));
     const payload = writeText.mock.calls[0]?.[0] as string;
     expect(payload).toContain("Computer ID: review-mac");
     expect(payload).toContain("Computer: Ada's Mac");
@@ -113,8 +116,8 @@ describe("shared Computer recovery", () => {
     const writeText = clipboard(true);
     render(<ComputerRecovery computer={computer} adapter={createAdapter()} onConnected={vi.fn()} />);
     await settle();
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy for AI assistant" })));
-    expect(screen.getByText("Copy failed. Select and copy the instructions.")).toBeTruthy();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy for Agent" })));
+    expect(screen.getByText("Copy failed. Select and copy the task.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Show less" })).toBeTruthy();
     expect(window.getSelection()?.toString()).toBe(writeText.mock.calls[0]?.[0]);
     expect(screen.queryByRole("button", { name: "Copied" })).toBeNull();
@@ -129,14 +132,14 @@ describe("shared Computer recovery", () => {
     expect(adapter.issue).not.toHaveBeenCalled();
     view.rerender(<ComputerRecovery computer={computer} adapter={adapter} onConnected={onConnected} />);
     await settle();
-    expect(screen.getByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy for Agent" })).toBeTruthy();
     view.rerender(
       <ComputerRecovery computer={computer} adapter={adapter} onConnected={onConnected} available={false} />,
     );
-    expect(screen.queryByRole("button", { name: "Copy for AI assistant" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy for Agent" })).toBeNull();
     await poll();
     view.rerender(<ComputerRecovery computer={computer} adapter={adapter} onConnected={onConnected} />);
-    expect(screen.getByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy for Agent" })).toBeTruthy();
     expect(adapter.issue).toHaveBeenCalledOnce();
   });
 
@@ -144,8 +147,7 @@ describe("shared Computer recovery", () => {
     const adapter = createAdapter();
     render(<ComputerRecovery computer={computer} adapter={adapter} onConnected={vi.fn()} />);
     await settle();
-    screen.getByRole("button", { name: "Copy for AI assistant" }).focus();
-    const recovery = document.querySelector('[data-ui="computer-recovery"]')?.parentElement;
+    screen.getByRole("button", { name: "Copy for Agent" }).focus();
     adapter.status.mockResolvedValue({
       connectCodeId: "repair-code",
       state: "expired",
@@ -153,9 +155,9 @@ describe("shared Computer recovery", () => {
       redeemedAt: null,
     });
     await poll();
-    expect(document.activeElement).toBe(recovery);
-    expect(screen.getByRole("button", { name: "Update instructions" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Copy for AI assistant" })).toBeNull();
+    // The masked copy control is disabled, so focus moves to the single Refresh action.
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Refresh" }));
+    expect((screen.getByRole("button", { name: "Copy for Agent" }) as HTMLButtonElement).disabled).toBe(true);
     await poll();
     expect(adapter.issue).toHaveBeenCalledOnce();
     adapter.status.mockResolvedValue(pending);
@@ -165,7 +167,7 @@ describe("shared Computer recovery", () => {
       issuedAt: new Date().toISOString(),
       expiresIn: 900,
     });
-    fireEvent.click(screen.getByRole("button", { name: "Update instructions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await settle();
     fireEvent.click(screen.getByRole("button", { name: "Show full instructions" }));
     expect(screen.getByRole("region", { name: "Restore connection" }).textContent).toContain("replacement-command");
@@ -185,8 +187,8 @@ describe("shared Computer recovery", () => {
     adapter.computers.mockResolvedValue({ computers: [{ ...computer, connectionStatus: "online" }] });
     await poll();
     expect(onConnected).toHaveBeenCalledOnce();
-    expect(screen.getByText("Connected")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Copy for AI assistant" })).toBeNull();
+    expect(screen.getByText("Ada's Mac is connected")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Copy for Agent" })).toBeNull();
     await poll();
     expect(onConnected).toHaveBeenCalledOnce();
   });
@@ -203,8 +205,9 @@ describe("shared Computer recovery", () => {
     });
     render(<ComputerRecovery computer={computer} adapter={adapter} onConnected={onConnected} />);
     await settle();
-    expect(screen.getByText("Authorization accepted. Waiting for openTag to come online…")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Copy for AI assistant" })).toBeNull();
+    // Whether the command was used is not shown: only the connection status.
+    expect(screen.getByRole("status").textContent).toContain("Waiting for Ada's Mac to reconnect…");
+    expect(screen.queryByRole("button", { name: "Copy for Agent" })).toBeNull();
     expect(onConnected).not.toHaveBeenCalled();
     adapter.computers.mockResolvedValue({
       computers: [{ ...computer, connectionStatus: "online", connectedAt: redeemedAt }],
@@ -224,7 +227,7 @@ describe("shared Computer recovery", () => {
     adapter.computers.mockResolvedValue({ computers: [{ ...computer, connectionStatus: "online" }] });
     await poll();
     expect(onConnected).toHaveBeenCalledOnce();
-    expect(screen.getByText("Connected")).toBeTruthy();
+    expect(screen.getByText("Ada's Mac is connected")).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -240,16 +243,17 @@ describe("shared Computer recovery", () => {
     adapter.status.mockRejectedValue(new Error("Authorization status unavailable"));
     render(<ComputerRecovery computer={computer} adapter={adapter} onConnected={vi.fn()} />);
     await settle();
-    expect(screen.getByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy for Agent" })).toBeTruthy();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2_001);
     });
-    expect(screen.queryByRole("button", { name: "Copy for AI assistant" })).toBeNull();
-    expect(screen.getByText("Checking whether these instructions are still valid…")).toBeTruthy();
+    // Past the deadline the command is masked at once, with nothing new issued until the verdict.
+    expect((screen.getByRole("button", { name: "Copy for Agent" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
     expect(adapter.issue).toHaveBeenCalledOnce();
     adapter.status.mockResolvedValue({ ...pending, state: "expired" });
     await poll();
-    expect(screen.getByRole("button", { name: "Update instructions" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
   });
 
   it("recovers from issuance failure without exposing an incomplete task", async () => {
@@ -258,10 +262,10 @@ describe("shared Computer recovery", () => {
     adapter.issue.mockRejectedValueOnce(new Error("failure"));
     render(<ComputerRecovery computer={computer} adapter={adapter} onConnected={vi.fn()} />);
     await settle();
-    expect(screen.getByText("Couldn’t prepare recovery instructions.")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Copy for AI assistant" })).toBeNull();
+    expect(screen.getByText("Couldn’t prepare the connection command.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Copy for Agent" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     await settle();
-    expect(screen.getByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy for Agent" })).toBeTruthy();
   });
 });

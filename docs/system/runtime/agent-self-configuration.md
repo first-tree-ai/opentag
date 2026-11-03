@@ -50,7 +50,8 @@ Self-configuration is enabled by default. New Agents start with `selfConfigurati
 `0072_self_configuration_default_enabled` turned it on for every Agent that was not deleted. That migration cannot
 tell an earlier owner opt-out from the earlier default, so it turned both on.
 
-The owner turns it off or on with the Self-configuration switch on the Agent's Name settings page, or through the
+The owner turns it off or on with the Self-configuration switch on the Agent's Model settings page, beside Ask for
+approval, or through the
 Account-scoped Agent update API with `selfConfigurationEnabled`. The Agent cannot change this flag through
 `self update`.
 

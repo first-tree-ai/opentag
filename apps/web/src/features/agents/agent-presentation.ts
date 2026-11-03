@@ -10,13 +10,13 @@ import {
   accountComputerLink,
   agentSettingsSectionLink,
   agentSetupLink,
+  agentSetupSignInLink,
 } from "./agent-routes.js";
 import type { AgentSettingsSection } from "./agent-settings/sections.js";
 
 /**
- * The card states what is true and how urgent it is. It carries no recovery of its own, because
- * what to do about a broken dependency depends on which one broke, and that explanation lives on
- * the Agent. The one exception is setup that never finished — see `agentSetupContinuation`.
+ * The card states what is true and how urgent it is. Its single next step, when the reader can fix
+ * the state, comes separately from `agentRowAction`.
  */
 type AgentCardStatus = {
   detail?: string;
@@ -25,6 +25,12 @@ type AgentCardStatus = {
 };
 
 export function agentCardStatus(agent: AgentListItem): AgentCardStatus {
+  const status = agentAvailabilityCardStatus(agent);
+  const detail = agentActivityDetail(agent, status.tone === "success");
+  return detail ? { ...status, detail } : status;
+}
+
+function agentAvailabilityCardStatus(agent: AgentListItem): AgentCardStatus {
   if (agent.status === "suspended" || agent.availability.state === "suspended") {
     return { label: m.agents_card_status_paused(), tone: "neutral" };
   }
@@ -32,7 +38,7 @@ export function agentCardStatus(agent: AgentListItem): AgentCardStatus {
     return { label: m.agents_card_status_unavailable(), tone: "neutral" };
   }
   if (agent.availability.state === "ready") {
-    return readyAgentCardStatus(agent);
+    return { label: m.agents_card_status_ready(), tone: "success" };
   }
   // A delivery check the Computer is still running resolves by itself, like a runtime check does.
   if (agent.availability.reason === "handoff_checking") {
@@ -47,15 +53,24 @@ export function agentCardStatus(agent: AgentListItem): AgentCardStatus {
   return blockedAgentCardStatus(agent);
 }
 
-function readyAgentCardStatus(agent: AgentListItem): AgentCardStatus {
-  return {
-    detail:
-      agent.activity.state === "working"
-        ? m.agents_card_activity_working({ elapsed: formatElapsedCompact(agent.activity.startedAt) })
-        : undefined,
-    label: m.agents_card_status_ready(),
-    tone: "success",
-  };
+/**
+ * How many Tasks the Agent is running. Work in progress is a fact whatever the Agent's status, so it
+ * shows on every row; "waiting" only shows beside Ready, where it is the useful thing to know rather
+ * than a contradiction of a blocked or paused status. An unknown activity says nothing.
+ */
+function agentActivityDetail(agent: AgentListItem, ready: boolean): string | undefined {
+  const { activity } = agent;
+  if (activity.state === "working") {
+    const count = activity.runningTaskCount;
+    if (count === undefined) {
+      // A Server without the count still reports when the work started.
+      return m.agents_card_activity_working({ elapsed: formatElapsedCompact(activity.startedAt) });
+    }
+    return count === 1
+      ? m.agents_card_activity_running_tasks_single({ count })
+      : m.agents_card_activity_running_tasks_plural({ count });
+  }
+  return activity.state === "idle" && ready ? m.agents_card_activity_waiting() : undefined;
 }
 
 function blockedAgentCardStatus(agent: AgentListItem): AgentCardStatus {
@@ -132,7 +147,8 @@ export function imBindingStateLabel(binding: ImBindingSummary): string {
   return {
     active: m.im_connected(),
     provisioning: m.im_connecting(),
-    reauthorization_required: m.im_permissions_required(),
+    // One wording for this state everywhere it is shown.
+    reauthorization_required: m.agents_card_status_messaging_permissions_required(),
     error: m.im_connection_error(),
     disabled: m.im_disconnected(),
   }[binding.bindingState];
@@ -359,8 +375,19 @@ export type AgentDependencyStatus = {
   tone: StatusTone;
 };
 
-function continueSetupAction(agentId: string): NonNullable<AgentDependencyStatus["action"]> {
-  return { label: m.agents_continue_setup(), link: agentSetupLink(agentId) };
+/**
+ * The one setup link for an Agent. A runtime that only needs signing in gets "Sign in", which opens
+ * the same setup step with its sign-in steps shown; every other setup reason continues setup.
+ */
+function continueSetupAction(agent: {
+  availability: AgentAvailability;
+  id: string;
+}): NonNullable<AgentDependencyStatus["action"]> {
+  const runtime = agent.availability.dependencies.runtime;
+  if (agent.availability.reason === "runtime_unavailable" && runtime.status === "sign-in") {
+    return { label: m.agents_runtime_sign_in_action(), link: agentSetupSignInLink(agent.id) };
+  }
+  return { label: m.agents_continue_setup(), link: agentSetupLink(agent.id) };
 }
 
 /**
@@ -394,7 +421,36 @@ export function agentSetupContinuation(agent: {
   availability: AgentAvailability;
   id: string;
 }): AgentDependencyStatus["action"] {
-  return SETUP_REASONS.has(agent.availability.reason) ? continueSetupAction(agent.id) : undefined;
+  return SETUP_REASONS.has(agent.availability.reason) ? continueSetupAction(agent) : undefined;
+}
+
+/**
+ * The one action a list row offers: the place where the state it shows gets fixed.
+ *
+ * Every blocked state the reader can repair carries the same single link, so no fixable row reads as
+ * a dead end beside one that offers a way out. Setup-owned reasons continue setup; messaging that
+ * needs new permissions or a reconnect opens the Agent's messaging settings; an offline Computer
+ * opens its connection recovery. A paused Agent was paused on purpose and states that fact without
+ * an action, and states that resolve on their own (checks, unknown evidence) offer nothing.
+ */
+export function agentRowAction(agent: {
+  availability: AgentAvailability;
+  computer: AgentListItem["computer"];
+  id: string;
+}): AgentDependencyStatus["action"] {
+  const setup = agentSetupContinuation(agent);
+  if (setup) return setup;
+  const { reason } = agent.availability;
+  if (reason === "im_reauthorization_required") {
+    return settingsAction(agent.id, m.agents_status_action_update_permissions(), "messaging");
+  }
+  if (reason === "im_error" || reason === "im_disabled") {
+    return settingsAction(agent.id, m.agents_status_action_reconnect_channel(), "messaging");
+  }
+  if (reason === "computer_offline") {
+    return { label: m.computer_recovery_heading(), link: accountComputerLink(agent.computer?.computerId, agent.id) };
+  }
+  return undefined;
 }
 
 function settingsAction(
@@ -415,7 +471,7 @@ function setupOrMaintenanceAction(
   setupReason: NonNullable<AgentAvailability["reason"]>,
   maintenance?: NonNullable<AgentDependencyStatus["action"]>,
 ): AgentDependencyStatus["action"] {
-  return agent.availability.reason === setupReason ? continueSetupAction(agent.id) : maintenance;
+  return agent.availability.reason === setupReason ? continueSetupAction(agent) : maintenance;
 }
 
 export function agentComputerStatus(agent: AgentDetailView): AgentDependencyStatus {
@@ -579,7 +635,7 @@ function agentMessagingConnectionLabel(binding: ImBindingSummary): string {
   const labels: Record<ImBindingSummary["bindingState"], string> = {
     active: m.agents_status_channel_connected(),
     provisioning: m.agents_status_channel_setting_up(),
-    reauthorization_required: m.agents_status_channel_permissions_update_required(),
+    reauthorization_required: m.agents_card_status_messaging_permissions_required(),
     error: m.agents_status_channel_connection_error(),
     disabled: m.agents_status_channel_disabled(),
   };

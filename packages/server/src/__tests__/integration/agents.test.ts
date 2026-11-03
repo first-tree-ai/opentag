@@ -1422,6 +1422,42 @@ describe("Agent persistence and authorization", () => {
     }
   });
 
+  it("keeps uppercase and Chinese names as typed and refuses a case variant", async () => {
+    const value = await fixture();
+    try {
+      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const mixed = await value.service.createForAccount(value.bootstrap.userId, createInput(computer.id, "Atlas"));
+      const chinese = await value.service.createForAccount(
+        value.bootstrap.userId,
+        createInput(computer.id, "研发助理"),
+      );
+      expect([mixed.name, chinese.name]).toEqual(["Atlas", "研发助理"]);
+
+      await expect(
+        value.service.createForAccount(value.bootstrap.userId, createInput(computer.id, "atlas")),
+      ).rejects.toMatchObject({ code: "AGENT_NAME_CONFLICT" });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("lets only one of two concurrent case-variant creates win", async () => {
+    const value = await fixture();
+    try {
+      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const settled = await Promise.allSettled([
+        value.service.createForAccount(value.bootstrap.userId, createInput(computer.id, "Helper")),
+        value.service.createForAccount(value.bootstrap.userId, createInput(computer.id, "helper")),
+      ]);
+      expect(settled.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      expect(settled.find((result) => result.status === "rejected")).toMatchObject({
+        reason: { code: "AGENT_NAME_CONFLICT" },
+      });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("persists the bound Computer on the Agent", async () => {
     const value = await fixture();
     try {

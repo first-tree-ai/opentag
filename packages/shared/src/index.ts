@@ -18,6 +18,8 @@ export {
   ListAccountComputersResponseSchema,
 } from "./account.js";
 export {
+  AGENT_ACTIVITY_TASK_COUNT_HEADER,
+  AGENT_ACTIVITY_TASK_COUNT_VERSION,
   AGENT_RUNTIME_PROVIDERS,
   AGENT_RUNTIME_TEST_FAILURE_CODES,
   AGENT_USAGE_WINDOW_DAYS,
@@ -63,10 +65,12 @@ export {
   CreateAgentRuntimeConfigSchema,
   type ListAgentsResponse,
   ListAgentsResponseSchema,
+  projectAgentActivityForClient,
   type RebindAgentComputerRequest,
   RebindAgentComputerRequestSchema,
   type ReceiveMode,
   ReceiveModeSchema,
+  requestsAgentActivityTaskCount,
   type UpdateAgentRequest,
   UpdateAgentRequestSchema,
   type UpdateAgentRuntimeConfig,

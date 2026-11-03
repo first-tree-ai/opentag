@@ -89,6 +89,9 @@ Waiting. The count lets a reader see at a glance which Agents are busy and how b
 Waiting says a ready Agent is free to take work. Waiting appears only beside Ready, because beside an offline, paused,
 or blocked status it would contradict the reason the Agent cannot work; a running count shows on every row, since
 work in progress is a fact whatever the status. Queued Tasks are not counted: the row reports work that has started.
+The list and detail responses include `runningTaskCount` only for a client that sends
+`x-opentag-agent-activity-task-count: 1`; the Web App sends it. Older clients validate the working activity strictly,
+so they keep receiving the shape they were released with.
 Two reads answer that question over the Agent's IM bindings, and
 `im_message_deliveries_unreported_accepted_idx` — partial on `state = 'accepted' and reported_at is null` — is the
 access path for both. Without it the reads join every Session of a binding to reach an answer, which is

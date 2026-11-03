@@ -152,6 +152,28 @@ export const AgentListActivitySchema = z.discriminatedUnion("state", [
     .strict(),
 ]);
 
+/**
+ * Clients that render running Task counts send this header with the version below. `runningTaskCount`
+ * is additive to a strict object, so a client that does not ask for it never receives it: older
+ * clients validate the working activity strictly and would reject the field.
+ */
+export const AGENT_ACTIVITY_TASK_COUNT_HEADER = "x-opentag-agent-activity-task-count";
+export const AGENT_ACTIVITY_TASK_COUNT_VERSION = "1";
+
+export function requestsAgentActivityTaskCount(value: string | string[] | undefined): boolean {
+  return (Array.isArray(value) ? value[0] : value) === AGENT_ACTIVITY_TASK_COUNT_VERSION;
+}
+
+/** The activity a client receives: the count only for a client that declared it can read it. */
+export function projectAgentActivityForClient(
+  activity: z.infer<typeof AgentListActivitySchema>,
+  includeTaskCount: boolean,
+): z.infer<typeof AgentListActivitySchema> {
+  if (includeTaskCount || activity.state !== "working" || activity.runningTaskCount === undefined) return activity;
+  const { runningTaskCount: _count, ...legacy } = activity;
+  return legacy;
+}
+
 export const AgentDetailSchema = AgentSummarySchema.extend({
   activity: AgentListActivitySchema,
 }).strict();

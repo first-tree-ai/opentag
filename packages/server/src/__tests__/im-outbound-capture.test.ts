@@ -795,4 +795,41 @@ describe("ImOutboundCapture bounded persistence", () => {
     expect(parentLookup?.params).toContain("oc_confirmed_chat");
     expect(statements).toHaveLength(3);
   });
+
+  it("inherits chatMode from the stored reply parent when omitted on the outbound response", async () => {
+    const parent = {
+      external_message_id: "om_root",
+      thread_key: "omt_topic",
+      provider_context: { provider: "feishu", chatType: "group", chatMode: "topic", rootId: "om_root" },
+    };
+    let calls = 0;
+    const { database, statements } = fakeDatabase(() => {
+      calls += 1;
+      if (calls === 1) return Promise.resolve([{ external_bot_id: "ou_bot" }]);
+      if (calls === 2) return Promise.resolve([parent]);
+      return Promise.resolve([]);
+    });
+    const capture = new ImOutboundCapture(database);
+
+    await capture.capture(
+      feishuEvent({
+        operationId: "feishu.im.messages.reply",
+        pathParams: { message_id: "om_root" },
+        responsePayload: {
+          code: 0,
+          data: {
+            message_id: "om_child",
+            chat_id: "oc_confirmed_chat",
+            msg_type: "text",
+            body: { content: '{"text":"fixture"}' },
+          },
+        },
+      }),
+    );
+
+    const insertStatement = statements[2];
+    expect(insertStatement?.params).toContain(
+      '{"provider":"feishu","parentId":"om_root","rootId":"om_root","chatMode":"topic"}',
+    );
+  });
 });

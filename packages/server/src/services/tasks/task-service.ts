@@ -774,6 +774,7 @@ export class TaskService {
         case when p.is_thread then 'thread' else 'channel' end as "sessionKind",
         p.channel_id as "channelId",
         case when p.is_thread then p.topic_key else null end as "threadKey",
+        p.chat_mode as "chatMode",
         p.anchor_at as "createdAt",
         case when ts.id is not null then ts.ended_at else cs.ended_at end as "endedAt",
         ts.manual_title as "manualTitle",

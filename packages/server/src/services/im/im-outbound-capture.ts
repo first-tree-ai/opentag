@@ -532,6 +532,38 @@ function feishuReplyConflict(meta: FeishuResponseMeta): boolean {
   return meta.replyTargetExternalId !== null && meta.parentId !== meta.replyTargetExternalId;
 }
 
+function feishuChatMode(value: unknown): "group" | "topic" | "p2p" | undefined {
+  return value === "group" || value === "topic" || value === "p2p" ? value : undefined;
+}
+
+function feishuOutboundProviderContext(
+  meta: FeishuResponseMeta,
+  data: Record<string, unknown>,
+): ProviderInboundContext {
+  const chatMode = feishuChatMode(data.chat_mode ?? data.chatMode) ?? (data.chat_type === "p2p" ? "p2p" : undefined);
+  return {
+    provider: "feishu",
+    ...(chatMode ? { chatMode } : {}),
+    ...(meta.threadId ? { threadId: meta.threadId } : {}),
+    ...(meta.rootId ? { rootId: meta.rootId } : {}),
+    ...(meta.replyToExternalId ? { parentId: meta.replyToExternalId } : {}),
+  };
+}
+
+function inheritParentFeishuContext(
+  current: ProviderInboundContext,
+  parent: StoredMessageContext,
+  rootId: string | null,
+): ProviderInboundContext {
+  if (current.provider !== "feishu") return current;
+  const parentChatMode = parent.providerContext.provider === "feishu" ? parent.providerContext.chatMode : undefined;
+  return {
+    ...current,
+    ...(rootId && !current.rootId ? { rootId } : {}),
+    ...(parentChatMode && !current.chatMode ? { chatMode: parentChatMode } : {}),
+  };
+}
+
 function parseFeishuSend(event: OutboundCaptureEvent, reply: boolean): OutboundCaptureParse {
   const response = asRecord(event.responsePayload);
   if (response?.code !== 0) return skipped("platform_not_successful");
@@ -555,12 +587,7 @@ function parseFeishuSend(event: OutboundCaptureEvent, reply: boolean): OutboundC
       replyToExternalId: meta.replyToExternalId,
       responseAuthorExternalId: meta.responseAuthorExternalId,
       content: feishuBodyContent(msgType, body, timeSource),
-      providerContext: {
-        provider: "feishu",
-        ...(meta.threadId ? { threadId: meta.threadId } : {}),
-        ...(meta.rootId ? { rootId: meta.rootId } : {}),
-        ...(meta.replyToExternalId ? { parentId: meta.replyToExternalId } : {}),
-      },
+      providerContext: feishuOutboundProviderContext(meta, data ?? {}),
       occurredAt: meta.providerAt ?? event.observedAt,
       timeSource,
       replyTargetExternalId: meta.replyTargetExternalId,
@@ -834,10 +861,7 @@ export class ImOutboundCapture {
     if (!parent) return { threadKey: null, providerContext: message.providerContext };
     const parentRootId = parent.providerContext.provider === "feishu" ? (parent.providerContext.rootId ?? null) : null;
     const rootId = parentRootId ?? (parent.threadKey ? null : parent.externalMessageId);
-    const providerContext =
-      message.providerContext.provider === "feishu" && rootId && !message.providerContext.rootId
-        ? { ...message.providerContext, rootId }
-        : message.providerContext;
+    const providerContext = inheritParentFeishuContext(message.providerContext, parent, rootId);
     return { threadKey: parent.threadKey ?? parentRootId ?? parent.externalMessageId, providerContext };
   }
 

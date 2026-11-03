@@ -101,6 +101,7 @@ export function TasksPage({ agentId, showExamples = false }: { agentId?: string;
           task.source.provider,
           task.source.channelId,
           task.source.threadKey,
+          task.source.chatMode,
         ]
           .map((value) => foldCase(value ?? ""))
           .join(" ")
@@ -450,7 +451,7 @@ export function TaskDetailPage({
             </span>
           </TaskDetailFact>
           <TaskDetailFact label={m.tasks_source_label()}>
-            <span className="inline-flex items-center gap-1.5">
+            <span className="inline-flex items-center gap-1.5" data-chat-mode={task.source.chatMode ?? undefined}>
               <ProviderIcon className="size-5" provider={task.source.provider} />
               {sourceLabel(task)}
             </span>
@@ -769,6 +770,7 @@ function TaskRow({
     <Table.Row
       className="cursor-pointer transition-colors hover:bg-kumo-tint/50 grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 border-b border-kumo-line last:border-b-0 @min-[40rem]/content:table-row @min-[40rem]/content:border-b-0"
       data-ui="task-table-row"
+      data-chat-mode={task.source.chatMode ?? undefined}
       onClick={(event) => {
         if (
           event.defaultPrevented ||
@@ -794,7 +796,11 @@ function TaskRow({
           </span>
         </Table.Cell>
       ) : null}
-      <Table.Cell className="col-start-1 row-start-2 min-w-0" data-label={m.tasks_source_label()}>
+      <Table.Cell
+        className="col-start-1 row-start-2 min-w-0"
+        data-chat-mode={task.source.chatMode ?? undefined}
+        data-label={m.tasks_source_label()}
+      >
         <span className={"inline-flex min-w-0 items-center gap-2 @min-[40rem]/content:whitespace-nowrap"}>
           <ProviderIcon className="size-5" provider={task.source.provider} />
           <span>{sourceLabel(task)}</span>

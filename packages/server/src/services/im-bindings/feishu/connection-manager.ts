@@ -606,7 +606,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     try {
       const payload = workStore.parse(attempt);
       if (payload.provider !== "feishu" || !owned) throw new Error("FEISHU_INBOUND_FENCE_STALE");
-      const event = payload.event;
+      const event = await this.#withResolvedChatMode(owned.adapter, payload.event);
       if (feishuEnvelopeEventId(event) !== attempt.eventId) throw new Error("FEISHU_INBOUND_IDENTITY_MISMATCH");
       const result = await this.#persistInboundEvent(
         event,
@@ -771,7 +771,8 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
           setFailureCode("FEISHU_INBOUND_NORMALIZE_FAILED");
           const events = adapter.normalizeInbound({ appId: handoff.appId, teamId: null, message });
           const senderOpenId = feishuSenderOpenId(message);
-          for (const event of events) {
+          for (const rawEvent of events) {
+            const event = await this.#withResolvedChatMode(adapter, rawEvent);
             const result = await this.#processInboundEvent(event, handoff, setFailureCode, senderOpenId);
             const messageId = result?.messageId;
             if (
@@ -883,6 +884,34 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
       ...outcomeAttrs(result.duplicate ? "duplicate" : result.deliveryIds.length > 0 ? "persisted" : "no_delivery"),
     });
     return result;
+  }
+
+  async #withResolvedChatMode(
+    adapter: FeishuAdapter,
+    event: Parameters<ImMessageInbox["ingest"]>[2],
+  ): Promise<Parameters<ImMessageInbox["ingest"]>[2]> {
+    if (event.providerContext.provider !== "feishu" || event.providerContext.chatMode) {
+      return event;
+    }
+    if (event.providerContext.chatType === "p2p") {
+      return {
+        ...event,
+        providerContext: { ...event.providerContext, chatMode: "p2p" },
+      };
+    }
+    if (event.message.operation === "deleted" || !adapter.resolveChatMode) {
+      return event;
+    }
+    try {
+      const chatMode = await adapter.resolveChatMode({ chatId: event.conversation.externalId });
+      if (!chatMode) return event;
+      return {
+        ...event,
+        providerContext: { ...event.providerContext, chatMode },
+      };
+    } catch {
+      return event;
+    }
   }
 
   async #enrichSenderName(

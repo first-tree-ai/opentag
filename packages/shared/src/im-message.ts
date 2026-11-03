@@ -12,6 +12,7 @@ export const ProviderInboundContextSchema = z.discriminatedUnion("provider", [
     .object({
       provider: z.literal("feishu"),
       chatType: z.string().min(1).max(160).optional(),
+      chatMode: z.enum(["group", "topic", "p2p"]).optional(),
       threadId: z.string().min(1).max(512).optional(),
       rootId: z.string().min(1).max(512).optional(),
       parentId: z.string().min(1).max(512).optional(),

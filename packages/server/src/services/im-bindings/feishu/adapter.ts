@@ -26,15 +26,23 @@ import type {
 import { setFeishuFailureReaction } from "./failure-reaction.js";
 import { feishuMessageContent } from "./message-content.js";
 
+export type FeishuChatMode = "group" | "topic" | "p2p";
+
 interface FeishuRawEnvelope {
   header?: { event_id?: string; tenant_key?: string };
   event_id?: string;
   tenant_key?: string;
-  event?: { sender?: { sender_type?: string; tenant_key?: string } };
+  chat_mode?: string;
+  chatMode?: string;
+  event?: {
+    sender?: { sender_type?: string; tenant_key?: string };
+    message?: { chat_mode?: string; chatMode?: string };
+  };
   opentagOperation?: "created" | "edited" | "deleted";
   opentagConversationKind?: "unknown";
   opentagSenderOpenId?: string;
   opentagContentTruncated?: boolean;
+  opentagChatMode?: FeishuChatMode;
 }
 
 interface RawFeishuMessageEvent {
@@ -54,6 +62,8 @@ interface RawFeishuMessageEvent {
     chat_id: string;
     thread_id?: string;
     chat_type: string;
+    chat_mode?: string;
+    chatMode?: string;
     message_type: string;
     content: string;
     mentions?: Array<{
@@ -89,11 +99,19 @@ export interface FeishuChannel {
 export interface FeishuHttpCapability {
   fetchResource(input: ProviderResourceInput, signal?: AbortSignal): Promise<ReadableResource>;
   resolveSenderName?(input: { chatId: string; senderOpenId: string }): Promise<string | undefined>;
+  resolveChatMode?(input: { chatId: string }): Promise<FeishuChatMode | undefined>;
 }
 
 export interface FeishuHttpClient {
   im: {
     v1: {
+      chats?: {
+        get(input: { path: { chat_id: string } }): Promise<{
+          code?: number;
+          msg?: string;
+          data?: { chat_mode?: string };
+        }>;
+      };
       chatMembers: {
         get(input: {
           path: { chat_id: string };
@@ -242,11 +260,18 @@ function boundedText(value: string): { text: string; truncated: boolean } {
   return { text, truncated: text !== value };
 }
 
+function feishuChatMode(value: unknown): FeishuChatMode | undefined {
+  return value === "group" || value === "topic" || value === "p2p" ? value : undefined;
+}
+
 function rawReceiveToNormalized(raw: RawFeishuMessageEvent): NormalizedMessage {
   const parsed = feishuMessageContent(raw.message.message_type, raw.message.content, raw.message.mentions);
   const senderId = raw.sender.sender_id?.open_id ?? raw.sender.sender_id?.user_id ?? "system";
   const eventId = raw.header?.event_id ?? raw.event_id;
   const tenantKey = raw.header?.tenant_key ?? raw.tenant_key ?? raw.sender.tenant_key;
+  const chatMode =
+    feishuChatMode(raw.message.chat_mode ?? raw.message.chatMode) ??
+    (raw.message.chat_type === "p2p" ? "p2p" : undefined);
   return {
     messageId: raw.message.message_id,
     chatId: raw.message.chat_id,
@@ -275,6 +300,7 @@ function rawReceiveToNormalized(raw: RawFeishuMessageEvent): NormalizedMessage {
       opentagOperation: "created",
       opentagSenderOpenId: raw.sender.sender_id?.open_id,
       opentagContentTruncated: parsed.truncated,
+      ...(chatMode ? { opentagChatMode: chatMode } : {}),
     } satisfies FeishuRawEnvelope,
   };
 }
@@ -307,6 +333,40 @@ function contentWasTruncated(message: NormalizedMessage): boolean {
   return raw?.opentagContentTruncated === true || message.resources.length > 16;
 }
 
+function normalizedChatMode(
+  message: NormalizedMessage,
+  raw: FeishuRawEnvelope | undefined,
+): FeishuChatMode | undefined {
+  const candidate = message as { chatMode?: unknown; chat_mode?: unknown };
+  const explicit = feishuChatMode(
+    raw?.opentagChatMode ??
+      raw?.chatMode ??
+      raw?.chat_mode ??
+      raw?.event?.message?.chat_mode ??
+      raw?.event?.message?.chatMode ??
+      candidate.chatMode ??
+      candidate.chat_mode,
+  );
+  if (explicit) return explicit;
+  if (raw?.opentagConversationKind === "unknown") return undefined;
+  return message.chatType === "p2p" ? "p2p" : undefined;
+}
+
+function normalizedProviderContext(
+  message: NormalizedMessage,
+  raw: FeishuRawEnvelope | undefined,
+): NormalizedInboundImEvent["providerContext"] {
+  const chatMode = normalizedChatMode(message, raw);
+  return {
+    provider: "feishu",
+    ...(message.chatType ? { chatType: message.chatType } : {}),
+    ...(chatMode ? { chatMode } : {}),
+    ...(message.threadId ? { threadId: message.threadId } : {}),
+    ...(message.rootId ? { rootId: message.rootId } : {}),
+    ...(message.replyToMessageId ? { parentId: message.replyToMessageId } : {}),
+  };
+}
+
 export function normalizeFeishuMessage(input: VerifiedFeishuEnvelope): NormalizedInboundImEvent[] {
   const raw = input.message.raw as FeishuRawEnvelope | undefined;
   const operation = raw?.opentagOperation ?? "created";
@@ -330,13 +390,7 @@ export function normalizeFeishuMessage(input: VerifiedFeishuEnvelope): Normalize
       externalAppId: input.appId,
       externalTeamId:
         raw?.header?.tenant_key ?? raw?.tenant_key ?? raw?.event?.sender?.tenant_key ?? input.teamId ?? input.appId,
-      providerContext: {
-        provider: "feishu",
-        ...(input.message.chatType ? { chatType: input.message.chatType } : {}),
-        ...(input.message.threadId ? { threadId: input.message.threadId } : {}),
-        ...(input.message.rootId ? { rootId: input.message.rootId } : {}),
-        ...(input.message.replyToMessageId ? { parentId: input.message.replyToMessageId } : {}),
-      },
+      providerContext: normalizedProviderContext(input.message, raw),
       conversation: {
         externalId: input.message.chatId,
         kind:
@@ -663,6 +717,16 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
       timeoutMs: FEISHU_SENDER_NAME_POLICY_TIMEOUT_MS,
     });
   }
+
+  async resolveChatMode(input: { chatId: string }): Promise<FeishuChatMode | undefined> {
+    const resolveChatMode = this.#http.resolveChatMode;
+    if (!resolveChatMode) return undefined;
+    return this.#policy.run("feishu.chat-mode.resolve", () => resolveChatMode(input), {
+      circuitKey: `feishu:chat-mode:${this.#appId}`,
+      maxAttempts: 1,
+      timeoutMs: FEISHU_CHAT_MODE_POLICY_TIMEOUT_MS,
+    });
+  }
 }
 
 const FEISHU_SENDER_NAME_TTL_MS = 60 * 60 * 1000;
@@ -677,6 +741,12 @@ const FEISHU_SENDER_NAME_CACHE_MAX_ENTRIES = 10_000;
 const FEISHU_SENDER_NAME_LOOKUP_TIMEOUT_MS = 4_000;
 /** Invariant: the policy deadline outlives the lookup deadline, so the lookup reports its own timeout. */
 const FEISHU_SENDER_NAME_POLICY_TIMEOUT_MS = 5_000;
+
+const FEISHU_CHAT_MODE_TTL_MS = 60 * 60 * 1000;
+const FEISHU_MISSING_CHAT_MODE_TTL_MS = 5 * 60 * 1000;
+const FEISHU_CHAT_MODE_CACHE_MAX_ENTRIES = 10_000;
+const FEISHU_CHAT_MODE_LOOKUP_TIMEOUT_MS = 4_000;
+const FEISHU_CHAT_MODE_POLICY_TIMEOUT_MS = 5_000;
 
 export function feishuSenderOpenId(message: NormalizedMessage): string | null {
   const raw = message.raw as FeishuRawEnvelope | undefined;
@@ -777,11 +847,81 @@ function createCachedFeishuSenderNameResolver(
   };
 }
 
+async function fetchFeishuChatMode(
+  client: FeishuHttpClient,
+  input: { chatId: string },
+): Promise<FeishuChatMode | undefined> {
+  const chats = client.im.v1.chats;
+  if (!chats) return undefined;
+  const response = await chats.get({ path: { chat_id: input.chatId } });
+  if (response.code !== undefined && response.code !== 0) {
+    throw new Error("FEISHU_CHAT_MODE_LOOKUP_FAILED");
+  }
+  return feishuChatMode(response.data?.chat_mode?.trim());
+}
+
+function withFeishuChatModeTimeout<T>(operation: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("FEISHU_CHAT_MODE_LOOKUP_TIMEOUT")), FEISHU_CHAT_MODE_LOOKUP_TIMEOUT_MS);
+    timer.unref();
+  });
+  return Promise.race([operation, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+function createCachedFeishuChatModeResolver(
+  client: FeishuHttpClient,
+): (input: { chatId: string }) => Promise<FeishuChatMode | undefined> {
+  const chatModes = new Map<string, { expiresAt: number; chatMode: FeishuChatMode | undefined }>();
+  const pendingChatModes = new Map<string, Promise<FeishuChatMode | undefined>>();
+
+  const remember = (chatId: string, chatMode: FeishuChatMode | undefined, now: number): void => {
+    chatModes.delete(chatId);
+    chatModes.set(chatId, {
+      expiresAt: now + (chatMode ? FEISHU_CHAT_MODE_TTL_MS : FEISHU_MISSING_CHAT_MODE_TTL_MS),
+      chatMode,
+    });
+    while (chatModes.size > FEISHU_CHAT_MODE_CACHE_MAX_ENTRIES) {
+      const oldest = chatModes.keys().next().value;
+      if (oldest === undefined) break;
+      chatModes.delete(oldest);
+    }
+  };
+
+  return async (input) => {
+    const key = input.chatId;
+    const now = Date.now();
+    const cached = chatModes.get(key);
+    if (cached && cached.expiresAt > now) {
+      chatModes.delete(key);
+      chatModes.set(key, cached);
+      return cached.chatMode;
+    }
+    if (cached) chatModes.delete(key);
+    const pending = pendingChatModes.get(key);
+    if (pending) return pending;
+
+    const lookup = withFeishuChatModeTimeout(fetchFeishuChatMode(client, input)).then((chatMode) => {
+      remember(key, chatMode, now);
+      return chatMode;
+    });
+    pendingChatModes.set(key, lookup);
+    try {
+      return await lookup;
+    } finally {
+      if (pendingChatModes.get(key) === lookup) pendingChatModes.delete(key);
+    }
+  };
+}
+
 export function createFeishuHttpCapability(
   client: FeishuHttpClient,
   createClientForSignal: (signal: AbortSignal) => FeishuHttpClient = () => client,
 ): FeishuHttpCapability {
   const resolveSenderName = createCachedFeishuSenderNameResolver(client);
+  const resolveChatMode = createCachedFeishuChatModeResolver(client);
   return {
     async fetchResource(input, signal) {
       const activeClient = signal ? createClientForSignal(signal) : client;
@@ -795,6 +935,7 @@ export function createFeishuHttpCapability(
       return { stream: response.getReadableStream() };
     },
     resolveSenderName,
+    resolveChatMode,
   };
 }
 

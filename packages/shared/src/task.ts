@@ -63,6 +63,7 @@ export const TaskSummarySchema = z
         conversationKind: ImConversationKindSchema,
         channelId: z.string().min(1),
         threadKey: z.string().min(1).nullable(),
+        chatMode: z.enum(["group", "topic", "p2p"]).nullable().optional(),
       })
       .strict(),
     sessionKind: TaskSessionKindSchema,

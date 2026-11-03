@@ -1131,7 +1131,12 @@ export async function startServer(): Promise<void> {
         })
       : undefined;
     const resolveImAdapter = createImProviderAdapterResolver({ imBindings: imBindingService, slackApi });
-    const imFeedbackMessenger = new ImFeedbackMessenger(imBindingService, imCallPolicy, config.publicUrl);
+    const imFeedbackMessenger = new ImFeedbackMessenger(
+      imBindingService,
+      imCallPolicy,
+      config.publicUrl,
+      imFeedback.store,
+    );
     imFeedbackWorker = new ImFeedbackWorker({
       store: imFeedback.store,
       transport: imFeedbackMessenger,

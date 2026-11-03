@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { WebAPIRateLimitedError } from "@slack/web-api";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ExternalCallPolicy, ExternalCallPolicyError } from "../services/im/external-call-policy.js";
-import { ImFeedbackMessenger } from "../services/im/im-feedback-messenger.js";
+import { FeedbackCooldownStorageError, ImFeedbackMessenger } from "../services/im/im-feedback-messenger.js";
 import type { FeedbackTarget } from "../services/im/im-feedback-store.js";
 import type { ImBindingService } from "../services/im-bindings/im-binding-service.js";
 
@@ -109,7 +109,17 @@ function harness() {
     getFeishuConnectionMaterial: feishu,
   } as unknown as ImBindingService;
   const policy = new ExternalCallPolicy({ allowedHosts: [] });
-  return { messenger: new ImFeedbackMessenger(bindings, policy, "https://app.example.test"), policy, slack, feishu };
+  const cooldown = {
+    slackCooldownRemaining: vi.fn(async () => 0 as number | undefined),
+    deferSlackInstallation: vi.fn(async () => true),
+  };
+  return {
+    messenger: new ImFeedbackMessenger(bindings, policy, "https://app.example.test", cooldown),
+    policy,
+    slack,
+    feishu,
+    cooldown,
+  };
 }
 beforeEach(() => {
   vi.clearAllMocks();
@@ -357,4 +367,86 @@ it("does not count Slack 429 responses toward the shared outage circuit", async 
   mocks.slack.chat.postMessage.mockResolvedValueOnce({ ok: true, ts: "other-installation-card", channel: "channel" });
   expect(await messenger.post(target())).toBe("other-installation-card");
   expect(mocks.slack.chat.postMessage).toHaveBeenCalledTimes(5);
+});
+
+describe("shared Slack cooldown transport", () => {
+  it.each(["post", "update", "find", "reaction"] as const)(
+    "defers %s before provider I/O without opening the outage circuit",
+    async (operation) => {
+      const h = harness();
+      const t = { ...target(), cardMessageId: "existing" };
+      h.cooldown.slackCooldownRemaining.mockResolvedValue(45_000);
+      for (let i = 0; i < 4; i++)
+        await expect(
+          operation === "reaction" ? h.messenger.reaction(t, "warning") : h.messenger[operation](t),
+        ).rejects.toMatchObject({ knownNotApplied: true, retryAfterMs: 45_000 });
+      expect(mocks.slack.chat.postMessage).not.toHaveBeenCalled();
+      expect(mocks.slack.chat.update).not.toHaveBeenCalled();
+      expect(mocks.slack.conversations.replies).not.toHaveBeenCalled();
+      expect(mocks.slack.reactions.add).not.toHaveBeenCalled();
+      expect(mocks.slack.reactions.remove).not.toHaveBeenCalled();
+      expect(h.cooldown.deferSlackInstallation).not.toHaveBeenCalled();
+      h.cooldown.slackCooldownRemaining.mockResolvedValue(0);
+      mocks.slack.chat.postMessage.mockResolvedValue({ ok: true, channel: t.channelId, ts: "ready" });
+      expect(await h.messenger.post(t)).toBe("ready");
+    },
+  );
+  it("checks the deadline separately before each reaction method", async () => {
+    const h = harness();
+    h.cooldown.slackCooldownRemaining.mockResolvedValueOnce(0).mockResolvedValueOnce(30_000);
+    await expect(h.messenger.reaction(target(), "warning")).rejects.toMatchObject({ retryAfterMs: 30_000 });
+    expect(mocks.slack.reactions.remove).toHaveBeenCalledOnce();
+    expect(mocks.slack.reactions.add).not.toHaveBeenCalled();
+  });
+  it("persists a native SDK 429 before returning it to the worker", async () => {
+    const h = harness();
+    const t = target();
+    mocks.slack.chat.postMessage.mockRejectedValueOnce(new WebAPIRateLimitedError(42));
+    await expect(h.messenger.post(t)).rejects.toMatchObject({ retryAfterMs: 42_000 });
+    expect(h.cooldown.deferSlackInstallation).toHaveBeenCalledExactlyOnceWith(t, 42_000);
+  });
+  it("classifies a failed cooldown write after a confirmed rejection as definitely not sent", async () => {
+    const h = harness();
+    h.cooldown.deferSlackInstallation.mockRejectedValueOnce(new Error("database unavailable"));
+    mocks.slack.chat.postMessage.mockRejectedValueOnce(new WebAPIRateLimitedError(7));
+    await expect(h.messenger.post(target())).rejects.toBeInstanceOf(FeedbackCooldownStorageError);
+    expect(mocks.slack.chat.postMessage).toHaveBeenCalledOnce();
+  });
+  it("does not call Slack on storage failure, or count that failure toward the provider circuit", async () => {
+    const h = harness();
+    h.cooldown.slackCooldownRemaining.mockRejectedValue(new Error("database unavailable"));
+    for (let i = 0; i < 4; i++)
+      await expect(h.messenger.post(target())).rejects.toMatchObject({
+        code: "IM_FEEDBACK_COOLDOWN_UNAVAILABLE",
+        knownNotApplied: true,
+      });
+    expect(mocks.slack.chat.postMessage).not.toHaveBeenCalled();
+    h.cooldown.slackCooldownRemaining.mockResolvedValue(0);
+    mocks.slack.chat.postMessage.mockResolvedValue({ ok: true, channel: "channel", ts: "ready" });
+    expect(await h.messenger.post(target())).toBe("ready");
+  });
+  it("blocks a rotated installation and ignores its late rate-limit result", async () => {
+    const h = harness();
+    h.cooldown.deferSlackInstallation.mockResolvedValueOnce(false);
+    mocks.slack.chat.postMessage.mockRejectedValueOnce(new WebAPIRateLimitedError(7));
+    await expect(h.messenger.post(target())).rejects.toMatchObject({
+      code: "IM_FEEDBACK_BINDING_STALE",
+      knownNotApplied: true,
+    });
+    h.cooldown.slackCooldownRemaining.mockResolvedValueOnce(undefined);
+    await expect(h.messenger.post(target())).rejects.toMatchObject({ code: "IM_FEEDBACK_BINDING_STALE" });
+    expect(mocks.slack.chat.postMessage).toHaveBeenCalledOnce();
+  });
+  it("does not consult the Slack cooldown for Feishu", async () => {
+    const h = harness();
+    h.cooldown.slackCooldownRemaining.mockRejectedValue(new Error("not a Slack installation"));
+    const t = target("feishu");
+    mocks.feishu.im.v1.message.reply.mockResolvedValue({
+      code: 0,
+      data: { message_id: "feishu-card", chat_id: t.channelId },
+    });
+    expect(await h.messenger.post(t)).toBe("feishu-card");
+    expect(h.cooldown.slackCooldownRemaining).not.toHaveBeenCalled();
+    expect(h.cooldown.deferSlackInstallation).not.toHaveBeenCalled();
+  });
 });

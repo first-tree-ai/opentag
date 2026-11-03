@@ -1,5 +1,9 @@
 import type { ServiceLogger } from "../../observability/service-logger.js";
-import { FeedbackProviderError, type FeedbackTransport } from "./im-feedback-messenger.js";
+import {
+  FeedbackCooldownStorageError,
+  FeedbackProviderError,
+  type FeedbackTransport,
+} from "./im-feedback-messenger.js";
 import type { FeedbackTarget, ImFeedbackStore } from "./im-feedback-store.js";
 
 type ReactionResult = { value: FeedbackTarget["appliedReaction"]; failed: boolean; retryAfterMs?: number };
@@ -65,20 +69,27 @@ export class ImFeedbackWorker {
       else if (target.cardState === "pending" && !target.cardMessageId) await this.#publish(target, reaction);
       else await this.#settleKnown(target, reaction);
     } catch (error) {
-      this.options.logger.warn(
-        { code: "IM_FEEDBACK_PROJECTION_FAILED", feedbackId: target.id },
-        "IM feedback remains pending",
-      );
-      await this.options.store.settle(target, {
-        delayMs: Math.max(
-          retryAfterMs,
-          error instanceof FeedbackProviderError
-            ? (error.retryAfterMs ?? feedbackRetryDelay(target.attemptCount))
-            : feedbackRetryDelay(target.attemptCount),
-        ),
-        errorCode: "IM_FEEDBACK_PROJECTION_FAILED",
-      });
+      await this.#failure(target, error, retryAfterMs);
     }
+  }
+  async #failure(target: FeedbackTarget, error: unknown, retryAfterMs: number): Promise<void> {
+    this.options.logger.warn(
+      { code: "IM_FEEDBACK_PROJECTION_FAILED", feedbackId: target.id },
+      "IM feedback remains pending",
+    );
+    await this.options.store.settle(target, {
+      delayMs: Math.max(
+        retryAfterMs,
+        error instanceof FeedbackProviderError
+          ? (error.retryAfterMs ?? feedbackRetryDelay(target.attemptCount))
+          : feedbackRetryDelay(target.attemptCount),
+      ),
+      errorCode: error instanceof FeedbackCooldownStorageError ? error.code : "IM_FEEDBACK_PROJECTION_FAILED",
+      ...(error instanceof FeedbackCooldownStorageError && target.cardState === "pending"
+        ? { cardState: "pending" as const }
+        : {}),
+    });
+    if (error instanceof FeedbackCooldownStorageError) throw error;
   }
   async #reaction(target: FeedbackTarget): Promise<ReactionResult> {
     let value = target.appliedReaction;
@@ -91,6 +102,7 @@ export class ImFeedbackWorker {
       }
       return { value, failed: false };
     } catch (error) {
+      if (error instanceof FeedbackCooldownStorageError) throw error;
       this.options.logger.warn(
         { code: "IM_FEEDBACK_REACTION_FAILED", feedbackId: target.id },
         "IM feedback reaction is pending",
@@ -171,6 +183,7 @@ export class ImFeedbackWorker {
         ...reactionRetry(target, reaction),
       });
     } catch (error) {
+      if (error instanceof FeedbackCooldownStorageError) throw error;
       const failure = sendFailure(error, target);
       await this.options.store.settle(target, {
         reaction: reaction.value,

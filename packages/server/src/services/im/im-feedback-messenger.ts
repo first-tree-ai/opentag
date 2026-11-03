@@ -5,7 +5,7 @@ import type { ImBindingService } from "../im-bindings/im-binding-service.js";
 import { SLACK_WEB_CLIENT_OPTIONS } from "../im-bindings/slack/default-api-client.js";
 import { type ExternalCallPolicy, ExternalCallPolicyError } from "./external-call-policy.js";
 import { renderFeedbackCard } from "./im-feedback-card.js";
-import type { FeedbackAction, FeedbackTarget } from "./im-feedback-store.js";
+import type { FeedbackAction, FeedbackTarget, ImFeedbackStore } from "./im-feedback-store.js";
 
 export class FeedbackProviderError extends Error {
   constructor(
@@ -15,6 +15,12 @@ export class FeedbackProviderError extends Error {
     readonly retryAfterMs?: number,
   ) {
     super(code);
+  }
+}
+
+export class FeedbackCooldownStorageError extends FeedbackProviderError {
+  constructor(retryAfterMs = 30_000) {
+    super("IM_FEEDBACK_COOLDOWN_UNAVAILABLE", true, false, retryAfterMs);
   }
 }
 
@@ -30,6 +36,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     readonly bindings: ImBindingService,
     readonly policy: ExternalCallPolicy,
     readonly publicUrl: string,
+    readonly cooldown: Pick<ImFeedbackStore, "slackCooldownRemaining" | "deferSlackInstallation">,
   ) {}
 
   async #run<T>(
@@ -44,17 +51,44 @@ export class ImFeedbackMessenger implements FeedbackTransport {
           return { ok: true as const, value: await task(signal) };
         } catch (error) {
           if (
-            operation.startsWith("slack.") &&
-            (error instanceof WebAPIRateLimitedError || slackErrorCode(error) === "ratelimited")
+            error instanceof FeedbackCooldownStorageError ||
+            (error instanceof FeedbackProviderError && error.code === "IM_FEEDBACK_BINDING_STALE")
           )
-            return { ok: false as const, retryAfterMs: slackRetryAfter(error) };
+            return { ok: false as const, error };
+          const limited = operation.startsWith("slack.") ? feedbackRateLimit(error) : undefined;
+          if (limited) return { ok: false as const, error: limited };
           throw error;
         }
       },
       options,
     );
-    if (!result.ok) throw new FeedbackProviderError("IM_FEEDBACK_RATE_LIMITED", true, false, result.retryAfterMs);
+    if (!result.ok) throw result.error;
     return result.value;
+  }
+
+  async #slackCall<T>(target: FeedbackTarget, task: () => Promise<T>): Promise<T> {
+    let remainingMs: number | undefined;
+    try {
+      remainingMs = await this.cooldown.slackCooldownRemaining(target);
+    } catch {
+      throw new FeedbackCooldownStorageError();
+    }
+    if (remainingMs === undefined) throw new FeedbackProviderError("IM_FEEDBACK_BINDING_STALE", true, true);
+    if (remainingMs > 0) throw new FeedbackProviderError("IM_FEEDBACK_RATE_LIMITED", true, false, remainingMs);
+    try {
+      return await task();
+    } catch (error) {
+      const limited = feedbackRateLimit(error);
+      if (!limited) throw error;
+      let current: boolean;
+      try {
+        current = await this.cooldown.deferSlackInstallation(target, limited.retryAfterMs ?? 30_000);
+      } catch {
+        throw new FeedbackCooldownStorageError(limited.retryAfterMs);
+      }
+      if (!current) throw new FeedbackProviderError("IM_FEEDBACK_BINDING_STALE", true, true);
+      throw limited;
+    }
   }
 
   async #slack(target: FeedbackTarget, signal: AbortSignal) {
@@ -140,8 +174,8 @@ export class ImFeedbackMessenger implements FeedbackTransport {
       const wanted = desired === (name === "eyes" ? "working" : "warning");
       try {
         const input = { channel: target.channelId, timestamp: target.inputExternalId, name };
-        if (wanted) await api.reactions.add(input);
-        else await api.reactions.remove(input);
+        if (wanted) await this.#slackCall(target, () => api.reactions.add(input));
+        else await this.#slackCall(target, () => api.reactions.remove(input));
       } catch (error) {
         if (slackErrorCode(error) !== (wanted ? "already_reacted" : "no_reaction")) throw error;
       }
@@ -172,11 +206,13 @@ export class ImFeedbackMessenger implements FeedbackTransport {
           const card = renderFeedbackCard(target, this.publicUrl, action);
           if (target.provider === "slack") {
             const { api } = await this.#slack(target, signal);
-            const r = await api.chat.postMessage({
-              channel: target.channelId,
-              thread_ts: target.threadKey ?? target.inputExternalId,
-              ...card.slack,
-            });
+            const r = await this.#slackCall(target, () =>
+              api.chat.postMessage({
+                channel: target.channelId,
+                thread_ts: target.threadKey ?? target.inputExternalId,
+                ...card.slack,
+              }),
+            );
             if (!r.ok || !r.ts || r.channel !== target.channelId)
               throw new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false);
             return r.ts;
@@ -220,12 +256,14 @@ export class ImFeedbackMessenger implements FeedbackTransport {
         const card = renderFeedbackCard(target, this.publicUrl, action);
         if (target.provider === "slack") {
           const { api } = await this.#slack(target, signal);
-          const r = await api.chat.update({
-            channel: target.channelId,
-            ts: cardMessageId,
-            text: card.slack.text,
-            blocks: card.slack.blocks,
-          });
+          const r = await this.#slackCall(target, () =>
+            api.chat.update({
+              channel: target.channelId,
+              ts: cardMessageId,
+              text: card.slack.text,
+              blocks: card.slack.blocks,
+            }),
+          );
           if (!r.ok) throw new FeedbackProviderError("IM_FEEDBACK_UPDATE_FAILED", false);
         } else {
           const { api } = await this.#feishu(target, signal);
@@ -252,12 +290,14 @@ export class ImFeedbackMessenger implements FeedbackTransport {
   }
   async #findSlack(target: FeedbackTarget, signal: AbortSignal, cursor?: string) {
     const { api, material } = await this.#slack(target, signal);
-    const r = await api.conversations.replies({
-      channel: target.channelId,
-      ts: target.threadKey ?? target.inputExternalId,
-      limit: 100,
-      ...(cursor ? { cursor } : {}),
-    });
+    const r = await this.#slackCall(target, () =>
+      api.conversations.replies({
+        channel: target.channelId,
+        ts: target.threadKey ?? target.inputExternalId,
+        limit: 100,
+        ...(cursor ? { cursor } : {}),
+      }),
+    );
     if (!r.ok) throw new FeedbackProviderError("IM_FEEDBACK_READBACK_FAILED", false);
     const ids = (r.messages ?? [])
       .filter(
@@ -291,6 +331,12 @@ export class ImFeedbackMessenger implements FeedbackTransport {
       .flatMap((m) => (m.message_id ? [m.message_id] : []));
     return { ids, ...(r.data.has_more && r.data.page_token ? { cursor: r.data.page_token } : {}) };
   }
+}
+
+function feedbackRateLimit(error: unknown): FeedbackProviderError | undefined {
+  if (error instanceof FeedbackProviderError && error.code === "IM_FEEDBACK_RATE_LIMITED") return error;
+  if (error instanceof WebAPIRateLimitedError || slackErrorCode(error) === "ratelimited")
+    return new FeedbackProviderError("IM_FEEDBACK_RATE_LIMITED", true, false, slackRetryAfter(error));
 }
 
 function slackErrorCode(error: unknown): string | undefined {

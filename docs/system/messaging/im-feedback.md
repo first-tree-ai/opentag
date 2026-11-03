@@ -79,12 +79,34 @@ identity, up to one hundred messages per page and five pages per pass, retaining
 its native ID. Multiple observed matches are a defect. Negative, inaccessible, or incomplete reads never authorize
 another creation. Readback stops at the twenty-four-hour action deadline; unresolved sends become dormant without deletion or another creation. Feishu topic replies are read through the `thread` container without unsupported time-range filters ([provider contract](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/list)). Unknown sends remain in Account diagnostics with sanitized operational warnings. This deliberately
 does not promise unconditional eventual delivery or exactly-once external sending. Known-message updates use that
-same native ID. If completion arrives while creation is in flight, a definitely-not-applied result suppresses the new card, while a confirmed or ambiguous send retains its binding/reconciliation path. Slack rate-limit responses are classified within the call-policy boundary so they do not count toward the shared outage circuit; per-target Retry-After does not coordinate the method limit across other targets or Server processes. Old buttons cannot authorize a stale operation.
+same native ID. If completion arrives while creation is in flight, a definitely-not-applied result suppresses the new card, while a confirmed or ambiguous send retains its binding/reconciliation path. Slack rate-limit responses are classified within the call-policy boundary so they do not count toward the shared outage circuit; the existing installation timestamp also gates subsequent feedback calls across targets, Server processes and restarts. Old buttons cannot authorize a stale operation.
 
 New actions expire after twenty-four hours and task retries also respect the original input deadline. Confirmed,
 settled projections and actions retain ninety days of diagnostics; cleanup is bounded to one hundred records per
 retention tick. Unknown sends and operations survive expiry. Referenced source deliveries/messages remain available
 until their feedback is safely removed. No historical error-card backfill runs.
+
+## Slack rate-limit coordination
+
+The feedback transport reuses `slack_installations.working_status_not_before_at`, which also gates legacy native
+status cleanup. It adds no cooldown table, column, index, migration or cleanup job. Immediately before each
+reaction add/remove, card creation/update or history read, it checks the active installation at the target's
+credential generation and reads the remaining deadline using the database clock. A future deadline defers the
+operation as definitely not submitted. A confirmed 429 extends the same timestamp with `greatest(current,
+database-now + Retry-After)` in a short generation-checked installation-row transaction. No database lock spans
+provider I/O. Rate-limit and cooldown-storage outcomes do not count toward the shared provider outage circuit.
+
+This is deliberately installation-wide: a rate limit on one feedback method also delays other feedback methods
+of that installation. Other installations and Feishu remain independent. It conservatively honors Slack's
+[per-method/App/workspace limits](https://docs.slack.dev/apis/web-api/rate-limits/), rather than providing separate
+method deadlines. A request already admitted before the deadline was persisted may still finish.
+
+Success, completion, target retention and legacy cleanup cannot shorten the deadline. Reauthorizing the same
+installation preserves an already committed cooldown, while old-generation responses cannot extend it afterward.
+Expired timestamps remain on the installation and need no cleanup. A cooldown read failure prevents submission.
+If recording a confirmed 429 fails, the current worker pass stops and retains a definitely-unsent pending card;
+coordination is not claimed successful while storage is unavailable. Other replicas and in-flight calls cannot be
+revoked by that local failure. Unknown provider sends retain their separate reconciliation rules.
 
 ## Writer cutover
 

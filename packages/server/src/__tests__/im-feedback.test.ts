@@ -17,7 +17,11 @@ import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js
 import { ApplicationCipher } from "../services/crypto.js";
 import { ImFeedbackActionsService } from "../services/im/im-feedback-actions.js";
 import { feedbackCardContent, renderFeedbackCard } from "../services/im/im-feedback-card.js";
-import { FeedbackProviderError, type FeedbackTransport } from "../services/im/im-feedback-messenger.js";
+import {
+  FeedbackCooldownStorageError,
+  FeedbackProviderError,
+  type FeedbackTransport,
+} from "../services/im/im-feedback-messenger.js";
 import { ImFeedbackStore, startImFeedback } from "../services/im/im-feedback-store.js";
 import { ImFeedbackWorker } from "../services/im/im-feedback-worker.js";
 import { WorkspaceSaveFailedError } from "../services/sandboxes/errors.js";
@@ -875,3 +879,21 @@ it("preserves workspace recovery and paused-Session guidance for a frozen batch 
     expect(rendered).not.toContain("opentag_feedback_retry");
   }
 });
+
+it.each(["reaction", "post"] as const)(
+  "stops the worker pass on %s cooldown-storage failure without inventing an unknown send",
+  async (operation) => {
+    const h = await fixture();
+    await h.finish();
+    const claim = vi.spyOn(h.store, "claim");
+    h.transport[operation].mockRejectedValueOnce(new FeedbackCooldownStorageError(30_000));
+    await h.worker.runOnce();
+    expect(claim).toHaveBeenCalledOnce();
+    expect(await h.target()).toMatchObject({
+      cardState: "pending",
+      cardMessageId: null,
+      lastErrorCode: "IM_FEEDBACK_COOLDOWN_UNAVAILABLE",
+    });
+    if (operation === "reaction") expect(h.transport.post).not.toHaveBeenCalled();
+  },
+);

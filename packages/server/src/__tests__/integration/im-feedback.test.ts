@@ -1,15 +1,23 @@
 import { randomUUID } from "node:crypto";
-import { computeTurnResultHash, type TurnReportRequest } from "@opentag/shared";
+import { computeTurnResultHash, SLACK_REQUIRED_BOT_SCOPES, type TurnReportRequest } from "@opentag/shared";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
-import { imFeedbackActions, imFeedbackTargets, imMessageDeliveries, sandboxes } from "../../db/schema/index.js";
+import {
+  imFeedbackActions,
+  imFeedbackTargets,
+  imMessageDeliveries,
+  sandboxes,
+  slackInstallations,
+} from "../../db/schema/index.js";
 import { PostgresRuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
 import { ApplicationCipher } from "../../services/crypto.js";
+import { ExternalCallPolicy } from "../../services/im/external-call-policy.js";
 import { ImFeedbackActionsService } from "../../services/im/im-feedback-actions.js";
-import type { FeedbackTransport } from "../../services/im/im-feedback-messenger.js";
-import { ImFeedbackStore, startImFeedback } from "../../services/im/im-feedback-store.js";
+import { type FeedbackTransport, ImFeedbackMessenger } from "../../services/im/im-feedback-messenger.js";
+import { type FeedbackTarget, ImFeedbackStore, startImFeedback } from "../../services/im/im-feedback-store.js";
 import { ImFeedbackWorker } from "../../services/im/im-feedback-worker.js";
+import { ImBindingService } from "../../services/im-bindings/im-binding-service.js";
 import { createSlackWorkingFixture } from "../support/slack-working-fixture.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
@@ -272,4 +280,223 @@ describe("PostgreSQL feedback operations", () => {
       await pumping;
     }
   });
+});
+
+function messengerFor(target: FeedbackTarget, store: ImFeedbackStore) {
+  const binding = {
+    getSlackConnectionMaterial: async () => ({
+      installationId: target.installationId,
+      generation: target.bindingGeneration,
+      botAccessToken: "synthetic-feedback-token",
+      botUserId: "U1",
+    }),
+  } as unknown as ImBindingService;
+  return new ImFeedbackMessenger(binding, new ExternalCallPolicy({ allowedHosts: [] }), "https://example.test", store);
+}
+
+async function failAnother(h: Awaited<ReturnType<typeof failed>>) {
+  const { frame } = await h.delivery();
+  await client.database.transaction((tx) => startImFeedback(tx, frame.deliveryId, clock));
+  const report = { ...h.report, requestId: randomUUID(), deliveryId: frame.deliveryId, turnId: frame.turnId };
+  report.resultHash = computeTurnResultHash(report);
+  expect(
+    await new PostgresRuntimeCustodyStore(client.database, { now: () => clock }).recordTurn(report, h.context),
+  ).toBe("recorded");
+}
+
+describe("existing installation cooldown", () => {
+  it("shares a real SDK 429 across due targets, worker restarts and methods, while isolating another installation", async () => {
+    const h = await failed();
+    await failAnother(h);
+    await client.database.update(imFeedbackTargets).set({ appliedReaction: "warning" });
+    const store = new ImFeedbackStore(client.database, () => clock);
+    const transport = messengerFor(h.target, store);
+    const replica = createDatabaseClient(fixtureDb.databaseUrl, { max: 1 });
+    const requests: string[] = [];
+    const http = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      requests.push(String(url));
+      return requests.length === 1
+        ? new Response(JSON.stringify({ ok: false, error: "ratelimited" }), {
+            status: 429,
+            headers: { "Retry-After": "60", "Content-Type": "application/json" },
+          })
+        : new Response(JSON.stringify({ ok: true, channel: h.target.channelId, ts: "synthetic-card" }), {
+            headers: { "Content-Type": "application/json" },
+          });
+    });
+    try {
+      await new ImFeedbackWorker({ store, transport, logger: { warn: vi.fn() }, now: () => clock }).runOnce();
+      expect(requests).toHaveLength(1);
+      expect(await client.database.select({ state: imFeedbackTargets.cardState }).from(imFeedbackTargets)).toEqual([
+        { state: "pending" },
+        { state: "pending" },
+      ]);
+      const restartedStore = new ImFeedbackStore(replica.database, () => clock);
+      const restarted = messengerFor(h.target, restartedStore);
+      await client.database.update(imFeedbackTargets).set({ nextAttemptAt: clock });
+      await new ImFeedbackWorker({
+        store: restartedStore,
+        transport: restarted,
+        logger: { warn: vi.fn() },
+        now: () => clock,
+      }).runOnce();
+      for (const call of [
+        () => restarted.reaction(h.target, "warning"),
+        () => restarted.find(h.target),
+        () => restarted.update({ ...h.target, cardMessageId: "bound" }),
+      ])
+        await expect(call()).rejects.toMatchObject({ code: "IM_FEEDBACK_RATE_LIMITED", knownNotApplied: true });
+      expect(requests).toHaveLength(1);
+      const [installation] = await client.database
+        .select()
+        .from(slackInstallations)
+        .where(eq(slackInstallations.id, h.target.installationId ?? ""));
+      if (!installation) throw new Error("Missing installation");
+      const [other] = await client.database
+        .insert(slackInstallations)
+        .values({
+          ...installation,
+          id: randomUUID(),
+          externalAppId: "OTHER_APP",
+          externalTeamId: "OTHER_TEAM",
+          workingStatusNotBeforeAt: new Date(0),
+        })
+        .returning();
+      if (!other) throw new Error("Missing second installation");
+      const otherTarget = { ...h.target, installationId: other.id };
+      expect(await messengerFor(otherTarget, restartedStore).post(otherTarget)).toBe("synthetic-card");
+      expect(requests).toHaveLength(2);
+      await client.database
+        .update(slackInstallations)
+        .set({ workingStatusNotBeforeAt: new Date(0) })
+        .where(eq(slackInstallations.id, installation.id));
+      expect(await restarted.post(h.target)).toBe("synthetic-card");
+      expect(requests).toHaveLength(3);
+    } finally {
+      http.mockRestore();
+      await replica.sql.end();
+    }
+  });
+
+  it("extends deadlines monotonically across independent connections and fences old-generation writers", async () => {
+    const h = await failed();
+    const store = new ImFeedbackStore(client.database);
+    const replica = createDatabaseClient(fixtureDb.databaseUrl, { max: 1 });
+    const other = new ImFeedbackStore(replica.database);
+    try {
+      expect(
+        await Promise.all([
+          store.deferSlackInstallation(h.target, 90_000),
+          other.deferSlackInstallation(h.target, 20_000),
+        ]),
+      ).toEqual([true, true]);
+      const [before] = await client.database.select().from(slackInstallations);
+      if (!before) throw new Error("Missing installation");
+      expect(await other.slackCooldownRemaining(h.target)).toBeGreaterThan(80_000);
+      await other.deferSlackInstallation(h.target, 5_000);
+      expect((await client.database.select().from(slackInstallations))[0]?.workingStatusNotBeforeAt).toEqual(
+        before.workingStatusNotBeforeAt,
+      );
+      await rotateInstallation(h.target);
+      expect(await other.deferSlackInstallation(h.target, 300_000)).toBe(false);
+      expect(await store.slackCooldownRemaining(h.target)).toBeUndefined();
+      expect(
+        await store.slackCooldownRemaining({ ...h.target, bindingGeneration: h.target.bindingGeneration + 1 }),
+      ).toBeGreaterThan(80_000);
+      expect((await client.database.select().from(slackInstallations))[0]?.workingStatusNotBeforeAt).toEqual(
+        before.workingStatusNotBeforeAt,
+      );
+      await client.database
+        .update(slackInstallations)
+        .set({ status: "reauthorization_required" })
+        .where(eq(slackInstallations.id, before.id));
+      expect(
+        await store.deferSlackInstallation({ ...h.target, bindingGeneration: h.target.bindingGeneration + 1 }, 400_000),
+      ).toBe(false);
+    } finally {
+      await replica.sql.end();
+    }
+  });
+
+  it.each([false, true])(
+    "retains shared cooldown through legacy settlement and feedback cleanup (rate limited=%s)",
+    async (limited) => {
+      const h = await failed();
+      const { frame } = await h.delivery();
+      await h.store.record(frame, h.context);
+      const claim = await h.store.claim();
+      if (!claim) throw new Error("Missing legacy claim");
+      const feedback = new ImFeedbackStore(client.database);
+      await feedback.deferSlackInstallation(h.target, 60_000);
+      const [before] = await client.database.select().from(slackInstallations);
+      if (!before) throw new Error("Missing installation");
+      await h.store.settle(claim, { working: false, delayMs: 0, ...(limited ? { cooldownMs: 5_000 } : {}) });
+      await client.database
+        .update(imFeedbackTargets)
+        .set({ state: "completed", cardState: "none", settledAt: new Date(Date.now() - 91 * 86400_000) });
+      await feedback.retain();
+      expect(await client.database.select().from(imFeedbackTargets)).toHaveLength(0);
+      expect(await h.store.claim()).toBeUndefined();
+      expect((await client.database.select().from(slackInstallations))[0]?.workingStatusNotBeforeAt).toEqual(
+        before.workingStatusNotBeforeAt,
+      );
+    },
+  );
+});
+
+async function rotateInstallation(target: FeedbackTarget) {
+  return new ImBindingService(client.database, new ApplicationCipher(Buffer.alloc(32, 11))).activateSlack(
+    {
+      intent: "reauthorize",
+      agentId: target.agentId,
+      appId: "A1",
+      teamId: "T1",
+      botUserId: "U1",
+      grantedBotScopes: [...SLACK_REQUIRED_BOT_SCOPES],
+      botAccessToken: "synthetic-rotated",
+      signingSecret: "unit-signing",
+      installedAt: new Date(),
+    },
+    "B1",
+  );
+}
+
+it("releases the installation lock during provider I/O and ignores a late 429 after real reauthorization", async () => {
+  const h = await failed();
+  const store = new ImFeedbackStore(client.database);
+  const transport = messengerFor(h.target, store);
+  let entered = () => {};
+  let release = () => {};
+  const admitted = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const http = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+    entered();
+    await gate;
+    return new Response(JSON.stringify({ ok: false, error: "ratelimited" }), {
+      status: 429,
+      headers: { "Retry-After": "60" },
+    });
+  });
+  const pending = transport.post(h.target);
+  try {
+    await admitted;
+    await client.sql.begin(async (tx) => {
+      await tx.unsafe("set local lock_timeout = '100ms'");
+      await tx`select id from slack_installations where id=${h.target.installationId} for update`;
+    });
+    await rotateInstallation(h.target);
+    release();
+    await expect(pending).rejects.toMatchObject({ code: "IM_FEEDBACK_BINDING_STALE", knownNotApplied: true });
+    const [installation] = await client.database.select().from(slackInstallations);
+    expect(installation?.credentialGeneration).toBe(h.target.bindingGeneration + 1);
+    expect(installation?.workingStatusNotBeforeAt.getTime()).toBe(0);
+  } finally {
+    release();
+    await Promise.allSettled([pending]);
+    http.mockRestore();
+  }
 });

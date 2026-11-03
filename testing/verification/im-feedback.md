@@ -89,8 +89,7 @@ migration was regenerated; merged migrations remain unchanged. The unique delive
 `CONCURRENTLY`, so the compatible release plan must account for its write lock. The local lock measurement below does not establish
 production migration duration or production row count.
 
-The user explicitly deferred the additional cooldown table on 2026-11-03. The durable installation/generation/method
-cooldown remains unimplemented and remains a review blocker; it is no longer awaiting a confirmation response. Per-target Retry-After and outage-circuit classification do not by themselves provide
+The user explicitly deferred the additional cooldown table on 2026-11-03. A subsequent necessity review found the existing installation timestamp sufficient for conservative shared cooldown; the user confirmed that existing-state design. The original additional-table proposal remains deferred. Exact method isolation is not implemented; the accepted behavior delays all designated feedback methods of the same installation. Per-target Retry-After and outage-circuit classification do not by themselves provide
 cross-worker rate-limit coordination. No review correction establishes native provider acceptance or deployment.
 
 
@@ -116,3 +115,20 @@ regressions. The focused Server suite passed 72 tests, the Web/CSRF/owned-contro
 types and repository checks passed. This correction changes rendering only; the previously passing 1,121-test
 PostgreSQL run remains the persistence evidence, and was not repeated for this presentation-only change. No cooldown
 table, migration, provider operation, task retry or workspace action was added or executed.
+
+
+## Shared cooldown without a schema change
+
+The owner confirmed reuse of the existing installation timestamp after a separate necessity review. The transport
+checks the active installation/generation before each designated SDK method, records confirmed 429 deadlines with
+`greatest` using the database clock, and defers other targets and methods conservatively. No cooldown table, column,
+index or migration was added. Legacy native cleanup uses the same stored deadline. Persistence failures stop the
+worker pass and preserve definite non-submission instead of inventing an unknown card creation.
+
+The focused Server run passed 84 tests. The two-file PostgreSQL feedback/native-status run passed 45 tests, including
+10 feedback cases. Real SDK HTTP 429 injection proves that two due targets and an independent restarted connection
+make only the initial request before cooldown, a different installation can send, same-installation methods defer,
+and expiry permits another request. Concurrent extenders preserve the longer deadline; real reauthorization
+preserves an existing deadline and fences late responses. Installation row locks remain available while HTTP is
+blocked. Successful or rate-limited legacy settlement and actual expired-feedback deletion cannot clear the shared
+deadline. Mock credentials and HTTP are synthetic; no live provider calls were made.

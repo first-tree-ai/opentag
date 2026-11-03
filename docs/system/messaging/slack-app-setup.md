@@ -101,61 +101,35 @@ Profile-fetch failure is nonfatal; cached metadata is retained only for the same
 Existing installations acquire an avatar on reconnection. Later Slack-side changes remain cached
 until the next reconnection, and missing or failed images fall back to initials in openTag.
 
-## Native working indicator
+## Working feedback and native status cleanup
 
-openTag uses [`assistant.threads.setStatus`](https://docs.slack.dev/reference/methods/assistant.threads.setStatus/)
-with `status: "is working"` and clears it with `status: ""`. Slack supplies the App name and native animation.
-The existing bot scope `chat:write` is sufficient following Slack's
-[scope update](https://docs.slack.dev/changelog/2026/03/05/set-status-scope-update/); the fixed manifest does not change.
-This does not enable Agent sessions or request `assistant:write`.
+Normal visible task feedback uses Server-owned `eyes` and `warning` reactions and terminal error cards, as defined
+in [IM feedback and safe recovery](im-feedback.md). Custody acceptance requests working; heartbeats, model retries
+and approval waits make no intermediate visible changes. The Agent sends the final reply through the provider CLI.
+Observer copies and internal Sessions do not publish a second projection.
 
-The indicator represents active execution for the installed bot in a specific Slack thread:
+The Server no longer creates or refreshes Slack native working indicators. The existing native-status worker runs
+in clear-only mode to drain known indicators using `assistant.threads.setStatus` with `status: ""`. Outbound capture
+does not refresh them, and activity acknowledgements do not reopen them. Existing thread targets and cleanup
+outbox rows remain until their references are safely retired. The existing `chat:write` capability suffices;
+no `assistant:write` or additional scope is requested for this cutover.
 
-| Execution state | Indicator |
-| --- | --- |
-| Webhook received, queued, delivery accepted, credentials preparing | Hidden |
-| Local provider `run_started`, or Cloud worker invocation after verification | `openTag is working` |
-| Running model/tool work, including concurrent turns for the same bot/thread | Visible while at least one live turn remains |
-| Waiting for user, completion, failure, cancellation, timeout, reporting | Cleared when no other live turn remains |
-| Observer delivery, Feishu, Web, Session-to-Session message | Hidden |
+Native cleanup and task feedback share the existing installation `working_status_not_before_at` timestamp.
+A confirmed 429 extends its deadline without shortening an earlier cooldown. Feedback checks it immediately before
+each designated SDK call, so another target or restarted worker observes the same gate. This deliberately defers
+all designated feedback methods of the same installation; other installations and Feishu remain independent.
+No new cooldown table or migration is required. Reauthorization preserves a committed cooldown; a late response
+from an old generation cannot extend it after rotation. No database lock remains held across provider calls.
 
-The target is `providerRef.channelId` and `providerRef.threadTs ?? providerRef.messageTs`, matching the inbound
-reply thread. Slack shows the installed App identity, not an internal subagent identity. A root DM may open a thread.
-The current providers finish their turn when asking the user for input; no waiting state is inferred from prose.
+The native cleanup worker keeps its existing three-second provider deadline and bounded transient failures.
+Rate-limit deferrals and shared-circuit waits do not spend that transient failure budget. Native cleanup failure
+never changes a Turn result. If explicit clearing cannot reach Slack, native inactivity expiry remains the final
+fallback. The feedback worker has its own target retry state and conservative unknown-send reconciliation.
 
-Execution heartbeats arrive every 30 seconds and lease liveness for at most 90 seconds, bounded by the delivery
-execution deadline. An explicit deadline is used without adding the default duration cap; duration budgets begin
-at the first execution observation and are never extended by heartbeats. Only a new sequence extends the lease.
-The server refreshes Slack at 45-second intervals;
-a confirmed same-thread provider reply schedules an immediate refresh because Slack automatically clears on replies.
-An execution that disconnects without a terminal signal expires; the next worker pass clears it (up to 45 additional
-seconds under normal availability). A terminal Turn Report commits cleanup in the custody transaction.
-A later live heartbeat wakes a cleared target. Each installation/thread has one stable target across credential
-rotations. Claiming refreshes its credential fence from the current installation, so sibling turns stay aggregated
-and terminal cleanup can use renewed credentials without replaying liveness. Activity and terminal cleanup share
-a transaction mutex before locking targets or turns. Successfully cleared targets are retired once delivery retention
-removes all referencing turns.
-
-The persisted outbox survives Server restarts, aggregates concurrent turns, and serializes each target across workers.
-A provider request, including response-body consumption, has a 3-second deadline, no hidden transport retry,
-and at most four transient failures per target activation. Shared-circuit waits do not consume that retry budget.
-HTTP 200 with `ok: false` is failure; installation-specific errors do not open the shared transport circuit.
-HTTP 5xx responses count toward that circuit, allowing shared outage protection and recovery.
-HTTP 429 persists `Retry-After` for every thread of the installation, including new targets and restarted workers;
-completion cannot bypass this cooldown. Rate-limit waits do not consume the transient retry budget.
-Authorization errors disable that target. Immediately before a provider call, ownership requires the installation
-to remain active at the claim's credential generation. Settlement locks and rechecks that installation before
-writing target state or cooldowns, so responses from a prior generation cannot affect the new generation.
-A request already admitted before rotation may still finish at Slack; its stale response is discarded locally.
-If explicit clearing cannot reach Slack, Slack's native inactivity timeout remains the final fallback.
-Status failures never change the Turn result.
-
-Local clients negotiate optional `runtime.turnActivity: 1`. Cloud Runners request `turnActivityVersion: 1` in auth and
-require the same welcome echo. Deploy the Server and migration before a new Runner image: the existing strict Cloud
-auth schema on an old Server rejects unknown fields. Older peers that do not negotiate activity keep existing behavior.
-
-Local automated coverage includes real PostgreSQL migrations/outbox behavior and mocked Slack HTTP; it is not live
-Slack visual acceptance. See [Slack live acceptance](https://github.com/first-tree-ai/opentag/blob/main/testing/slack-live-acceptance.md) before claiming a deployed result.
+Local automated coverage includes real PostgreSQL state, concurrent connections and mocked Slack HTTP.
+It does not establish deployment or native visual acceptance. Follow the
+[feedback verification record](https://github.com/first-tree-ai/opentag/blob/main/testing/verification/im-feedback.md)
+and use an explicitly authorized test installation before claiming a native result.
 
 ## Fixed Slack capability contract
 

@@ -365,6 +365,50 @@ export class ImFeedbackStore {
       );
   }
 
+  async slackCooldownRemaining(target: FeedbackTarget): Promise<number | undefined> {
+    if (!target.installationId || target.provider !== "slack") return;
+    const [installation] = await this.database
+      .select({
+        remainingMs: sql<number>`greatest(0, ceil(extract(epoch from (${slackInstallations.workingStatusNotBeforeAt} - statement_timestamp())) * 1000))::double precision`,
+      })
+      .from(slackInstallations)
+      .where(
+        and(
+          eq(slackInstallations.id, target.installationId),
+          eq(slackInstallations.status, "active"),
+          eq(slackInstallations.credentialGeneration, target.bindingGeneration),
+        ),
+      )
+      .limit(1);
+    return installation?.remainingMs;
+  }
+
+  async deferSlackInstallation(target: FeedbackTarget, retryAfterMs: number): Promise<boolean> {
+    const installationId = target.installationId;
+    if (!installationId || target.provider !== "slack") return false;
+    return this.database.transaction(async (tx) => {
+      const [installation] = await tx
+        .select({ id: slackInstallations.id })
+        .from(slackInstallations)
+        .where(
+          and(
+            eq(slackInstallations.id, installationId),
+            eq(slackInstallations.status, "active"),
+            eq(slackInstallations.credentialGeneration, target.bindingGeneration),
+          ),
+        )
+        .for("update");
+      if (!installation) return false;
+      await tx
+        .update(slackInstallations)
+        .set({
+          workingStatusNotBeforeAt: sql`greatest(${slackInstallations.workingStatusNotBeforeAt}, statement_timestamp() + ${retryAfterMs} * interval '1 millisecond')`,
+        })
+        .where(eq(slackInstallations.id, installation.id));
+      return true;
+    });
+  }
+
   async latestAction(feedbackId: string): Promise<FeedbackAction | undefined> {
     const [action] = await this.database
       .select()

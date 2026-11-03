@@ -42,6 +42,11 @@ Fresh delivery admission waits while the Agent's current binding/generation has 
 retry backoff do not remove this barrier. A matching binding and provider event ID releases the
 barrier even if receipt settlement has not finished; an equal event ID under another binding does not.
 
+Distinct Slack callback event IDs can normalize to one semantic message, including a `message` and
+`app_mention` pair. The duplicate event has no separate Inbox identity, so its receipt releases the
+barrier through normal settlement. If that settlement fails, fresh input waits until receipt recovery
+settles it; semantic deduplication does not authorize dispatch past unresolved receipt work.
+
 Initial recoverable receipt claims and fresh dispatch freezing use the same transaction-scoped Agent
 custody advisory lock as final queue claims. Receipt claims resolve the expected Agent without row
 locks, take that fence, then revalidate and lock the current binding/installation generation before

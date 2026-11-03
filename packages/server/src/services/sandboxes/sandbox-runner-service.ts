@@ -17,6 +17,7 @@ import {
   sandboxNotFound,
   WorkspaceRestoreRequiredError,
   WorkspaceSaveError,
+  WorkspaceSaveFailedError,
 } from "./errors.js";
 import {
   loadManagedSandboxById,
@@ -580,6 +581,16 @@ export class SandboxRunnerService {
     }
     if (!view || view.uid !== row.currentResourceUid) return { ...base, physical: "absent" };
     return { ...base, physical: "present" };
+  }
+
+  async verifySavedForAccount(accountId: string, sandboxId: string, environmentGeneration: number): Promise<boolean> {
+    const owned = await loadOwnedSandbox(this.#database, accountId, sandboxId, { authority: "read" });
+    if (!owned) throw sandboxNotFound();
+    if (owned.sandbox.environmentGeneration !== environmentGeneration) return false;
+    return this.#workspaceSealProven(
+      { storageUri: owned.sandbox.storageUri, sandboxId, sessionId: owned.sessionId, environmentGeneration },
+      environmentGeneration,
+    );
   }
 
   async stopForAccount(
@@ -1456,11 +1467,8 @@ export class SandboxRunnerService {
         // The sealed archive could not be proven: keep the physical resource binding and the
         // releasing lifecycle so a later stop retries. Never erased by delete-phase writes.
         await this.#recordError(row, WORKSPACE_SAVE_FAILED, error, { preserveCreateMarkers: true });
-        throw new SandboxServiceError(
-          "SERVICE_UNAVAILABLE",
-          "transient",
+        throw new WorkspaceSaveFailedError(
           `Failed to release the Sandbox environment: the workspace could not be saved (${error.message})`,
-          503,
         );
       }
       // A delete-phase failure must never erase create-phase evidence: `cloud_create_pending`

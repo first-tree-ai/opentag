@@ -8,6 +8,8 @@ import type { AgentUsageWindowDays } from "@opentag/shared/browser";
  * Agent itself can invalidate its detail, config and binding together without listing them.
  */
 export const queryKeys = {
+  imFeedbackList: (agentId: string) => ["im-feedback-list", agentId] as const,
+  imFeedback: (feedbackId: string) => ["im-feedback", feedbackId] as const,
   me: () => ["me"] as const,
   authProviders: () => ["authProviders"] as const,
   internalToolsOffered: () => ["internalToolsOffered"] as const,

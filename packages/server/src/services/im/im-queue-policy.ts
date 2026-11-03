@@ -41,6 +41,7 @@ export async function repeatsPendingInput(
     .where(
       and(
         eq(imMessageDeliveries.sessionId, sessionId),
+        eq(imMessageDeliveries.attemptOrdinal, 0),
         sql`(${imMessages.occurredAt}, ${imMessages.providerRevisionKey}, ${imMessages.id}) <
           (${message.occurredAt.toISOString()}::timestamptz, ${message.providerRevisionKey}, ${message.id}::uuid)`,
         or(isNull(imMessageDeliveries.reason), ne(imMessageDeliveries.reason, IM_DUPLICATE_PENDING_REASON)),

@@ -126,6 +126,30 @@ describe("idempotent create-mode Computer connect", () => {
     expect(row).toMatchObject({ disconnectedAt: null, currentInstallationId: f.installationId });
   });
 
+  it("repairs instead of reporting already connected when the running daemon has another version", async () => {
+    const f = await fixture();
+    await markOnline(f.first.computerId);
+    await unit.database.update(computers).set({ clientVersion: "0.0.1" }).where(eq(computers.id, f.first.computerId));
+    const issued = await f.machine.issueForAccount(f.accountId, {});
+
+    const result = await f.machine.exchangeConnectCode(
+      input(issued.code, f.installationId, { machineToken: f.first.machineToken, reportOutcome: true }),
+    );
+
+    expect(result).toMatchObject({ outcome: "repaired", computerId: f.first.computerId });
+  });
+
+  it("ignores capability build metadata when comparing the running version", async () => {
+    const f = await fixture();
+    await markOnline(f.first.computerId);
+    const issued = await f.machine.issueForAccount(f.accountId, {});
+    const result = await f.machine.exchangeConnectCode({
+      ...input(issued.code, f.installationId, { machineToken: f.first.machineToken, reportOutcome: true }),
+      clientVersion: "0.0.2+opentag-connect-runtime-v1",
+    });
+    expect(result.outcome).toBe("already_connected");
+  });
+
   it("repairs instead of reporting already connected when the presented token is not current", async () => {
     const f = await fixture();
     await markOnline(f.first.computerId);

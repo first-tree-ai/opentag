@@ -303,6 +303,7 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
         disconnectedAt: computers.disconnectedAt,
         currentInstanceId: computers.currentInstanceId,
         lastSeenAt: computers.lastSeenAt,
+        clientVersion: computers.clientVersion,
       })
       .from(computers)
       .where(and(eq(computers.currentInstallationId, input.installationId), isNull(computers.deletedAt)))
@@ -324,7 +325,10 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
       existing.disconnectedAt === null &&
       existing.currentInstanceId !== null &&
       (existing.lastSeenAt?.getTime() ?? 0) >= now.getTime() - this.#presenceTimeoutMs;
-    if (online && !targetAgentId && input.reportOutcome && presented?.computerId === existing.id) {
+    // A running daemon of another version (the command just upgraded the install) is not "nothing to
+    // do": repairing rotates the credential, so the Client restarts the daemon on the new version.
+    const sameVersion = releaseVersion(existing.clientVersion) === releaseVersion(input.clientVersion);
+    if (online && sameVersion && !targetAgentId && input.reportOutcome && presented?.computerId === existing.id) {
       return { outcome: "already_connected", computerId: existing.id, credentialId: presented.credentialId };
     }
     const [repaired] = await transaction
@@ -785,6 +789,11 @@ async function readPresentedCredential(
     computerId: credential.computerId,
     ownerAccountId: credential.ownerAccountId,
   };
+}
+
+/** A Client version without SemVer build metadata (capability markers do not change the release). */
+function releaseVersion(version: string): string {
+  return version.split("+", 1)[0] ?? version;
 }
 
 function computerAccountConflict(): AuthServiceError {

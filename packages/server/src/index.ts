@@ -45,7 +45,7 @@ import {
 import { createPlatformRuntime } from "./platform-runtime.js";
 import { AgentRuntimeOptionsOwner } from "./runtime/agent-runtime-options-owner.js";
 import { AgentRuntimeTestOwner } from "./runtime/agent-runtime-test-owner.js";
-import { type AgentSessionStopDependencies, stopAgentSessions } from "./runtime/agent-session-stopper.js";
+import { stopCloudThenLocalAgentSessions } from "./runtime/agent-session-stopper.js";
 import { loadApprovalAuthority } from "./runtime/approval-authority.js";
 import { ApprovalMessenger } from "./runtime/approval-messenger.js";
 import { PostgresApprovalStore } from "./runtime/approval-store.js";
@@ -67,7 +67,6 @@ import {
   AgentRuntimeTestService,
   AgentSelfService,
   AgentService,
-  type AgentSessionStopTarget,
   AgentSetupService,
   CloudAgentRuntimeTester,
   DatabaseAgentOwnerResolver,
@@ -327,57 +326,6 @@ function workerCloudOptions(
     ...(cloudDelivery ? { cloudDelivery } : {}),
     ...(cloudAllocation ? { cloudAllocation } : {}),
   };
-}
-
-/** Surface non-cancelled stop outcomes without turning a best-effort cancel into a hard failure. */
-function reportCloudStopOutcomes(
-  outcomes: Awaited<ReturnType<CloudDeliveryOwner["cancelSessionDeliveries"]>>,
-  onDiagnostic?: (code: string) => void,
-): void {
-  for (const outcome of outcomes) {
-    // A cancelled owning turn needs no diagnostic; a lost socket or a failed frame send stays
-    // explicitly visible instead of being swallowed as "best effort".
-    if (outcome.status === "cancelled") continue;
-    onDiagnostic?.(
-      outcome.status === "no_connection" ? "CLOUD_DELIVERY_STOP_NO_CONNECTION" : "CLOUD_DELIVERY_STOP_SEND_FAILED",
-    );
-  }
-}
-
-/**
- * Explicit Session stop for Cloud Sessions cancels the in-flight Cloud turn on its owning Runner
- * (best-effort; the cancellation report still flows through the durable report path) before the
- * Local reconcile-based stop runs. Cloud cancel failures never block the Local stop path.
- */
-async function stopCloudThenLocalAgentSessions(
-  database: DatabaseClient,
-  targets: AgentSessionStopTarget[],
-  cloudDelivery: CloudDeliveryOwner | undefined,
-  dependencies: AgentSessionStopDependencies,
-  onDiagnostic?: (code: string) => void,
-  cloudSession?: CloudSessionCollaborationOwner,
-): Promise<void> {
-  if (cloudDelivery) {
-    for (const target of targets) {
-      try {
-        reportCloudStopOutcomes(await cloudDelivery.cancelSessionDeliveries(target.sessionId), onDiagnostic);
-      } catch {
-        // The cancel path itself failed; Local stop and Runner scope invalidation still proceed.
-        onDiagnostic?.("CLOUD_DELIVERY_STOP_FAILED");
-      }
-    }
-  }
-  for (const target of targets) {
-    try {
-      const outcomes = await cloudSession?.cancelSessionMessages(target.sessionId);
-      for (const outcome of outcomes ?? []) {
-        if (outcome.status !== "requested") onDiagnostic?.("CLOUD_SESSION_STOP_UNCONFIRMED");
-      }
-    } catch {
-      onDiagnostic?.("CLOUD_SESSION_STOP_FAILED");
-    }
-  }
-  await stopAgentSessions(database, targets, dependencies);
 }
 
 function cloudSessionAuthorityOptions(
@@ -1021,8 +969,8 @@ export async function startServer(): Promise<void> {
           cloudDeliveryOwner,
           {
             currentInstanceId: (computerId) => registry.currentInstanceId(computerId),
-            requestReconcile: (computerId, instanceId, request, onDispatched) =>
-              domainOwner.requestReconcile(computerId, instanceId, request, onDispatched),
+            requestReconcile: (computerId, instanceId, request, onDispatched, admission) =>
+              domainOwner.requestReconcile(computerId, instanceId, request, onDispatched, admission),
           },
           reportDiagnostic,
           cloudSessionOwner,

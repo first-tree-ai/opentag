@@ -419,15 +419,27 @@ export class SessionCliProofService {
     });
   }
 
-  /**
-   * Session-scoped revocation for the Cloud stop path: a proof row is single per Session and a
-   * fresh one can only be minted against a live allocation, so deleting by Session is exact. The
-   * in-memory execution correlation is dropped synchronously; live credential executions keep
-   * running but can no longer authenticate the revoked token.
-   */
-  async revokeForSession(sessionId: string): Promise<void> {
-    await this.#database.delete(sessionCliProofs).where(eq(sessionCliProofs.sessionId, sessionId));
-    this.#cloud?.dropExecution({ sessionId });
+  async revokeForSession(
+    sessionId: string,
+    executor: DatabaseClient | DatabaseTransaction = this.#database,
+  ): Promise<void> {
+    const [proof] = await executor
+      .select({ proofId: sessionCliProofs.proofId, updatedAt: sessionCliProofs.updatedAt })
+      .from(sessionCliProofs)
+      .where(eq(sessionCliProofs.sessionId, sessionId))
+      .limit(1);
+    if (!proof) return;
+    const [deleted] = await executor
+      .delete(sessionCliProofs)
+      .where(
+        and(
+          eq(sessionCliProofs.sessionId, sessionId),
+          eq(sessionCliProofs.proofId, proof.proofId),
+          eq(sessionCliProofs.updatedAt, proof.updatedAt),
+        ),
+      )
+      .returning({ proofId: sessionCliProofs.proofId });
+    if (deleted) this.#cloud?.dropExecution({ sessionId, proofId: proof.proofId });
   }
 
   /**

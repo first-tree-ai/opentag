@@ -147,13 +147,18 @@ export class RuntimeCredentialOwner {
 
   /** Close every execution opened for one Session; used by an explicit Cloud stop. */
   closeSessionExecutions(sessionId: string, code: RuntimeCredentialRevokedCode): string[] {
-    const closed: string[] = [];
-    for (const record of this.#options.executions.executions()) {
-      if (record.sessionId !== sessionId) continue;
-      this.#revokeExecution(record.executionId, code, false);
-      closed.push(record.executionId);
-    }
-    return closed;
+    return this.prepareSessionExecutionClose(sessionId, code)();
+  }
+
+  prepareSessionExecutionClose(sessionId: string, code: RuntimeCredentialRevokedCode): () => string[] {
+    const ids = this.#options.executions
+      .executions()
+      .filter((record) => record.sessionId === sessionId)
+      .map((record) => record.executionId);
+    return () => {
+      for (const id of ids) this.#revokeExecution(id, code, false);
+      return ids;
+    };
   }
 
   businessOptions(): RuntimeBusinessOptions {

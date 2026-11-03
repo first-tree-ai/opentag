@@ -15,7 +15,7 @@ import {
   type TurnReportRequest,
 } from "@opentag/shared";
 import { and, eq, isNotNull, isNull } from "drizzle-orm";
-import type { DatabaseClient } from "../../db/client.js";
+import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   agents,
   imBindings,
@@ -26,9 +26,11 @@ import {
   users,
 } from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
+import { withAgentSessionStopAuthority } from "../../runtime/agent-session-stop-authority.js";
 import type { RuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
 import type { RuntimeBusinessContext } from "../../runtime/runtime-session.js";
 import type { RuntimeCredentialOwner } from "../../runtime-credentials/runtime-credential-owner.js";
+import type { AgentSessionStopTarget } from "../agents/agent-service.js";
 import type { SessionCliProofService } from "../sessions/session-cli-proof-service.js";
 import { CloudImSteering } from "./cloud-im-steering.js";
 import type { CloudModelGrantIssue } from "./cloud-model-grants.js";
@@ -827,8 +829,26 @@ export class CloudDeliveryOwner {
    * Two statements regardless of the backlog: the eligible deliveries, then (only when the list is
    * nonempty) the one Sandbox row `sandboxes_session_id_unique` guarantees for the Session.
    */
-  async cancelSessionDeliveries(sessionId: string): Promise<CloudSessionCancelOutcome[]> {
-    const rows = await this.#database
+  async cancelSessionDeliveries(
+    sessionId: string,
+    target?: AgentSessionStopTarget,
+  ): Promise<CloudSessionCancelOutcome[]> {
+    if (target) {
+      if (target.sessionId !== sessionId) return [];
+      return (
+        (await withAgentSessionStopAuthority(this.#database, target, (executor) =>
+          this.#cancelSessionDeliveries(sessionId, executor),
+        )) ?? []
+      );
+    }
+    return this.#cancelSessionDeliveries(sessionId, this.#database);
+  }
+
+  async #cancelSessionDeliveries(
+    sessionId: string,
+    executor: DatabaseClient | DatabaseTransaction,
+  ): Promise<CloudSessionCancelOutcome[]> {
+    const rows = await executor
       .select({
         id: imMessageDeliveries.id,
         turnId: imMessageDeliveries.turnId,
@@ -842,14 +862,16 @@ export class CloudDeliveryOwner {
           isNull(imMessageDeliveries.reportedAt),
         ),
       );
-    for (const row of rows) {
-      if (row.turnId) this.#revokeTurnGrants(row.turnId);
+    const closeExecutions = this.#credentials?.owner.prepareSessionExecutionClose(sessionId, "execution_closed");
+    if (rows.length === 0) {
+      closeExecutions?.();
+      return [];
     }
-    this.#credentials?.owner.closeSessionExecutions(sessionId, "execution_closed");
-    if (rows.length === 0) return [];
     // The Session's single Sandbox row is read once for the whole backlog. The connection fence
     // itself stays a per-delivery read, so a replacement attached mid-loop is still observed.
-    const sandbox = await loadSandboxRecordBySessionId(this.#database, sessionId);
+    const sandbox = await loadSandboxRecordBySessionId(executor, sessionId);
+    for (const row of rows) if (row.turnId) this.#revokeTurnGrants(row.turnId);
+    closeExecutions?.();
     const outcomes: CloudSessionCancelOutcome[] = [];
     for (const row of rows) {
       const record = sandbox ? this.#fence.connectionForSandbox(sandbox.id) : undefined;

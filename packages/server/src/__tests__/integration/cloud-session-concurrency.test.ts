@@ -466,6 +466,27 @@ describe("E6 Cloud Session concurrency on PostgreSQL and WebSockets", { timeout:
     expect((await a.wait("delivery:run", after)).delivery.deliveryId).toBe(older);
   });
 
+  it("admits lifecycle Cloud cancellation against the committed Agent revision", async () => {
+    const stack = await fixture(),
+      a = await runner(stack, stack.a);
+    await stack.enqueue(stack.a);
+    await stack.worker().runOnce();
+    const active = await a.start();
+    if (!active.model) throw new Error("Missing model grant");
+    const service = new AgentService(client.database, {
+      cloudIdentitiesEnabled: true,
+      stopSessions: async (targets) => {
+        for (const target of targets) await stack.owner.cancelSessionDeliveries(target.sessionId, target);
+      },
+    });
+    expect((await service.suspendById(stack.accountId, stack.agent.id)).status).toBe("suspended");
+    expect((await a.wait("delivery:cancel")).deliveryId).toBe(active.request.deliveryId);
+    expect(await stack.grants.verify(active.model.token)).toBeUndefined();
+    expect((await row(active.request.deliveryId)).state).toBe("accepted");
+    await a.finish(active.request, active.turnId);
+    expect((await row(active.request.deliveryId)).reportedAt).not.toBeNull();
+  });
+
   it("cancels and disconnects A without revoking B's model authority or completion", async () => {
     const stack = await fixture();
     const a = await runner(stack, stack.a);

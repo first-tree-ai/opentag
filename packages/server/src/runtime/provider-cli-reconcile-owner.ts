@@ -1407,10 +1407,7 @@ export class ProviderCliReconcileOwner {
     const current = this.#requests.get(key);
     this.#bumpTransition(key);
     if (current) this.#dropRequest(current);
-    if (!current) return;
-    await this.#withRequestGate(key, async () => {
-      await this.#sendCancel(current);
-    });
+    if (current) void this.#sendCancel(current);
   }
 
   #dropRequest(current: CurrentRequest): void {

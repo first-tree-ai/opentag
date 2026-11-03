@@ -596,9 +596,13 @@ describe("RuntimeCredentialOwner composed Cloud control authority", () => {
     expect(state.executions.get(first.executionId)).toBeUndefined();
     expect(state.executions.get(second.executionId)).toBeDefined();
 
-    expect(state.owner.closeSessionExecutions("session-a", "execution_closed")).toEqual([second.executionId]);
+    const closeSelected = state.owner.prepareSessionExecutionClose("session-a", "execution_closed");
+    const successor = openExecution("session-a", randomUUID(), "cloud-instance-d");
+    expect(closeSelected()).toEqual([second.executionId]);
     expect(state.executions.get(second.executionId)).toBeUndefined();
     expect(state.executions.get(third.executionId)).toBeDefined();
+    expect(state.executions.get(successor.executionId)).toBeDefined();
+    expect(state.owner.closeSessionExecutions("session-a", "execution_closed")).toEqual([successor.executionId]);
   });
 });
 

@@ -157,6 +157,7 @@ function projectActivityByAgent(rows: readonly AgentActivityEvidence[]): Map<str
 
 export interface AgentSessionStopTarget {
   agentId: string;
+  agentRevision: number;
   computerId: string;
   installationId: string;
   placementGeneration: number;
@@ -1702,6 +1703,7 @@ export class AgentService {
     return transaction
       .select({
         agentId: imBindings.agentId,
+        agentRevision: sql<number>`${agents.revision} + 1`,
         installationId: computers.currentInstallationId,
         computerId: sessionPlacements.computerId,
         placementGeneration: sessionPlacements.generation,

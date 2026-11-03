@@ -114,6 +114,16 @@ Agent creation, placement changes, and credential exchange retain their small
 transactions so related durable facts commit together. Connection cleanup and
 Runtime notifications run after commit.
 
+Lifecycle stop targets carry the Agent revision produced by suspend, delete or transfer.
+Immediately before Local stop or Cloud cancellation enqueue, the caller locks Agent → Session →
+placement and requires that exact revision, an inactive Agent and the captured Session placement.
+A superseded decision is skipped. Local proof preparation finishes before this admission; its
+enqueue is synchronous, so admission releases SQL without awaiting a socket callback or Runner
+result. Cloud selects specific delivery/message/execution identities on the guarded executor and
+retains durable work until terminal evidence. Proof retirement compares the selected proof ID and
+update version; only a successful delete drops that proof's execution correlation. A later reused
+or replaced proof survives an older result.
+
 AgentService mutation queries select the caller's ownership in the locking
 predicate, then validate lifecycle and revision while holding the row lock. A foreign or
 missing Agent returns the same not-found result without waiting for a foreign

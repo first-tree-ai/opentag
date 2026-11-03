@@ -25,12 +25,14 @@ import {
   users,
 } from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
+import { withAgentSessionStopAuthority } from "../../runtime/agent-session-stop-authority.js";
 import type { RuntimeDispatchAdmission } from "../../runtime/runtime-domain-owner.js";
 import {
   type CloudSessionWorkEnvelope,
   type CloudWorkAllocation,
   parseCloudSessionWorkEnvelope,
 } from "../../runtime/runtime-durable-work-store.js";
+import type { AgentSessionStopTarget } from "../agents/agent-service.js";
 import type { EffectiveRuntimeSnapshotAssembler } from "../runtime-config/index.js";
 import type {
   RuntimeExecutionRegistryPort,
@@ -1559,20 +1561,35 @@ export class CloudSessionCollaborationOwner {
    * Durable-only work (for example after a Server restart) is cancelled too, not just the tracked
    * in-memory messages.
    */
-  async cancelSessionMessages(sessionId: string): Promise<CloudSessionCancelOutcome[]> {
+  async cancelSessionMessages(
+    sessionId: string,
+    target?: AgentSessionStopTarget,
+  ): Promise<CloudSessionCancelOutcome[]> {
+    if (target && target.sessionId !== sessionId) return [];
+    const outcomes = target
+      ? await withAgentSessionStopAuthority(this.#database, target, (executor) =>
+          this.#cancelSessionMessages(sessionId, executor),
+        )
+      : await this.#cancelSessionMessages(sessionId, this.#database);
+    if (!outcomes) return [];
+    await this.reconcileSessionWork(sessionId);
+    return outcomes;
+  }
+
+  async #cancelSessionMessages(
+    sessionId: string,
+    executor: DatabaseClient | DatabaseTransaction,
+  ): Promise<CloudSessionCancelOutcome[]> {
     const outcomes: CloudSessionCancelOutcome[] = [];
-    const sandbox = await loadSandboxRecordBySessionId(this.#database, sessionId);
+    const sandbox = await loadSandboxRecordBySessionId(executor, sessionId);
     if (sandbox) {
       const record = this.#fence.connectionForSandbox(sandbox.id);
-      for (const entry of await this.#pendingSessionMessages(sessionId, sandbox.id)) {
+      for (const entry of await this.#pendingSessionMessages(sessionId, sandbox.id, executor)) {
         outcomes.push(this.#requestCancellation(record, entry));
       }
-      // Only work whose allocation is already authoritatively gone is retired here; every other
-      // record keeps blocking until its exact Runner terminal evidence arrives.
-      await this.reconcileSessionWork(sessionId);
     }
     await this.#proofs
-      ?.revokeForSession(sessionId)
+      ?.revokeForSession(sessionId, executor)
       .catch(() =>
         this.#logger?.warn({ code: "CLOUD_SESSION_PROOF_REVOKE_FAILED", sessionId }, "Session CLI proof revoke failed"),
       );
@@ -1587,10 +1604,11 @@ export class CloudSessionCollaborationOwner {
   async #pendingSessionMessages(
     sessionId: string,
     sandboxId: string,
+    executor: DatabaseClient | DatabaseTransaction,
   ): Promise<{ messageId: string; turnId?: string }[]> {
     const pending = new Map<string, { messageId: string; turnId?: string }>();
     for (const entry of this.#work.trackedMessages(sandboxId)) pending.set(entry.messageId, entry);
-    for (const row of await this.#durableWorkRows(sessionId)) {
+    for (const row of await this.#durableWorkRows(sessionId, executor)) {
       const messageId = row.recordKey.slice(sessionId.length + 1);
       if (pending.has(messageId)) continue;
       const envelope = parseCloudSessionWorkEnvelope(row.payload);
@@ -1657,10 +1675,13 @@ export class CloudSessionCollaborationOwner {
   }
 
   /** Non-terminal durable rows for one Session under its own placement Computer. */
-  async #durableWorkRows(sessionId: string): Promise<{ computerId: string; recordKey: string; payload: unknown }[]> {
-    const computerId = await this.#sessionComputerId(sessionId);
+  async #durableWorkRows(
+    sessionId: string,
+    executor: DatabaseClient | DatabaseTransaction = this.#database,
+  ): Promise<{ computerId: string; recordKey: string; payload: unknown }[]> {
+    const computerId = await this.#sessionComputerId(sessionId, executor);
     if (!computerId) return [];
-    return this.#database
+    return executor
       .select({
         computerId: runtimeDurableWork.computerId,
         payload: runtimeDurableWork.payload,

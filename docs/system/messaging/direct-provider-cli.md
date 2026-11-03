@@ -43,6 +43,10 @@ restart rules. Previously recorded Turn text is left in the conversation history
 
 ## Provider CLI lifecycle
 
+Retiring a requirement removes its local authority and enqueues its exact cancel notification
+without awaiting the socket callback. A delayed best-effort notification cannot block the later
+Session stop. Active replacement/retry sends retain their request gates and ordering checks.
+
 The targeted first-setup `opentag connect` command is the only installer for both official Provider CLIs during
 onboarding. It is non-interactive, returns bounded next actions, and can be run by a person or an Agent. The daemon
 independently inspects and reports both CLIs while setup is incomplete; it does not race the foreground installer.

@@ -411,7 +411,8 @@ describe("AgentSetupPage stages", () => {
     expect(rowTitle("runtime")).toContain("Codex");
     expect(rowTitle("runtime")).toContain("Checking");
     expect(rowDetail("runtime")).toContain("Checking the version and sign-in on Review Mac");
-    expect(screen.getByRole("status").textContent).toBe("Checking Codex automatically. No action needed…");
+    // The checking row says so; the footer adds no second line.
+    expect(screen.getByRole("status").textContent).toBe("");
     expect(screen.getAllByRole("status")).toHaveLength(1);
     expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
   });
@@ -426,7 +427,8 @@ describe("AgentSetupPage stages", () => {
     expectCompactReadinessRows();
     expect(readinessRow("runtime").getAttribute("data-status")).toBe("ready");
     expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("ready");
-    expect(screen.getByRole("status").textContent).toBe("This computer is ready. Continue to connect messaging.");
+    // Every row ready says so; the footer adds no summary line.
+    expect(screen.getByRole("status").textContent).toBe("");
     const railBeforeContinue = document.querySelector('[data-ui="onboarding-v2-rail"]') as HTMLElement;
     expect(railBeforeContinue.querySelector('li[data-status="current"]')?.textContent).toContain("Prepare computer");
 
@@ -561,8 +563,14 @@ describe("AgentSetupPage stages", () => {
     const qr = screen.getByAltText("Scan this QR code in Lark");
     expect(qr.parentElement?.getAttribute("data-ui")).toBe("setup-qr");
     expect(qr.classList.contains("ots-qr__image")).toBe(true);
-    expect(screen.getByText(/QR code expires/)).toBeTruthy();
+    expect(screen.getByText(/^Expires in \d+ min$/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
+    // Below 768px the QR code (for a second device) gives way to the same link opened in Lark.
+    expect(qr.closest(".otv2-connection-scan__content")?.className).toContain("hidden md:block");
+    const open = document.querySelector<HTMLAnchorElement>('[data-ui="agent-setup-feishu-open"]');
+    expect(open?.textContent).toBe("Open in Lark");
+    expect(open?.className).toContain("md:hidden");
+    expect(open?.getAttribute("href")).toBeTruthy();
   });
 
   it("models the browser-away Slack install wait for Review Lab", async () => {
@@ -1634,7 +1642,8 @@ describe("AgentSetupPage preparation polling", () => {
     const t0 = Date.now();
     expect(readinessRow("runtime").getAttribute("data-status")).toBe("waiting");
     expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("waiting");
-    expect(screen.getByRole("status").textContent).toBe("Checking Codex automatically. No action needed…");
+    // The checking row says so; the footer adds no second line.
+    expect(screen.getByRole("status").textContent).toBe("");
     expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
     expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
 
@@ -1666,7 +1675,8 @@ describe("AgentSetupPage preparation polling", () => {
     await advance(POLL_MS + 10);
     await settle();
     expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(false);
-    expect(screen.getByRole("status").textContent).toBe("This computer is ready. Continue to connect messaging.");
+    // Every row ready says so; the footer adds no summary line.
+    expect(screen.getByRole("status").textContent).toBe("");
     expect(refreshes).not.toHaveBeenCalled();
   });
 

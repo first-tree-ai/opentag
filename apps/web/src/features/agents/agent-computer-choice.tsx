@@ -98,6 +98,7 @@ export function AgentComputerChoice({
   agentId,
   children,
   connectAnother,
+  connectAnotherInline = false,
   inventoryAdapter,
   onBound,
 }: {
@@ -110,6 +111,11 @@ export function AgentComputerChoice({
   children?: (choice: ReactNode, multiple: boolean) => ReactNode;
   /** Settings offers a new connection beside an existing choice; an empty inventory connects inline instead. */
   connectAnother?: ReactNode;
+  /**
+   * Setup offers the same new connection beside an existing choice without leaving the flow: the
+   * connect command opens in place and the Computer that answers it is bound, as with no inventory.
+   */
+  connectAnotherInline?: boolean;
   /** Keeps Internal Tools on its in-memory Account instead of reading or mutating the Server. */
   inventoryAdapter?: AgentComputerInventoryAdapter;
   /**
@@ -251,22 +257,47 @@ export function AgentComputerChoice({
         />
       ) : null}
       {connected.length > 0 && connectAnother ? <div>{connectAnother}</div> : null}
-      {connected.length === 0 ? (
-        <div className="grid gap-2">
-          {/*
-           * The connect step reports the machine it connected, so what gets bound is the Computer that
-           * answered this command rather than whatever a re-read of the inventory happens to find.
-           */}
-          <ComputerConnect
-            adapter={adapter}
-            intent={{ mode: "create" }}
-            onConnected={(connected) =>
-              void bind({ computerId: connected.computerId, displayName: connected.displayName })
-            }
-          />
-        </div>
-      ) : null}
+      <NewComputerConnection
+        adapter={adapter}
+        hasChoice={connected.length > 0}
+        offerInline={connectAnotherInline}
+        onConnected={(connected) => void bind({ computerId: connected.computerId, displayName: connected.displayName })}
+      />
     </div>,
+  );
+}
+
+/**
+ * The connect command for a new computer: shown at once when the Account has none to choose, and
+ * behind **Connect a new computer** beside an existing choice when setup offers it in place. The
+ * connect step reports the machine it connected, so what gets bound is the Computer that answered
+ * this command rather than whatever a re-read of the inventory happens to find.
+ */
+function NewComputerConnection({
+  adapter,
+  hasChoice,
+  offerInline,
+  onConnected,
+}: {
+  adapter?: ComputerConnectAdapter;
+  hasChoice: boolean;
+  offerInline: boolean;
+  onConnected: (connected: { computerId: string; displayName: string }) => void;
+}) {
+  const [opened, setOpened] = useState(false);
+  if (hasChoice && !(offerInline && opened)) {
+    return offerInline ? (
+      <div>
+        <Button size="compact" variant="secondary" onClick={() => setOpened(true)}>
+          {m.computer_connect_another_action()}
+        </Button>
+      </div>
+    ) : null;
+  }
+  return (
+    <div className="grid gap-2">
+      <ComputerConnect adapter={adapter} intent={{ mode: "create" }} onConnected={onConnected} />
+    </div>
   );
 }
 

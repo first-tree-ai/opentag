@@ -245,4 +245,21 @@ describe("AgentComputerChoice over a cached inventory", () => {
     expect(screen.queryByRole("button", { name: /Use this computer:/ })).toBeNull();
     expect(rebind).not.toHaveBeenCalled();
   });
+
+  it("connects a new computer in place beside an existing choice when setup asks for it", async () => {
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [cachedComputer, spareComputer] });
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockReturnValue(new Promise(() => undefined));
+    const queryClient = createQueryClient();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AgentComputerChoice agentId={AGENT_ID} connectAnotherInline onBound={() => undefined} />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Connect a new computer" }));
+    expect(await screen.findByText("Copy the task to your Agent on this computer.")).toBeTruthy();
+    // The existing choice stays, and the entry is not offered twice.
+    expect(screen.getAllByRole("button", { name: /Use this computer:/ })).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: "Connect a new computer" })).toBeNull();
+  });
 });

@@ -91,7 +91,7 @@ export function CardCopy({
   title,
 }: {
   badge?: string;
-  description: string;
+  description?: string;
   disabled?: boolean;
   title: string;
 }) {
@@ -106,7 +106,7 @@ export function CardCopy({
           <em className="rounded bg-kumo-recessed px-2 py-1 text-xs uppercase text-kumo-subtle">{badge}</em>
         ) : null}
       </span>
-      <span className="text-sm text-kumo-subtle">{description}</span>
+      {description ? <span className="text-sm text-kumo-subtle">{description}</span> : null}
     </span>
   );
 }
@@ -131,7 +131,7 @@ function DestinationCard({
   title,
 }: {
   badge?: string;
-  description: string;
+  description?: string;
   disabled?: boolean;
   icon: "laptop" | "model";
   onChoose: () => void;
@@ -148,10 +148,11 @@ function DestinationCard({
 
 /*
  * Three Cloud cards, one per read state: the unanswered read describes the destination and says it
- * is checking; the failed read says the check failed and offers the retry; only an answered "no"
- * claims the deployment cannot offer Cloud.
+ * is checking; the failed read says the check failed and offers the retry; an answered "no" keeps
+ * the disabled card with its "unavailable" badge alone, because the reason is the deployment's and
+ * the reader can do nothing about it.
  */
-function cloudDestinationCopy(cloud: CloudDestinationRead): { badge?: string; description: string } {
+function cloudDestinationCopy(cloud: CloudDestinationRead): { badge?: string; description?: string } {
   if (cloud.kind === "failed") {
     return {
       badge: m.onboarding_v2_destination_cloud_check_failed_badge(),
@@ -161,7 +162,6 @@ function cloudDestinationCopy(cloud: CloudDestinationRead): { badge?: string; de
   if (cloud.kind === "ready" && !cloud.available) {
     return {
       badge: m.onboarding_v2_destination_cloud_unavailable_badge(),
-      description: m.onboarding_v2_destination_cloud_unavailable_description(),
     };
   }
   return {

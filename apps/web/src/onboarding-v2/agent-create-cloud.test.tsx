@@ -119,11 +119,8 @@ describe("Agent creation with a Cloud destination", () => {
     await waitFor(() => expect(cloudCard().hasAttribute("disabled")).toBe(true));
     expect(cloudCard().getAttribute("aria-pressed")).toBe("false");
     expect(screen.getByText("Temporarily unavailable")).toBeTruthy();
-    expect(
-      screen.getByText(
-        "Cloud is temporarily unavailable on this deployment. You can still run the agent on your own computer.",
-      ),
-    ).toBeTruthy();
+    // The disabled card says "unavailable" and nothing more: the reason is the deployment's.
+    expect(screen.queryByText(/on this deployment/)).toBeNull();
     fireEvent.click(cloudCard());
     expect(cloudCard().getAttribute("aria-pressed")).toBe("false");
     expect(browserApi.ensureCloudComputer).not.toHaveBeenCalled();

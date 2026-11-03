@@ -44,6 +44,7 @@ contents, and machine-specific operational logs outside the repository.
 - [SQL caller repairs: Feishu setup actual-work drain](verification/sql-caller-repairs-31.md)
 - [SQL caller repairs: outbound capture and detached MCP probes](verification/sql-caller-repairs-32.md)
 - [SQL caller repairs: Cloud proof commit and Runner cleanup](verification/sql-caller-repairs-33.md)
+- [SQL caller repairs: actual Cloud allocation and collaboration drain](verification/sql-caller-repairs-34.md)
 - [SQL caller repairs: Runtime Domain drain](verification/sql-caller-repairs-25.md)
 - [SQL caller repairs: Feishu connection and Inbox drain](verification/sql-caller-repairs-24.md)
 - [SQL caller repairs: Provider preparation drain](verification/sql-caller-repairs-23.md)

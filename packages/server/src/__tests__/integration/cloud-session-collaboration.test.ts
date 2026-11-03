@@ -10,6 +10,7 @@ import {
   sandboxes,
   sessionCliProofs,
   sessionMessages,
+  sessionPlacements,
   users,
 } from "../../db/schema/index.js";
 import type { RuntimeDispatchAdmission } from "../../runtime/runtime-domain-owner.js";
@@ -31,6 +32,7 @@ import { type RunnerControlSocket, RunnerHub, type RunnerScope } from "../../ser
 import { SandboxService } from "../../services/sandboxes/sandbox-service.js";
 import { SessionCliProofService, SessionService } from "../../services/sessions/index.js";
 import { deferred } from "../support/deferred.js";
+import { pausedTableRead } from "../support/paused-binding-read.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 /**
@@ -151,7 +153,11 @@ interface Stack {
   sessions: SessionService;
 }
 
-function makeStack(): Stack {
+function makeStack(
+  options: Partial<
+    Pick<ConstructorParameters<typeof CloudSessionCollaborationOwner>[0], "allocation" | "ensureTimeoutMs" | "database">
+  > = {},
+): Stack {
   const hub = new RunnerHub();
   const fence = new CloudRuntimeFence();
   const registry = new RuntimeExecutionRegistry();
@@ -180,6 +186,7 @@ function makeStack(): Stack {
     proofs,
     sessions,
     work: new CloudSessionWorkTracker(),
+    ...options,
   });
   return { fence, hub, owner, proofs, registry, sessions };
 }
@@ -852,3 +859,118 @@ it.each(["upsert-disconnect", "upsert-execution", "commit-disconnect", "committe
     }
   },
 );
+
+it.each(["resolve", "reject"] as const)("joins an allocation SQL tail after public timeout and %s", async (outcome) => {
+  const fixture = await seedCloudSession();
+  await client.database
+    .update(sandboxes)
+    .set({ lifecycle: "unallocated", environmentGeneration: 0, currentResourceName: null, currentResourceUid: null })
+    .where(eq(sandboxes.id, fixture.sandboxId));
+  const entered = deferred();
+  const release = deferred();
+  let tailFinished = false;
+  const allocate = vi.fn(async () => {
+    await client.sql`select 1`;
+    entered.resolve();
+    await release.promise;
+    await client.database.update(sandboxes).set({ lifecycle: "preparing" }).where(eq(sandboxes.id, fixture.sandboxId));
+    tailFinished = true;
+    if (outcome === "reject") throw new Error("Controlled allocation acknowledgement loss");
+    return "pending" as const;
+  });
+  const stack = makeStack({
+    ensureTimeoutMs: 30,
+    allocation: {
+      ensureSandbox: async () => ({ accountId: fixture.accountId, sandboxId: fixture.sandboxId }),
+      ensureEnvironmentAllocated: allocate,
+    },
+  });
+  const messageId = randomUUID();
+  await client.database.insert(sessionMessages).values({
+    id: messageId,
+    sourceSessionId: fixture.sessionId,
+    targetSessionId: fixture.sessionId,
+    content: "allocate",
+    contentHash: "a".repeat(64),
+    attemptCount: 1,
+    lastAttemptAt: new Date(),
+  });
+  const input = {
+    attemptCount: 1,
+    message: { content: "allocate", id: messageId },
+    route: {
+      agentId: fixture.agentId,
+      imBindingId: fixture.bindingId,
+      sourceComputerId: fixture.computerId,
+      sourceConnectionInstanceId: randomUUID(),
+      sourcePlacementGeneration: 1,
+      sourceSessionId: fixture.sessionId,
+      targetComputerId: fixture.computerId,
+      targetComputerKind: "cloud" as const,
+      targetInstallationId: randomUUID(),
+      targetPlacementGeneration: 1,
+      targetSessionId: fixture.sessionId,
+      targetSessionKind: "channel" as const,
+      targetCreatorSessionId: null,
+    },
+    runtime: await new EffectiveRuntimeSnapshotAssembler(client.database).assembleForSession(fixture.sessionId),
+  };
+  const running = stack.owner.deliver(input, allowAdmission);
+  let closed = false;
+  try {
+    await entered.promise;
+    expect(await running).toEqual({ status: "unreachable", code: "runtime_not_ready" });
+    const closing = stack.owner.close().then(() => {
+      closed = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(closed).toBe(false);
+    expect(tailFinished).toBe(false);
+    expect(await client.sql`select 1 as healthy`).toEqual([{ healthy: 1 }]);
+    await expect(stack.owner.deliver(input, allowAdmission)).resolves.toEqual({
+      status: "unreachable",
+      code: "runtime_not_ready",
+    });
+    release.resolve();
+    await closing;
+    expect(tailFinished).toBe(true);
+    expect(allocate).toHaveBeenCalledOnce();
+    expect(await client.database.select().from(runtimeDurableWork)).toHaveLength(0);
+  } finally {
+    release.resolve();
+    await Promise.allSettled([running, stack.owner.close()]);
+  }
+});
+
+it.each(["reconcile", "cancel"] as const)("joins original %s SQL and stops new admission", async (kind) => {
+  const fixture = await seedCloudSession();
+  const pause = pausedTableRead(client.database, sessionPlacements);
+  const stack = makeStack({ database: pause.database });
+  pause.arm();
+  const running = (
+    kind === "reconcile"
+      ? stack.owner.reconcileSessionWork(fixture.sessionId)
+      : stack.owner.cancelSessionMessages(fixture.sessionId)
+  ).then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  let closed = false;
+  try {
+    await pause.captured;
+    const closing = stack.owner.close().then(() => {
+      closed = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(closed).toBe(false);
+    expect(await stack.owner.reconcileSessionWork(fixture.sessionId)).toBe(0);
+    expect(await stack.owner.cancelSessionMessages(fixture.sessionId)).toEqual([]);
+    pause.release();
+    await closing;
+    await running;
+    expect(await client.sql`select 1 as healthy`).toEqual([{ healthy: 1 }]);
+  } finally {
+    pause.release();
+    await Promise.allSettled([running, stack.owner.close()]);
+  }
+});

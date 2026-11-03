@@ -431,6 +431,9 @@ export class CloudSessionCollaborationOwner {
   >();
   /** Per-target-Session dispatch serialization: one in-flight dispatch keeps same-Session FIFO order. */
   readonly #tails = new Map<string, Promise<unknown>>();
+  readonly #tasks = new Set<Promise<unknown>>();
+  readonly #stop = new AbortController();
+  #closing: Promise<void> | undefined;
 
   constructor(options: CloudSessionCollaborationOwnerOptions) {
     this.#database = options.database;
@@ -449,6 +452,29 @@ export class CloudSessionCollaborationOwner {
     this.#now = options.now ?? (() => Date.now());
     this.#requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.#ensureTimeoutMs = options.ensureTimeoutMs ?? DEFAULT_ENSURE_TIMEOUT_MS;
+  }
+
+  close(): Promise<void> {
+    if (this.#closing) return this.#closing;
+    this.#stop.abort();
+    for (const requestId of this.#pending.keys()) {
+      this.#failPending(requestId, new CloudSessionDispatchUnavailableError());
+    }
+    this.#closing = (async () => {
+      while (this.#tasks.size || this.#tails.size) {
+        await Promise.allSettled([...this.#tasks, ...this.#tails.values()]);
+      }
+    })();
+    return this.#closing;
+  }
+
+  #track<T>(operation: Promise<T>): Promise<T> {
+    this.#tasks.add(operation);
+    void operation.then(
+      () => this.#tasks.delete(operation),
+      () => this.#tasks.delete(operation),
+    );
+    return operation;
   }
 
   /**
@@ -474,6 +500,8 @@ export class CloudSessionCollaborationOwner {
     admission: RuntimeDispatchAdmission<RunnerCloudSessionMessageReceivedFrame>,
     signal?: AbortSignal,
   ): Promise<CloudSessionMessageOutcome> {
+    if (this.#stop.signal.aborted) return { status: "unreachable", code: "runtime_not_ready" };
+    signal = signal ? AbortSignal.any([signal, this.#stop.signal]) : this.#stop.signal;
     const { route } = input;
     // Same-Session dispatches are serialized so the Runner journals them in call order (FIFO).
     const tail = this.#tails.get(route.targetSessionId) ?? Promise.resolve();
@@ -511,7 +539,7 @@ export class CloudSessionCollaborationOwner {
     signal?.throwIfAborted();
     // Authoritative retirement runs before placement: accepted work whose Instance is gone can
     // never execute, so it is retired here instead of blocking a replacement allocation forever.
-    await this.reconcileSessionWork(route.targetSessionId, signal);
+    await this.#reconcileSessionWork(route.targetSessionId, signal);
 
     signal?.throwIfAborted();
     const ready = await this.#ensureReady(route.targetSessionId, signal);
@@ -1005,6 +1033,7 @@ export class CloudSessionCollaborationOwner {
         signal?.throwIfAborted();
         return error instanceof CloudCapacityExceededError ? "capacity" : "failed";
       });
+    this.#track(convergence);
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
@@ -1422,7 +1451,13 @@ export class CloudSessionCollaborationOwner {
    * journal lived in that Instance), so it is terminalized conservatively as failed. Timeout is
    * never used as evidence, and terminal work is never replayed. Returns the retired count.
    */
-  async reconcileSessionWork(sessionId: string, signal?: AbortSignal): Promise<number> {
+  reconcileSessionWork(sessionId: string, signal?: AbortSignal): Promise<number> {
+    if (this.#stop.signal.aborted) return Promise.resolve(0);
+    const activeSignal = signal ? AbortSignal.any([signal, this.#stop.signal]) : this.#stop.signal;
+    return this.#track(this.#reconcileSessionWork(sessionId, activeSignal));
+  }
+
+  async #reconcileSessionWork(sessionId: string, signal?: AbortSignal): Promise<number> {
     signal?.throwIfAborted();
     const store = this.#durableWork;
     if (!store) return 0;
@@ -1553,7 +1588,12 @@ export class CloudSessionCollaborationOwner {
    * Durable-only work (for example after a Server restart) is cancelled too, not just the tracked
    * in-memory messages.
    */
-  async cancelSessionMessages(
+  cancelSessionMessages(sessionId: string, target?: AgentSessionStopTarget): Promise<CloudSessionCancelOutcome[]> {
+    if (this.#stop.signal.aborted) return Promise.resolve([]);
+    return this.#track(this.#cancelAdmittedSessionMessages(sessionId, target));
+  }
+
+  async #cancelAdmittedSessionMessages(
     sessionId: string,
     target?: AgentSessionStopTarget,
   ): Promise<CloudSessionCancelOutcome[]> {
@@ -1564,7 +1604,7 @@ export class CloudSessionCollaborationOwner {
         )
       : await this.#cancelSessionMessages(sessionId, this.#database);
     if (!outcomes) return [];
-    await this.reconcileSessionWork(sessionId);
+    await this.#reconcileSessionWork(sessionId);
     return outcomes;
   }
 
@@ -1742,6 +1782,7 @@ export class CloudSessionCollaborationOwner {
   }
 
   #sendToConnection(connection: CloudConnectionRecord, frame: Parameters<RunnerHub["sendToCurrent"]>[2]): boolean {
+    if (this.#stop.signal.aborted) return false;
     const socket = this.#socketFor(connection);
     if (!socket) return false;
     return this.#hub.sendToCurrent(connection.scope.sandboxId, socket, frame);

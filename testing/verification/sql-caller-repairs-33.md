@@ -28,7 +28,7 @@ typecheck; runtime tests were not repeated for erased annotations. Repository
 gates pass; manifests and failed/successful logs remain in the local report dir.
 
 Independent source review found no actionable regression; exact-commit review
-remains pending. Batch 32 exact review at 9a6db831 found no actionable defect.
+at 41b921c7 also found no actionable defect. Batch 32 exact review at 9a6db831 found no actionable defect.
 Original Cloud allocation convergence and actual main shutdown composition remain
 open IM-F3. These component tests do not establish full Server signal, CI, merge,
 deployment or private billing acceptance.

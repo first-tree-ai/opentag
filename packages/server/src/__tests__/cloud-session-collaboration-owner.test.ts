@@ -2442,3 +2442,108 @@ describe("CloudSessionCollaborationOwner", () => {
     expect(await db.database.select().from(runtimeDurableWork)).toHaveLength(0);
   });
 });
+
+it.each(["before-timeout", "after-timeout"] as const)("drains original allocation work %s", async (phase) => {
+  const fixture = await seedCloudSession();
+  const messageId = randomUUID();
+  await insertMessage(messageId, fixture);
+  await db.database
+    .update(sandboxes)
+    .set({ lifecycle: "unallocated", environmentGeneration: 0, currentResourceName: null, currentResourceUid: null })
+    .where(eq(sandboxes.id, fixture.sandboxId));
+  const entered = deferred();
+  const release = deferred();
+  const allocate = vi.fn(async () => {
+    entered.resolve();
+    await release.promise;
+    await db.database.update(sandboxes).set({ lifecycle: "preparing" }).where(eq(sandboxes.id, fixture.sandboxId));
+    return "pending" as const;
+  });
+  const stack = makeStack(fixture, {
+    ensureTimeoutMs: phase === "after-timeout" ? 30 : 1000,
+    allocation: {
+      ensureSandbox: async () => ({ accountId: fixture.accountId, sandboxId: fixture.sandboxId }),
+      ensureEnvironmentAllocated: allocate,
+    },
+  });
+  const input = await deliveryInput(fixture, messageId);
+  const running = stack.owner.deliver(input, allowAdmission);
+  let closed = false;
+  try {
+    await entered.promise;
+    if (phase === "after-timeout") expect(await running).toEqual({ status: "unreachable", code: "runtime_not_ready" });
+    const closing = stack.owner.close().then(() => {
+      closed = true;
+    });
+    expect(stack.owner.close()).toBe(stack.owner.close());
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(closed).toBe(false);
+    await expect(stack.owner.deliver(input, allowAdmission)).resolves.toEqual({
+      status: "unreachable",
+      code: "runtime_not_ready",
+    });
+    release.resolve();
+    await closing;
+    await running;
+    expect(allocate).toHaveBeenCalledOnce();
+    expect(await db.database.select().from(runtimeDurableWork)).toHaveLength(0);
+    expect(stack.owner.activeDispatchTargets).toBe(0);
+  } finally {
+    release.resolve();
+    await Promise.allSettled([running, stack.owner.close()]);
+    stack.grants.close();
+  }
+});
+
+it.each(["reconcile", "cancel"] as const)("joins admitted %s SQL during close", async (kind) => {
+  const fixture = await seedCloudSession();
+  const pause = pausedTableRead(db.database, sessionPlacements);
+  const stack = makeStack(fixture, { database: pause.database });
+  pause.arm();
+  const running = (
+    kind === "reconcile"
+      ? stack.owner.reconcileSessionWork(fixture.sessionId)
+      : stack.owner.cancelSessionMessages(fixture.sessionId)
+  ).then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  let closed = false;
+  try {
+    await pause.captured;
+    const closing = stack.owner.close().then(() => {
+      closed = true;
+    });
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    expect(await stack.owner.reconcileSessionWork(fixture.sessionId)).toBe(0);
+    expect(await stack.owner.cancelSessionMessages(fixture.sessionId)).toEqual([]);
+    pause.release();
+    await closing;
+    await running;
+  } finally {
+    pause.release();
+    await Promise.allSettled([running, stack.owner.close()]);
+    stack.grants.close();
+  }
+});
+
+it("closes a pending receipt without sending late verification", async () => {
+  const fixture = await seedCloudSession();
+  const messageId = randomUUID();
+  await insertMessage(messageId, fixture);
+  const stack = makeStack(fixture);
+  const { sent } = await attachRunner(stack, fixture);
+  const running = stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission);
+  try {
+    await vi.waitFor(() => expect(sent.some((frame) => frame.type === "session:message:run")).toBe(true));
+    await stack.owner.close();
+    await expect(running).resolves.toEqual({ status: "unreachable", code: "runtime_not_ready" });
+    expect(stack.owner.activeDispatchTargets).toBe(0);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
+    expect(sent.filter((frame) => frame.type === "session:message:verified")).toHaveLength(0);
+  } finally {
+    await stack.owner.close();
+    stack.grants.close();
+  }
+});

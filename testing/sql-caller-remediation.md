@@ -440,3 +440,18 @@ aborting existing observation/caller signals stop subsequent dispatch; existing
 per-target serialization and actual-task settlement are joined before SQL pool
 cleanup. External allocation already issued may complete and is retained until
 its original Promise settles. No new budget, retry, durable state or abstraction.
+
+
+[Actual Cloud allocation and collaboration drain](verification/sql-caller-repairs-34.md)
+passes 195 distinct Docker cases, 14 native PostgreSQL. Original allocation tails
+and complete admitted delivery/recovery/cancellation now have explicit ownership.
+Batch 33 exact review found no actionable defect; batch 34 source review found
+none and exact review remains pending. IM-F3 still requires actual main shutdown
+composition and final fault acceptance. Fixed/simplified totals remain 36/37, 9/9.
+
+Main composition will register final resource cleanup before app/plugin hooks,
+start all producer/owner stops in preClose without waiting for websocket-dependent
+work, join them after child routes close, then close billing/readiness/SQL and
+telemetry with the existing error-collecting helper. High-level Slack/Context Tree,
+Inbox, Cloud and MCP ports must be included. No private hook mutation or generic
+lifecycle framework; late callback facts remain owned by their existing routes.

@@ -95,6 +95,10 @@ with a hyphen, and is at most 64 UTF-8 bytes (21 Chinese characters), so the res
 exact. The Server stores it trimmed and NFC-normalized, keeps its case, and enforces uniqueness within an Account
 case-insensitively, including under concurrent creation. Clients older than this rule do not recognize a slug with uppercase or Han characters and
 fall back to the generic member-directory guidance.
+Why: people name Agents the way they name teammates, often in Chinese or with capitals, and one name field is simpler
+than a separate display name and handle. Length is counted in bytes because the name is part of the platform
+instructions, whose reserved budget is in bytes; about 21 Chinese characters is enough for a name. Only unambiguous
+characters are allowed, and uniqueness ignores case, so two Agents never look alike.
 Agent and Session revision IDs identify their respective content; the sequences order updates.
 
 When preparing a Local Session within the same placement, the Client verifies its saved snapshot

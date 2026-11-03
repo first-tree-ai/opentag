@@ -28,6 +28,7 @@
   "computer_manage": "Manage computer",
   "computer_missing": "This computer is no longer on your account.",
   "computer_more_actions": "Computer actions",
+  "computer_never_connected": "Never connected",
   "computer_reconnect": "Reconnect",
   "computer_recovery_heading": "Restore connection",
   "computer_remove_action": "Remove computer…",

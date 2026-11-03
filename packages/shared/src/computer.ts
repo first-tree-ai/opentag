@@ -156,6 +156,15 @@ export const ComputerConnectCodeExchangeRequestSchema = z
     machineToken: z.string().min(1).max(4096).optional(),
     /** Set by Clients that understand `outcome` and a token-less `already_connected` response. */
     reportOutcome: z.literal(true).optional(),
+    /**
+     * Hex SHA-256 of the machine the Client runs on (machine ID, OS user, openTag home), computed on the
+     * Client so the raw identifier never leaves it. It lets a reconnect after a lost local identity repair
+     * its existing Computer. Optional like the fields above: absent when unreadable or on older Clients.
+     */
+    machineFingerprint: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional(),
   })
   .strict();
 

@@ -370,6 +370,11 @@
       "idx": 73,
       "tag": "0073_im-feedback",
       "sha256": "5adaa54e78c71059171eba508eaa39036fb15428816e6542469d14b0ea971e2f"
+    },
+    {
+      "idx": 74,
+      "tag": "0074_computer_machine_fingerprint",
+      "sha256": "90d218d3695244469712c9032a446aba9f0dad77e8c1c29d26ff391fa943d230"
     }
   ]
 }

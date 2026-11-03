@@ -193,6 +193,8 @@ export class OnboardingResetService {
           disconnectedAt: null,
           currentInstanceId: null,
           connectedAt: null,
+          // A reset machine starts over: it must not be recognized as one of these computers again.
+          machineFingerprint: null,
           updatedAt: now,
         })
         .where(inArray(computers.id, computerIds));

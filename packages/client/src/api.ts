@@ -302,7 +302,7 @@ export class OpenTagApi {
     } catch (error) {
       // An older Server rejects the optional idempotency fields as unknown keys. Validation runs
       // before redemption, so the code is untouched and one legacy retry is safe.
-      const { machineToken: _token, reportOutcome: _outcome, ...legacy } = input;
+      const { machineToken: _token, reportOutcome: _outcome, machineFingerprint: _fingerprint, ...legacy } = input;
       if (!isUnknownExchangeFieldRejection(error, input)) throw error;
       return send(legacy);
     }
@@ -1640,7 +1640,8 @@ function skillUploadHeaders(bytes: number): Record<string, string> {
 }
 
 function isUnknownExchangeFieldRejection(error: unknown, input: ComputerConnectCodeExchangeRequest): boolean {
-  if (input.machineToken === undefined && input.reportOutcome === undefined) return false;
+  if (input.machineToken === undefined && input.reportOutcome === undefined && input.machineFingerprint === undefined)
+    return false;
   return (
     error instanceof OpenTagApiError &&
     error.code === "VALIDATION_ERROR" &&

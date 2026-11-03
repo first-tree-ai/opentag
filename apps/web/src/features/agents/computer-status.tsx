@@ -31,12 +31,7 @@ export function ComputerIdentity({
 }) {
   const cloud = computer.kind === "cloud";
   const status = computerStatus(connection, cloud);
-  const lastOnline =
-    !cloud && connection === "offline" && lastSeenAt ? (
-      <time className="text-xs text-kumo-subtle" dateTime={lastSeenAt} title={formatDateTime(lastSeenAt)}>
-        {m.computer_last_online({ time: formatRelativeTime(lastSeenAt) })}
-      </time>
-    ) : null;
+  const lastOnline = cloud ? null : lastOnlineLine(connection, lastSeenAt);
   if (compact) {
     return (
       <div
@@ -89,5 +84,20 @@ export function ComputerIdentity({
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Every offline or disconnected Local card says when it was last online, or that it never came online,
+ * so two computers with the same name can be told apart. `undefined` means the caller has no reading.
+ */
+function lastOnlineLine(connection: ComputerConnection, lastSeenAt: string | null | undefined): ReactNode {
+  if (connection !== "offline" && connection !== "disconnected") return null;
+  if (lastSeenAt === null) return <span className="text-xs text-kumo-subtle">{m.computer_never_connected()}</span>;
+  if (!lastSeenAt) return null;
+  return (
+    <time className="text-xs text-kumo-subtle" dateTime={lastSeenAt} title={formatDateTime(lastSeenAt)}>
+      {m.computer_last_online({ time: formatRelativeTime(lastSeenAt) })}
+    </time>
   );
 }

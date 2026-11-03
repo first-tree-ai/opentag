@@ -93,6 +93,7 @@ describe("OpenTagApi Computer connect exchange compatibility", () => {
     clientVersion: "0.0.1",
     machineToken: "otmc_current",
     reportOutcome: true as const,
+    machineFingerprint: "a".repeat(64),
   };
   function validationError(code: string) {
     return jsonResponse(
@@ -126,6 +127,7 @@ describe("OpenTagApi Computer connect exchange compatibility", () => {
     const retried = JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body));
     expect(retried).not.toHaveProperty("machineToken");
     expect(retried).not.toHaveProperty("reportOutcome");
+    expect(retried).not.toHaveProperty("machineFingerprint");
     expect(retried.installationId).toBe(installationId);
   });
 

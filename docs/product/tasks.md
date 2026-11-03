@@ -153,8 +153,9 @@ could not be processed reads in the failure colour, because the reader may need 
 direct or ambient delivery, and plain-text kind labels repeated facts the page already shows once or did
 not help diagnose the run, so they were noise on every line. Operational notices stay at 14px. Message headings, emphasis and monospace code retain their
 content formatting. Wide code, native message payloads and message tables scroll locally, with named,
-keyboard-focusable regions. The conversation's 768px reading width, message order, paging and scroll
-anchoring are unchanged.
+keyboard-focusable regions. The detail page uses the same content width as the other Agent pages: the
+title, the horizontal row of Task facts and the conversation all span the full content frame. Message
+order, paging and scroll anchoring are unchanged.
 
 ## Cancelling a queued Task
 

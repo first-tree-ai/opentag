@@ -470,3 +470,10 @@ it("shows a rejected message in the failure colour and other unreported states a
   view.rerender(<TaskActivity task={task} turns={[pending]} pagination={null} />);
   expect(screen.getByText("Message pending.").className).toContain("text-kumo-subtle");
 });
+
+it("spans the page's full content width like the header above it", () => {
+  const { container } = render(<TaskActivity task={task} turns={[turn()]} pagination={null} />);
+  const thread = container.querySelector('[data-ui="task-thread"]');
+  expect(thread?.className).toContain("w-full");
+  expect(thread?.className).not.toMatch(/max-w-/);
+});

@@ -2484,7 +2484,8 @@ describe("AgentSetupPage manual Slack verification", () => {
     await settle();
     fireEvent.click(messagingChoice(/Slack/));
     await settle();
-    if (kind === "local") fireEvent.click(screen.getByRole("button", { name: "Manual setup" }));
+    expect(screen.getByLabelText("Paste into Slack")).toHaveProperty("value", "/slackauthticket test-ticket");
+    fireEvent.click(screen.getByRole("button", { name: "Manual setup" }));
     fireEvent.change(screen.getByLabelText("Bot Token"), { target: { value: "test-token" } });
     fireEvent.change(screen.getByLabelText("Signing Secret"), { target: { value: "test-secret" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));

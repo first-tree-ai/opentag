@@ -20,9 +20,9 @@ is not used.
 
 ## Automatically create and connect your own App
 
-In Agent creation or Messaging settings, choose **Connect Slack**. Agent setup presents the command/code form inline; Messaging settings keep the shared dialog. Both use an online Local Computer with a current Client. Cloud Agents open manual setup directly. Switching methods preserves the current ticket without issuing another one; leaving the manual form clears its credentials.
+In Agent creation or Messaging settings, choose **Connect Slack**. Agent setup presents the command/code form inline; Messaging settings keep the shared dialog. Both work on an online Local Computer with a current Client and on Cloud Agents. Switching methods preserves the current ticket without issuing another one; leaving the manual form clears its credentials.
 
-On a supported Local Computer:
+On a supported Local Computer or Cloud Agent:
 
 The new App and Bot use the Agent's `name`, rather than its separate `displayName`, with existing Slack name validation
 and length limits. No random suffix is added, and this entry does not rename existing Apps.
@@ -45,10 +45,10 @@ uncertain result, with explicit Retry preserving the current operation. `compute
 can also mean the existing runtime request timed out; it is not presented as proof
 that credentials were rejected. Manual setup remains available.
 
-The Computer prepares the official Slack CLI through existing Provider CLI installation when necessary. Web uses the
+On a Local Computer, the Client prepares the official Slack CLI through existing Provider CLI installation when necessary, keeping the CLI management grant in its native private config with native refresh. On a Cloud Agent, the Server runs the same `/slackauthticket` ticket/challenge, manifest creation, developer installation, approval request, and callback configuration flow directly against Slack's HTTPS APIs in bounded per-Computer memory. Web uses the
 current Account session and checks Agent ownership; it receives neither Slack credentials nor an Account Token for the
-Computer. The CLI management grant remains in its native private config and uses native refresh. Only authorize a ticket
-from your own selected Computer. This grant covers App management for the workspace, not just this one App.
+Computer. Only authorize a ticket
+from your own selected Computer or Cloud Agent. This grant covers App management for the workspace, not just this one App.
 
 If workspace policy requires approval, the official CLI submits the install request automatically. openTag shows
 a pending request only after Slack confirms it exists, with its App and workspace identifiers
@@ -82,7 +82,7 @@ local creation credentials have already been removed: reconnect it through the m
 or create another App. No extra acknowledgement request is needed. The CLI resolves its capture-hook entry beside the
 current bundle, supporting npm and portable layouts without package self-resolution. A missing or unusable entry only
 disables automatic Slack setup, and does not prevent daemon startup. Other Client embeddings without that entry use manual setup before creating
-an App. There is no new table or database field. Cloud Agents open **Manual setup** directly; offline Computers and older Clients can also use it, which
+an App. There is no new table or database field. Offline Computers and older Clients can still use **Manual setup**, which
 keeps the existing two-field binding and credential update flow. Public OAuth remains available.
 
 ## Local Agent approvals

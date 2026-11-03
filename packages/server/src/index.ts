@@ -49,6 +49,7 @@ import { type AgentSessionStopDependencies, stopAgentSessions } from "./runtime/
 import { loadApprovalAuthority } from "./runtime/approval-authority.js";
 import { ApprovalMessenger } from "./runtime/approval-messenger.js";
 import { PostgresApprovalStore } from "./runtime/approval-store.js";
+import { CloudSlackAutoSetupOwner } from "./runtime/cloud-slack-auto-setup-owner.js";
 import { COMPUTER_DELETED_CLOSE, ConnectionRegistry } from "./runtime/connection-registry.js";
 import { handleFeishuApprovalAction } from "./runtime/feishu-approval-action.js";
 import { ImDeliveryWorker } from "./runtime/im-delivery-worker.js";
@@ -1000,6 +1001,7 @@ export async function startServer(): Promise<void> {
     const agentRuntimeOptionsOwner = new AgentRuntimeOptionsOwner(registry);
     const agentRuntimeTestOwner = new AgentRuntimeTestOwner(registry);
     const slackAutoSetupOwner = new SlackAutoSetupOwner(registry);
+    const cloudSlackAutoSetupOwner = new CloudSlackAutoSetupOwner();
     const agentService = new AgentService(database, {
       mcpCredentialCipher: mcpCipher,
       ...optionalCloudUsage(config, cloudUsage),
@@ -1299,6 +1301,8 @@ export async function startServer(): Promise<void> {
           agents: agentService,
           slack: slackConfigurationService,
           owner: slackAutoSetupOwner,
+          cloud: cloudSlackAutoSetupOwner,
+          computerKind: (computerId) => imBindingService.computerKind(computerId),
           publicOrigin: config.publicUrl,
           officialSigningSecret: config.slackOAuth?.signingSecret,
         }),
@@ -1444,6 +1448,7 @@ export async function startServer(): Promise<void> {
     process.once("SIGTERM", closeForSignal);
     app.addHook("preClose", async () => {
       cloudModelRuntime?.tester.close();
+      cloudSlackAutoSetupOwner.close();
     });
     app.addHook("onClose", async () => {
       uninstallFatalHandlers();

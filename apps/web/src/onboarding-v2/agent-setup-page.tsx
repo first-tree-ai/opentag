@@ -1655,7 +1655,6 @@ function SlackSetupConfiguration({
       agentId={snapshot.agent.id}
       bindingId={"bindingId" in messaging ? messaging.bindingId : undefined}
       onSaved={controller.reload}
-      manualOnly={snapshot.computer.kind === "cloud"}
       onOAuth={reauthorize ? () => void controller.act(reauthorize) : undefined}
       renderTrigger={renderTrigger}
     />

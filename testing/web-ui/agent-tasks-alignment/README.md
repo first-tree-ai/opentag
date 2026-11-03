@@ -1,5 +1,7 @@
 # Agent home Tasks alignment
 
+Supports the [Web design contract](../../../docs/system/web/design.md) for tables inside section cards.
+
 Verified on 2026-11-03 against a production Web build of the Agent home Tasks section, rendered inside the Agent shell
 content frame with the real application CSS and representative Task fixtures. Screenshots use demonstration Tasks.
 

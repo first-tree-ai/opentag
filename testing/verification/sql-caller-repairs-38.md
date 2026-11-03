@@ -39,7 +39,7 @@ manifest. Failed logs, patch/install/frozen/build logs and source snapshots are
 retained. This is not a rebuilt production image or deployment claim.
 
 Batch 37 exact review at 5d4040c4 found no actionable defect. Batch 38 independent
-source review found none; exact-commit review and final broad owning checks remain.
+source review found none; exact review at 73d7e0a6 found none; final broad owning checks remain.
 IM-R2 still requires representative native scale/selection-equivalence evidence.
 Other size/legacy observations retain their individual measured or unmeasured
 limits; the remediation is not declared complete from this component alone.

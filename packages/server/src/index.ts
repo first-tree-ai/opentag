@@ -1412,11 +1412,7 @@ export async function startServer(): Promise<void> {
         ["application", () => app?.close()],
       ]).catch((error) => {
         const failures = (error instanceof AggregateError ? error.errors : [error]).map((failure) => ({
-          detail: formatStartupError(failure, knownSecrets),
-          cause:
-            failure instanceof Error && failure.cause !== undefined
-              ? formatStartupError(failure.cause, knownSecrets)
-              : undefined,
+          detail: formatStartupFailure(failure, knownSecrets),
         }));
         app?.log.error({ failures }, "Failed to close OpenTag server");
         process.exitCode = 1;

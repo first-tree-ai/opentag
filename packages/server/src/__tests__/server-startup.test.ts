@@ -139,7 +139,7 @@ vi.mock("../runtime/im-delivery-worker.js", () => ({
     }
     stop() {
       state.events.push("worker:stop");
-      state.workerStop();
+      return state.workerStop();
     }
   },
 }));
@@ -977,7 +977,11 @@ it.each([false, true])("joins pending listen before signal cleanup (stop failure
     await gate;
     state.events.push("listen");
   });
-  if (stopFails) state.schedulerStop.mockRejectedValue(new Error("Controlled stop error"));
+  if (stopFails) {
+    state.schedulerStop.mockRejectedValue(new Error("Controlled stop error jwt-secret"));
+    state.workerStop.mockRejectedValue(new Error("Worker stop error google-secret"));
+    state.sql.end.mockRejectedValue(new Error("Database close error encryption-secret"));
+  }
   const starting = startServer();
   try {
     await entered;
@@ -994,7 +998,16 @@ it.each([false, true])("joins pending listen before signal cleanup (stop failure
     expect(state.events).not.toContain("ready:listen");
     expect(state.events).not.toContain("prewarm:start");
     expect(app.close).toHaveBeenCalledOnce();
-    if (stopFails) await vi.waitFor(() => expect(process.exitCode).toBe(1));
+    if (stopFails) {
+      await vi.waitFor(() => expect(process.exitCode).toBe(1));
+      const logged = JSON.stringify((state.app as { log: { error: ReturnType<typeof vi.fn> } }).log.error.mock.calls);
+      expect(logged).toContain("Failed to close schedule scheduler");
+      expect(logged).toContain("Controlled stop error");
+      expect(logged).toContain("Worker stop error");
+      expect(logged).toContain("Database close error");
+      expect(state.shutdownTelemetry).toHaveBeenCalledOnce();
+      for (const secret of ["jwt-secret", "google-secret", "encryption-secret"]) expect(logged).not.toContain(secret);
+    }
   } finally {
     release();
     await starting;

@@ -49,6 +49,7 @@ contents, and machine-specific operational logs outside the repository.
 - [SQL caller repairs: main shutdown composition and shared resource disposal](verification/sql-caller-repairs-36.md)
 - [SQL caller repairs: actual Server process and pending-listen shutdown](verification/sql-caller-repairs-37.md)
 - [SQL caller repairs: native Google token-exchange budget](verification/sql-caller-repairs-38.md)
+- [SQL caller repairs: nested shutdown failure diagnostics](verification/sql-caller-repairs-39.md)
 - [SQL caller repairs: Runtime Domain drain](verification/sql-caller-repairs-25.md)
 - [SQL caller repairs: Feishu connection and Inbox drain](verification/sql-caller-repairs-24.md)
 - [SQL caller repairs: Provider preparation drain](verification/sql-caller-repairs-23.md)

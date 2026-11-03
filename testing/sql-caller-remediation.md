@@ -509,3 +509,12 @@ Server build pass; the precise SDK overlay is recorded. Batch 37 exact review
 found no actionable defect; batch 38 source review found none and exact review
 remains pending. IM-R2 measurement/strict selection equivalence and final broad
 Server/covered Client Runtime validation remain before full completion.
+
+
+[Nested shutdown failure diagnostics](verification/sql-caller-repairs-39.md)
+repairs a logging regression exposed by the new wrapper depth: the existing
+formatter now preserves resource leaves and secret redaction with fewer branches.
+Twenty-two host and Docker component cases pass, including simultaneous scheduler,
+worker and pool-close errors. No SQL/ownership behavior changes. Batch 38 exact
+review found no actionable defect; batch 39 source review found none. IM-R2 scale
+measurement and final broad owning validation remain.

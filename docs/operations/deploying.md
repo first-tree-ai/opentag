@@ -279,6 +279,36 @@ restore the original source from the backup, or delete that Skill and reinstall 
 in the live database, roll back only to a Server that accepts them. Deploying the enum migrations alone does not make
 older application validators compatible.
 
+Feishu chat metadata enrichment also requires a JSONB compatibility check when rolling back to a Server revision that
+predates `chatMode` and `groupMessageType` in `ProviderInboundContextSchema`. Older Server revisions spread
+`im_messages.provider_context` directly into the strict `RuntimeProviderMessageRefSchema` and parse
+`feishu_inbound_receipts.work_payload` with the older strict `ProviderInboundContextSchema`. Before switching to an
+older revision, audit both tables:
+
+```sql
+select count(*) from im_messages where provider_context ?| array['chatMode', 'groupMessageType'];
+select count(*) from feishu_inbound_receipts
+where work_payload is not null
+  and (work_payload #> '{event,providerContext}') ?| array['chatMode', 'groupMessageType'];
+```
+
+If any rows are present, strip the keys before completing the rollback:
+
+```sql
+update im_messages
+set provider_context = provider_context - 'chatMode' - 'groupMessageType'
+where provider_context ?| array['chatMode', 'groupMessageType'];
+
+update feishu_inbound_receipts
+set work_payload = jsonb_set(
+  work_payload,
+  '{event,providerContext}',
+  (work_payload #> '{event,providerContext}') - 'chatMode' - 'groupMessageType'
+)
+where work_payload is not null
+  and (work_payload #> '{event,providerContext}') ?| array['chatMode', 'groupMessageType'];
+```
+
 ## Verifying a deployment
 
 The job summary records the deployed revision, the image tag, and the image digest. Confirm the rollout from the

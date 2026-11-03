@@ -136,6 +136,7 @@ async function createMessage(
       provider: "feishu";
       chatType?: string;
       chatMode?: "group" | "topic" | "p2p";
+      groupMessageType?: "chat" | "thread";
       threadId?: string;
       rootId?: string;
     };
@@ -816,7 +817,12 @@ describe("TaskService", () => {
       channelId: "oc_regular_group",
       text: "Regular group message",
       occurredAt: minutes(5),
-      providerContext: { provider: "feishu", chatType: "group", chatMode: "group" },
+      providerContext: {
+        provider: "feishu",
+        chatType: "group",
+        chatMode: "group",
+        groupMessageType: "thread",
+      },
     });
     const topicMsg = await createMessage(binding.id, {
       channelId: "oc_topic",
@@ -830,18 +836,18 @@ describe("TaskService", () => {
     await createDelivery(topicChannel.id, topicMsg.id, { at: minutes(11), reported: true });
 
     const page = await service.list(bootstrap.userId, { limit: 50 });
-    expect(page.tasks.map((task) => [task.id, task.source.chatMode])).toEqual([
-      [topicMsg.id, "topic"],
-      [groupMsg.id, "group"],
-      [legacyMsg.id, null],
+    expect(page.tasks.map((task) => [task.id, task.source.chatMode, task.source.groupMessageType])).toEqual([
+      [topicMsg.id, "topic", null],
+      [groupMsg.id, "group", "thread"],
+      [legacyMsg.id, null, null],
     ]);
 
     const topicDetail = await service.detail(bootstrap.userId, topicMsg.id, { sections: ["turns"] });
     const groupDetail = await service.detail(bootstrap.userId, groupMsg.id, { sections: ["turns"] });
     const legacyDetail = await service.detail(bootstrap.userId, legacyMsg.id, { sections: ["turns"] });
-    expect(topicDetail.task.source.chatMode).toBe("topic");
-    expect(groupDetail.task.source.chatMode).toBe("group");
-    expect(legacyDetail.task.source.chatMode).toBeNull();
+    expect(topicDetail.task.source).toMatchObject({ chatMode: "topic", groupMessageType: null });
+    expect(groupDetail.task.source).toMatchObject({ chatMode: "group", groupMessageType: "thread" });
+    expect(legacyDetail.task.source).toMatchObject({ chatMode: null, groupMessageType: null });
   });
 
   it("renames a Task through its own id and refuses a topic that has no titleable Session", async () => {

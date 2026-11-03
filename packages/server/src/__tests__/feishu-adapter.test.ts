@@ -7,11 +7,12 @@ import {
   type NormalizedMessage,
   WSClient,
 } from "@larksuiteoapi/node-sdk";
-import { agentAvatarPath, FEISHU_REQUIRED_TENANT_SCOPES } from "@opentag/shared";
+import { agentAvatarPath, FEISHU_REQUIRED_TENANT_SCOPES, RuntimeProviderMessageRefSchema } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
 import { agents, computers, imBindings, imMessages } from "../db/schema/index.js";
+import { runtimeProviderMessageRef } from "../runtime/runtime-provider-message-ref.js";
 import { AgentService } from "../services/agents/index.js";
 import { ApplicationCipher } from "../services/crypto.js";
 import { ExternalCallPolicy } from "../services/im/external-call-policy.js";
@@ -19,6 +20,7 @@ import {
   createFeishuHttpCapability,
   createReliableFeishuDispatcher,
   FeishuAdapter,
+  type FeishuChatMetadata,
   feishuDomainForWorkspaceBrand,
   normalizeFeishuMessage,
 } from "../services/im-bindings/feishu/adapter.js";
@@ -772,57 +774,102 @@ describe("Feishu adapter", () => {
     });
   });
 
-  it("resolves and caches Feishu chat_mode and preserves raw chatMode in providerContext", async () => {
-    const getChat = vi
-      .fn()
-      .mockResolvedValueOnce({ code: 0, data: { chat_mode: "topic" } })
-      .mockResolvedValueOnce({ code: 0, data: { chat_mode: "group" } });
-    const http = createFeishuHttpCapability({
-      im: {
-        v1: {
-          chats: { get: getChat },
-          chatMembers: { get: vi.fn() },
-          messageResource: {
-            get: vi.fn().mockResolvedValue({ getReadableStream: () => Readable.from(Buffer.alloc(0)) }),
+  it("resolves and caches Feishu chat_mode and group_message_type, caches failures negatively, and strips them from runtime provider refs", async () => {
+    vi.useFakeTimers();
+    try {
+      const getChat = vi
+        .fn()
+        .mockResolvedValueOnce({ code: 0, data: { chat_mode: "topic" } })
+        .mockResolvedValueOnce({ code: 0, data: { chat_mode: "group", group_message_type: "thread" } })
+        .mockResolvedValueOnce({ code: 99_999, msg: "transient error" })
+        .mockResolvedValueOnce({ code: 0, data: { chat_mode: "group", group_message_type: "chat" } });
+      const http = createFeishuHttpCapability({
+        im: {
+          v1: {
+            chats: { get: getChat },
+            chatMembers: { get: vi.fn() },
+            messageResource: {
+              get: vi.fn().mockResolvedValue({ getReadableStream: () => Readable.from(Buffer.alloc(0)) }),
+            },
           },
         },
-      },
-    });
-    const adapter = new FeishuAdapter({
-      appId: "cli_chat_mode",
-      appSecret: "secret",
-      teamId: null,
-      channel: null,
-      http,
-      policy: new ExternalCallPolicy(),
-    });
+      });
+      const adapter = new FeishuAdapter({
+        appId: "cli_chat_mode",
+        appSecret: "secret",
+        teamId: null,
+        channel: null,
+        http,
+        policy: new ExternalCallPolicy(),
+      });
 
-    await expect(adapter.resolveChatMode({ chatId: "oc_topic" })).resolves.toBe("topic");
-    await expect(adapter.resolveChatMode({ chatId: "oc_topic" })).resolves.toBe("topic");
-    await expect(adapter.resolveChatMode({ chatId: "oc_group" })).resolves.toBe("group");
-    expect(getChat).toHaveBeenCalledTimes(2);
-    expect(getChat).toHaveBeenNthCalledWith(1, { path: { chat_id: "oc_topic" } });
-    expect(getChat).toHaveBeenNthCalledWith(2, { path: { chat_id: "oc_group" } });
+      await expect(adapter.resolveChatMetadata({ chatId: "oc_topic" })).resolves.toEqual({ chatMode: "topic" });
+      await expect(adapter.resolveChatMode({ chatId: "oc_topic" })).resolves.toBe("topic");
+      await expect(adapter.resolveChatMetadata({ chatId: "oc_group" })).resolves.toEqual({
+        chatMode: "group",
+        groupMessageType: "thread",
+      });
+      expect(getChat).toHaveBeenCalledTimes(2);
+
+      await expect(adapter.resolveChatMetadata({ chatId: "oc_failing" })).rejects.toThrow(
+        "FEISHU_CHAT_MODE_LOOKUP_FAILED",
+      );
+      await expect(adapter.resolveChatMetadata({ chatId: "oc_failing" })).resolves.toBeUndefined();
+      expect(getChat).toHaveBeenCalledTimes(3);
+
+      await vi.advanceTimersByTimeAsync(30_001);
+      await expect(adapter.resolveChatMetadata({ chatId: "oc_failing" })).resolves.toEqual({
+        chatMode: "group",
+        groupMessageType: "chat",
+      });
+      expect(getChat).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.useRealTimers();
+    }
 
     const received: NormalizedMessage[] = [];
     const dispatcher = createReliableFeishuDispatcher((message) => {
       received.push(message);
     });
-    const rawTopic = rawMessage("ev-topic", "om-topic", "20");
-    Object.assign(rawTopic.event.message, { chat_mode: "topic" });
     const rawP2p = rawMessage("ev-p2p", "om-p2p", "21");
     rawP2p.event.message.chat_type = "p2p";
-    await dispatcher.invoke(rawTopic, { needCheck: false });
     await dispatcher.invoke(rawP2p, { needCheck: false });
 
-    const [topicEvent] = normalizeFeishuMessage({
-      appId: "cli_1",
-      teamId: "workspace_1",
-      message: received[0] as never,
-    });
-    const [p2pEvent] = normalizeFeishuMessage({ appId: "cli_1", teamId: "workspace_1", message: received[1] as never });
-    expect(topicEvent?.providerContext).toMatchObject({ provider: "feishu", chatType: "group", chatMode: "topic" });
+    const [p2pEvent] = normalizeFeishuMessage({ appId: "cli_1", teamId: "workspace_1", message: received[0] as never });
     expect(p2pEvent?.providerContext).toMatchObject({ provider: "feishu", chatType: "p2p", chatMode: "p2p" });
+
+    const ref = runtimeProviderMessageRef(
+      {
+        channelId: "oc_topic",
+        externalMessageId: "om_1",
+        authorKind: "human",
+        authorExternalId: "ou_human",
+        providerContext: {
+          provider: "feishu",
+          chatType: "group",
+          chatMode: "topic",
+          groupMessageType: "thread",
+          threadId: "omt_1",
+          rootId: "om_1",
+        },
+      },
+      {
+        externalAppId: "cli_1",
+        externalBotId: "ou_bot",
+        externalTeamBrand: "feishu",
+      } as never,
+    );
+    expect(RuntimeProviderMessageRefSchema.parse(ref)).toEqual({
+      provider: "feishu",
+      teamBrand: "feishu",
+      appId: "cli_1",
+      botOpenId: "ou_bot",
+      chatId: "oc_topic",
+      chatType: "group",
+      messageId: "om_1",
+      threadId: "omt_1",
+      rootId: "om_1",
+    });
   });
 });
 
@@ -887,6 +934,7 @@ function fakeConnectionAdapter(input: {
   scopes?: string[];
   disconnect?: ReturnType<typeof vi.fn>;
   resolveSenderName?: () => Promise<string | undefined>;
+  resolveChatMetadata?: (input: { chatId: string }) => Promise<FeishuChatMetadata | undefined>;
   resolveChatMode?: (input: { chatId: string }) => Promise<"group" | "topic" | "p2p" | undefined>;
 }) {
   let handlers: Record<string, (value?: unknown) => unknown> = {};
@@ -912,6 +960,7 @@ function fakeConnectionAdapter(input: {
     listGrantedWorkspaceScopes: vi.fn().mockResolvedValue(input.scopes ?? FEISHU_REQUIRED_TENANT_SCOPES),
     normalizeInbound: vi.fn().mockReturnValue([]),
     resolveSenderName: vi.fn(input.resolveSenderName ?? (async () => undefined)),
+    ...(input.resolveChatMetadata ? { resolveChatMetadata: vi.fn(input.resolveChatMetadata) } : {}),
     resolveChatMode: vi.fn(input.resolveChatMode ?? (async () => undefined)),
   };
   return {
@@ -1597,20 +1646,35 @@ describe("FeishuConnectionManager", () => {
     await manager.stop();
   });
 
-  it("enriches inbound Feishu group messages with resolved chatMode and tolerates chat metadata lookup failures", async () => {
+  it("enriches Feishu chat metadata off the admission path and backfills earlier channel messages", async () => {
     const value = await connectionFixture();
     const owner = crypto.randomUUID();
     const attemptId = await validatingConnectionAttempt(value, owner);
-    const resolveChatMode = vi
-      .fn<({ chatId }: { chatId: string }) => Promise<"group" | "topic" | "p2p" | undefined>>()
-      .mockResolvedValueOnce("topic")
-      .mockRejectedValueOnce(new Error("FEISHU_CHAT_MODE_LOOKUP_FAILED"));
-    const fake = fakeConnectionAdapter({ appId: "cli_chat_mode", resolveChatMode });
+    let releaseChatMetadata: ((metadata: FeishuChatMetadata | undefined) => void) | undefined;
+    const resolveChatMetadata = vi
+      .fn<({ chatId }: { chatId: string }) => Promise<FeishuChatMetadata | undefined>>()
+      .mockImplementationOnce(
+        () =>
+          new Promise<FeishuChatMetadata | undefined>((resolve) => {
+            releaseChatMetadata = resolve;
+          }),
+      );
+    const fake = fakeConnectionAdapter({ appId: "cli_chat_mode", resolveChatMetadata });
     fake.adapter.normalizeInbound = (envelope) => normalizeFeishuMessage(envelope);
+    const firstMessageId = crypto.randomUUID();
+    const secondMessageId = crypto.randomUUID();
     const inbox = {
-      ingest: vi
-        .fn()
-        .mockResolvedValue({ messageId: crypto.randomUUID(), deliveryIds: ["delivery-1"], duplicate: false }),
+      ingest: vi.fn().mockResolvedValue({ messageId: secondMessageId, deliveryIds: ["delivery-1"], duplicate: false }),
+    };
+    const receipts = {
+      claim: vi.fn().mockResolvedValue({
+        accepted: true,
+        duplicate: false,
+        receiptId: "receipt-chat-mode",
+        status: "processing",
+      }),
+      markProcessed: vi.fn().mockResolvedValue(undefined),
+      markFailed: vi.fn().mockResolvedValue(undefined),
     };
     const manager = new FeishuConnectionManager({
       database: connectionDatabase.database,
@@ -1618,6 +1682,7 @@ describe("FeishuConnectionManager", () => {
       instanceId: owner,
       imBindings: value.imBindings,
       createAdapter: () => fake.adapter,
+      receipts,
     });
     await manager.activateAtomicAttempt({
       attemptId,
@@ -1626,49 +1691,64 @@ describe("FeishuConnectionManager", () => {
       appId: "cli_chat_mode",
       appSecret: "secret",
     });
+    const [binding] = await connectionDatabase.database
+      .select()
+      .from(imBindings)
+      .where(eq(imBindings.agentId, value.agent.id));
+    if (!binding) throw new Error("Expected activated Feishu binding");
+
+    await connectionDatabase.database.insert(imMessages).values([
+      {
+        id: firstMessageId,
+        imBindingId: binding.id,
+        providerEventId: "ev_missed",
+        channelId: "oc_threaded_group",
+        externalMessageId: "om_missed",
+        providerRevisionKey: "1",
+        operation: "created",
+        direction: "inbound",
+        authorKind: "human",
+        authorExternalId: "ou_human",
+        content: { version: 1, fallbackText: "missed earlier", blocks: [], truncated: false },
+        providerContext: { provider: "feishu", chatType: "group" },
+        occurredAt: connectionNow,
+        receivedAt: connectionNow,
+      },
+      {
+        id: secondMessageId,
+        imBindingId: binding.id,
+        providerEventId: "ev_current",
+        channelId: "oc_threaded_group",
+        externalMessageId: "om_current",
+        providerRevisionKey: "1",
+        operation: "created",
+        direction: "inbound",
+        authorKind: "human",
+        authorExternalId: "ou_human",
+        content: { version: 1, fallbackText: "current", blocks: [], truncated: false },
+        providerContext: { provider: "feishu", chatType: "group" },
+        occurredAt: connectionNow,
+        receivedAt: connectionNow,
+      },
+    ]);
 
     await fake.getHandlers().message?.({
-      messageId: "om_topic",
-      chatId: "oc_topic",
+      messageId: "om_current",
+      chatId: "oc_threaded_group",
       chatType: "group",
       senderId: "ou_human",
-      content: "hello topic",
+      content: "current",
       rawContentType: "text",
       resources: [],
       mentions: [],
       mentionAll: false,
       mentionedBot: false,
       createTime: 1,
-      raw: { header: { event_id: "ev_topic", tenant_key: "tenant_1" } },
-    } as never);
-    await fake.getHandlers().message?.({
-      messageId: "om_fallback",
-      chatId: "oc_fallback",
-      chatType: "group",
-      senderId: "ou_human",
-      content: "hello fallback",
-      rawContentType: "text",
-      resources: [],
-      mentions: [],
-      mentionAll: false,
-      mentionedBot: false,
-      createTime: 2,
-      raw: { header: { event_id: "ev_fallback", tenant_key: "tenant_1" } },
+      raw: { header: { event_id: "ev_current", tenant_key: "tenant_1" } },
     } as never);
 
-    expect(inbox.ingest).toHaveBeenNthCalledWith(
-      1,
-      expect.any(String),
-      expect.any(Number),
-      expect.objectContaining({
-        providerContext: expect.objectContaining({ provider: "feishu", chatType: "group", chatMode: "topic" }),
-      }),
-      expect.objectContaining({ provider: "feishu" }),
-      undefined,
-    );
-    expect(inbox.ingest).toHaveBeenNthCalledWith(
-      2,
-      expect.any(String),
+    expect(inbox.ingest).toHaveBeenCalledWith(
+      binding.id,
       expect.any(Number),
       expect.objectContaining({
         providerContext: { provider: "feishu", chatType: "group" },
@@ -1676,6 +1756,45 @@ describe("FeishuConnectionManager", () => {
       expect.objectContaining({ provider: "feishu" }),
       undefined,
     );
+    expect(receipts.claim).toHaveBeenCalledWith(
+      expect.objectContaining({
+        work: expect.objectContaining({
+          event: expect.objectContaining({
+            providerContext: { provider: "feishu", chatType: "group" },
+          }),
+        }),
+      }),
+    );
+
+    releaseChatMetadata?.({ chatMode: "group", groupMessageType: "thread" });
+    await vi.waitFor(async () => {
+      const rows = await connectionDatabase.database
+        .select({ id: imMessages.id, providerContext: imMessages.providerContext })
+        .from(imMessages)
+        .where(eq(imMessages.channelId, "oc_threaded_group"));
+      expect(rows).toEqual(
+        expect.arrayContaining([
+          {
+            id: firstMessageId,
+            providerContext: {
+              provider: "feishu",
+              chatType: "group",
+              chatMode: "group",
+              groupMessageType: "thread",
+            },
+          },
+          {
+            id: secondMessageId,
+            providerContext: {
+              provider: "feishu",
+              chatType: "group",
+              chatMode: "group",
+              groupMessageType: "thread",
+            },
+          },
+        ]),
+      );
+    });
     await manager.stop();
   });
 });

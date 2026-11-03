@@ -64,6 +64,7 @@ export const TaskSummarySchema = z
         channelId: z.string().min(1),
         threadKey: z.string().min(1).nullable(),
         chatMode: z.enum(["group", "topic", "p2p"]).nullable().optional(),
+        groupMessageType: z.enum(["chat", "thread"]).nullable().optional(),
       })
       .strict(),
     sessionKind: TaskSessionKindSchema,

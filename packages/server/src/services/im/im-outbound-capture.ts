@@ -532,35 +532,20 @@ function feishuReplyConflict(meta: FeishuResponseMeta): boolean {
   return meta.replyTargetExternalId !== null && meta.parentId !== meta.replyTargetExternalId;
 }
 
-function feishuChatMode(value: unknown): "group" | "topic" | "p2p" | undefined {
-  return value === "group" || value === "topic" || value === "p2p" ? value : undefined;
-}
-
-function feishuOutboundProviderContext(
-  meta: FeishuResponseMeta,
-  data: Record<string, unknown>,
-): ProviderInboundContext {
-  const chatMode = feishuChatMode(data.chat_mode ?? data.chatMode) ?? (data.chat_type === "p2p" ? "p2p" : undefined);
-  return {
-    provider: "feishu",
-    ...(chatMode ? { chatMode } : {}),
-    ...(meta.threadId ? { threadId: meta.threadId } : {}),
-    ...(meta.rootId ? { rootId: meta.rootId } : {}),
-    ...(meta.replyToExternalId ? { parentId: meta.replyToExternalId } : {}),
-  };
-}
-
 function inheritParentFeishuContext(
   current: ProviderInboundContext,
   parent: StoredMessageContext,
   rootId: string | null,
 ): ProviderInboundContext {
   if (current.provider !== "feishu") return current;
-  const parentChatMode = parent.providerContext.provider === "feishu" ? parent.providerContext.chatMode : undefined;
+  const parentFeishu = parent.providerContext.provider === "feishu" ? parent.providerContext : undefined;
+  const parentChatMode = parentFeishu?.chatMode;
+  const parentGroupMessageType = parentFeishu?.groupMessageType;
   return {
     ...current,
     ...(rootId && !current.rootId ? { rootId } : {}),
     ...(parentChatMode && !current.chatMode ? { chatMode: parentChatMode } : {}),
+    ...(parentGroupMessageType && !current.groupMessageType ? { groupMessageType: parentGroupMessageType } : {}),
   };
 }
 
@@ -587,7 +572,12 @@ function parseFeishuSend(event: OutboundCaptureEvent, reply: boolean): OutboundC
       replyToExternalId: meta.replyToExternalId,
       responseAuthorExternalId: meta.responseAuthorExternalId,
       content: feishuBodyContent(msgType, body, timeSource),
-      providerContext: feishuOutboundProviderContext(meta, data ?? {}),
+      providerContext: {
+        provider: "feishu",
+        ...(meta.threadId ? { threadId: meta.threadId } : {}),
+        ...(meta.rootId ? { rootId: meta.rootId } : {}),
+        ...(meta.replyToExternalId ? { parentId: meta.replyToExternalId } : {}),
+      },
       occurredAt: meta.providerAt ?? event.observedAt,
       timeSource,
       replyTargetExternalId: meta.replyTargetExternalId,

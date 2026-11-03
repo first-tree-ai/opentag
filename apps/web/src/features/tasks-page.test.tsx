@@ -1346,13 +1346,13 @@ describe("Tasks view", () => {
       ...task,
       id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
       title: "Regular group task",
-      source: { ...task.source, conversationKind: "channel", chatMode: "group" },
+      source: { ...task.source, conversationKind: "channel", chatMode: "group", groupMessageType: "thread" },
     } satisfies TaskSummary;
     const legacyTask = {
       ...task,
       id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
       title: "Legacy group task",
-      source: { ...task.source, conversationKind: "channel", chatMode: null },
+      source: { ...task.source, conversationKind: "channel", chatMode: null, groupMessageType: null },
     } satisfies TaskSummary;
     vi.spyOn(browserApi, "tasks").mockResolvedValue({
       tasks: [topicTask, regularGroupTask, legacyTask],
@@ -1364,14 +1364,16 @@ describe("Tasks view", () => {
 
     const sources = [...container.querySelectorAll('[data-label="Source"]')];
     expect(sources.map((cell) => cell.getAttribute("data-chat-mode"))).toEqual(["topic", "group", null]);
+    expect(sources.map((cell) => cell.getAttribute("data-group-message-type"))).toEqual([null, "thread", null]);
 
-    mockDetail({ ...detail, task: topicTask });
-    const detailView = await renderInRouter(<TaskDetailPage taskId={topicTask.id} />, {
-      path: `/tasks/${topicTask.id}`,
+    mockDetail({ ...detail, task: regularGroupTask });
+    const detailView = await renderInRouter(<TaskDetailPage taskId={regularGroupTask.id} />, {
+      path: `/tasks/${regularGroupTask.id}`,
     });
-    await screen.findByRole("heading", { name: "Topic chat task" });
+    await screen.findByRole("heading", { name: "Regular group task" });
     const sourceSpan = detailView.container.querySelector("dd [data-chat-mode]");
-    expect(sourceSpan?.getAttribute("data-chat-mode")).toBe("topic");
+    expect(sourceSpan?.getAttribute("data-chat-mode")).toBe("group");
+    expect(sourceSpan?.getAttribute("data-group-message-type")).toBe("thread");
   });
 
   it("renders internal child Sessions when returned on the Task detail page", async () => {

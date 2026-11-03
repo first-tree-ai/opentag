@@ -28,6 +28,7 @@ export interface TaskSummaryRow extends Record<string, unknown> {
   channelId: string;
   threadKey: string | null;
   chatMode?: "group" | "topic" | "p2p" | null;
+  groupMessageType?: "chat" | "thread" | null;
   createdAt: Date | string;
   endedAt: Date | string | null;
   manualTitle: string | null;
@@ -187,6 +188,7 @@ export function toSummary(row: TaskSummaryRow): TaskSummary {
       channelId: row.channelId,
       threadKey: row.threadKey,
       chatMode: row.chatMode ?? null,
+      groupMessageType: row.groupMessageType ?? null,
     },
     sessionKind: row.sessionKind,
     title,

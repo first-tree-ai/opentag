@@ -796,11 +796,17 @@ describe("ImOutboundCapture bounded persistence", () => {
     expect(statements).toHaveLength(3);
   });
 
-  it("inherits chatMode from the stored reply parent when omitted on the outbound response", async () => {
+  it("inherits chatMode and groupMessageType from the stored reply parent when omitted on the outbound response", async () => {
     const parent = {
       external_message_id: "om_root",
       thread_key: "omt_topic",
-      provider_context: { provider: "feishu", chatType: "group", chatMode: "topic", rootId: "om_root" },
+      provider_context: {
+        provider: "feishu",
+        chatType: "group",
+        chatMode: "group",
+        groupMessageType: "thread",
+        rootId: "om_root",
+      },
     };
     let calls = 0;
     const { database, statements } = fakeDatabase(() => {
@@ -829,7 +835,7 @@ describe("ImOutboundCapture bounded persistence", () => {
 
     const insertStatement = statements[2];
     expect(insertStatement?.params).toContain(
-      '{"provider":"feishu","parentId":"om_root","rootId":"om_root","chatMode":"topic"}',
+      '{"provider":"feishu","parentId":"om_root","rootId":"om_root","chatMode":"group","groupMessageType":"thread"}',
     );
   });
 });

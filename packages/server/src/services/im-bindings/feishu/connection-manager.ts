@@ -606,7 +606,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     try {
       const payload = workStore.parse(attempt);
       if (payload.provider !== "feishu" || !owned) throw new Error("FEISHU_INBOUND_FENCE_STALE");
-      const event = await this.#withResolvedChatMode(owned.adapter, payload.event);
+      const event = payload.event;
       if (feishuEnvelopeEventId(event) !== attempt.eventId) throw new Error("FEISHU_INBOUND_IDENTITY_MISMATCH");
       const result = await this.#persistInboundEvent(
         event,
@@ -620,24 +620,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
         () => undefined,
       );
       await receipts.markProcessed(attempt.receiptId, attempt.attempt);
-      if (
-        result.messageId &&
-        payload.senderOpenId &&
-        event.message.author.kind === "human" &&
-        !event.message.author.displayName
-      ) {
-        this.#trackDetached(
-          "FEISHU_SENDER_NAME_ENRICHMENT_FAILED",
-          this.#enrichSenderName(owned.adapter, {
-            imBindingId: attempt.scopeId,
-            messageId: result.messageId,
-            chatId: event.conversation.externalId,
-            senderOpenId: payload.senderOpenId,
-          }),
-          "provider",
-          result.messageId,
-        );
-      }
+      this.#scheduleInboundEnrichment(owned.adapter, attempt.scopeId, event, result.messageId, payload.senderOpenId);
     } catch (error) {
       await receipts
         .markFailed(attempt.receiptId, processingErrorCode(error), attempt.attempt)
@@ -771,28 +754,9 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
           setFailureCode("FEISHU_INBOUND_NORMALIZE_FAILED");
           const events = adapter.normalizeInbound({ appId: handoff.appId, teamId: null, message });
           const senderOpenId = feishuSenderOpenId(message);
-          for (const rawEvent of events) {
-            const event = await this.#withResolvedChatMode(adapter, rawEvent);
+          for (const event of events) {
             const result = await this.#processInboundEvent(event, handoff, setFailureCode, senderOpenId);
-            const messageId = result?.messageId;
-            if (
-              messageId &&
-              senderOpenId &&
-              event.message.author.kind === "human" &&
-              !event.message.author.displayName
-            ) {
-              this.#trackDetached(
-                "FEISHU_SENDER_NAME_ENRICHMENT_FAILED",
-                this.#enrichSenderName(adapter, {
-                  imBindingId: handoff.imBindingId,
-                  messageId,
-                  chatId: event.conversation.externalId,
-                  senderOpenId,
-                }),
-                "provider",
-                messageId,
-              );
-            }
+            this.#scheduleInboundEnrichment(adapter, handoff.imBindingId, event, result?.messageId, senderOpenId);
           }
         });
       },
@@ -886,32 +850,64 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     return result;
   }
 
-  async #withResolvedChatMode(
+  #scheduleInboundEnrichment(
     adapter: FeishuAdapter,
+    imBindingId: string,
     event: Parameters<ImMessageInbox["ingest"]>[2],
-  ): Promise<Parameters<ImMessageInbox["ingest"]>[2]> {
-    if (event.providerContext.provider !== "feishu" || event.providerContext.chatMode) {
-      return event;
+    messageId: string | undefined,
+    senderOpenId: string | null | undefined,
+  ): void {
+    if (!messageId) return;
+    if (senderOpenId && event.message.author.kind === "human" && !event.message.author.displayName) {
+      this.#trackDetached(
+        "FEISHU_SENDER_NAME_ENRICHMENT_FAILED",
+        this.#enrichSenderName(adapter, {
+          imBindingId,
+          messageId,
+          chatId: event.conversation.externalId,
+          senderOpenId,
+        }),
+        "provider",
+        messageId,
+      );
     }
-    if (event.providerContext.chatType === "p2p") {
-      return {
-        ...event,
-        providerContext: { ...event.providerContext, chatMode: "p2p" },
-      };
+    if (
+      event.providerContext.provider === "feishu" &&
+      event.message.operation !== "deleted" &&
+      !event.providerContext.chatMode
+    ) {
+      this.#trackDetached(
+        "FEISHU_CHAT_MODE_ENRICHMENT_FAILED",
+        this.#enrichChatMetadata(adapter, {
+          imBindingId,
+          chatId: event.conversation.externalId,
+        }),
+        "provider",
+        messageId,
+      );
     }
-    if (event.message.operation === "deleted" || !adapter.resolveChatMode) {
-      return event;
-    }
-    try {
-      const chatMode = await adapter.resolveChatMode({ chatId: event.conversation.externalId });
-      if (!chatMode) return event;
-      return {
-        ...event,
-        providerContext: { ...event.providerContext, chatMode },
-      };
-    } catch {
-      return event;
-    }
+  }
+
+  async #enrichChatMetadata(adapter: FeishuAdapter, input: { imBindingId: string; chatId: string }): Promise<void> {
+    const metadata = await resolveAdapterChatMetadata(adapter, input.chatId);
+    if (!metadata?.chatMode) return;
+    const patch = {
+      chatMode: metadata.chatMode,
+      ...(metadata.groupMessageType ? { groupMessageType: metadata.groupMessageType } : {}),
+    };
+    await this.#database
+      .update(imMessages)
+      .set({
+        providerContext: sql`${imMessages.providerContext} || ${JSON.stringify(patch)}::jsonb`,
+      })
+      .where(
+        and(
+          eq(imMessages.imBindingId, input.imBindingId),
+          eq(imMessages.channelId, input.chatId),
+          sql`${imMessages.providerContext} ->> 'provider' = 'feishu'`,
+          sql`${imMessages.providerContext} ->> 'chatMode' is null`,
+        ),
+      );
   }
 
   async #enrichSenderName(
@@ -1150,6 +1146,13 @@ function emitInboundDuplicate(bindingId: string, providerEventId: string, extern
     }),
     ...outcomeAttrs("duplicate"),
   });
+}
+
+async function resolveAdapterChatMetadata(adapter: FeishuAdapter, chatId: string) {
+  if (adapter.resolveChatMetadata) return adapter.resolveChatMetadata({ chatId });
+  if (!adapter.resolveChatMode) return undefined;
+  const chatMode = await adapter.resolveChatMode({ chatId });
+  return chatMode ? { chatMode } : undefined;
 }
 
 function connectionOutcome(code: string): string {

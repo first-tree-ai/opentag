@@ -183,7 +183,7 @@ describe("Task browser contracts", () => {
     expect(TaskTitleUpdateResponseSchema.parse({ task: summary })).toEqual({ task: summary });
   });
 
-  it("preserves Feishu chatMode across inbound provider context and Task summary sources", () => {
+  it("preserves Feishu chatMode and groupMessageType across inbound provider context and Task summary sources", () => {
     for (const chatMode of ["group", "topic", "p2p"] as const) {
       expect(ProviderInboundContextSchema.parse({ provider: "feishu", chatType: "group", chatMode })).toEqual({
         provider: "feishu",
@@ -194,10 +194,31 @@ describe("Task browser contracts", () => {
         chatMode,
       );
     }
-    expect(TaskSummarySchema.parse({ ...summary, source: { ...summary.source, chatMode: null } }).source.chatMode).toBe(
-      null,
-    );
+    for (const groupMessageType of ["chat", "thread"] as const) {
+      expect(
+        ProviderInboundContextSchema.parse({
+          provider: "feishu",
+          chatType: "group",
+          chatMode: "group",
+          groupMessageType,
+        }),
+      ).toEqual({
+        provider: "feishu",
+        chatType: "group",
+        chatMode: "group",
+        groupMessageType,
+      });
+      expect(
+        TaskSummarySchema.parse({ ...summary, source: { ...summary.source, groupMessageType } }).source
+          .groupMessageType,
+      ).toBe(groupMessageType);
+    }
+    expect(
+      TaskSummarySchema.parse({ ...summary, source: { ...summary.source, chatMode: null, groupMessageType: null } })
+        .source,
+    ).toMatchObject({ chatMode: null, groupMessageType: null });
     expect(() => ProviderInboundContextSchema.parse({ provider: "feishu", chatMode: "forum" })).toThrow();
+    expect(() => ProviderInboundContextSchema.parse({ provider: "feishu", groupMessageType: "topic" })).toThrow();
     expect(() => TaskSummarySchema.parse({ ...summary, source: { ...summary.source, chatMode: "forum" } })).toThrow();
   });
 });

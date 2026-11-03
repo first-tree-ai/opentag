@@ -1,4 +1,4 @@
-# Independent SQL caller review: batches 19–22
+# Independent SQL caller review: batches 19–23
 
 The user-authorized read-only reviewer inspected exact committed ranges, source,
 tests and evidence records without changing files or rerunning tests/Docker.
@@ -10,6 +10,8 @@ tests and evidence records without changing files or rerunning tests/Docker.
 | 20 correction | 3ff799ff..7b1b81fea5e91d180bb3abfcdac4bd554508e35d | P2 closed; exact 040000 ancestor entry and two real-Git process trace controls. |
 | 21 | 7b1b81fe..ac1b538f766442439a3575f21ceace86cf9d8d9e | No actionable finding; native close bounds and independent container cleanup retained. |
 | 22 | ac1b538f..8ea19fd8ab248607ee536f6a3568092156f6c9a1 | No actionable finding for registry/store reclamation; async admission/drain remains IM-F3. |
+| 23 initial | 8ea19fd8..4af455c0f5ff6aebc00154f8b3d506b04aa44a27 | P2: computer-kind read could resume into a new grant stage after close. |
+| 23 correction | 4af455c0..0efff5241f288edb1f450b9247c2523640391375 | P2 closed; immediate closed/current recheck, proxy/legacy gated controls. |
 
 The reviewer also checked the remaining shutdown design against pinned Fastify
 5.12.3, Avvio 9.3.0 and websocket dependency source. Actual registration-time
@@ -24,5 +26,5 @@ complete Slack setup and Context Tree runs need a narrow explicit owner; normal
 HTTP waits do not establish that drain for disconnected clients. These are design
 review observations, not completed IM-F3 repair or full Server acceptance.
 
-Batch 23 and later changes require their own exact-commit review. CI, merge,
+Batch 24 and later changes require their own exact-commit review. CI, merge,
 deployment, private billing and live provider acceptance are not inferred.

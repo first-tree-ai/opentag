@@ -343,3 +343,10 @@ final custody/leases/transactions and absence of post-disposal queries. Ordinary
 single-query HTTP calls and non-SQL Channel polling do not acquire extra owner
 collections merely to make the checklist uniform. IM-F3 remains open until that
 composition and the remaining observations are resolved and reviewed.
+
+[Feishu connection and Inbox drain](verification/sql-caller-repairs-24.md) is
+verified at component scope (202 cases, 18 native PG). New close ports still need
+actual main/route composition. Complete Feishu setup service, Runtime/Runner and
+transport, high-level Slack/Context Tree, approval/OAuth/Cloud cleanup and IM
+worker work remain; IM-F3 stays open. No issue count is advanced for a partial
+shutdown repair. Batch 23 review P2 is corrected at 0efff524 and reviewer-confirmed.

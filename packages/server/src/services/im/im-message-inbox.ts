@@ -115,6 +115,9 @@ export class ImMessageInbox {
   readonly #now: () => Date;
   readonly #onDeliveryChanged: ((deliveryId: string) => void) | undefined;
   readonly #onTaskCreated: ((request: TaskTitleGenerationRequest) => Promise<void> | void) | undefined;
+  #closed = false;
+  #closing: Promise<void> | undefined;
+  readonly #work = new Map<Promise<unknown>, AbortController | undefined>();
   readonly #overflowPasses = new Map<string, Promise<void>>();
   readonly #overflowRechecks = new Map<string, OverflowCandidate>();
   readonly #sessions: SessionService;
@@ -148,7 +151,62 @@ export class ImMessageInbox {
     this.#sessions = new SessionService(database, { now: this.#now });
   }
 
+  close(): Promise<void> {
+    if (this.#closing) return this.#closing;
+    this.#closed = true;
+    this.#overflowRechecks.clear();
+    for (const controller of this.#work.values()) controller?.abort("im_inbox_closed");
+    this.#closing = this.#drain();
+    return this.#closing;
+  }
+
+  async #drain(): Promise<void> {
+    while (this.#work.size > 0 || this.#overflowPasses.size > 0) {
+      await Promise.allSettled([...this.#work.keys(), ...this.#overflowPasses.values()]);
+    }
+  }
+
+  #track<T>(operation: Promise<T>, controller?: AbortController): Promise<T> {
+    this.#work.set(operation, controller);
+    void operation.then(
+      () => this.#work.delete(operation),
+      () => this.#work.delete(operation),
+    );
+    return operation;
+  }
+
+  #generateTaskTitles(requests: Iterable<TaskTitleGenerationRequest>): void {
+    if (!this.#onTaskCreated || this.#closed) return;
+    for (const request of requests) {
+      const controller = new AbortController();
+      const timer = setTimeout(
+        () => controller.abort("task_title_generation_timeout"),
+        TASK_TITLE_GENERATION_TIMEOUT_MS,
+      );
+      timer.unref();
+      const operation = Promise.resolve()
+        .then(() => {
+          controller.signal.throwIfAborted();
+          return this.#onTaskCreated?.({ ...request, signal: controller.signal });
+        })
+        .catch(() => undefined)
+        .finally(() => clearTimeout(timer));
+      void this.#track(operation, controller);
+    }
+  }
+
   async ingest(
+    imBindingId: string,
+    credentialGeneration: number,
+    rawEvent: NormalizedInboundImEvent,
+    admissionFence?: { provider: "feishu"; holderInstanceId: string; fencingEpoch: number },
+    telemetry?: { provider: "feishu" | "slack"; receivedAt?: Date },
+  ): Promise<IngestResult> {
+    if (this.#closed) throw new Error("The IM message inbox is closed");
+    return this.#track(this.#ingest(imBindingId, credentialGeneration, rawEvent, admissionFence, telemetry));
+  }
+
+  async #ingest(
     imBindingId: string,
     credentialGeneration: number,
     rawEvent: NormalizedInboundImEvent,
@@ -626,17 +684,7 @@ export class ImMessageInbox {
           for (const candidate of overflowCandidates.values()) {
             this.#queueOverflowExpiry(candidate);
           }
-          for (const request of createdTasks.values()) {
-            const controller = new AbortController();
-            const timer = setTimeout(
-              () => controller.abort("task_title_generation_timeout"),
-              TASK_TITLE_GENERATION_TIMEOUT_MS,
-            );
-            timer.unref();
-            void Promise.resolve(this.#onTaskCreated?.({ ...request, signal: controller.signal }))
-              .catch(() => undefined)
-              .finally(() => clearTimeout(timer));
-          }
+          this.#generateTaskTitles(createdTasks.values());
           return result;
         } catch (error) {
           setActiveSpanAttributes(outcomeAttrs("failed", classifyImInboundPersistenceError(error)));
@@ -774,6 +822,7 @@ export class ImMessageInbox {
   }
 
   #queueOverflowExpiry(candidate: OverflowCandidate): void {
+    if (this.#closed) return;
     const key = candidate.sessionId;
     if (this.#overflowPasses.has(key)) {
       this.#overflowRechecks.set(key, candidate);
@@ -784,8 +833,9 @@ export class ImMessageInbox {
         const hasOverflow = await this.#database.transaction((transaction) =>
           this.#hasOverflow(transaction, candidate.sessionId),
         );
-        if (!hasOverflow) return;
+        if (!hasOverflow || this.#closed) return;
         await this.#beforeOverflowExpiry?.();
+        if (this.#closed) return;
         const expiredIds = await this.#database.transaction((transaction) =>
           this.#expireOverflow(transaction, candidate.sessionId),
         );

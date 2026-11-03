@@ -179,6 +179,9 @@ Admission compares the binding, attempt, state, original ciphertext and deadline
 check writes a new random claim token into the existing owner field. Heartbeats, observations,
 release and activation must match that token. A stale process cannot commit over a new owner,
 a canceled attempt or a disabled binding. Shutdown retains saved credentials for a successor.
+The connection manager stop port joins its maintenance pass, admitted probes/activation,
+inbound handlers and detached observation/enrichment work before clearing the final lease.
+It rejects new work and stale probe results, and cannot restart while stop is in progress.
 
 All 66 scopes are checked before a candidate opens a message channel. Only a ready candidate
 enters existing atomic activation. Ambiguous upstream failures preserve it; a provider's

@@ -72,10 +72,16 @@ thread Session owns, and a delivery expired because a newer revision of its mess
 A message steered into a running Turn gets a small annotation on the input; it does not create a
 second Agent response or report.
 
+The Task detail exists to diagnose how the Agent ran, so the conversation keeps only what helps that:
+each reply once, failures, and gaps in the record. The message list is secondary to the Agent's status
+and may shrink as that status becomes more explicit.
+
 The runtime's final text (`finalText`) is not shown: it repeats the reply the Agent already sent, and it
 never substitutes for captured sent replies. A Turn report appears in the conversation only when it adds
 something the sent replies cannot show — an execution failure or an unavailable or incomplete reply
-history; a completed report with nothing else to say leaves no entry. Sent reply bodies, captured
+history; a completed report with nothing else to say leaves no entry, and a Turn that finished without
+a reply gets no placeholder text. A repeated reply or an empty-state line adds reading without telling
+the reader anything new about the run; the Task's status already says it completed. Sent reply bodies, captured
 replies and legacy Lark text or rich-text receipts alike, render as chat Markdown: Markdown formatting
 applies, a single newline stays a line break, and typed HTML stays literal text, as the IM displays it.
 Truncated content remains visible. On Local Computers supporting detailed reports,

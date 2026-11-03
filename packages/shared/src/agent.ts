@@ -146,6 +146,8 @@ export const AgentListActivitySchema = z.discriminatedUnion("state", [
     .object({
       state: z.literal("working"),
       startedAt: z.string().datetime(),
+      /** Tasks with a Turn the Computer accepted and has not reported yet. Older Servers omit it. */
+      runningTaskCount: z.number().int().safe().positive().optional(),
     })
     .strict(),
 ]);

@@ -176,3 +176,24 @@ describe("Agent list status through background refreshes", () => {
     expect(rowStatus()).toContain("Status unavailable");
   });
 });
+
+describe("Agent list activity", () => {
+  it("shows each Agent's running Task count, and Waiting only beside Ready", async () => {
+    const working: AgentListItem = {
+      ...readyAgent,
+      activity: { state: "working", startedAt: new Date().toISOString(), runningTaskCount: 2 },
+    };
+    const offline: AgentListItem = {
+      ...readyAgent,
+      ...secondAgentListItem,
+      availability: { ...readyAgent.availability, state: "action_required", reason: "computer_offline" },
+    };
+    const { rerender } = await renderInRouter(<AgentList agents={[working, offline]} />);
+    const row = (name: string) => screen.getByRole("link", { name }).closest("article")?.textContent ?? "";
+    expect(row("Open Reviewer")).toContain("2 tasks running");
+    expect(row("Open Helper")).not.toContain("Waiting");
+
+    rerender(<AgentList agents={[readyAgent, offline]} />);
+    expect(row("Open Reviewer")).toContain("Waiting");
+  });
+});

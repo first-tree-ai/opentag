@@ -251,6 +251,18 @@ describe("Agent contracts", () => {
         ],
       }),
     ).toMatchObject({ agents: [{ activity: { state: "working", startedAt: agent.updatedAt } }] });
+    expect(
+      AgentDetailSchema.parse({
+        ...summary,
+        activity: { state: "working", startedAt: agent.updatedAt, runningTaskCount: 2 },
+      }).activity,
+    ).toEqual({ state: "working", startedAt: agent.updatedAt, runningTaskCount: 2 });
+    expect(() =>
+      AgentDetailSchema.parse({
+        ...summary,
+        activity: { state: "working", startedAt: agent.updatedAt, runningTaskCount: 0 },
+      }),
+    ).toThrow();
     expect(() =>
       ListAgentsResponseSchema.parse({
         agents: [

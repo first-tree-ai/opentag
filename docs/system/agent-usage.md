@@ -83,7 +83,9 @@ bindings inside the same snapshot that authorized the call.
 ## List activity and the unreported-Turn index
 
 The Agent list reports whether an Agent is working or merely idle from Turns that a Computer accepted and has not
-reported yet. Two reads answer that question over the Agent's IM bindings, and
+reported yet. A working Agent also carries `runningTaskCount`, the number of open Tasks (Sessions) holding such a
+Turn, so several Turns in one Task count once; the list row shows that count, and an idle Ready Agent reads as
+Waiting. Queued Tasks are not counted. Two reads answer that question over the Agent's IM bindings, and
 `im_message_deliveries_unreported_accepted_idx` — partial on `state = 'accepted' and reported_at is null` — is the
 access path for both. Without it the reads join every Session of a binding to reach an answer, which is
 proportional to the Agent's history rather than to the Turns actually outstanding.

@@ -23,7 +23,7 @@ import {
   type UpdateAgentRequest,
   UpdateAgentRequestSchema,
 } from "@opentag/shared";
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
@@ -132,25 +132,16 @@ function toAgentComputer(row: {
 }
 
 interface AgentActivityEvidence {
-  acceptedAt: Date | null;
   agentId: string;
-  reportedAt: Date | null;
-  state: string;
+  runningTaskCount: number;
+  startedAt: Date;
 }
 
 function projectActivityByAgent(rows: readonly AgentActivityEvidence[]): Map<string, AgentListActivity> {
-  const workingStartedAt = new Map<string, Date>();
-  for (const row of rows) {
-    if (row.state !== "accepted" || row.reportedAt !== null || !row.acceptedAt) {
-      continue;
-    }
-    const current = workingStartedAt.get(row.agentId);
-    if (!current || row.acceptedAt > current) workingStartedAt.set(row.agentId, row.acceptedAt);
-  }
   return new Map(
-    [...workingStartedAt].map(([agentId, startedAt]) => [
-      agentId,
-      { state: "working", startedAt: startedAt.toISOString() },
+    rows.map((row) => [
+      row.agentId,
+      { state: "working", startedAt: row.startedAt.toISOString(), runningTaskCount: row.runningTaskCount },
     ]),
   );
 }
@@ -565,12 +556,12 @@ export class AgentService {
     agentIds: readonly string[],
     recoveryStartedAt: Date,
   ): Promise<Map<string, AgentListActivity>> {
+    // One row per working Agent: its open Tasks (Sessions) and the latest accepted Turn among them.
     const activityRows = await executor
-      .selectDistinctOn([imBindings.agentId], {
-        acceptedAt: imMessageDeliveries.acceptedAt,
+      .select({
         agentId: imBindings.agentId,
-        reportedAt: imMessageDeliveries.reportedAt,
-        state: imMessageDeliveries.state,
+        runningTaskCount: sql<number>`count(distinct ${imMessageDeliveries.sessionId})::int`,
+        startedAt: sql<Date>`max(${imMessageDeliveries.acceptedAt})`.mapWith(imMessageDeliveries.acceptedAt),
       })
       .from(imMessageDeliveries)
       .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
@@ -585,7 +576,7 @@ export class AgentService {
           gte(imMessageDeliveries.acceptedAt, recoveryStartedAt),
         ),
       )
-      .orderBy(imBindings.agentId, desc(imMessageDeliveries.acceptedAt), desc(imMessageDeliveries.id));
+      .groupBy(imBindings.agentId);
 
     const staleActivityRows = await executor
       .selectDistinct({ agentId: imBindings.agentId })

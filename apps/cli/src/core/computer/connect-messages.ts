@@ -33,7 +33,7 @@ export function describeConnectFailure(
     case "COMPUTER_ACCOUNT_CONFLICT":
       return {
         reason: "This computer is already connected to a different openTag account; nothing was changed.",
-        next: "Ask the owner of that account to delete this computer in openTag (move or delete its Agents first), then run this command again.",
+        next: "Ask the owner of that account to remove this computer in openTag (its Agents must be removed first), then run this command again.",
       };
     case "COMPUTER_IDENTITY_CONFLICT":
       return {

@@ -27,7 +27,6 @@
   "account_error_profile_save_failed": "无法保存账户资料",
   "account_error_refresh_failed": "显示名称已保存。openTag 无法刷新账户，因此页面其余部分仍显示之前的名称。",
   "account_language_label": "语言",
-  "account_page_description": "管理个人账户详情。",
   "account_page_title": "账户",
   "account_profile_saved": "账户资料已保存。",
   "account_profile_title": "账户资料",

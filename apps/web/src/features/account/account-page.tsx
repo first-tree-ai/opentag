@@ -25,7 +25,7 @@ export function AccountPage({ slackProvision = false }: { slackProvision?: boole
       </Page>
     );
   return (
-    <Page title={m.account_page_title()} description={m.account_page_description()}>
+    <Page title={m.account_page_title()}>
       <AccountSettings key={me.user.id} navigationGuardRef={profileNavigation} refreshMe={refreshMe} user={me.user} />
       <CloudBillingSettings key={me.user.id} accountId={me.user.id} />
     </Page>

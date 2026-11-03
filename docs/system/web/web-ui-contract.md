@@ -371,7 +371,7 @@ copy into the message catalog as if it were an omission; the exception and its r
 A state uses one label everywhere it appears. For example, a messaging binding that needs new permissions reads
 "Messaging permissions need updating" (需要更新消息权限) on the Agent list, the Agent page, the settings index, and the
 messaging page, with the single action Update permissions. Page subtitles, field helpers, and notes appear only when they
-add information the title or control does not already give. So the Tasks, messaging, Computer, and Usage pages carry no
+add information the title or control does not already give. So the Tasks, messaging, Computer, Usage, and Account pages carry no
 subtitle, and Account shows the sign-in email as plain text without explanatory helpers. The Soul editor's description
 holds only the formatting hint while editing. The Model page shows one line by the model field only when the computer's
 model list can't be read. Usage notes unreported Tasks as a muted line under the totals, not a warning banner.

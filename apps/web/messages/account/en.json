@@ -27,7 +27,6 @@
   "account_error_profile_save_failed": "Unable to save the account profile",
   "account_error_refresh_failed": "Your display name was saved. openTag could not refresh the account, so the rest of the page still shows the previous name.",
   "account_language_label": "Language",
-  "account_page_description": "Manage your personal account details.",
   "account_page_title": "Account",
   "account_profile_saved": "Account profile saved.",
   "account_profile_title": "Account profile",

@@ -67,7 +67,13 @@ describe("bounded Cloud latency diagnostics", () => {
     ).rejects.toBe(failure);
     f.recorder.finish("failed");
     expect(f.records.map((record) => record.seq)).toEqual([1, 2, 3, 4, 5]);
-    expect(f.records[1]).toMatchObject({ phase: "checkpoint", durationMs: 25, event: "end", revision: "unknown" });
+    expect(f.records[1]).toMatchObject({
+      phase: "checkpoint",
+      durationMs: 25,
+      event: "end",
+      revision: "unknown",
+      severity: "INFO",
+    });
     expect(f.records[3]).toMatchObject({ event: "failure", durationMs: 5 });
     expect(f.records[4]).toMatchObject({ event: "summary", outcome: "failed", durationMs: 30 });
     expect(JSON.stringify(f.records)).not.toMatch(/secret|private provider body/);

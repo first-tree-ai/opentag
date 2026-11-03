@@ -17,6 +17,8 @@ processes only under separate deployment authorization.
 Server uses existing Pino stdout (`module=im-delivery`), Runner the existing protected stderr writer
 (`module=cloud-latency`); both use `operation=cloud.latency`, `version=1`. Service identities stay
 `opentag-server` / `opentag-runner`. The reader normalizes the Server's owning-module wrapper.
+Runner explicitly sets `severity=INFO` on these measurement records; existing Pi/error diagnostics
+keep their separate severity semantics. Cloud Logging [extracts that special field into LogEntry](https://docs.cloud.google.com/run/docs/logging#special-json-fields).
 
 Each observer retains at most 1,024 input/allocation identities for in-process quota bookkeeping,
 then refuses further observation without affecting work admission. It never evicts identities to

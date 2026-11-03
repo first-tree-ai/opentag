@@ -129,6 +129,8 @@ describe("read-only Staging latency aggregation", () => {
       jsonPayload: { ...record, level: 30, pid: 1, msg: "private-message" },
     }));
     expect(aggregateLatency(JSON.stringify(array), options).population.completed).toBe(1);
+    const extracted = records.map(({ severity, ...record }) => ({ severity, timestamp: utc, jsonPayload: record }));
+    expect(aggregateLatency(JSON.stringify(extracted), options).population.completed).toBe(1);
     const docker = records.map((record) => ({ timestamp: utc, log: JSON.stringify(record) }));
     expect(aggregateLatency(lines(docker), options).population.completed).toBe(1);
     const server = records.map((record) => ({

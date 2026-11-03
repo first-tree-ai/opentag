@@ -1271,6 +1271,8 @@ describe("Runner cancellation and connection lifetime", () => {
       .filter((line) => line.includes('"operation":"cloud.latency"'))
       .map((line) => JSON.parse(line));
     expect(latency.at(-1)).toMatchObject({ event: "summary", outcome: "completed", diagnosticIncomplete: false });
+    expect(latency.every((record) => record.severity === "INFO")).toBe(true);
+    expect(Buffer.byteLength(latency.map((record) => JSON.stringify(record)).join("\n"))).toBeLessThan(64 * 1024);
     expect(latency.filter((record) => record.phase === "report_ack")).toHaveLength(2);
     expect(JSON.stringify(latency)).not.toMatch(/unit-execution-token|ephemeral-proof|burst/);
     stop.abort();

@@ -75,8 +75,9 @@ second Agent response or report.
 The runtime's final text (`finalText`) is not shown: it repeats the reply the Agent already sent, and it
 never substitutes for captured sent replies. A Turn report appears in the conversation only when it adds
 something the sent replies cannot show — an execution failure or an unavailable or incomplete reply
-history; a completed report with nothing else to say leaves no entry. Sent reply bodies render as chat
-Markdown: Markdown formatting applies and a single newline stays a line break, as the IM displays it.
+history; a completed report with nothing else to say leaves no entry. Sent reply bodies, captured
+replies and legacy Lark text or rich-text receipts alike, render as chat Markdown: Markdown formatting
+applies, a single newline stays a line break, and typed HTML stays literal text, as the IM displays it.
 Truncated content remains visible. On Local Computers supporting detailed reports,
 recognized provider failures explain authentication,
 model access, credit or quota, rate limits, service availability, connection loss, context limits,

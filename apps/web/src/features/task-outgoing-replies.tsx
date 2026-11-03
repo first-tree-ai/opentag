@@ -92,12 +92,12 @@ function OutgoingReplyBody({ reply }: { reply: OutgoingReply }) {
     );
   }
   if (content.msgType === "text" && content.text !== undefined) {
-    return <TaskMessageBody format="plain_text" text={content.text} />;
+    return <TaskMessageBody format="chat_markdown" text={content.text} />;
   }
   if (content.msgType === "post") {
     return (
       <div className="grid min-w-0 gap-2">
-        {content.text ? <TaskMessageBody format="plain_text" text={content.text} /> : null}
+        {content.text ? <TaskMessageBody format="chat_markdown" text={content.text} /> : null}
         <RawPayload payload={content.post ?? content.raw} />
       </div>
     );

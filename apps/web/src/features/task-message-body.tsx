@@ -11,10 +11,20 @@ type TaskMessageBodyProps = {
 
 type MarkdownNode = { type: string; value?: string; children?: MarkdownNode[] };
 
-/** Turns each newline inside a text node into a hard break, as chat platforms display it. */
+const blockContainers = new Set(["root", "blockquote", "listItem"]);
+
+/**
+ * Chat Markdown as an IM displays it: each newline inside a text node is a hard break, and HTML a
+ * person typed stays literal text rather than being dropped.
+ */
 function chatLineBreaks(node: MarkdownNode): void {
   if (!node.children) return;
   node.children = node.children.flatMap((child) => {
+    if (child.type === "html") {
+      const text = { type: "text", value: child.value ?? "" };
+      // A block of HTML sits where paragraphs do, so its literal text needs a paragraph of its own.
+      child = blockContainers.has(node.type) ? { type: "paragraph", children: [text] } : text;
+    }
     if (child.type !== "text" || !child.value?.includes("\n")) {
       chatLineBreaks(child);
       return [child];

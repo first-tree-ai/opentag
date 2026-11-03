@@ -8,6 +8,8 @@ import {
   type AccountSetupCompletion,
   AccountSetupCompletionSchema,
   type AccountSetupResetMode,
+  AGENT_ACTIVITY_TASK_COUNT_HEADER,
+  AGENT_ACTIVITY_TASK_COUNT_VERSION,
   type AgentAdminConfig,
   AgentAdminConfigSchema,
   type AgentCloudOverview,
@@ -449,7 +451,9 @@ export class BrowserApi {
   }
 
   agents(): Promise<ListAgentsResponse> {
-    return this.request(HTTP_PATHS.accountAgents, ListAgentsResponseSchema);
+    return this.request(HTTP_PATHS.accountAgents, ListAgentsResponseSchema, {
+      headers: { [AGENT_ACTIVITY_TASK_COUNT_HEADER]: AGENT_ACTIVITY_TASK_COUNT_VERSION },
+    });
   }
 
   tasks(input: { cursor?: string; agentId?: string; kind?: "channel" | "thread" } = {}): Promise<ListTasksResponse> {
@@ -517,7 +521,9 @@ export class BrowserApi {
   }
 
   agent(agentId: string): Promise<AgentDetail> {
-    return this.request(agentByIdPath(agentId), AgentDetailSchema);
+    return this.request(agentByIdPath(agentId), AgentDetailSchema, {
+      headers: { [AGENT_ACTIVITY_TASK_COUNT_HEADER]: AGENT_ACTIVITY_TASK_COUNT_VERSION },
+    });
   }
 
   agentSchedules(agentId: string, query: { limit?: number; cursor?: string } = {}): Promise<AgentScheduleListResponse> {

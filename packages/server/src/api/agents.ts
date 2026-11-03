@@ -1,4 +1,5 @@
 import {
+  AGENT_ACTIVITY_TASK_COUNT_HEADER,
   AGENT_AVATAR_TEMPLATE,
   AGENT_BY_ID_TEMPLATE,
   AGENT_CLOUD_TEMPLATE,
@@ -26,7 +27,9 @@ import {
   AgentUsageWindowDaysSchema,
   ContextTreeOperationRequestSchema,
   ContextTreeOperationResponseSchema,
+  projectAgentActivityForClient,
   RebindAgentComputerRequestSchema,
+  requestsAgentActivityTaskCount,
   UpdateAgentRequestSchema,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -114,8 +117,10 @@ export function registerAgentRoutes(
   app.get(AGENT_BY_ID_TEMPLATE, { preHandler }, async (request, reply) => {
     const { agentId } = parseRequest(AgentParamsSchema, request.params);
     const detail = await agentService.getById(authenticatedUserId(request), agentId);
+    const includeTaskCount = requestsAgentActivityTaskCount(request.headers[AGENT_ACTIVITY_TASK_COUNT_HEADER]);
     const response = AgentDetailSchema.parse({
       ...detail,
+      activity: projectAgentActivityForClient(detail.activity, includeTaskCount),
       ...(slackOAuthAvailable === undefined ? {} : { slackOAuthAvailable }),
     });
     return reply.code(200).send(response);

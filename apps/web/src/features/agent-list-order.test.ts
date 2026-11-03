@@ -383,10 +383,30 @@ describe("Agent availability model and presentation", () => {
       }),
     ).toBeUndefined();
     expect(agentCardStatus({ ...base, evidenceConfirmed: true } as never)).toEqual({
-      detail: undefined,
+      detail: "Waiting",
       label: "Ready",
       tone: "success",
     });
+    for (const [runningTaskCount, detail] of [
+      [1, "1 task running"],
+      [3, "3 tasks running"],
+    ] as const) {
+      expect(
+        agentCardStatus({
+          ...base,
+          activity: { state: "working", startedAt: new Date().toISOString(), runningTaskCount },
+          evidenceConfirmed: true,
+        } as never),
+      ).toEqual({ detail, label: "Ready", tone: "success" });
+    }
+    expect(
+      agentCardStatus({
+        ...base,
+        activity: { state: "working", startedAt: new Date().toISOString(), runningTaskCount: 2 },
+        evidenceConfirmed: true,
+        availability: { ...base.availability, state: "action_required", reason: "computer_offline" },
+      } as never),
+    ).toEqual({ detail: "2 tasks running", label: "Computer offline", tone: "warning" });
     expect(
       agentCardStatus({
         ...base,

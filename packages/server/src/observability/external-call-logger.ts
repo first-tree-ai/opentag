@@ -2,6 +2,7 @@ import {
   type PerformanceLogger,
   type PerformanceOperationHandle,
   runWithPerformanceContext,
+  safePerformanceErrorCode,
 } from "./performance-logger.js";
 
 const ALLOWED_TRANSPORT_CODES = new Set([
@@ -86,11 +87,46 @@ export function extractExternalTransportCode(error: unknown): string | undefined
   return undefined;
 }
 
+export function isExternalTimeoutError(error: unknown, code?: string, transportCode?: string): boolean {
+  const resolvedCode = code ?? safePerformanceErrorCode(error);
+  if (
+    resolvedCode !== undefined &&
+    (resolvedCode.endsWith("_TIMEOUT") ||
+      resolvedCode.endsWith("_DEADLINE_EXCEEDED") ||
+      resolvedCode === "github_timeout" ||
+      resolvedCode === "timeout")
+  ) {
+    return true;
+  }
+  const resolvedTransport = transportCode ?? extractExternalTransportCode(error);
+  if (
+    resolvedTransport === "ETIMEDOUT" ||
+    resolvedTransport === "TimeoutError" ||
+    (resolvedTransport?.startsWith("UND_ERR_") && resolvedTransport.endsWith("_TIMEOUT"))
+  ) {
+    return true;
+  }
+  if (
+    error instanceof Error &&
+    (error.name === "TimeoutError" ||
+      error.message.endsWith("_TIMEOUT") ||
+      error.message.includes("exceeded its deadline"))
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export interface ExternalCallTraceInput {
   provider: string;
   operation: string;
   accountId?: string;
   agentId?: string;
+  computerId?: string;
+  sessionId?: string;
+  deliveryId?: string;
+  turnId?: string;
+  sandboxId?: string;
   attributes?: Record<string, unknown>;
 }
 
@@ -98,6 +134,7 @@ export interface ExternalCallTraceOptions<T> {
   statusFromResult?: (result: T) => number | undefined;
   resultAttributes?: (result: T) => Record<string, unknown> | undefined;
   errorStatus?: (error: unknown) => number | undefined;
+  errorAttributes?: (error: unknown) => Record<string, unknown> | undefined;
   fallbackErrorCode?: string;
 }
 
@@ -115,8 +152,14 @@ export function traceExternalCall<T>(
       operation: input.operation,
       ...(input.accountId ? { accountId: input.accountId } : {}),
       ...(input.agentId ? { agentId: input.agentId } : {}),
+      ...(input.computerId ? { computerId: input.computerId } : {}),
+      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+      ...(input.deliveryId ? { deliveryId: input.deliveryId } : {}),
+      ...(input.turnId ? { turnId: input.turnId } : {}),
+      ...(input.sandboxId ? { sandboxId: input.sandboxId } : {}),
       attributes: {
         provider: input.provider,
+        service: input.provider,
         ...input.attributes,
       },
     },
@@ -126,6 +169,8 @@ export function traceExternalCall<T>(
         const status = options?.statusFromResult?.(result);
         const extra = options?.resultAttributes?.(result);
         return {
+          attemptCount: 1,
+          retryCount: 0,
           ...(status !== undefined ? { status } : {}),
           ...extra,
         };
@@ -133,9 +178,15 @@ export function traceExternalCall<T>(
       errorAttributes: (error) => {
         const status = options?.errorStatus?.(error);
         const transportCode = extractExternalTransportCode(error);
+        const timedOut = isExternalTimeoutError(error, undefined, transportCode);
+        const extra = options?.errorAttributes?.(error);
         return {
+          attemptCount: 1,
+          retryCount: 0,
           ...(status !== undefined ? { status } : {}),
           ...(transportCode ? { transportCode } : {}),
+          ...(timedOut ? { timedOut: true } : {}),
+          ...extra,
         };
       },
       fallbackErrorCode: options?.fallbackErrorCode ?? "EXTERNAL_CALL_FAILED",
@@ -156,7 +207,7 @@ function resolveHttpMethod(input: unknown, init?: RequestInit): string {
 function wrapStreamingFetchResponse(response: Response, handle: PerformanceOperationHandle): Response {
   const status = response.status;
   if (!response.body) {
-    handle.complete({ status });
+    handle.complete({ status, attemptCount: 1, retryCount: 0 });
     return response;
   }
   const reader = response.body.getReader();
@@ -166,18 +217,22 @@ function wrapStreamingFetchResponse(response: Response, handle: PerformanceOpera
         try {
           const { done, value } = await reader.read();
           if (done) {
-            handle.complete({ status });
+            handle.complete({ status, attemptCount: 1, retryCount: 0 });
             controller.close();
             return;
           }
           controller.enqueue(value);
         } catch (error) {
           const transportCode = extractExternalTransportCode(error);
+          const timedOut = isExternalTimeoutError(error, undefined, transportCode);
           handle.fail(
             error,
             {
               status,
+              attemptCount: 1,
+              retryCount: 0,
               ...(transportCode ? { transportCode } : {}),
+              ...(timedOut ? { timedOut: true } : {}),
             },
             "EXTERNAL_CALL_FAILED",
           );
@@ -185,7 +240,7 @@ function wrapStreamingFetchResponse(response: Response, handle: PerformanceOpera
         }
       },
       async cancel(reason) {
-        handle.complete({ status });
+        handle.complete({ status, attemptCount: 1, retryCount: 0 });
         await reader.cancel(reason);
       },
     },
@@ -239,6 +294,7 @@ export function createInstrumentedFetch(
       operation,
       attributes: {
         provider: options.provider,
+        service: options.provider,
         httpMethod,
         ...urlMeta,
       },
@@ -248,7 +304,17 @@ export function createInstrumentedFetch(
       response = await runWithPerformanceContext(handle.context, () => baseFetch(input, init));
     } catch (error) {
       const transportCode = extractExternalTransportCode(error);
-      handle.fail(error, transportCode ? { transportCode } : undefined, "EXTERNAL_CALL_FAILED");
+      const timedOut = isExternalTimeoutError(error, undefined, transportCode);
+      handle.fail(
+        error,
+        {
+          attemptCount: 1,
+          retryCount: 0,
+          ...(transportCode ? { transportCode } : {}),
+          ...(timedOut ? { timedOut: true } : {}),
+        },
+        "EXTERNAL_CALL_FAILED",
+      );
       throw error;
     }
     return wrapStreamingFetchResponse(response, handle);

@@ -11,6 +11,7 @@ import {
   CloudModelRequestSchema,
 } from "../cloud-model-request.js";
 import { cloudModelRetryAfter, cloudModelRetryDelay, waitForCloudModelRetry } from "../cloud-model-retry.js";
+import { updateCurrentPerformanceContext } from "../observability/performance-logger.js";
 import type { CloudModelService } from "../services/cloud-model-service.js";
 import { readBoundedResponseText } from "../services/sandboxes/cloud-model-catalog.js";
 import type { CloudModelGrantService } from "../services/sandboxes/cloud-model-grants.js";
@@ -127,6 +128,13 @@ async function callUpstream(
 ): Promise<Response | undefined> {
   const context = await options.contextForExecution(claims);
   if (!context) throw new Error("Cloud execution has no owner");
+  updateCurrentPerformanceContext({
+    accountId: context.accountId,
+    agentId: context.agentId,
+    sessionId: claims.sessionId,
+    sandboxId: claims.sandboxId,
+    ...(claims.executionId ? { turnId: claims.executionId } : {}),
+  });
   return options.modelService.request({ ...body, model }, signal, options.config, context);
 }
 

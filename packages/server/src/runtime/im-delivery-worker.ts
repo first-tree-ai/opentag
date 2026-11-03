@@ -28,6 +28,7 @@ import {
   runtimeAttrs,
   setActiveSpanAttributes,
   traceDeliveryClaim,
+  updateCurrentPerformanceContext,
 } from "../observability/index.js";
 import type { ServiceLogger } from "../observability/service-logger.js";
 import {
@@ -166,6 +167,25 @@ function claimAttempt(claim: WorkerClaim, phase: ImDeliveryFailurePhase): Delive
 /** How long the placement Computer has been silent; a Computer that never registered is fully offline. */
 function absentRuntimeMs(lastSeenAt: Date | null, now: number): number {
   return lastSeenAt ? now - lastSeenAt.getTime() : Number.POSITIVE_INFINITY;
+}
+function setDeliveryRowPerformanceContext(
+  row: {
+    agent: { id: string; createdByUserId: string };
+    computer: { id: string };
+    session: { id: string };
+    delivery: { id: string; turnId: string | null };
+  },
+  turnIdOverride?: string,
+): void {
+  const turnId = turnIdOverride ?? row.delivery.turnId ?? undefined;
+  updateCurrentPerformanceContext({
+    accountId: row.agent.createdByUserId,
+    agentId: row.agent.id,
+    computerId: row.computer.id,
+    sessionId: row.session.id,
+    deliveryId: row.delivery.id,
+    ...(turnId ? { turnId } : {}),
+  });
 }
 export class ImDeliveryWorker {
   #closed = false;
@@ -337,6 +357,13 @@ export class ImDeliveryWorker {
     if (this.#closed) return;
     const claimed = await this.#claim(sessionId);
     if (!claimed) return;
+    updateCurrentPerformanceContext({
+      agentId: claimed.agentId,
+      computerId: claimed.computerId,
+      deliveryId: claimed.id,
+      ...(sessionId ? { sessionId } : {}),
+      ...("expectedTurnId" in claimed ? { turnId: claimed.expectedTurnId } : {}),
+    });
     this.#logger?.info(
       {
         module: "im-delivery",
@@ -781,6 +808,7 @@ export class ImDeliveryWorker {
         await this.#recordFailure(attempt, "IM_DELIVERY_STEER_AUTHORITY_UNAVAILABLE");
         return;
       }
+      setDeliveryRowPerformanceContext(row, claim.expectedTurnId);
       if (row.computerOwnerAccountId !== row.agent.createdByUserId) {
         if (row.delivery.dispatchRequestId === null) {
           await this.#reject(claim.id, "computer_owner_mismatch", claimToken);
@@ -904,6 +932,7 @@ export class ImDeliveryWorker {
       await this.#recordFailure(attempt, "IM_DELIVERY_RUNTIME_AUTHORITY_UNAVAILABLE");
       return;
     }
+    setDeliveryRowPerformanceContext(row);
     if (row.computerOwnerAccountId !== row.agent.createdByUserId && row.delivery.dispatchRequestId === null) {
       setActiveSpanAttributes(outcomeAttrs("failed", "IM_DELIVERY_COMPUTER_OWNER_MISMATCH"));
       await this.#reject(deliveryId, "computer_owner_mismatch", claimToken);
@@ -1166,6 +1195,7 @@ export class ImDeliveryWorker {
       )
       .limit(1);
     if (!row) return;
+    setDeliveryRowPerformanceContext(row);
     setActiveSpanAttributes({
       ...imAttrs({
         provider: row.imBinding.provider,

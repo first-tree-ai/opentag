@@ -12,7 +12,7 @@ import {
   WebToolErrorEnvelopeSchema,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { createServiceLoggerPort } from "../observability/index.js";
+import { type createServiceLoggerPort, updateCurrentPerformanceContext } from "../observability/index.js";
 import { createComputerAuthPreHandler } from "../plugins/computer-auth.js";
 import { RuntimeWebError } from "../runtime-credentials/web-execution.js";
 import type { RuntimeWebGatewayTokenStore } from "../runtime-credentials/web-gateway-token-store.js";
@@ -111,6 +111,10 @@ export function registerRuntimeWebRoutes(app: FastifyInstance, options: RuntimeW
       const body = parseRequest(WebSearchExecutionRequestSchema, request.body);
       const mismatch = matchBearerExecution(request, reply, body.executionId);
       if (mismatch) return mismatch;
+      updateCurrentPerformanceContext({
+        computerId: gate.computerId,
+        ...options.service.executionContext?.(body.executionId),
+      });
       return runWebOperation(reply, options, gate.budget, (signal, deadlineAt, remainingMs) =>
         options.service.search({
           computerId: gate.computerId,
@@ -139,6 +143,10 @@ export function registerRuntimeWebRoutes(app: FastifyInstance, options: RuntimeW
       const body = parseRequest(WebFetchExecutionRequestSchema, request.body);
       const mismatch = matchBearerExecution(request, reply, body.executionId);
       if (mismatch) return mismatch;
+      updateCurrentPerformanceContext({
+        computerId: gate.computerId,
+        ...options.service.executionContext?.(body.executionId),
+      });
       return runWebOperation(reply, options, gate.budget, (signal, deadlineAt, remainingMs) =>
         options.service.fetch({
           computerId: gate.computerId,

@@ -35,6 +35,8 @@ const DEFAULT_EXCLUDED_METHODS = new Set([
   "notify",
   "onActiveBindingChanged",
   "onAgentPlacementChanged",
+  "executionComputerId",
+  "executionContext",
 ]);
 
 const SAFE_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -43,26 +45,53 @@ function safeId(value: unknown): string | undefined {
   return typeof value === "string" && SAFE_ID_PATTERN.test(value) ? value : undefined;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function pickSafeId(sources: ReadonlyArray<Record<string, unknown> | undefined>, key: string): string | undefined {
+  for (const source of sources) {
+    const id = safeId(source?.[key]);
+    if (id) return id;
+  }
+  return undefined;
+}
+
 function extractResourceIds(firstArg: unknown): {
   accountId?: string;
   agentId?: string;
   computerId?: string;
   sessionId?: string;
   deliveryId?: string;
+  turnId?: string;
+  sandboxId?: string;
 } {
-  if (typeof firstArg !== "object" || firstArg === null || Array.isArray(firstArg)) return {};
-  const record = firstArg as Record<string, unknown>;
-  const accountId = safeId(record.accountId);
-  const agentId = safeId(record.agentId);
-  const computerId = safeId(record.computerId);
-  const sessionId = safeId(record.sessionId);
-  const deliveryId = safeId(record.deliveryId);
+  const record = asRecord(firstArg);
+  if (!record) return {};
+  const sources = [
+    record,
+    asRecord(record.scope),
+    asRecord(record.allocation),
+    asRecord(record.claims),
+    asRecord(record.request),
+  ];
+  const accountId = pickSafeId(sources, "accountId");
+  const agentId = pickSafeId(sources, "agentId");
+  const computerId = pickSafeId(sources, "computerId");
+  const sessionId = pickSafeId(sources, "sessionId");
+  const deliveryId = pickSafeId(sources, "deliveryId");
+  const turnId = pickSafeId(sources, "turnId");
+  const sandboxId = pickSafeId(sources, "sandboxId");
   return {
     ...(accountId ? { accountId } : {}),
     ...(agentId ? { agentId } : {}),
     ...(computerId ? { computerId } : {}),
     ...(sessionId ? { sessionId } : {}),
     ...(deliveryId ? { deliveryId } : {}),
+    ...(turnId ? { turnId } : {}),
+    ...(sandboxId ? { sandboxId } : {}),
   };
 }
 

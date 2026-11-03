@@ -22,7 +22,7 @@ import {
   sessions,
   users,
 } from "../db/schema/index.js";
-import { outcomeAttrs, setActiveSpanAttributes } from "../observability/index.js";
+import { outcomeAttrs, setActiveSpanAttributes, updateCurrentPerformanceContext } from "../observability/index.js";
 import { InboundReceiptPendingError } from "../services/im/inbound-admission.js";
 import type { CloudDeliveryOwner } from "../services/sandboxes/cloud-delivery-owner.js";
 import { CloudDeliveryDispatchError } from "../services/sandboxes/cloud-delivery-owner.js";
@@ -349,6 +349,7 @@ export class CloudDeliveryCoordinator {
   ): Promise<boolean> {
     const sandboxId = await this.#ensureSandboxRow(row, attempt);
     if (!sandboxId) return false;
+    updateCurrentPerformanceContext({ sandboxId });
     if (!this.#options.cloudAllocation) return true;
     return this.#convergeAllocation(attempt, row.agent.createdByUserId, sandboxId);
   }

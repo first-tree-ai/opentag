@@ -28,6 +28,8 @@ export interface PerformanceExecutionContext {
   computerId?: string;
   sessionId?: string;
   deliveryId?: string;
+  turnId?: string;
+  sandboxId?: string;
 }
 
 export interface PerformanceStartInput {
@@ -40,6 +42,8 @@ export interface PerformanceStartInput {
   computerId?: string;
   sessionId?: string;
   deliveryId?: string;
+  turnId?: string;
+  sandboxId?: string;
   attributes?: Record<string, unknown>;
   startMessage?: string;
   completeMessage?: string;
@@ -89,17 +93,26 @@ export function exitPerformanceContext<T>(fn: () => T): T {
   return performanceContextStorage.exit(fn);
 }
 
+const CORRELATION_KEYS = [
+  "requestId",
+  "accountId",
+  "agentId",
+  "computerId",
+  "sessionId",
+  "deliveryId",
+  "turnId",
+  "sandboxId",
+] as const;
+
 export function updateCurrentPerformanceContext(
   patch: Partial<Omit<PerformanceExecutionContext, "callId" | "operation">>,
 ): void {
   const current = performanceContextStorage.getStore();
   if (!current) return;
-  if (patch.requestId !== undefined) current.requestId = patch.requestId;
-  if (patch.accountId !== undefined) current.accountId = patch.accountId;
-  if (patch.agentId !== undefined) current.agentId = patch.agentId;
-  if (patch.computerId !== undefined) current.computerId = patch.computerId;
-  if (patch.sessionId !== undefined) current.sessionId = patch.sessionId;
-  if (patch.deliveryId !== undefined) current.deliveryId = patch.deliveryId;
+  for (const key of CORRELATION_KEYS) {
+    const value = patch[key];
+    if (value !== undefined) current[key] = value;
+  }
 }
 
 function roundDurationMs(elapsedMs: number): number {
@@ -159,22 +172,24 @@ function buildChildContext(
   input: PerformanceStartInput,
   parent: PerformanceExecutionContext | undefined,
 ): PerformanceExecutionContext {
-  const requestId = input.requestId ?? parent?.requestId;
-  const accountId = input.accountId ?? parent?.accountId;
-  const agentId = input.agentId ?? parent?.agentId;
-  const computerId = input.computerId ?? parent?.computerId;
-  const sessionId = input.sessionId ?? parent?.sessionId;
-  const deliveryId = input.deliveryId ?? parent?.deliveryId;
-  return {
+  const child: PerformanceExecutionContext = {
     callId,
     operation: input.operation,
-    ...(requestId ? { requestId } : {}),
-    ...(accountId ? { accountId } : {}),
-    ...(agentId ? { agentId } : {}),
-    ...(computerId ? { computerId } : {}),
-    ...(sessionId ? { sessionId } : {}),
-    ...(deliveryId ? { deliveryId } : {}),
   };
+  for (const key of CORRELATION_KEYS) {
+    const value = input[key] ?? parent?.[key];
+    if (value) child[key] = value;
+  }
+  return child;
+}
+
+function contextCorrelationFields(context: PerformanceExecutionContext): Record<string, unknown> {
+  const fields: Record<string, unknown> = {};
+  for (const key of CORRELATION_KEYS) {
+    const value = context[key];
+    if (value) fields[key] = value;
+  }
+  return fields;
 }
 
 function buildBasePayload(
@@ -189,12 +204,7 @@ function buildBasePayload(
     callId: child.callId,
     ...(parent?.callId ? { parentCallId: parent.callId } : {}),
     ...(parent?.operation ? { callerOperation: parent.operation } : {}),
-    ...(child.requestId ? { requestId: child.requestId } : {}),
-    ...(child.accountId ? { accountId: child.accountId } : {}),
-    ...(child.agentId ? { agentId: child.agentId } : {}),
-    ...(child.computerId ? { computerId: child.computerId } : {}),
-    ...(child.sessionId ? { sessionId: child.sessionId } : {}),
-    ...(child.deliveryId ? { deliveryId: child.deliveryId } : {}),
+    ...contextCorrelationFields(child),
     startedAt,
     ...input.attributes,
   };
@@ -262,6 +272,7 @@ export function createPerformanceLogger(
         port[config.level](
           {
             ...basePayload,
+            ...contextCorrelationFields(childContext),
             ...extraAttributes,
             endedAt,
             durationMs,
@@ -281,6 +292,7 @@ export function createPerformanceLogger(
         port.warn(
           {
             ...basePayload,
+            ...contextCorrelationFields(childContext),
             ...extraAttributes,
             ...(code ? { code, errorCode: code } : {}),
             endedAt,

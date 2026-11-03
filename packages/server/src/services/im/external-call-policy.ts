@@ -304,18 +304,37 @@ export class ExternalCallPolicy {
       : operation.startsWith("feishu")
         ? "feishu"
         : "im-provider";
+    let attemptsUsed = 0;
     return traceExternalCall(
       this.#perfLogger,
       {
         provider,
         operation: `external.${operation}`,
       },
-      () => this.#executeRun(operation, action, options),
-      { fallbackErrorCode: "IM_PROVIDER_CALL_FAILED" },
+      () =>
+        this.#executeRun(operation, action, options, (attemptNumber) => {
+          attemptsUsed = attemptNumber;
+        }),
+      {
+        resultAttributes: () => ({
+          attemptCount: attemptsUsed,
+          retryCount: Math.max(0, attemptsUsed - 1),
+        }),
+        errorAttributes: () => ({
+          attemptCount: attemptsUsed,
+          retryCount: Math.max(0, attemptsUsed - 1),
+        }),
+        fallbackErrorCode: "IM_PROVIDER_CALL_FAILED",
+      },
     );
   }
 
-  async #executeRun<T>(operation: string, action: PolicyAction<T>, options: ExternalCallOptions): Promise<T> {
+  async #executeRun<T>(
+    operation: string,
+    action: PolicyAction<T>,
+    options: ExternalCallOptions,
+    onAttempt?: (attemptNumber: number) => void,
+  ): Promise<T> {
     const requestId = randomUUID();
     const circuitKey = options.circuitKey ?? operation;
     const circuit = this.#circuit(circuitKey);
@@ -325,9 +344,18 @@ export class ExternalCallPolicy {
     const startedAt = this.#clock().getTime();
     let permitSettled = Promise.resolve();
     try {
-      return await this.#runAttempts(operation, requestId, action, options, circuit, startedAt, (settled) => {
-        permitSettled = settled;
-      });
+      return await this.#runAttempts(
+        operation,
+        requestId,
+        action,
+        options,
+        circuit,
+        startedAt,
+        (settled) => {
+          permitSettled = settled;
+        },
+        onAttempt,
+      );
     } catch (error) {
       this.#recordFailure(circuit, operation, requestId, error);
       const code = errorCode(error);
@@ -370,10 +398,12 @@ export class ExternalCallPolicy {
     circuit: CircuitEntry,
     startedAt: number,
     onPermitSettled: (settled: Promise<void>) => void,
+    onAttempt?: (attemptNumber: number) => void,
   ): Promise<T> {
     const attempts = Math.max(1, options.maxAttempts ?? this.#maxAttempts);
     let lastError: unknown;
     for (let attemptNumber = 1; attemptNumber <= attempts; attemptNumber += 1) {
+      onAttempt?.(attemptNumber);
       try {
         const attempt = this.#withDeadline(operation, requestId, action, options);
         onPermitSettled(attempt.settled);

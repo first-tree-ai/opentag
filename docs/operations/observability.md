@@ -23,11 +23,11 @@ synonyms:
 | Request correlation | `requestId` | HTTP or client request identifier. |
 | Trace correlation | `traceId` | Active OpenTelemetry trace identifier injected via logger mixin. |
 | Account boundary | `accountId` | Tenant boundary for an Agent and its resources. |
-| Agent, Computer, Session, Delivery | `agentId`, `computerId`, `sessionId`, `deliveryId` | Stable resource identifiers. |
-| Provider | `provider` | A provider name such as `feishu` or `slack`. |
-| Outcome | `outcome` | A stable state transition such as `accepted`, `failed`, or `rejected`. |
+| Agent, Computer, Session, Delivery, Turn, Sandbox | `agentId`, `computerId`, `sessionId`, `deliveryId`, `turnId`, `sandboxId` | Stable resource and Turn execution identifiers. |
+| Provider / External service | `provider`, `service` | External dependency identifier (`slack`, `feishu`, `github`, `mcp`, `cloud-router`, `web-router`, `cloud-run`, `gcp-metadata`, `gcs`, `sandbox-runner`, `s3-skills`, `skill-source`, `error-reporting`, `channel-target`). |
+| Outcome | `outcome` | A stable state transition such as `accepted`, `started`, `completed`, `failed`, or `rejected`. |
 | Error identity | `errorCode`, `code` | Use the structured error code (dual-written as `errorCode` and `code` for compatibility). Do not invent `reason`, `errorReason`, `failureReason`, `dropReason`, or `detail` for the same concept. |
-| Attempt | `attempt` | Numeric retry or execution attempt. |
+| Attempt and retry counts | `attempt`, `attemptCount`, `retryCount`, `timedOut` | Numeric execution attempt, total attempts, retry count, and timeout indicator on external calls. |
 | Duration | `durationMs` | Elapsed time in milliseconds. |
 | Status | `status` | Protocol or provider status when it is not an outcome. |
 | Base service identity | `service`, `environment`, `revision` | Standard service metadata present on all server records. |
@@ -183,12 +183,14 @@ When `OPENTAG_PERF_LOG_ENABLED` is `true` (the default), the Server emits paired
 - **Entrypoints (`perfCategory="http" | "ws" | "worker"`)** — Fastify HTTP requests (excluding `/healthz`, `/readyz`, and WebSocket upgrade requests), non-heartbeat Runtime WebSocket business frames, and background worker passes.
 - **Domain services (`perfCategory="service"`)** — Public methods on core Server services, wrapped via a non-intrusive proxy that preserves native class private fields.
 - **Database queries (`perfCategory="db"`)** — Every executed Drizzle and `postgres.js` query (`operation="db.query"`), transaction (`operation="db.transaction"`), and savepoint (`operation="db.savepoint"`). Lazy queries that are never awaited and `no_pipeline` readiness probes do not emit records. Records carry `sqlCommand`, `dbTarget`, `paramCount`, `rowCount`, `inTransaction`, and `sqlState` on error, without logging raw SQL text or bound parameters.
-- **External service calls (`perfCategory="external"`)** — Outbound requests through `ExternalCallPolicy` (Feishu and Slack), `McpOutboundFetcher`, GitHub API and proxy transports, Cloud Model and Web Routers, Cloud Run Admin and GCP Metadata Server, S3/GCS object stores, remote Skill sources, and Error Reporting. Streaming responses settle on body EOF or body error rather than header arrival. User-configured or user-content URLs (MCP, Skill sources, Slack file downloads, provider proxy) log `httpMethod` and `targetHost` only; `targetPath` is included only for fixed, server-owned API route templates.
+- **External service calls (`perfCategory="external"`)** — Outbound requests through `ExternalCallPolicy` (Feishu and Slack), `McpOutboundFetcher`, GitHub API and proxy transports, Cloud Model and Web Routers, Cloud Run Admin and GCP Metadata Server, S3/GCS object stores, Sandbox Runner control RPCs (`external.sandbox-runner.runAcceptance` and `external.sandbox-runner.sealWorkspace`), remote Skill sources, Channel Target releases, and Error Reporting. Every external call settlement record includes `provider`, `service`, `operation`, `durationMs`, `outcome`, `attemptCount`, and `retryCount` (plus `errorCode`, `transportCode`, and `timedOut=true` when a call fails or times out). Streaming responses settle on body EOF or body error rather than header arrival. User-configured or user-content URLs (MCP, Skill sources, Slack file downloads, provider proxy) log `httpMethod` and `targetHost` only; `targetPath` is included only for fixed, server-owned API route templates.
 
 Every started operation generates a unique `callId` and records `startedAt` (ISO-8601 UTC). Its matching
 settlement record carries the same `callId` and `startedAt` plus `endedAt` (ISO-8601 UTC) and monotonic
-`durationMs`. Nested operations propagate `requestId`, `parentCallId`, and `callerOperation` through
-`AsyncLocalStorage`. Routine start and completion records emit at `OPENTAG_PERF_LOG_LEVEL` (default
+`durationMs`. Nested operations propagate `requestId`, `parentCallId`, `callerOperation`, and Turn/resource
+correlation identifiers (`accountId`, `agentId`, `computerId`, `sessionId`, `deliveryId`, `turnId`,
+`sandboxId`) through `AsyncLocalStorage`, so every database query and external service call within a Turn
+can be correlated end to end. Routine start and completion records emit at `OPENTAG_PERF_LOG_LEVEL` (default
 `debug`, matching per-request detail in the level contract); operations whose `durationMs` meets or
 exceeds `OPENTAG_PERF_SLOW_THRESHOLD_MS` attach `slow=true`, and failed operations emit at `warn`.
 Setting `OPENTAG_PERF_LOG_ENABLED=false` bypasses proxy/fetch wrapping and context allocation.

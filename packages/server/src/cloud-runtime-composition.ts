@@ -107,7 +107,7 @@ export function createSandboxRunnerRuntime(
   const tokens = new RunnerBootstrapTokenService(config.jwtSecret, {
     ttlSeconds: cloudRunner.bootstrapTokenTtlSeconds,
   });
-  const hub = new RunnerHub();
+  const hub = new RunnerHub(perfLogger ? { performanceLogger: perfLogger } : {});
   const store =
     options.workspaceStoreFactory?.({ tokenProvider }) ??
     new GcsWorkspaceObjectStore({ tokenProvider, ...(gcsFetch ? { fetchImpl: gcsFetch } : {}) });

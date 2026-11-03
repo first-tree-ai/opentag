@@ -25,6 +25,7 @@ import {
   sessions,
   users,
 } from "../../db/schema/index.js";
+import { updateCurrentPerformanceContext } from "../../observability/performance-logger.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import type { DeliveryDispatchStatus, RuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
 import type { RuntimeBusinessContext } from "../../runtime/runtime-session.js";
@@ -328,9 +329,22 @@ export class CloudDeliveryOwner {
     request: DirectImMessageDeliveryRequest;
   }): Promise<void> {
     const request = input.request;
+    updateCurrentPerformanceContext({
+      agentId: request.agentId,
+      computerId: input.computerId,
+      sessionId: request.sessionId,
+      deliveryId: request.deliveryId,
+    });
     const owned = await loadManagedSandboxBySessionId(this.#database, request.sessionId);
     if (!owned) throw new CloudDeliveryDispatchError("environment_not_ready", "The Session has no current Sandbox");
     const row = owned.sandbox;
+    updateCurrentPerformanceContext({
+      agentId: request.agentId,
+      computerId: input.computerId,
+      sessionId: request.sessionId,
+      deliveryId: request.deliveryId,
+      sandboxId: row.id,
+    });
     if (row.lifecycle !== "ready" || row.currentResourceName === null || row.idleReclaimAt !== null) {
       throw new CloudDeliveryDispatchError("environment_not_ready", "The Sandbox environment is not ready");
     }
@@ -406,12 +420,20 @@ export class CloudDeliveryOwner {
     connection: CloudConnectionRecord,
     frame: { deliveryId: string; requestId: string; turnId: string },
   ): Promise<void> {
+    updateCurrentPerformanceContext({
+      computerId: connection.computerId,
+      sessionId: connection.scope.sessionId,
+      sandboxId: connection.scope.sandboxId,
+      deliveryId: frame.deliveryId,
+      turnId: frame.turnId,
+    });
     if (!this.#isExactConnection(connection)) return;
     const scopeCheck = await this.#loadDispatchForScope(connection, frame.deliveryId, frame.requestId);
     if (!scopeCheck) {
       this.#sendVerified(connection, frame.requestId, "rejected", "dispatch_unknown");
       return;
     }
+    updateCurrentPerformanceContext({ agentId: scopeCheck.request.agentId });
     // After the awaited read: the connection must still be the exact current one, and the
     // Session's PERSISTED allocation must still be the scope this connection attached with. A
     // Session placement can lag behind a new environment generation; the dispatch columns alone
@@ -471,6 +493,13 @@ export class CloudDeliveryOwner {
     connection: CloudConnectionRecord,
     frame: { deliveryId: string; requestId: string; turnId: string },
   ): Promise<void> {
+    updateCurrentPerformanceContext({
+      computerId: connection.computerId,
+      sessionId: connection.scope.sessionId,
+      sandboxId: connection.scope.sandboxId,
+      deliveryId: frame.deliveryId,
+      turnId: frame.turnId,
+    });
     if (!this.#isExactConnection(connection)) return;
     const allocation = await this.#loadCurrentAllocation(connection, { allowReleasing: true });
     if (!allocation) {
@@ -778,6 +807,14 @@ export class CloudDeliveryOwner {
     frame: { requestId: string; report: TurnReportRequest },
   ) {
     const { report } = frame;
+    updateCurrentPerformanceContext({
+      agentId: report.agentId,
+      computerId: connection.computerId,
+      sessionId: report.sessionId,
+      sandboxId: connection.scope.sandboxId,
+      deliveryId: report.deliveryId,
+      turnId: report.turnId,
+    });
     if (!this.#isExactConnection(connection)) return;
     // The accepted turn's report stays recordable after an explicit Session end (durable custody
     // plus the exact prior allocation identity is the authority), but it must still belong to the
@@ -893,6 +930,7 @@ export class CloudDeliveryOwner {
    *   cannot replace the terminal hash.
    */
   async recoverAccepted(deliveryId: string): Promise<"pending" | "resolved" | "noop"> {
+    updateCurrentPerformanceContext({ deliveryId });
     const [row] = await this.#database
       .select()
       .from(imMessageDeliveries)
@@ -901,10 +939,16 @@ export class CloudDeliveryOwner {
     const delivery = row;
     if (delivery?.state !== "accepted" || delivery.reportedAt !== null) return "noop";
     if (!delivery.turnId || !delivery.reportOwnerInstanceId) return "noop";
+    updateCurrentPerformanceContext({
+      sessionId: delivery.sessionId,
+      deliveryId: delivery.id,
+      turnId: delivery.turnId,
+    });
 
     const allocation = await this.#resolveAcceptedAllocation(delivery);
     if (allocation.kind === "settle") return this.#settleUnknown(deliveryId);
     if (allocation.kind === "pending") return "pending";
+    updateCurrentPerformanceContext({ sandboxId: allocation.sandboxId });
 
     const live = this.#exactLiveOwner(allocation.sandboxId, delivery);
     if (live) return this.#recoverLive(live, delivery);
@@ -1184,6 +1228,19 @@ export class CloudDeliveryOwner {
     connection: CloudConnectionRecord,
     frame: RuntimeCredentialClientFrame,
   ): Promise<RuntimeCredentialServerFrame | undefined> {
+    updateCurrentPerformanceContext({
+      computerId: connection.computerId,
+      sessionId: connection.scope.sessionId,
+      sandboxId: connection.scope.sandboxId,
+      ...(frame.type === "runtime:execution:open"
+        ? {
+            agentId: frame.agentId,
+            ...(frame.source.kind === "delivery"
+              ? { deliveryId: frame.source.deliveryId, turnId: frame.source.turnId }
+              : {}),
+          }
+        : {}),
+    });
     const deps = this.#credentials;
     if (!deps) return credentialFailure(frame, "owner_unavailable");
     const result = await deps.owner.handle(frame, this.#context(connection));

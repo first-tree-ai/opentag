@@ -1033,7 +1033,9 @@ export async function startServer(): Promise<void> {
     const agentRuntimeOptionsOwner = new AgentRuntimeOptionsOwner(registry);
     const agentRuntimeTestOwner = new AgentRuntimeTestOwner(registry);
     const slackAutoSetupOwner = new SlackAutoSetupOwner(registry);
-    const cloudSlackAutoSetupOwner = new CloudSlackAutoSetupOwner();
+    const cloudSlackAutoSetupOwner = new CloudSlackAutoSetupOwner({
+      fetchImpl: createInstrumentedFetch(perfLogger, { provider: "slack" }),
+    });
     const agentService = new AgentService(database, {
       mcpCredentialCipher: mcpCipher,
       ...optionalCloudUsage(config, cloudUsage),
@@ -1151,7 +1153,11 @@ export async function startServer(): Promise<void> {
           state: new SlackOAuthStateService(config.jwtSecret),
         })
       : undefined;
-    const resolveImAdapter = createImProviderAdapterResolver({ imBindings: imBindingService, slackApi });
+    const resolveImAdapter = createImProviderAdapterResolver({
+      imBindings: imBindingService,
+      slackApi,
+      feishuPolicy: imCallPolicy,
+    });
     imFailureReactions = new ImFailureReactions({
       database,
       resolveAdapter: resolveImAdapter,

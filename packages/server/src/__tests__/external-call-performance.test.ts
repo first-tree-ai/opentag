@@ -1,11 +1,27 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { PassThrough } from "node:stream";
+import { defaultHttpInstance } from "@larksuiteoapi/node-sdk";
+import { CLOUD_MODEL_CHAT_COMPLETIONS_PATH, MCP_GATEWAY_PATH, RUNTIME_WEB_SEARCH_PATH } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
-import { createInstrumentedFetch, createPerformanceLogger, sanitizeExternalUrl } from "../observability/index.js";
+import { createApp } from "../app.js";
+import {
+  createInstrumentedFetch,
+  createPerformanceLogger,
+  isExternalTimeoutError,
+  sanitizeExternalUrl,
+  traceExternalCall,
+  updateCurrentPerformanceContext,
+} from "../observability/index.js";
+import { CloudSlackAutoSetupOwner } from "../runtime/cloud-slack-auto-setup-owner.js";
+import { RuntimeMcpGatewayTokenStore } from "../runtime-credentials/mcp-gateway-token-store.js";
+import { RuntimeWebGatewayTokenStore } from "../runtime-credentials/web-gateway-token-store.js";
 import { GitHubHttpTransport } from "../services/github-proxy/http-transport.js";
-import { ExternalCallPolicy } from "../services/im/external-call-policy.js";
+import { ExternalCallPolicy, ExternalCallPolicyError } from "../services/im/external-call-policy.js";
+import { FeishuAdapter } from "../services/im-bindings/feishu/adapter.js";
+import { createImProviderAdapterResolver } from "../services/im-bindings/provider-adapter-resolver.js";
 import { McpOutboundFetcher } from "../services/mcp/mcp-url-policy.js";
+import { RunnerHub } from "../services/sandboxes/runner-hub.js";
 
 function createLogCollector() {
   const logs: Array<{ level: string; payload: Record<string, unknown>; message: string }> = [];
@@ -69,6 +85,7 @@ describe("external call performance logging", () => {
       module: "external",
       perfCategory: "external",
       provider: "github",
+      service: "github",
       operation: "external.github.http",
       httpMethod: "POST",
       targetHost: "api.github.com",
@@ -78,11 +95,17 @@ describe("external call performance logging", () => {
     expect(logs[1]?.payload).toMatchObject({
       callId: logs[0]?.payload.callId,
       startedAt: logs[0]?.payload.startedAt,
+      service: "github",
       status: 200,
+      attemptCount: 1,
+      retryCount: 0,
       outcome: "completed",
     });
     expect(logs[3]?.payload).toMatchObject({
       callId: logs[2]?.payload.callId,
+      service: "github",
+      attemptCount: 1,
+      retryCount: 0,
       transportCode: "ECONNRESET",
       outcome: "failed",
       code: "ECONNRESET",
@@ -203,29 +226,67 @@ describe("external call performance logging", () => {
     });
   });
 
-  it("logs started and completed records for ExternalCallPolicy operations", async () => {
+  it("logs started and completed records for ExternalCallPolicy operations with retryCount and attemptCount", async () => {
     const { logs, perfLogger } = createLogCollector();
     const policy = new ExternalCallPolicy({
       allowedHosts: ["slack.com"],
+      backoffBaseMs: 0,
+      maxAttempts: 3,
       performanceLogger: perfLogger,
     });
 
-    const result = await policy.run("slack.auth.test", async () => ({ ok: true }));
+    let calls = 0;
+    const result = await policy.run("slack.auth.test", async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw new ExternalCallPolicyError("IM_PROVIDER_TEMP_FAILURE", "temporary", {
+          retryability: "retryable",
+        });
+      }
+      return { ok: true };
+    });
     expect(result).toEqual({ ok: true });
 
     expect(logs).toHaveLength(2);
     expect(logs[0]?.payload).toMatchObject({
       perfCategory: "external",
       provider: "slack",
+      service: "slack",
       operation: "external.slack.auth.test",
       outcome: "started",
     });
     expect(logs[1]?.payload).toMatchObject({
       callId: logs[0]?.payload.callId,
       startedAt: logs[0]?.payload.startedAt,
+      service: "slack",
+      attemptCount: 2,
+      retryCount: 1,
       outcome: "completed",
     });
     expect(logs[1]?.payload.durationMs).toBeGreaterThanOrEqual(0);
+
+    logs.length = 0;
+    const timeoutPolicy = new ExternalCallPolicy({
+      defaultTimeoutMs: 5,
+      maxAttempts: 1,
+      performanceLogger: perfLogger,
+    });
+    await expect(timeoutPolicy.run("feishu.chat.get", () => new Promise(() => undefined))).rejects.toMatchObject({
+      code: "IM_PROVIDER_CALL_DEADLINE_EXCEEDED",
+    });
+    expect(logs).toHaveLength(2);
+    expect(logs[1]?.payload).toMatchObject({
+      service: "feishu",
+      operation: "external.feishu.chat.get",
+      outcome: "failed",
+      code: "IM_PROVIDER_CALL_DEADLINE_EXCEEDED",
+      errorCode: "IM_PROVIDER_CALL_DEADLINE_EXCEEDED",
+      attemptCount: 1,
+      retryCount: 0,
+      timedOut: true,
+    });
+    expect(isExternalTimeoutError(new Error("timeout"), undefined, "UND_ERR_HEADERS_TIMEOUT")).toBe(true);
+    expect(isExternalTimeoutError(new Error("reset"), undefined, "ECONNRESET")).toBe(false);
   });
 
   it("logs started and completed records for McpOutboundFetcher without exposing secret-bearing path segments", async () => {
@@ -268,5 +329,372 @@ describe("external call performance logging", () => {
     expect(serialized).not.toContain("6f1c2a4e-9b7d-4e1a-8c3f-2d5e6a7b8c9d");
     expect(serialized).not.toContain("0123456789abcdef0123456789abcdef");
     expect(serialized).not.toContain("sk-proj-AbCdEf0123456789");
+  });
+
+  it("logs external calls for Sandbox RunnerHub acceptance and workspace seal, FeishuAdapter probes, and CloudSlackAutoSetupOwner", async () => {
+    const { logs, perfLogger } = createLogCollector();
+    const hub = new RunnerHub({ performanceLogger: perfLogger });
+    const scope = {
+      sandboxId: "sbx-100",
+      sessionId: "sess-100",
+      environmentGeneration: 1,
+      resourceName: "res-100",
+    };
+    const sentFrames: unknown[] = [];
+    const socket = {
+      send: (frame: unknown) => {
+        sentFrames.push(frame);
+        const typed = frame as { type?: string; requestId?: string };
+        const reqId = typed.requestId;
+        if (typed.type === "acceptance:run" && reqId) {
+          queueMicrotask(() => {
+            hub.resolveAcceptanceResult(
+              scope.sandboxId,
+              { type: "acceptance:result", requestId: reqId, outcome: "passed" },
+              socket,
+            );
+          });
+        }
+        if (typed.type === "workspace:seal" && reqId) {
+          queueMicrotask(() => {
+            hub.settleWorkspaceSeal(
+              scope.sandboxId,
+              { type: "workspace:seal:result", requestId: reqId, ok: true },
+              socket,
+            );
+          });
+        }
+      },
+      close: () => undefined,
+    };
+    hub.attach(scope, socket);
+    hub.markReady(
+      scope,
+      {
+        sandboxName: "sbx-100",
+        rootfs: "default",
+        nodeVersion: "24.0.0",
+        runnerVersion: "1.0.0",
+        piVersion: "1.0.0",
+        reportedAt: "2026-01-01T00:00:00.000Z",
+      },
+      socket,
+    );
+
+    const accRes = await hub.runAcceptance(
+      scope.sandboxId,
+      {
+        mode: "offline",
+        deadlineAtMs: Date.now() + 5_000,
+        turnId: "turn-acc-1",
+        deliveryId: "deliv-acc-1",
+      },
+      { timeoutMs: 1_000, socket },
+    );
+    expect(accRes.outcome).toBe("passed");
+
+    const sealRes = await hub.requestWorkspaceSeal(scope.sandboxId, { timeoutMs: 1_000, socket });
+    expect(sealRes.ok).toBe(true);
+
+    expect(logs.filter((l) => l.payload.operation === "external.sandbox-runner.runAcceptance")).toEqual([
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          service: "sandbox-runner",
+          sandboxId: "sbx-100",
+          sessionId: "sess-100",
+          turnId: "turn-acc-1",
+          deliveryId: "deliv-acc-1",
+          outcome: "started",
+        }),
+      }),
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          service: "sandbox-runner",
+          sandboxId: "sbx-100",
+          sessionId: "sess-100",
+          turnId: "turn-acc-1",
+          deliveryId: "deliv-acc-1",
+          attemptCount: 1,
+          retryCount: 0,
+          acceptanceOutcome: "passed",
+          outcome: "completed",
+        }),
+      }),
+    ]);
+    expect(logs.filter((l) => l.payload.operation === "external.sandbox-runner.sealWorkspace")).toHaveLength(2);
+
+    // FeishuAdapter via createImProviderAdapterResolver with feishuPolicy
+    logs.length = 0;
+    const feishuPolicy = new ExternalCallPolicy({
+      allowedHosts: ["open.feishu.cn"],
+      performanceLogger: perfLogger,
+    });
+    const postSpy = vi.spyOn(defaultHttpInstance, "post").mockResolvedValue({
+      code: 0,
+      tenant_access_token: "test-token",
+      expire: 7200,
+    });
+    const reqSpy = vi.spyOn(defaultHttpInstance, "request").mockResolvedValue({
+      code: 0,
+      bot: { open_id: "ou_bot_1", activate_status: 2, app_name: "Bot" },
+    });
+    try {
+      const resolver = createImProviderAdapterResolver({
+        imBindings: {
+          getSlackConnectionMaterial: async () => undefined,
+          getFeishuConnectionMaterial: async () => ({
+            appId: "cli_1",
+            appSecret: "sec_1",
+            teamId: "team_1",
+            teamBrand: "feishu" as const,
+            botOpenId: "ou_bot_1",
+            generation: 1,
+          }),
+        } as never,
+        slackApi: {} as never,
+        feishuPolicy,
+      });
+      const resolved = (await resolver("binding-1", 1)) as FeishuAdapter;
+      const bot = await resolved.probeBotIdentity();
+      expect(bot.openId).toBe("ou_bot_1");
+
+      const directAdapter = new FeishuAdapter({
+        appId: "cli_1",
+        appSecret: "sec_1",
+        teamId: "team_1",
+        channel: null,
+        policy: feishuPolicy,
+        scopeList: async () => ({
+          code: 0,
+          data: { scopes: [{ scope_name: "im:message", grant_status: 1 }] },
+        }),
+      });
+      expect(await directAdapter.listGrantedWorkspaceScopes()).toEqual(["im:message"]);
+    } finally {
+      reqSpy.mockRestore();
+      postSpy.mockRestore();
+    }
+
+    expect(
+      logs.some((l) => l.payload.operation === "external.feishu.bot.info" && l.payload.outcome === "completed"),
+    ).toBe(true);
+    expect(
+      logs.some((l) => l.payload.operation === "external.feishu.scope.list" && l.payload.outcome === "completed"),
+    ).toBe(true);
+
+    // CloudSlackAutoSetupOwner with instrumented fetch
+    logs.length = 0;
+    const slackSetup = new CloudSlackAutoSetupOwner({
+      fetchImpl: createInstrumentedFetch(perfLogger, {
+        provider: "slack",
+        baseFetch: vi.fn(async () => new Response(JSON.stringify({ ok: true, ticket: "t-123" }), { status: 200 })),
+      }),
+    });
+    const setupRes = await slackSetup.start({
+      computerId: "comp-1",
+      agentId: "agent-1",
+      input: { action: "authorize", force: true },
+    });
+    expect(setupRes).toEqual({ status: "authorization_required", ticket: "t-123" });
+    expect(
+      logs.some(
+        (l) =>
+          l.payload.operation === "external.slack.http" &&
+          l.payload.service === "slack" &&
+          l.payload.outcome === "completed",
+      ),
+    ).toBe(true);
+  });
+
+  it("propagates agentId, sessionId, deliveryId, turnId, and sandboxId across Turn execution entrypoints into external call logs", async () => {
+    const chunks: string[] = [];
+    const mcpTokens = new RuntimeMcpGatewayTokenStore();
+    const webTokens = new RuntimeWebGatewayTokenStore();
+    const executionId = "00000000-0000-4000-8000-000000000111";
+    const sessionId = "00000000-0000-4000-8000-000000000222";
+    const sandboxId = "00000000-0000-4000-8000-000000000333";
+    const computerId = "00000000-0000-4000-8000-000000000444";
+    const mcpBearer = mcpTokens.issue({ executionId, expiresAt: Date.now() + 60_000 }).token;
+    const webBearer = webTokens.issue({ executionId, expiresAt: Date.now() + 60_000 }).token;
+
+    const app = createApp({
+      loggerLevel: "debug",
+      loggerStream: { write: (chunk) => chunks.push(String(chunk)) },
+      mcpGateway: {
+        tokens: mcpTokens,
+        authorizer: {
+          authorize: vi.fn(async () => ({
+            executionId,
+            accountId: "acc-turn",
+            agentId: "agent-turn",
+            sessionId,
+            computerId,
+            source: { kind: "delivery", deliveryId: "deliv-turn", turnId: "turn-1" },
+            sandbox: { sandboxId, resourceUid: "uid-1", environmentGeneration: 1 },
+          })),
+        } as never,
+        service: {
+          catalog: vi.fn(async () => []),
+          callTool: vi.fn(async () => {
+            await traceExternalCall(
+              createPerformanceLogger(() => app.log),
+              { provider: "mcp", operation: "external.mcp.http" },
+              async () => ({ status: 200 }),
+              { statusFromResult: (r) => r.status },
+            );
+            return { result: { content: [{ type: "text", text: "ok" }] } };
+          }),
+        } as never,
+      },
+      runtimeWeb: {
+        machineAuth: { verifyMachineToken: vi.fn() },
+        tokens: webTokens,
+        service: {
+          executionComputerId: () => computerId,
+          executionContext: () => ({
+            accountId: "acc-turn",
+            agentId: "agent-turn",
+            sessionId,
+            computerId,
+            deliveryId: "deliv-turn",
+            turnId: "turn-1",
+            sandboxId,
+          }),
+          search: vi.fn(async () => ({
+            requestId: "r-web-1",
+            status: "ok",
+            retrievedAt: "2026-01-01T00:00:00.000Z",
+            effectiveDepth: "basic",
+            results: [],
+          })),
+          fetch: vi.fn(),
+        } as never,
+      },
+      cloudModel: {
+        config: {
+          enabled: true,
+          upstreamBaseUrl: "https://router.example.com/v1",
+          masterKey: "secret-master-key",
+          requestTimeoutMs: 5_000,
+          maxRequestBytes: 65_536,
+          maxResponseBytes: 65_536,
+          maxStreamsPerToken: 2,
+          tokenTtlSeconds: 300,
+        },
+        grants: {
+          verify: vi.fn(async () => ({
+            jti: "00000000-0000-4000-8000-000000000999",
+            executionId: "turn-1",
+            sandboxId,
+            sessionId,
+            model: "gpt-4o",
+            maxTokens: 1024,
+          })),
+          beginRequest: vi.fn(() => ({
+            signal: new AbortController().signal,
+            release: () => undefined,
+          })),
+          close: () => undefined,
+        } as never,
+        contextForExecution: vi.fn(async () => ({
+          accountId: "acc-turn",
+          agentId: "agent-turn",
+          sessionId,
+          source: "execution" as const,
+        })),
+        modelService: {
+          request: vi.fn(async () => {
+            updateCurrentPerformanceContext({ deliveryId: "deliv-turn" });
+            return new Response(JSON.stringify({ id: "cmpl-1", choices: [] }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            });
+          }),
+          close: async () => undefined,
+        } as never,
+      },
+    });
+
+    try {
+      const mcpRes = await app.inject({
+        method: "POST",
+        url: MCP_GATEWAY_PATH,
+        headers: { authorization: `Bearer ${mcpBearer}` },
+        payload: {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "demo__tool", arguments: {} },
+        },
+      });
+      expect(mcpRes.statusCode).toBe(200);
+
+      const webRes = await app.inject({
+        method: "POST",
+        url: RUNTIME_WEB_SEARCH_PATH,
+        headers: { authorization: `Bearer ${webBearer}` },
+        payload: {
+          protocolVersion: 1,
+          executionId,
+          toolCallId: "00000000-0000-4000-8000-000000000555",
+          query: "hello",
+        },
+      });
+      expect(webRes.statusCode).toBe(200);
+
+      const modelRes = await app.inject({
+        method: "POST",
+        url: CLOUD_MODEL_CHAT_COMPLETIONS_PATH,
+        headers: { authorization: "Bearer valid-model-token" },
+        payload: {
+          model: "gpt-4o",
+          messages: [{ role: "user", content: "hi" }],
+        },
+      });
+      expect(modelRes.statusCode).toBe(200);
+    } finally {
+      await app.close();
+    }
+
+    const records = chunks
+      .flatMap((c) => c.trim().split("\n"))
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+
+    const mcpExternal = records.find((r) => r.operation === "external.mcp.http" && r.outcome === "completed");
+    expect(mcpExternal).toMatchObject({
+      accountId: "acc-turn",
+      agentId: "agent-turn",
+      sessionId,
+      computerId,
+      deliveryId: "deliv-turn",
+      turnId: "turn-1",
+      sandboxId,
+      attemptCount: 1,
+      retryCount: 0,
+    });
+
+    const webServiceEnd = records.find((r) => r.operation === "RuntimeWebService.search" && r.outcome === "completed");
+    expect(webServiceEnd).toMatchObject({
+      accountId: "acc-turn",
+      agentId: "agent-turn",
+      sessionId,
+      computerId,
+      deliveryId: "deliv-turn",
+      turnId: "turn-1",
+      sandboxId,
+    });
+
+    const modelServiceEnd = records.find(
+      (r) => r.operation === "CloudModelService.request" && r.outcome === "completed",
+    );
+    expect(modelServiceEnd).toMatchObject({
+      accountId: "acc-turn",
+      agentId: "agent-turn",
+      sessionId,
+      sandboxId,
+      turnId: "turn-1",
+      deliveryId: "deliv-turn",
+    });
   });
 });

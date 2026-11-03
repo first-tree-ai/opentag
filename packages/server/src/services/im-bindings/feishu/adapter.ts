@@ -653,18 +653,24 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
   }
 
   async listGrantedWorkspaceScopes(): Promise<string[]> {
-    const response = await this.#scopeList();
-    if (response.code !== undefined && response.code !== 0) {
-      throw Object.assign(new Error("FEISHU_SCOPE_VALIDATION_FAILED"), { code: response.code });
-    }
-    if (!response.data?.scopes) throw new Error("FEISHU_SCOPE_VALIDATION_FAILED");
-    return [
-      ...new Set(
-        response.data.scopes
-          .filter((scope) => scope.grant_status === 1 && scope.scope_type !== "user")
-          .map((scope) => scope.scope_name),
-      ),
-    ].sort();
+    return this.#policy.run(
+      "feishu.scope.list",
+      async () => {
+        const response = await this.#scopeList();
+        if (response.code !== undefined && response.code !== 0) {
+          throw Object.assign(new Error("FEISHU_SCOPE_VALIDATION_FAILED"), { code: response.code });
+        }
+        if (!response.data?.scopes) throw new Error("FEISHU_SCOPE_VALIDATION_FAILED");
+        return [
+          ...new Set(
+            response.data.scopes
+              .filter((scope) => scope.grant_status === 1 && scope.scope_type !== "user")
+              .map((scope) => scope.scope_name),
+          ),
+        ].sort();
+      },
+      { circuitKey: `feishu:scope:${this.#appId}`, maxAttempts: 1 },
+    );
   }
 
   /**
@@ -673,25 +679,31 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
    * candidate must never open a socket just to answer that question.
    */
   async probeBotIdentity(): Promise<FeishuBotProbe> {
-    const response = await this.#client.request<{
-      code?: number;
-      bot?: { open_id?: string; activate_status?: number; app_name?: string; avatar_url?: string };
-    }>({ url: "/open-apis/bot/v3/info", method: "GET" });
-    if (response.code !== undefined && response.code !== 0) {
-      throw Object.assign(new Error("FEISHU_BOT_INFO_FAILED"), { code: response.code });
-    }
-    const openId = response.bot?.open_id;
-    if (!openId) {
-      throw Object.assign(new Error("FEISHU_BOT_IDENTITY_MISSING"), { code: "FEISHU_BOT_IDENTITY_MISSING" });
-    }
-    return {
-      openId,
-      activateStatus: response.bot?.activate_status ?? null,
-      profile: {
-        displayName: response.bot?.app_name?.slice(0, 255) || null,
-        avatarUrl: httpsAvatar(response.bot?.avatar_url),
+    return this.#policy.run(
+      "feishu.bot.info",
+      async () => {
+        const response = await this.#client.request<{
+          code?: number;
+          bot?: { open_id?: string; activate_status?: number; app_name?: string; avatar_url?: string };
+        }>({ url: "/open-apis/bot/v3/info", method: "GET" });
+        if (response.code !== undefined && response.code !== 0) {
+          throw Object.assign(new Error("FEISHU_BOT_INFO_FAILED"), { code: response.code });
+        }
+        const openId = response.bot?.open_id;
+        if (!openId) {
+          throw Object.assign(new Error("FEISHU_BOT_IDENTITY_MISSING"), { code: "FEISHU_BOT_IDENTITY_MISSING" });
+        }
+        return {
+          openId,
+          activateStatus: response.bot?.activate_status ?? null,
+          profile: {
+            displayName: response.bot?.app_name?.slice(0, 255) || null,
+            avatarUrl: httpsAvatar(response.bot?.avatar_url),
+          },
+        };
       },
-    };
+      { circuitKey: `feishu:bot-info:${this.#appId}`, maxAttempts: 1 },
+    );
   }
 
   normalizeInbound(input: VerifiedFeishuEnvelope): NormalizedInboundImEvent[] {

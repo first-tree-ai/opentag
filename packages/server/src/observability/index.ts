@@ -21,6 +21,7 @@ export {
   type ExternalCallTraceInput,
   type ExternalCallTraceOptions,
   extractExternalTransportCode,
+  isExternalTimeoutError,
   sanitizeExternalUrl,
   traceExternalCall,
 } from "./external-call-logger.js";

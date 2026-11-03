@@ -161,7 +161,7 @@ export interface CloudTurnRunnerOptions {
    */
   readonly sandboxReset?: () => Promise<void>;
   /** E5: quiesce writers and save while the Turn slot is held, before publishing its report. */
-  readonly checkpoint?: () => Promise<void>;
+  readonly checkpoint?: (options?: { readonly executionEffects?: TurnCompletion["executionEffects"] }) => Promise<void>;
   readonly log?: (message: string) => void;
   readonly onDiagnostic?: (record: Readonly<Record<string, unknown>>) => void;
   /** Unexpected durable-boundary failures that must surface instead of being swallowed. */
@@ -1591,10 +1591,17 @@ export class CloudTurnRunner {
     let checkpointError: unknown;
     if (checkpoint) {
       try {
-        await this.#options.checkpoint?.();
+        await this.#options.checkpoint?.({ executionEffects: completion.executionEffects });
       } catch (error) {
         checkpointError = error;
-        completion = workspaceSaveFailure(completion);
+        if (completion.executionEffects !== "not_started") {
+          completion = workspaceSaveFailure(completion);
+        } else if (this.#options.sandboxReset) {
+          this.#markSandboxDirty();
+          await this.#resetSandboxNamespace().catch((resetError) => {
+            checkpointError = resetError;
+          });
+        }
       }
     }
     // Record exactly one honest result AFTER the save attempt. A crash before this point leaves
@@ -1762,7 +1769,12 @@ export class CloudTurnRunner {
       completion = { errorReason: "client_shutdown", executionEffects: "may_have_occurred", outcome: "cancelled" };
     }
     const cleanup = await this.#cleanupInterrupted(completion);
-    await this.#settleSessionTerminal(current, sessionSettlementOutcome(cleanup.completion), true);
+    await this.#settleSessionTerminal(
+      current,
+      sessionSettlementOutcome(cleanup.completion),
+      true,
+      cleanup.completion.executionEffects,
+    );
     if (cleanup.failure !== undefined) this.#reportPersistenceError(cleanup.failure);
   }
 
@@ -1782,15 +1794,23 @@ export class CloudTurnRunner {
     entry: CloudJournalSessionEntry,
     outcome: CloudJournalSettlementOutcome,
     checkpoint = false,
+    executionEffects?: TurnCompletion["executionEffects"],
   ): Promise<void> {
     let effective = outcome;
     let checkpointError: unknown;
     if (checkpoint) {
       try {
-        await this.#options.checkpoint?.();
+        await this.#options.checkpoint?.(executionEffects ? { executionEffects } : undefined);
       } catch (error) {
         checkpointError = error;
-        effective = "failed";
+        if (executionEffects !== "not_started") {
+          effective = "failed";
+        } else if (this.#options.sandboxReset) {
+          this.#markSandboxDirty();
+          await this.#resetSandboxNamespace().catch((resetError) => {
+            checkpointError = resetError;
+          });
+        }
       }
     }
     const recorded = await this.#options.journal.recordSessionSettled(entry.messageId, entry.scope, effective);
@@ -2262,7 +2282,7 @@ export class CloudTurnRunner {
   }
 
   #reportCheckpointError(error: unknown): void {
-    if (error instanceof CloudWorkspaceError && !error.retryable) {
+    if (error instanceof CloudWorkspaceError && !error.retryable && error.archiveErrorCode !== undefined) {
       this.#log(`cloud workspace checkpoint failed: ${error.message}`);
       return;
     }

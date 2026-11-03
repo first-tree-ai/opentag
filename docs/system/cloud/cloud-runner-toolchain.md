@@ -48,6 +48,17 @@ the six packaged Context Tree skills plus four source-owned tool skills (`git`, 
 and catalog pins. Host skills are never copied. Real acceptance verifies the skills Pi actually
 loaded via a dedicated Pi RPC `get_commands` query (exactly those ten names, never contents).
 
+The image precompiles the pinned `pi-mcp-adapter` TypeScript modules to native ESM, preserving
+lazy imports. The entry is
+`/opt/opentag/pi/node_modules/pi-mcp-adapter/opentag-runtime.mjs`. Cloud workers load that entry
+through Node's native ESM loading in the existing gateway wrapper. A dynamic `import()` inside
+a Pi extension is also transformed by Jiti, even for `.mjs`; the wrapper uses `createRequire`
+for the compiled entry to avoid this runtime transformation. Bare dependencies remain external
+and retain their locked versions. Pi SDK, TUI, and TypeBox imports use relative paths to the
+SDK-owned dependencies, matching Pi's extension aliases even when those packages are absent
+from the install root. Adjacent adapter assets keep their original locations. Pi RPC budgets
+and Local Pi resource discovery are unchanged.
+
 Runtime credentials are supplied separately. The real acceptance harness injects only a filtered
 Pi configuration through `docker cp`; credentials are never Docker build args.
 

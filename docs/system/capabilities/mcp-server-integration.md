@@ -446,7 +446,7 @@ immediately.
 | --- | --- |
 | `none` | No authorization header. Extra headers still apply |
 | `bearer` | `<auth_header>: <auth_scheme> <key>`, where an **empty scheme sends the key verbatim** (`X-API-Key: <key>`) |
-| `oauth` | `Authorization: Bearer <access token>` — fixed, because the specification requires the token in that header and forbids it in the query string |
+| `oauth` | `Authorization: Bearer <access token>` by default; when `auth_header` is `x-lark-mcp-uat`, `X-Lark-MCP-UAT: <auth_scheme> <access token>` (or `<access token>` when `auth_scheme` is empty) |
 
 `extra_headers` are additional static headers sent for all three kinds, since they are configuration
 rather than credentials.
@@ -742,7 +742,7 @@ of the entry and continue working through their own client. A new Web installati
 preferred endpoint and creates an independent definition, with name-conflict handling if an older
 installation already holds the catalog name.
 
-#### The deployment HubSpot, Asana, Zoom, and GitHub clients
+#### The deployment HubSpot, Asana, Zoom, GitHub, and Feishu clients
 
 These providers offer neither dynamic registration nor a client metadata document, so a deployment
 that wants its Agents to use them registers its own OAuth app with each provider and configures
@@ -759,13 +759,33 @@ also derives the variable names; the Canva client above is a row of the same tab
 | Asana | `OPENTAG_MCP_ASANA_CLIENT_*` | `https://mcp.asana.com` | `https://app.asana.com` | `client_secret_basic` |
 | Zoom | `OPENTAG_MCP_ZOOM_CLIENT_*` | `https://mcp.zoom.us` | `https://zoom.us` | `client_secret_basic` |
 | GitHub | `OPENTAG_MCP_GITHUB_CLIENT_*` | `https://api.githubcopilot.com` | `https://github.com/login/oauth` | `client_secret_post` |
+| Feishu | `OPENTAG_MCP_FEISHU_CLIENT_*` | `https://mcp.feishu.cn` | `https://open.feishu.cn` | `client_secret_post` |
 
 Operator setup, for every brand: register `<OPENTAG_PUBLIC_URL>/api/v1/mcp-servers/oauth/callback` as
 the redirect URL. Create a HubSpot **MCP Auth App** (Development > MCP Auth Apps), an Asana app of
-type **MCP app**, and a Zoom **General app** with user-level OAuth. HubSpot assigns scopes at
+type **MCP app**, a Zoom **General app** with user-level OAuth, and a Feishu self-built application
+with OAuth 2.0 redirect URLs and `FEISHU_DEFAULT_OAUTH_SCOPES` (`docx:document:readonly`,
+`drive:drive:readonly`, `wiki:wiki:readonly`, `im:chat:readonly`, `im:message:readonly`,
+`search:message`, and `offline_access`) enabled. HubSpot assigns scopes at
 installation and advertises none in its metadata. Zoom's challenge carries no `scope`, so the flow
 requests every `scopes_supported` entry its protected resource metadata advertises; a Zoom app grants
 only the scopes listed on its **Scopes** page, so add the full advertised list there.
+
+Feishu's hosted MCP endpoint (`https://mcp.feishu.cn/mcp`) requires the user access token in
+`X-Lark-MCP-UAT: <access token>` (`authHeader: "x-lark-mcp-uat"`, `authScheme: ""`) on `kind = "oauth"`.
+When `OPENTAG_MCP_FEISHU_CLIENT_ID` and `OPENTAG_MCP_FEISHU_CLIENT_SECRET` are configured (or when
+refreshing an existing row whose `authorization_server` is `https://open.feishu.cn`), the OAuth service
+resolves Feishu's OAuth v2 metadata directly (`authorization_endpoint`:
+`https://accounts.feishu.cn/open-apis/authen/v1/authorize`, `token_endpoint`:
+`https://open.feishu.cn/open-apis/authen/v2/oauth/token`) instead of failing on
+`https://accounts.feishu.cn/mcp`'s blocked dynamic client registration. When no explicit scopes are
+supplied on start, the Feishu flow requests its default ordinary read-only scope set plus
+`offline_access` (`docx:document:readonly`, `drive:drive:readonly`, `wiki:wiki:readonly`,
+`im:chat:readonly`, `im:message:readonly`, `search:message`, `offline_access`) rather than the hosted
+MCP `mcp-tool:*` scopes advertised in the PRM or challenge. Refresh rotates both the access
+token and refresh token inside `mcp_server_authorizations`, maps invalid or expired Feishu refresh
+tokens to `invalid_grant` (terminal reauthorization required), and clears potentially consumed refresh
+material on unknown transport or 5xx outcomes. Broader application grants are not advertised as read-only credentials; tool restrictions declared in `X-Lark-MCP-Allowed-Tools` are enforced by the gateway at both catalog and call time.
 
 GitHub uses the [official remote MCP server](https://github.com/github/github-mcp-server/blob/main/docs/host-integration.md).
 An existing GitHub OAuth App can supply the MCP client pair: add the MCP callback alongside its
@@ -1190,6 +1210,10 @@ discover through another call first.
 - The catalogue is served from the stored probe snapshots rather than fanned out live. `tools/list`
   runs at the start of every turn; a live fan-out would add a round trip per Server to each one and
   contend for the same four outbound slots a real tool call needs.
+- When a mount's effective `extra_headers` includes `X-Lark-MCP-Allowed-Tools` (matched
+  case-insensitively), its comma-separated upstream tool names restrict the mount's usable tool
+  snapshot at both `catalog()` and `callTool()` time. Any tool not in the allowed set is omitted from
+  discovery and rejected at call time with `MCP_BINDING_NOT_FOUND`.
 
 ### Failures
 

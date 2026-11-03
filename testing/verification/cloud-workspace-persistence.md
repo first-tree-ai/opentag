@@ -4,8 +4,9 @@ Test and acceptance material for [Cloud workspace persistence](../../docs/system
 
 ## Local checkpoint diagnostics
 
-- `cloud-workspace.test.ts` checks that hard links and an oversized Context Tree cache retain
-  their specific archive error codes, the last saved object, and unsaved local files. A repeated
+- `cloud-workspace.test.ts` checks that hard links and an oversized Context Tree cache retained
+  for an active write session preserve their specific archive error codes, the last saved object,
+  and unsaved local files. Verified read-only caches follow the existing omission rules. A repeated
   terminal failure performs no new transfer.
 - `cloud-turns.test.ts` and `cloud-turns-session.test.ts` check that deterministic save failures
   are logged without filenames and keep the report/control channel available. IM execution

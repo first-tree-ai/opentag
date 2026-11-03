@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
   chmod,
@@ -8,6 +9,7 @@ import {
   readdir,
   readFile,
   readlink,
+  realpath,
   rm,
   stat,
   symlink,
@@ -16,6 +18,7 @@ import {
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { pack as tarPack } from "tar-stream";
 import { afterEach, describe, expect, it } from "vitest";
@@ -30,6 +33,7 @@ import {
   type WorkspaceArchiveInfo,
 } from "../runner/workspace-archive.js";
 
+const execFileAsync = promisify(execFile);
 const roots: string[] = [];
 
 afterEach(async () => {
@@ -237,6 +241,423 @@ describe("createWorkspaceArchive + restoreWorkspaceArchive roundtrip", () => {
     expect(notesMode & 0o111).toBe(0);
     const binding = await readFile(join(restored, ".opentag", "pi-session", "9f86d081", "binding.json"), "utf8");
     expect(JSON.parse(binding)).toEqual({ sessionId: "9f86d081", workspaceFingerprint: "abc123" });
+  });
+
+  describe("Context Tree cache exclusion and retention", () => {
+    const gitEnv = {
+      ...process.env,
+      GIT_AUTHOR_NAME: "Test",
+      GIT_AUTHOR_EMAIL: "test@example.com",
+      GIT_COMMITTER_NAME: "Test",
+      GIT_COMMITTER_EMAIL: "test@example.com",
+    };
+    const initialSmall = `${"a".repeat(1023)}\n`;
+    const initialLarge = `${"x".repeat(69_999)}\n`;
+
+    async function createSeedAndFixture(name: string) {
+      const root = await realpath(await makeRoot());
+      const seed = join(root, "seed");
+      await mkdir(seed, { recursive: true });
+      await execFileAsync("git", ["init", "-b", "main", seed], { env: gitEnv });
+      await writeFile(join(seed, "NODE.md"), initialSmall);
+      await writeFile(join(seed, "large.txt"), initialLarge);
+      await execFileAsync("git", ["-C", seed, "add", "NODE.md", "large.txt"], { env: gitEnv });
+      await execFileAsync("git", ["-C", seed, "commit", "-m", "init"], { env: gitEnv });
+
+      const workspace = join(root, `workspace-${name}`);
+      const projectDir = join(workspace, ".opentag", "context-tree", "project");
+      const ctHome = join(workspace, ".opentag", "context-tree", "home", ".context-tree");
+      const bareRepo = join(ctHome, "repositories", "repo.git");
+      const snapshotDir = join(ctHome, "snapshots", "repo-main");
+      await mkdir(projectDir, { recursive: true });
+      await mkdir(join(ctHome, "repositories"), { recursive: true });
+      await mkdir(join(ctHome, "snapshots"), { recursive: true });
+      await mkdir(join(ctHome, "cleanup", "logs"), { recursive: true });
+      await writeFile(join(projectDir, ".context-tree.json"), '{"schemaVersion":3,"trees":[]}\n');
+      await writeFile(join(ctHome, "cleanup", "logs", "events.jsonl"), "{}\n");
+      await execFileAsync("git", ["clone", "--bare", "--no-hardlinks", seed, bareRepo], { env: gitEnv });
+      await execFileAsync(
+        "git",
+        ["-c", "safe.bareRepository=all", "--git-dir", bareRepo, "worktree", "add", "--detach", snapshotDir, "HEAD"],
+        { env: gitEnv },
+      );
+      return { root, seed, workspace, ctHome, bareRepo, snapshotDir };
+    }
+
+    it("omits clean snapshots without write sessions, preserves active write sessions, and ignores malicious core.fsmonitor", async () => {
+      const clean = await createSeedAndFixture("clean");
+      const markerPath = join(clean.root, "fsmonitor-executed-marker");
+      const hookPath = join(clean.workspace, "hook.sh");
+      await writeFile(hookPath, `#!/bin/sh\necho pwned > "${markerPath}"\n`);
+      await chmod(hookPath, 0o755);
+      await execFileAsync("git", ["--git-dir", clean.bareRepo, "config", "core.fsmonitor", hookPath], {
+        env: gitEnv,
+      });
+
+      const archiveWithoutSession = join(clean.root, "without-session.tar.gz");
+      const infoWithout = await createWorkspaceArchive(clean.workspace, archiveWithoutSession, { maxBytes: 1024 });
+      await expect(lstat(markerPath)).rejects.toMatchObject({ code: "ENOENT" });
+      const restoredWithout = join(clean.root, "restored-without");
+      await restoreWorkspaceArchive(archiveWithoutSession, restoredWithout, infoWithout);
+
+      expect(
+        await readFile(join(restoredWithout, ".opentag", "context-tree", "project", ".context-tree.json"), "utf8"),
+      ).toBe('{"schemaVersion":3,"trees":[]}\n');
+      await expect(
+        lstat(join(restoredWithout, ".opentag", "context-tree", "home", ".context-tree", "repositories")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(
+        lstat(join(restoredWithout, ".opentag", "context-tree", "home", ".context-tree", "snapshots")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(
+        lstat(join(restoredWithout, ".opentag", "context-tree", "home", ".context-tree", "cleanup")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+
+      await mkdir(join(clean.ctHome, "sessions"), { recursive: true });
+      await mkdir(join(clean.ctHome, "worktrees", "session-1"), { recursive: true });
+      await writeFile(join(clean.ctHome, "sessions", "session-1.json"), '{"id":"session-1"}\n');
+      await writeFile(join(clean.ctHome, "worktrees", "session-1", "draft.md"), "unpublished draft\n");
+
+      const archiveWithSession = join(clean.root, "with-session.tar.gz");
+      const infoWith = await createWorkspaceArchive(clean.workspace, archiveWithSession);
+      const restoredWith = join(clean.root, "restored-with");
+      await restoreWorkspaceArchive(archiveWithSession, restoredWith, infoWith);
+
+      expect(
+        await readFile(
+          join(restoredWith, ".opentag", "context-tree", "home", ".context-tree", "worktrees", "session-1", "draft.md"),
+          "utf8",
+        ),
+      ).toBe("unpublished draft\n");
+      expect(
+        await readFile(
+          join(restoredWith, ".opentag", "context-tree", "home", ".context-tree", "snapshots", "repo-main", "NODE.md"),
+          "utf8",
+        ),
+      ).toBe(initialSmall);
+      await expect(
+        lstat(join(restoredWith, ".opentag", "context-tree", "home", ".context-tree", "cleanup")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    it("retains unstaged, same-size large, staged, and corrupt-index snapshot modifications", async () => {
+      const unstagedSmall = await createSeedAndFixture("unstaged-small");
+      const modifiedSmall = `${"b".repeat(1023)}\n`;
+      await writeFile(join(unstagedSmall.snapshotDir, "NODE.md"), modifiedSmall);
+      const archiveUnstagedSmall = join(unstagedSmall.root, "unstaged-small.tar.gz");
+      const infoUnstagedSmall = await createWorkspaceArchive(unstagedSmall.workspace, archiveUnstagedSmall);
+      const restoredUnstagedSmall = join(unstagedSmall.root, "restored-unstaged-small");
+      await restoreWorkspaceArchive(archiveUnstagedSmall, restoredUnstagedSmall, infoUnstagedSmall);
+      expect(
+        await readFile(
+          join(
+            restoredUnstagedSmall,
+            ".opentag",
+            "context-tree",
+            "home",
+            ".context-tree",
+            "snapshots",
+            "repo-main",
+            "NODE.md",
+          ),
+          "utf8",
+        ),
+      ).toBe(modifiedSmall);
+
+      const sameSizeLarge = await createSeedAndFixture("same-size-large");
+      const modifiedLarge = `${"y".repeat(69_999)}\n`;
+      await writeFile(join(sameSizeLarge.snapshotDir, "large.txt"), modifiedLarge);
+      const archiveSameSizeLarge = join(sameSizeLarge.root, "same-size-large.tar.gz");
+      const infoSameSizeLarge = await createWorkspaceArchive(sameSizeLarge.workspace, archiveSameSizeLarge);
+      const restoredSameSizeLarge = join(sameSizeLarge.root, "restored-same-size-large");
+      await restoreWorkspaceArchive(archiveSameSizeLarge, restoredSameSizeLarge, infoSameSizeLarge);
+      expect(
+        await readFile(
+          join(
+            restoredSameSizeLarge,
+            ".opentag",
+            "context-tree",
+            "home",
+            ".context-tree",
+            "snapshots",
+            "repo-main",
+            "large.txt",
+          ),
+          "utf8",
+        ),
+      ).toBe(modifiedLarge);
+
+      const stagedSmall = await createSeedAndFixture("staged-small");
+      const stagedContent = `${"c".repeat(1023)}\n`;
+      await writeFile(join(stagedSmall.snapshotDir, "NODE.md"), stagedContent);
+      await execFileAsync("git", ["-C", stagedSmall.snapshotDir, "add", "NODE.md"], { env: gitEnv });
+      const archiveStagedSmall = join(stagedSmall.root, "staged-small.tar.gz");
+      const infoStagedSmall = await createWorkspaceArchive(stagedSmall.workspace, archiveStagedSmall);
+      const restoredStagedSmall = join(stagedSmall.root, "restored-staged-small");
+      await restoreWorkspaceArchive(archiveStagedSmall, restoredStagedSmall, infoStagedSmall);
+      expect(
+        await readFile(
+          join(
+            restoredStagedSmall,
+            ".opentag",
+            "context-tree",
+            "home",
+            ".context-tree",
+            "snapshots",
+            "repo-main",
+            "NODE.md",
+          ),
+          "utf8",
+        ),
+      ).toBe(stagedContent);
+
+      const corruptIndex = await createSeedAndFixture("corrupt-index");
+      const corruptContent = `${"d".repeat(1023)}\n`;
+      await writeFile(join(corruptIndex.snapshotDir, "NODE.md"), corruptContent);
+      await writeFile(join(corruptIndex.bareRepo, "worktrees", "repo-main", "index"), "corrupt-index-bytes");
+      const archiveCorruptIndex = join(corruptIndex.root, "corrupt-index.tar.gz");
+      const infoCorruptIndex = await createWorkspaceArchive(corruptIndex.workspace, archiveCorruptIndex);
+      const restoredCorruptIndex = join(corruptIndex.root, "restored-corrupt-index");
+      await restoreWorkspaceArchive(archiveCorruptIndex, restoredCorruptIndex, infoCorruptIndex);
+      expect(
+        await readFile(
+          join(
+            restoredCorruptIndex,
+            ".opentag",
+            "context-tree",
+            "home",
+            ".context-tree",
+            "snapshots",
+            "repo-main",
+            "NODE.md",
+          ),
+          "utf8",
+        ),
+      ).toBe(corruptContent);
+    });
+
+    it("retains detached, no-reflog branch, and packed-local-branch commits inside snapshots", async () => {
+      const localCommit = await createSeedAndFixture("local-commit");
+      const committedContent = `${"e".repeat(1023)}\n`;
+      await writeFile(join(localCommit.snapshotDir, "NODE.md"), committedContent);
+      await execFileAsync("git", ["-C", localCommit.snapshotDir, "commit", "-am", "local edit"], { env: gitEnv });
+      const archiveLocalCommit = join(localCommit.root, "local-commit.tar.gz");
+      const infoLocalCommit = await createWorkspaceArchive(localCommit.workspace, archiveLocalCommit);
+      const restoredLocalCommit = join(localCommit.root, "restored-local-commit");
+      await restoreWorkspaceArchive(archiveLocalCommit, restoredLocalCommit, infoLocalCommit);
+      expect(
+        await readFile(
+          join(
+            restoredLocalCommit,
+            ".opentag",
+            "context-tree",
+            "home",
+            ".context-tree",
+            "snapshots",
+            "repo-main",
+            "NODE.md",
+          ),
+          "utf8",
+        ),
+      ).toBe(committedContent);
+
+      const noReflogBranch = await createSeedAndFixture("no-reflog-branch");
+      const branchContent = `${"f".repeat(1023)}\n`;
+      await execFileAsync(
+        "git",
+        ["-C", noReflogBranch.snapshotDir, "-c", "core.logAllRefUpdates=false", "switch", "-c", "local-work"],
+        { env: gitEnv },
+      );
+      await writeFile(join(noReflogBranch.snapshotDir, "NODE.md"), branchContent);
+      await execFileAsync(
+        "git",
+        ["-C", noReflogBranch.snapshotDir, "-c", "core.logAllRefUpdates=false", "commit", "-am", "local branch edit"],
+        { env: gitEnv },
+      );
+      const archiveNoReflogBranch = join(noReflogBranch.root, "no-reflog-branch.tar.gz");
+      const infoNoReflogBranch = await createWorkspaceArchive(noReflogBranch.workspace, archiveNoReflogBranch);
+      const restoredNoReflogBranch = join(noReflogBranch.root, "restored-no-reflog-branch");
+      await restoreWorkspaceArchive(archiveNoReflogBranch, restoredNoReflogBranch, infoNoReflogBranch);
+      expect(
+        await readFile(
+          join(
+            restoredNoReflogBranch,
+            ".opentag",
+            "context-tree",
+            "home",
+            ".context-tree",
+            "snapshots",
+            "repo-main",
+            "NODE.md",
+          ),
+          "utf8",
+        ),
+      ).toBe(branchContent);
+
+      const packedLocalBranch = await createSeedAndFixture("packed-local-branch");
+      const packedBranchContent = `${"g".repeat(1023)}\n`;
+      await execFileAsync(
+        "git",
+        ["-C", packedLocalBranch.snapshotDir, "-c", "core.logAllRefUpdates=false", "switch", "-c", "local-work"],
+        { env: gitEnv },
+      );
+      await writeFile(join(packedLocalBranch.snapshotDir, "NODE.md"), packedBranchContent);
+      await execFileAsync(
+        "git",
+        [
+          "-C",
+          packedLocalBranch.snapshotDir,
+          "-c",
+          "core.logAllRefUpdates=false",
+          "commit",
+          "-am",
+          "packed local branch edit",
+        ],
+        { env: gitEnv },
+      );
+      await execFileAsync(
+        "git",
+        ["-C", packedLocalBranch.snapshotDir, "-c", "core.logAllRefUpdates=false", "switch", "--detach", "HEAD"],
+        { env: gitEnv },
+      );
+      await execFileAsync(
+        "git",
+        ["-c", "safe.bareRepository=all", "--git-dir", packedLocalBranch.bareRepo, "pack-refs", "--all"],
+        { env: gitEnv },
+      );
+      await execFileAsync(
+        "git",
+        ["-C", packedLocalBranch.snapshotDir, "-c", "core.logAllRefUpdates=false", "reset", "--hard", "HEAD"],
+        { env: gitEnv },
+      );
+      const archivePackedBranch = join(packedLocalBranch.root, "packed-local-branch.tar.gz");
+      const infoPackedBranch = await createWorkspaceArchive(packedLocalBranch.workspace, archivePackedBranch);
+      const restoredPackedBranch = join(packedLocalBranch.root, "restored-packed-local-branch");
+      await restoreWorkspaceArchive(archivePackedBranch, restoredPackedBranch, infoPackedBranch);
+      expect(
+        await readFile(
+          join(
+            restoredPackedBranch,
+            ".opentag",
+            "context-tree",
+            "home",
+            ".context-tree",
+            "snapshots",
+            "repo-main",
+            "NODE.md",
+          ),
+          "utf8",
+        ),
+      ).toBe(packedBranchContent);
+    });
+
+    it("omits multi-sync ancestor snapshots and multi-branch remote clones under the real CLI layout", async () => {
+      const root = await realpath(await makeRoot());
+      const multiSyncWorkspace = join(root, "workspace-multi-sync");
+      const multiProjectDir = join(multiSyncWorkspace, ".opentag", "context-tree", "project");
+      const multiCtHome = join(multiSyncWorkspace, ".opentag", "context-tree", "home", ".context-tree");
+      const multiBareRepo = join(multiCtHome, "repositories", "repo.git");
+      const multiSnapshotsDir = join(multiCtHome, "snapshots");
+      await mkdir(multiProjectDir, { recursive: true });
+      await mkdir(join(multiCtHome, "repositories"), { recursive: true });
+      await mkdir(multiSnapshotsDir, { recursive: true });
+      await writeFile(join(multiProjectDir, ".context-tree.json"), '{"schemaVersion":3,"trees":[]}\n');
+
+      const multiSeed = join(root, "multi-seed");
+      await mkdir(multiSeed, { recursive: true });
+      await execFileAsync("git", ["init", "-b", "main", multiSeed], { env: gitEnv });
+      await writeFile(join(multiSeed, "NODE.md"), "commit-1\n");
+      await execFileAsync("git", ["-C", multiSeed, "add", "NODE.md"], { env: gitEnv });
+      await execFileAsync("git", ["-C", multiSeed, "commit", "-m", "c1"], { env: gitEnv });
+      // Add extra remote branches so clone --bare populates multiple refs/heads/* in packed-refs.
+      for (const extraBranch of ["feature-a", "feature-b"]) {
+        await execFileAsync("git", ["-C", multiSeed, "branch", extraBranch], { env: gitEnv });
+      }
+      const sha1 = (await execFileAsync("git", ["-C", multiSeed, "rev-parse", "HEAD"], { env: gitEnv })).stdout.trim();
+
+      await execFileAsync("git", ["clone", "--bare", "--no-hardlinks", multiSeed, multiBareRepo], { env: gitEnv });
+      await execFileAsync(
+        "git",
+        [
+          "--git-dir",
+          multiBareRepo,
+          "fetch",
+          "--quiet",
+          "--no-tags",
+          "origin",
+          "+refs/heads/main:refs/remotes/origin/main",
+        ],
+        { env: gitEnv },
+      );
+      await execFileAsync(
+        "git",
+        [
+          "-c",
+          "safe.bareRepository=all",
+          "--git-dir",
+          multiBareRepo,
+          "worktree",
+          "add",
+          "--detach",
+          join(multiSnapshotsDir, `tree-${sha1}`),
+          sha1,
+        ],
+        { env: gitEnv },
+      );
+
+      for (const label of ["commit-2", "commit-3"]) {
+        await writeFile(join(multiSeed, "NODE.md"), `${label}\n`);
+        await execFileAsync("git", ["-C", multiSeed, "commit", "-am", label], { env: gitEnv });
+        const nextSha = (
+          await execFileAsync("git", ["-C", multiSeed, "rev-parse", "HEAD"], { env: gitEnv })
+        ).stdout.trim();
+        await execFileAsync(
+          "git",
+          [
+            "--git-dir",
+            multiBareRepo,
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "origin",
+            "+refs/heads/main:refs/remotes/origin/main",
+          ],
+          { env: gitEnv },
+        );
+        await execFileAsync(
+          "git",
+          [
+            "-c",
+            "safe.bareRepository=all",
+            "--git-dir",
+            multiBareRepo,
+            "worktree",
+            "add",
+            "--detach",
+            join(multiSnapshotsDir, `tree-${nextSha}`),
+            nextSha,
+          ],
+          { env: gitEnv },
+        );
+      }
+      await execFileAsync(
+        "git",
+        ["--git-dir", multiBareRepo, "remote", "set-url", "origin", "https://github.com/acme/context.git"],
+        { env: gitEnv },
+      );
+
+      expect((await readdir(multiSnapshotsDir)).length).toBe(3);
+      const archiveMultiSync = join(root, "multi-sync.tar.gz");
+      const infoMultiSync = await createWorkspaceArchive(multiSyncWorkspace, archiveMultiSync, { maxBytes: 1024 });
+      const restoredMultiSync = join(root, "restored-multi-sync");
+      await restoreWorkspaceArchive(archiveMultiSync, restoredMultiSync, infoMultiSync);
+      await expect(
+        lstat(join(restoredMultiSync, ".opentag", "context-tree", "home", ".context-tree", "repositories")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(
+        lstat(join(restoredMultiSync, ".opentag", "context-tree", "home", ".context-tree", "snapshots")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    });
   });
 
   it("round-trips safe relative symlinks, including chained node_modules layouts", async () => {

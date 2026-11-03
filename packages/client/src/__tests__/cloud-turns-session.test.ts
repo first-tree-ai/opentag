@@ -1335,6 +1335,28 @@ describe("CloudTurnRunner Session collaboration", () => {
     await h.runner.close();
   });
 
+  it.each([401, 403, 409, 412])(
+    "surfaces a non-retryable Session HTTP %s checkpoint failure through onPersistenceError",
+    async (status) => {
+      const failed = vi.fn();
+      const h = harness({
+        runnerOptions: {
+          checkpoint: async () => {
+            throw new CloudWorkspaceError("save_failed", false, { httpStatus: status });
+          },
+          onPersistenceError: failed,
+        },
+      });
+      await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+      await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+      await h.runner.waitForActive();
+      expect(failed).toHaveBeenCalledOnce();
+      expect(settledOf(h.sent)[0]?.outcome).toBe("failed");
+      expect(h.workerInputs).toHaveLength(1);
+      await h.runner.close();
+    },
+  );
+
   it("anchors the worker timeout and the parent exec backstop to one execution deadline", async () => {
     const budgetMs = 60_000;
     const fixture = cloudDeliveryFixture();

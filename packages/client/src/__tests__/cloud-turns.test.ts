@@ -1028,6 +1028,80 @@ describe("CloudTurnRunner", () => {
     await h.runner.close();
   });
 
+  it.each([401, 403, 409, 412])(
+    "surfaces non-retryable HTTP %s checkpoint failures through onPersistenceError without rerunning the worker",
+    async (status) => {
+      const failed = vi.fn();
+      const h = harness({
+        runnerOptions: {
+          checkpoint: async () => {
+            throw new CloudWorkspaceError("save_failed", false, { httpStatus: status });
+          },
+          onPersistenceError: failed,
+        },
+      });
+      await h.runner.handleDeliveryRun(runFrame(h.delivery));
+      await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+      await h.runner.waitForActive();
+      expect(failed).toHaveBeenCalledOnce();
+      expect(reportsOf(h.sent)).toHaveLength(1);
+      expect(reportsOf(h.sent)[0]?.report).toMatchObject({
+        outcome: "failed",
+        errorReason: "workspace_failed",
+        executionEffects: "completed",
+      });
+      await h.runner.reconcile();
+      expect(reportsOf(h.sent)).toHaveLength(2);
+      expect(h.workerInputs).toHaveLength(1);
+      await h.runner.close();
+    },
+  );
+
+  it("preserves a not_started completion and resets the sandbox when checkpoint fails before prompt_acceptance", async () => {
+    const log = vi.fn();
+    const sandboxReset = vi.fn(async () => undefined);
+    const checkpointEffects: string[] = [];
+    const h = harness({
+      worker: async () => ({
+        code: 1,
+        stderr: "",
+        stdout: `${JSON.stringify({
+          kind: "result",
+          completion: {
+            outcome: "failed",
+            errorReason: "provider_start_failed",
+            executionEffects: "not_started",
+          },
+        })}\n`,
+      }),
+      runnerOptions: {
+        checkpoint: async (options) => {
+          checkpointEffects.push(options?.executionEffects ?? "missing");
+          throw new CloudWorkspaceError("save_failed", false, {
+            cause: new WorkspaceArchiveError("archive-too-large", "exceeds ceiling"),
+          });
+        },
+        sandboxReset,
+        log,
+      },
+    });
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+    await h.runner.waitForActive();
+    expect(checkpointEffects).toEqual(["not_started"]);
+    expect(sandboxReset).toHaveBeenCalledOnce();
+    expect(h.runner.needsSandboxReset).toBe(false);
+    expect(log).toHaveBeenCalledWith(
+      "cloud workspace checkpoint failed: Cloud workspace save_failed (archive-too-large)",
+    );
+    expect(reportsOf(h.sent)[0]?.report).toMatchObject({
+      outcome: "failed",
+      errorReason: "provider_start_failed",
+      executionEffects: "not_started",
+    });
+    await h.runner.close();
+  });
+
   it("drains release reports through their Server acknowledgment and refuses new custody", async () => {
     const h = harness();
     await h.runner.handleDeliveryRun(runFrame(h.delivery));

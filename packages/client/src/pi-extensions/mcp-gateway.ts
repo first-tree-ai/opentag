@@ -1,5 +1,7 @@
 /** Execution-scoped MCP credentials stay in memory, separate from native MCP configuration. */
 import { randomBytes } from "node:crypto";
+import { createRequire } from "node:module";
+import { basename } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent";
 
@@ -25,7 +27,12 @@ const definition = {
 };
 type StartHandler = (event: SessionStartEvent, context: ExtensionContext) => Promise<unknown> | unknown;
 type Registration = { dispose(): Promise<void> };
-const adapter = (await import(pathToFileURL(adapterEntry).href)) as {
+// Jiti also transforms dynamic .mjs imports; the compiled Cloud adapter must use Node's native loader.
+const adapter = (
+  basename(adapterEntry) === "opentag-runtime.mjs"
+    ? createRequire(import.meta.url)(adapterEntry)
+    : await import(pathToFileURL(adapterEntry).href)
+) as {
   createMcpAdapter(options: {
     config: { mcpServers: Record<string, typeof definition>; settings: Record<string, unknown> };
   }): (pi: ExtensionAPI) => void;

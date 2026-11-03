@@ -151,7 +151,18 @@ hold:
   key is re-checked immediately before its delete, because a row can appear between the two.
 
 Deletes are capped per run (`maxDeletesPerRun`, default 500); a failed delete is logged and left for
-the next pass. Logging is one `info` summary per run (scanned, deleted, skipped-young,
+the next pass. A pass also lists at most ten pages (`maxPagesPerRun`) of 200 entries by default,
+so young/referenced objects and failed deletions cannot drive an entire-prefix scan. The worker
+keeps the next-page cursor in memory across passes and wraps only at listing end. A delete cap
+reached mid-page leaves the remaining keys for a later wrap; they are not reported as processed.
+A failed LIST clears its continuation for the next scheduled pass and never retries inline.
+At the default hourly cadence this admits at most 2,000 listed entries per hour; full-prefix
+revisit time depends on population and deletion backlog. This is a work bound, not a measured
+production cleanup SLA.
+
+Stop closes GC admission and waits for its actual current list/SQL/delete work. It rechecks stop
+between stages and objects. Repeated stop callers join the same work; stopped collectors cannot
+be restarted, and manual passes return an empty summary. Construct a new collector to restart. Logging is one `info` summary per run (scanned, deleted, skipped-young,
 skipped-referenced, duration), `debug` per delete, and `warn` on a failed delete.
 
 Failed writes still check the current row before deleting their own object: a lost commit acknowledgement

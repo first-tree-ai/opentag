@@ -911,7 +911,11 @@ A row that has no refresh token at all simply lapses to `expired` at its deadlin
 to spend and retrying forever would achieve nothing.
 
 The scan joins `agents` and excludes deleted ones, so a soft-deleted Agent's credential is not
-renewed.
+renewed. The worker keeps one current pass Promise. Stop closes scan/probe/refresh admission and
+waits for that actual pass; an already-issued token exchange still finishes and persists under
+its existing generation/claim fences. Stop checks between rows avoid draining the rest of the
+100-row batch. SQL disposal follows that drain. Repeated stop calls join the same work; manual
+passes after stop return zero and start cannot reopen a stopped worker. A new instance restarts it.
 
 ## Probing
 

@@ -23,16 +23,10 @@ synonyms:
 | Request correlation | `requestId` | HTTP or client request identifier. |
 | Trace correlation | `traceId` | Active OpenTelemetry trace identifier injected via logger mixin. |
 | Account boundary | `accountId` | Tenant boundary for an Agent and its resources. |
-<<<<<<< HEAD
 | Agent, Computer, Session, Delivery, Turn, Sandbox | `agentId`, `computerId`, `sessionId`, `deliveryId`, `turnId`, `sandboxId` | Stable resource and Turn execution identifiers. |
+| Sandbox environment generation | `environmentGeneration` | Monotonic allocation generation for a Cloud Sandbox. |
 | Provider / External service | `provider`, `externalService` | External dependency identifier (`slack`, `feishu`, `github`, `mcp`, `cloud-router`, `web-router`, `cloud-run`, `gcp-metadata`, `gcs`, `sandbox-runner`, `s3-skills`, `skill-source`, `gcp-error-reporting`, `channel-target`), kept distinct from the Pino base `service="opentag-server"`. |
 | Outcome | `outcome` | A stable state transition such as `accepted`, `started`, `completed`, `failed`, or `rejected`. |
-=======
-| Agent, Computer, Session, Delivery, Sandbox | `agentId`, `computerId`, `sessionId`, `deliveryId`, `sandboxId` | Stable resource identifiers. |
-| Sandbox environment generation | `environmentGeneration` | Monotonic allocation generation for a Cloud Sandbox. |
-| Provider | `provider` | A provider name such as `feishu` or `slack`. |
-| Outcome | `outcome` | A stable state transition such as `accepted`, `failed`, or `rejected`. |
->>>>>>> origin/main
 | Error identity | `errorCode`, `code` | Use the structured error code (dual-written as `errorCode` and `code` for compatibility). Do not invent `reason`, `errorReason`, `failureReason`, `dropReason`, or `detail` for the same concept. |
 | Attempt and retry counts | `attempt`, `attemptCount`, `retryCount`, `timedOut` | Numeric execution attempt, total attempts, retry count, and timeout indicator on external calls. |
 | Duration | `durationMs` | Elapsed time in milliseconds. |

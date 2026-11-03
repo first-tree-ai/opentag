@@ -80,7 +80,7 @@ async function registerOffline(page: Page, displayName: string): Promise<string>
 
 async function copyTask(page: Page, scope: Page | Locator = page): Promise<string> {
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
-  const copy = scope.getByRole("button", { name: "Copy for AI assistant", exact: true });
+  const copy = scope.getByRole("button", { name: "Copy for Agent", exact: true });
   await expect(copy).toBeVisible();
   await copy.click();
   await expect(scope.getByRole("button", { name: "Copied", exact: true })).toBeVisible();
@@ -169,7 +169,7 @@ test("copies the current-computer task and waits for its actual daemon before co
   const agentId = await createAgent(page);
   await page.goto(`/agents/setup?agentId=${agentId}`);
   await expect(page.getByRole("heading", { name: "Connect your computer", exact: true })).toBeVisible();
-  await expect(page.getByText("Copy the task to your AI assistant on this computer.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Copy the task to your Agent on this computer.", { exact: true })).toBeVisible();
   const task = await copyTask(page);
   expect(task).toContain("Preserve a working connection");
   expect(task).toContain("server-side online status");
@@ -201,7 +201,7 @@ test("automatically repairs the sole disconnected Computer in place", async ({ p
   });
   await page.goto(`/agents/setup?agentId=${agentId}`);
   await expect(
-    page.getByText("Copy the task to your AI assistant on Office Linux to restore the connection.", { exact: true }),
+    page.getByText("Copy the task to your Agent on Office Linux to restore the connection.", { exact: true }),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: /Use this computer:/ })).toHaveCount(0);
   const task = await copyTask(page);
@@ -269,7 +269,7 @@ test("connects another Computer without moving an existing Agent", async ({ page
   await page.getByRole("button", { name: "Connect another computer", exact: true }).click();
   await expect(
     page.getByText(
-      "Copy the task to your AI assistant on the target computer. Return here to continue setup when it connects.",
+      "Copy the task to your Agent on the target computer. Return here to continue setup when it connects.",
       { exact: true },
     ),
   ).toBeVisible();
@@ -319,7 +319,7 @@ test("uses first-Local guidance when the inventory contains only Cloud", async (
   await expect(page.getByRole("heading", { name: "Cloud", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Connect another computer", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Connect computer", exact: true }).click();
-  await expect(page.getByText("Copy the task to your AI assistant on this computer.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Copy the task to your Agent on this computer.", { exact: true })).toBeVisible();
   expect(await copyTask(page)).toContain("Preserve a working connection");
   await expectNoPageOverflow(page);
   await expectAccessible(page);

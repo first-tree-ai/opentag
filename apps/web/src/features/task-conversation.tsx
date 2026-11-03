@@ -242,7 +242,6 @@ function TaskEntry({
           ) : entry.kind === "report" ? (
             <TaskReportBody
               capturedFeedSupplied={capturedFeedSupplied}
-              hasReplies={entry.hasReplies}
               provider={task.source.provider}
               report={entry.report}
             />
@@ -255,12 +254,10 @@ function TaskEntry({
   );
 }
 
+/** A message header names its author and time only; the body already says how the work went. */
 function TaskAgentMeta({ entry }: { entry: TaskTimelineEntry }) {
   if (entry.kind === "reply") return <TaskOutgoingReplyMeta reply={entry.reply} />;
   if (entry.kind === "report") return <TaskReportMeta report={entry.report} />;
-  if (entry.kind === "status") {
-    return <small className="text-xs text-kumo-subtle">{deliveryStateLabel(entry.turn.delivery)}</small>;
-  }
   return null;
 }
 
@@ -283,9 +280,7 @@ function TaskRequest({ turn, id }: { turn: TaskTurn; id: string }) {
       <div className="grid min-w-0 gap-2">
         <header className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1" data-ui="task-message-author">
           <strong className="min-w-0 wrap-anywhere text-sm font-medium">{author}</strong>
-          <small className="text-xs text-kumo-subtle">
-            {attentionLabel(turn.attention)} · {formatDateTime(turn.message.occurredAt)}
-          </small>
+          <small className="text-xs text-kumo-subtle">{formatDateTime(turn.message.occurredAt)}</small>
         </header>
         <div className="grid min-w-0 gap-3 rounded-xl bg-kumo-recessed p-4 ring-1 ring-inset ring-kumo-line/60 shadow-2xs">
           {turn.message.fallbackText || attachments.length === 0 ? (
@@ -305,11 +300,7 @@ function TaskRequest({ turn, id }: { turn: TaskTurn; id: string }) {
 }
 
 function TaskReportMeta({ report }: { report: TaskReport }) {
-  return (
-    <small className="text-xs text-kumo-subtle">
-      {m.tasks_report_summary({ outcome: humanizeEnum(report.outcome), time: formatDateTime(report.reportedAt) })}
-    </small>
-  );
+  return <small className="text-xs text-kumo-subtle">{formatDateTime(report.reportedAt)}</small>;
 }
 
 /**
@@ -331,18 +322,15 @@ function taskEntryVisible(
 
 function TaskReportBody({
   report,
-  hasReplies,
   provider,
   capturedFeedSupplied,
 }: {
   report: TaskReport;
-  hasReplies: boolean;
   provider: TaskSummary["source"]["provider"];
   capturedFeedSupplied: boolean;
 }) {
   return (
     <>
-      {hasReplies ? <TaskReportMeta report={report} /> : null}
       {provider === "feishu" ? <TaskReplyNotice capturedFeedSupplied={capturedFeedSupplied} report={report} /> : null}
       {report.errorReason ? <p className="text-sm text-kumo-danger">{turnFailureLabel(report.errorReason)}</p> : null}
     </>
@@ -384,13 +372,21 @@ function TaskUnreportedBody({ delivery }: { delivery: TaskTurn["delivery"] }) {
   if (delivery.state === "terminal_rejected" && delivery.reason === "restore_required") {
     return <p className="text-sm text-kumo-danger">{m.tasks_failure_progress_restore_failed()}</p>;
   }
+  // A rejected message is a failure the reader may need to act on, so it reads as one.
+  if (delivery.state === "terminal_rejected") {
+    return (
+      <p className="text-sm text-kumo-danger" data-state="failed">
+        {deliveryStateMessage(delivery)}
+      </p>
+    );
+  }
   return (
     <p className="text-sm text-kumo-subtle" data-state={running ? "progress" : "attention"}>
       {running
         ? m.tasks_work_in_progress()
         : delivery.state === "accepted"
           ? m.tasks_execution_report_unavailable()
-          : m.tasks_message_state({ state: deliveryStateLabel(delivery).toLocaleLowerCase() })}
+          : deliveryStateMessage(delivery)}
     </p>
   );
 }
@@ -442,19 +438,16 @@ function taskAuthorLabel(value: TaskTurn["message"]["authorKind"]): string {
   return m.tasks_author_system();
 }
 
-function attentionLabel(value: TaskTurn["attention"]): string {
-  if (value === "direct") return m.tasks_direct_message();
-  if (value === "ambient") return m.tasks_ambient_message();
-  return humanizeEnum(value);
-}
-
-function deliveryStateLabel(delivery: TaskTurn["delivery"]): string {
-  if (delivery.isRunning === true) return m.tasks_in_progress();
+/** Why an unreported message has no execution, in the reader's language. */
+function deliveryStateMessage(delivery: TaskTurn["delivery"]): string {
   // A withdrawn delivery is stored as expired; the reader asked for it and is told so.
   if (delivery.state === "expired" && delivery.reason === TASK_CANCELLED_DELIVERY_REASON) {
-    return m.tasks_status_cancelled();
+    return m.tasks_message_cancelled();
   }
-  return humanizeEnum(delivery.state);
+  if (delivery.state === "pending") return m.tasks_message_pending();
+  if (delivery.state === "expired") return m.tasks_message_expired();
+  if (delivery.state === "terminal_rejected") return m.tasks_message_rejected();
+  return m.tasks_execution_report_unavailable();
 }
 
 /*

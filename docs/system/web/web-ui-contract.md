@@ -315,28 +315,25 @@ Every module-owned stylesheet must:
 
 ## Schedule handoff feedback
 
-Schedule rows keep configuration state (Enabled, Paused, or an exhausted one-time schedule) separate from the
-latest handoff result. When a handoff summary exists, its recorded outcome and scheduled time remain visible
-without opening the full task. The list uses its existing summary fields and does not fetch the private prompt
-until details are opened.
+Each schedule row shows its name as a heading that opens the details, Pause or Resume, and a label only for a state
+other than running on schedule (Paused, or Finished for a one-time schedule). Below it, one line gives the rule in
+words ("Every weekday at 9:00", "Monthly on days 28–31 at 18:00"), the next time, and the last time. Times are short
+(month, day, weekday, and an unpadded hour) and name the zone only when it differs from the reader's. A cron
+expression with no plain form is shown as written, never guessed.
 
-Details explain the recorded outcome and retain its reason code and next scheduled time. An accepted handoff
-confirms runtime receipt, never task completion. An unknown handoff may still be in flight or may already have started work; users check
-Tasks before starting it again. Unreachable and rejected handoffs direct users to the Agent's Computer status,
-without diagnosing the cause from current presence. Skipped occurrences retain their reason code. The schedule
-does not retry an occurrence. Explanations do not imply a future occurrence when the next trigger is absent;
-future occurrences, when present, follow the current enabled state and time rule. These messages
-do not introduce retries, execution history, or a separate task lifecycle.
+The last run reads in the reader's terms. A run that happened shows only its time. One that did not run says why,
+in the danger color ("didn't run: the computer was offline"). One whose handoff is unconfirmed says so, in the
+warning color. The opened details add only what the row does not say: where the schedule posts (for example
+"Lark · thread"), its zone when it differs from the reader's, one note after a failed or unconfirmed run, the full
+task, and Delete. After a failed run, the note says it won't be rerun and, when another run exists, that the next
+run follows the schedule. After an unconfirmed run, it says to check Tasks before starting the work again. Internal
+identifiers and reason codes are not shown. The list uses its existing summary fields and does not fetch the private
+prompt until details are opened.
 
-## IM recovery confirmation
-
-[Task recovery](../messaging/im-feedback.md) is an owner-authenticated, read-only entry page, including links with an
-operation hint. Choosing an action opens a separate review; discard adds an acknowledgement of permanent file loss
-and unchanged external effects. Before the final POST the page fetches fresh confirmation data and refuses a changed
-revision, changed environment, missing action, or failed read even when cached data exists. A lost POST response leads
-to checking the recorded result, never an automatic second submission. Pending operations refresh their result only.
-The Agent detail page includes a collapsed, paginated recovery-notice list so delivery failures remain discoverable.
-English and Chinese copy distinguish "queued", "saved and released", "released but unverified", and actual completion.
+Why: a schedule row answers whether the schedule will run and whether the last run worked. Labels for the default
+state, a separate details button, raw cron, long timestamps, and handoff jargon repeated what the row already said or
+asked the reader to know the delivery system. Delete is rare and irreversible, so it sits with the details rather
+than on every row.
 
 ## Internationalization and copy
 

@@ -1,5 +1,5 @@
 import type { EffectiveRuntimeSnapshot } from "@opentag/shared";
-import { contextTreeName, contextTreeSelector } from "@opentag/shared";
+import { AGENT_SLUG_CHARACTERS, contextTreeName, contextTreeSelector } from "@opentag/shared";
 import type { ContextTreeStatus as ManagedContextTreeStatus } from "./context-tree-connections.js";
 import { GITHUB_MCP_INSTRUCTIONS, renderProviderOutboxGuidance } from "./provider-outbox-instructions.js";
 
@@ -28,8 +28,10 @@ export interface ManagedSessionContext {
  * them through `renderPlatformInstructions` (`OpenTag Agent slug: <slug>`) and fails closed on a
  * malformed name, so an anchored, charset-strict match is exactly the identity the Server vetted.
  */
+const MANAGED_AGENT_SLUG = new RegExp(`(?:^|\\n)OpenTag Agent slug: (${AGENT_SLUG_CHARACTERS})(?=\\n|$)`, "u");
+
 export function managedAgentSlug(platformInstructions: string): string | undefined {
-  return /(?:^|\n)OpenTag Agent slug: ([a-z0-9][a-z0-9-]*)(?=\n|$)/.exec(platformInstructions)?.[1];
+  return MANAGED_AGENT_SLUG.exec(platformInstructions)?.[1];
 }
 
 function renderCloudExecutionContext(): readonly string[] {

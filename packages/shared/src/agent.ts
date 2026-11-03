@@ -2,6 +2,7 @@ import { z } from "zod";
 import { AgentPermissionsSchema } from "./agent-permissions.js";
 import { ContextTreesSchema } from "./context-tree.js";
 import {
+  AGENT_NAME_PATTERN,
   AGENT_SLUG_MAX_LENGTH,
   RuntimeInstructionSchema,
   RuntimeInstructionsSchema,
@@ -9,16 +10,24 @@ import {
   RuntimeModelSchema,
   RuntimeReasoningEffortSchema,
   renderPlatformInstructions,
+  runtimeUtf8Length,
 } from "./runtime-config.js";
+
+export { AGENT_NAME_PATTERN, AGENT_SLUG_CHARACTERS } from "./runtime-config.js";
 
 export const AgentNameSchema = z
   .string()
   .trim()
+  // Compatibility ideographs render like their unified forms; NFC folds them into one name.
+  .normalize("NFC")
   .min(1, "Agent name is required")
-  .max(AGENT_SLUG_MAX_LENGTH, `Agent name must be at most ${AGENT_SLUG_MAX_LENGTH} characters`)
   .regex(
-    /^[a-z0-9][a-z0-9-]*$/,
-    "Agent name must start with a lowercase letter or number and contain only lowercase letters, numbers, and hyphens",
+    AGENT_NAME_PATTERN,
+    "Agent name may contain only letters, numbers, Chinese characters, and hyphens, and must not start with a hyphen",
+  )
+  .refine(
+    (name) => runtimeUtf8Length(name) <= AGENT_SLUG_MAX_LENGTH,
+    `Agent name must be at most ${AGENT_SLUG_MAX_LENGTH} bytes (21 Chinese characters)`,
   );
 export const AgentDisplayNameSchema = z.string().trim().min(1).max(120);
 export const AgentCreationIntentIdSchema = z.string().uuid();

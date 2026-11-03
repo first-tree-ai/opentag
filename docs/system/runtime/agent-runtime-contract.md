@@ -89,6 +89,16 @@ The Server uses `agent_runtime_configs.revision` for both Agent and Session snap
 An owner change to `selfConfigurationEnabled` advances that runtime revision in the same transaction
 as the Agent row, just as a runtime configuration change does. Repeating the same switch value or
 editing only the display name or receive mode does not advance it. Agent names are immutable.
+An Agent name is also its slug (`OpenTag Agent slug:` in the platform layer and `members/<slug>/` in a Context Tree).
+It may use ASCII letters in either case, digits, CJK unified ideographs (not radicals), and hyphens, must not start
+with a hyphen, and is at most 64 UTF-8 bytes (21 Chinese characters), so the reserved platform instruction budget stays
+exact. The Server stores it trimmed and NFC-normalized, keeps its case, and enforces uniqueness within an Account
+case-insensitively, including under concurrent creation. Clients older than this rule do not recognize a slug with uppercase or Han characters and
+fall back to the generic member-directory guidance.
+Why: people name Agents the way they name teammates, often in Chinese or with capitals, and one name field is simpler
+than a separate display name and handle. Length is counted in bytes because the name is part of the platform
+instructions, whose reserved budget is in bytes; about 21 Chinese characters is enough for a name. Only unambiguous
+characters are allowed, and uniqueness ignores case, so two Agents never look alike.
 Agent and Session revision IDs identify their respective content; the sequences order updates.
 
 When preparing a Local Session within the same placement, the Client verifies its saved snapshot

@@ -31,7 +31,7 @@ describe("Account Computer management", () => {
     const restore = screen.getByRole("link", { name: "Reconnect" });
     expect(restore.getAttribute("href")).toContain(`computerId=${computerId}`);
     fireEvent.click(restore);
-    expect(await screen.findByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Reconnect" })).toBeNull();
     expect(JSON.parse(String(repairRequests()[0]?.[1]?.body))).toEqual({
       mode: "repair",
@@ -76,7 +76,7 @@ describe("Account Computer management", () => {
     expect(JSON.parse(String(repairRequests()[0]?.[1]?.body))).toEqual({ mode: "create" });
     expect(screen.getByRole("heading", { name: "Ada's Mac" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Connect another computer" })).toBeNull();
-    expect(await screen.findByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
   });
 
   it("offers the first Local connection while preserving an existing Cloud card", async () => {
@@ -87,8 +87,8 @@ describe("Account Computer management", () => {
     expect(screen.queryByRole("button", { name: "Connect another computer" })).toBeNull();
     expect(repairRequests()).toHaveLength(0);
     fireEvent.click(connect);
-    expect(await screen.findByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
-    expect(screen.getByText("Copy the task to your AI assistant on this computer.")).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
+    expect(screen.getByText("Copy the task to your Agent on this computer.")).toBeTruthy();
     expect(repairRequests()).toHaveLength(1);
     expect(JSON.parse(String(repairRequests()[0]?.[1]?.body))).toEqual({ mode: "create" });
   });
@@ -181,7 +181,7 @@ describe("Account Computer management", () => {
     openComputer();
     fireEvent.click(await screen.findByRole("button", { name: "Connect computer" }));
     expect(await screen.findByText("Command accepted. Waiting for openTag to come online…")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Copy for AI assistant" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy for Agent" })).toBeNull();
     online = true;
     fireEvent(window, new Event("focus"));
     expect(await screen.findByText("Online", {}, { timeout: 3_000 })).toBeTruthy();
@@ -216,8 +216,7 @@ describe("Account Computer management", () => {
     });
     openComputer();
     const expectAttempt = async () => {
-      if (codeState === "pending")
-        expect(await screen.findByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
+      if (codeState === "pending") expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
       else
         expect(
           await screen.findByText(
@@ -231,7 +230,7 @@ describe("Account Computer management", () => {
     failed = true;
     fireEvent(window, new Event("focus"));
     expect(await screen.findByText("Status unavailable")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Copy for AI assistant" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy for Agent" })).toBeNull();
     expect(screen.queryByText("Offline")).toBeNull();
     failed = false;
     fireEvent(window, new Event("focus"));
@@ -240,7 +239,7 @@ describe("Account Computer management", () => {
     online = true;
     fireEvent(window, new Event("focus"));
     expect(await screen.findByText("Online", {}, { timeout: 3_000 })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Copy for AI assistant" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy for Agent" })).toBeNull();
     expect(document.querySelector('[data-ui="computer-recovery"]')).toBeNull();
   });
 
@@ -271,7 +270,7 @@ describe("Account Computer management", () => {
   it("automatically exposes recovery for an offline computer with no Agents", async () => {
     installApi({ computers: [{ ...twoReadyComputers[0], agentIds: [], connectionStatus: "offline" }] });
     openComputer();
-    expect(await screen.findByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.queryByRole("button", { name: "Get connection help" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Show full instructions" }));

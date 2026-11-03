@@ -81,6 +81,70 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 
+describe("OpenTagApi Computer connect exchange compatibility", () => {
+  const installationId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
+  const computerId = "9fd8c3db-9fb6-4e0b-8ca9-f0f830c4a1a5";
+  const request = {
+    code: "1234567890abcdef",
+    installationId,
+    displayName: "Laptop",
+    platform: "linux" as const,
+    arch: "x64",
+    clientVersion: "0.0.1",
+    machineToken: "otmc_current",
+    reportOutcome: true as const,
+  };
+  function validationError(code: string) {
+    return jsonResponse(
+      {
+        error: {
+          code: "VALIDATION_ERROR",
+          category: "validation",
+          message: "The request payload is invalid",
+          requestId: "request-1",
+          issues: [{ path: [], code, message: "rejected" }],
+        },
+      },
+      400,
+    );
+  }
+
+  it("retries once without the optional fields when an older Server rejects them as unknown", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(validationError("unrecognized_keys"))
+      .mockResolvedValueOnce(jsonResponse({ computerId, installationId, machineToken: "otmc_new" }));
+    const api = new OpenTagApi("https://opentag.example", fetchImpl);
+
+    await expect(api.exchangeComputerConnectCode(request)).resolves.toEqual({
+      computerId,
+      installationId,
+      machineToken: "otmc_new",
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const retried = JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body));
+    expect(retried).not.toHaveProperty("machineToken");
+    expect(retried).not.toHaveProperty("reportOutcome");
+    expect(retried.installationId).toBe(installationId);
+  });
+
+  it("does not retry other validation failures and accepts a token-less already-connected answer", async () => {
+    const rejecting = vi.fn<typeof fetch>().mockResolvedValueOnce(validationError("too_small"));
+    await expect(
+      new OpenTagApi("https://opentag.example", rejecting).exchangeComputerConnectCode(request),
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    expect(rejecting).toHaveBeenCalledTimes(1);
+
+    const connected = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ computerId, installationId, outcome: "already_connected" }));
+    await expect(
+      new OpenTagApi("https://opentag.example", connected).exchangeComputerConnectCode(request),
+    ).resolves.toEqual({ computerId, installationId, outcome: "already_connected" });
+  });
+});
+
 describe("OpenTagApi Agent methods", () => {
   it("covers computer, session, optional binding, and resource API surfaces", async () => {
     const installationId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
@@ -582,6 +646,64 @@ describe("OpenTagApi Agent methods", () => {
       await expect(
         api.deleteRuntimeAgentMcpServerDefinition("proof-token", "0f4c8f7e-4a4d-4b7b-9a51-7c8f1d2e3a4b"),
       ).resolves.toBeUndefined();
+    });
+  });
+});
+
+describe("OpenTagApi against a newer Server", () => {
+  /*
+   * A CLI keeps running until its next connect while the Server upgrades for everyone, so a newer
+   * Server's additive fields must not break its reads. Known fields stay validated.
+   */
+  const future = {
+    serverOnlyFlag: true,
+    agents: [
+      {
+        ...agentListItem,
+        activity: { state: "working", startedAt: agent.updatedAt, queuedTaskCount: 2 },
+        computer: { ...agentListItem.computer, region: "value-must-not-be-logged" },
+        brandNewField: { nested: [1, 2] },
+      },
+    ],
+  };
+
+  it("reads the Agent list and detail when the Server adds fields at any depth", async () => {
+    const debug = vi.fn();
+    const fetchImpl = vi.fn<typeof fetch>(async (input) =>
+      String(input).endsWith("/api/v1/agents")
+        ? jsonResponse(future)
+        : jsonResponse({ ...future.agents[0], usage: undefined, newDetailField: "x" }),
+    );
+    const api = new OpenTagApi("https://opentag.example", { fetchImpl, logger: { debug } });
+
+    const listed = await api.listAgents("access");
+    expect(listed).toEqual({
+      agents: [{ ...agentListItem, activity: { state: "working", startedAt: agent.updatedAt } }],
+    });
+    const detail = await api.getAgent("access", agentId);
+    expect(detail.activity).toEqual({ state: "working", startedAt: agent.updatedAt });
+    expect(detail).not.toHaveProperty("newDetailField");
+
+    // Version skew is visible in debug logs by key path only, never by value.
+    expect(debug).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: "/api/v1/agents",
+        ignoredKeys: expect.arrayContaining(["serverOnlyFlag", "agents.0.activity.queuedTaskCount"]),
+      }),
+      expect.any(String),
+    );
+    expect(JSON.stringify(debug.mock.calls)).not.toContain("value-must-not-be-logged");
+  });
+
+  it("still rejects a newer Server's response that changes a known field", async () => {
+    const changed = { agents: [{ ...future.agents[0], status: "archived" }] };
+    const api = new OpenTagApi("https://opentag.example", {
+      fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(changed)),
+      logger: { debug: vi.fn() },
+    });
+    await expect(api.listAgents("access")).rejects.toMatchObject({
+      code: "SERVICE_UNAVAILABLE",
+      phase: "serialization",
     });
   });
 });

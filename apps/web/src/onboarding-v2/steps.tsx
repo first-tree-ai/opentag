@@ -312,8 +312,7 @@ function RuntimePicker({
   if (draft.destination === "cloud") return null;
   return (
     <fieldset className={FIELDSET}>
-      <legend className="font-medium text-kumo-strong">{m.onboarding_v2_agent_runtime_label()}</legend>
-      <p className={HINT}>{m.onboarding_v2_agent_runtime_hint()}</p>
+      <legend className="mb-2 font-medium text-kumo-strong">{m.onboarding_v2_agent_runtime_label()}</legend>
       <ul className={CHOICE_GRID} data-ui="onboarding-v2-choices">
         {RUNTIMES.map((runtime) => (
           <li key={runtime}>
@@ -330,7 +329,6 @@ function RuntimePicker({
           </li>
         ))}
       </ul>
-      <p className="text-xs text-kumo-subtle m-0">{m.onboarding_v2_agent_runtime_footnote()}</p>
     </fieldset>
   );
 }

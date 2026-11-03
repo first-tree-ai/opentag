@@ -296,7 +296,7 @@ describe("Agent HTTP API", () => {
       url: HTTP_PATHS.accountAgents,
       headers: authorization,
       payload: {
-        name: "Bestony",
+        name: "Best ony",
         displayName: "Bestony",
         runtimeProvider: "codex",
         computerId,
@@ -313,7 +313,7 @@ describe("Agent HTTP API", () => {
             path: ["name"],
             code: "invalid_format",
             message:
-              "Agent name must start with a lowercase letter or number and contain only lowercase letters, numbers, and hyphens",
+              "Agent name may contain only letters, numbers, Chinese characters, and hyphens, and must not start with a hyphen",
           },
         ],
       },

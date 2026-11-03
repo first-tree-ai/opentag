@@ -567,11 +567,11 @@ function useRecheckOnEntry(
   snapshot: AgentSetupSnapshot | undefined,
   idle: boolean,
 ): void {
-  const asked = useRef(false);
+  const askedFor = useRef<string | undefined>(undefined);
   const needsRecheck = snapshot !== undefined && setupNeedsRecheckOnEntry(snapshot);
   useEffect(() => {
-    if (asked.current || !needsRecheck || !idle) return;
-    asked.current = true;
+    if (askedFor.current === agentId || !needsRecheck || !idle) return;
+    askedFor.current = agentId;
     if (!claimAgentRecheck(agentId, Date.now())) return;
     // The step's bounded poll is already reading this state, so the answer arrives on its next read.
     adapter.refreshPreparation(agentId).catch((error: unknown) => {

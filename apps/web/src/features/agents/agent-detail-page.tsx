@@ -66,13 +66,14 @@ export function AgentDetailPage({
  * (see `agent-recheck.ts` for when and why). The answer arrives through the normal live reads; the
  * request only shortens the wait, so a refused request changes nothing the page shows.
  */
-function AgentRecheckOnEntry({ agent }: { agent: AgentDetailView }) {
+export function AgentRecheckOnEntry({ agent }: { agent: AgentDetailView }) {
   const queryClient = useQueryClient();
-  const asked = useRef(false);
+  // One ask per Agent entered: the home can move from one Agent to another without remounting.
+  const askedFor = useRef<string | undefined>(undefined);
   const needsRecheck = agentHomeNeedsRecheck(agent);
   useEffect(() => {
-    if (asked.current || !needsRecheck) return;
-    asked.current = true;
+    if (askedFor.current === agent.id || !needsRecheck) return;
+    askedFor.current = agent.id;
     if (!claimAgentRecheck(agent.id, Date.now())) return;
     browserApi
       .refreshAgentSetup(agent.id)

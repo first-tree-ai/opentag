@@ -4,13 +4,15 @@
  */
 
 import type { AccountComputerSummary, AgentDetail, CloudAvailability, MeResponse } from "@opentag/shared/browser";
-import { QueryClient } from "@tanstack/react-query";
-import { screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../../__tests__/support/router.js";
 import { browserApi } from "../../api.js";
+import { createQueryClient } from "../../query/client.js";
 import { AccountContext } from "../session/session-context.js";
-import { AgentDetailPage } from "./agent-detail-page.js";
+import { AgentDetailPage, AgentRecheckOnEntry } from "./agent-detail-page.js";
+import type { AgentDetailView } from "./agent-model.js";
 
 const AGENT_ID = "3f1d3a2c-1f2e-4a1b-9c3d-5e6f70819a2b";
 const ACCOUNT_ID = "0b9c8d7e-6f50-4a1b-8c2d-3e4f50617283";
@@ -192,6 +194,45 @@ describe("Agent home for a Local Agent", () => {
     await renderAgentHome();
     expect(await screen.findByRole("region", { name: "Agent status" })).toBeTruthy();
     expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks again for a second Agent entered without remounting the home", async () => {
+    // Both Agents' views are already loaded, so moving from one to the other keeps this mounted.
+    const refresh = vi.spyOn(browserApi, "refreshAgentSetup").mockResolvedValue(undefined);
+    const notReady = (id: string): AgentDetailView => ({
+      ...agent,
+      id,
+      runtimeProvider: "codex",
+      availability: {
+        state: "action_required",
+        reason: "runtime_unavailable",
+        lastConfirmedAt: TIME,
+        dependencies: {
+          computer: { state: "ready", lastConfirmedAt: TIME },
+          runtime: { provider: "codex", status: "install" },
+          channel: { state: "connected", provider: "feishu", botDisplayName: "Reviewer" },
+          handoff: { state: "ready", lastConfirmedAt: TIME },
+        },
+      },
+      messaging: { kind: "ready", value: undefined },
+      computerKind: "local",
+      computerConnectionStatus: "online",
+    });
+    const client = createQueryClient();
+    const view = render(
+      <QueryClientProvider client={client}>
+        <AgentRecheckOnEntry agent={notReady(AGENT_ID)} />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(refresh).toHaveBeenCalledWith(AGENT_ID));
+    const otherId = "4a2e4b3d-2f3a-4b2c-8d4e-6f7a8b9c0d1e";
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <AgentRecheckOnEntry agent={notReady(otherId)} />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(refresh).toHaveBeenCalledWith(otherId));
+    expect(refresh).toHaveBeenCalledTimes(2);
   });
 
   it("does not ask a ready Agent's Computer to check again", async () => {

@@ -70,10 +70,15 @@
   color: var(--fg-2);
 }
 
-/* Assistant recovery instructions grow with the page instead of nesting a scrollable reader. */
+/* Task instructions size to their text and grow with the page instead of nesting a scrollable reader. */
 .ots-command[data-flowing="true"] .ots-command__body {
   height: auto;
-  min-height: 132px;
+  min-height: 0;
+}
+
+/* A collapsed one-line task sits level with its copy control. */
+.ots-command[data-flowing="true"]:not([data-expanded="true"]) .ots-command__body {
+  align-items: center;
 }
 
 .ots-command[data-flowing="true"] .ots-command__code {

@@ -330,7 +330,7 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByRole("heading", { name: "Connect your computer" })).toBeTruthy();
     expect(screen.queryByText("Reviewer runs on your computer; messages and results pass through openTag.")).toBeNull();
-    expect(screen.getByText("No computer connected")).toBeTruthy();
+    expect(screen.queryByText("No computer connected")).toBeNull();
     expect(window.location.pathname).toBe("/agents/setup");
 
     // The second row, so this cannot pass by binding whichever Computer happens to be first.

@@ -178,8 +178,10 @@ test("copies the current-computer task and waits for its actual daemon before co
     const computerId = await machine.connect(task);
     // An Agent-targeted connection binds on exchange before the daemon starts. Wait for the
     // observed bound-offline state, then verify setup remains blocked without a live daemon.
-    await expect(page.locator('[data-ui="agent-setup-computer-summary"]')).toContainText("Offline");
-    await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeDisabled();
+    // The repair command window is the only status while the computer is offline, and the step
+    // offers no Continue until it is online.
+    await expect(page.locator('[data-ui="computer-recovery"] [role="status"]')).toContainText("to reconnect");
+    await expect(page.getByRole("button", { name: "Continue", exact: true })).toHaveCount(0);
     expect(await computers(page)).toMatchObject([{ computerId, connectionStatus: "offline" }]);
     machine.start();
     await expect(page.getByRole("heading", { name: "Prepare this computer", exact: true })).toBeVisible();

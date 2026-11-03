@@ -715,7 +715,12 @@ function TaskTable({
   const table = (
     <section
       aria-label={m.tasks_table_region()}
-      className="min-w-0 overflow-hidden rounded-lg @min-[40rem]/content:overflow-x-auto @min-[40rem]/content:focus:outline-none @min-[40rem]/content:focus-visible:ring-2 @min-[40rem]/content:focus-visible:ring-kumo-brand @min-[40rem]/content:focus-visible:ring-inset"
+      /*
+       * Kumo pads every header and body cell by `p-3`. Inside a section card (`compact`), the region
+       * gives that padding back to the card so cell text starts on the same edge as the section heading,
+       * in both the wide table and the stacked rows.
+       */
+      className={`${compact ? "-mx-3 " : ""}min-w-0 overflow-hidden rounded-lg @min-[40rem]/content:overflow-x-auto @min-[40rem]/content:focus:outline-none @min-[40rem]/content:focus-visible:ring-2 @min-[40rem]/content:focus-visible:ring-kumo-brand @min-[40rem]/content:focus-visible:ring-inset`}
       // biome-ignore lint/a11y/noNoninteractiveTabindex: The same region remains keyboard-scrollable in wider content areas.
       tabIndex={0}
     >

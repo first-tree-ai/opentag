@@ -1008,6 +1008,23 @@ describe("Tasks view", () => {
     expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
   });
 
+  it("aligns the Agent home table text with the section heading", async () => {
+    vi.spyOn(browserApi, "tasks").mockResolvedValue({ tasks: [task], nextCursor: null });
+
+    await renderInRouter(<AgentTasksSection agentId={agentId} />);
+
+    // Kumo cells pad by p-3; the section-card region offsets that so cell text starts on the heading's edge.
+    expect((await screen.findByRole("region", { name: "Tasks table" })).classList).toContain("-mx-3");
+  });
+
+  it("keeps the Account Tasks table inside its own card", async () => {
+    vi.spyOn(browserApi, "tasks").mockResolvedValue({ tasks: [task], nextCursor: null });
+
+    await renderInRouter(<TasksPage />);
+
+    expect((await screen.findByRole("region", { name: "Tasks table" })).classList).not.toContain("-mx-3");
+  });
+
   it("reports when an Agent's Tasks cannot be loaded", async () => {
     vi.spyOn(browserApi, "tasks").mockRejectedValueOnce(new ApiError(503, "Tasks unavailable"));
 

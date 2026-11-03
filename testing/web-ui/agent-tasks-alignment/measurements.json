@@ -1,0 +1,82 @@
+[
+  {
+    "width": 320,
+    "version": "before",
+    "layout": "stacked",
+    "titleOffset": 12,
+    "headerOffset": null,
+    "sourceOffset": 12,
+    "trailingOffset": 12,
+    "pageOverflow": false
+  },
+  {
+    "width": 320,
+    "version": "after",
+    "layout": "stacked",
+    "titleOffset": 0,
+    "headerOffset": null,
+    "sourceOffset": 0,
+    "trailingOffset": 0,
+    "pageOverflow": false
+  },
+  {
+    "width": 390,
+    "version": "before",
+    "layout": "stacked",
+    "titleOffset": 12,
+    "headerOffset": null,
+    "sourceOffset": 12,
+    "trailingOffset": 12,
+    "pageOverflow": false
+  },
+  {
+    "width": 390,
+    "version": "after",
+    "layout": "stacked",
+    "titleOffset": 0,
+    "headerOffset": null,
+    "sourceOffset": 0,
+    "trailingOffset": 0,
+    "pageOverflow": false
+  },
+  {
+    "width": 768,
+    "version": "before",
+    "layout": "stacked",
+    "titleOffset": 12,
+    "headerOffset": null,
+    "sourceOffset": 12,
+    "trailingOffset": 12,
+    "pageOverflow": false
+  },
+  {
+    "width": 768,
+    "version": "after",
+    "layout": "stacked",
+    "titleOffset": 0,
+    "headerOffset": null,
+    "sourceOffset": 0,
+    "trailingOffset": 0,
+    "pageOverflow": false
+  },
+  {
+    "width": 1440,
+    "version": "before",
+    "layout": "table",
+    "titleOffset": 12,
+    "headerOffset": 12,
+    "sourceOffset": null,
+    "trailingOffset": null,
+    "pageOverflow": false
+  },
+  {
+    "width": 1440,
+    "version": "after",
+    "layout": "table",
+    "titleOffset": 0,
+    "headerOffset": 0,
+    "sourceOffset": null,
+    "trailingOffset": null,
+    "pageOverflow": false
+  }
+]

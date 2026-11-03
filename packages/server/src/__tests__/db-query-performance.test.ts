@@ -123,6 +123,9 @@ describe("database query performance logging", () => {
       "select 'from REVIEW_PRIVATE_LITERAL_BODY'::integer",
       "select 'it''s from REVIEW_PRIVATE_LITERAL_BODY'::text",
       "select E'it\\'s from REVIEW_PRIVATE_LITERAL_BODY'::text",
+      "select E'a\\', from REVIEW_PRIVATE_LITERAL_BODY'",
+      "select 'a\\', 'from REVIEW_PRIVATE_LITERAL_BODY'",
+      "select 'C:\\' as p, 'x from REVIEW_PRIVATE_LITERAL_BODY'",
       "select $$from REVIEW_PRIVATE_LITERAL_BODY$$::integer",
       "select $tag$from REVIEW_PRIVATE_LITERAL_BODY$tag$::integer",
       "select '/* open' as a, 'close */ from REVIEW_PRIVATE_LITERAL_BODY' as b",
@@ -151,6 +154,9 @@ describe("database query performance logging", () => {
       "select $$from REVIEW_PRIVATE_LITERAL_BODY$$::integer",
       "select $tag$from REVIEW_PRIVATE_LITERAL_BODY$tag$::integer",
       "select E'it\\'s from REVIEW_PRIVATE_LITERAL_BODY'::integer",
+      "select E'a\\', from REVIEW_PRIVATE_LITERAL_BODY'::integer",
+      "select 'a\\', 'from REVIEW_PRIVATE_LITERAL_BODY'",
+      "select 'C:\\' as p, 'x from REVIEW_PRIVATE_LITERAL_BODY'",
     ];
 
     const debugRecords: Array<{ level: string; payload: Record<string, unknown>; message: string }> = [];

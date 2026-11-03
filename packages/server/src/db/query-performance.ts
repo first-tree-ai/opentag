@@ -57,7 +57,6 @@ const TARGET_PATTERNS: readonly RegExp[] = [
 
 const IDENTIFIER_CHAR_PATTERN = /[A-Za-z0-9_$\x80-\xff]/;
 const STRING_PREFIX_CHAR_PATTERN = /^[EeBbXxNn]$/;
-// biome-ignore lint/suspicious/noControlCharactersInRegex: SQL dollar-quote tags allow non-ASCII bytes >= 0x80
 const DOLLAR_TAG_PATTERN = /^\$(?:[A-Za-z_\x80-\xff][A-Za-z0-9_\x80-\xff]*)?\$/;
 const SIMPLE_DOUBLE_QUOTED_IDENTIFIER = /^"([A-Za-z_][A-Za-z0-9_.]*)"/;
 
@@ -87,11 +86,11 @@ function skipBlockComment(raw: string, start: number): number {
   return i;
 }
 
-function skipSingleQuotedLiteral(raw: string, quoteStart: number): number {
+function skipSingleQuotedLiteral(raw: string, quoteStart: number, allowBackslashEscape = false): number {
   let i = quoteStart + 1;
   while (i < raw.length) {
     const ch = raw[i];
-    if (ch === "\\") {
+    if (allowBackslashEscape && ch === "\\") {
       i += 2;
       continue;
     }
@@ -149,7 +148,11 @@ function consumeSqlToken(raw: string, index: number): { nextIndex: number; repla
 
   const prefixOffset = prefixedLiteralQuoteOffset(raw, index);
   if (prefixOffset > 0 || raw[index] === "'") {
-    return { nextIndex: skipSingleQuotedLiteral(raw, index + prefixOffset), replacement: " '' " };
+    const allowBackslashEscape = prefixOffset === 1 && (raw[index] === "E" || raw[index] === "e");
+    return {
+      nextIndex: skipSingleQuotedLiteral(raw, index + prefixOffset, allowBackslashEscape),
+      replacement: " '' ",
+    };
   }
   if (raw[index] === "$") {
     const nextIndex = skipDollarQuotedLiteral(raw, index);

@@ -118,7 +118,7 @@ export function TasksPage({ agentId, showExamples = false }: { agentId?: string;
 
   return (
     <section className="grid gap-6" aria-labelledby="tasks-page-title" data-ui="tasks-page">
-      <PageHeader description={m.tasks_page_description()} title={m.tasks_title()} titleId="tasks-page-title" />
+      <PageHeader title={m.tasks_title()} titleId="tasks-page-title" />
 
       {/*
        * The toolbar is built out of the rows themselves — the Agent options are the Agents named by

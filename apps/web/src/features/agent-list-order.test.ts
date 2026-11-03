@@ -312,7 +312,9 @@ describe("Agent availability model and presentation", () => {
     expect(messagingChannelLabel(base, binding("active", "feishu"))).toContain("@reviewer");
     expect(messagingChannelLabel(base, binding("active", "slack", "Team Bot"))).toContain("Team Bot");
     expect(messagingChannelLabel(base, binding("active", "slack", null))).toBe("Slack");
-    expect(messagingConnectionLabel(binding("reauthorization_required", "feishu"))).toBe("Permissions required");
+    expect(messagingConnectionLabel(binding("reauthorization_required", "feishu"))).toBe(
+      "Messaging permissions need updating",
+    );
     expect(messagingConnectionTone(binding("disabled"))).toBe("neutral");
     expect(sharedConversationLabel("feishu")).toBe("Group chats");
     expect(sharedConversationLabel("slack")).toBe("Channels");

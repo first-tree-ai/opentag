@@ -13,7 +13,7 @@ import { ApiError, browserApi } from "../../../api.js";
 import * as m from "../../../paraglide/messages.js";
 import { queryKeys } from "../../../query/keys.js";
 import { liveResourceQueryOptions } from "../../../query/live.js";
-import { Banner, Select, SettingsList, SettingsRow, Text } from "../../../ui/design-system.js";
+import { Banner, Select, SettingsList, SettingsRow, Switch, Text } from "../../../ui/design-system.js";
 import { isConfirmedQuerySuccess } from "../../resource/resource-state.js";
 import { runtimeProviderName } from "../agent-presentation.js";
 import { PermissionsField } from "./permissions-field.js";
@@ -32,6 +32,8 @@ export interface RuntimeConfigurationFormProps {
   readonly initialConfig: AgentAdminConfig;
   readonly save: (input: UpdateAgentRequest) => Promise<AgentAdminConfig>;
   readonly section?: "all" | "execution" | "instructions";
+  /** Told after a change that other Agent views should re-read, such as self-configuration. */
+  readonly onAgentChanged?: () => void;
 }
 
 export function RuntimeConfigurationForm(props: RuntimeConfigurationFormProps) {
@@ -71,6 +73,7 @@ function RuntimeConfigurationEditor({
   computerOnline = true,
   cloudModelState,
   initialConfig,
+  onAgentChanged,
   save,
   section = "all",
 }: RuntimeConfigurationFormProps & { cloudModelState?: CloudModelState }) {
@@ -218,6 +221,7 @@ function RuntimeConfigurationEditor({
                 cloudModelState={cloudModelState}
                 modelDraft={modelDraft}
                 id={fieldId("model")}
+                note={cloud ? undefined : localOptionsNote(localOptions, computerOnline)}
                 onSelectionChange={(selection) => {
                   setModelSelection(selection);
                   if (selection === CUSTOM_MODEL_OPTION) {
@@ -264,6 +268,19 @@ function RuntimeConfigurationEditor({
                   </Select>
                 </div>
               </SettingsRow>
+              {section === "execution" ? (
+                <SelfConfigurationRow
+                  config={config}
+                  disabled={Boolean(saving)}
+                  save={save}
+                  onSaved={(updated, text) => {
+                    setConfig(updated);
+                    setMessage(text ? { kind: "success", section: "runtime", text } : undefined);
+                    onAgentChanged?.();
+                  }}
+                  onFailed={(text) => setMessage({ kind: "error", section: "runtime", text })}
+                />
+              ) : null}
               {permissionsAvailable ? (
                 <PermissionsField value={permissionsDraft} onChange={setPermissionsDraft} />
               ) : null}
@@ -272,7 +289,6 @@ function RuntimeConfigurationEditor({
               <LocalRuntimeOptionsFeedback
                 query={localOptions}
                 computerOnline={computerOnline}
-                discovered={discovered}
                 reasoningInvalid={reasoningInvalid}
               />
             ) : null}
@@ -378,33 +394,27 @@ function invalidNewReasoning(
   return historical && dirty;
 }
 
+/** Why the computer's model list is missing, said once by the model field; undefined when it loaded. */
+function localOptionsNote(query: ReturnType<typeof useLocalRuntimeOptions>, computerOnline: boolean) {
+  if (computerOnline && !query.isError) return undefined;
+  const denied = query.error instanceof ApiError && [401, 403, 404].includes(query.error.status);
+  return denied ? m.agent_settings_runtime_options_denied() : m.agent_settings_runtime_options_unavailable();
+}
+
 function LocalRuntimeOptionsFeedback({
   query,
   computerOnline,
-  discovered,
   reasoningInvalid,
 }: {
   query: ReturnType<typeof useLocalRuntimeOptions>;
   computerOnline: boolean;
-  discovered?: AgentRuntimeOptions;
   reasoningInvalid: boolean;
 }) {
-  const denied = query.error instanceof ApiError && [401, 403, 404].includes(query.error.status);
-  let feedback = null;
-  if (!computerOnline || query.isError)
-    feedback = (
-      <p role={denied ? "alert" : "status"} className="text-sm text-kumo-subtle">
-        {denied ? m.agent_settings_runtime_options_denied() : m.agent_settings_runtime_options_unavailable()}
-      </p>
-    );
-  else if (query.isPending && query.isFetching)
-    feedback = <p role="status">{m.agent_settings_runtime_options_loading()}</p>;
-  const reasoningUnknown = !discovered || discovered.reasoningEffortAllowedValues === null;
-  if (!feedback && !reasoningUnknown && !reasoningInvalid) return null;
+  const loading = computerOnline && !query.isError && query.isPending && query.isFetching;
+  if (!loading && !reasoningInvalid) return null;
   return (
     <div className="grid gap-2">
-      {feedback}
-      {reasoningUnknown ? <p className="text-sm text-kumo-subtle">{m.agent_settings_reasoning_unknown()}</p> : null}
+      {loading ? <p role="status">{m.agent_settings_runtime_options_loading()}</p> : null}
       {reasoningInvalid ? (
         <p role="alert" className="text-sm text-kumo-danger">
           {m.agent_settings_reasoning_unsupported()}
@@ -486,4 +496,50 @@ function runtimeTestDisabledReason(input: { runtimeDirty: boolean; computerOnlin
 
 function supportsPermissionSettings(computerKind: "local" | "cloud", provider: AgentRuntimeProvider): boolean {
   return computerKind === "local" && provider !== "pi";
+}
+
+/**
+ * Whether the Agent may change its own configuration from the chat. It sits with the other rules
+ * about what the Agent may do on its own, beside asking before it acts, and saves on its own.
+ */
+function SelfConfigurationRow({
+  config,
+  disabled,
+  save,
+  onSaved,
+  onFailed,
+}: {
+  config: AgentAdminConfig;
+  disabled: boolean;
+  save: (input: UpdateAgentRequest) => Promise<AgentAdminConfig>;
+  onSaved: (updated: AgentAdminConfig, text?: string) => void;
+  onFailed: (text: string) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  async function change(next: boolean) {
+    if (busy || disabled) return;
+    setBusy(true);
+    try {
+      const updated = await save({ expectedRevision: config.revision, selfConfigurationEnabled: next });
+      onSaved(updated, m.agent_settings_self_configuration_saved());
+    } catch (cause) {
+      onFailed(cause instanceof Error ? cause.message : m.agent_settings_save_self_configuration_failed());
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <SettingsRow
+      description={m.agent_settings_self_configuration_description()}
+      label={m.agent_settings_self_configuration()}
+    >
+      <Switch
+        aria-label={m.agent_settings_self_configuration()}
+        checked={config.selfConfigurationEnabled}
+        disabled={busy || disabled}
+        onCheckedChange={(next) => void change(next === true)}
+        transitioning={busy}
+      />
+    </SettingsRow>
+  );
 }

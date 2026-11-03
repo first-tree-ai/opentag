@@ -59,15 +59,12 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", "/account");
     render(<App />);
 
-    const email = (await screen.findByLabelText("Email")) as HTMLInputElement;
+    // The sign-in email can't be changed here, so it is plain text rather than a locked input.
+    expect(await screen.findByText("ada@example.com")).toBeTruthy();
+    expect(screen.queryByLabelText("Email")).toBeNull();
     const displayName = screen.getByLabelText("Display name") as HTMLInputElement;
-    expect(email.value).toBe("ada@example.com");
-    expect(email.readOnly).toBe(true);
-    expect(email.getAttribute("aria-describedby")).toBeNull();
     expect(screen.queryByText("Read only")).toBeNull();
-    expect(email.closest('[data-ui="field"]')).toBeTruthy();
     expect(displayName.closest('[data-ui="field"]')).toBeTruthy();
-    expect(email.closest('[data-ui="field"]')?.querySelector("label")?.classList.contains("sr-only")).toBe(true);
     expect(displayName.closest('[data-ui="field"]')?.querySelector("label")?.classList.contains("sr-only")).toBe(true);
     fireEvent.change(displayName, { target: { value: "  Ada Lovelace  " } });
     fireEvent.click(await screen.findByRole("button", { name: "Save account profile" }));

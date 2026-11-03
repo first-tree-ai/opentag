@@ -314,20 +314,14 @@ describe("RuntimeConfigurationForm", () => {
       .mockResolvedValue({ modelSuggestions: ["native/only"], reasoningEffortAllowedValues: null });
     const save = vi.fn();
     render(<RuntimeConfigurationForm initialConfig={{ ...config, runtimeProvider: provider }} save={save} />);
-    await screen.findByText(
-      "Local model options are unavailable. Showing suggestions; custom model IDs remain available.",
-    );
+    await screen.findByText("Couldn’t load the model list. You can type a model name.");
     expect(await optionLabels("Model")).toContain(preset);
     await returnToPage();
     await waitFor(() =>
-      expect(
-        screen.queryByText(
-          "Local model options are unavailable. Showing suggestions; custom model IDs remain available.",
-        ),
-      ).toBeNull(),
+      expect(screen.queryByText("Couldn’t load the model list. You can type a model name.")).toBeNull(),
     );
     expect(await optionLabels("Model")).toEqual(["Inherit local configuration", "native/only", "Custom model ID…"]);
-    expect(screen.getByText("The reasoning effort options for this model have not been confirmed.")).toBeTruthy();
+    expect(screen.queryByText("The reasoning effort options for this model have not been confirmed.")).toBeNull();
     expect((await optionLabels("Reasoning effort")).length).toBeGreaterThan(1);
     expect(save).not.toHaveBeenCalled();
   });
@@ -516,10 +510,8 @@ describe("RuntimeConfigurationForm", () => {
   it("shows authorization failures instead of presenting a failed directory as confirmed", async () => {
     vi.mocked(browserApi.agentRuntimeOptions).mockRejectedValue(new ApiError(403, "Forbidden"));
     render(<RuntimeConfigurationForm initialConfig={config} save={vi.fn()} />);
-    expect(await screen.findByRole("alert")).toHaveProperty(
-      "textContent",
-      "You do not have access to this Agent’s local model options.",
-    );
+    // The reason the list is missing is one line by the model field.
+    expect(await screen.findByText("You do not have access to this Agent’s local model options.")).toBeTruthy();
     expect(await optionLabels("Model")).toContain("Custom model ID…");
   });
 
@@ -1264,5 +1256,46 @@ describe("RuntimeConfigurationForm", () => {
     await waitFor(() => expect(save).toHaveBeenCalledOnce());
     expect(await screen.findByText("Model settings saved.")).toBeTruthy();
     expect(screen.queryByText(/Connection succeeded/)).toBeNull();
+  });
+
+  it("lets the owner toggle self-configuration beside the approval setting", async () => {
+    const updated = { ...config, selfConfigurationEnabled: true, revision: config.revision + 1 };
+    const save = vi.fn().mockResolvedValueOnce(updated);
+    const onAgentChanged = vi.fn();
+    render(
+      <RuntimeConfigurationForm
+        initialConfig={{ ...config, selfConfigurationEnabled: false }}
+        onAgentChanged={onAgentChanged}
+        save={save}
+        section="execution"
+      />,
+    );
+
+    const toggle = screen.getByRole("switch", { name: "Self-configuration" });
+    const approval = screen.getByRole("switch", { name: "Ask for approval" });
+    // Both rules about what the Agent may do on its own sit together.
+    expect(toggle.compareDocumentPosition(approval) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith({ expectedRevision: config.revision, selfConfigurationEnabled: true }),
+    );
+    await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("true"));
+    expect(await screen.findByText("Self-configuration setting saved.")).toBeTruthy();
+    expect(onAgentChanged).toHaveBeenCalledOnce();
+  });
+
+  it("keeps self-configuration off and says why when saving it fails", async () => {
+    const save = vi.fn().mockRejectedValue(new Error("revision conflict"));
+    render(
+      <RuntimeConfigurationForm
+        initialConfig={{ ...config, selfConfigurationEnabled: false }}
+        save={save}
+        section="execution"
+      />,
+    );
+    const toggle = screen.getByRole("switch", { name: "Self-configuration" });
+    fireEvent.click(toggle);
+    expect(await screen.findByText("revision conflict")).toBeTruthy();
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
   });
 });

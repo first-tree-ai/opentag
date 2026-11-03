@@ -78,6 +78,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
   readonly #onCardAction?: (event: unknown, bindingId: string, generation: number) => Promise<unknown>;
   readonly #afterActivationAgentLocked: (() => Promise<void>) | undefined;
   readonly #owned = new Map<string, OwnedChannel>();
+  readonly #backfilledChats = new Set<string>();
   readonly #maintenanceControllers = new Map<string, AbortController>();
   readonly #maintenanceFailures = new Map<string, number>();
   readonly #maintenanceNextAt = new Map<string, number>();
@@ -880,6 +881,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
         "FEISHU_CHAT_MODE_ENRICHMENT_FAILED",
         this.#enrichChatMetadata(adapter, {
           imBindingId,
+          messageId,
           chatId: event.conversation.externalId,
         }),
         "provider",
@@ -888,13 +890,29 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     }
   }
 
-  async #enrichChatMetadata(adapter: FeishuAdapter, input: { imBindingId: string; chatId: string }): Promise<void> {
-    const metadata = await resolveAdapterChatMetadata(adapter, input.chatId);
-    if (!metadata?.chatMode) return;
+  async #enrichChatMetadata(
+    adapter: FeishuAdapter,
+    input: { imBindingId: string; messageId: string; chatId: string },
+  ): Promise<void> {
+    const channelKey = `${input.imBindingId}:${input.chatId}`;
+    let metadata: Awaited<ReturnType<FeishuAdapter["resolveChatMetadata"]>>;
+    try {
+      metadata = await adapter.resolveChatMetadata?.({ chatId: input.chatId });
+    } catch (error) {
+      this.#backfilledChats.delete(channelKey);
+      throw error;
+    }
+    if (!metadata?.chatMode) {
+      this.#backfilledChats.delete(channelKey);
+      return;
+    }
     const patch = {
       chatMode: metadata.chatMode,
       ...(metadata.groupMessageType ? { groupMessageType: metadata.groupMessageType } : {}),
     };
+    const scope = this.#backfilledChats.has(channelKey)
+      ? and(eq(imMessages.id, input.messageId), eq(imMessages.imBindingId, input.imBindingId))
+      : and(eq(imMessages.imBindingId, input.imBindingId), eq(imMessages.channelId, input.chatId));
     await this.#database
       .update(imMessages)
       .set({
@@ -902,12 +920,12 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
       })
       .where(
         and(
-          eq(imMessages.imBindingId, input.imBindingId),
-          eq(imMessages.channelId, input.chatId),
+          scope,
           sql`${imMessages.providerContext} ->> 'provider' = 'feishu'`,
           sql`${imMessages.providerContext} ->> 'chatMode' is null`,
         ),
       );
+    this.#backfilledChats.add(channelKey);
   }
 
   async #enrichSenderName(
@@ -1146,13 +1164,6 @@ function emitInboundDuplicate(bindingId: string, providerEventId: string, extern
     }),
     ...outcomeAttrs("duplicate"),
   });
-}
-
-async function resolveAdapterChatMetadata(adapter: FeishuAdapter, chatId: string) {
-  if (adapter.resolveChatMetadata) return adapter.resolveChatMetadata({ chatId });
-  if (!adapter.resolveChatMode) return undefined;
-  const chatMode = await adapter.resolveChatMode({ chatId });
-  return chatMode ? { chatMode } : undefined;
 }
 
 function connectionOutcome(code: string): string {

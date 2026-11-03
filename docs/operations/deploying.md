@@ -282,8 +282,15 @@ older application validators compatible.
 Feishu chat metadata enrichment also requires a JSONB compatibility check when rolling back to a Server revision that
 predates `chatMode` and `groupMessageType` in `ProviderInboundContextSchema`. Older Server revisions spread
 `im_messages.provider_context` directly into the strict `RuntimeProviderMessageRefSchema` and parse
-`feishu_inbound_receipts.work_payload` with the older strict `ProviderInboundContextSchema`. Before switching to an
-older revision, audit both tables:
+`feishu_inbound_receipts.work_payload` with the older strict `ProviderInboundContextSchema`. Server deployments run as a
+single-replica stop-then-start replacement; do not run an older and newer Server replica concurrently against the same
+database without shipping the tolerant reader first. To roll back safely across this boundary, follow this ordered
+sequence:
+
+1. **Quiesce the current Server**: stop the running Server container (or pause Feishu connections and wait for detached
+   `#enrichChatMetadata` background tasks to drain) so no live Feishu WebSocket writer or background enrichment task can
+   write `chatMode` or `groupMessageType` while cleanup is in progress.
+2. **Audit both tables**:
 
 ```sql
 select count(*) from im_messages where provider_context ?| array['chatMode', 'groupMessageType'];
@@ -292,7 +299,7 @@ where work_payload is not null
   and (work_payload #> '{event,providerContext}') ?| array['chatMode', 'groupMessageType'];
 ```
 
-If any rows are present, strip the keys before completing the rollback:
+3. **Strip the keys** if either count is non-zero:
 
 ```sql
 update im_messages
@@ -308,6 +315,9 @@ set work_payload = jsonb_set(
 where work_payload is not null
   and (work_payload #> '{event,providerContext}') ?| array['chatMode', 'groupMessageType'];
 ```
+
+4. **Verify zero remaining rows**: re-run both `select count(*)` audit queries above and require both counts to be `0`.
+5. **Start the older Server revision** and restore traffic.
 
 ## Verifying a deployment
 

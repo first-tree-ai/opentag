@@ -839,7 +839,10 @@ export class ImOutboundCapture {
     message: CapturedOutboundMessage,
     deadlineAt: number,
   ): Promise<{ threadKey: string | null; providerContext: ProviderInboundContext }> {
-    if (message.threadKey !== null || !message.replyTargetExternalId) {
+    if (
+      !message.replyTargetExternalId ||
+      (message.threadKey !== null && message.providerContext.provider !== "feishu")
+    ) {
       return { threadKey: message.threadKey, providerContext: message.providerContext };
     }
     const parent = await this.#storedMessageContext(
@@ -848,11 +851,14 @@ export class ImOutboundCapture {
       message.replyTargetExternalId,
       deadlineAt,
     );
-    if (!parent) return { threadKey: null, providerContext: message.providerContext };
+    if (!parent) return { threadKey: message.threadKey, providerContext: message.providerContext };
     const parentRootId = parent.providerContext.provider === "feishu" ? (parent.providerContext.rootId ?? null) : null;
     const rootId = parentRootId ?? (parent.threadKey ? null : parent.externalMessageId);
     const providerContext = inheritParentFeishuContext(message.providerContext, parent, rootId);
-    return { threadKey: parent.threadKey ?? parentRootId ?? parent.externalMessageId, providerContext };
+    return {
+      threadKey: message.threadKey ?? parent.threadKey ?? parentRootId ?? parent.externalMessageId,
+      providerContext,
+    };
   }
 
   /** The locally stored same-binding, same-channel message a reply targets, newest revision first. */

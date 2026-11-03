@@ -99,15 +99,17 @@ export interface FeishuChannel {
 export interface FeishuHttpCapability {
   fetchResource(input: ProviderResourceInput, signal?: AbortSignal): Promise<ReadableResource>;
   resolveSenderName?(input: { chatId: string; senderOpenId: string }): Promise<string | undefined>;
-  resolveChatMetadata?(input: { chatId: string }): Promise<FeishuChatMetadata | undefined>;
-  resolveChatMode?(input: { chatId: string }): Promise<FeishuChatMode | undefined>;
+  resolveChatMetadata?(input: { chatId: string }, signal?: AbortSignal): Promise<FeishuChatMetadata | undefined>;
 }
 
 export interface FeishuHttpClient {
   im: {
     v1: {
       chats?: {
-        get(input: { path: { chat_id: string } }): Promise<{
+        get(
+          input: { path: { chat_id: string } },
+          options?: { signal?: AbortSignal },
+        ): Promise<{
           code?: number;
           msg?: string;
           data?: { chat_mode?: string; group_message_type?: string };
@@ -715,34 +717,12 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
 
   async resolveChatMetadata(input: { chatId: string }): Promise<FeishuChatMetadata | undefined> {
     const resolveChatMetadata = this.#http.resolveChatMetadata;
-    if (resolveChatMetadata) {
-      return this.#policy.run("feishu.chat-mode.resolve", () => resolveChatMetadata(input), {
-        circuitKey: `feishu:chat-mode:${this.#appId}`,
-        maxAttempts: 1,
-        timeoutMs: FEISHU_CHAT_MODE_POLICY_TIMEOUT_MS,
-      });
-    }
-    const resolveChatMode = this.#http.resolveChatMode;
-    if (!resolveChatMode) return undefined;
-    const chatMode = await this.#policy.run("feishu.chat-mode.resolve", () => resolveChatMode(input), {
+    if (!resolveChatMetadata) return undefined;
+    return this.#policy.run("feishu.chat-mode.resolve", (signal) => resolveChatMetadata(input, signal), {
       circuitKey: `feishu:chat-mode:${this.#appId}`,
       maxAttempts: 1,
       timeoutMs: FEISHU_CHAT_MODE_POLICY_TIMEOUT_MS,
     });
-    return chatMode ? { chatMode } : undefined;
-  }
-
-  async resolveChatMode(input: { chatId: string }): Promise<FeishuChatMode | undefined> {
-    const resolveChatMode = this.#http.resolveChatMode;
-    if (resolveChatMode) {
-      return this.#policy.run("feishu.chat-mode.resolve", () => resolveChatMode(input), {
-        circuitKey: `feishu:chat-mode:${this.#appId}`,
-        maxAttempts: 1,
-        timeoutMs: FEISHU_CHAT_MODE_POLICY_TIMEOUT_MS,
-      });
-    }
-    const metadata = await this.resolveChatMetadata(input);
-    return metadata?.chatMode;
   }
 }
 
@@ -868,10 +848,11 @@ function createCachedFeishuSenderNameResolver(
 async function fetchFeishuChatMetadata(
   client: FeishuHttpClient,
   input: { chatId: string },
+  signal: AbortSignal,
 ): Promise<FeishuChatMetadata | undefined> {
   const chats = client.im.v1.chats;
   if (!chats) return undefined;
-  const response = await chats.get({ path: { chat_id: input.chatId } });
+  const response = await chats.get({ path: { chat_id: input.chatId } }, { signal });
   if (response.code !== undefined && response.code !== 0) {
     throw new Error("FEISHU_CHAT_MODE_LOOKUP_FAILED");
   }
@@ -884,20 +865,38 @@ async function fetchFeishuChatMetadata(
   };
 }
 
-function withFeishuChatModeTimeout<T>(operation: Promise<T>): Promise<T> {
+function withFeishuChatModeTimeout<T>(
+  parentSignal: AbortSignal | undefined,
+  run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  const onParentAbort = (): void => {
+    controller.abort(parentSignal?.reason ?? new Error("FEISHU_CHAT_MODE_LOOKUP_ABORTED"));
+  };
+  if (parentSignal?.aborted) {
+    onParentAbort();
+  } else {
+    parentSignal?.addEventListener("abort", onParentAbort, { once: true });
+  }
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("FEISHU_CHAT_MODE_LOOKUP_TIMEOUT")), FEISHU_CHAT_MODE_LOOKUP_TIMEOUT_MS);
+    timer = setTimeout(() => {
+      const error = new Error("FEISHU_CHAT_MODE_LOOKUP_TIMEOUT");
+      controller.abort(error);
+      reject(error);
+    }, FEISHU_CHAT_MODE_LOOKUP_TIMEOUT_MS);
     timer.unref();
   });
-  return Promise.race([operation, timeout]).finally(() => {
+  return Promise.race([run(controller.signal), timeout]).finally(() => {
     if (timer) clearTimeout(timer);
+    parentSignal?.removeEventListener("abort", onParentAbort);
   });
 }
 
 function createCachedFeishuChatMetadataResolver(
   client: FeishuHttpClient,
-): (input: { chatId: string }) => Promise<FeishuChatMetadata | undefined> {
+  createClientForSignal: (signal: AbortSignal) => FeishuHttpClient = () => client,
+): (input: { chatId: string }, signal?: AbortSignal) => Promise<FeishuChatMetadata | undefined> {
   const chatMetadata = new Map<string, { expiresAt: number; metadata: FeishuChatMetadata | undefined }>();
   const pendingChatMetadata = new Map<string, Promise<FeishuChatMetadata | undefined>>();
 
@@ -919,7 +918,7 @@ function createCachedFeishuChatMetadataResolver(
     }
   };
 
-  return async (input) => {
+  return async (input, signal) => {
     const key = input.chatId;
     const now = Date.now();
     const cached = chatMetadata.get(key);
@@ -932,7 +931,9 @@ function createCachedFeishuChatMetadataResolver(
     const pending = pendingChatMetadata.get(key);
     if (pending) return pending;
 
-    const lookup = withFeishuChatModeTimeout(fetchFeishuChatMetadata(client, input)).then(
+    const lookup = withFeishuChatModeTimeout(signal, (lookupSignal) =>
+      fetchFeishuChatMetadata(createClientForSignal(lookupSignal), input, lookupSignal),
+    ).then(
       (metadata) => {
         remember(key, metadata, Date.now());
         return metadata;
@@ -956,8 +957,7 @@ export function createFeishuHttpCapability(
   createClientForSignal: (signal: AbortSignal) => FeishuHttpClient = () => client,
 ): FeishuHttpCapability {
   const resolveSenderName = createCachedFeishuSenderNameResolver(client);
-  const resolveChatMetadata = createCachedFeishuChatMetadataResolver(client);
-  const resolveChatMode = async (input: { chatId: string }) => (await resolveChatMetadata(input))?.chatMode;
+  const resolveChatMetadata = createCachedFeishuChatMetadataResolver(client, createClientForSignal);
   return {
     async fetchResource(input, signal) {
       const activeClient = signal ? createClientForSignal(signal) : client;
@@ -972,7 +972,6 @@ export function createFeishuHttpCapability(
     },
     resolveSenderName,
     resolveChatMetadata,
-    resolveChatMode,
   };
 }
 

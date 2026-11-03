@@ -1216,9 +1216,10 @@ describe("Tasks view", () => {
     });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     const activity = await screen.findByRole("region", { name: "Activity" });
-    expect(within(activity).getByText("Text").closest("header")?.getAttribute("data-ui")).toBe(
-      "task-message-author-agent",
-    );
+    // A plain-text reply's header names the author alone: no message kind or status label.
+    expect(activity.querySelector('[data-ui="task-message-author-agent"]')?.textContent).toBe("Atlas");
+    expect(within(activity).queryByText("Text")).toBeNull();
+    expect(within(activity).queryByText(/Completed/)).toBeNull();
     expect(within(activity).queryByText("Sent reply")).toBeNull();
     expect(within(activity).getByText("Hello from Lark")).toBeTruthy();
     expect(within(activity).queryByText("Execution summary")).toBeNull();

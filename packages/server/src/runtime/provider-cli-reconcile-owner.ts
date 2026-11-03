@@ -852,6 +852,7 @@ export class ProviderCliReconcileOwner {
     if (this.#shouldSkipGrant(current)) return;
     if (!this.#artifactIsReady(current)) return;
     const computerKind = (await this.#bindings.computerKind?.(current.computerId)) ?? "local";
+    if (this.#closed || this.#requests.get(requestKey(current.computerId, current.integrationId)) !== current) return;
     const proxyMode = this.#proxyMode(current.computerId, current.instanceId);
     if (computerKind === "cloud" && !proxyMode) {
       // Cloud never falls back to raw provider material; without proxy negotiation there is no

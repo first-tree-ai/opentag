@@ -32,3 +32,12 @@ The Runtime route/main composition does not yet await these new close Promises.
 That wiring, Session/Runner/transport tasks, other background borrowers and final
 shared-pool ordering remain IM-F3. These component checks do not establish full
 Server shutdown, CI, merge, deployment or online acceptance.
+
+Independent review found a P2 after computerKind SQL: an obsolete request could
+start a new proxy validation run or legacy grant before its later guard. The
+continuation now rechecks closed/current immediately after that read. Two gated
+proxy/legacy controls assert that neither grant port is called after close.
+The correction is captured and reviewed as a separate exact commit.
+
+The corrected proxy/legacy owner file passes all six cases on host and Docker
+(12 passing executions); no SQL is needed to decide the post-await admission guard.

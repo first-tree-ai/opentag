@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { reportBoundaryError } from "../features/error-boundary.js";
 import {
   createDiagnosticEnvelope,
   DiagnosticReporter,
@@ -322,6 +323,49 @@ describe("web diagnostics", () => {
 
     expect(reload).toHaveBeenCalledTimes(2);
     expect(error).toHaveBeenCalledTimes(1);
+    remove();
+  });
+
+  it("suppresses companion link error and lazyRouteComponent TypeError fallout during a vite:preloadError reload", () => {
+    let now = 30_000;
+    const sink = vi.fn();
+    setErrorReportSink(sink);
+    const error = vi.fn();
+    const reporter = new DiagnosticReporter({ now: () => now, error });
+    const remove = installWindowDiagnosticHandlers(window, reporter);
+
+    const preloadError = new Event("vite:preloadError", { cancelable: true });
+    Object.defineProperty(preloadError, "payload", {
+      value: new TypeError(
+        `Failed to fetch dynamically imported module: ${window.location.origin}/assets/agents.computers-GzrmCa8z.js`,
+      ),
+    });
+    window.dispatchEvent(preloadError);
+    expect(preloadError.defaultPrevented).toBe(true);
+    expect(reload).toHaveBeenCalledOnce();
+
+    // Calling preventDefault on vite:preloadError resolves Vite's preload wrapper to undefined,
+    // causing TanStack Router's lazyRouteComponent to throw before location.reload() unloads the tab.
+    now += 10;
+    const fallout = new TypeError("Cannot read properties of undefined (reading 'component')");
+    fallout.stack = `TypeError: Cannot read properties of undefined (reading 'component')\n    at ${window.location.origin}/assets/lazyRouteComponent-CybyN3Fx.js:1:4031`;
+    reportBoundaryError("root", fallout);
+
+    const rejection = new Event("unhandledrejection") as PromiseRejectionEvent;
+    Object.defineProperty(rejection, "reason", { value: fallout });
+    window.dispatchEvent(rejection);
+
+    // Companion <link rel="modulepreload"> error firing 10ms later in the same unloading window.
+    now += 10;
+    const link = document.createElement("link");
+    link.rel = "modulepreload";
+    link.href = "/assets/agents.computers-GzrmCa8z.js";
+    document.head.append(link);
+    link.dispatchEvent(new ErrorEvent("error"));
+
+    expect(reload).toHaveBeenCalledOnce();
+    expect(error).not.toHaveBeenCalled();
+    expect(sink).not.toHaveBeenCalled();
     remove();
   });
 

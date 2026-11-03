@@ -31,6 +31,7 @@ import { CloudCapacityExceededError } from "../services/sandboxes/errors.js";
 import { type RunnerControlSocket, RunnerHub, type RunnerScope } from "../services/sandboxes/runner-hub.js";
 import { SessionCliProofService } from "../services/sessions/session-cli-proof-service.js";
 import type { AuthorizedSessionMessageRoute } from "../services/sessions/session-service.js";
+import { pausedTableRead } from "./support/paused-binding-read.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 /**
@@ -160,6 +161,7 @@ interface Stack {
 function makeStack(
   fixture: CloudFixture,
   overrides: {
+    database?: ConstructorParameters<typeof CloudSessionCollaborationOwner>[0]["database"];
     allocation?: ConstructorParameters<typeof CloudSessionCollaborationOwner>[0]["allocation"];
     durableWork?: ConstructorParameters<typeof CloudSessionCollaborationOwner>[0]["durableWork"];
     ensureTimeoutMs?: number;
@@ -197,7 +199,7 @@ function makeStack(
   const owner = new CloudSessionCollaborationOwner({
     ...(overrides.allocation ? { allocation: overrides.allocation } : {}),
     assembler: new EffectiveRuntimeSnapshotAssembler(db.database),
-    database: db.database,
+    database: overrides.database ?? db.database,
     ...(overrides.ensureTimeoutMs !== undefined ? { ensureTimeoutMs: overrides.ensureTimeoutMs } : {}),
     ...(overrides.durableWork !== undefined
       ? { durableWork: overrides.durableWork }
@@ -1224,35 +1226,28 @@ describe("CloudSessionCollaborationOwner", () => {
     const messageId = randomUUID();
     await insertMessage(messageId, fixture);
     const store = new PostgresRuntimeDurableWorkStore(db.database);
-    const stack = makeStack(fixture, { durableWork: store });
+    const paused = pausedTableRead(db.database, runtimeDurableWork);
+    const stack = makeStack(fixture, { durableWork: store, database: paused.database });
     await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
     await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
       status: "accepted",
     });
     await db.database.update(sandboxes).set({ environmentGeneration: 2 }).where(eq(sandboxes.id, fixture.sandboxId));
-    const entered = deferred();
-    const release = deferred();
-    const read = store.read.bind(store);
-    vi.spyOn(store, "read").mockImplementation(async (...args) => {
-      const record = await read(...args);
-      entered.resolve();
-      await release.promise;
-      return record;
-    });
-    const write = vi.spyOn(store, "write");
+    paused.arm();
+    const write = vi.spyOn(store, "replaceSessionMessageRecord");
     const controller = new AbortController();
     const reconciling = stack.owner.reconcileSessionWork(fixture.sessionId, controller.signal);
     try {
-      await entered.promise;
+      await paused.captured;
       controller.abort();
-      release.resolve();
+      paused.release();
       await expect(reconciling).rejects.toBe(controller.signal.reason);
       expect(write).not.toHaveBeenCalled();
       const [record] = await db.database.select().from(runtimeDurableWork);
       expect(record?.status).toBe("accepted");
       expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(true);
     } finally {
-      release.resolve();
+      paused.release();
       await Promise.allSettled([reconciling]);
       stack.grants.close();
     }

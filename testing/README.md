@@ -23,6 +23,7 @@ contents, and machine-specific operational logs outside the repository.
 - [SQL caller repairs: final setup and Context authority](verification/sql-caller-repairs-03.md)
 - [SQL caller repairs: lifecycle stop authority](verification/sql-caller-repairs-04.md)
 - [SQL caller repairs: contention and live admission](verification/sql-caller-repairs-05.md)
+- [SQL caller repairs: SQL classification and terminal fences](verification/sql-caller-repairs-06.md)
 
 - [Account, Agent, and Computer management writes](verification/account-agent-computer-writes.md)
 

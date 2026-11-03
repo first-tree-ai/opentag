@@ -379,12 +379,7 @@ export class ImDeliveryWorker {
           },
           async () => {
             this.#onMetric({ name: "timeout", value: 1, agentId: claimed.agentId });
-            /*
-             * The timed-out operation is still in flight, so a terminal state is only written when
-             * the row carries no dispatch correlation: `RuntimeDomainOwner` persists that
-             * correlation before the frame leaves, so an uncorrelated row has no Turn that could
-             * still report, and a correlated row is left pending for the late-settle callback.
-             */
+            // A timeout cannot discard accepted custody or overwrite a later report/attempt.
             await this.#recordFailure(attempt, "IM_DELIVERY_OPERATION_TIMEOUT");
           },
           async () => {
@@ -1354,6 +1349,8 @@ export class ImDeliveryWorker {
   }
 
   #recordFailure(attempt: DeliveryAttempt, code: string, options?: DeliveryFailureOptions): Promise<void> {
+    if (attempt.phase === "recover" && code === "IM_DELIVERY_OPERATION_TIMEOUT")
+      return this.#deferRecovery(attempt, attempt.attemptCount, code);
     return recordDeliveryFailure(this.#failures, attempt, code, options);
   }
 

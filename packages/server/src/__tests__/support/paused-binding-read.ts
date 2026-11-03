@@ -1,3 +1,4 @@
+import type { PgTable } from "drizzle-orm/pg-core";
 import type { DatabaseClient } from "../../db/client.js";
 import { imBindings } from "../../db/schema/index.js";
 
@@ -11,6 +12,10 @@ export function deferred<T>() {
 
 /** Holds an actual SQL result after its snapshot was read, without holding a transaction open. */
 export function pausedBindingRead(client: DatabaseClient) {
+  return pausedTableRead(client, imBindings);
+}
+
+export function pausedTableRead(client: DatabaseClient, targetTable: PgTable) {
   const captured = deferred<void>();
   const released = deferred<void>();
   let armed = false;
@@ -26,7 +31,7 @@ export function pausedBindingRead(client: DatabaseClient) {
             if (key !== "from") return typeof method === "function" ? method.bind(select) : method;
             return (table: unknown) => {
               const query: object = Reflect.apply(method, select, [table]);
-              if (table === imBindings) {
+              if (table === targetTable) {
                 const then = Reflect.get(query, "then").bind(query);
                 // biome-ignore lint/suspicious/noThenProperty: Drizzle is already thenable; hold its actual SQL result.
                 Object.defineProperty(query, "then", {

@@ -31,6 +31,7 @@ import {
   type CloudSessionWorkEnvelope,
   type CloudWorkAllocation,
   parseCloudSessionWorkEnvelope,
+  runtimeDurableRecordFromRow,
 } from "../../runtime/runtime-durable-work-store.js";
 import type { AgentSessionStopTarget } from "../agents/agent-service.js";
 import type { EffectiveRuntimeSnapshotAssembler } from "../runtime-config/index.js";
@@ -113,12 +114,7 @@ export interface CloudSessionDurableWorkPort {
     kind: RuntimeDurableWorkRecord["kind"],
     key: string,
   ): Promise<RuntimeDurableWorkRecord | undefined>;
-  /**
-   * Compare-and-set custody replacement for a superseded Session-message record: replaces the row
-   * with the fresh attempt's record only while the stored row still equals the exact record the
-   * owner validated before its transaction. Absent only in degraded/test fixtures: custody
-   * replacement then fails closed instead of borrowing a stale record.
-   */
+  /** Exact-record CAS for custody replacement and settlement; absent ports fail closed. */
   replaceSessionMessageRecord?(
     computerId: string,
     expected: RuntimeDurableWorkRecord,
@@ -1339,16 +1335,18 @@ export class CloudSessionCollaborationOwner {
     ) {
       return;
     }
-    const removed = this.#work.settle(connection.scope, frame.messageId);
-    if (removed?.turnId) this.#revokeGrant(removed.turnId);
     const outcome = settledOutcome(frame.outcome);
-    const committed = await this.#terminalizeDurable({
-      ...outcome,
-      computerId: connection.computerId,
-      messageId: frame.messageId,
-      sessionId: connection.scope.sessionId,
-    });
+    const committed = await this.#terminalizeDurable(
+      {
+        ...outcome,
+        computerId: connection.computerId,
+        messageId: frame.messageId,
+      },
+      existing,
+    );
     if (!committed) return;
+    this.#work.settleTurn(connection.scope, frame.messageId, frame.turnId);
+    this.#revokeGrant(frame.turnId);
     this.#sendToConnection(connection, {
       type: "session:message:settled:ack",
       messageId: frame.messageId,
@@ -1427,11 +1425,7 @@ export class CloudSessionCollaborationOwner {
     signal?.throwIfAborted();
     if (!computerId) return 0;
     const rows = await this.#database
-      .select({
-        computerId: runtimeDurableWork.computerId,
-        payload: runtimeDurableWork.payload,
-        recordKey: runtimeDurableWork.recordKey,
-      })
+      .select()
       .from(runtimeDurableWork)
       .where(
         and(
@@ -1462,9 +1456,9 @@ export class CloudSessionCollaborationOwner {
           code: "allocation_retired",
           computerId: row.computerId,
           messageId,
-          sessionId,
           status: "failed",
         },
+        runtimeDurableRecordFromRow(row),
         signal,
       );
       if (committed) {
@@ -1493,28 +1487,21 @@ export class CloudSessionCollaborationOwner {
     return store.read(computerId, "session-message", durableKey(sessionId, messageId));
   }
 
-  /**
-   * Terminalize one durable record after a verified fact. Only monotonic transitions are written;
-   * a missing record or an identical already-terminal record is reported, while a conflicting
-   * terminal state is never overwritten and never acked.
-   */
+  /** Commit against the validated record; identical terminal results remain replayable. */
   async #terminalizeDurable(
     input: {
       computerId: string;
-      sessionId: string;
       messageId: string;
       status: "succeeded" | "failed";
       code?: string;
     },
+    existing: RuntimeDurableWorkRecord,
     signal?: AbortSignal,
   ): Promise<"recorded" | "already_recorded" | undefined> {
     const store = this.#durableWork;
     if (!store) return undefined;
-    const key = durableKey(input.sessionId, input.messageId);
     try {
-      const existing = await store.read(input.computerId, "session-message", key);
       signal?.throwIfAborted();
-      if (!existing) return undefined;
       if (isTerminalDurable(existing.status)) {
         return existing.status === input.status && existing.lastError?.code === input.code
           ? "already_recorded"
@@ -1537,8 +1524,8 @@ export class CloudSessionCollaborationOwner {
       } else {
         delete next.lastError;
       }
-      await store.write(input.computerId, next);
-      return "recorded";
+      const written = await store.replaceSessionMessageRecord?.(input.computerId, existing, next);
+      return written ? "recorded" : undefined;
     } catch (error) {
       signal?.throwIfAborted();
       this.#logger?.warn(

@@ -60,6 +60,9 @@ These responses and reconcile transport failures use the existing capped exponen
 while the delivery is still accepted, unreported, and at that attempt; a late report or newer
 attempt wins. The response never fabricates a report, expires accepted custody, or dispatches
 the input again. Only the actual report settles custody.
+The operation deadline uses that same attempt-fenced recovery helper. Generic failure writes also
+exclude reported rows and require the captured attempt count, so an older timeout cannot change
+terminal report metadata or a newer attempt's schedule.
 
 The expiry pass also sweeps accepted custody that no work path can reach any more: an ended Session,
 an inactive binding, a deleted Agent, or a superseded placement generation puts the row outside

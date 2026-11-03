@@ -141,6 +141,9 @@ A provider request, including response-body consumption, has a 3-second deadline
 and at most four transient failures per target activation. Shared-circuit waits do not consume that retry budget.
 HTTP 200 with `ok: false` is failure; installation-specific errors do not open the shared transport circuit.
 HTTP 5xx responses count toward that circuit, allowing shared outage protection and recovery.
+Credential/desired-state/claim reads and SQL settlement failures reach the pump's error boundary;
+they do not consume the Slack failure budget or disable a healthy target. Only the status API call
+uses provider failure handling. Existing claim expiry and the next scan recover uncertain SQL work.
 HTTP 429 persists `Retry-After` for every thread of the installation, including new targets and restarted workers;
 completion cannot bypass this cooldown. Rate-limit waits do not consume the transient retry budget.
 Authorization errors disable that target. Immediately before a provider call, ownership requires the installation

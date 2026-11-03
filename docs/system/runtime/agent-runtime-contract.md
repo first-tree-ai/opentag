@@ -108,6 +108,43 @@ The Client writes the new snapshot before atomically updating the binding. A mis
 can be reconstructed from a request with the exact saved hash and identity; a different request
 cannot replace it without the original snapshot needed to validate the prior configuration.
 
+## Context composition and token interpretation
+
+`renderManagedSystemPrompt` builds the OpenTag-managed system instructions separately from
+`buildAgentInput`, which appends each IM delivery's Session/revision facts, processing-time UTC,
+provider reference, attention and reply-role facts, Session instructions, message text, bounded IM
+history, and attachment context. The Platform and Agent instructions are not copied into every
+new message. Session instructions currently appear in both the managed system prompt and the
+per-delivery context. Session collaboration uses `buildSessionMessageInput` and has its own envelope.
+
+Local Claude Code starts a process for each Run with the native Session ID and `--resume` after
+initialization. Local Pi also starts a process per Run, restoring the exact Pi Session. Codex keeps
+an App Server per prepared Session and starts native Turns on its thread; execution-service
+attachment may reload that same thread. `excludeTurns: true` suppresses history returned in the
+resume RPC response; it does not remove the model's conversation history. Local configuration
+replacement follows the binding rules above, rather than replaying the old history.
+
+Cloud execution uses Pi only. Its worker restores the binding and Pi history under
+`.opentag/pi-session` and appends the current input. The Cloud model transport is Chat Completions,
+not a provider-side Responses conversation ID. Pi serializes its active native conversation for
+model calls. Cloud disables ambient context files, Skills, extensions, templates, and themes, then
+adds the packaged resources explicitly. Local production Pi enables native resources; Claude and
+Codex likewise retain their native project configuration.
+
+Context Tree preparation supplies tree location, availability, and guidance, not every tree page.
+Selected pages and Skill bodies enter context when the Agent reads them. Native Skill catalogs and
+MCP tool descriptions/schema can add input independently of the managed prompt. Local Claude's
+private plugin and MCP names change per Run; Codex's private MCP name lives for one runtime;
+Cloud Pi uses the fixed `opentag-mcp` adapter entry. These are distinct from rotating credentials.
+
+Native continuity does not guarantee a prompt-cache hit. Request input, cache reads/writes,
+billable cost, and the active context window are different measurements. Changes in an appended
+message do not themselves rewrite an earlier prefix. A changed tool catalog, managed system
+prompt, native configuration, model, or compaction can change it. The
+[Agent usage accounting](../agent-usage.md) provider rules define reported totals; they are not
+an invoice or a measurement of unique context. Cloud billing uses the model-call ledger rather
+than the Runner's Turn report.
+
 ## Provider and Product Support
 
 Provider implementation and production product support are separate claims:

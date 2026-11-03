@@ -1,0 +1,448 @@
+{
+  "evidence": "SYNTHETIC_ONLY",
+  "tokenEstimate": "ceil(UTF-16 code units / 4), English-only sizing heuristic; not a model tokenizer, provider usage, billed tokens, or a context-window measurement",
+  "excludes": [
+    "native provider base prompt",
+    "real user instructions",
+    "native project context",
+    "Skill catalog",
+    "MCP tool schemas",
+    "native conversation history",
+    "tool results",
+    "images"
+  ],
+  "managedPrompts": [
+    {
+      "environment": "local",
+      "provider": "claude-code",
+      "utf8Bytes": 24040,
+      "utf16CodeUnits": 24006,
+      "roughEnglishTokens": 6002,
+      "sections": [
+        {
+          "section": "# OpenTag managed instructions",
+          "utf8Bytes": 210,
+          "utf16CodeUnits": 210,
+          "roughEnglishTokens": 53
+        },
+        {
+          "section": "## Native Claude configuration",
+          "utf8Bytes": 1054,
+          "utf16CodeUnits": 1054,
+          "roughEnglishTokens": 264
+        },
+        {
+          "section": "## Platform",
+          "utf8Bytes": 50,
+          "utf16CodeUnits": 50,
+          "roughEnglishTokens": 13
+        },
+        {
+          "section": "## Agent",
+          "utf8Bytes": 89,
+          "utf16CodeUnits": 89,
+          "roughEnglishTokens": 23
+        },
+        {
+          "section": "## GitHub MCP",
+          "utf8Bytes": 504,
+          "utf16CodeUnits": 504,
+          "roughEnglishTokens": 126
+        },
+        {
+          "section": "## IM outbox",
+          "utf8Bytes": 9785,
+          "utf16CodeUnits": 9777,
+          "roughEnglishTokens": 2445
+        },
+        {
+          "section": "## Agent Home",
+          "utf8Bytes": 1565,
+          "utf16CodeUnits": 1559,
+          "roughEnglishTokens": 390
+        },
+        {
+          "section": "## Skills",
+          "utf8Bytes": 258,
+          "utf16CodeUnits": 258,
+          "roughEnglishTokens": 65
+        },
+        {
+          "section": "## Self-configuration",
+          "utf8Bytes": 577,
+          "utf16CodeUnits": 577,
+          "roughEnglishTokens": 145
+        },
+        {
+          "section": "## MCP",
+          "utf8Bytes": 3757,
+          "utf16CodeUnits": 3739,
+          "roughEnglishTokens": 935
+        },
+        {
+          "section": "## Session",
+          "utf8Bytes": 1855,
+          "utf16CodeUnits": 1855,
+          "roughEnglishTokens": 464
+        },
+        {
+          "section": "## Creating an Agent with its own Slack App",
+          "utf8Bytes": 2577,
+          "utf16CodeUnits": 2577,
+          "roughEnglishTokens": 645
+        },
+        {
+          "section": "## When to speak",
+          "utf8Bytes": 1439,
+          "utf16CodeUnits": 1437,
+          "roughEnglishTokens": 360
+        },
+        {
+          "section": "## Context Tree",
+          "utf8Bytes": 227,
+          "utf16CodeUnits": 227,
+          "roughEnglishTokens": 57
+        },
+        {
+          "section": "## Session instructions",
+          "utf8Bytes": 93,
+          "utf16CodeUnits": 93,
+          "roughEnglishTokens": 24
+        }
+      ]
+    },
+    {
+      "environment": "local",
+      "provider": "codex",
+      "utf8Bytes": 24100,
+      "utf16CodeUnits": 24066,
+      "roughEnglishTokens": 6017,
+      "sections": [
+        {
+          "section": "# OpenTag managed instructions",
+          "utf8Bytes": 210,
+          "utf16CodeUnits": 210,
+          "roughEnglishTokens": 53
+        },
+        {
+          "section": "## Native Codex configuration",
+          "utf8Bytes": 1114,
+          "utf16CodeUnits": 1114,
+          "roughEnglishTokens": 279
+        },
+        {
+          "section": "## Platform",
+          "utf8Bytes": 50,
+          "utf16CodeUnits": 50,
+          "roughEnglishTokens": 13
+        },
+        {
+          "section": "## Agent",
+          "utf8Bytes": 89,
+          "utf16CodeUnits": 89,
+          "roughEnglishTokens": 23
+        },
+        {
+          "section": "## GitHub MCP",
+          "utf8Bytes": 504,
+          "utf16CodeUnits": 504,
+          "roughEnglishTokens": 126
+        },
+        {
+          "section": "## IM outbox",
+          "utf8Bytes": 9785,
+          "utf16CodeUnits": 9777,
+          "roughEnglishTokens": 2445
+        },
+        {
+          "section": "## Agent Home",
+          "utf8Bytes": 1565,
+          "utf16CodeUnits": 1559,
+          "roughEnglishTokens": 390
+        },
+        {
+          "section": "## Skills",
+          "utf8Bytes": 258,
+          "utf16CodeUnits": 258,
+          "roughEnglishTokens": 65
+        },
+        {
+          "section": "## Self-configuration",
+          "utf8Bytes": 577,
+          "utf16CodeUnits": 577,
+          "roughEnglishTokens": 145
+        },
+        {
+          "section": "## MCP",
+          "utf8Bytes": 3757,
+          "utf16CodeUnits": 3739,
+          "roughEnglishTokens": 935
+        },
+        {
+          "section": "## Session",
+          "utf8Bytes": 1855,
+          "utf16CodeUnits": 1855,
+          "roughEnglishTokens": 464
+        },
+        {
+          "section": "## Creating an Agent with its own Slack App",
+          "utf8Bytes": 2577,
+          "utf16CodeUnits": 2577,
+          "roughEnglishTokens": 645
+        },
+        {
+          "section": "## When to speak",
+          "utf8Bytes": 1439,
+          "utf16CodeUnits": 1437,
+          "roughEnglishTokens": 360
+        },
+        {
+          "section": "## Context Tree",
+          "utf8Bytes": 227,
+          "utf16CodeUnits": 227,
+          "roughEnglishTokens": 57
+        },
+        {
+          "section": "## Session instructions",
+          "utf8Bytes": 93,
+          "utf16CodeUnits": 93,
+          "roughEnglishTokens": 24
+        }
+      ]
+    },
+    {
+      "environment": "local",
+      "provider": "pi",
+      "utf8Bytes": 22986,
+      "utf16CodeUnits": 22952,
+      "roughEnglishTokens": 5738,
+      "sections": [
+        {
+          "section": "# OpenTag managed instructions",
+          "utf8Bytes": 210,
+          "utf16CodeUnits": 210,
+          "roughEnglishTokens": 53
+        },
+        {
+          "section": "## Platform",
+          "utf8Bytes": 50,
+          "utf16CodeUnits": 50,
+          "roughEnglishTokens": 13
+        },
+        {
+          "section": "## Agent",
+          "utf8Bytes": 89,
+          "utf16CodeUnits": 89,
+          "roughEnglishTokens": 23
+        },
+        {
+          "section": "## GitHub MCP",
+          "utf8Bytes": 504,
+          "utf16CodeUnits": 504,
+          "roughEnglishTokens": 126
+        },
+        {
+          "section": "## IM outbox",
+          "utf8Bytes": 9785,
+          "utf16CodeUnits": 9777,
+          "roughEnglishTokens": 2445
+        },
+        {
+          "section": "## Agent Home",
+          "utf8Bytes": 1565,
+          "utf16CodeUnits": 1559,
+          "roughEnglishTokens": 390
+        },
+        {
+          "section": "## Skills",
+          "utf8Bytes": 258,
+          "utf16CodeUnits": 258,
+          "roughEnglishTokens": 65
+        },
+        {
+          "section": "## Self-configuration",
+          "utf8Bytes": 577,
+          "utf16CodeUnits": 577,
+          "roughEnglishTokens": 145
+        },
+        {
+          "section": "## MCP",
+          "utf8Bytes": 3757,
+          "utf16CodeUnits": 3739,
+          "roughEnglishTokens": 935
+        },
+        {
+          "section": "## Session",
+          "utf8Bytes": 1855,
+          "utf16CodeUnits": 1855,
+          "roughEnglishTokens": 464
+        },
+        {
+          "section": "## Creating an Agent with its own Slack App",
+          "utf8Bytes": 2577,
+          "utf16CodeUnits": 2577,
+          "roughEnglishTokens": 645
+        },
+        {
+          "section": "## When to speak",
+          "utf8Bytes": 1439,
+          "utf16CodeUnits": 1437,
+          "roughEnglishTokens": 360
+        },
+        {
+          "section": "## Context Tree",
+          "utf8Bytes": 227,
+          "utf16CodeUnits": 227,
+          "roughEnglishTokens": 57
+        },
+        {
+          "section": "## Session instructions",
+          "utf8Bytes": 93,
+          "utf16CodeUnits": 93,
+          "roughEnglishTokens": 24
+        }
+      ]
+    },
+    {
+      "environment": "cloud",
+      "provider": "pi",
+      "utf8Bytes": 22023,
+      "utf16CodeUnits": 21995,
+      "roughEnglishTokens": 5499,
+      "sections": [
+        {
+          "section": "# OpenTag managed instructions",
+          "utf8Bytes": 210,
+          "utf16CodeUnits": 210,
+          "roughEnglishTokens": 53
+        },
+        {
+          "section": "## Cloud execution context",
+          "utf8Bytes": 1139,
+          "utf16CodeUnits": 1139,
+          "roughEnglishTokens": 285
+        },
+        {
+          "section": "## Platform",
+          "utf8Bytes": 50,
+          "utf16CodeUnits": 50,
+          "roughEnglishTokens": 13
+        },
+        {
+          "section": "## Agent",
+          "utf8Bytes": 89,
+          "utf16CodeUnits": 89,
+          "roughEnglishTokens": 23
+        },
+        {
+          "section": "## GitHub MCP",
+          "utf8Bytes": 504,
+          "utf16CodeUnits": 504,
+          "roughEnglishTokens": 126
+        },
+        {
+          "section": "## IM outbox",
+          "utf8Bytes": 9785,
+          "utf16CodeUnits": 9777,
+          "roughEnglishTokens": 2445
+        },
+        {
+          "section": "## MCP",
+          "utf8Bytes": 3757,
+          "utf16CodeUnits": 3739,
+          "roughEnglishTokens": 935
+        },
+        {
+          "section": "## Session",
+          "utf8Bytes": 2125,
+          "utf16CodeUnits": 2125,
+          "roughEnglishTokens": 532
+        },
+        {
+          "section": "## Creating an Agent with its own Slack App",
+          "utf8Bytes": 2577,
+          "utf16CodeUnits": 2577,
+          "roughEnglishTokens": 645
+        },
+        {
+          "section": "## When to speak",
+          "utf8Bytes": 1439,
+          "utf16CodeUnits": 1437,
+          "roughEnglishTokens": 360
+        },
+        {
+          "section": "## Context Tree",
+          "utf8Bytes": 255,
+          "utf16CodeUnits": 255,
+          "roughEnglishTokens": 64
+        },
+        {
+          "section": "## Session instructions",
+          "utf8Bytes": 93,
+          "utf16CodeUnits": 93,
+          "roughEnglishTokens": 24
+        }
+      ]
+    }
+  ],
+  "appendedInput": {
+    "items": [
+      {
+        "index": 0,
+        "utf8Bytes": 1421,
+        "utf16CodeUnits": 1421,
+        "roughEnglishTokens": 356
+      },
+      {
+        "index": 1,
+        "utf8Bytes": 28,
+        "utf16CodeUnits": 28,
+        "roughEnglishTokens": 7
+      }
+    ],
+    "clockOnlyChange": {
+      "commonPrefixUtf16CodeUnits": 233,
+      "identical": false
+    },
+    "systemAndInputBothContainSessionInstruction": true
+  },
+  "cloudTreeCommitChange": {
+    "commonPrefixUtf16CodeUnits": 21823,
+    "identical": false
+  },
+  "localRevisionHashChanged": true,
+  "claudeNamespaceChange": {
+    "pluginIdentityChanged": true,
+    "gatewayNamespaceChanged": true,
+    "skillContentUnchanged": true
+  },
+  "usageExamples": [
+    {
+      "provider": "codex",
+      "syntheticRuntimeUsage": {
+        "inputTokens": 1000,
+        "cachedInputTokens": 800,
+        "outputTokens": 50
+      },
+      "displayedTotalTokens": 1050
+    },
+    {
+      "provider": "claude-code",
+      "syntheticRuntimeUsage": {
+        "inputTokens": 1000,
+        "cachedInputTokens": 800,
+        "outputTokens": 50
+      },
+      "displayedTotalTokens": 1850
+    },
+    {
+      "provider": "pi",
+      "syntheticRuntimeUsage": {
+        "inputTokens": 1000,
+        "cachedInputTokens": 800,
+        "outputTokens": 50
+      },
+      "displayedTotalTokens": 1850
+    }
+  ]
+}

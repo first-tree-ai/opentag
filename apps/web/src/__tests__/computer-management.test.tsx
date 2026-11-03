@@ -69,13 +69,13 @@ describe("Account Computer management", () => {
   ])("connects another computer alongside $name only after an explicit action", async ({ computers }) => {
     installApi({ computers });
     openComputer(`?computerId=${computerId}&fromAgent=${agentId}`);
-    const connect = await screen.findByRole("button", { name: "Connect another computer" });
+    const connect = await screen.findByRole("button", { name: "Connect a new computer" });
     expect(repairRequests()).toHaveLength(0);
     fireEvent.click(connect);
     await waitFor(() => expect(repairRequests()).toHaveLength(1));
     expect(JSON.parse(String(repairRequests()[0]?.[1]?.body))).toEqual({ mode: "create" });
     expect(screen.getByRole("heading", { name: "Ada's Mac" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Connect another computer" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Connect a new computer" })).toBeNull();
     expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
   });
 
@@ -83,8 +83,8 @@ describe("Account Computer management", () => {
     installApi({ bound: true, computers: [{ ...twoReadyComputers[0] }] });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
     render(<App />);
-    fireEvent.click(await screen.findByRole("link", { name: "Connect another computer" }));
-    expect(await screen.findByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
+    fireEvent.click(await screen.findByRole("link", { name: "Connect a new computer" }));
+    expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Ada's Mac" })).toBeTruthy();
     expect(screen.getByRole("link", { name: /Back to/ })).toBeTruthy();
     await waitFor(() => expect(window.location.search).not.toContain("connect="));
@@ -99,7 +99,7 @@ describe("Account Computer management", () => {
     openComputer();
     const connect = await screen.findByRole("button", { name: "Connect computer" });
     expect(screen.getByRole("heading", { name: "Cloud" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Connect another computer" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Connect a new computer" })).toBeNull();
     expect(repairRequests()).toHaveLength(0);
     fireEvent.click(connect);
     expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
@@ -133,16 +133,16 @@ describe("Account Computer management", () => {
       return api(path, init);
     });
     openComputer();
-    fireEvent.click(await screen.findByRole("button", { name: "Connect another computer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Connect a new computer" }));
     expect(await screen.findByText("Command accepted. Waiting for openTag to come online…")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Ada's Mac" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Zulu Tower" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Connect another computer" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Connect a new computer" })).toBeNull();
     expect(repairRequests()).toHaveLength(1);
 
     online = true;
     fireEvent(window, new Event("focus"));
-    expect(await screen.findByRole("button", { name: "Connect another computer" }, { timeout: 3_000 })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Connect a new computer" }, { timeout: 3_000 })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Zulu Tower" })).toBeTruthy();
     expect(screen.getAllByText("Online")).toHaveLength(2);
     expect(repairRequests()).toHaveLength(1);
@@ -153,11 +153,11 @@ describe("Account Computer management", () => {
     let failed = false;
     installApi({ bound: true, computerReadStatus: () => (failed ? 503 : undefined) });
     openComputer();
-    expect(await screen.findByRole("button", { name: "Connect another computer" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Connect a new computer" })).toBeTruthy();
     failed = true;
     fireEvent(window, new Event("focus"));
     expect(await screen.findByText("Status unavailable")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Connect another computer" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Connect a new computer" })).toBeNull();
     expect(repairRequests()).toHaveLength(0);
   });
 

@@ -57,7 +57,7 @@ describe("Agent Computer settings", () => {
     const bind = vi.spyOn(browserApi, "rebindAgentComputer");
     const value = agent(COMPUTER_ID, "ready");
     await renderInRouter(<AgentComputerSettings agent={value} onAgentChanged={vi.fn()} />);
-    const href = screen.getByRole("link", { name: "Connect another computer" }).getAttribute("href");
+    const href = screen.getByRole("link", { name: "Connect a new computer" }).getAttribute("href");
     expect(href).toContain("/agents/computers?");
     expect(href).toContain("connect=another");
     expect(href).toContain(`fromAgent=${value.id}`);
@@ -126,7 +126,7 @@ describe("Agent Computer settings", () => {
     const issue = vi.spyOn(browserApi, "issueComputerConnectCode");
     await renderInRouter(<AgentComputerSettings agent={value} onAgentChanged={vi.fn()} />);
     const use = await screen.findByRole("button", { name: "Use this computer: Ada's Mac" });
-    expect(screen.getByRole("link", { name: "Connect another computer" }).getAttribute("href")).toContain(
+    expect(screen.getByRole("link", { name: "Connect a new computer" }).getAttribute("href")).toContain(
       "connect=another",
     );
     expect(bind).not.toHaveBeenCalled();

@@ -274,7 +274,7 @@ test("connects another Computer from Agent settings without moving the Agent", a
       issued.push(request.postDataJSON());
   });
   await page.goto(`/agents/${agentId}/settings/computer`);
-  const entry = page.getByRole("link", { name: "Connect another computer", exact: true });
+  const entry = page.getByRole("link", { name: "Connect a new computer", exact: true });
   await expect(entry).toBeVisible();
   await testInfo.attach("agent-settings-connect-another", { body: await page.screenshot(), contentType: "image/png" });
   await entry.click();
@@ -291,10 +291,10 @@ test("connects another Computer from Agent settings without moving the Agent", a
   try {
     const newId = await machine.connect(task);
     expect(newId).not.toBe(existingId);
-    await expect(page.getByRole("button", { name: "Connect another computer", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Connect a new computer", exact: true })).toHaveCount(0);
     await expect(page.getByRole("heading", { name: "Office Linux", exact: true })).toBeVisible();
     machine.start();
-    await expect(page.getByRole("button", { name: "Connect another computer", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Connect a new computer", exact: true })).toBeVisible();
     await testInfo.attach("second-computer-connected", { body: await page.screenshot(), contentType: "image/png" });
     // An offline card on the Computers page issues its own recovery command; only the requested create belongs here.
     expect(issued.filter((body) => (body as { mode?: string }).mode === "create")).toEqual([{ mode: "create" }]);
@@ -335,7 +335,7 @@ test("uses first-Local guidance when the inventory contains only Cloud", async (
   });
   await page.goto("/agents/computers");
   await expect(page.getByRole("heading", { name: "Cloud", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Connect another computer", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Connect a new computer", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Connect computer", exact: true }).click();
   await expect(page.getByText("Copy the task to your Agent on this computer.", { exact: true })).toBeVisible();
   expect(await copyTask(page)).toContain("Preserve a working connection");

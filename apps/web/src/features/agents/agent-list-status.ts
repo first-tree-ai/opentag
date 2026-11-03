@@ -1,3 +1,4 @@
+import { LIVE_REFETCH_INTERVAL_MS } from "../../query/live.js";
 import type { AgentAvailability, AgentListItem } from "./agent-model.js";
 
 /**
@@ -42,4 +43,39 @@ export function steadyAgentListItem(agent: AgentListItem, lastSettled: AgentList
 
 function readyAvailability(availability: AgentAvailability): AgentAvailability {
   return { ...availability, state: "ready", reason: null };
+}
+
+/**
+ * How long a row may stay on held evidence before it says so. One live refresh interval means the
+ * next read after the first transient one also failed to settle, so a single blip stays silent.
+ */
+export const AGENT_STATUS_REFRESHING_AFTER_MS = LIVE_REFETCH_INTERVAL_MS;
+
+/** What the list remembers about one Agent between reads. */
+export type AgentListStatusMemory = Map<string, { settled?: AgentListItem; transientSince?: number }>;
+
+/**
+ * Records one read of an Agent and answers what its row shows.
+ *
+ * `refreshing` is true only for a row that holds a settled status while its evidence has stayed
+ * transient for at least `AGENT_STATUS_REFRESHING_AFTER_MS`: the row keeps that status and adds a
+ * quiet note, so one Agent's stuck reads never become a page-level notice. A row with nothing
+ * settled already reads as unknown and needs no second note.
+ */
+export function observeAgentListStatus(
+  memory: AgentListStatusMemory,
+  agent: AgentListItem,
+  now: number,
+): { shown: AgentListItem; refreshing: boolean } {
+  const entry = memory.get(agent.id) ?? {};
+  if (!isTransientAgentAvailability(agent)) {
+    memory.set(agent.id, { settled: agent });
+    return { shown: agent, refreshing: false };
+  }
+  const transientSince = entry.transientSince ?? now;
+  memory.set(agent.id, { ...entry, transientSince });
+  return {
+    shown: steadyAgentListItem(agent, entry.settled),
+    refreshing: entry.settled !== undefined && now - transientSince >= AGENT_STATUS_REFRESHING_AFTER_MS,
+  };
 }

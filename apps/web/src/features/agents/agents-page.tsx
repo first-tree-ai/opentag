@@ -11,7 +11,7 @@ import { EmptyState, Page } from "../layout/page.js";
 import { AsyncState } from "../resource/resource-state.js";
 import { useAccount } from "../session/session-context.js";
 import { AgentAvatar } from "./agent-avatar.js";
-import { isTransientAgentAvailability, steadyAgentListItem } from "./agent-list-status.js";
+import { type AgentListStatusMemory, observeAgentListStatus } from "./agent-list-status.js";
 import type { AgentListItem } from "./agent-model.js";
 import { agentCardStatus, agentSetupContinuation } from "./agent-presentation.js";
 import { useAgentListView } from "./agent-queries.js";
@@ -57,17 +57,14 @@ export function AgentsContent({ agents }: { agents: AgentListItem[] }) {
 
 export function AgentList({ agents }: { agents: AgentListItem[] }) {
   const shownOrder = useRef<readonly string[]>([]);
-  const lastSettled = useRef(new Map<string, AgentListItem>());
+  const statusMemory = useRef<AgentListStatusMemory>(new Map());
   /*
    * Also written during render: the settled answer a row shows must never lag a frame behind the
-   * read that produced it, and reapplying the same read leaves the map unchanged.
+   * read that produced it, and reapplying the same read leaves the memory unchanged. Every refresh,
+   * failed or not, re-renders the list, so the refreshing note appears on the read that earns it.
    */
-  const byId = new Map(
-    agents.map((agent) => {
-      if (!isTransientAgentAvailability(agent)) lastSettled.current.set(agent.id, agent);
-      return [agent.id, steadyAgentListItem(agent, lastSettled.current.get(agent.id))];
-    }),
-  );
+  const now = Date.now();
+  const byId = new Map(agents.map((agent) => [agent.id, observeAgentListStatus(statusMemory.current, agent, now)]));
   /*
    * Written during render on purpose. `orderAgentIds` is stable under reapplication, so a
    * repeated render of the same list produces the same order; deferring it to an effect would
@@ -87,15 +84,15 @@ export function AgentList({ agents }: { agents: AgentListItem[] }) {
         data-ui="agent-roster"
       >
         {order.map((id) => {
-          const agent = byId.get(id);
-          return agent ? <AgentRow agent={agent} key={agent.id} /> : null;
+          const row = byId.get(id);
+          return row ? <AgentRow agent={row.shown} key={id} refreshing={row.refreshing} /> : null;
         })}
       </div>
     </section>
   );
 }
 
-export function AgentRow({ agent }: { agent: AgentListItem }) {
+export function AgentRow({ agent, refreshing = false }: { agent: AgentListItem; refreshing?: boolean }) {
   const status = agentCardStatus(agent);
   const continueSetup = agentSetupContinuation(agent);
   const channel = agent.availability.dependencies.channel.provider;
@@ -132,6 +129,11 @@ export function AgentRow({ agent }: { agent: AgentListItem }) {
         {status.detail ? (
           <p className="text-sm text-kumo-subtle" data-ui="agent-row-state">
             {status.detail}
+          </p>
+        ) : null}
+        {refreshing ? (
+          <p className="text-sm text-kumo-subtle" data-ui="agent-row-refreshing">
+            {m.agents_card_status_refreshing()}
           </p>
         ) : null}
         {/*

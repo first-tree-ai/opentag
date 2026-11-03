@@ -1,5 +1,5 @@
 import { screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { agentListItem, secondAgentListItem } from "../../__tests__/support/app-fixtures.js";
 import { renderInRouter } from "../../__tests__/support/router.js";
 import type { AgentListItem } from "./agent-model.js";
@@ -110,6 +110,29 @@ function rowStatus() {
 }
 
 describe("Agent list status through background refreshes", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("says a held status is refreshing on that row only, after reads keep failing", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(0);
+    const helper: AgentListItem = { ...readyAgent, ...secondAgentListItem };
+    const { rerender } = await renderInRouter(<AgentList agents={[readyAgent, helper]} />);
+    rerender(<AgentList agents={[unreadable, helper]} />);
+    expect(screen.queryByText("Refreshing status")).toBeNull();
+
+    vi.setSystemTime(30_000);
+    rerender(<AgentList agents={[{ ...unreadable }, helper]} />);
+    expect(rowStatus()).toContain("Ready");
+    expect(rowStatus()).toContain("Refreshing status");
+    expect(screen.getAllByText("Refreshing status")).toHaveLength(1);
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    rerender(<AgentList agents={[readyAgent, helper]} />);
+    expect(screen.queryByText("Refreshing status")).toBeNull();
+  });
+
   it("keeps a ready row ready while its messaging is re-verified or a refresh fails", async () => {
     const { rerender } = await renderInRouter(<AgentList agents={[readyAgent]} />);
     expect(rowStatus()).toContain("Ready");

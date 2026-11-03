@@ -1917,13 +1917,17 @@ describe("FeishuConnectionManager", () => {
     const cold2Id = crypto.randomUUID();
     const failedWarmId = crypto.randomUUID();
     const repairWarmId = crypto.randomUUID();
+    const heldWarmId = crypto.randomUUID();
+    const postRepairWarmId = crypto.randomUUID();
     const inbox = {
       ingest: vi
         .fn()
         .mockResolvedValueOnce({ messageId: cold1Id, deliveryIds: ["d1"], duplicate: false })
         .mockResolvedValueOnce({ messageId: cold2Id, deliveryIds: ["d2"], duplicate: false })
+        .mockResolvedValueOnce({ messageId: heldWarmId, deliveryIds: ["d5"], duplicate: false })
         .mockResolvedValueOnce({ messageId: failedWarmId, deliveryIds: ["d3"], duplicate: false })
-        .mockResolvedValueOnce({ messageId: repairWarmId, deliveryIds: ["d4"], duplicate: false }),
+        .mockResolvedValueOnce({ messageId: repairWarmId, deliveryIds: ["d4"], duplicate: false })
+        .mockResolvedValueOnce({ messageId: postRepairWarmId, deliveryIds: ["d6"], duplicate: false }),
     };
     const manager = new FeishuConnectionManager({
       database: connectionDatabase.database,
@@ -1969,6 +1973,8 @@ describe("FeishuConnectionManager", () => {
 
     const updateWhereSqls: string[] = [];
     let failNextImMessageUpdate = false;
+    let holdNextImMessageUpdate = false;
+    let rejectHeldUpdate: ((reason?: unknown) => void) | undefined;
     const realUpdate = connectionDatabase.database.update.bind(connectionDatabase.database);
     const updateSpy = vi.spyOn(connectionDatabase.database, "update").mockImplementation(((table: unknown) => {
       const builder = realUpdate(table as never);
@@ -1980,6 +1986,12 @@ describe("FeishuConnectionManager", () => {
         setBuilder.where = ((condition: unknown) => {
           const query = realWhere(condition as never);
           updateWhereSqls.push(query.toSQL().sql);
+          if (holdNextImMessageUpdate) {
+            holdNextImMessageUpdate = false;
+            return new Promise((_, reject) => {
+              rejectHeldUpdate = reject;
+            }) as never;
+          }
           if (failNextImMessageUpdate) {
             failNextImMessageUpdate = false;
             return Promise.reject(new Error("transient update failure")) as never;
@@ -2021,6 +2033,8 @@ describe("FeishuConnectionManager", () => {
         [
           [failedWarmId, "ev_c3", "om_c3"],
           [repairWarmId, "ev_c4", "om_c4"],
+          [heldWarmId, "ev_c5", "om_c5"],
+          [postRepairWarmId, "ev_c6", "om_c6"],
         ].map(([id, providerEventId, externalMessageId]) => ({
           id: id as string,
           imBindingId: binding.id,
@@ -2039,30 +2053,32 @@ describe("FeishuConnectionManager", () => {
         })),
       );
 
-      failNextImMessageUpdate = true;
-      await send("ev_c3", "om_c3", 3);
+      holdNextImMessageUpdate = true;
+      await send("ev_c5", "om_c5", 3);
       await vi.waitFor(() => {
         expect(updateWhereSqls).toHaveLength(3);
       });
-      const [unrepaired] = await connectionDatabase.database
-        .select({ providerContext: imMessages.providerContext })
-        .from(imMessages)
-        .where(eq(imMessages.id, failedWarmId));
-      expect(unrepaired?.providerContext).toEqual({ provider: "feishu", chatType: "group" });
 
-      await send("ev_c4", "om_c4", 4);
-      await vi.waitFor(async () => {
-        const [repaired] = await connectionDatabase.database
-          .select({ providerContext: imMessages.providerContext })
-          .from(imMessages)
-          .where(eq(imMessages.id, failedWarmId));
-        expect(repaired?.providerContext).toEqual({
-          provider: "feishu",
-          chatType: "group",
-          chatMode: "topic",
-        });
+      failNextImMessageUpdate = true;
+      await send("ev_c3", "om_c3", 4);
+      await vi.waitFor(() => {
+        expect(updateWhereSqls).toHaveLength(4);
+      });
+
+      await send("ev_c4", "om_c4", 5);
+      await vi.waitFor(() => {
+        expect(updateWhereSqls).toHaveLength(5);
       });
       expect(updateWhereSqls.at(-1)).toContain('"channel_id" =');
+
+      rejectHeldUpdate?.(new Error("stale primary-key failure"));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      await send("ev_c6", "om_c6", 6);
+      await vi.waitFor(() => {
+        expect(updateWhereSqls).toHaveLength(6);
+      });
+      expect(updateWhereSqls.at(-1)).toContain('"im_messages"."id" =');
     } finally {
       updateSpy.mockRestore();
       await manager.stop();

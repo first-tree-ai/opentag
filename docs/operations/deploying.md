@@ -282,10 +282,10 @@ older application validators compatible.
 Feishu chat metadata enrichment also requires a JSONB compatibility check when rolling back to a Server revision that
 predates `chatMode` and `groupMessageType` in `ProviderInboundContextSchema`. Older Server revisions spread
 `im_messages.provider_context` directly into the strict `RuntimeProviderMessageRefSchema` and parse
-`feishu_inbound_receipts.work_payload` with the older strict `ProviderInboundContextSchema`. Server deployments run as a
-single-replica stop-then-start replacement; do not run an older and newer Server replica concurrently against the same
-database without shipping the tolerant reader first. To roll back safely across this boundary, follow this ordered
-sequence:
+`feishu_inbound_receipts.work_payload` with the older strict `ProviderInboundContextSchema`. On the documented
+single-replica staging and production deployments (stop-then-start replacement), stop the current OpenTag Server
+instance before rolling back; if running multiple replicas, roll out the tolerant reader before enabling metadata
+writes. To roll back safely across this boundary, follow this ordered sequence:
 
 1. **Quiesce the current Server**: stop the running Server container so no live Feishu WebSocket writer or detached
    `#enrichChatMetadata` background task can write `chatMode` or `groupMessageType` while cleanup is in progress.

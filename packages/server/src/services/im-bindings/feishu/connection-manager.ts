@@ -79,7 +79,8 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
   readonly #onCardAction?: (event: unknown, bindingId: string, generation: number) => Promise<unknown>;
   readonly #afterActivationAgentLocked: (() => Promise<void>) | undefined;
   readonly #owned = new Map<string, OwnedChannel>();
-  readonly #backfilledChats = new Map<string, Promise<void> | "done">();
+  readonly #completedBackfills = new Map<string, symbol>();
+  readonly #pendingBackfills = new Map<string, Promise<void>>();
   readonly #maintenanceControllers = new Map<string, AbortController>();
   readonly #maintenanceFailures = new Map<string, number>();
   readonly #maintenanceNextAt = new Map<string, number>();
@@ -155,7 +156,8 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     this.#timer = undefined;
     const owned = [...this.#owned.entries()];
     this.#owned.clear();
-    this.#backfilledChats.clear();
+    this.#completedBackfills.clear();
+    this.#pendingBackfills.clear();
     await Promise.allSettled(
       owned.map(async ([imBindingId, entry]) => {
         await entry.adapter.channel.disconnect().catch(() => this.#onDiagnostic("FEISHU_CONNECTION_DISCONNECT_FAILED"));
@@ -892,26 +894,33 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     }
   }
 
-  #setBackfillState(channelKey: string, state: Promise<void> | "done"): void {
-    this.#backfilledChats.delete(channelKey);
-    this.#backfilledChats.set(channelKey, state);
-    while (this.#backfilledChats.size > BACKFILLED_CHATS_MAX_ENTRIES) {
-      const oldest = this.#backfilledChats.keys().next().value;
+  #rememberCompletedBackfill(channelKey: string, token: symbol): void {
+    this.#completedBackfills.delete(channelKey);
+    this.#completedBackfills.set(channelKey, token);
+    while (this.#completedBackfills.size > BACKFILLED_CHATS_MAX_ENTRIES) {
+      const oldest = this.#completedBackfills.keys().next().value;
       if (oldest === undefined) break;
-      this.#backfilledChats.delete(oldest);
+      this.#completedBackfills.delete(oldest);
+    }
+  }
+
+  #invalidateCompletedBackfill(channelKey: string, expectedToken: symbol | undefined): void {
+    if (expectedToken !== undefined && this.#completedBackfills.get(channelKey) === expectedToken) {
+      this.#completedBackfills.delete(channelKey);
     }
   }
 
   async #resolveChatPatch(adapter: FeishuAdapter, channelKey: string, chatId: string): Promise<string | undefined> {
+    const observedToken = this.#completedBackfills.get(channelKey);
     let metadata: Awaited<ReturnType<FeishuAdapter["resolveChatMetadata"]>>;
     try {
       metadata = await adapter.resolveChatMetadata?.({ chatId });
     } catch (error) {
-      this.#backfilledChats.delete(channelKey);
+      this.#invalidateCompletedBackfill(channelKey, observedToken);
       throw error;
     }
     if (!metadata?.chatMode) {
-      this.#backfilledChats.delete(channelKey);
+      this.#invalidateCompletedBackfill(channelKey, observedToken);
       return undefined;
     }
     return JSON.stringify({
@@ -935,6 +944,24 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
       );
   }
 
+  async #updateSingleMessageChatContext(
+    channelKey: string,
+    expectedToken: symbol | undefined,
+    imBindingId: string,
+    messageId: string,
+    patchJson: string,
+  ): Promise<void> {
+    try {
+      await this.#updateChatContext(
+        and(eq(imMessages.id, messageId), eq(imMessages.imBindingId, imBindingId)),
+        patchJson,
+      );
+    } catch (error) {
+      this.#invalidateCompletedBackfill(channelKey, expectedToken);
+      throw error;
+    }
+  }
+
   async #enrichChatMetadata(
     adapter: FeishuAdapter,
     input: { imBindingId: string; messageId: string; chatId: string },
@@ -942,32 +969,42 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     const channelKey = `${input.imBindingId}:${input.chatId}`;
     const patchJson = await this.#resolveChatPatch(adapter, channelKey, input.chatId);
     if (!patchJson) return;
-    const existing = this.#backfilledChats.get(channelKey);
-    if (!existing) {
-      const backfill = this.#updateChatContext(
-        and(eq(imMessages.imBindingId, input.imBindingId), eq(imMessages.channelId, input.chatId)),
+    const completedToken = this.#completedBackfills.get(channelKey);
+    if (completedToken !== undefined) {
+      this.#rememberCompletedBackfill(channelKey, completedToken);
+      await this.#updateSingleMessageChatContext(
+        channelKey,
+        completedToken,
+        input.imBindingId,
+        input.messageId,
         patchJson,
       );
-      this.#setBackfillState(channelKey, backfill);
-      try {
-        await backfill;
-        if (this.#backfilledChats.get(channelKey) === backfill) this.#setBackfillState(channelKey, "done");
-      } catch (error) {
-        if (this.#backfilledChats.get(channelKey) === backfill) this.#backfilledChats.delete(channelKey);
-        throw error;
-      }
       return;
     }
-    try {
-      if (existing !== "done") await existing;
-      else this.#setBackfillState(channelKey, "done");
-      await this.#updateChatContext(
-        and(eq(imMessages.id, input.messageId), eq(imMessages.imBindingId, input.imBindingId)),
+    const pending = this.#pendingBackfills.get(channelKey);
+    if (pending) {
+      await pending;
+      await this.#updateSingleMessageChatContext(
+        channelKey,
+        this.#completedBackfills.get(channelKey),
+        input.imBindingId,
+        input.messageId,
         patchJson,
       );
-    } catch (error) {
-      this.#backfilledChats.delete(channelKey);
-      throw error;
+      return;
+    }
+    const nextToken = Symbol("backfilled");
+    const backfill = this.#updateChatContext(
+      and(eq(imMessages.imBindingId, input.imBindingId), eq(imMessages.channelId, input.chatId)),
+      patchJson,
+    ).then(() => {
+      this.#rememberCompletedBackfill(channelKey, nextToken);
+    });
+    this.#pendingBackfills.set(channelKey, backfill);
+    try {
+      await backfill;
+    } finally {
+      if (this.#pendingBackfills.get(channelKey) === backfill) this.#pendingBackfills.delete(channelKey);
     }
   }
 

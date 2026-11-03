@@ -1863,6 +1863,24 @@ describe("TaskService bounded detail at topic scale", () => {
     });
     expect(nonDeliveryOnGroupChannel).toEqual({ kind: "plain" });
 
+    // An ambient-only delivery on a group channel Session is not a Task and resolves to plain.
+    const ambientGroupMessage = await createMessage(binding.id, {
+      channelId: GROUP,
+      externalMessageId: "om_group_ambient",
+      text: "Ambient group chatter",
+      occurredAt: minutes(35),
+    });
+    const ambientDelivery = await createDelivery(channel.id, ambientGroupMessage.id, {
+      attention: "ambient",
+      at: minutes(36),
+      reported: true,
+    });
+    const ambientAnchor = await resolveSessionTaskAnchor(unitDatabase.database, {
+      sessionId: channel.id,
+      source: { kind: "delivery", deliveryId: ambientDelivery.id, turnId: "turn-ambient" },
+    });
+    expect(ambientAnchor).toEqual({ kind: "plain" });
+
     // A DB lookup failure logs IM_SESSION_FOOTER_ANCHOR_LOOKUP_FAILED and falls back to plain.
     const warnings: unknown[] = [];
     const failedLookup = await resolveSessionTaskAnchor(

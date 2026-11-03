@@ -1235,4 +1235,44 @@ describe("ImProviderProxyAdapter Session ID footer", () => {
       feishuPostSegmentHref: SESSION_URL,
     });
   });
+
+  it("rechecks the live authority fence after resolveTaskAnchor settles and before any upstream byte is sent", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ ok: true, ts: "1" })) as unknown as typeof fetch;
+    let revoked = false;
+    let releaseAnchor: (() => void) | undefined;
+    const anchorStarted = new Promise<void>((resolve) => {
+      releaseAnchor = resolve;
+    });
+    let continueAnchor: (() => void) | undefined;
+    const anchorGate = new Promise<void>((resolve) => {
+      continueAnchor = resolve;
+    });
+
+    const { instance } = adapter({
+      fetchImpl,
+      publicOrigin: PUBLIC_ORIGIN,
+      resolveTaskAnchor: async () => {
+        releaseAnchor?.();
+        await anchorGate;
+        return { kind: "link", taskAnchorId: SESSION_ID };
+      },
+    });
+    const recheck = vi.fn(async () => {
+      if (revoked) {
+        throw Object.assign(new Error("revoked during anchor lookup"), { code: "credential_stale" });
+      }
+    });
+
+    const pending = instance.handle(
+      request({ sessionId: SESSION_ID, body: jsonBody({ channel: "C1", text: "hello" }) }),
+      authorization({ sessionId: SESSION_ID, agentId: AGENT_ID, recheck }),
+    );
+    await anchorStarted;
+    revoked = true;
+    continueAnchor?.();
+
+    await expect(pending).rejects.toMatchObject({ code: "credential_stale" });
+    expect(recheck).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 });

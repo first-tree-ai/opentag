@@ -185,23 +185,26 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     authorization: RuntimeProxyAuthorization,
   ): Promise<ProviderProxyResponse> {
     const operation = match.operation;
-    // Preflight boundary: material resolution and the live fence revalidation after that async
-    // boundary fail with their own codes (or `cancelled`), before any upstream byte is sent.
+    // Preflight boundary: footer anchor resolution, material resolution, and the live fence
+    // revalidation after those async steps fail with their own codes (or `cancelled`), before
+    // any upstream byte is sent.
+    let annotated: AnnotatedOutboundBody;
     let material: RuntimeProviderMaterial;
     try {
+      annotated = await this.#annotateOutboundBodyWithSessionFooter(
+        operation,
+        prepared,
+        headers,
+        request,
+        authorization,
+      );
       material = await authorization.resolveMaterial(request.signal);
       await authorization.recheck(request.signal);
+      request.signal.throwIfAborted();
     } catch (error) {
       if (request.signal.aborted) throw new RuntimeProxyError("cancelled");
       throw error;
     }
-    const annotated = await this.#annotateOutboundBodyWithSessionFooter(
-      operation,
-      prepared,
-      headers,
-      request,
-      authorization,
-    );
     try {
       const response = await this.#fetchUpstream(operation, annotated.bytes, headers, request, material);
       return operation.response === "stream"

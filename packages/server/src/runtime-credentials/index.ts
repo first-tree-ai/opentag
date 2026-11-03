@@ -404,28 +404,33 @@ export async function resolveSessionTaskAnchor(
   logger?: Pick<ServiceLogger, "warn">,
 ): Promise<SessionTaskAnchorResolution> {
   try {
-    if (input.source?.kind === "delivery") {
-      const deliveryRows = await database.execute<{ messageId: string } & Record<string, unknown>>(sql`
-        select d.message_id::text as "messageId"
-        from im_message_deliveries d
-        where d.id = ${input.source.deliveryId}::uuid
-          and d.session_id = ${input.sessionId}::uuid
-        limit 1
-      `);
-      const messageId = [...deliveryRows][0]?.messageId;
-      if (messageId) return { kind: "link", taskAnchorId: messageId };
+    const deliveryJoin =
+      input.source?.kind === "delivery"
+        ? sql`left join im_message_deliveries d on d.id = ${input.source.deliveryId}::uuid and d.session_id = s.id`
+        : sql`left join im_message_deliveries d on false`;
+    const rows = await database.execute<
+      { kind: string; conversationKind: string; messageId: string | null; attention: string | null } & Record<
+        string,
+        unknown
+      >
+    >(sql`
+      select
+        s.kind,
+        s.conversation_kind as "conversationKind",
+        d.message_id::text as "messageId",
+        d.attention as "attention"
+      from sessions s
+      ${deliveryJoin}
+      where s.id = ${input.sessionId}::uuid
+      limit 1
+    `);
+    const row = [...rows][0];
+    if (!row) return { kind: "plain" };
+    if (row.kind === "thread" || (row.kind === "channel" && row.conversationKind === "dm")) {
+      return { kind: "link", taskAnchorId: row.messageId ?? input.sessionId };
     }
-    const sessionRows = await database.execute<{ kind: string; conversationKind: string } & Record<string, unknown>>(
-      sql`
-        select s.kind, s.conversation_kind as "conversationKind"
-        from sessions s
-        where s.id = ${input.sessionId}::uuid
-        limit 1
-      `,
-    );
-    const session = [...sessionRows][0];
-    if (session && (session.kind === "thread" || (session.kind === "channel" && session.conversationKind === "dm"))) {
-      return { kind: "link", taskAnchorId: input.sessionId };
+    if (row.messageId && row.attention === "direct") {
+      return { kind: "link", taskAnchorId: row.messageId };
     }
     return { kind: "plain" };
   } catch (error) {

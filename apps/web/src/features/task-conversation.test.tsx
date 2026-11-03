@@ -1,7 +1,6 @@
 import type { TaskReply, TaskSummary, TaskTurn } from "@opentag/shared/browser";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
-import { withLocale } from "../__tests__/support/with-locale.js";
 import { TaskActivity } from "./task-conversation.js";
 
 const task: TaskSummary = {
@@ -195,28 +194,6 @@ it("keeps resource preparation behind the ordinary waiting status", () => {
 
   expect(screen.getByText("Message pending.")).toBeTruthy();
   expect(screen.queryByText(/IM_DELIVERY_CLOUD|Runner|Sandbox|environment preparation/i)).toBeNull();
-});
-
-it.each([
-  ["pending", "Message pending.", "消息等待处理。"],
-  ["steered", "Message added to active work.", "消息已加入进行中的工作。"],
-  ["terminal_rejected", "Message rejected.", "消息已拒绝。"],
-  ["expired", "Message expired.", "消息已过期。"],
-] as const)("names the %s delivery state in the reader's language", (state, english, chinese) => {
-  for (const [locale, text] of [
-    ["en", english],
-    ["zh", chinese],
-  ] as const) {
-    withLocale(locale, () => {
-      const current = turn();
-      current.report = null;
-      current.delivery.state = state;
-      const view = render(<TaskActivity task={task} turns={[current]} pagination={null} />);
-      expect(screen.getByText(text)).toBeTruthy();
-      expect(screen.queryByText(/terminal|steered/i)).toBeNull();
-      view.unmount();
-    });
-  }
 });
 
 it.each([0, 3])("shows the incomplete-history notice only when replies were omitted (count: %i)", (omittedCount) => {

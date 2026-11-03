@@ -450,15 +450,6 @@ function deliveryStateMessage(delivery: TaskTurn["delivery"]): string {
   return m.tasks_execution_report_unavailable();
 }
 
-/* Every delivery state gets a word in the reader's language; the enum spelling is never shown. */
-const deliveryStateLabels: Record<TaskTurn["delivery"]["state"], () => string> = {
-  pending: m.tasks_delivery_pending,
-  accepted: m.tasks_delivery_accepted,
-  steered: m.tasks_delivery_steered,
-  terminal_rejected: m.tasks_delivery_rejected,
-  expired: m.tasks_delivery_expired,
-};
-
 /*
  * The reason is the runtime's vocabulary, one of `TurnFailureReason`, and a reader gets a name
  * for it. A reason this build does not know yet is still shown, humanized, rather than hidden.

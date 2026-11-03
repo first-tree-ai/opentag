@@ -126,12 +126,12 @@ export function createChannelTargetPoller(options: ChannelTargetPollerOptions): 
     return pending;
   }
 
-  return {
+  const poller: ChannelTargetPoller = {
     get: () => current,
     start: () => {
       if (timer) return;
-      void refresh();
-      timer = setInterval(() => void refresh(), options.intervalMs);
+      void poller.refresh();
+      timer = setInterval(() => void poller.refresh(), options.intervalMs);
       timer.unref();
     },
     stop: () => {
@@ -143,4 +143,5 @@ export function createChannelTargetPoller(options: ChannelTargetPollerOptions): 
     },
     refresh,
   };
+  return poller;
 }

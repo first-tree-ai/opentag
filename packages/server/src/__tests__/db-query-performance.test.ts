@@ -146,6 +146,76 @@ describe("database query performance logging", () => {
       dbTarget: "accounts",
       paramCount: 0,
     });
+
+    expect(
+      summarizeSqlQuery(["SELECT * FROM im_message_deliveries WHERE state = $1 FOR UPDATE SKIP LOCKED"], ["pending"]),
+    ).toEqual({
+      sqlCommand: "SELECT",
+      dbTarget: "im_message_deliveries",
+      paramCount: 1,
+    });
+
+    expect(
+      summarizeSqlQuery(
+        ["SELECT w.id FROM slack_working_messages w WHERE w.due_at <= now() FOR UPDATE OF w SKIP LOCKED"],
+        [],
+      ),
+    ).toEqual({
+      sqlCommand: "SELECT",
+      dbTarget: "slack_working_messages",
+      paramCount: 0,
+    });
+
+    expect(summarizeSqlQuery(["SELECT * FROM runtime_approvals WHERE id = $1 FOR UPDATE NOWAIT"], ["app-1"])).toEqual({
+      sqlCommand: "SELECT",
+      dbTarget: "runtime_approvals",
+      paramCount: 1,
+    });
+
+    expect(
+      summarizeSqlQuery(["SELECT * FROM sandboxes WHERE status = $1 FOR NO KEY UPDATE SKIP LOCKED"], ["idle"]),
+    ).toEqual({
+      sqlCommand: "SELECT",
+      dbTarget: "sandboxes",
+      paramCount: 1,
+    });
+
+    expect(
+      summarizeSqlQuery(
+        [
+          "WITH claimed AS (SELECT id FROM im_message_deliveries WHERE state = 'pending' FOR UPDATE SKIP LOCKED) UPDATE im_message_deliveries SET state = 'claimed' FROM claimed WHERE im_message_deliveries.id = claimed.id",
+        ],
+        [],
+      ),
+    ).toEqual({
+      sqlCommand: "WITH",
+      dbTarget: "im_message_deliveries",
+      paramCount: 0,
+    });
+
+    expect(
+      summarizeSqlQuery(
+        [
+          "WITH due AS (SELECT id FROM agent_schedules WHERE next_run_at <= now() FOR UPDATE SKIP LOCKED) SELECT * FROM due",
+        ],
+        [],
+      ),
+    ).toEqual({
+      sqlCommand: "WITH",
+      dbTarget: "agent_schedules",
+      paramCount: 0,
+    });
+
+    expect(
+      summarizeSqlQuery(
+        ["INSERT INTO agents (id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET updated_at = now()"],
+        ["agent-1"],
+      ),
+    ).toEqual({
+      sqlCommand: "INSERT",
+      dbTarget: "agents",
+      paramCount: 1,
+    });
   });
 
   it("never leaks single-quoted or dollar-quoted SQL literal bodies into dbTarget on success or 22P02 warn failure", async () => {

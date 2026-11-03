@@ -275,16 +275,8 @@ export class ImDeliveryWorker {
       onDiagnostic: this.#onDiagnostic,
     });
     const schedulers = createImDeliveryMaintenanceSchedulers({
-      expiryRun: async () => {
-        const options = {
-          ...this.#janitorConfig,
-          clock: this.#clock,
-          ...(this.#logger ? { logger: this.#logger } : {}),
-        };
-        await runImDeliveryExpiry(this.#database, options, this.#onDeliverySettled, this.#onDiagnostic);
-        await this.#cloudCoordinator.reconcileStoppedWork();
-      },
-      retentionRun: () => runImDeliveryRetention(this.#database, { ...this.#janitorConfig, clock: this.#clock }),
+      expiryRun: () => this.runExpiryOnce(),
+      retentionRun: () => this.runRetentionOnce(),
       supervisor: this.#supervisor,
       onDiagnostic: this.#onDiagnostic,
     });
@@ -328,6 +320,20 @@ export class ImDeliveryWorker {
       this.#onDiagnostic,
     );
     await this.#cloudCoordinator.reconcileStoppedWork();
+  }
+
+  async runExpiryOnce(): Promise<void> {
+    const options = {
+      ...this.#janitorConfig,
+      clock: this.#clock,
+      ...(this.#logger ? { logger: this.#logger } : {}),
+    };
+    await runImDeliveryExpiry(this.#database, options, this.#onDeliverySettled, this.#onDiagnostic);
+    await this.#cloudCoordinator.reconcileStoppedWork();
+  }
+
+  async runRetentionOnce(): Promise<void> {
+    await runImDeliveryRetention(this.#database, { ...this.#janitorConfig, clock: this.#clock });
   }
 
   async runOnce(): Promise<void> {

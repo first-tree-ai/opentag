@@ -159,12 +159,16 @@ export class ScheduleScheduler {
     const running = this.#currentScan;
     if (running) await running;
     if (this.#stopped) return;
+    await this.runOnce();
+  }
+
+  async runOnce(): Promise<void> {
     await this.#runScan();
   }
 
   #tick(): void {
     if (this.#scanning || this.#stopped) return;
-    void this.#runScan();
+    void this.runOnce();
   }
 
   async #runScan(): Promise<void> {

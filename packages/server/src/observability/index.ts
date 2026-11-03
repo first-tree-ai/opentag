@@ -62,6 +62,7 @@ export {
   type PerformanceOperationHandle,
   type PerformanceStartInput,
   type PerformanceTraceOptions,
+  resolvePerformanceLoggingConfig,
   runWithPerformanceContext,
   safePerformanceErrorCode,
   updateCurrentPerformanceContext,

@@ -3,6 +3,7 @@ import { createApp } from "../../app.js";
 import {
   createPerformanceLogger,
   getCurrentPerformanceContext,
+  resolvePerformanceLoggingConfig,
   runWithPerformanceContext,
   safePerformanceErrorCode,
   updateCurrentPerformanceContext,
@@ -279,5 +280,102 @@ describe("performance logger", () => {
     expect(
       runWithPerformanceContext({ callId: "c-1", operation: "manual" }, () => getCurrentPerformanceContext()?.callId),
     ).toBe("c-1");
+  });
+
+  it("keeps started and fast DB completion logs at debug when OPENTAG_PERF_LOG_LEVEL=info while escalating slow DB and non-DB completions to info", async () => {
+    const config = resolvePerformanceLoggingConfig({
+      OPENTAG_PERF_LOG_LEVEL: "info",
+      OPENTAG_PERF_SLOW_THRESHOLD_MS: "200",
+    });
+    expect(config).toEqual({
+      enabled: true,
+      level: "info",
+      dbLevel: "debug",
+      startLevel: "debug",
+      slowThresholdMs: 200,
+    });
+
+    const records: Array<{ level: string; payload: Record<string, unknown> }> = [];
+    const fakeLogger = {
+      isLevelEnabled: () => true,
+      debug: (payload: Record<string, unknown>) => records.push({ level: "debug", payload }),
+      info: (payload: Record<string, unknown>) => records.push({ level: "info", payload }),
+      warn: (payload: Record<string, unknown>) => records.push({ level: "warn", payload }),
+    };
+
+    const durations = [10, 250, 20];
+    let nowMs = 1_000;
+    let callIndex = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => {
+      if (callIndex % 2 === 0) {
+        callIndex += 1;
+        return nowMs;
+      }
+      const delta = durations[Math.floor(callIndex / 2)] ?? 10;
+      callIndex += 1;
+      nowMs += delta;
+      return nowMs;
+    });
+
+    const perf = createPerformanceLogger(() => fakeLogger as never, config);
+
+    await perf.traceAsync(
+      {
+        module: "database",
+        category: "db",
+        operation: "db.query",
+        attributes: { sqlCommand: "SELECT", dbTarget: "im_message_deliveries" },
+      },
+      async () => "fast-db",
+    );
+
+    await perf.traceAsync(
+      {
+        module: "database",
+        category: "db",
+        operation: "db.query",
+        attributes: { sqlCommand: "SELECT", dbTarget: "agent_schedules" },
+      },
+      async () => "slow-db",
+    );
+
+    await perf.traceAsync(
+      {
+        module: "ImDeliveryWorker",
+        category: "worker",
+        operation: "ImDeliveryWorker.runOnce",
+      },
+      async () => "worker-done",
+    );
+
+    expect(
+      records.map((r) => ({
+        level: r.level,
+        category: r.payload.perfCategory,
+        outcome: r.payload.outcome,
+        slow: r.payload.slow,
+      })),
+    ).toEqual([
+      { level: "debug", category: "db", outcome: "started", slow: undefined },
+      { level: "debug", category: "db", outcome: "completed", slow: undefined },
+      { level: "debug", category: "db", outcome: "started", slow: undefined },
+      { level: "info", category: "db", outcome: "completed", slow: true },
+      { level: "debug", category: "worker", outcome: "started", slow: undefined },
+      { level: "info", category: "worker", outcome: "completed", slow: undefined },
+    ]);
+
+    expect(
+      resolvePerformanceLoggingConfig({
+        OPENTAG_PERF_LOG_LEVEL: "info",
+        OPENTAG_PERF_DB_LOG_LEVEL: "info",
+        OPENTAG_PERF_START_LOG_LEVEL: "info",
+      }),
+    ).toEqual({
+      enabled: true,
+      level: "info",
+      dbLevel: "info",
+      startLevel: "info",
+      slowThresholdMs: 1_000,
+    });
   });
 });

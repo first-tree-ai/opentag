@@ -233,11 +233,13 @@ When `OPENTAG_PERF_LOG_ENABLED` is `true` (the default), the Server emits paired
 Every started operation generates a unique `callId` and records `startedAt` (ISO-8601 UTC). Its matching
 settlement record carries the same `callId` and `startedAt` plus `endedAt` (ISO-8601 UTC) and monotonic
 `durationMs`. Nested operations propagate `requestId`, `parentCallId`, `callerOperation`, `sandboxId`,
-and `environmentGeneration` through `AsyncLocalStorage`. Routine start and completion records emit at
-`OPENTAG_PERF_LOG_LEVEL` (default `debug`, matching per-request detail in the level contract); operations
-whose `durationMs` meets or exceeds `OPENTAG_PERF_SLOW_THRESHOLD_MS` attach `slow=true`, and failed
-operations emit at `warn`. Setting `OPENTAG_PERF_LOG_ENABLED=false` bypasses proxy/fetch wrapping and
-context allocation.
+and `environmentGeneration` through `AsyncLocalStorage`. Routine completion records emit at
+`OPENTAG_PERF_LOG_LEVEL` (default `debug`), while `outcome="started"` records emit at
+`OPENTAG_PERF_START_LOG_LEVEL` (default `debug`) and fast database completions (`perfCategory="db"`,
+`slow` absent) emit at `OPENTAG_PERF_DB_LOG_LEVEL` (default `debug`). Operations whose `durationMs` meets
+or exceeds `OPENTAG_PERF_SLOW_THRESHOLD_MS` attach `slow=true` and emit at `OPENTAG_PERF_LOG_LEVEL`, and
+failed operations emit at `warn`. Setting `OPENTAG_PERF_LOG_ENABLED=false` bypasses proxy/fetch wrapping
+and context allocation.
 
 In addition to paired performance spans, the Server and Cloud Runner emit structured lifecycle and
 streaming telemetry:
@@ -267,7 +269,9 @@ OPENTAG_OTEL_SAMPLE_RATE=1
 | `OPENTAG_OTEL_SAMPLE_RATE` | `1` | Global head sample rate in the inclusive range `0` to `1` |
 | `OPENTAG_LOG_LEVEL` | `info` | Server Pino level: `trace`, `debug`, `info`, `warn`, `error`, `fatal`, or `silent` |
 | `OPENTAG_PERF_LOG_ENABLED` | `true` | Enables paired start/end performance logs across HTTP/WS entrypoints, services, database queries, and external calls |
-| `OPENTAG_PERF_LOG_LEVEL` | `debug` | Default Pino level (`debug`, `info`, or `warn`) for routine performance start and completion records |
+| `OPENTAG_PERF_LOG_LEVEL` | `debug` | Default Pino level (`debug`, `info`, or `warn`) for routine performance completion records (and slow DB completions) |
+| `OPENTAG_PERF_DB_LOG_LEVEL` | `debug` | Pino level (`debug`, `info`, or `warn`) for routine fast database completion records (`perfCategory="db"`) |
+| `OPENTAG_PERF_START_LOG_LEVEL` | `debug` | Pino level (`debug`, `info`, or `warn`) for `outcome="started"` performance records |
 | `OPENTAG_PERF_SLOW_THRESHOLD_MS` | `1000` | Slow-operation threshold in milliseconds; completions at or above this duration set `slow=true` |
 | `GOOGLE_CLOUD_PROJECT` | unset | Forwards relayed Web App and CLI errors to Google Cloud Error Reporting; see [Client error reporting](error-reporting.md) |
 | `OPENTAG_ERROR_REPORTING_CREDENTIALS_JSON` | unset | Service account key JSON for that forwarding; unset uses Application Default Credentials |

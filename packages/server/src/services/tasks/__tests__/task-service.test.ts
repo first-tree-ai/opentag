@@ -20,6 +20,7 @@ import {
   sessionMessages,
   sessions,
 } from "../../../db/schema/index.js";
+import { resolveSessionTaskAnchor } from "../../../runtime-credentials/index.js";
 import { TaskQueryError, TaskService } from "../index.js";
 import { type LockedDeliveryRow, withdrawalRefusal } from "../task-service.js";
 
@@ -1690,4 +1691,234 @@ describe("TaskService bounded detail at topic scale", () => {
     expect(legacy.internalSessions).toHaveLength(count);
     expect(legacy.collaborationMessages).toHaveLength(count);
   }, 180_000);
+
+  it("resolves detail, get, listTurns, listReplies, listInternalSessions, and listCollaborationMessages by sessionId for 1:1 Sessions and keeps group channel footer anchors stable across multiple top-level requests", async () => {
+    const { binding, bootstrap, service } = await fixture();
+
+    // 1. DM Session
+    const dmSession = await createSession(binding.id, { channelId: DM, conversationKind: "dm" });
+    const dmMsg = await createMessage(binding.id, {
+      channelId: DM,
+      text: "DM question",
+      occurredAt: minutes(0),
+      providerContext: { provider: "feishu", chatType: "p2p" },
+    });
+    await createDelivery(dmSession.id, dmMsg.id, { at: minutes(1), reported: true });
+    await unitDatabase.database.insert(imMessages).values({
+      imBindingId: binding.id,
+      providerEventId: null,
+      channelId: DM,
+      externalMessageId: "om_dm_reply",
+      providerRevisionKey: "outbound:created:v1",
+      operation: "created",
+      direction: "outbound",
+      threadKey: null,
+      authorKind: "bot",
+      authorExternalId: "ou_bot",
+      content: {
+        version: 1,
+        fallbackText: "DM answer",
+        blocks: [{ type: "text", text: "DM answer" }],
+        truncated: false,
+        outbound: { messageType: "text", contentAvailable: true, timeSource: "provider" },
+      },
+      providerContext: { provider: "feishu" },
+      occurredAt: minutes(2),
+    });
+
+    expect(await resolveSessionTaskAnchor(unitDatabase.database, { sessionId: dmSession.id })).toEqual({
+      kind: "link",
+      taskAnchorId: dmSession.id,
+    });
+    expect((await service.detail(bootstrap.userId, dmSession.id)).task.id).toBe(dmMsg.id);
+    expect((await service.get(bootstrap.userId, dmSession.id, { limit: 10 })).task.id).toBe(dmMsg.id);
+    expect((await service.listTurns(bootstrap.userId, dmSession.id, {})).items.map((t) => t.message.id)).toEqual([
+      dmMsg.id,
+    ]);
+    expect((await service.listReplies(bootstrap.userId, dmSession.id, { limit: 10 })).items[0]?.fallbackText).toBe(
+      "DM answer",
+    );
+
+    // 2. Group thread Session
+    const { channel, thread, root, reply } = await groupTopic(binding.id, "om_thread_root");
+    await createDelivery(channel.id, root.id, { at: minutes(3), reported: true });
+    await createDelivery(thread.id, reply.id, { at: minutes(11), reported: true });
+    const internal = await createSession(binding.id, {
+      channelId: GROUP,
+      kind: "internal",
+      threadKey: "om_thread_root",
+      createdBySessionId: thread.id,
+      createdAt: minutes(12),
+    });
+    await unitDatabase.database.insert(sessionMessages).values({
+      id: crypto.randomUUID(),
+      sourceSessionId: thread.id,
+      targetSessionId: internal.id,
+      content: "Check thread",
+      contentHash: "a".repeat(64),
+      lastOutcome: "accepted",
+      attemptCount: 1,
+      lastAttemptAt: BASE_TIME,
+    });
+    await unitDatabase.database.insert(imMessages).values({
+      imBindingId: binding.id,
+      providerEventId: null,
+      channelId: GROUP,
+      externalMessageId: "om_thread_reply",
+      providerRevisionKey: "outbound:created:v1",
+      operation: "created",
+      direction: "outbound",
+      threadKey: "om_thread_root",
+      authorKind: "bot",
+      authorExternalId: "ou_bot",
+      content: {
+        version: 1,
+        fallbackText: "Thread answer",
+        blocks: [{ type: "text", text: "Thread answer" }],
+        truncated: false,
+        outbound: { messageType: "text", contentAvailable: true, timeSource: "provider" },
+      },
+      providerContext: { provider: "feishu", rootId: "om_thread_root" },
+      occurredAt: minutes(13),
+    });
+
+    expect(await resolveSessionTaskAnchor(unitDatabase.database, { sessionId: thread.id })).toEqual({
+      kind: "link",
+      taskAnchorId: thread.id,
+    });
+    expect((await service.detail(bootstrap.userId, thread.id)).task.id).toBe(root.id);
+    expect((await service.get(bootstrap.userId, thread.id, { limit: 10 })).task.id).toBe(root.id);
+    expect((await service.listTurns(bootstrap.userId, thread.id, {})).items.map((t) => t.message.id)).toEqual([
+      reply.id,
+      root.id,
+    ]);
+    expect((await service.listInternalSessions(bootstrap.userId, thread.id, {})).items.map((s) => s.id)).toEqual([
+      internal.id,
+    ]);
+    expect(
+      (await service.listCollaborationMessages(bootstrap.userId, thread.id, {})).items.map((m) => m.content),
+    ).toEqual(["Check thread"]);
+    expect((await service.listReplies(bootstrap.userId, thread.id, { limit: 10 })).items[0]?.fallbackText).toBe(
+      "Thread answer",
+    );
+
+    // 3. Group channel Session with two top-level requests A (minute 20) and B (minute 30),
+    // including out-of-order sends where execution A sends after delivery B was accepted:
+    const requestA = await createMessage(binding.id, {
+      channelId: GROUP,
+      externalMessageId: "om_group_req_a",
+      text: "Top-level group request A",
+      occurredAt: minutes(20),
+    });
+    const deliveryA = await createDelivery(channel.id, requestA.id, { at: minutes(21), reported: true });
+    await unitDatabase.database.insert(imMessages).values({
+      imBindingId: binding.id,
+      providerEventId: null,
+      channelId: GROUP,
+      externalMessageId: "om_group_req_a_reply",
+      providerRevisionKey: "outbound:created:v1",
+      operation: "created",
+      direction: "outbound",
+      threadKey: "om_group_req_a",
+      authorKind: "bot",
+      authorExternalId: "ou_bot",
+      content: {
+        version: 1,
+        fallbackText: "Answer for A",
+        blocks: [{ type: "text", text: "Answer for A" }],
+        truncated: false,
+        outbound: { messageType: "text", contentAvailable: true, timeSource: "provider" },
+      },
+      providerContext: { provider: "feishu", rootId: "om_group_req_a" },
+      occurredAt: minutes(22),
+    });
+
+    const requestB = await createMessage(binding.id, {
+      channelId: GROUP,
+      externalMessageId: "om_group_req_b",
+      text: "Top-level group request B",
+      occurredAt: minutes(30),
+    });
+    const deliveryB = await createDelivery(channel.id, requestB.id, { at: minutes(31), reported: true });
+
+    // Even after delivery B is accepted on the same group channel Session, execution A's own
+    // source.deliveryId still resolves to requestA.id!
+    const anchorFromSendA = await resolveSessionTaskAnchor(unitDatabase.database, {
+      sessionId: channel.id,
+      source: { kind: "delivery", deliveryId: deliveryA.id, turnId: "turn-a" },
+    });
+    expect(anchorFromSendA).toEqual({ kind: "link", taskAnchorId: requestA.id });
+
+    const anchorFromSendB = await resolveSessionTaskAnchor(unitDatabase.database, {
+      sessionId: channel.id,
+      source: { kind: "delivery", deliveryId: deliveryB.id, turnId: "turn-b" },
+    });
+    expect(anchorFromSendB).toEqual({ kind: "link", taskAnchorId: requestB.id });
+
+    // A non-delivery execution (e.g. session-message) on a group channel Session resolves to plain
+    // so it never links to an unrelated Task or a 404 route.
+    const nonDeliveryOnGroupChannel = await resolveSessionTaskAnchor(unitDatabase.database, {
+      sessionId: channel.id,
+      source: { kind: "session-message", messageId: crypto.randomUUID() },
+    });
+    expect(nonDeliveryOnGroupChannel).toEqual({ kind: "plain" });
+
+    // An ambient-only delivery on a group channel Session is not a Task and resolves to plain.
+    const ambientGroupMessage = await createMessage(binding.id, {
+      channelId: GROUP,
+      externalMessageId: "om_group_ambient",
+      text: "Ambient group chatter",
+      occurredAt: minutes(35),
+    });
+    const ambientDelivery = await createDelivery(channel.id, ambientGroupMessage.id, {
+      attention: "ambient",
+      at: minutes(36),
+      reported: true,
+    });
+    const ambientAnchor = await resolveSessionTaskAnchor(unitDatabase.database, {
+      sessionId: channel.id,
+      source: { kind: "delivery", deliveryId: ambientDelivery.id, turnId: "turn-ambient" },
+    });
+    expect(ambientAnchor).toEqual({ kind: "plain" });
+
+    // A DB lookup failure logs IM_SESSION_FOOTER_ANCHOR_LOOKUP_FAILED and falls back to plain.
+    const warnings: unknown[] = [];
+    const failedLookup = await resolveSessionTaskAnchor(
+      unitDatabase.database,
+      { sessionId: "not-a-uuid" },
+      { warn: (fields) => warnings.push(fields) },
+    );
+    expect(failedLookup).toEqual({ kind: "plain" });
+    expect(warnings).toMatchObject([{ code: "IM_SESSION_FOOTER_ANCHOR_LOOKUP_FAILED", sessionId: "not-a-uuid" }]);
+
+    const taskAnchorA = anchorFromSendA.kind === "link" ? anchorFromSendA.taskAnchorId : "";
+    const taskAnchorB = anchorFromSendB.kind === "link" ? anchorFromSendB.taskAnchorId : "";
+
+    // Clicking send A's footer link after request B has run still opens Task A!
+    expect((await service.detail(bootstrap.userId, taskAnchorA)).task.id).toBe(requestA.id);
+    expect((await service.get(bootstrap.userId, taskAnchorA, { limit: 10 })).task.id).toBe(requestA.id);
+    expect((await service.listTurns(bootstrap.userId, taskAnchorA, {})).items.map((t) => t.message.id)).toEqual([
+      requestA.id,
+    ]);
+    expect((await service.listReplies(bootstrap.userId, taskAnchorA, { limit: 10 })).items[0]?.fallbackText).toBe(
+      "Answer for A",
+    );
+
+    // Clicking send B's footer link opens Task B.
+    expect((await service.detail(bootstrap.userId, taskAnchorB)).task.id).toBe(requestB.id);
+
+    // Raw group channel Session id is not a 1:1 Task identifier.
+    await expect(service.detail(bootstrap.userId, channel.id)).rejects.toMatchObject({
+      code: "RESOURCE_NOT_FOUND",
+      statusCode: 404,
+    });
+    await expect(service.updateTitle(bootstrap.userId, channel.id, "Should not rename")).rejects.toMatchObject({
+      code: "RESOURCE_NOT_FOUND",
+      statusCode: 404,
+    });
+    await expect(service.cancel(bootstrap.userId, channel.id)).rejects.toMatchObject({
+      code: "RESOURCE_NOT_FOUND",
+      statusCode: 404,
+    });
+  });
 });

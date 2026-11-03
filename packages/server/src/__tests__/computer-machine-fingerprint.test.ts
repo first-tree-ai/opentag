@@ -36,7 +36,7 @@ async function account(email: string) {
   }
   const [row] = await unit.database
     .insert(users)
-    .values({ email, displayName: "Other", status: "active", createdAt: NOW, updatedAt: NOW })
+    .values({ email, displayName: "Other", createdAt: NOW, updatedAt: NOW })
     .returning({ id: users.id });
   if (!row) throw new Error("user insert returned no row");
   return row.id;
@@ -75,6 +75,7 @@ async function fixture() {
     machineFingerprintKey: KEY,
   });
   const first = await connect(machine, accountId, randomUUID());
+  if (!("machineToken" in first) || first.outcome !== "created") throw new Error("first connect did not create");
   return { accountId, machine, first, onCredentialRotated };
 }
 

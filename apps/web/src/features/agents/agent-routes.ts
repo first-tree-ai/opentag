@@ -64,3 +64,8 @@ export function agentSettingsSectionLink(agentId: string, section: AgentSettings
 export function accountComputerLink(computerId?: string, fromAgent?: string) {
   return { to: "/agents/computers", search: { computerId, fromAgent } } as const;
 }
+
+/** Starts a new Computer connection on the Account Computers page, keeping the way back to the Agent. */
+export function connectAnotherComputerLink(fromAgent?: string) {
+  return { to: "/agents/computers", search: { connect: "another", fromAgent } } as const;
+}

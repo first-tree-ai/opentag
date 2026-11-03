@@ -1,0 +1,92 @@
+diff --git a/packages/server/src/__tests__/integration/im-native-input-ledger.test.ts b/packages/server/src/__tests__/integration/im-native-input-ledger.test.ts
+index 1aa61ebc..09c65d95 100644
+--- a/packages/server/src/__tests__/integration/im-native-input-ledger.test.ts
++++ b/packages/server/src/__tests__/integration/im-native-input-ledger.test.ts
+@@ -1,5 +1,5 @@
+ import assert from "node:assert/strict";
+-import { type ChildProcess, execFileSync, spawn } from "node:child_process";
++import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+ import { createHash, createHmac, randomUUID } from "node:crypto";
+ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+ import { tmpdir } from "node:os";
+@@ -367,7 +367,7 @@ function connectPeer(target: Lane, directory: string, control: ReturnType<typeof
+ }
+
+ it.skipIf(process.platform === "win32")(
+-  "keeps the signed-ingress to native-Pi input ledger complete across batching and lost verification/steer/report acknowledgements",
++  "keeps an unseen earlier sender input before an already consumed successor",
+   async () => {
+     const directory = await mkdtemp(join(tmpdir(), "opentag-full-ledger-"));
+     const service = new ImBindingService(client.database, new ApplicationCipher(Buffer.alloc(32, 7)));
+@@ -428,6 +428,21 @@ it.skipIf(process.platform === "win32")(
+       expect(a.peer.inputs).toHaveLength(0);
+       a.peer.send({ kind: "reconcile" });
+       await expect.poll(() => peers.every(({ peer }) => peer.modelReady), { timeout: 15_000 }).toBe(true);
++      expect(peers.flatMap(({ peer }) => peer.inputs.flatMap((event) => event.markers))).toHaveLength(64);
++      expect(
++        peers
++          .flatMap(({ peer }) => peer.inputs.flatMap((event) => event.markers))
++          .some((marker) => marker.endsWith("_0000")),
++      ).toBe(false);
++      await Promise.all(targets.map((target) => post(url, target, 0, seconds)));
++      await expect
++        .poll(
++          async () =>
++            (await client.database.select().from(slackWebhookReceipts)).filter((row) => row.status === "processed")
++              .length,
++          { timeout: 10000 },
++        )
++        .toBe(132);
+       await deliverPending(worker, targets);
+       await expect
+         .poll(
+@@ -435,7 +450,7 @@ it.skipIf(process.platform === "win32")(
+             (await client.database.select().from(imMessageDeliveries)).filter((row) => row.state === "steered").length,
+           { timeout: 10_000 },
+         )
+-        .toBe(128);
++        .toBe(130);
+       for (const { peer } of peers) peer.send({ kind: "release" });
+       await expect
+         .poll(
+@@ -455,8 +470,8 @@ it.skipIf(process.platform === "win32")(
+       const messages = await client.database.select().from(imMessages);
+       const deliveries = await client.database.select().from(imMessageDeliveries);
+       const accepted = targets.flatMap((target) =>
+-        Array.from({ length: 65 }, (_, order) => {
+-          const inputId = envelope(target, order + 1, seconds).event.text;
++        Array.from({ length: 66 }, (_, order) => {
++          const inputId = envelope(target, order, seconds).event.text;
+           const message = messages.find((entry) => entry.content.fallbackText === inputId);
+           assert(message);
+           const delivery = deliveries.find(
+@@ -498,15 +513,17 @@ it.skipIf(process.platform === "win32")(
+       const file = join(directory, "ledger.json");
+       const ledger = {
+         environment: "synthetic",
+-        orderingBasis: "sender ordinal encoded in original Slack ts, posted in reverse order before dispatch",
++        orderingBasis:
++          "sender ordinal in Slack ts; ordinal 0 callback arrives only after original 1..32 native input consumption",
+         accepted,
+         received,
+       };
+       await writeFile(file, JSON.stringify(ledger));
+-      const verdict = JSON.parse(
+-        execFileSync(process.execPath, [ledgerCli, file], { encoding: "utf8", timeout: 5_000 }),
++      const checked = spawnSync(process.execPath, [ledgerCli, file], { encoding: "utf8", timeout: 5000 });
++      const verdict = JSON.parse(checked.stdout);
++      console.info(
++        JSON.stringify({ accepted: accepted.length, observations: received.length, findings: verdict.findings }),
+       );
+-      expect(verdict).toMatchObject({ ok: true, accepted: 130, received: 130 });
+       if (process.env.OPENTAG_INPUT_LEDGER_OUTPUT) {
+         const transmissions = peers.map(({ target, sent, dropped }) => ({
+           agentId: target.agentId,
+@@ -551,6 +568,7 @@ it.skipIf(process.platform === "win32")(
+           `${JSON.stringify({ ...ledger, verdict, transmissions }, null, 2)}\n`,
+         );
+       }
++      expect(verdict).toMatchObject({ ok: true, accepted: 132, received: 132 });
+       for (const { peer, sent, received: frames, dropped, target } of peers) {
+         expect(peer.errors).toEqual([]);
+         expect(dropped).toEqual([target.tag === "A" ? "verified" : "steer_result", "report_ack"]);

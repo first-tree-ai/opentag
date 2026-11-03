@@ -763,11 +763,11 @@ describe("Tasks view", () => {
     const activity = await screen.findByRole("region", { name: "Activity" });
     expect(
       within(activity)
-        .getByTitle("This message was included in the Agent's active work.")
+        .getByTitle("Check the corresponding execution result to see whether this message was processed.")
         .closest('[data-ui="task-message-request"]'),
     ).toBeTruthy();
     expect(activity.querySelectorAll('[data-ui="task-message-agent"]')).toHaveLength(1);
-    expect(within(activity).getByText("Added to active work")).toBeTruthy();
+    expect(within(activity).getByText("Grouped for execution")).toBeTruthy();
     expect(within(activity).queryByText(/150 tokens/)).toBeNull();
   });
 

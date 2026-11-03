@@ -50,6 +50,7 @@ contents, and machine-specific operational logs outside the repository.
 - [IM content and attachment delivery](verification/im-content-delivery.md)
 - [Ordered IM batches and Cloud steering](verification/im-backlog-batching.md)
 - [Inbound receipt recovery](verification/inbound-receipt-recovery.md)
+- [User input reliability and ledger assertions](verification/im-input-reliability.md)
 - [MCP Server integration](verification/mcp-server-integration.md)
 - [MCP catalog expansion](verification/mcp-catalog-expansion.md)
 - [MCP OAuth authorization reuse](verification/mcp-authorization-reuse.md)

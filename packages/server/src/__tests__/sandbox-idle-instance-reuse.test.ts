@@ -1116,6 +1116,23 @@ describe("E7 same-account physical reuse", () => {
     expect(rowA.storageUri).toBe(a.row.storageUri);
     expect(rowB.storageUri).not.toBe(a.row.storageUri);
     expect(stack.hub.describe(a.row.id).connected).toBe(false);
+    await expect(
+      stack.store.head({
+        storageUri: rowA.storageUri,
+        sandboxId: rowA.id,
+        sessionId: rowA.sessionId,
+        environmentGeneration: a.row.environmentGeneration,
+      }),
+    ).resolves.toMatchObject({ saved: true, sealed: true, ownerGeneration: a.row.environmentGeneration });
+
+    const deletesBefore = stack.fake.deleteCalls.length;
+    await restartService(stack).stopForAccount(accountId, rowA.id);
+    expect(stack.fake.deleteCalls).toHaveLength(deletesBefore);
+    expect(stack.fake.liveInstanceCount()).toBe(1);
+    expect((await sandboxRow(rowB.id)).currentResourceUid).toBe(a.row.currentResourceUid);
+    await expect(stack.fake.getInstance(rowB.currentResourceName as string)).resolves.toMatchObject({
+      uid: a.row.currentResourceUid,
+    });
   });
 
   it("never borrows across accounts, and never borrows from a non-reuse-capable Runner", async () => {

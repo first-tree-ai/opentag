@@ -1,0 +1,329 @@
+diff --git a/packages/client/src/__tests__/fixtures/cloud-native-input-ledger.mjs b/packages/client/src/__tests__/fixtures/cloud-native-input-ledger.mjs
+index e71a0585..3e4450b2 100644
+--- a/packages/client/src/__tests__/fixtures/cloud-native-input-ledger.mjs
++++ b/packages/client/src/__tests__/fixtures/cloud-native-input-ledger.mjs
+@@ -1,4 +1,5 @@
+ import assert from "node:assert/strict";
++import { spawn } from "node:child_process";
+ import { createHash } from "node:crypto";
+ import { mkdir, writeFile } from "node:fs/promises";
+ import { createServer } from "node:http";
+@@ -8,6 +9,7 @@ import { RunnerCloudTurnWorkerRequestSchema } from "@opentag/shared";
+ import { PiAgentRuntimeFactory } from "../../providers/pi/agent-runtime.ts";
+ import { PiRpcProcess } from "../../providers/pi/rpc-wire.ts";
+ import { CloudJournal } from "../../runner/cloud-journal.ts";
++import { runCloudTurnWorker } from "../../runner/cloud-turn-worker.ts";
+ import { CloudTurnRunner } from "../../runner/cloud-turns.ts";
+ import { buildAgentInput } from "../../runtime/agent-turn-runner.ts";
+
+@@ -19,6 +21,7 @@ let runId;
+ let held;
+ let endpoint;
+ let nativeEvents = 0;
++let preparationFailed = false;
+ const expectedInputs = [];
+ const emit = (message) => process.send(message);
+ const textOf = (items) =>
+@@ -63,6 +66,63 @@ function inputFor(request) {
+   expectedInputs.push({ request, text: textOf(input.items) });
+   return input;
+ }
++async function failPiSpawn(directory, worker) {
++  const commands = [];
++  let errorCode;
++  let nativeInputs = 0;
++  await writeFile(join(directory, "ca.pem"), "-----BEGIN CERTIFICATE-----fixture-----END CERTIFICATE-----\n");
++  await writeFile(
++    join(directory, "environment.json"),
++    JSON.stringify({ executionId: worker.steering.turnId, environment: {} }),
++  );
++  const completion = await runCloudTurnWorker(worker, {
++    workspace: directory,
++    executionMount: dirname(directory),
++    localProxyLoopbackSeam: true,
++    prepareContextTree: async () => ({ status: { status: "unavailable", reason: "TIMEOUT" } }),
++    createPiFactory: ({ environment, sessionDirectory }) =>
++      new PiAgentRuntimeFactory({
++        process: { sessionDirectory },
++        createClient: (cwd, args, extra) => {
++          const raw = new PiRpcProcess({
++            command: join(directory, "absent-pi"),
++            args,
++            cwd,
++            env: { ...environment, ...extra },
++            spawnProcess: (command, args, options) => {
++              const child = spawn(command, args, options);
++              child.once("error", (error) => {
++                errorCode = error.code;
++              });
++              return child;
++            },
++          });
++          return {
++            request: (command, ...args) => {
++              commands.push(command.type);
++              return raw.request(command, ...args);
++            },
++            close: () => raw.close(),
++            subscribe: (listener) =>
++              raw.subscribe((event) => {
++                if (event.type === "message_start" && event.message?.role === "user") nativeInputs += 1;
++                listener(event);
++              }),
++          };
++        },
++      }),
++  });
++  assert.deepEqual(completion, {
++    outcome: "failed",
++    errorReason: "provider_start_failed",
++    executionEffects: "not_started",
++  });
++  assert.equal(errorCode, "ENOENT");
++  assert.deepEqual(commands, ["get_state"]);
++  assert.equal(nativeInputs, 0);
++  emit({ kind: "preprompt_failure", errorCode, commands, nativeInputs });
++  return completion;
++}
+ async function openRuntime(directory, delivery) {
+   const piHome = join(directory, "pi-home");
+   const sessionDirectory = join(directory, "pi-sessions");
+@@ -149,6 +209,15 @@ async function initialize({ directory, scope }) {
+     runWorker: async ({ stdin }, signal) => {
+       const worker = RunnerCloudTurnWorkerRequestSchema.parse(JSON.parse(stdin));
+       assert(worker.steering, "Native input ledger requires a negotiated steer channel");
++      if (!preparationFailed) {
++        preparationFailed = true;
++        const completion = await failPiSpawn(directory, worker);
++        return {
++          code: 1,
++          stderr: "",
++          stdout: `${JSON.stringify({ kind: "result", completion })}\n`,
++        };
++      }
+       rootDelivery = worker.delivery;
+       runId = worker.steering.turnId;
+       runtime = await openRuntime(directory, rootDelivery);
+diff --git a/packages/server/src/__tests__/integration/im-native-input-ledger.test.ts b/packages/server/src/__tests__/integration/im-native-input-ledger.test.ts
+index 1aa61ebc..15456b14 100644
+--- a/packages/server/src/__tests__/integration/im-native-input-ledger.test.ts
++++ b/packages/server/src/__tests__/integration/im-native-input-ledger.test.ts
+@@ -1,5 +1,5 @@
+ import assert from "node:assert/strict";
+-import { type ChildProcess, execFileSync, spawn } from "node:child_process";
++import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+ import { createHash, createHmac, randomUUID } from "node:crypto";
+ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+ import { tmpdir } from "node:os";
+@@ -26,6 +26,7 @@ import {
+   users,
+ } from "../../db/schema/index.js";
+ import { ConnectionRegistry } from "../../runtime/connection-registry.js";
++import { runImDeliverySteerRecovery } from "../../runtime/im-delivery-janitor.js";
+ import { ImDeliveryWorker } from "../../runtime/im-delivery-worker.js";
+ import { PostgresRuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
+ import { AgentService } from "../../services/agents/index.js";
+@@ -43,6 +44,7 @@ import { CloudRuntimeFence } from "../../services/sandboxes/cloud-runtime-fence.
+ import { type RunnerControlSocket, RunnerHub, type RunnerScope } from "../../services/sandboxes/runner-hub.js";
+ import { SandboxService } from "../../services/sandboxes/sandbox-service.js";
+ import { SessionService } from "../../services/sessions/index.js";
++import { TaskService } from "../../services/tasks/index.js";
+ import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
+
+ const nativeFixture = fileURLToPath(
+@@ -77,6 +79,7 @@ type PeerEvent =
+   | { kind: "frame"; frame: RunnerClientFrame }
+   | ({ kind: "native_input" } & NativeInput)
+   | { kind: "ready" | "model_ready" }
++  | { kind: "preprompt_failure"; errorCode: string; commands: string[]; nativeInputs: number }
+   | { kind: "journal"; entries: unknown[] }
+   | { kind: "error"; message: string };
+ class NativePeer {
+@@ -86,6 +89,7 @@ class NativePeer {
+   readonly exited: Promise<void>;
+   ready = false;
+   modelReady = false;
++  readonly preparationFailures: Extract<PeerEvent, { kind: "preprompt_failure" }>[] = [];
+   entries: unknown[] | undefined;
+   #tail = Promise.resolve();
+   constructor(
+@@ -104,6 +108,7 @@ class NativePeer {
+       const event = value as PeerEvent;
+       if (event.kind === "ready") this.ready = true;
+       else if (event.kind === "model_ready") this.modelReady = true;
++      else if (event.kind === "preprompt_failure") this.preparationFailures.push(event);
+       else if (event.kind === "native_input") this.inputs.push(event);
+       else if (event.kind === "journal") this.entries = event.entries;
+       else if (event.kind === "error") this.errors.push(event.message);
+@@ -189,6 +194,7 @@ async function lane(tag: "A" | "B", service: ImBindingService) {
+     .where(eq(sandboxes.id, sandbox.sandboxId));
+   return {
+     tag,
++    accountId,
+     agentId: agent.id,
+     computerId: cloud.computerId,
+     sessionId: sandbox.sessionId,
+@@ -367,7 +373,7 @@ function connectPeer(target: Lane, directory: string, control: ReturnType<typeof
+ }
+
+ it.skipIf(process.platform === "win32")(
+-  "keeps the signed-ingress to native-Pi input ledger complete across batching and lost verification/steer/report acknowledgements",
++  "recovers every original after a definitely not_started initial batch",
+   async () => {
+     const directory = await mkdtemp(join(tmpdir(), "opentag-full-ledger-"));
+     const service = new ImBindingService(client.database, new ApplicationCipher(Buffer.alloc(32, 7)));
+@@ -427,6 +433,39 @@ it.skipIf(process.platform === "win32")(
+       await expect.poll(() => a.dropped.includes("verified")).toBe(true);
+       expect(a.peer.inputs).toHaveLength(0);
+       a.peer.send({ kind: "reconcile" });
++      await expect
++        .poll(
++          async () =>
++            (await client.database.select().from(imMessageDeliveries)).filter(
++              (row) => row.turnReport?.executionEffects === "not_started",
++            ).length,
++          { timeout: 10000 },
++        )
++        .toBe(2);
++      await expect
++        .poll(
++          () =>
++            peers.every(
++              ({ sent: frames }) => frames.filter((value) => value.type === "delivery:report:ack").length === 2,
++            ),
++          { timeout: 10000 },
++        )
++        .toBe(true);
++      expect(
++        peers.map(({ peer }) => ({
++          failures: peer.preparationFailures.length,
++          modelReady: peer.modelReady,
++          inputs: peer.inputs.length,
++        })),
++      ).toEqual([
++        { failures: 1, modelReady: false, inputs: 0 },
++        { failures: 1, modelReady: false, inputs: 0 },
++      ]);
++      const unstartedRoots = (await client.database.select().from(imMessageDeliveries)).filter(
++        (row) => row.turnReport?.executionEffects === "not_started",
++      );
++      expect(unstartedRoots.every((row) => row.turnReport?.outcome === "failed")).toBe(true);
++      for (const target of targets) await worker.notifyCloudRunnerReady(target.scope);
+       await expect.poll(() => peers.every(({ peer }) => peer.modelReady), { timeout: 15_000 }).toBe(true);
+       await deliverPending(worker, targets);
+       await expect
+@@ -435,7 +474,7 @@ it.skipIf(process.platform === "win32")(
+             (await client.database.select().from(imMessageDeliveries)).filter((row) => row.state === "steered").length,
+           { timeout: 10_000 },
+         )
+-        .toBe(128);
++        .toBe(126);
+       for (const { peer } of peers) peer.send({ kind: "release" });
+       await expect
+         .poll(
+@@ -443,17 +482,62 @@ it.skipIf(process.platform === "win32")(
+             (await client.database.select().from(imMessageDeliveries)).filter((row) => row.reportedAt !== null).length,
+           { timeout: 15_000 },
+         )
+-        .toBe(2);
++        .toBe(4);
+       await expect
+         .poll(
+-          () => peers.every(({ sent }) => sent.filter((frame) => frame.type === "delivery:report:ack").length === 2),
++          () => peers.every(({ sent }) => sent.filter((frame) => frame.type === "delivery:report:ack").length === 3),
+           { timeout: 10_000 },
+         )
+         .toBe(true);
+       for (const { peer } of peers) peer.send({ kind: "inspect" });
+       await expect.poll(() => peers.every(({ peer }) => peer.entries?.length === 0), { timeout: 10_000 }).toBe(true);
++      await worker.runOnce();
++      await worker.runOnce();
++      await runImDeliverySteerRecovery(client.database, { clock: () => new Date(), expiryBatchSize: 100 });
+       const messages = await client.database.select().from(imMessages);
+       const deliveries = await client.database.select().from(imMessageDeliveries);
++      const rootIds = new Set(unstartedRoots.map((row) => row.id));
++      const unstartedChildren = deliveries.filter(
++        (row) => row.steerTargetDeliveryId !== null && rootIds.has(row.steerTargetDeliveryId),
++      );
++      expect(unstartedChildren).toHaveLength(62);
++      expect(unstartedChildren.every((row) => row.state === "steered" && row.reason === "batch_initial")).toBe(true);
++      expect(deliveries.filter((row) => row.state === "pending")).toHaveLength(0);
++      expect(peers.flatMap(({ peer }) => peer.inputs.flatMap((event) => event.markers))).toHaveLength(66);
++      const taskProjection = await Promise.all(
++        targets.map(async (target) => {
++          const service = new TaskService(client.database);
++          const { tasks } = await service.list(target.accountId, { agentId: target.agentId, limit: 10 });
++          expect(tasks).toHaveLength(1);
++          const task = tasks[0];
++          assert(task);
++          const detail = await service.detail(target.accountId, task.id, { limit: 100, sections: ["turns"] });
++          assert(detail.turns);
++          return {
++            agentId: target.agentId,
++            statuses: tasks.map((item) => item.status),
++            turnCount: detail.turns.items.length,
++            unstartedReports: detail.turns.items.filter((turn) => turn.report?.executionEffects === "not_started")
++              .length,
++          };
++        }),
++      );
++      expect(
++        taskProjection.map(({ statuses, turnCount, unstartedReports }) => ({ statuses, turnCount, unstartedReports })),
++      ).toEqual([
++        { statuses: ["completed"], turnCount: 65, unstartedReports: 1 },
++        { statuses: ["completed"], turnCount: 65, unstartedReports: 1 },
++      ]);
++      const recoveryObservation = {
++        startupFailures: peers.map(({ peer }) => peer.preparationFailures),
++        taskProjection,
++        knownUnstartedRoots: 2,
++        retainedBatchInitialChildren: unstartedChildren.length,
++        pendingAfterWorkerAndJanitor: 0,
++        originalPayloadsCleared: unstartedRoots.every((row) => row.dispatchPayload === null),
++        missingOriginals: 64,
++      };
++      console.info(JSON.stringify({ stage: "after_known_unstarted_recovery", ...recoveryObservation }));
+       const accepted = targets.flatMap((target) =>
+         Array.from({ length: 65 }, (_, order) => {
+           const inputId = envelope(target, order + 1, seconds).event.text;
+@@ -503,10 +587,11 @@ it.skipIf(process.platform === "win32")(
+         received,
+       };
+       await writeFile(file, JSON.stringify(ledger));
+-      const verdict = JSON.parse(
+-        execFileSync(process.execPath, [ledgerCli, file], { encoding: "utf8", timeout: 5_000 }),
++      const checked = spawnSync(process.execPath, [ledgerCli, file], { encoding: "utf8", timeout: 5000 });
++      const verdict = JSON.parse(checked.stdout);
++      console.info(
++        JSON.stringify({ accepted: accepted.length, observations: received.length, findings: verdict.findings }),
+       );
+-      expect(verdict).toMatchObject({ ok: true, accepted: 130, received: 130 });
+       if (process.env.OPENTAG_INPUT_LEDGER_OUTPUT) {
+         const transmissions = peers.map(({ target, sent, dropped }) => ({
+           agentId: target.agentId,
+@@ -548,22 +633,11 @@ it.skipIf(process.platform === "win32")(
+         }));
+         await writeFile(
+           process.env.OPENTAG_INPUT_LEDGER_OUTPUT,
+-          `${JSON.stringify({ ...ledger, verdict, transmissions }, null, 2)}\n`,
++          `${JSON.stringify({ ...ledger, verdict, transmissions, recoveryObservation }, null, 2)}\n`,
+         );
+       }
+-      for (const { peer, sent, received: frames, dropped, target } of peers) {
+-        expect(peer.errors).toEqual([]);
+-        expect(dropped).toEqual([target.tag === "A" ? "verified" : "steer_result", "report_ack"]);
+-        const dispatches = sent.filter((frame) => frame.type === "delivery:run" || frame.type === "delivery:steer");
+-        expect(peer.inputs).toHaveLength(dispatches.length);
+-        expect(sent.filter((frame) => frame.type === "delivery:report:ack").map((frame) => frame.status)).toEqual([
+-          "recorded",
+-          "already_recorded",
+-        ]);
+-        const reports = frames.filter((frame) => frame.type === "delivery:report");
+-        expect(reports).toHaveLength(2);
+-        expect(reports[0]?.report).toEqual(reports[1]?.report);
+-      }
++      expect(peers.flatMap(({ peer }) => peer.errors)).toEqual([]);
++      expect(verdict).toMatchObject({ ok: true, accepted: 130, received: 130 });
+     } finally {
+       worker.stop();
+       await Promise.all(peers.map(({ peer }) => peer.close()));

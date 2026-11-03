@@ -122,6 +122,61 @@ describe("TurnCustodyOwner", () => {
     expect((await fixture.store.read("agent-1", "session-1"))?.unresolvedTurn).toBeUndefined();
   });
 
+  it("replays a recorded not_started input after reopening without starting a new attempt", async () => {
+    const fixture = await custodyFixture();
+    const request = delivery(fixture.runtime, "delivery-unstarted", randomUUID());
+    const owner = new TurnCustodyOwner({
+      bindingStore: fixture.store,
+      id: () => "turn-unstarted",
+      reconciler: fixture.reconciler,
+    });
+    const decision = await owner.accept(request);
+    await decision.onAcceptedSent?.();
+    const body = {
+      deliveryId: request.deliveryId,
+      turnId: "turn-unstarted",
+      sessionId: request.sessionId,
+      agentId: request.agentId,
+      placementGeneration: request.placementGeneration,
+      outcome: "failed" as const,
+      executionEffects: "not_started" as const,
+      errorReason: "provider_start_failed" as const,
+      traceSummary: { lastSequence: 0, droppedEvents: 0 },
+    };
+    const report = {
+      type: "turn:report" as const,
+      requestId: randomUUID(),
+      ...body,
+      resultHash: computeTurnResultHash(body),
+    };
+    await owner.markReporting(body.turnId, report);
+    await owner.recordResult(body.turnId, report.resultHash);
+
+    const store = new SessionBindingStore({ home: fixture.home, providerArtifactIdentity: () => "a".repeat(64) });
+    const workspace = new AgentWorkspaceManager({ home: fixture.home, bindingStore: store });
+    const reconciler = new SessionReconciler({ installationId: fixture.computerId, preparation: workspace });
+    await reconciler.reconcile({ ...fixture.reconcile, requestId: randomUUID() });
+    const start = vi.fn(async () => undefined);
+    const reopened = new TurnCustodyOwner({ bindingStore: store, reconciler, start, id: () => "turn-new" });
+    const replay = await reopened.accept({ ...request, requestId: randomUUID() });
+    expect(replay.result).toMatchObject({ status: "accepted", turnId: body.turnId });
+    expect(replay.onAcceptedSent).toBeUndefined();
+    expect(start).not.toHaveBeenCalled();
+    expect(reopened.liveTurnCount).toBe(0);
+    expect(reopened.admission.snapshot().client).toBe(0);
+    await expect(
+      reopened.accept({
+        ...request,
+        requestId: randomUUID(),
+        content: { ...request.content, text: "changed under the same delivery" },
+      }),
+    ).resolves.toMatchObject({ result: { status: "rejected", reason: "session_binding_conflict" } });
+    expect((await store.read(request.agentId, request.sessionId))?.recentRecordedInputs).toMatchObject([
+      { deliveryId: request.deliveryId, turnId: body.turnId, report, resultHash: report.resultHash },
+    ]);
+    expect(start).not.toHaveBeenCalled();
+  });
+
   it("C-26/C-27 rejects conflicting duplicates and rolls back failed preflight", async () => {
     const fixture = await custodyFixture();
     const owner = new TurnCustodyOwner({

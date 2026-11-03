@@ -1,0 +1,449 @@
+diff --git a/packages/client/src/__tests__/fixtures/cloud-native-input-ledger.mjs b/packages/client/src/__tests__/fixtures/cloud-native-input-ledger.mjs
+--- a/packages/client/src/__tests__/fixtures/cloud-native-input-ledger.mjs
++++ b/packages/client/src/__tests__/fixtures/cloud-native-input-ledger.mjs
+@@ -19,6 +19,8 @@
+ let held;
+ let endpoint;
+ let nativeEvents = 0;
++let modelRequests = 0;
++let holdAfter = 0;
+ const expectedInputs = [];
+ const emit = (message) => process.send(message);
+ const textOf = (items) =>
+@@ -70,9 +72,10 @@
+   endpoint = createServer(async (request, response) => {
+     for await (const _chunk of request) {
+     }
+-    if (!held) {
++    modelRequests += 1;
++    if (modelRequests === 1 || modelRequests === holdAfter) {
+       held = response;
+-      emit({ kind: "model_ready" });
++      emit({ kind: modelRequests === 1 ? "model_ready" : "crash_ready", modelRequests, nativeEvents });
+     } else reply(response);
+   });
+   await new Promise((done) => endpoint.listen(0, "127.0.0.1", done));
+@@ -105,6 +108,7 @@
+         },
+         requestTimeoutMs: 10000,
+       });
++      emit({ kind: "native_process", groupPid: raw.pid });
+       return {
+         request: (...args) => raw.request(...args),
+         close: (...args) => raw.close(...args),
+@@ -124,7 +128,8 @@
+     eventSink: () => {},
+   });
+ }
+-async function initialize({ directory, scope }) {
++async function initialize({ directory, scope, stopAfterModelRequests = 0 }) {
++  holdAfter = stopAfterModelRequests;
+   const journal = await CloudJournal.open(join(directory, "journal"));
+   runner = new CloudTurnRunner({
+     journal,
+diff --git a/packages/server/src/__tests__/integration/im-native-input-ledger.test.ts b/packages/server/src/__tests__/integration/im-native-input-ledger.test.ts
+--- a/packages/server/src/__tests__/integration/im-native-input-ledger.test.ts
++++ b/packages/server/src/__tests__/integration/im-native-input-ledger.test.ts
+@@ -1,5 +1,5 @@
+ import assert from "node:assert/strict";
+-import { type ChildProcess, execFileSync, spawn } from "node:child_process";
++import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process";
+ import { createHash, createHmac, randomUUID } from "node:crypto";
+ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+ import { tmpdir } from "node:os";
+@@ -76,7 +76,8 @@
+ type PeerEvent =
+   | { kind: "frame"; frame: RunnerClientFrame }
+   | ({ kind: "native_input" } & NativeInput)
+-  | { kind: "ready" | "model_ready" }
++  | { kind: "ready" | "model_ready" | "crash_ready" }
++  | { kind: "native_process"; groupPid: number }
+   | { kind: "journal"; entries: unknown[] }
+   | { kind: "error"; message: string };
+ class NativePeer {
+@@ -86,12 +87,15 @@
+   readonly exited: Promise<void>;
+   ready = false;
+   modelReady = false;
++  crashReady = false;
++  nativeGroupPid: number | undefined;
+   entries: unknown[] | undefined;
+   #tail = Promise.resolve();
+   constructor(
+     directory: string,
+     scope: RunnerScope & { resourceUid: string },
+     onFrame: (frame: RunnerClientFrame) => Promise<void>,
++    stopAfterModelRequests = 0,
+   ) {
+     this.child = spawn(process.execPath, ["--import", "tsx", nativeFixture], {
+       stdio: ["ignore", "ignore", "pipe", "ipc"],
+@@ -102,19 +106,38 @@
+     this.child.stderr?.on("data", (chunk) => this.errors.push(chunk.toString().slice(0, 2000)));
+     this.child.on("message", (value) => {
+       const event = value as PeerEvent;
+-      if (event.kind === "ready") this.ready = true;
+-      else if (event.kind === "model_ready") this.modelReady = true;
+-      else if (event.kind === "native_input") this.inputs.push(event);
+-      else if (event.kind === "journal") this.entries = event.entries;
+-      else if (event.kind === "error") this.errors.push(event.message);
+-      else if (event.kind === "frame")
+-        this.#tail = this.#tail
+-          .then(() => onFrame(event.frame))
+-          .catch((error) => {
+-            this.errors.push(String(error));
+-          });
++      switch (event.kind) {
++        case "ready":
++          this.ready = true;
++          return;
++        case "model_ready":
++          this.modelReady = true;
++          return;
++        case "crash_ready":
++          this.crashReady = true;
++          return;
++        case "native_process":
++          this.nativeGroupPid = event.groupPid;
++          return;
++        case "native_input":
++          this.inputs.push(event);
++          return;
++        case "journal":
++          this.entries = event.entries;
++          return;
++        case "error":
++          this.errors.push(event.message);
++          return;
++        case "frame":
++          this.#tail = this.#tail
++            .then(() => onFrame(event.frame))
++            .catch((error) => {
++              this.errors.push(String(error));
++            });
++          return;
++      }
+     });
+-    this.send({ kind: "init", directory, scope });
++    this.send({ kind: "init", directory, scope, stopAfterModelRequests });
+   }
+   send(message: unknown) {
+     this.child.send(message as object);
+@@ -288,10 +311,15 @@
+   throw new Error("Synthetic input queue did not drain within its input-count bound");
+ }
+
+-function connectPeer(target: Lane, directory: string, control: ReturnType<typeof makeDeliveryOwner>) {
++function connectPeer(
++  target: Lane,
++  directory: string,
++  control: ReturnType<typeof makeDeliveryOwner>,
++  stopAfterModelRequests = 0,
++) {
+   let peer: NativePeer;
+-  let dropVerified = target.tag === "A";
+-  let dropSteer = target.tag === "B";
++  let dropVerified = stopAfterModelRequests > 0 && target.tag === "A";
++  let dropSteer = stopAfterModelRequests > 0 && target.tag === "B";
+   let dropReportAck = true;
+   let lastSteer: RunnerServerFrame | undefined;
+   const sent: RunnerServerFrame[] = [];
+@@ -336,38 +364,97 @@
+     socket,
+     imInputVersion: 1,
+   });
+-  peer = new NativePeer(directory, target.scope, async (frame) => {
+-    received.push(frame);
+-    if (frame.type === "delivery:received") {
+-      const [frozen] = await client.database
+-        .select()
+-        .from(imMessageDeliveries)
+-        .where(eq(imMessageDeliveries.id, frame.deliveryId));
+-      const dispatch = sent.find((value) => value.type === "delivery:run" && value.requestId === frame.requestId);
+-      assert(dispatch?.type === "delivery:run");
+-      expect(frozen?.dispatchPayload).toEqual(dispatch.delivery);
+-      expect(frozen?.dispatchInputHash).toBe(computeDirectInputHash(dispatch.delivery));
+-      await control.owner.handleDeliveryReceived(connection, frame);
+-    } else if (frame.type === "delivery:report") await control.owner.handleDeliveryReport(connection, frame);
+-    else if (frame.type === "delivery:steer:result") {
+-      expect(lastSteer?.type === "delivery:steer" ? computeRuntimeImSteerInputHash(lastSteer.steer) : undefined).toBe(
+-        frame.inputHash,
+-      );
+-      if (dropSteer) {
+-        dropSteer = false;
+-        dropped.push("steer_result");
+-        assert(lastSteer);
+-        peer.send({ kind: "frame", frame: lastSteer });
+-        return;
+-      }
+-      await control.owner.handleSteerResult(connection, frame);
+-    } else throw new Error(`Unexpected Runner frame ${frame.type}`);
+-  });
++  peer = new NativePeer(
++    directory,
++    target.scope,
++    async (frame) => {
++      received.push(frame);
++      if (frame.type === "delivery:received") {
++        const [frozen] = await client.database
++          .select()
++          .from(imMessageDeliveries)
++          .where(eq(imMessageDeliveries.id, frame.deliveryId));
++        const dispatch = sent.find((value) => value.type === "delivery:run" && value.requestId === frame.requestId);
++        assert(dispatch?.type === "delivery:run");
++        expect(frozen?.dispatchPayload).toEqual(dispatch.delivery);
++        expect(frozen?.dispatchInputHash).toBe(computeDirectInputHash(dispatch.delivery));
++        await control.owner.handleDeliveryReceived(connection, frame);
++      } else if (frame.type === "delivery:report") await control.owner.handleDeliveryReport(connection, frame);
++      else if (frame.type === "delivery:steer:result") {
++        expect(lastSteer?.type === "delivery:steer" ? computeRuntimeImSteerInputHash(lastSteer.steer) : undefined).toBe(
++          frame.inputHash,
++        );
++        if (dropSteer) {
++          dropSteer = false;
++          dropped.push("steer_result");
++          assert(lastSteer);
++          peer.send({ kind: "frame", frame: lastSteer });
++          return;
++        }
++        await control.owner.handleSteerResult(connection, frame);
++      } else throw new Error(`Unexpected Runner frame ${frame.type}`);
++    },
++    stopAfterModelRequests,
++  );
+   return { peer, sent, received, target, dropped };
+ }
+
++function running(pid: number) {
++  try {
++    const state = execFileSync("ps", ["-o", "stat=", "-p", String(pid)], {
++      encoding: "utf8",
++      stdio: ["ignore", "pipe", "ignore"],
++    }).trim();
++    return state.length > 0 && !state.startsWith("Z");
++  } catch (error) {
++    if ((error as { status?: number }).status === 1) return false;
++    throw error;
++  }
++}
++
++function stopOwnedGroup(group: number) {
++  try {
++    process.kill(-group, "SIGKILL");
++  } catch (error) {
++    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
++  }
++}
++
++async function killRunner(peer: NativePeer, target: Lane, groups: number[]) {
++  expect(peer.errors).toEqual([]);
++  expect(peer.entries).toEqual([expect.objectContaining({ phase: "started" })]);
++  const rootEntry = peer.entries?.[0] as { deliveryId?: string; turnId?: string } | undefined;
++  assert(rootEntry?.deliveryId && rootEntry.turnId);
++  const group = peer.nativeGroupPid;
++  assert(group);
++  groups.push(group);
++  const pids = execFileSync("pgrep", ["-g", String(group)], { encoding: "utf8" })
++    .trim()
++    .split(/\s+/)
++    .map(Number);
++  expect(pids.length).toBeGreaterThanOrEqual(2);
++  expect(pids.map(running)).toEqual(pids.map(() => true));
++  const signal = new Promise((resolve) => peer.child.once("exit", (_code, value) => resolve(value)));
++  const killedAt = performance.now();
++  expect(peer.child.kill("SIGKILL")).toBe(true);
++  expect(await signal).toBe("SIGKILL");
++  await peer.exited;
++  await expect.poll(() => pids.map(running), { timeout: 5000 }).toEqual(pids.map(() => false));
++  return {
++    agentId: target.agentId,
++    rootDeliveryId: rootEntry.deliveryId,
++    turnId: rootEntry.turnId,
++    group,
++    pids,
++    journalPhase: "started",
++    observedInputs: 65,
++    automaticallyStopped: true,
++    quiescenceMs: Math.round(performance.now() - killedAt),
++  };
++}
++
+ it.skipIf(process.platform === "win32")(
+-  "keeps the signed-ingress to native-Pi input ledger complete across batching and lost verification/steer/report acknowledgements",
++  "does not replay native-consumed inputs after Runner SIGKILL",
+   async () => {
+     const directory = await mkdtemp(join(tmpdir(), "opentag-full-ledger-"));
+     const service = new ImBindingService(client.database, new ApplicationCipher(Buffer.alloc(32, 7)));
+@@ -390,6 +477,9 @@
+     const control = makeDeliveryOwner();
+     const worker = makeWorker(control.owner, targets);
+     const peers: ReturnType<typeof connectPeer>[] = [];
++    const originalPeers: ReturnType<typeof connectPeer>[] = [];
++    const groups: number[] = [];
++    const crashObservations: Awaited<ReturnType<typeof killRunner>>[] = [];
+     try {
+       const url = await app.listen({ host: "127.0.0.1", port: 0 });
+       const seconds = Math.floor(Date.now() / 1000);
+@@ -410,7 +500,7 @@
+       for (const target of targets) {
+         const path = join(directory, target.tag);
+         await mkdir(path);
+-        peers.push(connectPeer(target, path, control));
++        peers.push(connectPeer(target, path, control, 3));
+       }
+       await expect.poll(() => peers.every(({ peer }) => peer.ready), { timeout: 15_000 }).toBe(true);
+       for (const target of targets) await worker.notifyCloudRunnerReady(target.scope);
+@@ -437,21 +527,82 @@
+         )
+         .toBe(128);
+       for (const { peer } of peers) peer.send({ kind: "release" });
++      await expect.poll(() => peers.every(({ peer }) => peer.crashReady), { timeout: 15000 }).toBe(true);
++      expect(peers.flatMap(({ peer }) => peer.inputs.flatMap((event) => event.markers))).toHaveLength(130);
++      expect(
++        (await client.database.select().from(imMessageDeliveries)).filter((row) => row.reportedAt !== null),
++      ).toHaveLength(0);
++      for (const { peer } of peers) peer.send({ kind: "inspect" });
++      await expect.poll(() => peers.every(({ peer }) => peer.entries?.length === 1)).toBe(true);
++      originalPeers.push(...peers.splice(0));
++      for (const { peer, target } of originalPeers) {
++        crashObservations.push(await killRunner(peer, target, groups));
++        peers.push(connectPeer(target, join(directory, target.tag), control));
++      }
++      console.info(JSON.stringify({ stage: "after_runner_kill", crashObservations }));
++      await expect.poll(() => peers.every(({ peer }) => peer.ready), { timeout: 15000 }).toBe(true);
++      for (const { peer } of peers) peer.send({ kind: "reconcile" });
+       await expect
+         .poll(
+           async () =>
+-            (await client.database.select().from(imMessageDeliveries)).filter((row) => row.reportedAt !== null).length,
+-          { timeout: 15_000 },
++            (await client.database.select().from(imMessageDeliveries)).filter(
++              (row) => row.turnReport?.outcome === "unknown",
++            ).length,
++          { timeout: 10000 },
+         )
+         .toBe(2);
+       await expect
+         .poll(
+           () => peers.every(({ sent }) => sent.filter((frame) => frame.type === "delivery:report:ack").length === 2),
+-          { timeout: 10_000 },
++          { timeout: 10000 },
+         )
+         .toBe(true);
+       for (const { peer } of peers) peer.send({ kind: "inspect" });
+-      await expect.poll(() => peers.every(({ peer }) => peer.entries?.length === 0), { timeout: 10_000 }).toBe(true);
++      await expect.poll(() => peers.every(({ peer }) => peer.entries?.length === 0), { timeout: 10000 }).toBe(true);
++      for (const { peer, target, received: frames } of peers) {
++        expect(peer.inputs).toHaveLength(0);
++        expect(peer.nativeGroupPid).toBeUndefined();
++        const reports = frames.filter((frame) => frame.type === "delivery:report");
++        expect(reports).toHaveLength(2);
++        expect(reports[0]?.report).toEqual(reports[1]?.report);
++        const original = crashObservations.find((record) => record.agentId === target.agentId);
++        assert(original);
++        expect(reports[0]?.report).toMatchObject({
++          deliveryId: original.rootDeliveryId,
++          turnId: original.turnId,
++          agentId: target.agentId,
++          sessionId: target.sessionId,
++          outcome: "unknown",
++          executionEffects: "may_have_occurred",
++          errorReason: "turn_state_unknown",
++        });
++      }
++      const pending = (await client.database.select().from(imMessageDeliveries)).filter(
++        (row) => row.state === "pending",
++      );
++      expect(pending).toHaveLength(66);
++      console.info(
++        JSON.stringify({
++          stage: "after_sigkill_recovery",
++          observedOriginals: 130,
++          unknownRoots: 2,
++          replacementNativeInputs: 0,
++          requeuedSteers: pending.length,
++          crashObservations,
++        }),
++      );
++      await worker.runOnce();
++      await worker.runOnce();
++      await expect.poll(() => peers.every(({ peer }) => peer.modelReady), { timeout: 15000 }).toBe(true);
++      for (const { peer } of peers) peer.send({ kind: "release" });
++      await expect
++        .poll(
++          async () =>
++            (await client.database.select().from(imMessageDeliveries)).filter((row) => row.reportedAt !== null).length,
++          { timeout: 15000 },
++        )
++        .toBe(4);
++      const inputPeers = [...originalPeers, ...peers];
+       const messages = await client.database.select().from(imMessages);
+       const deliveries = await client.database.select().from(imMessageDeliveries);
+       const accepted = targets.flatMap((target) =>
+@@ -481,7 +632,7 @@
+           };
+         }),
+       );
+-      const received = peers.flatMap(({ peer }) =>
++      const received = inputPeers.flatMap(({ peer }) =>
+         peer.inputs.flatMap((event) =>
+           event.markers.map((inputId) => ({
+             inputId,
+@@ -503,12 +654,18 @@
+         received,
+       };
+       await writeFile(file, JSON.stringify(ledger));
+-      const verdict = JSON.parse(
+-        execFileSync(process.execPath, [ledgerCli, file], { encoding: "utf8", timeout: 5_000 }),
++      const checked = spawnSync(process.execPath, [ledgerCli, file], { encoding: "utf8", timeout: 5000 });
++      const verdict = JSON.parse(checked.stdout);
++      console.info(
++        JSON.stringify({
++          stage: "after_worker_retry",
++          accepted: accepted.length,
++          observations: received.length,
++          findings: verdict.findings,
++        }),
+       );
+-      expect(verdict).toMatchObject({ ok: true, accepted: 130, received: 130 });
+       if (process.env.OPENTAG_INPUT_LEDGER_OUTPUT) {
+-        const transmissions = peers.map(({ target, sent, dropped }) => ({
++        const transmissions = inputPeers.map(({ target, sent, dropped }) => ({
+           agentId: target.agentId,
+           sessionId: target.sessionId,
+           dropped,
+@@ -548,25 +705,20 @@
+         }));
+         await writeFile(
+           process.env.OPENTAG_INPUT_LEDGER_OUTPUT,
+-          `${JSON.stringify({ ...ledger, verdict, transmissions }, null, 2)}\n`,
++          `${JSON.stringify({ ...ledger, verdict, transmissions, crashObservations }, null, 2)}\n`,
+         );
+       }
+-      for (const { peer, sent, received: frames, dropped, target } of peers) {
+-        expect(peer.errors).toEqual([]);
+-        expect(dropped).toEqual([target.tag === "A" ? "verified" : "steer_result", "report_ack"]);
+-        const dispatches = sent.filter((frame) => frame.type === "delivery:run" || frame.type === "delivery:steer");
+-        expect(peer.inputs).toHaveLength(dispatches.length);
+-        expect(sent.filter((frame) => frame.type === "delivery:report:ack").map((frame) => frame.status)).toEqual([
+-          "recorded",
+-          "already_recorded",
+-        ]);
+-        const reports = frames.filter((frame) => frame.type === "delivery:report");
+-        expect(reports).toHaveLength(2);
+-        expect(reports[0]?.report).toEqual(reports[1]?.report);
+-      }
++      expect(peers.flatMap(({ peer }) => peer.errors)).toEqual([]);
++      expect(verdict).toMatchObject({ ok: true, accepted: 130, received: 130 });
+     } finally {
+       worker.stop();
+-      await Promise.all(peers.map(({ peer }) => peer.close()));
++      await Promise.all([...originalPeers, ...peers].map(({ peer }) => peer.close()));
++      for (const group of [
++        ...groups,
++        ...peers.map(({ peer }) => peer.nativeGroupPid).filter((pid): pid is number => pid !== undefined),
++      ]) {
++        stopOwnedGroup(group);
++      }
+       control.grants.close();
+       await app.close();
+       await rm(directory, { recursive: true, force: true });

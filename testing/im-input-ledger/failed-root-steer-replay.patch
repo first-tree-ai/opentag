@@ -1,0 +1,120 @@
+diff --git a/packages/client/src/__tests__/fixtures/cloud-native-input-ledger.mjs b/packages/client/src/__tests__/fixtures/cloud-native-input-ledger.mjs
+index e71a0585..1d5dfa3e 100644
+--- a/packages/client/src/__tests__/fixtures/cloud-native-input-ledger.mjs
++++ b/packages/client/src/__tests__/fixtures/cloud-native-input-ledger.mjs
+@@ -9,7 +9,7 @@ import { PiAgentRuntimeFactory } from "../../providers/pi/agent-runtime.ts";
+ import { PiRpcProcess } from "../../providers/pi/rpc-wire.ts";
+ import { CloudJournal } from "../../runner/cloud-journal.ts";
+ import { CloudTurnRunner } from "../../runner/cloud-turns.ts";
+-import { buildAgentInput } from "../../runtime/agent-turn-runner.ts";
++import { buildAgentInput, completionForResult } from "../../runtime/agent-turn-runner.ts";
+
+ const cli = join(dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))), "cli.js");
+ let runner;
+@@ -73,7 +73,12 @@ async function openRuntime(directory, delivery) {
+     if (!held) {
+       held = response;
+       emit({ kind: "model_ready" });
+-    } else reply(response);
++    } else {
++      response.writeHead(401, { "content-type": "application/json" });
++      response.end(
++        JSON.stringify({ error: { message: "synthetic permanent model error", type: "authentication_error" } }),
++      );
++    }
+   });
+   await new Promise((done) => endpoint.listen(0, "127.0.0.1", done));
+   await writeFile(
+@@ -153,7 +158,8 @@ async function initialize({ directory, scope }) {
+       runId = worker.steering.turnId;
+       runtime = await openRuntime(directory, rootDelivery);
+       const result = await runtime.prompt({ runId, input: inputFor(rootDelivery), signal });
+-      assert.equal(result.status, "completed", JSON.stringify(result));
++      assert.equal(result.status, "failed", JSON.stringify(result));
++      const completion = completionForResult(result, undefined);
+       await runtime.close();
+       runtime = undefined;
+       endpoint.closeAllConnections();
+@@ -161,7 +167,7 @@ async function initialize({ directory, scope }) {
+       return {
+         code: 0,
+         stderr: "",
+-        stdout: `${JSON.stringify({ kind: "result", completion: { outcome: "completed", executionEffects: "completed" } })}\n`,
++        stdout: `${JSON.stringify({ kind: "result", completion })}\n`,
+       };
+     },
+     steerWorker: async ({ request }) => {
+diff --git a/packages/server/src/__tests__/integration/im-native-input-ledger.test.ts b/packages/server/src/__tests__/integration/im-native-input-ledger.test.ts
+index 1aa61ebc..e6783d91 100644
+--- a/packages/server/src/__tests__/integration/im-native-input-ledger.test.ts
++++ b/packages/server/src/__tests__/integration/im-native-input-ledger.test.ts
+@@ -1,5 +1,5 @@
+ import assert from "node:assert/strict";
+-import { type ChildProcess, execFileSync, spawn } from "node:child_process";
++import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+ import { createHash, createHmac, randomUUID } from "node:crypto";
+ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+ import { tmpdir } from "node:os";
+@@ -367,7 +367,7 @@ function connectPeer(target: Lane, directory: string, control: ReturnType<typeof
+ }
+
+ it.skipIf(process.platform === "win32")(
+-  "keeps the signed-ingress to native-Pi input ledger complete across batching and lost verification/steer/report acknowledgements",
++  "does not replay already consumed steered inputs after a native Pi model failure",
+   async () => {
+     const directory = await mkdtemp(join(tmpdir(), "opentag-full-ledger-"));
+     const service = new ImBindingService(client.database, new ApplicationCipher(Buffer.alloc(32, 7)));
+@@ -452,6 +452,25 @@ it.skipIf(process.platform === "win32")(
+         .toBe(true);
+       for (const { peer } of peers) peer.send({ kind: "inspect" });
+       await expect.poll(() => peers.every(({ peer }) => peer.entries?.length === 0), { timeout: 10_000 }).toBe(true);
++      const beforeReplay = await client.database.select().from(imMessageDeliveries);
++      const pendingBeforeReplay = beforeReplay.filter((row) => row.state === "pending");
++      const beforeNative = peers.reduce(
++        (sum, { peer }) => sum + peer.inputs.flatMap((event) => event.markers).length,
++        0,
++      );
++      expect(beforeNative).toBe(130);
++      expect(beforeReplay.filter((row) => row.turnReport?.outcome === "failed")).toHaveLength(2);
++      console.info(
++        JSON.stringify({
++          stage: "before_retry",
++          nativeInputs: beforeNative,
++          requeuedAfterFailedRoot: pendingBeforeReplay.length,
++        }),
++      );
++      await worker.runOnce();
++      await worker.runOnce();
++      await expect.poll(() => peers.every(({ peer }) => peer.inputs.length >= 4), { timeout: 15_000 }).toBe(true);
++      for (const { peer } of peers) expect(peer.errors).toEqual([]);
+       const messages = await client.database.select().from(imMessages);
+       const deliveries = await client.database.select().from(imMessageDeliveries);
+       const accepted = targets.flatMap((target) =>
+@@ -503,10 +522,16 @@ it.skipIf(process.platform === "win32")(
+         received,
+       };
+       await writeFile(file, JSON.stringify(ledger));
+-      const verdict = JSON.parse(
+-        execFileSync(process.execPath, [ledgerCli, file], { encoding: "utf8", timeout: 5_000 }),
++      const checked = spawnSync(process.execPath, [ledgerCli, file], { encoding: "utf8", timeout: 5_000 });
++      const verdict = JSON.parse(checked.stdout);
++      console.info(
++        JSON.stringify({
++          stage: "after_retry",
++          accepted: verdict.accepted,
++          received: verdict.received,
++          findings: verdict.findings,
++        }),
+       );
+-      expect(verdict).toMatchObject({ ok: true, accepted: 130, received: 130 });
+       if (process.env.OPENTAG_INPUT_LEDGER_OUTPUT) {
+         const transmissions = peers.map(({ target, sent, dropped }) => ({
+           agentId: target.agentId,
+@@ -551,6 +576,7 @@ it.skipIf(process.platform === "win32")(
+           `${JSON.stringify({ ...ledger, verdict, transmissions }, null, 2)}\n`,
+         );
+       }
++      expect(verdict).toMatchObject({ ok: true, accepted: 130, received: 130 });
+       for (const { peer, sent, received: frames, dropped, target } of peers) {
+         expect(peer.errors).toEqual([]);
+         expect(dropped).toEqual([target.tag === "A" ? "verified" : "steer_result", "report_ack"]);

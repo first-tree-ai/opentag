@@ -1,7 +1,7 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
   "tasks_activity": "Activity",
-  "tasks_added_to_active_work": "Added to active work",
+  "tasks_added_to_active_work": "Grouped for execution",
   "tasks_agent_filter_value": "Agent: {agent}",
   "tasks_agent_label": "Agent",
   "tasks_agent_response": "Agent response",
@@ -64,7 +64,7 @@
   "tasks_filter_by_status": "Filter by status",
   "tasks_filter_tasks": "Filter Tasks",
   "tasks_in_progress": "In progress",
-  "tasks_included_in_active_work": "This message was included in the Agent's active work.",
+  "tasks_included_in_active_work": "Check the corresponding execution result to see whether this message was processed.",
   "tasks_last_activity_label": "Last activity",
   "tasks_load_earlier_activity": "Load earlier activity",
   "tasks_load_earlier_replies": "Load earlier replies",

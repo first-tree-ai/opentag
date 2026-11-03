@@ -45,6 +45,7 @@ export function ComputerManagement({
         compact
         computer={computer}
         connection={connection}
+        hideStatus={!cloud && confirmed && connection !== "online"}
         lastSeenAt={computer.lastSeenAt}
         actions={
           cloud ? undefined : (

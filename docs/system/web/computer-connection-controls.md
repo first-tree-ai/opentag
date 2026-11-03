@@ -27,23 +27,37 @@ Each card shows the computer's identity, a connection status badge, and a More m
 
 “Status unavailable” expresses missing evidence, not another persisted connection condition.
 
-- A local computer that is not online shows its repair task inline, issued automatically with a targeted repair
-  code: the shared instruction block, one copy action, optional full-text expansion, and the code's expiry. The
-  copied text is always complete. Copying is never evidence of connection.
+- A local computer that is not online shows the shared command window inline on its card, issued automatically with
+  a targeted repair code. The card hides its own status badge while the window is shown, so the window's status is
+  the only one. The copied text is always complete. Copying is never evidence of connection.
 - While the inventory read is uncertain, the repair task is hidden and the card offers Check status instead. Cancel
   inventory reads that began before the failure, then latch uncertainty against the cache's current
   successful-read sequence. Only a later Server read can restore confidence; render-time or Server timestamps
   cannot. Keep pending repair instructions until their own Server verdict retires them.
-- A confirmed online result updates the card and removes the repair task; keyboard focus that was inside it moves to
+- A confirmed online result updates the card and removes the window; keyboard focus that was inside it moves to
   the card.
 - More contains Remove, which keeps its typed-name confirmation and refuses while any non-deleted Agent is assigned.
   The web surface has no Disconnect action.
 
+## Command window
+
+Every connect surface (this page's create and repair flows, Agent settings, and the Agent setup connect step) uses one
+shared command window: an explanatory line chosen by the caller, the command with its expiry, and a single connection
+status. Other parts of the page do not add a second status for the same computer while the window is shown. One
+window everywhere means a reader learns the flow once and never has to reconcile two statuses that disagree.
+
+- The explanatory line above the command says which computer the task is for (for example “Copy the task to your
+  Agent on this computer”), so each caller supplies its own.
+- The status speaks only about the computer's connection: waiting for it, not connected, or connected. It never says
+  whether the command was used. The page cannot always know that, and it is not something the reader acts on.
+- An expired command is masked in place and offers one **Refresh** action that issues a new command there. Leaving
+  the dead command readable would invite copying a task that can no longer work.
+
 ## Access and compatibility
 
 The Server keeps an Account-authorized `POST /api/v1/computers/:computerId/disconnect` (not offered in the web
-surface), protected by the existing session and CSRF boundary. It revokes active credentials and pending repair codes and clears presence. Computer identity,
-Agent bindings, configuration, and local files remain. Cloud Computers cannot be disconnected through this endpoint.
+surface), protected by the existing session and CSRF boundary. It revokes active credentials and pending repair
+codes and clears presence. Computer identity, Agent bindings, configuration, and local files remain. Cloud Computers cannot be disconnected through this endpoint.
 
 The transaction records `computers.disconnected_at`; a successful targeted repair clears it, and so does a create
 code redeemed from the same installation, which repairs that Computer in place instead of adding one (see

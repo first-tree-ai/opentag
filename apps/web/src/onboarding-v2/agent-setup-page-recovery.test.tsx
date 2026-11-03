@@ -549,7 +549,7 @@ describe("AgentSetupPage with the Lab Computer adapters", () => {
     await settle();
     expect(screen.getByRole("button", { name: "Copy for Agent" })).toBeTruthy();
     expect(memory.inspect().computerConnectState).toBe("pending");
-    expect(screen.queryByText("Waiting for Review Mac to reconnect…")).toBeNull();
+    expect(screen.getByText("Waiting for Review Mac to reconnect…")).toBeTruthy();
 
     act(() => memory.controls.completeComputerConnection());
     await advance(1_600);

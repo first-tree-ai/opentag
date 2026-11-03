@@ -134,7 +134,7 @@ describe("Account Computer management", () => {
     });
     openComputer();
     fireEvent.click(await screen.findByRole("button", { name: "Connect a new computer" }));
-    expect(await screen.findByText("Command accepted. Waiting for openTag to come online…")).toBeTruthy();
+    expect(await screen.findByText("Waiting for your computer…")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Ada's Mac" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Zulu Tower" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Connect a new computer" })).toBeNull();
@@ -195,8 +195,11 @@ describe("Account Computer management", () => {
     });
     openComputer();
     fireEvent.click(await screen.findByRole("button", { name: "Connect computer" }));
-    expect(await screen.findByText("Command accepted. Waiting for openTag to come online…")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Copy for Agent" })).toBeNull();
+    // After redemption the used command is gone and only the connection status remains.
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Copy for Agent" })).toBeNull(), {
+      timeout: 3_000,
+    });
+    expect(screen.getByText("Waiting for your computer…")).toBeTruthy();
     online = true;
     fireEvent(window, new Event("focus"));
     expect(await screen.findByText("Online", {}, { timeout: 3_000 })).toBeTruthy();
@@ -232,14 +235,7 @@ describe("Account Computer management", () => {
     openComputer();
     const expectAttempt = async () => {
       if (codeState === "pending") expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
-      else
-        expect(
-          await screen.findByText(
-            "Authorization accepted. Waiting for openTag to come online…",
-            {},
-            { timeout: 3_000 },
-          ),
-        ).toBeTruthy();
+      else expect(await screen.findByText("Waiting for Ada's Mac to reconnect…", {}, { timeout: 3_000 })).toBeTruthy();
     };
     await expectAttempt();
     failed = true;

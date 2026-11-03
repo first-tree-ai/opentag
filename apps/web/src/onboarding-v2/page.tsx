@@ -410,7 +410,7 @@ function AgentCreatePage({
       data-ui="agent-create"
     >
       {!embedded && (
-        <header className="flex flex-wrap items-center justify-between gap-3 p-6">
+        <header className="flex items-center justify-between gap-2 p-6">
           {brandControl ?? <OpenTagLogo label={m.onboarding_v2_brand_name()} />}
           <div className="ml-auto flex items-center gap-2">
             {/*

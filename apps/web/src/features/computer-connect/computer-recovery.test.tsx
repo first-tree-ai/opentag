@@ -84,41 +84,33 @@ describe("shared Computer recovery", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("copies the full task and authorization before expansion without claiming reconnection", async () => {
+  it("shows and copies the repair command itself, without claiming reconnection", async () => {
     const adapter = createAdapter(),
       onConnected = vi.fn(),
       writeText = clipboard();
     render(<ComputerRecovery computer={computer} adapter={adapter} onConnected={onConnected} />);
     await settle();
     const region = screen.getByRole("region", { name: "Restore connection" });
-    expect(region.textContent).not.toContain(command);
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy for Agent" })));
     const payload = writeText.mock.calls[0]?.[0] as string;
-    expect(payload).toContain("Computer ID: review-mac");
-    expect(payload).toContain("Computer: Ada's Mac");
-    expect(payload).toContain("only when identity recovery or new authorization is needed");
-    expect(payload).toContain(command);
-    expect(payload).toContain("Do not overwrite a binding or create a replacement Computer");
-    expect(payload).toContain("Preserve the original Computer ID, Agent assignments, and user data");
-    expect(payload).not.toContain("Repair connection");
+    const [agentLine, commandLine, extra] = payload.split("\n");
+    expect(agentLine).toMatch(/^: 'openTag: restore the connection of Ada'\\''s Mac\. Run the next line as-is/);
+    expect(commandLine).toBe(command);
+    expect(extra).toBeUndefined();
     expect(onConnected).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Show full instructions" }));
     expect(region.textContent).toBe(payload);
-    expect(screen.getByRole("button", { name: "Show less" }).getAttribute("aria-expanded")).toBe("true");
+    expect(screen.queryByRole("button", { name: "Show full instructions" })).toBeNull();
     expect(screen.queryByRole("dialog")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Show less" }));
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copied" })));
     expect(writeText.mock.calls[1]?.[0]).toBe(payload);
     expect(adapter.issue).toHaveBeenCalledOnce();
   });
 
-  it("expands and selects the complete task when clipboard access fails", async () => {
+  it("selects the complete command when clipboard access fails", async () => {
     const writeText = clipboard(true);
     render(<ComputerRecovery computer={computer} adapter={createAdapter()} onConnected={vi.fn()} />);
     await settle();
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy for Agent" })));
-    expect(screen.getByText("Copy failed. Select and copy the task.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Show less" })).toBeTruthy();
     expect(window.getSelection()?.toString()).toBe(writeText.mock.calls[0]?.[0]);
     expect(screen.queryByRole("button", { name: "Copied" })).toBeNull();
   });
@@ -169,7 +161,6 @@ describe("shared Computer recovery", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await settle();
-    fireEvent.click(screen.getByRole("button", { name: "Show full instructions" }));
     expect(screen.getByRole("region", { name: "Restore connection" }).textContent).toContain("replacement-command");
     expect(screen.getByRole("region", { name: "Restore connection" }).textContent).not.toContain(command);
     expect(adapter.issue).toHaveBeenCalledTimes(2);

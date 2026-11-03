@@ -44,7 +44,7 @@ describe("completed Computer recovery", () => {
       const view = await renderInRouter(<ComputerManagement {...props} computer={computer} />);
       fireEvent.click(await screen.findByRole("button", { name: "Restore connection" }));
       expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
-      screen.getByRole("button", { name: "Show full instructions" }).focus();
+      screen.getByRole("button", { name: "Copy for Agent" }).focus();
       const card = document.querySelector('[data-ui="computer-management"]');
       await act(async () => {
         finish({ connectCodeId: "code", state: "redeemed", computerId, redeemedAt: connectedAt });

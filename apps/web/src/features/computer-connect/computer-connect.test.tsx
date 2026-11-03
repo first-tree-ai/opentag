@@ -154,17 +154,17 @@ describe("ComputerConnect", () => {
             : "Copy the task to your Agent on the computer you want to connect.",
         ),
       ).toBeTruthy();
+      // The window shows exactly what is copied: one inert Agent line, then the command a person can
+      // paste into a terminal. Nothing is hidden behind an expansion.
       const region = screen.getByRole("region", { name: "Connect computer" });
-      expect(region.textContent).not.toContain(COMMAND);
       fireEvent.click(screen.getByRole("button", { name: "Copy for Agent" }));
       await flushAsync();
       const payload = writeText.mock.calls[0]?.[0] as string;
-      expect(payload).toContain(COMMAND);
-      expect(payload).toContain("Preserve a working connection");
-      expect(payload).toContain("Do not redeem an already-used authorization");
-      expect(payload).not.toContain("target computer");
-      fireEvent.click(screen.getByRole("button", { name: "Show full instructions" }));
+      expect(payload).toBe(
+        `: 'openTag: connect this computer to my account. Run the next line as-is in a terminal on this computer and report its output.'\n${COMMAND}`,
+      );
       expect(region.textContent).toBe(payload);
+      expect(screen.queryByRole("button", { name: "Show full instructions" })).toBeNull();
       expect(issue).toHaveBeenCalledExactlyOnceWith({ mode: "create" });
     },
   );
@@ -217,12 +217,11 @@ describe("ComputerConnect", () => {
 
     expect(issue).toHaveBeenCalledWith({ mode: "repair", targetComputerId: COMPUTER_ID });
     expect(screen.getByText("Copy the task to your Agent on Ada's Mac.")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Show full instructions" }));
-    expect(screen.getByRole("region", { name: "Restore connection" }).textContent).toContain(COMPUTER_ID);
+    expect(screen.getByRole("region", { name: "Restore connection" }).textContent).toContain(COMMAND);
     expect(screen.getByRole("status").textContent).toContain(`Waiting for ${computer.displayName} to reconnect`);
   });
 
-  it("copies the complete targeted recovery task before expansion", async () => {
+  it("copies the targeted recovery command with its Agent line", async () => {
     vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
       connectCodeId: CONNECT_CODE_ID,
       bootstrapCommand: COMMAND,
@@ -243,11 +242,10 @@ describe("ComputerConnect", () => {
     await flushAsync();
 
     const payload = writeText.mock.calls[0]?.[0] as string;
-    expect(payload).toContain(`Computer: ${computer.displayName}`);
-    expect(payload).toContain(`Computer ID: ${COMPUTER_ID}`);
-    expect(payload).toContain(COMMAND);
-    expect(payload).toContain("Preserve the original Computer ID, Agent assignments, and user data");
-    fireEvent.click(screen.getByRole("button", { name: "Show full instructions" }));
+    // The command names the Computer itself (--computer); the line names it for the Agent.
+    expect(payload).toBe(
+      `: 'openTag: restore the connection of ${computer.displayName.replace("'", "'\\''")}. Run the next line as-is in a terminal on that computer and report its output.'\n${COMMAND}`,
+    );
     expect(screen.getByRole("region", { name: "Restore connection" }).textContent).toBe(payload);
   });
 

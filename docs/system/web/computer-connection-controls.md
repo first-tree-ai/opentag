@@ -53,6 +53,9 @@ window everywhere means a reader learns the flow once and never has to reconcile
 
 - The explanatory line above the command says which computer the task is for (for example “Copy the task to your
   Agent on this computer”), so each caller supplies its own.
+- The window shows exactly the text that is copied: the inert Agent line and the command (see
+  [Server and Client Runtime boundary](../server-client-boundary.md)). Nothing is hidden behind an expansion, because
+  the copied text is short and a reader should see what they paste.
 - The status speaks only about the computer's connection: waiting for it, not connected, or connected. It never says
   whether the command was used. The page cannot always know that, and it is not something the reader acts on.
 - An expired command is masked in place and offers one **Refresh** action that issues a new command there. Leaving

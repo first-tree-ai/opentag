@@ -505,6 +505,7 @@ export function registerAccountRoutes(
               downloadBaseUrl,
               environment,
               publicUrl,
+              targetComputerId: input.mode === "repair" ? input.targetComputerId : undefined,
             }),
             expiresIn: issued.expiresIn,
             issuedAt: issued.issuedAt.toISOString(),

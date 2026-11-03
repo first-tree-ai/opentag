@@ -295,8 +295,6 @@ describe("Account Computer management", () => {
     expect(screen.queryByRole("button", { name: "Restore connection" })).toBeNull();
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.queryByRole("button", { name: "Get connection help" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Show full instructions" }));
-    expect(screen.getByRole("region", { name: "Restore connection" }).textContent).toContain(computerId);
     const region = screen.getByRole("region", { name: "Restore connection" });
     expect(region.closest('[data-ui="computer-management"]')).toBeTruthy();
     expect(within(region).queryByText("Assistant requested a repair?")).toBeNull();

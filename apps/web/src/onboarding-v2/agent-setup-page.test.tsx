@@ -367,7 +367,6 @@ describe("AgentSetupPage stages", () => {
     expect(screen.getByText("Waiting for Review Mac to reconnect…")).toBeTruthy();
     // The code-expiry hint stays beside the recovery command (C5).
     expect(screen.getByText(/^Expires in /)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Show full instructions" }));
     expect(screen.getByRole("region", { name: "Restore connection" }).textContent).toContain("repair-code");
     expect(issue).toHaveBeenCalledExactlyOnceWith({
       mode: "repair",

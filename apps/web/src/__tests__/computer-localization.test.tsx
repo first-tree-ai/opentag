@@ -44,16 +44,12 @@ describe("Computer localization", () => {
     fireEvent.click(restore);
     await screen.findByRole("button", { name: copy.copy });
     expect(screen.queryByRole("button", { name: copy.repair })).toBeNull();
-    fireEvent.click(
-      screen.getByRole("button", { name: copy.locale === "en" ? "Show full instructions" : "展开完整指令" }),
-    );
-    expect(await screen.findByRole("button", { name: copy.copy })).toBeTruthy();
-    expect(screen.getByRole("region", { name: copy.restore }).textContent).toContain(computerId);
+    // Nothing is hidden: the window shows the copied text itself, its Agent line localized.
+    expect(screen.queryByRole("button", { name: /Show full instructions|展开完整指令/ })).toBeNull();
+    const task = screen.getByRole("region", { name: copy.restore }).textContent ?? "";
+    expect(task).toMatch(copy.locale === "en" ? /^: 'openTag: restore the connection of / : /^: 'openTag：恢复 /);
     if (copy.locale === "zh") {
       expect(screen.queryByRole("heading", { name: "运行环境" })).toBeNull();
-      // The assistant task deliberately names the Computer ID; the surrounding UI stays localized.
-      const task = screen.getByRole("region", { name: copy.restore }).textContent ?? "";
-      expect(task).toContain("Computer ID");
       expect(screen.getByRole("main").textContent?.replace(task, "")).not.toMatch(/计算机|账号|\bComputer\b|运行时/);
     }
     fireEvent.click(await screen.findByRole("link", { name: copy.back }));

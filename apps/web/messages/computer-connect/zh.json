@@ -1,6 +1,6 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
-  "computer_connect_another_intro": "将任务复制给目标电脑上的 Agent，完成后回到当前页面继续设置。",
+  "computer_connect_another_intro": "将任务复制给要连接的电脑上的 Agent。",
   "computer_connect_connected": "{computerName} 已连接",
   "computer_connect_copied": "已复制",
   "computer_connect_copy": "复制给 Agent",

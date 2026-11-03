@@ -184,7 +184,6 @@ function ComputerConnection({
         <Text as="h2" id="connect-computer-heading" variant="heading">
           {additional ? m.computer_connect_another_action() : m.computer_first_heading()}
         </Text>
-        <p className="max-w-prose text-sm text-kumo-subtle">{m.computer_first_description()}</p>
       </div>
       {connecting ? (
         <ComputerConnect

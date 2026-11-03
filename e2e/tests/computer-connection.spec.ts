@@ -280,10 +280,7 @@ test("connects another Computer from Agent settings without moving the Agent", a
   await entry.click();
   await expect(page).toHaveURL((url) => url.pathname === "/agents/computers" && !url.searchParams.has("connect"));
   await expect(
-    page.getByText(
-      "Copy the task to your Agent on the target computer. Return here to continue setup when it connects.",
-      { exact: true },
-    ),
+    page.getByText("Copy the task to your Agent on the computer you want to connect.", { exact: true }),
   ).toBeVisible();
   const task = await copyTask(page, page.locator('[data-ui="computer-connect"]'));
   expect(task).toContain("this computer's current environment");

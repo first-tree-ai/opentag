@@ -68,8 +68,8 @@ export interface RunnerWebSocketRouteOptions {
 export interface RunnerCloudSessionPort {
   handleReceived(connection: CloudConnectionRecord, frame: RunnerCloudSessionMessageReceivedFrame): Promise<void>;
   handleSettled(connection: CloudConnectionRecord, frame: RunnerCloudSessionMessageSettledFrame): Promise<void>;
-  /** Synchronously fails pending dispatches; async durable cleanup is handled internally. */
-  detachConnection(connectionId: string): void;
+  /** Synchronously fails pending dispatches and returns any durable cleanup. */
+  detachConnection(connectionId: string): void | Promise<void>;
 }
 
 const DEFAULT_AUTH_TIMEOUT_MS = 5_000;
@@ -159,6 +159,7 @@ export class RunnerConnection {
   #queued = 0;
   #chain: Promise<void> = Promise.resolve();
   #renewal: Promise<void> | undefined;
+  #cleanup: Promise<void> | undefined;
   #closing: Promise<void> | undefined;
 
   constructor(input: {
@@ -182,7 +183,7 @@ export class RunnerConnection {
   close(): Promise<void> {
     if (this.#closing) return this.#closing;
     this.#closeWith(1001, "Server shutting down");
-    this.#closing = Promise.allSettled([this.#chain, this.#renewal]).then(() => undefined);
+    this.#closing = Promise.allSettled([this.#chain, this.#renewal, this.#cleanup]).then(() => undefined);
     return this.#closing;
   }
 
@@ -247,13 +248,15 @@ export class RunnerConnection {
    * Teardown order is significant: Cloud delivery first closes the credential executions (the
    * registry close synchronously invalidates every Session proof correlated with them), then the
    * collaboration owner synchronously fails its pending dispatches and schedules its durable
-   * revocation cleanup. Both are idempotent, so either close path is safe.
+   * revocation cleanup. Clearing the retained connection makes both close paths share one cleanup.
    */
   #detachCloudConnection(): void {
     const connection = this.#cloudConnection;
     if (!connection) return;
+    this.#cloudConnection = undefined;
     this.#options.cloudDelivery?.detachConnection(connection.connectionId);
-    this.#options.cloudSession?.detachConnection(connection.connectionId);
+    this.#cleanup = Promise.resolve(this.#options.cloudSession?.detachConnection(connection.connectionId));
+    void this.#cleanup.catch(() => undefined);
   }
 
   #sendAuthResult(ok: boolean, requestId: string | undefined): void {

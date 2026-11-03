@@ -188,7 +188,7 @@ export class SessionCliProofService {
     executionId: string;
   }): Promise<{ proofId: string; token: string }> {
     this.#assertCloudBinding(input);
-    return this.#database.transaction(async (transaction) => {
+    const proof = await this.#database.transaction(async (transaction) => {
       await this.#lockCurrentPlacement(transaction, input);
       const [sandbox] = await transaction
         .select({
@@ -222,7 +222,6 @@ export class SessionCliProofService {
       ) {
         throw new SessionCliProofError("runtime_unavailable", "The Session Sandbox allocation is unavailable");
       }
-      this.#assertCloudBinding(input);
       const proof = await this.#upsertProof(
         transaction,
         { ...input, connectionInstanceId: input.connectionId },
@@ -233,6 +232,7 @@ export class SessionCliProofService {
             sessionId: input.sessionId,
           }) === true,
       );
+      this.#assertCloudBinding(input);
       this.#cloud?.registerExecution({
         connectionId: input.connectionId,
         executionId: input.executionId,
@@ -241,6 +241,13 @@ export class SessionCliProofService {
       });
       return proof;
     });
+    try {
+      this.#assertCloudBinding(input);
+    } catch (error) {
+      await this.revokeForConnection(input.connectionId);
+      throw error;
+    }
+    return proof;
   }
 
   async #lockCurrentPlacement(

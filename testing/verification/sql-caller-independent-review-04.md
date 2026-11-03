@@ -37,5 +37,6 @@ complete Slack setup and Context Tree runs need a narrow explicit owner; normal
 HTTP waits do not establish that drain for disconnected clients. These are design
 review observations, not completed IM-F3 repair or full Server acceptance.
 
-Batch 32 source review found no actionable regression; exact-commit review remains required. CI, merge,
+Batch 32 exact review at 9a6db831 found no actionable regression. Batch 33
+source review found no actionable regression; exact-commit review remains required. CI, merge,
 deployment, private billing and live provider acceptance are not inferred.

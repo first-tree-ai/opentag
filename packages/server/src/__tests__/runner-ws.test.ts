@@ -1208,8 +1208,59 @@ describe("E4 Cloud IM delivery over the runner channel", () => {
     });
     bareApps.push(app);
     const address = await app.listen({ host: "127.0.0.1", port: 0 });
-    return { ...context, address, owner, fence, grants };
+    return { ...context, app, address, owner, fence, grants };
   }
+
+  it("retains one proof cleanup after a Runner peer disconnects", async () => {
+    const accountId = await account();
+    const sandbox = await ownedSandbox(accountId);
+    const entered = deferred();
+    const release = deferred();
+    const detachConnection = vi.fn(async () => {
+      entered.resolve();
+      await release.promise;
+    });
+    const stack = await cloudDeliveryStack(accountId, {
+      cloudSession: { detachConnection, handleReceived: async () => undefined, handleSettled: async () => undefined },
+    });
+    await stack.service.startForAccount(accountId, sandbox.sandboxId);
+    const [row] = await unit.database.select().from(sandboxes).where(eq(sandboxes.id, sandbox.sandboxId));
+    const client = await connectRunner(stack.address);
+    let closing: Promise<void> | undefined;
+    let closed = false;
+    try {
+      client.send({
+        type: "auth",
+        requestId: randomUUID(),
+        token: await stack.tokens.issue({
+          sandboxId: sandbox.sandboxId,
+          sessionId: sandbox.sessionId,
+          environmentGeneration: 1,
+          resourceName: row?.currentResourceName as string,
+        }),
+        cloudDeliveryVersion: 1,
+        sessionCollaborationVersion: 1,
+      });
+      expect((await client.waitFor("auth:result")).ok).toBe(true);
+      await client.waitFor("server:welcome");
+      client.socket.close();
+      await client.closed;
+      await entered.promise;
+      closing = stack.app.close().then(() => {
+        closed = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(closed).toBe(false);
+      expect(detachConnection).toHaveBeenCalledOnce();
+      release.resolve();
+      await closing;
+      expect(detachConnection).toHaveBeenCalledOnce();
+    } finally {
+      release.resolve();
+      client.socket.close();
+      await closing;
+    }
+  });
 
   async function pendingDelivery(sessionId: string, placementGeneration: number) {
     const messageId = randomUUID();

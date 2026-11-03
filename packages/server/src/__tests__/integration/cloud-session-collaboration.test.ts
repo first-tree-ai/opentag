@@ -8,6 +8,7 @@ import {
   imBindings,
   runtimeDurableWork,
   sandboxes,
+  sessionCliProofs,
   sessionMessages,
   users,
 } from "../../db/schema/index.js";
@@ -29,6 +30,7 @@ import {
 import { type RunnerControlSocket, RunnerHub, type RunnerScope } from "../../services/sandboxes/runner-hub.js";
 import { SandboxService } from "../../services/sandboxes/sandbox-service.js";
 import { SessionCliProofService, SessionService } from "../../services/sessions/index.js";
+import { deferred } from "../support/deferred.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 /**
@@ -750,3 +752,103 @@ describe("E8 Cloud Session collaboration on real PostgreSQL", () => {
     expect(message?.lastOutcome).toBe("unknown");
   });
 });
+
+it.each(["upsert-disconnect", "upsert-execution", "commit-disconnect", "committed-replacement"] as const)(
+  "does not retain a Cloud proof after %s",
+  async (phase) => {
+    const fixture = await seedCloudSession();
+    const stack = makeStack();
+    const attached = attachRunner(stack, fixture);
+    const execution = openExecution(stack, fixture, attached.connection);
+    const entered = deferred();
+    const release = deferred();
+    const transaction = client.database.transaction.bind(client.database);
+    const hold = async () => {
+      entered.resolve();
+      await release.promise;
+    };
+    const spy = vi.spyOn(client.database, "transaction").mockImplementationOnce((async (work, options) => {
+      const result = await transaction(async (tx) => {
+        const wrapped = phase.startsWith("upsert")
+          ? new Proxy(tx, {
+              get(target, key) {
+                const value = Reflect.get(target, key);
+                if (key !== "insert") return typeof value === "function" ? value.bind(target) : value;
+                return (table: unknown) => {
+                  const builder = Reflect.apply(value, target, [table]) as ReturnType<typeof tx.insert>;
+                  if (table !== sessionCliProofs) return builder;
+                  const values = builder.values.bind(builder);
+                  builder.values = ((...args: Parameters<typeof values>) => {
+                    const query = values(...args);
+                    const then = query.then.bind(query);
+                    // biome-ignore lint/suspicious/noThenProperty: Pause the actual Drizzle write before mint resumes.
+                    Object.defineProperty(query, "then", {
+                      configurable: true,
+                      value: (resolve: (rows: unknown) => unknown, reject: (error: unknown) => unknown) =>
+                        then(async (rows: unknown) => {
+                          await hold();
+                          return rows;
+                        }).then(resolve, reject),
+                    });
+                    return query;
+                  }) as typeof builder.values;
+                  return builder;
+                };
+              },
+            })
+          : tx;
+        const result = await work(wrapped);
+        if (phase === "commit-disconnect") await hold();
+        return result;
+      }, options);
+      if (phase === "committed-replacement") await hold();
+      return result;
+    }) as typeof client.database.transaction);
+    const input = {
+      computerId: fixture.computerId,
+      connectionId: attached.connection.connectionId,
+      executionId: execution.executionId,
+      placementGeneration: 1,
+      sandboxId: fixture.sandboxId,
+      sessionId: fixture.sessionId,
+    };
+    const mint = stack.proofs.mintCloud(input).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    let replacement: { proofId: string; token: string } | undefined;
+    try {
+      await entered.promise;
+      stack.registry.close(execution.executionId, "execution_closed");
+      if (phase !== "upsert-execution") {
+        stack.fence.detach(attached.connection.connectionId);
+        await stack.owner.detachConnection(attached.connection.connectionId);
+        expect(await client.database.select().from(sessionCliProofs)).toHaveLength(0);
+      }
+      if (phase === "committed-replacement") {
+        const next = attachRunner(stack, fixture);
+        const fresh = openExecution(stack, fixture, next.connection);
+        replacement = await stack.proofs.mintCloud({
+          ...input,
+          connectionId: next.connection.connectionId,
+          executionId: fresh.executionId,
+        });
+      }
+      release.resolve();
+      expect(await mint).toMatchObject({ code: "runtime_unavailable" });
+      const rows = await client.database.select().from(sessionCliProofs);
+      if (replacement) {
+        expect(rows).toHaveLength(1);
+        expect(rows[0]?.proofId).toBe(replacement.proofId);
+        await expect(stack.proofs.authenticate(replacement.token)).resolves.toMatchObject({
+          sessionId: fixture.sessionId,
+        });
+      } else expect(rows).toHaveLength(0);
+      expect(await client.sql`select 1 as healthy`).toEqual([{ healthy: 1 }]);
+    } finally {
+      release.resolve();
+      await mint;
+      spy.mockRestore();
+    }
+  },
+);

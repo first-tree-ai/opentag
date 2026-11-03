@@ -35,11 +35,12 @@ import {
 } from "../../runtime/runtime-durable-work-store.js";
 import type { AgentSessionStopTarget } from "../agents/agent-service.js";
 import type { EffectiveRuntimeSnapshotAssembler } from "../runtime-config/index.js";
-import type {
-  RuntimeExecutionRegistryPort,
-  SessionCliCloudProofAuthority,
-  SessionCliCloudProofConnection,
-  SessionCliProofService,
+import {
+  type RuntimeExecutionRegistryPort,
+  type SessionCliCloudProofAuthority,
+  type SessionCliCloudProofConnection,
+  SessionCliProofError,
+  type SessionCliProofService,
 } from "../sessions/session-cli-proof-service.js";
 import type {
   CloudSessionMessageDeliveryInput,
@@ -168,6 +169,10 @@ export function createSessionCliCloudProofAuthority(input: {
       return false;
     },
     registerExecution: ({ connectionId, executionId, proofId, sessionId }) => {
+      const execution = input.registry.get(executionId);
+      if (!execution || execution.connectionId !== connectionId || execution.sessionId !== sessionId) {
+        throw new SessionCliProofError("runtime_unavailable", "The Session Cloud execution is unavailable");
+      }
       const existing = bySession.get(sessionId);
       const entry: ProofExecutionEntry =
         existing && existing.proofId === proofId
@@ -1624,20 +1629,21 @@ export class CloudSessionCollaborationOwner {
   /**
    * Connection loss. Pending dispatches fail synchronously and the Session proof stops
    * authenticating synchronously through the credential registry close that precedes this call
-   * (CloudDeliveryOwner teardown). The durable proof-row cleanup is asynchronous and its failures
-   * are handled here, never at the teardown boundary.
+   * (CloudDeliveryOwner teardown). RunnerConnection retains the returned durable cleanup.
    */
-  detachConnection(connectionId: string): void {
+  detachConnection(connectionId: string): Promise<void> {
     for (const [messageId, pending] of [...this.#pending.entries()]) {
       if (pending.connectionId !== connectionId) continue;
       this.#failPending(messageId, new CloudSessionDispatchUnavailableError());
     }
-    void this.#proofs?.revokeForConnection(connectionId).catch(() => {
-      this.#logger?.warn(
-        { code: "CLOUD_SESSION_PROOF_REVOKE_FAILED", connectionId },
-        "Session CLI proof connection revoke failed",
-      );
-    });
+    return (
+      this.#proofs?.revokeForConnection(connectionId).catch(() => {
+        this.#logger?.warn(
+          { code: "CLOUD_SESSION_PROOF_REVOKE_FAILED", connectionId },
+          "Session CLI proof connection revoke failed",
+        );
+      }) ?? Promise.resolve()
+    );
   }
 
   /* ------------------------------------------------------------------------------------------

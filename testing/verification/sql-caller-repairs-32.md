@@ -33,8 +33,8 @@ affected files pass retry; unchanged successful files were not repeated. Host
 89-case owning checks, server typecheck and repository gates pass. Failed logs,
 source snapshots and manifests remain under the local report directory.
 
-Independent source review found no actionable regression; exact committed review
-is pending. Batch 31 exact review found no new actionable defect and confirmed
+Independent source review found no actionable regression; exact committed review at
+9a6db831 also found no actionable regression. Batch 31 exact review found no new actionable defect and confirmed
 its late-slot P2 closed. Cloud proof COMMIT/detach and original allocation tails,
 plus actual main shutdown composition, still keep IM-F3 open. No whole Server
 signal, CI, merge, deployment or private-provider acceptance is claimed.

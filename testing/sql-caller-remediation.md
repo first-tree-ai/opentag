@@ -424,3 +424,19 @@ Batch 31 exact review confirms its P2 closed with no new actionable defect.
 Batch 32 source review found no actionable regression; exact review is pending.
 Cloud proof COMMIT/detach, original allocation convergence and actual main
 composition remain open IM-F3. Fixed/simplified totals remain 36/37 and 9/9.
+
+
+[Cloud proof commit and Runner cleanup](verification/sql-caller-repairs-33.md)
+passes 176 distinct Docker cases, 10 native PostgreSQL. Proof mint revalidates
+post-upsert and post-COMMIT; Runner joins exact detach cleanup through peer loss.
+Shared and replacement proofs retain their existing semantics. Batch 32 exact
+review found no actionable defect. Batch 33 source review found no actionable
+regression; exact review is pending. Original Cloud allocation convergence and
+actual main composition still keep IM-F3 open. No defect count is advanced.
+
+The next Cloud component retains whole admitted deliver/reconcile/cancel work
+and raw allocation convergence in the collaboration owner. Closing admission and
+aborting existing observation/caller signals stop subsequent dispatch; existing
+per-target serialization and actual-task settlement are joined before SQL pool
+cleanup. External allocation already issued may complete and is retained until
+its original Promise settles. No new budget, retry, durable state or abstraction.

@@ -21,15 +21,17 @@ Each card shows the computer's identity, a connection status badge, and a More m
 | Confirmed condition | Badge | Card body |
 | --- | --- | --- |
 | Online | Online, with no action | None |
-| Offline | Offline, with when it was last online | Inline repair task for this computer |
-| Disconnected | Disconnected | Inline repair task for this computer |
+| Offline | Offline, with when it was last online | Restore connection |
+| Disconnected | Disconnected | Restore connection |
 | Read unavailable | Status unavailable | Check status |
 
 “Status unavailable” expresses missing evidence, not another persisted connection condition.
 
-- A local computer that is not online shows the shared command window inline on its card, issued automatically with
-  a targeted repair code. The card hides its own status badge while the window is shown, so the window's status is
-  the only one. The copied text is always complete. Copying is never evidence of connection.
+- A local computer that is not online shows its status badge and one **Restore connection** action. Pressing it
+  opens the shared command window inline on the card and issues a targeted repair command only then; the card hides
+  its badge while the window is shown, so the window's status is the only one. A link that names the computer (Agent
+  settings' Reconnect, the Agent list's Restore connection) arrives with that card's window already open. The copied
+  text is always complete. Copying is never evidence of connection.
 - While the inventory read is uncertain, the repair task is hidden and the card offers Check status instead. Cancel
   inventory reads that began before the failure, then latch uncertainty against the cache's current
   successful-read sequence. Only a later Server read can restore confidence; render-time or Server timestamps
@@ -52,6 +54,9 @@ window everywhere means a reader learns the flow once and never has to reconcile
   whether the command was used. The page cannot always know that, and it is not something the reader acts on.
 - An expired command is masked in place and offers one **Refresh** action that issues a new command there. Leaving
   the dead command readable would invite copying a task that can no longer work.
+- On the computer list the window opens only when asked. Opening one for every offline computer made a long page
+  and left unused commands behind when several computers were offline. The Agent setup connect step is about one
+  computer, so it opens the window directly.
 
 ## Access and compatibility
 

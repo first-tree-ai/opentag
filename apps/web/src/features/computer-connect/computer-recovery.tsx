@@ -15,6 +15,7 @@ export function ComputerRecovery({
   computer,
   adapter,
   available = true,
+  focusOnMount = false,
   returnFocusRef,
   onConnected,
 }: {
@@ -22,11 +23,17 @@ export function ComputerRecovery({
   readonly adapter?: ComputerConnectAdapter;
   /** Hide controls during inventory uncertainty while retaining the exact attempt. */
   readonly available?: boolean;
+  /** Opened by the reader's own action: take focus so the button they pressed is not lost. */
+  readonly focusOnMount?: boolean;
   readonly returnFocusRef?: RefObject<HTMLElement | null>;
   readonly onConnected: () => void;
 }) {
   const recoveryRef = useRef<HTMLDivElement>(null);
   const focusTarget = returnFocusRef ?? recoveryRef;
+  useLayoutEffect(() => {
+    // Taken once, when the reader opens the window.
+    if (focusOnMount) recoveryRef.current?.focus({ preventScroll: true });
+  }, [focusOnMount]);
   useLayoutEffect(() => {
     const recovery = recoveryRef.current;
     return () => {

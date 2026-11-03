@@ -233,6 +233,7 @@ describe("Account Computer management", () => {
       return api(path, init);
     });
     openComputer();
+    fireEvent.click(await screen.findByRole("button", { name: "Restore connection" }));
     const expectAttempt = async () => {
       if (codeState === "pending") expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
       else expect(await screen.findByText("Waiting for Ada's Mac to reconnect…", {}, { timeout: 3_000 })).toBeTruthy();
@@ -278,10 +279,20 @@ describe("Account Computer management", () => {
     expect(repairRequests()).toHaveLength(0);
   });
 
-  it("automatically exposes recovery for an offline computer with no Agents", async () => {
+  it("opens recovery for an offline computer only when asked", async () => {
     installApi({ computers: [{ ...twoReadyComputers[0], agentIds: [], connectionStatus: "offline" }] });
     openComputer();
+    const restore = await screen.findByRole("button", { name: "Restore connection" });
+    // Several offline computers would otherwise each issue a command and lengthen the page.
+    expect(screen.getByText("Offline")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Copy for Agent" })).toBeNull();
+    expect(repairRequests()).toHaveLength(0);
+
+    fireEvent.click(restore);
     expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
+    expect(repairRequests()).toHaveLength(1);
+    expect(screen.queryByText("Offline")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Restore connection" })).toBeNull();
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.queryByRole("button", { name: "Get connection help" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Show full instructions" }));

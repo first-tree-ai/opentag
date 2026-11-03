@@ -6,7 +6,7 @@ import type { AgentSettingsSection } from "./agent-settings/sections.js";
  * producing a dead link at runtime.
  */
 export type AgentSettingsSectionLink = ReturnType<typeof agentSettingsSectionLink>;
-export type AgentSetupLink = ReturnType<typeof agentSetupLink>;
+export type AgentSetupLink = ReturnType<typeof agentSetupLink> | ReturnType<typeof agentSetupSignInLink>;
 
 export function agentDetailLink(agentId: string) {
   return { params: { agentId }, to: "/agents/$agentId" } as const;
@@ -23,6 +23,14 @@ export function agentScheduleDetailLink(agentId: string, scheduleId: string) {
 export function agentSetupLink(agentId: string) {
   return { search: { agentId }, to: "/agents/setup" } as const;
 }
+
+/** Setup for this Agent with its runtime sign-in steps already open. */
+export function agentSetupSignInLink(agentId: string) {
+  return { hash: RUNTIME_SIGN_IN_HASH, search: { agentId }, to: "/agents/setup" } as const;
+}
+
+/** The setup page opens its runtime sign-in steps when it is reached with this fragment. */
+export const RUNTIME_SIGN_IN_HASH = "sign-in";
 
 export function agentUsageLink(agentId: string) {
   return { params: { agentId }, to: "/agents/$agentId/usage" } as const;

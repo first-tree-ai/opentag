@@ -1,3 +1,6 @@
+import type { AgentRuntimeProvider } from "@opentag/shared/browser";
+import { RuntimeSignIn } from "./runtime-sign-in.js";
+
 /** A compact readiness row whose copy and state are decided by its caller. */
 
 export type CheckState = "pending" | "passed" | "failed" | "blocked";
@@ -11,6 +14,8 @@ export interface CheckRow {
   readonly statusLabel: string;
   readonly detail: string;
   readonly detailLabel: string;
+  /** A runtime that only needs signing in on this computer offers its terminal steps. */
+  readonly signIn?: { readonly provider: AgentRuntimeProvider; readonly computerName: string };
 }
 
 export function CheckLine({ check, position, component }: { check: CheckRow; position: number; component: string }) {
@@ -26,6 +31,9 @@ export function CheckLine({ check, position, component }: { check: CheckRow; pos
         </div>
         <section aria-label={check.detailLabel} className="otv2-readiness__detail" data-ui="readiness-detail">
           {check.detail}
+          {check.signIn ? (
+            <RuntimeSignIn computerName={check.signIn.computerName} provider={check.signIn.provider} />
+          ) : null}
         </section>
       </div>
     </li>

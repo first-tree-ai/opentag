@@ -865,10 +865,20 @@ export function repositoryFromUrl(value: string): { repository: string; path?: s
   const [owner, name, kind, ref, ...folder] = url.pathname.split("/").filter(Boolean);
   if (!owner || !name) return undefined;
   if (kind !== undefined && kind !== "tree") return undefined;
+  // A tree link always names its branch; `…/tree/` alone is not a folder link.
+  if (kind === "tree" && !ref) return undefined;
   const parsed = ContextTreeRepositorySchema.safeParse(`${owner}/${name.replace(/\.git$/u, "")}`);
   if (!parsed.success) return undefined;
-  const path = folder.map((part) => decodeURIComponent(part)).join("/");
-  const branch = ref ? ContextTreeBranchSchema.safeParse(decodeURIComponent(ref)) : undefined;
+  // The link is typed live: a stray `%` must read as an invalid link, never throw during render.
+  let path: string;
+  let branchName: string | undefined;
+  try {
+    path = folder.map((part) => decodeURIComponent(part)).join("/");
+    branchName = ref === undefined ? undefined : decodeURIComponent(ref);
+  } catch {
+    return undefined;
+  }
+  const branch = branchName === undefined ? undefined : ContextTreeBranchSchema.safeParse(branchName);
   if (branch && !branch.success) return undefined;
   return {
     repository: parsed.data,

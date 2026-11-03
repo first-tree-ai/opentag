@@ -574,6 +574,10 @@ describe("GitHub links for an existing tree", () => {
       ref: "release",
     });
     expect(repositoryFromUrl("https://github.com/acme-robotics/team-tree/blob/main/README.md")).toBeUndefined();
+    // Typed live: a malformed escape or a bare /tree/ is just not a link yet, and never throws.
+    expect(repositoryFromUrl("https://github.com/acme/repo/tree/main/docs%")).toBeUndefined();
+    expect(repositoryFromUrl("https://github.com/acme/repo/tree/main%")).toBeUndefined();
+    expect(repositoryFromUrl("https://github.com/acme/repo/tree/")).toBeUndefined();
     expect(repositoryFromUrl("https://gitlab.com/acme/team-tree")).toBeUndefined();
   });
 });

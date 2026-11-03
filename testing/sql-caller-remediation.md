@@ -404,3 +404,23 @@ preserves durable candidates. Pre-commit review P2 is corrected with two native
 late-slot controls; exact committed review remains pending. Batch 30 review found
 no actionable defect. Detached OAuth/proof/capture tails and main composition
 still keep IM-F3 open; no defect count is advanced for a partial global repair.
+
+The next component gives ImOutboundCapture ownership of its actual persistence
+and driver-pending work, joined after credential/transport drain. MCP probes use
+one owner at McpAuthorizationService (all OAuth/API callers share it), since the
+management routes also start detached probes. Its existing route registration
+starts probe shutdown and joins it; no new timeout or SQL pool.
+
+Cloud follow-up must additionally cover the proof COMMIT window, beyond a final
+in-transaction check, and original allocation convergence behind its timeout
+race. Proof mint is awaited by the Runner frame chain; exact revoke must remain
+owned through late commit. These remain open IM-F3, alongside main composition.
+
+
+[Outbound capture and detached MCP probe drain](verification/sql-caller-repairs-32.md)
+passes 172 distinct Docker cases, 33 native PostgreSQL. Raw capture SQL survives
+its public deadline in the owner; all MCP probe callers share one close port.
+Batch 31 exact review confirms its P2 closed with no new actionable defect.
+Batch 32 source review found no actionable regression; exact review is pending.
+Cloud proof COMMIT/detach, original allocation convergence and actual main
+composition remain open IM-F3. Fixed/simplified totals remain 36/37 and 9/9.

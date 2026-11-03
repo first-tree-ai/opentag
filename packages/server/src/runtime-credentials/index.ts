@@ -5,7 +5,7 @@ import type { ConnectionRegistry, RuntimeControlIdentity } from "../runtime/conn
 import type { RuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import type { ApplicationCipher } from "../services/crypto.js";
 import { ImOutboundCapture } from "../services/im/im-outbound-capture.js";
-import { startClosingServerResources } from "../shutdown.js";
+import { closeServerResources, startClosingServerResources } from "../shutdown.js";
 import { RuntimeCapabilityStore } from "./capability-store.js";
 import {
   type RuntimeConnectionFence,
@@ -312,7 +312,11 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
       feishu: materialResolver,
     },
   });
-  const adapters = createImAdapters(options, urlHandles);
+  const outboundCapture = new ImOutboundCapture(options.database, {
+    slackWorkingStatus: options.slackWorkingStatus,
+    ...(options.logger ? { logger: options.logger } : {}),
+  });
+  const adapters = createImAdapters(options, urlHandles, outboundCapture);
   const mcp = createMcpGatewayServices(options, { executions, scopeResolver, authority, connectionFence });
   const web = createRuntimeWebService(options, { executions, scopeResolver, authority, connectionFence });
   const owner = new RuntimeCredentialOwner({
@@ -356,9 +360,16 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
     ...(web ? { web } : {}),
     ...mcpServicesResult(mcp),
     close: () => {
-      closing ??= startClosingServerResources([
-        ["credential owner", () => owner.close()],
-        ["provider transport", () => transport.close()],
+      closing ??= closeServerResources([
+        [
+          "credential and transport work",
+          () =>
+            startClosingServerResources([
+              ["credential owner", () => owner.close()],
+              ["provider transport", () => transport.close()],
+            ]),
+        ],
+        ["outbound capture", () => outboundCapture.close()],
       ]).finally(() => {
         unsubscribeHandles();
         tenantTokens.clear();
@@ -395,12 +406,9 @@ function registryConnectionFence(registry: ConnectionRegistry): RuntimeConnectio
 function createImAdapters(
   options: RuntimeCredentialServicesOptions,
   urlHandles: RuntimeUrlHandleStore,
+  outboundCapture: ImOutboundCapture,
 ): Map<RuntimeCredentialProvider, ProviderProxyAdapter> {
   const adapters = new Map<RuntimeCredentialProvider, ProviderProxyAdapter>(options.adapters ?? []);
-  const outboundCapture = new ImOutboundCapture(options.database, {
-    slackWorkingStatus: options.slackWorkingStatus,
-    ...(options.logger ? { logger: options.logger } : {}),
-  });
   const defaults = [
     ["slack", SLACK_OPERATIONS],
     ["feishu", FEISHU_OPERATIONS],

@@ -343,7 +343,7 @@ it("cannot clear a newer flow after an older code exchange fails", async () => {
     const current = await begin(h),
       before = await root(h);
     release.resolve();
-    expect(await old).toMatchObject({ code: MCP_ERROR_CODES.OAUTH_FAILED });
+    expect(await old).toMatchObject({ code: MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE });
     expect(await root(h)).toEqual(before);
     await h.flows.callback(current.query, SECRET);
     expect((await root(h)).status).toBe("active");

@@ -54,7 +54,7 @@ The other seven unchanged passing files were not repeated. Owning host checks
 also pass. Typecheck and repository gates pass without a baseline waiver. Failed
 and successful logs remain in `.codex/reports/sql-caller-repairs-20261103/batch-31-*`.
 
-Batch 30 exact review found no actionable defect. This batch still needs exact
-committed review. Detached OAuth/proof/outbound-capture tails and main composition
+Batch 30 exact review found no actionable defect. Exact committed review at d6e088d6 found no new actionable defect and confirmed
+the pre-commit P2 closed. Detached OAuth/proof/outbound-capture tails and main composition
 remain open IM-F3. These results establish no full Server signal, CI, merge or
 deployment acceptance.

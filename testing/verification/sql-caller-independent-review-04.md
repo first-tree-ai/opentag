@@ -22,6 +22,7 @@ tests and evidence records without changing files or rerunning tests/Docker.
 | 28 correction | 0159bad5..6c87b97c9bed04125bd98fcdd3ff051bed2d74c5 | Both closed; actual adapter/transport capture gates and broker-to-GitHub policy controls cover late handles and cancellation. |
 | 29 | 6c87b97c..b7a76281a1e36d0e5549ec2fd8cae371f3812b52 | No actionable finding; actual work survives deadline grace, queued-drop/maintenance tails are joined, ready stop has no self-wait. |
 | 30 | b7a76281..85e731986a760d8a01e2db787c5ee938f1a8d58b | No actionable finding; complete service runs and approval work drain, existing accepted facts persist; high-level main wiring remains open. |
+| 31 | 85e73198..d6e088d6f2bf0b0184cd64a1a5f851d04b1ca1d4 | Pre-commit late QR settlement P2 closed; no new actionable finding. Raw SDK settlement, readiness SQL and post-drain owned QR cleanup are retained. |
 
 The reviewer also checked the remaining shutdown design against pinned Fastify
 5.12.3, Avvio 9.3.0 and websocket dependency source. Actual registration-time
@@ -36,5 +37,5 @@ complete Slack setup and Context Tree runs need a narrow explicit owner; normal
 HTTP waits do not establish that drain for disconnected clients. These are design
 review observations, not completed IM-F3 repair or full Server acceptance.
 
-Batch 31 and later changes require their own exact-commit review. CI, merge,
+Batch 32 source review found no actionable regression; exact-commit review remains required. CI, merge,
 deployment, private billing and live provider acceptance are not inferred.

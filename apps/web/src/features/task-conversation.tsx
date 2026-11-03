@@ -108,7 +108,7 @@ export function TaskActivity({
   return (
     <section
       ref={sectionRef}
-      className="relative grid w-full max-w-3xl gap-5"
+      className="relative grid w-full gap-5"
       aria-labelledby="task-activity-title"
       data-ui="task-thread"
       onScroll={(event) => updateScrollState(event.currentTarget)}

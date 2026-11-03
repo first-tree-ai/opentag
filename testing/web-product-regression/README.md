@@ -22,6 +22,11 @@ The product behaviours a regression run of the openTag Web product checks, one r
 The sweep and the connect harness run locally and are not part of this repository; their scenarios are described here
 so the cases stay readable without them.
 
+Known issues that a run may see and should not report again:
+
+- Each load of the Agent list logs "Failed to load resource" for Agents without a messaging binding, because the
+  optional binding read answers 404. It is console noise only (low severity) and has no visible effect.
+
 When a change fixes a product issue, add or update at least one row here, and its automated check, in the same pull
 request. Keep one row per behaviour, not one per screenshot or width.
 
@@ -153,6 +158,7 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | AC-05 | Account menu | Open the Account menu with the keyboard and by touch | Every destination is named and reachable; it closes on an outside click | Edge | smoke: `navigation-polish.spec.ts`, `browser-smoke.spec.ts` |
 | AC-06 | Cloud credits | Account with a Cloud credit banner | Banner actions keep touch-size targets on phones | Edge | smoke: `cloud-billing-smoke.spec.ts` |
 | AC-07 | Account profile reads plainly | Open Account | No page subtitle; the sign-in email is plain text, not a locked input; display name and language have no helper sentences | Edge | unit: `__tests__/account.test.tsx` |
+| AC-08 | Sign-in errors in the reader's language | On the zh page: wrong password; register an email that exists | "邮箱或密码不正确。" and "此邮箱已有账户，请直接登录。"; no English Server message in either language | Core | unit: `features/auth/login-page.test.tsx`, `__tests__/auth.test.tsx` |
 
 ## Languages and widths
 

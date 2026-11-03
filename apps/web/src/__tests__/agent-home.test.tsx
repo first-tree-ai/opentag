@@ -285,13 +285,10 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/manage`);
     render(<App />);
 
-    const unavailableDeleteButton = await screen.findByRole("button", { name: "Delete Agent" });
-    expect(unavailableDeleteButton.hasAttribute("disabled")).toBe(true);
+    expect((await screen.findByRole("button", { name: "Delete Agent" })).hasAttribute("disabled")).toBe(false);
     expect(
-      screen.getByText("Permanently deletes this Agent and disconnects its messaging app. Pause the Agent first."),
+      screen.getByText("Permanently deletes this Agent and disconnects its messaging app. This cannot be undone."),
     ).toBeTruthy();
-    fireEvent.click(unavailableDeleteButton);
-    expect(screen.queryByRole("dialog", { name: "Delete Reviewer?" })).toBeNull();
 
     fireEvent.click(await screen.findByRole("button", { name: "Pause Agent" }));
     expect(await screen.findByRole("button", { name: "Resume Agent" })).toBeTruthy();

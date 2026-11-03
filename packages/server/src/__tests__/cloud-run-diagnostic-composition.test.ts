@@ -2,9 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSandboxRunnerRuntime } from "../cloud-runtime-composition.js";
 import type { ServerConfig } from "../config.js";
 import type { DatabaseClient } from "../db/client.js";
+import { createPerformanceLogger } from "../observability/performance-logger.js";
+import type { CloudRunAdmin } from "../services/cloud-run/index.js";
+import { runnerInstanceId } from "../services/cloud-run/instance-identity.js";
 import { FakeWorkspaceObjectStore } from "./support/fake-workspace-store.js";
 
 const recordAdmin = vi.hoisted(() => vi.fn());
+const recordAdminInstance = vi.hoisted(() => vi.fn());
 vi.mock("../services/cloud-run/index.js", async (original) => {
   const actual = await original<typeof import("../services/cloud-run/index.js")>();
   return {
@@ -13,6 +17,7 @@ vi.mock("../services/cloud-run/index.js", async (original) => {
       constructor(...args: ConstructorParameters<typeof actual.CloudRunAdmin>) {
         super(...args);
         recordAdmin(...args);
+        recordAdminInstance(this);
       }
     },
   };
@@ -61,6 +66,34 @@ afterEach(() => {
 });
 
 describe("production Runner diagnostic selection wiring", () => {
+  it("retains selected diagnostics while instrumenting Cloud Run requests", async () => {
+    vi.stubEnv("OPENTAG_ENV", "staging");
+    vi.stubEnv("OPENTAG_CLOUD_LATENCY_DIAGNOSTICS", "true");
+    vi.stubEnv("OPENTAG_CLOUD_LATENCY_SESSION_IDS", sessionId);
+    vi.mocked(fetch).mockResolvedValue(new Response(null, { status: 404 }));
+    const log = vi.fn();
+    const performanceLogger = createPerformanceLogger(
+      () => ({ isLevelEnabled: () => true, debug: log, info: log, warn: log }) as never,
+    );
+    createSandboxRunnerRuntime({} as DatabaseClient, config("staging"), {
+      workspaceStoreFactory: () => new FakeWorkspaceObjectStore(),
+      performanceLogger,
+    });
+    const admin = recordAdminInstance.mock.calls.at(-1)?.[0] as CloudRunAdmin;
+    const id = runnerInstanceId({
+      environment: "staging",
+      sandboxId: otherSession,
+      sessionId,
+      environmentGeneration: 1,
+    });
+    expect(await admin.getInstance(admin.resourceNameFor(id))).toBeUndefined();
+    expect(recordAdmin.mock.calls.at(-1)?.[1]).toMatchObject({ diagnosticSessionIds: [sessionId] });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(log.mock.calls.map(([payload]) => payload)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ provider: "cloud-run", status: 404 })]),
+    );
+  });
+
   it.each([
     {
       environment: "staging" as const,

@@ -30,6 +30,7 @@ type InboundReceipt = { receiptId: string; attempt?: number; receivedAt?: Date }
 const DEFAULT_LEASE_MS = 30_000;
 const DEFAULT_MAINTENANCE_MS = 10_000;
 const CONNECTION_SCAN_PAGE_SIZE = 100;
+const BACKFILLED_CHATS_MAX_ENTRIES = 10_000;
 /** The channel-free Bot info probe is a bounded metadata read, not channel work. */
 const CANDIDATE_BOT_PROBE_TIMEOUT_MS = 5_000;
 
@@ -78,6 +79,8 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
   readonly #onCardAction?: (event: unknown, bindingId: string, generation: number) => Promise<unknown>;
   readonly #afterActivationAgentLocked: (() => Promise<void>) | undefined;
   readonly #owned = new Map<string, OwnedChannel>();
+  readonly #completedBackfills = new Map<string, symbol>();
+  readonly #pendingBackfills = new Map<string, { promise: Promise<void>; dirty: boolean; token: symbol }>();
   readonly #maintenanceControllers = new Map<string, AbortController>();
   readonly #maintenanceFailures = new Map<string, number>();
   readonly #maintenanceNextAt = new Map<string, number>();
@@ -153,6 +156,9 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     this.#timer = undefined;
     const owned = [...this.#owned.entries()];
     this.#owned.clear();
+    for (const pending of this.#pendingBackfills.values()) pending.dirty = true;
+    this.#completedBackfills.clear();
+    this.#pendingBackfills.clear();
     await Promise.allSettled(
       owned.map(async ([imBindingId, entry]) => {
         await entry.adapter.channel.disconnect().catch(() => this.#onDiagnostic("FEISHU_CONNECTION_DISCONNECT_FAILED"));
@@ -620,24 +626,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
         () => undefined,
       );
       await receipts.markProcessed(attempt.receiptId, attempt.attempt);
-      if (
-        result.messageId &&
-        payload.senderOpenId &&
-        event.message.author.kind === "human" &&
-        !event.message.author.displayName
-      ) {
-        this.#trackDetached(
-          "FEISHU_SENDER_NAME_ENRICHMENT_FAILED",
-          this.#enrichSenderName(owned.adapter, {
-            imBindingId: attempt.scopeId,
-            messageId: result.messageId,
-            chatId: event.conversation.externalId,
-            senderOpenId: payload.senderOpenId,
-          }),
-          "provider",
-          result.messageId,
-        );
-      }
+      this.#scheduleInboundEnrichment(owned.adapter, attempt.scopeId, event, result.messageId, payload.senderOpenId);
     } catch (error) {
       await receipts
         .markFailed(attempt.receiptId, processingErrorCode(error), attempt.attempt)
@@ -773,25 +762,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
           const senderOpenId = feishuSenderOpenId(message);
           for (const event of events) {
             const result = await this.#processInboundEvent(event, handoff, setFailureCode, senderOpenId);
-            const messageId = result?.messageId;
-            if (
-              messageId &&
-              senderOpenId &&
-              event.message.author.kind === "human" &&
-              !event.message.author.displayName
-            ) {
-              this.#trackDetached(
-                "FEISHU_SENDER_NAME_ENRICHMENT_FAILED",
-                this.#enrichSenderName(adapter, {
-                  imBindingId: handoff.imBindingId,
-                  messageId,
-                  chatId: event.conversation.externalId,
-                  senderOpenId,
-                }),
-                "provider",
-                messageId,
-              );
-            }
+            this.#scheduleInboundEnrichment(adapter, handoff.imBindingId, event, result?.messageId, senderOpenId);
           }
         });
       },
@@ -883,6 +854,180 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
       ...outcomeAttrs(result.duplicate ? "duplicate" : result.deliveryIds.length > 0 ? "persisted" : "no_delivery"),
     });
     return result;
+  }
+
+  #scheduleInboundEnrichment(
+    adapter: FeishuAdapter,
+    imBindingId: string,
+    event: Parameters<ImMessageInbox["ingest"]>[2],
+    messageId: string | undefined,
+    senderOpenId: string | null | undefined,
+  ): void {
+    if (!messageId) return;
+    if (senderOpenId && event.message.author.kind === "human" && !event.message.author.displayName) {
+      this.#trackDetached(
+        "FEISHU_SENDER_NAME_ENRICHMENT_FAILED",
+        this.#enrichSenderName(adapter, {
+          imBindingId,
+          messageId,
+          chatId: event.conversation.externalId,
+          senderOpenId,
+        }),
+        "provider",
+        messageId,
+      );
+    }
+    if (
+      event.providerContext.provider === "feishu" &&
+      event.message.operation !== "deleted" &&
+      !event.providerContext.chatMode
+    ) {
+      this.#trackDetached(
+        "FEISHU_CHAT_MODE_ENRICHMENT_FAILED",
+        this.#enrichChatMetadata(adapter, {
+          imBindingId,
+          messageId,
+          chatId: event.conversation.externalId,
+        }),
+        "provider",
+        messageId,
+      );
+    }
+  }
+
+  #rememberCompletedBackfill(channelKey: string, token: symbol): void {
+    this.#completedBackfills.delete(channelKey);
+    this.#completedBackfills.set(channelKey, token);
+    while (this.#completedBackfills.size > BACKFILLED_CHATS_MAX_ENTRIES) {
+      const oldest = this.#completedBackfills.keys().next().value;
+      if (oldest === undefined) break;
+      this.#completedBackfills.delete(oldest);
+    }
+  }
+
+  #invalidateCompletedBackfill(channelKey: string, expectedToken: symbol | undefined): void {
+    if (expectedToken !== undefined && this.#completedBackfills.get(channelKey) === expectedToken) {
+      this.#completedBackfills.delete(channelKey);
+    }
+  }
+
+  #markLookupInvalidation(
+    channelKey: string,
+    observedToken: symbol | undefined,
+    observedPending: { promise: Promise<void>; dirty: boolean; token: symbol } | undefined,
+  ): void {
+    this.#invalidateCompletedBackfill(channelKey, observedToken);
+    this.#invalidateCompletedBackfill(channelKey, observedPending?.token);
+    if (observedPending) observedPending.dirty = true;
+    const currentPending = this.#pendingBackfills.get(channelKey);
+    if (currentPending) currentPending.dirty = true;
+  }
+
+  async #resolveChatPatch(adapter: FeishuAdapter, channelKey: string, chatId: string): Promise<string | undefined> {
+    const observedToken = this.#completedBackfills.get(channelKey);
+    const observedPending = this.#pendingBackfills.get(channelKey);
+    let metadata: Awaited<ReturnType<FeishuAdapter["resolveChatMetadata"]>>;
+    try {
+      metadata = await adapter.resolveChatMetadata?.({ chatId });
+    } catch (error) {
+      this.#markLookupInvalidation(channelKey, observedToken, observedPending);
+      throw error;
+    }
+    if (!metadata?.chatMode) {
+      this.#markLookupInvalidation(channelKey, observedToken, observedPending);
+      return undefined;
+    }
+    return JSON.stringify({
+      chatMode: metadata.chatMode,
+      ...(metadata.groupMessageType ? { groupMessageType: metadata.groupMessageType } : {}),
+    });
+  }
+
+  async #updateChatContext(scope: ReturnType<typeof and>, patchJson: string): Promise<void> {
+    await this.#database
+      .update(imMessages)
+      .set({
+        providerContext: sql`${imMessages.providerContext} || ${patchJson}::jsonb`,
+      })
+      .where(
+        and(
+          scope,
+          sql`${imMessages.providerContext} ->> 'provider' = 'feishu'`,
+          sql`${imMessages.providerContext} ->> 'chatMode' is null`,
+        ),
+      );
+  }
+
+  async #updateSingleMessageChatContext(
+    channelKey: string,
+    expectedToken: symbol | undefined,
+    imBindingId: string,
+    messageId: string,
+    patchJson: string,
+  ): Promise<void> {
+    try {
+      await this.#updateChatContext(
+        and(eq(imMessages.id, messageId), eq(imMessages.imBindingId, imBindingId)),
+        patchJson,
+      );
+    } catch (error) {
+      this.#invalidateCompletedBackfill(channelKey, expectedToken);
+      throw error;
+    }
+  }
+
+  async #enrichChatMetadata(
+    adapter: FeishuAdapter,
+    input: { imBindingId: string; messageId: string; chatId: string },
+  ): Promise<void> {
+    const channelKey = `${input.imBindingId}:${input.chatId}`;
+    const patchJson = await this.#resolveChatPatch(adapter, channelKey, input.chatId);
+    if (!patchJson) return;
+    const completedToken = this.#completedBackfills.get(channelKey);
+    if (completedToken !== undefined) {
+      this.#rememberCompletedBackfill(channelKey, completedToken);
+      await this.#updateSingleMessageChatContext(
+        channelKey,
+        completedToken,
+        input.imBindingId,
+        input.messageId,
+        patchJson,
+      );
+      return;
+    }
+    const pending = this.#pendingBackfills.get(channelKey);
+    if (pending) {
+      await pending.promise;
+      await this.#updateSingleMessageChatContext(
+        channelKey,
+        this.#completedBackfills.get(channelKey),
+        input.imBindingId,
+        input.messageId,
+        patchJson,
+      );
+      return;
+    }
+    const nextToken = Symbol("backfilled");
+    const pendingEntry: { promise: Promise<void>; dirty: boolean; token: symbol } = {
+      promise: Promise.resolve(),
+      dirty: false,
+      token: nextToken,
+    };
+    const backfill = this.#updateChatContext(
+      and(eq(imMessages.imBindingId, input.imBindingId), eq(imMessages.channelId, input.chatId)),
+      patchJson,
+    ).then(() => {
+      if (!pendingEntry.dirty && this.#pendingBackfills.get(channelKey) === pendingEntry) {
+        this.#rememberCompletedBackfill(channelKey, nextToken);
+      }
+    });
+    pendingEntry.promise = backfill;
+    this.#pendingBackfills.set(channelKey, pendingEntry);
+    try {
+      await backfill;
+    } finally {
+      if (this.#pendingBackfills.get(channelKey) === pendingEntry) this.#pendingBackfills.delete(channelKey);
+    }
   }
 
   async #enrichSenderName(

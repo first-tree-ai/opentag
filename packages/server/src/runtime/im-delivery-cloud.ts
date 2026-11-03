@@ -26,6 +26,7 @@ import {
 import { CloudDeliveryLatency } from "../observability/cloud-latency.js";
 import { outcomeAttrs, setActiveSpanAttributes } from "../observability/index.js";
 import type { ServiceLogger } from "../observability/service-logger.js";
+import { InboundReceiptPendingError } from "../services/im/inbound-admission.js";
 import type { CloudDeliveryOwner } from "../services/sandboxes/cloud-delivery-owner.js";
 import { CloudDeliveryDispatchError } from "../services/sandboxes/cloud-delivery-owner.js";
 import { CloudCapacityExceededError } from "../services/sandboxes/errors.js";
@@ -342,6 +343,12 @@ export class CloudDeliveryCoordinator {
 
   async #recordDispatchError(attempt: DeliveryAttempt, error: unknown): Promise<void> {
     if (error instanceof ImDeliveryInputError) throw error;
+    if (error instanceof InboundReceiptPendingError) {
+      await this.#options.recordFailure(attempt, error.code, {
+        retryDelayMs: cappedRetryDelayMs(attempt.attemptCount),
+      });
+      return;
+    }
     if (error instanceof CloudDeliveryDispatchError) {
       const code = cloudDispatchFailureCode(error);
       setActiveSpanAttributes(outcomeAttrs("failed", error.code));

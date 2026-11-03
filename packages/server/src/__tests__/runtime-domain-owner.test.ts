@@ -208,6 +208,30 @@ describe("RuntimeDomainOwner", () => {
     await expect(second).resolves.toMatchObject({ code: "capacity" });
   });
 
+  it.each(["delivery", "steer"] as const)(
+    "defers %s before sending when accepted receipt work is pending",
+    async (kind) => {
+      const f = await ownerFixture();
+      const custody = new MemoryRuntimeCustodyStore();
+      vi.spyOn(custody, kind === "delivery" ? "beginDeliveryDispatch" : "beginSteerDispatch").mockResolvedValue(
+        "inbound_pending",
+      );
+      const release = vi.spyOn(custody, kind === "delivery" ? "releaseDeliveryDispatch" : "releaseSteerDispatch");
+      const owner = new RuntimeDomainOwner(f.registry, custody);
+      const dispatched = vi.fn();
+      const request = deliveryRequest();
+      const operation =
+        kind === "delivery"
+          ? owner.requestDelivery(f.computerId, f.instanceId, request, dispatched)
+          : owner.requestSteer(f.computerId, f.instanceId, steerRequest(request), dispatched);
+      await expect(operation).rejects.toMatchObject({ code: "IM_DELIVERY_INBOUND_PENDING" });
+      expect(f.frames).not.toContainEqual(expect.objectContaining({ type: "im:deliver" }));
+      expect(f.frames).not.toContainEqual(expect.objectContaining({ type: "im:steer" }));
+      expect(dispatched).not.toHaveBeenCalled();
+      expect(release).not.toHaveBeenCalled();
+    },
+  );
+
   it("maps custody and resend failures to request errors", async () => {
     const fixture = await ownerFixture();
     await expect(fixture.owner.resend(randomUUID())).rejects.toMatchObject({ code: "not_pending" });

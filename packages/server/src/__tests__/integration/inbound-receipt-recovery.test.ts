@@ -15,13 +15,15 @@ import {
   slackWebhookReceipts,
 } from "../../db/schema/index.js";
 import { resolveImDeliveryJanitorConfig, runImDeliveryRetention } from "../../runtime/im-delivery-janitor.js";
+import { ImDeliverySelector, lockEligibleDelivery } from "../../runtime/im-delivery-selector.js";
 import { ApplicationCipher } from "../../services/crypto.js";
+import { readInboundPendingAgents } from "../../services/im/inbound-admission.js";
 import { InboundWorkSchema, slackWorkEvent } from "../../services/im/inbound-work.js";
 import { ImMessageInbox } from "../../services/im/index.js";
 import { ImBindingService } from "../../services/im-bindings/index.js";
 import { SlackAdapter } from "../../services/im-bindings/slack/adapter.js";
 import { SlackWebhookReceiptStore } from "../../services/im-bindings/slack/webhook-receipt-store.js";
-import { createInboundFixture } from "./inbound-receipt-recovery-fixture.js";
+import { createInboundFixture, recordInboundInputs } from "./inbound-receipt-recovery-fixture.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 let testDatabase: MigratedTestDatabase;
@@ -42,7 +44,7 @@ async function baseFixture() {
 }
 
 async function fixture() {
-  const { client, clock, account, agent, service } = await baseFixture();
+  const { client, clock, account, agent, service, computer } = await baseFixture();
   const binding = await service.activateSlack(
     {
       intent: "create",
@@ -141,6 +143,7 @@ async function fixture() {
     service,
     agent,
     account,
+    computer,
     event,
     receipts,
     inbox,
@@ -151,6 +154,51 @@ async function fixture() {
     receipt,
   };
 }
+
+it("keeps a newer input behind an already acknowledged older receipt awaiting Inbox recovery", async () => {
+  const f = await fixture();
+  const app = f.app();
+  await f.client.sql.unsafe(
+    "create function fail_rsi_inbound_message() returns trigger language plpgsql as $$ begin raise exception 'synthetic failure' using errcode='40001'; end $$",
+  );
+  await f.client.sql.unsafe(
+    "create trigger fail_rsi_inbound_message before insert on im_messages for each row execute function fail_rsi_inbound_message()",
+  );
+  try {
+    expect((await f.send(app.server)).statusCode).toBe(200);
+    await expect.poll(async () => (await f.receipt()).status).toBe("failed");
+  } finally {
+    await f.client.sql.unsafe("drop trigger fail_rsi_inbound_message on im_messages");
+    await f.client.sql.unsafe("drop function fail_rsi_inbound_message()");
+  }
+  const olderReceipt = await f.receipt();
+  expect(olderReceipt.workPayload).not.toBeNull();
+  const newer = {
+    ...f.event,
+    event_id: "Ev_NEWER",
+    event: { ...f.event.event, text: "newer input", ts: f.event.event.ts.replace("000001", "000002") },
+  };
+  expect((await f.send(app.server, newer)).statusCode).toBe(200);
+  await expect.poll(async () => (await f.client.database.select().from(imMessages)).length).toBe(1);
+  const selector = new ImDeliverySelector(f.client.database);
+  expect((await selector.candidates(f.clock.now).next()).value).toBeUndefined();
+  const [newerDelivery] = await f.client.database.select().from(imMessageDeliveries);
+  assert(newerDelivery);
+  expect(
+    await f.client.database.transaction((tx) => lockEligibleDelivery(tx, newerDelivery.id, f.agent.id, f.clock.now)),
+  ).toBeUndefined();
+  f.clock.now = new Date(f.clock.now.getTime() + 3000);
+  await app.recoverOnce();
+  const messages = await f.client.database.select().from(imMessages);
+  const olderMessage = messages.find((message) => message.providerEventId === f.event.event_id);
+  const newerMessage = messages.find((message) => message.providerEventId === newer.event_id);
+  assert(olderMessage && newerMessage);
+  const recorded = await recordInboundInputs(f, 2);
+  expect(recorded.map((request) => request.imMessageId)).toEqual([olderMessage.id, newerMessage.id]);
+  expect(
+    recorded.every((request) => request.agentId === f.agent.id && request.sessionId === newerDelivery.sessionId),
+  ).toBe(true);
+});
 
 it("recovers an acknowledged Slack Inbox failure without provider redelivery", async () => {
   const f = await fixture();
@@ -268,6 +316,69 @@ it("deduplicates an Inbox commit whose receipt settlement was interrupted", asyn
   expect(await f.client.database.select().from(imMessages)).toHaveLength(1);
   expect(await f.client.database.select().from(imMessageDeliveries)).toHaveLength(1);
 });
+
+it.each(["message", "app_mention"] as const)(
+  "recovers interrupted twin-event settlement with %s first without duplicating its input",
+  async (firstType) => {
+    const f = await fixture();
+    const ingest = vi.spyOn(f.inbox, "ingest");
+    const app = f.app();
+    const envelope = (type: "message" | "app_mention", eventId: string) => ({
+      ...f.event,
+      event_id: eventId,
+      event: {
+        ...f.event.event,
+        type,
+        channel: "C_WORK",
+        channel_type: type === "message" ? "channel" : undefined,
+        text: "<@U_BOT> hello",
+      },
+    });
+    expect((await f.send(app.server, envelope(firstType, f.event.event_id))).statusCode).toBe(200);
+    await expect.poll(async () => (await f.receipt()).status).toBe("processed");
+    const [original] = await f.client.database.select().from(imMessages);
+    assert(original);
+    const twinReceipt = async () => {
+      const [row] = await f.client.database
+        .select()
+        .from(slackWebhookReceipts)
+        .where(eq(slackWebhookReceipts.eventId, "Ev_TWIN"));
+      assert(row);
+      return row;
+    };
+    await f.client.sql.unsafe(
+      "create function fail_twin_settlement() returns trigger language plpgsql as $$ begin if new.event_id = 'Ev_TWIN' and new.status = 'processed' then raise exception 'synthetic settlement failure' using errcode='40001'; end if; return new; end $$",
+    );
+    await f.client.sql.unsafe(
+      "create trigger fail_twin_settlement before update on slack_webhook_receipts for each row execute function fail_twin_settlement()",
+    );
+    try {
+      const twin = envelope(firstType === "message" ? "app_mention" : "message", "Ev_TWIN");
+      expect((await f.send(app.server, twin)).statusCode).toBe(200);
+      await expect.poll(async () => (await twinReceipt()).status).toBe("failed");
+      expect(ingest).toHaveBeenCalledTimes(2);
+      await expect(ingest.mock.results[1]?.value).resolves.toMatchObject({ duplicate: true, messageId: original.id });
+      expect(await f.client.database.select().from(imMessages)).toHaveLength(1);
+      expect(await f.client.database.select().from(imMessageDeliveries)).toHaveLength(1);
+      expect((await twinReceipt()).workPayload).not.toBeNull();
+      expect(await readInboundPendingAgents(f.client.database, [f.agent.id])).toEqual(new Set([f.agent.id]));
+      const selector = new ImDeliverySelector(f.client.database);
+      expect((await selector.candidates(f.clock.now).next()).value).toBeUndefined();
+      await recordInboundInputs(f, 0);
+    } finally {
+      await f.client.sql.unsafe("drop trigger fail_twin_settlement on slack_webhook_receipts");
+      await f.client.sql.unsafe("drop function fail_twin_settlement()");
+    }
+    f.clock.now = new Date(f.clock.now.getTime() + 2_000);
+    await app.recoverOnce();
+    expect(await twinReceipt()).toMatchObject({ status: "processed", workPayload: null, attemptCount: 2 });
+    expect(await readInboundPendingAgents(f.client.database, [f.agent.id])).toEqual(new Set());
+    const [request] = await recordInboundInputs(f, 1);
+    expect(request).toMatchObject({ imMessageId: original.id, agentId: f.agent.id });
+    expect(await f.client.database.select().from(imMessages)).toHaveLength(1);
+    expect(await f.client.database.select().from(imMessageDeliveries)).toHaveLength(1);
+  },
+);
 
 it.each(["unsupported", "identity-mismatch", "no-route"])("preserves the normal %s ignored result", async (kind) => {
   const f = await fixture();

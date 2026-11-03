@@ -1,4 +1,6 @@
 import { checkOutboundUrl, isLoopbackHostname, MCP_ERROR_CODES } from "@opentag/shared";
+import { sanitizeExternalUrl, traceExternalCall } from "../../observability/external-call-logger.js";
+import type { PerformanceLogger } from "../../observability/performance-logger.js";
 import { withOutboundDeadline } from "../outbound/deadline.js";
 import { classifyOutboundDestination, resolveAllAddresses } from "../outbound/destination-policy.js";
 import { McpServiceError } from "./errors.js";
@@ -134,6 +136,7 @@ export function assertOutboundUrl(rawUrl: string, policy: McpOutboundPolicy): UR
 
 export interface McpOutboundFetchOptions extends McpOutboundPolicy {
   fetch?: typeof globalThis.fetch;
+  performanceLogger?: PerformanceLogger;
   /**
    * Resolves a hostname to every address it holds. Injectable so a test can assert the policy
    * without a network, and so a deployment can supply a resolver with different search domains.
@@ -152,6 +155,7 @@ export class McpOutboundFetcher {
   readonly #inFlight = new Map<string, number>();
   readonly #maxConcurrentPerAccount: number;
   readonly #maxResponseBytes: number;
+  readonly #perfLogger: PerformanceLogger | undefined;
   readonly #policy: McpOutboundPolicy;
   readonly #resolveAddresses: (hostname: string) => Promise<string[]>;
   readonly #timeoutMs: number;
@@ -160,6 +164,7 @@ export class McpOutboundFetcher {
     this.#fetch = options.fetch ?? globalThis.fetch;
     this.#maxConcurrentPerAccount = options.maxConcurrentPerAccount ?? MCP_DEFAULT_MAX_CONCURRENT_PER_ACCOUNT;
     this.#maxResponseBytes = options.maxResponseBytes ?? MCP_DEFAULT_MAX_RESPONSE_BYTES;
+    this.#perfLogger = options.performanceLogger;
     this.#policy = { allowLoopback: options.allowLoopback };
     this.#resolveAddresses = options.resolveAddresses ?? resolveAllAddresses;
     this.#timeoutMs = options.timeoutMs ?? MCP_DEFAULT_TIMEOUT_MS;
@@ -171,6 +176,28 @@ export class McpOutboundFetcher {
   }
 
   async fetchOutbound(accountId: string, rawUrl: string, init: McpFetchInit = {}): Promise<McpFetchResponse> {
+    const httpMethod = (init.method ?? "GET").toUpperCase();
+    const urlMeta = sanitizeExternalUrl(rawUrl);
+    return traceExternalCall(
+      this.#perfLogger,
+      {
+        provider: "mcp",
+        operation: "external.mcp.http",
+        accountId,
+        attributes: {
+          httpMethod,
+          ...urlMeta,
+        },
+      },
+      () => this.#executeFetchOutbound(accountId, rawUrl, init),
+      {
+        statusFromResult: (response) => response.status,
+        fallbackErrorCode: MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE,
+      },
+    );
+  }
+
+  async #executeFetchOutbound(accountId: string, rawUrl: string, init: McpFetchInit): Promise<McpFetchResponse> {
     const url = assertOutboundUrl(rawUrl, this.#policy);
     /*
      * A call the caller cancelled before entry is refused here. `fetch` would refuse to start it

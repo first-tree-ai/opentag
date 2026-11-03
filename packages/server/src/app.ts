@@ -5,6 +5,7 @@ import type { ChannelName } from "@opentag/shared";
 import {
   ErrorEnvelopeSchema,
   HTTP_PATHS,
+  RUNTIME_PROVIDER_PROXY_PATH,
   redactForLog,
   ServerDeepHealthSchema,
   ServerHealthSchema,
@@ -48,6 +49,7 @@ import { type ErrorReportRoutesOptions, registerErrorReportRoutes } from "./api/
 import { registerExecutionWebSocketRoutes } from "./api/execution-websockets.js";
 import { registerGitHubIntegrationsRoutes } from "./api/github-integrations.js";
 import { registerImBindingRoutes } from "./api/im-bindings.js";
+import { registerImFeedbackRoutes } from "./api/im-feedback.js";
 import { registerImResourceRoute } from "./api/im-resources.js";
 import { type McpGatewayRoutesOptions, registerMcpGatewayRoutes } from "./api/mcp-gateway.js";
 import { registerMcpOAuthRoutes } from "./api/mcp-oauth.js";
@@ -79,7 +81,13 @@ import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import type { CloudBilling } from "./cloud-billing.js";
 import type { DatabaseClient } from "./db/client.js";
 import { DATABASE_READINESS_TIMEOUT_MS } from "./db/readiness-probe.js";
-import { currentTraceId } from "./observability/index.js";
+import {
+  currentTraceId,
+  type PerformanceLogger,
+  type PerformanceLoggingConfig,
+  prepareAppPerformance,
+  registerHttpPerformanceHooks,
+} from "./observability/index.js";
 import type { AgentRuntimeOptionsService } from "./services/agents/agent-runtime-options-service.js";
 import type { ContextTreeOperationService } from "./services/agents/context-tree-operation-service.js";
 import {
@@ -91,6 +99,7 @@ import {
 import { AuthServiceError, type ConnectCodeIssuer, type UserAuthService } from "./services/auth/index.js";
 import type { ComputerAuthVerifier, ComputerService, MachineAuthService } from "./services/computers/index.js";
 import { GitHubConnectionServiceError } from "./services/github/index.js";
+import { type ImFeedbackActionsService, ImFeedbackServiceError } from "./services/im/im-feedback-actions.js";
 import type { ImResourceService } from "./services/im/index.js";
 import { type FeishuSetupService, feishuPublicFailure } from "./services/im-bindings/feishu/index.js";
 import {
@@ -139,6 +148,7 @@ export interface CreateAppOptions {
   computerService?: ComputerService;
   sandboxService?: SandboxService;
   sandboxRunnerService?: SandboxRunnerService;
+  imFeedback?: ImFeedbackActionsService;
   cloudAvailability?: AccountRoutesOptions["cloudAvailability"];
   /** The one shared Router model catalog; backs the authenticated account Cloud model list route. */
   cloudModelCatalog?: CloudModelCatalog;
@@ -227,6 +237,8 @@ export interface CreateAppOptions {
   /** GitHub integration management; always registered so the UI can read availability. */
   loggerStream?: FastifyLoggerOptions["stream"];
   loggerLevel?: FastifyLoggerOptions["level"];
+  performanceLogger?: PerformanceLogger;
+  performanceLogging?: Partial<PerformanceLoggingConfig>;
   /** Passed to Fastify; `false` (the default) ignores `X-Forwarded-*` entirely. */
   trustProxy?: boolean | string[];
   readiness?: BootstrapReadiness;
@@ -282,6 +294,7 @@ function deploymentHeaders(deployment: CreateAppOptions["deployment"]): Record<s
 
 type AccountFacingError =
   | AuthServiceError
+  | ImFeedbackServiceError
   | AgentServiceError
   | ImBindingServiceError
   | OnboardingResetError
@@ -297,6 +310,7 @@ type AccountFacingError =
 function isAccountFacingError(error: unknown): error is AccountFacingError {
   return (
     error instanceof AuthServiceError ||
+    error instanceof ImFeedbackServiceError ||
     error instanceof AgentServiceError ||
     error instanceof ImBindingServiceError ||
     error instanceof OnboardingResetError ||
@@ -341,9 +355,19 @@ export function ignoreHttpTraceRoute(path: string): boolean {
   );
 }
 
-function disableProbeRequestLogging(request: FastifyRequest): boolean {
+function disableProbeRequestLogging(request: { url: string }): boolean {
   const pathname = sanitizeRequestUrl(request.url);
   return pathname === "/healthz" || pathname === "/readyz";
+}
+
+function shouldIgnoreHttpPerformanceRequest(request: { url: string }): boolean {
+  const pathname = sanitizeRequestUrl(request.url);
+  return (
+    disableProbeRequestLogging(request) ||
+    pathname === HTTP_PATHS.computerRuntimeWebSocket ||
+    pathname === HTTP_PATHS.sandboxRunnerWebSocket ||
+    pathname === RUNTIME_PROVIDER_PROXY_PATH
+  );
 }
 
 const MAX_ERROR_STACK_LENGTH = 8_192;
@@ -708,6 +732,8 @@ export function createApp(options: CreateAppOptions = {}) {
   const databaseReadinessProbe = createDatabaseReadinessProbe(
     options.databaseReadinessProbe ?? (healthDatabase ? () => healthDatabase.execute(sql`select 1`) : undefined),
   );
+  const preparedPerformance = prepareAppPerformance(app, options);
+  options = preparedPerformance.options;
 
   registerSessionProofRoutes(app, options);
   registerPublicCatalog(app, options);
@@ -743,6 +769,10 @@ export function createApp(options: CreateAppOptions = {}) {
     reply.header("x-request-id", _request.id);
     const traceId = currentTraceId();
     if (traceId) reply.header("x-trace-id", traceId);
+  });
+  registerHttpPerformanceHooks(app, preparedPerformance.perfLogger, {
+    shouldIgnore: shouldIgnoreHttpPerformanceRequest,
+    sanitizeUrl: sanitizeRequestUrl,
   });
 
   // Anonymous by design: a failure before sign-in is still a failure worth seeing.
@@ -875,7 +905,7 @@ export function createApp(options: CreateAppOptions = {}) {
     if (options.imBindingService) {
       registerImBindingRoutes(app, authService, options.imBindingService, options.feishuSetupService, authOptions);
     }
-    registerSlackSetupRoutes(app, authService, options, authOptions);
+    registerImAccountRoutes(app, authService, options, authOptions);
     registerGitHubIntegrationsRoutes(app);
     if (options.mcp) {
       registerMcpServerRoutes(app, authService, { ...options.mcp, authOptions });
@@ -1032,12 +1062,13 @@ export function createApp(options: CreateAppOptions = {}) {
   return app;
 }
 
-function registerSlackSetupRoutes(
+function registerImAccountRoutes(
   app: Parameters<typeof registerAccountRoutes>[0],
   authService: UserAuthService,
   options: CreateAppOptions,
   authOptions: NonNullable<AccountRoutesOptions["authOptions"]>,
 ): void {
+  if (options.imFeedback) registerImFeedbackRoutes(app, authService, options.imFeedback, authOptions);
   if (options.slackOAuth) registerSlackOAuthRoutes(app, { ...options.slackOAuth, authOptions });
   if (options.slackConfiguration)
     registerSlackConfigurationRoutes(app, authService, options.slackConfiguration, authOptions);

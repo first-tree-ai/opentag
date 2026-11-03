@@ -281,7 +281,7 @@ function MessagingConnectionActions({
           agentId={agent.id}
           bindingId={binding?.id}
           onSaved={onAgentChanged}
-          manualOnly={agent.computerKind === "cloud"}
+          cloud={agent.computerKind === "cloud"}
           onOAuth={binding ? onSlack : undefined}
           onDisconnect={binding ? () => onDisconnect(binding) : undefined}
         />

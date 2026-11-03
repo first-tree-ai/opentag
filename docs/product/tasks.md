@@ -22,8 +22,13 @@ rows are topics, not Sessions.
 - In a private chat, the whole conversation is one Task.
 - A topic becomes a Task only once somebody addressed the Agent directly. Messages the Agent only
   overheard (`ambient` attention) are conversation context, not Tasks, and are not counted.
-- The Task id is the id of the topic's earliest stored message. The detail endpoint accepts the id
-  of any message in the topic and reports the canonical id. `createdAt` is the root message's time.
+- The Task id is the id of the topic's earliest stored message. The detail and reply endpoints
+  accept the id of any message in the topic or the id of a 1:1 Session (a thread Session or a
+  private-chat channel Session) and report the canonical id; outbound IM replies sent through the
+  Server provider proxy append a clickable `Session <shortId>` footer linking to
+  `/agents/:agentId/tasks/:taskAnchorId` (anchored on the execution's own `deliveryId` message or
+  the 1:1 Session id, or rendered as plain `Session <shortId>` when a group channel execution has no
+  delivery anchor). `createdAt` is the root message's time.
 
 The Account's channel Session for a group is therefore never listed as a Task; a top-level request
 that nobody replied to is a topic of one message. A Task reports `sessionKind: "thread"` and its

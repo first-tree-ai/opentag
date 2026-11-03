@@ -28,6 +28,9 @@ detached commit reachable from published upstream refs in its bare repository (w
 `git` over workspace config). Whenever loose or packed local branch refs, unpublished commits,
 rewritten/force-pushed upstream history, staged changes, unstaged edits, or untracked files
 exist—or when Git cleanliness cannot be verified—those directories are preserved in the archive.
+Sparse snapshots are conservatively preserved: the in-process verifier does not treat
+intentionally unmaterialized tracked files as proof that a snapshot is clean. Their
+full Git index, cache, and any isolated write sessions remain available after restore.
 
 ## Save and restore boundaries
 
@@ -76,6 +79,11 @@ upload; unavailable readback stops the batch. Retries never rebase local files o
 newer object. Exhausted transient saves retain local files and can retry on reconnection. A crash
 before journaling the terminal report is reconciled as unknown execution effects and never
 automatically replayed.
+
+[IM task feedback](../messaging/im-feedback.md) exposes Account-confirmed save/release and explicit discard
+for a failed Session, reusing these generation-bound operations. The feedback action is recorded before cloud I/O;
+an unknown result is queried without submitting again. Only a verified seal for the exact environment permits a
+"saved" card result. A release without that proof remains explicitly unverified.
 
 Checkpoint diagnostics retain the archive failure code and the original error cause. Both IM
 Turns and internal Session messages log deterministic archive failures without cycling the control

@@ -63,3 +63,10 @@ export class WorkspaceRestoreRequiredError extends SandboxServiceError {
     this.name = "WorkspaceRestoreRequiredError";
   }
 }
+
+export class WorkspaceSaveFailedError extends SandboxServiceError {
+  constructor(message: string) {
+    super("SERVICE_UNAVAILABLE", "transient", message, 503);
+    this.name = "WorkspaceSaveFailedError";
+  }
+}

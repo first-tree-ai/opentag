@@ -31,7 +31,7 @@ async function fixture() {
       agentId: agent.id,
       externalAppId: "A_WORK",
       externalTeamId: "T_WORK",
-      externalBotId: "B_WORK",
+      externalBotId: "U_WORK",
       credentialGeneration: 1,
       credentialSchemaVersion: 1,
       encryptedCredential: "synthetic",

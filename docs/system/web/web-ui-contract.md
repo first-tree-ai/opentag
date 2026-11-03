@@ -302,6 +302,16 @@ does not retry an occurrence. Explanations do not imply a future occurrence when
 future occurrences, when present, follow the current enabled state and time rule. These messages
 do not introduce retries, execution history, or a separate task lifecycle.
 
+## IM recovery confirmation
+
+[Task recovery](../messaging/im-feedback.md) is an owner-authenticated, read-only entry page, including links with an
+operation hint. Choosing an action opens a separate review; discard adds an acknowledgement of permanent file loss
+and unchanged external effects. Before the final POST the page fetches fresh confirmation data and refuses a changed
+revision, changed environment, missing action, or failed read even when cached data exists. A lost POST response leads
+to checking the recorded result, never an automatic second submission. Pending operations refresh their result only.
+The Agent detail page includes a collapsed, paginated recovery-notice list so delivery failures remain discoverable.
+English and Chinese copy distinguish "queued", "saved and released", "released but unverified", and actual completion.
+
 ## Internationalization and copy
 
 User-facing copy goes through Paraglide messages. English and Simplified Chinese message catalogues must remain complete

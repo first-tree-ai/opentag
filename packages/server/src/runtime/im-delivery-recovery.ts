@@ -14,6 +14,7 @@ export type SessionEnsurer = Pick<SessionService, "ensureChatSessionInTransactio
 type Candidate = {
   id: string;
   messageId: string;
+  attemptOrdinal: number;
   sourceSessionId: string;
   targetDeliveryId: string;
   frozenBatch: RuntimeImSteerRequest["batch"] | null;
@@ -105,6 +106,7 @@ async function readSteeredCandidates(transaction: DatabaseTransaction, targetDel
     .select({
       id: imMessageDeliveries.id,
       messageId: imMessageDeliveries.messageId,
+      attemptOrdinal: imMessageDeliveries.attemptOrdinal,
       sourceSessionId: imMessageDeliveries.sessionId,
       targetDeliveryId: imMessageDeliveries.steerTargetDeliveryId,
       frozenBatch: sql<RuntimeImSteerRequest["batch"] | null>`case
@@ -197,6 +199,7 @@ async function transitionSteeredDelivery(
     .where(
       and(
         eq(imMessageDeliveries.messageId, candidate.messageId),
+        eq(imMessageDeliveries.attemptOrdinal, candidate.attemptOrdinal),
         eq(imMessageDeliveries.sessionId, route.sessionId),
         ne(imMessageDeliveries.id, candidate.id),
       ),

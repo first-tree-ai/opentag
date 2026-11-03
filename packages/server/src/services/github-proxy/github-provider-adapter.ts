@@ -1,4 +1,5 @@
 import { RUNTIME_PROVIDER_ORIGIN_HEADER } from "@opentag/shared";
+import type { PerformanceLogger } from "../../observability/performance-logger.js";
 import type { RuntimeProxyAuthorization } from "../../runtime-credentials/credential-broker.js";
 import type {
   ProviderProxyAdapter,
@@ -17,9 +18,12 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
     readonly options: {
       management: GitHubExecutionCredentialReader;
       transport?: Pick<GitHubHttpTransport, "request">;
+      performanceLogger?: PerformanceLogger;
     },
   ) {
-    this.#transport = options.transport ?? new GitHubHttpTransport();
+    this.#transport =
+      options.transport ??
+      new GitHubHttpTransport(options.performanceLogger ? { performanceLogger: options.performanceLogger } : {});
   }
 
   async handle(

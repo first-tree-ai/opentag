@@ -69,6 +69,7 @@ interface Fixture {
   readonly environment: Record<string, string>;
   readonly input: (overrides?: { scratch?: string }) => Parameters<typeof prepareCloudContextTree>[0];
   readonly root: string;
+  readonly repositoryPath: string;
   readonly treePath: string;
   readonly workspace: string;
 }
@@ -85,7 +86,7 @@ async function workspaceFiles(directory: string): Promise<Buffer[]> {
 }
 
 /** A disposable published tree plus one Session workspace, all local. */
-async function fixture(prefix: string): Promise<Fixture> {
+async function fixture(prefix: string, directory = "."): Promise<Fixture> {
   if (!contextTreePackage) throw new Error("the Context Tree package must resolve");
   const root = await realpath(await mkdtemp(join(tmpdir(), prefix)));
   roots.push(root);
@@ -98,16 +99,22 @@ async function fixture(prefix: string): Promise<Fixture> {
   );
   const seed = join(root, "tree-seed");
   await mkdir(seed, { recursive: true });
-  const created = await runCli(["init", join(root, "remote-tree"), "--project-path", seed, "--json"], {
+  const repositoryPath = join(root, "remote-tree");
+  const created = await runCli(["init", join(repositoryPath, directory), "--project-path", seed, "--json"], {
     HOME: accountHome,
     PATH: process.env.PATH ?? "",
   });
   const treePath = created.treeRoot as string;
   const gitEnv = { HOME: accountHome, PATH: process.env.PATH };
-  await execFileAsync("/usr/bin/git", ["init", "--initial-branch=main", treePath], { env: gitEnv });
-  await execFileAsync("/usr/bin/git", ["-C", treePath, "add", "NODE.md"], { env: gitEnv });
-  await execFileAsync("/usr/bin/git", ["-C", treePath, "commit", "-m", "init"], { env: gitEnv });
-  await execFileAsync("/usr/bin/git", ["-C", treePath, "config", "receive.denyCurrentBranch", "updateInstead"]);
+  if (directory !== ".") {
+    await mkdir(join(repositoryPath, "src"));
+    await writeFile(join(repositoryPath, "src", "code.ts"), "export const value = 1;\n");
+    await writeFile(join(repositoryPath, "README.md"), "Unchanged repository instructions.\n");
+  }
+  await execFileAsync("/usr/bin/git", ["init", "--initial-branch=main", repositoryPath], { env: gitEnv });
+  await execFileAsync("/usr/bin/git", ["-C", repositoryPath, "add", "."], { env: gitEnv });
+  await execFileAsync("/usr/bin/git", ["-C", repositoryPath, "commit", "-m", "init"], { env: gitEnv });
+  await execFileAsync("/usr/bin/git", ["-C", repositoryPath, "config", "receive.denyCurrentBranch", "updateInstead"]);
 
   // Rewrite only transport: clone from the disposable tree, keep the GitHub origin identity, and
   // route fetch/push/pull back to the disposable tree. `remote get-url` must stay untouched.
@@ -126,12 +133,12 @@ done
 case " $* " in
   *" clone "*)
     for argument in "$@"; do destination="$argument"; done
-    /usr/bin/git -C "$root" clone --bare --quiet --origin origin -- "file://${treePath}" "$destination" || exit $?
+    /usr/bin/git -C "$root" clone --bare --quiet --origin origin -- "file://${repositoryPath}" "$destination" || exit $?
     /usr/bin/git -C "$destination" remote set-url origin "https://github.com/acme/memory.git"
     exit $?
     ;;
   *" fetch "*|*" push "*|*" pull "*)
-    exec /usr/bin/git -c protocol.file.allow=always -c "url.file://${treePath}.insteadOf=https://github.com/acme/memory.git" "$@"
+    exec /usr/bin/git -c protocol.file.allow=always -c "url.file://${repositoryPath}.insteadOf=https://github.com/acme/memory.git" "$@"
     ;;
 esac
 if [ -n "$root" ]; then exec /usr/bin/git -C "$root" "$@"; fi
@@ -162,96 +169,188 @@ exec /usr/bin/git "$@"
       agentSlug: "tree-agent",
       environment,
       path,
-      contextTrees: [{ kind: "git" as const, path: ".", ref: "main", repository: "acme/memory" }],
+      contextTrees: [{ kind: "git" as const, path: directory, ref: "main", repository: "acme/memory" }],
       scratch: overrides.scratch ?? defaultScratch,
       workspace,
     }),
     root,
+    repositoryPath,
     treePath,
     workspace,
   };
 }
 
 describe("Cloud Context Tree continuity (real CLI)", () => {
-  it("publishes a prepared write after a real archive save and restore through the managed CLI", async () => {
-    const fixtureValue = await fixture("cloud-ct-roundtrip-");
-    const first = await prepareCloudContextTree(fixtureValue.input());
-    const firstTree = treeResult(first);
-    expect(firstTree).toMatchObject({ status: "ready" });
-    if (firstTree.status !== "ready" || !first.binDirectory) throw new Error("expected a ready tree");
-    const treePath = firstTree.treePath;
-    expect(treePath.startsWith(`${fixtureValue.workspace}/`)).toBe(true);
+  it.each([".", "docs"])(
+    "publishes a prepared %s write after archive save and restore through the managed CLI",
+    async (directory) => {
+      const fixtureValue = await fixture("cloud-ct-roundtrip-", directory);
+      const first = await prepareCloudContextTree(fixtureValue.input());
+      const firstTree = treeResult(first);
+      expect(firstTree).toMatchObject({ status: "ready" });
+      if (firstTree.status !== "ready" || !first.binDirectory) throw new Error("expected a ready tree");
+      const treePath = firstTree.treePath;
+      expect(treePath.startsWith(`${fixtureValue.workspace}/`)).toBe(true);
 
-    // The Agent prepares a write through the managed CLI; the worktree lands INSIDE the saved
-    // workspace because the shim pins HOME there.
-    const prepared = await runManaged(
-      first.binDirectory,
-      ["write", "prepare", "--project-path", firstTree.projectPath],
-      fixtureValue.environment,
-    );
-    const worktreePath = prepared.treeRoot as string;
-    expect(
-      worktreePath.startsWith(join(fixtureValue.workspace, ".opentag/context-tree/home/.context-tree/worktrees")),
-    ).toBe(true);
-    await recordMemberMemory(worktreePath, "tree-agent", "Prefer short-lived branches.");
+      // The Agent prepares a write through the managed CLI; the worktree lands INSIDE the saved
+      // workspace because the shim pins HOME there.
+      const prepared = await runManaged(
+        first.binDirectory,
+        ["write", "prepare", "--project-path", firstTree.projectPath],
+        fixtureValue.environment,
+      );
+      const worktreePath = prepared.treeRoot as string;
+      expect(
+        worktreePath.startsWith(join(fixtureValue.workspace, ".opentag/context-tree/home/.context-tree/worktrees")),
+      ).toBe(true);
+      await recordMemberMemory(worktreePath, "tree-agent", "Prefer short-lived branches.");
+      if (directory !== ".") {
+        await expect(stat(join(treePath, "../src"))).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(stat(join(worktreePath, "../src"))).rejects.toMatchObject({ code: "ENOENT" });
+      }
 
-    // Real E5 save/restore: archive the whole workspace, replace it, restore at the same path.
-    const archive = join(fixtureValue.root, "state.tar.gz");
-    const info = await createWorkspaceArchive(fixtureValue.workspace, archive);
-    await rm(fixtureValue.workspace, { recursive: true, force: true });
-    await restoreWorkspaceArchive(archive, fixtureValue.workspace, info);
-    expect(await readFile(join(worktreePath, "members", "tree-agent", "memory.md"), "utf8")).toContain(
-      "Prefer short-lived branches.",
-    );
-    // The per-execution environment reached the CLI but was never persisted in the workspace.
-    const secret = Buffer.from("execution-secret-0123456789abcdef");
-    for (const bytes of await workspaceFiles(fixtureValue.workspace)) {
-      expect(bytes.includes(secret)).toBe(false);
-    }
+      // Real E5 save/restore: archive the whole workspace, replace it, restore at the same path.
+      const archive = join(fixtureValue.root, "state.tar.gz");
+      const info = await createWorkspaceArchive(fixtureValue.workspace, archive);
+      await rm(fixtureValue.workspace, { recursive: true, force: true });
+      await restoreWorkspaceArchive(archive, fixtureValue.workspace, info);
+      expect(await readFile(join(worktreePath, "members", "tree-agent", "memory.md"), "utf8")).toContain(
+        "Prefer short-lived branches.",
+      );
+      // The per-execution environment reached the CLI but was never persisted in the workspace.
+      const secret = Buffer.from("execution-secret-0123456789abcdef");
+      for (const bytes of await workspaceFiles(fixtureValue.workspace)) {
+        expect(bytes.includes(secret)).toBe(false);
+      }
 
-    // A fresh Turn: fresh scratch, same workspace, same reserved write worktree.
-    const scratch = join(fixtureValue.root, "scratch-next");
-    await mkdir(scratch, { recursive: true });
-    const second = await prepareCloudContextTree(fixtureValue.input({ scratch }));
-    expect(treeResult(second)).toMatchObject({ status: "ready" });
-    if (treeResult(second).status !== "ready" || !second.binDirectory) throw new Error("expected a ready tree");
-    const finished = await runManaged(
-      second.binDirectory,
-      ["write", "finish", prepared.id as string, "--message", "docs: restore prepared write", "--publish"],
-      fixtureValue.environment,
+      // A fresh Turn: fresh scratch, same workspace, same reserved write worktree.
+      const scratch = join(fixtureValue.root, "scratch-next");
+      await mkdir(scratch, { recursive: true });
+      const second = await prepareCloudContextTree(fixtureValue.input({ scratch }));
+      expect(treeResult(second)).toMatchObject({ status: "ready" });
+      if (treeResult(second).status !== "ready" || !second.binDirectory) throw new Error("expected a ready tree");
+      const finished = await runManaged(
+        second.binDirectory,
+        ["write", "finish", prepared.id as string, "--message", "docs: restore prepared write", "--publish"],
+        fixtureValue.environment,
+      );
+      expect(finished.sha).toMatch(/^[0-9a-f]{40}$/);
+      // The draft was published to the disposable remote and the prepared worktree was reclaimed.
+      expect(await readFile(join(fixtureValue.treePath, "members", "tree-agent", "memory.md"), "utf8")).toContain(
+        "Prefer short-lived branches.",
+      );
+      await expect(stat(worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
+      if (directory !== ".")
+        expect(await readFile(join(fixtureValue.repositoryPath, "src/code.ts"), "utf8")).toBe(
+          "export const value = 1;\n",
+        );
+    },
+    60_000,
+  );
+
+  it.each([".", "docs"])(
+    "keeps a dirty restored %s checkout inspectable without resetting it",
+    async (directory) => {
+      const fixtureValue = await fixture("cloud-ct-dirty-", directory);
+      const first = await prepareCloudContextTree(fixtureValue.input());
+      const firstTree = treeResult(first);
+      expect(firstTree).toMatchObject({ status: "ready" });
+      if (firstTree.status !== "ready") throw new Error("expected a ready tree");
+      const treePath = firstTree.treePath;
+
+      // An unpublished direct edit in the Session checkout: the CLI reports DIRTY_TREE on the next
+      // Turn and nothing here may reset it.
+      const rootNode = await readFile(join(treePath, "NODE.md"), "utf8");
+      await writeFile(join(treePath, "NODE.md"), `${rootNode}\nUnpublished draft edit.\n`);
+
+      const archive = join(fixtureValue.root, "state.tar.gz");
+      const info = await createWorkspaceArchive(fixtureValue.workspace, archive);
+      await rm(fixtureValue.workspace, { recursive: true, force: true });
+      await restoreWorkspaceArchive(archive, fixtureValue.workspace, info);
+
+      const scratch = join(fixtureValue.root, "scratch-next");
+      await mkdir(scratch, { recursive: true });
+      const second = await prepareCloudContextTree(fixtureValue.input({ scratch }));
+      // Dirty is reported truthfully, but the checkpoint stays addressable for inspection.
+      expect(treeResult(second)).toMatchObject({ status: "unavailable", reason: "DIRTY_TREE" });
+      expect(second.binDirectory).toBeUndefined();
+      expect(await readFile(join(treePath, "NODE.md"), "utf8")).toContain("Unpublished draft edit.");
+    },
+    60_000,
+  );
+
+  it("preserves sparse read caches conservatively and restores offline without persisting cleanup logs", async () => {
+    const value = await fixture("cloud-ct-sparse-cache-", "docs");
+    const prepared = await prepareCloudContextTree(value.input());
+    const tree = treeResult(prepared);
+    if (tree.status !== "ready" || !prepared.binDirectory) throw new Error("expected a ready tree");
+    const state = join(value.workspace, ".opentag/context-tree/home/.context-tree");
+    const configurationPath = join(value.workspace, ".opentag/context-tree/project/.context-tree.json");
+    const configuration = await readFile(configurationPath, "utf8");
+    await mkdir(join(state, "cleanup/logs"), { recursive: true });
+    await writeFile(join(state, "cleanup/logs/events.jsonl"), "Disposable cleanup log.\n");
+    const archive = join(value.root, "state.tar.gz");
+    const info = await createWorkspaceArchive(value.workspace, archive);
+    await rm(value.workspace, { recursive: true, force: true });
+    await restoreWorkspaceArchive(archive, value.workspace, info);
+    expect(await readFile(configurationPath, "utf8")).toBe(configuration);
+    expect((await stat(join(state, "repositories"))).isDirectory()).toBe(true);
+    await expect(stat(join(state, "cleanup"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(join(tree.treePath, "../src"))).rejects.toMatchObject({ code: "ENOENT" });
+    const offline = await runManaged(
+      prepared.binDirectory,
+      ["sync", "--offline", "--project-path", tree.projectPath],
+      value.environment,
     );
-    expect(finished.sha).toMatch(/^[0-9a-f]{40}$/);
-    // The draft was published to the disposable remote and the prepared worktree was reclaimed.
-    expect(await readFile(join(fixtureValue.treePath, "members", "tree-agent", "memory.md"), "utf8")).toContain(
-      "Prefer short-lived branches.",
-    );
-    await expect(stat(worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(offline.connections).toMatchObject([{ ok: true, treeRoot: tree.treePath }]);
   }, 60_000);
 
-  it("keeps a dirty restored checkout inspectable without resetting it", async () => {
-    const fixtureValue = await fixture("cloud-ct-dirty-");
-    const first = await prepareCloudContextTree(fixtureValue.input());
-    const firstTree = treeResult(first);
-    expect(firstTree).toMatchObject({ status: "ready" });
-    if (firstTree.status !== "ready") throw new Error("expected a ready tree");
-    const treePath = firstTree.treePath;
-
-    // An unpublished direct edit in the Session checkout: the CLI reports DIRTY_TREE on the next
-    // Turn and nothing here may reset it.
-    const rootNode = await readFile(join(treePath, "NODE.md"), "utf8");
-    await writeFile(join(treePath, "NODE.md"), `${rootNode}\nUnpublished draft edit.\n`);
-
-    const archive = join(fixtureValue.root, "state.tar.gz");
-    const info = await createWorkspaceArchive(fixtureValue.workspace, archive);
-    await rm(fixtureValue.workspace, { recursive: true, force: true });
-    await restoreWorkspaceArchive(archive, fixtureValue.workspace, info);
-
-    const scratch = join(fixtureValue.root, "scratch-next");
-    await mkdir(scratch, { recursive: true });
-    const second = await prepareCloudContextTree(fixtureValue.input({ scratch }));
-    // Dirty is reported truthfully, but the checkpoint stays addressable for inspection.
-    expect(treeResult(second)).toMatchObject({ status: "unavailable", reason: "DIRTY_TREE" });
-    expect(second.binDirectory).toBeUndefined();
-    expect(await readFile(join(treePath, "NODE.md"), "utf8")).toContain("Unpublished draft edit.");
+  it("retains committed sparse sessions and empty sessions across restore for later publish and abort", async () => {
+    const value = await fixture("cloud-ct-sparse-committed-", "docs");
+    const first = await prepareCloudContextTree(value.input());
+    const tree = treeResult(first);
+    if (tree.status !== "ready" || !first.binDirectory) throw new Error("expected a ready tree");
+    const session = await runManaged(
+      first.binDirectory,
+      ["write", "prepare", "--project-path", tree.projectPath],
+      value.environment,
+    );
+    await recordMemberMemory(session.treeRoot as string, "tree-agent", "Retain this unpublished commit.");
+    const committed = await runManaged(
+      first.binDirectory,
+      ["write", "finish", session.id as string, "--message", "docs: unpublished"],
+      value.environment,
+    );
+    expect(committed.outcome).toBe("committed");
+    const empty = await runManaged(
+      first.binDirectory,
+      ["write", "prepare", "--project-path", tree.projectPath],
+      value.environment,
+    );
+    const archive = join(value.root, "state.tar.gz");
+    const info = await createWorkspaceArchive(value.workspace, archive);
+    await rm(value.workspace, { recursive: true, force: true });
+    await restoreWorkspaceArchive(archive, value.workspace, info);
+    expect(await readFile(join(session.treeRoot as string, "members/tree-agent/memory.md"), "utf8")).toContain(
+      "Retain this unpublished commit.",
+    );
+    const reviewed = await runManaged(
+      first.binDirectory,
+      ["write", "finish", session.id as string, "--message", "Review"],
+      value.environment,
+    );
+    expect(reviewed).toMatchObject({ outcome: "committed", sha: committed.sha, sessionId: session.id });
+    await runManaged(first.binDirectory, ["write", "abort", empty.id as string], value.environment);
+    await expect(stat(empty.treeRoot as string)).rejects.toMatchObject({ code: "ENOENT" });
+    const published = await runManaged(
+      first.binDirectory,
+      ["write", "finish", session.id as string, "--message", "Publish", "--publish"],
+      value.environment,
+    );
+    expect(published).toMatchObject({ outcome: "published", sha: committed.sha });
+    expect(await readFile(join(value.treePath, "members/tree-agent/memory.md"), "utf8")).toContain(
+      "Retain this unpublished commit.",
+    );
+    expect(await readFile(join(value.repositoryPath, "src/code.ts"), "utf8")).toBe("export const value = 1;\n");
   }, 60_000);
 });

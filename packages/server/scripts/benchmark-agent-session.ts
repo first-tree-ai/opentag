@@ -21,7 +21,6 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { AgentUsageWindowDays } from "@opentag/shared";
 import { drizzle } from "drizzle-orm/postgres-js";
-import postgres from "postgres";
 import { createDatabaseClient } from "../src/db/client.js";
 import { migrateDatabase } from "../src/db/migrate.js";
 import * as schema from "../src/db/schema/index.js";
@@ -48,7 +47,7 @@ function benchmarkDependencies(): BenchmarkDeps {
     // postgres.js is a template tag, not an object with a `query` method: the adapter is what makes the
     // harness depend on three plain members instead of on the driver's callable shape.
     openAdmin: async (databaseUrl) => {
-      const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+      const sql = createDatabaseClient(databaseUrl, { max: 1 }).sql;
       return {
         query: ((strings: TemplateStringsArray, ...values: unknown[]) =>
           sql(strings as never, ...(values as never[]))) as BenchmarkAdmin["query"],
@@ -73,7 +72,7 @@ function benchmarkDependencies(): BenchmarkDeps {
           },
           snapshot: () => [...queries],
         },
-        close: () => client.sql.end(),
+        close: () => client.sql.end({ timeout: 5 }),
       };
     },
     createCases: (database, now) => {

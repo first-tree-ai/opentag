@@ -61,6 +61,10 @@ Finding a deviation does not authorize its implementation.
   [Observability](../operations/observability.md). A statement deadline,
   transaction idle timeout, transport deadline, and whole-operation budget
   cover different waits; document which component owns each applicable bound.
+  Benchmark admin, fixture and EXPLAIN connections reuse the shared client with
+  one connection and a five-second native close. Fixture statements use the
+  shared 30-second statement / 35-second elapsed budgets, measured separately
+  from the shorter startup migration budget.
 
 ## Migrations
 

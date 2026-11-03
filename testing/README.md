@@ -36,6 +36,7 @@ contents, and machine-specific operational logs outside the repository.
 - [SQL caller repairs: remove demonstrated redundancy](verification/sql-caller-repairs-16.md)
 - [SQL caller repairs: physical Cloud ownership](verification/sql-caller-repairs-17.md)
 - [SQL caller repairs: Cloud gateway routing](verification/sql-caller-repairs-18.md)
+- [SQL caller repairs: operator database clients](verification/sql-caller-repairs-21.md)
 - [SQL caller repairs: selected Git subtree verification](verification/sql-caller-repairs-20.md)
 - [SQL caller repairs: bounded metadata and Thread roots](verification/sql-caller-repairs-19.md)
 - [Independent review: batches 14–17 and routing correction](verification/sql-caller-independent-review-03.md)

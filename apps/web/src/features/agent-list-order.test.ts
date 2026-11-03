@@ -208,7 +208,7 @@ describe("Agent availability model and presentation", () => {
         ...base,
         availability: { ...base.availability, state: "suspended", reason: "agent_suspended" },
       }),
-    ).toEqual({ label: "Suspended", tone: "neutral" });
+    ).toEqual({ label: "Paused", tone: "neutral" });
     expect(
       agentStatusPresentation({
         ...base,

@@ -31,11 +31,10 @@
   "im_feedback_code": "Error code: {code}",
   "im_feedback_source": "Session: {session}",
   "im_feedback_attribution": "Requested by {actor} · {time}",
-  "im_feedback_history": "Recovery and error notices",
-  "im_feedback_history_empty": "No recovery notices.",
   "im_feedback_more": "Load more",
   "im_feedback_save_boundary": "Changes since the last successful save may be lost. The last successful save time is unavailable here.",
   "im_feedback_card_blocked": "The error card could not be delivered. Check the Agent connection and its messaging permissions.",
   "im_feedback_task": "Open Task",
-  "im_feedback_batch_retry_blocked": "This frozen batch cannot be retried here. Open the original Task and review every input before starting new work."
+  "im_feedback_batch_retry_blocked": "This frozen batch cannot be retried here. Open the original Task and review every input before starting new work.",
+  "im_feedback_history_with_count": "Recovery and error notices ({count})"
 }

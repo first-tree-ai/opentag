@@ -177,12 +177,30 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
-    const notice = screen.getByRole("region", { name: "Agent status: Suspended" });
-    expect(within(notice).getByText("Suspended")).toBeTruthy();
+    const notice = screen.getByRole("region", { name: "Agent status: Paused" });
+    expect(within(notice).getByText("Paused")).toBeTruthy();
     expect(within(notice).getByText("This Agent is paused. Resume it to start receiving messages again.")).toBeTruthy();
-    expect(within(notice).getByRole("link", { name: "Pause or delete Agent" }).getAttribute("href")).toBe(
-      `/agents/${agentId}/settings/manage`,
-    );
+    // The notice resumes the Agent itself rather than sending the reader to the pause/delete page.
+    expect(within(notice).queryByRole("link", { name: "Pause or delete Agent" })).toBeNull();
+    expect(within(notice).getByRole("button", { name: "Resume Agent" })).toBeTruthy();
+    // The Server refuses a paused Agent's messaging reads, so the page does not ask (or poll) for them.
+    const messagingReads = () =>
+      vi.mocked(fetch).mock.calls.filter(([path]) => String(path).startsWith(`/api/v1/agents/${agentId}/im-binding`));
+    expect(messagingReads()).toHaveLength(0);
+  });
+
+  it("explains a paused Agent's messaging page and offers to resume it there", async () => {
+    installApi({ bound: true, initialStatus: "suspended" });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    render(<App />);
+    expect(
+      await screen.findByText("This Agent is paused. Resume it to view and change its messaging settings."),
+    ).toBeTruthy();
+    expect(screen.queryByText("The Agent was not found")).toBeNull();
+    expect(screen.getByRole("button", { name: "Resume Agent" })).toBeTruthy();
+    expect(
+      vi.mocked(fetch).mock.calls.filter(([path]) => String(path).startsWith(`/api/v1/agents/${agentId}/im-binding`)),
+    ).toHaveLength(0);
   });
 
   it("keeps unreadable Computer and Messaging evidence out of the success states", async () => {

@@ -31,11 +31,10 @@
   "im_feedback_code": "错误码：{code}",
   "im_feedback_source": "会话：{session}",
   "im_feedback_attribution": "由 {actor} 发起 · {time}",
-  "im_feedback_history": "恢复与错误记录",
-  "im_feedback_history_empty": "暂无恢复记录。",
   "im_feedback_more": "加载更多",
   "im_feedback_save_boundary": "上次成功保存之后的改动可能丢失；此处无法核实上次成功保存的时间。",
   "im_feedback_card_blocked": "错误卡片未能送达。请检查 Agent 连接及其消息发送权限。",
   "im_feedback_task": "查看任务",
-  "im_feedback_batch_retry_blocked": "此批量任务无法在这里重试。请打开原始任务，逐条检查输入后再开始新的工作。"
+  "im_feedback_batch_retry_blocked": "此批量任务无法在这里重试。请打开原始任务，逐条检查输入后再开始新的工作。",
+  "im_feedback_history_with_count": "恢复与错误记录（{count}）"
 }

@@ -817,33 +817,42 @@ function parseForm(
 ) {
   const owner = draft.owner.trim();
   const name = draft.name.trim();
-  const linkedRepository = repositoryFromUrl(repositoryUrl);
+  const linked = repositoryFromUrl(repositoryUrl);
+  const linkedRepository = linked?.repository;
   const repository = activeMode === "connect" ? (linkedRepository ?? "") : `${owner}/${name}`;
   const ownerValid = ContextTreeRepositorySchema.safeParse(`${owner}/memory`).success;
   const nameValid = ContextTreeRepositorySchema.safeParse(`acme/${name}`).success;
   const source = {
     kind: "git" as const,
     repository,
-    path: activeMode === "create" ? "." : path.trim() || ".",
+    // The directory field overrides the folder a pasted /tree/ link names; empty means the link's folder or root.
+    path: activeMode === "create" ? "." : path.trim() || linked?.path || ".",
     ref: "HEAD",
   };
   const valid = ContextTreeConnectionSchema.safeParse(source);
   return { source, valid, ownerValid, nameValid, linkedRepository };
 }
 
-function repositoryFromUrl(value: string): string | undefined {
+/**
+ * A GitHub repository link, or a folder link copied from GitHub's address bar
+ * (`https://github.com/owner/repository/tree/<branch>/<folder>`). The folder is taken from a tree link;
+ * the branch is not, because a connected tree always follows the repository's default branch.
+ */
+export function repositoryFromUrl(value: string): { repository: string; path?: string } | undefined {
+  let url: URL;
   try {
-    const url = new URL(value.trim());
-    if (url.protocol !== "https:" || url.hostname !== "github.com" || url.port || url.username || url.password) return;
-    const repository = url.pathname
-      .replace(/^\//u, "")
-      .replace(/\/$/u, "")
-      .replace(/\.git$/u, "");
-    const parsed = ContextTreeRepositorySchema.safeParse(repository);
-    return parsed.success ? parsed.data : undefined;
+    url = new URL(value.trim());
   } catch {
     return undefined;
   }
+  if (url.protocol !== "https:" || url.hostname !== "github.com" || url.port || url.username || url.password) return;
+  const [owner, name, kind, _ref, ...folder] = url.pathname.split("/").filter(Boolean);
+  if (!owner || !name) return undefined;
+  if (kind !== undefined && kind !== "tree") return undefined;
+  const parsed = ContextTreeRepositorySchema.safeParse(`${owner}/${name.replace(/\.git$/u, "")}`);
+  if (!parsed.success) return undefined;
+  const path = folder.map((part) => decodeURIComponent(part)).join("/");
+  return path ? { repository: parsed.data, path } : { repository: parsed.data };
 }
 
 function ContextTreeResult({

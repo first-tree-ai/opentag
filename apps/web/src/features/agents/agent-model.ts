@@ -39,7 +39,12 @@ export type AgentAvailability = {
     | null;
   lastConfirmedAt: string | null;
   dependencies: {
-    computer: { state: "ready" | "action_required" | "not_bound" | "unconfirmed"; lastConfirmedAt: string | null };
+    computer: {
+      state: "ready" | "action_required" | "not_bound" | "unconfirmed";
+      lastConfirmedAt: string | null;
+      /** The Server revoked the computer's access; it needs a repair, not just to come back online. */
+      disconnected?: true;
+    };
     /**
      * Readiness of the Agent's Provider on its Computer. `runtime_unavailable` is diagnosed from
      * this. For a Cloud-bound Agent the status is the managed-service verdict (with `cloud`
@@ -172,6 +177,7 @@ export function projectAgentAvailability(
       // one is answered by binding a Computer and the other by waiting for a read to succeed.
       state: computerDependencyState(agent, computer),
       lastConfirmedAt: computer?.lastSeenAt ?? null,
+      ...(computer?.connectionStatus === "disconnected" ? { disconnected: true as const } : {}),
     },
     runtime: runtimeDependency,
     handoff: handoffDependency(handoffState, binding, handoff),

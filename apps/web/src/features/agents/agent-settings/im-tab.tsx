@@ -13,6 +13,7 @@ import { AsyncState, toResourceState } from "../../resource/resource-state.js";
 import type { AgentDetailView } from "../agent-model.js";
 import { messagingConnectionLabel, messagingConnectionTone } from "../agent-presentation.js";
 import { useImBindingQuery } from "../agent-queries.js";
+import { ResumeAgentButton } from "../resume-agent-button.js";
 
 type Confirmation = { bindingId: string; provider: ImBindingSummary["provider"] };
 
@@ -28,7 +29,8 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
   const activeFeishuTriggerRef = useRef<HTMLElement | null>(null);
   const messagingHeadingRef = useRef<HTMLHeadingElement>(null);
   const triggerRulesHeadingRef = useRef<HTMLHeadingElement>(null);
-  const state = toResourceState(useImBindingQuery(agent.id));
+  const paused = agent.status === "suspended";
+  const state = toResourceState(useImBindingQuery(agent.id, true, !paused));
 
   useEffect(() => {
     if (confirmation || !restoreFocusTarget) return;
@@ -78,14 +80,30 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
     setConfirmationError(undefined);
   }
 
+  const header = (
+    <header className="grid gap-2">
+      <Text as="h1" ref={messagingHeadingRef} size="lg" tabIndex={-1} variant="heading">
+        {m.im_messaging_page_title()}
+      </Text>
+      <p className="text-sm text-kumo-subtle">{m.im_messaging_page_description()}</p>
+    </header>
+  );
+  // The Server shows and changes messaging only for an active Agent; say so and offer the way back.
+  if (paused) {
+    return (
+      <div className="grid gap-6">
+        {header}
+        <section className="grid justify-items-start gap-3" data-ui="im-agent-paused">
+          <p className="m-0 text-sm">{m.im_agent_paused()}</p>
+          <ResumeAgentButton agentId={agent.id} />
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div className="grid gap-6">
-      <header className="grid gap-2">
-        <Text as="h1" ref={messagingHeadingRef} size="lg" tabIndex={-1} variant="heading">
-          {m.im_messaging_page_title()}
-        </Text>
-        <p className="text-sm text-kumo-subtle">{m.im_messaging_page_description()}</p>
-      </header>
+      {header}
       <FeishuSetup
         agentId={agent.id}
         presentation="dialog"

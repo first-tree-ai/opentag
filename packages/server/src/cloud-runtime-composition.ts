@@ -5,6 +5,8 @@ import type { CloudModelConfig } from "./cloud-model-config.js";
 import type { ServerConfig } from "./config.js";
 import type { DatabaseClient } from "./db/client.js";
 import { agents, imBindings, sessions } from "./db/schema/index.js";
+import { createInstrumentedFetch } from "./observability/external-call-logger.js";
+import type { PerformanceLogger } from "./observability/performance-logger.js";
 import type { ServiceLogger } from "./observability/service-logger.js";
 import type { CloudSessionAllocationPort } from "./runtime/im-delivery-worker.types.js";
 import type { RuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
@@ -75,6 +77,7 @@ export function createSandboxRunnerRuntime(
     sessionWorkBusy?: SandboxRunnerServiceOptions["sessionWorkBusy"];
     sessionWorkBarrier?: SandboxRunnerServiceOptions["sessionWorkBarrier"];
     readinessNotifications?: SandboxRunnerServiceOptions["readinessNotifications"];
+    performanceLogger?: PerformanceLogger;
   } = {},
 ): SandboxRunnerRuntime | undefined {
   const cloudRunner = config.cloudRunner;
@@ -83,9 +86,13 @@ export function createSandboxRunnerRuntime(
   if (!cloudIdentities.enabled) {
     throw new Error("Cloud Runner requires cloud identities (Runner build version) to be enabled");
   }
+  const perfLogger = options.performanceLogger;
+  const metadataFetch = perfLogger ? createInstrumentedFetch(perfLogger, { provider: "gcp-metadata" }) : undefined;
+  const cloudRunFetch = perfLogger ? createInstrumentedFetch(perfLogger, { provider: "cloud-run" }) : undefined;
+  const gcsFetch = perfLogger ? createInstrumentedFetch(perfLogger, { provider: "gcs" }) : undefined;
   const tokenProvider = cloudRunner.staticAccessToken
     ? createStaticTokenProvider(cloudRunner.staticAccessToken)
-    : createMetadataServerTokenProvider();
+    : createMetadataServerTokenProvider(metadataFetch ? { fetchImpl: metadataFetch } : {});
   const cloudAdmin = new CloudRunAdmin(
     {
       project: cloudRunner.project,
@@ -95,13 +102,15 @@ export function createSandboxRunnerRuntime(
       vpc: cloudRunner.vpc,
       apiTimeoutMs: cloudRunner.apiTimeoutMs,
     },
-    { tokenProvider },
+    { tokenProvider, ...(cloudRunFetch ? { fetchImpl: cloudRunFetch } : {}) },
   );
   const tokens = new RunnerBootstrapTokenService(config.jwtSecret, {
     ttlSeconds: cloudRunner.bootstrapTokenTtlSeconds,
   });
   const hub = new RunnerHub();
-  const store = options.workspaceStoreFactory?.({ tokenProvider }) ?? new GcsWorkspaceObjectStore({ tokenProvider });
+  const store =
+    options.workspaceStoreFactory?.({ tokenProvider }) ??
+    new GcsWorkspaceObjectStore({ tokenProvider, ...(gcsFetch ? { fetchImpl: gcsFetch } : {}) });
   const sandboxRunnerService = new SandboxRunnerService(database, {
     cloudAdmin,
     tokens,

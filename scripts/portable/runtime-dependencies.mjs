@@ -25,7 +25,8 @@ import {
 import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
-const EXACT_VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const EXACT_VERSION_PATTERN =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[a-zA-Z-][a-zA-Z\d-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][a-zA-Z\d-]*))*)?$/;
 const PACKAGE_NAME_PATTERN = /^(@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/i;
 const LIFECYCLE_SCRIPT_NAMES = ["preinstall", "install", "postinstall"];
 
@@ -78,8 +79,8 @@ function validatePackageName(name) {
 
 /**
  * The top manifest of the portable source (and later of the shipped app) may only declare the
- * supported Context Tree dependency, pinned to an exact stable version. Anything else would need a
- * dependency shape the flat portable layout cannot express, so it fails closed here.
+ * supported Context Tree dependency, pinned to an exact stable or prerelease version. Anything else
+ * would need a dependency shape the flat portable layout cannot express, so it fails closed here.
  */
 export function readPortableDirectDependencyPins(packageManifest) {
   if (!isRecord(packageManifest)) {
@@ -99,7 +100,9 @@ export function readPortableDirectDependencyPins(packageManifest) {
   for (const name of names) {
     const pin = dependencies[name];
     if (typeof pin !== "string" || !EXACT_VERSION_PATTERN.test(pin)) {
-      fail(`runtime dependency ${name} must be pinned to an exact x.y.z version, got ${JSON.stringify(pin)}`);
+      fail(
+        `runtime dependency ${name} must be pinned to an exact x.y.z[-prerelease] version, got ${JSON.stringify(pin)}`,
+      );
     }
   }
   for (const field of ["optionalDependencies", "peerDependencies"]) {
@@ -211,7 +214,7 @@ function validateEmbeddedPackageManifest(manifest, what, allowLifecycleScripts) 
   }
   validatePackageName(manifest.name);
   if (!EXACT_VERSION_PATTERN.test(manifest.version)) {
-    fail(`embedded package ${what} must have an exact stable version`);
+    fail(`embedded package ${what} must have an exact stable or prerelease version`);
   }
   if (manifest.dependencies !== undefined && !isRecord(manifest.dependencies)) {
     fail(`embedded package ${what} dependencies must be an object`);

@@ -3,6 +3,7 @@ import { type StructuredError, StructuredErrorSchema } from "@opentag/shared";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../../db/client.js";
 import { feishuInboundReceipts, imBindings } from "../../../db/schema/index.js";
+import { lockImAgentCustody } from "../../im/inbound-admission.js";
 import { InboundReceiptWorkStore } from "../../im/inbound-receipt-work-store.js";
 import {
   INBOUND_WORK_LEASE_MS,
@@ -79,8 +80,7 @@ export class FeishuInboundReceiptStore {
     const work = input.work === undefined ? undefined : InboundWorkSchema.parse(input.work);
     if (work && work.provider !== "feishu") throw new Error("IM_INBOUND_WORK_PROVIDER_MISMATCH");
     return this.#database.transaction(async (transaction) => {
-      const receivedAt = this.#now();
-      await this.#assertWorkFence(transaction, input, work, receivedAt);
+      const receivedAt = await this.#lockWorkFence(transaction, input, work);
       const leaseExpiresAt = work ? new Date(receivedAt.getTime() + INBOUND_WORK_LEASE_MS) : null;
       const [created] = await transaction
         .insert(feishuInboundReceipts)
@@ -137,33 +137,41 @@ export class FeishuInboundReceiptStore {
     });
   }
 
-  async #assertWorkFence(
+  async #lockWorkFence(
     transaction: DatabaseTransaction,
     input: FeishuInboundReceiptInput,
     work: InboundWork | undefined,
-    receivedAt: Date,
-  ): Promise<void> {
-    if (work?.provider === "feishu") {
-      const fence = input.fence;
-      if (!fence) throw new FeishuInboundReceiptError("FEISHU_INBOUND_FENCE_STALE");
-      const [binding] = await transaction
-        .select({ id: imBindings.id })
-        .from(imBindings)
-        .where(
-          and(
-            eq(imBindings.id, input.bindingId),
-            eq(imBindings.provider, "feishu"),
-            eq(imBindings.status, "active"),
-            eq(imBindings.credentialGeneration, input.credentialGeneration),
-            eq(imBindings.externalAppId, work.event.externalAppId),
-            eq(imBindings.connectionOwnerInstanceId, fence.holderInstanceId),
-            eq(imBindings.connectionFencingEpoch, fence.fencingEpoch),
-            gt(imBindings.connectionLeaseExpiresAt, receivedAt),
-          ),
-        )
-        .limit(1);
-      if (!binding) throw new FeishuInboundReceiptError("FEISHU_INBOUND_FENCE_STALE");
-    }
+  ): Promise<Date> {
+    if (work?.provider !== "feishu") return this.#now();
+    const [identity] = await transaction
+      .select({ agentId: imBindings.agentId })
+      .from(imBindings)
+      .where(eq(imBindings.id, input.bindingId))
+      .limit(1);
+    const fence = input.fence;
+    if (!identity || !fence) throw new FeishuInboundReceiptError("FEISHU_INBOUND_FENCE_STALE");
+    await lockImAgentCustody(transaction, identity.agentId);
+    const receivedAt = this.#now();
+    const [binding] = await transaction
+      .select({ id: imBindings.id })
+      .from(imBindings)
+      .where(
+        and(
+          eq(imBindings.id, input.bindingId),
+          eq(imBindings.agentId, identity.agentId),
+          eq(imBindings.provider, "feishu"),
+          eq(imBindings.status, "active"),
+          eq(imBindings.credentialGeneration, input.credentialGeneration),
+          eq(imBindings.externalAppId, work.event.externalAppId),
+          eq(imBindings.connectionOwnerInstanceId, fence.holderInstanceId),
+          eq(imBindings.connectionFencingEpoch, fence.fencingEpoch),
+          gt(imBindings.connectionLeaseExpiresAt, receivedAt),
+        ),
+      )
+      .limit(1)
+      .for("no key update");
+    if (!binding) throw new FeishuInboundReceiptError("FEISHU_INBOUND_FENCE_STALE");
+    return receivedAt;
   }
 
   async markProcessed(receiptId: string, attempt?: number): Promise<void> {

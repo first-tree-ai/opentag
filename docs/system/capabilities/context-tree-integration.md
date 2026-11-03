@@ -132,7 +132,11 @@ transport's URL rewrite does not change the selected repository's identity.
 
 ## Distribution
 
-OpenTag pins `@first-tree-ai/context-tree` to `1.0.1`. Portable builds and Cloud images
+OpenTag pins `@first-tree-ai/context-tree` to `1.0.2-alpha.202611020650`. New managed
+Git subtree snapshots and write sessions use cone-mode sparse checkout with a full
+Git index, requiring Git 2.36 or newer. Snapshot identity includes the selected
+directory and commit; repository-root sources use full checkouts. Existing snapshots
+and unpublished write sessions are preserved. Portable builds and Cloud images
 include its CLI, public contracts, and six skills: init, connect, read, write, cleanup,
 and schedule-cleanup. Native cleanup schedules belong on persistent supported hosts,
 not ephemeral Cloud sandboxes. Server, Local runtimes, and Cloud images use the same

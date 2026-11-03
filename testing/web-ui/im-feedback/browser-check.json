@@ -1,0 +1,50 @@
+[
+  {
+    "locale": "en",
+    "width": 320,
+    "overflow": false,
+    "keyboardFocus": true,
+    "errors": [],
+    "violations": []
+  },
+  {
+    "locale": "en",
+    "width": 390,
+    "overflow": false,
+    "keyboardFocus": true,
+    "errors": [],
+    "violations": []
+  },
+  {
+    "locale": "en",
+    "width": 1440,
+    "overflow": false,
+    "keyboardFocus": true,
+    "errors": [],
+    "violations": []
+  },
+  {
+    "locale": "zh",
+    "width": 320,
+    "overflow": false,
+    "keyboardFocus": true,
+    "errors": [],
+    "violations": []
+  },
+  {
+    "locale": "zh",
+    "width": 390,
+    "overflow": false,
+    "keyboardFocus": true,
+    "errors": [],
+    "violations": []
+  },
+  {
+    "locale": "zh",
+    "width": 1440,
+    "overflow": false,
+    "keyboardFocus": true,
+    "errors": [],
+    "violations": []
+  }
+]

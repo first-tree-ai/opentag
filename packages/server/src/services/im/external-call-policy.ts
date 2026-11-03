@@ -3,6 +3,8 @@ import { isIP } from "node:net";
 import { type Readable, Transform } from "node:stream";
 import { domainToASCII } from "node:url";
 import { redactSensitive, type StructuredError, StructuredErrorSchema } from "@opentag/shared";
+import { traceExternalCall } from "../../observability/external-call-logger.js";
+import type { PerformanceLogger } from "../../observability/performance-logger.js";
 
 export type PolicyErrorCategory = "security" | "transient" | "validation" | "availability";
 export type PolicyRetryability = "retryable" | "not_retryable";
@@ -101,7 +103,10 @@ type ExternalCallPolicySecurityOptions = {
   /** Test-only escape hatch for a loopback HTTP transport. Production wiring never sets this. */
   allowHttpLoopbackForTests?: boolean;
 };
-type ExternalCallPolicyMetricOptions = { onMetric?: (metric: ExternalCallMetric) => void };
+type ExternalCallPolicyMetricOptions = {
+  onMetric?: (metric: ExternalCallMetric) => void;
+  performanceLogger?: PerformanceLogger;
+};
 type ExternalCallPolicyOptionsCore = ExternalCallPolicyTimingOptions & ExternalCallPolicyLimitOptions;
 type ExternalCallPolicyOptionsWithCircuit = ExternalCallPolicyOptionsCore &
   /* type-only */ ExternalCallPolicyBackoffOptions &
@@ -249,6 +254,7 @@ export class ExternalCallPolicy {
   readonly #circuitResetMs: number;
   readonly #allowedHosts: readonly string[];
   readonly #onMetric: (metric: ExternalCallMetric) => void;
+  readonly #perfLogger: PerformanceLogger | undefined;
   readonly #circuits = new Map<string, CircuitEntry>();
   #active = 0;
   readonly #waiters: ConcurrencyWaiter[] = [];
@@ -272,6 +278,7 @@ export class ExternalCallPolicy {
     this.#allowedHosts = [...(options.allowedHosts ?? [])];
     this.#allowHttpLoopbackForTests = options.allowHttpLoopbackForTests === true;
     this.#onMetric = options.onMetric ?? (() => undefined);
+    this.#perfLogger = options.performanceLogger;
   }
 
   /** Validate a provider URL before any credential-bearing request headers are constructed. */
@@ -292,6 +299,23 @@ export class ExternalCallPolicy {
   }
 
   async run<T>(operation: string, action: PolicyAction<T>, options: ExternalCallOptions = {}): Promise<T> {
+    const provider = operation.startsWith("slack")
+      ? "slack"
+      : operation.startsWith("feishu")
+        ? "feishu"
+        : "im-provider";
+    return traceExternalCall(
+      this.#perfLogger,
+      {
+        provider,
+        operation: `external.${operation}`,
+      },
+      () => this.#executeRun(operation, action, options),
+      { fallbackErrorCode: "IM_PROVIDER_CALL_FAILED" },
+    );
+  }
+
+  async #executeRun<T>(operation: string, action: PolicyAction<T>, options: ExternalCallOptions): Promise<T> {
     const requestId = randomUUID();
     const circuitKey = options.circuitKey ?? operation;
     const circuit = this.#circuit(circuitKey);

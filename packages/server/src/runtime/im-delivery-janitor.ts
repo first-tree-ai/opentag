@@ -4,6 +4,7 @@ import { PARKED_DELIVERY_CODE } from "../db/im-delivery-work.js";
 import { agents, computers, imBindings, imMessageDeliveries, sessionPlacements, sessions } from "../db/schema/index.js";
 import type { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
 import type { ServiceLogger } from "../observability/service-logger.js";
+import { ImFeedbackStore } from "../services/im/im-feedback-store.js";
 import { expireInboundReceiptWork } from "../services/im/inbound-receipt-work-store.js";
 import { SessionService } from "../services/sessions/session-service.js";
 import { settleSupersededPlacement, settleUnreportableTurn } from "./im-delivery-failure.js";
@@ -426,6 +427,7 @@ export async function runImDeliveryRetention(
   const slackWebhookReceiptsCutoff = new Date(now - options.slackWebhookReceiptsRetentionMs).toISOString();
   const feishuInboundReceiptsCutoff = new Date(now - options.feishuInboundReceiptsRetentionMs).toISOString();
   await expireInboundReceiptWork(database, new Date(now), options.retentionBatchSize);
+  await new ImFeedbackStore(database, options.clock).retain();
   await database.transaction(async (transaction) => {
     await transaction.execute(sql`
       with candidates as (
@@ -448,6 +450,7 @@ export async function runImDeliveryRetention(
             from im_message_deliveries as child
             where child.steer_target_delivery_id = delivery.id
           )
+          and not exists (select 1 from im_feedback_targets feedback where feedback.delivery_id = delivery.id)
         order by delivery.expires_at asc, delivery.id asc
         limit ${options.retentionBatchSize}
       )
@@ -485,6 +488,7 @@ export async function runImDeliveryRetention(
             from im_message_deliveries as delivery
             where delivery.message_id = message.id
           )
+          and not exists (select 1 from im_feedback_targets feedback where feedback.message_id = message.id)
         order by message.occurred_at asc, message.id asc
         limit ${options.retentionBatchSize}
       )

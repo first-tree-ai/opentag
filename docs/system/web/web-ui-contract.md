@@ -140,7 +140,9 @@ paused offline read, delivery credentials being re-verified, or a runtime Provid
 replace a row's last settled status; the row keeps it until the next settled answer. A check with no settled answer
 behind it reads as Ready, while unreadable evidence with none reads as Status unavailable. A confirmed problem
 replaces Ready as soon as it is read. When a row's evidence stays transient for a full refresh interval, that row
-alone adds a quiet **Refreshing status** note under its held status; there is no page-level notice. The Agent's own
+alone adds a quiet **Refreshing status** note under its held status; there is no page-level notice. A flickering
+status or a page-wide error reads as an outage when only one Agent's check is late, so the list keeps what it last
+knew and flags only the row whose answer is overdue. The Agent's own
 page keeps the exact current dependency states. The Server already bounds what it holds: a local Computer without a
 heartbeat for 90 seconds reads as offline, and runtime and messaging observations expire on their own TTLs, so held
 list statuses converge on the Server's next settled answer.

@@ -39,19 +39,40 @@ const SERVICE_BY_SOURCE: Record<ErrorReportRequest["source"], string> = {
   web: "opentag-web",
   cli: "opentag-cli",
 };
+const V8_STACK_FRAME = /(?:^|\n)\s*at\s+\S/;
+const noop = () => undefined;
+
+function silenceSdkLogger(sdk: unknown): void {
+  const logger = (sdk as { _logger?: Record<string, unknown> } | null)?._logger;
+  if (!logger || typeof logger !== "object") return;
+  for (const level of ["fatal", "error", "warn", "info", "debug", "trace"]) {
+    logger[level] = noop;
+  }
+}
+
+function sanitizedForwardError(error: unknown): Error {
+  if (!(error instanceof Error)) return new Error(redactSensitive(String(error)));
+  const clean = new Error(redactSensitive(error.message));
+  clean.name = error.name;
+  if (error.stack) clean.stack = redactSensitive(error.stack);
+  return clean;
+}
 
 function defaultCreateClient(projectId: string, credentials?: ErrorReportingCredentials): ErrorReportingClient {
   /*
    * `reportMode: "always"`: the SDK otherwise reports only under NODE_ENV=production, and a staging
-   * container is the environment most likely to be watched. Log level 1 keeps the SDK's own console
-   * output to genuine errors such as missing credentials.
+   * container is the environment most likely to be watched. `createLogger` in @google-cloud/error-reporting
+   * treats `logLevel: 0` as falsy (`Number(0) || 2` -> warn); `-1` clamps to `fatal` during construction
+   * and `silenceSdkLogger` replaces all `_logger` methods with no-ops so `sendError` never writes raw
+   * transport errors or headers to console.
    */
   const sdk = new ErrorReporting({
     projectId,
     reportMode: "always",
-    logLevel: 1,
+    logLevel: -1,
     ...(credentials ? { credentials } : {}),
   });
+  silenceSdkLogger(sdk);
   return { report: (error, request, callback) => sdk.report(error, request, undefined, callback) };
 }
 
@@ -110,9 +131,11 @@ export function toReportedError(event: ErrorReportRequest): Record<string, unkno
   };
   const user = reportedUser(event);
   const attribution = { ...(user ? { user } : {}), serviceContext };
-  if (event.stack) return { stack: withReportIdMarker(reportedMessage(event), event.reportId), ...attribution };
+  const text = withReportIdMarker(reportedMessage(event), event.reportId);
+  // Error Reporting rejects an empty reportLocation with HTTP 400 unless the text has V8 `at ...` frames.
+  if (event.stack && V8_STACK_FRAME.test(event.stack)) return { stack: text, ...attribution };
   return {
-    message: withReportIdMarker(event.message, event.reportId),
+    message: text,
     filePath: event.url ?? event.command ?? event.source,
     lineNumber: 0,
     functionName: event.code ?? "unknown",
@@ -165,7 +188,7 @@ export function createErrorReporter(options: ErrorReporterOptions): ErrorReporte
         options
           .logger()
           ?.warn(
-            { module: "error-reporting", err: error, source: safe.source, errorCode: safe.code },
+            { module: "error-reporting", err: sanitizedForwardError(error), source: safe.source, errorCode: safe.code },
             "Forwarding an error report to Google Cloud Error Reporting failed",
           );
       } finally {

@@ -23,7 +23,6 @@ describe("RuntimeSignIn", () => {
       "Open a terminal on Ada's Mac.",
       "Run claude",
       "Enter /login and follow the prompts to sign in.",
-      "Come back here and choose Check again.",
     ]);
     fireEvent.click(screen.getByRole("button", { name: "Copy /login" }));
     expect(writeText).toHaveBeenCalledWith("/login");

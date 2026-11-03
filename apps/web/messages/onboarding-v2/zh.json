@@ -241,7 +241,6 @@
   "onboarding_v2_runtime_pi_description": "支持多家模型服务",
   "onboarding_v2_runtime_pi_title": "Pi",
   "onboarding_v2_runtime_sign_in_action": "去登录",
-  "onboarding_v2_runtime_sign_in_check_again": "回到这里，点「重新检查」。",
   "onboarding_v2_runtime_sign_in_enter": "输入",
   "onboarding_v2_runtime_sign_in_follow": "，按提示完成登录。",
   "onboarding_v2_runtime_sign_in_open_terminal": "在 {computerName} 上打开终端。",

@@ -16,8 +16,9 @@ export function runtimeSignInCommands(provider: AgentRuntimeProvider): readonly 
 /**
  * "Sign in" for a runtime that is installed but signed out. Sign-in stays on the reader's computer:
  * openTag only checks it and never holds Claude or Codex credentials, so the action opens the
- * terminal steps rather than a Web sign-in. It opens already expanded when the page is reached from
- * the Agent list's "Sign in" link.
+ * terminal steps rather than a Web sign-in. The page's own Check again, with its hint, follows the
+ * steps, so they do not repeat it. It opens already expanded when the page is reached from the Agent
+ * list's "Sign in" link.
  */
 export function RuntimeSignIn({
   computerName,
@@ -61,7 +62,6 @@ export function RuntimeSignIn({
               {m.onboarding_v2_runtime_sign_in_follow()}
             </li>
           )}
-          <li>{m.onboarding_v2_runtime_sign_in_check_again()}</li>
         </ol>
       ) : null}
     </div>

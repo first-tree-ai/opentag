@@ -127,7 +127,7 @@ unfinished setup can be resumed.
 
 When the Agent's runtime is installed but signed out, the setup page's runtime row offers **Sign in** (**去登录**). It
 expands the terminal steps for that computer: open a terminal on it, run `claude` and enter `/login` for Claude Code,
-or run `codex login` for Codex, then choose Check again. Each command is a copyable chip. The Agent list row and the
+or run `codex login` for Codex. The page's existing Check again follows. Each command is a copyable chip. The Agent list row and the
 Agent page's runtime row name the same action with the same single link, which opens that setup step with the steps
 already shown. Why: sign-in stays on the user's computer. openTag only checks it and never stores Claude or Codex
 credentials, so the next step is the terminal on that computer, not a Web sign-in.

@@ -241,7 +241,6 @@
   "onboarding_v2_runtime_pi_description": "Works with many model providers",
   "onboarding_v2_runtime_pi_title": "Pi",
   "onboarding_v2_runtime_sign_in_action": "Sign in",
-  "onboarding_v2_runtime_sign_in_check_again": "Come back here and choose Check again.",
   "onboarding_v2_runtime_sign_in_enter": "Enter",
   "onboarding_v2_runtime_sign_in_follow": " and follow the prompts to sign in.",
   "onboarding_v2_runtime_sign_in_open_terminal": "Open a terminal on {computerName}.",

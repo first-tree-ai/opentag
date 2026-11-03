@@ -85,7 +85,11 @@ bindings inside the same snapshot that authorized the call.
 The Agent list reports whether an Agent is working or merely idle from Turns that a Computer accepted and has not
 reported yet. A working Agent also carries `runningTaskCount`, the number of open Tasks (Sessions) holding such a
 Turn, so several Turns in one Task count once; the list row shows that count, and an idle Ready Agent reads as
-Waiting. Queued Tasks are not counted. Two reads answer that question over the Agent's IM bindings, and
+Waiting. The count lets a reader see at a glance which Agents are busy and how busy without opening each one, and
+Waiting says a ready Agent is free to take work. Waiting appears only beside Ready, because beside an offline, paused,
+or blocked status it would contradict the reason the Agent cannot work; a running count shows on every row, since
+work in progress is a fact whatever the status. Queued Tasks are not counted: the row reports work that has started.
+Two reads answer that question over the Agent's IM bindings, and
 `im_message_deliveries_unreported_accepted_idx` — partial on `state = 'accepted' and reported_at is null` — is the
 access path for both. Without it the reads join every Session of a binding to reach an answer, which is
 proportional to the Agent's history rather than to the Turns actually outstanding.

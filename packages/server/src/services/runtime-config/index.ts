@@ -7,6 +7,7 @@ export {
   DEFAULT_AGENT_INSTRUCTIONS,
   DEFAULT_AGENT_RUNTIME_CONFIG,
   resolveAgentRuntimeConfig,
+  resolveUpdatedAgentRuntimeConfig,
 } from "./policy.js";
 export {
   isServerAdmittedAgentRuntimeProvider,

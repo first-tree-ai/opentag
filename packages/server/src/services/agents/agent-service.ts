@@ -45,7 +45,7 @@ import { type GitHubMcpAuthorityFence, matchesGitHubMcpFence } from "../mcp/gith
 import { removeMcpLocalAuthorization } from "../mcp/mcp-authorization-graph.js";
 import { lockMcpAccounts, lockMcpBindings } from "../mcp/mcp-binding-locks.js";
 import type { McpCredentialCipher } from "../mcp/mcp-credential-cipher.js";
-import { resolveAgentRuntimeConfig } from "../runtime-config/index.js";
+import { resolveAgentRuntimeConfig, resolveUpdatedAgentRuntimeConfig } from "../runtime-config/index.js";
 import type { CloudModelCatalog } from "../sandboxes/cloud-model-catalog.js";
 import { markEndedDescendantsInactive } from "../sessions/session-closure.js";
 import { AgentTransferError, type AgentTransferInput, type AgentTransferResult } from "./agent-transfer.js";
@@ -1571,14 +1571,18 @@ export class AgentService {
     selfConfigurationChanged: boolean,
   ): Promise<AgentRuntimeConfigRow> {
     const projection = toRuntimeConfig(current);
-    const next = resolveAgentRuntimeConfig({
-      contextTrees: projection.contextTrees,
-      permissions: input?.permissions ?? projection.permissions,
-      model: input?.model !== undefined ? input.model : projection.model,
-      reasoningEffort: input?.reasoningEffort !== undefined ? input.reasoningEffort : projection.reasoningEffort,
-      instructions: input?.instructions !== undefined ? (input.instructions ?? "") : projection.instructions,
-      maxDurationMs: input?.maxDurationMs !== undefined ? input.maxDurationMs : projection.maxDurationMs,
-    });
+    const newInstructions = input?.instructions !== undefined ? (input.instructions ?? "") : undefined;
+    const next = resolveUpdatedAgentRuntimeConfig(
+      {
+        contextTrees: projection.contextTrees,
+        permissions: input?.permissions ?? projection.permissions,
+        model: input?.model !== undefined ? input.model : projection.model,
+        reasoningEffort: input?.reasoningEffort !== undefined ? input.reasoningEffort : projection.reasoningEffort,
+        instructions: newInstructions ?? projection.instructions,
+        maxDurationMs: input?.maxDurationMs !== undefined ? input.maxDurationMs : projection.maxDurationMs,
+      },
+      newInstructions,
+    );
     if (!selfConfigurationChanged && runtimeConfigsEqual(current, next)) return current;
     const [updated] = await transaction
       .update(agentRuntimeConfigs)

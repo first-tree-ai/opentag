@@ -1,4 +1,10 @@
-import type { RuntimeApprovalRequest, TurnReportRequest } from "@opentag/shared";
+import {
+  AGENT_SLUG_MAX_LENGTH,
+  RUNTIME_INSTRUCTIONS_MAX_BYTES,
+  type RuntimeApprovalRequest,
+  renderPlatformInstructions,
+  type TurnReportRequest,
+} from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +12,7 @@ import WebSocket from "ws";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
 import {
+  agentRuntimeConfigs,
   agents,
   computerCredentials,
   computers,
@@ -1257,6 +1264,54 @@ describe("Agent persistence and authorization", () => {
         displayName: "Reviewer",
         revision: 2,
       });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("keeps an Agent whose stored instructions fill the earlier write budget updatable", async () => {
+    // Before CJK names, writes reserved a 64-byte slug line. An Agent stored at that limit must still
+    // accept updates that do not send instructions; only instructions a request sends take the
+    // wider reserve.
+    const value = await fixture();
+    try {
+      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const created = await value.service.createForAccount(
+        value.bootstrap.userId,
+        createInput(computer.id, "reviewer"),
+      );
+      const oldReserve = new TextEncoder().encode(
+        renderPlatformInstructions({ agentSlug: "a".repeat(AGENT_SLUG_MAX_LENGTH) }),
+      ).byteLength;
+      const legacy = "a".repeat(RUNTIME_INSTRUCTIONS_MAX_BYTES - oldReserve);
+      await value.database
+        .update(agentRuntimeConfigs)
+        .set({ instructions: legacy })
+        .where(eq(agentRuntimeConfigs.agentId, created.id));
+
+      const renamed = await value.service.updateById(value.bootstrap.userId, created.id, {
+        displayName: "Reviewer Bot",
+        expectedRevision: created.revision,
+      });
+      expect(renamed).toMatchObject({ displayName: "Reviewer Bot", runtimeConfig: { instructions: legacy } });
+
+      const remodeled = await value.service.updateById(value.bootstrap.userId, created.id, {
+        expectedRevision: renamed.revision,
+        runtimeConfig: { model: "gpt-5.6" },
+      });
+      expect(remodeled.runtimeConfig).toMatchObject({ model: "gpt-5.6", instructions: legacy });
+
+      await expect(
+        value.service.updateById(value.bootstrap.userId, created.id, {
+          expectedRevision: remodeled.revision,
+          runtimeConfig: { instructions: legacy },
+        }),
+      ).rejects.toThrow("combined 24 KiB limit");
+      const [stored] = await value.database
+        .select({ instructions: agentRuntimeConfigs.instructions })
+        .from(agentRuntimeConfigs)
+        .where(eq(agentRuntimeConfigs.agentId, created.id));
+      expect(stored?.instructions).toBe(legacy);
     } finally {
       await value.sql.end();
     }

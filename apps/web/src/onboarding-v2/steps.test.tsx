@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { overwriteGetLocale } from "../paraglide/runtime.js";
 import type { AgentDraft } from "./flow.js";
 import { AgentStep, DestinationStep } from "./steps.js";
 
@@ -60,6 +61,35 @@ describe("creation step navigation", () => {
     );
     expect(back.hasAttribute("disabled")).toBe(true);
     expect(screen.getByRole("button", { name: "Creating agent…" }).hasAttribute("disabled")).toBe(true);
+  });
+
+  describe("Agent name character hint", () => {
+    afterEach(() => overwriteGetLocale(() => "en"));
+
+    it.each([
+      ["en", "Lowercase letters, numbers and hyphens only, starting with a letter or number."],
+      ["zh", "仅限小写字母、数字和连字符，且以字母或数字开头。"],
+    ] as const)("names the allowed characters before any input in %s", (locale, hint) => {
+      overwriteGetLocale(() => locale);
+      render(
+        <AgentStep
+          draft={{ destination: "local", name: "", runtime: undefined }}
+          onBack={() => undefined}
+          onChange={() => undefined}
+          onSubmit={() => undefined}
+          submitLabel="Create Agent"
+        />,
+      );
+
+      const input = screen.getByRole("textbox");
+      const describedBy = input.getAttribute("aria-describedby") ?? "";
+      const description = describedBy
+        .split(" ")
+        .map((id) => document.getElementById(id)?.textContent ?? "")
+        .join(" ");
+      expect(description).toContain(hint);
+      expect(input.getAttribute("aria-invalid")).toBeNull();
+    });
   });
 
   it("keeps Create Agent disabled until a Runtime is selected", () => {

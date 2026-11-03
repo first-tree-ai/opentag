@@ -16,6 +16,7 @@
   "agents_card_status_no_computer": "未指定电脑",
   "agents_card_status_paused": "已暂停",
   "agents_card_status_ready": "已就绪",
+  "agents_card_status_refreshing": "状态刷新中",
   "agents_card_status_runtime_checking": "正在检查 {providerName}",
   "agents_card_status_runtime_not_installed": "未安装 {providerName}",
   "agents_card_status_runtime_sign_in_required": "需要登录 {providerName}",
@@ -141,6 +142,5 @@
   "agents_status_temporarily_unavailable": "状态暂时不可用",
   "agents_status_unknown": "状态暂时不可用",
   "agents_title": "Agent",
-  "agents_view_skills": "查看技能",
-  "agents_card_status_refreshing": "状态刷新中"
+  "agents_view_skills": "查看技能"
 }

@@ -323,7 +323,7 @@ describe("native feedback transport", () => {
     });
     expect(await harness().messenger.find(t)).toEqual({ ids: ["match"], cursor: "next" });
     expect(mocks.feishu.im.v1.message.list).toHaveBeenCalledWith({
-      params: expect.objectContaining({ container_id: t.channelId, page_size: 100 }),
+      params: { container_id_type: "thread", container_id: t.threadKey, page_size: 100, sort_type: "ByCreateTimeAsc" },
     });
   });
   it.each(["slack", "feishu"] as const)(
@@ -343,4 +343,18 @@ describe("native feedback transport", () => {
         );
     },
   );
+});
+
+it("does not count Slack 429 responses toward the shared outage circuit", async () => {
+  const { messenger } = harness();
+  for (let i = 0; i < 4; i++) {
+    mocks.slack.chat.postMessage.mockRejectedValueOnce(new WebAPIRateLimitedError(2));
+    await expect(messenger.post(target())).rejects.toMatchObject({
+      code: "IM_FEEDBACK_RATE_LIMITED",
+      retryAfterMs: 2000,
+    });
+  }
+  mocks.slack.chat.postMessage.mockResolvedValueOnce({ ok: true, ts: "other-installation-card", channel: "channel" });
+  expect(await messenger.post(target())).toBe("other-installation-card");
+  expect(mocks.slack.chat.postMessage).toHaveBeenCalledTimes(5);
 });

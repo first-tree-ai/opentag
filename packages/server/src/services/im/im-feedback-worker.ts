@@ -15,6 +15,7 @@ export class ImFeedbackWorker {
       >;
       transport: FeedbackTransport;
       logger: Pick<ServiceLogger, "warn">;
+      now?: () => Date;
       reconcileAction?: (target: FeedbackTarget) => Promise<void>;
     },
   ) {}
@@ -101,16 +102,21 @@ export class ImFeedbackWorker {
       };
     }
   }
+  async #expireReadback(target: FeedbackTarget, reaction: ReactionResult): Promise<boolean> {
+    if (target.actionsExpireAt > (this.options.now?.() ?? new Date())) return false;
+    await this.options.store.settle(target, {
+      reaction: reaction.value,
+      errorCode: "IM_FEEDBACK_SEND_UNKNOWN_EXPIRED",
+      ...reactionRetry(target, reaction),
+      dormant: !reaction.failed,
+    });
+    return true;
+  }
   async #recover(target: FeedbackTarget, reaction: ReactionResult): Promise<void> {
-    let cursor = target.reconciliationCursor ?? undefined;
-    const matches = new Set<string>();
-    for (let page = 0; page < 5; page++) {
-      if (!(await this.#owns(target))) return;
-      const result = await this.options.transport.find(target, cursor);
-      for (const id of result.ids) matches.add(id);
-      cursor = result.cursor;
-      if (matches.size > 1 || !cursor) break;
-    }
+    if (await this.#expireReadback(target, reaction)) return;
+    const result = await this.#readback(target);
+    if (!result) return;
+    const { matches, cursor } = result;
     if (matches.size === 1) {
       await this.options.store.settle(target, {
         reaction: reaction.value,
@@ -135,6 +141,19 @@ export class ImFeedbackWorker {
       delayMs: Math.max(300_000, reaction.retryAfterMs ?? 0),
       reconciliationCursor: cursor ?? null,
     });
+  }
+  async #readback(target: FeedbackTarget): Promise<{ matches: Set<string>; cursor?: string } | undefined> {
+    let cursor = target.reconciliationCursor ?? undefined;
+    const matches = new Set<string>();
+    for (let page = 0; page < 5; page++) {
+      if (!(await this.#owns(target))) return;
+      const result = await this.options.transport.find(target, cursor);
+      for (const id of result.ids) matches.add(id);
+      cursor = result.cursor;
+      if (matches.size > 1) break;
+      if (!cursor) break;
+    }
+    return { matches, cursor };
   }
   async #publish(target: FeedbackTarget, reaction: ReactionResult): Promise<void> {
     if (!(await this.#owns(target))) return;

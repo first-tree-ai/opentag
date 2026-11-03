@@ -11,13 +11,15 @@ export const ImFeedbackStateSchema = z.enum([
   "resolved",
   "stale",
 ]);
-export const ImFeedbackActionRequestSchema = z
-  .object({
-    kind: ImFeedbackActionKindSchema,
-    revision: z.number().int().positive().safe(),
-    confirmation: z.string().min(1).max(2048),
-  })
-  .strict();
+const confirmationFields = {
+  revision: z.number().int().positive().safe(),
+  confirmation: z.string().min(1).max(2048),
+};
+export const ImFeedbackActionRequestSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("retry_task"), ...confirmationFields }).strict(),
+  z.object({ kind: z.literal("save_release"), ...confirmationFields }).strict(),
+  z.object({ kind: z.literal("discard"), ...confirmationFields, permanentLossAcknowledged: z.literal(true) }).strict(),
+]);
 export const ImFeedbackViewSchema = z
   .object({
     id: z.string().uuid(),
@@ -30,6 +32,7 @@ export const ImFeedbackViewSchema = z
     effects: z.enum(["not_started", "may_have_occurred", "completed"]).nullable(),
     sandboxId: z.string().uuid().nullable(),
     environmentGeneration: z.number().int().nonnegative().safe().nullable(),
+    retryBlockedReason: z.enum(["batch_initial"]).nullable(),
     deliveryState: z.enum(["none", "pending", "sending", "sent", "send_unknown", "blocked"]),
     actions: z
       .array(z.object({ kind: ImFeedbackActionKindSchema, confirmation: z.string().max(2048) }).strict())

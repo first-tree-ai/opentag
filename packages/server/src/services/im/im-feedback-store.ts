@@ -15,7 +15,7 @@ import {
   users,
 } from "../../db/schema/index.js";
 
-export type FeedbackTarget = typeof imFeedbackTargets.$inferSelect;
+export type FeedbackTarget = typeof imFeedbackTargets.$inferSelect & { batchRetryBlocked?: boolean };
 export type FeedbackAction = typeof imFeedbackActions.$inferSelect;
 export interface FeedbackSettlement {
   reaction?: FeedbackTarget["appliedReaction"];
@@ -26,6 +26,7 @@ export interface FeedbackSettlement {
   delayMs?: number;
   errorCode?: string;
   stale?: boolean;
+  dormant?: boolean;
 }
 export const FEEDBACK_ACTION_TTL_MS = 24 * 60 * 60_000;
 const DORMANT = new Date("9999-12-31T00:00:00Z");
@@ -205,7 +206,9 @@ export class ImFeedbackStore {
         })
         .where(eq(imFeedbackTargets.id, target.id))
         .returning();
-      return claimed;
+      return claimed
+        ? { ...claimed, batchRetryBlocked: await hasFrozenFeedbackBatch(tx, claimed.deliveryId) }
+        : undefined;
     });
   }
 
@@ -272,7 +275,7 @@ export class ImFeedbackStore {
         ),
       )
       .returning();
-    return updated ?? target;
+    return updated ? { ...updated, batchRetryBlocked: target.batchRetryBlocked } : target;
   }
 
   async #queuedChange(target: FeedbackTarget, delivery: typeof imMessageDeliveries.$inferSelect) {
@@ -308,8 +311,7 @@ export class ImFeedbackStore {
         and(
           eq(imFeedbackTargets.bindingId, target.bindingId),
           eq(imFeedbackTargets.bindingGeneration, target.bindingGeneration),
-          eq(imFeedbackTargets.channelId, target.channelId),
-          eq(imFeedbackTargets.inputExternalId, target.inputExternalId),
+          eq(imFeedbackTargets.messageId, target.messageId),
           ne(imFeedbackTargets.state, "stale"),
         ),
       )
@@ -464,7 +466,14 @@ function cardSettlement(input: FeedbackSettlement) {
     ...(input.cardMessageId
       ? { cardMessageId: sql`coalesce(${imFeedbackTargets.cardMessageId},${input.cardMessageId})` }
       : {}),
-    ...(input.cardState ? { cardState: input.cardState } : {}),
+    ...(input.cardState
+      ? {
+          cardState:
+            input.cardState === "pending" || input.cardState === "blocked"
+              ? sql`case when ${imFeedbackTargets.state} = 'completed' and ${imFeedbackTargets.cardMessageId} is null then 'none' else ${input.cardState} end`
+              : input.cardState,
+        }
+      : {}),
     ...(input.cardRevision !== undefined ? { cardRevision: input.cardRevision } : {}),
     ...(input.reconciliationCursor !== undefined ? { reconciliationCursor: input.reconciliationCursor } : {}),
   };
@@ -485,7 +494,7 @@ function scheduleSettlement(target: FeedbackTarget, input: FeedbackSettlement, n
   return {
     lastErrorCode: input.errorCode ?? null,
     attemptCount: input.errorCode ? sql`${imFeedbackTargets.attemptCount} + 1` : 0,
-    nextAttemptAt: sql`case when ${imFeedbackTargets.revision} <> ${target.revision} then ${now.toISOString()}::timestamptz else ${(input.stale ? DORMANT : next).toISOString()}::timestamptz end`,
+    nextAttemptAt: sql`case when ${imFeedbackTargets.revision} <> ${target.revision} then ${now.toISOString()}::timestamptz else ${(input.stale || input.dormant ? DORMANT : next).toISOString()}::timestamptz end`,
   };
 }
 
@@ -512,4 +521,18 @@ function observerFeedbackUpdate(now: Date) {
     revision: sql`${imFeedbackTargets.revision}+1`,
     updatedAt: now,
   };
+}
+
+export async function hasFrozenFeedbackBatch(
+  database: DatabaseClient | DatabaseTransaction,
+  deliveryId: string,
+): Promise<boolean> {
+  const [member] = await database
+    .select({ id: imMessageDeliveries.id })
+    .from(imMessageDeliveries)
+    .where(
+      and(eq(imMessageDeliveries.steerTargetDeliveryId, deliveryId), eq(imMessageDeliveries.reason, "batch_initial")),
+    )
+    .limit(1);
+  return !!member;
 }

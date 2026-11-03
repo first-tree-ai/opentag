@@ -56,7 +56,9 @@ export const imFeedbackTargets = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    uniqueIndex("im_feedback_targets_delivery_unique").on(t.bindingId, t.bindingGeneration, t.deliveryId),
+    uniqueIndex("im_feedback_targets_delivery_unique").on(t.deliveryId, t.bindingId, t.bindingGeneration),
+    index("im_feedback_targets_card_owner_idx").on(t.cardOwnerDeliveryId, t.id),
+    index("im_feedback_targets_message_idx").on(t.messageId),
     index("im_feedback_targets_due_idx").on(t.nextAttemptAt, t.id),
     index("im_feedback_targets_account_agent_idx").on(t.accountId, t.agentId, t.createdAt, t.id),
     index("im_feedback_targets_retention_idx").on(t.settledAt, t.id),

@@ -58,7 +58,9 @@ function useFeedbackReview(
       }
       try {
         await api.imFeedbackAction(feedbackId, {
-          kind: selection.kind,
+          ...(selection.kind === "discard"
+            ? ({ kind: "discard", permanentLossAcknowledged: true } as const)
+            : { kind: selection.kind }),
           revision: selection.revision,
           confirmation: action.confirmation,
         });
@@ -110,6 +112,7 @@ function FeedbackSummary({ view }: { view: ImFeedbackView }) {
           {m.im_feedback_workspace_version({ generation: String(view.environmentGeneration) })}
         </p>
       ) : null}
+      {view.retryBlockedReason === "batch_initial" ? <p>{m.im_feedback_batch_retry_blocked()}</p> : null}
       {view.deliveryState === "send_unknown" ? <p role="status">{m.im_feedback_card_unknown()}</p> : null}
       {view.deliveryState === "blocked" ? <p role="alert">{m.im_feedback_card_blocked()}</p> : null}
       {view.action ? (

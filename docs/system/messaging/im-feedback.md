@@ -46,7 +46,7 @@ be delivered. Lists are owner-scoped and paginated in batches of twenty.
 The final CSRF-protected POST rechecks the current Account owner, active binding and installation generation,
 source-message revision, Session, placement, expiry, and allocation tuple. A five-minute signed confirmation binds
 the Account, feedback revision, and operation. Discard requires a second confirmation with an explicit permanent-loss
-acknowledgement. Concurrent save/discard requests admit one operation per revision. Cloud calls run after commit,
+acknowledgement, enforced by the strict HTTP schema and service admission as `permanentLossAcknowledged: true`. The placement generation must still match the feedback target even when the workspace allocation is unchanged. Concurrent save/discard requests admit one operation per revision. Cloud calls run after commit,
 using the existing generation-bound sandbox service; the action is persisted before submission.
 
 A verified save says that the environment was saved and released and will restore on the next allocation, never that
@@ -59,7 +59,7 @@ new delivery ID and an attempt ordinal from one through three, preserving the or
 Agent custody admission prevents simultaneous active attempts and rechecks queue capacity and placement. A native
 Retry callback additionally authenticates the installed App and exact original sender, channel, card, and generation.
 Native identity never authorizes workspace destruction. Unknown or potentially completed task effects remain
-ineligible. Successful admission says "Retry queued", not "Task completed".
+ineligible. A frozen initial batch is also ineligible: replaying only its root would omit member inputs. Its card and Account page explain this limitation and link to the original Task for review. Successful admission says "Retry queued", not "Task completed".
 
 ## Projection, unknown outcomes, and retention
 
@@ -77,9 +77,9 @@ Before a new card request, the worker persists `sending` and a stable request id
 abandoned send becomes `send_unknown`. Bounded readback searches the original conversation for this Bot and feedback
 identity, up to one hundred messages per page and five pages per pass, retaining a cursor. A confirmed match binds
 its native ID. Multiple observed matches are a defect. Negative, inaccessible, or incomplete reads never authorize
-another creation. Unknown sends remain in Account diagnostics with sanitized operational warnings. This deliberately
+another creation. Readback stops at the twenty-four-hour action deadline; unresolved sends become dormant without deletion or another creation. Feishu topic replies are read through the `thread` container without unsupported time-range filters ([provider contract](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/list)). Unknown sends remain in Account diagnostics with sanitized operational warnings. This deliberately
 does not promise unconditional eventual delivery or exactly-once external sending. Known-message updates use that
-same native ID; old buttons cannot authorize a stale operation.
+same native ID. If completion arrives while creation is in flight, a definitely-not-applied result suppresses the new card, while a confirmed or ambiguous send retains its binding/reconciliation path. Slack rate-limit responses are classified within the call-policy boundary so they do not count toward the shared outage circuit; per-target Retry-After does not coordinate the method limit across other targets or Server processes. Old buttons cannot authorize a stale operation.
 
 New actions expire after twenty-four hours and task retries also respect the original input deadline. Confirmed,
 settled projections and actions retain ninety days of diagnostics; cleanup is bounded to one hundred records per
@@ -89,7 +89,7 @@ until their feedback is safely removed. No historical error-card backfill runs.
 ## Writer cutover
 
 New Server processes stop creating Slack native thread-status projections. The old worker only drains known status
-indicators; outbound capture no longer refreshes them. The old reaction notifier is disabled. Old and new writers
+indicators; outbound capture no longer refreshes them. The old reaction notifier is disabled in the Server composition root. Its module and synthetic fixtures remain temporarily for the existing queue-policy and legacy reaction regression suites; they provide no production fallback and must not be reconnected alongside durable feedback. Old and new writers
 must not overlap during rollout, and old writers must not insert deliveries after explicit retry attempts are enabled.
 Coordinate this through the existing compatible release process without scaling the service to zero. The migration
 alone does not establish deployment or native Slack/Feishu acceptance.

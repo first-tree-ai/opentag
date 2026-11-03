@@ -65,7 +65,7 @@ async function failed() {
     report,
     target,
     service,
-    input: { kind: action.kind, revision: view.revision, confirmation: action.confirmation },
+    input: { kind: "retry_task" as const, revision: view.revision, confirmation: action.confirmation },
   };
 }
 describe("PostgreSQL feedback operations", () => {
@@ -146,7 +146,7 @@ describe("PostgreSQL feedback operations", () => {
       const results = await Promise.allSettled(
         view.actions.map((a) =>
           service.submitForAccount(h.target.accountId, h.target.id, {
-            kind: a.kind,
+            ...(a.kind === "discard" ? ({ kind: a.kind, permanentLossAcknowledged: true } as const) : { kind: a.kind }),
             revision: view.revision,
             confirmation: a.confirmation,
           }),
@@ -179,6 +179,18 @@ describe("PostgreSQL feedback operations", () => {
     );
     expect(JSON.stringify(due)).toContain("im_feedback_targets_due_idx");
     expect(JSON.stringify(attempt)).toContain("im_message_deliveries_message_session_attempt_unique");
+    const delivery = await client.database.execute(
+      sql`explain (analyze,buffers,format json) select id from im_feedback_targets where delivery_id=${h.target.deliveryId}::uuid`,
+    );
+    const owner = await client.database.execute(
+      sql`explain (analyze,buffers,format json) select id from im_feedback_targets where card_owner_delivery_id=${h.target.deliveryId}::uuid order by id`,
+    );
+    const message = await client.database.execute(
+      sql`explain (analyze,buffers,format json) select id from im_feedback_targets where message_id=${h.target.messageId}::uuid`,
+    );
+    expect(JSON.stringify(delivery)).toContain("im_feedback_targets_delivery_unique");
+    expect(JSON.stringify(owner)).toContain("im_feedback_targets_card_owner_idx");
+    expect(JSON.stringify(message)).toContain("im_feedback_targets_message_idx");
   });
   it("reconciles a lost COMMIT response by stable action identity", async () => {
     const h = await failed();

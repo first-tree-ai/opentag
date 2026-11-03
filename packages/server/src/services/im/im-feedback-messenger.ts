@@ -37,16 +37,24 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     task: (signal: AbortSignal) => Promise<T>,
     options: { maxAttempts: number; timeoutMs: number },
   ): Promise<T> {
-    try {
-      return await this.policy.run(operation, task, options);
-    } catch (error) {
-      if (
-        operation.startsWith("slack.") &&
-        (error instanceof WebAPIRateLimitedError || slackErrorCode(error) === "ratelimited")
-      )
-        throw new FeedbackProviderError("IM_FEEDBACK_RATE_LIMITED", true, false, slackRetryAfter(error));
-      throw error;
-    }
+    const result = await this.policy.run(
+      operation,
+      async (signal) => {
+        try {
+          return { ok: true as const, value: await task(signal) };
+        } catch (error) {
+          if (
+            operation.startsWith("slack.") &&
+            (error instanceof WebAPIRateLimitedError || slackErrorCode(error) === "ratelimited")
+          )
+            return { ok: false as const, retryAfterMs: slackRetryAfter(error) };
+          throw error;
+        }
+      },
+      options,
+    );
+    if (!result.ok) throw new FeedbackProviderError("IM_FEEDBACK_RATE_LIMITED", true, false, result.retryAfterMs);
+    return result.value;
   }
 
   async #slack(target: FeedbackTarget, signal: AbortSignal) {
@@ -262,10 +270,12 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     const { api, material } = await this.#feishu(target, signal);
     const r = await api.im.v1.message.list({
       params: {
-        container_id_type: "chat",
-        container_id: target.channelId,
+        container_id_type: target.threadKey ? "thread" : "chat",
+        container_id: target.threadKey ?? target.channelId,
         page_size: 100,
-        start_time: String(Math.floor((target.sendStartedAt ?? target.createdAt).getTime() / 1000)),
+        ...(!target.threadKey
+          ? { start_time: String(Math.floor((target.sendStartedAt ?? target.createdAt).getTime() / 1000)) }
+          : {}),
         sort_type: "ByCreateTimeAsc",
         ...(cursor ? { page_token: cursor } : {}),
       },

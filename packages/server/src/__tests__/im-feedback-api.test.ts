@@ -21,6 +21,7 @@ const view: ImFeedbackView = {
   sandboxId: null,
   environmentGeneration: null,
   deliveryState: "sent",
+  retryBlockedReason: null,
   actions: [{ kind: "retry_task", confirmation: "signed-token" }],
   action: null,
 };
@@ -121,4 +122,16 @@ describe("owner feedback HTTP API", () => {
       404,
     );
   });
+});
+
+it.each([undefined, false])("rejects unacknowledged discard through the HTTP boundary (%s)", async (ack) => {
+  const { app, service } = setup();
+  const response = await app.inject({
+    method: "POST",
+    url: imFeedbackActionsPath(id),
+    headers: { authorization: "Bearer owner" },
+    payload: { ...input, kind: "discard", ...(ack !== undefined ? { permanentLossAcknowledged: ack } : {}) },
+  });
+  expect(response.statusCode).toBe(400);
+  expect(service.submitForAccount).not.toHaveBeenCalled();
 });

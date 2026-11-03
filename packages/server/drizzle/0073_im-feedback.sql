@@ -85,7 +85,9 @@ ALTER TABLE "im_message_deliveries" ADD COLUMN "retry_of_delivery_id" uuid;--> s
 CREATE UNIQUE INDEX "im_feedback_actions_identity_unique" ON "im_feedback_actions" USING btree ("idempotency_key");--> statement-breakpoint
 CREATE UNIQUE INDEX "im_feedback_actions_revision_unique" ON "im_feedback_actions" USING btree ("feedback_id","feedback_revision");--> statement-breakpoint
 CREATE INDEX "im_feedback_actions_result_idx" ON "im_feedback_actions" USING btree ("state","updated_at","id");--> statement-breakpoint
-CREATE UNIQUE INDEX "im_feedback_targets_delivery_unique" ON "im_feedback_targets" USING btree ("binding_id","binding_generation","delivery_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "im_feedback_targets_delivery_unique" ON "im_feedback_targets" USING btree ("delivery_id","binding_id","binding_generation");--> statement-breakpoint
+CREATE INDEX "im_feedback_targets_card_owner_idx" ON "im_feedback_targets" USING btree ("card_owner_delivery_id","id");--> statement-breakpoint
+CREATE INDEX "im_feedback_targets_message_idx" ON "im_feedback_targets" USING btree ("message_id");--> statement-breakpoint
 CREATE INDEX "im_feedback_targets_due_idx" ON "im_feedback_targets" USING btree ("next_attempt_at","id");--> statement-breakpoint
 CREATE INDEX "im_feedback_targets_account_agent_idx" ON "im_feedback_targets" USING btree ("account_id","agent_id","created_at","id");--> statement-breakpoint
 CREATE INDEX "im_feedback_targets_retention_idx" ON "im_feedback_targets" USING btree ("settled_at","id");--> statement-breakpoint

@@ -18,6 +18,7 @@ const view = (overrides: Partial<ImFeedbackView> = {}): ImFeedbackView => ({
   sandboxId: "44444444-4444-4444-8444-444444444444",
   environmentGeneration: 3,
   deliveryState: "sent",
+  retryBlockedReason: null,
   actions: [
     { kind: "save_release", confirmation: "save-token" },
     { kind: "discard", confirmation: "discard-token" },
@@ -75,6 +76,7 @@ describe("Account-owned IM recovery", () => {
         kind: "discard",
         revision: 2,
         confirmation: "discard-token",
+        permanentLossAcknowledged: true,
       }),
     );
   });
@@ -141,4 +143,19 @@ describe("Account-owned IM recovery", () => {
     expect(screen.getByText(/上次成功保存之后的改动将永久丢失/)).not.toBeNull();
     expect((screen.getByRole("button", { name: "确认操作" }) as HTMLButtonElement).disabled).toBe(true);
   });
+});
+
+it("explains why a frozen batch has no retry action", async () => {
+  await renderInRouter(
+    <ImFeedbackPage
+      feedbackId={ID}
+      api={api(view({ state: "failed", effects: "not_started", retryBlockedReason: "batch_initial", actions: [] }))}
+    />,
+  );
+  expect(
+    await screen.findByText(
+      "This frozen batch cannot be retried here. Open the original Task and review every input before starting new work.",
+    ),
+  ).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Retry task" })).toBeNull();
 });

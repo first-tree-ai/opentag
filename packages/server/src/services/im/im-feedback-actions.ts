@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import {
   type ImFeedbackActionKind,
   type ImFeedbackActionRequest,
+  ImFeedbackActionRequestSchema,
   type ImFeedbackList,
   ImFeedbackListSchema,
   type ImFeedbackView,
@@ -28,8 +29,10 @@ import {
   createImFeedbackTarget,
   type FeedbackAction,
   type FeedbackTarget,
+  hasFrozenFeedbackBatch,
   ImFeedbackStore,
 } from "./im-feedback-store.js";
+import { IM_QUEUE_CAPACITY } from "./im-queue-policy.js";
 import { lockImAgentCustody } from "./inbound-admission.js";
 
 export class ImFeedbackServiceError extends Error {
@@ -210,6 +213,7 @@ export class ImFeedbackActionsService {
           sandboxId: t.sandboxId,
           environmentGeneration: t.environmentGeneration,
           deliveryState: t.cardState,
+          retryBlockedReason: (await hasFrozenFeedbackBatch(tx, t.deliveryId)) ? "batch_initial" : null,
           actions: allowed.map((kind) => ({ kind, confirmation: this.#confirmation(accountId, t, kind) })),
           action: action
             ? {
@@ -227,7 +231,8 @@ export class ImFeedbackActionsService {
   }
 
   async submitForAccount(accountId: string, id: string, input: ImFeedbackActionRequest): Promise<ImFeedbackView> {
-    if (!this.#verifyConfirmation(accountId, id, input)) throw conflict();
+    const parsed = ImFeedbackActionRequestSchema.safeParse(input);
+    if (!parsed.success || !this.#verifyConfirmation(accountId, id, parsed.data)) throw conflict();
     const admitted = await this.#admit(id, input.revision, input.kind, { accountId });
     this.#dispatch(admitted);
     return this.getForAccount(accountId, id);
@@ -263,6 +268,7 @@ export class ImFeedbackActionsService {
         agent: agents,
         session: sessions,
         delivery: imMessageDeliveries,
+        placement: sessionPlacements,
         sandbox: sandboxes,
         installation: slackInstallations,
       })
@@ -270,6 +276,7 @@ export class ImFeedbackActionsService {
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
       .innerJoin(sessions, eq(sessions.imBindingId, imBindings.id))
       .innerJoin(imMessageDeliveries, eq(imMessageDeliveries.sessionId, sessions.id))
+      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
       .leftJoin(sandboxes, eq(sandboxes.id, t.sandboxId ?? "00000000-0000-0000-0000-000000000000"))
       .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
       .innerJoin(users, eq(users.id, agents.createdByUserId))
@@ -285,6 +292,7 @@ export class ImFeedbackActionsService {
     if (
       !scope ||
       scope.agent.createdByUserId !== t.accountId ||
+      scope.placement.generation !== t.placementGeneration ||
       scope.binding.status !== "active" ||
       scope.binding.credentialGeneration !== t.bindingGeneration ||
       scope.binding.provider !== t.provider ||
@@ -297,6 +305,7 @@ export class ImFeedbackActionsService {
     if (t.state === "workspace_blocked") return workspaceActions(this.options.sandboxRunner, scope.sandbox, t);
     const d = scope.delivery;
     if (!neverStarted(d, t.reportHash) || !(await this.#currentMessage(tx, t))) return [];
+    if (await hasFrozenFeedbackBatch(tx, t.deliveryId)) return [];
     return t.effects === "not_started" &&
       d.attemptOrdinal < 3 &&
       d.expiresAt > this.now &&
@@ -332,7 +341,8 @@ export class ImFeedbackActionsService {
       .where(eq(imMessageDeliveries.id, initial.deliveryId))
       .for("update");
     const [target] = await tx.select().from(imFeedbackTargets).where(eq(imFeedbackTargets.id, id)).for("update");
-    if (!session || !placement || !delivery || !target) throw conflict();
+    if (!session || !placement || !delivery || !target || placement.generation !== target.placementGeneration)
+      throw conflict();
     if (target.bindingGeneration !== binding.credentialGeneration || !nativeActorMatches(actor, target))
       throw notFound();
     return { agent, session, placement, delivery, target };
@@ -375,7 +385,7 @@ export class ImFeedbackActionsService {
     const [count] = (await tx.execute(
       sql`select count(*)::int as count from im_message_deliveries where session_id=${target.sessionId}::uuid and state='pending' and reason is null and expires_at>${now.toISOString()}::timestamptz and dispatch_request_id is null and steer_target_delivery_id is null`,
     )) as Array<{ count: number }>;
-    if ((count?.count ?? 99) >= 99) throw conflict();
+    if ((count?.count ?? IM_QUEUE_CAPACITY) >= IM_QUEUE_CAPACITY) throw conflict();
     const original = attempts.find((d) => d.attemptOrdinal === 0);
     if (!original || original.expiresAt <= now) throw conflict();
     const [retry] = await tx
@@ -609,16 +619,20 @@ export class ImFeedbackActionsService {
     });
   }
 
+  #confirmationKey(): Buffer {
+    return createHmac("sha256", this.options.secret).update("opentag/im-feedback-confirmation/v1").digest();
+  }
+
   #confirmation(accountId: string, t: FeedbackTarget, kind: ImFeedbackActionKind): string {
     const body = Buffer.from(
       JSON.stringify({ accountId, id: t.id, revision: t.revision, kind, expires: this.now.getTime() + 5 * 60_000 }),
     ).toString("base64url");
-    return `${body}.${createHmac("sha256", this.options.secret).update(body).digest("base64url")}`;
+    return `${body}.${createHmac("sha256", this.#confirmationKey()).update(body).digest("base64url")}`;
   }
   #verifyConfirmation(accountId: string, id: string, input: ImFeedbackActionRequest): boolean {
     const [body, signature, ...extra] = input.confirmation.split(".");
     if (!body || !signature || extra.length) return false;
-    const expected = createHmac("sha256", this.options.secret).update(body).digest();
+    const expected = createHmac("sha256", this.#confirmationKey()).update(body).digest();
     const actual = Buffer.from(signature, "base64url");
     if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return false;
     try {

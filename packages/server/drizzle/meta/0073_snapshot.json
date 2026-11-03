@@ -1,5 +1,5 @@
 {
-  "id": "80e45f14-3c57-4437-8a25-ab705e1c5b54",
+  "id": "7991222e-575f-46c6-836a-96dc9d6dd69c",
   "prevId": "ae9f1a13-2a5c-40f0-b9b2-5bd6f98eee34",
   "version": "7",
   "dialect": "postgresql",
@@ -4511,6 +4511,12 @@
           "name": "im_feedback_targets_delivery_unique",
           "columns": [
             {
+              "expression": "delivery_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
               "expression": "binding_id",
               "isExpression": false,
               "asc": true,
@@ -4521,15 +4527,45 @@
               "isExpression": false,
               "asc": true,
               "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "im_feedback_targets_card_owner_idx": {
+          "name": "im_feedback_targets_card_owner_idx",
+          "columns": [
+            {
+              "expression": "card_owner_delivery_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
             },
             {
-              "expression": "delivery_id",
+              "expression": "id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             }
           ],
-          "isUnique": true,
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "im_feedback_targets_message_idx": {
+          "name": "im_feedback_targets_message_idx",
+          "columns": [
+            {
+              "expression": "message_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}

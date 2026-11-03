@@ -60,15 +60,16 @@ export function feedbackCardContent(target: FeedbackTarget, action?: FeedbackAct
     target.effects === "not_started"
       ? "The task did not start. No task operations were executed."
       : "External operations may already have occurred. Check the existing results before repeating this task.";
-  const availability =
-    target.state === "workspace_blocked"
+  const availability = target.batchRetryBlocked
+    ? "This frozen batch cannot be retried here. Open the original Task and review every input before starting new work."
+    : target.state === "workspace_blocked"
       ? "Work in this Session is paused; new input for this Session remains queued. Saving or discarding files will not undo external operations."
       : "Check the Agent's current availability before starting another attempt.";
   return { title, impact, availability, result: !!result, checking: !!checking };
 }
 
 function cardActions(target: FeedbackTarget, result: boolean, operationUrl: (kind: string) => string) {
-  if (result) return [];
+  if (result || target.batchRetryBlocked) return [];
   if (target.state === "workspace_blocked")
     return [
       { kind: "save_release", label: "Retry save", url: operationUrl("save_release"), style: "primary" as const },
@@ -97,7 +98,8 @@ export function renderFeedbackCard(target: FeedbackTarget, publicUrl: string, ac
   const text = content.result
     ? content.title
     : `${content.title}\n\n${content.impact}\n\n${content.availability}\n\n${code}`;
-  const canNativeRetry = target.state === "failed" && target.effects === "not_started" && !content.result;
+  const canNativeRetry =
+    target.state === "failed" && target.effects === "not_started" && !target.batchRetryBlocked && !content.result;
   return {
     slack: {
       text,

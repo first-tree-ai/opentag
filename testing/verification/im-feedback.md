@@ -70,3 +70,38 @@ custody lock helper. Both feedback hooks and the receipt fence remain in the cus
 receipt, Local/Cloud worker, custody and feedback checks passed 273 unit tests across fourteen files. The nine-file
 PostgreSQL group passed 100 tests, including receipt recovery/admission, process restart, steered recovery, claim
 queries, Cloud parking, feedback concurrency and Cloud custody. Server types and repository checks also passed.
+
+
+## Review corrections
+
+The review regression run passed 71 feedback/API/callback/native-transport cases, with 90.68% line and 84.55%
+statement coverage. It adds HTTP and direct-service rejection of missing/false permanent-loss acknowledgement,
+placement changes with an unchanged allocation, a frozen initial batch with a failed/not-started root, concurrent
+completion followed by a definitely-not-applied card send, and unknown-send dormancy after the action deadline.
+Slack SDK 429 responses no longer count toward the shared outage circuit. Feishu topic readback uses the provider's
+thread container without time-range filters. All 28 focused Web behavior, CSRF and owned-control contract checks
+passed; the discard POST contains the explicit acknowledgement and the batch page explains why replay is unavailable.
+Server and Web types passed, as did repository checks.
+
+The complete review-correction PostgreSQL integration run passed all **1,121 tests across 91 files** in 414.53 seconds, using explicit test-container cleanup with `TESTCONTAINERS_RYUK_DISABLED=true`. All five real PostgreSQL feedback cases passed. With 2,000 additional inputs, query plans also select the delivery,
+card-owner, and source-message feedback indexes for their respective hot lookup paths. Only the unmerged feedback
+migration was regenerated; merged migrations remain unchanged. The unique delivery index is still built without
+`CONCURRENTLY`, so the compatible release plan must account for its write lock. The local lock measurement below does not establish
+production migration duration or production row count.
+
+The durable installation/generation/method cooldown is a remaining review blocker, awaiting confirmation of the
+supplemental database design. Per-target Retry-After and outage-circuit classification do not by themselves provide
+cross-worker rate-limit coordination. No review correction establishes native provider acceptance or deployment.
+
+
+### Local delivery-index build and lock measurement
+
+On an isolated PostgreSQL 17.11 container (aarch64), a shadow table copied with `LIKE im_message_deliveries
+INCLUDING DEFAULTS INCLUDING CONSTRAINTS` contained 100,000 synthetic pending rows with distinct UUID message/Session
+pairs. It intentionally omitted foreign keys and existing indexes to isolate the replacement unique-index build.
+`CREATE UNIQUE INDEX ... USING btree (message_id, session_id, attempt_ordinal)` took **53.60 ms**. The transaction
+remained open after index creation; an independent connection's INSERT with `lock_timeout = '100ms'` failed with
+`55P03`. After commit, the same INSERT succeeded. This verifies that writes are blocked until the index transaction
+commits, not merely until the index build statement returns. It does not measure constraint validation, the full
+migration transaction, production hardware or table size. Production rollout must preserve service availability
+and account for this write-lock interval using the existing compatible CI release process.

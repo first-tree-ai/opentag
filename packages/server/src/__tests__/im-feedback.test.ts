@@ -10,6 +10,7 @@ import {
   imMessageDeliveries,
   imMessages,
   sandboxes,
+  sessionPlacements,
   users,
 } from "../db/schema/index.js";
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
@@ -47,7 +48,7 @@ async function fixture(provider: "slack" | "feishu" = "slack") {
     find: vi.fn<FeedbackTransport["find"]>(async () => ({ ids: [] as string[] })),
   };
   const warn = vi.fn();
-  const worker = new ImFeedbackWorker({ store, transport, logger: { warn } });
+  const worker = new ImFeedbackWorker({ store, transport, logger: { warn }, now: () => clock });
   const [agent] = await db.database.select().from(agents).where(eq(agents.id, entry.frame.agentId));
   if (!agent) throw new Error("Missing fixture Agent");
   if (provider === "feishu") {
@@ -153,7 +154,11 @@ async function workspaceFixture() {
     const view = await service.getForAccount(h.accountId, t.id);
     const a = view.actions.find((a) => a.kind === kind);
     if (!a) throw new Error("Missing operation");
-    return service.submitForAccount(h.accountId, t.id, { kind, revision: view.revision, confirmation: a.confirmation });
+    return service.submitForAccount(h.accountId, t.id, {
+      ...(kind === "discard" ? ({ kind, permanentLossAcknowledged: true } as const) : { kind }),
+      revision: view.revision,
+      confirmation: a.confirmation,
+    });
   }
   return { ...h, t, status, runner, service, submit };
 }
@@ -467,7 +472,7 @@ describe("safe feedback actions", () => {
     const a = view.actions[0];
     if (!a) throw new Error("Missing retry");
     await service.submitForAccount(h.accountId, t.id, {
-      kind: a.kind,
+      kind: "retry_task",
       revision: t.revision,
       confirmation: a.confirmation,
     });
@@ -544,7 +549,11 @@ describe("safe feedback actions", () => {
       occurredAt: new Date(source.occurredAt.getTime() + 1_000),
     });
     await expect(
-      service.submitForAccount(h.accountId, t.id, { kind: a.kind, revision: t.revision, confirmation: a.confirmation }),
+      service.submitForAccount(h.accountId, t.id, {
+        kind: "retry_task",
+        revision: t.revision,
+        confirmation: a.confirmation,
+      }),
     ).rejects.toMatchObject({ statusCode: 409 });
   });
   it("lets only the original native sender retry the exact card", async () => {
@@ -710,7 +719,7 @@ describe("safe feedback actions", () => {
     const view = await service.getForAccount(h.accountId, t.id);
     const a = view.actions.find((a) => a.kind === "save_release");
     if (!a) throw new Error("Missing save action");
-    const input = { kind: a.kind, revision: view.revision, confirmation: a.confirmation };
+    const input = { kind: "save_release" as const, revision: view.revision, confirmation: a.confirmation };
     await service.submitForAccount(h.accountId, t.id, input);
     await service.close();
     await service.submitForAccount(h.accountId, t.id, input);
@@ -719,5 +728,138 @@ describe("safe feedback actions", () => {
     const pending = await service.getForAccount(h.accountId, t.id);
     expect(pending.action?.state).toBe("checking");
     expect(pending.actions).toEqual([]);
+  });
+});
+
+describe("feedback review regressions", () => {
+  it.each([undefined, false])(
+    "rejects discard without a permanent-loss acknowledgement (%s) before admission",
+    async (ack) => {
+      const h = await workspaceFixture();
+      const view = await h.service.getForAccount(h.accountId, h.t.id);
+      const action = view.actions.find((a) => a.kind === "discard");
+      if (!action) throw new Error("Missing discard");
+      await expect(
+        h.service.submitForAccount(h.accountId, h.t.id, {
+          kind: "discard",
+          revision: view.revision,
+          confirmation: action.confirmation,
+          ...(ack !== undefined ? { permanentLossAcknowledged: ack } : {}),
+        } as never),
+      ).rejects.toMatchObject({ statusCode: 409 });
+      await h.service.close();
+      expect(h.runner.stopForAccount).not.toHaveBeenCalled();
+      expect(await db.database.select().from(imFeedbackActions)).toHaveLength(0);
+    },
+  );
+  it.each(["save_release", "discard"] as const)(
+    "rejects %s after placement changes, even with a valid current-environment token",
+    async (kind) => {
+      const h = await workspaceFixture();
+      const view = await h.service.getForAccount(h.accountId, h.t.id);
+      const action = view.actions.find((a) => a.kind === kind);
+      if (!action) throw new Error("Missing operation");
+      await db.database
+        .update(sessionPlacements)
+        .set({ generation: 2 })
+        .where(eq(sessionPlacements.sessionId, h.t.sessionId));
+      expect((await h.service.getForAccount(h.accountId, h.t.id)).actions).toEqual([]);
+      await expect(
+        h.service.submitForAccount(h.accountId, h.t.id, {
+          ...(kind === "discard" ? ({ kind, permanentLossAcknowledged: true } as const) : { kind }),
+          revision: view.revision,
+          confirmation: action.confirmation,
+        }),
+      ).rejects.toMatchObject({ statusCode: 409 });
+      expect(h.runner.stopForAccount).not.toHaveBeenCalled();
+      expect(await db.database.select().from(imFeedbackActions)).toHaveLength(0);
+    },
+  );
+  it("never publishes a fresh completion card when a send is known not applied after concurrent completion", async () => {
+    const h = await fixture();
+    await db.database
+      .update(imFeedbackTargets)
+      .set({ state: "failed", errorCode: "input_expired", desiredReaction: "warning", cardState: "pending" })
+      .where(eq(imFeedbackTargets.deliveryId, h.frame.deliveryId));
+    h.transport.post.mockImplementationOnce(async () => {
+      expect((await h.target()).cardState).toBe("sending");
+      await h.finish("completed", "completed");
+      throw new FeedbackProviderError("TRANSIENT_NOT_APPLIED", true);
+    });
+    await h.worker.runOnce();
+    clock = new Date(clock.getTime() + 301_000);
+    await h.worker.runOnce();
+    expect(await h.target()).toMatchObject({
+      state: "completed",
+      cardState: "none",
+      cardMessageId: null,
+      appliedReaction: "none",
+    });
+    expect(h.transport.post).toHaveBeenCalledOnce();
+  });
+  it("disables root-only retry of a frozen initial batch in API, native actions and card", async () => {
+    const h = await fixture();
+    const child = await h.delivery();
+    await db.database
+      .update(imMessageDeliveries)
+      .set({
+        state: "steered",
+        reason: "batch_initial",
+        steerTargetDeliveryId: h.frame.deliveryId,
+        steeredAt: clock,
+        turnId: null,
+        reportOwnerInstanceId: null,
+        acceptedAt: null,
+      })
+      .where(eq(imMessageDeliveries.id, child.frame.deliveryId));
+    await db.database.transaction((tx) => startImFeedback(tx, child.frame.deliveryId, clock));
+    await h.finish("failed", "not_started", "provider_start_failed");
+    const target = await h.target();
+    const service = new ImFeedbackActionsService({ database: db.database, secret: "secret", now: () => clock });
+    const view = await service.getForAccount(h.accountId, target.id);
+    expect(view).toMatchObject({ actions: [], retryBlockedReason: "batch_initial" });
+    await h.worker.runOnce();
+    const posted = h.transport.post.mock.calls[0]?.[0];
+    if (!posted) throw new Error("Missing card");
+    const card = renderFeedbackCard(posted, "https://example.test");
+    expect(card.slack.text).toContain("frozen batch cannot be retried");
+    expect(JSON.stringify(card.slack.blocks)).not.toContain('"opentag_feedback_retry"');
+    expect(
+      await service.submitNativeRetry({
+        feedbackId: target.id,
+        revision: target.revision,
+        provider: "slack",
+        userId: target.senderExternalId,
+        generation: target.bindingGeneration,
+        channelId: target.channelId,
+        messageId: "card-1",
+        installationId: target.installationId ?? undefined,
+      }),
+    ).toBe("unavailable");
+    expect(await db.database.select().from(imMessageDeliveries)).toHaveLength(2);
+    expect(await db.database.select().from(imFeedbackActions)).toHaveLength(0);
+  });
+  it("stops unknown-send readback after the bounded deadline and preserves the unresolved diagnostic across restart", async () => {
+    const h = await fixture();
+    await h.finish();
+    h.transport.post.mockRejectedValueOnce(new Error("ambiguous"));
+    await h.worker.runOnce();
+    clock = new Date((await h.target()).actionsExpireAt.getTime() + 1);
+    await h.worker.runOnce();
+    const restarted = new ImFeedbackWorker({
+      store: new ImFeedbackStore(db.database, () => clock),
+      transport: h.transport,
+      logger: { warn: h.warn },
+      now: () => clock,
+    });
+    clock = new Date(clock.getTime() + 91 * 86400_000);
+    await h.store.retain();
+    await restarted.runOnce();
+    expect(await h.target()).toMatchObject({
+      cardState: "send_unknown",
+      lastErrorCode: "IM_FEEDBACK_SEND_UNKNOWN_EXPIRED",
+    });
+    expect(h.transport.find).not.toHaveBeenCalled();
+    expect(h.transport.post).toHaveBeenCalledOnce();
   });
 });

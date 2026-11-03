@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
-import { agents, mcpServers, users } from "../../db/schema/index.js";
+import { agents, mcpServerAuthorizations, mcpServers, users } from "../../db/schema/index.js";
 import { AgentSelfService, AgentService, DatabaseAgentOwnerResolver } from "../../services/agents/index.js";
 import { ApplicationCipher } from "../../services/crypto.js";
 import {
@@ -28,8 +28,17 @@ afterAll(async () => testDatabase.stop());
 
 beforeEach(async () => testDatabase.reset());
 
-async function fixture() {
-  const client = createDatabaseClient(testDatabase.databaseUrl);
+async function fixture(discoveryTimeoutMs?: number) {
+  const client = createDatabaseClient(
+    testDatabase.databaseUrl,
+    discoveryTimeoutMs === undefined
+      ? undefined
+      : {
+          max: 1,
+          statementTimeoutMs: 500,
+          queryTimeoutMs: 2000,
+        },
+  );
   const bootstrap = await bootstrapInitialAdmin(client.database, { displayName: "Admin", email: "admin@example.com" });
   const agentService = new AgentService(client.database);
   const mcp = new McpServerService({ database: client.database });
@@ -43,6 +52,7 @@ async function fixture() {
   });
   const flows = new McpOAuthFlowService({
     database: client.database,
+    discoveryTimeoutMs,
     cipher,
     oauth: new McpOAuthClient({ fetcher, publicUrl: "https://opentag.example.com" }),
     servers: mcp,
@@ -586,6 +596,110 @@ describe("Agent self-configuration against PostgreSQL", () => {
       await expect(value.self.authenticate("valid-proof")).rejects.toMatchObject({ code: "RESOURCE_NOT_FOUND" });
       await expect(value.self.authenticate("other")).rejects.toThrow("invalid proof");
     } finally {
+      await value.sql.end();
+    }
+  });
+});
+
+describe("Agent self OAuth discovery limits on PostgreSQL", () => {
+  it.each(["duplicates", "oversized", "fourth-valid"] as const)("bounds actual metadata work for %s", async (mode) => {
+    const endpoint = await McpFixtureServer.start({
+      protectedResourceMetadata: (self) => ({
+        resource: `${self}/mcp`,
+        authorization_servers:
+          mode === "duplicates"
+            ? Array(16).fill(self)
+            : mode === "oversized"
+              ? Array.from({ length: 16 }, (_, i) => `${self}/issuer${i}`)
+              : [1, 2, 3].map((i) => `${self}/issuer${i}`).concat(self),
+      }),
+      ...(mode === "duplicates"
+        ? { authorizationServerMetadata: (self: string) => ({ issuer: `${self}/wrong` }) }
+        : {}),
+    });
+    const value = await fixture();
+    try {
+      const scope = await value.self.authenticate("valid-proof");
+      const server = await value.self.createMcpServer(scope, {
+        name: "bounded",
+        url: endpoint.endpoint,
+        defaultAuthKind: "oauth",
+      });
+      const running = value.self.startMcpOAuth(scope, server.mcpServerId, {});
+      if (mode === "fourth-valid") {
+        const result = await running;
+        const token = new URL(result.authorizationUrl).searchParams.get("token");
+        expect(token).toBeTruthy();
+        const handoff = await value.flows.redeemHandoffToken(token as string, value.accountId);
+        expect(new URL(handoff.targetUrl).pathname).toBe("/authorize");
+      } else
+        await expect(running).rejects.toMatchObject({
+          code: "MCP_OAUTH_FAILED",
+          ...(mode === "oversized" ? { detail: { maxCandidates: 4 } } : {}),
+        });
+      const metadataRequests = endpoint.requests.filter(
+        (r) => r.url.startsWith("/.well-known/") && !r.url.startsWith("/.well-known/oauth-protected-resource"),
+      );
+      expect(metadataRequests).toHaveLength(mode === "duplicates" ? 1 : mode === "oversized" ? 0 : 4);
+      expect(endpoint.tokensIssued).toBe(0);
+      expect(endpoint.registrations).toBe(0);
+    } finally {
+      await endpoint.stop();
+      await value.sql.end();
+    }
+  });
+
+  it("never registers or publishes after preparation SQL outlives the discovery deadline", async () => {
+    const endpoint = await McpFixtureServer.start({ dynamicRegistrationOnly: true });
+    const value = await fixture(80);
+    const observer = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let entered!: () => void;
+    const locked = new Promise<void>((r) => {
+      entered = r;
+    });
+    let lock = Promise.resolve();
+    try {
+      const scope = await value.self.authenticate("valid-proof");
+      const server = await value.self.createMcpServer(scope, {
+        name: "late-preparation",
+        url: endpoint.endpoint,
+        defaultAuthKind: "oauth",
+      });
+      await value.database
+        .insert(mcpServerAuthorizations)
+        .values({ agentId: value.agent.id, mcpServerId: server.mcpServerId, kind: "oauth", status: "pending" });
+      lock = observer.sql
+        .begin(async (tx) => {
+          await tx`lock table mcp_client_registrations in access exclusive mode`;
+          entered();
+          await gate;
+        })
+        .then(() => undefined);
+      await locked;
+      await expect(value.self.startMcpOAuth(scope, server.mcpServerId, {})).rejects.toMatchObject({
+        code: "MCP_UPSTREAM_UNAVAILABLE",
+      });
+      release();
+      await lock;
+      const [row] = await value.database
+        .select()
+        .from(mcpServerAuthorizations)
+        .where(eq(mcpServerAuthorizations.mcpServerId, server.mcpServerId));
+      expect(row).toMatchObject({ status: "error", state: null, ciphertext: null });
+      expect(endpoint.registrations).toBe(0);
+      expect(endpoint.tokensIssued).toBe(0);
+      expect(
+        await observer.sql`select pid from pg_stat_activity where datname=current_database() and state='idle in transaction'`,
+      ).toHaveLength(0);
+    } finally {
+      release();
+      await lock;
+      await observer.sql.end();
+      await endpoint.stop();
       await value.sql.end();
     }
   });

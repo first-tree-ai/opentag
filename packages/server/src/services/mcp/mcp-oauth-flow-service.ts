@@ -21,6 +21,7 @@ import {
 } from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import { generateSecret, hashSecret } from "../auth/security.js";
+import { type OutboundDeadline, withOutboundDeadline } from "../outbound/deadline.js";
 import { MCP_ERROR_CODES, McpServiceError } from "./errors.js";
 import {
   invalidateMcpCredentialProbes,
@@ -87,6 +88,7 @@ export interface McpOAuthFlowServiceOptions {
    * Developer Portal only: the waitlist endpoint at `mcp.canva.com` keeps its automatic resolution.
    */
   staticMcpClients?: Partial<Record<McpStaticOAuthBrand, { clientId: string; clientSecret: string }>>;
+  discoveryTimeoutMs?: number;
   now?: () => Date;
   logger?: ServiceLogger;
 }
@@ -144,6 +146,7 @@ export class McpOAuthFlowService {
   readonly #cipher: McpCredentialCipher;
   readonly #database: DatabaseClient;
   readonly #deploymentClients: readonly DeploymentOAuthClient[];
+  readonly #discoveryTimeoutMs: number;
   readonly #now: () => Date;
   readonly #oauth: McpOAuthClient;
   readonly #servers: McpServerService;
@@ -153,6 +156,7 @@ export class McpOAuthFlowService {
     this.#cipher = options.cipher;
     this.#database = options.database;
     this.#deploymentClients = deploymentOAuthClients(options);
+    this.#discoveryTimeoutMs = options.discoveryTimeoutMs ?? 30_000;
     this.#now = options.now ?? (() => new Date());
     this.#oauth = options.oauth;
     this.#servers = options.servers;
@@ -201,16 +205,25 @@ export class McpOAuthFlowService {
      */
     flowSecret: string,
     source: "account" | "agent-self" = "account",
+    signal?: AbortSignal,
   ): Promise<StartedMcpOAuth> {
     const context = await this.#prepareAuthorization(accountId, agentId, mcpServerId, source);
     try {
       const effective = McpServerService.resolveEffectiveConfig(context.server, context.binding);
       const existing = context.authorization;
 
-      const { metadata, client, registrationId, challengeScope, resource, prmScopes } = await this.#discoverForStart(
-        accountId,
-        effective.url,
-        existing?.authorizationServer ?? null,
+      const { metadata, client, registrationId, challengeScope, resource, prmScopes } = await withOutboundDeadline(
+        {
+          timeoutMs: this.#discoveryTimeoutMs,
+          ...(signal ? { signal } : {}),
+          failure: (reason) =>
+            new McpServiceError(
+              MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE,
+              "MCP OAuth discovery did not complete within its budget",
+              { cause: reason },
+            ),
+        },
+        (deadline) => this.#discoverForStart(accountId, effective.url, existing?.authorizationServer ?? null, deadline),
       );
 
       const pkce = McpOAuthClient.createPkcePair();
@@ -533,9 +546,10 @@ export class McpOAuthFlowService {
   async #protectedResourceForStart(
     accountId: string,
     url: string,
+    signal: AbortSignal,
   ): Promise<{ metadata: McpProtectedResourceMetadata; challengeScope?: string }> {
     try {
-      return await this.#oauth.protectedResourceMetadata(accountId, url);
+      return await this.#oauth.protectedResourceMetadata(accountId, url, undefined, signal);
     } catch (error) {
       if (isMissingPrmError(error) && this.#deploymentClient(url, FEISHU_MCP_ISSUER)) {
         return {
@@ -558,6 +572,7 @@ export class McpOAuthFlowService {
     accountId: string,
     url: string,
     recordedIssuer: string | null,
+    deadline: OutboundDeadline,
   ): Promise<{
     metadata: McpAuthorizationServerMetadata;
     client: McpClientCredentials;
@@ -566,7 +581,8 @@ export class McpOAuthFlowService {
     resource: string;
     prmScopes: readonly string[];
   }> {
-    const { metadata: prm, challengeScope } = await this.#protectedResourceForStart(accountId, url);
+    const { metadata: prm, challengeScope } = await this.#protectedResourceForStart(accountId, url, deadline.signal);
+    deadline.throwIfEnded();
     /*
      * Each advertised identifier is requested as published, except for Google's own identifier on a
      * Google Workspace origin (see `#advertisedIssuer`). The metadata reader compares exactly, so an
@@ -576,10 +592,18 @@ export class McpOAuthFlowService {
       prm.authorizationServers.map((issuer) => this.#advertisedIssuer(url, issuer)),
       recordedIssuer === null ? null : this.#advertisedIssuer(url, recordedIssuer),
     );
+    if (candidates.length > 4) {
+      throw new McpServiceError(
+        MCP_ERROR_CODES.OAUTH_FAILED,
+        "The MCP Server advertises more than four distinct authorization servers",
+        { maxCandidates: 4 },
+      );
+    }
     const failures: string[] = [];
     for (const issuer of candidates) {
       try {
-        const metadata = await this.#oauth.authorizationServerMetadata(accountId, issuer);
+        const metadata = await this.#oauth.authorizationServerMetadata(accountId, issuer, deadline.signal);
+        deadline.throwIfEnded();
         /*
          * A client already registered with this issuer is reused rather than registered again.
          *
@@ -593,7 +617,8 @@ export class McpOAuthFlowService {
          * Reuse also keeps a flow's own client stable: the authorization request named the client
          * returned here, so nothing may replace it between this call and the callback.
          */
-        const { client, registrationId } = await this.#clientForStart(accountId, url, metadata);
+        const { client, registrationId } = await this.#clientForStart(accountId, url, metadata, deadline);
+        deadline.throwIfEnded();
         return {
           metadata,
           client,
@@ -613,11 +638,8 @@ export class McpOAuthFlowService {
          * resolution, and authorization-URL construction wins. A failure on one issuer is not fatal
          * to the others — an AS that is down must not block one that works.
          */
+        deadline.throwIfEnded();
         if (error instanceof McpServiceError && error.code === MCP_ERROR_CODES.URL_BLOCKED) throw error;
-        if (error instanceof McpServiceError && error.code === MCP_ERROR_CODES.REGISTRATION_UNSUPPORTED) {
-          failures.push(`${issuer}: no registration mechanism`);
-          continue;
-        }
         failures.push(`${issuer}: ${error instanceof McpServiceError ? error.code : "discovery failed"}`);
       }
     }
@@ -704,10 +726,13 @@ export class McpOAuthFlowService {
     accountId: string,
     effectiveUrl: string,
     metadata: McpAuthorizationServerMetadata,
+    deadline: OutboundDeadline,
   ): Promise<{ client: McpClientCredentials; registrationId: string | null }> {
+    deadline.throwIfEnded();
     const deployment = this.#deploymentClient(effectiveUrl, metadata.issuer);
     if (deployment) return { client: deployment, registrationId: null };
     const preregistered = await this.#readPreregistered(accountId, metadata.issuer);
+    deadline.throwIfEnded();
     if (preregistered) {
       const row = await this.#readRegistrationRow(accountId, metadata.issuer, "preregistered");
       return { client: preregistered, registrationId: row?.id ?? null };
@@ -735,11 +760,13 @@ export class McpOAuthFlowService {
       };
     }
     const existing = await this.#readRegistrationRow(accountId, metadata.issuer, "dcr");
+    deadline.throwIfEnded();
     if (existing) {
       const client = await this.#clientFromRow(accountId, existing);
       return { client, registrationId: existing.id };
     }
-    const client = await this.#oauth.registerDynamically(accountId, metadata);
+    const client = await this.#oauth.registerDynamically(accountId, metadata, deadline.signal);
+    deadline.throwIfEnded();
     await this.#recordRegistration(accountId, metadata, client, this.#now(), { ifAbsent: true });
     /*
      * Re-read rather than using what was just registered.
@@ -1547,8 +1574,9 @@ function transientRefreshPreparation(error: unknown): boolean {
 
 /** Prefer the issuer the row already recorded; the remaining candidates keep their PRM order. */
 export function orderIssuers(issuers: readonly string[], recorded: string | null): string[] {
-  if (!recorded || !issuers.includes(recorded)) return [...issuers];
-  return [recorded, ...issuers.filter((issuer) => issuer !== recorded)];
+  const unique = [...new Set(issuers)];
+  if (!recorded || !unique.includes(recorded)) return unique;
+  return [recorded, ...unique.filter((issuer) => issuer !== recorded)];
 }
 
 /**

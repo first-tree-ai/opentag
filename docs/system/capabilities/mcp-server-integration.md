@@ -647,8 +647,15 @@ the first that can complete discovery, client resolution, and authorization-URL 
 recorded on the authorization row. An issuer that fails is reported and the next one is tried; only
 when all of them fail does the attempt error, naming the issuers it tried.
 
-Once an issuer is recorded it is reused for both refresh and reauthorization. Only a terminal failure
-sends the flow back through discovery to pick another.
+Each start revalidates metadata and prefers the recorded issuer when it is still advertised.
+Advertised issuers are deduplicated, preserving order; more than four distinct candidates fails
+explicitly before any issuer request. Discovery and client resolution share a 30-second outbound
+deadline, budgeted for the normal resource metadata, authorization metadata and registration stages
+at the existing 10-second request bound. Fallbacks share the remaining budget. The same signal
+reaches metadata and registration requests; deadline/cancellation stops candidate fallback and
+prevents late SQL preparation from starting registration or publishing a flow. SQL statements retain
+the infrastructure timeouts. A timed-out registration is not automatically replayed.
+Refresh uses the credential's recorded issuer rather than running this selection again.
 
 Users never choose an issuer — it is not a user-facing concept. The detail view shows which one is
 currently selected.

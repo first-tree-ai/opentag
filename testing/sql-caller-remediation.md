@@ -32,7 +32,7 @@ A repaired original case does not close another extension of the same finding.
 | 5d — Setup authority and read simplification | AG-F4; AG-S1, AG-S2 | [Verified locally](verification/sql-caller-repairs-12.md): exact callback target before send/success; shared one-query summary and direct creation replay; 162 distinct cases (21 native PG). |
 | 6a — Account/auth | AA-F1, AA-F2; AA-S1 | [Verified locally](verification/sql-caller-repairs-13.md): official adapter transaction and scoped internal Account read, precise errors and simpler setup; 199 distinct cases (106 native PG). |
 | 6b — MCP OAuth recovery | BG-F2, MC-F1 | [Verified locally](verification/sql-caller-repairs-14.md): preserve unspent refresh state and end failed consent, fenced against newer flows; 213 distinct cases (104 native PG). |
-| 6c — MCP discovery bounds | AG-F13 | Pending shared discovery deadline and explicit deduplicated candidate bound. |
+| 6c — MCP discovery bounds | AG-F13 | [Verified locally](verification/sql-caller-repairs-15.md): deduplication, four-candidate admission and shared 30-second outbound budget; 254 distinct cases (18 native PG). |
 | 7 — Stable Cloud ownership/recovery | SB-F1, SB-F2, AG-F10 | Pending concrete latest-source resource/placement/lock design; preserve physical UID facts and workspace compatibility. |
 | 8 — Bounded reads, bodies and operator cleanup | IM-F7, BG-F4, AG-F6, OP-F1 | Pending revalidation; reuse existing limits/stream cancellation/owned container cleanup. |
 | With owning batch — Simplification | AG-S3, AG-S4, AG-S5, AG-S6, DW-S1 | Pending current-source revalidation; remove demonstrated redundancy while retaining distinct admission, refresh, quota and recovery safeguards. |
@@ -182,3 +182,7 @@ reran Docker; pending batches are not certified by them.
 Batch 6b closes BG-F2/MC-F1. Twenty-seven original defects and four
 simplifications are repaired locally; ten defects and five simplifications remain.
 AG-F13 discovery bounds and final Server shutdown are still open.
+
+Batch 6c closes AG-F13. Twenty-eight original defects and four simplifications
+are repaired locally; nine defects and five simplifications remain. Independent
+review of batch 14 at 1ab43c77 also found no actionable issue (no test rerun).

@@ -72,6 +72,12 @@ description of impact, a non-destructive default focus target, and an execution 
 outcome is uncertain. A low-impact action may execute immediately only when it is reliably reversible and offers a clear,
 keyboard-accessible Undo path for long enough to recover.
 
+Deleting an Agent is offered whether it is running or paused, behind one confirmation that requires typing its name.
+The Server deletes only a paused Agent, so the Web pauses a running one first in the same action. If the pause fails,
+nothing is deleted and the dialog says so. If the delete fails after the pause, the dialog says the Agent is now paused
+and Try again retries only the delete. A missing permission is named as such. Why: the reader has already confirmed
+the delete, so a separate pause step adds nothing for them, and each failure has to say which state it left.
+
 Every full-screen state that replaces the application shell must keep a way to sign out, because an Account that has
 not finished setup is shown nothing else. First-time creation and exact setup headers reuse the shared Account menu,
 aligned with their navigation action. Until Account setup is complete, that menu offers only Sign out; navigation links

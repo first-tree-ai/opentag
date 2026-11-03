@@ -135,7 +135,7 @@ request. Keep one row per behaviour, not one per screenshot or width.
 
 | ID | Scenario | Steps | Expected result | Run | Verified today |
 | --- | --- | --- | --- | --- | --- |
-| TK-01 | Task list | Open an Agent's Tasks (in production builds the all-Agents `/tasks` route redirects to the Agent list) | Rows show title, Agent, source, status, last activity; loading, empty, and failure states are distinct | Core | unit: `features/tasks-page.test.tsx`, `__tests__/agent-tasks.test.tsx`; sweep |
+| TK-01 | Task list | Open an Agent's Tasks (in production builds the all-Agents `/tasks` route redirects to the Agent list) | Rows show title, source, status, last activity; loading, empty, and failure states are distinct | Core | unit: `features/tasks-page.test.tsx`, `__tests__/agent-tasks.test.tsx`; sweep |
 | TK-02 | Next page fails | Load more Tasks when the next page fails | Loaded Tasks stay; the failure offers a retry | Edge | unit: `__tests__/agent-tasks.test.tsx` |
 | TK-03 | Task detail | Open a Task | Uses the full page width; leads with the outcome | Core | unit: `features/task-conversation.test.tsx`; sweep |
 | TK-04 | Each reply once | Task with Agent replies | Each reply appears once in the timeline, without per-message status labels | Core | unit: `features/task-conversation.test.tsx`, `features/task-outgoing-replies.test.tsx` |

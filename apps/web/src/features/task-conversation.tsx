@@ -208,6 +208,7 @@ function TaskEntry({
   const turn = entry.turn;
   if (entry.kind === "request") return <TaskRequest turn={turn} id={entry.id} />;
   const compact = entry.kind === "report" && entry.hasReplies;
+  const { replyNotice, hasResponse } = agentEntryResponse(entry, task.source.provider, capturedFeedSupplied);
   return (
     <article
       className={compact ? "grid gap-2 pl-11" : "grid grid-cols-[2rem_minmax(0,1fr)] gap-3"}
@@ -228,29 +229,43 @@ function TaskEntry({
             <TaskAgentMeta entry={entry} />
           </header>
         ) : null}
-        {/* biome-ignore lint/a11y/useSemanticElements: This groups message content, not form controls. */}
-        <div
-          className={compact ? "grid min-w-0 gap-3 text-sm" : "grid min-w-0 gap-3"}
-          role="group"
-          aria-label={m.tasks_agent_response()}
-          data-ui="task-agent-response"
-        >
-          {entry.kind === "reply" ? (
-            <TaskOutgoingReply reply={entry.reply} />
-          ) : entry.kind === "report" ? (
-            <TaskReportBody
-              capturedFeedSupplied={capturedFeedSupplied}
-              hasReplies={entry.hasReplies}
-              provider={task.source.provider}
-              report={entry.report}
-            />
-          ) : (
-            <TaskUnreportedBody delivery={turn.delivery} />
-          )}
-        </div>
+        {hasResponse ? (
+          // biome-ignore lint/a11y/useSemanticElements: This groups message content, not form controls.
+          <div
+            className={compact ? "grid min-w-0 gap-3 text-sm" : "grid min-w-0 gap-3"}
+            role="group"
+            aria-label={m.tasks_agent_response()}
+            data-ui="task-agent-response"
+          >
+            {entry.kind === "reply" ? (
+              <TaskOutgoingReply reply={entry.reply} />
+            ) : entry.kind === "report" ? (
+              <TaskReportBody hasReplies={entry.hasReplies} replyNotice={replyNotice} report={entry.report} />
+            ) : (
+              <TaskUnreportedBody delivery={turn.delivery} />
+            )}
+          </div>
+        ) : null}
       </div>
     </article>
   );
+}
+
+/**
+ * What an Agent entry's response group holds. A completed report with nothing to add is only its
+ * author line, so its empty response group is omitted.
+ */
+function agentEntryResponse(
+  entry: TaskTimelineEntry,
+  provider: TaskSummary["source"]["provider"],
+  capturedFeedSupplied: boolean,
+): { replyNotice: TaskReplyNoticeKind | null; hasResponse: boolean } {
+  if (entry.kind !== "report") return { replyNotice: null, hasResponse: true };
+  const replyNotice = taskReplyNoticeKind(entry.report, provider, capturedFeedSupplied);
+  return {
+    replyNotice,
+    hasResponse: entry.hasReplies || replyNotice !== null || entry.report.errorReason !== null,
+  };
 }
 
 function TaskAgentMeta({ entry }: { entry: TaskTimelineEntry }) {
@@ -310,64 +325,59 @@ function TaskReportMeta({ report }: { report: TaskReport }) {
   );
 }
 
+/**
+ * A report adds only what the conversation does not already show: its completion line when it sits
+ * under its own replies, the reply-history notices, and a failure. The runtime's final text is not
+ * shown — the Agent's sent replies are the conversation, and repeating its last message beside them
+ * would show the same reply twice.
+ */
 function TaskReportBody({
   report,
   hasReplies,
-  provider,
-  capturedFeedSupplied,
+  replyNotice,
 }: {
   report: TaskReport;
   hasReplies: boolean;
-  provider: TaskSummary["source"]["provider"];
-  capturedFeedSupplied: boolean;
+  replyNotice: TaskReplyNoticeKind | null;
 }) {
   return (
     <>
       {hasReplies ? <TaskReportMeta report={report} /> : null}
-      {provider === "feishu" ? <TaskReplyNotice capturedFeedSupplied={capturedFeedSupplied} report={report} /> : null}
-      {report.finalText ? <TaskExecutionSummary text={report.finalText} /> : null}
-      {report.outgoingReplies?.runtimeSummaryTruncated ? (
-        <p className="text-sm text-kumo-subtle">{m.tasks_summary_truncated()}</p>
-      ) : null}
+      {replyNotice ? <TaskReplyNotice kind={replyNotice} /> : null}
       {report.errorReason ? <p className="text-sm text-kumo-danger">{turnFailureLabel(report.errorReason)}</p> : null}
     </>
   );
 }
 
+type TaskReplyNoticeKind = "unavailable" | "incomplete";
+
 /**
  * The old report's own reply snapshot. Once the captured replies feed is supplied, this notice only
  * states what stays true about that snapshot — an incomplete history — and stays silent on the
  * missing or unavailable cases the feed itself now reports. Legacy-only callers keep those notices;
- * an empty snapshot needs no notice.
+ * an empty snapshot needs no notice. Only Feishu/Lark Tasks carry the snapshot at all.
  */
-function TaskReplyNotice({ report, capturedFeedSupplied }: { report: TaskReport; capturedFeedSupplied: boolean }) {
+function taskReplyNoticeKind(
+  report: TaskReport,
+  provider: TaskSummary["source"]["provider"],
+  capturedFeedSupplied: boolean,
+): TaskReplyNoticeKind | null {
+  if (provider !== "feishu") return null;
   const snapshot = report.outgoingReplies;
-  if (!snapshot || snapshot.status === "unavailable")
-    return capturedFeedSupplied ? null : (
-      <p className="text-sm text-kumo-subtle" data-ui="task-reply-unavailable">
-        {m.tasks_reply_data_unavailable()}
-      </p>
-    );
-  if (snapshot.status === "incomplete" || (snapshot.omittedCount ?? 0) > 0)
-    return (
-      <p className="text-sm text-kumo-subtle" data-ui="task-reply-incomplete">
-        {m.tasks_reply_incomplete()}
-      </p>
-    );
+  if (!snapshot || snapshot.status === "unavailable") return capturedFeedSupplied ? null : "unavailable";
+  if (snapshot.status === "incomplete" || (snapshot.omittedCount ?? 0) > 0) return "incomplete";
   return null;
 }
 
-function TaskExecutionSummary({ text }: { text: string }) {
-  return (
-    // biome-ignore lint/a11y/useSemanticElements: This groups summary content, not form controls.
-    <div
-      className="grid gap-2 rounded-xl bg-kumo-base/80 p-3.5 ring-1 ring-inset ring-kumo-line/50"
-      data-ui="task-execution-summary"
-      role="group"
-      aria-label={m.tasks_execution_summary()}
-    >
-      <TaskMessageBody format="markdown" text={text} />
-    </div>
+function TaskReplyNotice({ kind }: { kind: TaskReplyNoticeKind }) {
+  return kind === "unavailable" ? (
+    <p className="text-sm text-kumo-subtle" data-ui="task-reply-unavailable">
+      {m.tasks_reply_data_unavailable()}
+    </p>
+  ) : (
+    <p className="text-sm text-kumo-subtle" data-ui="task-reply-incomplete">
+      {m.tasks_reply_incomplete()}
+    </p>
   );
 }
 

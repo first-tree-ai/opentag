@@ -3,6 +3,44 @@ import remarkGfm from "remark-gfm";
 import * as m from "../paraglide/messages.js";
 import { Text } from "../ui/design-system.js";
 
+/** The part of an mdast node this plugin reads; the web app does not depend on mdast's types. */
+type MarkdownNode = { type: string; value?: string; children?: MarkdownNode[] };
+
+/**
+ * A sent chat message shows what its recipient saw. Its single line breaks are its own — Markdown
+ * would join those lines — so each newline in prose becomes a hard break; code keeps its text
+ * untouched. HTML in the message was never rendered for the recipient, so it stays literal text.
+ */
+function remarkChatMessage() {
+  return (tree: MarkdownNode) => keepChatText(tree);
+}
+
+/** Parents whose HTML children are blocks; anywhere else an HTML node is inline. */
+const BLOCK_CONTAINERS = new Set(["root", "blockquote", "listItem", "footnoteDefinition"]);
+
+function literalHtml(node: MarkdownNode, parent: MarkdownNode): MarkdownNode {
+  if (node.type !== "html") return node;
+  const text = { type: "text", value: node.value ?? "" };
+  return BLOCK_CONTAINERS.has(parent.type) ? { type: "paragraph", children: [text] } : text;
+}
+
+function keepChatText(node: MarkdownNode): void {
+  if (!node.children) return;
+  node.children = node.children.flatMap((child): MarkdownNode[] => {
+    const text = literalHtml(child, node);
+    if (text.type !== "text" || !text.value?.includes("\n")) {
+      keepChatText(text);
+      return [text];
+    }
+    return text.value
+      .split(/\r?\n/u)
+      .flatMap((line, index) => [
+        ...(index > 0 ? [{ type: "break" }] : []),
+        ...(line ? [{ type: "text", value: line }] : []),
+      ]);
+  });
+}
+
 type TaskMessageBodyProps = {
   format: "markdown" | "plain_text";
   text: string;
@@ -10,7 +48,8 @@ type TaskMessageBodyProps = {
 
 export function TaskMessageBody({ format, text }: TaskMessageBodyProps) {
   const typography = "text-sm font-normal leading-normal";
-  if (format === "plain_text") {
+  // An empty body says so in either format rather than rendering nothing.
+  if (format === "plain_text" || !text) {
     return (
       <p className={`wrap-anywhere whitespace-pre-wrap ${typography}`} data-content-format="plain_text">
         {text || "No text content"}
@@ -24,7 +63,7 @@ export function TaskMessageBody({ format, text }: TaskMessageBodyProps) {
       data-content-format="markdown"
     >
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkChatMessage]}
         skipHtml
         urlTransform={defaultUrlTransform}
         components={{

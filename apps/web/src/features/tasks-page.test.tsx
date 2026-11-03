@@ -142,14 +142,38 @@ function timelineTurn(index: number): TaskDetail["turns"][number] {
     report: {
       ...base.report,
       turnId: `turn-${index}`,
-      finalText: `Response ${index}`,
+      // The final text is never displayed; each exchange's response is its sent reply.
+      finalText: `Final text ${index}`,
+      outgoingReplies: {
+        status: "complete",
+        replies: [
+          {
+            provider: "feishu",
+            teamBrand: "lark",
+            messageId: `om_response_${index}`,
+            chatId: task.source.channelId,
+            content: { msgType: "text", text: `Response ${index}` },
+          },
+        ],
+      },
       reportedAt: new Date(Date.UTC(2026, 7, 27, 0, index * 2 + 1)).toISOString(),
     },
   };
 }
 
+/** The Server's captured record of `timelineTurn(index)`'s reply, under the same native identity. */
+function timelineCapturedReply(index: number, provider: TaskReply["provider"]): TaskReply {
+  return capturedReply({
+    id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+    provider,
+    externalMessageId: `om_response_${index}`,
+    fallbackText: `Response ${index}`,
+    occurredAt: new Date(Date.UTC(2026, 7, 27, 0, index * 2, 30)).toISOString(),
+  });
+}
+
 function displayedMessages() {
-  return [...document.querySelectorAll('[data-ui="task-message-request"] p, [data-ui="task-execution-summary"] p')].map(
+  return [...document.querySelectorAll('[data-ui="task-message-request"] p, [data-ui="task-sent-reply"] p')].map(
     (message) => message.textContent,
   );
 }
@@ -169,8 +193,14 @@ describe("Tasks view", () => {
       turns: [timelineTurn(3), timelineTurn(2), timelineTurn(1)],
     };
     mockDetail(page);
+    // Slack replies exist only as captured records; a Lark receipt and its record are one reply.
+    vi.spyOn(browserApi, "taskReplies").mockResolvedValue({
+      items: [1, 2, 3].map((index) => timelineCapturedReply(index, provider)),
+      nextCursor: null,
+    });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />);
     await screen.findByText("Request 3");
+    await screen.findByText("Response 3");
 
     expect(displayedMessages()).toEqual([
       "Request 1",
@@ -180,12 +210,16 @@ describe("Tasks view", () => {
       "Request 3",
       "Response 3",
     ]);
+    expect(screen.queryByText(/^Final text/u)).toBeNull();
     expect(page.turns.map((turn) => turn.deliveryId)).toEqual(["delivery-3", "delivery-2", "delivery-1"]);
     for (const message of document.querySelectorAll('[data-ui="task-message-request"]')) {
       expect(message.querySelector("strong")?.textContent).toBe("Mia Zhang");
     }
-    for (const message of document.querySelectorAll('[data-ui="task-message-agent"]')) {
-      expect(message.querySelector("strong")?.textContent).toBe("Atlas");
+    // A report beneath its own Lark replies is compact and repeats no author line.
+    const agentAuthors = document.querySelectorAll('[data-ui="task-message-author-agent"]');
+    expect(agentAuthors.length).toBeGreaterThanOrEqual(3);
+    for (const author of agentAuthors) {
+      expect(author.querySelector("strong")?.textContent).toBe("Atlas");
     }
   });
 
@@ -473,7 +507,8 @@ describe("Tasks view", () => {
 
     const activity = await screen.findByRole("region", { name: "Activity" });
     expect(within(activity).getByText("Please investigate the failed deployment.")).toBeTruthy();
-    expect(within(activity).getByText("The runtime finished and the provider reply was sent separately.")).toBeTruthy();
+    expect(within(activity).getByText(/^Completed ·/)).toBeTruthy();
+    expect(within(activity).queryByText("The runtime finished and the provider reply was sent separately.")).toBeNull();
     expect(screen.getByLabelText("Task details").textContent).toContain("Atlas");
     expect(screen.queryByText(/Provider outbound messages and detailed tool traces/)).toBeNull();
     expect(screen.queryByText(/Internal collaboration/)).toBeNull();
@@ -1126,22 +1161,21 @@ describe("Tasks view", () => {
     },
   );
 
-  it("keeps Slack execution summaries without a permanent unsupported reply-history notice", async () => {
+  it("keeps Slack reports without the final text or a permanent unsupported reply-history notice", async () => {
     mockDetail({
       ...detail,
       task: { ...task, source: { ...task.source, provider: "slack" } },
     });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     const activity = await screen.findByRole("region", { name: "Activity" });
-    expect(within(activity).queryByText("Execution summary")).toBeNull();
-    expect(within(activity).getByRole("group", { name: "Execution summary" }).textContent).toContain(
-      detail.turns[0]?.report?.finalText,
-    );
+    expect(within(activity).getByText(/^Completed ·/)).toBeTruthy();
+    expect(within(activity).queryByRole("group", { name: "Execution summary" })).toBeNull();
+    expect(within(activity).queryByText(detail.turns[0]?.report?.finalText ?? "")).toBeNull();
     expect(within(activity).queryByText("Reply data is unavailable.")).toBeNull();
     expect(within(activity).queryByText("No sent replies recorded.")).toBeNull();
   });
 
-  it("renders captured Lark replies separately from an execution summary", async () => {
+  it("renders captured Lark replies without repeating the final text", async () => {
     const root = detail.turns[0];
     if (!root?.report) throw new Error("Expected the Task fixture to include a root Turn");
     mockDetail({
@@ -1177,7 +1211,7 @@ describe("Tasks view", () => {
     expect(within(activity).getByText("Hello from Lark")).toBeTruthy();
     expect(within(activity).queryByText("Execution summary")).toBeNull();
     expect(within(activity).queryByRole("button", { name: "Details" })).toBeNull();
-    expect(within(activity).getByText("The runtime finished and the provider reply was sent separately.")).toBeTruthy();
+    expect(within(activity).queryByText("The runtime finished and the provider reply was sent separately.")).toBeNull();
     expect(within(activity).queryByText("Work is in progress.")).toBeNull();
   });
 
@@ -1243,7 +1277,7 @@ describe("Tasks view", () => {
   });
 
   it.each([null, "", "Actual reply", "A different runtime summary"])(
-    "keeps the actual empty-final reply independent of summary %j",
+    "shows the actual reply once whatever the final text is (%j)",
     async (finalText) => {
       const data: TaskDetail = structuredClone(detail);
       const report = data.turns[0]?.report;
@@ -1265,14 +1299,10 @@ describe("Tasks view", () => {
       const { container } = await renderInRouter(<TaskDetailPage taskId={sessionId} />, {
         path: `/tasks/${sessionId}`,
       });
-      await screen.findAllByText("Actual reply");
+      expect(await screen.findAllByText("Actual reply")).toHaveLength(1);
       expect(container.querySelector('[data-ui="task-sent-reply"]')?.textContent).toContain("Actual reply");
-      const summary = container.querySelector('[data-ui="task-execution-summary"]');
-      if (finalText) {
-        expect(summary?.querySelector("p")?.textContent).toBe(finalText);
-      } else {
-        expect(summary).toBeNull();
-      }
+      expect(container.querySelector('[data-ui="task-execution-summary"]')).toBeNull();
+      expect(screen.queryByText("A different runtime summary")).toBeNull();
       expect(screen.queryByRole("button", { name: "Details" })).toBeNull();
       expect(screen.queryByText("Work is in progress.")).toBeNull();
     },
@@ -1291,7 +1321,7 @@ describe("Tasks view", () => {
        * The captured feed owns the empty state. The report's own incomplete-history note stays,
        * because it remains true of that snapshot; its missing/unavailable notice yields to the feed.
        */
-      await screen.findByRole("group", { name: "Execution summary" });
+      await screen.findByText(/^Completed ·/);
       if (status === "incomplete") {
         expect(
           screen.getByText("Reply history is incomplete. Some messages or content could not be included."),
@@ -1300,8 +1330,8 @@ describe("Tasks view", () => {
       expect(screen.queryByText("No reply records available.")).toBeNull();
       expect(screen.queryByText("No sent replies recorded.")).toBeNull();
       expect(screen.queryByText("Work is in progress.")).toBeNull();
-      expect(screen.queryByText("Execution summary")).toBeNull();
-      expect(screen.getByRole("group", { name: "Execution summary" }).textContent).toContain(report.finalText);
+      expect(screen.queryByRole("group", { name: "Execution summary" })).toBeNull();
+      if (report.finalText) expect(screen.queryByText(report.finalText)).toBeNull();
     },
   );
 

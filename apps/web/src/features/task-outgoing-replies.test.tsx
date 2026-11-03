@@ -25,7 +25,7 @@ function renderReplies(contents: Content[]) {
 }
 
 describe("actual outgoing reply content", () => {
-  it("preserves reply order, literal text and inspectable native post/card payloads", () => {
+  it("preserves reply order, literal HTML text and inspectable native post/card payloads", () => {
     const post = { title: "Native title", content: [[{ tag: "a", text: "Read", href: "javascript:bad()" }], []] };
     const card = '{"header":{"title":{"content":"Actual card"}},"url":"javascript:bad()"}';
     const { container } = renderReplies([
@@ -35,7 +35,8 @@ describe("actual outgoing reply content", () => {
     ]);
     const replies = container.querySelectorAll('[data-ui="task-sent-reply"]');
     expect(replies).toHaveLength(3);
-    expect(replies[0]?.textContent).toContain("First\n\n<b>literal HTML</b>");
+    expect(replies[0]?.querySelectorAll("p")[0]?.textContent).toBe("First");
+    expect(replies[0]?.textContent).toContain("<b>literal HTML</b>");
     expect(replies[0]?.querySelector("b")).toBeNull();
     expect(screen.queryByRole("link")).toBeNull();
     const controls = screen.getAllByRole("button", { name: "Message details" });

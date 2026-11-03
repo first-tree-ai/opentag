@@ -99,13 +99,16 @@ it("falls back to agent initials when the chat logo fails or is removed", () => 
   expect(container.querySelector('[data-ui="task-message-agent"] [aria-hidden="true"]')?.textContent).toBe("A");
 });
 
-it("shows the summary beside replies and keeps it visible across refresh, duplicate pages and prepended history", () => {
+it("shows each reply once without repeating the final text, across refresh, duplicate pages and prepended history", () => {
   const current = turn();
   const view = render(<TaskActivity task={task} turns={[current]} pagination={null} />);
-  expect(screen.getByText("Review finished")).toBeTruthy();
-  expect(screen.queryByText("Execution summary")).toBeNull();
+  expect(screen.getAllByText("Here is the review")).toHaveLength(1);
+  expect(screen.queryByText("Review finished")).toBeNull();
+  expect(screen.queryByRole("group", { name: "Execution summary" })).toBeNull();
+  expect(document.querySelector('[data-ui="task-execution-summary"]')).toBeNull();
+  // The reply and the report's completion line beneath it.
   expect(screen.getAllByRole("group", { name: "Agent response" })).toHaveLength(2);
-  expect(screen.getByRole("group", { name: "Execution summary" })).toBeTruthy();
+  expect(screen.getByText(/^Completed · /u)).toBeTruthy();
   expect(screen.queryByRole("region", { name: "Agent response" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Details" })).toBeNull();
   const earlier = turn();
@@ -120,12 +123,36 @@ it("shows the summary beside replies and keeps it visible across refresh, duplic
       pagination={null}
     />,
   );
-  expect(screen.getByText("Review finished")).toBeTruthy();
+  expect(screen.queryByText("Review finished")).toBeNull();
   expect(screen.getAllByText("Here is the review")).toHaveLength(1);
   expect(screen.queryByRole("button", { name: "Details" })).toBeNull();
 });
 
-it("keeps incomplete capture, truncation and execution failure visible beside the summary", () => {
+it("shows a captured reply once, rendered as Markdown, and not the identical final text", () => {
+  const current = turn();
+  if (!current.report) throw new Error("Expected report fixture");
+  const body = "**Review done**\n\n- First finding\n- Second finding";
+  current.report.finalText = body;
+  current.report.outgoingReplies = null;
+  const { container } = render(
+    <TaskActivity
+      task={task}
+      turns={[current]}
+      replies={[{ ...capturedReply(), fallbackText: body }]}
+      pagination={null}
+    />,
+  );
+  expect(screen.getAllByText("Review done")).toHaveLength(1);
+  expect(screen.getByText("Review done").tagName).toBe("STRONG");
+  expect(screen.getAllByRole("listitem").map((item) => item.textContent)).toEqual(["First finding", "Second finding"]);
+  expect(container.textContent).not.toContain("**");
+  expect(container.querySelectorAll('[data-ui="task-sent-reply"]')).toHaveLength(1);
+  // A completed report with nothing else to say keeps only its author line, without an empty group.
+  expect(screen.getAllByRole("group", { name: "Agent response" })).toHaveLength(1);
+  expect(screen.getByText(/^Completed · /u)).toBeTruthy();
+});
+
+it("keeps incomplete capture and execution failure visible without the final text", () => {
   const current = turn();
   if (!current.report?.outgoingReplies) throw new Error("Expected capture fixture");
   current.report.outcome = "failed";
@@ -133,10 +160,10 @@ it("keeps incomplete capture, truncation and execution failure visible beside th
   current.report.outgoingReplies.status = "incomplete";
   current.report.outgoingReplies.runtimeSummaryTruncated = true;
   render(<TaskActivity task={task} turns={[current]} pagination={null} />);
-  expect(screen.getByText("Review finished")).toBeTruthy();
+  expect(screen.queryByText("Review finished")).toBeNull();
   expect(screen.getByText("Here is the review")).toBeTruthy();
   expect(screen.getByText("Provider failed")).toBeTruthy();
-  expect(screen.getByText("Execution summary was truncated.")).toBeTruthy();
+  expect(screen.queryByText("Execution summary was truncated.")).toBeNull();
   expect(screen.getByText("Reply history is incomplete. Some messages or content could not be included.")).toBeTruthy();
 });
 
@@ -154,7 +181,7 @@ it.each([
   ["provider_execution_limit", "The agent reached an output, step, or budget limit before finishing."],
   ["provider_request_rejected", "The model provider rejected the request. Check the model configuration."],
   ["provider_process_exited", "The agent process exited unexpectedly before finishing."],
-])("explains %s beside the execution summary", (reason, explanation) => {
+])("explains %s in the report", (reason, explanation) => {
   const current = turn();
   if (!current.report) throw new Error("Expected report fixture");
   current.report.outcome = "failed";
@@ -204,7 +231,6 @@ it.each([0, 3])("shows the incomplete-history notice only when replies were omit
   current.report.outgoingReplies.omittedCount = omittedCount;
   render(<TaskActivity task={task} turns={[current]} pagination={null} />);
 
-  expect(screen.getByText("Review finished")).toBeTruthy();
   expect(screen.getByText("Here is the review")).toBeTruthy();
   expect(screen.queryAllByText(/Reply history is incomplete/)).toHaveLength(omittedCount > 0 ? 1 : 0);
 });
@@ -265,7 +291,7 @@ it("suppresses the missing-reply notice only when the captured feed is supplied"
 
   view.rerender(<TaskActivity task={task} turns={[current]} pagination={null} replies={[]} />);
   expect(screen.queryByText("Reply data is unavailable.")).toBeNull();
-  expect(screen.getByText("Review finished")).toBeTruthy();
+  expect(screen.queryByText("Review finished")).toBeNull();
 });
 
 it("keeps the report's own incomplete-history notice beside the captured feed", () => {

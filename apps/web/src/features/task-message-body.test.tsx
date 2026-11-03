@@ -42,7 +42,9 @@ describe("TaskMessageBody", () => {
     expect(link.getAttribute("rel")).toBe("noreferrer");
     expect(screen.queryByRole("img")).toBeNull();
     expect(screen.getByText("[Image: Architecture]")).toBeTruthy();
-    expect(screen.queryByText(/unsafe content/)).toBeNull();
+    // HTML is shown as the literal text the recipient saw, never as markup.
+    expect(document.querySelector("script")).toBeNull();
+    expect(screen.getByText("<script>unsafe content</script>")).toBeTruthy();
   });
 
   it("does not create a link for unsafe protocols", () => {
@@ -129,6 +131,29 @@ describe("TaskMessageBody", () => {
     expect(screen.getByText("outer")).toBeTruthy();
     expect(screen.getByText("inner")).toBeTruthy();
     expect(screen.getByText("second outer")).toBeTruthy();
+  });
+
+  it("keeps a chat message's single line breaks in prose and leaves code untouched", () => {
+    const { container } = render(
+      <TaskMessageBody
+        format="markdown"
+        text={"First line\nSecond **line**\r\nThird line\n\n- item one\n  continued\n\n```\na\nb\n```"}
+      />,
+    );
+
+    const paragraph = container.querySelector("p");
+    expect(paragraph?.querySelectorAll("br")).toHaveLength(2);
+    expect(paragraph?.textContent).toBe("First line\nSecond line\nThird line");
+    expect(screen.getByText("line").tagName).toBe("STRONG");
+    expect(screen.getByRole("listitem").querySelectorAll("br")).toHaveLength(1);
+    expect(container.querySelector("pre code")?.textContent).toBe("a\nb\n");
+    expect(container.querySelector("pre br")).toBeNull();
+  });
+
+  it("says there is no text for an empty Markdown body", () => {
+    render(<TaskMessageBody format="markdown" text="" />);
+
+    expect(screen.getByText("No text content")).toBeTruthy();
   });
 
   it("marks the body with the format it was given, so a reader can style each differently", () => {

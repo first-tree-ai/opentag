@@ -32,7 +32,8 @@ export function TaskCapturedReplyMeta({ reply }: { reply: CapturedTaskReply }) {
 }
 
 /**
- * The body of a platform-confirmed reply captured by the Server. When the capture carried no
+ * The body of a platform-confirmed reply captured by the Server. Agents write their replies in
+ * Markdown, so the body renders as Markdown, keeping the line breaks a chat message relies on. When the capture carried no
  * usable body, a matching legacy receipt still represents the same message: its whole rich
  * content is rendered by the existing reply renderer, with that renderer's own media description,
  * raw payload, and truncation/unavailable indicators. Without either, the record is shown honestly
@@ -51,7 +52,7 @@ export function TaskCapturedReply({ reply, legacyReply }: { reply: CapturedTaskR
   }
   return (
     <article className="grid gap-2" data-ui="task-sent-reply" data-msg-type={reply.messageType ?? "unknown"}>
-      {reply.fallbackText ? <TaskMessageBody format="plain_text" text={reply.fallbackText} /> : null}
+      {reply.fallbackText ? <TaskMessageBody format="markdown" text={reply.fallbackText} /> : null}
       <TaskAttachments attachments={reply.attachments ?? []} />
       {reply.truncated ? (
         <p className="text-sm text-kumo-subtle" data-ui="task-reply-content-truncated">
@@ -92,12 +93,12 @@ function OutgoingReplyBody({ reply }: { reply: OutgoingReply }) {
     );
   }
   if (content.msgType === "text" && content.text !== undefined) {
-    return <TaskMessageBody format="plain_text" text={content.text} />;
+    return <TaskMessageBody format="markdown" text={content.text} />;
   }
   if (content.msgType === "post") {
     return (
       <div className="grid min-w-0 gap-2">
-        {content.text ? <TaskMessageBody format="plain_text" text={content.text} /> : null}
+        {content.text ? <TaskMessageBody format="markdown" text={content.text} /> : null}
         <RawPayload payload={content.post ?? content.raw} />
       </div>
     );
@@ -114,7 +115,7 @@ function OutgoingReplyBody({ reply }: { reply: OutgoingReply }) {
   if (mediaLabel) {
     return <p className="wrap-anywhere text-sm">{mediaLabel}</p>;
   }
-  if (content.text) return <TaskMessageBody format="plain_text" text={content.text} />;
+  if (content.text) return <TaskMessageBody format="markdown" text={content.text} />;
   if (content.raw) return <RawPayload payload={content.raw} />;
   return (
     <p className="text-sm text-kumo-subtle" data-ui="task-reply-content-unavailable">

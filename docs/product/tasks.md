@@ -72,9 +72,12 @@ thread Session owns, and a delivery expired because a newer revision of its mess
 A message steered into a running Turn gets a small annotation on the input; it does not create a
 second Agent response or report.
 
-Execution summaries, when reported, remain visible as separate execution records in the conversation.
-They never substitute for captured sent replies. Execution failures, unavailable or incomplete reply
-history, and truncated content remain visible. On Local Computers supporting detailed reports,
+A report's `finalText` is not shown in the conversation. The Agent's sent replies are the
+conversation, and the runtime's final text usually repeats the last of them, so showing it beside
+them would show one reply twice. A report contributes only its completion line, execution failures,
+and unavailable or incomplete reply history; truncated reply content remains labelled. Sent replies
+render as Markdown, because Agents write their replies in Markdown, and keep the message's own
+single line breaks; a request stays literal text. On Local Computers supporting detailed reports,
 recognized provider failures explain authentication,
 model access, credit or quota, rate limits, service availability, connection loss, context limits,
 execution limits, rejected requests, or unexpected process exits. Unrecognized failures keep the
@@ -127,7 +130,7 @@ order in two, three or five columns according to the content container width. Th
 date and time can wrap without squeezing the other facts.
 
 The conversation follows the facts without a visible Activity heading; its existing Activity heading
-remains available to assistive technology. Requests, sent replies and execution summaries use 14px
+remains available to assistive technology. Requests and sent replies use 14px
 regular text with a 21px line height. Authors use 14px medium text and timestamps use 12px regular
 text. Operational notices stay at 14px. Message headings, emphasis and monospace code retain their
 content formatting. Wide code, native message payloads and message tables scroll locally, with named,
@@ -185,14 +188,14 @@ message or Session is never repeated across pages.
 ## Boundaries
 
 - Task reply history uses captured successful Lark outbound receipts from the originating Turn
-  report when that snapshot is present. `finalText` is only an execution summary, never a substitute
-  sent reply. A complete capture with no recorded send, or a legacy report without a snapshot, has an accurate
-  empty or unavailable state rather than “in progress.” Slack is not collected as Lark. Send receipts
+  report when that snapshot is present. `finalText` is never a substitute sent reply and is not
+  displayed. A complete capture with no recorded send, or a legacy report without a snapshot, has an
+  accurate empty or unavailable state rather than “in progress.” Slack is not collected as Lark. Send receipts
   are not read receipts. Partial capture is labelled independently of the number of replies; content
   truncation and native post/card details remain visible. Replies become available with the terminal
   report and are not backfilled from old runtime transcripts.
-- The unavailable Lark-reply notice is limited to Feishu/Lark Tasks. Slack Tasks retain their execution
-  summaries without a permanent notice about a capture feature they do not support.
+- The unavailable Lark-reply notice is limited to Feishu/Lark Tasks. Slack Tasks show their captured
+  replies without a permanent notice about a legacy capture feature they do not support.
 - Reply snapshots require `runtime.turnReport` v2 or later on the current connection. A report created on v2
   remains durable during a v1 reconnect and resumes unchanged after v2 or later is negotiated again. The
   server rejects an unnegotiated snapshot with a nonfatal `unsupported_capability` report result.

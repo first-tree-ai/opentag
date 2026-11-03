@@ -62,7 +62,9 @@ strictly, and a cursor that does not match the expected shape is a `400`.
 ## Executions and status
 
 The Task detail flattens the topic's messages and captured Agent replies into one oldest-to-newest
-conversation, including private chats, group chats, and channel topics. User follow-ups appear between
+conversation, including private chats, group chats, and channel topics. In a group, the messages of every member
+that the Agent received in the topic are shown, not only the requester's, because the Agent acted on that whole
+context. User follow-ups appear between
 replies according to their timestamps. Replies without a usable timestamp retain their captured
 position beside neighbouring replies, or at report time when none have timestamps; no send time is
 invented for display. Repeated delivery and reply identities across loaded pages appear once, while

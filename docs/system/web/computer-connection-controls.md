@@ -27,6 +27,9 @@ Each card shows the computer's identity, a connection status badge, and a More m
 
 “Status unavailable” expresses missing evidence, not another persisted connection condition.
 
+Every connect or repair command shows its code's expiry beside it. Why: a copied command is often run later, and the
+expiry tells the reader why an old copy no longer works.
+
 - A local computer that is not online shows its repair task inline, issued automatically with a targeted repair
   code: the shared instruction block, one copy action, optional full-text expansion, and the code's expiry. The
   copied text is always complete. Copying is never evidence of connection.

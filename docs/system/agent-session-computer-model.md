@@ -124,6 +124,16 @@ retains durable work until terminal evidence. Proof retirement compares the sele
 update version; only a successful delete drops that proof's execution correlation. A later reused
 or replaced proof survives an older result.
 
+Local lifecycle stop runs at most 16 complete requests concurrently within one
+30-second dispatch window. Deadline expiry or shared-domain capacity stops new
+targets; admitted requests retain their result timers. Confirmed stop proof cleanup
+remains owned by the Runtime domain through actual settlement even if notification
+times out; shutdown joins it before disposing SQL. Late preparation checks the signal before final authority SQL, and
+final enqueue checks it again. Unconfirmed targets retain the existing best-effort
+failure diagnostic without being marked stopped or automatically retried. This
+window starts after existing Cloud cancellation and is not the lifecycle HTTP
+response deadline.
+
 AgentService mutation queries select the caller's ownership in the locking
 predicate, then validate lifecycle and revision while holding the row lock. A foreign or
 missing Agent returns the same not-found result without waiting for a foreign

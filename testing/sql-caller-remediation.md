@@ -13,6 +13,11 @@ base before editing; present any materially different persistence/authority desi
 for confirmation. Keep each batch small enough to review and validate independently.
 A repaired original case does not close another extension of the same finding.
 
+Current status: the confirmed public remediations are locally complete through
+[batch 42](verification/sql-caller-repairs-42.md). Remaining scale/compatibility
+observations and unavailable private implementation are explicit boundaries.
+The batch notes retain their original checkpoint descriptions.
+
 ## Sequence and tracking
 
 | Batch | Findings and simplifications | State |
@@ -20,14 +25,14 @@ A repaired original case does not close another extension of the same finding.
 | 1 — Agent/Task authority snapshot | AG-F11, TK-F1, AG-F1 including IM metadata | [Verified locally](verification/sql-caller-repairs-01.md): 275 distinct cases (183 native PG), server typecheck and pnpm check pass. |
 | 2a — Skill/Schedule and compatible locks | SK-F1, SC-F1, IM-F5 | [Verified locally](verification/sql-caller-repairs-02.md): 294 distinct cases (153 native PG); full source contract and Session-first retained claims. |
 | 2b — Final setup/Context authority | AG-F3, AG-F5 | [Verified locally](verification/sql-caller-repairs-03.md): final locked expected Computer and post-SQL abort checks; 137 distinct cases, 88 native PG. |
-| 2c — Lifecycle stop authority | AG-F12; AG-F2 lifecycle extensions | [Verified locally](verification/sql-caller-repairs-04.md): Agent revision and final enqueue guards, exact proof CAS, no redundant dispatch wait; 270 distinct cases (79 native PG). AG-F2 Runtime-test and preparation extensions remain open in batch 4. |
+| 2c — Lifecycle stop authority | AG-F12; AG-F2 lifecycle extensions | [Verified locally](verification/sql-caller-repairs-04.md): Agent revision and final enqueue guards, exact proof CAS, no redundant dispatch wait; 270 distinct cases (79 native PG). The AG-F2 Runtime-test and preparation extensions are verified in batches 4b/4d. |
 | 3 — Contention and admission | IM-F1, IM-F6, CR-F1; CR-S1 | [Verified locally](verification/sql-caller-repairs-05.md): nonblocking claim, bounded durable Slack admission and per-call usage isolation; 201 distinct cases (77 native PG). Historical expiry scan remains an explicit scale boundary. |
 | 4a — SQL classification and terminal fences | SW-F1, IM-F4, CR-F2 | [Verified locally](verification/sql-caller-repairs-06.md): SQL failures stay outside provider accounting; current attempt and exact terminal-record CAS; 289 distinct cases (90 native PG). |
-| 4b — Runtime test and approval enqueue | AP-F1; AG-F2 Runtime-test portion | [Verified locally](verification/sql-caller-repairs-07.md): lock lifetime ends at synchronous enqueue, existing Runtime test result budget; 59 distinct cases (6 native PG). AG-F2 preparation remains open. |
+| 4b — Runtime test and approval enqueue | AP-F1; AG-F2 Runtime-test portion | [Verified locally](verification/sql-caller-repairs-07.md): lock lifetime ends at synchronous enqueue, existing Runtime test result budget; 59 distinct cases (6 native PG). AG-F2 preparation is verified in batch 4d. |
 | 4c — Send cancellation | IM-F2 | [Verified locally](verification/sql-caller-repairs-08.md): forward the existing operation signal, final reconcile admission, no new sends/allocation after deadline; 217 distinct cases (45 native PG). |
 | 4d — Preparation deadline | AG-F2 preparation portion | [Verified locally](verification/sql-caller-repairs-09.md): one existing preparation budget covers admitted dispatch waits and readiness; 65 distinct cases, including 2 native PG and 63 Docker unit cases. |
 | 5a — Background stop and GC work bound | BG-F1, BG-F3; IM-F3 GC portion | [Verified locally](verification/sql-caller-repairs-10.md): actual pass Promises replace running flags; page quota/cursor; 87 distinct cases (59 native PG). Main already awaits these stop ports. |
-| 5b — Stop, drain and owner resources | IM-F3, AG-F9 | AG-F9 [verified locally](verification/sql-caller-repairs-22.md). IM-F3 [verified locally](verification/sql-caller-repairs-37.md): component owners, actual HTTP work, main composition and built Server PG17 signal controls. Separate Google transport observation AA-R1 and final broad validation remain. |
+| 5b — Stop, drain and owner resources | IM-F3, AG-F9 | AG-F9 [verified locally](verification/sql-caller-repairs-22.md). IM-F3 [verified locally](verification/sql-caller-repairs-37.md): component owners, actual HTTP work, main composition and built Server PG17 signal controls. Google transport AA-R1 is verified in batch 38; broad regression and follow-up acceptance are recorded in batches 41–42. |
 | 5c — Client Context Tree resources | AG-F7, AG-F8 | [Verified locally](verification/sql-caller-repairs-11.md): memoized cleanup and bounded UTF-8 collection; 94 distinct cases, 27 repeated in Docker. AG-F8 moves from batch 8 to share the same client validation scope. |
 | 5d — Setup authority and read simplification | AG-F4; AG-S1, AG-S2 | [Verified locally](verification/sql-caller-repairs-12.md): exact callback target before send/success; shared one-query summary and direct creation replay; 162 distinct cases (21 native PG). |
 | 6a — Account/auth | AA-F1, AA-F2; AA-S1 | [Verified locally](verification/sql-caller-repairs-13.md): official adapter transaction and scoped internal Account read, precise errors and simpler setup; 199 distinct cases (106 native PG). |
@@ -39,7 +44,7 @@ A repaired original case does not close another extension of the same finding.
 | 8b — Git subtree verification | AG-F6 | [Verified locally](verification/sql-caller-repairs-20.md): literal selected-path and separate ancestor entry listing; 41 host/Docker cases, existing process bounds retained. |
 | 8c — Operator cleanup | OP-F1 | [Verified locally](verification/sql-caller-repairs-21.md): shared client defaults and native five-second close; 102 Vitest cases and both actual Docker benchmark CLIs, owned containers removed. |
 | 6d — Remaining simplification | AG-S3, AG-S4, AG-S5, AG-S6, DW-S1 | [Verified locally](verification/sql-caller-repairs-16.md): direct Settings credential read, Local-only query removal, one owner read, locked MCP check and unreachable quota deletion; 225 distinct cases (94 native PG). |
-| Observations | AA-R1, CR-R1, IM-R1, IM-R2, TK-R1, LC-R1 | AA-R1 [fixed locally](verification/sql-caller-repairs-38.md) with native token-exchange budget. CR/IM measured costs do not establish a required rewrite; TK legacy projection requires external API compatibility review before retirement; Web already uses paged sections. IM-R2 [fixed locally](verification/sql-caller-repairs-40.md): same-output SQL selection avoids unrelated full payloads after native scale/equivalence checks. LC-R1 lifecycle fan-out was omitted from the initial ledger; native scale/busy-domain tests confirm excessive preparation and partial stop. Its supplemental policy below awaits confirmation. |
+| Observations | AA-R1, CR-R1, IM-R1, IM-R2, TK-R1, LC-R1 | AA-R1 [fixed locally](verification/sql-caller-repairs-38.md) with native token-exchange budget. CR/IM measured costs do not establish a required rewrite; TK legacy projection requires external API compatibility review before retirement; Web already uses paged sections. IM-R2 [fixed locally](verification/sql-caller-repairs-40.md): same-output SQL selection avoids unrelated full payloads after native scale/equivalence checks. LC-R1 lifecycle fan-out was omitted from the initial ledger; native scale/busy-domain tests confirm excessive preparation and partial stop. Its confirmed Local policy is [verified locally](verification/sql-caller-repairs-42.md), including actual cutoff, capacity and cleanup faults. |
 | Private billing | Unavailable implementation | Blocked by absent source; public adapter review is not an implementation audit. |
 
 The table accounts for all 37 defect IDs, nine simplification IDs and six
@@ -535,10 +540,10 @@ Server unit/native matrices with successful affected reruns, plus 818 covered
 Client Runtime cases at 100 percent. Original failed command logs remain failed;
 no cases were waived. Test-only fixtures/collection were corrected without
 product changes. The original audit's 52 IDs are all accounted for. LC-R1 now
-has representative native cost/failure evidence and needs the specific Local-stop
-policy below before implementation; the overall remediation is not complete.
+has representative native cost/failure evidence; its specific Local-stop policy
+below was subsequently confirmed and verified in [batch 42](verification/sql-caller-repairs-42.md).
 
-## LC-R1 supplemental design — awaiting human confirmation
+## LC-R1 supplemental design — confirmed
 
 The original audit contains six observations, not five: LC-R1 was absent from the
 initial remediation ledger. It concerns unbounded Local lifecycle stop fan-out,
@@ -551,7 +556,7 @@ avoidable work and partial stop under a large single-Agent operation.
 
 Simply batching complete result Promises would multiply the existing 30-second
 request wait by the number of batches. The following adds a specific Local-stop
-operation policy and therefore needs confirmation before implementation:
+operation policy. The user confirmed the complete policy on 2026-11-03:
 
 1. Process at most **16 complete Local stop operations concurrently**, including
    proof preparation, final locked authority, enqueue and the actual result.
@@ -583,7 +588,7 @@ operation policy and therefore needs confirmation before implementation:
    existing best-effort notification contract. **No new automatic retry/recovery
    is introduced for remaining targets**; only a later existing reconciliation
    that actually confirms stop establishes that outcome. This residual-work
-   behavior is part of the policy being submitted for confirmation.
+   behavior is part of the confirmed policy.
 6. Keep Cloud's currently serial cancellation and CR-R1 observation separate.
    This change bounds the Local fan-out; it does not establish a Session-count
    limit, make the initial metadata selection globally bounded, or define a new
@@ -597,4 +602,17 @@ replacement-proof tests. Gate late preparation, an Agent-row wait crossing the
 cutoff, results/revocation after the cutoff and a capacity error while the other
 started targets still settle. Check actual proof rows, committed Agent state, no idle
 transaction, healthy same-pool and independent controls, owner shutdown and late
-result behavior. Do not implement this supplemental policy before confirmation.
+result behavior. This confirmed policy is implemented and locally verified in batch 42.
+
+
+[Bounded Local lifecycle stop](verification/sql-caller-repairs-42.md) passes
+49 distinct Docker cases, 21 native PostgreSQL. At 4,096 targets, preparation
+peaks at 16 and every healthy target confirms stop with exact proof cleanup.
+Actual SQL locks, the native dispatch window, capacity, owner close and accepted
+cleanup beyond the original request timer are verified. Main preserves the
+budget signal and eager Promise/result arrays are removed. All 37 public defect
+IDs, nine simplifications and the actionable AA-R1/IM-R2/LC-R1 follow-ups now have
+local repairs. CR-R1/IM-R1/TK-R1 retain their explicit scale/compatibility decisions;
+initial metadata population and unavailable private billing remain stated scope
+boundaries. This completes the authorized public remediation, not an audit of
+unavailable implementations or a claim of CI, merge, deployment or online acceptance.

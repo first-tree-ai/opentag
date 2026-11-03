@@ -970,8 +970,7 @@ export async function startServer(): Promise<void> {
           cloudDeliveryOwner,
           {
             currentInstanceId: (computerId) => registry.currentInstanceId(computerId),
-            requestReconcile: (computerId, instanceId, request, onDispatched, admission) =>
-              domainOwner.requestReconcile(computerId, instanceId, request, onDispatched, admission),
+            requestReconcile: domainOwner.requestReconcile.bind(domainOwner),
           },
           reportDiagnostic,
           cloudSessionOwner,

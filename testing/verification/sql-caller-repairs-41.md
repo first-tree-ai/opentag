@@ -2,6 +2,9 @@
 
 Supports the [remediation ledger](../sql-caller-remediation.md) and the
 [database read/write standards](../../docs/system/database-read-write-standards.md).
+This records the batch 41 boundary. Its remaining LC-R1 policy was subsequently
+confirmed and implemented in [batch 42](sql-caller-repairs-42.md).
+
 The branch fixes the 37 original public defects and nine simplifications, plus
 AA-R1 and IM-R2. The corrected original inventory contains **52 IDs: 37 F, nine S,
 six R**. LC-R1 was omitted from the initial ledger; the complete original audit

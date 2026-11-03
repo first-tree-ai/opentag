@@ -31,6 +31,7 @@ const state = vi.hoisted(() => ({
   machineAuthOptions: undefined as unknown,
   agentOptions: undefined as unknown,
   domainRequestReconcile: vi.fn(),
+  stopSignal: undefined as AbortSignal | undefined,
   sessionCliPrepareReconcile: vi.fn(),
   imBindingOptions: undefined as unknown,
   imBindingGetAgentComputerId: vi.fn(),
@@ -167,15 +168,25 @@ vi.mock("../runtime/agent-session-stopper.js", () => {
           instanceId: string | undefined,
           request: unknown,
           onDispatched?: () => void,
+          admission?: unknown,
+          signal?: AbortSignal,
         ): Promise<unknown>;
       },
     ) => {
+      state.stopSignal = new AbortController().signal;
       for (const target of targets) {
         const instanceId = dependencies.currentInstanceId(target.computerId);
-        await dependencies.requestReconcile(target.computerId, instanceId, {
-          type: "session:reconcile",
-          desired: "stopped",
-        });
+        await dependencies.requestReconcile(
+          target.computerId,
+          instanceId,
+          {
+            type: "session:reconcile",
+            desired: "stopped",
+          },
+          undefined,
+          undefined,
+          state.stopSignal,
+        );
       }
     },
   );
@@ -197,8 +208,15 @@ vi.mock("../runtime/runtime-domain-owner.js", () => ({
     constructor(_registry: unknown, _store: unknown, options: unknown) {
       state.domainOptions = options;
     }
-    requestReconcile(computerId: string, instanceId: string | undefined, request: unknown, onDispatched?: () => void) {
-      return state.domainRequestReconcile(computerId, instanceId, request, onDispatched);
+    requestReconcile(
+      computerId: string,
+      instanceId: string | undefined,
+      request: unknown,
+      onDispatched?: () => void,
+      admission?: unknown,
+      signal?: AbortSignal,
+    ) {
+      return state.domainRequestReconcile(computerId, instanceId, request, onDispatched, admission, signal);
     }
   },
   RuntimeDomainRequestError: class extends Error {},
@@ -705,6 +723,8 @@ describe("Server startup", () => {
       "instance-3",
       expect.objectContaining({ desired: "stopped" }),
       undefined,
+      undefined,
+      state.stopSignal,
     );
   });
 

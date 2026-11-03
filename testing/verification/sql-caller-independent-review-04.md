@@ -1,4 +1,4 @@
-# Independent SQL caller review: batches 19–40
+# Independent SQL caller review: batches 19–42
 
 The user-authorized read-only reviewer inspected exact committed ranges, source,
 tests and evidence records without changing files or rerunning tests/Docker.
@@ -45,5 +45,15 @@ defect. Batch 37 exact review at 5d4040c4 found none; actual Server/DNS controls
 Batch 38 exact review at 73d7e0a6 found no actionable defect. Batch 39 exact review at da000b91 found no actionable defect. Batch 40 exact review at e0b514b9 found no actionable defect. Final fixture and
 collection source review found none. LC-R1 was independently confirmed as an
 omitted sixth observation with remaining unbounded preparation; its new policy
-is not yet approved or implemented. CI, merge,
+was awaiting approval at that review. CI, merge,
 deployment, private billing and live provider acceptance are not inferred.
+
+
+Batch 41 exact review at 03c7005e found no actionable defect in fixtures,
+collection or evidence. The user then confirmed LC-R1's specific Local policy.
+Batch 42 source review found no actionable issue in 16-worker admission, the
+shared native dispatch signal, capacity handling or main's bound signal port.
+The owner-close and original-timer/real-SQL-tail controls were independently read;
+existing Domain ownership remains responsible for accepted cleanup. Forty-nine
+Docker cases pass, 21 native PostgreSQL; the reviewer did not rerun them.
+Exact committed review is captured separately with the workspace evidence.

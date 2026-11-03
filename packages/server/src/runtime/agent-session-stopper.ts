@@ -5,7 +5,10 @@ import type { AgentSessionStopTarget } from "../services/agents/index.js";
 import type { CloudDeliveryOwner } from "../services/sandboxes/cloud-delivery-owner.js";
 import type { CloudSessionCollaborationOwner } from "../services/sandboxes/cloud-session-collaboration-owner.js";
 import { withAgentSessionStopAuthority } from "./agent-session-stop-authority.js";
-import type { RuntimeDispatchAdmission } from "./runtime-domain-owner.js";
+import { type RuntimeDispatchAdmission, RuntimeDomainRequestError } from "./runtime-domain-owner.js";
+
+const LOCAL_STOP_CONCURRENCY = 16;
+const LOCAL_STOP_DISPATCH_BUDGET_MS = 30_000;
 
 interface AgentSessionStopDependencies {
   currentInstanceId(computerId: string): string | undefined;
@@ -23,6 +26,7 @@ interface AgentSessionStopDependencies {
     },
     onDispatched?: () => void,
     admission?: RuntimeDispatchAdmission<SessionReconcileResult>,
+    signal?: AbortSignal,
   ): Promise<SessionReconcileResult>;
 }
 
@@ -33,59 +37,58 @@ export async function stopAgentSessions(
   targets: AgentSessionStopTarget[],
   dependencies: AgentSessionStopDependencies,
 ): Promise<void> {
-  const requests = targets.flatMap((target) => {
-    const instanceId = dependencies.currentInstanceId(target.computerId);
-    if (!instanceId) return [];
+  if (targets.length === 0) return;
+  const signal = AbortSignal.timeout(LOCAL_STOP_DISPATCH_BUDGET_MS);
+  let nextTargetIndex = 0;
+  let failed = false;
+  let atCapacity = false;
+  async function stopTarget(target: AgentSessionStopTarget): Promise<void> {
     let superseded = false;
-    const admission: RuntimeDispatchAdmission<SessionReconcileResult> = async (enqueue) => {
-      const admitted = await withAgentSessionStopAuthority(database, target, async () => {
-        // RuntimeDomainOwner invokes this only after preparation; enqueue sends synchronously.
-        const result = enqueue(() => undefined);
-        void result.catch(() => undefined);
-        return { admitted: true, result } as const;
-      });
-      superseded = !admitted;
-      return admitted ?? { admitted: false };
-    };
-    return [
-      dependencies
-        .requestReconcile(
-          target.computerId,
-          instanceId,
-          {
-            type: "session:reconcile",
-            requestId: randomUUID(),
-            installationId: target.installationId,
-            sessionId: target.sessionId,
-            agentId: target.agentId,
-            placementGeneration: target.placementGeneration,
-            desired: "stopped",
-          },
-          undefined,
-          admission,
-        )
-        .catch((error: unknown) => {
-          if (!superseded) throw error;
-        }),
-    ];
-  });
-  const results = await Promise.allSettled(requests);
-  assertAgentSessionsStopped(
-    results.filter(
-      (result): result is PromiseSettledResult<SessionReconcileResult> =>
-        result.status === "rejected" || result.value !== undefined,
-    ),
-  );
-}
-
-export function assertAgentSessionsStopped(results: PromiseSettledResult<SessionReconcileResult>[]): void {
-  if (
-    results.some(
-      (result) => result.status === "rejected" || (result.status === "fulfilled" && result.value.status !== "stopped"),
-    )
-  ) {
-    throw new Error("Agent runtime stop notification failed");
+    try {
+      const instanceId = dependencies.currentInstanceId(target.computerId);
+      if (!instanceId) return;
+      const admission: RuntimeDispatchAdmission<SessionReconcileResult> = async (enqueue) => {
+        signal.throwIfAborted();
+        const admitted = await withAgentSessionStopAuthority(database, target, async () => {
+          const result = enqueue(() => undefined);
+          void result.catch(() => undefined);
+          return { admitted: true, result } as const;
+        });
+        superseded = !admitted;
+        return admitted ?? { admitted: false };
+      };
+      const result = await dependencies.requestReconcile(
+        target.computerId,
+        instanceId,
+        {
+          type: "session:reconcile",
+          requestId: randomUUID(),
+          installationId: target.installationId,
+          sessionId: target.sessionId,
+          agentId: target.agentId,
+          placementGeneration: target.placementGeneration,
+          desired: "stopped",
+        },
+        undefined,
+        admission,
+        signal,
+      );
+      if (result.status !== "stopped") failed = true;
+    } catch (error) {
+      if (superseded) return;
+      failed = true;
+      if (error instanceof RuntimeDomainRequestError && error.code === "capacity") atCapacity = true;
+    }
   }
+  async function runWorker(): Promise<void> {
+    while (!signal.aborted && !atCapacity) {
+      const target = targets[nextTargetIndex++];
+      if (!target) return;
+      await stopTarget(target);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(LOCAL_STOP_CONCURRENCY, targets.length) }, runWorker));
+  if (failed || nextTargetIndex < targets.length) throw new Error("Agent runtime stop notification failed");
 }
 
 /** Surface non-cancelled stop outcomes without turning a best-effort cancel into a hard failure. */

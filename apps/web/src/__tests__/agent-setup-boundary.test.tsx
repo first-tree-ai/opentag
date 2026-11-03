@@ -691,6 +691,39 @@ describe("Agent Setup route boundary", () => {
     expect(agentCreationPosts()).toHaveLength(0);
   });
 
+  it.each(["computer", "messaging"] as const)(
+    "returns to the Agent list from the unfinished first-time %s step through Back to Agents",
+    async (step) => {
+      installAgentSetupApi({ setupCompletedAt: null });
+      window.history.replaceState({}, "", `/agents/setup?agentId=${agentId}`);
+      render(<App />);
+
+      const continueButton = await expectPreparationGate();
+      if (step === "messaging") {
+        fireEvent.click(continueButton);
+        expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
+      }
+      expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+      expect(screen.getByRole("link", { name: "openTag" }).getAttribute("href")).toBe("/agents");
+      fireEvent.click(screen.getByRole("button", { name: "Back to Agents" }));
+
+      await waitFor(() => expect(window.location.pathname).toBe("/agents"));
+      expect(await screen.findByRole("heading", { name: "All Agents" })).toBeTruthy();
+    },
+  );
+
+  it("offers both the Agent list and the Agent itself once first-time setup is complete", async () => {
+    installApi({ bound: true, setupCompletedAt: null });
+    window.history.replaceState({}, "", `/agents/setup?agentId=${agentId}`);
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "View agent" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Back to Agents" }));
+
+    await waitFor(() => expect(window.location.pathname).toBe("/agents"));
+    expect(await screen.findByRole("heading", { name: "All Agents" })).toBeTruthy();
+  });
+
   it("surfaces and then removes a Slack callback error on the canonical setup URL", async () => {
     installAgentSetupApi({ setupCompletedAt: null });
     window.history.replaceState(

@@ -11,6 +11,7 @@ import { EmptyState, Page } from "../layout/page.js";
 import { AsyncState } from "../resource/resource-state.js";
 import { useAccount } from "../session/session-context.js";
 import { AgentAvatar } from "./agent-avatar.js";
+import { useSteadyAgentList } from "./agent-list-steady-status.js";
 import type { AgentListItem } from "./agent-model.js";
 import { agentCardStatus, agentSetupContinuation } from "./agent-presentation.js";
 import { useAgentListView } from "./agent-queries.js";
@@ -54,7 +55,9 @@ export function AgentsContent({ agents }: { agents: AgentListItem[] }) {
   return <EmptyState title={m.agents_empty_title()}>{m.agents_empty_description()}</EmptyState>;
 }
 
-export function AgentList({ agents }: { agents: AgentListItem[] }) {
+export function AgentList({ agents: answered }: { agents: AgentListItem[] }) {
+  // Routine re-checks keep a Ready row Ready; only a verdict, or a check that never ends, changes it.
+  const agents = useSteadyAgentList(answered);
   const shownOrder = useRef<readonly string[]>([]);
   const byId = new Map(agents.map((agent) => [agent.id, agent]));
   /*

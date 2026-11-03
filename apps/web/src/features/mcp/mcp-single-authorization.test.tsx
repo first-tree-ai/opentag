@@ -20,7 +20,12 @@ afterEach(() => vi.restoreAllMocks());
 describe("ordinary OAuth presentation after credential reuse", () => {
   it.each([
     ["ready", {}, null, false],
-    ["failed", { probeState: "failed", probeError: "MCP_UPSTREAM_UNAVAILABLE: timeout" }, "Request timed out", true],
+    [
+      "failed",
+      { probeState: "failed", probeError: "MCP_UPSTREAM_UNAVAILABLE: timeout" },
+      "The service timed out. Try again.",
+      true,
+    ],
     ["pending", { probeState: "pending", toolsCount: null }, "Checking connection…", false],
     ["empty", { toolsCount: 0 }, "No tools available", false],
   ] as const)(

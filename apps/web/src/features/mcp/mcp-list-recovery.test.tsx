@@ -31,8 +31,8 @@ describe("connector list recovery", () => {
     const probe = vi.spyOn(browserApi, "probeMcpServer");
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    expect(await screen.findByText("Authorization failed")).toBeTruthy();
-    expect(screen.queryByText("Couldn't load tools")).toBeNull();
+    expect(await screen.findByText("Authorization didn't finish. Try again.")).toBeTruthy();
+    expect(screen.queryByText("Couldn't load tools. Try again.")).toBeNull();
     expect(screen.queryByRole("button", { name: "Retry: linear" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Reauthorize: linear" }));
     await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
@@ -54,7 +54,7 @@ describe("connector list recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Reauthorize: linear" }));
     await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(await screen.findByText("Authorization failed")).toBeTruthy();
+    expect(await screen.findByText("Authorization didn't finish. Try again.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Reauthorize: linear" })).toBeTruthy();
   });
   it("opens the credential editor from a rejected key without making a request", async () => {
@@ -196,7 +196,7 @@ describe("connector list recovery", () => {
     );
     wrap(<McpPage agentId={AGENT_ID} />);
     fireEvent.click(await screen.findByRole("button", { name: "Retry: linear" }));
-    expect(await screen.findByText("Authorization failed")).toBeTruthy();
+    expect(await screen.findByText("Authorization didn't finish. Try again.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Reauthorize: linear" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Retry: linear" })).toBeNull();
   });

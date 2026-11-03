@@ -187,6 +187,17 @@ describe("SkillsPage", () => {
     });
   });
 
+  it("confirms a finished upload by the installed Skill's name", async () => {
+    stubList([]);
+    vi.spyOn(browserApi, "uploadAgentSkill").mockResolvedValue(skill() as never);
+    wrap(<SkillsPage agentId={AGENT_ID} />);
+    await screen.findByText(/No Skills yet/);
+
+    fireEvent.change(fileInput(), { target: { files: [archiveFile("notes.skill", "hello")] } });
+
+    expect(await screen.findByRole("status")).toHaveProperty("textContent", `Installed ${skill().name}`);
+  });
+
   it("confirms a name conflict and only then re-uploads with replace on", async () => {
     stubList([]);
     const replacements: { replace: boolean }[] = [];

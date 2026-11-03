@@ -28,7 +28,28 @@ export function probeFeedback(error: string | null, kind?: MCPAuthKind, preset =
   ) {
     return { label: m.mcp_feedback_unavailable(), action: "retry" };
   }
+  if (error?.startsWith(MCP_ERROR_CODES.URL_BLOCKED))
+    return { label: m.mcp_feedback_address_blocked(), action: "retry" };
   return { label: m.mcp_add_tools_failed(), action: "retry" };
+}
+
+/**
+ * The one short line, with its next step, for a failure the Server reported by code. Each line names
+ * what the reader can do about it; an unrecognized code falls back to the caller's generic line.
+ */
+export function failureCodeFeedback(code: string | null | undefined): string | undefined {
+  switch (code) {
+    case MCP_ERROR_CODES.URL_BLOCKED:
+    case MCP_ERROR_CODES.SERVER_URL_INVALID:
+      return m.mcp_feedback_address_blocked();
+    case MCP_ERROR_CODES.REGISTRATION_UNSUPPORTED:
+    case MCP_ERROR_CODES.REGISTRATION_FAILED:
+      return m.mcp_feedback_sign_in_unsupported();
+    case MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE:
+      return m.mcp_feedback_unreachable();
+    default:
+      return undefined;
+  }
 }
 
 export function connectorFeedback(entry: MCPAgentServer, error?: string): McpFeedback {
@@ -42,7 +63,7 @@ export function connectorFeedback(entry: MCPAgentServer, error?: string): McpFee
   if (auth.status === "expired") return { label: m.mcp_authorization_expired(), action: "authorize" };
   if (auth.status !== "active") {
     if (!auth.failureCode || auth.failureCode === MCP_ERROR_CODES.OAUTH_DENIED) return { action: "authorize" };
-    return { label: m.mcp_authorization_issue(), action: "authorize" };
+    return { label: failureCodeFeedback(auth.failureCode) ?? m.mcp_authorization_issue(), action: "authorize" };
   }
   if (auth.probeState === "failed")
     return probeFeedback(auth.probeError, auth.kind, Boolean(connectionPreset(entry.effective.url)));
@@ -67,6 +88,9 @@ export function isAuthorizationFeedback(label: string): boolean {
     m.mcp_feedback_rejected(),
     m.mcp_authorization_expired(),
     m.mcp_authorization_revoked(),
+    m.mcp_feedback_sign_in_unsupported(),
+    // An authorization attempt that could not reach the address is still retried by authorizing.
+    m.mcp_feedback_address_blocked(),
   ];
   return reasons.includes(label);
 }

@@ -8,7 +8,7 @@ import {
 import { ApiError } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
 import { connectionPreset } from "./mcp-connection-model.js";
-import { probeFeedback } from "./mcp-feedback.js";
+import { failureCodeFeedback, probeFeedback } from "./mcp-feedback.js";
 import { type McpOAuthSession, useMcpOAuthSession } from "./mcp-oauth-session.js";
 import { closeMcpOAuthWindow, type McpOAuthWindow } from "./mcp-oauth-window.js";
 import { useConnectMcpOAuth, useProbeMcpServer, useSetMcpAuthorization } from "./mcp-queries.js";
@@ -130,18 +130,28 @@ function requireTools(
   );
 }
 
-export function connectionFailure(cause: unknown, kind?: MCPAuthKind, fallback?: string): string {
+/**
+ * `preset` marks a catalog connector: its address is the catalog's, not one the reader typed, so a
+ * blocked address reads as the connector being unavailable rather than as a typo to check.
+ */
+export function connectionFailure(cause: unknown, kind?: MCPAuthKind, fallback?: string, preset = false): string {
   if (cause instanceof McpConnectionError) return cause.message;
   if (cause instanceof TypeError && /fetch|network|load failed/i.test(cause.message))
     return m.mcp_feedback_unreachable();
-  if (cause instanceof ApiError) {
-    if (cause.code === MCP_ERROR_CODES.AUTHORIZATION_REQUIRED) return m.mcp_authorization_issue();
-    if (cause.code === MCP_ERROR_CODES.OAUTH_FLOW_EXPIRED) return m.mcp_authorization_expired();
-    if (cause.status === 0) return m.mcp_feedback_unreachable();
-    if (cause.code === MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE)
-      return probeFeedback(`${cause.code}: ${cause.message}`, kind).label ?? m.mcp_add_tools_failed();
-  }
-  return fallback ?? (kind === "oauth" ? m.mcp_authorization_issue() : m.mcp_add_tools_failed());
+  const coded = cause instanceof ApiError ? apiFailure(cause, kind, preset) : undefined;
+  return coded ?? fallback ?? (kind === "oauth" ? m.mcp_authorization_issue() : m.mcp_add_tools_failed());
+}
+
+/** The line for a failure the Server answered with a known code, or undefined to use the fallback. */
+function apiFailure(cause: ApiError, kind: MCPAuthKind | undefined, preset: boolean): string | undefined {
+  if (preset && (cause.code === MCP_ERROR_CODES.URL_BLOCKED || cause.code === MCP_ERROR_CODES.PROTOCOL_UNSUPPORTED))
+    return m.mcp_feedback_unavailable();
+  if (cause.code === MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE)
+    return probeFeedback(`${cause.code}: ${cause.message}`, kind).label ?? m.mcp_add_tools_failed();
+  if (cause.code === MCP_ERROR_CODES.AUTHORIZATION_REQUIRED) return m.mcp_authorization_issue();
+  if (cause.code === MCP_ERROR_CODES.OAUTH_FLOW_EXPIRED) return m.mcp_authorization_expired();
+  if (cause.status === 0) return m.mcp_feedback_unreachable();
+  return failureCodeFeedback(cause.code);
 }
 export function isKeyFailure(cause: unknown): boolean {
   return cause instanceof McpConnectionError && cause.reason === "key";

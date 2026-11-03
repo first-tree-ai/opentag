@@ -1411,6 +1411,13 @@ until submission. There is no tool browser, credential-clearing action, advanced
 action, or global save footer in preset Details. Custom Details retains editable connection settings
 and collapsed Advanced settings.
 
+Every connector failure the reader sees is one short line that names the next step, chosen from the
+code the Server reports: an unreachable or blocked address asks to check the connector address, a
+service without account sign-in suggests an API key, a rejected key asks for an update, an
+unfinished authorization asks to try again, and an unreachable service asks to try again later.
+Upstream details stay private. Why: a bare "failed" gives an admin nothing to act on, while the
+Server already knows which of these happened.
+
 Authentication feedback sits directly below its controls. **Retry** and **Open window** follow the
 reason and wrap together on narrow screens. Controls keep their positions while authorization,
 key editing, saving, and recovery feedback change. Primary form actions use the shared default

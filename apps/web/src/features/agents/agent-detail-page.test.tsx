@@ -202,5 +202,9 @@ describe("Agent home for a Local Agent", () => {
     await waitFor(() =>
       expect(status.querySelector('[data-ui="agent-status-activity"]')?.textContent).toBe("2 tasks running"),
     );
+    // Its own row, ahead of the Computer and messaging rows.
+    const rows = [...status.querySelectorAll("li")].map((row) => row.getAttribute("data-ui"));
+    expect(rows[0]).toBe("agent-status-work");
+    expect(status.querySelector('[data-ui="agent-status-work"]')?.textContent).toContain("Work");
   });
 });

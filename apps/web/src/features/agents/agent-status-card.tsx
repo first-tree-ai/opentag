@@ -15,7 +15,10 @@ import {
   runtimeProviderName,
 } from "./agent-presentation.js";
 
-/** Two dependencies with two lines each, using the existing healthy layout's space in every state. */
+/**
+ * What the Agent is doing, when there is something to say, then its two dependencies with two lines
+ * each, using the existing healthy layout's space in every state.
+ */
 export function AgentStatusCard({ agent: current }: { agent: AgentDetailView }) {
   /*
    * The card holds the last settled dependency states through transient evidence, exactly as the
@@ -39,6 +42,19 @@ export function AgentStatusCard({ agent: current }: { agent: AgentDetailView }) 
       data-ui="agent-status-overview"
     >
       <ul className="grid h-full list-none divide-y divide-kumo-line">
+        {activity ? (
+          // What the Agent is doing comes first, as its own row, so it never reads as a fact about
+          // the Computer or the channel below it.
+          <li
+            className="flex min-w-0 items-center justify-between gap-4 py-5 text-sm first:pt-0 last:pb-0"
+            data-ui="agent-status-work"
+          >
+            <strong className="min-w-0 truncate font-semibold text-kumo-strong">{m.agents_status_work()}</strong>
+            <span className="whitespace-nowrap font-medium text-kumo-default" data-ui="agent-status-activity">
+              {activity}
+            </span>
+          </li>
+        ) : null}
         <AgentStatusRow
           agent={agent}
           dependency="computer"
@@ -71,9 +87,9 @@ export function AgentStatusCard({ agent: current }: { agent: AgentDetailView }) 
           status={agentMessagingStatus(agent)}
         />
       </ul>
-      {activity || refreshing ? (
-        <p className="mt-4 text-sm text-kumo-subtle" data-ui="agent-status-activity">
-          {[activity, refreshing ? m.agents_card_status_refreshing() : undefined].filter(Boolean).join(" · ")}
+      {refreshing ? (
+        <p className="mt-4 text-sm text-kumo-subtle" data-ui="agent-status-refreshing">
+          {m.agents_card_status_refreshing()}
         </p>
       ) : null}
     </section>

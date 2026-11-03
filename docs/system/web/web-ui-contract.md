@@ -167,7 +167,7 @@ alone adds a quiet **Refreshing status** note under its held status; there is no
 status or a page-wide error reads as an outage when only one Agent's check is late, so the list keeps what it last
 knew and flags only the row whose answer is overdue. The Agent home's status card follows the same rule, so
 the list and the home never disagree about one Agent, and it shows the same running-Task or **Waiting** line as the
-list row. Neither caches beyond that: the Server's evidence windows (60 seconds for Provider readiness, 120 for
+list row, as its own **Work** row ahead of Computer and Messaging so it never reads as a fact about either. Neither caches beyond that: the Server's evidence windows (60 seconds for Provider readiness, 120 for
 Provider CLI credentials, 300 for CLI artifacts) already decide when an answer stops counting, and a longer cache
 would hide a real recovery or failure. The Server already bounds what it holds: a local Computer without a
 heartbeat for 90 seconds reads as offline, and runtime and messaging observations expire on their own TTLs, so held

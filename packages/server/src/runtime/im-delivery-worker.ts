@@ -264,6 +264,7 @@ export class ImDeliveryWorker {
     this.#onMetric = input.onMetric ?? (() => undefined);
     this.#logger = input.logger;
     this.#cloudCoordinator = new CloudDeliveryCoordinator({
+      ...(this.#logger ? { logger: this.#logger } : {}),
       database: this.#database,
       ...(this.#cloudDelivery ? { cloudDelivery: this.#cloudDelivery } : {}),
       ...(this.#cloudAllocation ? { cloudAllocation: this.#cloudAllocation } : {}),

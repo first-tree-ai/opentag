@@ -250,12 +250,13 @@ export function installWindowDiagnosticHandlers(
       now >= reloadAt &&
       now - reloadAt < STALE_ASSET_UNLOAD_GRACE_MS
     ) {
+      if (source === "preload") preloadReloadUnloading = true;
       return true;
     }
     if (!tryReloadOnStaleAsset(target, resourcePath, () => now)) return false;
     reloadSource = source;
     reloadAt = now;
-    if (source === "preload") preloadReloadUnloading = true;
+    preloadReloadUnloading = true;
     return true;
   };
 

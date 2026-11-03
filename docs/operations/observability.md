@@ -175,6 +175,47 @@ jsonPayload.operation="pi.diagnostic"
 jsonPayload.turnId="<turn UUID>"
 ```
 
+## Cloud response-time evaluation
+
+Evaluate Cloud latency with separate ingress-to-first-useful-send-receipt,
+ingress-to-terminal-cleanup, ingress-to-checkpoint-commit and ingress-to-durable-report-ack
+endpoints. Client-send-to-rendered-response is a separate user-perceived metric that needs client
+or provider evidence. A custody acknowledgement, Pi spawn or first model token does not establish
+useful output; a provider send receipt does not establish client rendering or a read receipt.
+
+Retain attempted, successful, failed, timed-out and incomplete counts alongside successful-duration
+quantiles and missing-stage coverage. Use process-local monotonic durations, and do not subtract
+unrelated process clocks or sum overlapping phase envelopes. Allocation state, source/image,
+trigger, workspace and resource limits define separate cohorts. Missing diagnostics are unavailable
+evidence, not zero duration or a proven timeout.
+
+The [Cloud evaluation suite](https://github.com/first-tree-ai/opentag/blob/main/testing/performance/cloud-latency/README.md) provides a repeatable
+offline synthetic fixture, report generator and comparison guard. Its subprocess/model/tool/IM
+replacements do not measure production Cloud latency. Existing spans and Pi diagnostics do not
+form a complete end-to-end dataset, especially for ingress, outbound CLI receipts and model/tool
+attribution. New collection, export or retention paths require their own approved read/write design.
+
+An opt-in Staging lane observes Cloud IM preparation/allocation calls and Runner workspace-ready,
+worker-execution, checkpoint and matching report-ack boundaries on the existing log streams.
+It requires `OPENTAG_ENV=staging`, `OPENTAG_CLOUD_LATENCY_DIAGNOSTICS=true` and an explicit
+`OPENTAG_CLOUD_LATENCY_SESSION_IDS` list of at most 16 UUIDs. It emits no added records by default
+or in other environments. `OPENTAG_REVISION` is a full lowercase Git SHA, otherwise `unknown`.
+
+Each observation reserves a summary within 32 records / 64 KiB. Observers retain at most 1,024
+identities for quota enforcement without evicting them to reopen budgets. Server retries share
+one delivery budget and have separate attempt identities; duplicate attempts and repeated workspace
+preparations do not reopen budgets. Unavailable allocations emit failure, and non-dispatch Server
+summaries are incomplete rather than successful handoffs. Records carry existing correlation
+IDs, a process clock identity, UTC and monotonic durations; they exclude content and credentials.
+Logging failures do not change operation outcomes, custody, retries or checkpoint policy.
+
+The [Staging report guide](https://github.com/first-tree-ai/opentag/blob/main/testing/performance/cloud-latency/LIVE.md)
+describes the exact boundaries, blind spots and manual stdin-only aggregator. It reuses existing
+Pi phase durations, rejects incomplete/conflicting evidence for complete-trace metrics, and emits
+aggregate counts/quantiles without resource IDs or raw files. It does not infer timeout or genuine
+end-to-end latency from missing records. Deployment, live collection and actual log arrival remain
+separate operational acceptance; no exporter, scheduler, storage or retention change is installed.
+
 ## Full-stack performance logging
 
 When `OPENTAG_PERF_LOG_ENABLED` is `true` (the default), the Server emits paired `started` and

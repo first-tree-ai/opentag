@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentRuntimeEvent, CreateAgentRuntimeRequest } from "../agent-runtime/types.js";
 import {
@@ -7,6 +7,7 @@ import {
   ClaudeCodeAgentRuntimeFactory,
   claudeCodeAgentRuntimeEnvironment,
 } from "../providers/claude-code/agent-runtime.js";
+import { startClaudeCodeHostedToolBridge } from "../providers/claude-code/hosted-tool-bridge.js";
 import type { ClaudeCodeProcessClient, ClaudeCodeProcessResult } from "../providers/claude-code/process-wire.js";
 
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
@@ -240,6 +241,90 @@ describe("ClaudeCodeAgentRuntime", () => {
     expect(argumentAfter(processes[0]?.args ?? [], "--session-id")).toBe(SESSION_ID);
     expect(argumentAfter(processes[1]?.args ?? [], "--resume")).toBe(SESSION_ID);
     await runtime.close();
+  });
+
+  it("reuses names for consecutive Runs but allocates a new identity when the binding is resumed", async () => {
+    const captured: { pluginName: string; serverNames: string[]; configPath: string; gatewayToken: string }[] = [];
+    const factory = new ClaudeCodeAgentRuntimeFactory({
+      createSessionId: () => SESSION_ID,
+      createProcess: (_cwd, args) => new ScriptedClaudeCodeProcess(args, "complete"),
+      startHostedToolBridge: async (...args) => {
+        const bridge = await startClaudeCodeHostedToolBridge(...args);
+        const manifest = JSON.parse(await readFile(`${bridge.pluginPath}/.claude-plugin/plugin.json`, "utf8"));
+        const config = JSON.parse(await readFile(bridge.configPath, "utf8"));
+        captured.push({
+          pluginName: manifest.name,
+          serverNames: Object.keys(config.mcpServers),
+          configPath: bridge.configPath,
+          gatewayToken:
+            Object.values(config.mcpServers).map(
+              (entry) => (entry as { headers: { Authorization: string } }).headers.Authorization,
+            )[0] ?? "",
+        });
+        return bridge;
+      },
+    });
+    const request = createRequest(() => undefined);
+    const configuration = (token: string) => ({
+      provider: { mcpGateway: { url: "https://server.example.test/api/v1/mcp", token } },
+    });
+    const runtime = await factory.create(request);
+    try {
+      for (const runId of ["one", "two"]) {
+        await expect(
+          runtime.prompt({ runId, input: input("continue"), configuration: configuration(`otmg_${runId}`) }),
+        ).resolves.toMatchObject({ status: "completed" });
+      }
+      expect(captured[0]?.pluginName).toBe(captured[1]?.pluginName);
+      expect(captured[0]?.serverNames).toEqual(captured[1]?.serverNames);
+      expect(captured[0]?.gatewayToken).toBe("Bearer otmg_one");
+      expect(captured[1]?.gatewayToken).toBe("Bearer otmg_two");
+      expect(captured[0]?.configPath).not.toBe(captured[1]?.configPath);
+      await runtime.close();
+      const binding = runtime.binding;
+      if (!binding) throw new Error("Expected a durable binding");
+      expect(binding.payload).toEqual({ sessionId: SESSION_ID });
+      const resumed = await factory.resume({ ...request, binding });
+      try {
+        await expect(
+          resumed.prompt({ runId: "three", input: input("continue"), configuration: configuration("otmg_three") }),
+        ).resolves.toMatchObject({ status: "completed" });
+        expect(captured[2]?.pluginName).not.toBe(captured[0]?.pluginName);
+        expect(captured[2]?.serverNames).not.toEqual(captured[0]?.serverNames);
+        expect(resumed.binding).toEqual(binding);
+      } finally {
+        await resumed.close();
+      }
+      for (const entry of captured) await expect(stat(entry.configPath)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("removes a fresh bridge when the provider process cannot start", async () => {
+    let configPath: string | undefined;
+    const factory = new ClaudeCodeAgentRuntimeFactory({
+      createSessionId: () => SESSION_ID,
+      createProcess: () => {
+        throw new Error("fixture spawn failure");
+      },
+      startHostedToolBridge: async (...args) => {
+        const bridge = await startClaudeCodeHostedToolBridge(...args);
+        configPath = bridge.configPath;
+        return bridge;
+      },
+    });
+    const runtime = await factory.create(createRequest(() => undefined));
+    try {
+      await expect(runtime.prompt({ runId: "failure", input: input("work") })).resolves.toMatchObject({
+        status: "failed",
+        error: { code: "provider_start_failed" },
+      });
+      if (!configPath) throw new Error("Expected bridge setup before spawn failure");
+      await expect(stat(configPath)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await runtime.close();
+    }
   });
 
   it("interrupts the active local process and settles the run as aborted", async () => {

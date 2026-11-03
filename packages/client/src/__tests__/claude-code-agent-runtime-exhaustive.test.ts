@@ -302,6 +302,10 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
         token: "otmg_secret",
       },
       "/workspace",
+      expect.objectContaining({
+        pluginName: expect.stringMatching(/^opentag-[a-f0-9]{16}$/),
+        serverId: expect.stringMatching(/^[a-f0-9]{10}$/),
+      }),
     );
     await gatewayRuntime.close();
 

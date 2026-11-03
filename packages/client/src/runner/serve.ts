@@ -657,10 +657,11 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
   await mkdir(publicRoot, { recursive: true, mode: 0o700 });
   const journal = await CloudJournal.open(journalDir);
   const bridge = new RunnerChannelBridge();
+  let state: WorkState | undefined;
   const writeShutdown = createPiDiagnosticStderrWriter(options.stderr);
   const shutdown = new RunnerShutdownObserver({
     env: options.env ?? process.env,
-    assignment: () => bridge.lastWelcomedScope,
+    assignment: () => bridge.lastWelcomedScope && (state?.assignment ?? bridge.lastWelcomedScope),
     write: (record) => writeShutdown(`${JSON.stringify(record)}\n`),
   });
   let sandbox: NativeSandbox;
@@ -681,7 +682,6 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
     reportStartupError(error, options);
     return startupExitCode(error);
   }
-  let state: WorkState | undefined;
   let health: RunnerHealthListener | undefined;
   let stopping = false,
     exitCode = 143,

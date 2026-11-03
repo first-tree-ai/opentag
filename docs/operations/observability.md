@@ -218,8 +218,11 @@ separate operational acceptance; no exporter, scheduler, storage or retention ch
 
 The same Staging selection enables a separate Runner shutdown stream on existing stderr:
 `module=cloud-runner`, `operation=shutdown.diagnostic`, `version=1`. It captures the
-Session, Sandbox and generation from the last accepted authenticated welcome at the first stop
-request, or at cleanup entry for an exit without a stop request. This diagnostic-only identity
+Session, Sandbox and generation from the current committed assignment, falling back to the last
+accepted authenticated welcome if no assignment exists. Capture happens at the first stop request,
+or at cleanup entry for an exit without a stop request. A prior accepted welcome in this process
+is required; a persisted assignment alone cannot attribute unauthenticated startup. A refused
+cross-Session rebind keeps the held assignment's identity and Session selection. This diagnostic-only identity
 survives control-channel closure, including Server release before provider SIGTERM; it never
 authorizes execution on a closed channel. No prior accepted welcome means no attributed records.
 Repeated signals do not reopen the stream, and a later welcome cannot change its captured identity.

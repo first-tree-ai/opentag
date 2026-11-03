@@ -17,9 +17,11 @@ established. Private resource identities and raw operational logs remain outside
 The new process-local stream measures the existing cleanup calls without changing their order,
 error propagation, signal ownership or native-destroy policy. It is separate from Turn statistics:
 one shutdown can follow many Turns, and a stopped allocation is not another Turn.
-Correlation uses the last accepted authenticated welcome, retained in memory for diagnostics after
-Server control-channel release. This is never a fallback for execution authorization. It is captured
-once when stopping begins; no prior accepted welcome means no attributed stream.
+Correlation prefers the current committed assignment, falling back to the last accepted authenticated
+welcome only when no assignment exists. It survives Server control-channel release, without becoming
+a fallback for execution authorization. Capture happens once when stopping begins; no prior accepted
+welcome in this process means no attributed stream, even if a persisted assignment exists. A refused
+unsealed cross-Session rebind cannot replace the held assignment's diagnostic identity or selection.
 
 ## Local checks
 
@@ -34,6 +36,10 @@ once when stopping begins; no prior accepted welcome means no attributed stream.
   SIGTERM and non-signal exit after rejected reattachment must retain the authenticated identity.
   Active acceptance can destroy the namespace while the connection drains before cleanup entry;
   the request-to-summary elapsed interval includes it, while `native_cleanup` can then be a no-op.
+- The real HTTP/WebSocket workspace protocol test covers refused unsealed rebinds with diagnostics
+  disabled, only the held Session selected, both selected, and only the refused Session selected.
+  The refused Session never claims/restores a workspace or becomes ready. Shutdown records stay
+  attributed to the held assignment, and selecting only the refused Session emits no records.
 - Existing focused Runner serve tests cover cleanup, workspace and controller interactions; client
   typecheck/build verify the Runner artifact. This change does not touch Agent Runtime coverage inputs.
 

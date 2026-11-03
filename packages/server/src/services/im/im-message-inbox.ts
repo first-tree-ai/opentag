@@ -983,8 +983,10 @@ export class ImMessageInbox {
     const current = threadRootExternalId(currentContext);
     if (current) return current;
     this.#beforeReliableThreadRootLookup?.();
-    const contexts = await transaction
-      .select({ providerContext: imMessages.providerContext })
+    const rootExternalId = sql<string | null>`nullif(case when ${imMessages.providerContext}->>'provider' = 'slack'
+      then ${imMessages.providerContext}->>'threadTs' else ${imMessages.providerContext}->>'rootId' end, '')`;
+    const [context] = await transaction
+      .select({ rootExternalId })
       .from(imMessages)
       .where(
         and(
@@ -992,14 +994,12 @@ export class ImMessageInbox {
           eq(imMessages.channelId, channelId),
           eq(imMessages.threadKey, threadKey),
           eq(imMessages.direction, "inbound"),
+          isNotNull(rootExternalId),
         ),
       )
-      .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id));
-    for (const row of contexts) {
-      const rootExternalId = threadRootExternalId(row.providerContext);
-      if (rootExternalId) return rootExternalId;
-    }
-    return undefined;
+      .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
+      .limit(1);
+    return context?.rootExternalId ?? undefined;
   }
 }
 

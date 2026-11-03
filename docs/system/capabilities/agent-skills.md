@@ -100,7 +100,8 @@ the Server copies into the row.
 tests — the same interface/adapter/fake shape as `WorkspaceObjectStore` in
 `packages/server/src/services/sandboxes/workspace-object-store.ts`. `list` is a bounded
 `ListObjectsV2` page (`prefix`, optional `cursor`/`limit`) used only by the object collector; the S3
-adapter parses its XML with a small extractor rather than an XML dependency.
+adapter bounds the streamed XML to 4 MiB of bytes before UTF-8 decoding and parsing with a small
+extractor. Overflow cancels the reader and reports `invalid_response`; later passes can recover.
 
 `aws4fetch` is chosen over the AWS SDK v3 because it is SigV4 over `fetch` with zero transitive
 dependencies and no default-checksum behaviour, which several S3-compatible services reject. The

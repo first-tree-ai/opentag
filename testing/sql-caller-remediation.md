@@ -35,7 +35,9 @@ A repaired original case does not close another extension of the same finding.
 | 6c — MCP discovery bounds | AG-F13 | [Verified locally](verification/sql-caller-repairs-15.md): deduplication, four-candidate admission and shared 30-second outbound budget; 254 distinct cases (18 native PG). |
 | 7a — Stable Cloud ownership | SB-F1, SB-F2 | [Verified locally](verification/sql-caller-repairs-17.md): retained placement ownership and final locked reservation; 301 distinct cases (88 native PG). |
 | 7b — Cloud workspace routing | AG-F10 | [Verified locally](verification/sql-caller-repairs-18.md): workspace-owned hints, independent confirmed settlement and actual rebind/gateway recovery; 283 distinct cases, all repeated in Docker Linux. |
-| 8 — Bounded reads, bodies and operator cleanup | IM-F7, BG-F4, AG-F6, OP-F1 | Pending revalidation; reuse existing limits/stream cancellation/owned container cleanup. |
+| 8a — Bounded metadata and Thread root | IM-F7, BG-F4 | [Verified locally](verification/sql-caller-repairs-19.md): one projected root and streaming metadata bounds; 59 distinct cases (6 native PG). |
+| 8b — Git subtree verification | AG-F6 | Pending literal selected-path and ancestor mode listing, retaining trusted process bounds. |
+| 8c — Operator cleanup | OP-F1 | Pending existing official database budgets/bounded close and independent owned-container cleanup. |
 | 6d — Remaining simplification | AG-S3, AG-S4, AG-S5, AG-S6, DW-S1 | [Verified locally](verification/sql-caller-repairs-16.md): direct Settings credential read, Local-only query removal, one owner read, locked MCP check and unreachable quota deletion; 225 distinct cases (94 native PG). |
 | Observations | AA-R1, CR-R1, IM-R1, IM-R2, TK-R1 | Review measured limits/consumer contracts separately; no outage or necessary code change inferred from a size observation. TK legacy projection requires consumer migration before retirement. |
 | Private billing | Unavailable implementation | Blocked by absent source; public adapter review is not an implementation audit. |
@@ -248,3 +250,25 @@ work. Reads remain cancellable. No new timer or background queue is introduced.
 Batch 7b closes AG-F10. Thirty-one defects and all nine simplifications are
 repaired locally; six defects remain. [Independent review 3](verification/sql-caller-independent-review-03.md)
 records exact completed ranges and the corrected Cloud hint cancellation window.
+
+## Batch 8a concrete design
+
+IM-F7 projects the row provider's root (`threadTs` for Slack, `rootId` otherwise),
+filters missing/empty roots in SQL and retains occurredAt/revision/ID descending
+order with LIMIT 1. Binding/Channel/Thread/inbound predicates and no-root fallback
+remain; no schema/index/cache/transaction is added. Native actual Inbox and EXPLAIN
+must verify one materialized root and existing direct-root inheritance semantics.
+
+BG-F4 Channel uses existing readBoundedJson's 256-KiB byte limit and 10-second
+request signal, cancelling non-OK bodies and retaining its last-good target. The
+published staging pointer was read on 2026-11-03 at
+https://dl.opentag.build/releases/staging/latest.json: HTTP 200, 1,868 bytes,
+0.1.5-staging.48.1 (workspace frozen evidence retained). S3 LIST uses a 4-MiB byte
+limit while streaming before UTF-8 decode, replacing its late 4-Mi-character check.
+Normal Skill keys/pages fit that bound; multibyte bodies are explicitly subject
+to bytes. Preserve typed invalid_response, existing request timeout and no retries.
+Test no Content-Length, cancellation, split UTF-8 and subsequent normal recovery.
+
+Batch 8a closes IM-F7/BG-F4. Thirty-three defects and all nine simplifications
+are repaired locally; AG-F6, OP-F1, AG-F9 and final IM-F3 remain. Independent
+review confirmed batch 18 at 7a257f49, including its corrected P2 settlement window.

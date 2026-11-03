@@ -16,6 +16,11 @@ A Thread Session is materialized only after a real inbound provider event carrie
 - In `all_message` mode, a thread-scoped event materializes or wakes the Thread Session even when it does not address the Agent. The Thread delivery is `ambient` unless the message itself addresses the Agent; direct continuity only extends how long the delivery is retained. The Channel Session receives a separate `ambient` observer copy of the same message.
 - In `mention_only` mode, an unaddressed event is delivered to the Thread Session only after trusted direct continuity has been established. Otherwise it is not delivered and does not materialize a Thread Session.
 
+When an event omits its provider root, the Inbox selects the newest nonempty root from the same
+binding/Channel/Thread's inbound history. It retains occurrence-time, provider-revision and ID
+ordering, projecting one root in SQL instead of materializing every stored context. No root keeps
+the existing continuity fallback.
+
 The Thread Session owns the provider reply and the task execution for a message delivered to both scopes. The Channel observer copy is ambient channel context only: it must not reply, react, or perform another provider mutation for that message, and it must not investigate, execute or repeat, delegate, or create artifacts for that task — the observer Turn finishes without tool calls or task work. Reply role does not remove the Channel Session's normal IM credentials or CLI capabilities. If an ended-session fence prevents an ambient Thread delivery, the remaining Channel delivery is an ordinary owner delivery, not an observer copy.
 
 A visible Session that starts a lengthy user task first adds one emoji reaction meaning "received, working on it" to the original user message via the provider CLI (for example, Feishu OnIt or the provider's equivalent), before starting task work. Approval or completion reactions such as thumbs-up or check marks must not be used. It skips the reaction only for a duplicate acknowledgment or an observer delivery. When a message is delivered to both scopes, only the Thread owner acknowledges it; the Channel observer copy never acknowledges that message. Internal Sessions do not acknowledge in IM.

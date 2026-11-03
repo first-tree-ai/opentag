@@ -8,6 +8,7 @@ import {
   agentCardStatus,
   agentComputerStatus,
   agentMessagingStatus,
+  agentRowAction,
   agentSetupContinuation,
   agentStatusPresentation,
   computerRecoveryMessage,
@@ -147,6 +148,54 @@ describe("Finishing setup, offered from the Agent list", () => {
     // the dependency that broke is named. Sending this reader back to setup would restate a flow
     // they have already been through, for a problem it does not describe.
     expect(agentSetupContinuation({ availability: bound("offline", "ready"), id: agentId })).toBeUndefined();
+  });
+});
+
+describe("The single action a list row offers", () => {
+  const settings = (label: string) => ({
+    label,
+    link: { params: { agentId, section: "messaging" }, to: "/agents/$agentId/settings/$section" },
+  });
+  function row(availability: AgentAvailability) {
+    const agent = boundAgent();
+    return { availability, computer: agent.computer, id: agent.id };
+  }
+  function messaging(state: "reauthorization_required" | "error" | "disabled") {
+    return projectAgentAvailability(
+      boundAgent(),
+      onlineComputer("ready"),
+      messagingBinding(state),
+      undefined,
+      true,
+      true,
+    );
+  }
+
+  it("names where each fixable blocked state gets fixed", () => {
+    expect(agentRowAction(row(bound("online", "install")))).toMatchObject({ label: "Continue setup" });
+    expect(agentRowAction(row(messaging("reauthorization_required")))).toMatchObject(settings("Update permissions"));
+    expect(agentRowAction(row(messaging("error")))).toMatchObject(settings("Reconnect channel"));
+    expect(agentRowAction(row(messaging("disabled")))).toMatchObject(settings("Reconnect channel"));
+    const agent = boundAgent();
+    expect(agentRowAction(row(bound("offline", "ready")))).toEqual({
+      label: "Restore connection",
+      link: { search: { computerId: agent.computer?.computerId, fromAgent: agentId }, to: "/agents/computers" },
+    });
+  });
+
+  it("offers nothing for a ready, paused, or self-resolving Agent", () => {
+    const ready = projectAgentAvailability(
+      boundAgent(),
+      onlineComputer("ready"),
+      messagingBinding("active"),
+      { bindingState: "active", handoffReady: true },
+      true,
+      true,
+    );
+    expect(agentRowAction(row(ready))).toBeUndefined();
+    expect(agentRowAction(row({ ...ready, state: "suspended", reason: "agent_suspended" }))).toBeUndefined();
+    expect(agentRowAction(row({ ...ready, state: "unconfirmed", reason: "agent_unconfirmed" }))).toBeUndefined();
+    expect(agentRowAction(reverifying("checking_credentials"))).toBeUndefined();
   });
 });
 

@@ -144,7 +144,7 @@ for (const locale of ["en", "zh"] as const) {
       await home.focus();
       await page.keyboard.press("Enter");
       await expect(page).toHaveURL(/\/agents$/);
-      const setup = rows.first().locator('[data-ui="agent-row-continue-setup"]');
+      const setup = rows.first().locator('[data-ui="agent-row-action"]');
       await setup.scrollIntoViewIfNeeded();
       await expectWithinViewport(setup);
       await setup.focus();

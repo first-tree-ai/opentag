@@ -135,6 +135,13 @@ the viewport. The shell follows the website app preview breakpoints: 240px Agent
 and inline scrolling navigation at 640px and below. Compact controls retain account access and Agent switching.
 The same route outlet remains mounted across those changes. Agent roster rows stack identity above status below a 42rem roster container width, keeping names and setup actions readable at 320px.
 
+Every roster row whose blocked state the reader can fix offers exactly one action link to where it gets fixed:
+setup-owned reasons (no Computer, runtime missing, unavailable, or needing sign-in, messaging not finished, or
+delivery failing) use **Continue setup**; messaging that needs new permissions uses **Update permissions**; a
+disconnected or failed channel uses **Reconnect channel**; an offline Computer uses **Restore connection**. A paused
+Agent and states that resolve on their own offer no action. A fixable row without a way out reads as a dead end next
+to rows that have one, so every fixable state carries the same single link.
+
 Agent roster status stays steady through background refreshes. Transient evidence (a refresh that failed, a
 paused offline read, delivery credentials being re-verified, or a runtime Provider probe still running) does not
 replace a row's last settled status; the row keeps it until the next settled answer. A check with no settled answer

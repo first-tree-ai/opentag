@@ -8,7 +8,7 @@ import type {
 import { RUNNER_WORKSPACE_TIMEOUT_MS } from "@opentag/shared";
 import { and, asc, eq, inArray, isNotNull, isNull, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { agents, computers, imBindings, imMessageDeliveries, sandboxes, sessions } from "../../db/schema/index.js";
+import { computers, imMessageDeliveries, sandboxes, sessionPlacements, sessions } from "../../db/schema/index.js";
 import type { BackgroundFailureSupervisor } from "../../observability/background-failure-supervisor.js";
 import { type CloudRunAdmin, CloudRunAdminError, type RunnerInstanceIdentityInput } from "../cloud-run/index.js";
 import {
@@ -337,7 +337,11 @@ export class SandboxRunnerService {
         await lockCloudCapacityAdmission(transaction);
         // Start/execute requires the CURRENT authority chain: active Pi Agent, active binding,
         // un-ended Session, non-suspended Account, owned Cloud Computer.
-        const owned = await loadOwnedSandbox(transaction, accountId, sandboxId, { lock: true, authority: "manage" });
+        const owned = await loadOwnedSandbox(transaction, accountId, sandboxId, {
+          lock: true,
+          authority: "manage",
+          expectedAgentRevision: preflight.agentRevision,
+        });
         if (!owned) throw sandboxNotFound();
         const row = owned.sandbox;
         if (row.lifecycle === "releasing") {
@@ -526,7 +530,7 @@ export class SandboxRunnerService {
    * idempotent start/reconcile logic, so repeated claim attempts are safe.
    */
   async ensureIngressAllocation(accountId: string, sandboxId: string): Promise<IngressAllocationOutcome> {
-    const owned = await loadOwnedSandbox(this.#database, accountId, sandboxId, { lock: true, authority: "manage" });
+    const owned = await loadOwnedSandbox(this.#database, accountId, sandboxId, { authority: "manage" });
     if (!owned) throw sandboxNotFound();
     const row = owned.sandbox;
     // An automatic idle claim blocks execution but never terminates the input: the Session either
@@ -2294,9 +2298,8 @@ export class SandboxRunnerService {
       .select({ sandbox: sandboxes })
       .from(sandboxes)
       .innerJoin(sessions, eq(sessions.id, sandboxes.sessionId))
-      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
-      .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .innerJoin(computers, eq(computers.id, agents.computerId))
+      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+      .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
       .where(
         and(
           eq(computers.ownerAccountId, accountId),
@@ -2357,9 +2360,8 @@ export class SandboxRunnerService {
       .select({ accountId: computers.ownerAccountId, kind: computers.kind })
       .from(sandboxes)
       .innerJoin(sessions, eq(sessions.id, sandboxes.sessionId))
-      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
-      .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .innerJoin(computers, eq(computers.id, agents.computerId))
+      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+      .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
       .where(eq(sandboxes.id, claimed.id))
       .limit(1);
     if (candidateOwner?.kind !== "cloud" || candidateOwner.accountId !== accountId) {
@@ -2461,9 +2463,8 @@ export class SandboxRunnerService {
       .select({ sandbox: sandboxes, computerId: computers.id })
       .from(sandboxes)
       .innerJoin(sessions, eq(sessions.id, sandboxes.sessionId))
-      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
-      .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .innerJoin(computers, eq(computers.id, agents.computerId))
+      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+      .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
       .where(and(eq(sandboxes.currentResourceName, resourceName), isNotNull(sandboxes.currentResourceUid)))
       .limit(1);
     return row;

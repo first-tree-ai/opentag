@@ -33,7 +33,8 @@ A repaired original case does not close another extension of the same finding.
 | 6a — Account/auth | AA-F1, AA-F2; AA-S1 | [Verified locally](verification/sql-caller-repairs-13.md): official adapter transaction and scoped internal Account read, precise errors and simpler setup; 199 distinct cases (106 native PG). |
 | 6b — MCP OAuth recovery | BG-F2, MC-F1 | [Verified locally](verification/sql-caller-repairs-14.md): preserve unspent refresh state and end failed consent, fenced against newer flows; 213 distinct cases (104 native PG). |
 | 6c — MCP discovery bounds | AG-F13 | [Verified locally](verification/sql-caller-repairs-15.md): deduplication, four-candidate admission and shared 30-second outbound budget; 254 distinct cases (18 native PG). |
-| 7 — Stable Cloud ownership/recovery | SB-F1, SB-F2, AG-F10 | Pending concrete latest-source resource/placement/lock design; preserve physical UID facts and workspace compatibility. |
+| 7a — Stable Cloud ownership | SB-F1, SB-F2 | [Verified locally](verification/sql-caller-repairs-17.md): retained placement ownership and final locked reservation; 301 distinct cases (88 native PG). |
+| 7b — Cloud workspace routing | AG-F10 | Pending non-secret hint persistence in archived workspace through actual worker/Sandbox I/O. |
 | 8 — Bounded reads, bodies and operator cleanup | IM-F7, BG-F4, AG-F6, OP-F1 | Pending revalidation; reuse existing limits/stream cancellation/owned container cleanup. |
 | 6d — Remaining simplification | AG-S3, AG-S4, AG-S5, AG-S6, DW-S1 | [Verified locally](verification/sql-caller-repairs-16.md): direct Settings credential read, Local-only query removal, one owner read, locked MCP check and unreachable quota deletion; 225 distinct cases (94 native PG). |
 | Observations | AA-R1, CR-R1, IM-R1, IM-R2, TK-R1 | Review measured limits/consumer contracts separately; no outage or necessary code change inferred from a size observation. TK legacy projection requires consumer migration before retirement. |
@@ -191,3 +192,35 @@ Batch 6d closes the remaining five simplification IDs. Twenty-eight defects and
 all nine justified simplifications are repaired locally; nine defects remain.
 Independent source reviews of batches 14 and 15 at 1ab43c77/f8eca399 found no
 actionable issue; neither reviewer reran tests or certified final Server shutdown.
+
+## Batch 7a concrete design
+
+SB-F1/SB-F2 use existing placement facts, without a new owner column. Cloud
+Computer owners are stable, one Cloud Computer exists per Account, Cloud/Local
+rebind is forbidden, and transfer retains ended Session placements. Borrow moves
+one exact UID only between same-Account Sandbox rows. Production has no caller of
+the low-level movePlacement helper. Physical count/read/report/cleanup and the
+three runner candidate/holder joins therefore follow Sandbox → Session placement
+→ Cloud Computer owner. Managed execution separately requires the current Agent
+Computer/owner and active Account/Agent/binding/Session. Agent overview keeps
+current Agent ownership; it may use owned historical Cloud placements after detach,
+without exposing a transferred Agent to its former Account.
+
+Reservation retains capacity advisory as first lock, then Account NO KEY UPDATE,
+Agent UPDATE (captured preflight revision), binding UPDATE, Session NO KEY UPDATE,
+placement UPDATE, Computer UPDATE, Sandbox UPDATE. All final checks use that
+executor. Read/stop continue locking Sandbox only; physical owner joins and the
+borrow candidate check remain ordinary reads. Remove ensureIngressAllocation's
+ineffective autocommit Sandbox lock: actual start revalidates in its reservation
+transaction. Provider/storage I/O remains outside SQL, with the existing generation,
+operation, resource-name and UID fences and unknown-outcome retention.
+
+Independent source/design review found no confirmed reverse lock cycle: ensure
+and rebind serialize on Agent; idle work barriers only read placement/durable
+rows; borrow takes no authority locks after Sandbox. Native validation must prove
+committed-first withdrawal, in-flight serialization, preserved original-owner
+capacity/status/cleanup after actual suspend/transfer, and existing borrow/recovery.
+
+Batch 7a closes SB-F1/SB-F2. Thirty defects and all nine simplifications are
+repaired locally; seven defects remain. Independent review of batch 16 at
+573157e4 found no actionable issue (source review, no test rerun).

@@ -34,6 +34,7 @@ contents, and machine-specific operational logs outside the repository.
 - [SQL caller repairs: MCP OAuth recovery](verification/sql-caller-repairs-14.md)
 - [SQL caller repairs: bounded OAuth discovery](verification/sql-caller-repairs-15.md)
 - [SQL caller repairs: remove demonstrated redundancy](verification/sql-caller-repairs-16.md)
+- [SQL caller repairs: physical Cloud ownership](verification/sql-caller-repairs-17.md)
 - [Independent review: batches 03–13](verification/sql-caller-independent-review-02.md)
 - [Independent review: Authority and Skill/Schedule](verification/sql-caller-independent-review-01.md)
 

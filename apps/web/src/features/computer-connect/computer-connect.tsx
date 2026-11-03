@@ -118,12 +118,17 @@ function logComputerConnectFailure(operation: ComputerConnectOperation, cause: u
   console.warn("[OpenTag] Computer connect failure", diagnostic);
 }
 
-/** The redeemed Computer counts only once the connection bought by that redemption is online. */
+/**
+ * The redeemed Computer counts only once it is online with evidence from after the redemption: a
+ * connection made after it, or a heartbeat after it. Redemption that rotates credentials clears
+ * presence and the old credential's heartbeats are refused, so a later heartbeat comes from a valid
+ * credential; a computer that was already connected (credential kept) proves itself the same way.
+ */
 function isFreshlyConnected(computer: AccountComputerSummary, redeemedAt: string): boolean {
-  return (
-    computer.connectionStatus === "online" &&
-    computer.connectedAt !== null &&
-    Date.parse(computer.connectedAt) >= Date.parse(redeemedAt)
+  if (computer.connectionStatus !== "online") return false;
+  const redeemed = Date.parse(redeemedAt);
+  return [computer.connectedAt, computer.lastSeenAt].some(
+    (observed) => observed !== null && Date.parse(observed) >= redeemed,
   );
 }
 

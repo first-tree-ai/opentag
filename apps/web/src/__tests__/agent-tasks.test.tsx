@@ -50,7 +50,7 @@ describe("OpenTag Web App Shell", () => {
       name: "Investigate the failed deployment",
     });
     fireEvent.click(task);
-    expect(await screen.findByText("Stored runtime output")).toBeTruthy();
+    expect(await screen.findByText("Please investigate the failed deployment.")).toBeTruthy();
     expect(screen.getByLabelText("Task details").textContent).toContain("Reviewer");
     expect(screen.getByRole("heading", { name: "Activity" })).toBeTruthy();
     expect(window.location.pathname).toBe(`/agents/${agentId}/tasks/${taskSessionId}`);
@@ -61,7 +61,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/tasks/${taskSessionId}`);
     render(<App />);
 
-    expect(await screen.findByText("Stored runtime output")).toBeTruthy();
+    expect(await screen.findByText("Please investigate the failed deployment.")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Activity" })).toBeTruthy();
     expect(screen.queryByText("Read-only debug view")).toBeNull();
     expect(screen.queryByText("Runtime details")).toBeNull();

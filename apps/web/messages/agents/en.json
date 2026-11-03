@@ -16,6 +16,7 @@
   "agents_card_status_no_computer": "No computer assigned",
   "agents_card_status_paused": "Paused",
   "agents_card_status_ready": "Ready",
+  "agents_card_status_refreshing": "Refreshing status",
   "agents_card_status_runtime_checking": "Checking {providerName}",
   "agents_card_status_runtime_not_installed": "{providerName} not installed",
   "agents_card_status_runtime_sign_in_required": "{providerName} sign-in required",

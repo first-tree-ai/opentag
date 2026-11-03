@@ -77,9 +77,19 @@ thread Session owns, and a delivery expired because a newer revision of its mess
 A message steered into a running Turn gets a small annotation on the input; it does not create a
 second Agent response or report.
 
-Execution summaries, when reported, remain visible as separate execution records in the conversation.
-They never substitute for captured sent replies. Execution failures, unavailable or incomplete reply
-history, and truncated content remain visible. On Local Computers supporting detailed reports,
+The Task detail exists to diagnose how the Agent ran, so the conversation keeps only what helps that:
+each reply once, failures, and gaps in the record. The message list is secondary to the Agent's status
+and may shrink as that status becomes more explicit.
+
+The runtime's final text (`finalText`) is not shown: it repeats the reply the Agent already sent, and it
+never substitutes for captured sent replies. A Turn report appears in the conversation only when it adds
+something the sent replies cannot show — an execution failure or an unavailable or incomplete reply
+history; a completed report with nothing else to say leaves no entry, and a Turn that finished without
+a reply gets no placeholder text. A repeated reply or an empty-state line adds reading without telling
+the reader anything new about the run; the Task's status already says it completed. Sent reply bodies, captured
+replies and legacy Lark text or rich-text receipts alike, render as chat Markdown: Markdown formatting
+applies, a single newline stays a line break, and typed HTML stays literal text, as the IM displays it.
+Truncated content remains visible. On Local Computers supporting detailed reports,
 recognized provider failures explain authentication,
 model access, credit or quota, rate limits, service availability, connection loss, context limits,
 execution limits, rejected requests, or unexpected process exits. Unrecognized failures keep the
@@ -132,7 +142,7 @@ order in two, three or five columns according to the content container width. Th
 date and time can wrap without squeezing the other facts.
 
 The conversation follows the facts without a visible Activity heading; its existing Activity heading
-remains available to assistive technology. Requests, sent replies and execution summaries use 14px
+remains available to assistive technology. Requests and sent replies use 14px
 regular text with a 21px line height. Authors use 14px medium text and timestamps use 12px regular
 text. Operational notices stay at 14px. Message headings, emphasis and monospace code retain their
 content formatting. Wide code, native message payloads and message tables scroll locally, with named,
@@ -190,14 +200,14 @@ message or Session is never repeated across pages.
 ## Boundaries
 
 - Task reply history uses captured successful Lark outbound receipts from the originating Turn
-  report when that snapshot is present. `finalText` is only an execution summary, never a substitute
+  report when that snapshot is present. `finalText` is never displayed and never a substitute
   sent reply. A complete capture with no recorded send, or a legacy report without a snapshot, has an accurate
   empty or unavailable state rather than “in progress.” Slack is not collected as Lark. Send receipts
   are not read receipts. Partial capture is labelled independently of the number of replies; content
   truncation and native post/card details remain visible. Replies become available with the terminal
   report and are not backfilled from old runtime transcripts.
-- The unavailable Lark-reply notice is limited to Feishu/Lark Tasks. Slack Tasks retain their execution
-  summaries without a permanent notice about a capture feature they do not support.
+- The unavailable Lark-reply notice is limited to Feishu/Lark Tasks. Slack Tasks carry no permanent
+  notice about a capture feature they do not support.
 - Reply snapshots require `runtime.turnReport` v2 or later on the current connection. A report created on v2
   remains durable during a v1 reconnect and resumes unchanged after v2 or later is negotiated again. The
   server rejects an unnegotiated snapshot with a nonfatal `unsupported_capability` report result.

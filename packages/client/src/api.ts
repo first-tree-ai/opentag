@@ -281,20 +281,26 @@ export class OpenTagApi {
     );
   }
 
-  exchangeComputerConnectCode(
+  async exchangeComputerConnectCode(
     input: ComputerConnectCodeExchangeRequest,
     options?: RequestOptions,
   ): Promise<ComputerConnectCodeExchangeResponse> {
-    return this.#request(
-      HTTP_PATHS.computerConnectExchange,
-      ComputerConnectCodeExchangeResponseSchema,
-      {
-        method: "POST",
-        body: JSON.stringify(input),
-        headers: { "content-type": "application/json" },
-      },
-      options,
-    );
+    const send = (body: ComputerConnectCodeExchangeRequest) =>
+      this.#request(
+        HTTP_PATHS.computerConnectExchange,
+        ComputerConnectCodeExchangeResponseSchema,
+        { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" } },
+        options,
+      );
+    try {
+      return await send(input);
+    } catch (error) {
+      // An older Server rejects the optional idempotency fields as unknown keys. Validation runs
+      // before redemption, so the code is untouched and one legacy retry is safe.
+      const { machineToken: _token, reportOutcome: _outcome, ...legacy } = input;
+      if (!isUnknownExchangeFieldRejection(error, input)) throw error;
+      return send(legacy);
+    }
   }
 
   refresh(refreshToken: string, options?: RequestOptions): Promise<RefreshTokenResponse> {
@@ -1625,6 +1631,16 @@ export interface SkillUploadInput {
 
 function skillUploadHeaders(bytes: number): Record<string, string> {
   return { "content-type": SKILL_UPLOAD_CONTENT_TYPE, "content-length": String(bytes) };
+}
+
+function isUnknownExchangeFieldRejection(error: unknown, input: ComputerConnectCodeExchangeRequest): boolean {
+  if (input.machineToken === undefined && input.reportOutcome === undefined) return false;
+  return (
+    error instanceof OpenTagApiError &&
+    error.code === "VALIDATION_ERROR" &&
+    error.status === 400 &&
+    (error.issues ?? []).some((issue) => issue.code === "unrecognized_keys")
+  );
 }
 
 export function normalizeServerUrl(serverUrl: string): string {

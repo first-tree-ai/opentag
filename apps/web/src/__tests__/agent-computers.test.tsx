@@ -28,7 +28,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
     render(<App />);
     fireEvent.click(await screen.findByRole("link", { name: /Restore connection$/ }));
-    expect(await screen.findByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Back to Reviewer settings" }).getAttribute("href")).toBe(
       `/agents/${agentId}/settings/computer`,
     );
@@ -46,7 +46,7 @@ describe("OpenTag Web App Shell", () => {
     installApi({ bound: true, computerStatus: () => status });
     window.history.replaceState({}, "", "/agents/computers");
     render(<App />);
-    expect(await screen.findByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
     status = "online";
     fireEvent(window, new Event("focus"));
     expect(await screen.findByText("Online")).toBeTruthy();
@@ -103,6 +103,10 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByText("Claude Code sign-in required")).toBeTruthy();
+    // The row names its next step: setup is where the Computer's runtime checks are re-run.
+    expect(screen.getByRole("link", { name: "Continue setup" }).getAttribute("href")).toBe(
+      `/agents/setup?agentId=${agentId}`,
+    );
     expect(screen.queryByText("Cannot receive new work")).toBeNull();
     expect(screen.queryByRole("link", { name: "View Computer" })).toBeNull();
     expect(screen.queryByText("Available")).toBeNull();

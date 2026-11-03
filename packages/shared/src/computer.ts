@@ -130,6 +130,15 @@ export const ComputerConnectCodeModeSchema = z.enum(["create", "repair"]);
  * repair only from the one-time code: create always allocates a new Computer, and repair names its
  * target Computer when the code is issued.
  */
+/**
+ * What an exchange did to the installation it names. `created`: a new Computer. `repaired`: the
+ * Computer already bound to this installation for the same Account was reconnected in place with
+ * rotated credentials. `already_connected`: that Computer is online and the Client proved it holds
+ * its current credential, so credentials are kept (no token is returned) and the code is redeemed
+ * by that Computer.
+ */
+export const ComputerConnectOutcomeSchema = z.enum(["created", "repaired", "already_connected"]);
+
 export const ComputerConnectCodeExchangeRequestSchema = z
   .object({
     code: z.string().trim().min(16).max(512),
@@ -138,6 +147,15 @@ export const ComputerConnectCodeExchangeRequestSchema = z
     platform: ComputerPlatformSchema,
     arch: z.string().trim().min(1).max(64),
     clientVersion: z.string().trim().min(1).max(64),
+    /**
+     * The Client's current machine token for this home, when it has one. It proves possession of
+     * the installation's credential (required for `already_connected`) and lets the Server refuse a
+     * code from another Account instead of moving this machine to it. Older Servers reject the
+     * field as unknown, so the Client retries once without the optional fields.
+     */
+    machineToken: z.string().min(1).max(4096).optional(),
+    /** Set by Clients that understand `outcome` and a token-less `already_connected` response. */
+    reportOutcome: z.literal(true).optional(),
   })
   .strict();
 
@@ -154,7 +172,10 @@ export const ComputerConnectCodeExchangeResponseSchema = z
     runtimeProvider: AgentRuntimeProviderSchema.optional(),
     computerId: z.string().uuid(),
     installationId: z.string().uuid(),
-    machineToken: z.string().min(1).max(4096),
+    /** Absent only for `already_connected`, which keeps the Client's existing credential. */
+    machineToken: z.string().min(1).max(4096).optional(),
+    /** Answered only to Clients that sent `reportOutcome`; older Clients keep the legacy shape. */
+    outcome: ComputerConnectOutcomeSchema.optional(),
   })
   .strict()
   .superRefine((response, context) => {
@@ -163,6 +184,13 @@ export const ComputerConnectCodeExchangeResponseSchema = z
         code: "custom",
         path: ["runtimeProvider"],
         message: "runtimeProvider is only meaningful next to the bound agentId it describes",
+      });
+    }
+    if ((response.outcome === "already_connected") === (response.machineToken !== undefined)) {
+      context.addIssue({
+        code: "custom",
+        path: ["machineToken"],
+        message: "machineToken is returned for every outcome except already_connected",
       });
     }
   });
@@ -545,6 +573,7 @@ export type ComputerKind = z.infer<typeof ComputerKindSchema>;
 export type ComputerConnectCodeMode = z.infer<typeof ComputerConnectCodeModeSchema>;
 export type ComputerConnectCodeExchangeRequest = z.infer<typeof ComputerConnectCodeExchangeRequestSchema>;
 export type ComputerConnectCodeExchangeResponse = z.infer<typeof ComputerConnectCodeExchangeResponseSchema>;
+export type ComputerConnectOutcome = z.infer<typeof ComputerConnectOutcomeSchema>;
 export type ComputerConnectCodeIssueResponse = z.infer<typeof ComputerConnectCodeIssueResponseSchema>;
 export type ComputerConnectCodeState = z.infer<typeof ComputerConnectCodeStateSchema>;
 export type ComputerConnectCodeStatus = z.infer<typeof ComputerConnectCodeStatusSchema>;

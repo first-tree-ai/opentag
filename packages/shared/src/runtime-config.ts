@@ -13,12 +13,14 @@ export const OPENTAG_PLATFORM_INSTRUCTIONS = "You run inside OpenTag. IM output 
  */
 export const AGENT_SLUG_MAX_LENGTH = 64;
 /**
- * The characters an Agent name (its slug) may use: ASCII letters in either case, digits, Han
- * characters, and hyphens, starting with anything but a hyphen. Uniqueness is case-insensitive.
- * The source is unanchored so the client can embed it when reading the slug back from the
- * platform layer.
+ * The characters an Agent name (its slug) may use: ASCII letters in either case, digits, CJK unified
+ * ideographs, and hyphens, starting with anything but a hyphen. Case is limited to ASCII so
+ * JavaScript `toLowerCase()` and PostgreSQL `lower()` agree on the case-insensitive uniqueness key;
+ * ideographs have no case. `Unified_Ideograph` rather than `Script=Han`: the Han script also holds
+ * Kangxi and CJK radicals, which render like ordinary characters and which NFC does not fold. The
+ * source is unanchored so the client can embed it when reading the slug back from the platform layer.
  */
-export const AGENT_SLUG_CHARACTERS = String.raw`[A-Za-z0-9\p{Script=Han}][A-Za-z0-9\p{Script=Han}-]*`;
+export const AGENT_SLUG_CHARACTERS = String.raw`[A-Za-z0-9\p{Unified_Ideograph}][A-Za-z0-9\p{Unified_Ideograph}-]*`;
 export const AGENT_NAME_PATTERN = new RegExp(`^${AGENT_SLUG_CHARACTERS}$`, "u");
 
 const utf8 = new TextEncoder();

@@ -18,6 +18,8 @@ export { AGENT_NAME_PATTERN, AGENT_SLUG_CHARACTERS } from "./runtime-config.js";
 export const AgentNameSchema = z
   .string()
   .trim()
+  // Compatibility ideographs render like their unified forms; NFC folds them into one name.
+  .normalize("NFC")
   .min(1, "Agent name is required")
   .regex(
     AGENT_NAME_PATTERN,

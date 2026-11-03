@@ -4,6 +4,7 @@
   "onboarding_v2_agent_name_empty_error": "Your agent needs a name.",
   "onboarding_v2_agent_name_hint": "Use Chinese characters, letters, numbers, and hyphens (-); don't start with a hyphen.",
   "onboarding_v2_agent_name_label": "Agent name",
+  "onboarding_v2_agent_name_taken_error": "An Agent with this name already exists. Names aren't case-sensitive.",
   "onboarding_v2_agent_name_too_long_error": "The name is too long: up to 64 letters or 21 Chinese characters.",
   "onboarding_v2_agent_runtime_label": "Agent to use",
   "onboarding_v2_agent_title": "Create your agent",

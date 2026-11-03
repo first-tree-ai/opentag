@@ -108,6 +108,14 @@ interface AgentSafeRow {
 }
 
 /**
+ * Advisory lock key for one Account's Agent name. Uniqueness is on `lower(name)`, so case variants
+ * of a name must take the same lock; otherwise both pass the name check and one hits the index.
+ */
+function agentNameLockKey(accountId: string, name: string): string {
+  return `agent-name:${accountId}:${name.toLowerCase()}`;
+}
+
+/**
  * Separates the two ways a joined Computer can be absent. `agentComputerId` is null while the Agent
  * has no Computer, which is a normal state the reader must see; a bound Agent whose Computer row did
  * not join is a broken record and stays an error rather than being reported as unbound.
@@ -442,7 +450,7 @@ export class AgentService {
         assertCloudAgentBinding(this.#cloudIdentitiesEnabled, input.runtimeProvider, computer?.kind);
         assertLocalPermissions(computer?.kind, input.runtimeProvider, input.runtimeConfig?.permissions);
         await transaction.execute(
-          sql`select pg_advisory_xact_lock(hashtextextended(${`agent-name:${callerUserId}:${input.name}`}, 0))`,
+          sql`select pg_advisory_xact_lock(hashtextextended(${agentNameLockKey(callerUserId, input.name)}, 0))`,
         );
         if (input.creationIntentId && intentFingerprint) {
           const replay = await this.#findCreationIntent(
@@ -457,7 +465,11 @@ export class AgentService {
           .select({ id: agents.id })
           .from(agents)
           .where(
-            and(eq(agents.createdByUserId, callerUserId), eq(agents.name, input.name), ne(agents.status, "deleted")),
+            and(
+              eq(agents.createdByUserId, callerUserId),
+              sql`lower(${agents.name}) = ${input.name.toLowerCase()}`,
+              ne(agents.status, "deleted"),
+            ),
           )
           .limit(1);
         if (nameConflict) {
@@ -502,7 +514,7 @@ export class AgentService {
         );
         if (replay) return replay;
       }
-      if (constraintName === "agents_workspace_name_active_unique") {
+      if (constraintName === "agents_account_name_active_unique") {
         throw new AgentServiceError(
           "AGENT_NAME_CONFLICT",
           "deterministic",
@@ -1328,7 +1340,7 @@ export class AgentService {
     // Same key as creation, so a concurrent create of this name under the target Account serializes
     // instead of both passing their own name check.
     await transaction.execute(
-      sql`select pg_advisory_xact_lock(hashtextextended(${`agent-name:${target.id}:${agent.name}`}, 0))`,
+      sql`select pg_advisory_xact_lock(hashtextextended(${agentNameLockKey(target.id, agent.name)}, 0))`,
     );
     const [nameConflict] = await transaction
       .select({ id: agents.id })

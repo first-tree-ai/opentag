@@ -112,6 +112,13 @@ describe("Agent contracts", () => {
     },
   );
 
+  it("folds a compatibility ideograph into its unified form and refuses radicals", () => {
+    // U+F900 is a compatibility ideograph that renders as U+8C48; NFC stores the unified form.
+    expect(AgentNameSchema.parse("\uF900助手")).toBe("\u8C48助手");
+    // Kangxi radicals render like 一人 but are not unified ideographs.
+    expect(AgentNameSchema.safeParse("\u2F00\u2F08").success).toBe(false);
+  });
+
   it("normalizes canonical names and strict create/update payloads", () => {
     expect(AgentNameSchema.parse("  code-reviewer  ")).toBe("code-reviewer");
     expect(

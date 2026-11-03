@@ -53,7 +53,8 @@ export function emptyDraft(existingNames: readonly string[] = []): AgentDraft {
 export type AgentNameError = "empty" | "too-long" | "charset";
 
 export function validateAgentName(value: string): AgentNameError | undefined {
-  const trimmed = value.trim();
+  // Same order as `AgentNameSchema`: trim, NFC-normalize, then match and bound.
+  const trimmed = value.trim().normalize("NFC");
   if (trimmed.length === 0) return "empty";
   if (new TextEncoder().encode(trimmed).byteLength > AGENT_NAME_MAX_BYTES) return "too-long";
   if (!AGENT_NAME_PATTERN.test(trimmed)) return "charset";

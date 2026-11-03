@@ -131,7 +131,7 @@ describe("read-only Staging latency aggregation", () => {
     expect(aggregateLatency(JSON.stringify(array), options).population.completed).toBe(1);
     const extracted = records.map(({ severity, ...record }) => ({ severity, timestamp: utc, jsonPayload: record }));
     expect(aggregateLatency(JSON.stringify(extracted), options).population.completed).toBe(1);
-    const docker = records.map((record) => ({ timestamp: utc, log: JSON.stringify(record) }));
+    const docker = records.map((record) => ({ time: utc, stream: "stderr", log: JSON.stringify(record) }));
     expect(aggregateLatency(lines(docker), options).population.completed).toBe(1);
     const server = records.map((record) => ({
       ...record,
@@ -171,6 +171,8 @@ describe("read-only Staging latency aggregation", () => {
     expect(result.population).toMatchObject({ observed: 1, completed: 0, unsettledOrIncomplete: 1 });
     expect(result.evidence.duplicatePi).toBe(1);
     expect(result.evidence.invalid).toBe(1);
+    const docker = aggregateLatency(lines([{ time: utc, stream: "stderr", log: JSON.stringify(record) }]), options);
+    expect(docker.metrics["pi/2026-11-03/get_state"]?.p50).toBe(123);
     expect(JSON.stringify(result)).not.toMatch(/private-source/);
   });
 

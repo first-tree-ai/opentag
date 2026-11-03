@@ -57,12 +57,12 @@ function unwrap(value: unknown): { payload: Payload; timestamp: unknown } | unde
   const payload = object(outer.jsonPayload) ?? outer;
   if (typeof payload.log === "string") {
     try {
-      return { payload: object(JSON.parse(payload.log)) ?? {}, timestamp: outer.timestamp };
+      return { payload: object(JSON.parse(payload.log)) ?? {}, timestamp: outer.timestamp ?? outer.time };
     } catch {
       return;
     }
   }
-  return { payload, timestamp: outer.timestamp ?? payload.utc };
+  return { payload, timestamp: outer.timestamp ?? outer.time ?? payload.utc };
 }
 
 function rows(input: string): unknown[] {

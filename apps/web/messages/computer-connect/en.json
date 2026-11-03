@@ -1,6 +1,6 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
-  "computer_connect_another_intro": "Copy the task to your Agent on the target computer. Return here to continue setup when it connects.",
+  "computer_connect_another_intro": "Copy the task to your Agent on the computer you want to connect.",
   "computer_connect_connected": "{computerName} is connected",
   "computer_connect_copied": "Copied",
   "computer_connect_copy": "Copy for Agent",

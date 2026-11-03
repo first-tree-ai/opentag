@@ -9,6 +9,11 @@ Account → Computer manages the connection. Agent settings identifies the assig
 computer opens directly; existing multi-computer accounts retain explicit selection. Do not add Agent lists or runtime
 configuration to this surface.
 
+Every confirmed inventory offers **Connect a new computer** here. Agent settings offers the same entry next to an
+assigned Local computer or an existing choice; it opens this page and starts the one shared create flow. That request
+is consumed once and removed from the URL, so reload or Back never issues another command. Connecting a computer
+never moves an Agent; choosing it for an Agent stays an explicit step in Agent settings.
+
 ## State and interaction
 
 Each card shows the computer's identity, a connection status badge, and a More menu.

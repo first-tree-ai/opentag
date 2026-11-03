@@ -151,7 +151,7 @@ describe("ComputerConnect", () => {
         screen.getByText(
           executionLocation === "current"
             ? "Copy the task to your Agent on this computer."
-            : "Copy the task to your Agent on the target computer. Return here to continue setup when it connects.",
+            : "Copy the task to your Agent on the computer you want to connect.",
         ),
       ).toBeTruthy();
       const region = screen.getByRole("region", { name: "Connect computer" });

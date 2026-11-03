@@ -72,6 +72,16 @@ and classifies it:
 | Same Account, online on the same release, untargeted code, current token presented | `already_connected`: no credential rotation or reconnect, no token returned; the code is redeemed by this Computer so the issuing page reaches its connected state. |
 | Same Account, otherwise (offline, disconnected, another running release, token stale or absent, targeted code) | Repair in place (`repaired`): same Computer ID, `disconnected_at` cleared, credentials rotated, code consumed. |
 
+The connect command is one command that users and Agents can run again safely: it upgrades openTag first, then
+connects, and on an already-connected computer it repairs or confirms instead of adding a duplicate. Rerunning is the
+expected fix for a half-finished or broken connection, so it must never make things worse.
+
+- An account conflict stops without taking the computer over and offers no web action to do so. The browser that
+  issued the command may be signed in to a different account than the one that owns the computer, and only the
+  current owner can release it (by removing it in openTag).
+- An already-connected computer still consumes the code, and both the web page and the CLI show the same plain
+  “connected” result as a fresh connection. Whether anything changed is an internal detail the reader cannot act on.
+
 The request fields `machineToken` and `reportOutcome` are optional. The Server
 answers `outcome` (and may omit the token) only to Clients that sent
 `reportOutcome`, so older Clients keep their strict response shape; a newer

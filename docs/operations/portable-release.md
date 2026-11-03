@@ -308,6 +308,11 @@ channel pointers are deliberately left untouched.
 
 - The installer needs `curl` or `wget`, `tar`, and `sha256sum` or `shasum`. Linux and macOS on x64 and arm64 are
   supported; Windows is not.
+- The connect command never waits for input: it runs unattended in an Agent's shell, where a prompt would hang
+  with no one to answer it. Every choice it needs is decided by flags or defaults.
+- The connect command fetches the installer with `curl`; a machine without `curl` fails at that step with the shell's
+  own error. Supporting a fallback inside a one-line command would make it longer and harder to read for everyone,
+  and machines that can run Agents almost always have `curl`.
 - The installer only installs or upgrades openTag. The onboarding command runs `opentag connect`, which exchanges the
   one-time Computer code, binds its explicit Agent/Computer target, and then installs or restarts the daemon service.
   Provider CLI detection and installation belongs to that active daemon, never to `install.sh`.

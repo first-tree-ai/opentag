@@ -226,7 +226,7 @@ it.each(["slack", "feishu"] as const)(
     const observed: { text: string; params: (string | number)[] }[] = [];
     const debug = client.sql.options.debug;
     client.sql.options.debug = (_id, text, parameters) => {
-      if (text.includes('"im_messages"."thread_key" is not null')) {
+      if (text.includes('"ranked_thread_messages"')) {
         observed.push({ text, params: [...parameters] as (string | number)[] });
       }
     };

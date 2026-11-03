@@ -750,6 +750,7 @@ it("retains Cloud steer correlation without sending after delayed custody", asyn
     requestId: run.requestId,
     turnId: "root-cloud-turn",
   });
+  expect(await row(h.deliveryId)).toMatchObject({ state: "accepted", turnId: "root-cloud-turn" });
   await client.database
     .update(imMessageDeliveries)
     .set({ nextAttemptAt: new Date(Date.now() + 60000) })
@@ -760,17 +761,33 @@ it("retains Cloud steer correlation without sending after delayed custody", asyn
     .set({ expiresAt: new Date(Date.now() + 60000) })
     .where(eq(imMessageDeliveries.id, next.deliveryId));
   const entered = gate();
+  let custodyEntered = false;
   let unlock: (() => Promise<void>) | undefined;
   const original = h.custody.beginSteerDispatch.bind(h.custody);
   vi.spyOn(h.custody, "beginSteerDispatch").mockImplementation(async (...args) => {
     unlock = await holdPlacement(h.scope.sessionId);
+    custodyEntered = true;
     entered.release();
     return original(...args);
   });
   const dispatch = h.owner.requestSteer.bind(h.owner);
   vi.spyOn(h.owner, "requestSteer").mockImplementation((...args) => track(dispatch(...args)));
   const running = track(h.worker.runOnce());
-  await entered.promise;
+  await Promise.race([
+    entered.promise,
+    running.then(async () => {
+      if (custodyEntered) return;
+      const pending = await row(next.deliveryId);
+      const root = await row(h.deliveryId);
+      throw new Error(
+        `Cloud steer ended before custody: ${JSON.stringify({
+          diagnostic: h.diagnostic.mock.calls,
+          pending: { state: pending?.state, errorCode: pending?.lastErrorCode },
+          root: { state: root?.state, turnId: root?.turnId },
+        })}`,
+      );
+    }),
+  ]);
   await waitForLock();
   await running;
   await unlock?.();

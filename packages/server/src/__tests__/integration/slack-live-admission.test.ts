@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { SLACK_REQUIRED_BOT_SCOPES } from "@opentag/shared";
 import Fastify from "fastify";
-import { afterAll, afterEach, beforeAll, beforeEach, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { registerSlackEventsRoute } from "../../api/slack-events.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { imMessageDeliveries, imMessages, slackWebhookReceipts } from "../../db/schema/index.js";
@@ -84,11 +84,11 @@ async function fixture() {
     botUserId: ingress.botUserId,
     botId: ingress.botId,
   });
-  const app = () => {
+  const app = (inbox = new ImMessageInbox(client.database, { now: () => clock.now })) => {
     const server = Fastify({ logger: false });
     const controller = registerSlackEventsRoute(server, {
       imBindings: service,
-      inbox: new ImMessageInbox(client.database, { now: () => clock.now }),
+      inbox,
       receipts: new SlackWebhookReceiptStore(client.database, { now: () => clock.now }),
       maxPendingEvents: 2,
       now: () => clock.now,
@@ -116,8 +116,16 @@ async function fixture() {
 }
 
 it("bounds live Slack Inbox work and recovers acknowledged overflow from durable receipts", async () => {
-  const f = await fixture(),
-    app = f.app();
+  const f = await fixture();
+  const inbox = new ImMessageInbox(f.client.database, { now: () => f.clock.now });
+  const blockedInboxKey = `fixture-inbox:${f.agent.id}`;
+  const ingest = inbox.ingest.bind(inbox);
+  const blockedIngest = vi.spyOn(inbox, "ingest").mockImplementation(async (...args) => {
+    await f.client.sql`select pg_advisory_xact_lock(hashtextextended(${blockedInboxKey}, 0))`;
+    return ingest(...args);
+  });
+  cleanup.push(async () => blockedIngest.mockRestore());
+  const app = f.app(inbox);
   const receivedAt = f.clock.now;
   const observer = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
   cleanup.push(() => observer.sql.end({ timeout: 1 }));
@@ -131,7 +139,7 @@ it("bounds live Slack Inbox work and recovers acknowledged overflow from durable
       held = done;
     });
   const holder = admin.sql.begin(async (tx) => {
-    await tx`select pg_advisory_xact_lock(hashtextextended(${`im-agent-custody:${f.agent.id}`}, 0))`;
+    await tx`select pg_advisory_xact_lock(hashtextextended(${blockedInboxKey}, 0))`;
     held();
     await wait;
   });

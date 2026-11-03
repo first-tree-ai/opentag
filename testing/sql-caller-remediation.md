@@ -14,7 +14,9 @@ for confirmation. Keep each batch small enough to review and validate independen
 A repaired original case does not close another extension of the same finding.
 
 Current status: the confirmed public remediations are locally complete through
-[batch 42](verification/sql-caller-repairs-42.md). Remaining scale/compatibility
+[batch 42](verification/sql-caller-repairs-42.md). The subsequent main integration
+and independent PR review are tracked in the
+[PR acceptance record](verification/sql-caller-pr-integration.md). Remaining scale/compatibility
 observations and unavailable private implementation are explicit boundaries.
 The batch notes retain their original checkpoint descriptions.
 

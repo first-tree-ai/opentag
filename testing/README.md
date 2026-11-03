@@ -143,3 +143,6 @@ Screenshots and browser checks for Web UI changes, one directory per change:
 - [soul-template-browser](web-ui/soul-template-browser/README.md)
 - [skill-reader](web-ui/skill-reader/README.md)
 - [skills-management](web-ui/skills-management/README.md)
+
+- [SQL caller PR integration and acceptance](verification/sql-caller-pr-integration.md)
+- [SQL caller independent PR review](verification/sql-caller-independent-review-05.md)

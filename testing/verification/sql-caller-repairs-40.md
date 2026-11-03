@@ -68,7 +68,7 @@ historical binding removes the unnecessary extra Agent/installation fixture; the
 explicit order is corrected. Only those two cases were rerun and both pass. The
 production query and other passing cases were unchanged. Failed logs are retained.
 
-Server typecheck/build pass. Independent source review found no actionable
-regression; exact-commit review and repository gates are recorded separately.
+Server typecheck/build pass. Independent source and exact-commit review at e0b514b9 found no actionable
+regression; repository gates pass.
 Batch 39 exact review at da000b91 found no actionable defect. Final broad Server
 Docker regression and covered Client Runtime validation remain a separate gate.

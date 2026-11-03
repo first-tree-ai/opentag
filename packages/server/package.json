@@ -25,8 +25,8 @@
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --maxWorkers=1 --exclude 'src/__tests__/integration/**'",
-    "test:integration": "vitest run src/__tests__/integration --maxWorkers=2",
+    "test": "vitest run --maxWorkers=1 --exclude '**/integration/**'",
+    "test:integration": "vitest run src/__tests__/integration scripts/__tests__/integration --maxWorkers=2",
     "mcp:rollout-status": "node dist/admin/mcp-rollout-status-cli.mjs"
   },
   "dependencies": {

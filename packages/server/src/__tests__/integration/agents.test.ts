@@ -451,28 +451,26 @@ describe("Agent persistence and authorization", () => {
     },
   );
 
-  it("serializes a replacement registration after an already-started decision write", async () => {
+  it("releases a decision enqueue before replacement registration while its callback is pending", async () => {
     const value = await approvalFixture();
     const entered = deferred<void>();
     const release = deferred<void>();
-    try {
-      const delivery = value.store.deliver(value.row, async () => {
+    let finished = false;
+    const delivery = value.store
+      .deliver(value.row, async () => {
         entered.resolve();
         await release.promise;
+      })
+      .finally(() => {
+        finished = true;
       });
+    try {
       await entered.promise;
-      const replacement = value.register(crypto.randomUUID(), "new-socket");
-      // Observe PostgreSQL's lock barrier instead of relying on a timer to guess the ordering.
-      await waitUntil(async () => {
-        const [row] = await value.sql<
-          { blocked: boolean }[]
-        >`select exists(select 1 from pg_stat_activity where datname = current_database() and cardinality(pg_blocking_pids(pid)) > 0) as blocked`;
-        return row?.blocked === true;
-      });
-      expect((await value.store.find(value.row.id))?.status).toBe("accept");
+      await value.register(crypto.randomUUID(), "new-socket");
+      expect(finished).toBe(false);
+      expect((await value.store.find(value.row.id))?.status).toBe("stale");
       release.resolve();
       expect(await delivery).toBe(true);
-      await replacement;
       expect((await value.store.find(value.row.id))?.status).toBe("stale");
       expect(
         await value.store.deliver(value.row, async () => {
@@ -481,6 +479,7 @@ describe("Agent persistence and authorization", () => {
       ).toBe(false);
     } finally {
       release.resolve();
+      await delivery.catch(() => undefined);
       await value.sql.end();
     }
   });

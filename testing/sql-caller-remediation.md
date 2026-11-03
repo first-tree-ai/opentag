@@ -39,11 +39,11 @@ A repaired original case does not close another extension of the same finding.
 | 8b — Git subtree verification | AG-F6 | [Verified locally](verification/sql-caller-repairs-20.md): literal selected-path and separate ancestor entry listing; 41 host/Docker cases, existing process bounds retained. |
 | 8c — Operator cleanup | OP-F1 | [Verified locally](verification/sql-caller-repairs-21.md): shared client defaults and native five-second close; 102 Vitest cases and both actual Docker benchmark CLIs, owned containers removed. |
 | 6d — Remaining simplification | AG-S3, AG-S4, AG-S5, AG-S6, DW-S1 | [Verified locally](verification/sql-caller-repairs-16.md): direct Settings credential read, Local-only query removal, one owner read, locked MCP check and unreachable quota deletion; 225 distinct cases (94 native PG). |
-| Observations | AA-R1, CR-R1, IM-R1, IM-R2, TK-R1 | AA-R1 [fixed locally](verification/sql-caller-repairs-38.md) with native token-exchange budget. CR/IM measured costs do not establish a required rewrite; TK legacy projection requires consumer migration before retirement. IM-R2 [fixed locally](verification/sql-caller-repairs-40.md): same-output SQL selection avoids unrelated full payloads after native scale/equivalence checks. |
+| Observations | AA-R1, CR-R1, IM-R1, IM-R2, TK-R1, LC-R1 | AA-R1 [fixed locally](verification/sql-caller-repairs-38.md) with native token-exchange budget. CR/IM measured costs do not establish a required rewrite; TK legacy projection requires external API compatibility review before retirement; Web already uses paged sections. IM-R2 [fixed locally](verification/sql-caller-repairs-40.md): same-output SQL selection avoids unrelated full payloads after native scale/equivalence checks. LC-R1 lifecycle fan-out was omitted from the initial ledger; native scale/busy-domain tests confirm excessive preparation and partial stop. Its supplemental policy below awaits confirmation. |
 | Private billing | Unavailable implementation | Blocked by absent source; public adapter review is not an implementation audit. |
 
-The table accounts for all 37 defect IDs, nine simplification IDs and five
-observation IDs. Do not mark all 51 as code defects or automatically implement
+The table accounts for all 37 defect IDs, nine simplification IDs and six
+observation IDs. Do not mark all 52 as code defects or automatically implement
 extra budgets for them. No merge, release or online database action is authorized
 by a completed local batch.
 
@@ -528,3 +528,73 @@ root fallback. The owning matrix passes 155 distinct cases, 121 native PostgreSQ
 No new cap, index or transaction semantics are introduced. Batch 39 exact review
 found none; batch 40 source review found none. The 37 defect and nine
 simplification fixes remain locally complete; final broad regression is pending.
+
+
+[Broad owning regression](verification/sql-caller-repairs-41.md) covers the full
+Server unit/native matrices with successful affected reruns, plus 818 covered
+Client Runtime cases at 100 percent. Original failed command logs remain failed;
+no cases were waived. Test-only fixtures/collection were corrected without
+product changes. The original audit's 52 IDs are all accounted for. LC-R1 now
+has representative native cost/failure evidence and needs the specific Local-stop
+policy below before implementation; the overall remediation is not complete.
+
+## LC-R1 supplemental design — awaiting human confirmation
+
+The original audit contains six observations, not five: LC-R1 was absent from the
+initial remediation ledger. It concerns unbounded Local lifecycle stop fan-out,
+not the authority/drain defects already fixed. Native actual lifecycle calls
+show that 4,096 targets start 4,096 proof preparations before the shared domain's
+1,024 pending limit is checked. A full domain still performs about 24,585 SQL
+statements and sends no stop frames. An independent database connection remains
+healthy; these samples do not demonstrate a global outage. They do establish
+avoidable work and partial stop under a large single-Agent operation.
+
+Simply batching complete result Promises would multiply the existing 30-second
+request wait by the number of batches. The following adds a specific Local-stop
+operation policy and therefore needs confirmation before implementation:
+
+1. Process at most **16 complete Local stop operations concurrently**, including
+   proof preparation, final locked authority, enqueue and the actual result.
+   A small fixed worker loop replaces the eager flatMap/Promise array; no generic
+   queue/scheduler, Session-count cap, extra pool or increased domain limit.
+2. Share one **30-second Local-stop dispatch budget**, matching the existing
+   default Runtime request budget. Pass its native AbortSignal through the
+   existing requestReconcile signal port. Start the budget at entry to
+   stopAgentSessions, after the committed lifecycle mutation and existing Cloud
+   cancellation. It does not promise the entire lifecycle HTTP call finishes in
+   30 seconds, nor multiply the budget for each batch. An already-enqueued
+   request retains its original per-request result timer: one sent near the
+   dispatch cutoff can wait about another 30 seconds, followed by actual SQL
+   cleanup. Acceptance must not assert a hard 30-second total duration.
+3. At the deadline, stop admitting remaining targets and fence later enqueue.
+   Existing SQL already issued must settle under the shared official timeouts;
+   join all started operations. Check the shared signal at admission entry so
+   proof preparation completing after the cutoff does not begin a new authority
+   transaction. An authority transaction already entered keeps its existing SQL
+   and final enqueue signal fence. Do not race away real work or claim that an
+   AbortSignal cancels an already-issued database statement.
+4. If the shared domain returns capacity, stop taking additional targets, allow
+   already-started work to settle under the same budget and surface the existing
+   AGENT_SESSION_STOP_FAILED diagnostic. Other individual failures retain their
+   existing aggregate failure behavior. Never retry an uncertain stop send.
+5. Preserve the committed suspend/delete/rebind result and final Agent revision,
+   Session, placement and exact-proof fences. An unattempted or unconfirmed target
+   is not marked stopped; its proof is not broadly deleted. The API retains its
+   existing best-effort notification contract. **No new automatic retry/recovery
+   is introduced for remaining targets**; only a later existing reconciliation
+   that actually confirms stop establishes that outcome. This residual-work
+   behavior is part of the policy being submitted for confirmation.
+6. Keep Cloud's currently serial cancellation and CR-R1 observation separate.
+   This change bounds the Local fan-out; it does not establish a Session-count
+   limit, make the initial metadata selection globally bounded, or define a new
+   Cloud/overall HTTP latency contract.
+
+Acceptance: native 64/1,024/4,096 valid targets with real proof/guard SQL, max-one
+and normal pools, timely results, no results and an already-full shared domain;
+all small/normal targets still stop, preparation peaks at 16, and no work starts
+after the deadline/capacity boundary. Retain Account lifecycle/authority and
+replacement-proof tests. Gate late preparation, an Agent-row wait crossing the
+cutoff, results/revocation after the cutoff and a capacity error while the other
+started targets still settle. Check actual proof rows, committed Agent state, no idle
+transaction, healthy same-pool and independent controls, owner shutdown and late
+result behavior. Do not implement this supplemental policy before confirmation.

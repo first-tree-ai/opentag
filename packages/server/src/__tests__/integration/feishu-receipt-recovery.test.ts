@@ -172,7 +172,7 @@ it("recovers through a new connection owner after receipt persistence and an Inb
   expect(messages[0]?.receivedAt).toEqual(receivedAt);
   expect(await f.client.database.select().from(imMessageDeliveries)).toHaveLength(1);
   await expect(first.handlers().message?.(f.message("ev_old_owner") as never)).rejects.toMatchObject({
-    code: "FEISHU_INBOUND_FENCE_STALE",
+    code: "FEISHU_SETUP_FENCE_STALE",
   });
   expect(await f.client.database.select().from(feishuInboundReceipts)).toHaveLength(1);
   await second.handlers().message?.(f.message() as never);

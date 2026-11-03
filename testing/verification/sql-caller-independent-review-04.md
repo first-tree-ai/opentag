@@ -42,6 +42,8 @@ exact review at 41b921c7 found no actionable regression. Batch 34 exact review
 at 481ff05a found no actionable regression. Batch 35 exact review at 429b1607 found no
 actionable regression. Batch 36 exact review at e2f48e99 found no actionable composition
 defect. Batch 37 exact review at 5d4040c4 found none; actual Server/DNS controls pass.
-Batch 38 exact review at 73d7e0a6 found no actionable defect. Batch 39 exact review at da000b91 found no actionable defect. Batch 40 source
-review found none; exact-commit review remains required. CI, merge,
+Batch 38 exact review at 73d7e0a6 found no actionable defect. Batch 39 exact review at da000b91 found no actionable defect. Batch 40 exact review at e0b514b9 found no actionable defect. Final fixture and
+collection source review found none. LC-R1 was independently confirmed as an
+omitted sixth observation with remaining unbounded preparation; its new policy
+is not yet approved or implemented. CI, merge,
 deployment, private billing and live provider acceptance are not inferred.

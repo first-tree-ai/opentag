@@ -9,6 +9,7 @@ import type { RuntimeBusinessContext } from "../runtime/runtime-session.js";
 import type { AgentService } from "../services/agents/index.js";
 import { AgentRuntimeTestService } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
+import { deferred } from "./support/deferred.js";
 
 const userId = "53e2babe-e4ac-4eac-b7d1-d092d5a4568e";
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
@@ -423,22 +424,31 @@ describe("Agent Runtime test HTTP API", () => {
     expect(seenSignal?.aborted).toBe(false);
 
     let disconnectSignal: AbortSignal | undefined;
-    release = undefined;
+    const pendingTest = deferred<{ status: "passed" }>();
     const controller = new AbortController();
-    owner.start.mockImplementation(
-      (_computerId: string, input: { signal?: AbortSignal }) =>
-        new Promise<{ status: "passed" }>((resolve) => {
-          disconnectSignal = input.signal;
-          release = resolve;
-        }),
-    );
+    owner.start.mockImplementation((_computerId: string, input: { signal?: AbortSignal }) => {
+      disconnectSignal = input.signal;
+      return pendingTest.promise;
+    });
     const disconnected = fetch(url, { method: "POST", headers, body, signal: controller.signal });
-    await vi.waitFor(() => expect(disconnectSignal).toBeDefined());
-    expect(disconnectSignal?.aborted).toBe(false);
-    controller.abort();
-    await expect(disconnected).rejects.toThrow();
-    await vi.waitFor(() => expect(disconnectSignal?.aborted).toBe(true));
-    expect(service.updateById).not.toHaveBeenCalled();
+    try {
+      await vi.waitFor(() => expect(disconnectSignal).toBeDefined());
+      expect(disconnectSignal?.aborted).toBe(false);
+      controller.abort();
+      await expect(disconnected).rejects.toThrow();
+      await vi.waitFor(() => expect(disconnectSignal?.aborted).toBe(true));
+      const closed = vi.fn();
+      const closing = app.close().then(closed);
+      await vi.waitFor(() => expect(app.server.listening).toBe(false));
+      expect(closed).not.toHaveBeenCalled();
+      pendingTest.resolve({ status: "passed" });
+      await closing;
+      expect(service.updateById).not.toHaveBeenCalled();
+    } finally {
+      controller.abort();
+      pendingTest.resolve({ status: "passed" });
+      await disconnected.catch(() => undefined);
+    }
   });
 });
 

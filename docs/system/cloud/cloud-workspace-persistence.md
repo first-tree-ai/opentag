@@ -80,6 +80,11 @@ newer object. Exhausted transient saves retain local files and can retry on reco
 before journaling the terminal report is reconciled as unknown execution effects and never
 automatically replayed.
 
+[IM task feedback](../messaging/im-feedback.md) exposes Account-confirmed save/release and explicit discard
+for a failed Session, reusing these generation-bound operations. The feedback action is recorded before cloud I/O;
+an unknown result is queried without submitting again. Only a verified seal for the exact environment permits a
+"saved" card result. A release without that proof remains explicitly unverified.
+
 Checkpoint diagnostics retain the archive failure code and the original error cause. Both IM
 Turns and internal Session messages log deterministic archive failures without cycling the control
 connection. Log messages include the error code, not workspace filenames or the raw error cause.

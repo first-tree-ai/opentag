@@ -46,6 +46,7 @@ contents, and machine-specific operational logs outside the repository.
 - [IM Turn budget and recovery](im-turn-budget-recovery/README.md)
 - [Steered IM custody without terminal reports](verification/im-steer-custody.md)
 - [Provider process shutdown](verification/provider-process-custody.md)
+- [IM feedback and safe recovery](verification/im-feedback.md)
 - [IM content and attachment delivery](verification/im-content-delivery.md)
 - [Ordered IM batches and Cloud steering](verification/im-backlog-batching.md)
 - [Inbound receipt recovery](verification/inbound-receipt-recovery.md)

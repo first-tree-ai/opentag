@@ -1,0 +1,485 @@
+import { randomUUID } from "node:crypto";
+import type { TurnReportRequest } from "@opentag/shared";
+import { and, eq, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
+import {
+  agents,
+  imBindings,
+  imFeedbackActions,
+  imFeedbackTargets,
+  imMessageDeliveries,
+  imMessages,
+  sandboxes,
+  sessions,
+  slackInstallations,
+  users,
+} from "../../db/schema/index.js";
+
+export type FeedbackTarget = typeof imFeedbackTargets.$inferSelect;
+export type FeedbackAction = typeof imFeedbackActions.$inferSelect;
+export interface FeedbackSettlement {
+  reaction?: FeedbackTarget["appliedReaction"];
+  cardMessageId?: string;
+  cardState?: FeedbackTarget["cardState"];
+  cardRevision?: number;
+  reconciliationCursor?: string | null;
+  delayMs?: number;
+  errorCode?: string;
+  stale?: boolean;
+}
+export const FEEDBACK_ACTION_TTL_MS = 24 * 60 * 60_000;
+const DORMANT = new Date("9999-12-31T00:00:00Z");
+
+export async function createImFeedbackTarget(tx: DatabaseTransaction, deliveryId: string, now: Date): Promise<void> {
+  const [row] = await tx
+    .select({
+      delivery: imMessageDeliveries,
+      message: imMessages,
+      session: sessions,
+      binding: imBindings,
+      agent: agents,
+      sandbox: sandboxes,
+    })
+    .from(imMessageDeliveries)
+    .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
+    .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+    .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+    .innerJoin(agents, eq(agents.id, imBindings.agentId))
+    .leftJoin(sandboxes, eq(sandboxes.sessionId, sessions.id))
+    .where(
+      and(
+        eq(imMessageDeliveries.id, deliveryId),
+        eq(imMessageDeliveries.attention, "direct"),
+        eq(imMessages.direction, "inbound"),
+        eq(imMessages.authorKind, "human"),
+        ne(imMessages.operation, "deleted"),
+        ne(sessions.kind, "internal"),
+        eq(imBindings.status, "active"),
+        sql`not (${sessions.kind} = 'channel' and ${imMessages.threadKey} is not null and exists (select 1 from im_message_deliveries sibling inner join sessions owner on owner.id = sibling.session_id where sibling.message_id = ${imMessages.id} and owner.kind = 'thread' and owner.thread_key = ${imMessages.threadKey}))`,
+      ),
+    )
+    .limit(1);
+  if (!row || row.delivery.dispatchPayload?.replyRole === "observer" || row.delivery.reason === "duplicate_pending")
+    return;
+  await tx
+    .insert(imFeedbackTargets)
+    .values({
+      accountId: row.agent.createdByUserId,
+      agentId: row.agent.id,
+      bindingId: row.binding.id,
+      bindingGeneration: row.binding.credentialGeneration,
+      provider: row.binding.provider,
+      installationId: row.binding.slackInstallationId,
+      messageId: row.message.id,
+      sessionId: row.session.id,
+      deliveryId,
+      turnId: row.delivery.turnId,
+      placementGeneration: row.delivery.placementGeneration,
+      channelId: row.message.channelId,
+      inputExternalId: row.message.externalMessageId,
+      threadKey: row.message.threadKey,
+      senderExternalId: row.message.authorExternalId,
+      cardOwnerDeliveryId: row.delivery.steerTargetDeliveryId ?? deliveryId,
+      sandboxId: row.sandbox?.id,
+      environmentGeneration: row.sandbox?.environmentGeneration,
+      resourceUid: row.sandbox?.currentResourceUid,
+      state: "queued",
+      desiredReaction: "none",
+      appliedReaction: "none",
+      appliedRevision: 1,
+      actionsExpireAt: new Date(now.getTime() + FEEDBACK_ACTION_TTL_MS),
+      nextAttemptAt: now,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoNothing();
+}
+
+export async function startImFeedback(tx: DatabaseTransaction, rootDeliveryId: string, now: Date): Promise<void> {
+  const rows = await tx
+    .select({ id: imMessageDeliveries.id, turnId: imMessageDeliveries.turnId, sandbox: sandboxes })
+    .from(imMessageDeliveries)
+    .leftJoin(sandboxes, eq(sandboxes.sessionId, imMessageDeliveries.sessionId))
+    .where(
+      or(
+        eq(imMessageDeliveries.id, rootDeliveryId),
+        and(eq(imMessageDeliveries.state, "steered"), eq(imMessageDeliveries.steerTargetDeliveryId, rootDeliveryId)),
+      ),
+    );
+  for (const row of rows.sort((a, b) => a.id.localeCompare(b.id))) {
+    await createImFeedbackTarget(tx, row.id, now);
+    await tx
+      .update(imFeedbackTargets)
+      .set({
+        state: "working",
+        desiredReaction: "working",
+        turnId: row.turnId,
+        cardOwnerDeliveryId: rootDeliveryId,
+        sandboxId: row.sandbox?.id,
+        environmentGeneration: row.sandbox?.environmentGeneration,
+        resourceUid: row.sandbox?.currentResourceUid,
+        revision: sql`${imFeedbackTargets.revision} + 1`,
+        nextAttemptAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(imFeedbackTargets.deliveryId, row.id),
+          inArray(imFeedbackTargets.state, ["queued", "working"]),
+          ne(imFeedbackTargets.desiredReaction, "working"),
+        ),
+      );
+  }
+}
+
+export async function finishImFeedback(tx: DatabaseTransaction, report: TurnReportRequest, now: Date): Promise<void> {
+  const rows = await tx
+    .select({ target: imFeedbackTargets, reason: imMessageDeliveries.reason, state: imMessageDeliveries.state })
+    .from(imFeedbackTargets)
+    .innerJoin(imMessageDeliveries, eq(imMessageDeliveries.id, imFeedbackTargets.deliveryId))
+    .where(eq(imFeedbackTargets.cardOwnerDeliveryId, report.deliveryId))
+    .orderBy(imFeedbackTargets.id);
+  for (const { target, reason, state } of rows) {
+    if (target.state === "stale" || target.state === "resolved") continue;
+    if (isRecoveredChild(target, reason, state, report)) {
+      await tx
+        .update(imFeedbackTargets)
+        .set({
+          state: "queued",
+          desiredReaction: "none",
+          cardOwnerDeliveryId: target.deliveryId,
+          nextAttemptAt: now,
+          revision: sql`${imFeedbackTargets.revision} + 1`,
+          updatedAt: now,
+        })
+        .where(eq(imFeedbackTargets.id, target.id));
+      continue;
+    }
+    await tx
+      .update(imFeedbackTargets)
+      .set(terminalFeedbackUpdate(target, report, now))
+      .where(eq(imFeedbackTargets.id, target.id));
+  }
+}
+
+export class ImFeedbackStore {
+  constructor(
+    readonly database: DatabaseClient,
+    readonly now: () => Date = () => new Date(),
+  ) {}
+
+  async claim(): Promise<FeedbackTarget | undefined> {
+    return this.database.transaction(async (tx) => {
+      const now = this.now();
+      const [target] = await tx
+        .select()
+        .from(imFeedbackTargets)
+        .where(
+          and(
+            lte(imFeedbackTargets.nextAttemptAt, now),
+            or(isNull(imFeedbackTargets.claimExpiresAt), lte(imFeedbackTargets.claimExpiresAt, now)),
+          ),
+        )
+        .orderBy(imFeedbackTargets.nextAttemptAt, imFeedbackTargets.id)
+        .limit(1)
+        .for("update", { skipLocked: true });
+      if (!target) return;
+      const [claimed] = await tx
+        .update(imFeedbackTargets)
+        .set({
+          claimId: randomUUID(),
+          claimExpiresAt: new Date(now.getTime() + 90_000),
+          cardState: target.cardState === "sending" ? "send_unknown" : target.cardState,
+        })
+        .where(eq(imFeedbackTargets.id, target.id))
+        .returning();
+      return claimed;
+    });
+  }
+
+  async isCurrent(target: FeedbackTarget, withClaim = true): Promise<boolean> {
+    const [row] = await this.database
+      .select({ id: imFeedbackTargets.id })
+      .from(imFeedbackTargets)
+      .innerJoin(imBindings, eq(imBindings.id, imFeedbackTargets.bindingId))
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .innerJoin(users, eq(users.id, agents.createdByUserId))
+      .innerJoin(imMessages, eq(imMessages.id, imFeedbackTargets.messageId))
+      .innerJoin(sessions, eq(sessions.id, imFeedbackTargets.sessionId))
+      .leftJoin(slackInstallations, eq(slackInstallations.id, imFeedbackTargets.installationId))
+      .where(
+        and(
+          eq(imFeedbackTargets.id, target.id),
+          withClaim
+            ? and(
+                eq(imFeedbackTargets.claimId, target.claimId ?? "00000000-0000-0000-0000-000000000000"),
+                eq(imFeedbackTargets.revision, target.revision),
+                sql`${imFeedbackTargets.claimExpiresAt} > ${this.now().toISOString()}::timestamptz`,
+              )
+            : undefined,
+          eq(imBindings.status, "active"),
+          eq(imBindings.provider, target.provider),
+          eq(imBindings.credentialGeneration, target.bindingGeneration),
+          eq(agents.createdByUserId, target.accountId),
+          ne(agents.status, "deleted"),
+          isNull(users.suspendedAt),
+          ne(imMessages.operation, "deleted"),
+          or(
+            ne(imBindings.provider, "slack"),
+            and(
+              eq(slackInstallations.status, "active"),
+              eq(imBindings.slackInstallationId, target.installationId ?? "00000000-0000-0000-0000-000000000000"),
+              eq(slackInstallations.credentialGeneration, target.bindingGeneration),
+            ),
+          ),
+          sql`not exists (select 1 from im_messages newer where newer.im_binding_id = ${target.bindingId}::uuid and newer.channel_id = ${target.channelId} and newer.external_message_id = ${target.inputExternalId} and (newer.occurred_at, newer.provider_revision_key, newer.id) > (${imMessages.occurredAt}, ${imMessages.providerRevisionKey}, ${imMessages.id}))`,
+        ),
+      )
+      .limit(1);
+    return !!row;
+  }
+
+  async refreshQueued(target: FeedbackTarget): Promise<FeedbackTarget> {
+    if (target.state !== "queued") return target;
+    const [delivery] = await this.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, target.deliveryId));
+    if (!delivery) return target;
+    const change = await this.#queuedChange(target, delivery);
+    if (!change) return target;
+    const [updated] = await this.database
+      .update(imFeedbackTargets)
+      .set(change)
+      .where(
+        and(
+          eq(imFeedbackTargets.id, target.id),
+          eq(imFeedbackTargets.claimId, target.claimId ?? "00000000-0000-0000-0000-000000000000"),
+          eq(imFeedbackTargets.revision, target.revision),
+        ),
+      )
+      .returning();
+    return updated ?? target;
+  }
+
+  async #queuedChange(target: FeedbackTarget, delivery: typeof imMessageDeliveries.$inferSelect) {
+    const now = this.now();
+    if (["expired", "terminal_rejected"].includes(delivery.state)) return rejectedFeedbackUpdate(delivery, now);
+    if (delivery.state !== "accepted" && delivery.state !== "steered") return;
+    const root = delivery.steerTargetDeliveryId
+      ? (
+          await this.database
+            .select()
+            .from(imMessageDeliveries)
+            .where(eq(imMessageDeliveries.id, delivery.steerTargetDeliveryId))
+        )[0]
+      : delivery;
+    if (root?.turnReport) return terminalFeedbackUpdate(target, root.turnReport, now);
+    return {
+      state: "working" as const,
+      desiredReaction: "working" as const,
+      turnId: root?.turnId,
+      cardOwnerDeliveryId: root?.id ?? target.deliveryId,
+      revision: sql`${imFeedbackTargets.revision} + 1`,
+      updatedAt: now,
+    };
+  }
+
+  async desiredReaction(target: FeedbackTarget): Promise<FeedbackTarget["desiredReaction"]> {
+    const [latest] = await this.database
+      .select({ desired: imFeedbackTargets.desiredReaction })
+      .from(imFeedbackTargets)
+      .innerJoin(imMessageDeliveries, eq(imMessageDeliveries.id, imFeedbackTargets.deliveryId))
+      .where(
+        and(
+          eq(imFeedbackTargets.bindingId, target.bindingId),
+          eq(imFeedbackTargets.bindingGeneration, target.bindingGeneration),
+          eq(imFeedbackTargets.channelId, target.channelId),
+          eq(imFeedbackTargets.inputExternalId, target.inputExternalId),
+          ne(imFeedbackTargets.state, "stale"),
+        ),
+      )
+      .orderBy(
+        sql`${imMessageDeliveries.attemptOrdinal} desc`,
+        sql`${imFeedbackTargets.createdAt} desc`,
+        imFeedbackTargets.id,
+      )
+      .limit(1);
+    return latest?.desired ?? "none";
+  }
+
+  async markSending(target: FeedbackTarget): Promise<boolean> {
+    const rows = await this.database
+      .update(imFeedbackTargets)
+      .set({ cardState: "sending", sendStartedAt: this.now() })
+      .where(
+        and(
+          eq(imFeedbackTargets.id, target.id),
+          eq(imFeedbackTargets.claimId, target.claimId ?? "00000000-0000-0000-0000-000000000000"),
+          eq(imFeedbackTargets.cardState, "pending"),
+          isNull(imFeedbackTargets.cardMessageId),
+          eq(imFeedbackTargets.revision, target.revision),
+        ),
+      )
+      .returning({ id: imFeedbackTargets.id });
+    return rows.length === 1;
+  }
+
+  async settle(target: FeedbackTarget, input: FeedbackSettlement): Promise<void> {
+    const now = this.now();
+    await this.database
+      .update(imFeedbackTargets)
+      .set({
+        ...reactionSettlement(target, input),
+        ...cardSettlement(input),
+        ...scheduleSettlement(target, input, now),
+        ...(target.state === "failed" && (input.cardState ?? target.cardState) === "sent"
+          ? { settledAt: target.settledAt ?? now }
+          : {}),
+        ...(input.stale ? { state: "stale" as const, settledAt: now } : {}),
+        claimId: null,
+        claimExpiresAt: null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(imFeedbackTargets.id, target.id),
+          eq(imFeedbackTargets.claimId, target.claimId ?? "00000000-0000-0000-0000-000000000000"),
+        ),
+      );
+  }
+
+  async latestAction(feedbackId: string): Promise<FeedbackAction | undefined> {
+    const [action] = await this.database
+      .select()
+      .from(imFeedbackActions)
+      .where(eq(imFeedbackActions.feedbackId, feedbackId))
+      .orderBy(sql`${imFeedbackActions.feedbackRevision} desc`)
+      .limit(1);
+    return action;
+  }
+
+  async retain(): Promise<void> {
+    const cutoff = new Date(this.now().getTime() - 90 * 24 * 60 * 60_000);
+    await this.database.transaction(async (tx) => {
+      const rows = await tx
+        .select({ id: imFeedbackTargets.id })
+        .from(imFeedbackTargets)
+        .where(
+          and(
+            lte(imFeedbackTargets.settledAt, cutoff),
+            or(
+              inArray(imFeedbackTargets.cardState, ["none", "sent"]),
+              and(eq(imFeedbackTargets.state, "stale"), inArray(imFeedbackTargets.cardState, ["pending", "blocked"])),
+            ),
+            isNull(imFeedbackTargets.claimId),
+            sql`not exists (select 1 from im_feedback_actions a where a.feedback_id = ${imFeedbackTargets.id} and a.state in ('confirmed','submitting','checking'))`,
+          ),
+        )
+        .limit(100)
+        .for("update", { skipLocked: true });
+      if (!rows.length) return;
+      const ids = rows.map((r) => r.id);
+      await tx.delete(imFeedbackActions).where(inArray(imFeedbackActions.feedbackId, ids));
+      await tx.delete(imFeedbackTargets).where(inArray(imFeedbackTargets.id, ids));
+    });
+  }
+}
+
+export async function acknowledgeFeedbackActivity(
+  database: DatabaseClient,
+  frame: import("@opentag/shared").TurnActivityRequest,
+  context: import("../../runtime/runtime-session.js").RuntimeBusinessContext,
+): Promise<import("@opentag/shared").TurnActivityResult> {
+  const rows = await database.execute(
+    sql`select d.id from im_message_deliveries d inner join sessions s on s.id=d.session_id inner join session_placements p on p.session_id=s.id inner join im_bindings b on b.id=s.im_binding_id where d.id=${frame.deliveryId}::uuid and d.session_id=${frame.sessionId}::uuid and d.turn_id=${frame.turnId} and d.report_owner_instance_id=${context.instanceId}::uuid and d.placement_generation=${frame.placementGeneration} and p.generation=${frame.placementGeneration} and p.computer_id=${context.computerId}::uuid and b.agent_id=${frame.agentId}::uuid and d.state='accepted' and d.reported_at is null and s.ended_at is null limit 1`,
+  );
+  return {
+    type: "turn:activity:result",
+    requestId: frame.requestId,
+    turnId: frame.turnId,
+    sequence: frame.sequence,
+    status: rows.length && !context.signal.aborted ? "recorded" : "stale_generation",
+  };
+}
+
+function isRecoveredChild(
+  target: FeedbackTarget,
+  reason: string | null,
+  state: string,
+  report: TurnReportRequest,
+): boolean {
+  return (
+    target.deliveryId !== report.deliveryId &&
+    report.outcome !== "completed" &&
+    reason !== "batch_initial" &&
+    state === "pending"
+  );
+}
+function terminalFeedbackUpdate(target: FeedbackTarget, report: TurnReportRequest, now: Date) {
+  const failed = report.outcome !== "completed" && report.outcome !== "cancelled";
+  const state: FeedbackTarget["state"] = failed
+    ? report.errorReason === "workspace_failed"
+      ? "workspace_blocked"
+      : "failed"
+    : "completed";
+  return {
+    state,
+    desiredReaction: failed ? ("warning" as const) : ("none" as const),
+    errorCode: failed ? report.errorReason : null,
+    effects: report.executionEffects,
+    reportHash: report.resultHash,
+    actionsExpireAt: new Date(now.getTime() + FEEDBACK_ACTION_TTL_MS),
+    cardState: failed && target.deliveryId === report.deliveryId ? ("pending" as const) : target.cardState,
+    revision: sql`${imFeedbackTargets.revision} + 1`,
+    nextAttemptAt: now,
+    updatedAt: now,
+    settledAt: failed && target.deliveryId === report.deliveryId ? null : now,
+  };
+}
+function reactionSettlement(target: FeedbackTarget, input: FeedbackSettlement) {
+  return input.reaction !== undefined ? { appliedReaction: input.reaction, appliedRevision: target.revision } : {};
+}
+function cardSettlement(input: FeedbackSettlement) {
+  return {
+    ...(input.cardMessageId
+      ? { cardMessageId: sql`coalesce(${imFeedbackTargets.cardMessageId},${input.cardMessageId})` }
+      : {}),
+    ...(input.cardState ? { cardState: input.cardState } : {}),
+    ...(input.cardRevision !== undefined ? { cardRevision: input.cardRevision } : {}),
+    ...(input.reconciliationCursor !== undefined ? { reconciliationCursor: input.reconciliationCursor } : {}),
+  };
+}
+function scheduleSettlement(target: FeedbackTarget, input: FeedbackSettlement, now: Date) {
+  const periodic =
+    target.state === "queued"
+      ? 15_000
+      : target.state === "working" || target.state === "workspace_blocked"
+        ? 60_000
+        : undefined;
+  const next =
+    input.delayMs !== undefined
+      ? new Date(now.getTime() + input.delayMs)
+      : periodic
+        ? new Date(now.getTime() + periodic)
+        : DORMANT;
+  return {
+    lastErrorCode: input.errorCode ?? null,
+    attemptCount: input.errorCode ? sql`${imFeedbackTargets.attemptCount} + 1` : 0,
+    nextAttemptAt: sql`case when ${imFeedbackTargets.revision} <> ${target.revision} then ${now.toISOString()}::timestamptz else ${(input.stale ? DORMANT : next).toISOString()}::timestamptz end`,
+  };
+}
+
+function rejectedFeedbackUpdate(delivery: typeof imMessageDeliveries.$inferSelect, now: Date) {
+  const silent = ["cancelled", "duplicate_pending"].includes(delivery.reason ?? "");
+  return {
+    state: silent ? ("completed" as const) : ("failed" as const),
+    desiredReaction: silent ? ("none" as const) : ("warning" as const),
+    effects: delivery.dispatchRequestId ? ("may_have_occurred" as const) : ("not_started" as const),
+    errorCode: silent ? null : delivery.reason === "ttl" ? "input_expired" : "input_rejected",
+    cardState: silent ? ("none" as const) : ("pending" as const),
+    settledAt: silent ? now : null,
+    revision: sql`${imFeedbackTargets.revision} + 1`,
+    updatedAt: now,
+  };
+}

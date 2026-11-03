@@ -477,7 +477,7 @@ class ReliableFeishuChannel implements FeishuChannel {
   }
 }
 
-function createFeishuHttpInstance(signal?: AbortSignal): HttpInstance {
+export function createFeishuHttpInstance(signal?: AbortSignal): HttpInstance {
   const instance = defaultHttpInstance as unknown as HttpInstance;
   const withSignal = <D>(options: HttpRequestOptions<D> | undefined): HttpRequestOptions<D> =>
     ({ ...(options ?? {}), ...(signal ? { signal } : {}) }) as HttpRequestOptions<D>;

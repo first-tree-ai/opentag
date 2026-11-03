@@ -19,6 +19,7 @@ import {
   sessions,
 } from "../db/schema/index.js";
 import type { ServiceLogger } from "../observability/service-logger.js";
+import { finishImFeedback, startImFeedback } from "../services/im/im-feedback-store.js";
 import { finishSlackWorkingTurn } from "../services/im/slack-working-store.js";
 import { SessionService } from "../services/sessions/session-service.js";
 import { releaseImBatch, reserveImBatch, settleImBatch } from "./im-delivery-batch.js";
@@ -177,8 +178,11 @@ export async function writeTerminalReport(
     .returning({ id: imMessageDeliveries.id });
   if (!written) return undefined;
   await finishSlackWorkingTurn(transaction, report.deliveryId, now);
-  if (report.outcome === "completed") return [];
-  const recovered = await requeueSteeredDeliveries(transaction, report.deliveryId, now, sessions);
+  const recovered =
+    report.outcome === "completed"
+      ? { terminalizedIds: [] }
+      : await requeueSteeredDeliveries(transaction, report.deliveryId, now, sessions);
+  await finishImFeedback(transaction, report, now);
   return recovered.terminalizedIds;
 }
 
@@ -458,7 +462,10 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       }
       if (!(await this.#steerTargetMatches(transaction, scope, request, context, true))) return "conflict";
       const written = await this.#writeSteered(transaction, request.deliveryId, semanticHash, request.rootDeliveryId);
-      if (written) await settleImBatch(transaction, request, request.rootDeliveryId, this.#now());
+      if (written) {
+        await settleImBatch(transaction, request, request.rootDeliveryId, this.#now());
+        await startImFeedback(transaction, request.rootDeliveryId, this.#now());
+      }
       return written ? "steered" : "conflict";
     });
     if (status === "steered" || status === "already_steered") this.#onDeliverySettled?.(request.rootDeliveryId);
@@ -482,7 +489,10 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       if (!steerTransitionMatches(scope.delivery, request.requestId, inputHash)) return "conflict";
       if (!(await this.#absorbedTargetMatches(transaction, scope, rootDeliveryId, turnId, context))) return "conflict";
       const written = await this.#writeSteered(transaction, request.deliveryId, semanticHash, rootDeliveryId);
-      if (written) await settleImBatch(transaction, request, rootDeliveryId, this.#now());
+      if (written) {
+        await settleImBatch(transaction, request, rootDeliveryId, this.#now());
+        await startImFeedback(transaction, rootDeliveryId, this.#now());
+      }
       return written ? "steered" : "conflict";
     });
   }
@@ -580,7 +590,10 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
           ),
         )
         .returning({ id: imMessageDeliveries.id });
-      if (accepted) await settleImBatch(transaction, request, request.deliveryId, this.#now(), true);
+      if (accepted) {
+        await settleImBatch(transaction, request, request.deliveryId, this.#now(), true);
+        await startImFeedback(transaction, request.deliveryId, this.#now());
+      }
       return accepted ? "accepted" : "conflict";
     });
   }

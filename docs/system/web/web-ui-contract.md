@@ -130,6 +130,13 @@ Why: the Agent type (Local or Cloud) is fixed once chosen, because switching it 
 or Cloud preparation already made for it. A single exit in a fixed place, the top-right Back to Agents, replaces a
 step-by-step Back and a separate Set up later that each led somewhere different. The Agent list is where every
 unfinished setup can be resumed.
+
+When the Agent's runtime is installed but signed out, the setup page's runtime row offers **Sign in** (**去登录**). It
+expands the terminal steps for that computer: open a terminal on it, run `claude` and enter `/login` for Claude Code,
+or run `codex login` for Codex. The page's existing Check again follows. The commands are short enough to type, so they show as inline code with no copy control. The Agent list row and the
+Agent page's runtime row name the same action with the same single link, which opens that setup step with the steps
+already shown. Why: sign-in stays on the user's computer. openTag only checks it and never stores Claude or Codex
+credentials, so the next step is the terminal on that computer, not a Web sign-in.
 The completion screen stays visible until the user navigates away. Its primary action, **View agent**
 (**查看 Agent** in Chinese), opens that Agent's overview. Global navigation provides the return to the Agent list;
 the completion screen does not repeat that destination as a secondary action or redirect automatically.
@@ -167,9 +174,12 @@ alone adds a quiet **Refreshing status** note under its held status; there is no
 status or a page-wide error reads as an outage when only one Agent's check is late, so the list keeps what it last
 knew and flags only the row whose answer is overdue. The Agent home's status card follows the same rule, so
 the list and the home never disagree about one Agent, and it shows the same running-Task or **Waiting** line as the
-list row, as its own **Work** row ahead of Computer and Messaging so it never reads as a fact about either. Neither caches beyond that: the Server's evidence windows (60 seconds for Provider readiness, 120 for
-Provider CLI credentials, 300 for CLI artifacts) already decide when an answer stops counting, and a longer cache
-would hide a real recovery or failure. The Server already bounds what it holds: a local Computer without a
+list row, as its own **Work** row ahead of Computer and Messaging so it never reads as a fact about either. The card
+holds its dependency states and its messaging answer separately, so an unreadable messaging read never hides a runtime
+or Computer problem the same read confirmed. Neither
+caches beyond that: the Server's evidence windows (60 seconds for Provider readiness, 120 for Provider CLI
+credentials, 300 for CLI artifacts) already decide when an answer stops counting, and a longer cache would hide a real
+recovery or failure. The Server already bounds what it holds: a local Computer without a
 heartbeat for 90 seconds reads as offline, and runtime and messaging observations expire on their own TTLs, so held
 list statuses converge on the Server's next settled answer.
 

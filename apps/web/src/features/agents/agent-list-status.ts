@@ -80,50 +80,66 @@ export function observeAgentListStatus(
   };
 }
 
-/** The detail view's own transient evidence: the same moments of not knowing the list holds through. */
-export function isTransientAgentDetail(agent: Pick<AgentDetailView, "availability" | "messaging">): boolean {
-  const { availability } = agent;
+/** A detail read whose dependency states (Computer, runtime, delivery) are a moment of not knowing. */
+function isTransientDetailAvailability(availability: AgentDetailView["availability"]): boolean {
   return (
-    agent.messaging.kind === "unconfirmed" ||
     availability.state === "unconfirmed" ||
     availability.reason === "handoff_checking" ||
     (availability.reason === "runtime_unavailable" && availability.dependencies.runtime.status === "checking")
   );
 }
 
-/** What the Agent home remembers about its Agent between reads. */
-export type AgentDetailStatusMemory = { settled?: AgentDetailView; transientSince?: number };
+/** The detail view's own transient evidence: the same moments of not knowing the list holds through. */
+export function isTransientAgentDetail(agent: Pick<AgentDetailView, "availability" | "messaging">): boolean {
+  return agent.messaging.kind === "unconfirmed" || isTransientDetailAvailability(agent.availability);
+}
+
+type SettledDependencies = Pick<AgentDetailView, "availability" | "computerConnectionStatus">;
+
+/** What the Agent home remembers about its Agent between reads, per part of the status card. */
+export type AgentDetailStatusMemory = {
+  agentId?: string;
+  dependencies?: SettledDependencies;
+  messaging?: AgentDetailView["messaging"];
+  transientSince?: number;
+};
 
 /**
  * Records one read of an Agent for its home status card and answers what the card shows, by the
- * list's rule: transient evidence keeps the last settled dependency states, a confirmed problem
- * replaces them at once, and a card held for a full refresh interval says it is refreshing. With
- * nothing settled yet the card shows the current read as it is.
+ * list's rule: transient evidence keeps the last settled answer, a confirmed problem replaces it at
+ * once, and a card held for a full refresh interval says it is refreshing. The dependency states and
+ * the messaging read are held separately, so an unreadable messaging answer never hides a runtime or
+ * Computer problem the same read confirmed. With nothing settled yet the card shows the current read.
  */
 export function observeAgentDetailStatus(
   memory: AgentDetailStatusMemory,
   agent: AgentDetailView,
   now: number,
 ): { shown: AgentDetailView; refreshing: boolean } {
-  if (memory.settled && memory.settled.id !== agent.id) {
-    memory.settled = undefined;
+  if (memory.agentId !== agent.id) {
+    memory.agentId = agent.id;
+    memory.dependencies = undefined;
+    memory.messaging = undefined;
     memory.transientSince = undefined;
   }
-  if (!isTransientAgentDetail(agent)) {
-    memory.settled = agent;
-    memory.transientSince = undefined;
+  const dependenciesTransient = isTransientDetailAvailability(agent.availability);
+  const messagingTransient = agent.messaging.kind === "unconfirmed";
+  if (!dependenciesTransient) {
+    memory.dependencies = {
+      availability: agent.availability,
+      computerConnectionStatus: agent.computerConnectionStatus,
+    };
+  }
+  if (!messagingTransient) memory.messaging = agent.messaging;
+  const heldDependencies = dependenciesTransient ? memory.dependencies : undefined;
+  const heldMessaging = messagingTransient ? memory.messaging : undefined;
+  if (!heldDependencies && !heldMessaging) {
+    memory.transientSince = dependenciesTransient || messagingTransient ? (memory.transientSince ?? now) : undefined;
     return { shown: agent, refreshing: false };
   }
   memory.transientSince ??= now;
-  const settled = memory.settled;
-  if (!settled) return { shown: agent, refreshing: false };
   return {
-    shown: {
-      ...agent,
-      availability: settled.availability,
-      messaging: settled.messaging,
-      computerConnectionStatus: settled.computerConnectionStatus,
-    },
+    shown: { ...agent, ...heldDependencies, ...(heldMessaging ? { messaging: heldMessaging } : {}) },
     refreshing: now - memory.transientSince >= AGENT_STATUS_REFRESHING_AFTER_MS,
   };
 }

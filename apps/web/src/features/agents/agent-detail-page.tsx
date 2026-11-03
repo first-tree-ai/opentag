@@ -77,9 +77,11 @@ function AgentRecheckOnEntry({ agent }: { agent: AgentDetailView }) {
     browserApi
       .refreshAgentSetup(agent.id)
       .then(() =>
+        // Runtime readiness is read from the Computer and Provider CLI readiness from the Agent's
+        // handoff; re-reading both lets the page show the probe at once instead of on the next beat.
         Promise.all([
           queryClient.invalidateQueries({ queryKey: queryKeys.computers() }),
-          queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.agents.all(agent.id) }),
         ]),
       )
       .catch((error: unknown) => {

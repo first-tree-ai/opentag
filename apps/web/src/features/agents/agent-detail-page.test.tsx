@@ -4,6 +4,7 @@
  */
 
 import type { AccountComputerSummary, AgentDetail, CloudAvailability, MeResponse } from "@opentag/shared/browser";
+import { QueryClient } from "@tanstack/react-query";
 import { screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../../__tests__/support/router.js";
@@ -177,9 +178,14 @@ describe("Agent home for a Local Agent", () => {
 
   it("asks the online Computer to check again once on entry when the runtime is not ready", async () => {
     const refresh = stubLocalAgent("install");
+    const invalidate = vi.spyOn(QueryClient.prototype, "invalidateQueries");
     const first = await renderAgentHome();
     await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
     expect(refresh).toHaveBeenCalledWith(AGENT_ID);
+    // The Computer and every Agent-scoped read, the handoff with its Provider CLI readiness
+    // included, are read again right away.
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ["agents", AGENT_ID] }));
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["computers"] });
     first.unmount();
 
     // A second entry inside the one-minute window does not ask again.

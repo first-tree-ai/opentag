@@ -10,6 +10,7 @@ import {
   accountComputerLink,
   agentSettingsSectionLink,
   agentSetupLink,
+  agentSetupSignInLink,
 } from "./agent-routes.js";
 import type { AgentSettingsSection } from "./agent-settings/sections.js";
 
@@ -373,8 +374,19 @@ export type AgentDependencyStatus = {
   tone: StatusTone;
 };
 
-function continueSetupAction(agentId: string): NonNullable<AgentDependencyStatus["action"]> {
-  return { label: m.agents_continue_setup(), link: agentSetupLink(agentId) };
+/**
+ * The one setup link for an Agent. A runtime that only needs signing in gets "Sign in", which opens
+ * the same setup step with its sign-in steps shown; every other setup reason continues setup.
+ */
+function continueSetupAction(agent: {
+  availability: AgentAvailability;
+  id: string;
+}): NonNullable<AgentDependencyStatus["action"]> {
+  const runtime = agent.availability.dependencies.runtime;
+  if (agent.availability.reason === "runtime_unavailable" && runtime.status === "sign-in") {
+    return { label: m.agents_runtime_sign_in_action(), link: agentSetupSignInLink(agent.id) };
+  }
+  return { label: m.agents_continue_setup(), link: agentSetupLink(agent.id) };
 }
 
 /**
@@ -408,7 +420,7 @@ export function agentSetupContinuation(agent: {
   availability: AgentAvailability;
   id: string;
 }): AgentDependencyStatus["action"] {
-  return SETUP_REASONS.has(agent.availability.reason) ? continueSetupAction(agent.id) : undefined;
+  return SETUP_REASONS.has(agent.availability.reason) ? continueSetupAction(agent) : undefined;
 }
 
 /**
@@ -458,7 +470,7 @@ function setupOrMaintenanceAction(
   setupReason: NonNullable<AgentAvailability["reason"]>,
   maintenance?: NonNullable<AgentDependencyStatus["action"]>,
 ): AgentDependencyStatus["action"] {
-  return agent.availability.reason === setupReason ? continueSetupAction(agent.id) : maintenance;
+  return agent.availability.reason === setupReason ? continueSetupAction(agent) : maintenance;
 }
 
 export function agentComputerStatus(agent: AgentDetailView): AgentDependencyStatus {

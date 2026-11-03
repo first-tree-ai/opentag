@@ -83,4 +83,15 @@ describe("observeAgentDetailStatus", () => {
     const checking = withRuntime("checking");
     expect(observeAgentDetailStatus(fresh, checking, 0)).toEqual({ shown: checking, refreshing: false });
   });
+
+  it("never lets an unreadable messaging answer hide a runtime problem the same read confirmed", () => {
+    const memory: AgentDetailStatusMemory = {};
+    observeAgentDetailStatus(memory, ready, 0);
+    const mixed: AgentDetailView = { ...withRuntime("install"), messaging: { kind: "unconfirmed" } };
+    const { shown } = observeAgentDetailStatus(memory, mixed, 5);
+    expect(shown.availability.reason).toBe("runtime_unavailable");
+    expect(shown.availability.dependencies.runtime.status).toBe("install");
+    // Only the messaging part, which this read could not answer, is held.
+    expect(shown.messaging).toBe(ready.messaging);
+  });
 });

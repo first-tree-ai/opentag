@@ -20,6 +20,7 @@ import {
   sessionMessages,
   sessions,
 } from "../../../db/schema/index.js";
+import { resolveSessionTaskAnchor } from "../../../runtime-credentials/index.js";
 import { TaskQueryError, TaskService } from "../index.js";
 import { type LockedDeliveryRow, withdrawalRefusal } from "../task-service.js";
 
@@ -1691,7 +1692,7 @@ describe("TaskService bounded detail at topic scale", () => {
     expect(legacy.collaborationMessages).toHaveLength(count);
   }, 180_000);
 
-  it("resolves detail, get, listTurns, listReplies, listInternalSessions, and listCollaborationMessages by sessionId for DM, thread, and group channel Sessions", async () => {
+  it("resolves detail, get, listTurns, listReplies, listInternalSessions, and listCollaborationMessages by sessionId for 1:1 Sessions and keeps group channel footer anchors stable across multiple top-level requests", async () => {
     const { binding, bootstrap, service } = await fixture();
 
     // 1. DM Session
@@ -1725,6 +1726,7 @@ describe("TaskService bounded detail at topic scale", () => {
       occurredAt: minutes(2),
     });
 
+    expect(await resolveSessionTaskAnchor(unitDatabase.database, dmSession.id)).toBe(dmSession.id);
     expect((await service.detail(bootstrap.userId, dmSession.id)).task.id).toBe(dmMsg.id);
     expect((await service.get(bootstrap.userId, dmSession.id, { limit: 10 })).task.id).toBe(dmMsg.id);
     expect((await service.listTurns(bootstrap.userId, dmSession.id, {})).items.map((t) => t.message.id)).toEqual([
@@ -1777,6 +1779,7 @@ describe("TaskService bounded detail at topic scale", () => {
       occurredAt: minutes(13),
     });
 
+    expect(await resolveSessionTaskAnchor(unitDatabase.database, thread.id)).toBe(thread.id);
     expect((await service.detail(bootstrap.userId, thread.id)).task.id).toBe(root.id);
     expect((await service.get(bootstrap.userId, thread.id, { limit: 10 })).task.id).toBe(root.id);
     expect((await service.listTurns(bootstrap.userId, thread.id, {})).items.map((t) => t.message.id)).toEqual([
@@ -1793,53 +1796,68 @@ describe("TaskService bounded detail at topic scale", () => {
       "Thread answer",
     );
 
-    // 3. Group channel Session (resolves to the latest direct execution's topic)
-    const groupAlone = await createMessage(binding.id, {
+    // 3. Group channel Session with two top-level requests A (minute 20) and B (minute 30):
+    // send-time anchor resolution pins each reply's footer link to its own stable Task even after a
+    // newer top-level request runs in the same group channel Session.
+    const requestA = await createMessage(binding.id, {
       channelId: GROUP,
-      externalMessageId: "om_group_alone",
-      text: "Top-level group request",
+      externalMessageId: "om_group_req_a",
+      text: "Top-level group request A",
       occurredAt: minutes(20),
     });
-    await createDelivery(channel.id, groupAlone.id, { at: minutes(21), reported: true });
+    await createDelivery(channel.id, requestA.id, { at: minutes(21), reported: true });
+    const anchorFromSendA = await resolveSessionTaskAnchor(unitDatabase.database, channel.id);
+    expect(anchorFromSendA).toBe(requestA.id);
     await unitDatabase.database.insert(imMessages).values({
       imBindingId: binding.id,
       providerEventId: null,
       channelId: GROUP,
-      externalMessageId: "om_group_alone_reply",
+      externalMessageId: "om_group_req_a_reply",
       providerRevisionKey: "outbound:created:v1",
       operation: "created",
       direction: "outbound",
-      threadKey: "om_group_alone",
+      threadKey: "om_group_req_a",
       authorKind: "bot",
       authorExternalId: "ou_bot",
       content: {
         version: 1,
-        fallbackText: "Group channel answer",
-        blocks: [{ type: "text", text: "Group channel answer" }],
+        fallbackText: "Answer for A",
+        blocks: [{ type: "text", text: "Answer for A" }],
         truncated: false,
         outbound: { messageType: "text", contentAvailable: true, timeSource: "provider" },
       },
-      providerContext: { provider: "feishu", rootId: "om_group_alone" },
+      providerContext: { provider: "feishu", rootId: "om_group_req_a" },
       occurredAt: minutes(22),
     });
 
-    expect((await service.detail(bootstrap.userId, channel.id)).task.id).toBe(groupAlone.id);
-    expect((await service.get(bootstrap.userId, channel.id, { limit: 10 })).task.id).toBe(groupAlone.id);
-    expect((await service.listTurns(bootstrap.userId, channel.id, {})).items.map((t) => t.message.id)).toEqual([
-      groupAlone.id,
-    ]);
-    expect((await service.listReplies(bootstrap.userId, channel.id, { limit: 10 })).items[0]?.fallbackText).toBe(
-      "Group channel answer",
-    );
-
-    // Group channel Session id is read-only: updateTitle and cancel reject it with 404.
-    const queuedGroup = await createMessage(binding.id, {
+    const requestB = await createMessage(binding.id, {
       channelId: GROUP,
-      externalMessageId: "om_group_queued",
-      text: "Queued group request",
-      occurredAt: minutes(25),
+      externalMessageId: "om_group_req_b",
+      text: "Top-level group request B",
+      occurredAt: minutes(30),
     });
-    const queuedDelivery = await createDelivery(channel.id, queuedGroup.id, { state: "pending" });
+    await createDelivery(channel.id, requestB.id, { at: minutes(31), reported: true });
+    const anchorFromSendB = await resolveSessionTaskAnchor(unitDatabase.database, channel.id);
+    expect(anchorFromSendB).toBe(requestB.id);
+
+    // Clicking send A's footer link after request B has run still opens Task A!
+    expect((await service.detail(bootstrap.userId, anchorFromSendA ?? "")).task.id).toBe(requestA.id);
+    expect((await service.get(bootstrap.userId, anchorFromSendA ?? "", { limit: 10 })).task.id).toBe(requestA.id);
+    expect(
+      (await service.listTurns(bootstrap.userId, anchorFromSendA ?? "", {})).items.map((t) => t.message.id),
+    ).toEqual([requestA.id]);
+    expect(
+      (await service.listReplies(bootstrap.userId, anchorFromSendA ?? "", { limit: 10 })).items[0]?.fallbackText,
+    ).toBe("Answer for A");
+
+    // Clicking send B's footer link opens Task B.
+    expect((await service.detail(bootstrap.userId, anchorFromSendB ?? "")).task.id).toBe(requestB.id);
+
+    // Raw group channel Session id is not a 1:1 Task identifier.
+    await expect(service.detail(bootstrap.userId, channel.id)).rejects.toMatchObject({
+      code: "RESOURCE_NOT_FOUND",
+      statusCode: 404,
+    });
     await expect(service.updateTitle(bootstrap.userId, channel.id, "Should not rename")).rejects.toMatchObject({
       code: "RESOURCE_NOT_FOUND",
       statusCode: 404,
@@ -1848,6 +1866,5 @@ describe("TaskService bounded detail at topic scale", () => {
       code: "RESOURCE_NOT_FOUND",
       statusCode: 404,
     });
-    expect(await deliveryRow(queuedDelivery.id)).toMatchObject({ state: "pending", reason: null });
   });
 });

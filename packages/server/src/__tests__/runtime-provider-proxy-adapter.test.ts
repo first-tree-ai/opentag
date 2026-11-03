@@ -67,6 +67,7 @@ function adapter(
     fetchImpl?: typeof fetch;
     urlHandles?: RuntimeUrlHandleStore;
     publicOrigin?: string;
+    resolveTaskAnchor?: (sessionId: string, signal?: AbortSignal) => Promise<string | undefined>;
     outboundCapture?: OutboundWriteCapture;
   } = {},
 ) {
@@ -77,6 +78,7 @@ function adapter(
     registry: new ProviderOperationRegistry(provider === "slack" ? SLACK_OPERATIONS : FEISHU_OPERATIONS),
     urlHandles,
     ...(options.publicOrigin ? { publicOrigin: options.publicOrigin } : {}),
+    ...(options.resolveTaskAnchor ? { resolveTaskAnchor: options.resolveTaskAnchor } : {}),
     ...(options.outboundCapture ? { outboundCapture: options.outboundCapture } : {}),
     ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
   });
@@ -1047,6 +1049,76 @@ describe("ImProviderProxyAdapter Session ID footer", () => {
         { tag: "div", text: { tag: "lark_md", content: "Card v1 body" } },
         { tag: "note", elements: [{ tag: "lark_md", content: `[Session ${SHORT_ID}](${SESSION_URL})` }] },
       ],
+    });
+  });
+
+  it("uses resolveTaskAnchor for the task URL while keeping Session <shortId> as the visible label, and annotates message edits (Slack chat.update and Feishu im.messages.update)", async () => {
+    const ANCHOR_A = "aaaa0000-1111-2222-3333-444444444444";
+    const ANCHOR_B = "bbbb0000-1111-2222-3333-444444444444";
+    let currentAnchor = ANCHOR_A;
+    const slackCalls = captureFetch({ ok: true, ts: "1710000000.000100" });
+    const slackAdapter = adapter({
+      fetchImpl: slackCalls.fetchImpl,
+      publicOrigin: PUBLIC_ORIGIN,
+      resolveTaskAnchor: async () => currentAnchor,
+    });
+
+    // Send A on group channel Session resolves URL to ANCHOR_A
+    await slackAdapter.instance.handle(
+      request({
+        sessionId: SESSION_ID,
+        path: "/api/chat.postMessage",
+        body: jsonBody({ channel: "C1", text: "Reply to request A" }),
+      }),
+      authorization({ sessionId: SESSION_ID, agentId: AGENT_ID }),
+    );
+    const urlA = `https://opentag.example.com/agents/${AGENT_ID}/tasks/${ANCHOR_A}`;
+    expect(JSON.parse(slackCalls.calls[0]?.body ?? "{}").text).toBe(
+      `Reply to request A\n\n_<${urlA}|Session ${SHORT_ID}>_`,
+    );
+
+    // Edit via Slack chat.update also appends the footer idempotently
+    await slackAdapter.instance.handle(
+      request({
+        sessionId: SESSION_ID,
+        path: "/api/chat.update",
+        body: jsonBody({ channel: "C1", ts: "1710000000.000100", text: "Edited reply A" }),
+      }),
+      authorization({ sessionId: SESSION_ID, agentId: AGENT_ID }),
+    );
+    expect(JSON.parse(slackCalls.calls[1]?.body ?? "{}").text).toBe(
+      `Edited reply A\n\n_<${urlA}|Session ${SHORT_ID}>_`,
+    );
+
+    // Second top-level request B on the same group channel Session resolves URL to ANCHOR_B
+    currentAnchor = ANCHOR_B;
+    const urlB = `https://opentag.example.com/agents/${AGENT_ID}/tasks/${ANCHOR_B}`;
+    const feishuCalls = captureFetch({ code: 0, data: { message_id: "om_edit" } });
+    const feishuAdapter = adapter({
+      provider: "feishu",
+      fetchImpl: feishuCalls.fetchImpl,
+      publicOrigin: PUBLIC_ORIGIN,
+      resolveTaskAnchor: async () => currentAnchor,
+    });
+    const feishuAuth = authorization({
+      provider: "feishu",
+      sessionId: SESSION_ID,
+      agentId: AGENT_ID,
+      cli: { provider: "feishu", appId: "cli_a", teamBrand: "feishu" },
+      resolveMaterial: async () => ({ kind: "bearer", token: "t-token", origin: "https://open.feishu.cn" }),
+    });
+    await feishuAdapter.instance.handle(
+      request({
+        provider: "feishu",
+        sessionId: SESSION_ID,
+        method: "PUT",
+        path: "/open-apis/im/v1/messages/om_edit",
+        body: jsonBody({ msg_type: "text", content: JSON.stringify({ text: "Updated Feishu reply B" }) }),
+      }),
+      feishuAuth,
+    );
+    expect(JSON.parse(JSON.parse(feishuCalls.calls[0]?.body ?? "{}").content)).toEqual({
+      text: `Updated Feishu reply B\n\nSession ${SHORT_ID}: ${urlB}`,
     });
   });
 });

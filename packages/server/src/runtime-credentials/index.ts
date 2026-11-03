@@ -1,4 +1,5 @@
 import type { RuntimeCredentialProvider } from "@opentag/shared";
+import { sql } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
 import type { ServiceLogger } from "../observability/service-logger.js";
 import type { ConnectionRegistry, RuntimeControlIdentity } from "../runtime/connection-registry.js";
@@ -385,6 +386,41 @@ function registryConnectionFence(registry: ConnectionRegistry): RuntimeConnectio
   };
 }
 
+/**
+ * Resolves a Session ID to a stable Task anchor ID at send time: for a group channel Session
+ * (`s.kind = 'channel'` and `s.conversation_kind <> 'dm'`), returns the message ID of the latest
+ * direct delivery so each top-level reply links to its own stable Task; otherwise returns the
+ * Session ID itself.
+ */
+export async function resolveSessionTaskAnchor(
+  database: DatabaseClient,
+  sessionId: string,
+): Promise<string | undefined> {
+  try {
+    const rows = await database.execute<{ anchorId: string | null } & Record<string, unknown>>(sql`
+      select
+        case
+          when s.kind = 'channel' and s.conversation_kind <> 'dm' then (
+            select d.message_id::text
+            from im_message_deliveries d
+            inner join im_messages m on m.id = d.message_id
+            where d.session_id = s.id
+              and d.attention = 'direct'
+            order by (d.accepted_at is not null) desc, d.accepted_at desc, m.occurred_at desc, d.id desc
+            limit 1
+          )
+          else s.id::text
+        end as "anchorId"
+      from sessions s
+      where s.id = ${sessionId}::uuid
+      limit 1
+    `);
+    return [...rows][0]?.anchorId ?? sessionId;
+  } catch {
+    return sessionId;
+  }
+}
+
 /** Parent-provided adapters win; the Slack/Feishu IM adapters are constructed over their tables. */
 function createImAdapters(
   options: RuntimeCredentialServicesOptions,
@@ -395,6 +431,7 @@ function createImAdapters(
     slackWorkingStatus: options.slackWorkingStatus,
     ...(options.logger ? { logger: options.logger } : {}),
   });
+  const resolveTaskAnchor = (sessionId: string) => resolveSessionTaskAnchor(options.database, sessionId);
   const defaults = [
     ["slack", SLACK_OPERATIONS],
     ["feishu", FEISHU_OPERATIONS],
@@ -408,6 +445,7 @@ function createImAdapters(
         registry: new ProviderOperationRegistry(operations),
         urlHandles,
         outboundCapture,
+        resolveTaskAnchor,
         ...(options.publicOrigin ? { publicOrigin: options.publicOrigin } : {}),
         ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
         ...(options.logger ? { logger: options.logger } : {}),

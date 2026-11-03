@@ -106,6 +106,11 @@ export interface ImProviderProxyAdapterOptions {
   capabilityTtlSeconds?: number;
   /** Public web origin used to append a clickable Session ID footer to outbound IM messages. */
   publicOrigin?: string;
+  /**
+   * Resolves a Session ID to a stable Task anchor ID at send time (e.g., the latest direct
+   * message ID for a group channel Session). Defaults to the Session ID itself.
+   */
+  resolveTaskAnchor?: (sessionId: string, signal?: AbortSignal) => Promise<string | undefined>;
   /** Optional confirmed-send capture (IM adapters in production); absent keeps the proxy read-only. */
   outboundCapture?: OutboundWriteCapture;
   /** Test/deployment override for the bounded capture-port wait; defaults to the proxy budget. */
@@ -172,7 +177,13 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
       if (request.signal.aborted) throw new RuntimeProxyError("cancelled");
       throw error;
     }
-    const annotated = this.#annotateOutboundBodyWithSessionFooter(operation, prepared, headers, request, authorization);
+    const annotated = await this.#annotateOutboundBodyWithSessionFooter(
+      operation,
+      prepared,
+      headers,
+      request,
+      authorization,
+    );
     try {
       const response = await this.#fetchUpstream(operation, annotated.bytes, headers, request, material);
       return operation.response === "stream"
@@ -282,20 +293,29 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     }
   }
 
-  #annotateOutboundBodyWithSessionFooter(
+  async #annotateOutboundBodyWithSessionFooter(
     operation: ProviderOperation,
     prepared: { bytes: Uint8Array; parsed: unknown },
     headers: Record<string, string>,
     request: ProviderProxyRequest,
     authorization: RuntimeProxyAuthorization,
-  ): AnnotatedOutboundBody {
+  ): Promise<AnnotatedOutboundBody> {
+    if (!isAnnotatableMessageOperation(operation)) return { bytes: prepared.bytes };
+    const origin = this.#options.publicOrigin?.trim().replace(/\/+$/, "");
+    if (!origin || authorization.purpose === "validation" || !request.sessionId || !authorization.agentId) {
+      return { bytes: prepared.bytes };
+    }
+    const taskAnchorId =
+      (await this.#options.resolveTaskAnchor?.(request.sessionId, request.signal).catch(() => undefined)) ??
+      request.sessionId;
     return annotateOutboundBodyWithSessionFooter({
       operation,
       prepared,
       headers,
       request,
       authorization,
-      publicOrigin: this.#options.publicOrigin,
+      publicOrigin: origin,
+      taskAnchorId,
     });
   }
 
@@ -506,6 +526,21 @@ interface AnnotatedOutboundBody {
   injectedSessionFooter?: { sessionUrl: string; shortId: string };
 }
 
+function isAnnotatableMessageOperation(operation: ProviderOperation): boolean {
+  if (operation.provider === "slack") {
+    return operation.operationId === "chat.postMessage" || operation.operationId === "chat.update";
+  }
+  if (operation.provider === "feishu") {
+    return (
+      operation.operationId === "feishu.im.messages.create" ||
+      operation.operationId === "feishu.im.messages.reply" ||
+      operation.operationId === "feishu.im.messages.update" ||
+      operation.operationId === "feishu.im.messages.patch"
+    );
+  }
+  return false;
+}
+
 function annotateOutboundBodyWithSessionFooter(input: {
   operation: ProviderOperation;
   prepared: { bytes: Uint8Array; parsed: unknown };
@@ -513,17 +548,15 @@ function annotateOutboundBodyWithSessionFooter(input: {
   request: ProviderProxyRequest;
   authorization: RuntimeProxyAuthorization;
   publicOrigin: string | undefined;
+  taskAnchorId?: string;
 }): AnnotatedOutboundBody {
-  const { operation, prepared, headers, request, authorization, publicOrigin } = input;
-  const footer = buildSessionFooter(publicOrigin, authorization, request);
+  const { operation, prepared, headers, request, authorization, publicOrigin, taskAnchorId } = input;
+  const footer = buildSessionFooter(publicOrigin, authorization, request, taskAnchorId);
   if (!footer) return { bytes: prepared.bytes };
   let annotated: Uint8Array | undefined;
-  if (operation.provider === "slack" && operation.operationId === "chat.postMessage") {
+  if (operation.provider === "slack" && isAnnotatableMessageOperation(operation)) {
     annotated = annotateSlackPostMessage(prepared.parsed, footer.shortId, footer.sessionUrl, headers);
-  } else if (
-    operation.provider === "feishu" &&
-    (operation.operationId === "feishu.im.messages.create" || operation.operationId === "feishu.im.messages.reply")
-  ) {
+  } else if (operation.provider === "feishu" && isAnnotatableMessageOperation(operation)) {
     annotated = annotateFeishuSend(prepared.parsed, footer.shortId, footer.sessionUrl);
   }
   const maxBytes = operation.maxBodyBytes ?? 128 * 1024;
@@ -537,6 +570,7 @@ function buildSessionFooter(
   publicOrigin: string | undefined,
   authorization: RuntimeProxyAuthorization,
   request: ProviderProxyRequest,
+  taskAnchorId: string = request.sessionId,
 ): { shortId: string; sessionUrl: string } | undefined {
   const origin = publicOrigin?.trim().replace(/\/+$/, "");
   if (!origin || authorization.purpose === "validation" || !request.sessionId || !authorization.agentId) {
@@ -544,7 +578,7 @@ function buildSessionFooter(
   }
   return {
     shortId: request.sessionId.slice(0, 8),
-    sessionUrl: `${origin}/agents/${encodeURIComponent(authorization.agentId)}/tasks/${encodeURIComponent(request.sessionId)}`,
+    sessionUrl: `${origin}/agents/${encodeURIComponent(authorization.agentId)}/tasks/${encodeURIComponent(taskAnchorId || request.sessionId)}`,
   };
 }
 
@@ -688,7 +722,7 @@ function annotateFeishuSend(parsed: unknown, shortId: string, sessionUrl: string
     }
   } else if (record.msg_type === "post") {
     nextContent = annotateFeishuPostContent(contentObj, shortId, sessionUrl);
-  } else if (record.msg_type === "interactive") {
+  } else if (record.msg_type === "interactive" || record.msg_type === undefined) {
     nextContent = annotateFeishuInteractiveContent(contentObj, shortId, sessionUrl);
   }
   if (!nextContent) return undefined;

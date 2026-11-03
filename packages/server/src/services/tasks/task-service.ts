@@ -138,8 +138,7 @@ export class TaskService {
   async get(accountId: string, taskId: string, options: GetTaskOptions): Promise<TaskDetail> {
     const cursor = parseCursor(options.cursor);
     const scope =
-      (await this.#scopeOfMessage(this.database, accountId, taskId)) ??
-      (await this.#scopeOfSession(accountId, taskId, this.database, { includeGroupChannelExecutions: true }));
+      (await this.#scopeOfMessage(this.database, accountId, taskId)) ?? (await this.#scopeOfSession(accountId, taskId));
     if (!scope) throw taskNotFound();
     const [[row], turns, internalSessions, collaboration] = await Promise.all([
       this.#summaryRows(this.database, accountId, { scope, limit: 1 }),
@@ -338,8 +337,7 @@ export class TaskService {
   async listReplies(accountId: string, taskId: string, options: GetTaskOptions): Promise<ListTaskRepliesResponse> {
     const cursor = parseCursor(options.cursor);
     const scope =
-      (await this.#replyScopeOfMessage(accountId, taskId)) ??
-      (await this.#scopeOfSession(accountId, taskId, this.database, { includeGroupChannelExecutions: true }));
+      (await this.#replyScopeOfMessage(accountId, taskId)) ?? (await this.#scopeOfSession(accountId, taskId));
     if (!scope) throw taskNotFound();
     const rows = await this.#replyRows(scope, cursor, options.limit + 1);
     const page = rows.slice(0, options.limit);
@@ -364,7 +362,7 @@ export class TaskService {
       async (transaction) => {
         const scope =
           (await this.#scopeOfMessage(transaction, accountId, taskId)) ??
-          (await this.#scopeOfSession(accountId, taskId, transaction, { includeGroupChannelExecutions: true }));
+          (await this.#scopeOfSession(accountId, taskId, transaction));
         if (!scope) throw taskNotFound();
         return read(transaction, scope);
       },
@@ -462,15 +460,13 @@ export class TaskService {
   }
 
   /**
-   * The topic a Session belongs to: a thread or private-chat Session resolves directly from
-   * `title_sessions`, while a group's channel Session resolves to the topic of its latest direct
-   * execution only on read paths (`includeGroupChannelExecutions: true`).
+   * The topic a 1:1 Session belongs to (a thread Session or a private-chat channel Session); a
+   * group's channel Session is shared across top-level topics and resolves nothing here.
    */
   async #scopeOfSession(
     accountId: string,
     sessionId: string,
     executor: QueryExecutor = this.database,
-    options?: { includeGroupChannelExecutions?: boolean },
   ): Promise<TopicScope | undefined> {
     const located = await executor.execute<ChannelScope & Record<string, unknown>>(sql`
       select s.im_binding_id as "bindingId", s.channel_id as "channelId"
@@ -487,22 +483,6 @@ export class TaskService {
         ts.topic_key as "topicKey"
       from title_sessions ts
       where ts.id = ${sessionId}::uuid
-      ${
-        options?.includeGroupChannelExecutions
-          ? sql`union all
-      (
-        select
-          e.im_binding_id as "bindingId",
-          e.channel_id as "channelId",
-          e.topic_key as "topicKey"
-        from executions e
-        where e.session_id = ${sessionId}::uuid
-          and e.attention = 'direct'
-        order by e.activity_at desc, e.id desc
-        limit 1
-      )`
-          : sql``
-      }
       limit 1
     `);
     const [row] = [...rows];

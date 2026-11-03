@@ -299,6 +299,20 @@ describe("SkillsPage", () => {
     await waitFor(() => expect(update).toHaveBeenCalledWith(AGENT_ID, SKILL_ID, { enabled: false }));
   });
 
+  it("keeps a toggled switch enabled and focused while its write is pending", async () => {
+    stubList([skill({ enabled: true })]);
+    const update = vi.spyOn(browserApi, "updateAgentSkill").mockImplementation(() => new Promise(() => undefined));
+    wrap(<SkillsPage agentId={AGENT_ID} />);
+    const toggle = await screen.findByRole("switch", { name: "Enable Release notes writer" });
+    toggle.focus();
+    fireEvent.click(toggle);
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+    expect(toggle.hasAttribute("disabled")).toBe(false);
+    expect(document.activeElement).toBe(toggle);
+    fireEvent.click(toggle);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
   it("deletes only after the confirmation", async () => {
     stubList([skill()]);
     const remove = vi.spyOn(browserApi, "removeAgentSkill").mockResolvedValue(undefined);

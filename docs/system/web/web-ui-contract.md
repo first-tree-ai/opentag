@@ -156,7 +156,7 @@ Authenticated pages use the named `content` container and the shared content fra
 container queries for page composition because the Sidebar changes the space available to the route without changing
 the viewport. The shell follows the website app preview breakpoints: 240px Agent sidebar above 950px, 200px from 641px to 950px,
 and inline scrolling navigation at 640px and below. Compact controls retain account access and Agent switching.
-The same route outlet remains mounted across those changes. Agent roster rows stack identity above status below a 42rem roster container width, keeping names and setup actions readable at 320px.
+The same route outlet remains mounted across those changes. Agent roster rows stack identity above status below a 42rem roster container width, keeping names and setup actions readable at 320px. Each row's open link precedes its status and action in keyboard order, matching how the row reads.
 
 Every roster row whose blocked state the reader can fix offers exactly one action link to where it gets fixed:
 setup-owned reasons (no Computer, runtime missing, unavailable, or needing sign-in, messaging not finished, or
@@ -204,8 +204,13 @@ openTag Web targets WCAG 2.2 AA for product UI:
 - Enter and Space activate controls according to their native semantics;
 - Escape closes dismissible overlays, and focus returns to the control that opened them;
 - icon-only controls have an accessible name, while decorative icons are hidden from assistive technology;
-- validation identifies the field, describes the problem, and exposes the update to assistive technology; and
-- non-essential animation and transition are removed when `prefers-reduced-motion: reduce` is active.
+- validation identifies the field, describes the problem, and exposes the update to assistive technology;
+- non-essential animation and transition are removed when `prefers-reduced-motion: reduce` is active;
+- a control that changes in place keeps keyboard focus: a switch or button is not disabled while its write is
+  pending (it ignores repeat input and reports busy instead), because disabling the focused element drops focus
+  to the page; and
+- a step change inside one route, such as the next Agent Setup step, moves focus to the new step's heading, as a
+  route change does.
 
 Automated axe checks are required for representative browser flows, but they do not replace keyboard testing or review
 of contrast, focus order, accessible names, and task completion.

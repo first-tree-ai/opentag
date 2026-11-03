@@ -50,13 +50,13 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | AS-02 | Agent type is fixed once chosen | Continue past the Local/Cloud choice | No in-flow Back; the choice can't be changed mid-setup | Core | unit: `onboarding-v2/steps.test.tsx` |
 | AS-03 | One exit to the Agent list | On each setup step after creation, and on completion, use Back to Agents | Lands on the Agent list; the unfinished Agent offers Continue setup | Core | unit: `__tests__/agent-setup-boundary.test.tsx`, `onboarding-v2/agent-setup-page.test.tsx` |
 | AS-04 | Logo returns to the list | After creation, select the openTag logo | Lands on the Agent list. First-time creation (no Agent yet) offers no exit except signing out | Core | unit: `__tests__/agent-setup-boundary.test.tsx` |
-| AS-05 | Header on phones | Setup header at 390 and 320px | Logo shows the mark only; Back to Agents and the Account menu stay on one row at the top right | Edge | manual |
+| AS-05 | Header on phones | First-time full-screen setup header (an Account with no Agents yet) at 390 and 320px | Logo shows the mark only; Back to Agents and the Account menu stay on one row at the top right | Edge | manual |
 | AS-06 | Name rule is stated up front | Open the name field before typing | Hint states the allowed characters (letters in either case, digits, Chinese, hyphens; no leading hyphen) | Core | unit: `onboarding-v2/steps.test.tsx` |
 | AS-07 | Name refused | Type a name with a space or punctuation, or one starting with a hyphen | Short error "The name has characters that aren't allowed"; Create is refused | Core | unit: `onboarding-v2/steps.test.tsx`, `onboarding-v2/flow.test.ts` |
 | AS-08 | Name length | 64 letters, then 65; 21 Chinese characters, then 22 | 64 letters and 21 Chinese characters are accepted; one more is refused with the length error | Edge | unit: `onboarding-v2/flow.test.ts` |
 | AS-09 | Name taken, any case | Create "Atlas" when "atlas" exists | Refused with "An Agent with this name already exists. Names aren't case-sensitive."; offers to open the existing Agent | Core | unit: `__tests__/agent-setup-boundary.test.tsx`, `onboarding-v2/creation-error-message.test.ts` |
 | AS-10 | Runtime choice is called an Agent | Creation step with Local | Choice is labelled "Agent to use"; no "Runtime" in the creation copy | Core | unit: `onboarding-v2/steps.test.tsx` |
-| AS-11 | Cloud availability | Deployment with Cloud off, still checking, or failed to answer | Cloud card says why it is unavailable or checking; a failed read offers Try again; Local stays selectable | Edge | unit: `onboarding-v2/steps.test.tsx` |
+| AS-11 | Cloud availability | Deployment with Cloud off, still checking, or failed to answer | Cloud card says why it is unavailable or checking; a failed read offers Try again; Local stays selectable | Edge | unit: `onboarding-v2/steps.test.tsx` (checking and failed states are unit-only; a manual run can check Cloud off) |
 | AS-12 | Connect this computer | Prepare this computer with no Computer bound | Copyable connect task; the page waits and continues once the Computer connects | Core | smoke: `computer-connection.spec.ts`; connect C21 |
 | AS-13 | Choose among existing Computers | Account with several Computers, none bound | Lists them without creating a new connection; binding happens only after the user chooses | Edge | smoke: `computer-connection.spec.ts` |
 | AS-14 | Runtime sign-in steps | Runtime row reports signed out | Sign in expands terminal steps for that computer (`claude` then `/login`, or `codex login`) with copyable commands; Check again follows; the row number stays aligned with its title | Core | unit: `onboarding-v2/runtime-sign-in.test.tsx`, `onboarding-v2/agent-setup-page.test.tsx` |
@@ -65,7 +65,7 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | AS-17 | Connect messaging, Slack | Choose Slack: OAuth, or manual setup with the prefilled App manifest | Binding completes; manual setup shows the exact prefilled bot name | Core | unit: `onboarding-v2/slack-custom-app-entry.test.tsx` |
 | AS-18 | Messaging recovery | A binding that needs new permissions or failed | Recovery title, the reason, and the recovery action; disconnect keeps its confirmation | Edge | unit: `onboarding-v2/agent-setup-page.test.tsx` |
 | AS-19 | Completion | All steps ready | Completion screen offers View agent; the header still offers Back to Agents | Core | unit: `onboarding-v2/agent-setup-page.test.tsx`, `__tests__/agent-setup-boundary.test.tsx` |
-| AS-20 | Draft survives a visit away | Fill name and runtime, go to All Agents, return to New Agent | Draft is restored; a pending creation stays pending and disabled | Edge | unit: `__tests__/agent-setup-boundary.test.tsx` |
+| AS-20 | Draft survives a visit away | Fill name and runtime, go to All Agents, return to New Agent | Draft is restored; a pending creation stays pending and disabled | Edge | unit: `__tests__/agent-setup-boundary.test.tsx` (the pending creation is unit-only; a manual run can check the restored draft) |
 
 ## Agent home and schedules
 
@@ -80,7 +80,7 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | AH-07 | Schedule details | Open a schedule | Shows only where it posts (for example "Lark · thread"), the zone if different, one note after a failed or unconfirmed run, the full task, and Delete; no internal IDs or reason codes | Core | unit: `features/agents/agent-schedules-section.test.tsx` |
 | AH-08 | Pause, resume, delete a schedule | Pause, then Resume; open details and Delete | State updates with the observed revision; Paused label appears only while paused; delete asks for confirmation | Core | unit: `features/agents/agent-schedules-section.test.tsx` |
 | AH-09 | Schedules on phones | Schedules at 390 and 320px | Pause or Resume stays on each title row; long names wrap in the title | Edge | manual |
-| AH-10 | Deep-linked schedule | Open a schedule link from IM | That schedule opens with its details, even outside the first page; an inaccessible link says so without task content | Edge | unit: `features/agents/agent-schedules-section.test.tsx` |
+| AH-10 | Deep-linked schedule | An Agent with more schedules than one page; open a link from IM to a schedule beyond the first page, and one to a schedule that no longer exists | That schedule opens with its details, even outside the first page; an inaccessible link says so without task content | Edge | unit: `features/agents/agent-schedules-section.test.tsx` |
 
 ## Agent settings
 
@@ -94,7 +94,7 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | ST-06 | Soul (instructions) | Edit and save Soul; browse templates; switch Agents | Saves, returns to reading, and keeps the section when switching Agents | Core | smoke: `navigation-polish.spec.ts`; unit: `features/agents/agent-settings/soul-editor.test.tsx` |
 | ST-07 | Connectors (MCP) add and authorize | Add from Discover or custom; OAuth or API key | Connector is added once per Agent, authorization stays in its card, tools appear | Core | smoke: `mcp-add.spec.ts`, `mcp-connect.smoke.spec.ts`, `mcp-discover-authorization.spec.ts` |
 | ST-08 | Connector recovery | Cancel OAuth, block its window, fail a tool probe, reauthorize | Only this attempt is undone or retried; a working credential survives an interrupted reauthorization | Edge | smoke: `mcp-recovery-smoke.spec.ts`, `mcp-discover-continuation-smoke.spec.ts`, `mcp-auth-rejection.spec.ts` |
-| ST-09 | Connector list with any Agent name | MCP Server detail when an Agent has an uppercase or Chinese name | Page loads and lists that Agent | Edge | manual |
+| ST-09 | Connector list with any Agent name | Connectors page and MCP Server detail when an Agent has an uppercase or Chinese name | Both load without errors (the server detail does not list Agents) | Edge | manual |
 | ST-10 | Skills | Add a Skill from a preset or source; open its files | Skill installs; file selection and links stay accessible | Core | smoke: `site-design-smoke.spec.ts`; sweep |
 | ST-11 | Usage | Open Agent and Account usage | Charts and totals render for empty, partial, and full data | Core | smoke: `usage-visual.spec.ts`; unit: `__tests__/agent-usage.test.tsx` |
 | ST-12 | Pause and resume | Pause an idle and a working Agent, then Resume | Idle pauses at once; working asks to confirm; state and message update | Core | unit: `features/agents/agent-settings/agent-manage-settings.test.tsx` |
@@ -144,7 +144,7 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | TK-02 | Next page fails | Load more Tasks when the next page fails | Loaded Tasks stay; the failure offers a retry | Edge | unit: `__tests__/agent-tasks.test.tsx` |
 | TK-03 | Task detail | Open a Task | Uses the full page width; leads with the outcome | Core | unit: `features/task-conversation.test.tsx`; sweep |
 | TK-04 | Each reply once | Task with Agent replies | Each reply appears once in the timeline, without per-message status labels | Core | unit: `features/task-conversation.test.tsx`, `features/task-outgoing-replies.test.tsx` |
-| TK-05 | Cancel a Task | Cancel a running Task | Asks to confirm; the status updates | Edge | unit: `features/task-cancel.test.tsx` |
+| TK-05 | Cancel a Task | Cancel a queued Task (only queued Tasks offer Cancel) | Asks to confirm; the status updates | Edge | unit: `features/task-cancel.test.tsx` |
 | TK-06 | Narrow Agent workspace | Agent home, Tasks, and Skills in a narrow Agent workspace | Stay usable without overflow | Edge | smoke: `app.spec.ts` |
 
 ## Account

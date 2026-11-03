@@ -1,6 +1,8 @@
 import type { ClientRequest, IncomingMessage } from "node:http";
 import https from "node:https";
 import { type GitHubProxyFailureCode, githubProxyHeaders } from "@opentag/shared";
+import { sanitizeExternalUrl, traceExternalCall } from "../../observability/external-call-logger.js";
+import type { PerformanceLogger } from "../../observability/performance-logger.js";
 import type { ProviderProxyResponse } from "../../runtime-credentials/provider-proxy-adapter.js";
 import { classifyOutboundDestination } from "../outbound/destination-policy.js";
 import { allowedDownloadTarget, githubRequestTarget } from "./http-target.js";
@@ -23,6 +25,7 @@ export interface GitHubHttpTransportOptions {
   connect?: (url: URL, options: https.RequestOptions, listener: (response: IncomingMessage) => void) => ClientRequest;
   resolveAddresses?: (hostname: string) => Promise<string[]>;
   idleTimeoutMs?: number;
+  performanceLogger?: PerformanceLogger;
 }
 
 /** Raw HTTP bytes, one attempt, bounded idle waits. No fetch decompression or API interpretation. */
@@ -30,6 +33,23 @@ export class GitHubHttpTransport {
   constructor(readonly options: GitHubHttpTransportOptions = {}) {}
 
   async request(input: GitHubHttpRequest): Promise<ProviderProxyResponse> {
+    const urlMeta = sanitizeExternalUrl(input.url);
+    return traceExternalCall(
+      this.options.performanceLogger,
+      {
+        provider: "github",
+        operation: "external.github.proxy",
+        attributes: {
+          httpMethod: input.method.toUpperCase(),
+          ...urlMeta,
+        },
+      },
+      () => this.#executeRequest(input),
+      { statusFromResult: (res) => res.status },
+    );
+  }
+
+  async #executeRequest(input: GitHubHttpRequest): Promise<ProviderProxyResponse> {
     let url = input.url;
     let authenticated = true;
     for (let hop = 0; ; hop++) {

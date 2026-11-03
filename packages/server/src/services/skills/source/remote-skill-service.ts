@@ -9,6 +9,8 @@ import {
   SKILL_ERROR_CODES,
   type SkillErrorCode,
 } from "@opentag/shared";
+import { traceExternalCall } from "../../../observability/external-call-logger.js";
+import type { PerformanceLogger } from "../../../observability/performance-logger.js";
 import type { ServiceLogger } from "../../../observability/service-logger.js";
 import { SkillServiceError, skillSourceInvalid, skillSourceNoSkills } from "../errors.js";
 import { normalizeSkillEntries } from "../skill-archive.js";
@@ -61,6 +63,7 @@ export interface RemoteSkillServiceOptions {
   maxCandidates?: number;
   readLimits?: SkillReadLimits;
   logger?: ServiceLogger;
+  performanceLogger?: PerformanceLogger;
 }
 
 export interface ResolveRemoteSkillsInput {
@@ -109,16 +112,19 @@ export class RemoteSkillService {
   readonly #logger: ServiceLogger | undefined;
   readonly #maxCandidates: number | undefined;
   readonly #measureWorkspace: ((path: string) => Promise<number>) | undefined;
+  readonly #perfLogger: PerformanceLogger | undefined;
   readonly #readLimits: SkillReadLimits | undefined;
   readonly #remoteOptions: { allowLoopback: boolean; resolveAddresses?: (hostname: string) => Promise<string[]> };
 
   constructor(options: RemoteSkillServiceOptions) {
     this.#skills = options.skills;
+    this.#perfLogger = options.performanceLogger;
     this.#fetcher =
       options.fetcher ??
       new SkillSourceFetcher({
         allowLoopback: options.allowLoopback === true,
         ...(options.resolveAddresses === undefined ? {} : { resolveAddresses: options.resolveAddresses }),
+        ...(options.performanceLogger ? { performanceLogger: options.performanceLogger } : {}),
       });
     this.#gitRunner = options.gitRunner;
     this.#logger = options.logger;
@@ -335,14 +341,23 @@ export class RemoteSkillService {
       disposers.push(() => tunnel.close());
       const workspace = await SkillSourceWorkspace.create();
       disposers.push(() => workspace.dispose());
-      const snapshot = await fetchGitSnapshot({
-        source,
-        workspace: workspace.root,
-        signal: signal ?? new AbortController().signal,
-        proxyUrl: tunnel.proxyUrl,
-        ...(this.#gitRunner === undefined ? {} : { run: this.#gitRunner }),
-        ...(this.#measureWorkspace === undefined ? {} : { measureWorkspace: this.#measureWorkspace }),
-      });
+      const snapshot = await traceExternalCall(
+        this.#perfLogger,
+        {
+          provider: "git",
+          operation: "external.git.fetchSnapshot",
+          attributes: { sourceKind: source.kind },
+        },
+        () =>
+          fetchGitSnapshot({
+            source,
+            workspace: workspace.root,
+            signal: signal ?? new AbortController().signal,
+            proxyUrl: tunnel.proxyUrl,
+            ...(this.#gitRunner === undefined ? {} : { run: this.#gitRunner }),
+            ...(this.#measureWorkspace === undefined ? {} : { measureWorkspace: this.#measureWorkspace }),
+          }),
+      );
       disposers.push(() => snapshot.dispose());
       // The listing reads manifests through the snapshot, so a failure here must still release the
       // snapshot's monitor — it polls the workspace, which cleanup has just removed.

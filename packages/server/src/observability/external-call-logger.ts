@@ -1,0 +1,170 @@
+import type { PerformanceLogger } from "./performance-logger.js";
+
+const ALLOWED_TRANSPORT_CODES = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "ETIMEDOUT",
+  "EAI_AGAIN",
+  "EPIPE",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_SOCKET",
+  "ABORT_ERR",
+  "TimeoutError",
+  "AbortError",
+]);
+
+function sanitizePathSegment(segment: string): string {
+  if (!segment) return "";
+  // Scrub long opaque tokens or credential-like path segments while keeping API route structure.
+  if (segment.length > 40 || /^(?:xox[abp]-|cli_|gh[pousr]_|Bearer)/i.test(segment)) {
+    return ":redacted";
+  }
+  return segment.replace(/[^A-Za-z0-9._:@~-]/g, "_");
+}
+
+export function sanitizeExternalUrl(input: unknown): {
+  targetHost?: string;
+  targetPath?: string;
+} {
+  try {
+    const raw =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : typeof input === "object" && input !== null && "url" in input && typeof input.url === "string"
+            ? input.url
+            : undefined;
+    if (!raw) return {};
+    const parsed = new URL(raw);
+    const targetHost = parsed.hostname.slice(0, 128) || undefined;
+    const rawSegments = parsed.pathname.split("/").slice(0, 16);
+    const sanitizedPath = rawSegments.map(sanitizePathSegment).join("/").slice(0, 128) || "/";
+    return {
+      ...(targetHost ? { targetHost } : {}),
+      targetPath: sanitizedPath,
+    };
+  } catch {
+    return {};
+  }
+}
+
+export function extractExternalTransportCode(error: unknown): string | undefined {
+  let cursor: unknown = error;
+  for (let depth = 0; depth <= 3 && cursor && typeof cursor === "object"; depth += 1) {
+    try {
+      const code = (cursor as { code?: unknown }).code;
+      if (typeof code === "string" && ALLOWED_TRANSPORT_CODES.has(code)) return code;
+      const name = (cursor as { name?: unknown }).name;
+      if (typeof name === "string" && ALLOWED_TRANSPORT_CODES.has(name)) return name;
+      cursor = (cursor as { cause?: unknown }).cause;
+    } catch {
+      break;
+    }
+  }
+  return undefined;
+}
+
+export interface ExternalCallTraceInput {
+  provider: string;
+  operation: string;
+  accountId?: string;
+  agentId?: string;
+  attributes?: Record<string, unknown>;
+}
+
+export interface ExternalCallTraceOptions<T> {
+  statusFromResult?: (result: T) => number | undefined;
+  resultAttributes?: (result: T) => Record<string, unknown> | undefined;
+  errorStatus?: (error: unknown) => number | undefined;
+  fallbackErrorCode?: string;
+}
+
+export function traceExternalCall<T>(
+  perfLogger: PerformanceLogger | undefined,
+  input: ExternalCallTraceInput,
+  fn: () => Promise<T>,
+  options?: ExternalCallTraceOptions<T>,
+): Promise<T> {
+  if (!perfLogger) return fn();
+  return perfLogger.traceAsync(
+    {
+      module: "external",
+      category: "external",
+      operation: input.operation,
+      ...(input.accountId ? { accountId: input.accountId } : {}),
+      ...(input.agentId ? { agentId: input.agentId } : {}),
+      attributes: {
+        provider: input.provider,
+        ...input.attributes,
+      },
+    },
+    () => fn(),
+    {
+      resultAttributes: (result) => {
+        const status = options?.statusFromResult?.(result);
+        const extra = options?.resultAttributes?.(result);
+        return {
+          ...(status !== undefined ? { status } : {}),
+          ...extra,
+        };
+      },
+      errorAttributes: (error) => {
+        const status = options?.errorStatus?.(error);
+        const transportCode = extractExternalTransportCode(error);
+        return {
+          ...(status !== undefined ? { status } : {}),
+          ...(transportCode ? { transportCode } : {}),
+        };
+      },
+      fallbackErrorCode: options?.fallbackErrorCode ?? "EXTERNAL_CALL_FAILED",
+    },
+  );
+}
+
+function resolveHttpMethod(input: unknown, init?: RequestInit): string {
+  if (typeof init?.method === "string" && init.method.trim()) {
+    return init.method.trim().toUpperCase().slice(0, 16);
+  }
+  if (typeof input === "object" && input !== null && "method" in input && typeof input.method === "string") {
+    return input.method.trim().toUpperCase().slice(0, 16);
+  }
+  return "GET";
+}
+
+export function createInstrumentedFetch(
+  perfLogger: PerformanceLogger | undefined,
+  options: {
+    provider: string;
+    operation?: string;
+    baseFetch?: typeof fetch;
+  },
+): typeof fetch {
+  const baseFetch = options.baseFetch ?? globalThis.fetch.bind(globalThis);
+  if (!perfLogger) return baseFetch;
+  const operation = options.operation ?? `external.${options.provider}.http`;
+  return ((input: string | URL | Request, init?: RequestInit) => {
+    const httpMethod = resolveHttpMethod(input, init);
+    const urlMeta = sanitizeExternalUrl(input);
+    return traceExternalCall(
+      perfLogger,
+      {
+        provider: options.provider,
+        operation,
+        attributes: {
+          httpMethod,
+          ...urlMeta,
+        },
+      },
+      () => baseFetch(input, init),
+      {
+        statusFromResult: (response) => response?.status,
+      },
+    );
+  }) as typeof fetch;
+}

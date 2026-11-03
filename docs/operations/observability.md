@@ -175,6 +175,22 @@ jsonPayload.operation="pi.diagnostic"
 jsonPayload.turnId="<turn UUID>"
 ```
 
+## Full-stack performance logging
+
+When `OPENTAG_PERF_LOG_ENABLED` is `true` (the default), the Server emits paired `started` and
+`completed` or `failed` Pino records across four boundaries:
+
+- **Entrypoints (`perfCategory="http" | "ws" | "worker"`)** — Fastify HTTP requests (excluding `/healthz` and `/readyz`), non-heartbeat Runtime WebSocket business frames, and background workers.
+- **Domain services (`perfCategory="service"`)** — Asynchronous methods on core Server services, wrapped via a non-intrusive proxy that preserves native class private fields.
+- **Database queries (`perfCategory="db"`)** — Every executed Drizzle and `postgres.js` query (`operation="db.query"`), transaction (`operation="db.transaction"`), and savepoint (`operation="db.savepoint"`). Lazy queries that are never awaited and `no_pipeline` readiness probes do not emit records. Records carry `sqlCommand`, `dbTarget`, `paramCount`, `rowCount`, `inTransaction`, and `sqlState` on error, without logging raw SQL text or bound parameters.
+- **External service calls (`perfCategory="external"`)** — Outbound requests through `ExternalCallPolicy` (Feishu and Slack), `McpOutboundFetcher`, GitHub API and proxy transports, Cloud Model and Web Routers, Cloud Run Admin and GCP Metadata Server, S3/GCS object stores, remote Skill sources, and Error Reporting. Logged URLs retain only `httpMethod`, `targetHost`, and sanitized `targetPath`.
+
+Every started operation generates a unique `callId` and records `startedAt` (ISO-8601 UTC). Its matching
+settlement record carries the same `callId` and `startedAt` plus `endedAt` (ISO-8601 UTC) and monotonic
+`durationMs`. Nested operations propagate `requestId`, `parentCallId`, and `callerOperation` through
+`AsyncLocalStorage`. Operations whose `durationMs` meets or exceeds `OPENTAG_PERF_SLOW_THRESHOLD_MS`
+set `slow=true` and escalate their completion record to `warn`.
+
 ## Configuration
 
 Tracing is disabled when `OPENTAG_OTEL_ENDPOINT` is empty. The exporter sends traces to the configured URL exactly as written and accepts any valid OTLP collector headers.
@@ -193,6 +209,9 @@ OPENTAG_OTEL_SAMPLE_RATE=1
 | `OPENTAG_OTEL_ENVIRONMENT` | `OPENTAG_ENV` | `deployment.environment.name` resource label |
 | `OPENTAG_OTEL_SAMPLE_RATE` | `1` | Global head sample rate in the inclusive range `0` to `1` |
 | `OPENTAG_LOG_LEVEL` | `info` | Server Pino level: `trace`, `debug`, `info`, `warn`, `error`, `fatal`, or `silent` |
+| `OPENTAG_PERF_LOG_ENABLED` | `true` | Enables paired start/end performance logs across HTTP/WS entrypoints, services, database queries, and external calls |
+| `OPENTAG_PERF_LOG_LEVEL` | `info` | Default Pino level (`debug`, `info`, or `warn`) for routine performance start and completion records |
+| `OPENTAG_PERF_SLOW_THRESHOLD_MS` | `1000` | Slow-operation threshold in milliseconds; completions at or above this duration set `slow=true` and emit at `warn` |
 | `GOOGLE_CLOUD_PROJECT` | unset | Forwards relayed Web App and CLI errors to Google Cloud Error Reporting; see [Client error reporting](error-reporting.md) |
 | `OPENTAG_ERROR_REPORTING_CREDENTIALS_JSON` | unset | Service account key JSON for that forwarding; unset uses Application Default Credentials |
 

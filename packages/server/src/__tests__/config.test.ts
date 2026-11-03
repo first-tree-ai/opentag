@@ -413,6 +413,25 @@ describe("parseServerConfig", () => {
   it("accepts the configured server log level and rejects unknown levels", () => {
     expect(parseServerConfig({ ...required, OPENTAG_LOG_LEVEL: "debug" }).logLevel).toBe("debug");
     expect(() => parseServerConfig({ ...required, OPENTAG_LOG_LEVEL: "verbose" })).toThrow();
+    expect(parseServerConfig(required).observability.performance).toEqual({
+      enabled: true,
+      level: "info",
+      slowThresholdMs: 1_000,
+    });
+    expect(
+      parseServerConfig({
+        ...required,
+        OPENTAG_PERF_LOG_ENABLED: "false",
+        OPENTAG_PERF_LOG_LEVEL: "warn",
+        OPENTAG_PERF_SLOW_THRESHOLD_MS: "2500",
+      }).observability.performance,
+    ).toEqual({
+      enabled: false,
+      level: "warn",
+      slowThresholdMs: 2_500,
+    });
+    expect(() => parseServerConfig({ ...required, OPENTAG_PERF_LOG_LEVEL: "trace" })).toThrow();
+    expect(() => parseServerConfig({ ...required, OPENTAG_PERF_SLOW_THRESHOLD_MS: "0" })).toThrow();
   });
 
   it("parses OPENTAG_WEBSITE_ORIGINS into a canonical, de-duplicated allowlist", () => {

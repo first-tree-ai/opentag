@@ -532,6 +532,23 @@ function feishuReplyConflict(meta: FeishuResponseMeta): boolean {
   return meta.replyTargetExternalId !== null && meta.parentId !== meta.replyTargetExternalId;
 }
 
+function inheritParentFeishuContext(
+  current: ProviderInboundContext,
+  parent: StoredMessageContext,
+  rootId: string | null,
+): ProviderInboundContext {
+  if (current.provider !== "feishu") return current;
+  const parentFeishu = parent.providerContext.provider === "feishu" ? parent.providerContext : undefined;
+  const parentChatMode = parentFeishu?.chatMode;
+  const parentGroupMessageType = parentFeishu?.groupMessageType;
+  return {
+    ...current,
+    ...(rootId && !current.rootId ? { rootId } : {}),
+    ...(parentChatMode && !current.chatMode ? { chatMode: parentChatMode } : {}),
+    ...(parentGroupMessageType && !current.groupMessageType ? { groupMessageType: parentGroupMessageType } : {}),
+  };
+}
+
 function parseFeishuSend(event: OutboundCaptureEvent, reply: boolean): OutboundCaptureParse {
   const response = asRecord(event.responsePayload);
   if (response?.code !== 0) return skipped("platform_not_successful");
@@ -822,7 +839,10 @@ export class ImOutboundCapture {
     message: CapturedOutboundMessage,
     deadlineAt: number,
   ): Promise<{ threadKey: string | null; providerContext: ProviderInboundContext }> {
-    if (message.threadKey !== null || !message.replyTargetExternalId) {
+    if (
+      !message.replyTargetExternalId ||
+      (message.threadKey !== null && message.providerContext.provider !== "feishu")
+    ) {
       return { threadKey: message.threadKey, providerContext: message.providerContext };
     }
     const parent = await this.#storedMessageContext(
@@ -831,14 +851,14 @@ export class ImOutboundCapture {
       message.replyTargetExternalId,
       deadlineAt,
     );
-    if (!parent) return { threadKey: null, providerContext: message.providerContext };
+    if (!parent) return { threadKey: message.threadKey, providerContext: message.providerContext };
     const parentRootId = parent.providerContext.provider === "feishu" ? (parent.providerContext.rootId ?? null) : null;
     const rootId = parentRootId ?? (parent.threadKey ? null : parent.externalMessageId);
-    const providerContext =
-      message.providerContext.provider === "feishu" && rootId && !message.providerContext.rootId
-        ? { ...message.providerContext, rootId }
-        : message.providerContext;
-    return { threadKey: parent.threadKey ?? parentRootId ?? parent.externalMessageId, providerContext };
+    const providerContext = inheritParentFeishuContext(message.providerContext, parent, rootId);
+    return {
+      threadKey: message.threadKey ?? parent.threadKey ?? parentRootId ?? parent.externalMessageId,
+      providerContext,
+    };
   }
 
   /** The locally stored same-binding, same-channel message a reply targets, newest revision first. */

@@ -1335,6 +1335,47 @@ describe("Tasks view", () => {
     expect(sourceValue?.textContent).not.toMatch(/feishu/);
   });
 
+  it("exposes Feishu chatMode metadata on Task rows and detail sources while keeping legacy rows compatible", async () => {
+    const topicTask = {
+      ...task,
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      title: "Topic chat task",
+      source: { ...task.source, conversationKind: "channel", chatMode: "topic" },
+    } satisfies TaskSummary;
+    const regularGroupTask = {
+      ...task,
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      title: "Regular group task",
+      source: { ...task.source, conversationKind: "channel", chatMode: "group", groupMessageType: "thread" },
+    } satisfies TaskSummary;
+    const legacyTask = {
+      ...task,
+      id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      title: "Legacy group task",
+      source: { ...task.source, conversationKind: "channel", chatMode: null, groupMessageType: null },
+    } satisfies TaskSummary;
+    vi.spyOn(browserApi, "tasks").mockResolvedValue({
+      tasks: [topicTask, regularGroupTask, legacyTask],
+      nextCursor: null,
+    });
+
+    const { container } = await renderInRouter(<TasksPage />);
+    await screen.findByText("Topic chat task");
+
+    const sources = [...container.querySelectorAll('[data-label="Source"]')];
+    expect(sources.map((cell) => cell.getAttribute("data-chat-mode"))).toEqual(["topic", "group", null]);
+    expect(sources.map((cell) => cell.getAttribute("data-group-message-type"))).toEqual([null, "thread", null]);
+
+    mockDetail({ ...detail, task: regularGroupTask });
+    const detailView = await renderInRouter(<TaskDetailPage taskId={regularGroupTask.id} />, {
+      path: `/tasks/${regularGroupTask.id}`,
+    });
+    await screen.findByRole("heading", { name: "Regular group task" });
+    const sourceSpan = detailView.container.querySelector("dd [data-chat-mode]");
+    expect(sourceSpan?.getAttribute("data-chat-mode")).toBe("group");
+    expect(sourceSpan?.getAttribute("data-group-message-type")).toBe("thread");
+  });
+
   it("renders internal child Sessions when returned on the Task detail page", async () => {
     vi.spyOn(browserApi, "taskDetail").mockResolvedValue({
       task: detail.task,

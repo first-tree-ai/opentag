@@ -795,4 +795,95 @@ describe("ImOutboundCapture bounded persistence", () => {
     expect(parentLookup?.params).toContain("oc_confirmed_chat");
     expect(statements).toHaveLength(3);
   });
+
+  it("inherits chatMode and groupMessageType from the stored reply parent when omitted on the outbound response", async () => {
+    const parent = {
+      external_message_id: "om_root",
+      thread_key: "omt_topic",
+      provider_context: {
+        provider: "feishu",
+        chatType: "group",
+        chatMode: "group",
+        groupMessageType: "thread",
+        rootId: "om_root",
+      },
+    };
+    let calls = 0;
+    const { database, statements } = fakeDatabase(() => {
+      calls += 1;
+      if (calls === 1) return Promise.resolve([{ external_bot_id: "ou_bot" }]);
+      if (calls === 2) return Promise.resolve([parent]);
+      return Promise.resolve([]);
+    });
+    const capture = new ImOutboundCapture(database);
+
+    await capture.capture(
+      feishuEvent({
+        operationId: "feishu.im.messages.reply",
+        pathParams: { message_id: "om_root" },
+        responsePayload: {
+          code: 0,
+          data: {
+            message_id: "om_child",
+            chat_id: "oc_confirmed_chat",
+            msg_type: "text",
+            body: { content: '{"text":"fixture"}' },
+          },
+        },
+      }),
+    );
+
+    const insertStatement = statements[2];
+    expect(insertStatement?.params).toContain(
+      '{"provider":"feishu","parentId":"om_root","rootId":"om_root","chatMode":"group","groupMessageType":"thread"}',
+    );
+  });
+
+  it("inherits chatMode and groupMessageType on a normal Feishu thread reply with thread_id and root_id present", async () => {
+    const parent = {
+      external_message_id: "om_target",
+      thread_key: "omt_older",
+      provider_context: {
+        provider: "feishu",
+        chatType: "group",
+        chatMode: "topic",
+        groupMessageType: "thread",
+        threadId: "omt_older",
+        rootId: "om_older_root",
+      },
+    };
+    let calls = 0;
+    const { database, statements } = fakeDatabase(() => {
+      calls += 1;
+      if (calls === 1) return Promise.resolve([{ external_bot_id: "ou_bot" }]);
+      if (calls === 2) return Promise.resolve([parent]);
+      return Promise.resolve([]);
+    });
+    const capture = new ImOutboundCapture(database);
+
+    await capture.capture(
+      feishuEvent({
+        operationId: "feishu.im.messages.reply",
+        pathParams: { message_id: "om_target" },
+        responsePayload: {
+          code: 0,
+          data: {
+            message_id: "om_child",
+            chat_id: "oc_confirmed_chat",
+            root_id: "om_root",
+            parent_id: "om_root",
+            thread_id: "omt_topic",
+            msg_type: "text",
+            body: { content: '{"text":"fixture"}' },
+          },
+        },
+      }),
+    );
+
+    const insertStatement = statements[2];
+    expect(insertStatement?.params).toContain("omt_topic");
+    expect(insertStatement?.params).toContain(
+      '{"provider":"feishu","threadId":"omt_topic","rootId":"om_root","parentId":"om_root","chatMode":"topic","groupMessageType":"thread"}',
+    );
+  });
 });

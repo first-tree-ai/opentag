@@ -1,0 +1,28 @@
+# Independent SQL caller review: batches 19–22
+
+The user-authorized read-only reviewer inspected exact committed ranges, source,
+tests and evidence records without changing files or rerunning tests/Docker.
+
+| Batch | Exact reviewed range | Result |
+| --- | --- | --- |
+| 19 | 7a257f49..b846c5e9aeaa153aba53fc06d930709bdac45ada | No actionable finding; LIMIT 1 bounds materialization, not history scans. |
+| 20 initial | b846c5e9..3ff799ff0a793a017ba05eead251d948291df376 | P2: missing/file ancestors multiplied process launches; schema has no path-length bound. |
+| 20 correction | 3ff799ff..7b1b81fea5e91d180bb3abfcdac4bd554508e35d | P2 closed; exact 040000 ancestor entry and two real-Git process trace controls. |
+| 21 | 7b1b81fe..ac1b538f766442439a3575f21ceace86cf9d8d9e | No actionable finding; native close bounds and independent container cleanup retained. |
+| 22 | ac1b538f..8ea19fd8ab248607ee536f6a3568092156f6c9a1 | No actionable finding for registry/store reclamation; async admission/drain remains IM-F3. |
+
+The reviewer also checked the remaining shutdown design against pinned Fastify
+5.12.3, Avvio 9.3.0 and websocket dependency source. Actual registration-time
+onClose is LIFO; asynchronous execution child plugins register during boot.
+Root preClose must initiate stop without blocking subsequent websocket close,
+then onClose joins the retained operations before the earliest-registered final
+SQL cleanup. Websocket close itself does not join callback SQL.
+
+A loopback experiment with pinned Fastify/Node 24.20 confirmed that a client
+which disconnects can leave its handler gated after app.close resolves. Therefore
+complete Slack setup and Context Tree runs need a narrow explicit owner; normal
+HTTP waits do not establish that drain for disconnected clients. These are design
+review observations, not completed IM-F3 repair or full Server acceptance.
+
+Batch 23 and later changes require their own exact-commit review. CI, merge,
+deployment, private billing and live provider acceptance are not inferred.

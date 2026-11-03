@@ -86,8 +86,15 @@ describe("Provider preparation operation budget", () => {
     );
     try {
       await vi.waitFor(() => expect(f.callbacks).toHaveLength(1), { interval: 1 });
-      f.owner.close();
+      let drained = false;
+      const closing = f.owner.close().then(() => {
+        drained = true;
+      });
       expect(await result).toContain("closed");
+      expect(drained).toBe(false);
+      for (const callback of f.callbacks) callback(new Error("closed send"));
+      await closing;
+      expect(drained).toBe(true);
       await expect(f.owner.prepareComputer(f.input)).rejects.toThrow("closed");
     } finally {
       for (const callback of f.callbacks) callback(new Error("late closed send"));

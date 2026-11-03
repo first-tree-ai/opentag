@@ -150,6 +150,8 @@ export class ProviderCliReconcileOwner {
   readonly #agentReconcileSeq = new Map<string, number>();
   readonly #observedGeneration = new Map<string, number>();
   readonly #transitionEpoch = new Map<string, number>();
+  readonly #tasks = new Set<Promise<void>>();
+  #closing: Promise<void> | undefined;
   #closed = false;
 
   constructor(
@@ -195,10 +197,17 @@ export class ProviderCliReconcileOwner {
         return `provider-cli:${typed.integrationId}:${typed.credentialGeneration}`;
       },
       handle: (frame, context) =>
-        this.#handle(
-          frame as ProviderCliArtifactStatusFrame | ProviderCliPrewarmResultFrame | ProviderCliValidationResultFrame,
-          context,
-        ),
+        this.#closed
+          ? Promise.resolve(undefined)
+          : this.#track(
+              this.#handle(
+                frame as
+                  | ProviderCliArtifactStatusFrame
+                  | ProviderCliPrewarmResultFrame
+                  | ProviderCliValidationResultFrame,
+                context,
+              ),
+            ),
       failureResult: () => undefined,
       overloadResult: () => undefined,
     };
@@ -206,9 +215,14 @@ export class ProviderCliReconcileOwner {
 
   async onComputerRegistered(input: { computerId: string; installationId: string; instanceId: string }): Promise<void> {
     if (this.#closed) return;
+    return this.#track(this.#registerComputer(input));
+  }
+
+  async #registerComputer(input: { computerId: string; installationId: string; instanceId: string }): Promise<void> {
     const agentSeq = new Map(this.#agentReconcileSeq);
     await this.#resetComputer(input.computerId);
     await this.#preparation.inspect(input);
+    if (this.#closed) return;
     const requirements = await this.#bindings.listActiveProviderCliRequirements(input.computerId);
     if (!this.#connectionMatches(input.computerId, input.instanceId, input.installationId)) return;
     if (
@@ -240,6 +254,10 @@ export class ProviderCliReconcileOwner {
 
   async onActiveBindingChanged(input: { agentId: string; computerId: string }): Promise<void> {
     if (this.#closed) return;
+    return this.#track(this.#activeBindingChanged(input));
+  }
+
+  async #activeBindingChanged(input: { agentId: string; computerId: string }): Promise<void> {
     const seq = this.#beginAgentReconcile(input.computerId, input.agentId);
     const instanceId = this.#registry.currentInstanceId(input.computerId);
     if (!instanceId) return;
@@ -331,6 +349,15 @@ export class ProviderCliReconcileOwner {
     runtimeProvider?: AgentRuntimeProvider;
   }): Promise<void> {
     if (this.#closed) return;
+    return this.#track(this.#agentPlacementChanged(input));
+  }
+
+  async #agentPlacementChanged(input: {
+    agentId: string;
+    previousComputerId?: string;
+    computerId?: string;
+    runtimeProvider?: AgentRuntimeProvider;
+  }): Promise<void> {
     if (input.previousComputerId && input.previousComputerId !== input.computerId) {
       this.#beginAgentReconcile(input.previousComputerId, input.agentId);
       await this.#retireAgentOnComputer(input.agentId, input.previousComputerId);
@@ -369,12 +396,34 @@ export class ProviderCliReconcileOwner {
     await task;
   }
 
-  close(): void {
+  close(): Promise<void> {
+    if (this.#closing) return this.#closing;
     this.#closed = true;
+    const preparation = this.#preparation.close();
+    for (const key of [...this.#requests.keys()]) void this.#retireRequest(key);
+    this.#closing = this.#drain(preparation);
+    return this.#closing;
+  }
+
+  async #drain(preparation: Promise<void>): Promise<void> {
+    await Promise.allSettled([
+      preparation,
+      ...this.#inflightFresh.values(),
+      ...this.#inflightPrepare.values(),
+      ...this.#requestGates.values(),
+    ]);
+    while (this.#tasks.size > 0) await Promise.allSettled([...this.#tasks]);
     this.#inflightFresh.clear();
     this.#inflightPrepare.clear();
-    for (const key of [...this.#requests.keys()]) void this.#retireRequest(key);
-    this.#preparation.close();
+  }
+
+  #track(operation: Promise<void>): Promise<void> {
+    this.#tasks.add(operation);
+    void operation.then(
+      () => this.#tasks.delete(operation),
+      () => this.#tasks.delete(operation),
+    );
+    return operation;
   }
 
   async #dispatchRequirement(
@@ -791,7 +840,7 @@ export class ProviderCliReconcileOwner {
 
   async #issueGrant(current: CurrentRequest): Promise<void> {
     if (current.grantIssue) return current.grantIssue;
-    const task = this.#performIssueGrant(current).finally(() => {
+    const task = this.#track(this.#performIssueGrant(current)).finally(() => {
       if (current.grantIssue === task) current.grantIssue = undefined;
     });
     current.grantIssue = task;
@@ -1274,7 +1323,7 @@ export class ProviderCliReconcileOwner {
     const current = this.#requests.get(key);
     this.#bumpTransition(key);
     if (current) this.#dropRequest(current);
-    if (current) void this.#sendCancel(current);
+    if (current) void this.#track(this.#sendCancel(current));
   }
 
   #dropRequest(current: CurrentRequest): void {

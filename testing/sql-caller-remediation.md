@@ -310,3 +310,36 @@ independent review P2 is corrected at 7b1b81fe and reviewer-confirmed closed.
 AG-F9 component reclamation is verified locally. Thirty-six defects and all
 nine simplifications are repaired at component scope; final IM-F3 remains,
 including async admission/stop races and listener lifetime through owner drain.
+
+## Final IM-F3 composition work
+
+[Provider preparation drain](verification/sql-caller-repairs-23.md) is verified at
+component scope. It introduces an awaitable close port; actual route/main wiring
+still needs to join it. [Independent review 4](verification/sql-caller-independent-review-04.md)
+records batches 19–22 and the pinned shutdown dependency findings.
+
+Remaining work reuses each existing owner and applicable signal/task collection:
+
+- Runtime Domain: stop admission, join preparations/completions and custody releases.
+- RuntimeSession / RunnerConnection: join registration, heartbeat, frame/business,
+  disconnect and transport-close work; socket close alone is insufficient.
+- Credential owner / provider transport: stop admission, join broker/stream and
+  revalidation SQL, then unsubscribe execution/URL-handle listeners.
+- IM worker / Inbox: join actual operation work after deadline grace, queued drop,
+  maintenance, overflow and admitted ingest continuations.
+- Feishu: replace maintaining flag with its pass Promise; join detached observation,
+  enrichment, inbound and setup work before releasing the final lease and pool.
+- Slack setup / Context Tree: join complete high-level runs, including final SQL
+  after a remote result or client disconnect; do not track every internal query.
+- Approval poll/request work, OAuth callback probe and Cloud detach proof cleanup:
+  join the actual detached Promise at their existing owning boundary.
+- Main / actual async execution plugin: root preClose initiates all stop ports
+  without throwing/blocking websocket preClose; onClose joins them; the earliest
+  registered final hook releases readiness/pool/telemetry even after close errors.
+
+Final native Docker verification must use actual createApp child-plugin boot,
+SQL barriers, disconnected clients, late results and close failures, and inspect
+final custody/leases/transactions and absence of post-disposal queries. Ordinary
+single-query HTTP calls and non-SQL Channel polling do not acquire extra owner
+collections merely to make the checklist uniform. IM-F3 remains open until that
+composition and the remaining observations are resolved and reviewed.

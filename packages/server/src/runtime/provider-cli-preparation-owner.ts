@@ -27,6 +27,8 @@ interface Preparation extends PreparationTarget {
 export class ProviderCliPreparationOwner {
   readonly #current = new Map<string, Preparation>();
   readonly #operations = new Set<Preparation>();
+  readonly #tasks = new Set<Promise<unknown>>();
+  #closing: Promise<void> | undefined;
   #closed = false;
   constructor(
     readonly registry: ConnectionRegistry,
@@ -35,7 +37,8 @@ export class ProviderCliPreparationOwner {
   ) {}
 
   inspect(input: Omit<PreparationTarget, "runtimeProvider">): Promise<boolean> {
-    return this.#dispatch(input);
+    if (this.#closed) return Promise.resolve(false);
+    return this.#track(this.#dispatch(input));
   }
 
   async prepare(input: PreparationTarget, retry: (signal: AbortSignal) => Promise<boolean>): Promise<void> {
@@ -60,7 +63,7 @@ export class ProviderCliPreparationOwner {
     );
     current.timer.unref();
     try {
-      await Promise.race([this.#prepare(current, retry), deadline]);
+      await Promise.race([this.#track(this.#prepare(current, retry)), deadline]);
     } finally {
       current.pending = false;
       this.#release(current);
@@ -144,10 +147,22 @@ export class ProviderCliPreparationOwner {
     }
   }
 
-  close(): void {
+  close(): Promise<void> {
+    if (this.#closing) return this.#closing;
     this.#closed = true;
     for (const current of this.#operations)
       this.#cancel(current, new Error("The Computer preparation owner is closed"));
+    this.#closing = Promise.allSettled([...this.#tasks]).then(() => undefined);
+    return this.#closing;
+  }
+
+  #track<T>(operation: Promise<T>): Promise<T> {
+    this.#tasks.add(operation);
+    void operation.then(
+      () => this.#tasks.delete(operation),
+      () => this.#tasks.delete(operation),
+    );
+    return operation;
   }
 
   #cancel(current: Preparation, error: Error): void {

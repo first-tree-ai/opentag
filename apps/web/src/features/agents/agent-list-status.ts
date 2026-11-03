@@ -1,5 +1,5 @@
 import { LIVE_REFETCH_INTERVAL_MS } from "../../query/live.js";
-import type { AgentAvailability, AgentListItem } from "./agent-model.js";
+import type { AgentAvailability, AgentDetailView, AgentListItem } from "./agent-model.js";
 
 /**
  * Whether an Agent's current evidence is a moment of not knowing rather than an answer.
@@ -29,8 +29,8 @@ export function isTransientAgentAvailability(agent: Pick<AgentListItem, "availab
  * settled answer behind it is presented as ready, because it resolves to an answer the list then
  * shows; unreadable evidence with nothing settled behind it stays honestly unknown.
  *
- * Only the list does this. The Agent's own page keeps the exact current dependency states, where a
- * reader who is diagnosing an Agent needs them.
+ * The Agent home's status card follows the same rule through `observeAgentDetailStatus`, so the two
+ * never disagree about one Agent.
  */
 export function steadyAgentListItem(agent: AgentListItem, lastSettled: AgentListItem | undefined): AgentListItem {
   if (!isTransientAgentAvailability(agent)) return agent;
@@ -77,5 +77,53 @@ export function observeAgentListStatus(
   return {
     shown: steadyAgentListItem(agent, entry.settled),
     refreshing: entry.settled !== undefined && now - transientSince >= AGENT_STATUS_REFRESHING_AFTER_MS,
+  };
+}
+
+/** The detail view's own transient evidence: the same moments of not knowing the list holds through. */
+export function isTransientAgentDetail(agent: Pick<AgentDetailView, "availability" | "messaging">): boolean {
+  const { availability } = agent;
+  return (
+    agent.messaging.kind === "unconfirmed" ||
+    availability.state === "unconfirmed" ||
+    availability.reason === "handoff_checking" ||
+    (availability.reason === "runtime_unavailable" && availability.dependencies.runtime.status === "checking")
+  );
+}
+
+/** What the Agent home remembers about its Agent between reads. */
+export type AgentDetailStatusMemory = { settled?: AgentDetailView; transientSince?: number };
+
+/**
+ * Records one read of an Agent for its home status card and answers what the card shows, by the
+ * list's rule: transient evidence keeps the last settled dependency states, a confirmed problem
+ * replaces them at once, and a card held for a full refresh interval says it is refreshing. With
+ * nothing settled yet the card shows the current read as it is.
+ */
+export function observeAgentDetailStatus(
+  memory: AgentDetailStatusMemory,
+  agent: AgentDetailView,
+  now: number,
+): { shown: AgentDetailView; refreshing: boolean } {
+  if (memory.settled && memory.settled.id !== agent.id) {
+    memory.settled = undefined;
+    memory.transientSince = undefined;
+  }
+  if (!isTransientAgentDetail(agent)) {
+    memory.settled = agent;
+    memory.transientSince = undefined;
+    return { shown: agent, refreshing: false };
+  }
+  memory.transientSince ??= now;
+  const settled = memory.settled;
+  if (!settled) return { shown: agent, refreshing: false };
+  return {
+    shown: {
+      ...agent,
+      availability: settled.availability,
+      messaging: settled.messaging,
+      computerConnectionStatus: settled.computerConnectionStatus,
+    },
+    refreshing: now - memory.transientSince >= AGENT_STATUS_REFRESHING_AFTER_MS,
   };
 }

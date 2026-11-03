@@ -29,6 +29,7 @@ import { useAgentSetupStageReport } from "../analytics/milestones.js";
 import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, browserApi, CancelledRequestError, withDeadline } from "../api.js";
 import { AgentComputerChoice, type AgentComputerInventoryAdapter } from "../features/agents/agent-computer-choice.js";
 import { platformLabel } from "../features/agents/agent-presentation.js";
+import { claimAgentRecheck } from "../features/agents/agent-recheck.js";
 import {
   type ComputerConnectAdapter,
   createAgentTargetedComputerConnectAdapter,
@@ -209,9 +210,10 @@ type SetupPollClass = "bounded" | "unbounded" | undefined;
 /**
  * How a snapshot the outside world is still moving should be watched. Messaging authorizing,
  * waiting-handoff, and an offline Computer keep the existing unbounded beat. Connected local
- * preparation (`needs-runtime` or `needs-provider-clis`) always uses the finite read window —
- * GET only, never `refreshPreparation` and never an automatic install. The rows stay truthful
- * while that window is open; genuine waiting/checking copy is a separate visual decision.
+ * preparation (`needs-runtime` or `needs-provider-clis`) uses the finite read window — GET only,
+ * never an automatic install. The one exception is entering the step: `useRecheckOnEntry` asks the
+ * Computer to check again once, so an admin who just fixed something on the computer sees it
+ * recognised without finding a button. The polling itself never calls `refreshPreparation`.
  */
 function snapshotPollClass(snapshot: AgentSetupSnapshot): SetupPollClass {
   if (snapshot.messaging.kind === "authorizing" || snapshot.messaging.kind === "waiting-handoff") return "unbounded";
@@ -546,6 +548,39 @@ interface AgentSetupController {
   readonly pollExhausted: boolean;
 }
 
+/**
+ * Whether entering the step should ask the Computer to check again: a connected local Computer
+ * whose runtime or Provider CLIs are not ready, and no probe already running. A Cloud or offline
+ * Computer has nothing it can re-probe.
+ */
+function setupNeedsRecheckOnEntry(snapshot: AgentSetupSnapshot): boolean {
+  if (snapshot.computer.kind !== "bound" || snapshot.computer.connectionStatus !== "online") return false;
+  if (snapshot.stage !== "needs-runtime" && snapshot.stage !== "needs-provider-clis") return false;
+  if (snapshot.runtime.kind === "waiting") return false;
+  return !(snapshot.runtime.kind === "observed" && snapshot.runtime.status === "checking");
+}
+
+/** One re-check per entry, shared with the Agent home's one-minute window per Agent. */
+function useRecheckOnEntry(
+  agentId: string,
+  adapter: AgentSetupAdapter,
+  snapshot: AgentSetupSnapshot | undefined,
+  idle: boolean,
+): void {
+  const asked = useRef(false);
+  const needsRecheck = snapshot !== undefined && setupNeedsRecheckOnEntry(snapshot);
+  useEffect(() => {
+    if (asked.current || !needsRecheck || !idle) return;
+    asked.current = true;
+    if (!claimAgentRecheck(agentId, Date.now())) return;
+    // The step's bounded poll is already reading this state, so the answer arrives on its next read.
+    adapter.refreshPreparation(agentId).catch((error: unknown) => {
+      // Best effort: the step's own reads and Check again still work whether or not it was asked.
+      console.warn("Agent re-check on entry was not accepted", error);
+    });
+  }, [adapter, agentId, idle, needsRecheck]);
+}
+
 function useAgentSetup(
   agentId: string,
   adapter: AgentSetupAdapter,
@@ -564,6 +599,7 @@ function useAgentSetup(
       ? snapshot.messaging
       : undefined,
   );
+  useRecheckOnEntry(agentId, adapter, snapshot, actions.busyKey === undefined);
   const pollClass = snapshot === undefined ? undefined : snapshotPollClass(snapshot);
   const pollBudget = useRef(BOUNDED_POLL_ATTEMPTS);
   const pollWindowStartedAt = useRef<number | undefined>(undefined);

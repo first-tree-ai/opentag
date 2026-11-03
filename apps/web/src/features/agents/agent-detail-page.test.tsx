@@ -150,3 +150,57 @@ describe("Agent home for a Cloud-bound Agent", () => {
     expect(screen.getAllByRole("button", { name: "Recover workspace" })).not.toHaveLength(0);
   });
 });
+
+describe("Agent home for a Local Agent", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  function stubLocalAgent(runtimeStatus: "ready" | "install", activity: AgentDetail["activity"] = { state: "idle" }) {
+    stubCloudAgent();
+    const local = { ...agent, runtimeProvider: "codex" as const, activity };
+    vi.mocked(browserApi.agent).mockResolvedValue(local);
+    vi.mocked(browserApi.agents).mockResolvedValue({
+      agents: [{ ...local, usage: { windowDays: 30, tasks: 0, failed: 0, tokens: 0 } }],
+    });
+    vi.mocked(browserApi.computers).mockResolvedValue({
+      computers: [
+        {
+          ...cloudComputer,
+          kind: "local",
+          displayName: "Review Mac",
+          platform: "darwin",
+          providerReadiness: [{ provider: "codex", status: runtimeStatus, observedAt: TIME }],
+        } as AccountComputerSummary,
+      ],
+    });
+    return vi.spyOn(browserApi, "refreshAgentSetup").mockResolvedValue(undefined);
+  }
+
+  it("asks the online Computer to check again once on entry when the runtime is not ready", async () => {
+    const refresh = stubLocalAgent("install");
+    const first = await renderAgentHome();
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    expect(refresh).toHaveBeenCalledWith(AGENT_ID);
+    first.unmount();
+
+    // A second entry inside the one-minute window does not ask again.
+    await renderAgentHome();
+    expect(await screen.findByRole("region", { name: "Agent status" })).toBeTruthy();
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not ask a ready Agent's Computer to check again", async () => {
+    const refresh = stubLocalAgent("ready");
+    await renderAgentHome();
+    expect(await screen.findByRole("region", { name: "Agent status" })).toBeTruthy();
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("shows the running-Task line the Agent list shows", async () => {
+    stubLocalAgent("ready", { state: "working", startedAt: TIME, runningTaskCount: 2 });
+    await renderAgentHome();
+    const status = await screen.findByRole("region", { name: "Agent status" });
+    await waitFor(() =>
+      expect(status.querySelector('[data-ui="agent-status-activity"]')?.textContent).toBe("2 tasks running"),
+    );
+  });
+});

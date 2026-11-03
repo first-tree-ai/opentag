@@ -1,10 +1,12 @@
 import { Link } from "@tanstack/react-router";
-import type { ReactNode } from "react";
+import { type ReactNode, useRef } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Button, Icon, Popover } from "../../ui/design-system.js";
+import { type AgentDetailStatusMemory, observeAgentDetailStatus } from "./agent-list-status.js";
 import type { AgentDetailView } from "./agent-model.js";
 import {
   type AgentDependencyStatus,
+  agentActivityDetail,
   agentComputerStatus,
   agentMessagingStatus,
   agentRuntimeIssue,
@@ -14,7 +16,15 @@ import {
 } from "./agent-presentation.js";
 
 /** Two dependencies with two lines each, using the existing healthy layout's space in every state. */
-export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
+export function AgentStatusCard({ agent: current }: { agent: AgentDetailView }) {
+  /*
+   * The card holds the last settled dependency states through transient evidence, exactly as the
+   * Agent list does, so a background re-check never flickers it and the two never disagree. Written
+   * during render for the same reason as the list: the shown state must not lag the read behind it.
+   */
+  const memory = useRef<AgentDetailStatusMemory>({});
+  const { shown: agent, refreshing } = observeAgentDetailStatus(memory.current, current, Date.now());
+  const activity = agentActivityDetail(agent, agent.availability.state === "ready");
   const computer = agentRuntimeIssue(agent) ?? agentComputerStatus(agent);
   const binding = agent.messaging.kind === "ready" ? agent.messaging.value : undefined;
   const provider = runtimeProviderName(agent.runtimeProvider);
@@ -61,6 +71,11 @@ export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
           status={agentMessagingStatus(agent)}
         />
       </ul>
+      {activity || refreshing ? (
+        <p className="mt-4 text-sm text-kumo-subtle" data-ui="agent-status-activity">
+          {[activity, refreshing ? m.agents_card_status_refreshing() : undefined].filter(Boolean).join(" · ")}
+        </p>
+      ) : null}
     </section>
   );
 }

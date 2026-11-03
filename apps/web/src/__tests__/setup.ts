@@ -1,6 +1,7 @@
 import { cleanup } from "@testing-library/react";
 import { afterEach, beforeEach, vi } from "vitest";
 import { resetReportedMilestones } from "../analytics/milestones.js";
+import { resetAgentRechecks } from "../features/agents/agent-recheck.js";
 import { overwriteGetLocale, overwriteSetLocale } from "../paraglide/runtime.js";
 
 // Tests assert the published English copy; pin locale resolution and disable navigation in jsdom.
@@ -88,6 +89,7 @@ afterEach(async () => {
   // Milestones are reported once per document as well as once per browser, and the per-document
   // floor is module state that outlives a render.
   resetReportedMilestones();
+  resetAgentRechecks();
   // A popup that was still open when its tree unmounted leaves behind the scroll lock it applied to
   // <body>. Nothing else in these tests writes an inline body style, so the next test starts in a
   // document no earlier test has locked.

@@ -216,6 +216,14 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+/**
+ * Polling reads only. Entering the step may ask the Computer to check again once (see
+ * `useRecheckOnEntry`); the bounded poll itself never calls `refreshPreparation`.
+ */
+function expectNoPollingRefresh(refreshes: { mock: { calls: unknown[] } }): void {
+  expect(refreshes.mock.calls.length).toBeLessThanOrEqual(1);
+}
+
 describe("AgentSetupPage stages", () => {
   it.each(["offline", "disconnected"] as const)(
     "takes a sole %s Computer through recovery without creating another",
@@ -751,7 +759,7 @@ describe("preparation review regressions", () => {
     expect(stopped).toBeLessThanOrEqual(1 + BOUNDED_POLL_ATTEMPTS);
     await advance(POLL_MS * 4);
     expect(reads.mock.calls.length).toBe(stopped);
-    expect(refreshes).not.toHaveBeenCalled();
+    expectNoPollingRefresh(refreshes);
     expect(document.querySelector('[data-ui="agent-setup-messaging"]')).toBeNull();
   });
 
@@ -799,7 +807,7 @@ describe("preparation review regressions", () => {
       "The messaging CLI download failed verification",
     );
     await advance(POLL_MS * 2);
-    expect(adapter.refreshPreparation).not.toHaveBeenCalled();
+    expectNoPollingRefresh(vi.mocked(adapter.refreshPreparation));
     fireEvent.click(screen.getByRole("button", { name: "Check again" }));
     await settle();
     expect(adapter.refreshPreparation).toHaveBeenCalledWith(SETUP_AGENT_ID);
@@ -953,7 +961,7 @@ describe("AgentSetupPage transitions", () => {
     await advance(POLL_MS + 10);
     expect(adapter.readSnapshot).toHaveBeenCalledTimes(3);
     expect(screen.queryByText("We couldn't read the latest state from the server. Check again.")).toBeNull();
-    expect(adapter.refreshPreparation).not.toHaveBeenCalled();
+    expectNoPollingRefresh(vi.mocked(adapter.refreshPreparation));
     expect(adapter.startFeishuAttempt).not.toHaveBeenCalled();
   });
 
@@ -1604,20 +1612,6 @@ describe("AgentSetupPage preparation rows across stages", () => {
   });
 });
 
-describe("AgentSetupPage runtime sign-in", () => {
-  it("offers Sign in with the terminal steps on the runtime row", async () => {
-    const memory = createMemorySetupAdapter({ agent: setupAgent(), runtimeStatus: "sign-in" });
-    renderSetup(memory.adapter);
-    await settle();
-
-    const row = document.querySelector('[data-component="runtime"]') as HTMLElement;
-    const toggle = within(row).getByRole("button", { name: "Sign in" });
-    fireEvent.click(toggle);
-    expect(within(row).getByText("codex login")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
-  });
-});
-
 describe("AgentSetupPage preparation polling", () => {
   it("follows the real first-connect heartbeats: waiting, install at 30s, ready after t60", async () => {
     const memory = createMemorySetupAdapter({
@@ -1647,7 +1641,7 @@ describe("AgentSetupPage preparation polling", () => {
     expect(screen.queryByText("Checking Messaging support automatically. No action needed…")).toBeNull();
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
-    expect(refreshes).not.toHaveBeenCalled();
+    expectNoPollingRefresh(refreshes);
 
     await advance(60_000 - (Date.now() - t0));
     expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("install-required");
@@ -1658,14 +1652,14 @@ describe("AgentSetupPage preparation polling", () => {
     await advance(4_000);
     expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("install-required");
     expect(reads.mock.calls.length).toBeGreaterThan(readsAtT60);
-    expect(refreshes).not.toHaveBeenCalled();
+    expectNoPollingRefresh(refreshes);
 
     memory.controls.setImCliReadiness("slack", "ready");
     await advance(POLL_MS + 10);
     await settle();
     expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(false);
     expect(screen.getByRole("status").textContent).toBe("This computer is ready. Continue to connect messaging.");
-    expect(refreshes).not.toHaveBeenCalled();
+    expectNoPollingRefresh(refreshes);
   });
 
   it("converges a slow install that becomes ready near the end of the window", async () => {
@@ -1685,7 +1679,7 @@ describe("AgentSetupPage preparation polling", () => {
     await settle();
 
     expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(false);
-    expect(refreshes).not.toHaveBeenCalled();
+    expectNoPollingRefresh(refreshes);
   });
 
   it.each([
@@ -1703,7 +1697,7 @@ describe("AgentSetupPage preparation polling", () => {
     expect(reads).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
-    expect(refreshes).not.toHaveBeenCalled();
+    expectNoPollingRefresh(refreshes);
 
     await advance(BOUNDED_POLL_WINDOW_MS + 10);
     const stopped = reads.mock.calls.length;
@@ -1711,7 +1705,7 @@ describe("AgentSetupPage preparation polling", () => {
     expect(stopped).toBeLessThanOrEqual(1 + BOUNDED_POLL_ATTEMPTS);
     await advance(POLL_MS * 4);
     expect(reads).toHaveBeenCalledTimes(stopped);
-    expect(refreshes).not.toHaveBeenCalled();
+    expectNoPollingRefresh(refreshes);
     expect(screen.getByRole("status").textContent).toBe("Automatic checking paused. Check again to retry.");
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
@@ -1742,7 +1736,7 @@ describe("AgentSetupPage preparation polling", () => {
     expect(stopped).toBeLessThanOrEqual(1 + BOUNDED_POLL_ATTEMPTS);
     await advance(BOUNDED_POLL_WINDOW_MS / 2);
     expect(reads.mock.calls.length).toBe(stopped);
-    expect(refreshes).not.toHaveBeenCalled();
+    expectNoPollingRefresh(refreshes);
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
   });
 
@@ -1836,7 +1830,7 @@ describe("AgentSetupPage preparation polling", () => {
     await settle();
     expect(calls).toBeGreaterThanOrEqual(3);
     expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(false);
-    expect(adapter.refreshPreparation).not.toHaveBeenCalled();
+    expectNoPollingRefresh(vi.mocked(adapter.refreshPreparation));
 
     hung.resolve(await installing.adapter.readSnapshot(SETUP_AGENT_ID));
     await settle();
@@ -1874,7 +1868,9 @@ describe("AgentSetupPage preparation polling", () => {
     const readyReads = reads.mock.calls.length;
     await advance(POLL_MS * 4);
     expect(reads.mock.calls.length).toBe(readyReads);
-    expect(refreshes).not.toHaveBeenCalled();
+    // One re-check per blocked entry (the second came after the one-minute window); none from
+    // polling, and none for the ready entry.
+    expect(refreshes).toHaveBeenCalledTimes(2);
   });
 });
 

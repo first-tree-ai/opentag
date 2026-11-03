@@ -1,5 +1,9 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
+import { useEffect, useRef } from "react";
+import { browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
+import { queryKeys } from "../../query/keys.js";
 import { buttonClassName, Icon, StatusIndicator, Text } from "../../ui/design-system.js";
 import { AgentUsageOverview } from "../agent-usage.js";
 import { ImFeedbackList } from "../im-feedback-list.js";
@@ -10,6 +14,7 @@ import { AgentAvatar } from "./agent-avatar.js";
 import type { AgentDetailView } from "./agent-model.js";
 import { agentAvailabilityRecovery, agentRecoveryMessage, agentStatusPresentation } from "./agent-presentation.js";
 import { useAgentDetailView } from "./agent-queries.js";
+import { agentHomeNeedsRecheck, claimAgentRecheck } from "./agent-recheck.js";
 import { agentDetailLink, agentSettingsLink } from "./agent-routes.js";
 import { AgentSchedulesSection } from "./agent-schedules-section.js";
 import { AgentStatusCard } from "./agent-status-card.js";
@@ -30,6 +35,7 @@ export function AgentDetailPage({
     <AsyncState state={state}>
       {(agent) => (
         <section className="grid gap-6">
+          <AgentRecheckOnEntry agent={agent} />
           <AgentObjectHeader agent={agent} showBackLink={false} />
           <div className="grid gap-6">
             <AgentLifecycleNotice agent={agent} />
@@ -52,6 +58,36 @@ export function AgentDetailPage({
       )}
     </AsyncState>
   );
+}
+
+/**
+ * Asks the Agent's Computer to check its runtime and Provider CLIs again, once per entry, when the
+ * home opens on a Local Agent whose Computer is online but whose runtime reads not ready or unknown
+ * (see `agent-recheck.ts` for when and why). The answer arrives through the normal live reads; the
+ * request only shortens the wait, so a refused request changes nothing the page shows.
+ */
+function AgentRecheckOnEntry({ agent }: { agent: AgentDetailView }) {
+  const queryClient = useQueryClient();
+  const asked = useRef(false);
+  const needsRecheck = agentHomeNeedsRecheck(agent);
+  useEffect(() => {
+    if (asked.current || !needsRecheck) return;
+    asked.current = true;
+    if (!claimAgentRecheck(agent.id, Date.now())) return;
+    browserApi
+      .refreshAgentSetup(agent.id)
+      .then(() =>
+        Promise.all([
+          queryClient.invalidateQueries({ queryKey: queryKeys.computers() }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) }),
+        ]),
+      )
+      .catch((error: unknown) => {
+        // Best effort: the live reads keep the page current whether or not the Computer was asked.
+        console.warn("Agent re-check on entry was not accepted", error);
+      });
+  }, [agent.id, needsRecheck, queryClient]);
+  return null;
 }
 
 export function AgentObjectHeader({

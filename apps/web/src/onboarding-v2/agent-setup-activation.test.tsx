@@ -48,9 +48,13 @@ describe("durable Feishu activation presentation", () => {
       const check = vi.spyOn(memory.adapter, "checkFeishuAttempt");
       const view = mount(memory.adapter);
       await settle();
+      // Entering with a runtime that needs recovery on an online Computer already asked once.
+      const onEntry = condition === "runtime" ? 1 : 0;
+      expect(refresh).toHaveBeenCalledTimes(onEntry);
       fireEvent.click(screen.getByRole("button", { name: "Check again" }));
       await settle();
-      expect(refresh).toHaveBeenCalledExactlyOnceWith(SETUP_AGENT_ID);
+      expect(refresh).toHaveBeenCalledTimes(onEntry + 1);
+      expect(refresh).toHaveBeenLastCalledWith(SETUP_AGENT_ID);
       expect(check).not.toHaveBeenCalled();
       view.client.clear();
     },

@@ -1,6 +1,6 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
-  "onboarding_v2_agent_name_charset_error": "只能使用小写字母、数字和连字符，且必须以字母或数字开头。",
+  "onboarding_v2_agent_name_charset_error": "名称中有不支持的字符。",
   "onboarding_v2_agent_name_empty_error": "你的 Agent 需要一个名称。",
   "onboarding_v2_agent_name_hint": "使用小写字母、数字和连字符（-），以字母或数字开头。",
   "onboarding_v2_agent_name_label": "Agent 名称",

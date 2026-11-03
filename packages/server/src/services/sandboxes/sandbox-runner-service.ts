@@ -504,7 +504,7 @@ export class SandboxRunnerService {
       )
       .returning();
     if (!updated) throw runnerConflict("The Sandbox environment changed concurrently");
-    this.#allocationStartMeta.set(updated.id, {
+    this.#setAllocationStartMeta(updated.id, {
       generation,
       mode: "cold_start",
       startedAtMs: now.getTime(),
@@ -1008,14 +1008,13 @@ export class SandboxRunnerService {
         resourceUid: current.currentResourceUid,
         runnerVersion: readiness.runnerVersion,
         startupMode: "reconnect",
-        startupDurationMs: 0,
       });
       return "ready";
     }
     if (current.lifecycle !== "preparing") return "stale";
     const existingStartMeta = this.#allocationStartMeta.get(current.id);
     if (!existingStartMeta || existingStartMeta.generation !== current.environmentGeneration) {
-      this.#allocationStartMeta.set(current.id, {
+      this.#setAllocationStartMeta(current.id, {
         generation: current.environmentGeneration,
         mode: "cold_start",
         startedAtMs: current.lastActivityAt.getTime(),
@@ -1137,7 +1136,6 @@ export class SandboxRunnerService {
       resourceName: rechecked.currentResourceName,
       resourceUid: rechecked.currentResourceUid,
       startupMode: "reconnect",
-      startupDurationMs: 0,
     });
     return "ready";
   }
@@ -2506,7 +2504,7 @@ export class SandboxRunnerService {
       throw runnerConflict("The Sandbox environment changed while the physical Instance was being adopted");
     }
     this.#allocationStartMeta.delete(candidate.sandboxId);
-    this.#allocationStartMeta.set(adopted.id, {
+    this.#setAllocationStartMeta(adopted.id, {
       generation: adopted.environmentGeneration,
       mode: "warm_reuse",
       startedAtMs: now.getTime(),
@@ -2775,6 +2773,18 @@ export class SandboxRunnerService {
         environmentGeneration: generation,
       }),
     );
+  }
+
+  #setAllocationStartMeta(
+    sandboxId: string,
+    meta: { generation: number; mode: "cold_start" | "warm_reuse"; startedAtMs: number },
+  ): void {
+    this.#allocationStartMeta.delete(sandboxId);
+    if (this.#allocationStartMeta.size >= 1_024) {
+      const oldestKey = this.#allocationStartMeta.keys().next().value;
+      if (oldestKey !== undefined) this.#allocationStartMeta.delete(oldestKey);
+    }
+    this.#allocationStartMeta.set(sandboxId, meta);
   }
 
   #emitLifecycleLog(operation: string, fields: Record<string, unknown>, level: "info" | "warn" = "info"): void {

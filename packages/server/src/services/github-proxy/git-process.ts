@@ -135,7 +135,6 @@ export async function runTrustedProcess(
     const resolvedCode = code ?? 1;
     const stdoutBuffer = Buffer.concat(output);
     perfHandle?.complete({
-      outcome: resolvedCode === 0 ? "success" : "failure",
       statusCode: resolvedCode,
     });
     return { code: resolvedCode, stdout: stdoutBuffer };

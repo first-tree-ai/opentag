@@ -3,6 +3,7 @@ import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
+import { createPerformanceLogger, type PerformanceLogger } from "../observability/performance-logger.js";
 import { RuntimeCapabilityStore } from "../runtime-credentials/capability-store.js";
 import {
   type RuntimeConnectionFence,
@@ -134,6 +135,7 @@ async function setup(
   adapter: ProviderProxyAdapter,
   options: {
     logger?: { warn(record: Record<string, unknown>, message: string): void };
+    performanceLogger?: PerformanceLogger;
     connectionFence?: RuntimeConnectionFence;
     brokerConnectionFence?: RuntimeConnectionFence;
     cloud?: boolean;
@@ -200,6 +202,7 @@ async function setup(
     executions,
     ...(options.connectionFence ? { connectionFence: options.connectionFence } : {}),
     ...(options.logger ? { logger: options.logger } : {}),
+    ...(options.performanceLogger ? { performanceLogger: options.performanceLogger } : {}),
     authTimeoutMs: 150,
     revalidateIntervalMs: options.revalidateIntervalMs ?? 60_000,
     ...(options.chunkMaxBytes !== undefined ? { chunkMaxBytes: options.chunkMaxBytes } : {}),
@@ -269,7 +272,18 @@ async function drainBinaryUntilFrame(queue: MessageQueue, type: string): Promise
 
 describe("RuntimeProviderProxyTransport", () => {
   it("authenticates the first-frame ticket and streams a request/response with credits", async () => {
-    const state = await setup(echoAdapter());
+    const perfRecords: Array<Record<string, unknown>> = [];
+    const baseLogger = {
+      debug: (payload: Record<string, unknown>) => perfRecords.push(payload),
+      info: (payload: Record<string, unknown>) => perfRecords.push(payload),
+      warn: (payload: Record<string, unknown>) => perfRecords.push(payload),
+      error: (payload: Record<string, unknown>) => perfRecords.push(payload),
+    };
+    const performanceLogger = createPerformanceLogger(
+      () => baseLogger as unknown as Parameters<typeof createPerformanceLogger>[0] extends () => infer R ? R : never,
+      { enabled: true, level: "debug", slowThresholdMs: 1_000 },
+    );
+    const state = await setup(echoAdapter(), { performanceLogger });
     const { ticket } = state.tickets.issue({
       executionId: state.record.executionId,
       computerId: COMPUTER,
@@ -291,6 +305,19 @@ describe("RuntimeProviderProxyTransport", () => {
     expect(chunk.data.subarray(0, 4).readUInt32BE(0)).toBe(7);
     expect(chunk.data.subarray(4).toString("utf8")).toBe("HELLO");
     expect(await queue.nextJson()).toEqual({ type: "end", streamId: 7 });
+    expect(perfRecords).toContainEqual(
+      expect.objectContaining({
+        module: "runtime-provider-proxy",
+        perfCategory: "ws",
+        operation: "ws.provider_proxy.stream",
+        outcome: "completed",
+        provider: "slack",
+        statusCode: 200,
+        requestBytes: 5,
+        responseBytes: 5,
+        firstByteMs: expect.any(Number),
+      }),
+    );
     socket.close();
   });
 

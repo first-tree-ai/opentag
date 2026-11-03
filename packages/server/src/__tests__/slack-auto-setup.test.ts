@@ -269,12 +269,15 @@ it("correlates results with the authenticated Computer instance and clears bound
   owner.close();
 });
 
-function cloudFixture() {
+function cloudFixture(options: { ttlMs?: number; maxEntries?: number } = {}) {
   const cloudComputerId = randomUUID();
   const cloudAgentId = randomUUID();
+  let currentNow = 1_700_000_000_000;
   let exchangeTeamId = "T1";
   let exchangeRefreshToken: string | undefined = "xoxe-refresh-1";
+  let exchangeExp: number | undefined;
   let rotateError: string | undefined;
+  let rotateExp: number | undefined;
   let createError: string | undefined;
   let createIncludeAppId = false;
   let loseCreate = false;
@@ -301,6 +304,7 @@ function cloudFixture() {
         ok: true,
         token: "xoxe.xoxp-user-1",
         ...(exchangeRefreshToken ? { refresh_token: exchangeRefreshToken } : {}),
+        ...(exchangeExp !== undefined ? { exp: exchangeExp } : {}),
         team_id: exchangeTeamId,
         team_domain: "cloud-team",
       });
@@ -312,6 +316,7 @@ function cloudFixture() {
             ok: true,
             token: "xoxe.xoxp-user-rotated",
             refresh_token: "xoxe-refresh-2",
+            ...(rotateExp !== undefined ? { exp: rotateExp } : {}),
             team_id: "T1",
           }),
     "apps.manifest.validate": () => Response.json({ ok: true }),
@@ -373,7 +378,11 @@ function cloudFixture() {
     if (!handler) throw new Error(`Unexpected Slack method: ${method}`);
     return handler(body);
   });
-  const owner = new CloudSlackAutoSetupOwner({ fetchImpl });
+  const owner = new CloudSlackAutoSetupOwner({
+    fetchImpl,
+    now: () => currentNow,
+    ...options,
+  });
   const run = (input: SlackAutoSetupCommand) =>
     owner.start({ computerId: cloudComputerId, agentId: cloudAgentId, input });
   const authorize = async () => {
@@ -390,14 +399,24 @@ function cloudFixture() {
     fetchImpl,
     cloudComputerId,
     cloudAgentId,
+    now: () => currentNow,
+    advanceTimeMs: (deltaMs: number) => {
+      currentNow += deltaMs;
+    },
     setExchangeTeamId: (value: string) => {
       exchangeTeamId = value;
     },
     setExchangeRefreshToken: (value: string | undefined) => {
       exchangeRefreshToken = value;
     },
+    setExchangeExp: (value: number | undefined) => {
+      exchangeExp = value;
+    },
     setRotateError: (value: string | undefined) => {
       rotateError = value;
+    },
+    setRotateExp: (value: number | undefined) => {
+      rotateExp = value;
     },
     setCreateError: (value: string | undefined, includeAppId = false) => {
       createError = value;
@@ -472,6 +491,10 @@ it("Cloud owner completes ticket exchange, token rotation, app creation, approva
     status: "installed",
     credentials,
   });
+  expect(await f.run({ action: "authorize" })).toEqual({
+    status: "authorized",
+    teamName: "cloud-team",
+  });
   expect(await f.run(callbacksCommand())).toEqual({ status: "connected" });
   expect(f.calls.filter((call) => call.method === "apps.manifest.create")).toHaveLength(1);
   const updateCall = JSON.parse(f.calls.find((call) => call.method === "apps.manifest.update")?.body ?? "{}") as {
@@ -487,14 +510,105 @@ it("Cloud owner completes ticket exchange, token rotation, app creation, approva
     is_enabled: true,
     request_url: "https://qa.example/interactions",
   });
-  expect(await f.run({ action: "authorize" })).toEqual({
+  // Completed callbacks remove the project entry from memory so later callbacks fail closed with manual_required.
+  expect(await f.run(callbacksCommand())).toEqual({
+    status: "failed",
+    code: "manual_required",
+  });
+});
+
+it("Cloud owner skips token rotation while exp is fresh and rotates when near or past exp", async () => {
+  const f = cloudFixture();
+  const baseSeconds = Math.floor(f.now() / 1_000);
+  f.setExchangeExp(baseSeconds + 3_600);
+  f.setRotateExp(baseSeconds + 7_200);
+  await f.authorize();
+  expect(await f.run({ action: "install", displayName: "QA", challenge: "code" })).toEqual({
+    status: "installed",
+    credentials,
+  });
+  // Still well before exp - 300s: install retry skips tooling.tokens.rotate.
+  f.advanceTimeMs(3_000 * 1_000);
+  expect(await f.run({ action: "install", displayName: "QA" })).toEqual({
+    status: "installed",
+    credentials,
+  });
+  expect(f.calls.filter((call) => call.method === "tooling.tokens.rotate")).toHaveLength(0);
+
+  // Within the 300s rotation window (baseSeconds + 3350s >= exp - 300s): rotates once and updates exp.
+  f.advanceTimeMs(350 * 1_000);
+  expect(await f.run(callbacksCommand())).toEqual({ status: "connected" });
+  expect(f.calls.filter((call) => call.method === "tooling.tokens.rotate")).toHaveLength(1);
+});
+
+it("Cloud owner prunes expired and excess project/login entries via TTL and maxEntries bounds", async () => {
+  const f = cloudFixture({ ttlMs: 10_000, maxEntries: 2 });
+  const c1 = randomUUID(),
+    c2 = randomUUID(),
+    c3 = randomUUID();
+  const a1 = randomUUID(),
+    a2 = randomUUID(),
+    a3 = randomUUID();
+
+  // Populate two projects on c1 and exchange a login on c1:a1.
+  expect(await f.owner.start({ computerId: c1, agentId: a1, input: { action: "authorize" } })).toEqual({
+    status: "authorization_required",
+    ticket: "test-ticket",
+  });
+  expect(
+    await f.owner.start({
+      computerId: c1,
+      agentId: a1,
+      input: { action: "install", displayName: "QA", challenge: "code" },
+    }),
+  ).toEqual({ status: "installed", credentials });
+  expect(await f.owner.start({ computerId: c1, agentId: a2, input: { action: "authorize" } })).toEqual({
+    status: "authorization_required",
+    ticket: "test-ticket",
+  });
+
+  // Touch c1:a1 so c1:a2 becomes the oldest project entry, then insert c1:a3 to evict c1:a2 (maxEntries = 2).
+  expect(await f.owner.start({ computerId: c1, agentId: a1, input: { action: "authorize" } })).toEqual({
     status: "authorized",
     teamName: "cloud-team",
   });
-  // After callbacks clear the creation signingSecret, a later install directs to manual_required.
-  expect(await f.run({ action: "install", displayName: "QA" })).toEqual({
-    status: "failed",
-    code: "manual_required",
+  expect(await f.owner.start({ computerId: c1, agentId: a3, input: { action: "authorize" } })).toEqual({
+    status: "authorization_required",
+    ticket: "test-ticket",
+  });
+  // c1:a1 remains authorized (and touching it makes c1:a3 the oldest), while c1:a2 lost its ticket when evicted.
+  expect(await f.owner.start({ computerId: c1, agentId: a1, input: { action: "authorize" } })).toEqual({
+    status: "authorized",
+    teamName: "cloud-team",
+  });
+  expect(
+    await f.owner.start({
+      computerId: c1,
+      agentId: a2,
+      input: { action: "install", displayName: "QA", challenge: "code" },
+    }),
+  ).toEqual({ status: "failed", code: "authorization_failed" });
+
+  // Evict c1's login by touching c2 and c3 (maxEntries = 2 on #logins).
+  await f.owner.start({ computerId: c2, agentId: a2, input: { action: "authorize" } });
+  await f.owner.start({ computerId: c3, agentId: a3, input: { action: "authorize" } });
+  expect(await f.owner.start({ computerId: c1, agentId: a1, input: { action: "authorize" } })).toEqual({
+    status: "authorization_required",
+    ticket: "test-ticket",
+  });
+
+  // Re-establish login on c1:a1, then advance past ttlMs (10s): project and login expire and require a fresh ticket.
+  expect(
+    await f.owner.start({
+      computerId: c1,
+      agentId: a1,
+      input: { action: "install", displayName: "QA", challenge: "code" },
+    }),
+  ).toEqual({ status: "installed", credentials });
+  f.advanceTimeMs(11_000);
+  expect(await f.owner.start({ computerId: c1, agentId: a1, input: { action: "authorize" } })).toEqual({
+    status: "authorization_required",
+    ticket: "test-ticket",
   });
 });
 

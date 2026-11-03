@@ -45,17 +45,17 @@ uncertain result, with explicit Retry preserving the current operation. `compute
 can also mean the existing runtime request timed out; it is not presented as proof
 that credentials were rejected. Manual setup remains available.
 
-On a Local Computer, the Client prepares the official Slack CLI through existing Provider CLI installation when necessary, keeping the CLI management grant in its native private config with native refresh. On a Cloud Agent, the Server runs the same `/slackauthticket` ticket/challenge, manifest creation, developer installation, approval request, and callback configuration flow directly against Slack's HTTPS APIs in bounded per-Computer memory. Web uses the
+On a Local Computer, the Client prepares the official Slack CLI through existing Provider CLI installation when necessary, keeping the CLI management grant in its native private config with native refresh. On a Cloud Agent, the Server runs the same `/slackauthticket` ticket/challenge, manifest creation, developer installation, approval request, and callback configuration flow directly against Slack's HTTPS APIs in a bounded in-process cache (per-Computer single-flight with a 32-request cap, 24-hour TTL and 256-entry eviction on project and login state, token rotation only when near/past `exp`, and automatic removal of the project entry once `callbacks` completes). Because Cloud setup state (`authorization`, `uncertain`/`created` App record, and workspace login) lives in Server process memory rather than on a persistent Local Computer disk, a Server restart or redeploy during an unfinished setup (for example while waiting on workspace admin approval, after an uncertain creation, or after a denied request) clears that in-process record and can leave the already-created App in Slack; after a Server restart, check Slack's existing Apps (`https://api.slack.com/apps`) and finish connecting via **Manual setup** rather than reauthorizing to create a duplicate App. Web uses the
 current Account session and checks Agent ownership; it receives neither Slack credentials nor an Account Token for the
 Computer. Only authorize a ticket
 from your own selected Computer or Cloud Agent. This grant covers App management for the workspace, not just this one App.
 
-If workspace policy requires approval, the official CLI submits the install request automatically. openTag shows
+If workspace policy requires approval, the official CLI (or the Cloud owner) submits the install request automatically. openTag shows
 a pending request only after Slack confirms it exists, with its App and workspace identifiers
 and a link to that workspace's app management. Select **Requests to install** there; Workspace Owners and designated App
 Managers can review requests, while Workspace Admin alone does not grant this permission. Organization policies may
-require an organization app manager. After approval, **Continue** installs and binds the same App. Pending or
-denied requests do not start another install, cancel the request, or create another App. If Slack confirms the current
+require an organization app manager. After approval, **Continue** installs and binds the same App (on a Cloud Agent, within the current Server process lifetime; if the Server restarted while waiting for approval, finish connecting the existing App through **Manual setup**). Pending or
+denied requests do not start another install, cancel the request, or create another App while that setup record remains present. If Slack confirms the current
 account can install without another person's approval, a historical request does not block installation.
 
 Approval-aware setup negotiates the existing optional `runtime.slackAutoSetup` capability at version 2. Deploy the
@@ -208,7 +208,7 @@ delivery. Private channels and MPIMs still require an invitation. The Agent may 
 A credential-free local live acceptance checklist for a separately registered test Team/App is in
 [slack-live-acceptance.md](https://github.com/first-tree-ai/opentag/blob/main/testing/slack-live-acceptance.md).
 
-Web shows one primary action for the current state. Installation failures retry the same App; only an authorization failure offers reauthorization. Confirmed pending requests offer **View approval** and secondary **Continue**. A denied request or uncertain creation never offers a new-App retry. App/Team IDs and safe error codes are in **Diagnostics**.
+Web shows one primary action for the current state. Installation failures retry the same App; only an authorization failure offers reauthorization. Confirmed pending requests offer **View approval** and secondary **Continue**. While the setup record is present (persisted on disk for a Local Computer, or within the current Server process for a Cloud Agent), a denied request or uncertain creation never offers a new-App retry; if the Server restarts during an unfinished Cloud setup, check existing Apps in Slack and use **Manual setup**. App/Team IDs and safe error codes are in **Diagnostics**.
 
 A saved callback is **Unverified** until a real signed event closes identity. Slack connection and Agent runtime preparation remain separate: a verified Slack binding can show **Preparing the Agent…**. Reopening setup uses a neutral message-verification prompt instead of inferring manual configuration from missing page-local state.
 

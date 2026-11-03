@@ -2,14 +2,21 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentRuntimeProvider, DirectImMessageDeliveryRequest, EffectiveRuntimeSnapshot } from "@opentag/shared";
-import { computeRuntimeSnapshotHashes, runtimeUsageTotalTokens } from "@opentag/shared";
-import { startClaudeCodeHostedToolBridge } from "../../../packages/client/src/providers/claude-code/hosted-tool-bridge.js";
-import { buildAgentInput } from "../../../packages/client/src/runtime/agent-turn-runner.js";
+// biome-ignore-start lint/correctness/noUndeclaredDependencies: Standalone tooling resolves the public Shared export from source via scripts/tsconfig.scripts.json.
+import {
+  type AgentRuntimeProvider,
+  computeRuntimeSnapshotHashes,
+  type DirectImMessageDeliveryRequest,
+  type EffectiveRuntimeSnapshot,
+  runtimeUsageTotalTokens,
+} from "@opentag/shared";
+// biome-ignore-end lint/correctness/noUndeclaredDependencies: End the source-resolved tooling import.
+import { startClaudeCodeHostedToolBridge } from "../../packages/client/src/providers/claude-code/hosted-tool-bridge.js";
+import { buildAgentInput } from "../../packages/client/src/runtime/agent-turn-runner.js";
 import {
   type ManagedSessionContext,
   renderManagedSystemPrompt,
-} from "../../../packages/client/src/runtime/managed-instructions.js";
+} from "../../packages/client/src/runtime/managed-instructions.js";
 
 const agentId = "00000000-0000-4000-8000-000000000001";
 const sessionId = "00000000-0000-4000-8000-000000000002";
@@ -82,8 +89,10 @@ function prefix(left: string, right: string) {
   return { commonPrefixUtf16CodeUnits: offset, identical: left === right };
 }
 
+const localPromptTexts: string[] = [];
 const prompts = (["claude-code", "codex", "pi"] as const).map((provider) => {
   const prompt = renderManagedSystemPrompt({ ...snapshot, provider }, context);
+  localPromptTexts.push(prompt);
   assert.equal(prompt, renderManagedSystemPrompt({ ...snapshot, provider }, context));
   return { environment: "local", provider, ...size(prompt), sections: sections(prompt) };
 });
@@ -97,8 +106,10 @@ const textOf = (input: typeof first) => input.items.map((item) => (item.type ===
 const firstText = textOf(first);
 const secondText = textOf(second);
 assert.notEqual(firstText, secondText);
-assert.equal(cloudPrompt.includes(sessionInstruction), true);
-assert.equal(firstText.includes(sessionInstruction), true);
+const systemAndInputBothContainSessionInstruction = [...localPromptTexts, cloudPrompt, firstText].every((text) =>
+  text.includes(sessionInstruction),
+);
+assert.equal(systemAndInputBothContainSessionInstruction, true);
 assert.equal(first.items.length, 2);
 const revisedSnapshot = { ...snapshot, revision: { ...snapshot.revision, session: { sequence: 2, id: "session-v2" } } };
 const localRevisionHashChanged =
@@ -197,7 +208,7 @@ process.stdout.write(
       appendedInput: {
         items: first.items.map((item, index) => ({ index, ...(item.type === "text" ? size(item.text) : {}) })),
         clockOnlyChange: prefix(firstText, secondText),
-        systemAndInputBothContainSessionInstruction: true,
+        systemAndInputBothContainSessionInstruction,
       },
       cloudTreeCommitChange: prefix(beforeTreeUpdate, afterTreeUpdate),
       localRevisionHashChanged,

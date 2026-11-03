@@ -12,11 +12,12 @@ in this audit. No provider/model API, real IM task, deployment, or online databa
 ## Reproduce
 
 ```sh
-pnpm exec tsx --tsconfig scripts/tsconfig.scripts.json testing/performance/context-tokens/audit.mts
+pnpm exec tsx --tsconfig scripts/tsconfig.scripts.json scripts/performance/context-token-audit.mts
 pnpm exec tsc -p testing/performance/context-tokens/tsconfig.json
 ```
 
-The harness calls the real managed-prompt and IM-input builders and Claude bridge with synthetic
+The [harness](../../../scripts/performance/context-token-audit.mts) calls the real managed-prompt
+and IM-input builders and Claude bridge with synthetic
 identities, a synthetic Skill, and an `.invalid` gateway. It creates private temporary files, opens
 no listener, makes no HTTP request, starts no provider, and removes its files on exit. It asserts
 prompt stability, repeated Session instructions, namespace churn, and provider total-token rules.
@@ -199,7 +200,7 @@ in the managed native system prompt and remove the ordinary IM duplicate. Preser
 attention, reply-role, time and provider facts. Audit internal/collaboration/schedule paths and Local
 configuration replacement versus Cloud restore before deciding their equivalent rule. No history
 rewrite or replay; previously persisted messages retain their old contents. This changes instruction
-placement/trust/refresh semantics and is not authorized by the start permission.
+placement/trust/refresh semantics and requires separate approval.
 
 **C — shorten or lazily load manuals.** First review the measured IM/MCP/provisioning sections.
 An approved design must specify which capability instructions stay mandatory, how discovery is
@@ -225,7 +226,7 @@ no separate Claude namespace or Session-instruction deduplication work item. Pro
 | Real sample analysis | Existing authorized post-release exports; no new collection. | #1121 remains open and PARTIAL. |
 | Cloud stages and latency metrics | Do not recreate measurement framework. | #1108 / PR #1115, separate owner. |
 | Startup improvements | Not a context-token fix. | #1112, separate owner. |
-| Service/query/external-call logging | Not prompt telemetry; proposed logging design not extended. | PR #1117, control-chat review. |
+| Service/query/external-call logging | Not prompt telemetry; proposed logging design not extended. | PR #1117. |
 | Live Tree selection changes | Coordinate if changing Tree injection/restart semantics. | #1088 / PR #1091, separate owner. |
 
 No new follow-up Issue is created in this audit. Recheck live Issues/PRs before any later creation;
@@ -237,8 +238,8 @@ the deduplication snapshot is not a permanent claim that no duplicate exists.
 - Ten existing targeted Client suites pass (316 tests): managed instructions, IM input, Session
   manager/bindings, Cloud continuity/worker, Claude bridge, and Claude/Codex/Pi adapters. The first
   attempt needed the Shared package build in this fresh checkout; the rerun passes.
-- `pnpm check` passes with existing baseline warnings. Performance artifacts are excluded by the
-  repository's Biome configuration; the harness is separately formatted, executed and typechecked.
+- `pnpm check` passes with existing baseline warnings. The harness lives under `scripts/`, matching the
+  existing tooling scope excluded from runtime patch coverage; it is formatted, executed and typechecked.
 - Application builds, the full regression matrix, Agent Runtime coverage and PostgreSQL integration
   were not run: no shipped runtime implementation, covered tests, schemas, dependencies, or database
   behavior changed. The Shared build only supplies package exports for the existing Client tests.

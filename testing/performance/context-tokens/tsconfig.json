@@ -4,7 +4,7 @@
     "composite": false,
     "noEmit": true
   },
-  "files": ["audit.mts"],
+  "files": ["../../../scripts/performance/context-token-audit.mts"],
   "include": [],
   "references": []
 }

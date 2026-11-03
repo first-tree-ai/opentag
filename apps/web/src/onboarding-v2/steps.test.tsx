@@ -68,6 +68,25 @@ describe("creation step navigation", () => {
     expect(screen.queryByText(/runtime/i)).toBeNull();
   });
 
+  it("states the allowed name characters before anything is typed", () => {
+    render(
+      <AgentStep
+        draft={{ destination: "local", name: "", runtime: undefined }}
+        onChange={() => undefined}
+        onSubmit={() => undefined}
+        submitLabel="Create Agent"
+      />,
+    );
+
+    const rule = "Use lowercase letters, numbers, and hyphens (-), starting with a letter or number.";
+    expect(screen.getByText(rule)).toBeTruthy();
+    const input = screen.getByLabelText("Agent name");
+    const describedBy = input.getAttribute("aria-describedby")?.split(" ") ?? [];
+    expect(describedBy.map((id) => document.getElementById(id)?.textContent)).toContain(rule);
+    expect(input.getAttribute("aria-invalid")).toBeNull();
+    expect(input.getAttribute("placeholder")).toBe("opentag");
+  });
+
   it("keeps Create Agent disabled until a Runtime is selected", () => {
     render(
       <AgentStep

@@ -269,7 +269,9 @@ it("correlates results with the authenticated Computer instance and clears bound
   owner.close();
 });
 
-function cloudFixture(options: { ttlMs?: number; maxEntries?: number } = {}) {
+function cloudFixture(
+  options: { ttlMs?: number; maxEntries?: number; maxTeamsPerComputer?: number; stateDir?: string } = {},
+) {
   const cloudComputerId = randomUUID();
   const cloudAgentId = randomUUID();
   let currentNow = 1_700_000_000_000;
@@ -510,8 +512,9 @@ it("Cloud owner completes ticket exchange, token rotation, app creation, approva
     is_enabled: true,
     request_url: "https://qa.example/interactions",
   });
-  // Completed callbacks remove the project entry from memory so later callbacks fail closed with manual_required.
-  expect(await f.run(callbacksCommand())).toEqual({
+  // Completed callbacks remove signingSecret while keeping the secret-free creation fence so callbacks can retry and install directs to manual_required.
+  expect(await f.run(callbacksCommand())).toEqual({ status: "connected" });
+  expect(await f.run({ action: "install", displayName: "QA" })).toEqual({
     status: "failed",
     code: "manual_required",
   });
@@ -527,12 +530,9 @@ it("Cloud owner skips token rotation while exp is fresh and rotates when near or
     status: "installed",
     credentials,
   });
-  // Still well before exp - 300s: install retry skips tooling.tokens.rotate.
+  // Still well before exp - 300s: callbacks step skips tooling.tokens.rotate.
   f.advanceTimeMs(3_000 * 1_000);
-  expect(await f.run({ action: "install", displayName: "QA" })).toEqual({
-    status: "installed",
-    credentials,
-  });
+  expect(await f.run(callbacksCommand())).toEqual({ status: "connected" });
   expect(f.calls.filter((call) => call.method === "tooling.tokens.rotate")).toHaveLength(0);
 
   // Within the 300s rotation window (baseSeconds + 3350s >= exp - 300s): rotates once and updates exp.
@@ -541,8 +541,83 @@ it("Cloud owner skips token rotation while exp is fresh and rotates when near or
   expect(f.calls.filter((call) => call.method === "tooling.tokens.rotate")).toHaveLength(1);
 });
 
-it("Cloud owner prunes expired and excess project/login entries via TTL and maxEntries bounds", async () => {
-  const f = cloudFixture({ ttlMs: 10_000, maxEntries: 2 });
+it("Cloud owner preserves the creation fence across owner restart, 24h TTL expiry, and 256-entry cross-tenant LRU", async () => {
+  const f = cloudFixture({ ttlMs: 10_000, maxEntries: 4 });
+  await f.authorize();
+  f.requireApproval("T1");
+  expect(await f.run({ action: "install", displayName: "QA", challenge: "code" })).toEqual({
+    status: "approval_pending",
+    appId: "A1",
+    teamId: "T1",
+  });
+
+  // 256 authorize calls from other Computers/Agents must not evict A1's in-flight creation record.
+  for (let i = 0; i < 256; i += 1) {
+    await f.owner.start({ computerId: randomUUID(), agentId: randomUUID(), input: { action: "authorize" } });
+  }
+
+  // Simulate a Server restart by instantiating a second CloudSlackAutoSetupOwner on the same fake Slack.
+  const restarted = new CloudSlackAutoSetupOwner({ fetchImpl: f.fetchImpl, now: f.now, ttlMs: 10_000, maxEntries: 4 });
+  const runRestarted = (input: SlackAutoSetupCommand) =>
+    restarted.start({ computerId: f.cloudComputerId, agentId: f.cloudAgentId, input });
+
+  // Reloading after restart restores approval_pending for A1 instead of issuing a new ticket.
+  expect(await runRestarted({ action: "authorize" })).toEqual({
+    status: "approval_pending",
+    appId: "A1",
+    teamId: "T1",
+  });
+
+  // Even if the user reauthorizes with force: true after approval, A1 is reused without a second apps.manifest.create.
+  f.setApprovalStatus("approved");
+  expect(await runRestarted({ action: "authorize", force: true })).toEqual({
+    status: "authorization_required",
+    ticket: "test-ticket",
+  });
+  expect(await runRestarted({ action: "install", displayName: "QA", challenge: "code" })).toEqual({
+    status: "installed",
+    credentials,
+  });
+  expect(f.calls.filter((call) => call.method === "apps.manifest.create")).toHaveLength(1);
+
+  // Now test 24h TTL expiry during approval_pending on another Agent: secrets expire, but the fence prevents A2 creation.
+  const idleAgentId = randomUUID();
+  const runIdle = (input: SlackAutoSetupCommand) =>
+    restarted.start({ computerId: f.cloudComputerId, agentId: idleAgentId, input });
+  f.setApprovalStatus(undefined);
+  f.requireApproval("T1");
+  expect(await runIdle({ action: "authorize", force: true })).toEqual({
+    status: "authorization_required",
+    ticket: "test-ticket",
+  });
+  expect(await runIdle({ action: "install", displayName: "QA", challenge: "code" })).toEqual({
+    status: "approval_pending",
+    appId: "A1",
+    teamId: "T1",
+  });
+  expect(f.calls.filter((call) => call.method === "apps.manifest.create")).toHaveLength(2);
+
+  // Advance past ttlMs: login and signingSecret expire, but the creation fence stays and directs to manual_required.
+  f.advanceTimeMs(11_000);
+  expect(await runIdle({ action: "authorize" })).toEqual({
+    status: "failed",
+    code: "manual_required",
+    appId: "A1",
+    teamId: "T1",
+  });
+  expect(await runIdle({ action: "authorize", force: true })).toEqual({
+    status: "authorization_required",
+    ticket: "test-ticket",
+  });
+  expect(await runIdle({ action: "install", displayName: "QA", challenge: "code" })).toEqual({
+    status: "failed",
+    code: "manual_required",
+  });
+  expect(f.calls.filter((call) => call.method === "apps.manifest.create")).toHaveLength(2);
+});
+
+it("Cloud owner prunes expired and excess login/transient entries and bounds teams per Computer", async () => {
+  const f = cloudFixture({ ttlMs: 10_000, maxEntries: 2, maxTeamsPerComputer: 2 });
   const c1 = randomUUID(),
     c2 = randomUUID(),
     c3 = randomUUID();
@@ -550,36 +625,22 @@ it("Cloud owner prunes expired and excess project/login entries via TTL and maxE
     a2 = randomUUID(),
     a3 = randomUUID();
 
-  // Populate two projects on c1 and exchange a login on c1:a1.
+  // Populate two transient authorize-only projects on c1; touching c1:a1 and adding c1:a3 evicts c1:a2.
   expect(await f.owner.start({ computerId: c1, agentId: a1, input: { action: "authorize" } })).toEqual({
     status: "authorization_required",
     ticket: "test-ticket",
   });
-  expect(
-    await f.owner.start({
-      computerId: c1,
-      agentId: a1,
-      input: { action: "install", displayName: "QA", challenge: "code" },
-    }),
-  ).toEqual({ status: "installed", credentials });
   expect(await f.owner.start({ computerId: c1, agentId: a2, input: { action: "authorize" } })).toEqual({
     status: "authorization_required",
     ticket: "test-ticket",
   });
-
-  // Touch c1:a1 so c1:a2 becomes the oldest project entry, then insert c1:a3 to evict c1:a2 (maxEntries = 2).
   expect(await f.owner.start({ computerId: c1, agentId: a1, input: { action: "authorize" } })).toEqual({
-    status: "authorized",
-    teamName: "cloud-team",
+    status: "authorization_required",
+    ticket: "test-ticket",
   });
   expect(await f.owner.start({ computerId: c1, agentId: a3, input: { action: "authorize" } })).toEqual({
     status: "authorization_required",
     ticket: "test-ticket",
-  });
-  // c1:a1 remains authorized (and touching it makes c1:a3 the oldest), while c1:a2 lost its ticket when evicted.
-  expect(await f.owner.start({ computerId: c1, agentId: a1, input: { action: "authorize" } })).toEqual({
-    status: "authorized",
-    teamName: "cloud-team",
   });
   expect(
     await f.owner.start({
@@ -589,24 +650,36 @@ it("Cloud owner prunes expired and excess project/login entries via TTL and maxE
     }),
   ).toEqual({ status: "failed", code: "authorization_failed" });
 
-  // Evict c1's login by touching c2 and c3 (maxEntries = 2 on #logins).
-  await f.owner.start({ computerId: c2, agentId: a2, input: { action: "authorize" } });
-  await f.owner.start({ computerId: c3, agentId: a3, input: { action: "authorize" } });
-  expect(await f.owner.start({ computerId: c1, agentId: a1, input: { action: "authorize" } })).toEqual({
-    status: "authorization_required",
-    ticket: "test-ticket",
-  });
-
-  // Re-establish login on c1:a1, then advance past ttlMs (10s): project and login expire and require a fresh ticket.
-  expect(
+  // Bound teams per Computer (maxTeamsPerComputer = 2): exchanging T1, T2, T3 on c1 evicts T1.
+  for (const [agent, team] of [
+    [a1, "T1"],
+    [a2, "T2"],
+    [a3, "T3"],
+  ] as const) {
+    f.setExchangeTeamId(team);
+    await f.owner.start({ computerId: c1, agentId: agent, input: { action: "authorize", force: true } });
     await f.owner.start({
       computerId: c1,
-      agentId: a1,
+      agentId: agent,
       input: { action: "install", displayName: "QA", challenge: "code" },
-    }),
-  ).toEqual({ status: "installed", credentials });
-  f.advanceTimeMs(11_000);
+    });
+  }
+  // T1 was evicted when T3 was added on c1, while T3 remains authorized.
   expect(await f.owner.start({ computerId: c1, agentId: a1, input: { action: "authorize" } })).toEqual({
+    status: "failed",
+    code: "manual_required",
+    appId: "A1",
+    teamId: "T1",
+  });
+  expect(await f.owner.start({ computerId: c1, agentId: a3, input: { action: "authorize" } })).toEqual({
+    status: "authorized",
+    teamName: "cloud-team",
+  });
+
+  // Evict c1's outer login entry by touching c2 and c3 (maxEntries = 2 on #logins).
+  await f.owner.start({ computerId: c2, agentId: a2, input: { action: "authorize" } });
+  await f.owner.start({ computerId: c3, agentId: a3, input: { action: "authorize" } });
+  expect(await f.owner.start({ computerId: c1, agentId: a3, input: { action: "authorize" } })).toEqual({
     status: "authorization_required",
     ticket: "test-ticket",
   });

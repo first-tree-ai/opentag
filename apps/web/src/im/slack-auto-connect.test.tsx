@@ -4,7 +4,10 @@ import { afterEach, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../api.js";
 import { SlackAutoConnect } from "./slack-auto-connect.js";
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  window.localStorage.clear();
+  vi.restoreAllMocks();
+});
 it("links to the right workspace after confirmed submission and continues without another ticket", async () => {
   const api = vi
     .spyOn(browserApi, "autoSetupSlack")
@@ -303,4 +306,38 @@ it("explains a slow request without inventing a timeout or dispatching a second 
   } finally {
     vi.useRealTimers();
   }
+});
+
+it("restores approval_pending across a page reload and gates a lost Server state to manual setup instead of a new ticket", async () => {
+  const api = vi
+    .spyOn(browserApi, "autoSetupSlack")
+    .mockResolvedValueOnce({ status: "authorization_required", ticket: "ticket-1" })
+    .mockResolvedValueOnce({ status: "approval_pending", appId: "A1", teamId: "T1" })
+    .mockResolvedValueOnce({ status: "failed", code: "authorization_failed" });
+  const first = render(<SlackAutoConnect agentId="agent" onBusy={vi.fn()} onConnected={vi.fn()} />);
+  fireEvent.change(await screen.findByLabelText("Code"), { target: { value: "code-1" } });
+  fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+  expect(await screen.findByText(/Request submitted/)).toBeTruthy();
+  first.unmount();
+
+  // Simulate a page reload after a Server restart: remounting restores A1's pending state without calling authorize.
+  const onResult = vi.fn();
+  render(<SlackAutoConnect agentId="agent" onBusy={vi.fn()} onConnected={vi.fn()} onResult={onResult} />);
+  expect(await screen.findByText(/Request submitted/)).toBeTruthy();
+  expect(screen.getByRole("link", { name: "View approval" })).toHaveProperty(
+    "href",
+    "https://app.slack.com/apps-manage/T1",
+  );
+  expect(api).toHaveBeenCalledTimes(2);
+
+  // If the Server container was wiped and returns authorization_failed with no appId on Continue, gate to manual_required for A1.
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Use manual setup for this App.");
+  expect(onResult).toHaveBeenLastCalledWith({
+    status: "failed",
+    code: "manual_required",
+    appId: "A1",
+    teamId: "T1",
+  });
+  expect(screen.queryByRole("button", { name: "Reauthorize" })).toBeNull();
 });

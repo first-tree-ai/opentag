@@ -31,7 +31,7 @@ import {
   slackBotConversationUrl,
   slackBotDisplayName,
 } from "./slack-app-manifest.js";
-import { SlackAutoConnect } from "./slack-auto-connect.js";
+import { clearStoredSlackAutoSetup, SlackAutoConnect } from "./slack-auto-connect.js";
 import { slackConfigurationMessage } from "./slack-configuration.js";
 
 export type SlackSetupApi = {
@@ -137,6 +137,7 @@ function SlackCustomAppFlow({
   }
   function finishSave(method: "auto" | "manual" = "manual") {
     if (!mounted.current) return;
+    clearStoredSlackAutoSetup(agentId);
     setSavedMethod(method);
     setAutoResume(false);
     setEditing(undefined);

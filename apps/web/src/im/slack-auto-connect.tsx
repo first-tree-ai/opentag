@@ -8,6 +8,70 @@ import { slackConfigurationMessage } from "./slack-configuration.js";
 
 type Failure = Extract<SlackAutoSetupResponse, { status: "failed" }>;
 
+const SETUP_STORAGE_PREFIX = "opentag:slack-auto-setup:";
+
+function isFencedSetupResult(result: SlackAutoSetupResponse): boolean {
+  if (result.status === "approval_pending") return true;
+  if (result.status !== "failed") return false;
+  return (
+    result.code === "create_uncertain" ||
+    result.code === "approval_denied" ||
+    result.code === "manual_required" ||
+    Boolean(result.appId)
+  );
+}
+
+function readStoredSetupResult(agentId: string): SlackAutoSetupResponse | undefined {
+  try {
+    const raw = window.localStorage.getItem(`${SETUP_STORAGE_PREFIX}${agentId}`);
+    if (!raw) return undefined;
+    const parsed = JSON.parse(raw) as SlackAutoSetupResponse;
+    return isFencedSetupResult(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeStoredSetupResult(agentId: string, result: SlackAutoSetupResponse): void {
+  try {
+    const key = `${SETUP_STORAGE_PREFIX}${agentId}`;
+    if (result.status === "connected") {
+      window.localStorage.removeItem(key);
+    } else if (isFencedSetupResult(result)) {
+      window.localStorage.setItem(key, JSON.stringify(result));
+    }
+  } catch {
+    // Ignore storage errors in restricted environments.
+  }
+}
+
+export function clearStoredSlackAutoSetup(agentId: string): void {
+  try {
+    window.localStorage.removeItem(`${SETUP_STORAGE_PREFIX}${agentId}`);
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
+function resolveFencedResult(
+  next: SlackAutoSetupResponse,
+  stored: SlackAutoSetupResponse | undefined,
+): SlackAutoSetupResponse {
+  if (!stored || !("appId" in stored) || !stored.appId) return next;
+  if (
+    next.status === "authorization_required" ||
+    (next.status === "failed" && next.code === "authorization_failed" && !next.appId)
+  ) {
+    return {
+      status: "failed",
+      code: "manual_required",
+      appId: stored.appId,
+      ...(stored.teamId ? { teamId: stored.teamId } : {}),
+    };
+  }
+  return next;
+}
+
 export function SlackAutoConnect({
   footerAction,
   api = browserApi,
@@ -54,8 +118,10 @@ export function SlackAutoConnect({
       setError(undefined);
       onBusy(true);
       try {
-        const next = await api.autoSetupSlack(agentId, setupRequest(action, force, challenge));
+        const rawNext = await api.autoSetupSlack(agentId, setupRequest(action, force, challenge));
         if (!mounted.current) return;
+        const next = resolveFencedResult(rawNext, readStoredSetupResult(agentId));
+        writeStoredSetupResult(agentId, next);
         setResult(next);
         setChallenge("");
         onResult?.(next);
@@ -77,9 +143,16 @@ export function SlackAutoConnect({
   useEffect(() => {
     if (!started.current) {
       started.current = true;
+      const stored = resume ? undefined : readStoredSetupResult(agentId);
+      if (stored) {
+        lastAction.current = "connect";
+        setResult(stored);
+        onResult?.(stored);
+        return;
+      }
       void run(resume ? "connect" : "authorize");
     }
-  }, [run, resume]);
+  }, [agentId, onResult, run, resume]);
   return (
     <div hidden={hidden}>
       <form

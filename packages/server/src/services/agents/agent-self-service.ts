@@ -109,10 +109,12 @@ export class AgentSelfService {
   }
 
   async updateConfig(scope: AgentSelfScope, input: UpdateSelfAgentRequest): Promise<AgentAdminConfig> {
-    const updated = await this.#options.agents.updateById(scope.accountId, scope.agentId, {
-      expectedRevision: input.expectedRevision,
-      runtimeConfig: input.runtimeConfig,
-    });
+    const updated = await this.#options.agents.updateById(
+      scope.accountId,
+      scope.agentId,
+      { expectedRevision: input.expectedRevision, runtimeConfig: input.runtimeConfig },
+      "agent-self",
+    );
     // Field names only: instructions are Agent-authored text and never belong in a log line.
     this.#audit(scope, "agent_self.config_updated", {
       fields: Object.keys(input.runtimeConfig).sort(),

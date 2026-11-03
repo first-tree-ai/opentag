@@ -46,7 +46,9 @@ alone. Each section returns at most 100 rows and 20 by default. Naming a subset 
 contract: the Web conversation renders the summary and the Turns, asks for `sections=turns`, and
 never reads the Internal Session or collaboration history it would discard. Reading any of them
 resolves the topic and serves the requested sections from one read-only Repeatable Read transaction,
-so an authorized topic is read from a single snapshot and no wait spans external I/O.
+so an authorized topic is read from a single snapshot and no wait spans external I/O. The captured-replies
+subresource also resolves its stored-message scope and reads replies in one read-only snapshot;
+it does not depend on a Runtime Session existing.
 
 Every section cursor is the exact ordering key of the last row it returned: the timestamp at the
 microsecond precision PostgreSQL compares, not the millisecond a browser `Date` would keep, plus the

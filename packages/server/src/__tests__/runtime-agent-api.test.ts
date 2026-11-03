@@ -195,10 +195,12 @@ describe("Runtime Agent self-configuration routes", () => {
     });
     expect(updated.statusCode).toBe(200);
     expect(updated.json()).toMatchObject({ revision: 4 });
-    expect(agents.updateById).toHaveBeenCalledWith(accountId, source.agentId, {
-      expectedRevision: 3,
-      runtimeConfig: { instructions: "be thorough", model: null },
-    });
+    expect(agents.updateById).toHaveBeenCalledWith(
+      accountId,
+      source.agentId,
+      { expectedRevision: 3, runtimeConfig: { instructions: "be thorough", model: null } },
+      "agent-self",
+    );
     const audit = logger.info.mock.calls.find(([bindings]) => bindings.event === "agent_self.config_updated");
     expect(audit?.[0]).toMatchObject({ fields: ["instructions", "model"], revision: 4, runtimeConfigRevision: 8 });
     expect(JSON.stringify(logger.info.mock.calls)).not.toContain("be thorough");

@@ -720,39 +720,44 @@ export class AgentService {
   }
 
   async getById(callerUserId: string, agentId: string): Promise<AgentDetail> {
-    const creator = alias(users, "agent_creator");
-    const [row] = await this.#database
-      .select({
-        id: agents.id,
-        createdByUserId: agents.createdByUserId,
-        creatorDisplayName: creator.displayName,
-        avatarSourceUrl: imBindings.botAvatarUrl,
-        agentComputerId: agents.computerId,
-        computerId: computers.id,
-        computerDisplayName: computers.displayName,
-        computerPlatform: computers.platform,
-        computerOwnerAccountId: computers.ownerAccountId,
-        name: agents.name,
-        displayName: agents.displayName,
-        runtimeProvider: agents.runtimeProvider,
-        receiveMode: agents.receiveMode,
-        status: agents.status,
-        createdAt: agents.createdAt,
-        updatedAt: agents.updatedAt,
-      })
-      .from(agents)
-      .innerJoin(creator, eq(creator.id, agents.createdByUserId))
-      .leftJoin(imBindings, and(eq(imBindings.agentId, agents.id), ne(imBindings.status, "disabled")))
-      .leftJoin(computers, eq(computers.id, agents.computerId))
-      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
-      .limit(1);
-    if (!row || row.createdByUserId !== callerUserId) throw resourceNotFound();
-    const recoveryStartedAt = new Date(this.#now().getTime() - AGENT_ACTIVITY_RECOVERY_WINDOW_MS);
-    const activityByAgent = await this.#readActivityByAgent(this.#database, [agentId], recoveryStartedAt);
-    return {
-      ...toAgentSummary({ ...row, computer: toAgentComputer(row) }),
-      activity: activityByAgent.get(agentId) ?? { state: "idle" },
-    };
+    return this.#database.transaction(
+      async (transaction) => {
+        const creator = alias(users, "agent_creator");
+        const [row] = await transaction
+          .select({
+            id: agents.id,
+            createdByUserId: agents.createdByUserId,
+            creatorDisplayName: creator.displayName,
+            avatarSourceUrl: imBindings.botAvatarUrl,
+            agentComputerId: agents.computerId,
+            computerId: computers.id,
+            computerDisplayName: computers.displayName,
+            computerPlatform: computers.platform,
+            computerOwnerAccountId: computers.ownerAccountId,
+            name: agents.name,
+            displayName: agents.displayName,
+            runtimeProvider: agents.runtimeProvider,
+            receiveMode: agents.receiveMode,
+            status: agents.status,
+            createdAt: agents.createdAt,
+            updatedAt: agents.updatedAt,
+          })
+          .from(agents)
+          .innerJoin(creator, eq(creator.id, agents.createdByUserId))
+          .leftJoin(imBindings, and(eq(imBindings.agentId, agents.id), ne(imBindings.status, "disabled")))
+          .leftJoin(computers, eq(computers.id, agents.computerId))
+          .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
+          .limit(1);
+        if (!row || row.createdByUserId !== callerUserId) throw resourceNotFound();
+        const recoveryStartedAt = new Date(this.#now().getTime() - AGENT_ACTIVITY_RECOVERY_WINDOW_MS);
+        const activityByAgent = await this.#readActivityByAgent(transaction, [agentId], recoveryStartedAt);
+        return {
+          ...toAgentSummary({ ...row, computer: toAgentComputer(row) }),
+          activity: activityByAgent.get(agentId) ?? { state: "idle" },
+        };
+      },
+      { isolationLevel: "repeatable read", accessMode: "read only" },
+    );
   }
 
   async getUsageById(
@@ -851,7 +856,12 @@ export class AgentService {
     return toAgentAdminConfig(scope.agent, scope.runtimeConfig, scope.computerId);
   }
 
-  async updateById(callerUserId: string, agentId: string, rawInput: UpdateAgentRequest): Promise<AgentAdminConfig> {
+  async updateById(
+    callerUserId: string,
+    agentId: string,
+    rawInput: UpdateAgentRequest,
+    source: "account" | "agent-self" = "account",
+  ): Promise<AgentAdminConfig> {
     const input = UpdateAgentRequestSchema.parse(rawInput);
     // Validate an explicit Cloud model choice BEFORE the mutation transaction: no Agent row lock is
     // held across the catalog's network read, and a rejected choice leaves no revision writes.
@@ -864,6 +874,14 @@ export class AgentService {
     const result = await this.#database.transaction(async (transaction) => {
       const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
       this.#requireManagePermission(scope);
+      if (source === "agent-self" && !scope.agent.selfConfigurationEnabled) {
+        throw new AgentServiceError(
+          "AGENT_SELF_CONFIGURATION_DISABLED",
+          "deterministic",
+          "The Account has disabled self-configuration for this Agent",
+          403,
+        );
+      }
       if (scope.agent.revision !== input.expectedRevision) {
         throw new AgentServiceError(
           "AGENT_REVISION_CONFLICT",

@@ -55,7 +55,8 @@ Account-scoped Agent update API with `selfConfigurationEnabled`. The Agent canno
 `self update`.
 
 When `selfConfigurationEnabled` is false, every route under `/api/v1/runtime/agent` returns HTTP 403 with
-`AGENT_SELF_CONFIGURATION_DISABLED`, including read routes. The managed prompt includes the Self-configuration
+`AGENT_SELF_CONFIGURATION_DISABLED`, including read routes. Agent-originated configuration writes also recheck
+this switch under the existing Agent mutation lock, so an earlier authenticated request cannot bypass a later opt-out. The managed prompt includes the Self-configuration
 section only when the flag is true and the Session CLI is available, and only on a Local Computer. That section
 covers instructions, model, and reasoning effort.
 

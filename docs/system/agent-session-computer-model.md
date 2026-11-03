@@ -107,7 +107,9 @@ AgentService mutation queries select the caller's ownership in the locking
 predicate, then validate lifecycle and revision while holding the row lock. A foreign or
 missing Agent returns the same not-found result without waiting for a foreign
 Agent row lock. Detail and configuration reads apply the same ownership
-predicate in their first query.
+predicate in their first query. Agent detail and IM binding metadata/activity reads keep
+authorization and enrichment in the same read-only snapshot. A concurrent transfer cannot combine
+the previous Account's authorization with the new Account's binding or activity facts.
 
 ## Rationale
 

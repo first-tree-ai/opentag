@@ -7,6 +7,8 @@ contents, and machine-specific operational logs outside the repository.
 
 ## Plans and harnesses
 
+- [SQL caller remediation and progress](sql-caller-remediation.md)
+
 - [Agent Runtime Provider test plan](agent-runtime-test-plan.md)
 - [Cloud Computer acceptance harness](cloud-computer.md)
 - [Managed CLI installation acceptance](managed-cli-entry/README.md)
@@ -15,6 +17,8 @@ contents, and machine-specific operational logs outside the repository.
 - [Cloud startup performance](performance/cloud-startup/README.md)
 
 ## Verification by feature
+
+- [SQL caller repairs: Agent and Task authority](verification/sql-caller-repairs-01.md)
 
 - [Account, Agent, and Computer management writes](verification/account-agent-computer-writes.md)
 

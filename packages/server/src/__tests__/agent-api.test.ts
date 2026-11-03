@@ -1,4 +1,5 @@
 import {
+  AGENT_ACTIVITY_TASK_COUNT_HEADER,
   accountAgentCreationIntentPath,
   agentByIdPath,
   agentComputerRebindPath,
@@ -366,6 +367,23 @@ describe("Agent HTTP API", () => {
     const response = await app.inject({ method: "GET", url: agentByIdPath(agentId), headers: authorization });
     expect(response.statusCode).toBe(statusCode);
     expect(response.json()).toMatchObject({ error: { code, category: "deterministic" } });
+  });
+
+  it("sends the detail's running Task count only to clients that declare they read it", async () => {
+    const service = agentService();
+    const working = { state: "working" as const, startedAt: agentDetail.updatedAt, runningTaskCount: 3 };
+    service.getById.mockResolvedValue({ ...agentDetail, activity: working });
+    const { app } = appWith(service);
+
+    const legacy = await app.inject({ method: "GET", url: agentByIdPath(agentId), headers: authorization });
+    expect(legacy.json().activity).toEqual({ state: "working", startedAt: agentDetail.updatedAt });
+
+    const current = await app.inject({
+      method: "GET",
+      url: agentByIdPath(agentId),
+      headers: { ...authorization, [AGENT_ACTIVITY_TASK_COUNT_HEADER]: "1" },
+    });
+    expect(current.json().activity).toEqual(working);
   });
 
   it("preserves malformed JSON as a typed client error", async () => {

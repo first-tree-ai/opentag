@@ -26,10 +26,11 @@ export interface PerformanceExecutionContext {
   accountId?: string;
   agentId?: string;
   computerId?: string;
+  sandboxId?: string;
+  environmentGeneration?: number;
   sessionId?: string;
   deliveryId?: string;
   turnId?: string;
-  sandboxId?: string;
 }
 
 export interface PerformanceStartInput {
@@ -40,10 +41,11 @@ export interface PerformanceStartInput {
   accountId?: string;
   agentId?: string;
   computerId?: string;
+  sandboxId?: string;
+  environmentGeneration?: number;
   sessionId?: string;
   deliveryId?: string;
   turnId?: string;
-  sandboxId?: string;
   attributes?: Record<string, unknown>;
   startMessage?: string;
   completeMessage?: string;
@@ -80,12 +82,23 @@ export interface PerformanceLogger {
 }
 
 const performanceContextStorage = new AsyncLocalStorage<PerformanceExecutionContext>();
+const contextLoggers = new WeakMap<PerformanceExecutionContext, PerformanceLogger>();
 
 export function getCurrentPerformanceContext(): PerformanceExecutionContext | undefined {
   return performanceContextStorage.getStore();
 }
 
+export function getCurrentPerformanceLogger(): PerformanceLogger | undefined {
+  const current = performanceContextStorage.getStore();
+  return current ? contextLoggers.get(current) : undefined;
+}
+
 export function runWithPerformanceContext<T>(context: PerformanceExecutionContext, fn: () => T): T {
+  const parent = performanceContextStorage.getStore();
+  if (parent && !contextLoggers.has(context)) {
+    const parentLogger = contextLoggers.get(parent);
+    if (parentLogger) contextLoggers.set(context, parentLogger);
+  }
   return performanceContextStorage.run(context, fn);
 }
 
@@ -93,25 +106,15 @@ export function exitPerformanceContext<T>(fn: () => T): T {
   return performanceContextStorage.exit(fn);
 }
 
-const CORRELATION_KEYS = [
-  "requestId",
-  "accountId",
-  "agentId",
-  "computerId",
-  "sessionId",
-  "deliveryId",
-  "turnId",
-  "sandboxId",
-] as const;
-
 export function updateCurrentPerformanceContext(
   patch: Partial<Omit<PerformanceExecutionContext, "callId" | "operation">>,
 ): void {
   const current = performanceContextStorage.getStore();
   if (!current) return;
-  for (const key of CORRELATION_KEYS) {
+  const target = current as unknown as Record<string, unknown>;
+  for (const key of CONTEXT_ID_KEYS) {
     const value = patch[key];
-    if (value !== undefined) current[key] = value;
+    if (value !== undefined) target[key] = value;
   }
 }
 
@@ -167,29 +170,40 @@ const FAIL_MESSAGES: Record<PerformanceCategory, string> = {
   external: "External call failed",
 };
 
+const CONTEXT_ID_KEYS = [
+  "requestId",
+  "accountId",
+  "agentId",
+  "computerId",
+  "sandboxId",
+  "environmentGeneration",
+  "sessionId",
+  "deliveryId",
+  "turnId",
+] as const;
+
+function copyDefinedContextIds(
+  source: Partial<Record<(typeof CONTEXT_ID_KEYS)[number], unknown>>,
+): Partial<Omit<PerformanceExecutionContext, "callId" | "operation">> {
+  const out: Record<string, unknown> = {};
+  for (const key of CONTEXT_ID_KEYS) {
+    const value = source[key];
+    if (value !== undefined && value !== "") out[key] = value;
+  }
+  return out as Partial<Omit<PerformanceExecutionContext, "callId" | "operation">>;
+}
+
 function buildChildContext(
   callId: string,
   input: PerformanceStartInput,
   parent: PerformanceExecutionContext | undefined,
 ): PerformanceExecutionContext {
-  const child: PerformanceExecutionContext = {
+  return {
     callId,
     operation: input.operation,
+    ...(parent ? copyDefinedContextIds(parent) : {}),
+    ...copyDefinedContextIds(input),
   };
-  for (const key of CORRELATION_KEYS) {
-    const value = input[key] ?? parent?.[key];
-    if (value) child[key] = value;
-  }
-  return child;
-}
-
-function contextCorrelationFields(context: PerformanceExecutionContext): Record<string, unknown> {
-  const fields: Record<string, unknown> = {};
-  for (const key of CORRELATION_KEYS) {
-    const value = context[key];
-    if (value) fields[key] = value;
-  }
-  return fields;
 }
 
 function buildBasePayload(
@@ -204,7 +218,7 @@ function buildBasePayload(
     callId: child.callId,
     ...(parent?.callId ? { parentCallId: parent.callId } : {}),
     ...(parent?.operation ? { callerOperation: parent.operation } : {}),
-    ...contextCorrelationFields(child),
+    ...copyDefinedContextIds(child),
     startedAt,
     ...input.attributes,
   };
@@ -252,6 +266,7 @@ export function createPerformanceLogger(
         fail: () => undefined,
       };
     }
+    contextLoggers.set(childContext, loggerInstance);
 
     const startMono = performance.now();
     const port = portFor(input.module);
@@ -272,7 +287,7 @@ export function createPerformanceLogger(
         port[config.level](
           {
             ...basePayload,
-            ...contextCorrelationFields(childContext),
+            ...copyDefinedContextIds(childContext),
             ...extraAttributes,
             endedAt,
             durationMs,
@@ -292,7 +307,7 @@ export function createPerformanceLogger(
         port.warn(
           {
             ...basePayload,
-            ...contextCorrelationFields(childContext),
+            ...copyDefinedContextIds(childContext),
             ...extraAttributes,
             ...(code ? { code, errorCode: code } : {}),
             endedAt,
@@ -383,10 +398,11 @@ export function createPerformanceLogger(
     options?: PerformanceTraceOptions<T>,
   ): Promise<T> => traceOperation(input, fn, options);
 
-  return {
+  const loggerInstance: PerformanceLogger = {
     config,
     startOperation,
     traceAsync,
     traceOperation,
   };
+  return loggerInstance;
 }

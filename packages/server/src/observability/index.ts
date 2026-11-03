@@ -55,6 +55,7 @@ export {
   DEFAULT_PERFORMANCE_LOGGING_CONFIG,
   exitPerformanceContext,
   getCurrentPerformanceContext,
+  getCurrentPerformanceLogger,
   type PerformanceCategory,
   type PerformanceExecutionContext,
   type PerformanceLogger,

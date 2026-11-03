@@ -117,6 +117,7 @@ export interface CloudModelGrantPort {
   isModelAllowed(model: string): Promise<boolean>;
   issue(input: {
     executionId: string;
+    deliveryId?: string;
     sandboxId: string;
     sessionId: string;
     model: string;
@@ -865,6 +866,7 @@ export class CloudDeliveryOwner {
     this.#grantOwnershipByTurn.set(turnId, ownership);
     const issued = await grants.issue({
       executionId: turnId,
+      deliveryId: request.deliveryId,
       model,
       sandboxId: connection.scope.sandboxId,
       sessionId: connection.scope.sessionId,

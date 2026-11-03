@@ -11,7 +11,7 @@ import {
   CloudModelRequestSchema,
 } from "../cloud-model-request.js";
 import { cloudModelRetryAfter, cloudModelRetryDelay, waitForCloudModelRetry } from "../cloud-model-retry.js";
-import { updateCurrentPerformanceContext } from "../observability/performance-logger.js";
+import { type PerformanceLogger, updateCurrentPerformanceContext } from "../observability/performance-logger.js";
 import type { CloudModelService } from "../services/cloud-model-service.js";
 import { readBoundedResponseText } from "../services/sandboxes/cloud-model-catalog.js";
 import type { CloudModelGrantService } from "../services/sandboxes/cloud-model-grants.js";
@@ -55,6 +55,7 @@ export interface CloudModelProxyRouteOptions {
   modelService: CloudModelService;
   contextForExecution: (claims: GrantClaims) => Promise<CloudCallContext | undefined>;
   now?: () => number;
+  performanceLogger?: PerformanceLogger;
 }
 
 type GrantClaims = NonNullable<Awaited<ReturnType<CloudModelGrantService["verify"]>>>;
@@ -115,6 +116,10 @@ async function authorize(
     await fail(reply, 403, "CLOUD_MODEL_MODEL_DENIED", "The token does not cover the requested model");
     return undefined;
   }
+  updateCurrentPerformanceContext({
+    sandboxId: claims.sandboxId,
+    sessionId: claims.sessionId,
+  });
   return { claims, body: applyCloudModelOutputBudget(parsed.data, claims.maxTokens) };
 }
 
@@ -134,6 +139,7 @@ async function callUpstream(
     sessionId: claims.sessionId,
     sandboxId: claims.sandboxId,
     ...(claims.executionId ? { turnId: claims.executionId } : {}),
+    ...(claims.deliveryId ? { deliveryId: claims.deliveryId } : {}),
   });
   return options.modelService.request({ ...body, model }, signal, options.config, context);
 }
@@ -166,6 +172,12 @@ function waitForDrain(raw: ServerResponse, signal: AbortSignal): Promise<boolean
 
 type PipelineOutcome = "completed" | "started_truncated" | "not_started";
 
+interface StreamMetrics {
+  firstEventMs?: number;
+  streamDurationMs?: number;
+  responseBytes: number;
+}
+
 /**
  * Relay the upstream body with a hard byte cap. Headers are written with the first chunk, so a
  * pre-body failure can still be sanitized. Overflow, upstream failure, timeout, revocation, and
@@ -176,12 +188,21 @@ async function pipeUpstreamBody(
   upstream: Response,
   options: CloudModelProxyRouteOptions,
   signal: AbortSignal,
-): Promise<PipelineOutcome> {
+  requestStartedAtMs: number,
+): Promise<{ outcome: PipelineOutcome; metrics: StreamMetrics }> {
   const reader = upstream.body?.getReader();
-  if (!reader) return "not_started";
-  let result: "completed" | "truncated";
+  if (!reader) return { outcome: "not_started", metrics: { responseBytes: 0 } };
+  let result: { status: "completed" | "truncated"; metrics: StreamMetrics };
   try {
-    result = await pumpUpstreamChunks(reply, reader, upstream, options.config.maxResponseBytes, signal);
+    result = await pumpUpstreamChunks(
+      reply,
+      reader,
+      upstream,
+      options.config.maxResponseBytes,
+      signal,
+      requestStartedAtMs,
+      options.now ?? Date.now,
+    );
   } finally {
     try {
       await reader.cancel();
@@ -189,13 +210,13 @@ async function pipeUpstreamBody(
       // The reader is already closed/cancelled; nothing left to release.
     }
   }
-  if (!reply.raw.headersSent) return "not_started";
-  if (result === "completed") {
+  if (!reply.raw.headersSent) return { outcome: "not_started", metrics: result.metrics };
+  if (result.status === "completed") {
     if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
-    return "completed";
+    return { outcome: "completed", metrics: result.metrics };
   }
   if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.destroy();
-  return "started_truncated";
+  return { outcome: "started_truncated", metrics: result.metrics };
 }
 
 function startStreamingResponse(reply: FastifyReply, upstream: Response): void {
@@ -219,21 +240,39 @@ async function pumpUpstreamChunks(
   upstream: Response,
   maxResponseBytes: number,
   signal: AbortSignal,
-): Promise<"completed" | "truncated"> {
+  requestStartedAtMs: number,
+  now: () => number,
+): Promise<{ status: "completed" | "truncated"; metrics: StreamMetrics }> {
   let bytes = 0;
+  let firstChunkAtMs: number | undefined;
+  const buildMetrics = (): StreamMetrics => {
+    const endMs = now();
+    return {
+      responseBytes: bytes,
+      ...(firstChunkAtMs !== undefined
+        ? {
+            firstEventMs: Math.max(0, firstChunkAtMs - requestStartedAtMs),
+            streamDurationMs: Math.max(0, endMs - firstChunkAtMs),
+          }
+        : {}),
+    };
+  };
   try {
     for (;;) {
       const chunk = await reader.read();
-      if (chunk.done) return signal.aborted ? "truncated" : "completed";
-      if (signal.aborted) return "truncated";
+      if (chunk.done) return { status: signal.aborted ? "truncated" : "completed", metrics: buildMetrics() };
+      if (signal.aborted) return { status: "truncated", metrics: buildMetrics() };
+      if (firstChunkAtMs === undefined) firstChunkAtMs = now();
       bytes += chunk.value.byteLength;
-      if (bytes > maxResponseBytes) return "truncated";
+      if (bytes > maxResponseBytes) return { status: "truncated", metrics: buildMetrics() };
       startStreamingResponse(reply, upstream);
-      if (!(await writeChunk(reply.raw, chunk.value, signal))) return "truncated";
+      if (!(await writeChunk(reply.raw, chunk.value, signal))) {
+        return { status: "truncated", metrics: buildMetrics() };
+      }
     }
   } catch {
     // Upstream read/write failed or the signal aborted: finalize as truncated by the caller.
-    return "truncated";
+    return { status: "truncated", metrics: buildMetrics() };
   }
 }
 
@@ -511,6 +550,41 @@ async function requestModelAttempt(
   return rejection ? { ok: false, upstream, rejection } : { ok: true, upstream };
 }
 
+function logChatCompletionsOutcome(
+  reply: FastifyReply,
+  claims: GrantClaims,
+  body: z.infer<typeof CloudModelRequestSchema>,
+  outcome: PipelineOutcome,
+  metrics: StreamMetrics,
+  retries: number,
+  retryWaitMs: number,
+  durationMs: number,
+): void {
+  try {
+    reply.log.info(
+      {
+        module: "cloud-model-proxy",
+        operation: "cloud_model.chat_completions",
+        outcome: outcome === "completed" ? "success" : "failure",
+        sandboxId: claims.sandboxId,
+        sessionId: claims.sessionId,
+        model: claims.model,
+        stream: body.stream === true,
+        durationMs: Math.max(0, durationMs),
+        retryCount: retries,
+        retryWaitMs,
+        responseBytes: metrics.responseBytes,
+        ...(metrics.firstEventMs !== undefined ? { firstEventMs: metrics.firstEventMs } : {}),
+        ...(metrics.streamDurationMs !== undefined ? { streamDurationMs: metrics.streamDurationMs } : {}),
+        pipelineOutcome: outcome,
+      },
+      "Cloud model chat completions finished",
+    );
+  } catch {
+    // Observability logging must never affect model response handling.
+  }
+}
+
 /** Own the single retry budget; every ambiguous failure and exhausted response is terminal. */
 async function forwardChatCompletions(
   options: CloudModelProxyRouteOptions,
@@ -521,11 +595,24 @@ async function forwardChatCompletions(
   timedOut: () => boolean,
   proxyOwnsRetry: boolean,
 ): Promise<FastifyReply> {
+  const now = options.now ?? Date.now;
+  const requestStartedAtMs = now();
+  let retryWaitMs = 0;
   for (let retries = 0; ; retries += 1) {
     if (signal.aborted) return finalizeUpstreamUnavailable(reply, signal, timedOut);
     const attempt = await requestModelAttempt(options, claims, body, signal, timedOut);
     if (attempt.ok) {
-      const outcome = await pipeUpstreamBody(reply, attempt.upstream, options, signal);
+      const { outcome, metrics } = await pipeUpstreamBody(reply, attempt.upstream, options, signal, requestStartedAtMs);
+      logChatCompletionsOutcome(
+        reply,
+        claims,
+        body,
+        outcome,
+        metrics,
+        retries,
+        retryWaitMs,
+        now() - requestStartedAtMs,
+      );
       return finalizePipedOutcome(reply, outcome, signal, timedOut);
     }
     const { upstream, rejection } = attempt;
@@ -549,7 +636,9 @@ async function forwardChatCompletions(
         rejection.retryAfter,
       );
     }
+    const waitStartedAtMs = now();
     if (!(await waitForCloudModelRetry(delayMs, signal))) return finalizeUpstreamUnavailable(reply, signal, timedOut);
+    retryWaitMs += Math.max(0, now() - waitStartedAtMs);
   }
 }
 

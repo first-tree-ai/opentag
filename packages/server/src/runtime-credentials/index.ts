@@ -86,6 +86,7 @@ export interface RuntimeCredentialServicesOptions {
   registry: ConnectionRegistry;
   custody: RuntimeCustodyStore;
   logger?: ServiceLogger;
+  performanceLogger?: PerformanceLogger;
   /**
    * Additional exact connection fence composed with the Local registry fence (E4 Cloud Runner
    * connections). Local registry behavior is unchanged; a frame is current when EITHER fence
@@ -117,7 +118,6 @@ export interface RuntimeCredentialServicesOptions {
   gitHubAdmission?: RuntimeGitHubAdmission;
   authority?: RuntimeExecutionAuthority;
   fetchImpl?: typeof fetch;
-  performanceLogger?: PerformanceLogger;
   /** Parent-provided adapters (e.g. GitHub). IM adapters are constructed by default. */
   adapters?: ReadonlyMap<RuntimeCredentialProvider, ProviderProxyAdapter>;
   /**
@@ -348,6 +348,7 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
     executions,
     connectionFence,
     ...(options.logger ? { logger: options.logger } : {}),
+    ...(options.performanceLogger ? { performanceLogger: options.performanceLogger } : {}),
   });
   const unsubscribeHandles = executions.onClose((event) => {
     urlHandles.revokeExecution(event.executionId);

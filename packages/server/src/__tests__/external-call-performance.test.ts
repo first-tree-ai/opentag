@@ -1364,6 +1364,7 @@ describe("external call performance logging", () => {
           verify: vi.fn(async () => ({
             jti: "00000000-0000-4000-8000-000000000999",
             executionId: "turn-1",
+            deliveryId: "deliv-turn",
             sandboxId,
             sessionId,
             model: "gpt-4o",
@@ -1381,17 +1382,14 @@ describe("external call performance logging", () => {
               innerJoin: () => ({
                 innerJoin: () => ({
                   innerJoin: () => ({
-                    leftJoin: () => ({
-                      where: () => ({
-                        limit: async () => [
-                          {
-                            accountId: "acc-turn",
-                            agentId: "agent-turn",
-                            sessionId,
-                            deliveryId: "deliv-turn",
-                          },
-                        ],
-                      }),
+                    where: () => ({
+                      limit: async () => [
+                        {
+                          accountId: "acc-turn",
+                          agentId: "agent-turn",
+                          sessionId,
+                        },
+                      ],
                     }),
                   }),
                 }),

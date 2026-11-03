@@ -4,9 +4,11 @@ import { createApp } from "../app.js";
 import {
   createInstrumentedFetch,
   createPerformanceLogger,
+  getCurrentPerformanceLogger,
   instrumentServerWorkers,
   instrumentService,
 } from "../observability/index.js";
+import { runTrustedProcess } from "../services/github-proxy/git-process.js";
 
 class PrivateFieldService {
   readonly #secretPrefix = "agent";
@@ -241,5 +243,76 @@ describe("service and HTTP performance instrumentation", () => {
       expect(start.callerOperation).toBeUndefined();
     }
     expect(httpStarts.map((s) => s.requestId)).toEqual(["req-keepalive-1", "req-keepalive-2", "req-keepalive-3"]);
+  });
+
+  it("extracts sandboxId and environmentGeneration from nested scope/allocation objects and traces git subprocesses via getCurrentPerformanceLogger", async () => {
+    const records: Array<Record<string, unknown>> = [];
+    const perfLogger = createPerformanceLogger(
+      () =>
+        ({
+          isLevelEnabled: () => true,
+          debug: (payload: Record<string, unknown>) => records.push(payload),
+          info: (payload: Record<string, unknown>) => records.push(payload),
+          warn: (payload: Record<string, unknown>) => records.push(payload),
+        }) as never,
+    );
+
+    class SandboxTestService {
+      async handleNestedScope(_input: {
+        scope: { sandboxId: string; sessionId: string; environmentGeneration: number };
+      }): Promise<number> {
+        expect(getCurrentPerformanceLogger()).toBe(perfLogger);
+        const res = await runTrustedProcess("git", ["version"], {
+          cwd: process.cwd(),
+          environment: { PATH: process.env.PATH ?? "" },
+          signal: new AbortController().signal,
+        });
+        return res.code;
+      }
+
+      hasActiveCapacityLease(): boolean {
+        return true;
+      }
+    }
+
+    const service = instrumentService(new SandboxTestService(), {
+      serviceName: "SandboxTestService",
+      perfLogger,
+    });
+
+    expect(service.hasActiveCapacityLease()).toBe(true);
+    expect(records).toHaveLength(0);
+
+    const code = await service.handleNestedScope({
+      scope: {
+        sandboxId: "sbx-123",
+        sessionId: "ses-456",
+        environmentGeneration: 7,
+      },
+    });
+    expect(code).toBe(0);
+
+    expect(records.map((r) => [r.perfCategory, r.operation, r.outcome])).toEqual([
+      ["service", "SandboxTestService.handleNestedScope", "started"],
+      ["service", "subprocess.git.version", "started"],
+      ["service", "subprocess.git.version", "completed"],
+      ["service", "SandboxTestService.handleNestedScope", "completed"],
+    ]);
+
+    expect(records[0]).toMatchObject({
+      sandboxId: "sbx-123",
+      sessionId: "ses-456",
+      environmentGeneration: 7,
+    });
+    expect(records[2]).toMatchObject({
+      module: "git-subprocess",
+      operation: "subprocess.git.version",
+      parentCallId: records[0]?.callId,
+      callerOperation: "SandboxTestService.handleNestedScope",
+      sandboxId: "sbx-123",
+      sessionId: "ses-456",
+      environmentGeneration: 7,
+      statusCode: 0,
+    });
   });
 });

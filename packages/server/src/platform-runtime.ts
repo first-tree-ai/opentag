@@ -133,6 +133,7 @@ export async function createPlatformRuntime(options: {
     ...buildPlatformCredentialTransportOptions(options),
     ...mcpCredentialOptions(options.mcpMounts),
     ...(options.logger ? { logger: options.logger } : {}),
+    ...(options.performanceLogger ? { performanceLogger: options.performanceLogger } : {}),
   });
   return {
     credentials,

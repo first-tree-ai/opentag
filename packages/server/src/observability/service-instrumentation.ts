@@ -37,12 +37,25 @@ const DEFAULT_EXCLUDED_METHODS = new Set([
   "onAgentPlacementChanged",
   "executionComputerId",
   "executionContext",
+  "hasActiveCapacityLease",
+  "inputInstance",
+  "canBatch",
+  "canSteer",
+  "isModelPathConfigured",
+  "isSandboxBusy",
+  "attachConnection",
+  "detachConnection",
+  "sendRevocationToInstance",
 ]);
 
 const SAFE_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 
 function safeId(value: unknown): string | undefined {
   return typeof value === "string" && SAFE_ID_PATTERN.test(value) ? value : undefined;
+}
+
+function safeGeneration(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -63,35 +76,34 @@ function extractResourceIds(firstArg: unknown): {
   accountId?: string;
   agentId?: string;
   computerId?: string;
+  sandboxId?: string;
+  environmentGeneration?: number;
   sessionId?: string;
   deliveryId?: string;
   turnId?: string;
-  sandboxId?: string;
 } {
   const record = asRecord(firstArg);
   if (!record) return {};
-  const sources = [
-    record,
-    asRecord(record.scope),
-    asRecord(record.allocation),
-    asRecord(record.claims),
-    asRecord(record.request),
-  ];
+  const scope = asRecord(record.scope) ?? asRecord(record.allocation);
+  const sources = [record, scope, asRecord(record.claims), asRecord(record.request)];
   const accountId = pickSafeId(sources, "accountId");
   const agentId = pickSafeId(sources, "agentId");
   const computerId = pickSafeId(sources, "computerId");
+  const sandboxId = pickSafeId(sources, "sandboxId");
+  const environmentGeneration =
+    safeGeneration(record.environmentGeneration) ?? safeGeneration(scope?.environmentGeneration);
   const sessionId = pickSafeId(sources, "sessionId");
   const deliveryId = pickSafeId(sources, "deliveryId");
   const turnId = pickSafeId(sources, "turnId");
-  const sandboxId = pickSafeId(sources, "sandboxId");
   return {
     ...(accountId ? { accountId } : {}),
     ...(agentId ? { agentId } : {}),
     ...(computerId ? { computerId } : {}),
+    ...(sandboxId ? { sandboxId } : {}),
+    ...(environmentGeneration !== undefined ? { environmentGeneration } : {}),
     ...(sessionId ? { sessionId } : {}),
     ...(deliveryId ? { deliveryId } : {}),
     ...(turnId ? { turnId } : {}),
-    ...(sandboxId ? { sandboxId } : {}),
   };
 }
 
@@ -319,6 +331,13 @@ const CONTAINER_SERVICE_FIELDS: ReadonlyArray<readonly [string, ReadonlyArray<re
       ["approvalOwner", "RuntimeApprovalOwner"],
     ],
   ],
+  [
+    "runnerChannel",
+    [
+      ["cloudDelivery", "CloudDeliveryOwner"],
+      ["cloudSession", "CloudSessionCollaborationOwner"],
+    ],
+  ],
 ];
 
 function wrapNestedField(
@@ -345,7 +364,7 @@ function wrapContainerFields(
   for (const [field, serviceName] of fields) {
     wrapNestedField(next, field, serviceName, perfLogger);
   }
-  if (containerKey === "runtime") {
+  if (containerKey === "runtime" || containerKey === "runnerChannel" || containerKey === "cloudModel") {
     next.performanceLogger = perfLogger;
   }
   copy[containerKey] = next;

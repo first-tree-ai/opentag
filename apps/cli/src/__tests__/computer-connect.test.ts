@@ -1,5 +1,5 @@
 import { mkdtemp, realpath, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import * as client from "@opentag/client";
 import {
@@ -50,7 +50,8 @@ describe("computer connect", () => {
         expect.objectContaining({ code: "code", home, noStart: false, serverUrl: channelServerUrl() }),
       );
       expect(stdout).toHaveBeenCalledWith("Connected this Computer\n");
-      expect(stdout).toHaveBeenCalledWith("Daemon service opentag-dev is active\n");
+      // A running service is implied; no extra status line.
+      expect(stdout).toHaveBeenCalledTimes(1);
     } finally {
       stdout.mockRestore();
       runSpy.mockRestore();
@@ -191,7 +192,8 @@ describe("computer connect", () => {
       noStart: true,
       serverUrl: "https://opentag.example",
     });
-    expect(result.message).toBe(`Connected Computer ${firstComputerId}`);
+    expect(result.message).toBe(`Connected this computer (${hostname()}) to openTag.`);
+    expect(result.computerId).toBe(firstComputerId);
     await runComputerConnect({
       api: { exchangeComputerConnectCode },
       code: "second-code",
@@ -429,9 +431,10 @@ describe("idempotent computer connect", () => {
       });
       expect(result.message).toBe(
         outcome === "created"
-          ? "Connected this computer to openTag as Computer 11111111-1111-4111-8111-111111111111."
-          : "Reconnected this computer to openTag; it keeps Computer 11111111-1111-4111-8111-111111111111.",
+          ? `Connected this computer (${hostname()}) to openTag.`
+          : `Reconnected this computer (${hostname()}) to openTag; it keeps its existing Computer.`,
       );
+      expect(result.message).not.toContain("11111111");
     }
   });
 

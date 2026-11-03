@@ -71,12 +71,13 @@ export async function runComputerConnect(options: ComputerConnectOptions): Promi
   await manager?.preflight();
   const serviceBefore = await manager?.status();
   const identity = await resolveInstallationIdentity(home, serverUrl);
+  const displayName = hostname();
   const api = options.api ?? (await resolveCommandContext({ home, serverUrl })).api;
   if (!api) throw new Error("Command context did not resolve an API");
   const exchange = await api.exchangeComputerConnectCode({
     code: options.code,
     installationId: identity.computerId,
-    displayName: hostname(),
+    displayName,
     platform: currentPlatform,
     arch: arch(),
     clientVersion,
@@ -88,7 +89,7 @@ export async function runComputerConnect(options: ComputerConnectOptions): Promi
     runtimeProvider: exchange.runtimeProvider,
     computerId: exchange.computerId,
     credentialsPath: machineCredentialsPath(home),
-    message: connectedMessage(exchange.computerId, exchange.agentId, exchange.outcome),
+    message: connectedMessage(displayName, exchange.agentId, exchange.outcome),
     ...(exchange.outcome ? { outcome: exchange.outcome } : {}),
   };
   if (exchange.outcome === "already_connected" || exchange.machineToken === undefined) {
@@ -114,7 +115,7 @@ export async function runComputerConnect(options: ComputerConnectOptions): Promi
   } catch (error) {
     return {
       ...result,
-      message: `${result.message} on the Server; local persistence is incomplete`,
+      message: `Connected this computer (${displayName}) on the openTag server, but could not save its credentials here; local persistence is incomplete.`,
       persistenceError: {
         stage,
         installationId: identity.computerId,
@@ -188,19 +189,17 @@ async function currentMachineTokenField(home: string, serverUrl: string): Promis
   }
 }
 
-function connectedMessage(computerId: string, agentId: string | undefined, outcome?: ComputerConnectOutcome): string {
-  const agent = agentId ? ` and bound Agent ${agentId}` : "";
+/** One line in plain language; IDs stay in the structured result and `--json`. */
+function connectedMessage(displayName: string, agentId: string | undefined, outcome?: ComputerConnectOutcome): string {
+  const machine = `This computer (${displayName})`;
+  const agent = agentId ? " and bound the Agent to it" : "";
   switch (outcome) {
     case "already_connected":
-      return `This computer is already connected to openTag as Computer ${computerId}; nothing changed and the connect code was not used.`;
+      return `${machine} is already connected to openTag; nothing changed and the connect code was not used.`;
     case "repaired":
-      return `Reconnected this computer to openTag; it keeps Computer ${computerId}${agent}.`;
-    case "created":
-      return `Connected this computer to openTag as Computer ${computerId}${agent}.`;
+      return `Reconnected this computer (${displayName}) to openTag${agent}; it keeps its existing Computer.`;
     default:
-      return agentId
-        ? `Connected Computer ${computerId} and bound Agent ${agentId}`
-        : `Connected Computer ${computerId}`;
+      return `Connected this computer (${displayName}) to openTag${agent}.`;
   }
 }
 

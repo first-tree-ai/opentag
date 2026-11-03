@@ -488,13 +488,13 @@ maybe_edit_path() {
   fi
 
   if ! profile="$(profile_for_shell)"; then
-    log "Automatic PATH setup skipped: this shell is not recognized."
+    info "Automatic PATH setup skipped: this shell is not recognized."
     return 0
   fi
 
   if [ "$PATH_MODE" = "prompt" ]; then
     if [ ! -t 0 ]; then
-      log "Automatic PATH setup skipped because prompt mode requires an interactive shell."
+      info "Automatic PATH setup skipped because prompt mode requires an interactive shell."
       return 0
     fi
     printf 'Add %s to PATH in %s? [Y/n] ' "$BIN_DIR" "$profile"
@@ -510,7 +510,7 @@ maybe_edit_path() {
 
   if rewrite_path_block "$profile"; then
     PATH_UPDATED_PROFILE="$profile"
-    log "Updated PATH block in $profile"
+    info "Updated PATH block in $profile"
   else
     log "PATH setup failed for $profile."
   fi
@@ -555,8 +555,11 @@ cleanup() {
     else
       summary="Installation failed at step ${CURRENT_STEP}/${STEP_COUNT}. Nothing was activated; any existing install is unchanged."
     fi
-    printf '%s%s%s\n' "$ERR_COLOR" "$summary" "$ERR_RESET" >&2 || :
-    printf '%s\n' "Re-run with --help for options." >&2 || :
+    # A failure before step 1 is a preflight refusal whose reason (and next step) die already printed.
+    if [ "$CURRENT_STEP" -gt 0 ]; then
+      printf '%s%s%s\n' "$ERR_COLOR" "$summary" "$ERR_RESET" >&2 || :
+      [ "$QUIET" -eq 1 ] || printf '%s\n' "Re-run with --help for options." >&2 || :
+    fi
   fi
 }
 trap cleanup EXIT HUP INT TERM
@@ -601,10 +604,13 @@ fi
 
 if [ "$FORCE" -eq 0 ] && portable_install_is_current "$VERSION" "$BIN_NAME"; then
   ok "already current"
-  log "openTag ${VERSION} is already installed and up to date; skipping download."
-  log "Run this installer with --force to reinstall the same version."
   maybe_edit_path "$BIN_NAME"
-  print_footer "openTag is already up to date."
+  if [ "$QUIET" -eq 1 ]; then
+    # Quiet callers (the connect command) get one line: nothing was downloaded or changed.
+    log "openTag ${VERSION} is already installed."
+    exit 0
+  fi
+  print_footer "openTag is already up to date." "openTag ${VERSION} is already installed; nothing was downloaded."
   exit 0
 fi
 end_step
@@ -719,4 +725,8 @@ PATH="$BIN_DIR:${PATH:-}"
 export PATH
 maybe_edit_path "$BIN_NAME"
 
+if [ "$QUIET" -eq 1 ]; then
+  log "openTag ${VERSION} installed."
+  exit 0
+fi
 print_footer "openTag is ready." "openTag ${VERSION} installed at $FINAL_VERSION_DIR"

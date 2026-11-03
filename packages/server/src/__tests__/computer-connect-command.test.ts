@@ -25,7 +25,7 @@ describe("buildComputerConnectCommand", () => {
     const installerUrl = releasedInstallerUrl(channel.environment);
     expect(command).toBe(
       `opentag_installer="$(mktemp)" && curl -fsSL ${installerUrl} -o "$opentag_installer"` +
-        ` && sh "$opentag_installer"` +
+        ` && sh "$opentag_installer" --quiet` +
         ` && PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/${channel.binName}" connect` +
         ` --server ${channel.publicUrl} -- ${CODE}`,
     );

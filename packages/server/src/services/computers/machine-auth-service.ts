@@ -836,8 +836,10 @@ export function buildComputerConnectCommand(options: {
    * Some execution tools reject the entire submitted command if it contains explicit deletion.
    * Leave this public installer in the OS temporary directory for independent cleanup, so deletion
    * neither blocks setup at preflight nor becomes a prerequisite of connect or replaces its status.
+   * `--quiet` keeps the installer to one result line (and errors), so connect's own outcome is the
+   * message the reader sees.
    */
-  return `opentag_installer="$(mktemp)" && curl -fsSL ${shellArg(installerUrl)} -o "$opentag_installer" && sh "$opentag_installer" && ${connect}`;
+  return `opentag_installer="$(mktemp)" && curl -fsSL ${shellArg(installerUrl)} -o "$opentag_installer" && sh "$opentag_installer" --quiet && ${connect}`;
 }
 
 function shellArg(value: string): string {

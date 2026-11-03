@@ -35,8 +35,11 @@ published SHA-256, extracts it, runs the new runtime once, and only then activat
 | `--force` | Reinstall even when the target version is already active |
 | `--no-path-edit` | Never edit shell startup files |
 | `--path-mode auto\|prompt\|off` | How the installer manages the `PATH` block |
-| `--quiet`, `-q` | Only print the final result and errors; also `OPENTAG_QUIET` set to any non-empty value (e.g. `1`) |
+| `--quiet`, `-q` | Print one result line (`openTag <version> installed.` or `… is already installed.`) and errors; also `OPENTAG_QUIET` set to any non-empty value (e.g. `1`). The Computer connect command runs the installer this way |
 | `--no-color` | Disable colored output; also `NO_COLOR` or `OPENTAG_NO_COLOR` set to any non-empty value (e.g. `1`) |
+
+Before downloading anything, the installer checks that the install root and shim directory can be created, and that
+`curl` or `wget` exists; a failure prints a reason line and a `Next:` line.
 
 **Reinstalling is cheap.** After reading `latest.json`, the installer checks whether the requested version is already
 the live install: the `current` symlink must resolve to a payload whose `INSTALL.json` matches the target version,

@@ -108,7 +108,7 @@ describe.each([false, true])("post-exchange persistence (existing binding: %s)",
         runtimeProvider: "claude-code",
         persistenceError: { stage, installationId: nextCredential.installationId },
       });
-      expect(result.message).toContain("on the Server; local persistence is incomplete");
+      expect(result.message).toContain("could not save its credentials here; local persistence is incomplete");
       expect(JSON.stringify(result)).not.toContain(nextCredential.machineToken);
       expect(JSON.stringify(result)).not.toContain(oldCredential.machineToken);
       expect(exchange).toHaveBeenCalledOnce();

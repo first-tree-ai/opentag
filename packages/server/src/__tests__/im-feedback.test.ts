@@ -863,3 +863,15 @@ describe("feedback review regressions", () => {
     expect(h.transport.post).toHaveBeenCalledOnce();
   });
 });
+
+it("preserves workspace recovery and paused-Session guidance for a frozen batch root on both providers", async () => {
+  const h = await workspaceFixture();
+  const card = renderFeedbackCard({ ...(await h.target()), batchRetryBlocked: true }, "https://example.test");
+  for (const rendered of [JSON.stringify(card.slack), card.feishu]) {
+    expect(rendered).toContain("Retry save");
+    expect(rendered).toContain("Discard unsaved changes");
+    expect(rendered).toContain("Work in this Session is paused; new input for this Session remains queued.");
+    expect(rendered).not.toContain("frozen batch cannot be retried");
+    expect(rendered).not.toContain("opentag_feedback_retry");
+  }
+});

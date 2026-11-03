@@ -159,3 +159,15 @@ it("explains why a frozen batch has no retry action", async () => {
   ).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Retry task" })).toBeNull();
 });
+
+it("keeps workspace recovery available without task-replay guidance for a frozen batch", async () => {
+  await renderInRouter(<ImFeedbackPage feedbackId={ID} api={api(view({ retryBlockedReason: "batch_initial" }))} />);
+  expect(await screen.findByRole("button", { name: "Retry save and release" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Discard unsaved changes" })).toBeTruthy();
+  expect(screen.getByText("Work in this Session is paused. New input for this Session remains queued.")).toBeTruthy();
+  expect(
+    screen.queryByText(
+      "This frozen batch cannot be retried here. Open the original Task and review every input before starting new work.",
+    ),
+  ).toBeNull();
+});

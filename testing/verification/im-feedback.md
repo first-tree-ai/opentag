@@ -89,8 +89,8 @@ migration was regenerated; merged migrations remain unchanged. The unique delive
 `CONCURRENTLY`, so the compatible release plan must account for its write lock. The local lock measurement below does not establish
 production migration duration or production row count.
 
-The durable installation/generation/method cooldown is a remaining review blocker, awaiting confirmation of the
-supplemental database design. Per-target Retry-After and outage-circuit classification do not by themselves provide
+The user explicitly deferred the additional cooldown table on 2026-11-03. The durable installation/generation/method
+cooldown remains unimplemented and remains a review blocker; it is no longer awaiting a confirmation response. Per-target Retry-After and outage-circuit classification do not by themselves provide
 cross-worker rate-limit coordination. No review correction establishes native provider acceptance or deployment.
 
 
@@ -105,3 +105,14 @@ remained open after index creation; an independent connection's INSERT with `loc
 commits, not merely until the index build statement returns. It does not measure constraint validation, the full
 migration transaction, production hardware or table size. Production rollout must preserve service availability
 and account for this write-lock interval using the existing compatible CI release process.
+
+
+## Workspace recovery on frozen batches
+
+A subsequent presentation correction restricts the batch-replay block to task retry. A workspace-failed batch root
+keeps both save/release and discard links and the paused-Session guidance on Slack and Feishu; the Account page
+likewise keeps recovery controls without the task-replay warning. Both provider cards and the Account page have
+regressions. The focused Server suite passed 72 tests, the Web/CSRF/owned-control group passed 29 tests, and Server/Web
+types and repository checks passed. This correction changes rendering only; the previously passing 1,121-test
+PostgreSQL run remains the persistence evidence, and was not repeated for this presentation-only change. No cooldown
+table, migration, provider operation, task retry or workspace action was added or executed.

@@ -161,3 +161,17 @@ main landmark without horizontal overflow. The real exact-setup screenshot below
 - [Real-backend desktop creation](real-draft-1440.png)
 - [Real-backend mobile creation](real-draft-390.png)
 - [Real-backend exact Agent setup](real-exact-setup.png)
+
+## Back to Agents
+
+Setup moves forward only: the creation step's Back is removed, and the standalone exact-setup header offers
+**Back to Agents** at every step, including completion, beside a logo that links to the same list. Previously the
+header's Back to agent opened the unfinished Agent's overview and appeared not to respond. A local sandbox run
+(fresh Account, real Server and PostgreSQL, Chinese, 1440/768/390/320px) confirms the exit stays in the top-right
+row at every width, the logo shows only its mark on phones, there is no horizontal overflow, and the exit lands on
+the Agent list, where the unfinished Agent offers Continue setup.
+
+- [Before, desktop](back-to-agents-before-1440.png) and [after, desktop](back-to-agents-after-1440.png)
+- [Before, 390px](back-to-agents-before-390.png), [after, 390px](back-to-agents-after-390.png), and
+  [after, 320px](back-to-agents-after-320.png)
+- [Landing on the Agent list](back-to-agents-landing-1440.png)

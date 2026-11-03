@@ -369,6 +369,42 @@ describe("web diagnostics", () => {
     remove();
   });
 
+  it("suppresses lazyRouteComponent TypeError fallout when a link error precedes vite:preloadError", () => {
+    let now = 40_000;
+    const sink = vi.fn();
+    setErrorReportSink(sink);
+    const error = vi.fn();
+    const reporter = new DiagnosticReporter({ now: () => now, error });
+    const remove = installWindowDiagnosticHandlers(window, reporter);
+
+    const link = document.createElement("link");
+    link.rel = "modulepreload";
+    link.href = "/assets/login-BcRjvb9R.js";
+    document.head.append(link);
+    link.dispatchEvent(new ErrorEvent("error"));
+    expect(reload).toHaveBeenCalledOnce();
+
+    now += 5;
+    const preloadError = new Event("vite:preloadError", { cancelable: true });
+    Object.defineProperty(preloadError, "payload", {
+      value: new TypeError(
+        `Failed to fetch dynamically imported module: ${window.location.origin}/assets/login-BcRjvb9R.js`,
+      ),
+    });
+    window.dispatchEvent(preloadError);
+    expect(preloadError.defaultPrevented).toBe(true);
+
+    now += 5;
+    const fallout = new TypeError("Cannot read properties of undefined (reading 'component')");
+    fallout.stack = `TypeError: Cannot read properties of undefined (reading 'component')\n    at ${window.location.origin}/assets/lazyRouteComponent-CybyN3Fx.js:1:4031`;
+    reportBoundaryError("route", fallout);
+
+    expect(reload).toHaveBeenCalledOnce();
+    expect(error).not.toHaveBeenCalled();
+    expect(sink).not.toHaveBeenCalled();
+    remove();
+  });
+
   it("leaves a third-party resource failure unreported", () => {
     const error = vi.fn();
     const remove = installWindowDiagnosticHandlers(window, new DiagnosticReporter({ error }));

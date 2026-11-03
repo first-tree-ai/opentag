@@ -62,3 +62,11 @@ lost-response and restart paths. Check reactions owned by another user are prese
 No real-user IM send, task replay, workspace discard, production migration, deployment or native provider
 acceptance was performed by these local checks. Unknown provider outcomes remain unresolved until evidence exists.
 Keep the issue open until its applicable acceptance requirements have evidence.
+
+## Main-branch admission integration
+
+After integrating the accepted-receipt dispatch fence, feedback retry admission reuses the same canonical Agent
+custody lock helper. Both feedback hooks and the receipt fence remain in the custody store. The combined selector,
+receipt, Local/Cloud worker, custody and feedback checks passed 273 unit tests across fourteen files. The nine-file
+PostgreSQL group passed 100 tests, including receipt recovery/admission, process restart, steered recovery, claim
+queries, Cloud parking, feedback concurrency and Cloud custody. Server types and repository checks also passed.

@@ -1,6 +1,6 @@
-import { sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
 import { parkedDelivery } from "../db/im-delivery-work.js";
+import { lockImAgentCustody, readInboundPendingAgents } from "../services/im/inbound-admission.js";
 import { DISPATCH_CLAIM_PREFIX } from "./im-delivery-claim.js";
 import { isCloudReadinessRetry } from "./im-delivery-ready-wakeup.js";
 import {
@@ -119,10 +119,15 @@ export class ImDeliverySelector {
       rows.map((row) => row.sessionId),
       now,
     );
+    const inboundPending = await readInboundPendingAgents(
+      this.database,
+      [...contexts.values()].map((context) => context.agentId),
+    );
     for (const row of rows) {
       if (!sessionId) this.#cursor = { time: row.cursorTime, id: row.id };
       const context = contexts.get(row.sessionId);
       if (!eligibleDeliveryCandidate(row, context, custody, !!sessionId)) continue;
+      if (row.state === "pending" && row.dispatchRequestId === null && inboundPending.has(context.agentId)) continue;
       if (await this.#ordered(row, context, heads)) yield { row, context };
     }
   }
@@ -167,9 +172,7 @@ export async function lockEligibleDelivery(
   now: Date,
   sessionId?: string,
 ) {
-  await database.execute(
-    sql`select pg_advisory_xact_lock(hashtextextended(${`im-agent-custody:${expectedAgentId}`}, 0))`,
-  );
+  await lockImAgentCustody(database, expectedAgentId);
   const delivery = await lockDeliveryCandidate(database, deliveryId, now);
   if (!delivery || (sessionId && delivery.sessionId !== sessionId)) return undefined;
   const rows = await readDeliveryCustody(database);
@@ -177,6 +180,12 @@ export async function lockEligibleDelivery(
   const context = contexts.get(delivery.sessionId);
   const custody = new DeliveryCustodySnapshot(rows, contexts);
   if (!eligibleDeliveryCandidate(delivery, context, custody, !!sessionId) || context.agentId !== expectedAgentId)
+    return undefined;
+  if (
+    delivery.state === "pending" &&
+    delivery.dispatchRequestId === null &&
+    (await readInboundPendingAgents(database, [expectedAgentId])).has(expectedAgentId)
+  )
     return undefined;
   if (needsPendingOrder(delivery, context) && (await readPendingHead(database, delivery.sessionId)) !== delivery.id)
     return undefined;

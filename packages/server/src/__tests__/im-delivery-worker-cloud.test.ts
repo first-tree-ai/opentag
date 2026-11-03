@@ -6,6 +6,7 @@ import {
   agentRuntimeConfigs,
   agents,
   computers,
+  feishuInboundReceipts,
   imBindings,
   imMessageDeliveries,
   imMessages,
@@ -1400,6 +1401,74 @@ describe("ImDeliveryWorker Cloud routing", () => {
       clockMs = row.nextAttemptAt.getTime();
     }
     expect(delays).toEqual([2_000, 4_000, 8_000, 16_000, 30_000, 30_000]);
+  });
+
+  it("backs off without freezing or sending when a receipt commits between claim and Cloud dispatch", async () => {
+    const { scope, cloud, bindingId } = await cloudScope();
+    const stack = makeStack();
+    const sent: RunnerServerFrame[] = [];
+    const socket = fakeSocket(sent);
+    stack.hub.attach(scope, socket);
+    stack.hub.markReady(scope, READINESS, socket);
+    stack.fence.attach({ computerId: cloud.computerId, installationId: randomUUID(), scope });
+    const { deliveryId } = await pendingDelivery(scope.sessionId);
+    let clock = new Date();
+    let inserted = false;
+    const worker = makeWorker(stack.owner, undefined, {
+      now: () => clock,
+      beforeDeliveryAdmission: async () => {
+        if (inserted) return;
+        inserted = true;
+        await unit.database.insert(feishuInboundReceipts).values({
+          imBindingId: bindingId,
+          credentialGeneration: 1,
+          eventId: "older-pending",
+          status: "failed",
+          workPayload: {},
+          nextAttemptAt: new Date(clock.getTime() + 60000),
+          lastErrorCode: "SYNTHETIC",
+          lastErrorAt: clock,
+        });
+      },
+    });
+    try {
+      await worker.runOnce();
+      const [held] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, deliveryId));
+      if (!held) throw new Error("Missing held delivery");
+      expect(held).toMatchObject({
+        state: "pending",
+        dispatchRequestId: null,
+        dispatchPayload: null,
+        turnReport: null,
+        lastErrorCode: "IM_DELIVERY_INBOUND_PENDING",
+      });
+      expect(held.nextAttemptAt.getTime() - clock.getTime()).toBe(2000);
+      expect(sent.filter((frame) => frame.type === "delivery:run")).toEqual([]);
+      await worker.runOnce();
+      const [again] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, deliveryId));
+      if (!again) throw new Error("Missing deferred delivery");
+      expect(again.attemptCount).toBe(held.attemptCount);
+      await unit.database.update(feishuInboundReceipts).set({
+        status: "processed",
+        processedAt: clock,
+        workPayload: null,
+        leaseExpiresAt: null,
+        nextAttemptAt: null,
+        lastErrorCode: null,
+        lastErrorAt: null,
+      });
+      clock = held.nextAttemptAt;
+      await worker.runOnce();
+      expect(sent.filter((frame) => frame.type === "delivery:run")).toHaveLength(1);
+    } finally {
+      worker.stop();
+    }
   });
 
   it("pauses a pending Cloud input under reauthorization and delivers it after restoration", async () => {

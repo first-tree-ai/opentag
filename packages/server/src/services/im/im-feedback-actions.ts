@@ -30,6 +30,7 @@ import {
   type FeedbackTarget,
   ImFeedbackStore,
 } from "./im-feedback-store.js";
+import { lockImAgentCustody } from "./inbound-admission.js";
 
 export class ImFeedbackServiceError extends Error {
   readonly category = "deterministic" as const;
@@ -308,7 +309,7 @@ export class ImFeedbackActionsService {
   async #lockScope(tx: DatabaseTransaction, id: string, actor: Actor) {
     const [initial] = await tx.select().from(imFeedbackTargets).where(eq(imFeedbackTargets.id, id)).limit(1);
     if (!initial) throw notFound();
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`im-agent-custody:${initial.agentId}`},0))`);
+    await lockImAgentCustody(tx, initial.agentId);
     const [agent] = await tx.select().from(agents).where(eq(agents.id, initial.agentId)).for("update");
     if (!agent || agent.createdByUserId !== initial.accountId || agent.status === "deleted") throw notFound();
     if ("accountId" in actor && actor.accountId !== agent.createdByUserId) throw notFound();

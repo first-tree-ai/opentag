@@ -350,3 +350,10 @@ actual main/route composition. Complete Feishu setup service, Runtime/Runner and
 transport, high-level Slack/Context Tree, approval/OAuth/Cloud cleanup and IM
 worker work remain; IM-F3 stays open. No issue count is advanced for a partial
 shutdown repair. Batch 23 review P2 is corrected at 0efff524 and reviewer-confirmed.
+
+[Runtime Domain drain](verification/sql-caller-repairs-25.md) is verified at
+component scope (70 cases, two native PG). It joins starting dispatches and
+pending releases as well as preparation/completion/send work. Actual route/main
+awaiting and the remaining owner/connection composition still keep IM-F3 open.
+Batch 24's late adapter/callback P2 findings are corrected at 4d6969bd and
+reviewer-confirmed closed; the earlier component counts include that correction.

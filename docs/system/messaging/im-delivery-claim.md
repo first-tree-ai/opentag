@@ -56,6 +56,13 @@ bounds. A cancelled unsent attempt retains committed dispatch correlation for
 identity-based recovery; cancellation never erases custody or rejects already-sent
 receipts and reports.
 
+The Runtime domain close port stops new requests, rejects pending waiters and
+joins admitted preparation, completion, send and custody-release work. Closing a
+waiter does not establish that its transport or SQL has ended. Already-sent
+requests retain deferred dispatch correlation; an unsent reservation can release
+through the existing retry path. Callers must await this close port before
+disposing its shared database pool.
+
 For accepted Local custody, a reconcile response does not settle the delivery. `busy`, `running`,
 `reporting`, `recovery_required`, and `rejected` are recorded as distinct deferred status codes.
 `ready` and `stopped` without a recorded report mean `IM_DELIVERY_RECOVERY_AWAITING_REPORT`.

@@ -1,6 +1,7 @@
 import {
   type AgentAdminConfig,
   CONTEXT_TREES_MAX,
+  ContextTreeBranchSchema,
   type ContextTreeConnection,
   ContextTreeConnectionSchema,
   type ContextTreeOperationRequest,
@@ -88,7 +89,7 @@ function ContextTreeSettingsForm({
     pendingAction,
   });
   const activeMode = mode ?? "connect";
-  const { source, valid, ownerValid, nameValid, linkedRepository, linkedPath } = parseForm(
+  const { source, valid, ownerValid, nameValid, linkedRepository, linkedPath, linkedRef } = parseForm(
     activeMode,
     draft,
     repositoryUrl,
@@ -252,11 +253,7 @@ function ContextTreeSettingsForm({
             ? m.agent_settings_context_tree_connect_existing()
             : m.agent_settings_context_tree_create_new()
         }
-        description={
-          activeMode === "connect"
-            ? m.agent_settings_context_tree_connect_guidance()
-            : m.agent_settings_context_tree_create_guidance()
-        }
+        description={formGuidance(activeMode, linkedRef)}
         onClose={closeForm}
         initialFocusRef={activeMode === "connect" ? repositoryInput : ownerInput}
         returnFocusRef={returnFocus}
@@ -818,6 +815,14 @@ function RepositoryFields({
   );
 }
 
+/** The dialog's one sentence; a folder link that names a branch says that branch is the one used. */
+function formGuidance(activeMode: TreeAction, linkedRef: string | undefined): string {
+  if (activeMode !== "connect") return m.agent_settings_context_tree_create_guidance();
+  return linkedRef
+    ? m.agent_settings_context_tree_connect_guidance_branch({ branch: linkedRef })
+    : m.agent_settings_context_tree_connect_guidance();
+}
+
 function parseForm(
   activeMode: TreeAction,
   draft: { owner: string; name: string },
@@ -836,18 +841,20 @@ function parseForm(
     repository,
     // The directory field overrides the folder a pasted /tree/ link names; empty means the link's folder or root.
     path: activeMode === "create" ? "." : path.trim() || linked?.path || ".",
-    ref: "HEAD",
+    // A folder link names its branch; connecting follows that branch rather than silently using another.
+    ref: activeMode === "connect" && linked?.ref ? linked.ref : "HEAD",
   };
   const valid = ContextTreeConnectionSchema.safeParse(source);
-  return { source, valid, ownerValid, nameValid, linkedRepository, linkedPath: linked?.path };
+  return { source, valid, ownerValid, nameValid, linkedRepository, linkedPath: linked?.path, linkedRef: linked?.ref };
 }
 
 /**
  * A GitHub repository link, or a folder link copied from GitHub's address bar
- * (`https://github.com/owner/repository/tree/<branch>/<folder>`). The folder is taken from a tree link;
- * the branch is not, because a connected tree always follows the repository's default branch.
+ * (`https://github.com/owner/repository/tree/<branch>/<folder>`). A tree link names its branch and
+ * folder; the branch is read as the first segment, so a branch whose name contains `/` must be
+ * connected from the repository link with the folder typed in.
  */
-export function repositoryFromUrl(value: string): { repository: string; path?: string } | undefined {
+export function repositoryFromUrl(value: string): { repository: string; path?: string; ref?: string } | undefined {
   let url: URL;
   try {
     url = new URL(value.trim());
@@ -855,13 +862,19 @@ export function repositoryFromUrl(value: string): { repository: string; path?: s
     return undefined;
   }
   if (url.protocol !== "https:" || url.hostname !== "github.com" || url.port || url.username || url.password) return;
-  const [owner, name, kind, _ref, ...folder] = url.pathname.split("/").filter(Boolean);
+  const [owner, name, kind, ref, ...folder] = url.pathname.split("/").filter(Boolean);
   if (!owner || !name) return undefined;
   if (kind !== undefined && kind !== "tree") return undefined;
   const parsed = ContextTreeRepositorySchema.safeParse(`${owner}/${name.replace(/\.git$/u, "")}`);
   if (!parsed.success) return undefined;
   const path = folder.map((part) => decodeURIComponent(part)).join("/");
-  return path ? { repository: parsed.data, path } : { repository: parsed.data };
+  const branch = ref ? ContextTreeBranchSchema.safeParse(decodeURIComponent(ref)) : undefined;
+  if (branch && !branch.success) return undefined;
+  return {
+    repository: parsed.data,
+    ...(path ? { path } : {}),
+    ...(branch?.success ? { ref: branch.data } : {}),
+  };
 }
 
 function ContextTreeResult({

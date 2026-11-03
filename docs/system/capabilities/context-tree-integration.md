@@ -42,11 +42,14 @@ stay inside the confirmation. A confirmed removal returns focus to a surviving n
 connection shortcut. Successful first connections return focus to the collection's trailing connection action
 and leave visible, concise feedback.
 
-Connect accepts a GitHub repository link and an optional relative directory; an empty
-directory means the repository root. GitHub’s default branch is resolved during verification
-and saved with the connection. Both Local and Cloud can connect existing trees.
-Create accepts an owner and repository name and uses GitHub's default branch.
-Neither dialog asks for a branch.
+Connect accepts a GitHub repository link or a folder link copied from GitHub
+(`…/tree/<branch>/<folder>`), plus an optional relative directory that overrides the link's folder; with neither,
+the tree is the repository root. A folder link connects the branch it names, and the dialog says so, because silently
+using another branch would connect content the reader did not point at. A repository link uses GitHub's default
+branch, resolved during verification and saved with the connection. The branch is read as the link's first segment
+after `tree/`, so a branch whose name contains `/` is connected from the repository link with the folder typed in.
+Both Local and Cloud can connect existing trees. Create accepts an owner and repository name and uses GitHub's
+default branch. Neither dialog asks for a branch.
 Both Local and Cloud Computers can create private repositories: OpenTag creates the repository,
 generates the initial page with the pinned `context-tree init`, and commits it through
 GitHub's contents API. Connection verification and creation run exclusively on the Server with the current Agent's GitHub MCP OAuth

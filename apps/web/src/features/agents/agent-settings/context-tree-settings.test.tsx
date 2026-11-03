@@ -131,6 +131,29 @@ it("accepts a clone URL and leaves the directory empty for the root", async () =
   );
 });
 
+it("connects a folder link on the branch and folder it names", async () => {
+  const operation = vi
+    .spyOn(browserApi, "contextTreeOperation")
+    .mockResolvedValue({ status: "completed", repository: "acme/memory" });
+  render(<ContextTreeSettings config={config()} online onChanged={vi.fn()} />);
+  await openForm();
+  fireEvent.change(screen.getByRole("textbox", { name: "GitHub repository link" }), {
+    target: { value: "https://github.com/acme/memory/tree/release/docs/guide" },
+  });
+  // The dialog says which branch it will use instead of claiming the default one.
+  expect(
+    screen.getByText("Paste a GitHub repository or folder link. We use the release branch from the link."),
+  ).toBeTruthy();
+  expect(screen.getByRole("textbox", { name: "Directory (optional)" }).getAttribute("placeholder")).toBe("docs/guide");
+  submit();
+  await waitFor(() =>
+    expect(operation).toHaveBeenCalledWith(
+      "agent-a",
+      expect.objectContaining({ action: "connect", repository: "acme/memory", path: "docs/guide", ref: "release" }),
+    ),
+  );
+});
+
 it("renders source cards with exact GitHub links and disconnects only the chosen source while offline", async () => {
   const operation = vi
     .spyOn(browserApi, "contextTreeOperation")
@@ -534,7 +557,7 @@ it("preserves a form draft but disables writes while the current selection is un
 });
 
 describe("GitHub links for an existing tree", () => {
-  it("takes the folder from a tree link and keeps following the default branch", () => {
+  it("takes the branch and folder from a tree link", () => {
     expect(repositoryFromUrl("https://github.com/acme-robotics/team-tree")).toEqual({
       repository: "acme-robotics/team-tree",
     });
@@ -543,10 +566,12 @@ describe("GitHub links for an existing tree", () => {
     });
     expect(repositoryFromUrl("https://github.com/acme-robotics/team-tree/tree/main/docs/context")).toEqual({
       repository: "acme-robotics/team-tree",
+      ref: "main",
       path: "docs/context",
     });
-    expect(repositoryFromUrl("https://github.com/acme-robotics/team-tree/tree/main")).toEqual({
+    expect(repositoryFromUrl("https://github.com/acme-robotics/team-tree/tree/release")).toEqual({
       repository: "acme-robotics/team-tree",
+      ref: "release",
     });
     expect(repositoryFromUrl("https://github.com/acme-robotics/team-tree/blob/main/README.md")).toBeUndefined();
     expect(repositoryFromUrl("https://gitlab.com/acme/team-tree")).toBeUndefined();

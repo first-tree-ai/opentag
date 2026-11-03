@@ -80,7 +80,7 @@ async function registerOffline(page: Page, displayName: string): Promise<string>
 
 async function copyTask(page: Page, scope: Page | Locator = page): Promise<string> {
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
-  const copy = scope.getByRole("button", { name: "Copy for Agent", exact: true });
+  const copy = scope.getByRole("button", { name: "Copy", exact: true });
   await expect(copy).toBeVisible();
   await copy.click();
   await expect(scope.getByRole("button", { name: "Copied", exact: true })).toBeVisible();
@@ -169,7 +169,9 @@ test("copies the current-computer task and waits for its actual daemon before co
   const agentId = await createAgent(page);
   await page.goto(`/agents/setup?agentId=${agentId}`);
   await expect(page.getByRole("heading", { name: "Connect your computer", exact: true })).toBeVisible();
-  await expect(page.getByText("Copy the task to your Agent on this computer.", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Run this in a terminal on this computer, or send it to your Agent there.", { exact: true }),
+  ).toBeVisible();
   const task = await copyTask(page);
   // The copied text is the command itself, led by one inert line for an Agent.
   expect(task).toMatch(/^: 'openTag: connect this computer to my account\. Run the next line as-is/);
@@ -204,7 +206,7 @@ test("automatically repairs the sole disconnected Computer in place", async ({ p
   });
   await page.goto(`/agents/setup?agentId=${agentId}`);
   await expect(
-    page.getByText("Copy the task to your Agent on Office Linux to restore the connection.", { exact: true }),
+    page.getByText("Run this in a terminal on Office Linux, or send it to your Agent there.", { exact: true }),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: /Use this computer:/ })).toHaveCount(0);
   const task = await copyTask(page);
@@ -283,7 +285,9 @@ test("connects another Computer from Agent settings without moving the Agent", a
   await entry.click();
   await expect(page).toHaveURL((url) => url.pathname === "/agents/computers" && !url.searchParams.has("connect"));
   await expect(
-    page.getByText("Copy the task to your Agent on the computer you want to connect.", { exact: true }),
+    page.getByText("Run this in a terminal on the computer you want to connect, or send it to your Agent there.", {
+      exact: true,
+    }),
   ).toBeVisible();
   const task = await copyTask(page, page.locator('[data-ui="computer-connect"]'));
   expect(task).toContain("this computer's current environment");
@@ -337,7 +341,9 @@ test("uses first-Local guidance when the inventory contains only Cloud", async (
   await expect(page.getByRole("heading", { name: "Cloud", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Connect a new computer", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Connect computer", exact: true }).click();
-  await expect(page.getByText("Copy the task to your Agent on this computer.", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Run this in a terminal on this computer, or send it to your Agent there.", { exact: true }),
+  ).toBeVisible();
   expect(await copyTask(page)).toMatch(/^: 'openTag: connect this computer/);
   await expectNoPageOverflow(page);
   await expectAccessible(page);

@@ -114,6 +114,10 @@ when embedded). After an exact Agent has been admitted, the full-screen header o
 列表**) at every step, including the completion screen, and its openTag logo links to the same Agent list
 (`/agents`); on phones the logo shows the mark alone so the logo, Back to Agents, and Account menu share one row. The list resumes unfinished setup through the Agent's Continue setup action. The pre-Agent creation header
 offers both only to an Account that has completed setup; for a first-time Account the list would redirect back to setup.
+Why: the Agent type (Local or Cloud) is fixed once chosen, because switching it mid-setup would discard the computer
+or Cloud preparation already made for it. A single exit in a fixed place, the top-right Back to Agents, replaces a
+step-by-step Back and a separate Set up later that each led somewhere different. The Agent list is where every
+unfinished setup can be resumed.
 The completion screen stays visible until the user navigates away. Its primary action, **View agent**
 (**查看 Agent** in Chinese), opens that Agent's overview. Global navigation provides the return to the Agent list;
 the completion screen does not repeat that destination as a secondary action or redirect automatically.
@@ -140,7 +144,9 @@ paused offline read, delivery credentials being re-verified, or a runtime Provid
 replace a row's last settled status; the row keeps it until the next settled answer. A check with no settled answer
 behind it reads as Ready, while unreadable evidence with none reads as Status unavailable. A confirmed problem
 replaces Ready as soon as it is read. When a row's evidence stays transient for a full refresh interval, that row
-alone adds a quiet **Refreshing status** note under its held status; there is no page-level notice. The Agent's own
+alone adds a quiet **Refreshing status** note under its held status; there is no page-level notice. A flickering
+status or a page-wide error reads as an outage when only one Agent's check is late, so the list keeps what it last
+knew and flags only the row whose answer is overdue. The Agent's own
 page keeps the exact current dependency states. The Server already bounds what it holds: a local Computer without a
 heartbeat for 90 seconds reads as offline, and runtime and messaging observations expire on their own TTLs, so held
 list statuses converge on the Server's next settled answer.

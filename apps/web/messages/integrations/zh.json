@@ -32,7 +32,7 @@
   "integrations_github_removed": "GitHub 账户授权已断开。",
   "integrations_github_removing": "正在断开授权…",
   "integrations_github_repositories_close": "关闭仓库列表",
-  "integrations_github_repositories_description": "可用于 知识树 连接的仓库。",
+  "integrations_github_repositories_description": "可用于知识树连接的仓库。",
   "integrations_github_repositories_empty": "未找到可访问的仓库。请检查 GitHub 账户权限及 OAuth 授权。",
   "integrations_github_repositories_error": "暂时无法读取仓库，请重试。",
   "integrations_github_repositories_filter": "筛选当前列表",

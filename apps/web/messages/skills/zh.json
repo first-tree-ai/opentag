@@ -7,7 +7,7 @@
   "skills_delete_in_progress": "正在删除…",
   "skills_delete_label": "删除技能 {name}",
   "skills_delete_title": "删除 {name}？",
-  "skills_details_binary": "此文件是二进制文件或非 UTF-8 文本。下载 技能 后可打开。",
+  "skills_details_binary": "此文件是二进制文件或非 UTF-8 文本。下载技能后可打开。",
   "skills_details_binary_title": "无法预览",
   "skills_details_changed": "此技能已更新。关闭并重新打开详情以阅读最新版本。",
   "skills_details_description": "简介：",

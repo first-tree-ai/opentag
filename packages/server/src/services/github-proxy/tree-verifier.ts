@@ -60,9 +60,13 @@ async function assertSupportedCommittedPath(
     let ancestor = "";
     for (const part of path.split("/")) {
       ancestor = ancestor ? `${ancestor}/${part}` : part;
-      assertSupportedEntries(
-        await runTrustedGit(["--literal-pathspecs", "-C", repository, "ls-tree", "-z", sha, "--", ancestor], options),
+      const entry = await runTrustedGit(
+        ["--literal-pathspecs", "-C", repository, "ls-tree", "-z", sha, "--", ancestor],
+        options,
       );
+      if (!/^040000 tree [0-9a-f]+\t[^\0]+\0$/.test(entry.toString("utf8"))) {
+        throw new GitPublicationError("tree_invalid");
+      }
     }
     args.push("--", path);
   }

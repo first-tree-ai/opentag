@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -154,3 +154,27 @@ it.each(["ancestor", "selected", "descendant"] as const)("rejects a %s Gitlink b
   });
   await expect(stat(join(root, `tree-${sha}`))).rejects.toMatchObject({ code: "ENOENT" });
 });
+
+it.each(["missing", "NODE.md"])(
+  "rejects %s ancestor after one Git lookup despite a long remaining path",
+  async (ancestor) => {
+    const trace = join(root, "git-trace.jsonl");
+    const path = `${ancestor}/${Array(2000).fill("a").join("/")}`;
+    await expect(
+      verifyPublishedContextTree(
+        bare,
+        await git(tree, ["rev-parse", "HEAD"]),
+        {
+          ...options,
+          environment: { ...environment, GIT_TRACE2_EVENT: trace },
+        },
+        path,
+      ),
+    ).rejects.toMatchObject({ code: "tree_invalid" });
+    const events = (await readFile(trace, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(events.filter((event) => event.event === "start")).toHaveLength(1);
+  },
+);

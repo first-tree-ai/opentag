@@ -279,8 +279,8 @@ AG-F6 lists each selected path component's exact nonrecursive entry separately,
 then recursively lists only the literal selected subtree. Git ls-tree treats its
 path arguments as patterns; combining ancestor and child patterns can still list
 unrelated siblings. Use --literal-pathspecs and one entry query per component,
-sequentially under the existing operation signal/process bounds. Existing path
-length bounds the number of components. Reject 120000/160000 modes before
+sequentially under the existing operation signal/process bounds. Each ancestor must be exactly one 040000 tree entry; missing paths or ordinary
+files fail immediately rather than multiplying process launches. Reject 120000/160000 modes before
 checkout, retain filesystem ancestor checks and pinned CLI verification. Root
 selection still lists the whole repository. Do not enlarge the 1-MiB output bound,
 change full fetch/checkout, cache or introduce parallel Git processes.
@@ -288,3 +288,17 @@ change full fetch/checkout, cache or introduce parallel Git processes.
 Batch 8b closes AG-F6. Thirty-four defects and all nine simplifications are
 repaired locally; OP-F1, AG-F9 and final IM-F3 remain. Batch 19 independent
 review at b846c5e9 found no actionable issue.
+
+## Batch 8c concrete design
+
+OP-F1 replaces the three benchmark raw admin/fixture/EXPLAIN clients with the
+existing createDatabaseClient(max: 1), retaining the shared official connect,
+statement and idle-transaction settings and the existing elapsed deadline.
+The tracked Agent/Session and Task fixture statements measured at most 2,875 ms
+and 1,844 ms respectively; the existing 30-second statement / 35-second elapsed
+budgets fit these separate benchmark operations without widening Server or
+startup migration budgets. Retain the Agent admin's five-second native end and
+apply that same bound to other owned benchmark clients. Existing independent
+cleanup/error aggregation still reaches owned-container removal. No benchmark
+framework, schema, retry or timeout wrapper. Test the native admin through a
+lossy PostgreSQL proxy and run the actual fixture/CLI against disposable Docker.

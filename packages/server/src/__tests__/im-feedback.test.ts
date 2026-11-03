@@ -237,6 +237,64 @@ describe("durable IM feedback", () => {
     expect(await h.target()).toMatchObject({ appliedReaction: null, cardState: "sent" });
     expect(JSON.stringify(h.warn.mock.calls)).not.toContain("private upstream text");
   });
+  it("honors reaction Retry-After while still publishing the incident card", async () => {
+    const h = await fixture();
+    await h.finish();
+    h.transport.reaction.mockRejectedValueOnce(
+      new FeedbackProviderError("IM_FEEDBACK_RATE_LIMITED", true, false, 45_000),
+    );
+    await h.worker.runOnce();
+    expect((await h.target()).nextAttemptAt).toEqual(new Date(clock.getTime() + 45_000));
+    expect(h.transport.post).toHaveBeenCalledOnce();
+    clock = new Date(clock.getTime() + 44_000);
+    await h.worker.runOnce();
+    expect(h.transport.reaction).toHaveBeenCalledOnce();
+    clock = new Date(clock.getTime() + 2_000);
+    await h.worker.runOnce();
+    expect(h.transport.reaction).toHaveBeenCalledTimes(2);
+    expect(h.transport.post).toHaveBeenCalledOnce();
+  });
+  it("retries a definitely rate-limited card only after Retry-After", async () => {
+    const h = await fixture();
+    await h.finish();
+    h.transport.post.mockRejectedValueOnce(new FeedbackProviderError("IM_FEEDBACK_RATE_LIMITED", true, false, 45_000));
+    await h.worker.runOnce();
+    expect(await h.target()).toMatchObject({ cardState: "pending", nextAttemptAt: new Date(clock.getTime() + 45_000) });
+    clock = new Date(clock.getTime() + 44_000);
+    await h.worker.runOnce();
+    expect(h.transport.post).toHaveBeenCalledOnce();
+    clock = new Date(clock.getTime() + 2_000);
+    await h.worker.runOnce();
+    expect(h.transport.post).toHaveBeenCalledTimes(2);
+    expect((await h.target()).cardState).toBe("sent");
+  });
+  it("honors Retry-After on bound-card updates", async () => {
+    const h = await fixture();
+    await h.finish();
+    await h.worker.runOnce();
+    await db.database
+      .update(imFeedbackTargets)
+      .set({ revision: sql`${imFeedbackTargets.revision}+1`, nextAttemptAt: clock })
+      .where(eq(imFeedbackTargets.deliveryId, h.frame.deliveryId));
+    h.transport.update.mockRejectedValueOnce(
+      new FeedbackProviderError("IM_FEEDBACK_RATE_LIMITED", true, false, 60_000),
+    );
+    await h.worker.runOnce();
+    expect((await h.target()).nextAttemptAt).toEqual(new Date(clock.getTime() + 60_000));
+  });
+  it("preserves the longest rate limit when the card send is also ambiguous", async () => {
+    const h = await fixture();
+    await h.finish();
+    h.transport.reaction.mockRejectedValueOnce(
+      new FeedbackProviderError("IM_FEEDBACK_RATE_LIMITED", true, false, 60_000),
+    );
+    h.transport.post.mockRejectedValueOnce(new Error("unknown send"));
+    await h.worker.runOnce();
+    expect(await h.target()).toMatchObject({
+      cardState: "send_unknown",
+      nextAttemptAt: new Date(clock.getTime() + 60_000),
+    });
+  });
   it("reconciles an unanswered send without automatically creating another card", async () => {
     const h = await fixture();
     await h.finish();

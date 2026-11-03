@@ -1,5 +1,5 @@
 import { Client, LoggerLevel } from "@larksuiteoapi/node-sdk";
-import { WebClient } from "@slack/web-api";
+import { WebAPIRateLimitedError, WebClient } from "@slack/web-api";
 import { createFeishuHttpInstance, feishuDomainForWorkspaceBrand } from "../im-bindings/feishu/adapter.js";
 import type { ImBindingService } from "../im-bindings/im-binding-service.js";
 import { SLACK_WEB_CLIENT_OPTIONS } from "../im-bindings/slack/default-api-client.js";
@@ -31,6 +31,23 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     readonly policy: ExternalCallPolicy,
     readonly publicUrl: string,
   ) {}
+
+  async #run<T>(
+    operation: string,
+    task: (signal: AbortSignal) => Promise<T>,
+    options: { maxAttempts: number; timeoutMs: number },
+  ): Promise<T> {
+    try {
+      return await this.policy.run(operation, task, options);
+    } catch (error) {
+      if (
+        operation.startsWith("slack.") &&
+        (error instanceof WebAPIRateLimitedError || slackErrorCode(error) === "ratelimited")
+      )
+        throw new FeedbackProviderError("IM_FEEDBACK_RATE_LIMITED", true, false, slackRetryAfter(error));
+      throw error;
+    }
+  }
 
   async #slack(target: FeedbackTarget, signal: AbortSignal) {
     const material = await this.bindings.getSlackConnectionMaterial(target.bindingId);
@@ -73,7 +90,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     threadKey: string;
     result: "recorded" | "unavailable";
   }): Promise<void> {
-    await this.policy.run(
+    await this.#run(
       "slack.feedback.response",
       async (signal) => {
         const api = new WebClient(input.token, {
@@ -96,7 +113,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
   }
 
   async reaction(target: FeedbackTarget, desired: FeedbackTarget["desiredReaction"]): Promise<void> {
-    await this.policy.run(
+    await this.#run(
       `${target.provider}.feedback.reaction`,
       (signal) =>
         target.provider === "slack"
@@ -141,7 +158,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
 
   async post(target: FeedbackTarget, action?: FeedbackAction): Promise<string> {
     try {
-      return await this.policy.run(
+      return await this.#run(
         `${target.provider}.feedback.post`,
         async (signal) => {
           const card = renderFeedbackCard(target, this.publicUrl, action);
@@ -181,13 +198,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
         "invalid_blocks",
         "invalid_arguments",
       ].includes(code ?? "");
-      if (permanent || code === "ratelimited")
-        throw new FeedbackProviderError(
-          "IM_FEEDBACK_SEND_REJECTED",
-          true,
-          permanent,
-          code === "ratelimited" ? slackRetryAfter(error) : undefined,
-        );
+      if (permanent) throw new FeedbackProviderError("IM_FEEDBACK_SEND_REJECTED", true, true);
       throw new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false);
     }
   }
@@ -195,7 +206,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
   async update(target: FeedbackTarget, action?: FeedbackAction): Promise<void> {
     const cardMessageId = target.cardMessageId;
     if (!cardMessageId) return;
-    await this.policy.run(
+    await this.#run(
       `${target.provider}.feedback.update`,
       async (signal) => {
         const card = renderFeedbackCard(target, this.publicUrl, action);
@@ -222,7 +233,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
   }
 
   async find(target: FeedbackTarget, cursor?: string): Promise<{ ids: string[]; cursor?: string }> {
-    return this.policy.run(
+    return this.#run(
       `${target.provider}.feedback.find`,
       (signal) =>
         target.provider === "slack"

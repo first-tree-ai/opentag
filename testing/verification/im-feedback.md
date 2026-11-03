@@ -12,9 +12,9 @@ edits, retention, unknown workspace operations, exact save proof, explicit save 
 
 `im-feedback-messenger.test.ts` intercepts both native SDKs. It checks original conversation addressing,
 supported Feishu reaction names and ownership, idempotent Slack reaction errors, bounded readback identity,
-missing/ambiguous responses, Retry-After, credential fencing, private callback responses and bound-message updates.
+missing/ambiguous responses, the SDK's real `WebAPIRateLimitedError` and Retry-After on sends/reactions/updates/readback, credential fencing, private callback responses and bound-message updates.
 HTTP and callback tests exercise Account authentication, browser origin/CSRF, strict input, verified Slack
-signatures, strict approval parsing, and Feishu callback scope. All credentials are synthetic.
+signatures, strict approval parsing, and Feishu callback scope. Worker regressions also preserve the longest rate-limit delay when reaction and card operations fail together. All credentials are synthetic.
 
 `integration/im-feedback.test.ts` uses real PostgreSQL and independent pool connections:
 
@@ -30,8 +30,8 @@ unknown results, locale layout, keyboard control and accessibility.
 
 ## Local validation
 
-Focused server validation: 54 feedback tests and 60 affected delivery-worker tests passed. The new feedback
-implementation has 89.55% line coverage and 83.15% statement coverage in the focused feedback run. Five PostgreSQL feedback
+Focused server validation: 61 feedback tests and 60 affected delivery-worker tests passed. The new feedback
+implementation has 90.12% line coverage and 83.92% statement coverage in the focused feedback run. Five PostgreSQL feedback
 checks passed, including the populated query plans. Shared package validation passed 781 tests. The changed managed
 IM instruction checks passed 65 client tests; the change does not alter Agent Runtime coverage-owned implementation.
 The complete workspace build and all package types passed. Web behavior, CSRF and Kumo contract checks passed 27 tests;

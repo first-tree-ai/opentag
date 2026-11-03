@@ -2,7 +2,7 @@ import type { ServiceLogger } from "../../observability/service-logger.js";
 import { FeedbackProviderError, type FeedbackTransport } from "./im-feedback-messenger.js";
 import type { FeedbackTarget, ImFeedbackStore } from "./im-feedback-store.js";
 
-type ReactionResult = { value: FeedbackTarget["appliedReaction"]; failed: boolean };
+type ReactionResult = { value: FeedbackTarget["appliedReaction"]; failed: boolean; retryAfterMs?: number };
 export class ImFeedbackWorker {
   #timer: ReturnType<typeof setInterval> | undefined;
   #pass: Promise<void> | undefined;
@@ -52,22 +52,29 @@ export class ImFeedbackWorker {
   }
   async #apply(original: FeedbackTarget): Promise<void> {
     let target = original;
+    let retryAfterMs = 0;
     try {
       target = await this.options.store.refreshQueued(target);
       if (!(await this.#owns(target))) return;
       await this.options.reconcileAction?.(target);
       if (!(await this.#owns(target))) return;
       const reaction = await this.#reaction(target);
+      retryAfterMs = reaction.retryAfterMs ?? 0;
       if (target.cardState === "send_unknown") await this.#recover(target, reaction);
       else if (target.cardState === "pending" && !target.cardMessageId) await this.#publish(target, reaction);
       else await this.#settleKnown(target, reaction);
-    } catch {
+    } catch (error) {
       this.options.logger.warn(
         { code: "IM_FEEDBACK_PROJECTION_FAILED", feedbackId: target.id },
         "IM feedback remains pending",
       );
       await this.options.store.settle(target, {
-        delayMs: feedbackRetryDelay(target.attemptCount),
+        delayMs: Math.max(
+          retryAfterMs,
+          error instanceof FeedbackProviderError
+            ? (error.retryAfterMs ?? feedbackRetryDelay(target.attemptCount))
+            : feedbackRetryDelay(target.attemptCount),
+        ),
         errorCode: "IM_FEEDBACK_PROJECTION_FAILED",
       });
     }
@@ -82,12 +89,16 @@ export class ImFeedbackWorker {
         value = desired;
       }
       return { value, failed: false };
-    } catch {
+    } catch (error) {
       this.options.logger.warn(
         { code: "IM_FEEDBACK_REACTION_FAILED", feedbackId: target.id },
         "IM feedback reaction is pending",
       );
-      return { value: null, failed: true };
+      return {
+        value: null,
+        failed: true,
+        ...(error instanceof FeedbackProviderError && error.retryAfterMs ? { retryAfterMs: error.retryAfterMs } : {}),
+      };
     }
   }
   async #recover(target: FeedbackTarget, reaction: ReactionResult): Promise<void> {
@@ -106,7 +117,7 @@ export class ImFeedbackWorker {
         cardState: "sent",
         cardMessageId: [...matches][0],
         cardRevision: 0,
-        delayMs: 0,
+        delayMs: reaction.retryAfterMs ?? 0,
       });
       return;
     }
@@ -121,7 +132,7 @@ export class ImFeedbackWorker {
     await this.options.store.settle(target, {
       reaction: reaction.value,
       errorCode: matches.size > 1 ? "IM_FEEDBACK_DUPLICATE_CARD" : "IM_FEEDBACK_SEND_UNKNOWN",
-      delayMs: 300_000,
+      delayMs: Math.max(300_000, reaction.retryAfterMs ?? 0),
       reconciliationCursor: cursor ?? null,
     });
   }
@@ -141,7 +152,12 @@ export class ImFeedbackWorker {
         ...reactionRetry(target, reaction),
       });
     } catch (error) {
-      await this.options.store.settle(target, { reaction: reaction.value, ...sendFailure(error, target) });
+      const failure = sendFailure(error, target);
+      await this.options.store.settle(target, {
+        reaction: reaction.value,
+        ...failure,
+        delayMs: Math.max(failure.delayMs, reaction.retryAfterMs ?? 0),
+      });
     }
   }
   async #settleKnown(target: FeedbackTarget, reaction: ReactionResult): Promise<void> {
@@ -159,7 +175,7 @@ export class ImFeedbackWorker {
 function reactionRetry(target: FeedbackTarget, result: ReactionResult) {
   return result.failed
     ? {
-        delayMs: feedbackRetryDelay(target.attemptCount),
+        delayMs: result.retryAfterMs ?? feedbackRetryDelay(target.attemptCount),
         errorCode: "IM_FEEDBACK_REACTION_FAILED",
       }
     : {};

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { WebAPIRateLimitedError } from "@slack/web-api";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ExternalCallPolicy, ExternalCallPolicyError } from "../services/im/external-call-policy.js";
 import { ImFeedbackMessenger } from "../services/im/im-feedback-messenger.js";
@@ -22,7 +23,8 @@ const mocks = vi.hoisted(() => ({
   slackOptions: vi.fn(),
   feishuOptions: vi.fn(),
 }));
-vi.mock("@slack/web-api", () => ({
+vi.mock("@slack/web-api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@slack/web-api")>()),
   WebClient: class {
     constructor(token: string, options: unknown) {
       mocks.slackOptions(token, options);
@@ -211,12 +213,28 @@ describe("native feedback transport", () => {
     await expect(messenger.post(target(provider))).rejects.toMatchObject({ knownNotApplied: false });
   });
   it("honors a definite Slack rejection and Retry-After without retrying inside the SDK", async () => {
-    mocks.slack.chat.postMessage.mockRejectedValue({ data: { error: "ratelimited" }, retryAfter: 42 });
+    mocks.slack.chat.postMessage.mockRejectedValue(new WebAPIRateLimitedError(42));
     const { messenger } = harness();
     await expect(messenger.post(target())).rejects.toMatchObject({ knownNotApplied: true, retryAfterMs: 42_000 });
     expect(mocks.slack.chat.postMessage).toHaveBeenCalledOnce();
     mocks.slack.chat.postMessage.mockRejectedValue({ data: { error: "internal_error" } });
     await expect(messenger.post(target())).rejects.toMatchObject({ knownNotApplied: false });
+  });
+  it.each(["reaction", "update", "find"] as const)("propagates SDK Retry-After for %s", async (operation) => {
+    const t = { ...target(), cardMessageId: "existing" };
+    const h = harness();
+    const mocksByOperation = {
+      reaction: mocks.slack.reactions.remove,
+      update: mocks.slack.chat.update,
+      find: mocks.slack.conversations.replies,
+    };
+    mocksByOperation[operation].mockRejectedValue(new WebAPIRateLimitedError(37));
+    const calls = {
+      reaction: () => h.messenger.reaction(t, "warning"),
+      update: () => h.messenger.update(t),
+      find: () => h.messenger.find(t),
+    };
+    await expect(calls[operation]()).rejects.toMatchObject({ knownNotApplied: true, retryAfterMs: 37_000 });
   });
   it("treats an open local circuit as definitely not submitted", async () => {
     const h = harness();

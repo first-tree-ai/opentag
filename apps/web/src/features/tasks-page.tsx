@@ -701,6 +701,12 @@ function TaskBackLink({ agentId, showExamples }: { agentId: string; showExamples
   );
 }
 
+/*
+ * Compact tables sit inside a titled card. Pulling the region out by the cells' own inset (px-3)
+ * lines cell text up with the card title on both edges, while row hover keeps its padding.
+ */
+const COMPACT_TABLE_INSET = "-mx-3";
+
 function TaskTable({
   compact = false,
   showAgent = true,
@@ -715,7 +721,7 @@ function TaskTable({
   const table = (
     <section
       aria-label={m.tasks_table_region()}
-      className="min-w-0 overflow-hidden rounded-lg @min-[40rem]/content:overflow-x-auto @min-[40rem]/content:focus:outline-none @min-[40rem]/content:focus-visible:ring-2 @min-[40rem]/content:focus-visible:ring-kumo-brand @min-[40rem]/content:focus-visible:ring-inset"
+      className={`min-w-0 overflow-hidden rounded-lg ${compact ? COMPACT_TABLE_INSET : ""} @min-[40rem]/content:overflow-x-auto @min-[40rem]/content:focus:outline-none @min-[40rem]/content:focus-visible:ring-2 @min-[40rem]/content:focus-visible:ring-kumo-brand @min-[40rem]/content:focus-visible:ring-inset`}
       // biome-ignore lint/a11y/noNoninteractiveTabindex: The same region remains keyboard-scrollable in wider content areas.
       tabIndex={0}
     >

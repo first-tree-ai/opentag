@@ -354,8 +354,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     await this.#assertActivationClaim(input);
     this.#assertActivationRunning(input, shutdownEpoch);
     const candidate = this.#createAdapter({
-      onCardAction: async (event) =>
-        handoff ? this.#onCardAction?.(event, handoff.imBindingId, handoff.generation) : undefined,
+      onCardAction: (event) => this.#handleCardAction(event, handoff, shutdownEpoch),
       appId: input.appId,
       appSecret: input.appSecret,
       teamId: null,
@@ -725,6 +724,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
   }
 
   async #connectClaimed(imBindingId: string, epoch: number, signal?: AbortSignal): Promise<void> {
+    const shutdownEpoch = this.#shutdownEpoch;
     await withRootSpan(
       "feishu.connection.connect",
       imAttrs({ provider: "feishu", bindingId: imBindingId }),
@@ -733,9 +733,10 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
         try {
           const material = await this.#imBindings.getFeishuConnectionMaterial(imBindingId);
           if (!material) throw new FeishuOperationError("FEISHU_BINDING_NOT_ACTIVE");
+          this.#assertActivationRunning({ signal }, shutdownEpoch);
           const createdAdapter = this.#createAdapter({
             onCardAction: (event) =>
-              this.#onCardAction?.(event, imBindingId, material.generation) ?? Promise.resolve(undefined),
+              this.#handleCardAction(event, { imBindingId, generation: material.generation }, shutdownEpoch),
             appId: material.appId,
             appSecret: material.appSecret,
             teamId: material.teamId,
@@ -754,12 +755,16 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
           if (identity.externalBotId !== material.botOpenId) {
             throw new FeishuOperationError("FEISHU_BOT_IDENTITY_MISMATCH");
           }
-          await this.#replaceOwned(imBindingId, {
-            adapter: createdAdapter,
-            epoch,
-            generation: material.generation,
-            appId: material.appId,
-          });
+          await this.#replaceOwned(
+            imBindingId,
+            {
+              adapter: createdAdapter,
+              epoch,
+              generation: material.generation,
+              appId: material.appId,
+            },
+            signal,
+          );
           setActiveSpanAttributes(outcomeAttrs("connected"));
         } catch (error) {
           await adapter?.channel.disconnect().catch(() => this.#onDiagnostic("FEISHU_CONNECTION_DISCONNECT_FAILED"));
@@ -771,7 +776,8 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     );
   }
 
-  async #replaceOwned(imBindingId: string, next: OwnedChannel): Promise<void> {
+  async #replaceOwned(imBindingId: string, next: OwnedChannel, signal?: AbortSignal): Promise<void> {
+    const shutdownEpoch = this.#shutdownEpoch;
     this.#attachHandlers(next.adapter, () => ({
       imBindingId,
       epoch: next.epoch,
@@ -793,6 +799,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
       )
       .returning({ imBindingId: imBindings.id });
     if (!observed) throw new FeishuOperationError("FEISHU_CONNECTION_LEASE_STALE");
+    this.#assertActivationRunning({ signal }, shutdownEpoch);
     this.#owned.set(imBindingId, next);
     if (previous && previous.adapter !== next.adapter) {
       await previous.adapter.channel
@@ -806,13 +813,18 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     adapter: FeishuAdapter,
     resolveHandoff: () => { imBindingId: string; epoch: number; generation: number; appId: string } | undefined,
   ): (() => void) | undefined {
+    const shutdownEpoch = this.#shutdownEpoch;
+    const activeHandoff = () => {
+      if (shutdownEpoch !== this.#shutdownEpoch || (this.#stopped && this.#shutdownEpoch > 0)) return undefined;
+      return resolveHandoff();
+    };
     return adapter.channel.on({
       message: async (message: NormalizedMessage) => {
-        this.#assertActivationRunning({}, this.#shutdownEpoch);
+        this.#assertActivationRunning({}, shutdownEpoch);
         await this.#track(
           traceFeishuInbound(async (setFailureCode) => {
             setFailureCode("FEISHU_INBOUND_ADMISSION_FAILED");
-            const handoff = resolveHandoff();
+            const handoff = activeHandoff();
             if (!handoff) throw new FeishuOperationError("FEISHU_ADMISSION_NOT_READY");
             setActiveSpanAttributes(imAttrs({ provider: "feishu", bindingId: handoff.imBindingId }));
             setFailureCode("FEISHU_INBOUND_NORMALIZE_FAILED");
@@ -844,7 +856,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
         );
       },
       reconnecting: () => {
-        const handoff = resolveHandoff();
+        const handoff = activeHandoff();
         if (handoff) {
           emitRootSpan("feishu.connection.transition", {
             ...imAttrs({ provider: "feishu", bindingId: handoff.imBindingId }),
@@ -859,7 +871,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
         }
       },
       reconnected: () => {
-        const handoff = resolveHandoff();
+        const handoff = activeHandoff();
         if (handoff) {
           emitRootSpan("feishu.connection.transition", {
             ...imAttrs({ provider: "feishu", bindingId: handoff.imBindingId }),
@@ -874,7 +886,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
         }
       },
       error: (error: unknown) => {
-        const handoff = resolveHandoff();
+        const handoff = activeHandoff();
         if (handoff) {
           const code = diagnosticCode(error);
           emitRootSpan(
@@ -1097,6 +1109,26 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
 
   #scheduleMaintenance(): void {
     this.#trackDetached("FEISHU_CONNECTION_MAINTENANCE_FAILED", this.maintain(), "scheduler");
+  }
+
+  #handleCardAction(
+    event: unknown,
+    handoff: { imBindingId: string; generation: number } | undefined,
+    shutdownEpoch: number,
+  ): Promise<unknown> {
+    if (
+      !handoff ||
+      !this.#onCardAction ||
+      shutdownEpoch !== this.#shutdownEpoch ||
+      (this.#stopped && this.#shutdownEpoch > 0)
+    )
+      return Promise.resolve(undefined);
+    return this.#track(
+      Promise.resolve().then(() => {
+        this.#assertActivationRunning({}, shutdownEpoch);
+        return this.#onCardAction?.(event, handoff.imBindingId, handoff.generation);
+      }),
+    );
   }
 
   #track<T>(operation: Promise<T>): Promise<T> {

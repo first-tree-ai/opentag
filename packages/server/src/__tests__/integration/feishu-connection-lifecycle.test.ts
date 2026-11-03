@@ -42,6 +42,7 @@ afterEach(async () => {
 
 interface FakeAdapterHarness {
   createAdapter: (input: {
+    onCardAction?: (event: unknown) => Promise<unknown>;
     appId: string;
     appSecret: string;
     teamId: string | null;
@@ -181,7 +182,12 @@ async function insertCandidate(
 function createManager(
   value: Awaited<ReturnType<typeof fixture>>,
   harness: FakeAdapterHarness,
-  options: { instanceId?: string; runtimeReady?: boolean; database?: DatabaseClient } = {},
+  options: {
+    instanceId?: string;
+    runtimeReady?: boolean;
+    database?: DatabaseClient;
+    onCardAction?: (event: unknown, bindingId: string, generation: number) => Promise<unknown>;
+  } = {},
 ) {
   return new FeishuConnectionManager({
     database: options.database ?? value.client.database,
@@ -189,6 +195,7 @@ function createManager(
     instanceId: options.instanceId ?? randomUUID(),
     imBindings: value.imBindings,
     createAdapter: harness.createAdapter,
+    ...(options.onCardAction ? { onCardAction: options.onCardAction } : {}),
     runtimeReady: vi.fn(async () => options.runtimeReady ?? true),
     now: () => clock.now,
   });
@@ -773,3 +780,99 @@ it("joins a detached connection observation after actual PostgreSQL completion",
     await manager.stop();
   }
 });
+
+it("disconnects a maintenance adapter when stop wins during lease observation SQL", async () => {
+  const value = await fixture(),
+    firstHarness = fakeAdapterFactory();
+  const first = createManager(value, firstHarness),
+    setup = createSetupService(value, first);
+  const { attemptId, bindingId } = await insertCandidate(value.client.database, value.cipher, {
+    agentId: value.agent.id,
+  });
+  await setup.check(value.bootstrap.userId, attemptId);
+  await first.stop();
+  const harness = fakeAdapterFactory(),
+    pause = pausedBindingUpdate(value.client.database);
+  const manager = createManager(value, harness, { database: pause.database });
+  try {
+    pause.arm();
+    manager.start();
+    await pause.captured;
+    const stopping = manager.stop();
+    pause.release();
+    await stopping;
+    expect(harness.channelAdapters).toEqual(["cli_integration"]);
+    expect(harness.disconnectedAdapters).toEqual(["cli_integration"]);
+    await manager.stop();
+    expect(harness.disconnectedAdapters).toHaveLength(1);
+    const [row] = await value.client.database.select().from(imBindings).where(eq(imBindings.id, bindingId));
+    expect(row).toMatchObject({ connectionOwnerInstanceId: null, connectionLeaseExpiresAt: null });
+  } finally {
+    pause.release();
+    await setup.stop();
+    await manager.stop();
+  }
+});
+
+it.each(["activation", "maintenance"] as const)(
+  "joins %s card-action SQL and fences late card/error callbacks",
+  async (origin) => {
+    const value = await fixture(),
+      harness = fakeAdapterFactory();
+    let card: ((event: unknown) => Promise<unknown>) | undefined;
+    let handlers: Parameters<FeishuChannel["on"]>[0] | undefined;
+    const entered = deferred<void>(),
+      release = deferred<void>();
+    const decide = vi.fn(async () => {
+      await value.client.sql`select 1`;
+      entered.resolve(undefined);
+      await release.promise;
+      return (await value.client.sql`select 2 as result`)[0]?.result;
+    });
+    const create = harness.createAdapter;
+    harness.createAdapter = (input) => {
+      if (input.onCardAction) card = input.onCardAction;
+      const adapter = create(input);
+      vi.spyOn(adapter.channel, "on").mockImplementation((next) => {
+        handlers = next;
+        return () => undefined;
+      });
+      return adapter;
+    };
+    let manager = createManager(value, harness, { onCardAction: decide });
+    const setup = createSetupService(value, manager);
+    const { attemptId } = await insertCandidate(value.client.database, value.cipher, { agentId: value.agent.id });
+    try {
+      await setup.check(value.bootstrap.userId, attemptId);
+      if (origin === "maintenance") {
+        await manager.stop();
+        manager = createManager(value, harness, { onCardAction: decide });
+        manager.start();
+        await manager.maintain();
+      }
+      if (!card || !handlers?.error) throw new Error("Expected live provider callbacks");
+      const result = card({});
+      await entered.promise;
+      let drained = false;
+      const stopping = manager.stop().then(() => {
+        drained = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(drained).toBe(false);
+      await expect(card({})).resolves.toBeUndefined();
+      const diagnostic = vi.spyOn(value.imBindings, "recordDiagnosticError");
+      handlers.error(new Error("late provider error"));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(diagnostic).not.toHaveBeenCalled();
+      release.resolve(undefined);
+      expect(await result).toBe(2);
+      await stopping;
+      expect(decide).toHaveBeenCalledTimes(1);
+      diagnostic.mockRestore();
+    } finally {
+      release.resolve(undefined);
+      await setup.stop();
+      await manager.stop();
+    }
+  },
+);

@@ -41,3 +41,19 @@ Providers use controlled adapter ports; actual Feishu SDK/network shutdown is
 not certified. Main does not yet await Inbox close, and complete setup-service,
 Runtime/Runner/transport, other producer work and final pool ordering remain
 IM-F3. No full Server, CI, merge, deployment or online acceptance is inferred.
+
+Independent review found two P2 gaps in the first commit. Maintenance could
+install an adapter after its lease UPDATE returned during stop; it now rechecks
+the existing signal/shutdown epoch before ownership transfer and uses the
+existing catch to disconnect/release. Card-action ports now share one small
+stop/epoch gate and track their actual callback Promise. Channel handoff callbacks
+also retain their creation epoch, so late error callbacks cannot issue diagnostic
+SQL. No approval authorization or callback response contract is expanded.
+
+The correction adds three native PG17 controls: post-UPDATE late adoption and
+activation/maintenance card callbacks with real SQL before and after a gate.
+Stop waits for the admitted callback; late card/error callbacks issue no new work.
+All 16 Feishu native cases pass in Docker (including the prior 13). Across this
+batch and correction there are 205 distinct cases, 21 native PG cases and 595
+passing executions. Final whole-Server composition remains open. The corrected
+source is frozen as batch-24b and requires exact-commit independent re-review.

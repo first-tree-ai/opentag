@@ -747,6 +747,7 @@ export async function startServer(): Promise<void> {
         supervisor: backgroundFailureSupervisor,
       },
       performanceLogger: perfLogger,
+      logger: serviceLogger("sandboxes"),
     });
     const runnerImagePrewarmWorker = createRunnerImagePrewarmWorker({
       environment: config.environment,

@@ -1,6 +1,8 @@
 import type { RunnerWorkspaceObject } from "@opentag/shared";
 import type { DatabaseClient } from "../../db/client.js";
 import type { sandboxes } from "../../db/schema/index.js";
+import { updateCurrentPerformanceContext } from "../../observability/performance-logger.js";
+import type { ServiceLogger } from "../../observability/service-logger.js";
 import { loadSandboxRecordById } from "./owned-sandbox.js";
 import type { RunnerBootstrapTokenService } from "./runner-bootstrap-token.js";
 import type { RunnerHub, RunnerScope } from "./runner-hub.js";
@@ -71,6 +73,7 @@ export interface RunnerWorkspaceServiceOptions {
   readonly hub: RunnerHub;
   readonly store: WorkspaceObjectStore;
   readonly runnerService: Pick<SandboxRunnerService, "validateRunnerChannelScope">;
+  readonly logger?: ServiceLogger;
 }
 
 const MAX_BEARER_TOKEN_CHARS = 4_096;
@@ -125,6 +128,7 @@ export class RunnerWorkspaceService {
   readonly #hub: RunnerHub;
   readonly #store: WorkspaceObjectStore;
   readonly #runnerService: Pick<SandboxRunnerService, "validateRunnerChannelScope">;
+  readonly #logger: ServiceLogger | undefined;
   /** One upload per Sandbox per Server process; a second concurrent attempt conflicts. */
   readonly #uploads = new Set<string>();
 
@@ -134,6 +138,7 @@ export class RunnerWorkspaceService {
     this.#hub = options.hub;
     this.#store = options.store;
     this.#runnerService = options.runnerService;
+    this.#logger = options.logger;
   }
 
   /**
@@ -180,6 +185,11 @@ export class RunnerWorkspaceService {
     ) {
       throw staleScope("The Runner allocation is no longer current");
     }
+    updateCurrentPerformanceContext({
+      sandboxId: scope.sandboxId,
+      sessionId: scope.sessionId,
+      environmentGeneration: scope.environmentGeneration,
+    });
     return { scope, row };
   }
 
@@ -198,7 +208,14 @@ export class RunnerWorkspaceService {
       return head;
     }
     try {
-      return await this.#store.claim(scope);
+      const claimed = await this.#store.claim(scope);
+      this.#emitWorkspaceLog("runner.workspace.claim", scope, {
+        archiveBytes: claimed.bytes,
+        workspaceGeneration: claimed.generation,
+        saved: claimed.saved,
+        sealed: claimed.sealed,
+      });
+      return claimed;
     } catch (error) {
       throw mapStoreError(error);
     }
@@ -227,7 +244,13 @@ export class RunnerWorkspaceService {
       throw conflict("The pinned workspace archive is no longer current");
     }
     try {
-      return { object: head, stream: await this.#store.read(scope, head) };
+      const stream = await this.#store.read(scope, head);
+      this.#emitWorkspaceLog("runner.workspace.download", scope, {
+        archiveBytes: head.bytes,
+        workspaceGeneration: head.generation,
+        sealed: head.sealed,
+      });
+      return { object: head, stream };
     } catch (error) {
       throw mapStoreError(error);
     }
@@ -273,7 +296,13 @@ export class RunnerWorkspaceService {
         md5: input.md5,
         sealed: input.sealed,
       };
-      return await this.#store.write(scope, head, write);
+      const written = await this.#store.write(scope, head, write);
+      this.#emitWorkspaceLog("runner.workspace.upload", scope, {
+        archiveBytes: written.bytes,
+        workspaceGeneration: written.generation,
+        sealed: written.sealed,
+      });
+      return written;
     } catch (error) {
       if (error instanceof RunnerWorkspaceError) throw error;
       throw mapStoreError(error);
@@ -287,6 +316,24 @@ export class RunnerWorkspaceService {
       return await this.#store.head(scope);
     } catch (error) {
       throw mapStoreError(error);
+    }
+  }
+
+  #emitWorkspaceLog(operation: string, scope: WorkspaceObjectScope, fields: Record<string, unknown>): void {
+    try {
+      this.#logger?.info(
+        {
+          operation,
+          outcome: "success",
+          sandboxId: scope.sandboxId,
+          sessionId: scope.sessionId,
+          environmentGeneration: scope.environmentGeneration,
+          ...fields,
+        },
+        `Runner workspace operation: ${operation}`,
+      );
+    } catch {
+      // Observability logging must never affect workspace persistence semantics.
     }
   }
 }

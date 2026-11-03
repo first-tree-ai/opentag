@@ -283,9 +283,16 @@ export class SkillService {
   async #upload(accountId: string, agentId: string, input: SkillUploadInput): Promise<SkillDetail> {
     const actual = createHash("sha256").update(input.bytes).digest("hex");
     if (actual !== input.declaredSha256) throw skillHashMismatch();
+    const normalizeStartedAtMs = Date.now();
     const normalized = await normalizeSkillArchive(input.bytes, input.format, this.#readLimits);
     this.#logger?.debug(
-      { agentId, bytes: normalized.archive.byteLength, fileCount: normalized.fileCount, source: input.source },
+      {
+        agentId,
+        bytes: normalized.archive.byteLength,
+        fileCount: normalized.fileCount,
+        source: input.source,
+        normalizeDurationMs: Math.max(0, Date.now() - normalizeStartedAtMs),
+      },
       "Skill archive validated",
     );
     const existing = await this.#findByName(agentId, normalized.manifest.name);
@@ -414,6 +421,7 @@ export class SkillService {
 
   async #openBundle(row: SkillRow): Promise<SkillBundle> {
     const store = this.#requireStore();
+    const startedAtMs = Date.now();
     let stream: ReadableStream<Uint8Array>;
     try {
       stream = await store.get(row.objectKey);
@@ -421,7 +429,13 @@ export class SkillService {
       throw mapSkillStoreError(error);
     }
     this.#logger?.info(
-      { agentId: row.agentId, bytes: row.archiveBytes, skillId: row.id, name: row.name },
+      {
+        agentId: row.agentId,
+        bytes: row.archiveBytes,
+        skillId: row.id,
+        name: row.name,
+        durationMs: Math.max(0, Date.now() - startedAtMs),
+      },
       "Skill bundle opened",
     );
     return { skill: toSkillDetail(row), stream, sha256: row.archiveSha256, bytes: row.archiveBytes };

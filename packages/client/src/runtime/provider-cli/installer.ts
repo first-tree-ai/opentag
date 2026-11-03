@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants, createReadStream } from "node:fs";
 import { chmod, lstat, mkdir, open, readdir, rename, rm, rmdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { createLogger } from "../../observability/logger.js";
 import { ensurePrivateDirectory, syncDurableDirectory } from "../../storage/durable-file.js";
 import {
@@ -257,15 +258,18 @@ export class ProviderCliInstaller {
     }
 
     await this.recoverStaging(provider);
+    const installStartedAt = performance.now();
     const operationId = randomUUID();
     const stagingDir = providerCliStagingDirPath(this.#layout, provider, operationId);
     try {
       await ensurePrivateDirectory(this.#layout.root, stagingDir);
+      const downloadStartedAt = performance.now();
       const archive = await this.#fetcher({
         url: artifact.url,
         maxBytes: artifact.archiveBytes,
         timeoutMs: DOWNLOAD_TIMEOUT_MS,
       });
+      const downloadDurationMs = Math.max(0, Math.round(performance.now() - downloadStartedAt));
       if (archive.byteLength !== artifact.archiveBytes) {
         throw new ProviderCliInstallError("integrity_failed", "Artifact size disagrees with the reviewed catalog");
       }
@@ -274,7 +278,9 @@ export class ProviderCliInstaller {
         throw new ProviderCliInstallError("integrity_failed", "Artifact digest disagrees with the reviewed catalog");
       }
 
+      const extractStartedAt = performance.now();
       const extracted = await extractSafely(archive, artifact);
+      const extractDurationMs = Math.max(0, Math.round(performance.now() - extractStartedAt));
       const executableDigest = createHash("sha256").update(extracted.content).digest("hex");
       if (executableDigest !== artifact.executableSha256 || extracted.content.byteLength !== artifact.executableBytes) {
         throw new ProviderCliInstallError(
@@ -310,7 +316,21 @@ export class ProviderCliInstaller {
 
       // Probe every published or reused artifact. A prior failed publication must never
       // become selectable merely because its digest-addressed directory now exists.
+      const probeStartedAt = performance.now();
       await verifyPublishedExecutable(executablePath, artifact, entry, this.#execFile);
+      const probeDurationMs = Math.max(0, Math.round(performance.now() - probeStartedAt));
+      logger.info(
+        {
+          provider,
+          version: entry.version,
+          archiveBytes: artifact.archiveBytes,
+          downloadDurationMs,
+          extractDurationMs,
+          probeDurationMs,
+          durationMs: Math.max(0, Math.round(performance.now() - installStartedAt)),
+        },
+        "Provider CLI artifact installed",
+      );
       return { artifactId, version: entry.version, executablePath, archiveSha256: artifact.sha256, reused: false };
     } finally {
       await rm(stagingDir, { force: true, recursive: true }).catch((error: unknown) => {

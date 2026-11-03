@@ -137,6 +137,21 @@ export interface TurnCompletion {
   readonly usage?: TurnReportHashInput["usage"];
 }
 
+interface TurnPhaseTimings {
+  credentialPrepareMs?: number;
+  turnPlanPrepareMs?: number;
+  runtimeEnsureMs?: number;
+  promptDurationMs?: number;
+}
+
+function formatTurnPhaseTimings(timings: TurnPhaseTimings): Record<string, number> {
+  const fields: Record<string, number> = {};
+  for (const [key, value] of Object.entries(timings)) {
+    if (typeof value === "number") fields[key] = value;
+  }
+  return fields;
+}
+
 export class AgentTurnRunner {
   readonly #bindingStore: SessionBindingStore;
   readonly #connection: AgentTurnRunnerOptions["connection"];
@@ -403,18 +418,24 @@ export class AgentTurnRunner {
     let releaseObserver: () => void = () => undefined;
     let turnPlanInput: ProviderCliTurnPlanPrepareInput | undefined;
     let preparedExecutionId: string | undefined;
+    const phaseTimings: TurnPhaseTimings = {};
     try {
       signal.throwIfAborted();
       const started = await this.#startTurn(owner, turn, signal);
       preparedExecutionId = started.preparedExecutionId;
       turnPlanInput = started.turnPlanInput;
+      phaseTimings.credentialPrepareMs = started.credentialPrepareMs;
+      phaseTimings.turnPlanPrepareMs = started.turnPlanPrepareMs;
       const runSignal = started.runSignal;
       runSignal.throwIfAborted();
+      const ensureStartedAt = this.#now();
       const runtime = await this.#runtimeManager.ensureRuntime(owner.request.sessionId, runSignal);
+      phaseTimings.runtimeEnsureMs = Math.max(0, this.#now() - ensureStartedAt);
       turn.runtime = runtime;
       releaseObserver = this.#observeTurn(turn, runtime, trace, () => {
         terminalObserved = true;
       });
+      const promptStartedAt = this.#now();
       const result = await runtime.prompt({
         runId: owner.turnId,
         ...(started.allowedUnixSockets ? { allowedUnixSockets: started.allowedUnixSockets } : {}),
@@ -431,6 +452,7 @@ export class AgentTurnRunner {
          */
         ...(started.webTools || started.mcpGateway ? this.#providerLaunchConfiguration(started, owner) : {}),
       });
+      phaseTimings.promptDurationMs = Math.max(0, this.#now() - promptStartedAt);
       turn.phase = "reporting";
       completion = completionForResult(result, signal.reason);
       // A failure the provider returned rather than threw is still a failure the reporter judges.
@@ -443,6 +465,7 @@ export class AgentTurnRunner {
         {
           ...fields,
           durationMs: Math.max(0, this.#now() - startedAt),
+          ...formatTurnPhaseTimings(phaseTimings),
           errorReason: completion.errorReason,
           ...errorFieldsForLog(error),
           outcome: completion.outcome,
@@ -467,7 +490,12 @@ export class AgentTurnRunner {
     const traceSummary = await trace.finish();
     if (completion.outcome === "completed") {
       this.#logger.info(
-        { ...fields, durationMs: Math.max(0, this.#now() - startedAt), outcome: completion.outcome },
+        {
+          ...fields,
+          durationMs: Math.max(0, this.#now() - startedAt),
+          ...formatTurnPhaseTimings(phaseTimings),
+          outcome: completion.outcome,
+        },
         "Turn completed",
       );
     }
@@ -561,8 +589,11 @@ export class AgentTurnRunner {
     turnPlanInput?: ProviderCliTurnPlanPrepareInput;
     webTools?: PreparedWebToolsLaunch;
     mcpGateway?: PreparedMcpGatewayLaunch;
+    credentialPrepareMs: number;
+    turnPlanPrepareMs: number;
   }> {
     await this.#bindingStore.updateUnresolved(owner.request.agentId, owner.request.sessionId, owner.turnId, "starting");
+    const credentialStartedAt = this.#now();
     const credentials = await this.#credentialEnvironment.prepare(
       {
         agentId: owner.request.agentId,
@@ -575,8 +606,11 @@ export class AgentTurnRunner {
       },
       signal,
     );
+    const credentialPrepareMs = Math.max(0, this.#now() - credentialStartedAt);
     const runSignal = credentials.signal ? AbortSignal.any([signal, credentials.signal]) : signal;
+    const turnPlanStartedAt = this.#now();
     const turnPlanInput = await this.#prepareTurnPlanForRun(owner, turn, credentials, signal);
+    const turnPlanPrepareMs = Math.max(0, this.#now() - turnPlanStartedAt);
     return {
       ...(credentials.executionId ? { preparedExecutionId: credentials.executionId } : {}),
       ...(credentials.allowedUnixSockets ? { allowedUnixSockets: credentials.allowedUnixSockets } : {}),
@@ -584,6 +618,8 @@ export class AgentTurnRunner {
       ...(turnPlanInput ? { turnPlanInput } : {}),
       ...(credentials.web ? { webTools: credentials.web } : {}),
       ...(credentials.mcp ? { mcpGateway: credentials.mcp } : {}),
+      credentialPrepareMs,
+      turnPlanPrepareMs,
     };
   }
 

@@ -83,6 +83,8 @@ export interface OutboundWriteCaptureEvent {
   query: string;
   requestBody: unknown;
   responsePayload: unknown;
+  /** Present only when the proxy actually appended a Session ID footer to this outbound request. */
+  injectedSessionFooter?: { sessionUrl: string; shortId: string };
   observedAt: Date;
 }
 
@@ -170,11 +172,20 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
       if (request.signal.aborted) throw new RuntimeProxyError("cancelled");
       throw error;
     }
+    const annotated = this.#annotateOutboundBodyWithSessionFooter(operation, prepared, headers, request, authorization);
     try {
-      const response = await this.#fetchUpstream(operation, prepared, headers, request, authorization, material);
+      const response = await this.#fetchUpstream(operation, annotated.bytes, headers, request, material);
       return operation.response === "stream"
         ? this.#streamResponse(match, response)
-        : await this.#jsonResponse(match, request, authorization, material, prepared, response);
+        : await this.#jsonResponse(
+            match,
+            request,
+            authorization,
+            material,
+            prepared,
+            annotated.injectedSessionFooter,
+            response,
+          );
     } catch (error) {
       if (error instanceof RuntimeProxyError) {
         // A write whose response cannot be parsed or read is an unconfirmed outcome, never a
@@ -239,10 +250,9 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
 
   async #fetchUpstream(
     operation: ProviderOperation,
-    prepared: { bytes: Uint8Array; parsed: unknown },
+    bodyBytes: Uint8Array,
     headers: Record<string, string>,
     request: ProviderProxyRequest,
-    authorization: RuntimeProxyAuthorization,
     material: RuntimeProviderMaterial,
   ): Promise<Response> {
     const url = `${material.origin}${request.path.startsWith("/") ? request.path : `/${request.path}`}`;
@@ -258,7 +268,6 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
       signal: AbortSignal.any([request.signal, AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)]),
       headers: upstreamHeaders(operation.body, upstreamRequestHeaders, material.token),
     };
-    const bodyBytes = this.#upstreamBodyBytes(operation, prepared, headers, request, authorization);
     if (operation.body === "stream") {
       init.body = Readable.from(request.body);
       init.duplex = "half";
@@ -273,26 +282,21 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     }
   }
 
-  #upstreamBodyBytes(
+  #annotateOutboundBodyWithSessionFooter(
     operation: ProviderOperation,
     prepared: { bytes: Uint8Array; parsed: unknown },
     headers: Record<string, string>,
     request: ProviderProxyRequest,
     authorization: RuntimeProxyAuthorization,
-  ): Uint8Array {
-    const footer = buildSessionFooter(this.#options.publicOrigin, authorization, request);
-    if (!footer) return prepared.bytes;
-    let annotated: Uint8Array | undefined;
-    if (operation.provider === "slack" && operation.operationId === "chat.postMessage") {
-      annotated = annotateSlackPostMessage(prepared.parsed, footer.shortId, footer.sessionUrl, headers);
-    } else if (
-      operation.provider === "feishu" &&
-      (operation.operationId === "feishu.im.messages.create" || operation.operationId === "feishu.im.messages.reply")
-    ) {
-      annotated = annotateFeishuSend(prepared.parsed, footer.shortId, footer.sessionUrl);
-    }
-    const maxBytes = operation.maxBodyBytes ?? 128 * 1024;
-    return annotated && annotated.byteLength <= maxBytes ? annotated : prepared.bytes;
+  ): AnnotatedOutboundBody {
+    return annotateOutboundBodyWithSessionFooter({
+      operation,
+      prepared,
+      headers,
+      request,
+      authorization,
+      publicOrigin: this.#options.publicOrigin,
+    });
   }
 
   #streamResponse(match: ProviderOperationMatch, response: Response): ProviderProxyResponse {
@@ -314,6 +318,7 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     authorization: RuntimeProxyAuthorization,
     material: RuntimeProviderMaterial,
     prepared: { bytes: Uint8Array; parsed: unknown },
+    injectedSessionFooter: { sessionUrl: string; shortId: string } | undefined,
     response: Response,
   ): Promise<ProviderProxyResponse> {
     const operation = match.operation;
@@ -323,7 +328,14 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
       // An unconfirmed or ambiguous outcome must never reach the caller as a successful write.
       if (outcome.state === "unknown") throw new RuntimeProxyError("write_outcome_unknown");
       if (outcome.state === "succeeded") {
-        await this.#captureConfirmedWrite(match, request, authorization, prepared.parsed, payload);
+        await this.#captureConfirmedWrite(
+          match,
+          request,
+          authorization,
+          prepared.parsed,
+          injectedSessionFooter,
+          payload,
+        );
       }
     }
     const rewritten = rewriteOperationResponse(operation, payload, {
@@ -351,6 +363,7 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     request: ProviderProxyRequest,
     authorization: RuntimeProxyAuthorization,
     parsedRequest: unknown,
+    injectedSessionFooter: { sessionUrl: string; shortId: string } | undefined,
     payload: unknown,
   ): Promise<void> {
     const capture = this.#options.outboundCapture;
@@ -367,6 +380,7 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
             query: match.query,
             requestBody: parsedRequest,
             responsePayload: payload,
+            ...(injectedSessionFooter ? { injectedSessionFooter } : {}),
             observedAt: new Date(),
           })
           .then(() => "settled" as const),
@@ -484,6 +498,41 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
   }
 }
 
+const SLACK_TEXT_MAX_CHARS = 4_000;
+const SLACK_MARKDOWN_TEXT_MAX_CHARS = 12_000;
+
+interface AnnotatedOutboundBody {
+  bytes: Uint8Array;
+  injectedSessionFooter?: { sessionUrl: string; shortId: string };
+}
+
+function annotateOutboundBodyWithSessionFooter(input: {
+  operation: ProviderOperation;
+  prepared: { bytes: Uint8Array; parsed: unknown };
+  headers: Record<string, string>;
+  request: ProviderProxyRequest;
+  authorization: RuntimeProxyAuthorization;
+  publicOrigin: string | undefined;
+}): AnnotatedOutboundBody {
+  const { operation, prepared, headers, request, authorization, publicOrigin } = input;
+  const footer = buildSessionFooter(publicOrigin, authorization, request);
+  if (!footer) return { bytes: prepared.bytes };
+  let annotated: Uint8Array | undefined;
+  if (operation.provider === "slack" && operation.operationId === "chat.postMessage") {
+    annotated = annotateSlackPostMessage(prepared.parsed, footer.shortId, footer.sessionUrl, headers);
+  } else if (
+    operation.provider === "feishu" &&
+    (operation.operationId === "feishu.im.messages.create" || operation.operationId === "feishu.im.messages.reply")
+  ) {
+    annotated = annotateFeishuSend(prepared.parsed, footer.shortId, footer.sessionUrl);
+  }
+  const maxBytes = operation.maxBodyBytes ?? 128 * 1024;
+  if (!annotated || annotated.byteLength > maxBytes) {
+    return { bytes: prepared.bytes };
+  }
+  return { bytes: annotated, injectedSessionFooter: footer };
+}
+
 function buildSessionFooter(
   publicOrigin: string | undefined,
   authorization: RuntimeProxyAuthorization,
@@ -536,16 +585,24 @@ function annotateSlackPostMessage(
     next.blocks = annotatedBlocks;
     changed = true;
   }
-  if (typeof record.text === "string" && record.text.trim().length > 0 && !record.text.includes(sessionUrl)) {
-    next.text = `${record.text}\n\n_<${sessionUrl}|Session ${shortId}>_`;
+  const textFooter = `\n\n_<${sessionUrl}|Session ${shortId}>_`;
+  if (
+    typeof record.text === "string" &&
+    record.text.trim().length > 0 &&
+    !record.text.includes(sessionUrl) &&
+    record.text.length + textFooter.length <= SLACK_TEXT_MAX_CHARS
+  ) {
+    next.text = `${record.text}${textFooter}`;
     changed = true;
   }
+  const markdownFooter = `\n\n_[Session ${shortId}](${sessionUrl})_`;
   if (
     typeof record.markdown_text === "string" &&
     record.markdown_text.trim().length > 0 &&
-    !record.markdown_text.includes(sessionUrl)
+    !record.markdown_text.includes(sessionUrl) &&
+    record.markdown_text.length + markdownFooter.length <= SLACK_MARKDOWN_TEXT_MAX_CHARS
   ) {
-    next.markdown_text = `${record.markdown_text}\n\n_[Session ${shortId}](${sessionUrl})_`;
+    next.markdown_text = `${record.markdown_text}${markdownFooter}`;
     changed = true;
   }
   if (!changed) return undefined;

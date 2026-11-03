@@ -1831,5 +1831,23 @@ describe("TaskService bounded detail at topic scale", () => {
     expect((await service.listReplies(bootstrap.userId, channel.id, { limit: 10 })).items[0]?.fallbackText).toBe(
       "Group channel answer",
     );
+
+    // Group channel Session id is read-only: updateTitle and cancel reject it with 404.
+    const queuedGroup = await createMessage(binding.id, {
+      channelId: GROUP,
+      externalMessageId: "om_group_queued",
+      text: "Queued group request",
+      occurredAt: minutes(25),
+    });
+    const queuedDelivery = await createDelivery(channel.id, queuedGroup.id, { state: "pending" });
+    await expect(service.updateTitle(bootstrap.userId, channel.id, "Should not rename")).rejects.toMatchObject({
+      code: "RESOURCE_NOT_FOUND",
+      statusCode: 404,
+    });
+    await expect(service.cancel(bootstrap.userId, channel.id)).rejects.toMatchObject({
+      code: "RESOURCE_NOT_FOUND",
+      statusCode: 404,
+    });
+    expect(await deliveryRow(queuedDelivery.id)).toMatchObject({ state: "pending", reason: null });
   });
 });

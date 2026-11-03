@@ -890,10 +890,14 @@ describe("ImOutboundCapture bounded persistence", () => {
 
 describe("parseCapturedOutbound Session ID footer stripping", () => {
   const SESSION_URL = "https://opentag.example.com/agents/11111111-2222-3333-4444-555555555555/tasks/12345678-aaaa";
+  const INJECTED_FOOTER = { sessionUrl: SESSION_URL, shortId: "12345678" };
+  const OTHER_SLACK_REF = "_<https://other.example/agents/another-agent/tasks/another-task|Session abcdefgh>_";
+  const OTHER_FEISHU_REF = "Session abcdefgh: https://other.example/agents/another-agent/tasks/another-task";
 
-  it("strips the injected Session ID footer from echoed Slack text and blocks", () => {
+  it("strips the injected Session ID footer from echoed Slack text and blocks when injectedSessionFooter is present", () => {
     const fromText = captured(
       event({
+        injectedSessionFooter: INJECTED_FOOTER,
         responsePayload: {
           ok: true,
           channel: "C0123ABCD",
@@ -910,6 +914,7 @@ describe("parseCapturedOutbound Session ID footer stripping", () => {
 
     const fromBlocks = captured(
       event({
+        injectedSessionFooter: INJECTED_FOOTER,
         responsePayload: {
           ok: true,
           channel: "C0123ABCD",
@@ -927,9 +932,10 @@ describe("parseCapturedOutbound Session ID footer stripping", () => {
     expect(fromBlocks.content.fallbackText).toBe("Block body");
   });
 
-  it("strips the injected Session ID footer from echoed Feishu text and post bodies", () => {
+  it("strips the injected Session ID footer from echoed Feishu text and post bodies when injectedSessionFooter is present", () => {
     const fromText = captured(
       feishuEvent({
+        injectedSessionFooter: INJECTED_FOOTER,
         responsePayload: {
           code: 0,
           data: {
@@ -946,6 +952,7 @@ describe("parseCapturedOutbound Session ID footer stripping", () => {
 
     const fromPost = captured(
       feishuEvent({
+        injectedSessionFooter: INJECTED_FOOTER,
         responsePayload: {
           code: 0,
           data: {
@@ -967,5 +974,109 @@ describe("parseCapturedOutbound Session ID footer stripping", () => {
       }),
     );
     expect(fromPost.content.fallbackText).toBe("Deploy report\nFinished runbook");
+  });
+
+  it("preserves unannotated Agent-authored Session links verbatim when injectedSessionFooter is absent", () => {
+    const slackUnannotated = captured(
+      event({
+        responsePayload: {
+          ok: true,
+          channel: "C0123ABCD",
+          ts: "1790042400.000100",
+          message: {
+            type: "message",
+            text: `Reference body\n\n${OTHER_SLACK_REF}`,
+            ts: "1790042400.000100",
+          },
+        },
+      }),
+    );
+    expect(slackUnannotated.content.fallbackText).toBe(`Reference body\n\n${OTHER_SLACK_REF}`);
+
+    const feishuTextUnannotated = captured(
+      feishuEvent({
+        responsePayload: {
+          code: 0,
+          data: {
+            message_id: "om_ref",
+            chat_id: "oc_confirmed_chat",
+            msg_type: "text",
+            create_time: "1790042400000",
+            body: { content: JSON.stringify({ text: `Reference body\n\n${OTHER_FEISHU_REF}` }) },
+          },
+        },
+      }),
+    );
+    expect(feishuTextUnannotated.content.fallbackText).toBe(`Reference body\n\n${OTHER_FEISHU_REF}`);
+
+    const feishuPostUnannotated = captured(
+      feishuEvent({
+        responsePayload: {
+          code: 0,
+          data: {
+            message_id: "om_post_ref",
+            chat_id: "oc_confirmed_chat",
+            msg_type: "post",
+            create_time: "1790042400000",
+            body: {
+              content: JSON.stringify({
+                title: "Deploy report",
+                content: [
+                  [{ tag: "text", text: "Finished runbook" }],
+                  [
+                    {
+                      tag: "a",
+                      text: "Session abcdefgh",
+                      href: "https://other.example/agents/another-agent/tasks/another-task",
+                    },
+                  ],
+                ],
+              }),
+            },
+          },
+        },
+      }),
+    );
+    expect(feishuPostUnannotated.content.fallbackText).toBe("Deploy report\nFinished runbook\nSession abcdefgh");
+  });
+
+  it("preserves an Agent-authored reference to a different Session or origin when stripping this send's injected footer", () => {
+    const slackWithBoth = captured(
+      event({
+        injectedSessionFooter: INJECTED_FOOTER,
+        responsePayload: {
+          ok: true,
+          channel: "C0123ABCD",
+          ts: "1790042400.000100",
+          message: {
+            type: "message",
+            text: `Reference body\n\n${OTHER_SLACK_REF}\n\n_<${SESSION_URL}|Session 12345678>_`,
+            ts: "1790042400.000100",
+          },
+        },
+      }),
+    );
+    expect(slackWithBoth.content.fallbackText).toBe(`Reference body\n\n${OTHER_SLACK_REF}`);
+
+    const feishuWithBoth = captured(
+      feishuEvent({
+        injectedSessionFooter: INJECTED_FOOTER,
+        responsePayload: {
+          code: 0,
+          data: {
+            message_id: "om_both",
+            chat_id: "oc_confirmed_chat",
+            msg_type: "text",
+            create_time: "1790042400000",
+            body: {
+              content: JSON.stringify({
+                text: `Reference body\n\n${OTHER_FEISHU_REF}\n\nSession 12345678: ${SESSION_URL}`,
+              }),
+            },
+          },
+        },
+      }),
+    );
+    expect(feishuWithBoth.content.fallbackText).toBe(`Reference body\n\n${OTHER_FEISHU_REF}`);
   });
 });

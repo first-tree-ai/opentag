@@ -831,6 +831,99 @@ describe("ImProviderProxyAdapter Session ID footer", () => {
     });
     expect(capturedEvents).toHaveLength(1);
     expect(capturedEvents[0]?.requestBody).toEqual(originalBody);
+    expect(capturedEvents[0]?.injectedSessionFooter).toEqual({
+      sessionUrl: SESSION_URL,
+      shortId: SHORT_ID,
+    });
+  });
+
+  it("keeps Slack text (<= 4,000 chars) and markdown_text (<= 12,000 chars) within field limits in JSON and form modes without truncating Agent text", async () => {
+    const capturedEvents: OutboundWriteCaptureEvent[] = [];
+    const { calls, fetchImpl } = captureFetch({ ok: true, ts: "1710000000.000100" });
+    const { instance } = adapter({
+      fetchImpl,
+      publicOrigin: PUBLIC_ORIGIN,
+      outboundCapture: {
+        capture: async (event) => {
+          capturedEvents.push(event);
+        },
+      },
+    });
+    const maxText = "t".repeat(4_000);
+    const maxMarkdown = "m".repeat(12_000);
+
+    // JSON mode at exact field limits: sent unmodified, injectedSessionFooter omitted
+    await instance.handle(
+      request({
+        sessionId: SESSION_ID,
+        body: jsonBody({ channel: "C1", text: maxText, markdown_text: maxMarkdown }),
+      }),
+      authorization({ sessionId: SESSION_ID, agentId: AGENT_ID }),
+    );
+    expect(JSON.parse(calls[0]?.body ?? "{}")).toEqual({
+      channel: "C1",
+      text: maxText,
+      markdown_text: maxMarkdown,
+    });
+    expect(capturedEvents[0]?.injectedSessionFooter).toBeUndefined();
+
+    // Form mode at exact field limits: sent unmodified, injectedSessionFooter omitted
+    const form = new URLSearchParams({
+      channel: "C1",
+      text: maxText,
+      markdown_text: maxMarkdown,
+    }).toString();
+    await instance.handle(
+      request({
+        sessionId: SESSION_ID,
+        headers: FORM_HEADERS,
+        body: bodyOf(new TextEncoder().encode(form)),
+      }),
+      authorization({ sessionId: SESSION_ID, agentId: AGENT_ID }),
+    );
+    expect(calls[1]?.body).toBe(form);
+    expect(capturedEvents[1]?.injectedSessionFooter).toBeUndefined();
+  });
+
+  it("omits injectedSessionFooter when the annotated payload exceeds maxBodyBytes and falls back to prepared.bytes", async () => {
+    const capturedEvents: OutboundWriteCaptureEvent[] = [];
+    const { calls, fetchImpl } = captureFetch({ code: 0, data: { message_id: "om_big" } });
+    const { instance } = adapter({
+      provider: "feishu",
+      fetchImpl,
+      publicOrigin: PUBLIC_ORIGIN,
+      outboundCapture: {
+        capture: async (event) => {
+          capturedEvents.push(event);
+        },
+      },
+    });
+    const feishuAuth = authorization({
+      provider: "feishu",
+      sessionId: SESSION_ID,
+      agentId: AGENT_ID,
+      cli: { provider: "feishu", appId: "cli_a", teamBrand: "feishu" },
+      resolveMaterial: async () => ({ kind: "bearer", token: "t-token", origin: "https://open.feishu.cn" }),
+    });
+    const footerLikeText = `Session abcdef01: https://other.example/agents/other-agent/tasks/abcdef01-0000`;
+    const nearLimitPayload = {
+      receive_id: "oc_1",
+      msg_type: "text",
+      content: JSON.stringify({ text: `${"x".repeat(128 * 1024 - 180)}\n\n${footerLikeText}` }),
+    };
+
+    await instance.handle(
+      request({
+        provider: "feishu",
+        sessionId: SESSION_ID,
+        path: "/open-apis/im/v1/messages?receive_id_type=chat_id",
+        body: jsonBody(nearLimitPayload),
+      }),
+      feishuAuth,
+    );
+
+    expect(JSON.parse(calls[0]?.body ?? "{}")).toEqual(nearLimitPayload);
+    expect(capturedEvents[0]?.injectedSessionFooter).toBeUndefined();
   });
 
   it("appends the Session ID footer to Slack form-encoded chat.postMessage requests", async () => {

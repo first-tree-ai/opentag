@@ -47,6 +47,11 @@ const MESSAGE_TYPE_MAX_BYTES = 160;
 const PROVIDER_TIME_MAX_BYTES = 64;
 const SLACK_PROJECTION_MAX_ITEMS = 8;
 
+export interface InjectedSessionFooter {
+  sessionUrl: string;
+  shortId: string;
+}
+
 /** One verified send/reply observation handed over by the proxy after platform success. */
 export interface OutboundCaptureEvent {
   provider: RuntimeCredentialProvider;
@@ -60,6 +65,8 @@ export interface OutboundCaptureEvent {
   requestBody: unknown;
   /** Native JSON response exactly as the platform returned it, before any handle rewriting. */
   responsePayload: unknown;
+  /** Present only when the proxy actually appended a Session ID footer to this outbound request. */
+  injectedSessionFooter?: InjectedSessionFooter;
   /** When the Server observed the confirmed response; the fallback time, honestly labeled. */
   observedAt: Date;
 }
@@ -259,35 +266,47 @@ function buildContent(input: ContentInput): ImContentV1 {
   });
 }
 
-const SESSION_TASK_URL_RE = /^https?:\/\/[^\s<>|)]+\/agents\/[^/\s<>|)]+\/tasks\/[^/\s<>|)]+$/;
-const SLACK_SESSION_FOOTER_RE =
-  /(?:\r?\n){2}_(?:<https?:\/\/[^\s<>|)]+\/agents\/[^/\s<>|)]+\/tasks\/[^/\s<>|)]+\|Session [^\s<>|]+>|\[Session [^\s\]]+\]\(https?:\/\/[^\s<>|)]+\/agents\/[^/\s<>|)]+\/tasks\/[^/\s<>|)]+\))_\s*$/;
-const SLACK_SESSION_FOOTER_ONLY_RE =
-  /^_?(?:<https?:\/\/[^\s<>|)]+\/agents\/[^/\s<>|)]+\/tasks\/[^/\s<>|)]+\|Session [^\s<>|]+>|\[Session [^\s\]]+\]\(https?:\/\/[^\s<>|)]+\/agents\/[^/\s<>|)]+\/tasks\/[^/\s<>|)]+\))_?$/;
-const FEISHU_TEXT_SESSION_FOOTER_RE =
-  /(?:\r?\n){2}Session [^\s:]+: https?:\/\/[^\s<>|)]+\/agents\/[^/\s<>|)]+\/tasks\/[^/\s<>|)]+\s*$/;
-const FEISHU_MD_SESSION_FOOTER_RE =
-  /(?:\r?\n){1,2}\[Session [^\s\]]+\]\(https?:\/\/[^\s<>|)]+\/agents\/[^/\s<>|)]+\/tasks\/[^/\s<>|)]+\)\s*$/;
-
-function stripSlackSessionFooter(value: string): string {
-  if (SLACK_SESSION_FOOTER_ONLY_RE.test(value.trim())) return "";
-  return value.replace(SLACK_SESSION_FOOTER_RE, "");
+function stripSlackSessionFooter(value: string, footer: InjectedSessionFooter | undefined): string {
+  if (!footer) return value;
+  const mrkdwnLink = `<${footer.sessionUrl}|Session ${footer.shortId}>`;
+  const mdLink = `[Session ${footer.shortId}](${footer.sessionUrl})`;
+  const trimmed = value.trim();
+  if (trimmed === mrkdwnLink || trimmed === `_${mrkdwnLink}_` || trimmed === mdLink || trimmed === `_${mdLink}_`) {
+    return "";
+  }
+  const trimmedEnd = value.trimEnd();
+  for (const suffix of [`\n\n_${mrkdwnLink}_`, `\r\n\r\n_${mrkdwnLink}_`, `\n\n_${mdLink}_`, `\r\n\r\n_${mdLink}_`]) {
+    if (trimmedEnd.endsWith(suffix)) {
+      return trimmedEnd.slice(0, -suffix.length);
+    }
+  }
+  return value;
 }
 
-function stripFeishuTextSessionFooter(value: string): string {
-  return value.replace(FEISHU_TEXT_SESSION_FOOTER_RE, "").replace(FEISHU_MD_SESSION_FOOTER_RE, "");
+function stripFeishuTextSessionFooter(value: string, footer: InjectedSessionFooter | undefined): string {
+  if (!footer) return value;
+  const textLine = `Session ${footer.shortId}: ${footer.sessionUrl}`;
+  const mdLine = `[Session ${footer.shortId}](${footer.sessionUrl})`;
+  const trimmedEnd = value.trimEnd();
+  for (const suffix of [
+    `\n\n${textLine}`,
+    `\r\n\r\n${textLine}`,
+    `\n\n${mdLine}`,
+    `\r\n\r\n${mdLine}`,
+    `\n${mdLine}`,
+    `\r\n${mdLine}`,
+  ]) {
+    if (trimmedEnd.endsWith(suffix)) {
+      return trimmedEnd.slice(0, -suffix.length);
+    }
+  }
+  return value;
 }
 
-function isFeishuSessionFooterParagraph(paragraph: unknown): boolean {
-  if (!Array.isArray(paragraph) || paragraph.length !== 1) return false;
+function isFeishuSessionFooterParagraph(paragraph: unknown, footer: InjectedSessionFooter | undefined): boolean {
+  if (!footer || !Array.isArray(paragraph) || paragraph.length !== 1) return false;
   const record = asRecord(paragraph[0]);
-  return (
-    record?.tag === "a" &&
-    typeof record.text === "string" &&
-    /^Session [^\s]+$/.test(record.text) &&
-    typeof record.href === "string" &&
-    SESSION_TASK_URL_RE.test(record.href)
-  );
+  return record?.tag === "a" && record.text === `Session ${footer.shortId}` && record.href === footer.sessionUrl;
 }
 
 /** One Feishu post paragraph is a sequence of tagged segments; only their text runs display. */
@@ -315,11 +334,12 @@ function feishuPostField(body: Record<string, unknown>, key: "title" | "content"
 }
 
 /** Tagged post paragraphs joined by lines; only their display runs are read. */
-function feishuPostParagraphs(paragraphs: unknown): string {
+function feishuPostParagraphs(paragraphs: unknown, footer: InjectedSessionFooter | undefined): string {
   if (!Array.isArray(paragraphs)) return "";
   const lines: string[] = [];
-  for (const paragraph of paragraphs) {
-    if (isFeishuSessionFooterParagraph(paragraph)) continue;
+  for (let index = 0; index < paragraphs.length; index += 1) {
+    const paragraph = paragraphs[index];
+    if (index === paragraphs.length - 1 && isFeishuSessionFooterParagraph(paragraph, footer)) continue;
     const line = feishuPostLine(paragraph);
     if (line.length > 0) lines.push(line);
   }
@@ -330,12 +350,16 @@ function feishuPostParagraphs(paragraphs: unknown): string {
  * Post display text, at the top level or under the locale key older shapes wrap it in. The tagged
  * form wins; the same content sent as markdown (content_v2) is read only when it has no text.
  */
-function feishuPostText(body: Record<string, unknown>): string | undefined {
+function feishuPostText(body: Record<string, unknown>, footer: InjectedSessionFooter | undefined): string | undefined {
   const title = feishuPostField(body, "title");
-  const tagged = feishuPostParagraphs(feishuPostField(body, "content"));
+  const tagged = feishuPostParagraphs(feishuPostField(body, "content"), footer);
   const markdown = feishuPostField(body, "content_v2");
   const bodyText =
-    tagged.length > 0 ? tagged : typeof markdown === "string" ? stripFeishuTextSessionFooter(markdown).trim() : "";
+    tagged.length > 0
+      ? tagged
+      : typeof markdown === "string"
+        ? stripFeishuTextSessionFooter(markdown, footer).trim()
+        : "";
   const parts = [typeof title === "string" ? title.trim() : "", bodyText].filter((part) => part.length > 0);
   return parts.length > 0 ? parts.join("\n") : undefined;
 }
@@ -379,13 +403,14 @@ function feishuBodyContent(
   msgType: string | undefined,
   body: Record<string, unknown> | undefined,
   timeSource: TimeSource,
+  footer: InjectedSessionFooter | undefined,
 ) {
   const resource = msgType ? feishuResource(msgType, body) : undefined;
   return buildContent({
     ...(msgType === "text"
-      ? { text: typeof body?.text === "string" ? stripFeishuTextSessionFooter(body.text) : undefined }
+      ? { text: typeof body?.text === "string" ? stripFeishuTextSessionFooter(body.text, footer) : undefined }
       : {}),
-    ...(msgType === "post" ? { text: body ? feishuPostText(body) : undefined } : {}),
+    ...(msgType === "post" ? { text: body ? feishuPostText(body, footer) : undefined } : {}),
     ...(resource ? { blocks: [resource.block], resources: [resource.resource] } : {}),
     ...(msgType && !resource && msgType !== "text" && msgType !== "post" ? { unsupportedType: msgType } : {}),
     ...(msgType ? { messageType: msgType } : {}),
@@ -432,39 +457,47 @@ function slackAttachmentText(message: Record<string, unknown>): string[] {
 }
 
 /** Bounded Block Kit text, read only when the response carries no plain text of its own. */
-function slackBlockText(message: Record<string, unknown>): string[] {
+function slackBlockText(message: Record<string, unknown>, footer: InjectedSessionFooter | undefined): string[] {
   if (!Array.isArray(message.blocks)) return [];
   const parts: string[] = [];
   for (const block of message.blocks.slice(0, SLACK_PROJECTION_MAX_ITEMS)) {
     const record = asRecord(block);
     if (!record) continue;
     const text = asRecord(record.text);
-    const cleaned = typeof text?.text === "string" ? stripSlackSessionFooter(text.text).trim() : "";
+    const cleaned = typeof text?.text === "string" ? stripSlackSessionFooter(text.text, footer).trim() : "";
     if (cleaned.length > 0) parts.push(cleaned);
-    collectSlackRichText(record.elements, parts, 2);
+    collectSlackRichText(record.elements, parts, 2, footer);
   }
   return parts;
 }
 
-function collectSlackRichText(elements: unknown, parts: string[], depth: number): void {
+function collectSlackRichText(
+  elements: unknown,
+  parts: string[],
+  depth: number,
+  footer: InjectedSessionFooter | undefined,
+): void {
   if (depth <= 0 || !Array.isArray(elements) || parts.length >= SLACK_PROJECTION_MAX_ITEMS) return;
   for (const element of elements) {
     if (parts.length >= SLACK_PROJECTION_MAX_ITEMS) return;
     const record = asRecord(element);
     if (!record) continue;
-    const cleaned = typeof record.text === "string" ? stripSlackSessionFooter(record.text).trim() : "";
+    const cleaned = typeof record.text === "string" ? stripSlackSessionFooter(record.text, footer).trim() : "";
     if (cleaned.length > 0) parts.push(cleaned);
-    collectSlackRichText(record.elements, parts, depth - 1);
+    collectSlackRichText(record.elements, parts, depth - 1, footer);
   }
 }
 
 /** The display body Slack confirms: message text plus bounded attachment/rich-text descriptions. */
-function slackMessageText(message: Record<string, unknown> | undefined): string | undefined {
+function slackMessageText(
+  message: Record<string, unknown> | undefined,
+  footer: InjectedSessionFooter | undefined,
+): string | undefined {
   if (!message) return undefined;
-  const primary = typeof message.text === "string" ? stripSlackSessionFooter(message.text) : "";
+  const primary = typeof message.text === "string" ? stripSlackSessionFooter(message.text, footer) : "";
   const parts = primary.trim().length > 0 ? [primary] : [];
   parts.push(...slackAttachmentText(message));
-  if (primary.trim().length === 0) parts.push(...slackBlockText(message));
+  if (primary.trim().length === 0) parts.push(...slackBlockText(message, footer));
   const unique = parts.filter((part, index) => parts.indexOf(part) === index);
   return unique.length > 0 ? unique.join("\n") : undefined;
 }
@@ -483,7 +516,7 @@ function parseSlackPostMessage(event: OutboundCaptureEvent): OutboundCapturePars
   const threadTs = bounded(message?.thread_ts, ID_MAX_BYTES) ?? bounded(request.thread_ts, ID_MAX_BYTES) ?? null;
   const messageType =
     bounded(message?.subtype, MESSAGE_TYPE_MAX_BYTES) ?? bounded(message?.type, MESSAGE_TYPE_MAX_BYTES);
-  const text = slackMessageText(message);
+  const text = slackMessageText(message, event.injectedSessionFooter);
   const providerAt = slackEpochToDate(externalMessageId);
   const timeSource: TimeSource = providerAt ? "provider" : "observed";
   return {
@@ -608,7 +641,7 @@ function parseFeishuSend(event: OutboundCaptureEvent, reply: boolean): OutboundC
       threadKey: meta.threadId ?? meta.rootId,
       replyToExternalId: meta.replyToExternalId,
       responseAuthorExternalId: meta.responseAuthorExternalId,
-      content: feishuBodyContent(msgType, body, timeSource),
+      content: feishuBodyContent(msgType, body, timeSource, event.injectedSessionFooter),
       providerContext: {
         provider: "feishu",
         ...(meta.threadId ? { threadId: meta.threadId } : {}),

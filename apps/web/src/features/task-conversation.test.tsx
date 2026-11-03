@@ -413,3 +413,33 @@ it("auto-scrolls to the latest entry on mount and shows a jump-to-latest button 
     HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
   }
 });
+
+it.each([
+  ["terminal_rejected", null, "The message could not be processed."],
+  ["expired", null, "The message expired before it was processed."],
+  ["pending", null, "Message pending."],
+] as const)("explains a %s message once, without a status label in its header", (state, reason, explanation) => {
+  const current = turn();
+  current.report = null;
+  current.delivery.state = state;
+  current.delivery.reason = reason;
+  const { container } = render(<TaskActivity task={task} turns={[current]} pagination={null} />);
+
+  expect(screen.getByText(explanation)).toBeTruthy();
+  expect(container.querySelector('[data-ui="task-message-author-agent"]')?.textContent).toBe("Atlas");
+  for (const label of ["Terminal rejected", "Expired", "Pending"]) expect(screen.queryByText(label)).toBeNull();
+});
+
+it("dates a failed report without repeating its outcome as a label", () => {
+  const current = turn();
+  if (!current.report) throw new Error("Expected report fixture");
+  current.report.outcome = "failed";
+  current.report.errorReason = "provider_failed";
+  current.report.outgoingReplies = null;
+  const { container } = render(<TaskActivity task={task} turns={[current]} pagination={null} replies={[]} />);
+
+  const header = container.querySelector('[data-ui="task-message-author-agent"]');
+  expect(header?.textContent).toContain("Atlas");
+  expect(header?.textContent).not.toMatch(/Failed|Completed/);
+  expect(screen.getByText("Provider failed")).toBeTruthy();
+});

@@ -9,26 +9,29 @@ import { type CapturedTaskReply, type TaskReply, taskReplyTime } from "./task-ti
 type OutgoingSnapshot = NonNullable<NonNullable<TaskTurn["report"]>["outgoingReplies"]>;
 type OutgoingReply = OutgoingSnapshot["replies"][number];
 
+/**
+ * A sent reply's header carries its send time, plus its kind only when the kind says something the
+ * body may not — a card, an image, a shared chat. Plain text and unrecognized kinds go unlabelled.
+ */
 export function TaskOutgoingReplyMeta({ reply }: { reply: OutgoingReply }) {
-  const typeLabel = replyTypeLabel(reply.content.msgType);
-  const meta = [typeLabel, replyTime(reply.createTime)].filter(Boolean).join(" · ");
-  return <small className="text-xs text-kumo-subtle">{meta}</small>;
-}
-
-/** The platform-reported message type of a captured reply, mapped onto the same labels. */
-function capturedReplyTypeLabel(messageType: string | null): string {
-  return replyTypeLabel(messageType ?? "unknown");
+  const meta = [headerKindLabel(reply.content.msgType), replyTime(reply.createTime)].filter(Boolean).join(" · ");
+  return meta ? <small className="text-xs text-kumo-subtle">{meta}</small> : null;
 }
 
 export function TaskCapturedReplyMeta({ reply }: { reply: CapturedTaskReply }) {
   const meta = [
-    capturedReplyTypeLabel(reply.messageType),
+    headerKindLabel(reply.messageType ?? "unknown"),
     formatDateTime(reply.occurredAt),
     reply.timeSource === "observed" ? m.tasks_reply_time_observed() : null,
   ]
     .filter(Boolean)
     .join(" · ");
   return <small className="text-xs text-kumo-subtle">{meta}</small>;
+}
+
+function headerKindLabel(msgType: string): string | undefined {
+  const label = replyTypeLabel(msgType);
+  return msgType === "text" || label === m.tasks_reply_type_unknown() ? undefined : label;
 }
 
 /**

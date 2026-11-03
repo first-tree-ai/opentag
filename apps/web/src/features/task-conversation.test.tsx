@@ -443,3 +443,16 @@ it("dates a failed report without repeating its outcome as a label", () => {
   expect(header?.textContent).not.toMatch(/Failed|Completed/);
   expect(screen.getByText("Provider failed")).toBeTruthy();
 });
+
+it.each(["direct", "ambient"] as const)(
+  "dates a %s request under its sender without an attention label",
+  (attention) => {
+    const current = turn();
+    current.attention = attention;
+    const { container } = render(<TaskActivity task={task} turns={[current]} pagination={null} />);
+
+    const header = container.querySelector('[data-ui="task-message-author"]');
+    expect(header?.querySelector("strong")?.textContent).toBe("Mia");
+    expect(header?.textContent).not.toMatch(/Direct|Ambient/);
+  },
+);

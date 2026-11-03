@@ -280,9 +280,7 @@ function TaskRequest({ turn, id }: { turn: TaskTurn; id: string }) {
       <div className="grid min-w-0 gap-2">
         <header className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1" data-ui="task-message-author">
           <strong className="min-w-0 wrap-anywhere text-sm font-medium">{author}</strong>
-          <small className="text-xs text-kumo-subtle">
-            {attentionLabel(turn.attention)} · {formatDateTime(turn.message.occurredAt)}
-          </small>
+          <small className="text-xs text-kumo-subtle">{formatDateTime(turn.message.occurredAt)}</small>
         </header>
         <div className="grid min-w-0 gap-3 rounded-xl bg-kumo-recessed p-4 ring-1 ring-inset ring-kumo-line/60 shadow-2xs">
           {turn.message.fallbackText || attachments.length === 0 ? (
@@ -430,12 +428,6 @@ function taskAuthorLabel(value: TaskTurn["message"]["authorKind"]): string {
   if (value === "human") return m.tasks_author_user();
   if (value === "bot") return m.tasks_author_bot();
   return m.tasks_author_system();
-}
-
-function attentionLabel(value: TaskTurn["attention"]): string {
-  if (value === "direct") return m.tasks_direct_message();
-  if (value === "ambient") return m.tasks_ambient_message();
-  return humanizeEnum(value);
 }
 
 /** Why an unreported message has no execution, in the reader's language. */

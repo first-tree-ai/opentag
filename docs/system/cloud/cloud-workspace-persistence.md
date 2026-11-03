@@ -28,6 +28,9 @@ detached commit reachable from published upstream refs in its bare repository (w
 `git` over workspace config). Whenever loose or packed local branch refs, unpublished commits,
 rewritten/force-pushed upstream history, staged changes, unstaged edits, or untracked files
 exist—or when Git cleanliness cannot be verified—those directories are preserved in the archive.
+Sparse snapshots are conservatively preserved: the in-process verifier does not treat
+intentionally unmaterialized tracked files as proof that a snapshot is clean. Their
+full Git index, cache, and any isolated write sessions remain available after restore.
 
 ## Save and restore boundaries
 

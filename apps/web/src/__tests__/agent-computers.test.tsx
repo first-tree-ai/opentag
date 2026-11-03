@@ -103,6 +103,10 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByText("Claude Code sign-in required")).toBeTruthy();
+    // The row names its next step: setup is where the Computer's runtime checks are re-run.
+    expect(screen.getByRole("link", { name: "Continue setup" }).getAttribute("href")).toBe(
+      `/agents/setup?agentId=${agentId}`,
+    );
     expect(screen.queryByText("Cannot receive new work")).toBeNull();
     expect(screen.queryByRole("link", { name: "View Computer" })).toBeNull();
     expect(screen.queryByText("Available")).toBeNull();

@@ -40,19 +40,39 @@ const SERVICE_BY_SOURCE: Record<ErrorReportRequest["source"], string> = {
   cli: "opentag-cli",
 };
 const V8_STACK_FRAME = /(?:^|\n)\s*at\s+\S/;
+const noop = () => undefined;
+
+function silenceSdkLogger(sdk: unknown): void {
+  const logger = (sdk as { _logger?: Record<string, unknown> } | null)?._logger;
+  if (!logger || typeof logger !== "object") return;
+  for (const level of ["fatal", "error", "warn", "info", "debug", "trace"]) {
+    logger[level] = noop;
+  }
+}
+
+function sanitizedForwardError(error: unknown): Error {
+  if (!(error instanceof Error)) return new Error(redactSensitive(String(error)));
+  const clean = new Error(redactSensitive(error.message));
+  clean.name = error.name;
+  if (error.stack) clean.stack = redactSensitive(error.stack);
+  return clean;
+}
 
 function defaultCreateClient(projectId: string, credentials?: ErrorReportingCredentials): ErrorReportingClient {
   /*
    * `reportMode: "always"`: the SDK otherwise reports only under NODE_ENV=production, and a staging
-   * container is the environment most likely to be watched. `logLevel: 0` silences the SDK's raw
-   * console dumps because `createErrorReporter` logs every callback failure through Pino.
+   * container is the environment most likely to be watched. `createLogger` in @google-cloud/error-reporting
+   * treats `logLevel: 0` as falsy (`Number(0) || 2` -> warn); `-1` clamps to `fatal` during construction
+   * and `silenceSdkLogger` replaces all `_logger` methods with no-ops so `sendError` never writes raw
+   * transport errors or headers to console.
    */
   const sdk = new ErrorReporting({
     projectId,
     reportMode: "always",
-    logLevel: 0,
+    logLevel: -1,
     ...(credentials ? { credentials } : {}),
   });
+  silenceSdkLogger(sdk);
   return { report: (error, request, callback) => sdk.report(error, request, undefined, callback) };
 }
 
@@ -168,7 +188,7 @@ export function createErrorReporter(options: ErrorReporterOptions): ErrorReporte
         options
           .logger()
           ?.warn(
-            { module: "error-reporting", err: error, source: safe.source, errorCode: safe.code },
+            { module: "error-reporting", err: sanitizedForwardError(error), source: safe.source, errorCode: safe.code },
             "Forwarding an error report to Google Cloud Error Reporting failed",
           );
       } finally {

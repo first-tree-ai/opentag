@@ -1,3 +1,4 @@
+import { ErrorReporting } from "@google-cloud/error-reporting";
 import type { ErrorReportRequest } from "@opentag/shared";
 import type { FastifyBaseLogger } from "fastify";
 import { describe, expect, it, vi } from "vitest";
@@ -219,6 +220,60 @@ describe("createErrorReporter", () => {
     });
     await expect(reporter.report(webEvent)).resolves.toBeUndefined();
     await expect(createErrorReporter({ logger: () => undefined }).report(webEvent)).resolves.toBeUndefined();
+  });
+
+  it("silences the real Google SDK logger and strips transport response objects on sendError failures", async () => {
+    const { logger, resolve } = fakeLogger();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const sdkProbe = new ErrorReporting({ projectId: "p", reportMode: "never", logLevel: -1 }) as unknown as {
+      _client: {
+        authClient: { getAccessToken: () => Promise<string> };
+        request: (opts: unknown, cb: (err: Error | null, body?: unknown, res?: unknown) => void) => void;
+      };
+    };
+    const clientProto = Object.getPrototypeOf(sdkProbe._client) as {
+      request: (opts: unknown, cb: (err: Error | null, body?: unknown, res?: unknown) => void) => void;
+    };
+    const requestSpy = vi.spyOn(clientProto, "request").mockImplementation((_opts, cb) => {
+      const transportError = Object.assign(new Error("400 Bad Request: Authorization: Bearer synthetic-sdk-secret"), {
+        response: {
+          statusCode: 400,
+          request: { headers: { Authorization: "Bearer synthetic-sdk-secret" } },
+        },
+      });
+      cb(transportError, null, { statusCode: 400 });
+    });
+
+    try {
+      const reporter = createErrorReporter({
+        projectId: "p",
+        credentials: { client_email: "relay@p.example", private_key: "placeholder-private-key" },
+        logger: resolve,
+      });
+      await reporter.report({
+        source: "web",
+        message: "TypeError: Failed to fetch",
+        stack: "lazyRouteComponent (https://opentag.example/assets/index.js:1:4031)",
+        code: "typeerror",
+        url: "https://opentag.example/agents",
+        occurredAt,
+      });
+
+      expect(consoleError).not.toHaveBeenCalled();
+      expect(consoleWarn).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledOnce();
+      const loggedPayload = JSON.stringify(logger.warn.mock.calls[0]);
+      expect(loggedPayload).not.toContain("synthetic-sdk-secret");
+      const loggedErr = (logger.warn.mock.calls[0]?.[0] as { err?: Error } | undefined)?.err;
+      expect(loggedErr?.message).toContain("[REDACTED]");
+      expect(loggedErr?.message).not.toContain("synthetic-sdk-secret");
+      expect(loggedErr).not.toHaveProperty("response");
+    } finally {
+      requestSpy.mockRestore();
+      consoleError.mockRestore();
+      consoleWarn.mockRestore();
+    }
   });
 });
 

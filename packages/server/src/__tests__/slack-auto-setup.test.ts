@@ -869,3 +869,38 @@ it("Cloud owner enforces per-Computer single-flight, 32-request cap, and close()
   }
   release();
 });
+
+it("Cloud owner fences late settlement of a timed-out request so a subsequent request on the same Computer stays tracked", async () => {
+  vi.useFakeTimers();
+  const deferreds: Array<() => void> = [];
+  const owner = new CloudSlackAutoSetupOwner({
+    timeoutMs: 1_000,
+    callTimeoutMs: 60_000,
+    fetchImpl: async () => {
+      await new Promise<void>((resolve) => {
+        deferreds.push(resolve);
+      });
+      return Response.json({ ok: true, ticket: `ticket-${deferreds.length}` });
+    },
+  });
+  const targetComputerId = randomUUID();
+  const targetAgentId = randomUUID();
+
+  // Start request 1 and advance past its 1000ms timeout while its fetch remains unresolved.
+  const first = owner.start({ computerId: targetComputerId, agentId: targetAgentId, input: { action: "authorize" } });
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(await first).toEqual({ status: "failed", code: "computer_unavailable" });
+
+  // Start request 2 on the same computerId, then let request 1's fetch resolve late.
+  const second = owner.start({ computerId: targetComputerId, agentId: targetAgentId, input: { action: "authorize" } });
+  deferreds[0]?.();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  // Request 2 must still own the pending slot (a 3rd concurrent request returns busy) and resolve when its fetch completes.
+  expect(
+    await owner.start({ computerId: targetComputerId, agentId: targetAgentId, input: { action: "authorize" } }),
+  ).toEqual({ status: "failed", code: "busy" });
+  deferreds[1]?.();
+  expect(await second).toEqual({ status: "authorization_required", ticket: "ticket-2" });
+});

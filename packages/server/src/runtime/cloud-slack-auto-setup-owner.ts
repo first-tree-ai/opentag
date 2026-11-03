@@ -222,18 +222,19 @@ export class CloudSlackAutoSetupOwner {
     const controller = new AbortController();
     return new Promise<Result>((resolve) => {
       const finish = (result: Result) => {
-        if (!this.#pending.has(input.computerId)) return;
+        if (this.#pending.get(input.computerId) !== entry) return;
         clearTimeout(timer);
         this.#pending.delete(input.computerId);
         persistStoreToDisk(this.#stateDir, this.#store);
         resolve(result);
       };
+      const entry = { abort: () => controller.abort(), finish };
       const timer = setTimeout(() => {
         controller.abort();
         finish({ status: "failed", code: "computer_unavailable" });
       }, this.#timeoutMs);
       timer.unref();
-      this.#pending.set(input.computerId, { abort: () => controller.abort(), finish });
+      this.#pending.set(input.computerId, entry);
       void this.#execute(input, controller.signal)
         .then(finish)
         .catch((error) => finish(this.#failure(error)));
@@ -758,6 +759,7 @@ export class CloudSlackAutoSetupOwner {
     } catch {
       throw new SetupFailure("install_failed", "http_request_failed");
     }
+    if (signal.aborted) throw new SetupFailure("install_failed", "http_request_failed");
     let body: unknown;
     try {
       body = await response.json();
@@ -891,6 +893,7 @@ export class CloudSlackAutoSetupOwner {
     } catch {
       throw new SetupFailure(code, "http_request_failed");
     }
+    if (signal.aborted) throw new SetupFailure(code, "http_request_failed");
     const body = await parseSlackJson(response, code);
     const ok = z
       .object({ ok: z.literal(true) })
@@ -921,6 +924,7 @@ export class CloudSlackAutoSetupOwner {
     } catch {
       throw new SetupFailure(code, "http_request_failed");
     }
+    if (signal.aborted) throw new SetupFailure(code, "http_request_failed");
     return parseSlackJson(response, code);
   }
 

@@ -1341,7 +1341,6 @@ function ComputerSetupSection({
         agentId={agentId}
         computerConnectAdapter={computerConnectAdapter}
         inventoryAdapter={computerAdapter?.inventory}
-        name={snapshot.agent.displayName}
         onChanged={afterBind}
         snapshot={snapshot}
       />
@@ -1351,7 +1350,7 @@ function ComputerSetupSection({
     const canBind = snapshot.actions.some((action) => action.kind === "bind-computer");
     return (
       <section className="otv2-computer-step flex flex-col" data-state={computer.kind} data-ui="agent-setup-computer">
-        <ComputerStepHeader name={snapshot.agent.displayName} />
+        <ComputerStepHeader />
         <div className="otv2-computer-step__body">
           <ComputerSummary
             metadata={platformLabel(computer.platform)}
@@ -1380,7 +1379,7 @@ function ComputerSetupSection({
   if (computer.kind === "observation-failed") {
     return (
       <section className="otv2-computer-step flex flex-col" data-state={computer.kind} data-ui="agent-setup-computer">
-        <ComputerStepHeader name={snapshot.agent.displayName} />
+        <ComputerStepHeader />
         <div className="otv2-computer-step__body">
           <ComputerSummary
             metadata={platformLabel(computer.platform)}
@@ -1407,18 +1406,12 @@ function ComputerSetupSection({
   );
 }
 
-function ComputerStepHeader({ name, title }: { readonly name: string; readonly title?: string }) {
+function ComputerStepHeader({ title }: { readonly title?: string }) {
   return (
     <header className="grid gap-1" data-ui="agent-setup-computer-header">
       <Text as="h1" size="lg" variant="heading">
         {title ?? m.onboarding_v2_connect_title()}
       </Text>
-      <p className="flex items-start gap-2 text-sm text-kumo-subtle m-0">
-        <span aria-hidden="true" className="shrink-0 text-kumo-brand">
-          <Icon name="shield" />
-        </span>
-        {m.onboarding_v2_connect_privacy({ name })}
-      </p>
     </header>
   );
 }
@@ -1460,21 +1453,19 @@ function NotBoundComputerSection({
   agentId,
   computerConnectAdapter,
   inventoryAdapter,
-  name,
   onChanged,
   snapshot,
 }: {
   readonly agentId: string;
   readonly computerConnectAdapter: ComputerConnectAdapter;
   readonly inventoryAdapter?: AgentComputerInventoryAdapter;
-  readonly name: string;
   readonly onChanged: () => void;
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const canBind = snapshot.actions.some((action) => action.kind === "bind-computer");
   const renderChoice = (choice: ReactNode, multiple = false) => (
     <>
-      <ComputerStepHeader name={name} title={multiple ? m.agents_computer_choice_existing_heading() : undefined} />
+      <ComputerStepHeader title={multiple ? m.agents_computer_choice_existing_heading() : undefined} />
       <div className="otv2-computer-step__body">
         <ComputerSummary
           status={
@@ -1523,7 +1514,7 @@ function BoundComputerSection({
   const offline = computer.kind === "bound" && computer.connectionStatus === "offline";
   return (
     <section className="otv2-computer-step flex flex-col" data-state={computer.kind} data-ui="agent-setup-computer">
-      <ComputerStepHeader name={snapshot.agent.displayName} />
+      <ComputerStepHeader />
       <div className="otv2-computer-step__body">
         <ComputerSummary
           metadata={platformLabel(computer.platform)}
@@ -1549,7 +1540,6 @@ function PreparationSummarySection({ snapshot }: { readonly snapshot: AgentSetup
         <Text as="h1" size="lg" variant="heading">
           {m.onboarding_v2_prep_title()}
         </Text>
-        <p className={HINT}>{m.onboarding_v2_prep_intro()}</p>
       </header>
       <div className="otv2-preparation__checks">
         <ComputerSummary
@@ -1691,7 +1681,6 @@ function MessagingConnections({
   if (!choosing && "provider" in snapshot.messaging && snapshot.messaging.provider !== "slack") return null;
   return (
     <>
-      {choosing ? <p className={HINT}>{m.onboarding_v2_messaging_description()}</p> : null}
       <ul
         className={choosing && startActions.length ? CHOICE_GRID : "m-0 flex list-none flex-wrap gap-3 p-0"}
         data-ui={

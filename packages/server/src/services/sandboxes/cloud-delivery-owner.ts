@@ -25,7 +25,7 @@ import {
   sessions,
   users,
 } from "../../db/schema/index.js";
-import { traceExternalCall } from "../../observability/external-call-logger.js";
+import { markExternalCallTimedOut, traceExternalCall } from "../../observability/external-call-logger.js";
 import { type PerformanceLogger, updateCurrentPerformanceContext } from "../../observability/performance-logger.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import type { DeliveryDispatchStatus, RuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
@@ -340,45 +340,6 @@ export class CloudDeliveryOwner {
       sessionId: request.sessionId,
       deliveryId: request.deliveryId,
     });
-    let attempts = 0;
-    await traceExternalCall(
-      this.#perfLogger,
-      {
-        provider: "sandbox-runner",
-        operation: "external.sandbox-runner.deliveryRun",
-        agentId: request.agentId,
-        computerId: input.computerId,
-        sessionId: request.sessionId,
-        deliveryId: request.deliveryId,
-      },
-      () =>
-        this.#executeDispatchDelivery(input, () => {
-          attempts += 1;
-        }),
-      {
-        resultAttributes: () => ({
-          attemptCount: attempts,
-          retryCount: Math.max(0, attempts - 1),
-        }),
-        errorAttributes: () => ({
-          attemptCount: attempts,
-          retryCount: Math.max(0, attempts - 1),
-        }),
-        fallbackErrorCode: "CLOUD_DELIVERY_DISPATCH_FAILED",
-      },
-    );
-  }
-
-  async #executeDispatchDelivery(
-    input: {
-      computerId: string;
-      inputHash: string;
-      installationId: string;
-      request: DirectImMessageDeliveryRequest;
-    },
-    onAttempt: () => void,
-  ): Promise<void> {
-    const request = input.request;
     const owned = await loadManagedSandboxBySessionId(this.#database, request.sessionId);
     if (!owned) throw new CloudDeliveryDispatchError("environment_not_ready", "The Session has no current Sandbox");
     const row = owned.sandbox;
@@ -421,14 +382,49 @@ export class CloudDeliveryOwner {
     });
     assertCloudDispatchStatus(dispatch);
     await this.#assertEnvironmentStillOwned(row, request, input.inputHash);
-    onAttempt();
-    const sent = this.#hub.sendToCurrent(row.id, socket, {
-      type: "delivery:run",
-      requestId: request.requestId,
-      delivery: request,
-    });
-    if (!sent) throw new CloudDeliveryDispatchError("send_failed", "The Runner control channel is not writable");
+    await this.#sendDeliveryRunFrame(row.id, socket, request, input.computerId);
     await this.#recordActivity(row.id);
+  }
+
+  async #sendDeliveryRunFrame(
+    sandboxId: string,
+    socket: RunnerControlSocket,
+    request: DirectImMessageDeliveryRequest,
+    computerId: string,
+  ): Promise<void> {
+    let attempts = 0;
+    await traceExternalCall(
+      this.#perfLogger,
+      {
+        provider: "sandbox-runner",
+        operation: "external.sandbox-runner.deliveryRun",
+        agentId: request.agentId,
+        computerId,
+        sessionId: request.sessionId,
+        deliveryId: request.deliveryId,
+        sandboxId,
+      },
+      async () => {
+        attempts += 1;
+        const sent = this.#hub.sendToCurrent(sandboxId, socket, {
+          type: "delivery:run",
+          requestId: request.requestId,
+          delivery: request,
+        });
+        if (!sent) throw new CloudDeliveryDispatchError("send_failed", "The Runner control channel is not writable");
+      },
+      {
+        resultAttributes: () => ({
+          attemptCount: attempts,
+          retryCount: Math.max(0, attempts - 1),
+        }),
+        errorAttributes: () => ({
+          attemptCount: attempts,
+          retryCount: Math.max(0, attempts - 1),
+        }),
+        fallbackErrorCode: "CLOUD_DELIVERY_DISPATCH_FAILED",
+      },
+    );
   }
 
   /**
@@ -1241,51 +1237,79 @@ export class CloudDeliveryOwner {
     input: { deliveryId: string; turnId: string },
   ): Promise<"none" | "received" | "started" | "reported" | undefined> {
     let attempts = 0;
-    return traceExternalCall(
-      this.#perfLogger,
-      {
-        provider: "sandbox-runner",
-        operation: "external.sandbox-runner.deliveryQuery",
-        computerId: connection.computerId,
-        sessionId: connection.scope.sessionId,
-        sandboxId: connection.scope.sandboxId,
-        deliveryId: input.deliveryId,
-        turnId: input.turnId,
-      },
-      () =>
-        this.#executeQueryRunner(connection, input, () => {
-          attempts += 1;
-        }),
-      {
-        resultAttributes: (phase) => ({
-          ...(phase ? { phase } : { timedOut: true }),
-          attemptCount: attempts,
-          retryCount: Math.max(0, attempts - 1),
-        }),
-        errorAttributes: () => ({
-          attemptCount: attempts,
-          retryCount: Math.max(0, attempts - 1),
-        }),
-        fallbackErrorCode: "CLOUD_DELIVERY_QUERY_FAILED",
-      },
-    );
+    try {
+      return await traceExternalCall(
+        this.#perfLogger,
+        {
+          provider: "sandbox-runner",
+          operation: "external.sandbox-runner.deliveryQuery",
+          computerId: connection.computerId,
+          sessionId: connection.scope.sessionId,
+          sandboxId: connection.scope.sandboxId,
+          deliveryId: input.deliveryId,
+          turnId: input.turnId,
+        },
+        () =>
+          this.#executeQueryRunner(connection, input, () => {
+            attempts += 1;
+          }),
+        {
+          resultAttributes: (phase) => ({
+            phase,
+            attemptCount: attempts,
+            retryCount: Math.max(0, attempts - 1),
+          }),
+          errorAttributes: () => ({
+            attemptCount: attempts,
+            retryCount: Math.max(0, attempts - 1),
+          }),
+          fallbackErrorCode: "CLOUD_DELIVERY_QUERY_FAILED",
+        },
+      );
+    } catch {
+      return undefined;
+    }
   }
 
   async #executeQueryRunner(
     connection: CloudConnectionRecord,
     input: { deliveryId: string; turnId: string },
     onAttempt: () => void,
-  ): Promise<"none" | "received" | "started" | "reported" | undefined> {
+  ): Promise<"none" | "received" | "started" | "reported"> {
     const socket = this.#socketFor(connection);
-    if (!socket) return undefined;
+    if (!socket) {
+      throw Object.assign(new Error("Runner socket unavailable"), {
+        code: "RUNNER_QUERY_SOCKET_UNAVAILABLE",
+      });
+    }
     const requestId = randomUUID();
-    return new Promise((resolve) => {
+    return new Promise<"none" | "received" | "started" | "reported">((resolve, reject) => {
       const timer = setTimeout(() => {
         this.#pendingQueries.delete(requestId);
-        resolve(undefined);
+        reject(
+          markExternalCallTimedOut(
+            Object.assign(new Error("Runner delivery query timed out"), {
+              code: "RUNNER_QUERY_TIMEOUT",
+            }),
+          ),
+        );
       }, 10_000);
       timer.unref?.();
-      this.#pendingQueries.set(requestId, { connectionId: connection.connectionId, resolve, timer });
+      this.#pendingQueries.set(requestId, {
+        connectionId: connection.connectionId,
+        resolve: (phase) => {
+          if (phase === undefined) {
+            reject(
+              Object.assign(new Error("Runner connection detached"), {
+                code: "RUNNER_QUERY_CONNECTION_DETACHED",
+              }),
+            );
+            return;
+          }
+          resolve(phase);
+        },
+        timer,
+      });
       try {
         onAttempt();
         socket.send({
@@ -1297,7 +1321,11 @@ export class CloudDeliveryOwner {
       } catch {
         clearTimeout(timer);
         this.#pendingQueries.delete(requestId);
-        resolve(undefined);
+        reject(
+          Object.assign(new Error("Runner query send failed"), {
+            code: "RUNNER_QUERY_SEND_FAILED",
+          }),
+        );
       }
     });
   }

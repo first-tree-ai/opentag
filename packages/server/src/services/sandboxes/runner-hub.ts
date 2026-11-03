@@ -433,6 +433,7 @@ export class RunnerHub {
   ): Promise<RunnerWorkspaceSealResultFrame> {
     const entry = this.#entries.get(sandboxId);
     let attempts = 0;
+    let coalesced = false;
     return traceExternalCall(
       this.#perfLogger,
       {
@@ -442,18 +443,27 @@ export class RunnerHub {
         ...(entry ? { sessionId: entry.scope.sessionId } : {}),
       },
       () =>
-        this.#executeRequestWorkspaceSeal(sandboxId, options, () => {
-          attempts += 1;
-        }),
+        this.#executeRequestWorkspaceSeal(
+          sandboxId,
+          options,
+          () => {
+            attempts += 1;
+          },
+          () => {
+            coalesced = true;
+          },
+        ),
       {
         resultAttributes: (result) => ({
           ok: result.ok,
           attemptCount: attempts,
           retryCount: Math.max(0, attempts - 1),
+          ...(coalesced ? { coalesced: true } : {}),
         }),
         errorAttributes: () => ({
           attemptCount: attempts,
           retryCount: Math.max(0, attempts - 1),
+          ...(coalesced ? { coalesced: true } : {}),
         }),
         fallbackErrorCode: "RUNNER_WORKSPACE_SEAL_UNAVAILABLE",
       },
@@ -471,6 +481,7 @@ export class RunnerHub {
     sandboxId: string,
     options: { timeoutMs: number; socket?: RunnerControlSocket },
     onAttempt: () => void,
+    onCoalesced: () => void,
   ): Promise<RunnerWorkspaceSealResultFrame> {
     const entry = this.#entries.get(sandboxId);
     if (!entry) throw new RunnerWorkspaceSealUnavailableError("No Runner is connected for this Sandbox");
@@ -478,7 +489,7 @@ export class RunnerHub {
       throw new RunnerWorkspaceSealUnavailableError("The Runner connection was replaced");
     }
     if (entry.pendingSeal) {
-      onAttempt();
+      onCoalesced();
       return entry.pendingSeal.promise;
     }
     const requestId = randomUUID();

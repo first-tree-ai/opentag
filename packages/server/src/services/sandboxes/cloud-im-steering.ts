@@ -83,9 +83,11 @@ export class CloudImSteering {
   ): Promise<RuntimeImSteerResult> {
     const connection = await this.options.connection(request.sessionId);
     if (!connection) throw new Error("CLOUD_STEER_UNAVAILABLE");
+    const computerId = connection.record?.computerId;
+    const sandboxId = connection.record?.scope?.sandboxId;
     updateCurrentPerformanceContext({
-      computerId: connection.record.computerId,
-      sandboxId: connection.record.scope.sandboxId,
+      ...(computerId ? { computerId } : {}),
+      ...(sandboxId ? { sandboxId } : {}),
     });
     const hash = computeRuntimeImSteerInputHash(request);
     const status = await this.options.custody.beginSteerDispatch(request, hash, connection.context);

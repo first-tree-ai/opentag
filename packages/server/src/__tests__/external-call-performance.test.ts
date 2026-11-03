@@ -438,6 +438,29 @@ describe("external call performance logging", () => {
     ]);
     expect(logs.filter((l) => l.payload.operation === "external.sandbox-runner.sealWorkspace")).toHaveLength(2);
 
+    // Concurrent requestWorkspaceSeal: leader logs attemptCount: 1, coalesced waiter logs attemptCount: 0, coalesced: true
+    logs.length = 0;
+    sentFrames.length = 0;
+    const [seal1, seal2] = await Promise.all([
+      hub.requestWorkspaceSeal(scope.sandboxId, { timeoutMs: 1_000, socket }),
+      hub.requestWorkspaceSeal(scope.sandboxId, { timeoutMs: 1_000, socket }),
+    ]);
+    expect(seal1.ok).toBe(true);
+    expect(seal2.ok).toBe(true);
+    expect(sentFrames.filter((f) => (f as { type?: string }).type === "workspace:seal")).toHaveLength(1);
+    const sealCompletions = logs.filter(
+      (l) => l.payload.operation === "external.sandbox-runner.sealWorkspace" && l.payload.outcome === "completed",
+    );
+    expect(sealCompletions).toHaveLength(2);
+    expect(
+      sealCompletions.map((l) => ({ attemptCount: l.payload.attemptCount, coalesced: l.payload.coalesced })),
+    ).toEqual(
+      expect.arrayContaining([
+        { attemptCount: 1, coalesced: undefined },
+        { attemptCount: 0, coalesced: true },
+      ]),
+    );
+
     // Pre-dispatch rejection on disconnected sandbox -> attemptCount: 0
     logs.length = 0;
     await expect(
@@ -831,8 +854,44 @@ describe("external call performance logging", () => {
 
     const hub = new RunnerHub({ performanceLogger: perfLogger });
     const fence = new CloudRuntimeFence();
+    const collabScope = {
+      sandboxId: "00000000-0000-4000-8000-000000000701",
+      sessionId: "00000000-0000-4000-8000-000000000702",
+      environmentGeneration: 1,
+      resourceName: "projects/p/locations/l/instances/i-701",
+    };
+    const collabSocket = { send: vi.fn(), close: vi.fn() };
+    hub.attach(collabScope, collabSocket);
+    const collabConn = fence.attach({
+      computerId: "comp-701",
+      installationId: "inst-701",
+      scope: collabScope,
+      socket: collabSocket,
+      executionEligible: true,
+      sessionCollaborationEligible: true,
+      sessionCollaborationVersion: 2,
+    });
+    const observedTurnIdsBeforeRead: Array<string | undefined> = [];
+    const fakeDbQuery = {
+      from: vi.fn().mockReturnThis(),
+      innerJoin: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      limit: vi.fn(async () => {
+        observedTurnIdsBeforeRead.push(getCurrentPerformanceContext()?.turnId);
+        return [];
+      }),
+    };
     const collabOwner = new CloudSessionCollaborationOwner({
-      database: {} as never,
+      database: {
+        select: () => fakeDbQuery,
+      } as never,
+      durableWork: {
+        read: async () => {
+          observedTurnIdsBeforeRead.push(getCurrentPerformanceContext()?.turnId);
+          return undefined;
+        },
+        write: async () => undefined,
+      },
       fence,
       hub,
       work: new CloudSessionWorkTracker(),
@@ -840,14 +899,135 @@ describe("external call performance logging", () => {
       performanceLogger: perfLogger,
     });
     expect(collabOwner.activeDispatchTargets).toBe(0);
+
+    await runWithPerformanceContext({ callId: "ws-1", operation: "runner.ws.frame session:message:received" }, () =>
+      collabOwner.handleReceived(collabConn, {
+        type: "session:message:received",
+        requestId: "00000000-0000-4000-8000-000000000711",
+        messageId: "00000000-0000-4000-8000-000000000712",
+        turnId: "turn-seeded-received",
+        status: "accepted",
+        phase: "received",
+      }),
+    );
+    await runWithPerformanceContext({ callId: "ws-2", operation: "runner.ws.frame session:message:settled" }, () =>
+      collabOwner.handleSettled(collabConn, {
+        type: "session:message:settled",
+        requestId: "00000000-0000-4000-8000-000000000713",
+        messageId: "00000000-0000-4000-8000-000000000714",
+        turnId: "turn-seeded-settled",
+        outcome: "completed",
+      }),
+    );
+    expect(observedTurnIdsBeforeRead).toEqual(["turn-seeded-received", "turn-seeded-settled"]);
+  });
+
+  it("records distinct failure settlements for CloudDeliveryOwner.#queryRunner (no-socket, send-failed, and 10s deadline timeout)", async () => {
+    const { logs, perfLogger } = createLogCollector();
+    const hub = new RunnerHub({ performanceLogger: perfLogger });
+    const fence = new CloudRuntimeFence();
+    const queryScope = {
+      sandboxId: "00000000-0000-4000-8000-000000000801",
+      sessionId: "00000000-0000-4000-8000-000000000802",
+      environmentGeneration: 1,
+      resourceName: "projects/p/locations/l/instances/i-801",
+    };
+    let shouldThrowOnSend = false;
+    const querySocket = {
+      send: () => {
+        if (shouldThrowOnSend) throw new Error("not writable");
+      },
+      close: () => undefined,
+    };
+    const queryConn = fence.attach({
+      computerId: "comp-801",
+      installationId: "inst-801",
+      scope: queryScope,
+      socket: querySocket,
+      executionEligible: true,
+    });
+    const deliveryRow = {
+      id: "deliv-q-1",
+      sessionId: queryScope.sessionId,
+      state: "accepted",
+      reportedAt: null,
+      turnId: "turn-q-1",
+      reportOwnerInstanceId: queryConn.instanceId,
+      dispatchPayload: null,
+      acceptedAt: new Date(),
+    };
+    const sandboxRow = {
+      id: queryScope.sandboxId,
+      sessionId: queryScope.sessionId,
+      environmentGeneration: 1,
+      currentResourceName: queryScope.resourceName,
+      currentResourceUid: "uid-801",
+      lifecycle: "ready",
+    };
+    let selectCall = 0;
+    const fakeQueryDb = {
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      limit: vi.fn(async () => {
+        selectCall += 1;
+        return selectCall % 2 === 1 ? [deliveryRow] : [sandboxRow];
+      }),
+    };
     const deliveryOwner = new CloudDeliveryOwner({
-      database: {} as never,
+      database: {
+        select: () => fakeQueryDb,
+      } as never,
       custody: {} as never,
       fence,
       hub,
       performanceLogger: perfLogger,
     });
     expect(deliveryOwner.isModelPathConfigured()).toBe(false);
+
+    // 1) No socket attached to hub -> RUNNER_QUERY_SOCKET_UNAVAILABLE, attemptCount: 0
+    expect(await deliveryOwner.recoverAccepted("deliv-q-1")).toBe("pending");
+    expect(logs.at(-1)?.payload).toMatchObject({
+      operation: "external.sandbox-runner.deliveryQuery",
+      outcome: "failed",
+      errorCode: "RUNNER_QUERY_SOCKET_UNAVAILABLE",
+      attemptCount: 0,
+      retryCount: 0,
+    });
+    expect(logs.at(-1)?.payload.timedOut).toBeUndefined();
+
+    // 2) Socket attached, send throws -> RUNNER_QUERY_SEND_FAILED, attemptCount: 1
+    logs.length = 0;
+    hub.attach(queryScope, querySocket);
+    shouldThrowOnSend = true;
+    expect(await deliveryOwner.recoverAccepted("deliv-q-1")).toBe("pending");
+    expect(logs.at(-1)?.payload).toMatchObject({
+      operation: "external.sandbox-runner.deliveryQuery",
+      outcome: "failed",
+      errorCode: "RUNNER_QUERY_SEND_FAILED",
+      attemptCount: 1,
+      retryCount: 0,
+    });
+    expect(logs.at(-1)?.payload.timedOut).toBeUndefined();
+
+    // 3) Socket send succeeds, 10s receipt timer expires -> RUNNER_QUERY_TIMEOUT, attemptCount: 1, timedOut: true
+    logs.length = 0;
+    shouldThrowOnSend = false;
+    vi.useFakeTimers();
+    try {
+      const pendingRecover = deliveryOwner.recoverAccepted("deliv-q-1");
+      await vi.advanceTimersByTimeAsync(10_005);
+      expect(await pendingRecover).toBe("pending");
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(logs.at(-1)?.payload).toMatchObject({
+      operation: "external.sandbox-runner.deliveryQuery",
+      outcome: "failed",
+      errorCode: "RUNNER_QUERY_TIMEOUT",
+      attemptCount: 1,
+      retryCount: 0,
+      timedOut: true,
+    });
   });
 
   it("propagates agentId, sessionId, deliveryId, turnId, and sandboxId across Turn execution entrypoints into external call logs", async () => {

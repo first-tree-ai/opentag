@@ -1230,6 +1230,12 @@ export class CloudSessionCollaborationOwner {
     connection: CloudConnectionRecord,
     frame: RunnerCloudSessionMessageReceivedFrame,
   ): Promise<void> {
+    updateCurrentPerformanceContext({
+      computerId: connection.computerId,
+      sessionId: connection.scope.sessionId,
+      sandboxId: connection.scope.sandboxId,
+      ...(frame.status === "accepted" ? { turnId: frame.turnId } : {}),
+    });
     if (!this.#isExactConnection(connection)) return;
     // The pending dispatch correlates by its unique request-attempt identity; a receipt for any
     // older attempt (or a reconnect re-announcement) falls through to the re-announcement path.
@@ -1248,6 +1254,12 @@ export class CloudSessionCollaborationOwner {
     connection: CloudConnectionRecord,
     frame: Extract<RunnerCloudSessionMessageReceivedFrame, { status: "accepted" }>,
   ): Promise<void> {
+    updateCurrentPerformanceContext({
+      computerId: connection.computerId,
+      sessionId: connection.scope.sessionId,
+      sandboxId: connection.scope.sandboxId,
+      turnId: frame.turnId,
+    });
     const row = await this.#loadMessageAuthority(frame.messageId);
     if (!this.#isExactConnection(connection)) return;
     if (!row || row.targetSessionId !== connection.scope.sessionId) {
@@ -1399,6 +1411,12 @@ export class CloudSessionCollaborationOwner {
    * falsely acked, so the Runner keeps its immutable result and replays it on reconnect.
    */
   async handleSettled(connection: CloudConnectionRecord, frame: RunnerCloudSessionMessageSettledFrame): Promise<void> {
+    updateCurrentPerformanceContext({
+      computerId: connection.computerId,
+      sessionId: connection.scope.sessionId,
+      sandboxId: connection.scope.sandboxId,
+      turnId: frame.turnId,
+    });
     if (!this.#isExactConnection(connection)) return;
     // The request id is per-attempt correlation, not evidence: the durable fence is the exact
     // record keyed by message id plus the envelope's Turn and allocation identity.

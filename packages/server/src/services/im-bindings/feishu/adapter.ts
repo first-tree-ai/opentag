@@ -464,10 +464,12 @@ class ReliableFeishuChannel implements FeishuChannel {
   botIdentity?: { openId: string; name?: string };
   readonly #outbound: LarkChannel;
   readonly #wsClient: WSClient;
+  readonly #dispatcher: EventDispatcher;
   #handlers: Parameters<FeishuChannel["on"]>[0] = {};
   readonly #ready: Promise<void>;
   #resolveReady: () => void = () => undefined;
   #rejectReady: (error: unknown) => void = () => undefined;
+  #started = false;
 
   constructor(input: {
     appId: string;
@@ -489,7 +491,7 @@ class ReliableFeishuChannel implements FeishuChannel {
       outbound: { retry: { maxAttempts: 1 } },
       source: "opentag",
     });
-    const dispatcher = createReliableFeishuDispatcher(async (message) => {
+    this.#dispatcher = createReliableFeishuDispatcher(async (message) => {
       const handler = this.#handlers.message;
       if (!handler) throw new Error("FEISHU_ADMISSION_NOT_READY");
       await handler(message);
@@ -511,14 +513,39 @@ class ReliableFeishuChannel implements FeishuChannel {
       onReconnecting: () => this.#handlers.reconnecting?.(),
       onReconnected: () => this.#handlers.reconnected?.(),
     });
-    void this.#wsClient.start({ eventDispatcher: dispatcher });
   }
 
   async connect(signal?: AbortSignal): Promise<void> {
     if (signal?.aborted) throw signal.reason;
-    await this.#outbound.connect();
-    this.botIdentity = this.#outbound.botIdentity;
-    await this.#ready;
+    if (!this.#started) {
+      this.#started = true;
+      void this.#wsClient.start({ eventDispatcher: this.#dispatcher });
+    }
+    let onAbort: (() => void) | undefined;
+    try {
+      const connectPromise = (async () => {
+        await this.#outbound.connect();
+        this.botIdentity = this.#outbound.botIdentity;
+        await this.#ready;
+      })();
+      if (!signal) {
+        await connectPromise;
+        return;
+      }
+      await Promise.race([
+        connectPromise,
+        new Promise<never>((_, reject) => {
+          onAbort = () => {
+            this.#wsClient.close({ force: true });
+            reject(signal.reason ?? new Error("FEISHU_CONNECT_ABORTED"));
+          };
+          if (signal.aborted) onAbort();
+          else signal.addEventListener("abort", onAbort, { once: true });
+        }),
+      ]);
+    } finally {
+      if (onAbort && signal) signal.removeEventListener("abort", onAbort);
+    }
   }
 
   async disconnect(): Promise<void> {

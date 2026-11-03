@@ -108,6 +108,12 @@ Inbox call uses the existing message and Session uniqueness rules, including whe
 Inbox committed but receipt settlement was interrupted. This recovery never
 replays an accepted Turn or an outbound operation.
 
+Slack admits at most eight detached live Inbox operations per Server, in addition to the one
+serial recovery sweep. This stays below the shared pool's 20-connection default. Persisted overflow
+is acknowledged without starting another Inbox operation; it waits for the existing 60-second
+processing lease and ordinary recovery. Closing also defers newly persisted input. There is no
+additional in-memory queue, and overflow keeps its original identity, receive time and deadline.
+
 Recovery eligibility ends seven days after the original receive time. Inbox uses
 that original time for message receive timestamps and direct/ambient deadlines,
 so a retry does not restart a 24-hour or seven-day delivery window. Completed work

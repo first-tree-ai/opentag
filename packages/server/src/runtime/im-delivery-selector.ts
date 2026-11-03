@@ -167,9 +167,10 @@ export async function lockEligibleDelivery(
   now: Date,
   sessionId?: string,
 ) {
-  await database.execute(
-    sql`select pg_advisory_xact_lock(hashtextextended(${`im-agent-custody:${expectedAgentId}`}, 0))`,
+  const [fence] = await database.execute(
+    sql`select pg_try_advisory_xact_lock(hashtextextended(${`im-agent-custody:${expectedAgentId}`}, 0)) as acquired`,
   );
+  if (!fence?.acquired) return undefined;
   const delivery = await lockDeliveryCandidate(database, deliveryId, now);
   if (!delivery || (sessionId && delivery.sessionId !== sessionId)) return undefined;
   const rows = await readDeliveryCustody(database);

@@ -27,7 +27,10 @@ Custody is loaded fresh for each scan and grouped in memory by Agent and Session
 remains Agent-wide; Cloud custody remains Session-scoped and also respects Local custody for the
 same Agent. These snapshots can postpone eligibility, but cannot authorize a dispatch.
 
-For each selected candidate, a short transaction takes the Agent advisory lock, locks the delivery
+For each selected candidate, a short transaction tries the Agent advisory lock with
+`pg_try_advisory_xact_lock`. A busy Agent is skipped without taking its delivery lock or changing
+attempt/claim state; the same bounded scan can reach unrelated Agents. Ingress retains its blocking
+serialization on that key. An acquired claim transaction locks the delivery
 by primary key with `FOR UPDATE SKIP LOCKED`, and re-reads eligibility, metadata, and custody without
 the hint cache. It checks the expected Agent identity and Cloud queue head again before persisting
 the existing claim marker or recovery lease. Each scan attempts at most eight such transactions.

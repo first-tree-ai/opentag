@@ -21,13 +21,13 @@ A repaired original case does not close another extension of the same finding.
 | 2a — Skill/Schedule and compatible locks | SK-F1, SC-F1, IM-F5 | [Verified locally](verification/sql-caller-repairs-02.md): 294 distinct cases (153 native PG); full source contract and Session-first retained claims. |
 | 2b — Final setup/Context authority | AG-F3, AG-F5 | [Verified locally](verification/sql-caller-repairs-03.md): final locked expected Computer and post-SQL abort checks; 137 distinct cases, 88 native PG. |
 | 2c — Lifecycle stop authority | AG-F12; AG-F2 lifecycle extensions | [Verified locally](verification/sql-caller-repairs-04.md): Agent revision and final enqueue guards, exact proof CAS, no redundant dispatch wait; 270 distinct cases (79 native PG). AG-F2 Runtime-test and preparation extensions remain open in batch 4. |
-| 3 — Contention and admission | IM-F1, IM-F6, CR-F1 | Pending revalidation of newer IM implementation; reuse try-lock/SKIP LOCKED, compatible row order and existing durable receipt recovery. |
+| 3 — Contention and admission | IM-F1, IM-F6, CR-F1; CR-S1 | [Verified locally](verification/sql-caller-repairs-05.md): nonblocking claim, bounded durable Slack admission and per-call usage isolation; 201 distinct cases (77 native PG). Historical expiry scan remains an explicit scale boundary. |
 | 4 — External effects and result fences | SW-F1, IM-F2, IM-F4, CR-F2, AG-F2, AP-F1 | Pending revalidation; preserve custody, exact status/attempt/Turn identities and failure classification. Official approval idle backstop remains; AP-F1 is bounded latency. |
 | 5 — Stop, drain and owner resources | IM-F3, BG-F1, BG-F3, AG-F4, AG-F7, AG-F9 | Pending revalidation of actual owners; stop admission and join underlying work, not only deadline wrappers. Reuse existing owner/cursor stores. |
 | 6 — Auth and OAuth recovery | AA-F1, AA-F2, BG-F2, MC-F1, AG-F13 | Pending revalidation against current Better Auth/MCP changes. Use official transactions/transport and distinguish preparation from uncertain exchange. |
 | 7 — Stable Cloud ownership/recovery | SB-F1, SB-F2, AG-F10 | Pending concrete latest-source resource/placement/lock design; preserve physical UID facts and workspace compatibility. |
 | 8 — Bounded reads, bodies and operator cleanup | IM-F7, BG-F4, AG-F6, AG-F8, OP-F1 | Pending revalidation; reuse existing limits/stream cancellation/owned container cleanup. |
-| With owning batch — Simplification | AA-S1, AG-S1, AG-S2, AG-S3, AG-S4, AG-S5, AG-S6, CR-S1, DW-S1 | Pending current-source revalidation; remove demonstrated redundancy while retaining distinct admission, refresh, quota and recovery safeguards. |
+| With owning batch — Simplification | AA-S1, AG-S1, AG-S2, AG-S3, AG-S4, AG-S5, AG-S6, DW-S1 | Pending current-source revalidation; remove demonstrated redundancy while retaining distinct admission, refresh, quota and recovery safeguards. |
 | Observations | AA-R1, CR-R1, IM-R1, IM-R2, TK-R1 | Review measured limits/consumer contracts separately; no outage or necessary code change inferred from a size observation. TK legacy projection requires consumer migration before retirement. |
 | Private billing | Unavailable implementation | Blocked by absent source; public adapter review is not an implementation audit. |
 
@@ -126,3 +126,7 @@ private implementation retain their explicit remaining scope.
 Batch 2b then closes AG-F3/AG-F5. Batch 2c closes AG-F12 and only the lifecycle
 portion of AG-F2. Nine original defects are repaired locally; 28 defects, nine
 simplifications, five observations and the unavailable implementation remain.
+
+Batch 3 closes IM-F1/IM-F6/CR-F1 and CR-S1. Twelve original defects and one
+simplification are repaired locally; 25 defects and eight simplifications remain.
+Five observations and unavailable private source retain their separate scope.

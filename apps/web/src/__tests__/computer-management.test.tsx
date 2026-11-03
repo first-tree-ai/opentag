@@ -79,6 +79,21 @@ describe("Account Computer management", () => {
     expect(await screen.findByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
   });
 
+  it("starts the connection requested from Agent settings once, then drops the request from the URL", async () => {
+    installApi({ bound: true, computers: [{ ...twoReadyComputers[0] }] });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
+    render(<App />);
+    fireEvent.click(await screen.findByRole("link", { name: "Connect another computer" }));
+    expect(await screen.findByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Ada's Mac" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: /Back to/ })).toBeTruthy();
+    await waitFor(() => expect(window.location.search).not.toContain("connect="));
+    expect(window.location.search).toContain(`fromAgent=${agentId}`);
+    expect(repairRequests()).toHaveLength(1);
+    expect(JSON.parse(String(repairRequests()[0]?.[1]?.body))).toEqual({ mode: "create" });
+    expect(vi.mocked(fetch).mock.calls.some(([path]) => String(path).endsWith("/computer/rebind"))).toBe(false);
+  });
+
   it("offers the first Local connection while preserving an existing Cloud card", async () => {
     installApi({ computers: [{ ...twoReadyComputers[0], kind: "cloud", displayName: "Cloud" }] });
     openComputer();

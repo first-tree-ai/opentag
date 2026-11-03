@@ -259,14 +259,26 @@ test("lists multiple disconnected Computers without creating a connection or sel
   expect(issued).toEqual([{ mode: "repair", targetAgentId: agentId, targetComputerId: officeId }]);
 });
 
-test("connects another Computer without moving an existing Agent", async ({ page, e2eRuntime }) => {
+test("connects another Computer from Agent settings without moving the Agent", async ({
+  page,
+  e2eRuntime,
+}, testInfo) => {
   const accountId = await signUp(page);
   await e2eRuntime.setSetupComplete(accountId);
   const existingId = await registerOffline(page, "Office Linux");
   const agentId = await createAgent(page);
   await post(page, `/api/v1/agents/${agentId}/computer/rebind`, { computerId: existingId });
-  await page.goto("/agents/computers");
-  await page.getByRole("button", { name: "Connect another computer", exact: true }).click();
+  const issued: unknown[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().endsWith("/computer-connect-codes"))
+      issued.push(request.postDataJSON());
+  });
+  await page.goto(`/agents/${agentId}/settings/computer`);
+  const entry = page.getByRole("link", { name: "Connect another computer", exact: true });
+  await expect(entry).toBeVisible();
+  await testInfo.attach("agent-settings-connect-another", { body: await page.screenshot(), contentType: "image/png" });
+  await entry.click();
+  await expect(page).toHaveURL((url) => url.pathname === "/agents/computers" && !url.searchParams.has("connect"));
   await expect(
     page.getByText(
       "Copy the task to your AI assistant on the target computer. Return here to continue setup when it connects.",
@@ -283,6 +295,8 @@ test("connects another Computer without moving an existing Agent", async ({ page
     await expect(page.getByRole("heading", { name: "Office Linux", exact: true })).toBeVisible();
     machine.start();
     await expect(page.getByRole("button", { name: "Connect another computer", exact: true })).toBeVisible();
+    await testInfo.attach("second-computer-connected", { body: await page.screenshot(), contentType: "image/png" });
+    expect(issued).toEqual([{ mode: "create" }]);
     expect(await computers(page)).toHaveLength(2);
     const config = (await (await page.request.get(`/api/v1/agents/${agentId}/config`)).json()) as {
       computerId: string;

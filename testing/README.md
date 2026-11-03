@@ -36,6 +36,7 @@ contents, and machine-specific operational logs outside the repository.
 - [Cloud delivery cancellation reads](performance/cancel-deliveries/README.md)
 - [Database disconnect recovery](verification/database-disconnect.md)
 - [Feishu setup observation consistency](verification/feishu-setup-observation.md)
+- [Accepted inbound receipt ordering](verification/inbound-receipt-order.md)
 - [Feishu user MCP authorization](verification/feishu-user-mcp-authorization.md)
 - [GitHub platform integration](verification/github-platform-integration.md)
 - [Ownership gate reconciliation](verification/ownership-gate.md)

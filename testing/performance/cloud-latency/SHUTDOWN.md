@@ -17,6 +17,9 @@ established. Private resource identities and raw operational logs remain outside
 The new process-local stream measures the existing cleanup calls without changing their order,
 error propagation, signal ownership or native-destroy policy. It is separate from Turn statistics:
 one shutdown can follow many Turns, and a stopped allocation is not another Turn.
+Correlation uses the last accepted authenticated welcome, retained in memory for diagnostics after
+Server control-channel release. This is never a fallback for execution authorization. It is captured
+once when stopping begins; no prior accepted welcome means no attributed stream.
 
 ## Local checks
 
@@ -27,6 +30,8 @@ one shutdown can follow many Turns, and a stopped allocation is not another Turn
   native boundary replaced. Verify startup SIGTERM emits no invented Session records, ready SIGTERM
   waits for delayed destroy, active acceptance SIGINT cancels exactly once, and failed destroy is
   recorded without changing the existing global signal exit policy.
+  Server-release regressions close the channel with 4409 and refuse to re-welcome: both subsequent
+  SIGTERM and non-signal exit after rejected reattachment must retain the authenticated identity.
   Active acceptance can destroy the namespace while the connection drains before cleanup entry;
   the request-to-summary elapsed interval includes it, while `native_cleanup` can then be a no-op.
 - Existing focused Runner serve tests cover cleanup, workspace and controller interactions; client

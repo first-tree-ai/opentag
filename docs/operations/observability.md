@@ -217,18 +217,21 @@ end-to-end latency from missing records. Deployment, live collection and actual 
 separate operational acceptance; no exporter, scheduler, storage or retention change is installed.
 
 The same Staging selection enables a separate Runner shutdown stream on existing stderr:
-`module=cloud-runner`, `operation=shutdown.diagnostic`, `version=1`. It captures the current
-authenticated Session, Sandbox and generation at the first stop request, or at cleanup entry for
-an exit without a stop request. No current authenticated scope means no attributed records. Repeated
-signals do not reopen the stream, and a later welcome cannot change its captured identity.
+`module=cloud-runner`, `operation=shutdown.diagnostic`, `version=1`. It captures the
+Session, Sandbox and generation from the last accepted authenticated welcome at the first stop
+request, or at cleanup entry for an exit without a stop request. This diagnostic-only identity
+survives control-channel closure, including Server release before provider SIGTERM; it never
+authorizes execution on a closed channel. No prior accepted welcome means no attributed records.
+Repeated signals do not reopen the stream, and a later welcome cannot change its captured identity.
 
 Each Runner serve invocation emits at most eight records / 16 KiB, including its reserved summary.
 The stream measures `controller_drain` (the existing controller close call), `native_cleanup`
 (active acceptance cancellation/wait and the existing conditional native destroy), and
 `gateway_health_close` (the existing web gateway and health listener close calls). Existing caught
 errors and no-op cleanup remain part of those call boundaries. A false native cleanup result emits
-failure. Missing phases, output loss and absent summaries are incomplete evidence. The summary
-describes these cleanup calls, not the global process exit code or proof that the process exited.
+failure. Dropped records leave sequence gaps. Missing phases, output loss and absent summaries are
+incomplete evidence. The summary describes these cleanup calls, not the global process exit code
+or proof that the process exited.
 Elapsed time between the request and first phase includes existing connection/acceptance draining
 before cleanup entry; a native destroy may already have happened during that interval.
 

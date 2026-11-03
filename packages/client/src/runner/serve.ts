@@ -466,6 +466,8 @@ function createCloudTurnRunner(input: {
 class RunnerChannelBridge implements CloudCredentialChannel {
   sendFn?: (frame: RunnerClientFrame) => void;
   scope?: CloudTurnScope;
+  /** Diagnostic correlation only; never authorizes work after a channel closes. */
+  lastWelcomedScope?: CloudTurnScope;
   /** True only after a negotiated `cloudDeliveryVersion: 1` welcome. Legacy E3 stays Cloud-free. */
   cloudEnabled = false;
   imInputEnabled = false;
@@ -658,7 +660,7 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
   const writeShutdown = createPiDiagnosticStderrWriter(options.stderr);
   const shutdown = new RunnerShutdownObserver({
     env: options.env ?? process.env,
-    scope: () => bridge.scope,
+    assignment: () => bridge.lastWelcomedScope,
     write: (record) => writeShutdown(`${JSON.stringify(record)}\n`),
   });
   let sandbox: NativeSandbox;
@@ -1067,6 +1069,7 @@ async function serveOnce(
         resourceName: data.resourceName,
         resourceUid: data.resourceUid ?? null,
       };
+      bridge.lastWelcomedScope = bridge.scope;
       bridge.cloudEnabled = cloudCapable;
       bridge.imInputEnabled = cloudCapable && data.imInputVersion === 1;
       bridge.turnActivityEnabled = cloudCapable && data.turnActivityVersion === 1;

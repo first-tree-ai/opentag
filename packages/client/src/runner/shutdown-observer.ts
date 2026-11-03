@@ -34,7 +34,7 @@ export type RunnerShutdownRecord = z.infer<typeof recordSchema>;
 
 export class RunnerShutdownObserver {
   readonly #sessions: ReadonlySet<string>;
-  readonly #scope: () => CloudTurnScope | undefined;
+  readonly #assignment: () => CloudTurnScope | undefined;
   readonly #write: (record: RunnerShutdownRecord) => void;
   readonly #revision: string;
   readonly #now: () => number;
@@ -53,13 +53,13 @@ export class RunnerShutdownObserver {
 
   constructor(input: {
     env: Readonly<Record<string, string | undefined>>;
-    scope: () => CloudTurnScope | undefined;
+    assignment: () => CloudTurnScope | undefined;
     write: (record: RunnerShutdownRecord) => void;
     now?: () => number;
     utc?: () => string;
   }) {
     this.#sessions = cloudLatencySessions(input.env);
-    this.#scope = input.scope;
+    this.#assignment = input.assignment;
     this.#write = input.write;
     const revision = input.env.OPENTAG_REVISION ?? "";
     this.#revision = /^[a-f0-9]{40}$/.test(revision) ? revision : "unknown";
@@ -71,7 +71,7 @@ export class RunnerShutdownObserver {
     if (this.#attempted) return;
     this.#attempted = true;
     if (this.#sessions.size === 0) return;
-    const scope = this.#scope();
+    const scope = this.#assignment();
     if (!scope || !this.#sessions.has(scope.sessionId)) return;
     const parsed = contextSchema.safeParse({
       sessionId: scope.sessionId,

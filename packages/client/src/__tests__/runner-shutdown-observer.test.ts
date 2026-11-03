@@ -19,7 +19,7 @@ const selected = {
 function fixture(
   input: {
     env?: Record<string, string | undefined>;
-    scope?: () => CloudTurnScope | undefined;
+    assignment?: () => CloudTurnScope | undefined;
     write?: (record: RunnerShutdownRecord) => void;
   } = {},
 ) {
@@ -27,7 +27,7 @@ function fixture(
   let now = 100;
   const observer = new RunnerShutdownObserver({
     env: input.env ?? selected,
-    scope: input.scope ?? (() => scope),
+    assignment: input.assignment ?? (() => scope),
     write: (record) => {
       input.write?.(record);
       records.push(record);
@@ -63,9 +63,9 @@ describe("Runner shutdown diagnostics", () => {
     expect(records).toEqual([]);
   });
 
-  it("requires an authenticated scope when stopping and never adopts a later welcome", async () => {
+  it("requires a prior authenticated welcome and never adopts a later one after stopping", async () => {
     let current: CloudTurnScope | undefined;
-    const { observer, records } = fixture({ scope: () => current });
+    const { observer, records } = fixture({ assignment: () => current });
     observer.start("request");
     current = scope;
     observer.start("exit");
@@ -76,11 +76,11 @@ describe("Runner shutdown diagnostics", () => {
   it("captures only explicit correlation fields and measures delayed work in one process clock", async () => {
     let current: CloudTurnScope | undefined = scope;
     const { observer, records, advance } = fixture({
-      scope: () => current,
+      assignment: () => current,
       env: { ...selected, OPENTAG_REVISION: "secret-invalid-revision", TOKEN: "secret-token" },
     });
     observer.start("request");
-    current = undefined;
+    current = { ...scope, sessionId: "33333333-3333-4333-8333-333333333333" };
     await observer.measure("controller_drain", async () => advance(30));
     await observer.measure("native_cleanup", async () => advance(250));
     await observer.measure("gateway_health_close", async () => advance(20));

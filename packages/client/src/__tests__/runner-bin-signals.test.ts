@@ -207,6 +207,7 @@ interface ControlServer {
   readonly url: string;
   readonly frames: Record<string, unknown>[];
   send(frame: unknown): void;
+  releaseScope(): Promise<void>;
   waitFor(type: string, timeoutMs?: number): Promise<Record<string, unknown>>;
 }
 
@@ -219,7 +220,29 @@ async function startControlServer(): Promise<ControlServer> {
   });
   const frames: Record<string, unknown>[] = [];
   const sockets: WsSocket[] = [];
+  let released = false;
   const waiters: { type: string; resolve: (frame: Record<string, unknown>) => void }[] = [];
+  const authenticate = (socket: WsSocket, frame: Record<string, unknown>) => {
+    if (released) {
+      socket.send(JSON.stringify({ type: "auth:result", ok: false }));
+      return;
+    }
+    socket.send(
+      JSON.stringify({ type: "auth:result", ok: true, ...(frame.requestId ? { requestId: frame.requestId } : {}) }),
+    );
+    socket.send(
+      JSON.stringify({
+        type: "server:welcome",
+        protocolVersion: 1,
+        sandboxId: "11111111-1111-4111-8111-111111111111",
+        sessionId: "22222222-2222-4222-8222-222222222222",
+        environmentGeneration: 1,
+        resourceName: `projects/p/locations/r/instances/${SANDBOX_NAME}`,
+        heartbeatIntervalMs: 50,
+        heartbeatTimeoutMs: 300_000,
+      }),
+    );
+  };
   wss.on("connection", (socket) => {
     sockets.push(socket);
     socket.on("message", (raw) => {
@@ -230,23 +253,7 @@ async function startControlServer(): Promise<ControlServer> {
         const [waiter] = waiters.splice(index, 1);
         waiter?.resolve(frame);
       }
-      if (frame.type === "auth") {
-        socket.send(
-          JSON.stringify({ type: "auth:result", ok: true, ...(frame.requestId ? { requestId: frame.requestId } : {}) }),
-        );
-        socket.send(
-          JSON.stringify({
-            type: "server:welcome",
-            protocolVersion: 1,
-            sandboxId: "11111111-1111-4111-8111-111111111111",
-            sessionId: "22222222-2222-4222-8222-222222222222",
-            environmentGeneration: 1,
-            resourceName: `projects/p/locations/r/instances/${SANDBOX_NAME}`,
-            heartbeatIntervalMs: 50,
-            heartbeatTimeoutMs: 300_000,
-          }),
-        );
-      }
+      if (frame.type === "auth") authenticate(socket, frame);
       if (frame.type === "heartbeat") socket.send(JSON.stringify({ type: "server:heartbeat" }));
     });
   });
@@ -255,6 +262,20 @@ async function startControlServer(): Promise<ControlServer> {
     frames,
     send(frame) {
       for (const socket of sockets) if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(frame));
+    },
+    async releaseScope() {
+      released = true;
+      await Promise.all(
+        sockets
+          .filter((socket) => socket.readyState === socket.OPEN)
+          .map(
+            (socket) =>
+              new Promise<void>((resolveClose) => {
+                socket.once("close", () => resolveClose());
+                socket.close(4409, "environment released");
+              }),
+          ),
+      );
     },
     waitFor(type, timeoutMs = 15_000) {
       const existing = frames.find((frame) => frame.type === type);
@@ -332,6 +353,35 @@ describe("runner bin signal lifecycle (real child)", () => {
     expect(records.find((record) => record.event === "failure")).toMatchObject({ phase: "native_cleanup" });
     expect(records.at(-1)).toMatchObject({ outcome: "failed", diagnosticIncomplete: false });
     expect(fixture.diagnostics()).not.toContain("private-destroy-failure");
+  }, 30_000);
+
+  it("retains authenticated correlation when Server releases the channel before SIGTERM", async () => {
+    const control = await startControlServer();
+    const fixture = await spawnRunnerBin({ backendUrl: control.url, launchMs: 0, destroyMs: 250 });
+    await control.waitFor("runner:ready");
+    await control.releaseScope();
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
+    fixture.child.kill("SIGTERM");
+    const exit = await fixture.exited;
+    expect(exit.signal, fixture.diagnostics()).toBeNull();
+    expect(exit.code, fixture.diagnostics()).toBe(143);
+    expectCompleteShutdown(fixture);
+    expect(shutdownRecords(fixture)[0]).toMatchObject({
+      sessionId: "22222222-2222-4222-8222-222222222222",
+      trigger: "request",
+    });
+  }, 30_000);
+
+  it("attributes non-signal cleanup after channel release and rejected reattachment", async () => {
+    const control = await startControlServer();
+    const fixture = await spawnRunnerBin({ backendUrl: control.url, launchMs: 0, destroyMs: 250 });
+    await control.waitFor("runner:ready");
+    await control.releaseScope();
+    const exit = await fixture.exited;
+    expect(exit.signal, fixture.diagnostics()).toBeNull();
+    expect(exit.code, fixture.diagnostics()).toBe(1);
+    expectCompleteShutdown(fixture);
+    expect(shutdownRecords(fixture)[0]?.trigger).toBe("exit");
   }, 30_000);
 
   it("SIGINT during an active acceptance aborts exactly once and waits for destroy before exiting 130", async () => {

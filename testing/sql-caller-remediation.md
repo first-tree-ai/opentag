@@ -376,3 +376,9 @@ joins actual SQL/stream work and retains revocation listeners until it settles.
 Two hundred distinct cases pass, including 41 native PostgreSQL cases. Batch 27
 independent review found no actionable defect. Remaining IM worker, setup,
 approval and detached tails plus actual main composition still keep IM-F3 open.
+
+Batch 28 independent review found two P2 windows (late response handles and
+missing broker-to-task-policy cancellation). The correction uses existing signals
+and passes 143 cases, five native PG; cumulative component coverage is 263 cases,
+41 native PG. Exact correction review is pending. Default outbound capture raw
+query tails remain included in final IM-F3 ownership work.

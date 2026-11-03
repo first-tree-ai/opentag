@@ -380,6 +380,7 @@ export class RuntimeCredentialBroker {
       provider,
       bindingId,
       sessionBindingId: fence.snapshot.binding.id,
+      signal,
       source: execution.source,
       purpose: execution.purpose,
     });

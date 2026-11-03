@@ -43,3 +43,24 @@ Batch 27 exact review found no actionable defect, including a check of pinned
 WebSocket late-upgrade rejection. This batch needs its own exact review. Other
 owners, detached callback/proof tails and actual main ordering remain IM-F3.
 Component tests do not establish whole-Server signal, CI or deployment status.
+
+## Independent review correction
+
+Review found two P2 windows: a confirmed IM response could create URL handles
+after execution-close cleanup while waiting for capture; broker task policy did
+not receive the signal, so actual GitHub authorize could continue provenance SQL.
+The adapter now checks the request signal after confirmed capture and before
+rewriting; capture itself still settles once. Task-policy input carries an
+optional signal, and broker forwards its existing signal. No new authorization
+source, retry or deadline.
+
+The correction passes 143 distinct cases (five native PG), 270 executions on
+host/Docker. Two real-adapter loopback controls close the execution while capture
+is held, then prove confirmed capture finishes and neither upload nor download
+handles survive. Three real broker-to-GitHubRuntimePolicy controls cover acquire,
+renew and beginRequest: after the first provenance read, cancellation prevents
+the recursive read and management lookup. Owning adapter/capture/transport/broker,
+GitHub policy and native platform consumers pass. Batch 28 cumulative coverage is
+263 distinct cases, 41 native PG, 687 passing executions. Exact correction review
+is pending; main composition remains open. The default outbound capture's own
+bounded raw-query tail is separately retained for the remaining IM-F3 work.

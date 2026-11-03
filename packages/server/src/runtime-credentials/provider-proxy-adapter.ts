@@ -300,6 +300,7 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
         await this.#captureConfirmedWrite(match, request, authorization, prepared.parsed, payload);
       }
     }
+    request.signal.throwIfAborted();
     const rewritten = rewriteOperationResponse(operation, payload, {
       executionId: request.executionId,
       provider: request.provider,

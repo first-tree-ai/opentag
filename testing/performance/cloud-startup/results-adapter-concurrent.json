@@ -1,0 +1,1117 @@
+{
+  "node": "v24.21.0",
+  "arch": "arm64",
+  "samples": 30,
+  "boundary": "Two real execution adapters and TLS challenges; no workers, relay, native Sandbox or Cloud allocation",
+  "records": [
+    {
+      "index": 0,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 369.068083,
+          "challengeMs": 371.124541
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 358.320416,
+          "challengeMs": 364.55975
+        }
+      ]
+    },
+    {
+      "index": 0,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 5.118875000000003,
+          "challengeMs": 7.5569169999999986
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 6.133167000000071,
+          "challengeMs": 8.548500000000104
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 4.413542000000007,
+          "challengeMs": 6.414292000000046
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 5.605292000000077,
+          "challengeMs": 7.589625000000069
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 107.59216600000002,
+          "challengeMs": 173.00916600000005
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 254.92158300000006,
+          "challengeMs": 262.762958
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 241.23420799999985,
+          "challengeMs": 244.90170799999987
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 214.26724999999988,
+          "challengeMs": 216.4989169999999
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 17.39949999999999,
+          "challengeMs": 20.549833000000035
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 16.792042000000038,
+          "challengeMs": 20.22529200000008
+        }
+      ]
+    },
+    {
+      "index": 3,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 9.176457999999911,
+          "challengeMs": 13.074957999999924
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 14.580832999999984,
+          "challengeMs": 15.912041999999929
+        }
+      ]
+    },
+    {
+      "index": 3,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 365.30204200000003,
+          "challengeMs": 367.123251
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 150.951417,
+          "challengeMs": 153.218709
+        }
+      ]
+    },
+    {
+      "index": 4,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 310.9523750000001,
+          "challengeMs": 313.13300000000004
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 173.05729100000008,
+          "challengeMs": 179.734375
+        }
+      ]
+    },
+    {
+      "index": 4,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 6.575333999999884,
+          "challengeMs": 9.057416999999987
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 6.0193749999998545,
+          "challengeMs": 8.215833999999859
+        }
+      ]
+    },
+    {
+      "index": 5,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 22.376374999999825,
+          "challengeMs": 24.461084000000028
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 23.638749999999845,
+          "challengeMs": 25.722958999999946
+        }
+      ]
+    },
+    {
+      "index": 5,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 258.6681249999997,
+          "challengeMs": 295.365542
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 209.60545899999988,
+          "challengeMs": 212.23741699999982
+        }
+      ]
+    },
+    {
+      "index": 6,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 109.65075099999967,
+          "challengeMs": 112.91816699999981
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 425.77541699999983,
+          "challengeMs": 449.9952089999997
+        }
+      ]
+    },
+    {
+      "index": 6,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 14.979749999999967,
+          "challengeMs": 17.65350000000035
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 16.815166000000318,
+          "challengeMs": 19.121708000000126
+        }
+      ]
+    },
+    {
+      "index": 7,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 6.98679200000015,
+          "challengeMs": 8.968374999999924
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 9.77212499999996,
+          "challengeMs": 11.03145799999993
+        }
+      ]
+    },
+    {
+      "index": 7,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 218.66341599999987,
+          "challengeMs": 222.54050000000007
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 351.8862079999999,
+          "challengeMs": 353.97962499999994
+        }
+      ]
+    },
+    {
+      "index": 8,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 409.9034580000002,
+          "challengeMs": 411.95112500000005
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 376.4544169999999,
+          "challengeMs": 379.1734999999999
+        }
+      ]
+    },
+    {
+      "index": 8,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 8.790250000000015,
+          "challengeMs": 16.387624999999844
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 10.950749999999971,
+          "challengeMs": 17.035874999999578
+        }
+      ]
+    },
+    {
+      "index": 9,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 46.311167000000296,
+          "challengeMs": 60.07858299999998
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 62.48962500000016,
+          "challengeMs": 72.66891699999996
+        }
+      ]
+    },
+    {
+      "index": 9,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 256.05654200000026,
+          "challengeMs": 260.748458
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 291.73833300000024,
+          "challengeMs": 293.51970800000026
+        }
+      ]
+    },
+    {
+      "index": 10,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 548.2881260000004,
+          "challengeMs": 552.4577509999999
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 291.1838749999997,
+          "challengeMs": 293.10400000000027
+        }
+      ]
+    },
+    {
+      "index": 10,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 10.825417000000016,
+          "challengeMs": 12.135917000000518
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 7.5756250000004,
+          "challengeMs": 9.82770900000014
+        }
+      ]
+    },
+    {
+      "index": 11,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 5.058124999999563,
+          "challengeMs": 6.76720800000021
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 6.260624999999891,
+          "challengeMs": 7.831124999999702
+        }
+      ]
+    },
+    {
+      "index": 11,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 164.19404100000065,
+          "challengeMs": 166.11683300000004
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 97.42541600000004,
+          "challengeMs": 99.59495800000059
+        }
+      ]
+    },
+    {
+      "index": 12,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 248.77420799999982,
+          "challengeMs": 250.90529199999946
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 338.41525,
+          "challengeMs": 343.24004199999945
+        }
+      ]
+    },
+    {
+      "index": 12,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 12.639125000000604,
+          "challengeMs": 18.291833000000224
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 12.00316600000042,
+          "challengeMs": 16.375833000000057
+        }
+      ]
+    },
+    {
+      "index": 13,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 7.3961660000004485,
+          "challengeMs": 8.974374999999782
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 9.612041000000318,
+          "challengeMs": 10.521875000000364
+        }
+      ]
+    },
+    {
+      "index": 13,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 156.0313329999999,
+          "challengeMs": 158.5354159999997
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 173.55720800000017,
+          "challengeMs": 175.6498330000004
+        }
+      ]
+    },
+    {
+      "index": 14,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 91.52283299999999,
+          "challengeMs": 93.63166700000056
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 273.0731249999999,
+          "challengeMs": 274.7828330000002
+        }
+      ]
+    },
+    {
+      "index": 14,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 5.2529169999997976,
+          "challengeMs": 7.338042000000314
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 5.799582999999984,
+          "challengeMs": 8.154250000000502
+        }
+      ]
+    },
+    {
+      "index": 15,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 5.108916000000136,
+          "challengeMs": 6.9606659999999465
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 5.541374999999789,
+          "challengeMs": 7.620041000000128
+        }
+      ]
+    },
+    {
+      "index": 15,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 408.15579199999956,
+          "challengeMs": 409.91804199999933
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 431.74616699999933,
+          "challengeMs": 433.4435829999993
+        }
+      ]
+    },
+    {
+      "index": 16,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 163.82574999999997,
+          "challengeMs": 167.55570799999987
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 260.0262910000001,
+          "challengeMs": 261.7375000000002
+        }
+      ]
+    },
+    {
+      "index": 16,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 5.55920900000001,
+          "challengeMs": 7.110791999999492
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 4.636166999999659,
+          "challengeMs": 6.154291999999259
+        }
+      ]
+    },
+    {
+      "index": 17,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 4.640417000000525,
+          "challengeMs": 6.35766700000022
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 5.605709000000388,
+          "challengeMs": 7.6693750000004
+        }
+      ]
+    },
+    {
+      "index": 17,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 295.8615,
+          "challengeMs": 298.3209999999999
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 94.37874999999985,
+          "challengeMs": 96.24066599999969
+        }
+      ]
+    },
+    {
+      "index": 18,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 113.68145800000002,
+          "challengeMs": 115.5175419999996
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 106.19183299999986,
+          "challengeMs": 108.12370800000008
+        }
+      ]
+    },
+    {
+      "index": 18,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 6.483957999999802,
+          "challengeMs": 8.283249999999498
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 5.3312919999998485,
+          "challengeMs": 7.186208000000079
+        }
+      ]
+    },
+    {
+      "index": 19,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 5.826915999999983,
+          "challengeMs": 7.554041000000325
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 4.8246250000001965,
+          "challengeMs": 6.478958000000603
+        }
+      ]
+    },
+    {
+      "index": 19,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 387.1010419999993,
+          "challengeMs": 396.21583399999963
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 255.9354999999996,
+          "challengeMs": 258.12966699999924
+        }
+      ]
+    },
+    {
+      "index": 20,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 156.10591699999986,
+          "challengeMs": 158.18858399999954
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 189.3622919999998,
+          "challengeMs": 190.96529199999986
+        }
+      ]
+    },
+    {
+      "index": 20,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 4.608374999999796,
+          "challengeMs": 6.204208999999537
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 5.562249999999949,
+          "challengeMs": 7.219208999999864
+        }
+      ]
+    },
+    {
+      "index": 21,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 4.523750000000291,
+          "challengeMs": 6.343958999999813
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 5.494542000000365,
+          "challengeMs": 7.610959000000548
+        }
+      ]
+    },
+    {
+      "index": 21,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 166.37883299999976,
+          "challengeMs": 168.21787500000028
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 181.88679200000024,
+          "challengeMs": 183.43216699999994
+        }
+      ]
+    },
+    {
+      "index": 22,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 472.99045900000056,
+          "challengeMs": 478.17145900000014
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 296.1528330000001,
+          "challengeMs": 357.6187920000002
+        }
+      ]
+    },
+    {
+      "index": 22,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 40.13666699999976,
+          "challengeMs": 45.66829199999938
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 40.6778749999994,
+          "challengeMs": 46.45650000000023
+        }
+      ]
+    },
+    {
+      "index": 23,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 6.106083000000581,
+          "challengeMs": 7.9705000000003565
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 5.060083000000304,
+          "challengeMs": 6.794125000000349
+        }
+      ]
+    },
+    {
+      "index": 23,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 343.63916700000027,
+          "challengeMs": 345.3422500000006
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 139.3837080000003,
+          "challengeMs": 141.2706250000001
+        }
+      ]
+    },
+    {
+      "index": 24,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 192.2207500000004,
+          "challengeMs": 197.62366699999984
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 198.82466700000077,
+          "challengeMs": 204.00595900000008
+        }
+      ]
+    },
+    {
+      "index": 24,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 5.924124999999549,
+          "challengeMs": 7.638665999998921
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 7.182666000000609,
+          "challengeMs": 8.579999999999927
+        }
+      ]
+    },
+    {
+      "index": 25,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 5.883583000000726,
+          "challengeMs": 7.706833000000188
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 4.970250000000306,
+          "challengeMs": 6.9667499999995925
+        }
+      ]
+    },
+    {
+      "index": 25,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 197.78245900000002,
+          "challengeMs": 199.34008399999948
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 147.08841699999903,
+          "challengeMs": 149.30841699999837
+        }
+      ]
+    },
+    {
+      "index": 26,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 159.23350000000028,
+          "challengeMs": 161.0935840000002
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 200.70141700000022,
+          "challengeMs": 202.45216699999946
+        }
+      ]
+    },
+    {
+      "index": 26,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 4.825166000000536,
+          "challengeMs": 6.398041000000376
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 5.9493750000001455,
+          "challengeMs": 7.329125000000204
+        }
+      ]
+    },
+    {
+      "index": 27,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 4.521375000000262,
+          "challengeMs": 5.8857090000001335
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 5.488459000000148,
+          "challengeMs": 6.738666999999623
+        }
+      ]
+    },
+    {
+      "index": 27,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 125.39775000000009,
+          "challengeMs": 127.20208300000013
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 130.1834170000002,
+          "challengeMs": 131.7369579999995
+        }
+      ]
+    },
+    {
+      "index": 28,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 275.1816260000014,
+          "challengeMs": 277.1110010000011
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 331.9365420000013,
+          "challengeMs": 333.78304200000093
+        }
+      ]
+    },
+    {
+      "index": 28,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 4.853750000000218,
+          "challengeMs": 6.499791999998706
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 6.0665419999986625,
+          "challengeMs": 7.420541999999841
+        }
+      ]
+    },
+    {
+      "index": 29,
+      "version": "after",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 30.58404200000041,
+          "challengeMs": 32.71516700000029
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 31.244125000001077,
+          "challengeMs": 33.38479200000074
+        }
+      ]
+    },
+    {
+      "index": 29,
+      "version": "before",
+      "attempts": [
+        {
+          "status": "fulfilled",
+          "lane": 0,
+          "readyMs": 111.41362499999923,
+          "challengeMs": 113.31154199999946
+        },
+        {
+          "status": "fulfilled",
+          "lane": 1,
+          "readyMs": 271.59691699999894,
+          "challengeMs": 273.3586670000004
+        }
+      ]
+    }
+  ],
+  "provenance": {
+    "baselineSource": "e4f7cb1d0ca038c13368c7be90f4e7058105a329",
+    "candidateSource": "same baseline plus only the execution CA algorithm/key-usage diff",
+    "candidateImplementationSha256": "88bd9304b92ee4de72eedc72d8b95023638fbb5fc4f1d9d72fc26cbc2531ba72",
+    "node": "v24.21.0",
+    "pi": "0.84.2",
+    "openssl": "3.0.22",
+    "platform": "linux/arm64",
+    "imageId": "sha256:90d5c0acdc0ffdc596d3b30c4d3faf0ad201eae6ba26b695bb8644053aef7c16",
+    "cpuQuota": 1,
+    "memoryLimitBytes": 1073741824,
+    "network": "none",
+    "artifactModules": {
+      "before": {
+        "cli-BzEfDA1X.mjs": "f79ce6b4489d4028ab23106a833c1d7e20394554d9439f5574219fc4f2170489",
+        "index.mjs": "4acba34b917120f8114f3e737803555de16c13c780b4d89c4e6757cdff2e12dd",
+        "pi-extensions/mcp-gateway.mjs": "49932677b790c63b9e115611e34a2207e280b0e0aa12ded41b5e34055cfbf48e",
+        "pi-extensions/web-tools.mjs": "b3894f0e975337ae6ba24b601f953452d4c54247d68a89b3ee02e05214e47c66",
+        "runner/bin.mjs": "f7beddb651e393644941fba2d5b4263062a277b4e40fc5c54b4ca646ab3a7163"
+      },
+      "after": {
+        "cli-CfZ4pVKx.mjs": "aa9bd4e6567ff4efe2b60e59ad3d94f410373c96f33b95188f1436fc6030d918",
+        "index.mjs": "e60d3461a768b3e848fdc25d02ac409eb91a5cae54e8006456aedc69d1fbee80",
+        "pi-extensions/mcp-gateway.mjs": "49932677b790c63b9e115611e34a2207e280b0e0aa12ded41b5e34055cfbf48e",
+        "pi-extensions/web-tools.mjs": "b3894f0e975337ae6ba24b601f953452d4c54247d68a89b3ee02e05214e47c66",
+        "runner/bin.mjs": "d834e78938710c727c63794a3249e3b13db9de794b5ee3d27b857477cd44fa44"
+      }
+    }
+  }
+}

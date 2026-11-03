@@ -15,6 +15,18 @@ import { AccountSignOut } from "../session/sign-out-button.js";
 import { AccountMenu } from "../shell/account-menu.js";
 import { useInAppShell } from "../shell/shell-context.js";
 
+/** The logo returns to the Agent list wherever setup offers a way out. */
+function BrandHome() {
+  return (
+    <Link
+      className="inline-flex rounded-sm focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-kumo-brand"
+      to="/agents"
+    >
+      <OpenTagLogo label={m.onboarding_v2_brand_name()} />
+    </Link>
+  );
+}
+
 /** An exact setup target is a uuid; anything else can never name an Agent and fails closed. */
 const AGENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -283,6 +295,7 @@ function TargetedAgentSetup({
         agentId={resolution.agentId}
         key={resolution.agentId}
         onAdopt={onAdopt}
+        onBackToAgents={onBackToAgents}
         onOpenAgent={onOpenAgent}
         onReviewFinished={onReviewFinished}
         onTargetInvalidated={retryResolution}
@@ -295,6 +308,7 @@ function TargetedAgentSetup({
   return (
     <AgentSetupSurface
       accountControl={<AccountMenu placement="page" />}
+      brandControl={accountCompleted ? <BrandHome /> : undefined}
       existingAgentNames={resolution.existingAgentNames}
       onBackToAgents={accountCompleted ? onBackToAgents : undefined}
       onAgentAvailable={onTarget}
@@ -313,6 +327,7 @@ function ExactAgentSetup({
   accountCompleted,
   agentId,
   onAdopt,
+  onBackToAgents,
   onOpenAgent,
   onReviewFinished,
   onTargetInvalidated,
@@ -322,6 +337,7 @@ function ExactAgentSetup({
   accountCompleted: boolean;
   agentId: string;
   onAdopt: (agentId: string) => Promise<void>;
+  onBackToAgents: () => Promise<void>;
   onOpenAgent: (agentId: string) => Promise<void>;
   onReviewFinished: (agentId: string) => Promise<void>;
   onTargetInvalidated: () => void;
@@ -394,14 +410,8 @@ function ExactAgentSetup({
     <AgentSetupSurface
       accountControl={<AccountMenu placement="page" />}
       agentId={agentId}
-      brandControl={
-        <Link
-          className="inline-flex rounded-sm focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-kumo-brand"
-          to="/agents"
-        >
-          <OpenTagLogo label={m.onboarding_v2_brand_name()} />
-        </Link>
-      }
+      brandControl={<BrandHome />}
+      onBackToAgents={() => void onBackToAgents()}
       onOpenAgent={() => onOpenAgent(agentId)}
       onReady={reviewMode ? onReviewFinished : undefined}
       reviewMode={reviewMode}

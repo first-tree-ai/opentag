@@ -182,8 +182,10 @@ export interface AgentSetupPageProps {
   readonly previewInitialView?: AgentSetupPreviewView;
   /** Reports the screen the production surface is actually showing to its Review Lab controls. */
   readonly onPreviewViewChange?: (view: AgentSetupPreviewView) => void;
-  /** Returns to this exact Agent; Setup presents it as Back before ready and Open after ready. */
+  /** Opens this exact Agent; offered as the completion action once setup is ready. */
   readonly onOpenAgent?: () => void;
+  /** Leaves setup for the Agent list. Offered in the header at every stage; the list resumes unfinished setup. */
+  readonly onBackToAgents?: () => void;
   /** Rendered in the header; the caller supplies it because only the route knows an Account session exists. */
   readonly accountControl?: ReactNode;
   /** The route supplies brand navigation after Account admission. */
@@ -707,6 +709,7 @@ export function AgentSetupPage({
   brandControl,
   adapter,
   computerAdapter,
+  onBackToAgents,
   onExternalNavigation,
   onOpenAgent,
   onPreviewViewChange,
@@ -731,6 +734,7 @@ export function AgentSetupPage({
       brandControl={brandControl}
       computerAdapter={computerAdapter}
       key={agentId}
+      onBackToAgents={onBackToAgents}
       onExternalNavigation={onExternalNavigation}
       onOpenAgent={onOpenAgent}
       onPreviewViewChange={onPreviewViewChange}
@@ -750,6 +754,7 @@ function AgentSetupPageContent({
   brandControl,
   adapter,
   computerAdapter,
+  onBackToAgents,
   onExternalNavigation,
   onOpenAgent,
   onPreviewViewChange,
@@ -776,7 +781,6 @@ function AgentSetupPageContent({
   const [oauthError] = useState(() => (slackOAuthError ? slackSetupErrorMessage(slackOAuthError) : undefined));
   const snapshot = controller.phase.kind === "ready" ? controller.phase.snapshot : undefined;
   const report = useReadyReport(snapshot, agentId, onReady, reviewMode);
-  const ready = snapshot?.stage === "ready";
   // The stages between a connected Computer and a usable Agent, which is where a reader who never
   // holds a conversation actually stops. Reported per stage, not per re-read.
   useAgentSetupStageReport(agentId, snapshot?.stage);
@@ -819,9 +823,9 @@ function AgentSetupPageContent({
         <header className="flex flex-wrap items-center justify-between gap-3 p-6">
           {brandControl ?? <OpenTagLogo label={m.onboarding_v2_brand_name()} />}
           <div className="ml-auto flex items-center gap-2">
-            {onOpenAgent && !ready ? (
-              <Button onClick={onOpenAgent} variant="ghost">
-                {setupExitLabel(snapshot)}
+            {onBackToAgents ? (
+              <Button onClick={onBackToAgents} variant="ghost">
+                {m.onboarding_v2_back_to_agents()}
               </Button>
             ) : null}
             {accountControl}
@@ -1619,12 +1623,6 @@ function MessagingSetupSection({
       />
     </section>
   );
-}
-
-function setupExitLabel(snapshot: AgentSetupSnapshot | undefined): string {
-  return snapshot?.stage === "needs-messaging" && snapshot.messaging.kind === "not-configured"
-    ? m.onboarding_v2_setup_later()
-    : m.onboarding_v2_back_to_agent();
 }
 
 /** Custom App setup remains available independently of the official OAuth actions. */

@@ -29,36 +29,26 @@ describe("creation step navigation", () => {
     expect(onSubmit).toHaveBeenCalledOnce();
   });
 
-  it("enables Back on the second step, then locks both navigation actions while creating", () => {
-    const onBack = vi.fn();
+  it("offers no in-flow Back on the second step and locks Create while creating", () => {
     const onSubmit = vi.fn();
     const readyDraft: AgentDraft = { destination: "local", name: "opentag", runtime: "codex" };
     const { rerender } = render(
-      <AgentStep
-        draft={readyDraft}
-        onBack={onBack}
-        onChange={() => undefined}
-        onSubmit={onSubmit}
-        submitLabel="Create Agent"
-      />,
+      <AgentStep draft={readyDraft} onChange={() => undefined} onSubmit={onSubmit} submitLabel="Create Agent" />,
     );
 
-    const back = screen.getByRole("button", { name: "Back" });
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
     const create = screen.getByRole("button", { name: "Create Agent" });
-    expect(back.hasAttribute("disabled")).toBe(false);
     expect(create.hasAttribute("disabled")).toBe(false);
 
     rerender(
       <AgentStep
         draft={readyDraft}
-        onBack={onBack}
         onChange={() => undefined}
         onSubmit={onSubmit}
         submitLabel="Creating agent…"
         submitting
       />,
     );
-    expect(back.hasAttribute("disabled")).toBe(true);
     expect(screen.getByRole("button", { name: "Creating agent…" }).hasAttribute("disabled")).toBe(true);
   });
 
@@ -66,14 +56,12 @@ describe("creation step navigation", () => {
     render(
       <AgentStep
         draft={{ destination: "local", name: "opentag", runtime: undefined }}
-        onBack={() => undefined}
         onChange={() => undefined}
         onSubmit={() => undefined}
         submitLabel="Create Agent"
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Back" }).hasAttribute("disabled")).toBe(false);
     expect(screen.getByRole("button", { name: "Create Agent" }).hasAttribute("disabled")).toBe(true);
   });
 
@@ -142,7 +130,6 @@ describe("creation step navigation", () => {
     render(
       <AgentStep
         draft={{ destination: "cloud", name: "opentag", runtime: undefined }}
-        onBack={() => undefined}
         onChange={() => undefined}
         onSubmit={onSubmit}
         submitLabel="Create Agent"

@@ -154,7 +154,7 @@ describe("agent setup lab page", () => {
     expect(screen.queryByRole("combobox", { name: "Screen state" })).toBeNull();
   });
 
-  it("keeps Screen synchronized when the production creation page moves forward and back", async () => {
+  it("keeps Screen synchronized when the production creation page moves forward", async () => {
     renderLabPage();
     await openControls();
 
@@ -166,14 +166,7 @@ describe("agent setup lab page", () => {
       expect(screen.getByRole("combobox", { name: "Screen" }).textContent?.trim()).toBe("Name & Runtime"),
     );
     expect(screen.queryByRole("combobox", { name: "Screen state" })).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: "Back" }));
-
-    expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
-    await waitFor(() =>
-      expect(screen.getByRole("combobox", { name: "Screen" }).textContent?.trim()).toBe("Choose location"),
-    );
-    expect(screen.getByRole("combobox", { name: "Screen state" }).textContent?.trim()).toBe("New computer");
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
   });
 
   it("makes the blocked-messaging and all-preparation-ready combinations explicit", async () => {
@@ -207,17 +200,17 @@ describe("agent setup lab page", () => {
     expect(await screen.findByText("reviewer is ready.")).toBeTruthy();
   });
 
-  it("shows the real creation choice and only exposes Back to agents for an additional Agent", async () => {
+  it("shows the real creation choice and only exposes Back to Agents for an additional Agent", async () => {
     renderLabPage();
     expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Back to agents" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Back to Agents" })).toBeNull();
 
     await openControls();
     fireEvent.click(screen.getByRole("button", { name: "Additional Agent" }));
     fireEvent.click(await screen.findByRole("button", { name: /Local computer/ }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     expect((screen.getByLabelText("Agent name") as HTMLInputElement).value).toBe("opentag-2");
-    fireEvent.click(await screen.findByRole("button", { name: "Back to agents" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Back to Agents" }));
     expect(
       await screen.findByText(
         "The real product would open the Agents list here. The Lab keeps this in-memory run isolated.",

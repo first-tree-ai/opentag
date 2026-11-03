@@ -205,6 +205,17 @@ It requires `OPENTAG_ENV=staging`, `OPENTAG_CLOUD_LATENCY_DIAGNOSTICS=true` and 
 `OPENTAG_CLOUD_LATENCY_SESSION_IDS` list of at most 16 UUIDs. It emits no added records by default
 or in other environments. `OPENTAG_REVISION` is a full lowercase Git SHA, otherwise `unknown`.
 
+The production composition snapshots the validated selection into a typed Cloud Run Admin option.
+Only new Staging Instances whose birth Session is selected receive `OPENTAG_ENV=staging`,
+`OPENTAG_CLOUD_LATENCY_DIAGNOSTICS=true` and the full approved Session list in their container
+environment. Other create requests retain their existing shape. Both create API versions share
+this construction. The Server revision is not forwarded as the Runner revision.
+
+Existing or adopted Instances are never patched to change diagnostics. Borrowing an Instance born
+without these settings can leave Runner records unavailable; retain that sample as missing evidence.
+Disabling Server selection affects future creation only: existing immutable settings last until
+normal reclamation, while the Runner continues to apply the Session allowlist after a transfer.
+
 Each observation reserves a summary within 32 records / 64 KiB. Observers retain at most 1,024
 identities for quota enforcement without evicting them to reopen budgets. Server retries share
 one delivery budget and have separate attempt identities; duplicate attempts and repeated workspace
@@ -219,6 +230,34 @@ Pi phase durations, rejects incomplete/conflicting evidence for complete-trace m
 aggregate counts/quantiles without resource IDs or raw files. It does not infer timeout or genuine
 end-to-end latency from missing records. Deployment, live collection and actual log arrival remain
 separate operational acceptance; no exporter, scheduler, storage or retention change is installed.
+
+The same Staging selection enables a separate Runner shutdown stream on existing stderr:
+`module=cloud-runner`, `operation=shutdown.diagnostic`, `version=1`. It captures the
+Session, Sandbox and generation from the current committed assignment, falling back to the last
+accepted authenticated welcome if no assignment exists. Capture happens at the first stop request,
+or at cleanup entry for an exit without a stop request. A prior accepted welcome in this process
+is required; a persisted assignment alone cannot attribute unauthenticated startup. A refused
+cross-Session rebind keeps the held assignment's identity and Session selection. This diagnostic-only identity
+survives control-channel closure, including Server release before provider SIGTERM; it never
+authorizes execution on a closed channel. No prior accepted welcome means no attributed records.
+Repeated signals do not reopen the stream, and a later welcome cannot change its captured identity.
+
+Each Runner serve invocation emits at most eight records / 16 KiB, including its reserved summary.
+The stream measures `controller_drain` (the existing controller close call), `native_cleanup`
+(active acceptance cancellation/wait and the existing conditional native destroy), and
+`gateway_health_close` (the existing web gateway and health listener close calls). Existing caught
+errors and no-op cleanup remain part of those call boundaries. A false native cleanup result emits
+failure. Dropped records leave sequence gaps. Missing phases, output loss and absent summaries are
+incomplete evidence. The summary describes these cleanup calls, not the global process exit code
+or proof that the process exited.
+Elapsed time between the request and first phase includes existing connection/acceptance draining
+before cleanup entry; a native destroy may already have happened during that interval.
+
+Shutdown records share the bounded payload and process-local clock rules above, carry no Turn ID,
+and remain separate from Turn latency reports. They add no wait, flush or retry policy. Their
+durations cannot establish provider deletion time, SIGTERM delivery time or an ingress latency
+distribution; provider state transitions require independent evidence. See the
+[shutdown validation guide](https://github.com/first-tree-ai/opentag/blob/main/testing/performance/cloud-latency/SHUTDOWN.md).
 
 ## Full-stack performance logging
 

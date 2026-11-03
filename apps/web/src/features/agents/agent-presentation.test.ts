@@ -71,7 +71,7 @@ function boundAgent(): AgentDetail {
   return { ...agentWithoutComputer(), computer: { computerId, displayName: "Studio", platform: "darwin" } };
 }
 
-function onlineComputer(runtimeStatus: "ready" | "install"): AccountComputerSummary {
+function onlineComputer(runtimeStatus: "ready" | "install" | "sign-in"): AccountComputerSummary {
   return {
     computerId,
     displayName: "Studio",
@@ -100,7 +100,10 @@ function messagingBinding(bindingState: ImBindingSummary["bindingState"]): ImBin
   };
 }
 
-function bound(connectionStatus: "online" | "offline", runtimeStatus: "ready" | "install"): AgentAvailability {
+function bound(
+  connectionStatus: "online" | "offline",
+  runtimeStatus: "ready" | "install" | "sign-in",
+): AgentAvailability {
   const computer: AccountComputerSummary = { ...onlineComputer(runtimeStatus), connectionStatus };
   return projectAgentAvailability(boundAgent(), computer, undefined, undefined, true, true);
 }

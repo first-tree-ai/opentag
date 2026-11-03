@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentHostedTools } from "../agent-runtime/types.js";
 import {
   type ClaudeCodeHostedToolBridge,
+  createClaudeCodeBridgeIdentity,
   startClaudeCodeHostedToolBridge,
 } from "../providers/claude-code/hosted-tool-bridge.js";
 
@@ -56,7 +57,7 @@ describe("Claude Code hosted tool bridge", () => {
     await expect(readFile(bridge.configPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("uses a distinct explicit plugin identity for each Run without reserving a user plugin name", async () => {
+  it("uses distinct default identities without reserving a user plugin name", async () => {
     const first = await startClaudeCodeHostedToolBridge(undefined, "run-one", new AbortController().signal, []);
     const second = await startClaudeCodeHostedToolBridge(undefined, "run-two", new AbortController().signal, []);
     try {
@@ -64,6 +65,76 @@ describe("Claude Code hosted tool bridge", () => {
       expect((await stat(join(first.pluginPath, ".claude-plugin", "plugin.json"))).mode & 0o777).toBe(0o600);
     } finally {
       await Promise.all([first.close(), second.close()]);
+    }
+  });
+
+  it("keeps runtime names stable while isolating each bridge's credentials, ports, and cleanup", async () => {
+    const identity = createClaudeCodeBridgeIdentity();
+    const tools: AgentHostedTools = {
+      definitions: [{ name: "echo", inputSchema: { type: "object" } }],
+      handler: vi.fn<AgentHostedTools["handler"]>(async (call) => ({
+        success: true,
+        content: [{ type: "text", text: call.runId }],
+      })),
+    };
+    const bridges: ClaudeCodeHostedToolBridge[] = [];
+    try {
+      for (const runId of ["first", "second"]) {
+        bridges.push(
+          await startClaudeCodeHostedToolBridge(
+            tools,
+            runId,
+            new AbortController().signal,
+            [],
+            {
+              url: "https://server.example.test/api/v1/mcp",
+              token: `otmg_${runId}`,
+            },
+            undefined,
+            identity,
+          ),
+        );
+      }
+      const [first, second] = bridges;
+      if (!first || !second) throw new Error("Expected both bridges");
+      const configOf = async (bridge: ClaudeCodeHostedToolBridge) =>
+        JSON.parse(await readFile(bridge.configPath, "utf8"));
+      const firstConfig = (await configOf(first)).mcpServers;
+      const secondConfig = (await configOf(second)).mcpServers;
+      expect(Object.keys(firstConfig)).toEqual(Object.keys(secondConfig));
+      expect(first.allowedTools).toEqual(second.allowedTools);
+      expect(await pluginToolPrefix(first)).toBe(await pluginToolPrefix(second));
+      expect(first.configPath).not.toBe(second.configPath);
+      expect(first.pluginPath).not.toBe(second.pluginPath);
+      const localName = `h${identity.serverId}`;
+      const gatewayName = `g${identity.serverId}`;
+      const firstLocal = firstConfig[localName];
+      const secondLocal = secondConfig[localName];
+      expect(firstLocal.url).not.toBe(secondLocal.url);
+      expect(firstLocal.headers.Authorization).not.toBe(secondLocal.headers.Authorization);
+      expect(firstConfig[gatewayName].headers.Authorization).toBe("Bearer otmg_first");
+      expect(secondConfig[gatewayName].headers.Authorization).toBe("Bearer otmg_second");
+      const rpc = (headers: Record<string, string>) =>
+        fetch(secondLocal.url, {
+          method: "POST",
+          headers: { "content-type": "application/json", ...headers },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: { name: "echo", arguments: {} },
+          }),
+        });
+      expect((await rpc(firstLocal.headers)).status).toBe(404);
+      await first.close();
+      const response = await rpc(secondLocal.headers);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ result: { content: [{ type: "text", text: "second" }] } });
+      await expect(stat(first.configPath)).rejects.toMatchObject({ code: "ENOENT" });
+      await second.close();
+      await expect(stat(second.configPath)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await Promise.all(bridges.map((bridge) => bridge.close()));
     }
   });
 

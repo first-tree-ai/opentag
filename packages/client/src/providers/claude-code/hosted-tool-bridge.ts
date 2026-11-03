@@ -25,6 +25,18 @@ export interface ClaudeCodeHostedToolBridge {
   close(): Promise<void>;
 }
 
+export interface ClaudeCodeBridgeIdentity {
+  readonly pluginName: string;
+  readonly serverId: string;
+}
+
+export function createClaudeCodeBridgeIdentity(): ClaudeCodeBridgeIdentity {
+  return {
+    pluginName: `opentag-${randomBytes(8).toString("hex")}`,
+    serverId: randomBytes(5).toString("hex"),
+  };
+}
+
 export async function startClaudeCodeHostedToolBridge(
   hostedTools: AgentHostedTools | undefined,
   runId: string,
@@ -32,6 +44,7 @@ export async function startClaudeCodeHostedToolBridge(
   skillPaths: readonly string[],
   mcpGateway?: ClaudeCodeMcpGatewayEndpoint,
   cwd?: string,
+  identity: ClaudeCodeBridgeIdentity = createClaudeCodeBridgeIdentity(),
 ): Promise<ClaudeCodeHostedToolBridge> {
   signal.throwIfAborted();
   const definitions = new Map((hostedTools?.definitions ?? []).map((definition) => [definition.name, definition]));
@@ -41,8 +54,7 @@ export async function startClaudeCodeHostedToolBridge(
 
   const directory = await mkdtemp(join(tmpdir(), "opentag-claude-mcp-"));
   const pluginPath = join(directory, "opentag");
-  const pluginName = `opentag-${randomBytes(8).toString("hex")}`;
-  const serverId = randomBytes(5).toString("hex");
+  const { pluginName, serverId } = identity;
   const localServerName = `h${serverId}`;
   const gatewayServerName = `g${serverId}`;
   // Keep the gateway prefix no longer than the original 11-character server name.

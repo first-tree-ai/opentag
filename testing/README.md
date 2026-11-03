@@ -13,6 +13,7 @@ contents, and machine-specific operational logs outside the repository.
 - [Slack local live acceptance](slack-live-acceptance.md)
 - [Agent usage and internal Session page benchmark](performance/agent-session/REPORT.md)
 - [Cloud startup performance](performance/cloud-startup/README.md)
+- [Context-token composition and cache audit](performance/context-tokens/README.md)
 
 ## Verification by feature
 

@@ -1,0 +1,10 @@
+{
+  "extends": "../../../scripts/tsconfig.scripts.json",
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": true
+  },
+  "files": ["../../../scripts/performance/context-token-audit.mts"],
+  "include": [],
+  "references": []
+}

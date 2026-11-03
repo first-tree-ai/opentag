@@ -200,4 +200,10 @@ describe("onboarding flow layout", () => {
       });
     });
   });
+
+  it("keeps the pending spinner neutral and still for readers who ask for reduced motion", () => {
+    expect(declarationValue(".otv2-pending-spinner", "border")).toContain("currentColor");
+    expect(declarationValue(".otv2-pending-spinner", "animation")).toContain("otv2-pending-spin");
+    expect(mediaDeclarationValue("prefers-reduced-motion: reduce", ".otv2-pending-spinner", "animation")).toBe("none");
+  });
 });

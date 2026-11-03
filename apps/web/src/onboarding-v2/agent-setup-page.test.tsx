@@ -560,6 +560,8 @@ describe("AgentSetupPage stages", () => {
     await settle(10);
 
     expect(screen.getByText("Waiting for scan and authorization…")).toBeTruthy();
+    // The wait is pending, not done: the neutral spinner, never a success dot.
+    expect(screen.getAllByRole("status")[0]?.querySelector(".otv2-pending-spinner")).toBeTruthy();
     const qr = screen.getByAltText("Scan this QR code in Lark");
     expect(qr.parentElement?.getAttribute("data-ui")).toBe("setup-qr");
     expect(qr.classList.contains("ots-qr__image")).toBe(true);

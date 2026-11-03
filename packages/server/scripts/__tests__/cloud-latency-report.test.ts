@@ -69,6 +69,38 @@ describe("read-only Staging latency aggregation", () => {
     expect(result.metrics[`opentag-runner/${"a".repeat(40)}/2026-11-03/checkpoint`]?.p99).toBe(10);
   });
 
+  it("excludes non-dispatch allocation failures while retaining a later successful attempt", async () => {
+    const records: CloudLatencyRecord[] = [];
+    const deliveryId = randomUUID();
+    const clockId = randomUUID();
+    let time = 0;
+    const make = (attempt: number) =>
+      new CloudLatencyRecorder({
+        context: { sessionId, deliveryId, attempt },
+        clockId,
+        service: "server",
+        revision: "a".repeat(40),
+        now: () => time,
+        utc: () => utc,
+        write: (record) => records.push(record),
+      });
+    const waiting = make(1);
+    await waiting.measure("allocation_wait", async () => false, { falseIsFailure: true });
+    waiting.finish("incomplete");
+    const retry = make(2);
+    retry.start("allocation_wait");
+    time += 50;
+    retry.end("allocation_wait");
+    retry.finish("completed");
+    const result = aggregateLatency(lines(records), options);
+    expect(result.metrics[`opentag-server/${"a".repeat(40)}/2026-11-03/allocation_wait`]).toMatchObject({
+      n: 1,
+      p50: 50,
+    });
+    expect(result.evidence.incompleteTraces).toBe(1);
+    expect(result.evidence.failedPhaseObservations).toBe(1);
+  });
+
   it("reports incomplete evidence for gaps, duplicates, reversed clocks, missing starts or summary", () => {
     for (const mutate of [
       (records: CloudLatencyRecord[]) => records.splice(0, 1),

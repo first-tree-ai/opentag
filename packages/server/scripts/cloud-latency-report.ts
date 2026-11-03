@@ -175,7 +175,7 @@ function consumeLatency(state: State, payload: Payload): void {
   }
   const record = parsed.data;
   if (record.turnId) noteTurn(state, record.turnId, allocationKey(record));
-  const key = `${record.clockId}/${allocationKey(record)}/${record.turnId ?? record.deliveryId ?? "allocation"}`;
+  const key = `${record.clockId}/${allocationKey(record)}/${record.turnId ?? record.deliveryId ?? "allocation"}/${record.attempt ?? "turn"}`;
   const trace: Trace = state.traces.get(key) ?? {
     first: record,
     lastElapsedMs: 0,

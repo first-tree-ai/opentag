@@ -20,7 +20,8 @@ telemetry, repeated optimization or user-facing latency acceptance criteria.
 ## Reused candidate evidence
 
 [PR #1112](https://github.com/first-tree-ai/opentag/pull/1112), exact inspected head
-`46427ab1455630b2937d04ad00cc3f2da8ccd7c1`, remains the startup owner's work. Its report records
+`46427ab1455630b2937d04ad00cc3f2da8ccd7c1`, merged as `b1c235b8`; its report remains the referenced
+startup evidence. Its report records
 Linux/arm64, 1 CPU / 1 GiB, 100 samples per variant/scenario and nearest-rank P50/P95.
 Adapter-to-exact-input P50 improves 13–16%, and P95 improves 19–32% across its primary scenarios;
 1,000 successful and eight injected-failure attempts are retained across the full experiment set.

@@ -202,8 +202,10 @@ It requires `OPENTAG_ENV=staging`, `OPENTAG_CLOUD_LATENCY_DIAGNOSTICS=true` and 
 or in other environments. `OPENTAG_REVISION` is a full lowercase Git SHA, otherwise `unknown`.
 
 Each observation reserves a summary within 32 records / 64 KiB. Observers retain at most 1,024
-identities for quota enforcement without evicting them to reopen budgets. Repeated delivery
-attempts and workspace preparations are not new observations. Records carry existing correlation
+identities for quota enforcement without evicting them to reopen budgets. Server retries share
+one delivery budget and have separate attempt identities; duplicate attempts and repeated workspace
+preparations do not reopen budgets. Unavailable allocations emit failure, and non-dispatch Server
+summaries are incomplete rather than successful handoffs. Records carry existing correlation
 IDs, a process clock identity, UTC and monotonic durations; they exclude content and credentials.
 Logging failures do not change operation outcomes, custody, retries or checkpoint policy.
 

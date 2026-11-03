@@ -58,7 +58,8 @@ Permission to review or merge that code does not itself authorize deployment or 
 
 The first increment observes existing Server preparation/allocation calls and Runner occupation /
 report boundaries without changing their implementations. It reuses existing Pi ends. In-process
-quota bookkeeping retains at most 1,024 identities and suppresses repeat observations; it never
+quota bookkeeping retains at most 1,024 identities and suppresses duplicate observations; Server
+attempts share their delivery's 32-record / 64 KiB quota with a reserved final summary. It never
 evicts an identity to reopen a log budget. No application data cache is introduced. The reader is
 stdin-only (16 MiB / 10,000 rows, positive window at most 24 hours), with no automated query or
 raw-file storage. Ingress, individual model/tool/MCP/IM timing and timeout classification remain

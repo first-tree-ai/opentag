@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { computeDirectInputHash, type RunnerServerFrame } from "@opentag/shared";
+import {
+  type CloudLatencyRecord,
+  CloudLatencyRecordSchema,
+  computeDirectInputHash,
+  type RunnerServerFrame,
+} from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -1359,7 +1364,17 @@ describe("ImDeliveryWorker Cloud routing", () => {
       error: new CloudCapacityExceededError("account"),
     };
     const { deliveryId } = await pendingDelivery(scope.sessionId);
-    const worker = makeWorker(stack.owner, allocation, { now: () => new Date(clockMs) });
+    vi.stubEnv("OPENTAG_ENV", "staging");
+    vi.stubEnv("OPENTAG_CLOUD_LATENCY_DIAGNOSTICS", "true");
+    vi.stubEnv("OPENTAG_CLOUD_LATENCY_SESSION_IDS", scope.sessionId);
+    const diagnostics: CloudLatencyRecord[] = [];
+    const info = vi.fn((record: Record<string, unknown>) => {
+      if (record.operation === "cloud.latency") diagnostics.push(CloudLatencyRecordSchema.parse(record));
+    });
+    const worker = makeWorker(stack.owner, allocation, {
+      now: () => new Date(clockMs),
+      logger: { debug: vi.fn(), info, warn: vi.fn(), error: vi.fn() },
+    });
     await unit.database
       .update(imMessageDeliveries)
       .set({ nextAttemptAt: new Date(clockMs - 1) })
@@ -1395,6 +1410,23 @@ describe("ImDeliveryWorker Cloud routing", () => {
       .from(imMessageDeliveries)
       .where(eq(imMessageDeliveries.id, deliveryId));
     expect(generic).toMatchObject({ state: "pending", lastErrorCode: "IM_DELIVERY_CLOUD_ALLOCATION_FAILED" });
+    expect(diagnostics.filter((record) => record.event === "summary").map((record) => record.outcome)).toEqual(
+      Array(4).fill("incomplete"),
+    );
+    expect(
+      diagnostics.filter((record) => record.phase === "allocation_wait" && record.event === "failure"),
+    ).toHaveLength(4);
+    expect(diagnostics.some((record) => record.phase === "allocation_wait" && record.event === "end")).toBe(false);
+
+    if (!generic) throw new Error("delivery row missing");
+    clockMs = generic.nextAttemptAt.getTime();
+    allocation.error = undefined;
+    await worker.runOnce();
+    expect(sent.filter((frame) => frame.type === "delivery:run")).toHaveLength(1);
+    expect(diagnostics.at(-1)).toMatchObject({ event: "summary", outcome: "completed", attempt: 5 });
+    expect(diagnostics.filter((record) => record.phase === "allocation_wait" && record.event === "end")).toHaveLength(
+      1,
+    );
   });
 
   it("backs off transient Cloud dispatch failures with the attempt count and caps the delay", async () => {

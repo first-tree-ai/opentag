@@ -129,8 +129,8 @@ export class CloudDeliveryCoordinator {
   async deliver(row: CloudDeliveryClaimRow, attempt: DeliveryAttempt, lease: CloudClaimLease, signal: AbortSignal) {
     const latency = this.#latency.begin(row.session.id, row.delivery.id, attempt.attemptCount);
     try {
-      await this.#deliver(row, attempt, lease, signal, latency);
-      latency?.finish("completed");
+      const dispatched = await this.#deliver(row, attempt, lease, signal, latency);
+      latency?.finish(dispatched ? "completed" : "incomplete");
     } catch (error) {
       latency?.finish("failed");
       throw error;
@@ -143,15 +143,15 @@ export class CloudDeliveryCoordinator {
     lease: CloudClaimLease,
     signal: AbortSignal,
     latency?: CloudLatencyRecorder,
-  ) {
+  ): Promise<boolean> {
     // Release a stale/expired dispatch FIRST: a dispatched row is outside the janitor's TTL bound,
     // so this is the only path back to the bounded deadline, and it must not depend on the model
     // path being configured.
-    if (!(await lease.assertOwned())) return;
-    if (await this.#releaseUnusableDispatch(row, attempt)) return;
+    if (!(await lease.assertOwned())) return false;
+    if (await this.#releaseUnusableDispatch(row, attempt)) return false;
     const prepare = () => this.#prepareDispatch(row, attempt);
     const prepared = latency ? await latency.measure("runtime_assembly", prepare) : await prepare();
-    if (prepared.kind !== "continue") return;
+    if (prepared.kind !== "continue") return false;
     if (
       await this.#options.hasOtherCustody({
         deliveryId: attempt.deliveryId,
@@ -161,21 +161,23 @@ export class CloudDeliveryCoordinator {
       })
     ) {
       await this.#options.recordFailure(attempt, "IM_DELIVERY_AGENT_CUSTODY_FENCED");
-      return;
+      return false;
     }
-    if (!(await lease.assertOwned())) return;
+    if (!(await lease.assertOwned())) return false;
     try {
       const built =
         prepared.persistedRequest ?? (await this.#buildFreshDispatch(row, prepared.replyRole, prepared.runtime));
-      if (!(await lease.assertOwned())) return;
+      if (!(await lease.assertOwned())) return false;
       const allocate = () => this.#ensureEnvironment(row, attempt);
-      if (!(latency ? await latency.measure("allocation_wait", allocate) : await allocate())) return;
-      if (!(await lease.assertOwned())) return;
+      if (!(latency ? await latency.measure("allocation_wait", allocate, { falseIsFailure: true }) : await allocate()))
+        return false;
+      if (!(await lease.assertOwned())) return false;
       const cloudDelivery = this.#options.cloudDelivery;
-      if (!cloudDelivery) return;
-      await this.#dispatchToRunner(row, cloudDelivery, built, attempt, signal);
+      if (!cloudDelivery) return false;
+      return await this.#dispatchToRunner(row, cloudDelivery, built, attempt, signal);
     } catch (error) {
       await this.#recordDispatchError(attempt, error);
+      return false;
     }
   }
 
@@ -307,7 +309,7 @@ export class CloudDeliveryCoordinator {
     built: DirectImMessageDeliveryRequest,
     attempt: DeliveryAttempt,
     signal: AbortSignal,
-  ): Promise<void> {
+  ): Promise<boolean> {
     await this.#options.beforeDeliveryAdmission?.(signal);
     const admitted = await this.#options.withActiveAgentAdmission(
       {
@@ -332,9 +334,10 @@ export class CloudDeliveryCoordinator {
     );
     if (!admitted.admitted) {
       await this.#options.recordFailure(attempt, "IM_DELIVERY_AGENT_NOT_ACTIVE");
-      return;
+      return false;
     }
     await admitted.result;
+    return true;
   }
 
   async #recordDispatchError(attempt: DeliveryAttempt, error: unknown): Promise<void> {

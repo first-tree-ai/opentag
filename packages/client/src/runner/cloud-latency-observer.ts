@@ -119,7 +119,7 @@ export class RunnerCloudLatencyObserver {
         })
       : undefined;
     if (!entry) return action();
-    return entry.trace.measure("workspace_ready", action).then(
+    return entry.trace.measure("workspace_ready", action, { falseIsFailure: true }).then(
       (result) => {
         entry.trace.finish(result === false ? "incomplete" : "completed");
         return result;

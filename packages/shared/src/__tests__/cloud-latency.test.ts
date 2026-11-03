@@ -96,6 +96,14 @@ describe("bounded Cloud latency diagnostics", () => {
     expect(Buffer.byteLength(f.records.map((record) => JSON.stringify(record)).join("\n"))).toBeLessThan(64 * 1024);
   });
 
+  it("classifies an unavailable boolean result without changing it into an exception", async () => {
+    const f = fixture();
+    expect(await f.recorder.measure("allocation_wait", async () => false, { falseIsFailure: true })).toBe(false);
+    f.recorder.finish("incomplete");
+    expect(f.records[1]).toMatchObject({ event: "failure", phase: "allocation_wait", outcome: "failed" });
+    expect(f.records.at(-1)).toMatchObject({ outcome: "incomplete", diagnosticIncomplete: true });
+  });
+
   it("marks missing/duplicate phases and explicit truncation without inventing duration", () => {
     const f = fixture();
     f.recorder.end("checkpoint");

@@ -22,8 +22,10 @@ keep their separate severity semantics. Cloud Logging [extracts that special fie
 
 Each observer retains at most 1,024 input/allocation identities for in-process quota bookkeeping,
 then refuses further observation without affecting work admission. It never evicts identities to
-reopen a log budget. Server measures only the first encountered attempt per delivery; retries are
-unobserved. Runner measures the first preparation per allocation and one stream per Turn. This
+reopen a log budget. Server observes distinct delivery attempts within one shared 32-record /
+64 KiB delivery budget and suppresses duplicate observations of the same attempt. At most 32
+attempt identities are retained per delivery. Runner measures the first preparation per allocation
+and one stream per Turn. This
 ephemeral bookkeeping adds no application cache or persistence.
 
 A stream has at most 32 records / 64 KiB, a reserved summary and a 4 KiB record bound. Caps,
@@ -36,7 +38,7 @@ never add retry or flush waits. Cancelled and unknown outcomes remain distinct f
 | Observation | Actual boundary and qualification |
 | --- | --- |
 | Server `runtime_assembly` | Cloud IM dispatch preparation: frozen-input validation, reply role, runtime/model resolution; may reuse a snapshot; phase completion is not work admission |
-| Server `allocation_wait` | Existing Sandbox ensure and bounded convergence call; not proof of authenticated Runner/workspace readiness |
+| Server `allocation_wait` | Existing Sandbox ensure and bounded convergence call; false/unavailable results emit failure rather than successful-duration samples; not proof of authenticated Runner/workspace readiness |
 | Runner `workspace_ready` | Existing prepare call, including quiescence, restoration, initial save and native relaunch; first preparation only; the ready fast path may be a no-op |
 | Runner `worker_execution` | Existing parent's worker-start diagnostic to parent's native-exec summary; child `worker_end` is a different boundary; overlaps worker/Pi phases |
 | Runner `checkpoint` | Existing occupation callback, including quiescence, save/rollback policy and native relaunch; original semantics/errors remain authoritative |
@@ -46,6 +48,11 @@ never add retry or flush waits. Cancelled and unknown outcomes remain distinct f
 Queue metrics keep their existing callback/logger path. Context Tree work remains within
 `worker_preparation`. Separate MCP startup, model TTFT/tool RTT, outbound provider receipts and
 timeout classification remain coverage gaps. No performance gain is claimed from instrumentation.
+Server summaries are `completed` only after admitted handoff succeeds; non-dispatch returns are
+`incomplete`. A capacity-wait attempt cannot appear as successful allocation latency, and a later
+successful attempt remains observable while its delivery budget permits. Attempt durations exclude
+inter-attempt backoff and must not be relabeled as total cold-start or ingress latency. Budget
+exhaustion remains missing evidence rather than reopening the delivery's quota.
 
 ## Bounded manual report
 
@@ -69,7 +76,7 @@ It aggregates in memory and writes only anonymous cohort aggregates to stdout. R
 messages, errors and payloads are not copied into the report. Oversized/invalid input exits nonzero
 with a fixed message without echoing source text or arguments.
 
-Reports retain declared/observed/completed/failed/cancelled/unknown/missing/incomplete counts and
+Reports keep Server attempt sequences separate and retain declared/observed/completed/failed/cancelled/unknown/missing/incomplete counts and
 malformed input, duplicate Pi records, sequence/clock gaps, missing starts/summaries, allocation
 conflicts and outcome conflicts. Missing phases are absent, not zero. Process clocks are never
 joined. Phase totals include completed phases in failed Turns; they are component measurements,

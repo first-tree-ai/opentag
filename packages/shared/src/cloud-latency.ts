@@ -108,11 +108,15 @@ export class CloudLatencyRecorder {
     this.#emit(outcome === "failed" ? "failure" : "end", this.#now() - started, phase, outcome);
   }
 
-  async measure<T>(phase: CloudLatencyPhase, action: () => Promise<T>): Promise<T> {
+  async measure<T>(
+    phase: CloudLatencyPhase,
+    action: () => Promise<T>,
+    options: { falseIsFailure?: boolean } = {},
+  ): Promise<T> {
     this.start(phase);
     try {
       const result = await action();
-      this.end(phase);
+      this.end(phase, options.falseIsFailure && result === false ? "failed" : "completed");
       return result;
     } catch (error) {
       this.end(phase, "failed");

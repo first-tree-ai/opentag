@@ -22,7 +22,7 @@ describe("Server Cloud delivery measurement admission", () => {
     expect(sink.info).not.toHaveBeenCalled();
   });
 
-  it("observes only the first attempt for one delivery and caps process bookkeeping", () => {
+  it("observes distinct attempts while suppressing duplicates and bounding delivery bookkeeping", () => {
     const sink = logger();
     const observer = new CloudDeliveryLatency(env, sink);
     const deliveryId = randomUUID();
@@ -37,9 +37,28 @@ describe("Server Cloud delivery measurement admission", () => {
       attempt: 3,
       service: "opentag-server",
     });
-    expect(observer.begin(sessionId, deliveryId, 4)).toBeUndefined();
+    expect(observer.begin(sessionId, deliveryId, 3)).toBeUndefined();
+    const retry = observer.begin(sessionId, deliveryId, 4);
+    expect(retry).toBeDefined();
+    retry?.finish("completed");
+    expect(sink.info.mock.calls.at(-1)?.[0]).toMatchObject({ deliveryId, attempt: 4 });
     for (let index = 1; index < 1024; index++) expect(observer.begin(sessionId, randomUUID(), 1)).toBeDefined();
     expect(observer.begin(sessionId, randomUUID(), 1)).toBeUndefined();
+  });
+
+  it("shares one 32-record budget across retries and reserves its last summary", () => {
+    const sink = logger();
+    const observer = new CloudDeliveryLatency(env, sink);
+    const deliveryId = randomUUID();
+    for (let attempt = 1; attempt < 100; attempt++) {
+      const trace = observer.begin(sessionId, deliveryId, attempt);
+      trace?.start("allocation_wait");
+      trace?.end("allocation_wait", "failed");
+      trace?.finish("incomplete");
+    }
+    expect(sink.info).toHaveBeenCalledTimes(32);
+    expect(sink.info.mock.calls.at(-1)?.[0]).toMatchObject({ event: "summary", diagnosticIncomplete: true });
+    expect(Buffer.byteLength(JSON.stringify(sink.info.mock.calls))).toBeLessThan(64 * 1024);
   });
 
   it("invalid identities and logging failures remain observational", async () => {

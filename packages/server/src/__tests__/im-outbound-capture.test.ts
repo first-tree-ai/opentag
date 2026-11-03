@@ -890,14 +890,35 @@ describe("ImOutboundCapture bounded persistence", () => {
 
 describe("parseCapturedOutbound Session ID footer stripping", () => {
   const SESSION_URL = "https://opentag.example.com/agents/11111111-2222-3333-4444-555555555555/tasks/12345678-aaaa";
-  const INJECTED_FOOTER = { sessionUrl: SESSION_URL, shortId: "12345678" };
+  const INJECTED_SLACK_TEXT_FOOTER = {
+    shortId: "12345678",
+    sessionUrl: SESSION_URL,
+    slackTextAppended: `\n\n_<${SESSION_URL}|Session 12345678>_`,
+  };
+  const INJECTED_SLACK_BLOCKS_FOOTER = {
+    shortId: "12345678",
+    sessionUrl: SESSION_URL,
+    slackBlockTextAppended: `<${SESSION_URL}|Session 12345678>`,
+  };
+  const INJECTED_FEISHU_TEXT_FOOTER = {
+    shortId: "12345678",
+    sessionUrl: SESSION_URL,
+    feishuTextAppended: `\n\nSession 12345678: ${SESSION_URL}`,
+  };
+  const INJECTED_FEISHU_POST_FOOTER = {
+    shortId: "12345678",
+    sessionUrl: SESSION_URL,
+    feishuPostLocalesAppended: ["$top"],
+    feishuPostSegmentText: "Session 12345678",
+    feishuPostSegmentHref: SESSION_URL,
+  };
   const OTHER_SLACK_REF = "_<https://other.example/agents/another-agent/tasks/another-task|Session abcdefgh>_";
   const OTHER_FEISHU_REF = "Session abcdefgh: https://other.example/agents/another-agent/tasks/another-task";
 
   it("strips the injected Session ID footer from echoed Slack text and blocks when injectedSessionFooter is present", () => {
     const fromText = captured(
       event({
-        injectedSessionFooter: INJECTED_FOOTER,
+        injectedSessionFooter: INJECTED_SLACK_TEXT_FOOTER,
         responsePayload: {
           ok: true,
           channel: "C0123ABCD",
@@ -914,7 +935,7 @@ describe("parseCapturedOutbound Session ID footer stripping", () => {
 
     const fromBlocks = captured(
       event({
-        injectedSessionFooter: INJECTED_FOOTER,
+        injectedSessionFooter: INJECTED_SLACK_BLOCKS_FOOTER,
         responsePayload: {
           ok: true,
           channel: "C0123ABCD",
@@ -935,7 +956,7 @@ describe("parseCapturedOutbound Session ID footer stripping", () => {
   it("strips the injected Session ID footer from echoed Feishu text and post bodies when injectedSessionFooter is present", () => {
     const fromText = captured(
       feishuEvent({
-        injectedSessionFooter: INJECTED_FOOTER,
+        injectedSessionFooter: INJECTED_FEISHU_TEXT_FOOTER,
         responsePayload: {
           code: 0,
           data: {
@@ -952,7 +973,7 @@ describe("parseCapturedOutbound Session ID footer stripping", () => {
 
     const fromPost = captured(
       feishuEvent({
-        injectedSessionFooter: INJECTED_FOOTER,
+        injectedSessionFooter: INJECTED_FEISHU_POST_FOOTER,
         responsePayload: {
           code: 0,
           data: {
@@ -1043,7 +1064,7 @@ describe("parseCapturedOutbound Session ID footer stripping", () => {
   it("preserves an Agent-authored reference to a different Session or origin when stripping this send's injected footer", () => {
     const slackWithBoth = captured(
       event({
-        injectedSessionFooter: INJECTED_FOOTER,
+        injectedSessionFooter: INJECTED_SLACK_TEXT_FOOTER,
         responsePayload: {
           ok: true,
           channel: "C0123ABCD",
@@ -1060,7 +1081,7 @@ describe("parseCapturedOutbound Session ID footer stripping", () => {
 
     const feishuWithBoth = captured(
       feishuEvent({
-        injectedSessionFooter: INJECTED_FOOTER,
+        injectedSessionFooter: INJECTED_FEISHU_TEXT_FOOTER,
         responsePayload: {
           code: 0,
           data: {
@@ -1078,5 +1099,70 @@ describe("parseCapturedOutbound Session ID footer stripping", () => {
       }),
     );
     expect(feishuWithBoth.content.fallbackText).toBe(`Reference body\n\n${OTHER_FEISHU_REF}`);
+  });
+
+  it("preserves Agent-authored text in mixed Slack text+blocks and mixed Feishu post locales when only the other component was annotated", () => {
+    // Slack mixed text + blocks: text already had the link, only blocks was annotated
+    const mixedSlack = captured(
+      event({
+        injectedSessionFooter: INJECTED_SLACK_BLOCKS_FOOTER,
+        responsePayload: {
+          ok: true,
+          channel: "C0123ABCD",
+          ts: "1790042400.000100",
+          message: {
+            type: "message",
+            text: `Reference body\n\n_<${SESSION_URL}|Session 12345678>_`,
+            blocks: [
+              { type: "section", text: { type: "mrkdwn", text: "Block body" } },
+              { type: "context", elements: [{ type: "mrkdwn", text: `<${SESSION_URL}|Session 12345678>` }] },
+            ],
+            ts: "1790042400.000100",
+          },
+        },
+      }),
+    );
+    expect(mixedSlack.content.fallbackText).toBe(`Reference body\n\n_<${SESSION_URL}|Session 12345678>_`);
+
+    // Feishu post mixed locales: zh_cn already had the link, only en_us was annotated
+    const mixedFeishuZhFirst = captured(
+      feishuEvent({
+        injectedSessionFooter: {
+          shortId: "12345678",
+          sessionUrl: SESSION_URL,
+          feishuPostLocalesAppended: ["en_us"],
+          feishuPostSegmentText: "Session 12345678",
+          feishuPostSegmentHref: SESSION_URL,
+        },
+        responsePayload: {
+          code: 0,
+          data: {
+            message_id: "om_post_zh",
+            chat_id: "oc_confirmed_chat",
+            msg_type: "post",
+            create_time: "1790042400000",
+            body: {
+              content: JSON.stringify({
+                zh_cn: {
+                  title: "ZH",
+                  content: [
+                    [{ tag: "text", text: "ZH body" }],
+                    [{ tag: "a", text: "Session 12345678", href: SESSION_URL }],
+                  ],
+                },
+                en_us: {
+                  title: "EN",
+                  content: [
+                    [{ tag: "text", text: "EN body" }],
+                    [{ tag: "a", text: "Session 12345678", href: SESSION_URL }],
+                  ],
+                },
+              }),
+            },
+          },
+        },
+      }),
+    );
+    expect(mixedFeishuZhFirst.content.fallbackText).toBe("ZH\nZH body\nSession 12345678");
   });
 });

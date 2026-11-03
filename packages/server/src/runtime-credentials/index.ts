@@ -1,4 +1,4 @@
-import type { RuntimeCredentialProvider } from "@opentag/shared";
+import type { RuntimeCredentialProvider, RuntimeExecutionSource } from "@opentag/shared";
 import { sql } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
 import type { ServiceLogger } from "../observability/service-logger.js";
@@ -23,7 +23,11 @@ import { McpGatewayExecutionAuthorizer } from "./mcp-gateway-execution.js";
 import { RuntimeMcpGatewayTokenStore } from "./mcp-gateway-token-store.js";
 import { LiveMcpServicePolicy, type McpUsableMountReader } from "./mcp-policy.js";
 import { ProviderOperationRegistry } from "./operation-registry.js";
-import { ImProviderProxyAdapter, type ProviderProxyAdapter } from "./provider-proxy-adapter.js";
+import {
+  ImProviderProxyAdapter,
+  type ProviderProxyAdapter,
+  type SessionTaskAnchorResolution,
+} from "./provider-proxy-adapter.js";
 import { RuntimeCredentialOwner, type RuntimeCredentialOwnerOptions } from "./runtime-credential-owner.js";
 import { RuntimeScopeResolver, type RuntimeScopeResolverPort } from "./scope-resolver.js";
 import { SLACK_OPERATIONS } from "./slack-operations.js";
@@ -387,37 +391,53 @@ function registryConnectionFence(registry: ConnectionRegistry): RuntimeConnectio
 }
 
 /**
- * Resolves a Session ID to a stable Task anchor ID at send time: for a group channel Session
- * (`s.kind = 'channel'` and `s.conversation_kind <> 'dm'`), returns the message ID of the latest
- * direct delivery so each top-level reply links to its own stable Task; otherwise returns the
- * Session ID itself.
+ * Resolves an execution's Session and source to a stable Task anchor ID (`kind: "link"`) or a
+ * plain non-clickable `Session <shortId>` label (`kind: "plain"`):
+ * - A delivery execution resolves its own `deliveryId`'s `message_id` directly.
+ * - A 1:1 thread or private-chat (`dm`) Session resolves to its `sessionId`.
+ * - A non-delivery execution on a group `channel` Session (or a failed lookup) returns `plain` so
+ *   it never links to an unrelated Task or a 404 route.
  */
 export async function resolveSessionTaskAnchor(
   database: DatabaseClient,
-  sessionId: string,
-): Promise<string | undefined> {
+  input: { sessionId: string; source?: RuntimeExecutionSource },
+  logger?: Pick<ServiceLogger, "warn">,
+): Promise<SessionTaskAnchorResolution> {
   try {
-    const rows = await database.execute<{ anchorId: string | null } & Record<string, unknown>>(sql`
-      select
-        case
-          when s.kind = 'channel' and s.conversation_kind <> 'dm' then (
-            select d.message_id::text
-            from im_message_deliveries d
-            inner join im_messages m on m.id = d.message_id
-            where d.session_id = s.id
-              and d.attention = 'direct'
-            order by (d.accepted_at is not null) desc, d.accepted_at desc, m.occurred_at desc, d.id desc
-            limit 1
-          )
-          else s.id::text
-        end as "anchorId"
-      from sessions s
-      where s.id = ${sessionId}::uuid
-      limit 1
-    `);
-    return [...rows][0]?.anchorId ?? sessionId;
-  } catch {
-    return sessionId;
+    if (input.source?.kind === "delivery") {
+      const deliveryRows = await database.execute<{ messageId: string } & Record<string, unknown>>(sql`
+        select d.message_id::text as "messageId"
+        from im_message_deliveries d
+        where d.id = ${input.source.deliveryId}::uuid
+          and d.session_id = ${input.sessionId}::uuid
+        limit 1
+      `);
+      const messageId = [...deliveryRows][0]?.messageId;
+      if (messageId) return { kind: "link", taskAnchorId: messageId };
+    }
+    const sessionRows = await database.execute<{ kind: string; conversationKind: string } & Record<string, unknown>>(
+      sql`
+        select s.kind, s.conversation_kind as "conversationKind"
+        from sessions s
+        where s.id = ${input.sessionId}::uuid
+        limit 1
+      `,
+    );
+    const session = [...sessionRows][0];
+    if (session && (session.kind === "thread" || (session.kind === "channel" && session.conversationKind === "dm"))) {
+      return { kind: "link", taskAnchorId: input.sessionId };
+    }
+    return { kind: "plain" };
+  } catch (error) {
+    logger?.warn(
+      {
+        code: "IM_SESSION_FOOTER_ANCHOR_LOOKUP_FAILED",
+        sessionId: input.sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      "Failed to resolve IM session footer task anchor",
+    );
+    return { kind: "plain" };
   }
 }
 
@@ -431,7 +451,8 @@ function createImAdapters(
     slackWorkingStatus: options.slackWorkingStatus,
     ...(options.logger ? { logger: options.logger } : {}),
   });
-  const resolveTaskAnchor = (sessionId: string) => resolveSessionTaskAnchor(options.database, sessionId);
+  const resolveTaskAnchor = (input: { sessionId: string; source?: RuntimeExecutionSource }) =>
+    resolveSessionTaskAnchor(options.database, input, options.logger);
   const defaults = [
     ["slack", SLACK_OPERATIONS],
     ["feishu", FEISHU_OPERATIONS],

@@ -26,9 +26,9 @@ rows are topics, not Sessions.
   accept the id of any message in the topic or the id of a 1:1 Session (a thread Session or a
   private-chat channel Session) and report the canonical id; outbound IM replies sent through the
   Server provider proxy append a clickable `Session <shortId>` footer linking to
-  `/agents/:agentId/tasks/:taskAnchorId` (resolved at send time to the current direct message anchor
-  for a group channel Session, or the Session id for a thread or private-chat Session).
-  `createdAt` is the root message's time.
+  `/agents/:agentId/tasks/:taskAnchorId` (anchored on the execution's own `deliveryId` message or
+  the 1:1 Session id, or rendered as plain `Session <shortId>` when a group channel execution has no
+  delivery anchor). `createdAt` is the root message's time.
 
 The Account's channel Session for a group is therefore never listed as a Task; a top-level request
 that nobody replied to is a topic of one message. A Task reports `sessionKind: "thread"` and its

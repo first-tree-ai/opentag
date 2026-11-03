@@ -10,6 +10,7 @@ import {
   type OutboundWriteCaptureEvent,
   type ProviderProxyRequest,
   RuntimeProxyError,
+  type SessionTaskAnchorResolution,
 } from "../runtime-credentials/provider-proxy-adapter.js";
 import { SLACK_OPERATIONS } from "../runtime-credentials/slack-operations.js";
 import { RuntimeUrlHandleStore } from "../runtime-credentials/url-handle-store.js";
@@ -67,7 +68,11 @@ function adapter(
     fetchImpl?: typeof fetch;
     urlHandles?: RuntimeUrlHandleStore;
     publicOrigin?: string;
-    resolveTaskAnchor?: (sessionId: string, signal?: AbortSignal) => Promise<string | undefined>;
+    resolveTaskAnchor?: (input: {
+      sessionId: string;
+      source?: RuntimeProxyAuthorization["source"];
+      signal?: AbortSignal;
+    }) => Promise<SessionTaskAnchorResolution>;
     outboundCapture?: OutboundWriteCapture;
   } = {},
 ) {
@@ -836,6 +841,8 @@ describe("ImProviderProxyAdapter Session ID footer", () => {
     expect(capturedEvents[0]?.injectedSessionFooter).toEqual({
       sessionUrl: SESSION_URL,
       shortId: SHORT_ID,
+      slackTextAppended: `\n\n_<${SESSION_URL}|Session ${SHORT_ID}>_`,
+      slackBlockTextAppended: `<${SESSION_URL}|Session ${SHORT_ID}>`,
     });
   });
 
@@ -1052,15 +1059,15 @@ describe("ImProviderProxyAdapter Session ID footer", () => {
     });
   });
 
-  it("uses resolveTaskAnchor for the task URL while keeping Session <shortId> as the visible label, and annotates message edits (Slack chat.update and Feishu im.messages.update)", async () => {
+  it("uses resolveTaskAnchor for the task URL while keeping Session <shortId> as the visible label, renders plain Session <shortId> when anchor is plain, and annotates message edits", async () => {
     const ANCHOR_A = "aaaa0000-1111-2222-3333-444444444444";
     const ANCHOR_B = "bbbb0000-1111-2222-3333-444444444444";
-    let currentAnchor = ANCHOR_A;
+    let currentResolution: SessionTaskAnchorResolution = { kind: "link", taskAnchorId: ANCHOR_A };
     const slackCalls = captureFetch({ ok: true, ts: "1710000000.000100" });
     const slackAdapter = adapter({
       fetchImpl: slackCalls.fetchImpl,
       publicOrigin: PUBLIC_ORIGIN,
-      resolveTaskAnchor: async () => currentAnchor,
+      resolveTaskAnchor: async () => currentResolution,
     });
 
     // Send A on group channel Session resolves URL to ANCHOR_A
@@ -1090,15 +1097,38 @@ describe("ImProviderProxyAdapter Session ID footer", () => {
       `Edited reply A\n\n_<${urlA}|Session ${SHORT_ID}>_`,
     );
 
+    // Plain resolution (e.g. session-message on a group channel Session) renders plain Session <shortId> without link
+    currentResolution = { kind: "plain" };
+    await slackAdapter.instance.handle(
+      request({
+        sessionId: SESSION_ID,
+        path: "/api/chat.postMessage",
+        body: jsonBody({
+          channel: "C1",
+          text: "Plain reply",
+          blocks: [{ type: "section", text: { type: "mrkdwn", text: "Plain block" } }],
+        }),
+      }),
+      authorization({ sessionId: SESSION_ID, agentId: AGENT_ID }),
+    );
+    expect(JSON.parse(slackCalls.calls[2]?.body ?? "{}")).toEqual({
+      channel: "C1",
+      text: `Plain reply\n\n_Session ${SHORT_ID}_`,
+      blocks: [
+        { type: "section", text: { type: "mrkdwn", text: "Plain block" } },
+        { type: "context", elements: [{ type: "mrkdwn", text: `Session ${SHORT_ID}` }] },
+      ],
+    });
+
     // Second top-level request B on the same group channel Session resolves URL to ANCHOR_B
-    currentAnchor = ANCHOR_B;
+    currentResolution = { kind: "link", taskAnchorId: ANCHOR_B };
     const urlB = `https://opentag.example.com/agents/${AGENT_ID}/tasks/${ANCHOR_B}`;
     const feishuCalls = captureFetch({ code: 0, data: { message_id: "om_edit" } });
     const feishuAdapter = adapter({
       provider: "feishu",
       fetchImpl: feishuCalls.fetchImpl,
       publicOrigin: PUBLIC_ORIGIN,
-      resolveTaskAnchor: async () => currentAnchor,
+      resolveTaskAnchor: async () => currentResolution,
     });
     const feishuAuth = authorization({
       provider: "feishu",
@@ -1119,6 +1149,90 @@ describe("ImProviderProxyAdapter Session ID footer", () => {
     );
     expect(JSON.parse(JSON.parse(feishuCalls.calls[0]?.body ?? "{}").content)).toEqual({
       text: `Updated Feishu reply B\n\nSession ${SHORT_ID}: ${urlB}`,
+    });
+  });
+
+  it("tracks exact per-component footer provenance when Slack text or a Feishu post locale already contains the footer", async () => {
+    const capturedEvents: OutboundWriteCaptureEvent[] = [];
+    const slackCalls = captureFetch({ ok: true, ts: "1710000000.000100" });
+    const slackAdapter = adapter({
+      fetchImpl: slackCalls.fetchImpl,
+      publicOrigin: PUBLIC_ORIGIN,
+      outboundCapture: {
+        capture: async (event) => {
+          capturedEvents.push(event);
+        },
+      },
+    });
+    const preAnnotatedText = `Reference body\n\n_<${SESSION_URL}|Session ${SHORT_ID}>_`;
+    await slackAdapter.instance.handle(
+      request({
+        sessionId: SESSION_ID,
+        body: jsonBody({
+          channel: "C1",
+          text: preAnnotatedText,
+          blocks: [{ type: "section", text: { type: "mrkdwn", text: "Block without link" } }],
+        }),
+      }),
+      authorization({ sessionId: SESSION_ID, agentId: AGENT_ID }),
+    );
+    // text was NOT modified, only blocks was modified -> slackTextAppended is undefined!
+    expect(JSON.parse(slackCalls.calls[0]?.body ?? "{}").text).toBe(preAnnotatedText);
+    expect(capturedEvents[0]?.injectedSessionFooter).toEqual({
+      shortId: SHORT_ID,
+      sessionUrl: SESSION_URL,
+      slackBlockTextAppended: `<${SESSION_URL}|Session ${SHORT_ID}>`,
+    });
+
+    const feishuCaptured: OutboundWriteCaptureEvent[] = [];
+    const feishuCalls = captureFetch({ code: 0, data: { message_id: "om_post_mixed" } });
+    const feishuAdapter = adapter({
+      provider: "feishu",
+      fetchImpl: feishuCalls.fetchImpl,
+      publicOrigin: PUBLIC_ORIGIN,
+      outboundCapture: {
+        capture: async (event) => {
+          feishuCaptured.push(event);
+        },
+      },
+    });
+    await feishuAdapter.instance.handle(
+      request({
+        provider: "feishu",
+        sessionId: SESSION_ID,
+        path: "/open-apis/im/v1/messages?receive_id_type=chat_id",
+        body: jsonBody({
+          receive_id: "oc_1",
+          msg_type: "post",
+          content: JSON.stringify({
+            zh_cn: {
+              title: "ZH",
+              content: [
+                [{ tag: "text", text: "ZH body" }],
+                [{ tag: "a", text: `Session ${SHORT_ID}`, href: SESSION_URL }],
+              ],
+            },
+            en_us: {
+              title: "EN",
+              content: [[{ tag: "text", text: "EN body" }]],
+            },
+          }),
+        }),
+      }),
+      authorization({
+        provider: "feishu",
+        sessionId: SESSION_ID,
+        agentId: AGENT_ID,
+        cli: { provider: "feishu", appId: "cli_a", teamBrand: "feishu" },
+        resolveMaterial: async () => ({ kind: "bearer", token: "t-token", origin: "https://open.feishu.cn" }),
+      }),
+    );
+    expect(feishuCaptured[0]?.injectedSessionFooter).toEqual({
+      shortId: SHORT_ID,
+      sessionUrl: SESSION_URL,
+      feishuPostLocalesAppended: ["en_us"],
+      feishuPostSegmentText: `Session ${SHORT_ID}`,
+      feishuPostSegmentHref: SESSION_URL,
     });
   });
 });

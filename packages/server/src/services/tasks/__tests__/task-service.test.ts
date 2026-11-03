@@ -1726,7 +1726,10 @@ describe("TaskService bounded detail at topic scale", () => {
       occurredAt: minutes(2),
     });
 
-    expect(await resolveSessionTaskAnchor(unitDatabase.database, dmSession.id)).toBe(dmSession.id);
+    expect(await resolveSessionTaskAnchor(unitDatabase.database, { sessionId: dmSession.id })).toEqual({
+      kind: "link",
+      taskAnchorId: dmSession.id,
+    });
     expect((await service.detail(bootstrap.userId, dmSession.id)).task.id).toBe(dmMsg.id);
     expect((await service.get(bootstrap.userId, dmSession.id, { limit: 10 })).task.id).toBe(dmMsg.id);
     expect((await service.listTurns(bootstrap.userId, dmSession.id, {})).items.map((t) => t.message.id)).toEqual([
@@ -1779,7 +1782,10 @@ describe("TaskService bounded detail at topic scale", () => {
       occurredAt: minutes(13),
     });
 
-    expect(await resolveSessionTaskAnchor(unitDatabase.database, thread.id)).toBe(thread.id);
+    expect(await resolveSessionTaskAnchor(unitDatabase.database, { sessionId: thread.id })).toEqual({
+      kind: "link",
+      taskAnchorId: thread.id,
+    });
     expect((await service.detail(bootstrap.userId, thread.id)).task.id).toBe(root.id);
     expect((await service.get(bootstrap.userId, thread.id, { limit: 10 })).task.id).toBe(root.id);
     expect((await service.listTurns(bootstrap.userId, thread.id, {})).items.map((t) => t.message.id)).toEqual([
@@ -1796,18 +1802,15 @@ describe("TaskService bounded detail at topic scale", () => {
       "Thread answer",
     );
 
-    // 3. Group channel Session with two top-level requests A (minute 20) and B (minute 30):
-    // send-time anchor resolution pins each reply's footer link to its own stable Task even after a
-    // newer top-level request runs in the same group channel Session.
+    // 3. Group channel Session with two top-level requests A (minute 20) and B (minute 30),
+    // including out-of-order sends where execution A sends after delivery B was accepted:
     const requestA = await createMessage(binding.id, {
       channelId: GROUP,
       externalMessageId: "om_group_req_a",
       text: "Top-level group request A",
       occurredAt: minutes(20),
     });
-    await createDelivery(channel.id, requestA.id, { at: minutes(21), reported: true });
-    const anchorFromSendA = await resolveSessionTaskAnchor(unitDatabase.database, channel.id);
-    expect(anchorFromSendA).toBe(requestA.id);
+    const deliveryA = await createDelivery(channel.id, requestA.id, { at: minutes(21), reported: true });
     await unitDatabase.database.insert(imMessages).values({
       imBindingId: binding.id,
       providerEventId: null,
@@ -1836,22 +1839,55 @@ describe("TaskService bounded detail at topic scale", () => {
       text: "Top-level group request B",
       occurredAt: minutes(30),
     });
-    await createDelivery(channel.id, requestB.id, { at: minutes(31), reported: true });
-    const anchorFromSendB = await resolveSessionTaskAnchor(unitDatabase.database, channel.id);
-    expect(anchorFromSendB).toBe(requestB.id);
+    const deliveryB = await createDelivery(channel.id, requestB.id, { at: minutes(31), reported: true });
+
+    // Even after delivery B is accepted on the same group channel Session, execution A's own
+    // source.deliveryId still resolves to requestA.id!
+    const anchorFromSendA = await resolveSessionTaskAnchor(unitDatabase.database, {
+      sessionId: channel.id,
+      source: { kind: "delivery", deliveryId: deliveryA.id, turnId: "turn-a" },
+    });
+    expect(anchorFromSendA).toEqual({ kind: "link", taskAnchorId: requestA.id });
+
+    const anchorFromSendB = await resolveSessionTaskAnchor(unitDatabase.database, {
+      sessionId: channel.id,
+      source: { kind: "delivery", deliveryId: deliveryB.id, turnId: "turn-b" },
+    });
+    expect(anchorFromSendB).toEqual({ kind: "link", taskAnchorId: requestB.id });
+
+    // A non-delivery execution (e.g. session-message) on a group channel Session resolves to plain
+    // so it never links to an unrelated Task or a 404 route.
+    const nonDeliveryOnGroupChannel = await resolveSessionTaskAnchor(unitDatabase.database, {
+      sessionId: channel.id,
+      source: { kind: "session-message", messageId: crypto.randomUUID() },
+    });
+    expect(nonDeliveryOnGroupChannel).toEqual({ kind: "plain" });
+
+    // A DB lookup failure logs IM_SESSION_FOOTER_ANCHOR_LOOKUP_FAILED and falls back to plain.
+    const warnings: unknown[] = [];
+    const failedLookup = await resolveSessionTaskAnchor(
+      unitDatabase.database,
+      { sessionId: "not-a-uuid" },
+      { warn: (fields) => warnings.push(fields) },
+    );
+    expect(failedLookup).toEqual({ kind: "plain" });
+    expect(warnings).toMatchObject([{ code: "IM_SESSION_FOOTER_ANCHOR_LOOKUP_FAILED", sessionId: "not-a-uuid" }]);
+
+    const taskAnchorA = anchorFromSendA.kind === "link" ? anchorFromSendA.taskAnchorId : "";
+    const taskAnchorB = anchorFromSendB.kind === "link" ? anchorFromSendB.taskAnchorId : "";
 
     // Clicking send A's footer link after request B has run still opens Task A!
-    expect((await service.detail(bootstrap.userId, anchorFromSendA ?? "")).task.id).toBe(requestA.id);
-    expect((await service.get(bootstrap.userId, anchorFromSendA ?? "", { limit: 10 })).task.id).toBe(requestA.id);
-    expect(
-      (await service.listTurns(bootstrap.userId, anchorFromSendA ?? "", {})).items.map((t) => t.message.id),
-    ).toEqual([requestA.id]);
-    expect(
-      (await service.listReplies(bootstrap.userId, anchorFromSendA ?? "", { limit: 10 })).items[0]?.fallbackText,
-    ).toBe("Answer for A");
+    expect((await service.detail(bootstrap.userId, taskAnchorA)).task.id).toBe(requestA.id);
+    expect((await service.get(bootstrap.userId, taskAnchorA, { limit: 10 })).task.id).toBe(requestA.id);
+    expect((await service.listTurns(bootstrap.userId, taskAnchorA, {})).items.map((t) => t.message.id)).toEqual([
+      requestA.id,
+    ]);
+    expect((await service.listReplies(bootstrap.userId, taskAnchorA, { limit: 10 })).items[0]?.fallbackText).toBe(
+      "Answer for A",
+    );
 
     // Clicking send B's footer link opens Task B.
-    expect((await service.detail(bootstrap.userId, anchorFromSendB ?? "")).task.id).toBe(requestB.id);
+    expect((await service.detail(bootstrap.userId, taskAnchorB)).task.id).toBe(requestB.id);
 
     // Raw group channel Session id is not a 1:1 Task identifier.
     await expect(service.detail(bootstrap.userId, channel.id)).rejects.toMatchObject({

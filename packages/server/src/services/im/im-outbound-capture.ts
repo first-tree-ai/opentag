@@ -48,8 +48,14 @@ const PROVIDER_TIME_MAX_BYTES = 64;
 const SLACK_PROJECTION_MAX_ITEMS = 8;
 
 export interface InjectedSessionFooter {
-  sessionUrl: string;
   shortId: string;
+  sessionUrl?: string;
+  slackTextAppended?: string;
+  slackBlockTextAppended?: string;
+  feishuTextAppended?: string;
+  feishuPostLocalesAppended?: readonly string[];
+  feishuPostSegmentText?: string;
+  feishuPostSegmentHref?: string;
 }
 
 /** One verified send/reply observation handed over by the proxy after platform success. */
@@ -266,47 +272,43 @@ function buildContent(input: ContentInput): ImContentV1 {
   });
 }
 
-function stripSlackSessionFooter(value: string, footer: InjectedSessionFooter | undefined): string {
-  if (!footer) return value;
-  const mrkdwnLink = `<${footer.sessionUrl}|Session ${footer.shortId}>`;
-  const mdLink = `[Session ${footer.shortId}](${footer.sessionUrl})`;
-  const trimmed = value.trim();
-  if (trimmed === mrkdwnLink || trimmed === `_${mrkdwnLink}_` || trimmed === mdLink || trimmed === `_${mdLink}_`) {
-    return "";
-  }
+function stripSlackTextFooter(value: string, footer: InjectedSessionFooter | undefined): string {
+  const appended = footer?.slackTextAppended;
+  if (!appended) return value;
+  const normalized = appended.replaceAll("\r\n", "\n");
+  const crlf = normalized.replaceAll("\n", "\r\n");
   const trimmedEnd = value.trimEnd();
-  for (const suffix of [`\n\n_${mrkdwnLink}_`, `\r\n\r\n_${mrkdwnLink}_`, `\n\n_${mdLink}_`, `\r\n\r\n_${mdLink}_`]) {
-    if (trimmedEnd.endsWith(suffix)) {
-      return trimmedEnd.slice(0, -suffix.length);
-    }
-  }
+  if (trimmedEnd.endsWith(normalized)) return trimmedEnd.slice(0, -normalized.length);
+  if (trimmedEnd.endsWith(crlf)) return trimmedEnd.slice(0, -crlf.length);
+  if (value.trim() === normalized.trim()) return "";
   return value;
 }
 
+function stripSlackBlockElementText(value: string, footer: InjectedSessionFooter | undefined): string {
+  const appended = footer?.slackBlockTextAppended;
+  if (!appended) return value;
+  return value.trim() === appended ? "" : value;
+}
+
 function stripFeishuTextSessionFooter(value: string, footer: InjectedSessionFooter | undefined): string {
-  if (!footer) return value;
-  const textLine = `Session ${footer.shortId}: ${footer.sessionUrl}`;
-  const mdLine = `[Session ${footer.shortId}](${footer.sessionUrl})`;
+  const appended = footer?.feishuTextAppended;
+  if (!appended) return value;
+  const normalized = appended.replaceAll("\r\n", "\n");
+  const crlf = normalized.replaceAll("\n", "\r\n");
   const trimmedEnd = value.trimEnd();
-  for (const suffix of [
-    `\n\n${textLine}`,
-    `\r\n\r\n${textLine}`,
-    `\n\n${mdLine}`,
-    `\r\n\r\n${mdLine}`,
-    `\n${mdLine}`,
-    `\r\n${mdLine}`,
-  ]) {
-    if (trimmedEnd.endsWith(suffix)) {
-      return trimmedEnd.slice(0, -suffix.length);
-    }
-  }
+  if (trimmedEnd.endsWith(normalized)) return trimmedEnd.slice(0, -normalized.length);
+  if (trimmedEnd.endsWith(crlf)) return trimmedEnd.slice(0, -crlf.length);
   return value;
 }
 
 function isFeishuSessionFooterParagraph(paragraph: unknown, footer: InjectedSessionFooter | undefined): boolean {
-  if (!footer || !Array.isArray(paragraph) || paragraph.length !== 1) return false;
+  if (!footer?.feishuPostSegmentText || !Array.isArray(paragraph) || paragraph.length !== 1) return false;
   const record = asRecord(paragraph[0]);
-  return record?.tag === "a" && record.text === `Session ${footer.shortId}` && record.href === footer.sessionUrl;
+  if (!record || record.text !== footer.feishuPostSegmentText) return false;
+  if (footer.feishuPostSegmentHref !== undefined) {
+    return record.tag === "a" && record.href === footer.feishuPostSegmentHref;
+  }
+  return record.tag === "text";
 }
 
 /** One Feishu post paragraph is a sequence of tagged segments; only their text runs display. */
@@ -333,6 +335,16 @@ function feishuPostField(body: Record<string, unknown>, key: "title" | "content"
   return undefined;
 }
 
+function feishuPostContentField(body: Record<string, unknown>): { localeKey: string; content: unknown } | undefined {
+  if (body.content !== undefined) return { localeKey: "$top", content: body.content };
+  for (const [localeKey, value] of Object.entries(body)) {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
+    const nested = (value as Record<string, unknown>).content;
+    if (nested !== undefined) return { localeKey, content: nested };
+  }
+  return undefined;
+}
+
 /** Tagged post paragraphs joined by lines; only their display runs are read. */
 function feishuPostParagraphs(paragraphs: unknown, footer: InjectedSessionFooter | undefined): string {
   if (!Array.isArray(paragraphs)) return "";
@@ -352,7 +364,10 @@ function feishuPostParagraphs(paragraphs: unknown, footer: InjectedSessionFooter
  */
 function feishuPostText(body: Record<string, unknown>, footer: InjectedSessionFooter | undefined): string | undefined {
   const title = feishuPostField(body, "title");
-  const tagged = feishuPostParagraphs(feishuPostField(body, "content"), footer);
+  const contentEntry = feishuPostContentField(body);
+  const stripLocale =
+    contentEntry !== undefined && (footer?.feishuPostLocalesAppended?.includes(contentEntry.localeKey) ?? false);
+  const tagged = feishuPostParagraphs(contentEntry?.content, stripLocale ? footer : undefined);
   const markdown = feishuPostField(body, "content_v2");
   const bodyText =
     tagged.length > 0
@@ -464,7 +479,7 @@ function slackBlockText(message: Record<string, unknown>, footer: InjectedSessio
     const record = asRecord(block);
     if (!record) continue;
     const text = asRecord(record.text);
-    const cleaned = typeof text?.text === "string" ? stripSlackSessionFooter(text.text, footer).trim() : "";
+    const cleaned = typeof text?.text === "string" ? stripSlackBlockElementText(text.text, footer).trim() : "";
     if (cleaned.length > 0) parts.push(cleaned);
     collectSlackRichText(record.elements, parts, 2, footer);
   }
@@ -482,7 +497,7 @@ function collectSlackRichText(
     if (parts.length >= SLACK_PROJECTION_MAX_ITEMS) return;
     const record = asRecord(element);
     if (!record) continue;
-    const cleaned = typeof record.text === "string" ? stripSlackSessionFooter(record.text, footer).trim() : "";
+    const cleaned = typeof record.text === "string" ? stripSlackBlockElementText(record.text, footer).trim() : "";
     if (cleaned.length > 0) parts.push(cleaned);
     collectSlackRichText(record.elements, parts, depth - 1, footer);
   }
@@ -494,7 +509,7 @@ function slackMessageText(
   footer: InjectedSessionFooter | undefined,
 ): string | undefined {
   if (!message) return undefined;
-  const primary = typeof message.text === "string" ? stripSlackSessionFooter(message.text, footer) : "";
+  const primary = typeof message.text === "string" ? stripSlackTextFooter(message.text, footer) : "";
   const parts = primary.trim().length > 0 ? [primary] : [];
   parts.push(...slackAttachmentText(message));
   if (primary.trim().length === 0) parts.push(...slackBlockText(message, footer));

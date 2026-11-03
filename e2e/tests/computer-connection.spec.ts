@@ -296,7 +296,11 @@ test("connects another Computer from Agent settings without moving the Agent", a
     machine.start();
     await expect(page.getByRole("button", { name: "Connect another computer", exact: true })).toBeVisible();
     await testInfo.attach("second-computer-connected", { body: await page.screenshot(), contentType: "image/png" });
-    expect(issued).toEqual([{ mode: "create" }]);
+    // An offline card on the Computers page issues its own recovery command; only the requested create belongs here.
+    expect(issued.filter((body) => (body as { mode?: string }).mode === "create")).toEqual([{ mode: "create" }]);
+    const repairs = issued.filter((body) => (body as { mode?: string }).mode !== "create");
+    expect(repairs.length).toBeLessThanOrEqual(1);
+    for (const repair of repairs) expect(repair).toMatchObject({ mode: "repair", targetComputerId: existingId });
     expect(await computers(page)).toHaveLength(2);
     const config = (await (await page.request.get(`/api/v1/agents/${agentId}/config`)).json()) as {
       computerId: string;

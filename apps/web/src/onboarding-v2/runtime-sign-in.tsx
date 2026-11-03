@@ -1,10 +1,8 @@
 import type { AgentRuntimeProvider } from "@opentag/shared/browser";
-import { useEffect, useId, useRef, useState } from "react";
+import { useId, useState } from "react";
 import { RUNTIME_SIGN_IN_HASH } from "../features/agents/agent-routes.js";
 import * as m from "../paraglide/messages.js";
 import { Button, Icon } from "../ui/design-system.js";
-
-const COPY_FEEDBACK_MS = 1_600;
 
 /** The terminal commands that sign a runtime in on the reader's own computer, when it has them. */
 export function runtimeSignInCommands(provider: AgentRuntimeProvider): readonly string[] | undefined {
@@ -49,16 +47,16 @@ export function RuntimeSignIn({
           {provider === "claude-code" ? (
             <>
               <li>
-                {m.onboarding_v2_runtime_sign_in_run()} <CopyChip text="claude" />
+                {m.onboarding_v2_runtime_sign_in_run()} <CommandChip text="claude" />
               </li>
               <li>
-                {m.onboarding_v2_runtime_sign_in_enter()} <CopyChip text="/login" />
+                {m.onboarding_v2_runtime_sign_in_enter()} <CommandChip text="/login" />
                 {m.onboarding_v2_runtime_sign_in_follow()}
               </li>
             </>
           ) : (
             <li>
-              {m.onboarding_v2_runtime_sign_in_run()} <CopyChip text="codex login" />
+              {m.onboarding_v2_runtime_sign_in_run()} <CommandChip text="codex login" />
               {m.onboarding_v2_runtime_sign_in_follow()}
             </li>
           )}
@@ -76,33 +74,7 @@ function readOpenedFromLink(): boolean {
   }
 }
 
-/** One command, copyable in place. */
-function CopyChip({ text }: { readonly text: string }) {
-  const [copied, setCopied] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
-  useEffect(() => () => clearTimeout(timer.current), []);
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      clearTimeout(timer.current);
-      timer.current = setTimeout(() => setCopied(false), COPY_FEEDBACK_MS);
-    } catch {
-      // Without clipboard access the command stays selectable on screen.
-    }
-  }
-  return (
-    <span className="inline-flex items-center gap-1 rounded-md bg-kumo-recessed py-0.5 pr-0.5 pl-2 align-middle">
-      <code className="font-mono text-sm text-kumo-strong select-all">{text}</code>
-      <Button
-        aria-label={copied ? m.common_copied() : `${m.common_copy()} ${text}`}
-        onClick={() => void copy()}
-        shape="square"
-        size="compact"
-        variant="ghost"
-      >
-        <Icon className="size-3.5" name={copied ? "check" : "copy"} />
-      </Button>
-    </span>
-  );
+/** A short command, shown inline; it is short enough to type, so it carries no copy control. */
+function CommandChip({ text }: { readonly text: string }) {
+  return <code className="rounded-md bg-kumo-recessed px-1.5 py-0.5 font-mono text-sm text-kumo-strong">{text}</code>;
 }

@@ -8,9 +8,7 @@ afterEach(() => {
 });
 
 describe("RuntimeSignIn", () => {
-  it("opens the Claude Code terminal steps with copyable commands", async () => {
-    const writeText = vi.fn(async () => undefined);
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  it("opens the Claude Code terminal steps with the commands inline", () => {
     render(<RuntimeSignIn computerName="Ada's Mac" provider="claude-code" />);
 
     const toggle = screen.getByRole("button", { name: "Sign in" });
@@ -24,9 +22,9 @@ describe("RuntimeSignIn", () => {
       "Run claude",
       "Enter /login and follow the prompts to sign in.",
     ]);
-    fireEvent.click(screen.getByRole("button", { name: "Copy /login" }));
-    expect(writeText).toHaveBeenCalledWith("/login");
-    expect(await screen.findByRole("button", { name: "Copied" })).toBeTruthy();
+    expect(screen.getByText("/login").tagName).toBe("CODE");
+    // Commands this short are typed, not copied, so the steps carry no copy controls.
+    expect(screen.getAllByRole("button")).toHaveLength(1);
   });
 
   it("uses codex login for Codex", () => {

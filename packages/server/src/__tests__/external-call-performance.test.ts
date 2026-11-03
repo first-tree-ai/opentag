@@ -1,3 +1,5 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { createInstrumentedFetch, createPerformanceLogger, sanitizeExternalUrl } from "../observability/index.js";
@@ -87,6 +89,48 @@ describe("external call performance logging", () => {
       errorCode: "ECONNRESET",
     });
     expect(JSON.stringify(logs)).not.toContain("secret-query-token");
+  });
+
+  it("preserves Response.redirected, Response.url, and Response.type across a real HTTP redirect", async () => {
+    const { logs, perfLogger } = createLogCollector();
+    const server = createServer((req, res) => {
+      if (req.url === "/start") {
+        res.writeHead(302, { location: "/final" });
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ reached: "final" }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const { port } = server.address() as AddressInfo;
+    const baseUrl = `http://127.0.0.1:${port}`;
+
+    try {
+      const instrumentedFetch = createInstrumentedFetch(perfLogger, {
+        provider: "github",
+      });
+      const response = await instrumentedFetch(`${baseUrl}/start`);
+      expect({
+        redirected: response.redirected,
+        url: response.url,
+        type: response.type,
+        status: response.status,
+      }).toEqual({
+        redirected: true,
+        url: `${baseUrl}/final`,
+        type: "basic",
+        status: 200,
+      });
+      expect(await response.json()).toEqual({ reached: "final" });
+      expect(logs).toHaveLength(2);
+      expect(logs[1]?.payload).toMatchObject({
+        outcome: "completed",
+        status: 200,
+      });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it("settles streaming fetch and GitHubHttpTransport on body EOF or body error rather than header arrival", async () => {

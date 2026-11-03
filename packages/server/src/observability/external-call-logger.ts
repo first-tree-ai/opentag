@@ -192,11 +192,29 @@ function wrapStreamingFetchResponse(response: Response, handle: PerformanceOpera
     { highWaterMark: 2 },
   );
 
-  return new Response(wrappedBody, {
+  const wrappedResponse = new Response(wrappedBody, {
     status: response.status,
     statusText: response.statusText,
     headers: response.headers,
   });
+  Object.defineProperties(wrappedResponse, {
+    redirected: {
+      get: () => response.redirected,
+      enumerable: true,
+      configurable: true,
+    },
+    url: {
+      get: () => response.url,
+      enumerable: true,
+      configurable: true,
+    },
+    type: {
+      get: () => response.type,
+      enumerable: true,
+      configurable: true,
+    },
+  });
+  return wrappedResponse;
 }
 
 export function createInstrumentedFetch(

@@ -37,6 +37,7 @@ contents, and machine-specific operational logs outside the repository.
 - [SQL caller repairs: physical Cloud ownership](verification/sql-caller-repairs-17.md)
 - [SQL caller repairs: Cloud gateway routing](verification/sql-caller-repairs-18.md)
 - [SQL caller repairs: RuntimeSession and scheduler drain](verification/sql-caller-repairs-26.md)
+- [SQL caller repairs: Runtime and Runner route drain](verification/sql-caller-repairs-27.md)
 - [SQL caller repairs: Runtime Domain drain](verification/sql-caller-repairs-25.md)
 - [SQL caller repairs: Feishu connection and Inbox drain](verification/sql-caller-repairs-24.md)
 - [SQL caller repairs: Provider preparation drain](verification/sql-caller-repairs-23.md)

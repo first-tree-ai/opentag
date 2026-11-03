@@ -158,6 +158,8 @@ export class RunnerConnection {
   #credentialTimer: ReturnType<typeof setInterval> | undefined;
   #queued = 0;
   #chain: Promise<void> = Promise.resolve();
+  #renewal: Promise<void> | undefined;
+  #closing: Promise<void> | undefined;
 
   constructor(input: {
     socket: WebSocket;
@@ -175,6 +177,13 @@ export class RunnerConnection {
     this.#heartbeatTimeoutMs = input.options.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS;
     this.#credentialRenewalIntervalMs =
       input.options.credentialRenewalIntervalMs ?? Math.max(1_000, Math.floor(input.options.tokens.ttlMs / 2));
+  }
+
+  close(): Promise<void> {
+    if (this.#closing) return this.#closing;
+    this.#closeWith(1001, "Server shutting down");
+    this.#closing = Promise.allSettled([this.#chain, this.#renewal]).then(() => undefined);
+    return this.#closing;
   }
 
   start(): void {
@@ -678,7 +687,15 @@ export class RunnerConnection {
     });
   }
 
-  async #renewCredential(): Promise<void> {
+  #renewCredential(): Promise<void> {
+    if (this.#closed) return Promise.resolve();
+    this.#renewal ??= this.#performCredentialRenewal().finally(() => {
+      this.#renewal = undefined;
+    });
+    return this.#renewal;
+  }
+
+  async #performCredentialRenewal(): Promise<void> {
     const current = this.#scope;
     if (!current || this.#closed || !this.#options.hub.isCurrent(current.sandboxId, this.#adapter)) return;
     // Revalidate the database allocation before minting anything; a stale connection must never

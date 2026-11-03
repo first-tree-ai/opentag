@@ -46,6 +46,7 @@ import { RunnerBootstrapTokenService } from "../services/sandboxes/runner-bootst
 import { RunnerHub } from "../services/sandboxes/runner-hub.js";
 import { SandboxRunnerService } from "../services/sandboxes/sandbox-runner-service.js";
 import { SessionService } from "../services/sessions/index.js";
+import { deferred } from "./support/deferred.js";
 import { FAKE_REGION, FakeCloudRunAdmin } from "./support/fake-cloud-run-admin.js";
 import { FakeWorkspaceObjectStore } from "./support/fake-workspace-store.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
@@ -693,6 +694,60 @@ describe("runner readiness gating", () => {
 });
 
 describe("runner control channel liveness and credential renewal", () => {
+  it.each(["authentication", "renewal"])("joins disconnected Runner %s before route close completes", async (phase) => {
+    const accountId = await account();
+    const sandbox = await ownedSandbox(accountId);
+    const ctx = await createBareRunnerApp(accountId, { credentialRenewalIntervalMs: 50 });
+    await ctx.service.startForAccount(accountId, sandbox.sandboxId);
+    const status = await ctx.service.statusForAccount(accountId, sandbox.sandboxId);
+    const token = await ctx.tokens.issue({
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: status.currentResourceName as string,
+    });
+    const entered = deferred(),
+      resume = deferred();
+    const original = ctx.service.validateRunnerScope.bind(ctx.service);
+    const client = await connectRunner(ctx.address);
+    if (phase === "renewal") {
+      client.send({ type: "auth", requestId: randomUUID(), token });
+      await client.waitFor("server:credential");
+    }
+    const spy = vi.spyOn(ctx.service, "validateRunnerScope").mockImplementation(async (...args) => {
+      const result = await original(...args);
+      entered.resolve();
+      await resume.promise;
+      return result;
+    });
+    let closed = false;
+    let closing: Promise<void> | undefined;
+    try {
+      if (phase === "authentication") client.send({ type: "auth", requestId: randomUUID(), token });
+      await entered.promise;
+      if (phase === "renewal") {
+        await new Promise((resolve) => setTimeout(resolve, 180));
+        expect(spy).toHaveBeenCalledTimes(1);
+      }
+      client.socket.close();
+      await client.closed;
+      const frames = client.frames.length;
+      closing = ctx.app.close().then(() => {
+        closed = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(closed).toBe(false);
+      resume.resolve();
+      await closing;
+      expect(client.frames).toHaveLength(frames);
+      expect(ctx.hub.describe(sandbox.sandboxId).connected).toBe(false);
+    } finally {
+      resume.resolve();
+      client.socket.close();
+      await closing;
+      spy.mockRestore();
+    }
+  });
   it("keeps a healthy idle connection open across more than two heartbeat periods and stays responsive", async () => {
     const accountId = await account();
     const sandbox = await ownedSandbox(accountId);

@@ -10,6 +10,7 @@ import { type RuntimeBusinessOptions, RuntimeSession, type RuntimeSessionOptions
 import type { SlackAutoSetupOwner } from "../runtime/slack-auto-setup-owner.js";
 import type { ComputerAuthVerifier, ComputerService } from "../services/computers/index.js";
 import { SERVER_ADMITTED_AGENT_RUNTIME_PROVIDERS } from "../services/runtime-config/index.js";
+import { startClosingServerResources } from "../shutdown.js";
 
 export interface RuntimeRoutesOptions extends RuntimeSessionOptions {
   approvalOwner?: {
@@ -81,6 +82,7 @@ export function registerRuntimeRoutes(
   const domainOwner = options.domainOwner;
   const agentRuntimeTestOwner = options.agentRuntimeTestOwner;
   const providerCliReconcileOwner = options.providerCliReconcileOwner;
+  const sessions = new Set<RuntimeSession>();
   const sessionOptions: RuntimeSessionOptions = {
     authTimeoutMs: options.authTimeoutMs,
     business:
@@ -110,11 +112,19 @@ export function registerRuntimeRoutes(
       request.headers,
       SERVER_ADMITTED_AGENT_RUNTIME_PROVIDERS,
     );
-    new RuntimeSession(socket, machineAuth, computerService, registry, {
+    const session = new RuntimeSession(socket, machineAuth, computerService, registry, {
       ...sessionOptions,
       providerReadiness: providerReadiness?.providers,
       providerReadinessVersion: providerReadiness?.version,
-    }).start();
+    });
+    sessions.add(session);
+    session.start();
+    socket.once("close", () => {
+      void session.close().then(
+        () => sessions.delete(session),
+        () => sessions.delete(session),
+      );
+    });
   });
   const heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? 90_000;
   const sweep = setInterval(() => {
@@ -124,15 +134,26 @@ export function registerRuntimeRoutes(
     );
   }, heartbeatTimeoutMs);
   sweep.unref();
-  app.addHook("onClose", async () => {
+  let closing: Promise<void> | undefined;
+  const beginClose = () => {
+    if (closing) return closing;
     clearInterval(sweep);
-    options.approvalOwner?.close();
-    agentRuntimeTestOwner?.close();
-    options.slackAutoSetupOwner?.close();
-    options.agentRuntimeOptionsOwner?.close();
-    providerCliReconcileOwner?.close();
-    domainOwner?.close();
-    registry.closeAll();
+    closing = startClosingServerResources([
+      ["Runtime approvals", () => options.approvalOwner?.close()],
+      ["Runtime tests", () => agentRuntimeTestOwner?.close()],
+      ["Slack setup requests", () => options.slackAutoSetupOwner?.close()],
+      ["Runtime options", () => options.agentRuntimeOptionsOwner?.close()],
+      ["Provider preparation", () => providerCliReconcileOwner?.close()],
+      ["Runtime Domain", () => domainOwner?.close()],
+      ["Runtime connection registry", () => registry.closeAll()],
+      ...[...sessions].map((session) => ["Runtime session", () => session.close()] as const),
+    ]);
+    void closing.catch(() => undefined);
+    return closing;
+  };
+  app.addHook("preClose", async () => {
+    void beginClose();
   });
+  app.addHook("onClose", () => beginClose());
   return registry;
 }

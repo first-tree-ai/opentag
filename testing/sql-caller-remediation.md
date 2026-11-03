@@ -364,3 +364,9 @@ awaitable close, but actual Runtime route retention/join, Runner/transport,
 remaining owners and final main ordering remain open IM-F3. Failure-reaction
 ownership already used its existing pending map and was left simple. Batch 25's
 omitted-read/admission P2 is corrected at 0b09a346 and reviewer-confirmed closed.
+
+[Runtime and Runner route drain](verification/sql-caller-repairs-27.md) now joins
+retained connections even after physical peer disconnect. Ninety-three distinct
+cases pass, including two native PG controls through actual asynchronous plugin
+boot and an unrelated failing close. Remaining owners/transport and final main
+composition still keep IM-F3 open. Batch 26 independent review found no action.

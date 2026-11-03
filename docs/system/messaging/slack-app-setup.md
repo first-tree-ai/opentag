@@ -66,6 +66,12 @@ check the native CLI debug log under `<openTag home>/slack-management/config/log
 can leave deploy stdout empty. Continuing re-links the same private project with `--force` before retrying installation,
 so an existing local link does not block recovery with `app_found`. No raw CLI error text or credentials are sent to Web.
 
+Callback configuration is bound to the selected active Agent, owned Computer, binding ID and
+credential generation. The Server rechecks that target before starting callbacks and before
+reporting connected. Unbind, replacement, transfer, suspend or a Computer change requires
+reloading the current configuration; the old operation does not rebind or undo completed Slack work.
+These checks do not hold a database transaction across CLI execution.
+
 Failed callback configuration also resumes through **Continue**, without another installation or credential
 rotation. An
 uncertain creation is stopped: inspect Slack's existing Apps and use manual binding rather than create another copy.

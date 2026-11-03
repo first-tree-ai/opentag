@@ -594,17 +594,25 @@ describe("Agent setup projection Messaging states", () => {
     async (credentialStatus) => {
       const bootstrap = await account();
       const { agentId } = await messagingReadyAgent(bootstrap.userId);
-      const pause = pausedBindingRead(unitDatabase.database);
+      const captured = deferred<void>(),
+        released = deferred<void>();
+      const pause = { captured: captured.promise, release: () => released.resolve() };
       const { imBindingService, feishuSetup, service } = harness({
-        database: pause.database,
         runtimeReadiness: runtimeReadiness("ready"),
         imCliReadiness: "ready",
         credentialExecutionReadiness: { status: credentialStatus },
         registrations: registrationGateway(new Date(Date.now() + 60_000)),
       });
+      const read = imBindingService.readSetupForAgent.bind(imBindingService);
+      const readSpy = vi.spyOn(imBindingService, "readSetupForAgent");
       try {
         await feishuSetup.createOrReuse(bootstrap.userId, agentId, "create");
-        pause.arm();
+        readSpy.mockImplementationOnce(async (...args) => {
+          const snapshot = await read(...args);
+          captured.resolve();
+          await released.promise;
+          return snapshot;
+        });
         const pending = service.getSetupById(bootstrap.userId, agentId);
         await pause.captured;
         await unitDatabase.database.transaction(async (transaction) => {
@@ -650,6 +658,7 @@ describe("Agent setup projection Messaging states", () => {
         });
       } finally {
         pause.release();
+        readSpy.mockRestore();
         await feishuSetup.stop();
       }
     },

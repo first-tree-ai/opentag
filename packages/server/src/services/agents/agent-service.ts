@@ -496,7 +496,8 @@ export class AgentService {
     } catch (error) {
       const constraintName = uniqueConstraintName(error);
       if (constraintName && input.creationIntentId) {
-        const replay = await this.#replayCreationIntent(
+        const replay = await this.#findCreationIntent(
+          this.#database,
           callerUserId,
           input.creationIntentId,
           creationIntentFingerprint(input),
@@ -521,16 +522,6 @@ export class AgentService {
       });
     }
     return result.config;
-  }
-
-  async #replayCreationIntent(
-    callerUserId: string,
-    creationIntentId: string,
-    intentFingerprint: string,
-  ): Promise<AgentAdminConfig | undefined> {
-    return this.#database.transaction(async (transaction) => {
-      return this.#findCreationIntent(transaction, callerUserId, creationIntentId, intentFingerprint);
-    });
   }
 
   async #findCreationIntent(
@@ -720,42 +711,48 @@ export class AgentService {
     };
   }
 
+  getSummaryById(callerUserId: string, agentId: string): Promise<AgentSummary> {
+    return this.#readAgentSummary(this.#database, callerUserId, agentId);
+  }
+
+  async #readAgentSummary(executor: QueryExecutor, callerUserId: string, agentId: string): Promise<AgentSummary> {
+    const creator = alias(users, "agent_creator");
+    const [row] = await executor
+      .select({
+        id: agents.id,
+        createdByUserId: agents.createdByUserId,
+        creatorDisplayName: creator.displayName,
+        avatarSourceUrl: imBindings.botAvatarUrl,
+        agentComputerId: agents.computerId,
+        computerId: computers.id,
+        computerDisplayName: computers.displayName,
+        computerPlatform: computers.platform,
+        computerOwnerAccountId: computers.ownerAccountId,
+        name: agents.name,
+        displayName: agents.displayName,
+        runtimeProvider: agents.runtimeProvider,
+        receiveMode: agents.receiveMode,
+        status: agents.status,
+        createdAt: agents.createdAt,
+        updatedAt: agents.updatedAt,
+      })
+      .from(agents)
+      .innerJoin(creator, eq(creator.id, agents.createdByUserId))
+      .leftJoin(imBindings, and(eq(imBindings.agentId, agents.id), ne(imBindings.status, "disabled")))
+      .leftJoin(computers, eq(computers.id, agents.computerId))
+      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
+      .limit(1);
+    if (!row) throw resourceNotFound();
+    return toAgentSummary({ ...row, computer: toAgentComputer(row) });
+  }
+
   async getById(callerUserId: string, agentId: string): Promise<AgentDetail> {
     return this.#database.transaction(
       async (transaction) => {
-        const creator = alias(users, "agent_creator");
-        const [row] = await transaction
-          .select({
-            id: agents.id,
-            createdByUserId: agents.createdByUserId,
-            creatorDisplayName: creator.displayName,
-            avatarSourceUrl: imBindings.botAvatarUrl,
-            agentComputerId: agents.computerId,
-            computerId: computers.id,
-            computerDisplayName: computers.displayName,
-            computerPlatform: computers.platform,
-            computerOwnerAccountId: computers.ownerAccountId,
-            name: agents.name,
-            displayName: agents.displayName,
-            runtimeProvider: agents.runtimeProvider,
-            receiveMode: agents.receiveMode,
-            status: agents.status,
-            createdAt: agents.createdAt,
-            updatedAt: agents.updatedAt,
-          })
-          .from(agents)
-          .innerJoin(creator, eq(creator.id, agents.createdByUserId))
-          .leftJoin(imBindings, and(eq(imBindings.agentId, agents.id), ne(imBindings.status, "disabled")))
-          .leftJoin(computers, eq(computers.id, agents.computerId))
-          .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
-          .limit(1);
-        if (!row || row.createdByUserId !== callerUserId) throw resourceNotFound();
+        const agent = await this.#readAgentSummary(transaction, callerUserId, agentId);
         const recoveryStartedAt = new Date(this.#now().getTime() - AGENT_ACTIVITY_RECOVERY_WINDOW_MS);
         const activityByAgent = await this.#readActivityByAgent(transaction, [agentId], recoveryStartedAt);
-        return {
-          ...toAgentSummary({ ...row, computer: toAgentComputer(row) }),
-          activity: activityByAgent.get(agentId) ?? { state: "idle" },
-        };
+        return { ...agent, activity: activityByAgent.get(agentId) ?? { state: "idle" } };
       },
       { isolationLevel: "repeatable read", accessMode: "read only" },
     );

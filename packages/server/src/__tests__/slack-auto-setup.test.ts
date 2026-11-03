@@ -64,6 +64,7 @@ function fixture(officialBinding = false) {
     ),
   };
   const slack = {
+    assertAutoSetupTarget: vi.fn(async () => undefined),
     view: vi.fn(async (_accountId: string, _agentId: string, _publicOrigin: string, signingSecret?: string) => {
       if (!officialBinding) return unbound();
       return { ...bound(), preferredRecovery: signingSecret === "official-secret" ? "oauth" : "credentials" } as const;

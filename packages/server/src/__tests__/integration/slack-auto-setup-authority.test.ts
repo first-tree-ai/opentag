@@ -2,15 +2,17 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { RUNTIME_CAPABILITY, SLACK_REQUIRED_BOT_SCOPES, type SlackAutoSetupRuntimeResult } from "@opentag/shared";
 import { and, eq, ne } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, beforeEach, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { createDatabaseClient } from "../../db/client.js";
-import { computers, imBindings, slackInstallations, users } from "../../db/schema/index.js";
+import { agents as agentRows, computers, imBindings, slackInstallations, users } from "../../db/schema/index.js";
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { SlackAutoSetupOwner } from "../../runtime/slack-auto-setup-owner.js";
 import { AgentService } from "../../services/agents/agent-service.js";
+import { AgentSetupService } from "../../services/agents/agent-setup-service.js";
 import { SlackAutoSetupService } from "../../services/agents/slack-auto-setup-service.js";
 import { ApplicationCipher } from "../../services/crypto.js";
+import { FeishuSetupService } from "../../services/im-bindings/feishu/index.js";
 import { ImBindingService } from "../../services/im-bindings/im-binding-service.js";
 import { SlackConfigurationService } from "../../services/im-bindings/slack/configuration-service.js";
 import { startMigratedTestDatabase } from "./migrated-test-database.js";
@@ -25,6 +27,7 @@ beforeEach(async () => {
   await pg.reset();
 });
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const owner of owners.splice(0)) owner.close();
   await Promise.all(clients.splice(0).map((client) => client.sql.end()));
 });
@@ -150,7 +153,23 @@ async function fixture() {
       },
     );
   };
-  return { client, account, computer, next, agent, agents, auto, entered, release, sent, finish, frames };
+  return {
+    client,
+    account,
+    computer,
+    next,
+    agent,
+    agents,
+    auto,
+    slack,
+    bindings,
+    cipher,
+    entered,
+    release,
+    sent,
+    finish,
+    frames,
+  };
 }
 
 it.each(["before inspection", "during inspection"])(
@@ -186,3 +205,158 @@ it.each(["before inspection", "during inspection"])(
     expect((await f.agents.getConfigById(f.account.id, f.agent.id)).computerId).toBe(f.next.id);
   },
 );
+
+async function boundFixture() {
+  const f = await fixture();
+  f.release.resolve();
+  await f.slack.configureToken(
+    f.account.id,
+    f.agent.id,
+    {
+      intent: "create",
+      expectedMessaging: { kind: "unbound" },
+      botAccessToken: credentials.botAccessToken,
+      signingSecret: credentials.signingSecret,
+    },
+    credentials,
+    f.computer.id,
+  );
+  return f;
+}
+const changes = ["unbind", "replacement", "generation", "transfer", "computer", "suspended"] as const;
+type Change = (typeof changes)[number];
+async function changeTarget(f: Awaited<ReturnType<typeof boundFixture>>, change: Change) {
+  const view = await f.slack.view(f.account.id, f.agent.id, "https://example.test");
+  assert(view.binding);
+  if (change === "unbind" || change === "replacement") {
+    await f.bindings.unbindForAgent(f.account.id, f.agent.id, { provider: "slack", bindingId: view.binding.id });
+    if (change === "replacement")
+      await f.slack.configureToken(
+        f.account.id,
+        f.agent.id,
+        {
+          intent: "create",
+          expectedMessaging: { kind: "unbound" },
+          botAccessToken: credentials.botAccessToken,
+          signingSecret: credentials.signingSecret,
+        },
+        credentials,
+        f.computer.id,
+      );
+  } else if (change === "generation") {
+    await f.slack.configureToken(f.account.id, f.agent.id, {
+      intent: "reauthorize",
+      expectedMessaging: {
+        kind: "bound",
+        provider: "slack",
+        bindingId: view.binding.id,
+        credentialGeneration: view.binding.credentialGeneration,
+      },
+      signingSecret: "replacement-secret",
+    });
+  } else if (change === "computer") await f.agents.rebindById(f.account.id, f.agent.id, f.next.id);
+  else if (change === "suspended") await f.agents.suspendById(f.account.id, f.agent.id);
+  else {
+    const [other] = await f.client.database
+      .insert(users)
+      .values({ email: "new-owner@example.test", displayName: "Next" })
+      .returning();
+    assert(other);
+    await f.agents.suspendById(f.account.id, f.agent.id);
+    await f.agents.transferToAccount({ agentId: f.agent.id, slack: "keep", targetAccountId: other.id });
+    await f.agents.reactivateById(other.id, f.agent.id);
+  }
+}
+async function targetState(f: Awaited<ReturnType<typeof fixture>>) {
+  const [agent] = await f.client.database.select().from(agentRows).where(eq(agentRows.id, f.agent.id));
+  const bindings = await f.client.database
+    .select()
+    .from(imBindings)
+    .where(eq(imBindings.agentId, f.agent.id))
+    .orderBy(imBindings.id);
+  return { agent, bindings };
+}
+
+it.each(changes)("refuses callback admission after %s without sending CLI work", async (change) => {
+  const f = await boundFixture(),
+    read = f.slack.view.bind(f.slack);
+  let changed: Awaited<ReturnType<typeof targetState>> | undefined;
+  vi.spyOn(f.slack, "view").mockImplementationOnce(async (...args) => {
+    const selected = await read(...args);
+    // Change after the authoritative view returned, before the final admission query.
+    await changeTarget(f, change);
+    changed = await targetState(f);
+    return selected;
+  });
+  await expect(f.auto.run(f.account.id, f.agent.id, { action: "connect" })).rejects.toMatchObject({
+    code: "SLACK_CONFIGURATION_CONFLICT",
+  });
+  expect(f.frames).toHaveLength(0);
+  expect(await targetState(f)).toEqual(changed);
+});
+
+it.each(changes)("refuses late callback success after %s without rebinding or undoing the change", async (change) => {
+  const f = await boundFixture();
+  const running = f.auto.run(f.account.id, f.agent.id, { action: "connect" }).then(
+    (value) => ({ value }),
+    (error: unknown) => ({ error }),
+  );
+  await f.sent.promise;
+  await expect(f.client.sql`select 1 as healthy`).resolves.toHaveLength(1);
+  await changeTarget(f, change);
+  const changed = await targetState(f);
+  await f.finish({ status: "connected" });
+  expect(await running).toMatchObject({ error: { code: "SLACK_CONFIGURATION_CONFLICT" } });
+  expect(await targetState(f)).toEqual(changed);
+  expect(f.frames).toHaveLength(1);
+});
+
+it("keeps a current callback success", async () => {
+  const f = await boundFixture(),
+    running = f.auto.run(f.account.id, f.agent.id, { action: "connect" });
+  await f.sent.promise;
+  await f.finish({ status: "connected" });
+  expect(await running).toEqual({ status: "connected" });
+  expect(f.frames).toHaveLength(1);
+});
+
+it("reads setup and preparation without discarded activity queries", async () => {
+  const f = await fixture(),
+    now = new Date("2026-11-03T00:00:00Z");
+  const messaging = new FeishuSetupService({
+    database: f.client.database,
+    cipher: f.cipher,
+    instanceId: randomUUID(),
+    imBindings: f.bindings,
+    registrations: {
+      start: () => {
+        throw new Error("Unexpected provider request");
+      },
+    },
+    activation: {} as never,
+    now: () => now,
+  });
+  const prepareComputer = vi.fn(async () => undefined);
+  const setup = new AgentSetupService(f.client.database, f.agents, messaging, { now: () => now, prepareComputer });
+  const { activity: _activity, ...summary } = await f.agents.getById(f.account.id, f.agent.id);
+  const queries: string[] = [];
+  const debug = f.client.sql.options.debug;
+  f.client.sql.options.debug = (_id, query) => {
+    queries.push(query);
+  };
+  try {
+    expect((await setup.getSetupById(f.account.id, f.agent.id)).agent).toEqual(summary);
+    expect(queries.some((query) => query.includes('from "im_message_deliveries"'))).toBe(false);
+    expect(queries.filter((query) => query.trimStart().toLowerCase().startsWith("select"))).toHaveLength(5);
+    // Messaging retains its own Repeatable Read BEGIN/SET/COMMIT.
+    expect(queries).toHaveLength(8);
+    queries.length = 0;
+    await setup.refreshPreparationById(f.account.id, f.agent.id);
+    expect(queries.some((query) => query.includes('from "im_message_deliveries"'))).toBe(false);
+    expect(queries).toHaveLength(2);
+    expect(prepareComputer).toHaveBeenCalledTimes(1);
+  } finally {
+    f.client.sql.options.debug = debug;
+    await messaging.stop();
+  }
+});

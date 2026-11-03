@@ -10,9 +10,9 @@ import {
   type SlackConfigurationView,
   type SlackProvisionCredentials,
 } from "@opentag/shared";
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../../db/client.js";
-import { agents, imBindings } from "../../../db/schema/index.js";
+import { agents, computers, imBindings } from "../../../db/schema/index.js";
 import type { ApplicationCipher } from "../../crypto.js";
 import { currentBindingOf } from "../current-binding.js";
 import { releaseTerminalNeverActivatedSlotForAgent } from "../disable-im-binding.js";
@@ -78,6 +78,39 @@ export class SlackConfigurationService {
     this.#database = input.database;
     this.#imBindings = input.imBindings;
     this.#now = input.now ?? (() => new Date());
+  }
+
+  async assertAutoSetupTarget(
+    callerUserId: string,
+    agentId: string,
+    expected: { computerId: string; bindingId: string; credentialGeneration: number },
+  ): Promise<void> {
+    const [current] = await this.#database
+      .select({ id: imBindings.id })
+      .from(agents)
+      .innerJoin(computers, eq(computers.id, agents.computerId))
+      .innerJoin(imBindings, eq(imBindings.agentId, agents.id))
+      .where(
+        and(
+          eq(agents.id, agentId),
+          eq(agents.createdByUserId, callerUserId),
+          eq(agents.status, "active"),
+          eq(computers.id, expected.computerId),
+          eq(computers.ownerAccountId, callerUserId),
+          isNull(computers.deletedAt),
+          eq(imBindings.id, expected.bindingId),
+          eq(imBindings.provider, "slack"),
+          ne(imBindings.status, "disabled"),
+          eq(imBindings.credentialGeneration, expected.credentialGeneration),
+        ),
+      )
+      .limit(1);
+    if (!current)
+      throw new SlackConfigurationServiceError(
+        "SLACK_CONFIGURATION_CONFLICT",
+        409,
+        "The Slack setup target changed; reload the current configuration",
+      );
   }
 
   async currentBinding(callerUserId: string, agentId: string): Promise<SlackOAuthExpectedBinding | null> {

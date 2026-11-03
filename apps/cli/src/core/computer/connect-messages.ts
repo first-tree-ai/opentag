@@ -1,9 +1,9 @@
 import type { CommandError } from "../command/policy.js";
 
 /**
- * Plain-language presentation for `computer connect`. Every outcome is one line saying what happened;
- * every failure is one line saying why plus one line saying what to do next. Error codes and request
- * IDs stay available on a trailing detail line for support, never as the main message.
+ * Plain-language presentation for `computer connect`. Every success is one line; every failure is one
+ * line saying why plus one line saying what to do next. Internal detail (error codes, request IDs,
+ * whether anything changed) stays out of the human output.
  */
 export interface ConnectFailureMessage {
   reason: string;
@@ -19,30 +19,30 @@ export function describeConnectFailure(
   const server = context.serverUrl ?? "the openTag server";
   switch (error.code) {
     case "AUTH_CODE_EXPIRED":
-      return { reason: "This connect code has expired; nothing was changed on this computer.", next: NEW_COMMAND };
+      return { reason: "This connect code has expired.", next: NEW_COMMAND };
     case "AUTH_CODE_CONSUMED":
       return {
-        reason: "This connect code has already been used; nothing was changed on this computer.",
+        reason: "This connect code has already been used.",
         next: NEW_COMMAND,
       };
     case "AUTH_INVALID_CODE":
       return {
-        reason: "This connect code is not valid (it may be incomplete or revoked); nothing was changed.",
+        reason: "This connect code is not valid.",
         next: NEW_COMMAND,
       };
     case "COMPUTER_ACCOUNT_CONFLICT":
       return {
-        reason: "This computer is already connected to a different openTag account; nothing was changed.",
-        next: "Ask the owner of that account to remove this computer in openTag (its Agents must be removed first), then run this command again.",
+        reason: "This computer is linked to another openTag account.",
+        next: "Ask that account's owner to remove it in openTag, then run this command again.",
       };
     case "COMPUTER_IDENTITY_CONFLICT":
       return {
-        reason: "openTag already has another Computer registered with this installation; nothing was changed.",
+        reason: "openTag already has another computer registered with this installation.",
         next: NEW_COMMAND,
       };
     case "AUTH_USER_SUSPENDED":
       return {
-        reason: "The openTag account that issued this code is suspended; nothing was changed.",
+        reason: "The openTag account that issued this code is suspended.",
         next: "Contact your openTag administrator.",
       };
     default:
@@ -50,19 +50,19 @@ export function describeConnectFailure(
   }
   if (error.phase === "transport" || error.code === "SERVICE_UNAVAILABLE" || error.code === "TIMEOUT") {
     return {
-      reason: `Could not reach the openTag server at ${server}; nothing was changed and the code was not used.`,
+      reason: `Could not reach the openTag server at ${server}.`,
       next: "Check this computer's network connection, then run the same command again.",
     };
   }
   if (isPermissionProblem(error.message)) {
     return {
-      reason: `openTag cannot write to its folder ${context.home} (permission denied); nothing was changed.`,
-      next: "Fix the folder's permissions for this user (or set OPENTAG_HOME to a writable folder), then run the same command again.",
+      reason: `openTag cannot write to ${context.home}: permission denied.`,
+      next: "Fix that folder's permissions for this user, then run the same command again.",
     };
   }
   if (isDiskFull(error.message)) {
     return {
-      reason: `openTag cannot write to ${context.home} because the disk is full; nothing was changed.`,
+      reason: `openTag cannot write to ${context.home}: the disk is full.`,
       next: "Free some disk space, then run the same command again.",
     };
   }
@@ -72,9 +72,9 @@ export function describeConnectFailure(
   };
 }
 
-export function formatConnectFailure(error: CommandError, message: ConnectFailureMessage): string {
-  const detail = [error.code, error.requestId ? `request ${error.requestId}` : undefined].filter(Boolean).join(", ");
-  return `${message.reason}\nNext: ${message.next}\n(details: ${detail})\n`;
+/** Error codes and request IDs stay in `--json`; the human output is only the reason and the next step. */
+export function formatConnectFailure(_error: CommandError, message: ConnectFailureMessage): string {
+  return `${message.reason}\nNext: ${message.next}\n`;
 }
 
 function isPermissionProblem(message: string): boolean {

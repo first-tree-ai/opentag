@@ -66,7 +66,7 @@ async function liveCredentialIds(computerId: string) {
 }
 
 describe("idempotent create-mode Computer connect", () => {
-  it("reports an online Computer whose current credential is presented as already connected without changing anything", async () => {
+  it("reports an online Computer whose current credential is presented as already connected, redeeming the code without rotation", async () => {
     const f = await fixture();
     await markOnline(f.first.computerId);
     const credentialsBefore = await liveCredentialIds(f.first.computerId);
@@ -79,11 +79,19 @@ describe("idempotent create-mode Computer connect", () => {
 
     expect(result).toMatchObject({ outcome: "already_connected", computerId: f.first.computerId });
     expect("machineToken" in result).toBe(false);
-    expect(await codeRow(issued.connectCodeId)).toMatchObject({ consumedAt: null, consumedComputerId: null });
+    // The code is redeemed by this exact Computer so the issuing page reaches its connected state,
+    // but the credential is kept: no rotation and no reconnect.
+    expect(await codeRow(issued.connectCodeId)).toMatchObject({
+      consumedAt: NOW,
+      consumedComputerId: f.first.computerId,
+    });
     expect(await liveCredentialIds(f.first.computerId)).toEqual(credentialsBefore);
     expect(await computerCount(f.accountId)).toBe(1);
     expect(f.onCredentialRotated).not.toHaveBeenCalled();
-    expect((await f.machine.getConnectCodeStatusForAccount(f.accountId, issued.connectCodeId)).state).toBe("pending");
+    expect(await f.machine.getConnectCodeStatusForAccount(f.accountId, issued.connectCodeId)).toMatchObject({
+      state: "redeemed",
+      computerId: f.first.computerId,
+    });
   });
 
   it("repairs in place when the Computer is offline, keeping its ID and rotating its credential", async () => {

@@ -189,18 +189,12 @@ async function currentMachineTokenField(home: string, serverUrl: string): Promis
   }
 }
 
-/** One line in plain language; IDs stay in the structured result and `--json`. */
-function connectedMessage(displayName: string, agentId: string | undefined, outcome?: ComputerConnectOutcome): string {
-  const machine = `This computer (${displayName})`;
-  const agent = agentId ? " and bound the Agent to it" : "";
-  switch (outcome) {
-    case "already_connected":
-      return `${machine} is already connected to openTag; nothing changed and the connect code was not used.`;
-    case "repaired":
-      return `Reconnected this computer (${displayName}) to openTag${agent}; it keeps its existing Computer.`;
-    default:
-      return `Connected this computer (${displayName}) to openTag${agent}.`;
-  }
+/**
+ * One line in plain language, the same for every outcome: whether the Server created, repaired, or
+ * found the computer already connected is internal detail kept in the structured result and `--json`.
+ */
+function connectedMessage(displayName: string, agentId: string | undefined, _outcome?: ComputerConnectOutcome): string {
+  return `Connected this computer (${displayName}) to openTag${agentId ? " and bound the Agent to it" : ""}.`;
 }
 
 function safeFailureMessage(error: unknown, fallback: string, machineToken: string): string {

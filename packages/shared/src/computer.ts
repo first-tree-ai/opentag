@@ -134,7 +134,8 @@ export const ComputerConnectCodeModeSchema = z.enum(["create", "repair"]);
  * What an exchange did to the installation it names. `created`: a new Computer. `repaired`: the
  * Computer already bound to this installation for the same Account was reconnected in place with
  * rotated credentials. `already_connected`: that Computer is online and the Client proved it holds
- * its current credential, so nothing changed, the code was not consumed, and no token is returned.
+ * its current credential, so credentials are kept (no token is returned) and the code is redeemed
+ * by that Computer.
  */
 export const ComputerConnectOutcomeSchema = z.enum(["created", "repaired", "already_connected"]);
 

@@ -69,7 +69,7 @@ and classifies it:
 | --- | --- |
 | None (never seen, or deleted) | Create a new Computer (`created`). |
 | Another Account's, or the presented token belongs to another Account | `COMPUTER_ACCOUNT_CONFLICT` (409). Nothing is consumed or changed. |
-| Same Account, online on the same release, untargeted code, current token presented | `already_connected`: no credential rotation, code left unconsumed, no token returned. |
+| Same Account, online on the same release, untargeted code, current token presented | `already_connected`: no credential rotation or reconnect, no token returned; the code is redeemed by this Computer so the issuing page reaches its connected state. |
 | Same Account, otherwise (offline, disconnected, another running release, token stale or absent, targeted code) | Repair in place (`repaired`): same Computer ID, `disconnected_at` cleared, credentials rotated, code consumed. |
 
 The request fields `machineToken` and `reportOutcome` are optional. The Server

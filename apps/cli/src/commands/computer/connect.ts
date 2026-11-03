@@ -146,8 +146,7 @@ function presentPersistenceFailure(connection: ComputerConnectResult, home: stri
   } else {
     const lines = [
       `${connection.message.replace(/; local persistence is incomplete\.$/, ".")} (${failure.stage}: ${failure.message})`,
-      `Next: Fix ${home}'s permissions or free disk space, then get a new connect command from openTag and run it; this computer keeps its existing Computer.`,
-      `(details: ${error.code}; the used code cannot be reused)`,
+      `Next: Fix ${home}'s permissions or free disk space, then get a new connect command from openTag and run it.`,
     ];
     process.stderr.write(`${lines.map(safeLine).join("\n")}\n`);
   }

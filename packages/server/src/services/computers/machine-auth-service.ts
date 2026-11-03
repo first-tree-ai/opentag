@@ -220,7 +220,9 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
       } else {
         const resolved = await this.#resolveCreateTarget(transaction, connectCode, input, targetAgentId, now);
         if (resolved.outcome === "already_connected") {
-          // Nothing changes: the code stays unconsumed and the Client keeps its current credential.
+          // The Client keeps its current credential (no rotation, no reconnect). The code is still
+          // redeemed by this exact Computer, so the issuing page sees its ordinary connected verdict.
+          await consumeConnectCode(transaction, connectCode.id, resolved.computerId, now);
           return {
             revokedCredentialIds: [],
             result: {
@@ -246,14 +248,7 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
         targetAgent,
       );
       const credential = await rotateComputerCredentials(transaction, computer.id, connectCode.issuedByAccountId, now);
-      const [consumed] = await transaction
-        .update(computerConnectCodes)
-        .set({ consumedComputerId: computer.id, consumedAt: now })
-        .where(and(eq(computerConnectCodes.id, connectCode.id), isNull(computerConnectCodes.consumedAt)))
-        .returning({ id: computerConnectCodes.id });
-      if (!consumed) {
-        throw invalidMachineCredential("AUTH_CODE_CONSUMED", "The Computer connect code has already been used");
-      }
+      await consumeConnectCode(transaction, connectCode.id, computer.id, now);
       return {
         revokedCredentialIds: credential.revokedCredentialIds,
         result: {
@@ -756,6 +751,23 @@ async function lockRedeemableConnectCode(
     throw invalidMachineCredential("AUTH_CODE_EXPIRED", "The Computer connect code has expired");
   }
   return { connectCode, now };
+}
+
+/** Conditional, so a code two callers reach at once is redeemed by exactly one of them. */
+async function consumeConnectCode(
+  transaction: DatabaseTransaction,
+  connectCodeId: string,
+  computerId: string,
+  now: Date,
+): Promise<void> {
+  const [consumed] = await transaction
+    .update(computerConnectCodes)
+    .set({ consumedComputerId: computerId, consumedAt: now })
+    .where(and(eq(computerConnectCodes.id, connectCodeId), isNull(computerConnectCodes.consumedAt)))
+    .returning({ id: computerConnectCodes.id });
+  if (!consumed) {
+    throw invalidMachineCredential("AUTH_CODE_CONSUMED", "The Computer connect code has already been used");
+  }
 }
 
 /** The live local Computer a presented machine token currently authenticates, or undefined. */

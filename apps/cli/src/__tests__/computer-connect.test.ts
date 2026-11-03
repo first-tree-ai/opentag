@@ -381,7 +381,8 @@ describe("idempotent computer connect", () => {
     });
 
     expect(result).toMatchObject({ outcome: "already_connected", computerId, service: { state: "active" } });
-    expect(result.message).toContain("already connected");
+    // The same short success as any connect: whether anything changed is internal detail.
+    expect(result.message).toBe(`Connected this computer (${hostname()}) to openTag.`);
     expect(exchangeComputerConnectCode.mock.calls[0]?.[0]).toMatchObject({
       installationId: identityBefore?.computerId,
       machineToken: credentialsBefore?.computer.machineToken,
@@ -432,7 +433,7 @@ describe("idempotent computer connect", () => {
       expect(result.message).toBe(
         outcome === "created"
           ? `Connected this computer (${hostname()}) to openTag.`
-          : `Reconnected this computer (${hostname()}) to openTag; it keeps its existing Computer.`,
+          : `Connected this computer (${hostname()}) to openTag.`,
       );
       expect(result.message).not.toContain("11111111");
     }
@@ -444,7 +445,7 @@ describe("idempotent computer connect", () => {
       [new client.OpenTagApiError("AUTH_CODE_CONSUMED", "credential", "used", 401), /already been used/],
       [
         new client.OpenTagApiError("COMPUTER_ACCOUNT_CONFLICT", "deterministic", "conflict", 409),
-        /different openTag account/,
+        /^This computer is linked to another openTag account\.$/,
       ],
       [
         new client.OpenTagApiError("SERVICE_UNAVAILABLE", "transient", "unavailable", undefined, undefined, {
@@ -465,6 +466,7 @@ describe("idempotent computer connect", () => {
         expect(first).toMatch(reason);
         expect(first).not.toMatch(/^[A-Z_]+:/);
         expect(second).toMatch(/^Next: /);
+        expect(output).not.toMatch(/details|request|nothing was changed/i);
         expect(process.exitCode).not.toBe(0);
       } finally {
         stderr.mockRestore();

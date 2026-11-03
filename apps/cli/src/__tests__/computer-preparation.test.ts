@@ -445,10 +445,10 @@ describe("targeted local Computer preparation", () => {
     expect(json.out).toBe("");
     expect(json.exitCode).toBe(3);
     const human = await invoke();
-    const [reason, next, detail] = human.err.split("\n");
+    const [reason, next, extra] = human.err.split("\n");
     expect(reason).toContain("(credentials: disk full)");
     expect(next).toMatch(/^Next: .*get a new connect command from openTag and run it/);
-    expect(detail).toContain("cannot be reused");
+    expect(extra).toBe("");
     const guidance = JSON.parse(json.err).result.guidance as string[];
     expect(guidance.join("\n")).toContain(
       "computer repair-local --installation-id 22222222-2222-4222-8222-222222222222",

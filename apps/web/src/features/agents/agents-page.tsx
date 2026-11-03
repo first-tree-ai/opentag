@@ -11,6 +11,7 @@ import { EmptyState, Page } from "../layout/page.js";
 import { AsyncState } from "../resource/resource-state.js";
 import { useAccount } from "../session/session-context.js";
 import { AgentAvatar } from "./agent-avatar.js";
+import { isTransientAgentAvailability, steadyAgentListItem } from "./agent-list-status.js";
 import type { AgentListItem } from "./agent-model.js";
 import { agentCardStatus, agentSetupContinuation } from "./agent-presentation.js";
 import { useAgentListView } from "./agent-queries.js";
@@ -56,7 +57,17 @@ export function AgentsContent({ agents }: { agents: AgentListItem[] }) {
 
 export function AgentList({ agents }: { agents: AgentListItem[] }) {
   const shownOrder = useRef<readonly string[]>([]);
-  const byId = new Map(agents.map((agent) => [agent.id, agent]));
+  const lastSettled = useRef(new Map<string, AgentListItem>());
+  /*
+   * Also written during render: the settled answer a row shows must never lag a frame behind the
+   * read that produced it, and reapplying the same read leaves the map unchanged.
+   */
+  const byId = new Map(
+    agents.map((agent) => {
+      if (!isTransientAgentAvailability(agent)) lastSettled.current.set(agent.id, agent);
+      return [agent.id, steadyAgentListItem(agent, lastSettled.current.get(agent.id))];
+    }),
+  );
   /*
    * Written during render on purpose. `orderAgentIds` is stable under reapplication, so a
    * repeated render of the same list produces the same order; deferring it to an effect would

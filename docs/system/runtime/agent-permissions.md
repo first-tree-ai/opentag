@@ -23,9 +23,11 @@ and original resources; edits remain visible during a run. Claude honors
 skill `allowed-tools` grants, which can pre-approve commands otherwise subject to approval. Approvals
 are practical guardrails, not isolation from writable skills or approval-free file reads and uploads.
 OpenTag's supplementary temporary MCP configuration uses runtime-scoped service names with fresh
-execution credentials per Run, keeping
-platform tools and their grant rules separate from native user servers. The gateway name stays
-short enough to preserve its original tool-name budget. Native plugins and hooks execute as trusted local code and can run outside tool
+execution credentials per Run, keeping platform tools and their grant rules separate from native
+user servers. The explicit supplementary configuration takes precedence when a project `.mcp.json`
+tries to register the same known runtime name; the native fixture checks that precedence for both
+gateway and hosted tools. The gateway name stays short enough to preserve its original tool-name
+budget. Native plugins and hooks execute as trusted local code and can run outside tool
 approvals, and a model-written project configuration can enable them on the next Run. The inherited
 daemon environment can include long-lived operator credentials; these are not fenced or revoked
 with an execution. See the [native trust contract](agent-runtime-contract.md#local-claude-native-configuration-and-trust).

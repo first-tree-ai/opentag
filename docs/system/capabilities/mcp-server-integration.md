@@ -1114,7 +1114,13 @@ Grant rules use those exact names. Keeping the gateway name no longer than its o
 prefix leaves 110 characters within Claude's 128-character tool-name limit. Longer gateway names
 were already outside that native budget; this does not add a general tool aliasing layer.
 Both a user server named `opentag-mcp` and a user plugin named `opentag` keep their own endpoints
-and never inherit the platform's grant rules. The separately loaded private Skill plugin has a
+and never inherit the platform's grant rules. If project `.mcp.json` registers a previously observed
+runtime `g<id>` or `h<id>` name before a later Run, the explicit supplementary `--mcp-config` entry
+takes precedence: only the platform server's tools occupy that bare name and receive its grants.
+The native fixture guards this required precedence with project MCP servers enabled. Plugin MCP
+names are qualified by their plugin namespace and do not occupy the bare runtime server name.
+Native plugin code still has the trust boundary described in the Runtime contract.
+The separately loaded private Skill plugin has a
 runtime-scoped explicit `opentag-<random-id>` manifest name, avoiding a fixed plugin-name collision.
 
 Each Run receives a fresh private MCP configuration with that execution's bearer, new loopback

@@ -34,6 +34,10 @@ Checks:
 - Each of two Runs calls the user MCP, both plugin MCP services, platform gateway, and hosted tool. The two Runs
   use different fixture gateway tokens through the same adapter instance while retaining the same platform
   MCP names and packaged-Skill namespace.
+- Between those Runs, project `.mcp.json` registers shadow endpoints under the learned `g<id>` and
+  `h<id>` names, with project MCP servers enabled. Run 2 still exposes and calls only the platform
+  tools under those names; shadow tools are absent. The adapter leaves the shadow configuration
+  untouched, and the fixture restores its own edit before the remaining cases.
 - Each Run also calls platform tools with 85- and 110-character upstream names. The fixture model
   endpoint rejects any model-facing name over 128 characters, including the exact 128-character
   boundary case in these Runs. This guards against a plugin prefix silently shrinking the native budget.
@@ -110,6 +114,12 @@ their tools successfully; native user/plugin collision handling, project Skill d
 the 128-character tool-name boundary, plugin disablement, and sibling isolation also pass.
 `runtimeNamespacesStable` is `true` in the fixture result. Model and MCP responses are served on
 loopback; this does not measure provider prompt-cache hits, real-model quality, or savings.
+
+The between-Runs learned-name collision regression also passes on Claude Code 2.1.210:
+`runtimeNameCollisionsUsePlatform` is `true`. With both learned names registered in project
+`.mcp.json`, the explicit supplementary entries retain their platform tools and grants; neither
+shadow tool appears in the model's catalog. The fixture checks that the adapter leaves this
+project edit untouched before restoring it for the remaining cases.
 
 One local fixture run reported `No conversation found with session ID` on the second Run.
 The unchanged fixture passed on rerun. Its cause was not established; this observation does not

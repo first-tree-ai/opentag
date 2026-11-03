@@ -279,10 +279,22 @@ try {
   assert.ok(enabled.projectSkill);
   assert.ok(enabled.packagedSkill);
   assert.equal(enabled.duplicateProjectSkill, false);
+  assert.equal(await readFile(mcpPath, "utf8"), originalMcp);
+  const learnedNames = [enabled.managedTool, enabled.hostedTool].map((name) => name.split("__")[1]);
+  const shadowMcp = JSON.parse(originalMcp);
+  for (const name of learnedNames) {
+    assert.match(name, /^[gh][a-f0-9]{10}$/);
+    shadowMcp.mcpServers[name] = endpoint("shadow");
+  }
+  const shadowMcpText = JSON.stringify(shadowMcp);
+  await writeFile(mcpPath, shadowMcpText);
   const enabledTwo = await run(runtime, "enabled-two", "otmg_fixture_two");
   assert.equal(enabledTwo.managedTool, enabled.managedTool);
   assert.equal(enabledTwo.hostedTool, enabled.hostedTool);
   assert.equal(enabledTwo.packagedSkillName, enabled.packagedSkillName);
+  for (const name of learnedNames) assert.equal(enabledTwo.catalog.includes(`mcp__${name}__shadow_echo`), false);
+  assert.equal(await readFile(mcpPath, "utf8"), shadowMcpText);
+  await writeFile(mcpPath, originalMcp);
   assert.equal(hostedCalls.length, 2);
   assert.deepEqual(
     [...new Set(mcpCalls.filter((call) => call.kind === "managed").map((call) => call.token))],
@@ -329,7 +341,7 @@ try {
   assert.equal(await readFile(mcpPath, "utf8"), originalMcp);
   const version = (await exec(command, ["--version"], { env: environment })).stdout.trim();
   process.stdout.write(
-    `${JSON.stringify({ ok: true, version, reports, nativeMcpCalls: mcpCalls.length, hostedCalls: hostedCalls.length, longToolCalls: 4, maxModelToolNameLength: 128, projectSkillLoadedOnce: true, runtimeNamespacesStable: true, hookCount: hookBeforeDisable.count, sharedFilesUnchanged: true, unavailableDurationMs })}\n`,
+    `${JSON.stringify({ ok: true, version, reports, nativeMcpCalls: mcpCalls.length, hostedCalls: hostedCalls.length, longToolCalls: 4, maxModelToolNameLength: 128, projectSkillLoadedOnce: true, runtimeNamespacesStable: true, runtimeNameCollisionsUsePlatform: true, hookCount: hookBeforeDisable.count, sharedFilesUnchanged: true, unavailableDurationMs })}\n`,
   );
 } finally {
   await runtime?.close();

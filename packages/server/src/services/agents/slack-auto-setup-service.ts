@@ -13,9 +13,6 @@ import type { AgentService } from "./agent-service.js";
 import { AgentServiceError } from "./errors.js";
 
 export class SlackAutoSetupService {
-  #closed = false;
-  #closing: Promise<void> | undefined;
-  readonly #work = new Set<Promise<SlackAutoSetupResponse>>();
   constructor(
     readonly options: {
       agents: Pick<AgentService, "getConfigById">;
@@ -25,24 +22,7 @@ export class SlackAutoSetupService {
       officialSigningSecret?: string;
     },
   ) {}
-  close(): Promise<void> {
-    this.#closed = true;
-    this.#closing ??= Promise.allSettled([...this.#work]).then(() => undefined);
-    return this.#closing;
-  }
-
-  run(accountId: string, agentId: string, input: SlackAutoSetupRequest): Promise<SlackAutoSetupResponse> {
-    if (this.#closed) return Promise.resolve({ status: "failed", code: "computer_unavailable" });
-    const operation = this.#run(accountId, agentId, input);
-    this.#work.add(operation);
-    void operation.then(
-      () => this.#work.delete(operation),
-      () => this.#work.delete(operation),
-    );
-    return operation;
-  }
-
-  async #run(accountId: string, agentId: string, input: SlackAutoSetupRequest): Promise<SlackAutoSetupResponse> {
+  async run(accountId: string, agentId: string, input: SlackAutoSetupRequest): Promise<SlackAutoSetupResponse> {
     const config = await this.options.agents.getConfigById(accountId, agentId);
     if (!config.computerId)
       throw new AgentServiceError("AGENT_COMPUTER_NOT_BOUND", "deterministic", "Connect a Computer first", 409);

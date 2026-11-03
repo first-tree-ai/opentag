@@ -4,6 +4,7 @@ import { RUNTIME_CAPABILITY, SLACK_REQUIRED_BOT_SCOPES, type SlackAutoSetupRunti
 import { and, eq, ne } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import WebSocket from "ws";
+import { createApp } from "../../app.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { agents as agentRows, computers, imBindings, slackInstallations, users } from "../../db/schema/index.js";
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
@@ -361,35 +362,46 @@ it("reads setup and preparation without discarded activity queries", async () =>
   }
 });
 
-it("joins the complete confirmed installation through inspection and final SQL on close", async () => {
+it("joins a disconnected HTTP setup through confirmed inspection and final SQL", async () => {
   const f = await fixture();
-  const running = f.auto.run(f.account.id, f.agent.id, { action: "connect" });
+  const app = createApp();
+  let result: unknown;
+  app.post("/setup", async () => {
+    result = await f.auto.run(f.account.id, f.agent.id, { action: "connect" });
+    return result;
+  });
+  const address = await app.listen({ host: "127.0.0.1", port: 0 });
+  const abort = new AbortController();
+  const request = fetch(`${address}/setup`, { method: "POST", signal: abort.signal }).then(
+    () => undefined,
+    (error: unknown) => error,
+  );
   let drained = false;
+  let closing: Promise<void> | undefined;
   try {
     await f.sent.promise;
     await f.finish({ status: "installed", credentials });
     await f.entered.promise;
-    const closing = f.auto.close().then(() => {
+    abort.abort();
+    expect(await request).toMatchObject({ name: "AbortError" });
+    closing = app.close().then(() => {
       drained = true;
     });
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
     expect(drained).toBe(false);
-    expect(await f.auto.run(f.account.id, f.agent.id, { action: "connect" })).toEqual({
-      status: "failed",
-      code: "computer_unavailable",
-    });
     f.release.resolve();
     await expect.poll(() => f.frames.length).toBe(2);
     await f.finish({ status: "connected" });
-    expect(await running).toEqual({ status: "connected" });
     await closing;
+    expect(result).toEqual({ status: "connected" });
     const [binding] = await f.client.database.select().from(imBindings).where(eq(imBindings.agentId, f.agent.id));
     expect(binding?.status).toBe("active");
     expect(binding?.provider).toBe("slack");
     expect((await f.client.sql`select 1 as healthy`)[0]?.healthy).toBe(1);
   } finally {
     f.release.resolve();
-    await running.catch(() => undefined);
-    await f.auto.close();
+    abort.abort();
+    await request;
+    await (closing ?? app.close());
   }
 });

@@ -138,7 +138,7 @@ import { AccountSetupService } from "./services/setup/index.js";
 import { S3SkillObjectStore, SkillObjectGc, SkillPresetService, SkillService } from "./services/skills/index.js";
 import { RemoteSkillService } from "./services/skills/source/remote-skill-service.js";
 import { TaskService } from "./services/tasks/index.js";
-import { closeServerResources } from "./shutdown.js";
+import { closeServerResources, startClosingServerResources } from "./shutdown.js";
 import { defaultWebAppRoot } from "./web-app.js";
 
 export { bootstrapInitialAdmin } from "./admin/bootstrap.js";
@@ -556,6 +556,16 @@ export async function startServer(): Promise<void> {
   let databaseSql: ReturnType<typeof createDatabaseClient>["sql"] | undefined;
   let cloudBilling: CloudBilling | undefined;
   let cloudModelService: CloudModelService | undefined;
+  let databaseProbe: ReturnType<typeof createDedicatedDatabaseReadinessProbe> | undefined;
+  let sharedCleanup: Promise<void> | undefined;
+  const closeSharedResources = () => {
+    sharedCleanup ??= closeServerResources([
+      ["database readiness probe", () => databaseProbe?.close()],
+      ["database pool", () => databaseSql?.end({ timeout: DATABASE_CLOSE_TIMEOUT_SECONDS })],
+      ["telemetry", () => shutdownTelemetry()],
+    ]);
+    return sharedCleanup;
+  };
   const knownSecrets: string[] = collectKnownSecrets(process.env);
   const reportDiagnostic = createServerDiagnosticReporter(() => app?.log);
   const serviceLogger = (module: string) => createServiceLoggerPort(() => app?.log, module);
@@ -588,6 +598,7 @@ export async function startServer(): Promise<void> {
       deadlineMs: DATABASE_READINESS_TIMEOUT_MS,
       log: { debug: (fields, message) => app?.log.debug(fields, message) },
     });
+    databaseProbe = databaseReadinessProbe;
     const imCallPolicy = new ExternalCallPolicy({
       allowedHosts: ["slack.com", "files.slack.com", "open.feishu.cn", "open.larksuite.com"],
       maxConcurrency: 16,
@@ -1176,6 +1187,27 @@ export async function startServer(): Promise<void> {
       sessions: sessionService,
     });
     app = createApp({
+      beginShutdown: () =>
+        startClosingServerResources([
+          ["schedule scheduler", () => scheduleScheduler.stop()],
+          ["channel target poller", () => channelTargetPoller.stop()],
+          ["sandbox idle reclaimer", () => sandboxIdleReclaimer?.stop()],
+          ["IM delivery worker", () => imDeliveryWorker.stop()],
+          ["IM message inbox", () => imMessageInbox.close()],
+          ["Slack working worker", () => slackWorkingWorker.stop()],
+          ["IM failure reactions", () => imFailureReactions?.close()],
+          ["MCP refresh worker", () => mcpRefreshWorker.stop()],
+          ["skill garbage collector", () => skillRuntime.gc?.stop()],
+          ["GitHub Context Tree operations", () => githubContextTreeOperations?.close()],
+          ["platform runtime", () => platformRuntime.close()],
+          ["Feishu setup service", () => feishuSetupService.stop()],
+          ["Feishu connections", () => feishuConnections.stop()],
+          ["Cloud Session work", () => cloudSessionOwner?.close()],
+          ["Cloud runtime tests", () => cloudModelRuntime?.tester.close()],
+          ["Cloud model work", () => cloudModelService?.close()],
+          ["runner image prewarm worker", () => runnerImagePrewarmWorker?.stop()],
+        ]),
+      closeResources: closeSharedResources,
       environment: config.environment,
       revision: config.buildRevision,
       databaseReadinessProbe: createApplicationDatabaseReadinessProbe(sql, databaseReadinessProbe),
@@ -1379,33 +1411,10 @@ export async function startServer(): Promise<void> {
     };
     process.once("SIGINT", closeForSignal);
     process.once("SIGTERM", closeForSignal);
-    app.addHook("preClose", async () => {
-      cloudModelRuntime?.tester.close();
-    });
     app.addHook("onClose", async () => {
       uninstallFatalHandlers();
       process.off("SIGINT", closeForSignal);
       process.off("SIGTERM", closeForSignal);
-      const imagePrewarmStopped = runnerImagePrewarmWorker?.stop();
-      void imagePrewarmStopped?.catch(() => undefined);
-      await closeServerResources([
-        ["schedule scheduler", () => scheduleScheduler.stop()],
-        ["channel target poller", () => channelTargetPoller.stop()],
-        ["sandbox idle reclaimer", () => sandboxIdleReclaimer?.stop()],
-        ["IM delivery worker", () => imDeliveryWorker.stop()],
-        ["Slack working worker", () => slackWorkingWorker.stop()],
-        ["IM failure reactions", () => imFailureReactions?.close()],
-        ["MCP refresh worker", () => mcpRefreshWorker.stop()],
-        ["skill garbage collector", () => skillRuntime.gc?.stop()],
-        ["GitHub Context Tree operations", () => githubContextTreeOperations?.close()],
-        ["platform runtime", () => platformRuntime.close()],
-        ["Feishu setup service", () => feishuSetupService.stop()],
-        ["Feishu connections", () => feishuConnections.stop()],
-        ["runner image prewarm worker", () => imagePrewarmStopped],
-        ["database readiness probe", () => databaseReadinessProbe.close()],
-        ["database pool", () => sql.end({ timeout: DATABASE_CLOSE_TIMEOUT_SECONDS })],
-        ["telemetry", () => shutdownTelemetry()],
-      ]);
     });
     app.log.info(serverEnvironmentSummary(config), "Resolved OpenTag environment");
     app.log.info({ databaseTimeouts: config.databaseTimeouts }, "Resolved database timeouts");
@@ -1419,10 +1428,9 @@ export async function startServer(): Promise<void> {
     uninstallFatalHandlers();
     const failure = await closeServerResources([
       ["application", () => app?.close()],
-      ["cloud model service", () => cloudModelService?.close()],
-      ["cloud billing", () => cloudBilling?.close()],
-      ["database pool", () => databaseSql?.end({ timeout: DATABASE_CLOSE_TIMEOUT_SECONDS })],
-      ["telemetry", () => shutdownTelemetry()],
+      ["cloud model service", () => (app ? undefined : cloudModelService?.close())],
+      ["cloud billing", () => (app ? undefined : cloudBilling?.close())],
+      ["shared resources", () => closeSharedResources()],
     ]).then(
       () => error,
       (cleanupError) =>

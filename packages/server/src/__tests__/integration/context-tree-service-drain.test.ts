@@ -1,6 +1,6 @@
 import { request } from "node:http";
-import Fastify from "fastify";
 import { afterAll, beforeAll, expect, it } from "vitest";
+import { createApp } from "../../app.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { ContextTreeOperationService } from "../../services/agents/context-tree-operation-service.js";
 import { AgentService } from "../../services/agents/index.js";
@@ -45,17 +45,17 @@ it("joins remote preparation and final selection SQL after the HTTP client disco
       },
     },
   );
-  const app = Fastify();
   let poolReleased = false,
     drained = false,
     ownerStopped = false;
-  app.addHook("onClose", async () => {
-    await client.sql.end({ timeout: 1 });
-    poolReleased = true;
-  });
-  app.addHook("onClose", () => {
-    ownerStopped = true;
-    return service.close();
+  const app = createApp({
+    beginShutdown: () => {
+      ownerStopped = true;
+    },
+    closeResources: async () => {
+      await client.sql.end({ timeout: 1 });
+      poolReleased = true;
+    },
   });
   app.post("/tree", async () =>
     service.run(accountId, agentId, {
@@ -85,14 +85,6 @@ it("joins remote preparation and final selection SQL after the HTTP client disco
     expect(poolReleased).toBe(true);
     const saved = await new AgentService(observer.database).getConfigById(accountId, agentId);
     expect(saved.runtimeConfig.contextTrees).toEqual([target]);
-    expect(
-      await service.run(accountId, agentId, {
-        ...target,
-        action: "connect",
-        expectedRevision: config.revision,
-        expectedRuntimeConfigRevision: config.runtimeConfig.revision,
-      }),
-    ).toEqual({ status: "failed", code: "computer_unavailable" });
   } finally {
     resume.resolve();
     peer.destroy();

@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { closeServerResources, startClosingServerResources } from "../shutdown.js";
 
 const state = vi.hoisted(() => ({
   events: [] as string[],
@@ -254,7 +255,11 @@ vi.mock("../services/computers/index.js", () => ({
 }));
 vi.mock("../services/crypto.js", () => ({ ApplicationCipher: class {} }));
 vi.mock("../services/im/index.js", () => ({
-  ImMessageInbox: class {},
+  ImMessageInbox: class {
+    close() {
+      state.events.push("inbox:close");
+    }
+  },
   ImResourceService: class {},
 }));
 vi.mock("../services/im-bindings/feishu/index.js", () => ({
@@ -438,9 +443,11 @@ beforeEach(() => {
     code: "binding_inactive",
   });
   const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+  const closeHooks: (() => unknown)[] = [];
+  state.onClose = () => closeServerResources(closeHooks.map((hook) => ["application hook", hook] as const));
   state.app = {
-    addHook: vi.fn((_name: string, hook: () => Promise<void>) => {
-      state.onClose = hook;
+    addHook: vi.fn((name: string, hook: () => Promise<void>) => {
+      if (name === "onClose") closeHooks.unshift(hook);
     }),
     listen: vi.fn(async () => state.events.push("listen")),
     close: vi.fn(async () => {
@@ -449,10 +456,33 @@ beforeEach(() => {
     }),
     log,
   };
-  state.createApp.mockImplementation((options: unknown) => {
-    state.appOptions = options;
-    return state.app;
-  });
+  state.createApp.mockImplementation(
+    (options: {
+      beginShutdown?: () => unknown;
+      closeResources?: () => unknown;
+      cloudBilling?: { close(): Promise<void> };
+    }) => {
+      state.appOptions = options;
+      const app = state.app as ReturnType<typeof Fastify>;
+      let stopping: Promise<void> | undefined;
+      const begin = () => {
+        stopping ??= startClosingServerResources([["server producers", () => options.beginShutdown?.()]]);
+        void stopping.catch(() => undefined);
+        return stopping;
+      };
+      app.addHook("preClose", async () => {
+        void begin();
+      });
+      app.addHook("onClose", () =>
+        closeServerResources([
+          ["server producers", begin],
+          ["cloud billing", () => options.cloudBilling?.close()],
+          ["shared resources", () => options.closeResources?.()],
+        ]),
+      );
+      return app;
+    },
+  );
   process.env.OPENTAG_DATABASE_URL = "postgres://db-user:db-password@localhost/opentag";
   process.env.OPENTAG_JWT_SECRET = "jwt-secret";
   process.env.OPENTAG_GOOGLE_CLIENT_SECRET = "google-secret";
@@ -625,10 +655,11 @@ describe("Server startup", () => {
     await app.close();
     // The schedule scanner stops first: no new claims and no late hand-off frames once the
     // Runtime and the database begin their own shutdown.
-    expect(state.events.slice(-7)).toEqual([
+    expect(state.events.slice(-8)).toEqual([
       "app:close",
       "scheduler:stop",
       "worker:stop",
+      "inbox:close",
       "platform:close",
       "feishu-setup:stop",
       "feishu-connections:stop",
@@ -795,13 +826,13 @@ describe("Server startup", () => {
     expect(state.events).not.toContain("prewarm:start");
     expect(state.events.slice(-9)).toEqual([
       "app:close",
-      "prewarm:stop",
       "scheduler:stop",
       "worker:stop",
+      "inbox:close",
       "platform:close",
       "feishu-setup:stop",
       "feishu-connections:stop",
-      "sql:end",
+      "prewarm:stop",
       "sql:end",
     ]);
     const logged = JSON.stringify(app.log.error.mock.calls);
@@ -851,9 +882,9 @@ describe("Server startup", () => {
       expect(process.exitCode).toBe(1);
       expect(state.events).not.toContain("ready:listen");
       expect(state.events.indexOf("sql:end")).toBeGreaterThan(state.events.indexOf("scheduler:stop"));
-      expect(state.events.indexOf("billing:close")).toBeGreaterThan(state.events.indexOf("sql:end"));
+      expect(state.events.indexOf("billing:close")).toBeLessThan(state.events.indexOf("sql:end"));
       expect(state.events.slice(-3)).toEqual(["billing:close", "sql:end", "telemetry:close"]);
-      expect(state.shutdownTelemetry).toHaveBeenCalledTimes(2);
+      expect(state.shutdownTelemetry).toHaveBeenCalledOnce();
       expect(report).toHaveBeenCalledOnce();
       const logged = JSON.stringify(report.mock.calls);
       expect(logged).toContain("Server startup and resource cleanup failed");

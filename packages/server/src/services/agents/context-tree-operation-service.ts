@@ -18,32 +18,12 @@ import type {
 
 /** Validate remotely first, then compare revisions again inside the Agent update transaction. */
 export class ContextTreeOperationService {
-  #closed = false;
-  #closing: Promise<void> | undefined;
-  readonly #work = new Set<Promise<ContextTreeOperationResponse>>();
   constructor(
     readonly agents: Pick<AgentService, "getConfigById" | "updateContextTreeSelection">,
     readonly registry: Pick<ConnectionRegistry, "currentInstanceId" | "supportsCapability">,
     readonly github: GitHubContextTreeOperationRunner,
   ) {}
-  close(): Promise<void> {
-    this.#closed = true;
-    this.#closing ??= Promise.allSettled([...this.#work]).then(() => undefined);
-    return this.#closing;
-  }
-
-  run(userId: string, agentId: string, raw: ContextTreeOperationRequest): Promise<ContextTreeOperationResponse> {
-    if (this.#closed) return Promise.resolve({ status: "failed", code: "computer_unavailable" });
-    const operation = this.#run(userId, agentId, raw);
-    this.#work.add(operation);
-    void operation.then(
-      () => this.#work.delete(operation),
-      () => this.#work.delete(operation),
-    );
-    return operation;
-  }
-
-  async #run(userId: string, agentId: string, raw: ContextTreeOperationRequest): Promise<ContextTreeOperationResponse> {
+  async run(userId: string, agentId: string, raw: ContextTreeOperationRequest): Promise<ContextTreeOperationResponse> {
     const input = ContextTreeOperationRequestSchema.parse(raw);
     const config = await this.agents.getConfigById(userId, agentId);
     if (

@@ -467,3 +467,13 @@ CloudModel/billing preClose cannot block subsequent connection teardown. Batch 3
 exact review found no actionable defect; batch 35 source review found none and
 exact review remains pending. Main wiring and actual signal/fault acceptance are
 still open IM-F3. Totals remain 36/37 fixes and 9/9 recorded simplifications.
+
+
+[Main shutdown composition](verification/sql-caller-repairs-36.md) passes 74
+Docker cases, 23 native PostgreSQL, and Server build. Main starts all stop ports
+before child teardown and disposes shared resources once after actual work. Two
+redundant HTTP service owners are deleted; the shared app owner now covers their
+lost-peer final SQL. Batch 35 exact review found no actionable defect; batch 36
+source review found no composition defect. Actual Server signal/fault tests and
+the pending-listen/prewarm boundary remain open IM-F3. Fixed/simplified totals
+remain 36/37 and 9/9 until that final acceptance.

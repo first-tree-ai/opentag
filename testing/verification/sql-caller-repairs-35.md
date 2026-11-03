@@ -41,7 +41,7 @@ were corrected, with no runtime test repetition. Local logs/manifests retain all
 failed and successful evidence; PGlite is not counted as native PostgreSQL.
 
 Independent source review found no actionable regression; exact-commit review
-remains pending. Batch 34 exact review at 481ff05a found no actionable defect.
+at 429b1607 also found no actionable defect. Batch 34 exact review at 481ff05a found no actionable defect.
 Actual main producer/finalizer wiring and full Server signal/fault acceptance
 still keep IM-F3 open. No CI, merge, deployment or private billing implementation
 coverage is claimed.

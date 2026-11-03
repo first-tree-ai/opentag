@@ -177,6 +177,7 @@ async function fixture() {
     modelGrants: grants,
     modelBaseUrl: "https://server.example.test/api/v1/cloud-model",
   });
+  const diagnostics: string[] = [];
   const worker = (options: { afterClaimRowLocked?: () => Promise<void> } = {}) => {
     const instance = new ImDeliveryWorker({
       database: client.database,
@@ -190,12 +191,13 @@ async function fixture() {
         },
         ensureEnvironmentAllocated: async () => "ready",
       },
+      onDiagnostic: (code) => diagnostics.push(code),
       ...options,
     });
     cleanup.push(async () => instance.stop());
     return instance;
   };
-  return { accountId, agent, cloud, a, b, enqueue, hub, fence, grants, owner, worker };
+  return { accountId, agent, cloud, a, b, enqueue, hub, fence, grants, owner, worker, diagnostics };
 }
 
 type Stack = Awaited<ReturnType<typeof fixture>>;
@@ -406,8 +408,12 @@ describe("E6 Cloud Session concurrency on PostgreSQL and WebSockets", { timeout:
     const a1 = await stack.enqueue(stack.a);
     const a2 = await stack.enqueue(stack.a);
     const b1 = await stack.enqueue(stack.b);
-    await Promise.all(Array.from({ length: 4 }, () => stack.worker().runOnce()));
-    const [activeA, activeB] = await Promise.all([a.start(), b.start()]);
+    const workers = Array.from({ length: 4 }, () => stack.worker());
+    for (const worker of workers) worker.start();
+    const [activeA, activeB] = await Promise.all([a.start(), b.start()]).finally(() =>
+      Promise.all(workers.map((worker) => worker.stop())),
+    );
+    expect(stack.diagnostics).not.toContain("IM_DELIVERY_WORKER_SCHEDULING_FAILED");
     expect(activeA.request.deliveryId).toBe(a1);
     expect(activeB.request.deliveryId).toBe(b1);
     expect((await row(a2)).dispatchRequestId).toBeNull();

@@ -204,3 +204,33 @@ evidence are retained as `heartbeat-b8-*` and `browser-b8-*` workspace artifacts
 The original native full-command failure and early Cloud steer timing limitation
 above remain unchanged. These bounded local passes do not establish CI or approval
 for the new merge commit.
+
+## Cloud concurrency CI follow-up
+
+At `a207ee72`, CI run `41723474877`, attempt 1, reports **1,366 pass / one
+failure** across 122 PostgreSQL integration files. The four-Worker Cloud Session
+case waits five seconds for a missing `delivery:run`; the other nine cases in its
+file pass. This failure remains recorded independently of the earlier Cloud steer
+timeout and original nonzero native command.
+
+Both Sessions belong to one Agent. Claims use the existing nonblocking Agent
+advisory fence; a contending bounded scan may return without claiming either
+Session. The test invoked each Worker only once and then stopped scheduling.
+It now starts the four real Workers, retaining their existing polling interval,
+and joins all four stops on success or failure before checking results. The
+original frame deadline, exact A1/B1 selection, undispatched A2, one frame per
+Session and two grants remain; a scheduling-failure diagnostic also fails the test.
+
+Docker controls hold the real Agent fence until all first-wave scans return:
+all three deliveries remain pending with zero attempts and no dispatch or error,
+and neither Runner receives a frame. Releasing the fence without further polling
+reproduces the missing-frame failure. With actual Worker polling, release admits
+each Session once and preserves the exact assertions. The final complete file
+passes **10/10**, and the controlled polling case passes separately. The two
+one-case controls filter the other nine cases rather than disabling them.
+
+The natural unchanged file also passed 10/10 locally; that does not erase the CI
+failure. These controls demonstrate the invalid single-pass progress assumption,
+not the precise interleaving on the CI runner. Production code, database semantics
+and budgets are unchanged. Source hashes, commands and logs are retained in
+`heartbeat-2201-*` workspace artifacts; the new head still requires its own CI.

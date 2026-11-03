@@ -26,7 +26,11 @@ import {
   users,
 } from "../../db/schema/index.js";
 import { markExternalCallTimedOut, traceExternalCall } from "../../observability/external-call-logger.js";
-import { type PerformanceLogger, updateCurrentPerformanceContext } from "../../observability/performance-logger.js";
+import {
+  type PerformanceLogger,
+  type PerformanceOperationHandle,
+  updateCurrentPerformanceContext,
+} from "../../observability/performance-logger.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import type { DeliveryDispatchStatus, RuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
 import type { RuntimeBusinessContext } from "../../runtime/runtime-session.js";
@@ -221,6 +225,14 @@ export class CloudDeliveryOwner {
       timer: ReturnType<typeof setTimeout>;
     }
   >();
+  readonly #pendingDeliveryRunHandles = new Map<
+    string,
+    {
+      connectionId: string;
+      deliveryId: string;
+      handle: PerformanceOperationHandle;
+    }
+  >();
 
   readonly #onTurnActivity: CloudDeliveryOwnerOptions["onTurnActivity"];
 
@@ -382,12 +394,13 @@ export class CloudDeliveryOwner {
     });
     assertCloudDispatchStatus(dispatch);
     await this.#assertEnvironmentStillOwned(row, request, input.inputHash);
-    await this.#sendDeliveryRunFrame(row.id, socket, request, input.computerId);
+    await this.#sendDeliveryRunFrame(row.id, connection.connectionId, socket, request, input.computerId);
     await this.#recordActivity(row.id);
   }
 
   async #sendDeliveryRunFrame(
     sandboxId: string,
+    connectionId: string,
     socket: RunnerControlSocket,
     request: DirectImMessageDeliveryRequest,
     computerId: string,
@@ -397,7 +410,7 @@ export class CloudDeliveryOwner {
       this.#perfLogger,
       {
         provider: "sandbox-runner",
-        operation: "external.sandbox-runner.deliveryRun",
+        operation: "external.sandbox-runner.deliveryDispatch",
         agentId: request.agentId,
         computerId,
         sessionId: request.sessionId,
@@ -405,12 +418,20 @@ export class CloudDeliveryOwner {
         sandboxId,
       },
       async () => {
-        attempts += 1;
-        const sent = this.#hub.sendToCurrent(sandboxId, socket, {
-          type: "delivery:run",
-          requestId: request.requestId,
-          delivery: request,
-        });
+        const sent = this.#hub.sendToCurrent(
+          sandboxId,
+          socket,
+          {
+            type: "delivery:run",
+            requestId: request.requestId,
+            delivery: request,
+          },
+          {
+            onAttempt: () => {
+              attempts += 1;
+            },
+          },
+        );
         if (!sent) throw new CloudDeliveryDispatchError("send_failed", "The Runner control channel is not writable");
       },
       {
@@ -425,6 +446,66 @@ export class CloudDeliveryOwner {
         fallbackErrorCode: "CLOUD_DELIVERY_DISPATCH_FAILED",
       },
     );
+    this.#startPendingDeliveryRunHandle(connectionId, sandboxId, computerId, request);
+  }
+
+  #startPendingDeliveryRunHandle(
+    connectionId: string,
+    sandboxId: string,
+    computerId: string,
+    request: DirectImMessageDeliveryRequest,
+  ): void {
+    const perfLogger = this.#perfLogger;
+    if (!perfLogger?.config.enabled) return;
+    const existing = this.#pendingDeliveryRunHandles.get(request.requestId);
+    if (existing) {
+      this.#pendingDeliveryRunHandles.delete(request.requestId);
+      existing.handle.complete({ superseded: true, attemptCount: 1, retryCount: 0 });
+    }
+    while (this.#pendingDeliveryRunHandles.size >= 512) {
+      const oldestKey = this.#pendingDeliveryRunHandles.keys().next().value;
+      if (oldestKey === undefined) break;
+      const oldest = this.#pendingDeliveryRunHandles.get(oldestKey);
+      this.#pendingDeliveryRunHandles.delete(oldestKey);
+      oldest?.handle.fail(
+        Object.assign(new Error("Delivery run telemetry evicted"), { code: "RUNNER_DELIVERY_RUN_EVICTED" }),
+        { attemptCount: 1, retryCount: 0 },
+        "RUNNER_DELIVERY_RUN_EVICTED",
+      );
+    }
+    const handle = perfLogger.startOperation({
+      module: "external",
+      category: "external",
+      operation: "external.sandbox-runner.deliveryRun",
+      agentId: request.agentId,
+      computerId,
+      sessionId: request.sessionId,
+      deliveryId: request.deliveryId,
+      sandboxId,
+      attributes: {
+        provider: "sandbox-runner",
+        externalService: "sandbox-runner",
+      },
+    });
+    this.#pendingDeliveryRunHandles.set(request.requestId, {
+      connectionId,
+      deliveryId: request.deliveryId,
+      handle,
+    });
+  }
+
+  #settlePendingDeliveryRunHandle(
+    connection: CloudConnectionRecord,
+    frame: { deliveryId: string; requestId: string; turnId: string },
+  ): void {
+    const pending = this.#pendingDeliveryRunHandles.get(frame.requestId);
+    if (!pending || pending.connectionId !== connection.connectionId || pending.deliveryId !== frame.deliveryId) return;
+    this.#pendingDeliveryRunHandles.delete(frame.requestId);
+    pending.handle.complete({
+      turnId: frame.turnId,
+      attemptCount: 1,
+      retryCount: 0,
+    });
   }
 
   /**
@@ -469,6 +550,7 @@ export class CloudDeliveryOwner {
       turnId: frame.turnId,
     });
     if (!this.#isExactConnection(connection)) return;
+    this.#settlePendingDeliveryRunHandle(connection, frame);
     const scopeCheck = await this.#loadDispatchForScope(connection, frame.deliveryId, frame.requestId);
     if (!scopeCheck) {
       this.#sendVerified(connection, frame.requestId, "rejected", "dispatch_unknown");
@@ -542,6 +624,7 @@ export class CloudDeliveryOwner {
       turnId: frame.turnId,
     });
     if (!this.#isExactConnection(connection)) return;
+    this.#settlePendingDeliveryRunHandle(connection, frame);
     const allocation = await this.#loadCurrentAllocation(connection, { allowReleasing: true });
     if (!allocation) {
       this.#sendVerified(connection, frame.requestId, "rejected", "stale_generation");
@@ -1417,6 +1500,17 @@ export class CloudDeliveryOwner {
       // An unanswered query is unknown, not "none": never settle unknown-offline here; the
       // Runner's journal re-sends its report on reconnect and recovery retries later.
       pending.resolve(undefined);
+    }
+    for (const [requestId, pending] of [...this.#pendingDeliveryRunHandles.entries()]) {
+      if (pending.connectionId !== connectionId) continue;
+      this.#pendingDeliveryRunHandles.delete(requestId);
+      pending.handle.fail(
+        Object.assign(new Error("Runner connection detached before delivery receipt"), {
+          code: "RUNNER_CONNECTION_DETACHED",
+        }),
+        { attemptCount: 1, retryCount: 0 },
+        "RUNNER_CONNECTION_DETACHED",
+      );
     }
     this.#credentials?.owner.closeConnection(connectionId, "connection_replaced");
     for (const [turnId, ownership] of [...this.#grantOwnershipByTurn.entries()]) {

@@ -478,6 +478,7 @@ describe("Feishu adapter", () => {
     };
     class FakeWsClient {
       static instances: FakeWsClient[] = [];
+      static startCalls = 0;
       readonly options: {
         onReady?: () => void;
         onError?: (error: unknown) => void;
@@ -489,6 +490,7 @@ describe("Feishu adapter", () => {
         FakeWsClient.instances.push(this);
       }
       async start(): Promise<void> {
+        FakeWsClient.startCalls += 1;
         this.options.onReady?.();
       }
       close(): void {}
@@ -501,11 +503,13 @@ describe("Feishu adapter", () => {
     try {
       const module = await import("../services/im-bindings/feishu/adapter.js");
       const adapter = new module.FeishuAdapter({ appId: "cli_default", appSecret: "secret", teamId: null });
+      expect(FakeWsClient.startCalls).toBe(0);
       await expect(adapter.validateBinding()).resolves.toEqual({
         externalAppId: "cli_default",
         externalTeamId: "cli_default",
         externalBotId: "ou_default",
       });
+      expect(FakeWsClient.startCalls).toBe(1);
       const reconnecting = vi.fn();
       const reconnected = vi.fn();
       const error = vi.fn();
@@ -525,6 +529,26 @@ describe("Feishu adapter", () => {
       await adapter.channel.disconnect();
       expect(outbound.connect).toHaveBeenCalledTimes(1);
       expect(outbound.disconnect).toHaveBeenCalledTimes(1);
+
+      // Late outbound.connect() resolution after abort + disconnect is quarantined
+      let resolveOutboundConnect!: () => void;
+      outbound.connect.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveOutboundConnect = resolve;
+          }),
+      );
+      outbound.disconnect.mockClear();
+      const abortController = new AbortController();
+      const abortedAdapter = new module.FeishuAdapter({ appId: "cli_aborted", appSecret: "secret", teamId: null });
+      const pendingValidate = abortedAdapter.validateBinding(abortController.signal);
+      abortController.abort(new Error("FEISHU_CONNECT_CANCELLED"));
+      await expect(pendingValidate).rejects.toThrow("FEISHU_CONNECT_CANCELLED");
+      await abortedAdapter.channel.disconnect();
+      resolveOutboundConnect();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(abortedAdapter.channel.botIdentity).toBeUndefined();
+      expect(outbound.disconnect.mock.calls.length).toBeGreaterThanOrEqual(2);
     } finally {
       vi.doUnmock("@larksuiteoapi/node-sdk");
       vi.resetModules();

@@ -470,6 +470,7 @@ class ReliableFeishuChannel implements FeishuChannel {
   #resolveReady: () => void = () => undefined;
   #rejectReady: (error: unknown) => void = () => undefined;
   #started = false;
+  #closed = false;
 
   constructor(input: {
     appId: string;
@@ -505,7 +506,9 @@ class ReliableFeishuChannel implements FeishuChannel {
       autoReconnect: true,
       source: "opentag",
       handshakeTimeoutMs: 15_000,
-      onReady: () => this.#resolveReady(),
+      onReady: () => {
+        if (!this.#closed) this.#resolveReady();
+      },
       onError: (error) => {
         this.#rejectReady(new Error("FEISHU_CONNECTION_ERROR"));
         this.#handlers.error?.(error);
@@ -516,27 +519,25 @@ class ReliableFeishuChannel implements FeishuChannel {
   }
 
   async connect(signal?: AbortSignal): Promise<void> {
-    if (signal?.aborted) throw signal.reason;
+    if (this.#closed) throw new Error("FEISHU_CHANNEL_CLOSED");
+    if (signal?.aborted) throw signal.reason ?? new Error("FEISHU_CONNECT_ABORTED");
     if (!this.#started) {
       this.#started = true;
       void this.#wsClient.start({ eventDispatcher: this.#dispatcher });
     }
+    const state = { cancelled: false };
+    const connectPromise = this.#connectAndWaitReady(state, signal);
+    if (!signal) {
+      await connectPromise;
+      return;
+    }
     let onAbort: (() => void) | undefined;
     try {
-      const connectPromise = (async () => {
-        await this.#outbound.connect();
-        this.botIdentity = this.#outbound.botIdentity;
-        await this.#ready;
-      })();
-      if (!signal) {
-        await connectPromise;
-        return;
-      }
       await Promise.race([
         connectPromise,
         new Promise<never>((_, reject) => {
           onAbort = () => {
-            this.#wsClient.close({ force: true });
+            this.#quarantineAbortedConnect(state);
             reject(signal.reason ?? new Error("FEISHU_CONNECT_ABORTED"));
           };
           if (signal.aborted) onAbort();
@@ -544,11 +545,46 @@ class ReliableFeishuChannel implements FeishuChannel {
         }),
       ]);
     } finally {
-      if (onAbort && signal) signal.removeEventListener("abort", onAbort);
+      if (onAbort) signal.removeEventListener("abort", onAbort);
     }
   }
 
+  async #connectAndWaitReady(state: { cancelled: boolean }, signal?: AbortSignal): Promise<void> {
+    const outboundPromise = this.#outbound.connect();
+    void outboundPromise.then(
+      async () => {
+        if (state.cancelled || this.#closed || signal?.aborted) {
+          this.botIdentity = undefined;
+          await this.#outbound.disconnect().catch(() => undefined);
+        }
+      },
+      () => undefined,
+    );
+    await outboundPromise;
+    await this.#assertConnectActive(state, signal);
+    await this.#ready;
+    await this.#assertConnectActive(state, signal);
+    this.botIdentity = this.#outbound.botIdentity;
+  }
+
+  async #assertConnectActive(state: { cancelled: boolean }, signal?: AbortSignal): Promise<void> {
+    if (!state.cancelled && !this.#closed && !signal?.aborted) return;
+    this.botIdentity = undefined;
+    await this.disconnect().catch(() => undefined);
+    throw signal?.reason ?? new Error("FEISHU_CONNECT_ABORTED");
+  }
+
+  #quarantineAbortedConnect(state: { cancelled: boolean }): void {
+    state.cancelled = true;
+    this.#closed = true;
+    this.botIdentity = undefined;
+    this.#wsClient.close({ force: true });
+    void this.#outbound.disconnect().catch(() => undefined);
+  }
+
   async disconnect(): Promise<void> {
+    this.#closed = true;
+    this.botIdentity = undefined;
     this.#wsClient.close({ force: true });
     await this.#outbound.disconnect();
   }

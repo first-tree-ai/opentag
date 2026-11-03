@@ -1030,6 +1030,224 @@ describe("external call performance logging", () => {
     });
   });
 
+  it("traces CloudDeliveryOwner deliveryDispatch (attemptCount 0 on stale socket, 1 on send) and settles deliveryRun on handleDeliveryReceived", async () => {
+    const { logs, perfLogger } = createLogCollector();
+    const hub = new RunnerHub({ performanceLogger: perfLogger });
+    const fence = new CloudRuntimeFence();
+    const scope = {
+      sandboxId: "00000000-0000-4000-8000-000000000811",
+      sessionId: "00000000-0000-4000-8000-000000000812",
+      environmentGeneration: 1,
+      resourceName: "projects/p/locations/l/instances/i-811",
+    };
+    let throwOnSend = false;
+    const socket = {
+      send: () => {
+        if (throwOnSend) throw new Error("socket closed");
+      },
+      close: () => undefined,
+    };
+    hub.attach(scope, socket);
+    hub.markReady(
+      scope,
+      {
+        sandboxName: "i-811",
+        rootfs: "default",
+        nodeVersion: "24.0.0",
+        runnerVersion: "1.0.0",
+        piVersion: "1.0.0",
+        reportedAt: "2026-01-01T00:00:00.000Z",
+      },
+      socket,
+    );
+    const conn = fence.attach({
+      computerId: "comp-811",
+      installationId: "inst-811",
+      scope,
+      socket,
+      executionEligible: true,
+    });
+    const sandboxRow = {
+      id: scope.sandboxId,
+      sessionId: scope.sessionId,
+      environmentGeneration: 1,
+      currentResourceName: scope.resourceName,
+      currentResourceUid: "uid-811",
+      lifecycle: "ready",
+      idleReclaimAt: null,
+    };
+    let detachDuringSecondRead = false;
+    let managedSelectCalls = 0;
+    const fakeDispatchDb = {
+      from: vi.fn().mockReturnThis(),
+      innerJoin: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      limit: vi.fn(async () => {
+        managedSelectCalls += 1;
+        if (detachDuringSecondRead && managedSelectCalls === 2) {
+          hub.detach(scope.sandboxId, socket);
+        }
+        return [
+          {
+            sandbox: sandboxRow,
+            sessionEndedAt: null,
+            agentStatus: "active",
+            bindingStatus: "active",
+            suspendedAt: null,
+            computerId: "comp-811",
+            ownerAccountId: "acc-811",
+            agentOwnerId: "acc-811",
+            runtimeProvider: "pi",
+          },
+        ];
+      }),
+    };
+    const owner = new CloudDeliveryOwner({
+      database: {
+        select: () => fakeDispatchDb,
+      } as never,
+      custody: {
+        beginDeliveryDispatch: vi.fn(async () => "dispatched"),
+        releaseDeliveryDispatch: vi.fn(async () => undefined),
+      } as never,
+      fence,
+      hub,
+      modelBaseUrl: "https://server.example.com/api/v1/cloud-model",
+      modelGrants: {
+        defaultModel: async () => "gpt-4o",
+        isModelAllowed: async () => true,
+        issue: async () => undefined,
+        revokeExecution: () => 0,
+      },
+      performanceLogger: perfLogger,
+    });
+    const req = {
+      type: "im:deliver" as const,
+      requestId: "00000000-0000-4000-8000-000000000813",
+      deliveryId: "00000000-0000-4000-8000-000000000814",
+      imMessageId: "00000000-0000-4000-8000-000000000815",
+      sessionId: scope.sessionId,
+      agentId: "00000000-0000-4000-8000-000000000816",
+      placementGeneration: 1,
+      attention: "direct" as const,
+      content: {
+        kind: "text" as const,
+        text: "hello",
+        providerRef: {
+          provider: "feishu" as const,
+          teamBrand: "feishu" as const,
+          appId: "app",
+          botOpenId: "bot",
+          chatId: "chat",
+          messageId: "msg",
+        },
+      },
+      runtime: { model: "gpt-4o" } as never,
+      deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+    };
+
+    // 1) Stale socket detached before sendToCurrent -> attemptCount: 0
+    detachDuringSecondRead = true;
+    await expect(
+      owner.dispatchDelivery({
+        computerId: "comp-811",
+        inputHash: "a".repeat(64),
+        installationId: "inst-811",
+        request: req,
+      }),
+    ).rejects.toMatchObject({ code: "send_failed" });
+    expect(logs.at(-1)?.payload).toMatchObject({
+      operation: "external.sandbox-runner.deliveryDispatch",
+      outcome: "failed",
+      attemptCount: 0,
+      retryCount: 0,
+    });
+
+    // 2) Reattach socket, throw on socket.send -> attemptCount: 1
+    logs.length = 0;
+    detachDuringSecondRead = false;
+    hub.attach(scope, socket);
+    hub.markReady(
+      scope,
+      {
+        sandboxName: "i-811",
+        rootfs: "default",
+        nodeVersion: "24.0.0",
+        runnerVersion: "1.0.0",
+        piVersion: "1.0.0",
+        reportedAt: "2026-01-01T00:00:00.000Z",
+      },
+      socket,
+    );
+    throwOnSend = true;
+    await expect(
+      owner.dispatchDelivery({
+        computerId: "comp-811",
+        inputHash: "a".repeat(64),
+        installationId: "inst-811",
+        request: req,
+      }),
+    ).rejects.toMatchObject({ code: "send_failed" });
+    expect(logs.at(-1)?.payload).toMatchObject({
+      operation: "external.sandbox-runner.deliveryDispatch",
+      outcome: "failed",
+      attemptCount: 1,
+      retryCount: 0,
+    });
+
+    // 3) Reattach socket, send succeeds -> deliveryDispatch completes and deliveryRun settles on handleDeliveryReceived
+    logs.length = 0;
+    throwOnSend = false;
+    hub.attach(scope, socket);
+    hub.markReady(
+      scope,
+      {
+        sandboxName: "i-811",
+        rootfs: "default",
+        nodeVersion: "24.0.0",
+        runnerVersion: "1.0.0",
+        piVersion: "1.0.0",
+        reportedAt: "2026-01-01T00:00:00.000Z",
+      },
+      socket,
+    );
+    await owner.dispatchDelivery({
+      computerId: "comp-811",
+      inputHash: "a".repeat(64),
+      installationId: "inst-811",
+      request: req,
+    });
+    expect(
+      logs.find(
+        (l) => l.payload.operation === "external.sandbox-runner.deliveryDispatch" && l.payload.outcome === "completed",
+      )?.payload,
+    ).toMatchObject({
+      attemptCount: 1,
+      retryCount: 0,
+    });
+    expect(
+      logs.find(
+        (l) => l.payload.operation === "external.sandbox-runner.deliveryRun" && l.payload.outcome === "started",
+      ),
+    ).toBeDefined();
+
+    await owner.handleDeliveryReceived(conn, {
+      deliveryId: req.deliveryId,
+      requestId: req.requestId,
+      turnId: "turn-811",
+    });
+    expect(
+      logs.find(
+        (l) => l.payload.operation === "external.sandbox-runner.deliveryRun" && l.payload.outcome === "completed",
+      )?.payload,
+    ).toMatchObject({
+      deliveryId: req.deliveryId,
+      turnId: "turn-811",
+      attemptCount: 1,
+      retryCount: 0,
+    });
+  });
+
   it("propagates agentId, sessionId, deliveryId, turnId, and sandboxId across Turn execution entrypoints into external call logs", async () => {
     const chunks: string[] = [];
     const mcpTokens = new RuntimeMcpGatewayTokenStore();

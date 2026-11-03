@@ -561,10 +561,16 @@ export class RunnerHub {
    * Send a frame to exactly one current connection (e.g. a refreshed credential). Never reaches a
    * superseded socket; a failed write is a dead connection, not something to swallow.
    */
-  sendToCurrent(sandboxId: string, socket: RunnerControlSocket, frame: RunnerServerFrame): boolean {
+  sendToCurrent(
+    sandboxId: string,
+    socket: RunnerControlSocket,
+    frame: RunnerServerFrame,
+    options?: { onAttempt?: () => void },
+  ): boolean {
     const entry = this.#entries.get(sandboxId);
     if (!entry || entry.socket !== socket) return false;
     try {
+      options?.onAttempt?.();
       entry.socket.send(frame);
       return true;
     } catch {

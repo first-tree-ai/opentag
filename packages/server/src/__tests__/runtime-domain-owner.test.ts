@@ -1868,3 +1868,68 @@ it("close joins an already-admitted completion callback", async () => {
     await f.owner.close();
   }
 });
+
+it.each(["getDelivery", "getTurn"] as const)("close joins an admitted %s custody read", async (method) => {
+  const f = await ownerFixture();
+  const entered = deferred(),
+    release = deferred();
+  vi.spyOn(f.custody, method).mockImplementation(async () => {
+    entered.resolve();
+    await release.promise;
+    return undefined;
+  });
+  const result = f.owner[method](randomUUID());
+  try {
+    await entered.promise;
+    let drained = false;
+    const closing = f.owner.close().then(() => {
+      drained = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(drained).toBe(false);
+    release.resolve();
+    expect(await result).toBeUndefined();
+    await closing;
+    await expect(f.owner[method](randomUUID())).rejects.toMatchObject({ code: "stopped" });
+  } finally {
+    release.resolve();
+    await result;
+    await f.owner.close();
+  }
+});
+
+it("close joins complete Session-message admission before it creates a pending request", async () => {
+  const f = await ownerFixture();
+  const entered = deferred(),
+    release = deferred();
+  const result = f.owner
+    .requestSessionMessageDelivery(
+      f.computerId,
+      f.instanceId,
+      sessionMessageDelivery(),
+      undefined,
+      async (operation) => {
+        entered.resolve();
+        await release.promise;
+        return { admitted: true, result: operation(() => undefined) };
+      },
+    )
+    .catch((error: unknown) => error);
+  try {
+    await entered.promise;
+    let drained = false;
+    const closing = f.owner.close().then(() => {
+      drained = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(drained).toBe(false);
+    release.resolve();
+    await closing;
+    expect(await result).toMatchObject({ code: "stopped" });
+    expect(f.frames).toEqual([]);
+  } finally {
+    release.resolve();
+    await result;
+    await f.owner.close();
+  }
+});

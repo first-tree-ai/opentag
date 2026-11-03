@@ -266,13 +266,13 @@ export class RuntimeDomainOwner {
   getDelivery(deliveryId: string): Promise<AcceptedDeliveryRecord | undefined> {
     if (this.#closed)
       return Promise.reject(new RuntimeDomainRequestError("stopped", "The runtime domain owner stopped"));
-    return this.#custody.getDelivery(deliveryId);
+    return this.#track(this.#custody.getDelivery(deliveryId));
   }
 
   getTurn(turnId: string): Promise<RecordedTurnRecord | undefined> {
     if (this.#closed)
       return Promise.reject(new RuntimeDomainRequestError("stopped", "The runtime domain owner stopped"));
-    return this.#custody.getTurn(turnId);
+    return this.#track(this.#custody.getTurn(turnId));
   }
 
   close(): Promise<void> {
@@ -516,29 +516,31 @@ export class RuntimeDomainOwner {
   ): Promise<SessionMessageDeliveryResult> {
     if (this.#closed)
       return Promise.reject(new RuntimeDomainRequestError("stopped", "The runtime domain owner stopped"));
-    return this.#withDispatchAdmission(
-      admission,
-      (admissionDispatched) =>
-        this.#request(
-          "session-message",
-          computerId,
-          instanceId,
-          request,
-          hashTuple([
-            request.messageId,
-            sessionMessageRequestOriginKey(request),
-            request.targetSessionId,
-            request.agentId,
-            request.placementGeneration,
-            request.content,
-            request.runtime,
-          ]),
-          undefined,
-          undefined,
-          admissionDispatched,
-          signal,
-        ) as Promise<SessionMessageDeliveryResult>,
-      onDispatched,
+    return this.#track(
+      this.#withDispatchAdmission(
+        admission,
+        (admissionDispatched) =>
+          this.#request(
+            "session-message",
+            computerId,
+            instanceId,
+            request,
+            hashTuple([
+              request.messageId,
+              sessionMessageRequestOriginKey(request),
+              request.targetSessionId,
+              request.agentId,
+              request.placementGeneration,
+              request.content,
+              request.runtime,
+            ]),
+            undefined,
+            undefined,
+            admissionDispatched,
+            signal,
+          ) as Promise<SessionMessageDeliveryResult>,
+        onDispatched,
+      ),
     );
   }
 

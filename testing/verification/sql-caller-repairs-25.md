@@ -34,3 +34,13 @@ Actual Runtime route/main wiring still does not await this port. RuntimeSession,
 Runner, provider transport, remaining background/high-level owners and the final
 pool ordering remain IM-F3. Independent review follows the exact commit; no full
 Server, CI, merge, deployment or online acceptance is inferred.
+
+Independent review found a P2 group missed by the first task owner: admitted
+getDelivery/getTurn reads and the complete Session-message admission/result
+Promise did not use the existing work set. All three now use that same track
+port; no collection or state machine was added. Three new gated unit cases prove
+that close waits for the reads/admission and a late admission sends no frame.
+The complete four-file Docker matrix passes all 73 cases, including both native
+custody controls; the 59-case owner suite also passes on host. Across the batch
+and correction, 73 distinct cases (two native PG) have 447 passing executions.
+The corrected source is captured as batch-25b and requires exact-commit review.

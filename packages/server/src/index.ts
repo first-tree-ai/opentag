@@ -72,13 +72,7 @@ import {
   DatabaseAgentOwnerResolver,
 } from "./services/agents/index.js";
 import { SlackAutoSetupService } from "./services/agents/slack-auto-setup-service.js";
-import {
-  AuthService,
-  ConnectCodeService,
-  DevBrowserAuthService,
-  formatStartupError,
-  PostAuthenticationService,
-} from "./services/auth/index.js";
+import { AuthService, ConnectCodeService, DevBrowserAuthService, formatStartupError } from "./services/auth/index.js";
 import { createChannelTargetPoller } from "./services/channel-target/index.js";
 import { loadCloudBilling } from "./services/cloud-billing-module.js";
 import { CloudCallStore } from "./services/cloud-call-store.js";
@@ -596,7 +590,6 @@ export async function startServer(): Promise<void> {
       deadlineMs: DATABASE_READINESS_TIMEOUT_MS,
       log: { debug: (fields, message) => app?.log.debug(fields, message) },
     });
-    const postAuthentication = new PostAuthenticationService(database);
     const imCallPolicy = new ExternalCallPolicy({
       allowedHosts: ["slack.com", "files.slack.com", "open.feishu.cn", "open.larksuite.com"],
       maxConcurrency: 16,
@@ -621,9 +614,6 @@ export async function startServer(): Promise<void> {
     });
     const dev = config.devAuth ? new DevBrowserAuthService(database, config.devAuth.email) : undefined;
     const betterAuth = createBetterAuth(database, {
-      onSessionCreating: async (userId) => {
-        await postAuthentication.ensureAccountReady(userId);
-      },
       publicUrl: config.publicUrl,
       secret: config.betterAuthSecret,
       secureCookies: isHostedEnvironment(config.environment),

@@ -30,10 +30,11 @@ A repaired original case does not close another extension of the same finding.
 | 5b — Stop, drain and owner resources | IM-F3 remaining, AG-F9 | Pending revalidation of actual owners; stop admission and join underlying work, not only deadline wrappers. Reuse existing owner/cursor stores. |
 | 5c — Client Context Tree resources | AG-F7, AG-F8 | [Verified locally](verification/sql-caller-repairs-11.md): memoized cleanup and bounded UTF-8 collection; 94 distinct cases, 27 repeated in Docker. AG-F8 moves from batch 8 to share the same client validation scope. |
 | 5d — Setup authority and read simplification | AG-F4; AG-S1, AG-S2 | [Verified locally](verification/sql-caller-repairs-12.md): exact callback target before send/success; shared one-query summary and direct creation replay; 162 distinct cases (21 native PG). |
-| 6 — Auth and OAuth recovery | AA-F1, AA-F2, BG-F2, MC-F1, AG-F13 | Pending revalidation against current Better Auth/MCP changes. Use official transactions/transport and distinguish preparation from uncertain exchange. |
+| 6a — Account/auth | AA-F1, AA-F2; AA-S1 | [Verified locally](verification/sql-caller-repairs-13.md): official adapter transaction and scoped internal Account read, precise errors and simpler setup; 199 distinct cases (106 native PG). |
+| 6b — MCP OAuth recovery | BG-F2, MC-F1, AG-F13 | Pending current-source revalidation; distinguish preparation from uncertain exchange and bound discovery. |
 | 7 — Stable Cloud ownership/recovery | SB-F1, SB-F2, AG-F10 | Pending concrete latest-source resource/placement/lock design; preserve physical UID facts and workspace compatibility. |
 | 8 — Bounded reads, bodies and operator cleanup | IM-F7, BG-F4, AG-F6, OP-F1 | Pending revalidation; reuse existing limits/stream cancellation/owned container cleanup. |
-| With owning batch — Simplification | AA-S1, AG-S3, AG-S4, AG-S5, AG-S6, DW-S1 | Pending current-source revalidation; remove demonstrated redundancy while retaining distinct admission, refresh, quota and recovery safeguards. |
+| With owning batch — Simplification | AG-S3, AG-S4, AG-S5, AG-S6, DW-S1 | Pending current-source revalidation; remove demonstrated redundancy while retaining distinct admission, refresh, quota and recovery safeguards. |
 | Observations | AA-R1, CR-R1, IM-R1, IM-R2, TK-R1 | Review measured limits/consumer contracts separately; no outage or necessary code change inferred from a size observation. TK legacy projection requires consumer migration before retirement. |
 | Private billing | Unavailable implementation | Blocked by absent source; public adapter review is not an implementation audit. |
 
@@ -166,3 +167,12 @@ drains, final Server shutdown order and independent review remain open.
 Batch 5d closes AG-F4/AG-S1/AG-S2. Twenty-three original defects and three
 simplifications are repaired locally; 14 defects and six simplifications remain.
 All five observations and unavailable private implementation remain separate.
+
+Batch 6a closes AA-F1/AA-F2/AA-S1. Twenty-five original defects and four
+simplifications are repaired locally; 12 defects and five simplifications remain.
+Previously stranded Accounts are not silently reclaimed, overwritten or deleted.
+
+[Independent review 1](verification/sql-caller-independent-review-01.md) confirms
+no actionable finding in batches 1/2a at commit 29f57a53. It is a read-only
+review, without a new Docker rerun. Remaining completed batches are under
+separate independent review; pending batches are not certified by it.

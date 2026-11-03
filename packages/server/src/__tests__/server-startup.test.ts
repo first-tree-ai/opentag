@@ -154,8 +154,8 @@ vi.mock("../runtime/provider-cli-reconcile-owner.js", () => ({
   },
 }));
 vi.mock("../runtime/runtime-custody-store.js", () => ({ PostgresRuntimeCustodyStore: class {} }));
-vi.mock("../runtime/agent-session-stopper.js", () => ({
-  stopAgentSessions: vi.fn(
+vi.mock("../runtime/agent-session-stopper.js", () => {
+  const stopAgentSessions = vi.fn(
     async (
       _database: unknown,
       targets: { agentId: string; computerId: string; placementGeneration: number; sessionId: string }[],
@@ -177,8 +177,19 @@ vi.mock("../runtime/agent-session-stopper.js", () => ({
         });
       }
     },
-  ),
-}));
+  );
+  return {
+    stopAgentSessions,
+    stopCloudThenLocalAgentSessions: vi.fn(
+      async (
+        database: unknown,
+        targets: Parameters<typeof stopAgentSessions>[1],
+        _cloud: unknown,
+        dependencies: Parameters<typeof stopAgentSessions>[2],
+      ) => stopAgentSessions(database, targets, dependencies),
+    ),
+  };
+});
 vi.mock("../runtime/runtime-domain-owner.js", () => ({
   RuntimeDomainConflictError: class extends Error {},
   RuntimeDomainOwner: class {
@@ -224,7 +235,6 @@ vi.mock("../services/auth/index.js", async () => ({
     }
   },
   formatStartupError: (await import("../services/auth/security.js")).formatStartupError,
-  PostAuthenticationService: class {},
 }));
 vi.mock("../services/channel-target/index.js", () => ({
   createChannelTargetPoller: () => ({

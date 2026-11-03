@@ -15,14 +15,23 @@ import { AccountSignOut } from "../session/sign-out-button.js";
 import { AccountMenu } from "../shell/account-menu.js";
 import { useInAppShell } from "../shell/shell-context.js";
 
-/** The logo returns to the Agent list wherever setup offers a way out. */
+/**
+ * The logo returns to the Agent list wherever setup offers a way out. Phones show the mark alone,
+ * as the compact account rail does, so the logo, Back to Agents, and the Account menu share one row.
+ */
 function BrandHome() {
   return (
     <Link
+      aria-label={m.onboarding_v2_brand_name()}
       className="inline-flex rounded-sm focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-kumo-brand"
       to="/agents"
     >
-      <OpenTagLogo label={m.onboarding_v2_brand_name()} />
+      <span className="max-sm:hidden">
+        <OpenTagLogo label="" />
+      </span>
+      <span className="sm:hidden">
+        <OpenTagLogo label="" variant="mark" />
+      </span>
     </Link>
   );
 }

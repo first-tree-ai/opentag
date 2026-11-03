@@ -112,7 +112,7 @@ Subsequent setup visits use the application shell.
 Setup steps move forward only; they carry no in-flow Back. Leaving setup belongs to the header (or the account rail
 when embedded). After an exact Agent has been admitted, the full-screen header offers **Back to Agents** (**返回 Agent
 列表**) at every step, including the completion screen, and its openTag logo links to the same Agent list
-(`/agents`). The list resumes unfinished setup through the Agent's Continue setup action. The pre-Agent creation header
+(`/agents`); on phones the logo shows the mark alone so the logo, Back to Agents, and Account menu share one row. The list resumes unfinished setup through the Agent's Continue setup action. The pre-Agent creation header
 offers both only to an Account that has completed setup; for a first-time Account the list would redirect back to setup.
 The completion screen stays visible until the user navigates away. Its primary action, **View agent**
 (**查看 Agent** in Chinese), opens that Agent's overview. Global navigation provides the return to the Agent list;

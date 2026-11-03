@@ -39,7 +39,7 @@ A repaired original case does not close another extension of the same finding.
 | 8b — Git subtree verification | AG-F6 | [Verified locally](verification/sql-caller-repairs-20.md): literal selected-path and separate ancestor entry listing; 41 host/Docker cases, existing process bounds retained. |
 | 8c — Operator cleanup | OP-F1 | [Verified locally](verification/sql-caller-repairs-21.md): shared client defaults and native five-second close; 102 Vitest cases and both actual Docker benchmark CLIs, owned containers removed. |
 | 6d — Remaining simplification | AG-S3, AG-S4, AG-S5, AG-S6, DW-S1 | [Verified locally](verification/sql-caller-repairs-16.md): direct Settings credential read, Local-only query removal, one owner read, locked MCP check and unreachable quota deletion; 225 distinct cases (94 native PG). |
-| Observations | AA-R1, CR-R1, IM-R1, IM-R2, TK-R1 | Review measured limits/consumer contracts separately; no outage or necessary code change inferred from a size observation. TK legacy projection requires consumer migration before retirement. |
+| Observations | AA-R1, CR-R1, IM-R1, IM-R2, TK-R1 | AA-R1 [fixed locally](verification/sql-caller-repairs-38.md) with native token-exchange budget. CR/IM measured costs do not establish a required rewrite; TK legacy projection requires consumer migration before retirement. IM-R2 representative measurement is still pending. |
 | Private billing | Unavailable implementation | Blocked by absent source; public adapter review is not an implementation audit. |
 
 The table accounts for all 37 defect IDs, nine simplification IDs and five
@@ -499,3 +499,13 @@ do not retry an uncertain one-time code. No JWKS change (not reachable through
 OpenTag's published flow), global fetch override, new SQL/pool or provider migration.
 Validate paused headers/body, exactly one exchange, new-flow recovery, healthy SQL
 and confirmed-token persistence during shutdown before broader Server regression.
+
+
+[Native Google token-exchange budget](verification/sql-caller-repairs-38.md)
+passes 83 identified Docker cases, 40 native PostgreSQL. AA-R1 is fixed locally
+with a pinned native-signal patch covering headers/body, one-time-code recovery
+and confirmed-token SQL after lost client/shutdown. Frozen install, typecheck and
+Server build pass; the precise SDK overlay is recorded. Batch 37 exact review
+found no actionable defect; batch 38 source review found none and exact review
+remains pending. IM-R2 measurement/strict selection equivalence and final broad
+Server/covered Client Runtime validation remain before full completion.

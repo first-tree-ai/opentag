@@ -35,7 +35,7 @@ before app.close starts. Test-only signal callback typing was corrected after
 the first typecheck; failure logs remain retained.
 
 Batch 36 exact review at e2f48e99 found no actionable defect. Independent batch 37
-source review found none; exact committed review and final broad checks remain.
+source review found none; exact review at 5d4040c4 also found none; final broad checks remain.
 IM-F3's public SQL ownership/composition defect is repaired locally. AA-R1 remains
 separately actionable: the pinned official Google token exchange has no native
 application budget and can prolong the now-correct HTTP drain. It must be bounded

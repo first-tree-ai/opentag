@@ -100,6 +100,14 @@ Query `operation=github.refresh` together with `connectionId` or `attemptId`. Pr
 WARN-and-above stdout shipping retains failures and settlement records, not the INFO phase stream.
 Process termination can leave only a started phase; missing completion is not proof of a timeout.
 
+## Google sign-in transport budget
+
+The built-in Google authorization-code exchange has a 10 s native fetch budget,
+including token-body parsing. An uncertain exchange is not retried with the same
+code. A complete token result keeps its original commit/rollback handling during
+client disconnect or shutdown. A pinned core patch preserves this boundary until
+the library provides equivalent native cancellation.
+
 ## Cloud Pi phase diagnostics
 
 Cloud Turn workers emit a bounded diagnostic stream independently of `OPENTAG_LOG_LEVEL`.
@@ -345,6 +353,10 @@ unlock; it does not restart for each file. PostgreSQL 16 uses a stricter 10 s cl
 its native statement and transaction-idle limits still apply. Verification has a 10 s total budget. Direct timeout parameters in the connection URL cannot disable this startup policy. Losing the dedicated startup session invalidates the attempt;
 a replacement cannot inherit its advisory lock. Failure ends that startup attempt without widening its budget.
 Large index builds and bulk backfills require a separate measured execution, compatibility and recovery design.
+
+HTTP request stages and producer work drain before the first database-pool close.
+Shutdown also joins a pending listen attempt and cannot restart prewarm or publish
+readiness after a stop request.
 
 Database shutdown supplies `end({ timeout: 1 })` on its first call, including startup cleanup. After the graceful
 budget the driver destroys remaining sockets, even if a peer withholds its closing acknowledgement.

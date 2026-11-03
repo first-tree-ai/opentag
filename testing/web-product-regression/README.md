@@ -95,6 +95,11 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | ST-12 | Pause and resume | Pause an idle and a working Agent, then Resume | Idle pauses at once; working asks to confirm; state and message update | Core | unit: `features/agents/agent-settings/agent-manage-settings.test.tsx` |
 | ST-13 | Delete a running Agent | Delete a running Agent and type its name | One confirmation pauses then deletes; lands on the Agent list | Core | unit: `features/agents/agent-settings/agent-manage-settings.test.tsx`, `__tests__/agent-home.test.tsx` |
 | ST-14 | Delete failures | Pause fails; delete fails after the pause; no permission | Says nothing was deleted; says the Agent is paused and retries only the delete; names the missing permission | Edge | unit: `features/agents/agent-settings/agent-manage-settings.test.tsx` |
+| ST-15 | Messaging permissions use one label | Agent whose messaging binding needs new permissions; open the list, Agent page, settings index, and messaging page | Every place reads "Messaging permissions need updating" / "需要更新消息权限"; the action is Update permissions | Core | unit: `features/agent-list-order.test.ts`, `__tests__/agent-messaging.test.tsx` |
+| ST-16 | Model list can't be read | Model page while the computer is offline or its model list fails to load | One line by the model field ("Couldn't load the model list. You can type a model name."); no other notes; the model can still be typed | Edge | unit: `features/agents/agent-settings/runtime-configuration.test.tsx` |
+| ST-17 | Self-configuration with the permissions | Open Model and Name settings; toggle Self-configuration | The switch sits on the Model page beside Ask for approval and saves on its own; the Name page has only the name | Core | unit: `features/agents/agent-settings/runtime-configuration.test.tsx`, `features/agents/agent-settings/general-config-form.test.tsx` |
+| ST-18 | No copy that restates the page | Open Tasks, messaging, Computer, and Usage; edit Soul | No subtitle restates the title; while editing Soul, only the formatting hint is announced | Edge | unit: `__tests__/agent-messaging.test.tsx`, `__tests__/agent-usage.test.tsx`; manual |
+| ST-19 | Unreported usage | Usage for an Agent where some Tasks reported no usage | A muted line under the totals ("1 个任务未上报用量"), not a warning banner | Edge | unit: `__tests__/agent-usage.test.tsx`, `features/agent-usage.test.tsx` |
 
 ## Computers and the connect command
 
@@ -147,6 +152,7 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | AC-04 | Account settings | Open Account | Readable beside the navigation; GitHub authorization can be retired | Core | smoke: `responsive-smoke.spec.ts`, `github-account-review.smoke.spec.ts`; unit: `__tests__/account.test.tsx` |
 | AC-05 | Account menu | Open the Account menu with the keyboard and by touch | Every destination is named and reachable; it closes on an outside click | Edge | smoke: `navigation-polish.spec.ts`, `browser-smoke.spec.ts` |
 | AC-06 | Cloud credits | Account with a Cloud credit banner | Banner actions keep touch-size targets on phones | Edge | smoke: `cloud-billing-smoke.spec.ts` |
+| AC-07 | Account profile reads plainly | Open Account | No page subtitle; the sign-in email is plain text, not a locked input; display name and language have no helper sentences | Edge | unit: `__tests__/account.test.tsx` |
 
 ## Languages and widths
 

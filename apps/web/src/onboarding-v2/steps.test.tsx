@@ -68,6 +68,44 @@ describe("creation step navigation", () => {
     expect(screen.queryByText(/runtime/i)).toBeNull();
   });
 
+  it("states the allowed name characters before anything is typed", () => {
+    render(
+      <AgentStep
+        draft={{ destination: "local", name: "", runtime: undefined }}
+        onChange={() => undefined}
+        onSubmit={() => undefined}
+        submitLabel="Create Agent"
+      />,
+    );
+
+    const rule = "Use lowercase letters, numbers, and hyphens (-), starting with a letter or number.";
+    expect(screen.getByText(rule)).toBeTruthy();
+    const input = screen.getByLabelText("Agent name");
+    const describedBy = input.getAttribute("aria-describedby")?.split(" ") ?? [];
+    expect(describedBy.map((id) => document.getElementById(id)?.textContent)).toContain(rule);
+    expect(input.getAttribute("aria-invalid")).toBeNull();
+    expect(input.getAttribute("placeholder")).toBe("opentag");
+  });
+
+  it("names a refused name briefly instead of repeating the character rule", () => {
+    render(
+      <AgentStep
+        draft={{ destination: "local", name: "研发助理", runtime: "codex" }}
+        onChange={() => undefined}
+        onSubmit={() => undefined}
+        submitLabel="Create Agent"
+      />,
+    );
+
+    const input = screen.getByLabelText("Agent name");
+    fireEvent.blur(input);
+
+    const rule = "Use lowercase letters, numbers, and hyphens (-), starting with a letter or number.";
+    expect(screen.getByText("The name has characters that aren't allowed.")).toBeTruthy();
+    expect(screen.getAllByText(rule)).toHaveLength(1);
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+  });
+
   it("keeps Create Agent disabled until a Runtime is selected", () => {
     render(
       <AgentStep

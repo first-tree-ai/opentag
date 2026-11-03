@@ -510,7 +510,7 @@ describe("AgentSetupPage messaging recovery", () => {
     expect(document.querySelector('[data-ui="agent-setup-messaging-destructive-action"]')).toBeNull();
   });
 
-  it("keeps the messaging description when the snapshot offers no Provider to start", async () => {
+  it("keeps the messaging heading when the snapshot offers no Provider to start", async () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent() });
     renderSetup(
       patchedAdapter(memory, (snapshot) => ({
@@ -521,7 +521,7 @@ describe("AgentSetupPage messaging recovery", () => {
     await settle();
     continueFromPreparation();
 
-    expect(screen.getByText("Pick the app your team already works in.")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
     expect(document.querySelector('[data-ui="agent-setup-messaging-choices"]')).toBeNull();
   });
 });

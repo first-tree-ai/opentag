@@ -293,9 +293,12 @@ Every module-owned stylesheet must:
 ## Schedule handoff feedback
 
 Schedule rows keep configuration state (Enabled, Paused, or an exhausted one-time schedule) separate from the
-latest handoff result. When a handoff summary exists, its recorded outcome and scheduled time remain visible
-without opening the full task. The list uses its existing summary fields and does not fetch the private prompt
-until details are opened.
+latest handoff result. Each row shows the schedule name as a heading that opens its details, the state, and
+Pause or Resume. Below it, one line gives the time rule in words ("Every weekday at 9:00"), the next time, and
+the last time. Times are short (month, day, weekday, and time) and name the zone only when it differs from the
+reader's. A cron expression without a plain-language form is shown as written. The last handoff names its
+outcome only when it was not accepted, and then in the danger color. Delete lives in the opened details. The list
+uses its existing summary fields and does not fetch the private prompt until details are opened.
 
 Details explain the recorded outcome and retain its reason code and next scheduled time. An accepted handoff
 confirms runtime receipt, never task completion. An unknown handoff may still be in flight or may already have started work; users check

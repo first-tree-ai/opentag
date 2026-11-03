@@ -1,15 +1,11 @@
-import type {
-  AgentSchedule,
-  AgentScheduleListItem,
-  AgentScheduleListResponse,
-  AgentScheduleRule,
-} from "@opentag/shared/browser";
+import type { AgentSchedule, AgentScheduleListItem, AgentScheduleListResponse } from "@opentag/shared/browser";
 import { type InfiniteData, useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { ApiError, browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
 import { queryKeys } from "../../query/keys.js";
-import { Banner, Button, Dialog, Text } from "../../ui/design-system.js";
+import { Banner, Button, Dialog, Icon, StatusIndicator, Text } from "../../ui/design-system.js";
+import { scheduleRuleText, shortScheduleTime } from "./schedule-rule.js";
 
 /** Account management for schedules pinned to this Agent's existing IM conversations. */
 export function AgentSchedulesSection({ agentId, scheduleId }: { agentId: string; scheduleId?: string }) {
@@ -195,47 +191,63 @@ function ScheduleRow({
   item: AgentScheduleListItem;
 }) {
   const expanded = expandedId === item.id;
+  const last = item.lastDispatch;
+  const lastFailed = last ? last.outcome !== "accepted" : false;
   return (
-    <li className="grid gap-3 py-4 first:pt-0 last:pb-0">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="grid min-w-0 gap-1">
-          <strong className="wrap-anywhere text-sm text-kumo-strong">{item.name}</strong>
-          <span className="text-sm text-kumo-subtle">{scheduleStatus(item)}</span>
-          {item.nextTriggerAt ? (
-            <span className="text-sm text-kumo-subtle">
-              {m.agents_schedules_next()}: {formatScheduleTime(item.nextTriggerAt, item.timezone)}
-            </span>
-          ) : null}
-          {item.lastDispatch ? (
-            <p className="wrap-anywhere text-sm text-kumo-subtle">
-              <span>
-                {m.agents_schedules_last_dispatch()}: {handoffOutcome(item.lastDispatch.outcome)}
-              </span>
-              {" · "}
-              <time dateTime={item.lastDispatch.scheduledFor}>
-                {formatScheduleTime(item.lastDispatch.scheduledFor, item.timezone)}
-              </time>
-            </p>
-          ) : null}
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button aria-expanded={expanded} onClick={() => onToggle(item.id)} size="compact" variant="secondary">
-            {expanded ? m.agents_schedules_hide_details() : m.agents_schedules_show_details()}
-          </Button>
+    <li className="grid gap-1 py-4 first:pt-0 last:pb-0">
+      <div className="flex items-start justify-between gap-3">
+        <Text as="h3" headingSize="body" variant="heading">
+          <button
+            aria-expanded={expanded}
+            className="flex min-w-0 cursor-pointer items-center gap-2 rounded-sm border-0 bg-transparent p-0 text-left text-inherit focus-visible:outline-2 focus-visible:outline-kumo-brand"
+            onClick={() => onToggle(item.id)}
+            type="button"
+          >
+            <Icon className="size-4 shrink-0 text-kumo-subtle" name={expanded ? "chevron-down" : "chevron-right"} />
+            <span className="wrap-anywhere">{item.name}</span>
+          </button>
+        </Text>
+        <div className="flex shrink-0 items-center gap-3">
+          <StatusIndicator
+            label={scheduleStatus(item)}
+            tone={item.enabled && item.nextTriggerAt ? "success" : "neutral"}
+          />
           <Button disabled={pendingId === item.id} onClick={() => onChange(item)} size="compact" variant="secondary">
             {item.enabled ? m.agents_schedules_pause() : m.agents_schedules_resume()}
           </Button>
-          <Button
-            disabled={pendingId === item.id}
-            onClick={() => onDelete(item)}
-            size="compact"
-            variant="secondary-destructive"
-          >
-            {m.agents_schedules_delete()}
-          </Button>
         </div>
       </div>
-      {expanded ? <ScheduleRowDetails detail={detail} /> : null}
+      <p className="flex flex-wrap gap-x-4 gap-y-1 pl-6 text-sm text-kumo-subtle">
+        <span>{scheduleRuleText(item.schedule, item.timezone)}</span>
+        {item.nextTriggerAt ? (
+          <span>
+            {m.agents_schedules_next_short()}{" "}
+            <time dateTime={item.nextTriggerAt}>{shortScheduleTime(item.nextTriggerAt, item.timezone)}</time>
+          </span>
+        ) : null}
+        {last ? (
+          <span className={lastFailed ? "text-kumo-danger" : undefined}>
+            {m.agents_schedules_last_short()}{" "}
+            <time dateTime={last.scheduledFor}>{shortScheduleTime(last.scheduledFor, item.timezone)}</time>
+            {lastFailed ? ` · ${handoffOutcome(last.outcome)}` : null}
+          </span>
+        ) : null}
+      </p>
+      {expanded ? (
+        <div className="grid gap-3 pt-2 pl-6">
+          <ScheduleRowDetails detail={detail} />
+          <div>
+            <Button
+              disabled={pendingId === item.id}
+              onClick={() => onDelete(item)}
+              size="compact"
+              variant="secondary-destructive"
+            >
+              {m.agents_schedules_delete()}
+            </Button>
+          </div>
+        </div>
+      ) : null}
     </li>
   );
 }
@@ -294,21 +306,6 @@ function scheduleStatus(schedule: AgentScheduleListItem): string {
   return m.agents_schedules_enabled();
 }
 
-function scheduleRule(rule: AgentScheduleRule, timezone: string): string {
-  if (rule.kind === "at") return m.agents_schedules_at({ time: formatScheduleTime(rule.at, timezone) });
-  if (rule.kind === "every") return m.agents_schedules_every({ seconds: String(rule.intervalSeconds) });
-  return m.agents_schedules_cron({ expression: rule.expression });
-}
-
-export function formatScheduleTime(instant: string, timezone: string): string {
-  const formatted = new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "long",
-    timeZone: timezone,
-  }).format(new Date(instant));
-  return `${formatted} (${timezone})`;
-}
-
 function ScheduleDetail({ schedule }: { schedule: AgentSchedule }) {
   const last = schedule.lastDispatch;
   const target = schedule.target;
@@ -324,24 +321,24 @@ function ScheduleDetail({ schedule }: { schedule: AgentSchedule }) {
   return (
     <div className="grid gap-3 rounded-md bg-kumo-recessed p-4 text-sm">
       <dl className="grid gap-2">
-        <DetailRow label={m.agents_schedules_rule()} value={scheduleRule(schedule.schedule, schedule.timezone)} />
+        <DetailRow label={m.agents_schedules_rule()} value={scheduleRuleText(schedule.schedule, schedule.timezone)} />
         <DetailRow label={m.agents_schedules_timezone()} value={schedule.timezone} />
         <DetailRow label={m.agents_schedules_target()} value={targetLabel} />
         <DetailRow
           label={m.agents_schedules_next()}
-          value={schedule.nextTriggerAt ? formatScheduleTime(schedule.nextTriggerAt, schedule.timezone) : "—"}
+          value={schedule.nextTriggerAt ? shortScheduleTime(schedule.nextTriggerAt, schedule.timezone) : "—"}
         />
         <DetailRow label={m.agents_schedules_last_dispatch()} value={outcome} />
         {last ? (
           <>
             <DetailRow
               label={m.agents_schedules_scheduled_for()}
-              value={formatScheduleTime(last.scheduledFor, schedule.timezone)}
+              value={shortScheduleTime(last.scheduledFor, schedule.timezone)}
             />
             {last.attemptedAt ? (
               <DetailRow
                 label={m.agents_schedules_attempted_at()}
-                value={formatScheduleTime(last.attemptedAt, schedule.timezone)}
+                value={shortScheduleTime(last.attemptedAt, schedule.timezone)}
               />
             ) : null}
             {last.code ? <DetailRow label={m.agents_schedules_code()} value={last.code} /> : null}

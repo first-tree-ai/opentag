@@ -3,7 +3,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../../api.js";
-import { AgentSchedulesSection, formatScheduleTime } from "./agent-schedules-section.js";
+import { AgentSchedulesSection } from "./agent-schedules-section.js";
+import { shortScheduleTime } from "./schedule-rule.js";
 
 const AGENT_ID = "10c4a3b9-1631-4e4b-8922-23932ea36237";
 const SCHEDULE_ID = "5238c0ee-a939-4bc0-8772-66d46c9df934";
@@ -59,20 +60,27 @@ describe("AgentSchedulesSection", () => {
     ["rejected", "Rejected by the runtime"],
     ["unknown", "Handoff result unknown"],
     ["skipped", "Skipped"],
-  ] as const)("shows the latest %s handoff before details are opened", async (outcome, label) => {
-    const item = schedule({
-      lastDispatch: { scheduledFor: TIME, attemptedAt: null, messageId: null, outcome, code: null },
-    });
-    vi.spyOn(browserApi, "agentSchedules").mockResolvedValue({ items: [summaryOf(item)], nextCursor: null });
-    const detail = vi.spyOn(browserApi, "agentSchedule").mockResolvedValue(item);
+  ] as const)(
+    "shows the latest %s handoff before details are opened, naming only a failure",
+    async (outcome, label) => {
+      const item = schedule({
+        lastDispatch: { scheduledFor: TIME, attemptedAt: null, messageId: null, outcome, code: null },
+      });
+      vi.spyOn(browserApi, "agentSchedules").mockResolvedValue({ items: [summaryOf(item)], nextCursor: null });
+      const detail = vi.spyOn(browserApi, "agentSchedule").mockResolvedValue(item);
 
-    mount();
-    expect(await screen.findByText(`Latest handoff: ${label}`)).toBeTruthy();
-    expect(screen.getByText(formatScheduleTime(TIME, item.timezone))).toBeTruthy();
-    expect(screen.getByText("Enabled")).toBeTruthy();
-    expect(screen.queryByText(item.prompt)).toBeNull();
-    expect(detail).not.toHaveBeenCalled();
-  });
+      mount();
+      const time = shortScheduleTime(TIME, item.timezone);
+      expect(await screen.findByText(time)).toBeTruthy();
+      const last = screen.getByText(time).parentElement;
+      expect(last?.textContent).toBe(outcome === "accepted" ? `Last ${time}` : `Last ${time} · ${label}`);
+      expect(last?.classList.contains("text-kumo-danger")).toBe(outcome !== "accepted");
+      expect(screen.getByText("Every minute")).toBeTruthy();
+      expect(screen.getByText("Enabled")).toBeTruthy();
+      expect(screen.queryByText(item.prompt)).toBeNull();
+      expect(detail).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     [
@@ -94,7 +102,7 @@ describe("AgentSchedulesSection", () => {
     vi.spyOn(browserApi, "agentSchedule").mockResolvedValue(item);
 
     mount();
-    fireEvent.click(await screen.findByRole("button", { name: "Show details" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Daily check" }));
     expect(await screen.findByText(explanation)).toBeTruthy();
     expect(screen.getByText("runtime_not_ready")).toBeTruthy();
     expect(screen.getByText("Next scheduled time", { exact: true })).toBeTruthy();
@@ -116,11 +124,11 @@ describe("AgentSchedulesSection", () => {
       expect(await screen.findByText("One-time schedule exhausted")).toBeTruthy();
       expect(
         screen.getByText(
-          `Latest handoff: ${outcome === "unreachable" ? "Runtime unreachable" : "Rejected by the runtime"}`,
+          new RegExp(`· ${outcome === "unreachable" ? "Runtime unreachable" : "Rejected by the runtime"}$`),
         ),
       ).toBeTruthy();
       expect(screen.queryByText("Enabled")).toBeNull();
-      fireEvent.click(screen.getByRole("button", { name: "Show details" }));
+      fireEvent.click(screen.getByRole("button", { name: "Daily check" }));
       expect(await screen.findByText("The schedule will not retry this occurrence.")).toBeTruthy();
       expect(screen.getByText("runtime_not_ready")).toBeTruthy();
       expect(screen.queryByText(/before the next scheduled time|Future occurrences/)).toBeNull();
@@ -136,8 +144,8 @@ describe("AgentSchedulesSection", () => {
     vi.spyOn(browserApi, "agentSchedules").mockResolvedValue({ items: [summaryOf(item)], nextCursor: null });
     mount();
     expect(await screen.findByText("Paused")).toBeTruthy();
-    expect(screen.getByText("Latest handoff: Runtime unreachable")).toBeTruthy();
-    expect(screen.queryByText(/Next scheduled time/)).toBeNull();
+    expect(screen.getByText(/· Runtime unreachable$/)).toBeTruthy();
+    expect(screen.queryByText(/^Next /)).toBeNull();
   });
 
   it("keeps the full task behind the Account detail read", async () => {
@@ -149,9 +157,9 @@ describe("AgentSchedulesSection", () => {
     expect(await screen.findByText("Daily check")).toBeTruthy();
     expect(screen.queryByText(item.prompt)).toBeNull();
     expect(detail).not.toHaveBeenCalled();
-    expect(screen.queryByText(/Latest handoff:/)).toBeNull();
+    expect(screen.queryByText(/^Last /)).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Show details" }));
+    fireEvent.click(screen.getByRole("button", { name: "Daily check" }));
     expect(await screen.findByText(item.prompt)).toBeTruthy();
     expect(screen.getByText(/feishu channel test-chat, thread test-thread/)).toBeTruthy();
     expect(detail).toHaveBeenCalledWith(AGENT_ID, SCHEDULE_ID);
@@ -192,7 +200,11 @@ describe("AgentSchedulesSection", () => {
     await waitFor(() => expect(pause).toHaveBeenCalledWith(AGENT_ID, SCHEDULE_ID, 3));
     expect(await screen.findByText("Paused")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Show details" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Daily check" }));
+    expect(screen.getByRole("button", { name: "Daily check" }).getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
     fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(remove).toHaveBeenCalledWith(AGENT_ID, SCHEDULE_ID, 4));
   });

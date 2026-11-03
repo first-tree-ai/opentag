@@ -342,13 +342,17 @@ Every module-owned stylesheet must:
 Each schedule row shows its name as a heading that opens the details, Pause or Resume, and a label only for a state
 other than running on schedule (Paused, or Finished for a one-time schedule). Below it, one line gives the rule in
 words ("Every weekday at 9:00", "Monthly on days 28–31 at 18:00"), the next time, and the last time. Times are short
-(month, day, weekday, and an unpadded hour) and name the zone only when it differs from the reader's. A cron
+(month, day, weekday, and an unpadded hour) and name the zone, after the time ("Mon, Nov 9, 9:30 (GMT+8)",
+"11月9日周一 9:30（GMT+8）"), only when it differs from the reader's. Two zones count as the same when their UTC
+offsets are equal at that run, not by name and not by a fixed offset: Asia/Shanghai reads the same as Asia/Singapore,
+while a daylight-saving zone differs only on the dates its clock differs. Why: the reader needs the zone only when
+their own clock would show a different time, and a zone name between the date and the time breaks the time apart. A cron
 expression with no plain form is shown as written, never guessed.
 
 The last run reads in the reader's terms. A run that happened shows only its time. One that did not run says why,
 in the danger color ("didn't run: the computer was offline"). One whose handoff is unconfirmed says so, in the
 warning color. The opened details add only what the row does not say: where the schedule posts (for example
-"Lark · thread"), its zone when it differs from the reader's, one note after a failed or unconfirmed run, the full
+"Lark · thread"), its zone when it differs from the reader's at the next (or last) run, one note after a failed or unconfirmed run, the full
 task, and Delete. After a failed run, the note says it won't be rerun and, when another run exists, that the next
 run follows the schedule. After an unconfirmed run, it says to check Tasks before starting the work again. Internal
 identifiers and reason codes are not shown. The list uses its existing summary fields and does not fetch the private

@@ -6,7 +6,7 @@ import { messagingProviderLabel } from "../../im/provider-label.js";
 import * as m from "../../paraglide/messages.js";
 import { queryKeys } from "../../query/keys.js";
 import { Banner, Button, Dialog, Icon, StatusIndicator, Text } from "../../ui/design-system.js";
-import { scheduleRuleText, shortScheduleTime } from "./schedule-rule.js";
+import { sameClockAt, scheduleRuleText, shortScheduleTime } from "./schedule-rule.js";
 
 /** Account management for schedules pinned to this Agent's existing IM conversations. */
 export function AgentSchedulesSection({ agentId, scheduleId }: { agentId: string; scheduleId?: string }) {
@@ -358,13 +358,14 @@ function ScheduleDetail({ schedule }: { schedule: AgentSchedule }) {
     target.sessionKind === "thread"
       ? m.agents_schedules_target_thread({ provider })
       : m.agents_schedules_target_channel({ provider });
-  const readerZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  // The zone is worth naming only when the reader's clock reads differently at the next (or last) run.
+  const zoneInstant = schedule.nextTriggerAt ?? last?.scheduledFor ?? new Date();
   const note = last ? lastRunNote(last, schedule.nextTriggerAt !== null) : undefined;
   return (
     <div className="grid gap-3 rounded-md bg-kumo-recessed p-4 text-sm">
       <dl className="grid gap-2">
         <DetailRow label={m.agents_schedules_target()} value={destination} />
-        {schedule.timezone !== readerZone ? (
+        {!sameClockAt(schedule.timezone, zoneInstant) ? (
           <DetailRow label={m.agents_schedules_timezone()} value={schedule.timezone} />
         ) : null}
       </dl>

@@ -11,37 +11,33 @@ configuration to this surface.
 
 ## State and interaction
 
-The identity, status row, description, primary action slot, and More menu keep the same layout.
+Each card shows the computer's identity, a connection status badge, and a More menu.
 
-| Confirmed condition | Description | Primary action |
+| Confirmed condition | Badge | Card body |
 | --- | --- | --- |
-| Online | Your Agents can use this computer. | None |
-| Offline | Turn on or wake this computer and check its internet connection. | Get connection help |
-| Disconnected | Reconnect to let your Agents use this computer. | Reconnect |
-| Read unavailable | Couldn’t check this computer’s status. | Try again |
+| Online | Online, with no action | None |
+| Offline | Offline, with when it was last online | Inline repair task for this computer |
+| Disconnected | Disconnected | Inline repair task for this computer |
+| Read unavailable | Status unavailable | Check status |
 
-“Status unavailable” expresses missing evidence, not another persisted connection condition. Preparing a command,
-waiting for redemption, and checking status belong to the action row; they do not replace the connection badge.
+“Status unavailable” expresses missing evidence, not another persisted connection condition.
 
-- Help uses the shared onboarding instruction block, one copy action, and optional full-text expansion. The copied
-  text is always complete. “Assistant requested a repair?” reveals the exceptional credential repair action.
-- Reconnect authorizes the existing Computer through a targeted repair code. Closing the dialog keeps the issued
-  command and polling alive. “View instructions” reopens it without generating another code. Expiry is visible on
-  the card; a replacement is issued only on request. Copying is never evidence of connection.
-- A confirmed online result updates the card and an open dialog. Closing returns keyboard focus to the action,
-  or the card when that action has disappeared.
-- More contains Disconnect and the existing Delete action. Disconnect confirmation focuses “Keep connected”; it
-  cannot be dismissed during the request. A lost response requires checking status before another mutation.
-  Cancel inventory reads that began before the failure, then latch uncertainty against the cache's current
+- A local computer that is not online shows its repair task inline, issued automatically with a targeted repair
+  code: the shared instruction block, one copy action, optional full-text expansion, and the code's expiry. The
+  copied text is always complete. Copying is never evidence of connection.
+- While the inventory read is uncertain, the repair task is hidden and the card offers Check status instead. Cancel
+  inventory reads that began before the failure, then latch uncertainty against the cache's current
   successful-read sequence. Only a later Server read can restore confidence; render-time or Server timestamps
-  cannot. Keep pending repair instructions until their own Server verdict retires them. Expired or revoked
-  commands both say “This command is no longer valid.”
-- Delete retains its existing typed-name confirmation and refusal while any non-deleted Agent is assigned.
+  cannot. Keep pending repair instructions until their own Server verdict retires them.
+- A confirmed online result updates the card and removes the repair task; keyboard focus that was inside it moves to
+  the card.
+- More contains Remove, which keeps its typed-name confirmation and refuses while any non-deleted Agent is assigned.
+  The web surface has no Disconnect action.
 
 ## Access and compatibility
 
-Disconnect is an Account-authorized `POST /api/v1/computers/:computerId/disconnect`, protected by the existing session
-and CSRF boundary. It revokes active credentials and pending repair codes and clears presence. Computer identity,
+The Server keeps an Account-authorized `POST /api/v1/computers/:computerId/disconnect` (not offered in the web
+surface), protected by the existing session and CSRF boundary. It revokes active credentials and pending repair codes and clears presence. Computer identity,
 Agent bindings, configuration, and local files remain. Cloud Computers cannot be disconnected through this endpoint.
 
 The transaction records `computers.disconnected_at`; a successful targeted repair clears it, and so does a create

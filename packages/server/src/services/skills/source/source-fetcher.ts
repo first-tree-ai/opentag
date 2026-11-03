@@ -4,6 +4,8 @@ import {
   SKILL_SOURCE_DOWNLOAD_MAX_BYTES,
   SKILL_SOURCE_HTTP_TIMEOUT_MS,
 } from "@opentag/shared";
+import { sanitizeExternalUrl, traceExternalCall } from "../../../observability/external-call-logger.js";
+import type { PerformanceLogger } from "../../../observability/performance-logger.js";
 import { withOutboundDeadline } from "../../outbound/deadline.js";
 import { classifyOutboundDestination, resolveAllAddresses } from "../../outbound/destination-policy.js";
 import type { SkillServiceError } from "../errors.js";
@@ -39,6 +41,7 @@ export interface SkillSourceFetcherOptions {
   resolveAddresses?: (hostname: string) => Promise<string[]>;
   timeoutMs?: number;
   maxBytes?: number;
+  performanceLogger?: PerformanceLogger;
 }
 
 export interface SkillSourceFetchResult {
@@ -88,6 +91,23 @@ export class SkillSourceFetcher {
   }
 
   async #request(url: string, maxBytes: number): Promise<SkillSourceFetchResult> {
+    const urlMeta = sanitizeExternalUrl(url);
+    return traceExternalCall(
+      this.#options.performanceLogger,
+      {
+        provider: "skill-source",
+        operation: "external.skill-source.http",
+        attributes: {
+          httpMethod: "GET",
+          ...urlMeta,
+        },
+      },
+      () => this.#executeRequest(url, maxBytes),
+      { statusFromResult: (res) => res.status },
+    );
+  }
+
+  async #executeRequest(url: string, maxBytes: number): Promise<SkillSourceFetchResult> {
     const policy = { allowLoopback: this.#options.allowLoopback };
     const target = checkOutboundUrl(url, policy);
     if ("failure" in target) throw sourceFailure(target.failure);

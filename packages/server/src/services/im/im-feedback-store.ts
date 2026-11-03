@@ -16,6 +16,7 @@ import {
 } from "../../db/schema/index.js";
 
 export type FeedbackTarget = typeof imFeedbackTargets.$inferSelect & { batchRetryBlocked?: boolean };
+export type SlackFeedbackScope = Pick<FeedbackTarget, "provider" | "installationId" | "bindingGeneration">;
 export type FeedbackAction = typeof imFeedbackActions.$inferSelect;
 export interface FeedbackSettlement {
   reaction?: FeedbackTarget["appliedReaction"];
@@ -365,7 +366,7 @@ export class ImFeedbackStore {
       );
   }
 
-  async slackCooldownRemaining(target: FeedbackTarget): Promise<number | undefined> {
+  async slackCooldownRemaining(target: SlackFeedbackScope): Promise<number | undefined> {
     if (!target.installationId || target.provider !== "slack") return;
     const [installation] = await this.database
       .select({
@@ -383,7 +384,7 @@ export class ImFeedbackStore {
     return installation?.remainingMs;
   }
 
-  async deferSlackInstallation(target: FeedbackTarget, retryAfterMs: number): Promise<boolean> {
+  async deferSlackInstallation(target: SlackFeedbackScope, retryAfterMs: number): Promise<boolean> {
     const installationId = target.installationId;
     if (!installationId || target.provider !== "slack") return false;
     return this.database.transaction(async (tx) => {

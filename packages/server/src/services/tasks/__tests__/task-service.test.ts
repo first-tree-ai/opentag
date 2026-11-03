@@ -132,7 +132,14 @@ async function createMessage(
     authorDisplayName?: string | null;
     revisionKey?: string;
     resources?: ImContentV1["resources"];
-    providerContext?: { provider: "feishu"; chatType?: string; threadId?: string; rootId?: string };
+    providerContext?: {
+      provider: "feishu";
+      chatType?: string;
+      chatMode?: "group" | "topic" | "p2p";
+      groupMessageType?: "chat" | "thread";
+      threadId?: string;
+      rootId?: string;
+    };
   } = {},
 ) {
   const [message] = await unitDatabase.database
@@ -792,6 +799,55 @@ describe("TaskService", () => {
     const detail = await service.get(bootstrap.userId, reply.id, { limit: 50 });
     expect(detail.task.id).toBe(root.id);
     expect(detail.turns.map((turn) => turn.message.id)).toEqual([reply.id, root.id]);
+  });
+
+  it("distinguishes Feishu topic chats, regular group chats, and legacy records without stored chatMode", async () => {
+    const { binding, bootstrap, service } = await fixture();
+    const topicChannel = await createSession(binding.id, { channelId: "oc_topic" });
+    const groupChannel = await createSession(binding.id, { channelId: "oc_regular_group" });
+    const legacyChannel = await createSession(binding.id, { channelId: "oc_legacy" });
+
+    const legacyMsg = await createMessage(binding.id, {
+      channelId: "oc_legacy",
+      text: "Legacy message",
+      occurredAt: minutes(0),
+      providerContext: { provider: "feishu", chatType: "group" },
+    });
+    const groupMsg = await createMessage(binding.id, {
+      channelId: "oc_regular_group",
+      text: "Regular group message",
+      occurredAt: minutes(5),
+      providerContext: {
+        provider: "feishu",
+        chatType: "group",
+        chatMode: "group",
+        groupMessageType: "thread",
+      },
+    });
+    const topicMsg = await createMessage(binding.id, {
+      channelId: "oc_topic",
+      text: "Topic chat message",
+      occurredAt: minutes(10),
+      providerContext: { provider: "feishu", chatType: "group", chatMode: "topic", threadId: "omt_1" },
+    });
+
+    await createDelivery(legacyChannel.id, legacyMsg.id, { at: minutes(1), reported: true });
+    await createDelivery(groupChannel.id, groupMsg.id, { at: minutes(6), reported: true });
+    await createDelivery(topicChannel.id, topicMsg.id, { at: minutes(11), reported: true });
+
+    const page = await service.list(bootstrap.userId, { limit: 50 });
+    expect(page.tasks.map((task) => [task.id, task.source.chatMode, task.source.groupMessageType])).toEqual([
+      [topicMsg.id, "topic", null],
+      [groupMsg.id, "group", "thread"],
+      [legacyMsg.id, null, null],
+    ]);
+
+    const topicDetail = await service.detail(bootstrap.userId, topicMsg.id, { sections: ["turns"] });
+    const groupDetail = await service.detail(bootstrap.userId, groupMsg.id, { sections: ["turns"] });
+    const legacyDetail = await service.detail(bootstrap.userId, legacyMsg.id, { sections: ["turns"] });
+    expect(topicDetail.task.source).toMatchObject({ chatMode: "topic", groupMessageType: null });
+    expect(groupDetail.task.source).toMatchObject({ chatMode: "group", groupMessageType: "thread" });
+    expect(legacyDetail.task.source).toMatchObject({ chatMode: null, groupMessageType: null });
   });
 
   it("renames a Task through its own id and refuses a topic that has no titleable Session", async () => {

@@ -26,6 +26,14 @@ import type {
 import { setFeishuFailureReaction } from "./failure-reaction.js";
 import { feishuMessageContent } from "./message-content.js";
 
+export type FeishuChatMode = "group" | "topic" | "p2p";
+export type FeishuGroupMessageType = "chat" | "thread";
+
+export interface FeishuChatMetadata {
+  chatMode?: FeishuChatMode;
+  groupMessageType?: FeishuGroupMessageType;
+}
+
 interface FeishuRawEnvelope {
   header?: { event_id?: string; tenant_key?: string };
   event_id?: string;
@@ -35,6 +43,8 @@ interface FeishuRawEnvelope {
   opentagConversationKind?: "unknown";
   opentagSenderOpenId?: string;
   opentagContentTruncated?: boolean;
+  opentagChatMode?: FeishuChatMode;
+  opentagGroupMessageType?: FeishuGroupMessageType;
 }
 
 interface RawFeishuMessageEvent {
@@ -89,11 +99,22 @@ export interface FeishuChannel {
 export interface FeishuHttpCapability {
   fetchResource(input: ProviderResourceInput, signal?: AbortSignal): Promise<ReadableResource>;
   resolveSenderName?(input: { chatId: string; senderOpenId: string }): Promise<string | undefined>;
+  resolveChatMetadata?(input: { chatId: string }, signal?: AbortSignal): Promise<FeishuChatMetadata | undefined>;
 }
 
 export interface FeishuHttpClient {
   im: {
     v1: {
+      chats?: {
+        get(
+          input: { path: { chat_id: string } },
+          options?: { signal?: AbortSignal },
+        ): Promise<{
+          code?: number;
+          msg?: string;
+          data?: { chat_mode?: string; group_message_type?: string };
+        }>;
+      };
       chatMembers: {
         get(input: {
           path: { chat_id: string };
@@ -242,6 +263,14 @@ function boundedText(value: string): { text: string; truncated: boolean } {
   return { text, truncated: text !== value };
 }
 
+function feishuChatMode(value: unknown): FeishuChatMode | undefined {
+  return value === "group" || value === "topic" || value === "p2p" ? value : undefined;
+}
+
+function feishuGroupMessageType(value: unknown): FeishuGroupMessageType | undefined {
+  return value === "chat" || value === "thread" ? value : undefined;
+}
+
 function rawReceiveToNormalized(raw: RawFeishuMessageEvent): NormalizedMessage {
   const parsed = feishuMessageContent(raw.message.message_type, raw.message.content, raw.message.mentions);
   const senderId = raw.sender.sender_id?.open_id ?? raw.sender.sender_id?.user_id ?? "system";
@@ -275,6 +304,7 @@ function rawReceiveToNormalized(raw: RawFeishuMessageEvent): NormalizedMessage {
       opentagOperation: "created",
       opentagSenderOpenId: raw.sender.sender_id?.open_id,
       opentagContentTruncated: parsed.truncated,
+      ...(raw.message.chat_type === "p2p" ? { opentagChatMode: "p2p" as const } : {}),
     } satisfies FeishuRawEnvelope,
   };
 }
@@ -307,6 +337,33 @@ function contentWasTruncated(message: NormalizedMessage): boolean {
   return raw?.opentagContentTruncated === true || message.resources.length > 16;
 }
 
+function normalizedChatMode(
+  message: NormalizedMessage,
+  raw: FeishuRawEnvelope | undefined,
+): FeishuChatMode | undefined {
+  const explicit = feishuChatMode(raw?.opentagChatMode);
+  if (explicit) return explicit;
+  if (raw?.opentagConversationKind === "unknown") return undefined;
+  return message.chatType === "p2p" ? "p2p" : undefined;
+}
+
+function normalizedProviderContext(
+  message: NormalizedMessage,
+  raw: FeishuRawEnvelope | undefined,
+): NormalizedInboundImEvent["providerContext"] {
+  const chatMode = normalizedChatMode(message, raw);
+  const groupMessageType = feishuGroupMessageType(raw?.opentagGroupMessageType);
+  return {
+    provider: "feishu",
+    ...(message.chatType ? { chatType: message.chatType } : {}),
+    ...(chatMode ? { chatMode } : {}),
+    ...(groupMessageType ? { groupMessageType } : {}),
+    ...(message.threadId ? { threadId: message.threadId } : {}),
+    ...(message.rootId ? { rootId: message.rootId } : {}),
+    ...(message.replyToMessageId ? { parentId: message.replyToMessageId } : {}),
+  };
+}
+
 export function normalizeFeishuMessage(input: VerifiedFeishuEnvelope): NormalizedInboundImEvent[] {
   const raw = input.message.raw as FeishuRawEnvelope | undefined;
   const operation = raw?.opentagOperation ?? "created";
@@ -330,13 +387,7 @@ export function normalizeFeishuMessage(input: VerifiedFeishuEnvelope): Normalize
       externalAppId: input.appId,
       externalTeamId:
         raw?.header?.tenant_key ?? raw?.tenant_key ?? raw?.event?.sender?.tenant_key ?? input.teamId ?? input.appId,
-      providerContext: {
-        provider: "feishu",
-        ...(input.message.chatType ? { chatType: input.message.chatType } : {}),
-        ...(input.message.threadId ? { threadId: input.message.threadId } : {}),
-        ...(input.message.rootId ? { rootId: input.message.rootId } : {}),
-        ...(input.message.replyToMessageId ? { parentId: input.message.replyToMessageId } : {}),
-      },
+      providerContext: normalizedProviderContext(input.message, raw),
       conversation: {
         externalId: input.message.chatId,
         kind:
@@ -663,6 +714,16 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
       timeoutMs: FEISHU_SENDER_NAME_POLICY_TIMEOUT_MS,
     });
   }
+
+  async resolveChatMetadata(input: { chatId: string }): Promise<FeishuChatMetadata | undefined> {
+    const resolveChatMetadata = this.#http.resolveChatMetadata;
+    if (!resolveChatMetadata) return undefined;
+    return this.#policy.run("feishu.chat-mode.resolve", (signal) => resolveChatMetadata(input, signal), {
+      circuitKey: `feishu:chat-mode:${this.#appId}`,
+      maxAttempts: 1,
+      timeoutMs: FEISHU_CHAT_MODE_POLICY_TIMEOUT_MS,
+    });
+  }
 }
 
 const FEISHU_SENDER_NAME_TTL_MS = 60 * 60 * 1000;
@@ -677,6 +738,13 @@ const FEISHU_SENDER_NAME_CACHE_MAX_ENTRIES = 10_000;
 const FEISHU_SENDER_NAME_LOOKUP_TIMEOUT_MS = 4_000;
 /** Invariant: the policy deadline outlives the lookup deadline, so the lookup reports its own timeout. */
 const FEISHU_SENDER_NAME_POLICY_TIMEOUT_MS = 5_000;
+
+const FEISHU_CHAT_MODE_TTL_MS = 60 * 60 * 1000;
+const FEISHU_MISSING_CHAT_MODE_TTL_MS = 5 * 60 * 1000;
+const FEISHU_FAILED_CHAT_MODE_TTL_MS = 30 * 1000;
+const FEISHU_CHAT_MODE_CACHE_MAX_ENTRIES = 10_000;
+const FEISHU_CHAT_MODE_LOOKUP_TIMEOUT_MS = 4_000;
+const FEISHU_CHAT_MODE_POLICY_TIMEOUT_MS = 5_000;
 
 export function feishuSenderOpenId(message: NormalizedMessage): string | null {
   const raw = message.raw as FeishuRawEnvelope | undefined;
@@ -777,11 +845,119 @@ function createCachedFeishuSenderNameResolver(
   };
 }
 
+async function fetchFeishuChatMetadata(
+  client: FeishuHttpClient,
+  input: { chatId: string },
+  signal: AbortSignal,
+): Promise<FeishuChatMetadata | undefined> {
+  const chats = client.im.v1.chats;
+  if (!chats) return undefined;
+  const response = await chats.get({ path: { chat_id: input.chatId } }, { signal });
+  if (response.code !== undefined && response.code !== 0) {
+    throw new Error("FEISHU_CHAT_MODE_LOOKUP_FAILED");
+  }
+  const chatMode = feishuChatMode(response.data?.chat_mode?.trim());
+  const groupMessageType = feishuGroupMessageType(response.data?.group_message_type?.trim());
+  if (!chatMode && !groupMessageType) return undefined;
+  return {
+    ...(chatMode ? { chatMode } : {}),
+    ...(groupMessageType ? { groupMessageType } : {}),
+  };
+}
+
+function withFeishuChatModeTimeout<T>(
+  parentSignal: AbortSignal | undefined,
+  run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  const onParentAbort = (): void => {
+    controller.abort(parentSignal?.reason ?? new Error("FEISHU_CHAT_MODE_LOOKUP_ABORTED"));
+  };
+  if (parentSignal?.aborted) {
+    onParentAbort();
+  } else {
+    parentSignal?.addEventListener("abort", onParentAbort, { once: true });
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error("FEISHU_CHAT_MODE_LOOKUP_TIMEOUT");
+      controller.abort(error);
+      reject(error);
+    }, FEISHU_CHAT_MODE_LOOKUP_TIMEOUT_MS);
+    timer.unref();
+  });
+  return Promise.race([run(controller.signal), timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+    parentSignal?.removeEventListener("abort", onParentAbort);
+  });
+}
+
+function createCachedFeishuChatMetadataResolver(
+  client: FeishuHttpClient,
+  createClientForSignal: (signal: AbortSignal) => FeishuHttpClient = () => client,
+): (input: { chatId: string }, signal?: AbortSignal) => Promise<FeishuChatMetadata | undefined> {
+  const chatMetadata = new Map<string, { expiresAt: number; metadata: FeishuChatMetadata | undefined }>();
+  const pendingChatMetadata = new Map<string, Promise<FeishuChatMetadata | undefined>>();
+
+  const remember = (
+    chatId: string,
+    metadata: FeishuChatMetadata | undefined,
+    now: number,
+    ttlMs = metadata?.chatMode ? FEISHU_CHAT_MODE_TTL_MS : FEISHU_MISSING_CHAT_MODE_TTL_MS,
+  ): void => {
+    chatMetadata.delete(chatId);
+    chatMetadata.set(chatId, {
+      expiresAt: now + ttlMs,
+      metadata,
+    });
+    while (chatMetadata.size > FEISHU_CHAT_MODE_CACHE_MAX_ENTRIES) {
+      const oldest = chatMetadata.keys().next().value;
+      if (oldest === undefined) break;
+      chatMetadata.delete(oldest);
+    }
+  };
+
+  return async (input, signal) => {
+    const key = input.chatId;
+    const now = Date.now();
+    const cached = chatMetadata.get(key);
+    if (cached && cached.expiresAt > now) {
+      chatMetadata.delete(key);
+      chatMetadata.set(key, cached);
+      return cached.metadata;
+    }
+    if (cached) chatMetadata.delete(key);
+    const pending = pendingChatMetadata.get(key);
+    if (pending) return pending;
+
+    const lookup = withFeishuChatModeTimeout(signal, (lookupSignal) =>
+      fetchFeishuChatMetadata(createClientForSignal(lookupSignal), input, lookupSignal),
+    ).then(
+      (metadata) => {
+        remember(key, metadata, Date.now());
+        return metadata;
+      },
+      (error: unknown) => {
+        remember(key, undefined, Date.now(), FEISHU_FAILED_CHAT_MODE_TTL_MS);
+        throw error;
+      },
+    );
+    pendingChatMetadata.set(key, lookup);
+    try {
+      return await lookup;
+    } finally {
+      if (pendingChatMetadata.get(key) === lookup) pendingChatMetadata.delete(key);
+    }
+  };
+}
+
 export function createFeishuHttpCapability(
   client: FeishuHttpClient,
   createClientForSignal: (signal: AbortSignal) => FeishuHttpClient = () => client,
 ): FeishuHttpCapability {
   const resolveSenderName = createCachedFeishuSenderNameResolver(client);
+  const resolveChatMetadata = createCachedFeishuChatMetadataResolver(client, createClientForSignal);
   return {
     async fetchResource(input, signal) {
       const activeClient = signal ? createClientForSignal(signal) : client;
@@ -795,6 +971,7 @@ export function createFeishuHttpCapability(
       return { stream: response.getReadableStream() };
     },
     resolveSenderName,
+    resolveChatMetadata,
   };
 }
 

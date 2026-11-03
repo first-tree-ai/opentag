@@ -256,6 +256,8 @@ describe("native feedback transport", () => {
   });
   it("privately answers an ineligible Slack click without replacing or posting a public card", async () => {
     await harness().messenger.respondSlack({
+      installationId: "11111111-1111-4111-8111-111111111111",
+      generation: 2,
       token: "unit-token",
       channelId: "channel",
       userId: "human",
@@ -449,4 +451,30 @@ describe("shared Slack cooldown transport", () => {
     expect(h.cooldown.slackCooldownRemaining).not.toHaveBeenCalled();
     expect(h.cooldown.deferSlackInstallation).not.toHaveBeenCalled();
   });
+});
+
+it("gates private callback acknowledgements at the verified installation generation", async () => {
+  const h = harness();
+  h.cooldown.slackCooldownRemaining.mockResolvedValue(25_000);
+  const input = {
+    installationId: "11111111-1111-4111-8111-111111111111",
+    generation: 2,
+    token: "synthetic-token",
+    channelId: "channel",
+    userId: "human",
+    threadKey: "thread",
+    result: "unavailable" as const,
+  };
+  await expect(h.messenger.respondSlack(input)).rejects.toMatchObject({
+    code: "IM_FEEDBACK_RATE_LIMITED",
+    retryAfterMs: 25_000,
+  });
+  expect(mocks.slack.chat.postEphemeral).not.toHaveBeenCalled();
+  h.cooldown.slackCooldownRemaining.mockResolvedValue(0);
+  mocks.slack.chat.postEphemeral.mockRejectedValueOnce(new WebAPIRateLimitedError(7));
+  await expect(h.messenger.respondSlack(input)).rejects.toMatchObject({ retryAfterMs: 7_000 });
+  expect(h.cooldown.deferSlackInstallation).toHaveBeenCalledExactlyOnceWith(
+    { provider: "slack", installationId: input.installationId, bindingGeneration: 2 },
+    7_000,
+  );
 });

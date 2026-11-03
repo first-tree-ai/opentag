@@ -1,6 +1,12 @@
 import type { ClientRequest, IncomingMessage } from "node:http";
 import https from "node:https";
 import { type GitHubProxyFailureCode, githubProxyHeaders } from "@opentag/shared";
+import { extractExternalTransportCode, sanitizeExternalUrl } from "../../observability/external-call-logger.js";
+import {
+  type PerformanceLogger,
+  type PerformanceOperationHandle,
+  runWithPerformanceContext,
+} from "../../observability/performance-logger.js";
 import type { ProviderProxyResponse } from "../../runtime-credentials/provider-proxy-adapter.js";
 import { classifyOutboundDestination } from "../outbound/destination-policy.js";
 import { allowedDownloadTarget, githubRequestTarget } from "./http-target.js";
@@ -23,6 +29,7 @@ export interface GitHubHttpTransportOptions {
   connect?: (url: URL, options: https.RequestOptions, listener: (response: IncomingMessage) => void) => ClientRequest;
   resolveAddresses?: (hostname: string) => Promise<string[]>;
   idleTimeoutMs?: number;
+  performanceLogger?: PerformanceLogger;
 }
 
 /** Raw HTTP bytes, one attempt, bounded idle waits. No fetch decompression or API interpretation. */
@@ -30,6 +37,31 @@ export class GitHubHttpTransport {
   constructor(readonly options: GitHubHttpTransportOptions = {}) {}
 
   async request(input: GitHubHttpRequest): Promise<ProviderProxyResponse> {
+    const perfLogger = this.options.performanceLogger;
+    if (!perfLogger?.config.enabled) {
+      return this.#executeRequest(input);
+    }
+    const urlMeta = sanitizeExternalUrl(input.url);
+    const handle = perfLogger.startOperation({
+      module: "external",
+      category: "external",
+      operation: "external.github.proxy",
+      attributes: {
+        provider: "github",
+        httpMethod: input.method.toUpperCase(),
+        ...urlMeta,
+      },
+    });
+    try {
+      return await runWithPerformanceContext(handle.context, () => this.#executeRequest(input, handle));
+    } catch (error) {
+      const transportCode = extractExternalTransportCode(error);
+      handle.fail(error, transportCode ? { transportCode } : undefined, "EXTERNAL_CALL_FAILED");
+      throw error;
+    }
+  }
+
+  async #executeRequest(input: GitHubHttpRequest, handle?: PerformanceOperationHandle): Promise<ProviderProxyResponse> {
     let url = input.url;
     let authenticated = true;
     for (let hop = 0; ; hop++) {
@@ -40,12 +72,12 @@ export class GitHubHttpTransport {
       const outgoing = responseHeaders(response);
       const location = response.headers.location;
       if (![301, 302, 303, 307, 308].includes(status) || !location)
-        return { status, headers: outgoing, body: this.#body(response) };
+        return { status, headers: outgoing, body: this.#body(response, status, handle) };
       if (!["GET", "HEAD"].includes(input.method)) {
         // Do not replay writes or disclose signed cross-origin redirect capabilities.
         const next = redirectTarget(location, url, input);
         if (!next || next.origin !== input.url.origin) delete outgoing.location;
-        return { status, headers: outgoing, body: this.#body(response) };
+        return { status, headers: outgoing, body: this.#body(response, status, handle) };
       }
       const next = redirectTarget(location, url, input);
       response.destroy();
@@ -100,7 +132,11 @@ export class GitHubHttpTransport {
     });
   }
 
-  async *#body(response: IncomingMessage): AsyncIterable<Uint8Array> {
+  async *#body(
+    response: IncomingMessage,
+    status: number,
+    handle?: PerformanceOperationHandle,
+  ): AsyncIterable<Uint8Array> {
     const iterator = response[Symbol.asyncIterator]();
     try {
       for (;;) {
@@ -114,12 +150,18 @@ export class GitHubHttpTransport {
         } finally {
           clearTimeout(timer);
         }
-        if (chunk.done) return;
+        if (chunk.done) {
+          handle?.complete({ status });
+          return;
+        }
         yield chunk.value;
       }
     } catch (error) {
-      throw error instanceof GitHubProxyError ? error : new GitHubProxyError("github_response_truncated");
+      const mapped = error instanceof GitHubProxyError ? error : new GitHubProxyError("github_response_truncated");
+      handle?.fail(mapped, { status }, mapped.code);
+      throw mapped;
     } finally {
+      handle?.complete({ status });
       response.destroy();
     }
   }

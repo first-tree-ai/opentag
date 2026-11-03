@@ -5,6 +5,7 @@ import type { ChannelName } from "@opentag/shared";
 import {
   ErrorEnvelopeSchema,
   HTTP_PATHS,
+  RUNTIME_PROVIDER_PROXY_PATH,
   redactForLog,
   ServerDeepHealthSchema,
   ServerHealthSchema,
@@ -80,7 +81,13 @@ import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import type { CloudBilling } from "./cloud-billing.js";
 import type { DatabaseClient } from "./db/client.js";
 import { DATABASE_READINESS_TIMEOUT_MS } from "./db/readiness-probe.js";
-import { currentTraceId } from "./observability/index.js";
+import {
+  currentTraceId,
+  type PerformanceLogger,
+  type PerformanceLoggingConfig,
+  prepareAppPerformance,
+  registerHttpPerformanceHooks,
+} from "./observability/index.js";
 import type { AgentRuntimeOptionsService } from "./services/agents/agent-runtime-options-service.js";
 import type { ContextTreeOperationService } from "./services/agents/context-tree-operation-service.js";
 import {
@@ -230,6 +237,8 @@ export interface CreateAppOptions {
   /** GitHub integration management; always registered so the UI can read availability. */
   loggerStream?: FastifyLoggerOptions["stream"];
   loggerLevel?: FastifyLoggerOptions["level"];
+  performanceLogger?: PerformanceLogger;
+  performanceLogging?: Partial<PerformanceLoggingConfig>;
   /** Passed to Fastify; `false` (the default) ignores `X-Forwarded-*` entirely. */
   trustProxy?: boolean | string[];
   readiness?: BootstrapReadiness;
@@ -346,9 +355,19 @@ export function ignoreHttpTraceRoute(path: string): boolean {
   );
 }
 
-function disableProbeRequestLogging(request: FastifyRequest): boolean {
+function disableProbeRequestLogging(request: { url: string }): boolean {
   const pathname = sanitizeRequestUrl(request.url);
   return pathname === "/healthz" || pathname === "/readyz";
+}
+
+function shouldIgnoreHttpPerformanceRequest(request: { url: string }): boolean {
+  const pathname = sanitizeRequestUrl(request.url);
+  return (
+    disableProbeRequestLogging(request) ||
+    pathname === HTTP_PATHS.computerRuntimeWebSocket ||
+    pathname === HTTP_PATHS.sandboxRunnerWebSocket ||
+    pathname === RUNTIME_PROVIDER_PROXY_PATH
+  );
 }
 
 const MAX_ERROR_STACK_LENGTH = 8_192;
@@ -713,6 +732,8 @@ export function createApp(options: CreateAppOptions = {}) {
   const databaseReadinessProbe = createDatabaseReadinessProbe(
     options.databaseReadinessProbe ?? (healthDatabase ? () => healthDatabase.execute(sql`select 1`) : undefined),
   );
+  const preparedPerformance = prepareAppPerformance(app, options);
+  options = preparedPerformance.options;
 
   registerSessionProofRoutes(app, options);
   registerPublicCatalog(app, options);
@@ -748,6 +769,10 @@ export function createApp(options: CreateAppOptions = {}) {
     reply.header("x-request-id", _request.id);
     const traceId = currentTraceId();
     if (traceId) reply.header("x-trace-id", traceId);
+  });
+  registerHttpPerformanceHooks(app, preparedPerformance.perfLogger, {
+    shouldIgnore: shouldIgnoreHttpPerformanceRequest,
+    sanitizeUrl: sanitizeRequestUrl,
   });
 
   // Anonymous by design: a failure before sign-in is still a failure worth seeing.

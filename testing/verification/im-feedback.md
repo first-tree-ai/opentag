@@ -125,10 +125,22 @@ checks the active installation/generation before each designated SDK method, rec
 index or migration was added. Legacy native cleanup uses the same stored deadline. Persistence failures stop the
 worker pass and preserve definite non-submission instead of inventing an unknown card creation.
 
-The focused Server run passed 84 tests. The two-file PostgreSQL feedback/native-status run passed 45 tests, including
+The initial focused Server run passed 84 tests; a follow-up also gates private callback responses using their verified installation generation. The two-file PostgreSQL feedback/native-status run passed 45 tests, including
 10 feedback cases. Real SDK HTTP 429 injection proves that two due targets and an independent restarted connection
 make only the initial request before cooldown, a different installation can send, same-installation methods defer,
 and expiry permits another request. Concurrent extenders preserve the longer deadline; real reauthorization
 preserves an existing deadline and fences late responses. Installation row locks remain available while HTTP is
 blocked. Successful or rate-limited legacy settlement and actual expired-feedback deletion cannot clear the shared
 deadline. Mock credentials and HTTP are synthetic; no live provider calls were made.
+
+
+After integrating main at `7ba8c3e76bca148c8a8a34a137a247823e5ff505`, the combined feedback/native-status run passed
+130 cases (85 unit/API/transport and 45 PostgreSQL), with 91.94% line and 86.33% statement coverage for the feedback
+implementation. Independent PostgreSQL connections and the external-call policy had performance logging enabled.
+A separate eleven-file group passed 235 adjacent regressions for provider call policy, ingress, startup, native
+status, performance instrumentation, Feishu conversion, outbound capture and Task reads. Shared tests passed 782
+cases, all workspace package types passed, and repository checks passed. The feedback worker participates in the
+main branch's existing worker instrumentation. Private callback acknowledgements carry the verified installation
+ID/generation and honor the same cooldown. These results do not establish current-head CI, deployment or native
+Slack/Feishu acceptance. The cooldown correction changes no schema or migration; the original two feedback tables
+remain part of the previously approved feature migration.

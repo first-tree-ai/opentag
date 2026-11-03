@@ -124,6 +124,8 @@ async function dispatchAction(
     if (options.feedbackResponse) {
       void options
         .feedbackResponse({
+          installationId: installation.installationId,
+          generation: installation.generation,
           token: installation.botAccessToken,
           channelId: payload.channel.id,
           userId: payload.user.id,

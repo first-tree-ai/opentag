@@ -36,9 +36,13 @@ import { DATABASE_CLOSE_TIMEOUT_SECONDS } from "./db/timeouts.js";
 import {
   createBackgroundFailureSupervisor,
   createErrorReporter,
+  createInstrumentedFetch,
+  createPerformanceLogger,
   createServerDiagnosticReporter,
   createServiceLoggerPort,
   initTelemetry,
+  instrumentServerWorkers,
+  type PerformanceLogger,
   type ServiceLogger,
   shutdownTelemetry,
 } from "./observability/index.js";
@@ -246,6 +250,15 @@ function cloudPlatformRuntimeOptions(
   return { cloudRuntimeFence: fence, cloudRevocationSender: sender };
 }
 
+function serverPerformanceLogger(
+  config: ServerConfig,
+  getLogger: () => ReturnType<typeof createApp>["log"] | undefined,
+): PerformanceLogger | undefined {
+  const perfConfig = config.observability?.performance;
+  if (perfConfig?.enabled === false) return undefined;
+  return createPerformanceLogger(getLogger, perfConfig);
+}
+
 /** One model catalog shared by settings, dispatch and diagnostics. */
 async function createCloudModelRuntime(
   config: ServerConfig,
@@ -254,14 +267,17 @@ async function createCloudModelRuntime(
   calls: CloudCallStore,
   database: DatabaseClient,
   onError: NonNullable<CloudModelServiceOptions["onError"]>,
+  perfLogger?: PerformanceLogger,
 ) {
   const model = config.cloudModel;
   if (!runner || !model.enabled) return undefined;
+  const routerFetch = createInstrumentedFetch(perfLogger, { provider: "cloud-router" });
   const catalog = new RouterCloudModelCatalog({
     upstreamBaseUrl: model.upstreamBaseUrl,
     masterKey: model.masterKey,
+    fetchImpl: routerFetch,
   });
-  const service = new CloudModelService(model, { calls, billing, onError });
+  const service = new CloudModelService(model, { calls, billing, onError, fetchImpl: routerFetch });
   try {
     await service.initialize();
   } catch (error) {
@@ -445,13 +461,14 @@ function createSkillRuntime(
   config: ServerConfig,
   database: DatabaseClient,
   logger: ServiceLogger,
+  perfLogger?: PerformanceLogger,
 ): { service: SkillService; remote: RemoteSkillService; preset: SkillPresetService; gc?: SkillObjectGc } {
   const storage = config.skillStorage;
   if (!storage.enabled) {
     const service = new SkillService({ database, keyPrefix: "skills", logger });
     return {
       service,
-      remote: new RemoteSkillService({ skills: service, logger }),
+      remote: new RemoteSkillService({ skills: service, logger, performanceLogger: perfLogger }),
       preset: new SkillPresetService({ skills: service, logger }),
     };
   }
@@ -465,9 +482,10 @@ function createSkillRuntime(
       forcePathStyle: storage.forcePathStyle,
     },
     logger,
+    fetch: createInstrumentedFetch(perfLogger, { provider: "s3-skills" }),
   });
   const service = new SkillService({ database, store, keyPrefix: storage.prefix, logger });
-  const remote = new RemoteSkillService({ skills: service, logger });
+  const remote = new RemoteSkillService({ skills: service, logger, performanceLogger: perfLogger });
   const preset = new SkillPresetService({ skills: service, logger });
   if (storage.gcIntervalSeconds <= 0) return { service, remote, preset };
   const gc = new SkillObjectGc({
@@ -631,6 +649,7 @@ export async function startServer(): Promise<void> {
   try {
     const config = parseServerConfig(process.env);
     knownSecrets.push(...cipherKeySecrets(config));
+    const perfLogger = serverPerformanceLogger(config, () => app?.log);
     const instanceId = randomUUID();
     await initTelemetry(config.observability.tracing, instanceId);
     readiness.complete("configuration");
@@ -643,6 +662,7 @@ export async function startServer(): Promise<void> {
 
     const { database, sql } = createDatabaseClient(config.databaseUrl, {
       ...config.databaseTimeouts,
+      performanceLogger: perfLogger,
       onQueryTimeout: ({ timeoutMs }) =>
         app?.log.warn({ check: "database", timeoutMs }, "Database query exceeded client deadline"),
     });
@@ -655,6 +675,7 @@ export async function startServer(): Promise<void> {
     const imCallPolicy = new ExternalCallPolicy({
       allowedHosts: ["slack.com", "files.slack.com", "open.feishu.cn", "open.larksuite.com"],
       maxConcurrency: 16,
+      performanceLogger: perfLogger,
       onMetric: (metric) => app?.log.info({ metric }, "IM provider call metric"),
     });
     /*
@@ -672,6 +693,7 @@ export async function startServer(): Promise<void> {
     const feishuRegistrationPolicy = new ExternalCallPolicy({
       allowedHosts: ["open.feishu.cn", "open.larksuite.com"],
       maxConcurrency: 64,
+      performanceLogger: perfLogger,
       onMetric: (metric) => app?.log.info({ metric }, "Feishu registration call metric"),
     });
     const dev = config.devAuth ? new DevBrowserAuthService(database, config.devAuth.email) : undefined;
@@ -694,6 +716,7 @@ export async function startServer(): Promise<void> {
       channel: config.environment,
       downloadBaseUrl: config.channelTarget.downloadBaseUrl,
       intervalMs: config.channelTarget.pollIntervalMs,
+      fetchImpl: createInstrumentedFetch(perfLogger, { provider: "channel-target" }),
       logger: {
         info: (bindings: Record<string, unknown>, message: string) => app?.log.info(bindings, message),
         warn: (bindings: Record<string, unknown>, message: string) => app?.log.warn(bindings, message),
@@ -728,6 +751,7 @@ export async function startServer(): Promise<void> {
         },
         supervisor: backgroundFailureSupervisor,
       },
+      performanceLogger: perfLogger,
     });
     const runnerImagePrewarmWorker = createRunnerImagePrewarmWorker({
       environment: config.environment,
@@ -735,6 +759,7 @@ export async function startServer(): Promise<void> {
       databaseUrl: config.databaseUrl,
       logger: serviceLogger("runner-image-prewarm"),
       supervisor: backgroundFailureSupervisor,
+      performanceLogger: perfLogger,
     });
     /*
      * E7 idle reclamation runs on the existing Server lifecycle: one fixed 15s cadence, one idle
@@ -777,6 +802,7 @@ export async function startServer(): Promise<void> {
       cloudCalls,
       database,
       (event, details) => app?.log.error({ event, ...details }),
+      perfLogger,
     );
     cloudModelService = cloudModelRuntime?.service;
     const modelCatalogOptions = optionalCloudModelCatalog(cloudModelRuntime);
@@ -792,7 +818,10 @@ export async function startServer(): Promise<void> {
      */
     const mcpCipher = new McpCredentialCipher(applicationCipher);
     const mcpServers = new McpServerService({ database, cipher: mcpCipher, reuseOAuth: config.mcpOAuthReuse });
-    const mcpFetcher = new McpOutboundFetcher({ allowLoopback: config.mcpAllowLoopback });
+    const mcpFetcher = new McpOutboundFetcher({
+      allowLoopback: config.mcpAllowLoopback,
+      performanceLogger: perfLogger,
+    });
     /*
      * A second fetcher for runtime tool calls. It enforces the same URL policy — the gate, the
      * redirect refusal, the response bound are all properties of the class — but carries its own
@@ -803,6 +832,7 @@ export async function startServer(): Promise<void> {
       allowLoopback: config.mcpAllowLoopback,
       timeoutMs: MCP_RUNTIME_TIMEOUT_MS,
       maxConcurrentPerAccount: MCP_RUNTIME_MAX_CONCURRENT_PER_ACCOUNT,
+      performanceLogger: perfLogger,
     });
     const mcpOAuth = new McpOAuthClient({ fetcher: mcpFetcher, publicUrl: config.publicUrl });
     const mcpProbe = new McpProbe({ fetcher: mcpFetcher, logger: serviceLogger("mcp-probe") });
@@ -842,6 +872,7 @@ export async function startServer(): Promise<void> {
           const api = new GitHubApiClient({
             ...githubClient,
             redirectUri: `${config.publicUrl}${MCP_OAUTH_CALLBACK_PATH}`,
+            fetch: createInstrumentedFetch(perfLogger, { provider: "github" }),
           });
           return {
             api,
@@ -870,6 +901,7 @@ export async function startServer(): Promise<void> {
         cloudDeliveryOwnerRef?.sendRevocationToInstance(computerId, instanceId, frame);
       }),
       logger: serviceLogger("platform-runtime"),
+      performanceLogger: perfLogger,
     });
     const computerService = new ComputerService(database, authService, {
       providerReadiness: registry,
@@ -976,7 +1008,7 @@ export async function startServer(): Promise<void> {
       executions: platformRuntime.credentials.owner.executionRegistry,
       executionLive: (id) => platformRuntime.credentials.owner.isExecutionLive(id),
     });
-    const skillRuntime = createSkillRuntime(config, database, serviceLogger("skills"));
+    const skillRuntime = createSkillRuntime(config, database, serviceLogger("skills"), perfLogger);
     const slackWorkingStore = new SlackWorkingStore(database);
     const domainOwner = new RuntimeDomainOwner(registry, custody, {
       onTurnActivity: (frame, context) => acknowledgeFeedbackActivity(database, frame, context),
@@ -1106,7 +1138,11 @@ export async function startServer(): Promise<void> {
       slackOAuthAvailable: config.slackOAuth !== undefined,
       cloudAvailability: (now) => cloudAvailability(config, now),
     });
-    const slackApi = new DefaultSlackApiClient(undefined, undefined, imCallPolicy);
+    const slackApi = new DefaultSlackApiClient(
+      undefined,
+      createInstrumentedFetch(perfLogger, { provider: "slack" }),
+      imCallPolicy,
+    );
     const slackWorkingWorker = new SlackWorkingWorker({
       store: slackWorkingStore,
       api: slackApi,
@@ -1269,12 +1305,14 @@ export async function startServer(): Promise<void> {
       databaseReadinessProbe: createApplicationDatabaseReadinessProbe(sql, databaseReadinessProbe),
       deployment: deploymentProof(config),
       loggerLevel: config.logLevel,
+      performanceLogger: perfLogger,
       trustProxy: config.trustProxy,
       errorReporting: {
         reporter: createErrorReporter({
           projectId: config.observability.errorReporting.projectId,
           credentials: config.observability.errorReporting.credentials,
           logger: () => app?.log,
+          performanceLogger: perfLogger,
         }),
       },
       betterAuth: { instance: betterAuth, publicUrl: config.publicUrl },
@@ -1444,6 +1482,20 @@ export async function startServer(): Promise<void> {
       ...(setupResetService ? { internalNavigationService, setupResetService } : {}),
       accountSetupService,
     });
+    instrumentServerWorkers(
+      [
+        ["ImDeliveryWorker", imDeliveryWorker],
+        ["SlackWorkingWorker", slackWorkingWorker],
+        ["ImFeedbackWorker", imFeedbackWorker],
+        ["ScheduleScheduler", scheduleScheduler],
+        ["SandboxIdleReclaimer", sandboxIdleReclaimer],
+        ["McpRefreshWorker", mcpRefreshWorker],
+        ["SkillObjectGc", skillRuntime.gc],
+        ["RunnerImagePrewarmWorker", runnerImagePrewarmWorker],
+        ["ChannelTargetPoller", channelTargetPoller],
+      ],
+      perfLogger,
+    );
     feishuSetupService.start();
     feishuConnections.start();
     approvalOwner.start();

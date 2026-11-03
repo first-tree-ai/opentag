@@ -80,6 +80,8 @@ export interface SlackEventsRouteOptions extends SlackEventsReceiptOptions {
   approvalOwner?: Pick<RuntimeApprovalOwner, "decide">;
   imFeedback?: Pick<ImFeedbackActionsService, "submitNativeRetry">;
   feedbackResponse?: (input: {
+    installationId: string;
+    generation: number;
     token: string;
     channelId: string;
     userId: string;

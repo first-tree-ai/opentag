@@ -10,6 +10,7 @@ import {
   sandboxes,
   slackInstallations,
 } from "../../db/schema/index.js";
+import { createPerformanceLogger } from "../../observability/performance-logger.js";
 import { PostgresRuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
 import { ApplicationCipher } from "../../services/crypto.js";
 import { ExternalCallPolicy } from "../../services/im/external-call-policy.js";
@@ -291,7 +292,12 @@ function messengerFor(target: FeedbackTarget, store: ImFeedbackStore) {
       botUserId: "U1",
     }),
   } as unknown as ImBindingService;
-  return new ImFeedbackMessenger(binding, new ExternalCallPolicy({ allowedHosts: [] }), "https://example.test", store);
+  return new ImFeedbackMessenger(
+    binding,
+    new ExternalCallPolicy({ allowedHosts: [], performanceLogger: createPerformanceLogger(() => undefined) }),
+    "https://example.test",
+    store,
+  );
 }
 
 async function failAnother(h: Awaited<ReturnType<typeof failed>>) {
@@ -311,7 +317,10 @@ describe("existing installation cooldown", () => {
     await client.database.update(imFeedbackTargets).set({ appliedReaction: "warning" });
     const store = new ImFeedbackStore(client.database, () => clock);
     const transport = messengerFor(h.target, store);
-    const replica = createDatabaseClient(fixtureDb.databaseUrl, { max: 1 });
+    const replica = createDatabaseClient(fixtureDb.databaseUrl, {
+      max: 1,
+      performanceLogger: createPerformanceLogger(() => undefined),
+    });
     const requests: string[] = [];
     const http = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
       requests.push(String(url));
@@ -381,7 +390,10 @@ describe("existing installation cooldown", () => {
   it("extends deadlines monotonically across independent connections and fences old-generation writers", async () => {
     const h = await failed();
     const store = new ImFeedbackStore(client.database);
-    const replica = createDatabaseClient(fixtureDb.databaseUrl, { max: 1 });
+    const replica = createDatabaseClient(fixtureDb.databaseUrl, {
+      max: 1,
+      performanceLogger: createPerformanceLogger(() => undefined),
+    });
     const other = new ImFeedbackStore(replica.database);
     try {
       expect(

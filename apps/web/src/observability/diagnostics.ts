@@ -26,6 +26,7 @@ export type DiagnosticReporterOptions = {
 const DEFAULT_COOLDOWN_MS = 30_000;
 const STALE_ASSET_RELOAD_KEY = "opentag:stale-asset-reload";
 const STALE_ASSET_RELOAD_COOLDOWN_MS = 60_000;
+const STALE_ASSET_UNLOAD_GRACE_MS = 500;
 const UUID_SEGMENT = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const INTEGER_SEGMENT = /^\d+$/;
 const SAFE_CODE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
@@ -33,6 +34,19 @@ const VITE_CSS_PRELOAD_FAILURE = /Unable to preload CSS for\s+([^\s)'"]+)/i;
 const DYNAMIC_IMPORT_FAILURE =
   /(?:Failed to fetch dynamically imported module|error loading dynamically imported module|Importing a module script failed)/i;
 const ASSET_URL_OR_PATH = /(https?:\/\/[^\s)'"]+|\/assets\/[^\s)'"]+)/i;
+const LAZY_ROUTE_UNDEFINED_MODULE =
+  /(?:Cannot read properties of undefined \(reading '(?:component|default)'\)|undefined is not an object \(evaluating '[^\n']*component'\)|lazyRouteComponent)/i;
+
+let preloadReloadUnloading = false;
+
+/**
+ * Calling `event.preventDefault()` on `vite:preloadError` makes Vite's `__vitePreload` resolve the
+ * failed `import()` to `undefined` before `location.reload()` unloads the document, which causes
+ * TanStack Router's `lazyRouteComponent` to throw a `TypeError` reading `.component` on `undefined`.
+ */
+export function isStaleAssetPreloadFallout(error: unknown): boolean {
+  return preloadReloadUnloading && LAZY_ROUTE_UNDEFINED_MODULE.test(readReasonText(error));
+}
 
 /**
  * The flat expression this module matches `name: value` shapes with.
@@ -220,10 +234,36 @@ export function installWindowDiagnosticHandlers(
   target: Window = window,
   reporter: DiagnosticReporter = windowDiagnosticReporter,
 ): () => void {
+  preloadReloadUnloading = false;
+  let reloadSource: "preload" | "rejection" | "element" | undefined;
+  let reloadAt = -Infinity;
+
+  const shouldSuppressForStaleAsset = (
+    source: "preload" | "rejection" | "element",
+    resourcePath: string | undefined,
+  ): boolean => {
+    if (!resourcePath?.startsWith("/assets/")) return false;
+    const now = reporter.readNow();
+    if (
+      reloadSource !== undefined &&
+      reloadSource !== source &&
+      now >= reloadAt &&
+      now - reloadAt < STALE_ASSET_UNLOAD_GRACE_MS
+    ) {
+      return true;
+    }
+    if (!tryReloadOnStaleAsset(target, resourcePath, () => now)) return false;
+    reloadSource = source;
+    reloadAt = now;
+    if (source === "preload") preloadReloadUnloading = true;
+    return true;
+  };
+
   const onUnhandledRejection = (event: PromiseRejectionEvent) => {
+    if (isStaleAssetPreloadFallout(event.reason)) return;
     const staleAssetPath = extractStaleAssetPath(event.reason, target);
     if (staleAssetPath) {
-      if (tryReloadOnStaleAsset(target, staleAssetPath, () => reporter.readNow())) return;
+      if (shouldSuppressForStaleAsset("rejection", staleAssetPath)) return;
       const normalized = normalizeError(event.reason, "resource_load_failed");
       reporter.report(
         {
@@ -252,7 +292,7 @@ export function installWindowDiagnosticHandlers(
   const onVitePreloadError = (event: Event) => {
     const payload = (event as { payload?: unknown }).payload;
     const resourcePath = extractStaleAssetPath(payload, target);
-    if (tryReloadOnStaleAsset(target, resourcePath ?? "/assets/", () => reporter.readNow())) {
+    if (shouldSuppressForStaleAsset("preload", resourcePath ?? "/assets/")) {
       event.preventDefault();
       return;
     }
@@ -276,6 +316,7 @@ export function installWindowDiagnosticHandlers(
     // carrying the thrown value; a resource that failed to load carries none and targets its element.
     const thrown = event.error;
     if ((thrown !== undefined && thrown !== null) || event.target === target) {
+      if (isStaleAssetPreloadFallout(thrown ?? event.message)) return;
       const normalized = normalizeError(thrown ?? event.message, "unhandled_error");
       reporter.report(
         {
@@ -297,7 +338,7 @@ export function installWindowDiagnosticHandlers(
      */
     if (!resource || !isSameOrigin(resource.source, target)) return;
     const resourcePath = resourcePathWithoutQuery(resource.source, target);
-    if (tryReloadOnStaleAsset(target, resourcePath, () => reporter.readNow())) return;
+    if (shouldSuppressForStaleAsset("element", resourcePath)) return;
     reporter.report(
       {
         source: "window",
@@ -314,6 +355,7 @@ export function installWindowDiagnosticHandlers(
   target.addEventListener("vite:preloadError", onVitePreloadError);
   target.addEventListener("error", onWindowError, true);
   return () => {
+    preloadReloadUnloading = false;
     target.removeEventListener("unhandledrejection", onUnhandledRejection);
     target.removeEventListener("vite:preloadError", onVitePreloadError);
     target.removeEventListener("error", onWindowError, true);

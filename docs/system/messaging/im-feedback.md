@@ -90,7 +90,7 @@ until their feedback is safely removed. No historical error-card backfill runs.
 
 The feedback transport reuses `slack_installations.working_status_not_before_at`, which also gates legacy native
 status cleanup. It adds no cooldown table, column, index, migration or cleanup job. Immediately before each
-reaction add/remove, card creation/update or history read, it checks the active installation at the target's
+reaction add/remove, card creation/update, private callback response or history read, it checks the active installation at the target's
 credential generation and reads the remaining deadline using the database clock. A future deadline defers the
 operation as definitely not submitted. A confirmed 429 extends the same timestamp with `greatest(current,
 database-now + Retry-After)` in a short generation-checked installation-row transaction. No database lock spans

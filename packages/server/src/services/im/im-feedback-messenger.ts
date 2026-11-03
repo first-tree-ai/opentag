@@ -5,7 +5,7 @@ import type { ImBindingService } from "../im-bindings/im-binding-service.js";
 import { SLACK_WEB_CLIENT_OPTIONS } from "../im-bindings/slack/default-api-client.js";
 import { type ExternalCallPolicy, ExternalCallPolicyError } from "./external-call-policy.js";
 import { renderFeedbackCard } from "./im-feedback-card.js";
-import type { FeedbackAction, FeedbackTarget, ImFeedbackStore } from "./im-feedback-store.js";
+import type { FeedbackAction, FeedbackTarget, ImFeedbackStore, SlackFeedbackScope } from "./im-feedback-store.js";
 
 export class FeedbackProviderError extends Error {
   constructor(
@@ -66,7 +66,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     return result.value;
   }
 
-  async #slackCall<T>(target: FeedbackTarget, task: () => Promise<T>): Promise<T> {
+  async #slackCall<T>(target: SlackFeedbackScope, task: () => Promise<T>): Promise<T> {
     let remainingMs: number | undefined;
     try {
       remainingMs = await this.cooldown.slackCooldownRemaining(target);
@@ -126,6 +126,8 @@ export class ImFeedbackMessenger implements FeedbackTransport {
   }
 
   async respondSlack(input: {
+    installationId: string;
+    generation: number;
     token: string;
     channelId: string;
     userId: string;
@@ -140,15 +142,19 @@ export class ImFeedbackMessenger implements FeedbackTransport {
           fetch: (url, init) =>
             fetch(url, { ...init, signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal }),
         });
-        await api.chat.postEphemeral({
-          channel: input.channelId,
-          user: input.userId,
-          thread_ts: input.threadKey,
-          text:
-            input.result === "recorded"
-              ? "Retry queued. Check the original card for its result."
-              : "This operation is unavailable or changed. Open the original card's current details before deciding again.",
-        });
+        await this.#slackCall(
+          { provider: "slack", installationId: input.installationId, bindingGeneration: input.generation },
+          () =>
+            api.chat.postEphemeral({
+              channel: input.channelId,
+              user: input.userId,
+              thread_ts: input.threadKey,
+              text:
+                input.result === "recorded"
+                  ? "Retry queued. Check the original card for its result."
+                  : "This operation is unavailable or changed. Open the original card's current details before deciding again.",
+            }),
+        );
       },
       { maxAttempts: 1, timeoutMs: 3_000 },
     );

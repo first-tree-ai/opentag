@@ -19,7 +19,8 @@ A repaired original case does not close another extension of the same finding.
 | --- | --- | --- |
 | 1 — Agent/Task authority snapshot | AG-F11, TK-F1, AG-F1 including IM metadata | [Verified locally](verification/sql-caller-repairs-01.md): 275 distinct cases (183 native PG), server typecheck and pnpm check pass. |
 | 2a — Skill/Schedule and compatible locks | SK-F1, SC-F1, IM-F5 | [Verified locally](verification/sql-caller-repairs-02.md): 294 distinct cases (153 native PG); full source contract and Session-first retained claims. |
-| 2b — Remaining mutation authority | AG-F3, AG-F5, AG-F12 | Pending current-source revalidation; preserve expected Computer and lifecycle/work/proof identities. |
+| 2b — Final setup/Context authority | AG-F3, AG-F5 | [Verified locally](verification/sql-caller-repairs-03.md): final locked expected Computer and post-SQL abort checks; 137 distinct cases, 88 native PG. |
+| 2c — Lifecycle stop authority | AG-F12 | Pending current-source revalidation; preserve lifecycle/work/proof identities. |
 | 3 — Contention and admission | IM-F1, IM-F6, CR-F1 | Pending revalidation of newer IM implementation; reuse try-lock/SKIP LOCKED, compatible row order and existing durable receipt recovery. |
 | 4 — External effects and result fences | SW-F1, IM-F2, IM-F4, CR-F2, AG-F2, AP-F1 | Pending revalidation; preserve custody, exact status/attempt/Turn identities and failure classification. Official approval idle backstop remains; AP-F1 is bounded latency. |
 | 5 — Stop, drain and owner resources | IM-F3, BG-F1, BG-F3, AG-F4, AG-F7, AG-F9 | Pending revalidation of actual owners; stop admission and join underlying work, not only deadline wrappers. Reuse existing owner/cursor stores. |

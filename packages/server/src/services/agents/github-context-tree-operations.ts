@@ -233,6 +233,7 @@ export class GitHubContextTreeOperations implements GitHubContextTreeOperationRu
       if (!target.private || target.fullName.toLowerCase() !== repository.toLowerCase() || !target.defaultBranch)
         halt("publication_uncertain");
       await this.#assertFinalFence(input.accountId, input.agentId, connection.id, fence);
+      signal.throwIfAborted();
       return { status: "completed", repository, ref: ContextTreeBranchSchema.parse(target.defaultBranch) };
     } catch (error) {
       // Never retry a write automatically or adopt an existing repository after an uncertain reply.
@@ -309,6 +310,7 @@ export class GitHubContextTreeOperations implements GitHubContextTreeOperationRu
     });
     await recheck();
     await this.#assertFinalFence(input.accountId, input.agentId, connection.id, fence);
+    signal.throwIfAborted();
     return { status: "completed", repository, ...(input.ref === "HEAD" ? { ref } : {}) };
   }
 

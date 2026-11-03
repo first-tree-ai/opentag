@@ -53,8 +53,7 @@ export class SlackAutoSetupService {
       ...(input.challenge ? { challenge: input.challenge } : {}),
     });
     if (installed.status !== "installed") return installed;
-    await this.#checkPlacement(accountId, agentId, computerId);
-    await this.#bind(accountId, agentId, installed.credentials);
+    await this.#bind(accountId, agentId, computerId, installed.credentials);
     await this.#checkPlacement(accountId, agentId, computerId);
     return this.#callbacks(
       computerId,
@@ -82,7 +81,7 @@ export class SlackAutoSetupService {
         "The Agent moved to another Computer",
       );
   }
-  async #bind(accountId: string, agentId: string, credentials: SlackProvisionCredentials) {
+  async #bind(accountId: string, agentId: string, computerId: string, credentials: SlackProvisionCredentials) {
     const current = await this.options.slack.view(
       accountId,
       agentId,
@@ -114,6 +113,7 @@ export class SlackAutoSetupService {
         signingSecret: credentials.signingSecret,
       },
       credentials,
+      computerId,
     );
   }
   async #callbacks(

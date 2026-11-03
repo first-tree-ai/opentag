@@ -82,6 +82,11 @@ An uncertain create response is recorded even if a background config refresh cha
 is pending; other stale response state is still discarded.
 Retrying an already connected tree is idempotent.
 
+Remote verification checks its existing cancellation signal after the final SQL authority read,
+before returning a completed result that admits selection persistence. Cancellation or close during
+that read cannot start a later selection write. Once repository creation may have succeeded, the
+same cancellation retains the publication-uncertain result and never retries the remote write.
+
 ## Preparation
 
 OpenTag writes authorized selections to its own configuration at

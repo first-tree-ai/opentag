@@ -163,6 +163,7 @@ export class SlackConfigurationService {
     agentId: string,
     input: SaveSlackConfigurationRequest,
     expectedIdentity?: Pick<SlackProvisionCredentials, "appId" | "teamId" | "botUserId">,
+    expectedComputerId?: string,
   ): Promise<SlackConfigurationResult> {
     await this.#imBindings.assertCanManage(callerUserId, agentId);
     await this.#agent(agentId, this.#database);
@@ -226,6 +227,7 @@ export class SlackConfigurationService {
         signingSecret,
       },
       installation,
+      expectedComputerId,
     );
   }
 
@@ -252,6 +254,7 @@ export class SlackConfigurationService {
     agentId: string,
     input: SlackOAuthActivationInput,
     installation: SlackInstallationInspection,
+    expectedComputerId?: string,
   ): Promise<SlackConfigurationResult> {
     // Profile enrichment must never prevent a valid installation from connecting.
     let profile: SlackBindingActivation["profile"];
@@ -267,7 +270,13 @@ export class SlackConfigurationService {
       // Token inspection is external. Reacquire live Account authority and serialize the Agent's
       // binding immediately before committing the inspected credential snapshot.
       await this.#imBindings.assertCanManageForMutation(callerUserId, agentId, transaction);
-      await this.#agent(agentId, transaction);
+      const agent = await this.#agent(agentId, transaction);
+      if (expectedComputerId !== undefined && agent.computerId !== expectedComputerId)
+        throw new SlackConfigurationServiceError(
+          "SLACK_CONFIGURATION_CONFLICT",
+          409,
+          "The Agent moved to another Computer",
+        );
       // A terminal first-time Feishu attempt is not a connection, but its row still holds the Agent's
       // slot and the Provider/App uniqueness entries. Release it under this transaction's lock so the
       // insert below can take the slot; the fence leaves a working binding alone.

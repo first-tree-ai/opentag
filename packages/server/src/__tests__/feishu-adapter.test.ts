@@ -1986,8 +1986,10 @@ describe("FeishuConnectionManager", () => {
     const updateWhereSqls: string[] = [];
     let failNextImMessageUpdate = false;
     let holdNextImMessageUpdate = false;
+    let holdAfterNextImMessageUpdateExec = false;
     let rejectHeldUpdate: ((reason?: unknown) => void) | undefined;
-    let resolveHeldUpdate: (() => void) | undefined;
+    let notifyHeldExecDone: (() => void) | undefined;
+    let resolveHeldExecReturn: (() => void) | undefined;
     const realUpdate = connectionDatabase.database.update.bind(connectionDatabase.database);
     const updateSpy = vi.spyOn(connectionDatabase.database, "update").mockImplementation(((table: unknown) => {
       const builder = realUpdate(table as never);
@@ -1999,10 +2001,20 @@ describe("FeishuConnectionManager", () => {
         setBuilder.where = ((condition: unknown) => {
           const query = realWhere(condition as never);
           updateWhereSqls.push(query.toSQL().sql);
+          if (holdAfterNextImMessageUpdateExec) {
+            holdAfterNextImMessageUpdateExec = false;
+            return (async () => {
+              const result = await query;
+              notifyHeldExecDone?.();
+              await new Promise<void>((resolve) => {
+                resolveHeldExecReturn = resolve;
+              });
+              return result;
+            })() as never;
+          }
           if (holdNextImMessageUpdate) {
             holdNextImMessageUpdate = false;
-            return new Promise<void>((resolve, reject) => {
-              resolveHeldUpdate = resolve;
+            return new Promise<void>((_, reject) => {
               rejectHeldUpdate = reject;
             }).then(() => query) as never;
           }
@@ -2085,8 +2097,12 @@ describe("FeishuConnectionManager", () => {
       });
       expect(updateWhereSqls.at(-1)).toContain('"channel_id" =');
 
+      const flushMicrotasks = async () => {
+        for (let i = 0; i < 6; i += 1) await Promise.resolve();
+      };
+
       rejectHeldUpdate?.(new Error("stale primary-key failure"));
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await flushMicrotasks();
 
       await send("ev_c6", "om_c6", 6);
       await vi.waitFor(() => {
@@ -2094,39 +2110,31 @@ describe("FeishuConnectionManager", () => {
       });
       expect(updateWhereSqls.at(-1)).toContain('"im_messages"."id" =');
 
-      await connectionDatabase.database.insert(imMessages).values(
-        [
-          [dirty1Id, "ev_d1", "om_d1"],
-          [dirty3Id, "ev_d3", "om_d3"],
-        ].map(([id, providerEventId, externalMessageId]) => ({
-          id: id as string,
-          imBindingId: binding.id,
-          providerEventId: providerEventId as string,
-          channelId: "oc_dirty",
-          externalMessageId: externalMessageId as string,
-          providerRevisionKey: "1",
-          operation: "created" as const,
-          direction: "inbound" as const,
-          authorKind: "human" as const,
-          authorExternalId: "ou_human",
-          content: { version: 1 as const, fallbackText: externalMessageId as string, blocks: [], truncated: false },
-          providerContext: { provider: "feishu" as const, chatType: "group" },
-          occurredAt: connectionNow,
-          receivedAt: connectionNow,
-        })),
-      );
-
-      holdNextImMessageUpdate = true;
-      await send("ev_d1", "om_d1", 7, "oc_dirty");
-      await vi.waitFor(() => {
-        expect(updateWhereSqls).toHaveLength(7);
+      await connectionDatabase.database.insert(imMessages).values({
+        id: dirty1Id,
+        imBindingId: binding.id,
+        providerEventId: "ev_d1",
+        channelId: "oc_dirty",
+        externalMessageId: "om_d1",
+        providerRevisionKey: "1",
+        operation: "created",
+        direction: "inbound",
+        authorKind: "human",
+        authorExternalId: "ou_human",
+        content: { version: 1, fallbackText: "om_d1", blocks: [], truncated: false },
+        providerContext: { provider: "feishu", chatType: "group" },
+        occurredAt: connectionNow,
+        receivedAt: connectionNow,
       });
-      expect(updateWhereSqls.at(-1)).toContain('"channel_id" =');
 
-      resolveChatMetadata.mockResolvedValueOnce(undefined);
-      await send("ev_d2", "om_d2", 8, "oc_dirty");
-      resolveHeldUpdate?.();
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      const dirty1ExecDone = new Promise<void>((resolve) => {
+        notifyHeldExecDone = resolve;
+      });
+      holdAfterNextImMessageUpdateExec = true;
+      await send("ev_d1", "om_d1", 7, "oc_dirty");
+      await dirty1ExecDone;
+      expect(updateWhereSqls).toHaveLength(7);
+      expect(updateWhereSqls.at(-1)).toContain('"channel_id" =');
 
       await connectionDatabase.database.insert(imMessages).values({
         id: dirty2Id,
@@ -2144,7 +2152,28 @@ describe("FeishuConnectionManager", () => {
         occurredAt: connectionNow,
         receivedAt: connectionNow,
       });
+      resolveChatMetadata.mockResolvedValueOnce(undefined);
+      await send("ev_d2", "om_d2", 8, "oc_dirty");
+      await flushMicrotasks();
+      resolveHeldExecReturn?.();
+      await flushMicrotasks();
 
+      await connectionDatabase.database.insert(imMessages).values({
+        id: dirty3Id,
+        imBindingId: binding.id,
+        providerEventId: "ev_d3",
+        channelId: "oc_dirty",
+        externalMessageId: "om_d3",
+        providerRevisionKey: "1",
+        operation: "created",
+        direction: "inbound",
+        authorKind: "human",
+        authorExternalId: "ou_human",
+        content: { version: 1, fallbackText: "om_d3", blocks: [], truncated: false },
+        providerContext: { provider: "feishu", chatType: "group" },
+        occurredAt: connectionNow,
+        receivedAt: connectionNow,
+      });
       await send("ev_d3", "om_d3", 9, "oc_dirty");
       await vi.waitFor(async () => {
         const [repairedDirty] = await connectionDatabase.database
@@ -2159,48 +2188,30 @@ describe("FeishuConnectionManager", () => {
       });
       expect(updateWhereSqls.at(-1)).toContain('"channel_id" =');
 
-      await connectionDatabase.database.insert(imMessages).values(
-        [
-          [late1Id, "ev_l1", "om_l1"],
-          [late3Id, "ev_l3", "om_l3"],
-        ].map(([id, providerEventId, externalMessageId]) => ({
-          id: id as string,
-          imBindingId: binding.id,
-          providerEventId: providerEventId as string,
-          channelId: "oc_dirty_late",
-          externalMessageId: externalMessageId as string,
-          providerRevisionKey: "1",
-          operation: "created" as const,
-          direction: "inbound" as const,
-          authorKind: "human" as const,
-          authorExternalId: "ou_human",
-          content: { version: 1 as const, fallbackText: externalMessageId as string, blocks: [], truncated: false },
-          providerContext: { provider: "feishu" as const, chatType: "group" },
-          occurredAt: connectionNow,
-          receivedAt: connectionNow,
-        })),
-      );
-
-      holdNextImMessageUpdate = true;
-      await send("ev_l1", "om_l1", 10, "oc_dirty_late");
-      await vi.waitFor(() => {
-        expect(updateWhereSqls).toHaveLength(9);
+      await connectionDatabase.database.insert(imMessages).values({
+        id: late1Id,
+        imBindingId: binding.id,
+        providerEventId: "ev_l1",
+        channelId: "oc_dirty_late",
+        externalMessageId: "om_l1",
+        providerRevisionKey: "1",
+        operation: "created",
+        direction: "inbound",
+        authorKind: "human",
+        authorExternalId: "ou_human",
+        content: { version: 1, fallbackText: "om_l1", blocks: [], truncated: false },
+        providerContext: { provider: "feishu", chatType: "group" },
+        occurredAt: connectionNow,
+        receivedAt: connectionNow,
       });
 
-      let releaseLateLookup: ((metadata: FeishuChatMetadata | undefined) => void) | undefined;
-      resolveChatMetadata.mockImplementationOnce(
-        () =>
-          new Promise<FeishuChatMetadata | undefined>((resolve) => {
-            releaseLateLookup = resolve;
-          }),
-      );
-      await send("ev_l2", "om_l2", 11, "oc_dirty_late");
-
-      resolveHeldUpdate?.();
-      await new Promise((resolve) => setTimeout(resolve, 10));
-
-      releaseLateLookup?.(undefined);
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      const late1ExecDone = new Promise<void>((resolve) => {
+        notifyHeldExecDone = resolve;
+      });
+      holdAfterNextImMessageUpdateExec = true;
+      await send("ev_l1", "om_l1", 10, "oc_dirty_late");
+      await late1ExecDone;
+      expect(updateWhereSqls).toHaveLength(9);
 
       await connectionDatabase.database.insert(imMessages).values({
         id: late2Id,
@@ -2214,6 +2225,43 @@ describe("FeishuConnectionManager", () => {
         authorKind: "human",
         authorExternalId: "ou_human",
         content: { version: 1, fallbackText: "om_l2", blocks: [], truncated: false },
+        providerContext: { provider: "feishu", chatType: "group" },
+        occurredAt: connectionNow,
+        receivedAt: connectionNow,
+      });
+
+      let notifyLateLookupStarted: (() => void) | undefined;
+      const lateLookupStarted = new Promise<void>((resolve) => {
+        notifyLateLookupStarted = resolve;
+      });
+      let releaseLateLookup: ((metadata: FeishuChatMetadata | undefined) => void) | undefined;
+      resolveChatMetadata.mockImplementationOnce(() => {
+        notifyLateLookupStarted?.();
+        return new Promise<FeishuChatMetadata | undefined>((resolve) => {
+          releaseLateLookup = resolve;
+        });
+      });
+      await send("ev_l2", "om_l2", 11, "oc_dirty_late");
+      await lateLookupStarted;
+
+      resolveHeldExecReturn?.();
+      await flushMicrotasks();
+
+      releaseLateLookup?.(undefined);
+      await flushMicrotasks();
+
+      await connectionDatabase.database.insert(imMessages).values({
+        id: late3Id,
+        imBindingId: binding.id,
+        providerEventId: "ev_l3",
+        channelId: "oc_dirty_late",
+        externalMessageId: "om_l3",
+        providerRevisionKey: "1",
+        operation: "created",
+        direction: "inbound",
+        authorKind: "human",
+        authorExternalId: "ou_human",
+        content: { version: 1, fallbackText: "om_l3", blocks: [], truncated: false },
         providerContext: { provider: "feishu", chatType: "group" },
         occurredAt: connectionNow,
         receivedAt: connectionNow,

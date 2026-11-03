@@ -6,8 +6,8 @@ import * as m from "../../paraglide/messages.js";
  * A schedule rule in the reader's words: "Every weekday at 9:00", "每月 1 日 18:00".
  *
  * Only the cron shapes people actually write by hand are phrased — fixed minute and hour with a
- * day-of-week set, a single day of the month, or every day — plus fixed intervals and one-off
- * times. Anything else keeps its raw expression, which stays exact rather than guessed.
+ * day-of-week set, a day-of-month set, or every day — plus fixed intervals and one-off times.
+ * Anything else keeps its raw expression, which stays exact rather than guessed.
  */
 export function scheduleRuleText(rule: AgentScheduleRule, timezone: string): string {
   if (rule.kind === "at") return m.agents_schedules_at({ time: shortScheduleTime(rule.at, timezone) });
@@ -15,19 +15,28 @@ export function scheduleRuleText(rule: AgentScheduleRule, timezone: string): str
   return cronText(rule.expression) ?? m.agents_schedules_cron({ expression: rule.expression });
 }
 
-/** Month, day, weekday, and time in the schedule's zone; the zone is named only when it is not the reader's. */
+/**
+ * Month, day, weekday, and time in the schedule's zone, with the hour unpadded like the rules
+ * ("9:00"); the zone is named only when it is not the reader's.
+ */
 export function shortScheduleTime(instant: string, timezone: string): string {
   const reader = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  return new Intl.DateTimeFormat(intlLocale(), {
-    month: "short",
-    day: "numeric",
-    weekday: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-    timeZone: timezone,
-    ...(timezone === reader ? {} : { timeZoneName: "short" }),
-  }).format(new Date(instant));
+  return (
+    new Intl.DateTimeFormat(intlLocale(), {
+      month: "short",
+      day: "numeric",
+      weekday: "short",
+      hour: "numeric",
+      minute: "2-digit",
+      hourCycle: "h23",
+      timeZone: timezone,
+      ...(timezone === reader ? {} : { timeZoneName: "short" }),
+    })
+      .formatToParts(new Date(instant))
+      // Some locales pad a 24-hour hour even when asked for "numeric".
+      .map((part) => (part.type === "hour" ? String(Number(part.value)) : part.value))
+      .join("")
+  );
 }
 
 function intervalText(seconds: number): string {
@@ -73,10 +82,11 @@ function subHourlyText(minute: string): string | undefined {
 function dayText(time: string, dayOfMonth: string, dayOfWeek: string): string | undefined {
   if (dayOfMonth === "*" && dayOfWeek === "*") return m.agents_schedules_daily({ time });
   if (dayOfMonth === "*") return weekdayText(time, dayOfWeek);
-  if (dayOfWeek === "*" && inRange(dayOfMonth, 31) && Number(dayOfMonth) >= 1) {
-    return m.agents_schedules_monthly({ day: String(Number(dayOfMonth)), time });
-  }
-  return undefined;
+  if (dayOfWeek !== "*") return undefined;
+  const days = numberSet(dayOfMonth, 1, 31);
+  if (!days) return undefined;
+  if (days.length === 1) return m.agents_schedules_monthly({ day: String(days[0]), time });
+  return m.agents_schedules_monthly_days({ days: dayOfMonthList(days), time });
 }
 
 function weekdayText(time: string, dayOfWeek: string): string | undefined {
@@ -91,18 +101,44 @@ function inRange(field: string, max: number): boolean {
   return NUMBER.test(field) && Number(field) <= max;
 }
 
-/** A day-of-week field as sorted, distinct days (0 = Sunday), or undefined when it is not a plain list or range. */
+/** A day-of-week field as sorted, distinct days (0 = Sunday, 7 folded into it). */
 function weekdays(field: string): number[] | undefined {
-  const days = new Set<number>();
+  const days = numberSet(field, 0, 7);
+  return days && [...new Set(days.map((day) => day % 7))].sort((left, right) => left - right);
+}
+
+/** A plain cron list of numbers and ranges within bounds as sorted, distinct values; undefined otherwise. */
+function numberSet(field: string, min: number, max: number): number[] | undefined {
+  const values = new Set<number>();
   for (const part of field.split(",")) {
-    const range = /^(\d)(?:-(\d))?$/.exec(part);
+    const range = /^(\d{1,2})(?:-(\d{1,2}))?$/.exec(part);
     if (!range) return undefined;
     const start = Number(range[1]);
     const end = range[2] === undefined ? start : Number(range[2]);
-    if (start > 7 || end > 7 || end < start) return undefined;
-    for (let day = start; day <= end; day += 1) days.add(day % 7);
+    if (start < min || end > max || end < start) return undefined;
+    for (let value = start; value <= end; value += 1) values.add(value);
   }
-  return [...days].sort((left, right) => left - right);
+  return [...values].sort((left, right) => left - right);
+}
+
+/** Days of the month with consecutive runs of three or more as ranges: "1、15、28–31", "1, 15 and 28–31". */
+function dayOfMonthList(days: readonly number[]): string {
+  const parts: string[] = [];
+  for (let index = 0; index < days.length; ) {
+    let end = index;
+    while (end + 1 < days.length && days[end + 1] === (days[end] ?? 0) + 1) end += 1;
+    if (end - index >= 2) {
+      parts.push(`${days[index]}–${days[end]}`);
+      index = end + 1;
+    } else {
+      parts.push(String(days[index]));
+      index += 1;
+    }
+  }
+  const locale = intlLocale();
+  return locale.startsWith("zh")
+    ? parts.join("、")
+    : new Intl.ListFormat(locale, { style: "long", type: "conjunction" }).format(parts);
 }
 
 function weekdayList(days: readonly number[]): string {

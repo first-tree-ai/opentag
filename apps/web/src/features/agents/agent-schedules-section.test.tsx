@@ -55,46 +55,40 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("AgentSchedulesSection", () => {
   it.each([
-    ["accepted", "Received by the runtime"],
-    ["unreachable", "Runtime unreachable"],
-    ["rejected", "Rejected by the runtime"],
-    ["unknown", "Handoff result unknown"],
-    ["skipped", "Skipped"],
-  ] as const)(
-    "shows the latest %s handoff before details are opened, naming only a failure",
-    async (outcome, label) => {
-      const item = schedule({
-        lastDispatch: { scheduledFor: TIME, attemptedAt: null, messageId: null, outcome, code: null },
-      });
-      vi.spyOn(browserApi, "agentSchedules").mockResolvedValue({ items: [summaryOf(item)], nextCursor: null });
-      const detail = vi.spyOn(browserApi, "agentSchedule").mockResolvedValue(item);
+    ["accepted", null, null, ""],
+    ["unreachable", null, "text-kumo-danger", "didn't run: the computer was offline"],
+    ["rejected", null, "text-kumo-danger", "didn't run: the Agent didn't accept it"],
+    ["skipped", "late", "text-kumo-danger", "didn't run: the time was missed"],
+    ["rejected", "agent_suspended", "text-kumo-danger", "didn't run: the Agent was paused"],
+    ["unknown", null, "text-kumo-warning", "not confirmed"],
+  ] as const)("says what happened to a %s (%s) last run in the reader's terms", async (outcome, code, tone, suffix) => {
+    const item = schedule({
+      lastDispatch: { scheduledFor: TIME, attemptedAt: null, messageId: null, outcome, code },
+    });
+    vi.spyOn(browserApi, "agentSchedules").mockResolvedValue({ items: [summaryOf(item)], nextCursor: null });
+    const detail = vi.spyOn(browserApi, "agentSchedule").mockResolvedValue(item);
 
-      mount();
-      const time = shortScheduleTime(TIME, item.timezone);
-      expect(await screen.findByText(time)).toBeTruthy();
-      const last = screen.getByText(time).parentElement;
-      expect(last?.textContent).toBe(outcome === "accepted" ? `Last ${time}` : `Last ${time} · ${label}`);
-      expect(last?.classList.contains("text-kumo-danger")).toBe(outcome !== "accepted");
-      expect(screen.getByText("Every minute")).toBeTruthy();
-      expect(screen.getByText("Enabled")).toBeTruthy();
-      expect(screen.queryByText(item.prompt)).toBeNull();
-      expect(detail).not.toHaveBeenCalled();
-    },
-  );
+    mount();
+    const time = shortScheduleTime(TIME, item.timezone);
+    expect(await screen.findByText(time)).toBeTruthy();
+    const last = screen.getByText(time).parentElement;
+    expect(last?.textContent).toBe(suffix ? `Last ${time} ${suffix}` : `Last ${time}`);
+    if (tone) expect(last?.classList.contains(tone)).toBe(true);
+    else expect(last?.className).toBe("");
+    expect(screen.getByText("Every minute")).toBeTruthy();
+    // Running on schedule is the default state, so it carries no label.
+    expect(screen.queryByText("Enabled")).toBeNull();
+    expect(screen.queryByText(item.prompt)).toBeNull();
+    expect(detail).not.toHaveBeenCalled();
+  });
 
   it.each([
-    [
-      "accepted",
-      "The runtime received this occurrence. This does not confirm task completion; check Tasks for progress and results.",
-    ],
-    ["unreachable", "This occurrence could not reach the runtime. Check the Agent’s Computer status."],
-    ["rejected", "The runtime did not accept this occurrence. Check the reason code and the Agent’s Computer status."],
-    [
-      "unknown",
-      "The handoff has not been confirmed yet. The task may have started; check Tasks before starting it again.",
-    ],
-    ["skipped", "This occurrence was skipped. See the reason code."],
-  ] as const)("explains %s without claiming the business task completed", async (outcome, explanation) => {
+    ["accepted", null],
+    ["unreachable", "It won't be rerun; the next run follows the schedule."],
+    ["rejected", "It won't be rerun; the next run follows the schedule."],
+    ["skipped", "It won't be rerun; the next run follows the schedule."],
+    ["unknown", "It may have started. Check Tasks before starting it again."],
+  ] as const)("adds only what the row does not say for a %s last run", async (outcome, note) => {
     const item = schedule({
       lastDispatch: { scheduledFor: TIME, attemptedAt: TIME, messageId: null, outcome, code: "runtime_not_ready" },
     });
@@ -103,39 +97,34 @@ describe("AgentSchedulesSection", () => {
 
     mount();
     fireEvent.click(await screen.findByRole("button", { name: "Daily check" }));
-    expect(await screen.findByText(explanation)).toBeTruthy();
-    expect(screen.getByText("runtime_not_ready")).toBeTruthy();
-    expect(screen.getByText("Next scheduled time", { exact: true })).toBeTruthy();
-    expect(screen.queryByText("The schedule will not retry this occurrence.") !== null).toBe(outcome !== "accepted");
+    expect(await screen.findByText(item.prompt)).toBeTruthy();
+    expect(screen.getByText("Lark · thread")).toBeTruthy();
+    if (note) expect(screen.getByText(note)).toBeTruthy();
+    expect(screen.queryByText("runtime_not_ready")).toBeNull();
+    expect(screen.queryByText(/test-chat|test-thread/)).toBeNull();
+    expect(screen.queryByText("Next scheduled time")).toBeNull();
   });
 
   it.each(["unreachable", "rejected"] as const)(
-    "explains an exhausted one-time %s handoff without implying another occurrence",
+    "does not promise another run after an exhausted one-time %s occurrence",
     async (outcome) => {
       const item = schedule({
         schedule: { kind: "at", at: TIME },
         nextTriggerAt: null,
-        lastDispatch: { scheduledFor: TIME, attemptedAt: TIME, messageId: null, outcome, code: "runtime_not_ready" },
+        lastDispatch: { scheduledFor: TIME, attemptedAt: TIME, messageId: null, outcome, code: null },
       });
       vi.spyOn(browserApi, "agentSchedules").mockResolvedValue({ items: [summaryOf(item)], nextCursor: null });
       vi.spyOn(browserApi, "agentSchedule").mockResolvedValue(item);
 
       mount();
-      expect(await screen.findByText("One-time schedule exhausted")).toBeTruthy();
-      expect(
-        screen.getByText(
-          new RegExp(`· ${outcome === "unreachable" ? "Runtime unreachable" : "Rejected by the runtime"}$`),
-        ),
-      ).toBeTruthy();
-      expect(screen.queryByText("Enabled")).toBeNull();
+      expect(await screen.findByText("Finished")).toBeTruthy();
       fireEvent.click(screen.getByRole("button", { name: "Daily check" }));
-      expect(await screen.findByText("The schedule will not retry this occurrence.")).toBeTruthy();
-      expect(screen.getByText("runtime_not_ready")).toBeTruthy();
-      expect(screen.queryByText(/before the next scheduled time|Future occurrences/)).toBeNull();
+      expect(await screen.findByText("It won't be rerun.")).toBeTruthy();
+      expect(screen.queryByText(/next run/)).toBeNull();
     },
   );
 
-  it("keeps a past failed handoff visible when the schedule is paused", async () => {
+  it("labels a paused schedule and keeps its past failed run visible", async () => {
     const item = schedule({
       enabled: false,
       nextTriggerAt: null,
@@ -144,7 +133,8 @@ describe("AgentSchedulesSection", () => {
     vi.spyOn(browserApi, "agentSchedules").mockResolvedValue({ items: [summaryOf(item)], nextCursor: null });
     mount();
     expect(await screen.findByText("Paused")).toBeTruthy();
-    expect(screen.getByText(/· Runtime unreachable$/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Resume" })).toBeTruthy();
+    expect(screen.getByText(/didn't run: the computer was offline$/)).toBeTruthy();
     expect(screen.queryByText(/^Next /)).toBeNull();
   });
 
@@ -161,7 +151,7 @@ describe("AgentSchedulesSection", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Daily check" }));
     expect(await screen.findByText(item.prompt)).toBeTruthy();
-    expect(screen.getByText(/feishu channel test-chat, thread test-thread/)).toBeTruthy();
+    expect(screen.getByText("Lark · thread")).toBeTruthy();
     expect(detail).toHaveBeenCalledWith(AGENT_ID, SCHEDULE_ID);
   });
 

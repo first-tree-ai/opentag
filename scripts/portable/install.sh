@@ -254,7 +254,8 @@ download_to() {
   elif command_exists wget; then
     wget -qO "$dest" "$url"
   else
-    die "openTag setup needs curl or wget to download files, and neither is installed. Install curl (for example: sudo apt-get install curl), then run the same command again."
+    die "openTag setup needs curl or wget to download files, and neither is installed.
+Next: install curl (for example: sudo apt-get install curl), then run the same command again."
   fi
 }
 
@@ -274,7 +275,8 @@ require_writable() {
   flag="$2"
   ancestor="$(existing_ancestor "$target")"
   if [ ! -d "$ancestor" ] || [ ! -w "$ancestor" ]; then
-    die "openTag cannot write to $ancestor (needed for $target): permission denied. Fix the folder's permissions for user $(id -un 2>/dev/null || printf 'this user'), or choose another folder with $flag, then run the same command again."
+    die "openTag cannot write to $ancestor (needed for $target): permission denied.
+Next: fix the folder's permissions for user $(id -un 2>/dev/null || printf 'this user'), or choose another folder with $flag, then run the same command again."
   fi
 }
 

@@ -511,9 +511,9 @@ test("portable installer refuses an unwritable install location before downloadi
         args: ["--prefix", join(locked, "share", "opentag"), "--bin-dir", join(locked, "bin")],
       });
       assert.notEqual(result.status, 0);
-      const [reason] = result.stderr.split("\n");
-      assert.match(reason, /^opentag portable installer: openTag cannot write to .*locked .*permission denied\./);
-      assert.match(reason, /Fix the folder's permissions/);
+      const [reason, next] = result.stderr.split("\n");
+      assert.match(reason, /^opentag portable installer: openTag cannot write to .*locked .*permission denied\.$/);
+      assert.match(next, /^Next: fix the folder's permissions/);
       assert.doesNotMatch(result.stderr, /mkdir:/);
       assert.equal(requests.length, 0, "nothing is downloaded when the install location is unwritable");
     } finally {

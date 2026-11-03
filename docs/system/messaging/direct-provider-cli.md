@@ -53,7 +53,10 @@ After a Feishu/Lark or Slack binding becomes active, the daemon may repair only 
 openTag-managed artifact and validates the exact CLI with the real bound credential before reporting it ready; it never
 replaces an external installation or foreign shim. Automatic install/repair and credential validation are bounded: the
 Server keeps the terminal observation on the same connection, readiness GETs never refill the budget, and a replacement
-request or grant id cannot start a new episode. Manual failures such as `unsupported_platform`, `global_bin_unavailable`,
+request or grant id cannot start a new episode. Client shutdown cancels an in-flight daemon ensure: waiting for the provider lock and the managed download stop at once,
+the staging directory is removed, the lock is released, and no readiness verdict is published, so a stopping daemon never
+waits for a download. Publication itself is one rename and is not interrupted. Manual failures such as
+`unsupported_platform`, `global_bin_unavailable`,
 `integrity_failed`, and a final ensure `version_incompatible` settle immediately. Web and Agent diagnostics map those
 allowlisted reasons to the next step. An inspection `version_incompatible` may still be repaired with a supported
 managed artifact. Periodic Client inspection stays read-only, keeps the visible failure, and can recover after a real

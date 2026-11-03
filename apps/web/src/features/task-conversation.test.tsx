@@ -99,13 +99,12 @@ it("falls back to agent initials when the chat logo fails or is removed", () => 
   expect(container.querySelector('[data-ui="task-message-agent"] [aria-hidden="true"]')?.textContent).toBe("A");
 });
 
-it("shows the summary beside replies and keeps it visible across refresh, duplicate pages and prepended history", () => {
+it("shows each sent reply once without the runtime final text across refresh, duplicate pages and prepended history", () => {
   const current = turn();
   const view = render(<TaskActivity task={task} turns={[current]} pagination={null} />);
-  expect(screen.getByText("Review finished")).toBeTruthy();
-  expect(screen.queryByText("Execution summary")).toBeNull();
-  expect(screen.getAllByRole("group", { name: "Agent response" })).toHaveLength(2);
-  expect(screen.getByRole("group", { name: "Execution summary" })).toBeTruthy();
+  expect(screen.getByText("Here is the review")).toBeTruthy();
+  expect(screen.queryByText("Review finished")).toBeNull();
+  expect(screen.getAllByRole("group", { name: "Agent response" })).toHaveLength(1);
   expect(screen.queryByRole("region", { name: "Agent response" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Details" })).toBeNull();
   const earlier = turn();
@@ -120,12 +119,12 @@ it("shows the summary beside replies and keeps it visible across refresh, duplic
       pagination={null}
     />,
   );
-  expect(screen.getByText("Review finished")).toBeTruthy();
+  expect(screen.queryByText("Review finished")).toBeNull();
   expect(screen.getAllByText("Here is the review")).toHaveLength(1);
   expect(screen.queryByRole("button", { name: "Details" })).toBeNull();
 });
 
-it("keeps incomplete capture, truncation and execution failure visible beside the summary", () => {
+it("keeps incomplete capture and execution failure visible without the runtime final text", () => {
   const current = turn();
   if (!current.report?.outgoingReplies) throw new Error("Expected capture fixture");
   current.report.outcome = "failed";
@@ -133,10 +132,9 @@ it("keeps incomplete capture, truncation and execution failure visible beside th
   current.report.outgoingReplies.status = "incomplete";
   current.report.outgoingReplies.runtimeSummaryTruncated = true;
   render(<TaskActivity task={task} turns={[current]} pagination={null} />);
-  expect(screen.getByText("Review finished")).toBeTruthy();
+  expect(screen.queryByText("Review finished")).toBeNull();
   expect(screen.getByText("Here is the review")).toBeTruthy();
   expect(screen.getByText("Provider failed")).toBeTruthy();
-  expect(screen.getByText("Execution summary was truncated.")).toBeTruthy();
   expect(screen.getByText("Reply history is incomplete. Some messages or content could not be included.")).toBeTruthy();
 });
 
@@ -202,11 +200,12 @@ it.each([0, 3])("shows the incomplete-history notice only when replies were omit
   const current = turn();
   if (!current.report?.outgoingReplies) throw new Error("Expected capture fixture");
   current.report.outgoingReplies.omittedCount = omittedCount;
-  render(<TaskActivity task={task} turns={[current]} pagination={null} />);
+  const { container } = render(<TaskActivity task={task} turns={[current]} pagination={null} />);
 
-  expect(screen.getByText("Review finished")).toBeTruthy();
   expect(screen.getByText("Here is the review")).toBeTruthy();
   expect(screen.queryAllByText(/Reply history is incomplete/)).toHaveLength(omittedCount > 0 ? 1 : 0);
+  // A complete report with nothing to add leaves no entry of its own.
+  expect(container.querySelectorAll('[data-ui="task-message-agent"]')).toHaveLength(omittedCount > 0 ? 2 : 1);
 });
 
 it("renders attachment-only input with names, types and availability without an empty text placeholder", () => {
@@ -265,7 +264,26 @@ it("suppresses the missing-reply notice only when the captured feed is supplied"
 
   view.rerender(<TaskActivity task={task} turns={[current]} pagination={null} replies={[]} />);
   expect(screen.queryByText("Reply data is unavailable.")).toBeNull();
-  expect(screen.getByText("Review finished")).toBeTruthy();
+  expect(document.querySelector('[data-ui="task-message-agent"]')).toBeNull();
+});
+
+it("renders a captured reply as chat Markdown, keeping its line breaks", () => {
+  const { container } = render(
+    <TaskActivity
+      task={task}
+      turns={[]}
+      pagination={null}
+      replies={[capturedReply({ fallbackText: "Options:\n1. **Roll back**\n2. Wait\n\nFirst line\nsecond line" })]}
+    />,
+  );
+  const reply = container.querySelector('[data-ui="task-sent-reply"]');
+  expect(reply?.querySelector('[data-content-format="markdown"]')).toBeTruthy();
+  expect(reply?.querySelector("strong")?.textContent).toBe("Roll back");
+  expect(reply?.querySelectorAll("ol > li")).toHaveLength(2);
+  expect(reply?.textContent).not.toContain("**");
+  const last = [...(reply?.querySelectorAll("p") ?? [])].at(-1);
+  expect(last?.querySelector("br")).toBeTruthy();
+  expect(last?.textContent).toBe("First line\nsecond line");
 });
 
 it("keeps the report's own incomplete-history notice beside the captured feed", () => {

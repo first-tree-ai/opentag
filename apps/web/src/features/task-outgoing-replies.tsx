@@ -51,7 +51,7 @@ export function TaskCapturedReply({ reply, legacyReply }: { reply: CapturedTaskR
   }
   return (
     <article className="grid gap-2" data-ui="task-sent-reply" data-msg-type={reply.messageType ?? "unknown"}>
-      {reply.fallbackText ? <TaskMessageBody format="plain_text" text={reply.fallbackText} /> : null}
+      {reply.fallbackText ? <TaskMessageBody format="chat_markdown" text={reply.fallbackText} /> : null}
       <TaskAttachments attachments={reply.attachments ?? []} />
       {reply.truncated ? (
         <p className="text-sm text-kumo-subtle" data-ui="task-reply-content-truncated">

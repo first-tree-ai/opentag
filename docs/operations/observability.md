@@ -201,6 +201,17 @@ It requires `OPENTAG_ENV=staging`, `OPENTAG_CLOUD_LATENCY_DIAGNOSTICS=true` and 
 `OPENTAG_CLOUD_LATENCY_SESSION_IDS` list of at most 16 UUIDs. It emits no added records by default
 or in other environments. `OPENTAG_REVISION` is a full lowercase Git SHA, otherwise `unknown`.
 
+The production composition snapshots the validated selection into a typed Cloud Run Admin option.
+Only new Staging Instances whose birth Session is selected receive `OPENTAG_ENV=staging`,
+`OPENTAG_CLOUD_LATENCY_DIAGNOSTICS=true` and the full approved Session list in their container
+environment. Other create requests retain their existing shape. Both create API versions share
+this construction. The Server revision is not forwarded as the Runner revision.
+
+Existing or adopted Instances are never patched to change diagnostics. Borrowing an Instance born
+without these settings can leave Runner records unavailable; retain that sample as missing evidence.
+Disabling Server selection affects future creation only: existing immutable settings last until
+normal reclamation, while the Runner continues to apply the Session allowlist after a transfer.
+
 Each observation reserves a summary within 32 records / 64 KiB. Observers retain at most 1,024
 identities for quota enforcement without evicting them to reopen budgets. Server retries share
 one delivery budget and have separate attempt identities; duplicate attempts and repeated workspace

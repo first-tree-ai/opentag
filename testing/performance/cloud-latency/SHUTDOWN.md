@@ -43,6 +43,22 @@ unsealed cross-Session rebind cannot replace the held assignment's diagnostic id
 - Existing focused Runner serve tests cover cleanup, workspace and controller interactions; client
   typecheck/build verify the Runner artifact. This change does not touch Agent Runtime coverage inputs.
 
+## Managed Instance parameter delivery
+
+The Server composition snapshots the existing strict Staging flag/Session selection and passes it
+through a typed, defensively validated Cloud Run Admin option. Only selected Staging birth allocations
+receive three additional container variables: the Staging environment, enable flag and full approved
+UUID list. The same container builder handles v2 creation and the narrow v1 compatibility fallback.
+The Server revision is not used as the Runner revision. Default, invalid, oversized, production,
+development and non-selected cases retain the original create environment. Existing/adopted Instances
+are never patched, and resource/credential/policy fields retain their existing behavior.
+
+Fake API tests cover these boundaries, immutable selection, v1 parity, unchanged non-diagnostic
+payload fields and adoption without PATCH. A production-factory test captures the real Admin
+construction and verifies both environment gates, strict opt-in and valid bounded selection without
+database or network I/O. Existing production composition tests remain applicable. This validates
+source wiring only; deployment, actual parameter arrival and live overhead still need verification.
+
 ## Live follow-up
 
 Deployment and new native execution require the corresponding operational authorization. Enable

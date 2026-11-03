@@ -1,4 +1,4 @@
-import { CLOUD_MODEL_PROXY_PATH, sandboxRunnerWebSocketUrl } from "@opentag/shared";
+import { CLOUD_MODEL_PROXY_PATH, cloudLatencySessions, sandboxRunnerWebSocketUrl } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import type { CloudModelProxyRouteOptions } from "./api/cloud-model-proxy.js";
 import type { CloudModelConfig } from "./cloud-model-config.js";
@@ -95,7 +95,10 @@ export function createSandboxRunnerRuntime(
       vpc: cloudRunner.vpc,
       apiTimeoutMs: cloudRunner.apiTimeoutMs,
     },
-    { tokenProvider },
+    {
+      tokenProvider,
+      diagnosticSessionIds: config.environment === "staging" ? [...cloudLatencySessions(process.env)] : [],
+    },
   );
   const tokens = new RunnerBootstrapTokenService(config.jwtSecret, {
     ttlSeconds: cloudRunner.bootstrapTokenTtlSeconds,

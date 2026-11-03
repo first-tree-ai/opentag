@@ -74,7 +74,9 @@ and classifies it:
 
 The connect command is one command that users and Agents can run again safely: it upgrades openTag first, then
 connects, and on an already-connected computer it repairs or confirms instead of adding a duplicate. Rerunning is the
-expected fix for a half-finished or broken connection, so it must never make things worse.
+expected fix for a half-finished or broken connection, so it must never make things worse. The upgrade finishes
+before connecting starts: overlapping them would save little time and add failures from a connection made by one
+version while another is being installed.
 
 - An account conflict stops without taking the computer over and offers no web action to do so. The browser that
   issued the command may be signed in to a different account than the one that owns the computer, and only the

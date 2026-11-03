@@ -102,6 +102,12 @@ Drafts are not persisted across a document reload or an external authorization r
 Agent's server snapshot restores the remaining setup steps.
 If a creation finishes after the user navigates away, it refreshes the Agent list without pulling the user back into setup.
 
+The creation form starts with the product name as the Agent name; matching the product name is intended, not a
+collision. The name field states the allowed characters before anything is typed, and a refused name gets a short
+error that does not repeat them. Why: a rule the reader only discovers by failing wastes an attempt, and repeating
+it in the error adds reading without new information. Create stays disabled until a Local Agent's runtime is chosen;
+no runtime is preselected, because the reader's computer may not have it.
+
 First-time setup stays full-screen throughout its current journey, even when Account admission completes before
 Computer or messaging setup. An Account-scoped, tab-local layout marker preserves this presentation across reloads
 and external authorization; leaving setup or signing out clears it. If browser storage is unavailable, the current
@@ -349,5 +355,9 @@ field, the method labels, and the installed states — goes through Paraglide. D
 copy into the message catalog as if it were an omission; the exception and its reason are recorded in
 `mcp-server-integration.md`.
 
-Controls use concise action labels. Errors explain what happened and what the user can do next. Do not rely on color,
+Controls use concise action labels. Errors explain what happened and what the user can do next. Messages stay short:
+they say what happened and the next step, without internal states (such as "already connected" or "nothing
+changed") or parenthetical mechanics. Explanatory text appears only when it adds information the reader needs, such
+as which computer a command is for. Why: fewer words and fewer controls make the next step easier to find, and
+internal details give the reader nothing to act on. Do not rely on color,
 placeholder text, an icon, or a tooltip as the only communication of essential information.

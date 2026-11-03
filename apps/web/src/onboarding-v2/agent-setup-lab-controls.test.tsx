@@ -209,13 +209,13 @@ describe("agent setup lab controls", () => {
     expect(screenState()).toBe("Needs recovery");
   });
 
-  it("falls back to the new-computer journey when Back leaves a creation-only scenario", async () => {
+  it("falls back to the new-computer journey when Screen leaves a creation-only scenario", async () => {
     renderLabPage();
     await openControls();
     await chooseOption("Screen", "Name & Runtime");
     expect(await screen.findByRole("heading", { name: "Create your agent" })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    await chooseOption("Screen", "Choose location");
 
     expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
     await waitFor(() =>

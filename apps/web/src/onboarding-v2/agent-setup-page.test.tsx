@@ -72,6 +72,7 @@ function renderSetup(
   props: {
     agentId?: string;
     computerAdapter?: AgentSetupPageProps["computerAdapter"];
+    onBackToAgents?: () => void;
     onExternalNavigation?: (url: string) => void;
     onOpenAgent?: () => void;
     onReady?: (agentId: string) => Promise<void> | void;
@@ -86,6 +87,7 @@ function renderSetup(
         adapter={adapter}
         agentId={props.agentId ?? SETUP_AGENT_ID}
         computerAdapter={props.computerAdapter}
+        onBackToAgents={props.onBackToAgents}
         onExternalNavigation={props.onExternalNavigation}
         onOpenAgent={props.onOpenAgent}
         onReady={props.onReady}
@@ -2355,19 +2357,49 @@ describe("AgentSetupPage request fencing", () => {
 });
 
 describe("AgentSetupPage closed failures and review", () => {
-  it("replaces the return action with View agent when setup becomes ready", async () => {
+  it("keeps Back to Agents in the header and adds View agent once setup is ready", async () => {
+    const onBackToAgents = vi.fn();
     const onOpenAgent = vi.fn();
     const memory = createMemorySetupAdapter({
       agent: setupAgent(),
       messaging: { kind: "bound", provider: "slack", reachable: true },
     });
-    renderSetup(memory.adapter, { onOpenAgent });
+    renderSetup(memory.adapter, { onBackToAgents, onOpenAgent });
     await settle();
 
-    expect(screen.queryByRole("button", { name: "Back to agent" })).toBeNull();
+    expect(document.querySelector('[data-ui="agent-setup-ready"]')).not.toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "View agent" }));
     expect(onOpenAgent).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Back to Agents" }));
+    expect(onBackToAgents).toHaveBeenCalledTimes(1);
+    expect(onOpenAgent).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    ["Connect your computer", { agent: setupAgent({ computer: null }) }, false],
+    ["Prepare this computer", { agent: setupAgent() }, false],
+    ["Connect your messaging app", { agent: setupAgent() }, true],
+  ] as const)(
+    "offers Back to Agents, and no other way back, on the %s step",
+    async (heading, seed, continueToMessaging) => {
+      mockComputerInventory();
+      const onBackToAgents = vi.fn();
+      const onOpenAgent = vi.fn();
+      const memory = createMemorySetupAdapter(seed);
+      renderSetup(memory.adapter, { onBackToAgents, onOpenAgent });
+      await settle();
+      await advance(1);
+      if (continueToMessaging) fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+      expect(screen.getByRole("heading", { name: heading })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Back to agent" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Set up later" })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Back to Agents" }));
+      expect(onBackToAgents).toHaveBeenCalledTimes(1);
+      expect(onOpenAgent).not.toHaveBeenCalled();
+    },
+  );
 
   it("fails closed on a terminal answer instead of offering any creation path", async () => {
     const adapter = scriptedAdapter(async () => {

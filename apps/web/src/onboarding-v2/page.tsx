@@ -11,9 +11,9 @@ import { useRememberedState, useShellMemory } from "../features/shell/shell-memo
 import * as m from "../paraglide/messages.js";
 import { syncAgentQueries } from "../query/agent-sync.js";
 import { Banner, Button, Icon } from "../ui/design-system.js";
-import { OpenTagLogo } from "../ui/opentag-logo.js";
 import { AgentSetupPage, type AgentSetupPageProps, type AgentSetupPreviewView } from "./agent-setup-page.js";
 import { type AgentDraft, CLOUD_RUNTIME, draftIsSubmittable, emptyDraft, type FlowState } from "./flow.js";
+import { SetupLogo } from "./setup-logo.js";
 import "./onboarding-v2.css";
 import type { AgentSetupAdapter } from "./setup-adapter.js";
 import { AgentStep, DestinationStep, StepRail } from "./steps.js";
@@ -194,6 +194,7 @@ export function AgentSetupSurface({
         agentId={agentId}
         brandControl={brandControl}
         computerAdapter={computerAdapter}
+        onBackToAgents={onBackToAgents}
         onExternalNavigation={onExternalNavigation}
         onOpenAgent={onOpenAgent}
         onPreviewViewChange={onSetupPreviewViewChange}
@@ -208,6 +209,7 @@ export function AgentSetupSurface({
   return (
     <AgentCreatePage
       accountControl={accountControl}
+      brandControl={brandControl}
       creationPreview={creationPreview}
       creationPreviewInitialView={creationPreviewInitialView}
       existingAgentNames={existingAgentNames}
@@ -229,6 +231,7 @@ async function creationRequest(selected: SelectedCreation, preview: boolean): Pr
 
 function AgentCreatePage({
   accountControl,
+  brandControl,
   creationPreview,
   creationPreviewInitialView = "destination",
   existingAgentNames = [],
@@ -237,6 +240,7 @@ function AgentCreatePage({
   onBackToAgents,
 }: {
   accountControl?: ReactNode;
+  brandControl?: ReactNode;
   creationPreview?: (request: CreateAgentRequest) => Promise<{ readonly id: string }>;
   creationPreviewInitialView?: CreationPreviewView;
   existingAgentNames?: readonly string[];
@@ -259,7 +263,7 @@ function AgentCreatePage({
   );
   const { draft, destinationConfirmed } = creation;
   const setDraft = (next: AgentDraft) => setCreation({ ...creation, draft: next });
-  const setDestinationConfirmed = (next: boolean) => setCreation({ ...creation, destinationConfirmed: next });
+  const confirmDestination = () => setCreation({ ...creation, destinationConfirmed: true });
   const [pending, setPending] = useState<PendingCreation | undefined>(
     () => memory?.values.get(CREATION_PENDING_KEY) as PendingCreation | undefined,
   );
@@ -406,14 +410,13 @@ function AgentCreatePage({
       data-ui="agent-create"
     >
       {!embedded && (
-        <header className="flex flex-wrap items-center justify-between gap-3 p-6">
-          <OpenTagLogo label={m.onboarding_v2_brand_name()} />
+        <header className="flex items-center justify-between gap-2 p-6">
+          {brandControl ?? <SetupLogo label={m.onboarding_v2_brand_name()} />}
           <div className="ml-auto flex items-center gap-2">
             {/*
             Leaving for the Agent list is offered only to an Account that has somewhere to go. An
             Account with no Agent has nothing behind this page: that list would send it straight
-            back. Undoing a choice made here is Go back's job, one page at a time. Signing out is
-            the one exit that is always real, so it is offered regardless.
+            back. Signing out is the one exit that is always real, so it is offered regardless.
           */}
             {onBackToAgents ? (
               <Button disabled={submitting} onClick={onBackToAgents} variant="ghost">
@@ -445,7 +448,6 @@ function AgentCreatePage({
           {destinationConfirmed ? (
             <AgentStep
               draft={draft}
-              onBack={() => setDestinationConfirmed(false)}
               onChange={(next) => {
                 // Changing the name is the other way out of a refusal, so the refusal stops being
                 // shown the moment it is no longer about what the form says.
@@ -471,7 +473,7 @@ function AgentCreatePage({
               draft={draft}
               onChoose={(destination) => setDraft({ ...draft, destination })}
               onCloudRetry={readCloudAvailability}
-              onSubmit={() => setDestinationConfirmed(true)}
+              onSubmit={confirmDestination}
             />
           )}
         </div>

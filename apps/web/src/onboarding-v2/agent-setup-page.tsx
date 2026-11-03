@@ -1682,53 +1682,51 @@ function MessagingConnections({
   const feishu = startActions.find((action) => action.provider === "feishu");
   if (!choosing && "provider" in snapshot.messaging && snapshot.messaging.provider !== "slack") return null;
   return (
-    <>
-      <ul
-        className={choosing && startActions.length ? CHOICE_GRID : "m-0 flex list-none flex-wrap gap-3 p-0"}
-        data-ui={
-          choosing && startActions.length ? "agent-setup-messaging-choices" : "agent-setup-messaging-configuration"
-        }
-      >
-        <li key="slack">
-          <SlackSetupConfiguration
-            onSetupOpenChange={onSetupOpenChange}
-            controller={controller}
-            snapshot={snapshot}
-            slackApi={slackApi}
-            renderTrigger={
-              choosing && slack
-                ? ({ onClick, disabled, ref }) => (
-                    <Button
-                      ref={ref}
-                      className={CARD}
-                      disabled={disabled || controller.busyKey !== undefined}
-                      onClick={() => {
-                        if (!starting.current) onClick();
-                      }}
-                      variant="ghost"
-                    >
-                      <MessagingChoiceCopy provider="slack" />
-                    </Button>
-                  )
-                : undefined
-            }
-          />
+    <ul
+      className={choosing && startActions.length ? CHOICE_GRID : "m-0 flex list-none flex-wrap gap-3 p-0"}
+      data-ui={
+        choosing && startActions.length ? "agent-setup-messaging-choices" : "agent-setup-messaging-configuration"
+      }
+    >
+      <li key="slack">
+        <SlackSetupConfiguration
+          onSetupOpenChange={onSetupOpenChange}
+          controller={controller}
+          snapshot={snapshot}
+          slackApi={slackApi}
+          renderTrigger={
+            choosing && slack
+              ? ({ onClick, disabled, ref }) => (
+                  <Button
+                    ref={ref}
+                    className={CARD}
+                    disabled={disabled || controller.busyKey !== undefined}
+                    onClick={() => {
+                      if (!starting.current) onClick();
+                    }}
+                    variant="ghost"
+                  >
+                    <MessagingChoiceCopy provider="slack" />
+                  </Button>
+                )
+              : undefined
+          }
+        />
+      </li>
+      {choosing && feishu ? (
+        <li key="feishu">
+          <Button
+            className={CARD}
+            disabled={controller.busyKey !== undefined}
+            loading={controller.busyKey?.kind === "start-messaging" && controller.busyKey.provider === "feishu"}
+            onClick={() => void start(feishu)}
+            variant="ghost"
+          >
+            <MessagingChoiceCopy provider="feishu" />
+          </Button>
         </li>
-        {choosing && feishu ? (
-          <li key="feishu">
-            <Button
-              className={CARD}
-              disabled={controller.busyKey !== undefined}
-              loading={controller.busyKey?.kind === "start-messaging" && controller.busyKey.provider === "feishu"}
-              onClick={() => void start(feishu)}
-              variant="ghost"
-            >
-              <MessagingChoiceCopy provider="feishu" />
-            </Button>
-          </li>
-        ) : null}
-      </ul>
-    </>
+      ) : null}
+    </ul>
   );
 }
 

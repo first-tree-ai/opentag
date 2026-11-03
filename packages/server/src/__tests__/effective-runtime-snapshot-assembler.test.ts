@@ -1,4 +1,10 @@
-import { computeRuntimeSnapshotHashes, renderPlatformInstructions } from "@opentag/shared";
+import {
+  AGENT_NAME_WIDEST,
+  AGENT_SLUG_MAX_LENGTH,
+  computeRuntimeSnapshotHashes,
+  RUNTIME_INSTRUCTIONS_MAX_BYTES,
+  renderPlatformInstructions,
+} from "@opentag/shared";
 import { describe, expect, it } from "vitest";
 import type { DatabaseClient } from "../db/client.js";
 import {
@@ -10,6 +16,7 @@ import {
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const sessionId = "b077f77b-ad35-4031-8628-aee73f9a7ca8";
 const agentName = "code-reviewer";
+const utf8Length = (value: string) => new TextEncoder().encode(value).byteLength;
 
 function authority(overrides: Record<string, unknown> = {}) {
   return {
@@ -196,6 +203,27 @@ describe("EffectiveRuntimeSnapshotAssembler", () => {
     await expect(
       assembler(async () => authority({ agentName: "Not A Slug" })).assembleForSession(sessionId),
     ).rejects.toBeInstanceOf(EffectiveRuntimeSnapshotAssemblerError);
+  });
+
+  it("still assembles an unchanged ASCII Agent whose instructions fill the earlier write budget", async () => {
+    // Writes once reserved a 64-byte slug line; the wider CJK reserve applies to new writes only.
+    const oldReserve = utf8Length(renderPlatformInstructions({ agentSlug: "a".repeat(AGENT_SLUG_MAX_LENGTH) }));
+    const instructions = "a".repeat(RUNTIME_INSTRUCTIONS_MAX_BYTES - oldReserve);
+    const snapshot = await assembler(async () =>
+      authority({ agentName: "reviewer", runtimeConfig: { ...authority().runtimeConfig, instructions } }),
+    ).assembleForSession(sessionId);
+
+    expect(snapshot.instructions.agent).toBe(instructions);
+  });
+
+  it("still fails closed when the actual name and stored instructions exceed the combined limit", async () => {
+    const actualPlatform = utf8Length(renderPlatformInstructions({ agentSlug: AGENT_NAME_WIDEST }));
+    const instructions = "a".repeat(RUNTIME_INSTRUCTIONS_MAX_BYTES - actualPlatform + 1);
+    await expect(
+      assembler(async () =>
+        authority({ agentName: AGENT_NAME_WIDEST, runtimeConfig: { ...authority().runtimeConfig, instructions } }),
+      ).assembleForSession(sessionId),
+    ).rejects.toMatchObject({ name: "EffectiveRuntimeSnapshotAssemblerError", code: "SNAPSHOT_INVALID" });
   });
 
   it("omits nullable runtime fields when compiling the stored default configuration", async () => {

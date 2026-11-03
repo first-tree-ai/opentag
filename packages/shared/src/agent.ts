@@ -44,6 +44,14 @@ export const AgentRuntimeProviderSchema = z.enum(AGENT_RUNTIME_PROVIDERS);
 export const ReceiveModeSchema = z.enum(["all_message", "mention_only"]);
 export const AgentStatusSchema = z.enum(["active", "suspended"]);
 
+/**
+ * Agent instructions as a write accepts them. Writes reserve the widest platform layer any Agent
+ * can render, so instructions accepted now still fit under any name.
+ *
+ * Stored configuration is read with the per-layer bound only (`AgentRuntimeConfigSchema`): a
+ * config written under an earlier, smaller reserve is still valid, and the assembled snapshot
+ * checks the actual combined bytes for the Agent's actual name.
+ */
 export const AgentInstructionsSchema = RuntimeInstructionSchema.superRefine((instructions, context) => {
   const combined = RuntimeInstructionsSchema.safeParse({
     // The Agent name is not known here, so budget the longest platform layer any Agent can
@@ -64,7 +72,8 @@ export const AgentRuntimeConfigSchema = z
     revision: z.number().int().safe().positive(),
     model: RuntimeModelSchema.nullable(),
     reasoningEffort: RuntimeReasoningEffortSchema.nullable(),
-    instructions: AgentInstructionsSchema,
+    // Stored shape: the per-layer bound only. See `AgentInstructionsSchema` for the write reserve.
+    instructions: RuntimeInstructionSchema,
     maxDurationMs: RuntimeMaxDurationMsSchema.nullable(),
     contextTrees: ContextTreesSchema,
     permissions: AgentPermissionsSchema,

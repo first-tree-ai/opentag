@@ -455,6 +455,27 @@ describe("Agent contracts", () => {
     ).toThrow("combined 24 KiB limit");
   });
 
+  it("reads stored instructions written under the earlier ASCII-name reserve", () => {
+    // Before Agent names admitted CJK ideographs, writes reserved a 64-byte slug line. A stored
+    // configuration at that limit must stay readable, or unchanged Agents stop running; only new
+    // writes take the wider reserve.
+    const oldReserve = runtimeUtf8Length(renderPlatformInstructions({ agentSlug: "a".repeat(AGENT_SLUG_MAX_LENGTH) }));
+    const storedAtOldLimit = "a".repeat(RUNTIME_INSTRUCTIONS_MAX_BYTES - oldReserve);
+    const stored = { ...agent.runtimeConfig, instructions: storedAtOldLimit };
+
+    expect(AgentRuntimeConfigSchema.parse(stored)).toMatchObject({ instructions: storedAtOldLimit });
+    expect(AgentAdminConfigSchema.parse({ ...agent, runtimeConfig: stored }).runtimeConfig.instructions).toBe(
+      storedAtOldLimit,
+    );
+    expect(() =>
+      UpdateAgentRequestSchema.parse({ expectedRevision: 1, runtimeConfig: { instructions: storedAtOldLimit } }),
+    ).toThrow("combined 24 KiB limit");
+    expect(
+      AgentRuntimeConfigSchema.safeParse({ ...stored, instructions: "a".repeat(RUNTIME_INSTRUCTIONS_MAX_BYTES + 1) })
+        .success,
+    ).toBe(false);
+  });
+
   it("shares route templates and encoded path builders", () => {
     expect(AgentCreationIntentResultSchema.parse({ kind: "found", agentId: agent.id })).toEqual({
       kind: "found",

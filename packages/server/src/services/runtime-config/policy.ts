@@ -1,4 +1,5 @@
 import {
+  AgentInstructionsSchema,
   AgentRuntimeConfigSchema,
   type ContextTreeConnection,
   type CreateAgentRuntimeConfig,
@@ -22,9 +23,12 @@ export const DEFAULT_AGENT_RUNTIME_CONFIG = Object.freeze({
 export function resolveAgentRuntimeConfig(
   input: (CreateAgentRuntimeConfig & { contextTrees?: ContextTreeConnection[] }) | undefined,
 ): Readonly<Required<CreateAgentRuntimeConfig> & { contextTrees: ContextTreeConnection[] }> {
-  return AgentRuntimeConfigSchema.omit({ revision: true }).parse({
-    ...DEFAULT_AGENT_RUNTIME_CONFIG,
-    ...input,
-    permissions: input?.permissions ?? DEFAULT_AGENT_PERMISSIONS,
-  });
+  // A new configuration is a write, so its instructions take the write reserve, not the stored bound.
+  return AgentRuntimeConfigSchema.omit({ revision: true })
+    .extend({ instructions: AgentInstructionsSchema })
+    .parse({
+      ...DEFAULT_AGENT_RUNTIME_CONFIG,
+      ...input,
+      permissions: input?.permissions ?? DEFAULT_AGENT_PERMISSIONS,
+    });
 }

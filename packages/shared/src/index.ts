@@ -33,6 +33,7 @@ export {
   AgentDetailSchema,
   type AgentDisplayName,
   AgentDisplayNameSchema,
+  AgentInstructionsSchema,
   type AgentListActivity,
   AgentListActivitySchema,
   type AgentListItem,

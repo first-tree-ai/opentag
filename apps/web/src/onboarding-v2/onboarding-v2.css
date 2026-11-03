@@ -1004,12 +1004,6 @@
   margin-inline-start: 0;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .otv2-messaging-settings .ots-pulse {
-    animation: none;
-  }
-}
-
 /* Keep compact selectors accessible regardless of their specificity or pointer type. */
 @media (width < 768px), (pointer: coarse) {
   .otv2-messaging-settings {

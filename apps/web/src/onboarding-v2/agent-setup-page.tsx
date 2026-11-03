@@ -1824,7 +1824,12 @@ function FeishuAuthorizing({
           {spaceScriptBoundary(m.onboarding_v2_messaging_lark_intro_phone({ provider: providerTitle("feishu") }))}
         </p>
         <p className={WAITING_LINE} role="status">
-          <span aria-hidden="true" className={qrValid ? "ots-pulse shrink-0" : "hidden"} />
+          {/* Pending, not done: the same spinner as the connect command window, never a success dot. */}
+          {qrValid ? (
+            <span aria-hidden="true" className="shrink-0">
+              <Loader size="sm" />
+            </span>
+          ) : null}
           {!qrValid ? (
             m.onboarding_v2_connection_qr_elapsed()
           ) : messaging.qrUrl ? (
@@ -1887,7 +1892,9 @@ function SlackAuthorizing({
           <strong>{providerTitle("slack")}</strong>
         </span>
         <p className={WAITING_LINE} role="status">
-          <span aria-hidden="true" className="ots-pulse shrink-0" />
+          <span aria-hidden="true" className="shrink-0">
+            <Loader size="sm" />
+          </span>
           {spaceScriptBoundary(m.onboarding_v2_messaging_slack_waiting({ provider: providerTitle("slack") }))}
         </p>
       </div>
@@ -1940,7 +1947,9 @@ function MessagingHandoff({
           <strong>{providerTitle(messaging.provider)}</strong>
         </span>
         <p className={WAITING_LINE} role="status">
-          <span aria-hidden="true" className="ots-pulse shrink-0" />
+          <span aria-hidden="true" className="shrink-0">
+            <Loader size="sm" />
+          </span>
           {m.onboarding_v2_messaging_confirming()}
         </p>
         {messaging.progress ? (

@@ -1423,6 +1423,46 @@ describe("Agent persistence and authorization", () => {
     }
   });
 
+  it("stores uppercase and Chinese names as typed and rejects their case variants", async () => {
+    const value = await fixture();
+    try {
+      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const mixed = await value.service.createForAccount(value.bootstrap.userId, createInput(computer.id, "Reviewer"));
+      const chinese = await value.service.createForAccount(
+        value.bootstrap.userId,
+        createInput(computer.id, "代码审查-2"),
+      );
+      expect(mixed.name).toBe("Reviewer");
+      expect(chinese.name).toBe("代码审查-2");
+      expect(
+        (await value.service.listForAccount(value.bootstrap.userId)).agents.map(({ name }) => name).sort(),
+      ).toEqual(["Reviewer", "代码审查-2"].sort());
+
+      await expect(
+        value.service.createForAccount(value.bootstrap.userId, createInput(computer.id, "reviewer")),
+      ).rejects.toMatchObject({ code: "AGENT_NAME_CONFLICT", statusCode: 409 });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("serializes concurrent creates of case-variant names to one winner", async () => {
+    const value = await fixture();
+    try {
+      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const settled = await Promise.allSettled([
+        value.service.createForAccount(value.bootstrap.userId, createInput(computer.id, "Assistant")),
+        value.service.createForAccount(value.bootstrap.userId, createInput(computer.id, "assistant")),
+      ]);
+      expect(settled.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      const rejected = settled.find((result) => result.status === "rejected");
+      expect(rejected).toMatchObject({ reason: { code: "AGENT_NAME_CONFLICT", statusCode: 409 } });
+      expect(await value.database.select().from(agents)).toHaveLength(1);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("persists the bound Computer on the Agent", async () => {
     const value = await fixture();
     try {

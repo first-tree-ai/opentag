@@ -11,14 +11,29 @@ import {
   renderPlatformInstructions,
 } from "./runtime-config.js";
 
+/**
+ * The Agent name charset: ASCII letters of either case, digits, Han characters and hyphens, never
+ * starting with a hyphen. Case is limited to ASCII so JavaScript `toLowerCase()` and PostgreSQL
+ * `lower()` agree on the case-insensitive uniqueness key; Han characters have no case.
+ */
+export const AGENT_NAME_PATTERN = /^[A-Za-z0-9\p{Script=Han}][A-Za-z0-9\p{Script=Han}-]*$/u;
+/**
+ * The widest name `AgentNameSchema` accepts in UTF-8: `.max()` counts UTF-16 code units, and a BMP
+ * Han character is one unit but three bytes (astral Han characters are two units and four bytes).
+ * Byte budgets that include the name must reserve this, not an ASCII-length name.
+ */
+export const AGENT_NAME_WIDEST = "中".repeat(AGENT_SLUG_MAX_LENGTH);
+
 export const AgentNameSchema = z
   .string()
   .trim()
+  // Han compatibility ideographs render like their unified forms; NFC folds them into one name.
+  .normalize("NFC")
   .min(1, "Agent name is required")
   .max(AGENT_SLUG_MAX_LENGTH, `Agent name must be at most ${AGENT_SLUG_MAX_LENGTH} characters`)
   .regex(
-    /^[a-z0-9][a-z0-9-]*$/,
-    "Agent name must start with a lowercase letter or number and contain only lowercase letters, numbers, and hyphens",
+    AGENT_NAME_PATTERN,
+    "Agent name must start with a letter, number, or Chinese character and contain only letters, numbers, Chinese characters, and hyphens",
   );
 export const AgentDisplayNameSchema = z.string().trim().min(1).max(120);
 export const AgentCreationIntentIdSchema = z.string().uuid();
@@ -32,7 +47,7 @@ export const AgentInstructionsSchema = RuntimeInstructionSchema.superRefine((ins
     // The Agent name is not known here, so budget the longest platform layer any Agent can
     // render. Accepting instructions that only fit without the identity line would move the
     // failure to snapshot assembly, where the operator can no longer act on it.
-    platform: renderPlatformInstructions({ agentSlug: "a".repeat(AGENT_SLUG_MAX_LENGTH) }),
+    platform: renderPlatformInstructions({ agentSlug: AGENT_NAME_WIDEST }),
     agent: instructions,
   });
   if (!combined.success) {

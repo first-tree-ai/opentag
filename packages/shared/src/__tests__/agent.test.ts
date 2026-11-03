@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  AGENT_NAME_WIDEST,
   AgentAdminConfigSchema,
   AgentCreationIntentResultSchema,
   AgentDetailSchema,
@@ -132,16 +133,48 @@ describe("Agent contracts", () => {
     });
   });
 
-  it.each(["", "UPPER", "has space", "under_score", "-leading"])("rejects invalid canonical name %j", (name) =>
-    expect(() => AgentNameSchema.parse(name)).toThrow(),
-  );
+  it.each([
+    "",
+    "has space",
+    "under_score",
+    "-leading",
+    "-代码",
+    "名字!",
+    "ｆｕｌｌ",
+    "名\u3000字",
+    "café",
+    "まる",
+    "한글",
+  ])("rejects invalid canonical name %j", (name) => expect(() => AgentNameSchema.parse(name)).toThrow());
+
+  it.each([
+    ["Bestony", "Bestony"],
+    ["UPPER", "UPPER"],
+    ["Code-Reviewer-2", "Code-Reviewer-2"],
+    ["代码审查", "代码审查"],
+    ["2号助手", "2号助手"],
+    ["小A-助手", "小A-助手"],
+    ["  审查  ", "审查"],
+  ])("accepts uppercase and Chinese name %j", (name, expected) => {
+    expect(AgentNameSchema.parse(name)).toBe(expected);
+  });
+
+  it("folds Han compatibility ideographs into their unified form", () => {
+    // U+F900 is the compatibility form of U+8C48; both render as the same character.
+    expect(AgentNameSchema.parse("\uF900")).toBe("\u8C48");
+  });
+
+  it("counts a Chinese name toward the 64-character limit by character", () => {
+    expect(AgentNameSchema.parse("中".repeat(64))).toBe("中".repeat(64));
+    expect(AgentNameSchema.safeParse("中".repeat(65)).success).toBe(false);
+  });
 
   it.each([
     ["", "Agent name is required"],
     ["a".repeat(65), "Agent name must be at most 64 characters"],
     [
-      "Bestony",
-      "Agent name must start with a lowercase letter or number and contain only lowercase letters, numbers, and hyphens",
+      "best_ony",
+      "Agent name must start with a letter, number, or Chinese character and contain only letters, numbers, Chinese characters, and hyphens",
     ],
   ])("provides a stable validation message for %j", (name, message) => {
     const result = AgentNameSchema.safeParse(name);
@@ -387,11 +420,12 @@ describe("Agent contracts", () => {
   });
 
   it("reserves the shared platform instruction budget on create and update", () => {
-    // The reserved platform budget is the worst case, including the longest Agent slug line,
-    // so instructions accepted here can never fail later during snapshot assembly.
-    const worstCasePlatform = runtimeUtf8Length(
-      renderPlatformInstructions({ agentSlug: "a".repeat(AGENT_SLUG_MAX_LENGTH) }),
-    );
+    // The reserved platform budget is the worst case, including the widest Agent slug line in
+    // UTF-8 (64 Chinese characters), so instructions accepted here can never fail later during
+    // snapshot assembly.
+    expect(AgentNameSchema.parse(AGENT_NAME_WIDEST)).toBe(AGENT_NAME_WIDEST);
+    expect(runtimeUtf8Length(AGENT_NAME_WIDEST)).toBe(3 * AGENT_SLUG_MAX_LENGTH);
+    const worstCasePlatform = runtimeUtf8Length(renderPlatformInstructions({ agentSlug: AGENT_NAME_WIDEST }));
     const agentBudget = RUNTIME_INSTRUCTIONS_MAX_BYTES - worstCasePlatform;
     const exactAscii = "a".repeat(agentBudget);
     const exactUtf8 = "界".repeat(Math.floor(agentBudget / 3)) + "a".repeat(agentBudget % 3);

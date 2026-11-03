@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AgentDisplayNameSchema } from "./agent.js";
+import { AgentDisplayNameSchema, AgentNameSchema } from "./agent.js";
 
 /**
  * MCP (Model Context Protocol) management contract.
@@ -475,7 +475,7 @@ export type ListAgentMCPServersResponse = z.infer<typeof ListAgentMCPServersResp
 export const MCPServerAgentSchema = z
   .object({
     agentId: UuidSchema,
-    agentName: MCPServerNameSchema,
+    agentName: AgentNameSchema,
     agentDisplayName: AgentDisplayNameSchema,
     enabled: z.boolean(),
     effective: MCPEffectiveConfigSchema,

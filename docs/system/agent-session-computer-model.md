@@ -16,6 +16,15 @@ skills, tools, MCP Servers, Context Trees, receive mode, credentials, permission
 settings, and its Computer once one is bound. Runtime collaboration creates
 Sessions under an existing Agent; it does not create another Agent.
 
+An Agent's name is its immutable slug, separate from its editable display name.
+A name is 1–64 characters of ASCII letters in either case, digits, Han (Chinese)
+characters, and hyphens, and does not start with a hyphen. The Server stores it
+trimmed and NFC-normalized, keeps its case as typed, and enforces uniqueness
+among an Account's active Agents case-insensitively. The slug is the Agent's
+identity in its platform instructions and its `members/<agent-slug>/` Context
+Tree directory. IM handles derive from it only within each provider's own naming
+rules.
+
 A Session is a stable logical identity, not a Provider process or an activity
 status. openTag has channel, thread, and internal Sessions. For Sessions that
 have not ended, an Agent has at most one channel Session per Integration and
@@ -111,6 +120,13 @@ predicate in their first query.
 
 ## Rationale
 
+Agent names admit the characters people use for their own names without
+letting two names look the same or fold differently. Case is limited to ASCII so
+the Server's case-insensitive key agrees between JavaScript and PostgreSQL; Han
+characters have no case. NFC folds Han compatibility ideographs into the unified
+characters they render as. Other scripts and full-width forms stay out until a
+need justifies their confusable and case-folding rules.
+
 Stable Session identity lets messages and people address work without knowing
 where a Provider process is running. Separating placement and transient runtime
 observations prevents short-lived connection state from becoming a second or
@@ -124,6 +140,8 @@ Agent's identity and configuration wait on something it does not yet need.
 
 ## Constraints
 
+- Byte budgets that include the Agent slug reserve its widest UTF-8 form, 64 Han
+  characters, so content accepted against a short name still fits under any name.
 - Client code must not silently choose one of an Account's Computers and present
   it as the Account's only one; binding an Agent records the Computer its owner
   selected.

@@ -151,7 +151,7 @@ export function TaskActivity({
             onClick={scrollToLatest}
           >
             <Icon name="chevron-down" />
-            <span>Jump to latest</span>
+            <span>{m.tasks_jump_to_latest()}</span>
           </Button>
         </div>
       ) : null}
@@ -449,6 +449,15 @@ function deliveryStateMessage(delivery: TaskTurn["delivery"]): string {
   if (delivery.state === "terminal_rejected") return m.tasks_message_rejected();
   return m.tasks_execution_report_unavailable();
 }
+
+/* Every delivery state gets a word in the reader's language; the enum spelling is never shown. */
+const deliveryStateLabels: Record<TaskTurn["delivery"]["state"], () => string> = {
+  pending: m.tasks_delivery_pending,
+  accepted: m.tasks_delivery_accepted,
+  steered: m.tasks_delivery_steered,
+  terminal_rejected: m.tasks_delivery_rejected,
+  expired: m.tasks_delivery_expired,
+};
 
 /*
  * The reason is the runtime's vocabulary, one of `TurnFailureReason`, and a reader gets a name

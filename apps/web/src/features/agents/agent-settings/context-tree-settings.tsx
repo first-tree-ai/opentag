@@ -855,36 +855,40 @@ function parseForm(
  * connected from the repository link with the folder typed in.
  */
 export function repositoryFromUrl(value: string): { repository: string; path?: string; ref?: string } | undefined {
-  let url: URL;
-  try {
-    url = new URL(value.trim());
-  } catch {
-    return undefined;
-  }
-  if (url.protocol !== "https:" || url.hostname !== "github.com" || url.port || url.username || url.password) return;
-  const [owner, name, kind, ref, ...folder] = url.pathname.split("/").filter(Boolean);
+  const segments = githubPathSegments(value);
+  if (!segments) return undefined;
+  const [owner, name, kind, ref, ...folder] = segments;
   if (!owner || !name) return undefined;
   if (kind !== undefined && kind !== "tree") return undefined;
   // A tree link always names its branch; `…/tree/` alone is not a folder link.
   if (kind === "tree" && !ref) return undefined;
   const parsed = ContextTreeRepositorySchema.safeParse(`${owner}/${name.replace(/\.git$/u, "")}`);
   if (!parsed.success) return undefined;
-  // The link is typed live: a stray `%` must read as an invalid link, never throw during render.
-  let path: string;
-  let branchName: string | undefined;
-  try {
-    path = folder.map((part) => decodeURIComponent(part)).join("/");
-    branchName = ref === undefined ? undefined : decodeURIComponent(ref);
-  } catch {
-    return undefined;
-  }
-  const branch = branchName === undefined ? undefined : ContextTreeBranchSchema.safeParse(branchName);
+  const branch = ref === undefined ? undefined : ContextTreeBranchSchema.safeParse(ref);
   if (branch && !branch.success) return undefined;
+  const path = folder.join("/");
   return {
     repository: parsed.data,
     ...(path ? { path } : {}),
     ...(branch?.success ? { ref: branch.data } : {}),
   };
+}
+
+/**
+ * The decoded path segments of an https://github.com link, or `undefined` when it is not one. The link
+ * is typed live, so a malformed URL or a stray `%` must read as "not a link yet", never throw in render.
+ */
+function githubPathSegments(value: string): string[] | undefined {
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== "https:" || url.hostname !== "github.com" || url.port || url.username || url.password) return;
+    return url.pathname
+      .split("/")
+      .filter(Boolean)
+      .map((part) => decodeURIComponent(part));
+  } catch {
+    return undefined;
+  }
 }
 
 function ContextTreeResult({

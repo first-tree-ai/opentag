@@ -67,6 +67,43 @@ describe("Agent Runtime test owner", () => {
     expect(fixture.owner.pendingCount()).toBe(0);
   });
 
+  it.each(["timeout", "cancelled", "closed", "result"] as const)(
+    "settles %s without waiting for the socket callback and ignores its late error",
+    async (outcome) => {
+      const callbacks: ((error?: Error) => void)[] = [];
+      const fixture = await testOwnerFixture({ ttlMs: 30, onSend: (callback) => callbacks.push(callback) });
+      const controller = new AbortController();
+      const result = fixture.owner.start(fixture.computerId, {
+        computerId: fixture.computerId,
+        provider: "codex",
+        signal: controller.signal,
+      });
+      expect(fixture.owner.pendingCount()).toBe(1);
+      if (outcome === "cancelled") controller.abort();
+      if (outcome === "closed") fixture.owner.close();
+      if (outcome === "result") {
+        const frame = fixture.frames[0] as { requestId: string };
+        await fixture.owner
+          .businessOptions()
+          .handle({ type: "agent-runtime:test:result", requestId: frame.requestId, status: "passed" }, fixture.context);
+      }
+      await expect(result).resolves.toEqual(
+        outcome === "result"
+          ? { status: "passed" }
+          : { status: "failed", code: outcome === "closed" ? "cancelled" : outcome },
+      );
+      expect(fixture.owner.pendingCount()).toBe(0);
+      expect(fixture.owner.hasComputerInFlight(fixture.computerId)).toBe(false);
+      const next = fixture.owner.start(fixture.computerId, { computerId: fixture.computerId, provider: "codex" });
+      callbacks[0]?.(new Error("late transport failure"));
+      await Promise.resolve();
+      expect(fixture.owner.pendingCount()).toBe(1);
+      fixture.owner.close();
+      await expect(next).resolves.toEqual({ status: "failed", code: "cancelled" });
+      for (const callback of callbacks.slice(1)) callback();
+    },
+  );
+
   it("enforces one in-flight test per Computer, a global pending limit, TTL, and cancel cleanup", async () => {
     const fixture = await testOwnerFixture({ maxPending: 1, ttlMs: 30 });
     const first = fixture.owner.start(fixture.computerId, {
@@ -550,10 +587,15 @@ function appWith(service: ReturnType<typeof agentService>, runtimeTest: AgentRun
   return { app, service };
 }
 
-async function testOwnerFixture(options?: { maxPending?: number; ttlMs?: number }) {
+async function testOwnerFixture(options?: {
+  maxPending?: number;
+  ttlMs?: number;
+  onSend?: (callback: (error?: Error) => void) => void;
+}) {
   const registry = new ConnectionRegistry();
   const registered = await registerComputer(registry, {
     negotiatedCapabilities: { [RUNTIME_CAPABILITY.agentRuntimeTest]: 1 },
+    onSend: options?.onSend,
   });
   const owner = new AgentRuntimeTestOwner(registry, options);
   const context: RuntimeBusinessContext = {
@@ -567,7 +609,7 @@ async function testOwnerFixture(options?: { maxPending?: number; ttlMs?: number 
 
 async function registerComputer(
   registry: ConnectionRegistry,
-  entry: { negotiatedCapabilities: Record<string, number> },
+  entry: { negotiatedCapabilities: Record<string, number>; onSend?: (callback: (error?: Error) => void) => void },
 ) {
   const computerId = randomUUID();
   const instanceId = randomUUID();
@@ -587,7 +629,8 @@ async function registerComputer(
         terminate: vi.fn(),
         send: vi.fn((serialized: string, callback: (error?: Error) => void) => {
           frames.push(JSON.parse(serialized));
-          callback();
+          if (entry.onSend) entry.onSend(callback);
+          else callback();
         }),
       } as unknown as WebSocket,
     },

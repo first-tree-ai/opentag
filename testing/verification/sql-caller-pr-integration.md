@@ -123,3 +123,47 @@ only on that abnormal path. The unchanged 400-ms fault budget, actual placement
 lock, no-send check and retained correlation assertions remain. All nine cases in
 the updated file pass in `pr-steer-final-docker.log` (13.67 s). This improves failure
 evidence; it does not claim to establish the earlier timeout's complete cause.
+
+
+## Browser CI follow-up
+
+At published head `1e60b04f`, CI run `41646480913` passes the PostgreSQL integration
+matrix, all Node unit shards, runtime coverage and other code checks. Browser Smoke
+fails eight Discover scenarios: after gated initial OAuth client registration fails,
+the actual accessible button is `Reauthorize` / `重新授权`, while the old test expects
+`Authorize` / `授权`. The retained CI screenshot and accessibility tree confirm the
+button is present and enabled. The approved initial-flow cleanup now stores
+`error` / `MCP_OAUTH_FAILED` rather than leaving the row pending; the existing Web
+label mapping correctly presents the retry action. No product copy or persistence
+behavior changes in this follow-up.
+
+The test now expects those existing labels and replaces its mount-count-only poll
+with an exact one-element authorization projection: `oauth`, `error`,
+`hasCredential: false`, `MCP_OAUTH_FAILED`. The original alert, card height, viewport,
+contrast, focus, popup, search and accessibility checks remain intact.
+
+Local acceptance: **12/12 browser scenarios pass without retries** (27.2 s): eight
+Discover locale/width combinations plus four keyboard/settings widths. Web build,
+E2E typecheck and independent read-only review pass. The browser run uses Linux
+arm64 Node 24.22.1, Chromium 156.0.8078.79, current built artifacts and all 74
+migrations against owned PostgreSQL 17.11. This is local evidence; the new PR head
+must pass its own complete CI matrix.
+
+The host attempt could not finish PostgreSQL protocol setup through a newly
+published Docker host port. The accepted run therefore places Server, browser and
+psql in the database container's network namespace. Only external test setup/fixture
+psql transport is changed to the installed native client with the same SQL/options;
+the task owns Compose lifecycle. The existing Chromium-executable override is used
+and local video recording is disabled. Application code, browser assertions and
+provider simulation are unchanged. Setup-only failed attempts are retained and do
+not count as browser passes. Commands, fixture/source hashes, logs and screenshots
+remain in workspace `sql-caller-repairs-20261103`.
+
+During follow-up the real base advances to `bb34c508`. Its Computer-connect contract
+is verified on the conflict-free merge tree
+`a1d984a2bbb5fae131f7ba591b521905d319f42e` without changing the PR head: frozen install,
+Server/Client/CLI builds and typechecks pass, as do 97 host unit cases and 115 Docker
+cases (64 native PostgreSQL, 51 Server unit) across the affected DTO/API/CLI,
+credential rotation, registration drain and proof-authority paths. Independent
+review verifies the archived combination against every Git blob; no production
+fix or new database design is required for this base change.

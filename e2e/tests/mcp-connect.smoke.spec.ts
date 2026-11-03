@@ -984,7 +984,7 @@ const discoverCopy = {
     add: "Add: Linear",
     preparing: "Authorizing…",
     cancel: "Cancel: Linear",
-    reconnect: "Authorize: Linear",
+    reauthorize: "Reauthorize: Linear",
     failed: "Authorization failed",
   },
   zh: {
@@ -995,7 +995,7 @@ const discoverCopy = {
     add: "添加: Linear",
     preparing: "正在授权…",
     cancel: "取消: Linear",
-    reconnect: "授权: Linear",
+    reauthorize: "重新授权: Linear",
     failed: "授权失败",
   },
 } as const;
@@ -1098,9 +1098,18 @@ for (const locale of ["en", "zh"] as const) {
         }
         release();
         await expect(card.getByRole("alert")).toHaveText(copy.failed);
-        await expect(card.getByRole("button", { name: copy.reconnect, exact: true })).toBeEnabled();
+        await expect(card.getByRole("button", { name: copy.reauthorize, exact: true })).toBeEnabled();
         await expect.poll(async () => (await card.boundingBox())?.height).toBe(height);
-        await expect.poll(() => mounts(page, current.id)).toHaveLength(1);
+        await expect
+          .poll(async () =>
+            (await mounts(page, current.id)).map((row) => ({
+              kind: row.authorization?.kind,
+              status: row.authorization?.status,
+              hasCredential: row.authorization?.hasCredential,
+              failureCode: row.authorization?.failureCode,
+            })),
+          )
+          .toEqual([{ kind: "oauth", status: "error", hasCredential: false, failureCode: "MCP_OAUTH_FAILED" }]);
         await expect(dialog.getByLabel(copy.search, { exact: true })).toHaveValue("Linear");
         await expectAccessible(page);
         await expectNoPageOverflow(page);

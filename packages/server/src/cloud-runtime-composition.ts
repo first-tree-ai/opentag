@@ -68,6 +68,15 @@ export interface CloudDeliveryComposition {
  * composition regression calls this same factory, so a wiring drift (a missing workspace route,
  * a runner service without the store) is a test failure rather than a production surprise.
  */
+function createRunnerExternalFetches(perfLogger: PerformanceLogger | undefined) {
+  if (!perfLogger) return {};
+  return {
+    metadataFetch: createInstrumentedFetch(perfLogger, { provider: "gcp-metadata" }),
+    cloudRunFetch: createInstrumentedFetch(perfLogger, { provider: "cloud-run" }),
+    gcsFetch: createInstrumentedFetch(perfLogger, { provider: "gcs" }),
+  };
+}
+
 export function createSandboxRunnerRuntime(
   database: DatabaseClient,
   config: Pick<ServerConfig, "environment" | "jwtSecret" | "cloudRunner" | "cloudIdentities">,
@@ -78,6 +87,7 @@ export function createSandboxRunnerRuntime(
     sessionWorkBarrier?: SandboxRunnerServiceOptions["sessionWorkBarrier"];
     readinessNotifications?: SandboxRunnerServiceOptions["readinessNotifications"];
     performanceLogger?: PerformanceLogger;
+    logger?: ServiceLogger;
   } = {},
 ): SandboxRunnerRuntime | undefined {
   const cloudRunner = config.cloudRunner;
@@ -86,10 +96,7 @@ export function createSandboxRunnerRuntime(
   if (!cloudIdentities.enabled) {
     throw new Error("Cloud Runner requires cloud identities (Runner build version) to be enabled");
   }
-  const perfLogger = options.performanceLogger;
-  const metadataFetch = perfLogger ? createInstrumentedFetch(perfLogger, { provider: "gcp-metadata" }) : undefined;
-  const cloudRunFetch = perfLogger ? createInstrumentedFetch(perfLogger, { provider: "cloud-run" }) : undefined;
-  const gcsFetch = perfLogger ? createInstrumentedFetch(perfLogger, { provider: "gcs" }) : undefined;
+  const { metadataFetch, cloudRunFetch, gcsFetch } = createRunnerExternalFetches(options.performanceLogger);
   const tokenProvider = cloudRunner.staticAccessToken
     ? createStaticTokenProvider(cloudRunner.staticAccessToken)
     : createMetadataServerTokenProvider(metadataFetch ? { fetchImpl: metadataFetch } : {});
@@ -124,15 +131,18 @@ export function createSandboxRunnerRuntime(
     // E9 admission ceilings from the deployment configuration (defaults 3/20).
     capacity: { accountLimit: cloudRunner.maxInstancesPerAccount, platformLimit: cloudRunner.maxInstances },
     workspace: { store },
-    ...(options.readinessNotifications ? { readinessNotifications: options.readinessNotifications } : {}),
-    ...(options.sessionWorkBusy ? { sessionWorkBusy: options.sessionWorkBusy } : {}),
-    ...(options.sessionWorkBarrier ? { sessionWorkBarrier: options.sessionWorkBarrier } : {}),
+    readinessNotifications: options.readinessNotifications,
+    sessionWorkBusy: options.sessionWorkBusy,
+    sessionWorkBarrier: options.sessionWorkBarrier,
+    logger: options.logger,
+    performanceLogger: options.performanceLogger,
   });
   const runnerWorkspace = new RunnerWorkspaceService(database, {
     tokens,
     hub,
     store,
     runnerService: sandboxRunnerService,
+    logger: options.logger,
   });
   return { sandboxRunnerService, runnerChannel: { tokens, hub }, runnerWorkspace };
 }

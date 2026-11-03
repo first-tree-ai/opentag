@@ -1,6 +1,7 @@
 import type { RuntimeCredentialProvider, RuntimeExecutionSource } from "@opentag/shared";
 import { sql } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
+import type { PerformanceLogger } from "../observability/performance-logger.js";
 import type { ServiceLogger } from "../observability/service-logger.js";
 import type { ConnectionRegistry, RuntimeControlIdentity } from "../runtime/connection-registry.js";
 import type { RuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
@@ -84,6 +85,7 @@ export interface RuntimeCredentialServicesOptions {
   registry: ConnectionRegistry;
   custody: RuntimeCustodyStore;
   logger?: ServiceLogger;
+  performanceLogger?: PerformanceLogger;
   /**
    * Additional exact connection fence composed with the Local registry fence (E4 Cloud Runner
    * connections). Local registry behavior is unchanged; a frame is current when EITHER fence
@@ -344,6 +346,7 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
     executions,
     connectionFence,
     ...(options.logger ? { logger: options.logger } : {}),
+    ...(options.performanceLogger ? { performanceLogger: options.performanceLogger } : {}),
   });
   const unsubscribeHandles = executions.onClose((event) => {
     urlHandles.revokeExecution(event.executionId);

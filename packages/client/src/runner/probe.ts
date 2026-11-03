@@ -9,6 +9,7 @@ export interface RunnerToolProbe {
   readonly name: string;
   readonly detail?: string;
   readonly ok: boolean;
+  readonly durationMs?: number;
 }
 
 export interface ProbeRunnerToolsOptions {
@@ -96,15 +97,23 @@ async function probeCommand(
   timeoutMs: number,
   evaluate: (detail: string) => boolean,
 ): Promise<RunnerToolProbe> {
+  const startedAtMs = Date.now();
   try {
     const result = await run(command, [...args], { encoding: "utf8", env, timeout: timeoutMs, windowsHide: true });
+    const durationMs = Math.max(0, Date.now() - startedAtMs);
     const detail = `${result.stdout}${result.stderr}`.trim();
     const firstLine = detail.split(/\r?\n/)[0] ?? "";
     // Anchored patterns evaluate the first output line; tools like gh print extra lines after it.
-    return { name: label, ok: evaluate(firstLine), ...(firstLine ? { detail: firstLine.slice(0, 200) } : {}) };
+    return {
+      name: label,
+      ok: evaluate(firstLine),
+      durationMs,
+      ...(firstLine ? { detail: firstLine.slice(0, 200) } : {}),
+    };
   } catch (error) {
+    const durationMs = Math.max(0, Date.now() - startedAtMs);
     const detail = probeFailureDetail(error);
-    return { name: label, ok: false, ...(detail ? { detail } : {}) };
+    return { name: label, ok: false, durationMs, ...(detail ? { detail } : {}) };
   }
 }
 

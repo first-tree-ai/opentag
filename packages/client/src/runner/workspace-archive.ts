@@ -43,6 +43,13 @@ export const WORKSPACE_ARCHIVE_MAX_BYTES = 128 * 1024 * 1024;
 export const WORKSPACE_MAX_BYTES = 256 * 1024 * 1024;
 export const WORKSPACE_MAX_ENTRIES = 50_000;
 
+export interface WorkspaceArchiveStats {
+  readonly archiveBytes: number;
+  readonly workspaceBytes: number;
+  readonly entryCount: number;
+  readonly omittedCleanRepoCount?: number;
+}
+
 /**
  * Injectable ceilings for tests. Production callers use the module constants; every limit
  * must be a positive integer. The decompressed-stream ceiling is derived, not injectable.
@@ -51,6 +58,7 @@ export interface WorkspaceArchiveLimits {
   readonly maxArchiveBytes?: number;
   readonly maxBytes?: number;
   readonly maxEntries?: number;
+  readonly onStats?: (stats: WorkspaceArchiveStats) => void;
 }
 
 export type WorkspaceArchiveErrorCode =
@@ -350,6 +358,8 @@ interface WorkspaceScan {
   /** Deterministic breadth-first order; parents always precede their children. */
   readonly records: readonly WalkRecord[];
   readonly namespace: ReadonlyMap<string, NamespaceEntry>;
+  readonly workspaceBytes: number;
+  readonly omittedCleanRepoCount: number;
 }
 
 /**
@@ -1173,6 +1183,12 @@ async function scanWorkspace(workspacePath: string, limits: ResolvedLimits): Pro
   const namespace = new Map<string, NamespaceEntry>();
   const state: ScanState = { bytes: 0 };
   const preserveContextTreeCache = await shouldPreserveContextTreeCache(workspacePath);
+  let omittedCleanRepoCount = 0;
+  if (!preserveContextTreeCache) {
+    const reposRoot = join(workspacePath, ...`${CONTEXT_TREE_STATE_REL}/repositories`.split("/"));
+    const repoNames = await readdir(reposRoot).catch(() => [] as string[]);
+    omittedCleanRepoCount = repoNames.length;
+  }
   const pendingDirs: string[] = [""];
   let cursor = 0;
   while (cursor < pendingDirs.length) {
@@ -1189,7 +1205,7 @@ async function scanWorkspace(workspacePath: string, limits: ResolvedLimits): Pro
       if (childDir !== undefined) pendingDirs.push(childDir);
     }
   }
-  return { records, namespace };
+  return { records, namespace, workspaceBytes: state.bytes, omittedCleanRepoCount };
 }
 
 /**
@@ -1330,7 +1346,22 @@ export async function createWorkspaceArchive(
     throw toArchiveError(error, "io-failed", "Archive publish failed");
   }
 
-  return { bytes: compressed.readCount(), sha256: hashes.sha256.digest("hex"), md5: hashes.md5.digest("base64") };
+  const result: WorkspaceArchiveInfo = {
+    bytes: compressed.readCount(),
+    sha256: hashes.sha256.digest("hex"),
+    md5: hashes.md5.digest("base64"),
+  };
+  try {
+    limits?.onStats?.({
+      archiveBytes: result.bytes,
+      workspaceBytes: scan.workspaceBytes,
+      entryCount: scan.records.length,
+      omittedCleanRepoCount: scan.omittedCleanRepoCount,
+    });
+  } catch {
+    // Telemetry callback must never fail archive creation.
+  }
+  return result;
 }
 
 function validateExpected(expected: WorkspaceArchiveInfo, limits: ResolvedLimits): void {
@@ -1447,6 +1478,10 @@ class RestoreState {
     }
   }
 
+  get stats(): { readonly workspaceBytes: number; readonly entryCount: number } {
+    return { workspaceBytes: this.bytes, entryCount: this.entries };
+  }
+
   private dest(name: string): string {
     const dest = join(this.staging, ...name.split("/"));
     const suffix = relative(this.staging, dest);
@@ -1483,7 +1518,7 @@ async function extractArchiveInto(
   staging: string,
   expected: WorkspaceArchiveInfo,
   limits: ResolvedLimits,
-): Promise<void> {
+): Promise<{ readonly workspaceBytes: number; readonly entryCount: number }> {
   const hashes = { sha256: createHash("sha256"), md5: createHash("md5") };
   const compressedMeter = new PassThrough();
   const compressed = attachCompressedMeter(compressedMeter, limits.maxArchiveBytes, hashes);
@@ -1526,6 +1561,7 @@ async function extractArchiveInto(
   // Integrity is proven and the full member graph is known: only now install symlinks and
   // apply declared directory modes.
   await state.finalize();
+  return state.stats;
 }
 
 /**
@@ -1594,8 +1630,17 @@ export async function restoreWorkspaceArchive(
   const staging = await mkdtemp(join(parent, `.${basename(workspacePath)}.opentag-restore-`));
 
   try {
-    await extractArchiveInto(archivePathResolved, staging, expected, resolvedLimits);
+    const stats = await extractArchiveInto(archivePathResolved, staging, expected, resolvedLimits);
     await replaceDestination(staging, workspacePath);
+    try {
+      limits?.onStats?.({
+        archiveBytes: expected.bytes,
+        workspaceBytes: stats.workspaceBytes,
+        entryCount: stats.entryCount,
+      });
+    } catch {
+      // Telemetry callback must never fail workspace restoration.
+    }
   } catch (error) {
     await rm(staging, { recursive: true, force: true });
     throw error instanceof WorkspaceArchiveError

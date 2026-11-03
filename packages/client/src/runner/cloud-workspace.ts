@@ -10,6 +10,7 @@ import {
   type RunnerWorkspaceObject,
   RunnerWorkspaceObjectSchema,
 } from "@opentag/shared";
+import { type RunnerPerformanceSink, traceRunnerOperation } from "./perf-log.js";
 import {
   createWorkspaceArchive,
   restoreWorkspaceArchive,
@@ -59,6 +60,7 @@ export interface CloudWorkspaceOptions {
   timeoutMs?: number;
   retryDelayMs?: number;
   sleep?: (ms: number) => Promise<void>;
+  onPerformanceLog?: RunnerPerformanceSink;
 }
 
 function outside(root: string, target: string): boolean {
@@ -164,7 +166,20 @@ export class CloudWorkspace {
           this.#rollbackPending = false;
           return;
         }
-        await this.#restoreFromObject(object, this.#rollbackPending);
+        await traceRunnerOperation(
+          this.#options.onPerformanceLog,
+          "runner.workspace.restore",
+          async (addMetrics) => {
+            await this.#restoreFromObject(object, this.#rollbackPending, addMetrics);
+          },
+          {
+            environmentGeneration: this.#options.environmentGeneration(),
+            workspaceGeneration: object.generation,
+            saved: object.saved,
+            sealed: object.sealed,
+            ...(object.saved ? { archiveBytes: object.bytes } : {}),
+          },
+        );
         this.#rollbackPending = false;
         this.#restored = true;
         // Even a saved restore commits once before readiness. This CAS fences an upload still
@@ -194,7 +209,20 @@ export class CloudWorkspace {
           this.#rollbackPending = false;
           return;
         }
-        await this.#restoreFromObject(object, true);
+        await traceRunnerOperation(
+          this.#options.onPerformanceLog,
+          "runner.workspace.restore",
+          async (addMetrics) => {
+            await this.#restoreFromObject(object, true, addMetrics);
+          },
+          {
+            environmentGeneration: this.#options.environmentGeneration(),
+            workspaceGeneration: object.generation,
+            saved: object.saved,
+            sealed: object.sealed,
+            ...(object.saved ? { archiveBytes: object.bytes } : {}),
+          },
+        );
         this.#rollbackPending = false;
         this.#restored = true;
       } catch (error) {
@@ -203,14 +231,20 @@ export class CloudWorkspace {
     });
   }
 
-  async #restoreFromObject(object: RunnerWorkspaceObject, replaceExisting: boolean): Promise<void> {
+  async #restoreFromObject(
+    object: RunnerWorkspaceObject,
+    replaceExisting: boolean,
+    addMetrics?: (metrics: { archiveBytes?: number; workspaceBytes?: number; entryCount?: number }) => void,
+  ): Promise<void> {
     if (!replaceExisting) {
       await mkdir(this.#options.workspace, { recursive: true, mode: 0o700 });
       if ((await readdir(this.#options.workspace)).length !== 0) throw new CloudWorkspaceError("restore_failed");
       if (object.saved) {
         await this.#temporaryArchive(async (path) => {
           await this.#download(object, path);
-          await restoreWorkspaceArchive(path, this.#options.workspace, object);
+          await restoreWorkspaceArchive(path, this.#options.workspace, object, {
+            onStats: (stats) => addMetrics?.(stats),
+          });
         });
       }
       return;
@@ -227,7 +261,9 @@ export class CloudWorkspace {
     try {
       await this.#temporaryArchive(async (path) => {
         await this.#download(object, path);
-        await restoreWorkspaceArchive(path, staging, object);
+        await restoreWorkspaceArchive(path, staging, object, {
+          onStats: (stats) => addMetrics?.(stats),
+        });
       });
       await rm(workspacePath, { recursive: true, force: true });
       await rename(staging, workspacePath);
@@ -250,26 +286,50 @@ export class CloudWorkspace {
     const previous = this.#object;
     if (!previous || !this.#restored) throw new CloudWorkspaceError("restore_failed");
     this.#pendingSave = true;
-    try {
-      await this.#temporaryArchive(async (path) => {
-        const info = await createWorkspaceArchive(this.#options.workspace, path);
-        this.#object = await this.#upload(path, previous, info, sealed);
-      });
-      this.#pendingSave = false;
-    } catch (error) {
-      if (
-        error instanceof WorkspaceArchiveError &&
-        ["too-many-entries", "workspace-too-large", "archive-too-large", "unsafe-entry", "unsupported-entry"].includes(
-          error.code,
-        )
-      ) {
-        this.#terminalFailure = new CloudWorkspaceError("save_failed", false, { cause: error });
-      }
-      throw (
-        this.#terminalFailure ??
-        (error instanceof CloudWorkspaceError ? error : new CloudWorkspaceError("save_failed", true, { cause: error }))
-      );
-    }
+    await traceRunnerOperation(
+      this.#options.onPerformanceLog,
+      sealed ? "runner.workspace.seal" : "runner.workspace.save",
+      async (addMetrics) => {
+        try {
+          await this.#temporaryArchive(async (path) => {
+            const info = await createWorkspaceArchive(this.#options.workspace, path, {
+              onStats: (stats) => addMetrics(stats),
+            });
+            const uploaded = await this.#upload(path, previous, info, sealed);
+            this.#object = uploaded;
+            addMetrics({
+              workspaceGeneration: uploaded.generation,
+              saved: uploaded.saved,
+              sealed: uploaded.sealed,
+            });
+          });
+          this.#pendingSave = false;
+        } catch (error) {
+          if (
+            error instanceof WorkspaceArchiveError &&
+            [
+              "too-many-entries",
+              "workspace-too-large",
+              "archive-too-large",
+              "unsafe-entry",
+              "unsupported-entry",
+            ].includes(error.code)
+          ) {
+            this.#terminalFailure = new CloudWorkspaceError("save_failed", false, { cause: error });
+          }
+          throw (
+            this.#terminalFailure ??
+            (error instanceof CloudWorkspaceError
+              ? error
+              : new CloudWorkspaceError("save_failed", true, { cause: error }))
+          );
+        }
+      },
+      {
+        environmentGeneration: this.#options.environmentGeneration(),
+        sealed,
+      },
+    );
   }
 
   async #temporaryArchive<T>(operation: (path: string) => Promise<T>): Promise<T> {

@@ -125,6 +125,7 @@ describe("database query performance logging", () => {
       () =>
         ({
           isLevelEnabled: () => true,
+          debug: (payload: Record<string, unknown>, message: string) => logs.push({ level: "debug", payload, message }),
           info: (payload: Record<string, unknown>, message: string) => logs.push({ level: "info", payload, message }),
           warn: (payload: Record<string, unknown>, message: string) => logs.push({ level: "warn", payload, message }),
         }) as never,
@@ -180,19 +181,22 @@ describe("database query performance logging", () => {
     expect(JSON.stringify(logs)).not.toContain(secretParam);
   });
 
-  it("does not emit logs for lazy queries that are never awaited or for readiness no_pipeline probes", async () => {
+  it("does not emit logs for lazy queries that are never awaited or for readiness no_pipeline probes, and leaves sql unproxied when disabled", async () => {
     const logs: Array<Record<string, unknown>> = [];
     const perfLogger = createPerformanceLogger(
       () =>
         ({
           isLevelEnabled: () => true,
+          debug: (payload: Record<string, unknown>) => logs.push(payload),
           info: (payload: Record<string, unknown>) => logs.push(payload),
           warn: (payload: Record<string, unknown>) => logs.push(payload),
         }) as never,
     );
+    const disabledPerf = createPerformanceLogger(() => undefined, { enabled: false });
 
     const realSql = postgres("postgresql://unused/unused");
     try {
+      expect(instrumentDatabaseSql(realSql, disabledPerf)).toBe(realSql);
       const instrumented = instrumentDatabaseSql(realSql, perfLogger);
       const lazy = instrumented.unsafe('select * from "users"').values();
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -216,6 +220,7 @@ describe("database query performance logging", () => {
       () =>
         ({
           isLevelEnabled: () => true,
+          debug: (payload: Record<string, unknown>) => logs.push({ level: "debug", payload }),
           info: (payload: Record<string, unknown>) => logs.push({ level: "info", payload }),
           warn: (payload: Record<string, unknown>) => logs.push({ level: "warn", payload }),
         }) as never,

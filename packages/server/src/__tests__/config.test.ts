@@ -415,7 +415,7 @@ describe("parseServerConfig", () => {
     expect(() => parseServerConfig({ ...required, OPENTAG_LOG_LEVEL: "verbose" })).toThrow();
     expect(parseServerConfig(required).observability.performance).toEqual({
       enabled: true,
-      level: "info",
+      level: "debug",
       slowThresholdMs: 1_000,
     });
     expect(

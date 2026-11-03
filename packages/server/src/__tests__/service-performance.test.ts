@@ -1,6 +1,12 @@
+import { HTTP_PATHS } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
-import { createInstrumentedFetch, createPerformanceLogger, instrumentService } from "../observability/index.js";
+import {
+  createInstrumentedFetch,
+  createPerformanceLogger,
+  instrumentServerWorkers,
+  instrumentService,
+} from "../observability/index.js";
 
 class PrivateFieldService {
   readonly #secretPrefix = "agent";
@@ -11,8 +17,17 @@ class PrivateFieldService {
   }
 
   async resolveAgent(input: { accountId: string; agentId: string }): Promise<string> {
-    await this.#fetch("https://api.example.com/v1/check?token=do-not-log");
+    const res = await this.#fetch("https://api.example.com/v1/check?token=do-not-log");
+    await res.text();
     return `${this.#secretPrefix}:${input.accountId}:${input.agentId}`;
+  }
+
+  async list(input: { accountId: string }): Promise<string[]> {
+    return [`${this.#secretPrefix}:${input.accountId}`];
+  }
+
+  async get(input: { accountId: string }): Promise<string> {
+    return `${this.#secretPrefix}:${input.accountId}`;
   }
 
   currentInstanceId(): string {
@@ -21,15 +36,21 @@ class PrivateFieldService {
 }
 
 describe("service and HTTP performance instrumentation", () => {
-  it("preserves private class fields, skips excluded sync readers, and orders start/end logs across layers", async () => {
+  it("preserves private class fields, instruments list/get and workers, skips excluded sync readers, and orders start/end logs across layers", async () => {
     const records: Array<Record<string, unknown>> = [];
     const perfLogger = createPerformanceLogger(
       () =>
         ({
           isLevelEnabled: () => true,
+          debug: (payload: Record<string, unknown>) => records.push(payload),
           info: (payload: Record<string, unknown>) => records.push(payload),
           warn: (payload: Record<string, unknown>) => records.push(payload),
         }) as never,
+    );
+    const disabledPerf = createPerformanceLogger(() => undefined, { enabled: false });
+    const rawInstance = new PrivateFieldService(vi.fn());
+    expect(instrumentService(rawInstance, { serviceName: "PrivateFieldService", perfLogger: disabledPerf })).toBe(
+      rawInstance,
     );
 
     const instrumentedFetch = createInstrumentedFetch(perfLogger, {
@@ -47,12 +68,26 @@ describe("service and HTTP performance instrumentation", () => {
 
     const value = await service.resolveAgent({ accountId: "acc-1", agentId: "agent-9" });
     expect(value).toBe("agent:acc-1:agent-9");
+    expect(await service.list({ accountId: "acc-1" })).toEqual(["agent:acc-1"]);
+    expect(await service.get({ accountId: "acc-1" })).toBe("agent:acc-1");
+
+    const worker = {
+      runOnce: vi.fn(async () => "tick-ok"),
+    };
+    instrumentServerWorkers([["ImDeliveryWorker", worker]], perfLogger);
+    expect(await worker.runOnce()).toBe("tick-ok");
 
     expect(records.map((r) => [r.perfCategory, r.operation, r.outcome])).toEqual([
       ["service", "PrivateFieldService.resolveAgent", "started"],
       ["external", "external.example.http", "started"],
       ["external", "external.example.http", "completed"],
       ["service", "PrivateFieldService.resolveAgent", "completed"],
+      ["service", "PrivateFieldService.list", "started"],
+      ["service", "PrivateFieldService.list", "completed"],
+      ["service", "PrivateFieldService.get", "started"],
+      ["service", "PrivateFieldService.get", "completed"],
+      ["worker", "ImDeliveryWorker.runOnce", "started"],
+      ["worker", "ImDeliveryWorker.runOnce", "completed"],
     ]);
 
     expect(records[1]).toMatchObject({
@@ -63,7 +98,7 @@ describe("service and HTTP performance instrumentation", () => {
     });
   });
 
-  it("correlates HTTP route, instrumented service, and requestId end-to-end while silencing probes", async () => {
+  it("correlates HTTP route, instrumented service, and requestId end-to-end while silencing probes and WebSocket upgrades", async () => {
     const chunks: string[] = [];
     const authService = {
       getAuthenticatedUser: vi.fn().mockResolvedValue({
@@ -80,13 +115,26 @@ describe("service and HTTP performance instrumentation", () => {
     };
     const app = createApp({
       authService: authService as never,
+      loggerLevel: "debug",
       loggerStream: { write: (chunk) => chunks.push(String(chunk)) },
     });
 
     try {
       await app.inject({ method: "GET", url: "/healthz" });
       await app.inject({ method: "GET", url: "/readyz" });
-      expect(chunks).toEqual([]);
+      await app.inject({
+        method: "GET",
+        url: HTTP_PATHS.sandboxRunnerWebSocket,
+        headers: { upgrade: "websocket" },
+      });
+
+      const preUpgradePerfRecords = chunks
+        .flatMap((c) => c.trim().split("\n"))
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as Record<string, unknown>)
+        .filter((line) => typeof line.perfCategory === "string");
+      expect(preUpgradePerfRecords).toEqual([]);
+      chunks.length = 0;
 
       const response = await app.inject({
         method: "GET",

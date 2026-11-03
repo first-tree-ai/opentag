@@ -15,7 +15,7 @@ export interface PerformanceLoggingConfig {
 
 export const DEFAULT_PERFORMANCE_LOGGING_CONFIG: PerformanceLoggingConfig = {
   enabled: true,
-  level: "info",
+  level: "debug",
   slowThresholdMs: 1_000,
 };
 
@@ -255,8 +255,7 @@ export function createPerformanceLogger(
         const endedAt = new Date().toISOString();
         const durationMs = roundDurationMs(performance.now() - startMono);
         const slow = durationMs >= config.slowThresholdMs;
-        const emitLevel: PerformanceLogLevel = slow ? "warn" : config.level;
-        port[emitLevel](
+        port[config.level](
           {
             ...basePayload,
             ...extraAttributes,
@@ -324,6 +323,15 @@ export function createPerformanceLogger(
     fn: (handle: PerformanceOperationHandle) => Promise<T> | T,
     options?: PerformanceTraceOptions<T>,
   ): Promise<T> | T => {
+    if (!config.enabled) {
+      return fn({
+        callId: "",
+        startedAt: "",
+        context: { callId: "", operation: input.operation },
+        complete: () => undefined,
+        fail: () => undefined,
+      });
+    }
     const handle = startOperation(input);
     return runWithPerformanceContext(handle.context, () => {
       let output: Promise<T> | T;

@@ -41,6 +41,7 @@ import {
   createServerDiagnosticReporter,
   createServiceLoggerPort,
   initTelemetry,
+  instrumentServerWorkers,
   type PerformanceLogger,
   type ServiceLogger,
   shutdownTelemetry,
@@ -248,8 +249,10 @@ function cloudPlatformRuntimeOptions(
 function serverPerformanceLogger(
   config: ServerConfig,
   getLogger: () => ReturnType<typeof createApp>["log"] | undefined,
-): PerformanceLogger {
-  return createPerformanceLogger(getLogger, config.observability?.performance);
+): PerformanceLogger | undefined {
+  const perfConfig = config.observability?.performance;
+  if (perfConfig?.enabled === false) return undefined;
+  return createPerformanceLogger(getLogger, perfConfig);
 }
 
 /** One model catalog shared by settings, dispatch and diagnostics. */
@@ -1452,6 +1455,19 @@ export async function startServer(): Promise<void> {
       ...(setupResetService ? { internalNavigationService, setupResetService } : {}),
       accountSetupService,
     });
+    instrumentServerWorkers(
+      [
+        ["ImDeliveryWorker", imDeliveryWorker],
+        ["SlackWorkingWorker", slackWorkingWorker],
+        ["ScheduleScheduler", scheduleScheduler],
+        ["SandboxIdleReclaimer", sandboxIdleReclaimer],
+        ["McpRefreshWorker", mcpRefreshWorker],
+        ["SkillObjectGc", skillRuntime.gc],
+        ["RunnerImagePrewarmWorker", runnerImagePrewarmWorker],
+        ["ChannelTargetPoller", channelTargetPoller],
+      ],
+      perfLogger,
+    );
     feishuSetupService.start();
     feishuConnections.start();
     approvalOwner.start();

@@ -67,7 +67,9 @@ export {
 export {
   type InstrumentServiceOptions,
   instrumentAppOptions,
+  instrumentServerWorkers,
   instrumentService,
+  instrumentWorker,
   prepareAppPerformance,
   registerHttpPerformanceHooks,
 } from "./service-instrumentation.js";

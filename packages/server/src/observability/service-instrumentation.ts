@@ -18,9 +18,6 @@ const DEFAULT_EXCLUDED_METHODS = new Set([
   "start",
   "stop",
   "close",
-  "read",
-  "get",
-  "list",
   "snapshot",
   "currentInstanceId",
   "supportsCapability",
@@ -88,7 +85,7 @@ export function instrumentService<T extends object>(
   options: InstrumentServiceOptions,
 ): T | undefined {
   const perfLogger = options.perfLogger;
-  if (!instance || !perfLogger) return instance;
+  if (!instance || !perfLogger?.config.enabled) return instance;
   const existing = instrumentedServices.get(instance);
   if (existing) return existing as T;
 
@@ -136,19 +133,30 @@ export function instrumentService<T extends object>(
   return proxy;
 }
 
+function isWebSocketUpgradeRequest(request: { headers?: Record<string, unknown> }): boolean {
+  const upgrade = request.headers?.upgrade;
+  return typeof upgrade === "string" && upgrade.toLowerCase() === "websocket";
+}
+
 export function registerHttpPerformanceHooks(
   app: {
     addHook(
       name: "onRequest" | "onResponse" | "onRequestAbort",
       hook: (
-        request: { id: string; method: string; url: string; routeOptions?: { url?: string } },
+        request: {
+          id: string;
+          method: string;
+          url: string;
+          headers?: Record<string, unknown>;
+          routeOptions?: { url?: string };
+        },
         reply?: { statusCode: number },
       ) => Promise<void> | void,
     ): unknown;
   },
   perfLogger: PerformanceLogger | undefined,
   options: {
-    shouldIgnore: (request: { url: string }) => boolean;
+    shouldIgnore: (request: { url: string; headers?: Record<string, unknown> }) => boolean;
     sanitizeUrl: (url: string) => string;
   },
 ): void {
@@ -156,7 +164,7 @@ export function registerHttpPerformanceHooks(
   const handles = new WeakMap<object, ReturnType<PerformanceLogger["startOperation"]>>();
 
   app.addHook("onRequest", async (request) => {
-    if (options.shouldIgnore(request)) return;
+    if (options.shouldIgnore(request) || isWebSocketUpgradeRequest(request)) return;
     const route = request.routeOptions?.url ?? options.sanitizeUrl(request.url);
     const handle = perfLogger.startOperation({
       module: "http",
@@ -308,6 +316,57 @@ export function instrumentAppOptions<T extends object>(options: T, perfLogger: P
   }
 
   return copy as T;
+}
+
+const DEFAULT_WORKER_METHODS = [
+  "runOnce",
+  "runPass",
+  "check",
+  "refresh",
+  "notifyComputerReady",
+  "notifyCloudRunnerReady",
+] as const;
+
+export function instrumentWorker<T extends object>(
+  worker: T | undefined,
+  options: {
+    workerName: string;
+    perfLogger: PerformanceLogger | undefined;
+    methods?: readonly string[];
+  },
+): T | undefined {
+  const perfLogger = options.perfLogger;
+  if (!worker || !perfLogger?.config.enabled || instrumentedServices.has(worker)) return worker;
+  const methods = options.methods ?? DEFAULT_WORKER_METHODS;
+  const record = worker as Record<string, unknown>;
+  for (const methodName of methods) {
+    const original = Reflect.get(worker, methodName, worker);
+    if (typeof original !== "function") continue;
+    const operation = `${options.workerName}.${methodName}`;
+    record[methodName] = (...args: unknown[]) =>
+      perfLogger.traceOperation(
+        {
+          module: options.workerName,
+          category: "worker",
+          operation,
+          ...extractResourceIds(args[0]),
+        },
+        () => Reflect.apply(original, worker, args),
+        { fallbackErrorCode: "WORKER_OPERATION_FAILED" },
+      );
+  }
+  instrumentedServices.set(worker, worker);
+  return worker;
+}
+
+export function instrumentServerWorkers(
+  workers: ReadonlyArray<readonly [string, object | undefined]>,
+  perfLogger: PerformanceLogger | undefined,
+): void {
+  if (!perfLogger?.config.enabled) return;
+  for (const [workerName, worker] of workers) {
+    instrumentWorker(worker, { workerName, perfLogger });
+  }
 }
 
 export function prepareAppPerformance<

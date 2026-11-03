@@ -1,4 +1,8 @@
-import type { PerformanceLogger } from "./performance-logger.js";
+import {
+  type PerformanceLogger,
+  type PerformanceOperationHandle,
+  runWithPerformanceContext,
+} from "./performance-logger.js";
 
 const ALLOWED_TRANSPORT_CODES = new Set([
   "ECONNRESET",
@@ -91,7 +95,7 @@ export function traceExternalCall<T>(
   fn: () => Promise<T>,
   options?: ExternalCallTraceOptions<T>,
 ): Promise<T> {
-  if (!perfLogger) return fn();
+  if (!perfLogger?.config.enabled) return fn();
   return perfLogger.traceAsync(
     {
       module: "external",
@@ -137,6 +141,52 @@ function resolveHttpMethod(input: unknown, init?: RequestInit): string {
   return "GET";
 }
 
+function wrapStreamingFetchResponse(response: Response, handle: PerformanceOperationHandle): Response {
+  const status = response.status;
+  if (!response.body) {
+    handle.complete({ status });
+    return response;
+  }
+  const reader = response.body.getReader();
+  const wrappedBody = new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        try {
+          const { done, value } = await reader.read();
+          if (done) {
+            handle.complete({ status });
+            controller.close();
+            return;
+          }
+          controller.enqueue(value);
+        } catch (error) {
+          const transportCode = extractExternalTransportCode(error);
+          handle.fail(
+            error,
+            {
+              status,
+              ...(transportCode ? { transportCode } : {}),
+            },
+            "EXTERNAL_CALL_FAILED",
+          );
+          controller.error(error);
+        }
+      },
+      async cancel(reason) {
+        handle.complete({ status });
+        await reader.cancel(reason);
+      },
+    },
+    { highWaterMark: 2 },
+  );
+
+  return new Response(wrappedBody, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
 export function createInstrumentedFetch(
   perfLogger: PerformanceLogger | undefined,
   options: {
@@ -145,26 +195,30 @@ export function createInstrumentedFetch(
     baseFetch?: typeof fetch;
   },
 ): typeof fetch {
-  const baseFetch = options.baseFetch ?? globalThis.fetch.bind(globalThis);
-  if (!perfLogger) return baseFetch;
+  const baseFetch = options.baseFetch ?? globalThis.fetch;
+  if (!perfLogger?.config.enabled) return baseFetch;
   const operation = options.operation ?? `external.${options.provider}.http`;
-  return ((input: string | URL | Request, init?: RequestInit) => {
+  return (async (input: string | URL | Request, init?: RequestInit) => {
     const httpMethod = resolveHttpMethod(input, init);
     const urlMeta = sanitizeExternalUrl(input);
-    return traceExternalCall(
-      perfLogger,
-      {
+    const handle = perfLogger.startOperation({
+      module: "external",
+      category: "external",
+      operation,
+      attributes: {
         provider: options.provider,
-        operation,
-        attributes: {
-          httpMethod,
-          ...urlMeta,
-        },
+        httpMethod,
+        ...urlMeta,
       },
-      () => baseFetch(input, init),
-      {
-        statusFromResult: (response) => response?.status,
-      },
-    );
+    });
+    let response: Response;
+    try {
+      response = await runWithPerformanceContext(handle.context, () => baseFetch(input, init));
+    } catch (error) {
+      const transportCode = extractExternalTransportCode(error);
+      handle.fail(error, transportCode ? { transportCode } : undefined, "EXTERNAL_CALL_FAILED");
+      throw error;
+    }
+    return wrapStreamingFetchResponse(response, handle);
   }) as typeof fetch;
 }

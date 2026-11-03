@@ -238,7 +238,7 @@ export function instrumentDatabaseSql<T extends Sql>(
   perfLogger: PerformanceLogger | undefined,
   inTransaction = false,
 ): T {
-  if (!perfLogger || typeof sql !== "function") return sql;
+  if (!perfLogger?.config.enabled || typeof sql !== "function") return sql;
   const cached = instrumentedObjects.get(sql);
   if (cached) return cached as T;
 

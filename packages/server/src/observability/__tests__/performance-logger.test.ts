@@ -80,6 +80,7 @@ describe("performance logger", () => {
     const records: Array<{ payload: Record<string, unknown> }> = [];
     const fakeLogger = {
       isLevelEnabled: () => true,
+      debug: (payload: Record<string, unknown>) => records.push({ payload }),
       info: (payload: Record<string, unknown>) => records.push({ payload }),
       warn: (payload: Record<string, unknown>) => records.push({ payload }),
     };
@@ -163,10 +164,11 @@ describe("performance logger", () => {
     expect(dbStart?.callId).not.toBe(externalStart?.callId);
   });
 
-  it("escalates slow operations to warn level and sets slow=true", async () => {
+  it("marks slow completions with slow=true at the configured routine level without escalating to warn", async () => {
     const records: Array<{ level: string; payload: Record<string, unknown> }> = [];
     const fakeLogger = {
       isLevelEnabled: () => true,
+      debug: (payload: Record<string, unknown>) => records.push({ level: "debug", payload }),
       info: (payload: Record<string, unknown>) => records.push({ level: "info", payload }),
       warn: (payload: Record<string, unknown>) => records.push({ level: "warn", payload }),
     };
@@ -180,7 +182,7 @@ describe("performance logger", () => {
 
     const perf = createPerformanceLogger(() => fakeLogger as never, {
       enabled: true,
-      level: "info",
+      level: "debug",
       slowThresholdMs: 200,
     });
 
@@ -194,8 +196,8 @@ describe("performance logger", () => {
     );
 
     expect(records).toHaveLength(2);
-    expect(records[0]?.level).toBe("info");
-    expect(records[1]?.level).toBe("warn");
+    expect(records[0]?.level).toBe("debug");
+    expect(records[1]?.level).toBe("debug");
     expect(records[1]?.payload).toMatchObject({
       outcome: "completed",
       slow: true,
@@ -255,22 +257,23 @@ describe("performance logger", () => {
     expect(JSON.stringify(lines)).not.toContain("secret-value");
   });
 
-  it("suppresses emission when disabled and tolerates manual context helpers outside a store", () => {
-    const info = vi.fn();
-    const perf = createPerformanceLogger(() => ({ info }) as never, { enabled: false });
+  it("suppresses emission and skips AsyncLocalStorage allocation when disabled", () => {
+    const debug = vi.fn();
+    const perf = createPerformanceLogger(() => ({ debug }) as never, { enabled: false });
     const result = perf.traceOperation(
       {
         module: "service",
         category: "service",
         operation: "noop",
       },
-      () => {
-        expect(getCurrentPerformanceContext()?.operation).toBe("noop");
+      (handle) => {
+        expect(handle.callId).toBe("");
+        expect(getCurrentPerformanceContext()).toBeUndefined();
         return 42;
       },
     );
     expect(result).toBe(42);
-    expect(info).not.toHaveBeenCalled();
+    expect(debug).not.toHaveBeenCalled();
 
     updateCurrentPerformanceContext({ requestId: "ignored" });
     expect(

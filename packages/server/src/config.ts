@@ -221,7 +221,7 @@ const EncryptionKeyRingSchema = z
 
 const ServerLogLevelSchema = z.enum(["trace", "debug", "info", "warn", "error", "fatal", "silent"]).default("info");
 export type ServerLogLevel = z.infer<typeof ServerLogLevelSchema>;
-const PerformanceLogLevelSchema = z.enum(["debug", "info", "warn"]).default("info");
+const PerformanceLogLevelSchema = z.enum(["debug", "info", "warn"]).default("debug");
 
 function validateMcpGoogleClientPair(
   value: {

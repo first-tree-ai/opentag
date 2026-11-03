@@ -5,6 +5,7 @@ import type { ChannelName } from "@opentag/shared";
 import {
   ErrorEnvelopeSchema,
   HTTP_PATHS,
+  RUNTIME_PROVIDER_PROXY_PATH,
   redactForLog,
   ServerDeepHealthSchema,
   ServerHealthSchema,
@@ -352,6 +353,16 @@ export function ignoreHttpTraceRoute(path: string): boolean {
 function disableProbeRequestLogging(request: { url: string }): boolean {
   const pathname = sanitizeRequestUrl(request.url);
   return pathname === "/healthz" || pathname === "/readyz";
+}
+
+function shouldIgnoreHttpPerformanceRequest(request: { url: string }): boolean {
+  const pathname = sanitizeRequestUrl(request.url);
+  return (
+    disableProbeRequestLogging(request) ||
+    pathname === HTTP_PATHS.computerRuntimeWebSocket ||
+    pathname === HTTP_PATHS.sandboxRunnerWebSocket ||
+    pathname === RUNTIME_PROVIDER_PROXY_PATH
+  );
 }
 
 const MAX_ERROR_STACK_LENGTH = 8_192;
@@ -755,7 +766,7 @@ export function createApp(options: CreateAppOptions = {}) {
     if (traceId) reply.header("x-trace-id", traceId);
   });
   registerHttpPerformanceHooks(app, preparedPerformance.perfLogger, {
-    shouldIgnore: disableProbeRequestLogging,
+    shouldIgnore: shouldIgnoreHttpPerformanceRequest,
     sanitizeUrl: sanitizeRequestUrl,
   });
 

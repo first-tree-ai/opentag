@@ -88,7 +88,12 @@ function ContextTreeSettingsForm({
     pendingAction,
   });
   const activeMode = mode ?? "connect";
-  const { source, valid, ownerValid, nameValid, linkedRepository } = parseForm(activeMode, draft, repositoryUrl, path);
+  const { source, valid, ownerValid, nameValid, linkedRepository, linkedPath } = parseForm(
+    activeMode,
+    draft,
+    repositoryUrl,
+    path,
+  );
   const fieldId = `context-tree-${config.id}`;
   const uncertainCreation =
     activeMode === "create"
@@ -273,6 +278,7 @@ function ContextTreeSettingsForm({
                 pending,
                 submitted,
                 linkedRepository,
+                linkedPath,
                 valid,
                 repositoryInput,
                 pathInput,
@@ -686,6 +692,7 @@ function ConnectTreeFields({
   pending,
   submitted,
   linkedRepository,
+  linkedPath,
   valid,
   repositoryInput,
   pathInput,
@@ -698,6 +705,7 @@ function ConnectTreeFields({
   pending: boolean;
   submitted: boolean;
   linkedRepository: string | undefined;
+  linkedPath?: string;
   valid: ReturnType<typeof ContextTreeConnectionSchema.safeParse>;
   repositoryInput: RefObject<HTMLInputElement | null>;
   pathInput: RefObject<HTMLInputElement | null>;
@@ -737,7 +745,8 @@ function ConnectTreeFields({
           value={path}
           disabled={pending}
           onChange={(event) => onPathChange(event.target.value)}
-          placeholder="docs"
+          // Shows the folder a pasted /tree/ link already names, so an empty field never looks filled in.
+          placeholder={linkedPath ?? ""}
           aria-invalid={Boolean(submitted && !valid.success && linkedRepository)}
           aria-describedby={`${fieldId}-path-hint${submitted && !valid.success && linkedRepository ? ` ${fieldId}-path-error` : ""}`}
         />
@@ -830,7 +839,7 @@ function parseForm(
     ref: "HEAD",
   };
   const valid = ContextTreeConnectionSchema.safeParse(source);
-  return { source, valid, ownerValid, nameValid, linkedRepository };
+  return { source, valid, ownerValid, nameValid, linkedRepository, linkedPath: linked?.path };
 }
 
 /**

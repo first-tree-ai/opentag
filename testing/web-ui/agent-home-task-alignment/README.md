@@ -18,7 +18,5 @@ Measured in a local sandbox (synthetic team data, zh), as the left edge in pixel
 
 The remaining 1px is text-measurement rounding. There is no horizontal overflow at 320 or 1440px.
 
-- [1440px before](1440-before.png) and [after](1440-after.png)
-- [768px after](768-after.png)
-- [390px before](390-before.png) and [after](390-after.png)
-- [320px after](320-after.png)
+Screenshots at each width were reviewed from the local sandbox run and are not committed: binary files fall
+outside the Markdown review lane.

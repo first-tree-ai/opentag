@@ -93,7 +93,9 @@ function RuntimeConfigurationEditor({
     section: "runtime" | "instructions";
     text: string;
   }>();
-  const [saving, setSaving] = useState<"runtime" | "instructions">();
+  // One write at a time: every save sends the same config revision, so a second concurrent write
+  // would fail with a revision conflict.
+  const [saving, setSaving] = useState<"runtime" | "instructions" | "selfConfiguration">();
   const fieldId = (name: string) => `runtime-${name}-${config.id}`;
   const providerName = runtimeProviderName(config.runtimeProvider);
   const TroubleshootingHeading = section === "execution" ? "h2" : "h3";
@@ -162,6 +164,26 @@ function RuntimeConfigurationEditor({
       setMessage({ kind: "success", section: "runtime", text: m.agent_settings_model_saved() });
     } catch (cause) {
       setMessage({ kind: "error", section: "runtime", text: modelSaveFailureMessage(cause) });
+    } finally {
+      setSaving(undefined);
+    }
+  }
+
+  async function saveSelfConfiguration(next: boolean) {
+    if (saving) return;
+    setSaving("selfConfiguration");
+    setMessage(undefined);
+    try {
+      const updated = await save({ expectedRevision: config.revision, selfConfigurationEnabled: next });
+      setConfig(updated);
+      setMessage({ kind: "success", section: "runtime", text: m.agent_settings_self_configuration_saved() });
+      onAgentChanged?.();
+    } catch (cause) {
+      setMessage({
+        kind: "error",
+        section: "runtime",
+        text: cause instanceof Error ? cause.message : m.agent_settings_save_self_configuration_failed(),
+      });
     } finally {
       setSaving(undefined);
     }
@@ -270,15 +292,10 @@ function RuntimeConfigurationEditor({
               </SettingsRow>
               {section === "execution" ? (
                 <SelfConfigurationRow
-                  config={config}
+                  checked={config.selfConfigurationEnabled}
                   disabled={Boolean(saving)}
-                  save={save}
-                  onSaved={(updated, text) => {
-                    setConfig(updated);
-                    setMessage(text ? { kind: "success", section: "runtime", text } : undefined);
-                    onAgentChanged?.();
-                  }}
-                  onFailed={(text) => setMessage({ kind: "error", section: "runtime", text })}
+                  saving={saving === "selfConfiguration"}
+                  onChange={(next) => void saveSelfConfiguration(next)}
                 />
               ) : null}
               {permissionsAvailable ? (
@@ -503,31 +520,16 @@ function supportsPermissionSettings(computerKind: "local" | "cloud", provider: A
  * about what the Agent may do on its own, beside asking before it acts, and saves on its own.
  */
 function SelfConfigurationRow({
-  config,
+  checked,
   disabled,
-  save,
-  onSaved,
-  onFailed,
+  saving,
+  onChange,
 }: {
-  config: AgentAdminConfig;
+  checked: boolean;
   disabled: boolean;
-  save: (input: UpdateAgentRequest) => Promise<AgentAdminConfig>;
-  onSaved: (updated: AgentAdminConfig, text?: string) => void;
-  onFailed: (text: string) => void;
+  saving: boolean;
+  onChange: (next: boolean) => void;
 }) {
-  const [busy, setBusy] = useState(false);
-  async function change(next: boolean) {
-    if (busy || disabled) return;
-    setBusy(true);
-    try {
-      const updated = await save({ expectedRevision: config.revision, selfConfigurationEnabled: next });
-      onSaved(updated, m.agent_settings_self_configuration_saved());
-    } catch (cause) {
-      onFailed(cause instanceof Error ? cause.message : m.agent_settings_save_self_configuration_failed());
-    } finally {
-      setBusy(false);
-    }
-  }
   return (
     <SettingsRow
       description={m.agent_settings_self_configuration_description()}
@@ -535,10 +537,10 @@ function SelfConfigurationRow({
     >
       <Switch
         aria-label={m.agent_settings_self_configuration()}
-        checked={config.selfConfigurationEnabled}
-        disabled={busy || disabled}
-        onCheckedChange={(next) => void change(next === true)}
-        transitioning={busy}
+        checked={checked}
+        disabled={disabled}
+        onCheckedChange={(next) => onChange(next === true)}
+        transitioning={saving}
       />
     </SettingsRow>
   );

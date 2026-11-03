@@ -1284,6 +1284,36 @@ describe("RuntimeConfigurationForm", () => {
     expect(onAgentChanged).toHaveBeenCalledOnce();
   });
 
+  it("holds model and permission saves until a self-configuration save settles", async () => {
+    let settle: (value: typeof config) => void = () => undefined;
+    const updated = { ...config, selfConfigurationEnabled: true, revision: config.revision + 1 };
+    const save = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<typeof config>((resolve) => (settle = resolve)))
+      .mockResolvedValue({ ...updated, revision: updated.revision + 1 });
+    const { container } = render(
+      <RuntimeConfigurationForm
+        initialConfig={{ ...config, selfConfigurationEnabled: false }}
+        save={save}
+        section="execution"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("switch", { name: "Self-configuration" }));
+    await chooseOption("Reasoning effort", "High");
+    const submit = container.querySelector<HTMLButtonElement>('button[type="submit"]');
+    expect(submit?.disabled).toBe(true);
+    // Both writes carry the same revision, so a second one now would only conflict.
+    fireEvent.submit(submit?.form as HTMLFormElement);
+    expect(save).toHaveBeenCalledOnce();
+
+    settle(updated);
+    expect(await screen.findByText("Self-configuration setting saved.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ expectedRevision: updated.revision }));
+  });
+
   it("keeps self-configuration off and says why when saving it fails", async () => {
     const save = vi.fn().mockRejectedValue(new Error("revision conflict"));
     render(

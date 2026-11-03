@@ -29,6 +29,13 @@ detached commit reachable from published upstream refs in its bare repository (w
 rewritten/force-pushed upstream history, staged changes, unstaged edits, or untracked files
 exist—or when Git cleanliness cannot be verified—those directories are preserved in the archive.
 
+Gateway write routing hints (`{id, source}` only) live in
+`.opentag/context-tree/command-sessions` inside the workspace. Fresh Runner hosts and rebinding
+recover them with the CLI session/draft; host routing files are dispensable. UUID, 4-KiB, schema,
+file-type and current-source checks apply. Confirmed prepare/terminal settlement uses bounded
+Sandbox I/O and is joined by gateway close even after request cancellation. Published, unchanged
+and aborted sessions remove their hint; uncertain publication retains it for explicit recovery.
+
 ## Save and restore boundaries
 
 The Runner restores and verifies the workspace before reporting execution readiness. A complete

@@ -34,7 +34,7 @@ A repaired original case does not close another extension of the same finding.
 | 6b — MCP OAuth recovery | BG-F2, MC-F1 | [Verified locally](verification/sql-caller-repairs-14.md): preserve unspent refresh state and end failed consent, fenced against newer flows; 213 distinct cases (104 native PG). |
 | 6c — MCP discovery bounds | AG-F13 | [Verified locally](verification/sql-caller-repairs-15.md): deduplication, four-candidate admission and shared 30-second outbound budget; 254 distinct cases (18 native PG). |
 | 7a — Stable Cloud ownership | SB-F1, SB-F2 | [Verified locally](verification/sql-caller-repairs-17.md): retained placement ownership and final locked reservation; 301 distinct cases (88 native PG). |
-| 7b — Cloud workspace routing | AG-F10 | Pending non-secret hint persistence in archived workspace through actual worker/Sandbox I/O. |
+| 7b — Cloud workspace routing | AG-F10 | [Verified locally](verification/sql-caller-repairs-18.md): workspace-owned hints, independent confirmed settlement and actual rebind/gateway recovery; 283 distinct cases, all repeated in Docker Linux. |
 | 8 — Bounded reads, bodies and operator cleanup | IM-F7, BG-F4, AG-F6, OP-F1 | Pending revalidation; reuse existing limits/stream cancellation/owned container cleanup. |
 | 6d — Remaining simplification | AG-S3, AG-S4, AG-S5, AG-S6, DW-S1 | [Verified locally](verification/sql-caller-repairs-16.md): direct Settings credential read, Local-only query removal, one owner read, locked MCP check and unreachable quota deletion; 225 distinct cases (94 native PG). |
 | Observations | AA-R1, CR-R1, IM-R1, IM-R2, TK-R1 | Review measured limits/consumer contracts separately; no outage or necessary code change inferred from a size observation. TK legacy projection requires consumer migration before retirement. |
@@ -224,3 +224,27 @@ capacity/status/cleanup after actual suspend/transfer, and existing borrow/recov
 Batch 7a closes SB-F1/SB-F2. Thirty defects and all nine simplifications are
 repaired locally; seven defects remain. Independent review of batch 16 at
 573157e4 found no actionable issue (source review, no test rerun).
+
+## Batch 7b concrete design
+
+AG-F10 keeps the Local filesystem route. Cloud supplies a small session-hint I/O
+port to the existing gateway, executed through its existing NativeSandbox exec
+path. Only `{id, source}` is written under
+`/workspace/.opentag/context-tree/command-sessions/<uuid>.json`, alongside the
+already archived CLI HOME/project/draft. UUID, 4-KiB, schema and current configured
+source checks remain; directory/file permissions are 0700/0600. Reads reject links,
+special files and oversized data. No execution handle/token is persisted. Gateway
+close never deletes a retained write hint. Successful abort, published and unchanged outcomes
+remove it; unknown outcomes retain it for explicit recovery. A fresh Runner host
+or rebind can recover entirely from the workspace, without a host hint or a new
+prepare/publish attempt. Existing exec cancellation bounds file work.
+
+Independent review found a cancellation window after confirmed CLI completion:
+request cancellation could prevent writing the recovery hint or deleting a
+finished one. Confirmed settlement now uses the existing 5-second Sandbox exec
+bound independently of request cancellation; gateway close still joins that actual
+work. Reads remain cancellable. No new timer or background queue is introduced.
+
+Batch 7b closes AG-F10. Thirty-one defects and all nine simplifications are
+repaired locally; six defects remain. [Independent review 3](verification/sql-caller-independent-review-03.md)
+records exact completed ranges and the corrected Cloud hint cancellation window.

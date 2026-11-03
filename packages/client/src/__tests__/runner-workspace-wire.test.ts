@@ -1,18 +1,19 @@
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { link, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DirectImMessageDeliveryRequest, RunnerWorkspaceObject } from "@opentag/shared";
+import { contextTreeSelector, type DirectImMessageDeliveryRequest, type RunnerWorkspaceObject } from "@opentag/shared";
 import { expect, it, type Mock, vi } from "vitest";
 import { type WebSocket, WebSocketServer } from "ws";
 import type { CloudTurnRunnerOptions } from "../runner/cloud-turns.js";
 import type { NativeSandbox } from "../runner/native-sandbox.js";
 import { runRunnerServe } from "../runner/serve.js";
 import type { NativeWebExecutionChannel } from "../runner/web-gateway.js";
-import { createWorkspaceArchive } from "../runner/workspace-archive.js";
+import { createWorkspaceArchive, restoreWorkspaceArchive } from "../runner/workspace-archive.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
+import { cloudContextTreeGatewayFixture } from "./support/cloud-context-tree-gateway.js";
 
 const sandboxId = "2b63a21e-f6c7-4474-91ea-4dabf0566a24";
 const sessionId = "5f9a1c3e-2d4b-4e6f-8a1b-9c0d1e2f3a4b";
@@ -1551,3 +1552,68 @@ it("fails closed when rebind cleanup cannot close the previous web execution", {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+it("restores and finishes a gateway write through actual Runner rebind without host routing state", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "ot-gateway-runner-rebind-")));
+  let token = "fixture-a";
+  const peer = await protocolPeer({
+    httpToken: () => token,
+    authReply: (frame, attempt) => {
+      if (attempt === 1) return undefined;
+      token = "fixture-b";
+      return rebindWelcomeReply(frame);
+    },
+  });
+  const stop = new AbortController(),
+    state = { destroyed: 0, launched: 0 };
+  const { workspace, running } = await runRebindScenario({ root, peer, stop, state });
+  let tree: Awaited<ReturnType<typeof cloudContextTreeGatewayFixture>> | undefined;
+  try {
+    expect((await peer.wait("runner:ready")).workspaceRestored).toBe(true);
+    await writeFile(join(workspace, "session-a.txt"), "A private workspace");
+    const requestId = randomUUID();
+    peer.send({ type: "workspace:seal", requestId });
+    expect(await peer.wait("workspace:seal:result")).toMatchObject({ requestId, ok: true });
+    const archiveA = join(root, "a.tar.gz"),
+      infoA = await createWorkspaceArchive(workspace, archiveA);
+    await rm(workspace, { recursive: true, force: true });
+    tree = await cloudContextTreeGatewayFixture(join(root, "gateway-fixture"), workspace);
+    const before = tree.gateway();
+    await before.run(["sync", "--tree", contextTreeSelector(tree.sources[0])]);
+    const prepared = JSON.parse(
+      (await before.run(["write", "prepare", "--tree", contextTreeSelector(tree.sources[0])])).stdout,
+    );
+    await writeFile(join(prepared.treeRoot, "b-memory.md"), "---\ntitle: B memory\n---\nRetain Session B.\n");
+    await writeFile(join(workspace, "session-b.txt"), "B assignment");
+    await before.close();
+    const archiveB = join(root, "b.tar.gz");
+    await createWorkspaceArchive(workspace, archiveB);
+    await rm(workspace, { recursive: true, force: true });
+    await restoreWorkspaceArchive(archiveA, workspace, infoA);
+    await mkdir(join(root, "private", "turn-material"), { recursive: true });
+    await writeFile(join(root, "private", "turn-material", "stale-host-routing"), "dispensable A state");
+    peer.seedObject(await readFile(archiveB));
+    peer.advance();
+    peer.disconnect();
+    expect((await peer.wait("runner:ready")).workspaceRestored).toBe(true);
+    expect(state.destroyed).toBeGreaterThanOrEqual(1);
+    expect(await readFile(join(workspace, "session-b.txt"), "utf8")).toBe("B assignment");
+    await expect(readFile(join(workspace, "session-a.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(join(root, "private", "turn-material"))).toEqual([]);
+    const after = tree.gateway({ stateDirectory: join(root, "private", "turn-material", "fresh-routing") });
+    expect(
+      JSON.parse(
+        (await after.run(["write", "finish", prepared.id, "--message", "docs: recovered B", "--publish"])).stdout,
+      ).outcome,
+    ).toBe("published");
+    expect(await tree.git("--git-dir", tree.remote, "show", "main:docs/b-memory.md")).toContain("Retain Session B.");
+    await expect(readFile(tree.hintPath(prepared.id))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(join(root, "private", "turn-material"))).toEqual([]);
+  } finally {
+    await tree?.close();
+    stop.abort();
+    await running;
+    await peer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 60000);

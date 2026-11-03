@@ -70,6 +70,7 @@ import {
 import { CLOUD_STEER_RELAY_SOURCE, cloudSteerResult, cloudSteerSocketPath } from "./cloud-steer-control.js";
 import { CloudWorkspaceError } from "./cloud-workspace.js";
 import { CONTEXT_TREE_COMMAND_WORKER_SOURCE } from "./context-tree-command-worker.js";
+import { createSandboxContextTreeSessionHints } from "./context-tree-session-hints.js";
 import { NativeProviderBridge } from "./native-provider-bridge.js";
 import { type NativeSandbox, NativeSandboxError, SANDBOX_NODE, SANDBOX_WORKER_ENTRY } from "./native-sandbox.js";
 import type { NativeSandboxWebGateway, NativeWebExecutionChannel } from "./web-gateway.js";
@@ -1979,6 +1980,7 @@ export class CloudTurnRunner {
       workspace: "/workspace",
       sources: input.contextTrees,
       stateDirectory: join(this.#options.stateDirectory, "context-tree-command-sessions", input.agentId),
+      sessionHints: createSandboxContextTreeSessionHints(this.#options.sandbox, "/workspace"),
       environment: () => {
         const routing = {
           OPENTAG_PROVIDER_PROXY_URL: `http://127.0.0.1:${CLOUD_CONNECT_PROXY_PORT}`,

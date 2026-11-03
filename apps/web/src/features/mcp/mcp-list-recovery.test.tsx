@@ -69,10 +69,30 @@ describe("connector list recovery", () => {
     ]);
     const save = vi.spyOn(browserApi, "setMcpAuthorization");
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Update credentials: linear" }));
+    expect(await screen.findByText("The key was rejected. Update it.")).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Update key: linear" }));
     const dialog = within(await screen.findByRole("dialog", { name: "linear" }));
     expect(await dialog.findByLabelText("API key or token", { selector: "input[type=password]" })).toBeTruthy();
     expect(save).not.toHaveBeenCalled();
+  });
+  it("offers to edit a typed address the Server cannot reach, instead of a retry", async () => {
+    stub([
+      entry({
+        authorization: {
+          ...authorization(),
+          probeState: "failed",
+          probeError: `${MCP_ERROR_CODES.URL_BLOCKED}: resolves to a non-public address`,
+        },
+      }),
+    ]);
+    wrap(<McpPage agentId={AGENT_ID} />);
+    expect(await screen.findByText("Can't reach this address. Check the connector address.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry: linear" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Edit address: linear" }));
+    const dialog = within(await screen.findByRole("dialog", { name: "linear" }));
+    expect(dialog.getByRole("textbox", { name: "Connector address" })).toBeTruthy();
+    expect(dialog.getByText("Can't reach this address. Check the connector address.")).toBeTruthy();
+    expect(dialog.queryByRole("button", { name: "Retry" })).toBeNull();
   });
   it("retries with the existing credential, showing only a disabled trash button while checking", async () => {
     stub([

@@ -1415,8 +1415,10 @@ Every connector failure the reader sees is one short line that names the next st
 code the Server reports: an unreachable or blocked address asks to check the connector address, a
 service without account sign-in suggests an API key, a rejected key asks for an update, an
 unfinished authorization asks to try again, and an unreachable service asks to try again later.
-Upstream details stay private. Why: a bare "failed" gives an admin nothing to act on, while the
-Server already knows which of these happened.
+Upstream details stay private. The row's action matches the line: an address the reader typed opens
+**Edit address**, a rejected key offers **Update key**, and **Retry** remains only for transient causes
+and catalog connectors. Why: a bare "failed" gives an admin nothing to act on, while the Server
+already knows which of these happened, and an action that does not fix the stated cause is a dead end.
 
 Authentication feedback sits directly below its controls. **Retry** and **Open window** follow the
 reason and wrap together on narrow screens. Controls keep their positions while authorization,

@@ -77,8 +77,12 @@ describe("Connector feedback evidence", () => {
   ])("classifies %s without exposing upstream details", (error, label) => {
     expect(probeFeedback(error, "oauth")).toEqual({ label, action: "retry" });
   });
-  it("uses a generic authorization reason when the service response cannot distinguish the cause", () => {
+  it("asks for a new key when the service rejects a saved key, and to authorize again otherwise", () => {
     expect(probeFeedback(`${MCP_ERROR_CODES.UPSTREAM_ERROR}: ${MCP_AUTH_REJECTION_SUMMARY}`, "bearer")).toEqual({
+      label: "The key was rejected. Update it.",
+      action: "authorize",
+    });
+    expect(probeFeedback(`${MCP_ERROR_CODES.UPSTREAM_ERROR}: ${MCP_AUTH_REJECTION_SUMMARY}`, "oauth")).toEqual({
       label: "Authorization didn't finish. Try again.",
       action: "authorize",
     });
@@ -114,6 +118,7 @@ describe("Connector failure reasons with a next step", () => {
     expect(probeFeedback(`${MCP_ERROR_CODES.URL_BLOCKED}: resolves to a non-public address`, "none", false)).toEqual({
       label: "Can't reach this address. Check the connector address.",
       action: "retry",
+      recovery: "edit-address",
     });
   });
 });

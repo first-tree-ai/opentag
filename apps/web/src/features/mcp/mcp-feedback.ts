@@ -8,29 +8,44 @@ import * as m from "../../paraglide/messages.js";
 import { connectionPreset } from "./mcp-connection-model.js";
 import { hasMcpToolSnapshot } from "./mcp-tool-snapshot.js";
 
-export type McpFeedback = { label?: string; action?: "authorize" | "retry"; neutral?: boolean };
+/**
+ * `recovery` refines the row's action when the fix is a specific edit rather than a retry: an address
+ * the reader typed is changed in the connector's settings, and a rejected key is replaced.
+ */
+export type McpFeedback = {
+  label?: string;
+  action?: "authorize" | "retry";
+  recovery?: "edit-address";
+  neutral?: boolean;
+};
 
 /** Presentation only; an attempt's failure must not become a new persisted authorization state. */
 export function probeFeedback(error: string | null, kind?: MCPAuthKind, preset = false): McpFeedback {
-  if (error?.includes(MCP_AUTH_REJECTION_SUMMARY) || error?.startsWith(MCP_ERROR_CODES.AUTHORIZATION_REQUIRED)) {
-    if (kind === "none" && preset) return { label: m.mcp_feedback_unavailable(), action: "retry" };
-    return { label: kind === "none" ? undefined : m.mcp_authorization_issue(), action: "authorize" };
-  }
+  if (error?.includes(MCP_AUTH_REJECTION_SUMMARY) || error?.startsWith(MCP_ERROR_CODES.AUTHORIZATION_REQUIRED))
+    return rejectionFeedback(kind, preset);
   if (error?.startsWith(MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE)) {
     return {
       label: /timeout|timed out/i.test(error) ? m.mcp_feedback_timeout() : m.mcp_feedback_unreachable(),
       action: "retry",
     };
   }
-  if (
-    preset &&
-    (error?.startsWith(MCP_ERROR_CODES.URL_BLOCKED) || error?.startsWith(MCP_ERROR_CODES.PROTOCOL_UNSUPPORTED))
-  ) {
+  return addressFeedback(error, preset) ?? { label: m.mcp_add_tools_failed(), action: "retry" };
+}
+
+/** The service refused the credential: a key is replaced, an account authorizes again. */
+function rejectionFeedback(kind: MCPAuthKind | undefined, preset: boolean): McpFeedback {
+  if (kind === "none" && preset) return { label: m.mcp_feedback_unavailable(), action: "retry" };
+  if (kind === "bearer") return { label: m.mcp_add_key_error(), action: "authorize" };
+  return { label: kind === "none" ? undefined : m.mcp_authorization_issue(), action: "authorize" };
+}
+
+/** A catalog address is unavailable; an address the reader typed is theirs to edit. */
+function addressFeedback(error: string | null, preset: boolean): McpFeedback | undefined {
+  const blocked = error?.startsWith(MCP_ERROR_CODES.URL_BLOCKED);
+  if (preset && (blocked || error?.startsWith(MCP_ERROR_CODES.PROTOCOL_UNSUPPORTED)))
     return { label: m.mcp_feedback_unavailable(), action: "retry" };
-  }
-  if (error?.startsWith(MCP_ERROR_CODES.URL_BLOCKED))
-    return { label: m.mcp_feedback_address_blocked(), action: "retry" };
-  return { label: m.mcp_add_tools_failed(), action: "retry" };
+  if (blocked) return { label: m.mcp_feedback_address_blocked(), action: "retry", recovery: "edit-address" };
+  return undefined;
 }
 
 /**
@@ -53,11 +68,7 @@ export function failureCodeFeedback(code: string | null | undefined): string | u
 }
 
 export function connectorFeedback(entry: MCPAgentServer, error?: string): McpFeedback {
-  if (error)
-    return {
-      label: error,
-      action: isAuthorizationFeedback(error) ? "authorize" : "retry",
-    };
+  if (error) return attemptFeedback(error);
   const auth = entry.authorization;
   if (!auth) return { action: "authorize" };
   if (auth.status === "expired") return { label: m.mcp_authorization_expired(), action: "authorize" };
@@ -71,6 +82,12 @@ export function connectorFeedback(entry: MCPAgentServer, error?: string): McpFee
     return { label: m.mcp_add_loading_tools(), neutral: true };
   if (auth.toolsCount === 0 && !auth.toolsTruncated) return { label: m.mcp_tools_zero(), neutral: true };
   return {};
+}
+
+/** A failure the current attempt reported, before it reached the saved authorization. */
+function attemptFeedback(error: string): McpFeedback {
+  if (error === m.mcp_feedback_address_blocked()) return { label: error, action: "retry", recovery: "edit-address" };
+  return { label: error, action: isAuthorizationFeedback(error) ? "authorize" : "retry" };
 }
 
 export function authorizationAction(entry: MCPAgentServer): string {
@@ -89,8 +106,7 @@ export function isAuthorizationFeedback(label: string): boolean {
     m.mcp_authorization_expired(),
     m.mcp_authorization_revoked(),
     m.mcp_feedback_sign_in_unsupported(),
-    // An authorization attempt that could not reach the address is still retried by authorizing.
-    m.mcp_feedback_address_blocked(),
+    m.mcp_add_key_error(),
   ];
   return reasons.includes(label);
 }

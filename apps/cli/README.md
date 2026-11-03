@@ -42,12 +42,17 @@ must install and authenticate the selected Codex, Claude Code, or Pi CLI; openTa
 Pi requires version 0.80.6 or newer and a configured model provider with usable credentials. A Runtime or daemon failure does not skip
 Provider preparation. An untargeted code remains an ordinary Computer connection without an inferred Runtime.
 
-Human output and `--json` use the same local result, with four required rows: Computer (connection and daemon checks),
+By default the human output is the outcome line and, when preparation is incomplete, one `Next:` line: the first
+blocking row's own action. The person or Agent running the command needs only the result and the next step; the
+per-row report and the step-by-step Provider preparation lines are diagnostics, printed with `--verbose`.
+
+`--verbose` and `--json` show the same local result, with four required rows: Computer (connection and daemon checks),
 selected Runtime, Lark CLI, and Slack CLI. JSON exposes it as `result.preparation`, next to `result.connected`,
 `result.connection`, and `result.guidance`. Non-blocking warnings do not downgrade ready rows. `--no-start` skips only
 the daemon service; `--no-prepare-provider-clis` explicitly skips both Providers. Skipped required checks remain blocking.
 
-All four local checks passing produces `Local computer preparation: READY`; it does not prove Server/Web readiness.
+All four local checks passing produces `Local computer preparation: READY` (with `--verbose`); it does not prove
+Server/Web readiness.
 The Web must still wait for fresh daemon observations. Partial preparation returns exit `3` and
 `LOCAL_COMPUTER_PREPARATION_INCOMPLETE`, retains `connected: true`, and sets the connect envelope's retryability to
 `never`: **do not replay the one-time code**. Follow the individual rows' idempotent repair/verify actions instead.

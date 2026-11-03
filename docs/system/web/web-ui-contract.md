@@ -72,6 +72,12 @@ description of impact, a non-destructive default focus target, and an execution 
 outcome is uncertain. A low-impact action may execute immediately only when it is reliably reversible and offers a clear,
 keyboard-accessible Undo path for long enough to recover.
 
+Deleting an Agent is offered whether it is running or paused, behind one confirmation that requires typing its name.
+The Server deletes only a paused Agent, so the Web pauses a running one first in the same action. If the pause fails,
+nothing is deleted and the dialog says so. If the delete fails after the pause, the dialog says the Agent is now paused
+and Try again retries only the delete. A missing permission is named as such. Why: the reader has already confirmed
+the delete, so a separate pause step adds nothing for them, and each failure has to say which state it left.
+
 Every full-screen state that replaces the application shell must keep a way to sign out, because an Account that has
 not finished setup is shown nothing else. First-time creation and exact setup headers reuse the shared Account menu,
 aligned with their navigation action. Until Account setup is complete, that menu offers only Sign out; navigation links
@@ -101,6 +107,12 @@ the submitted draft; a departed form cannot clear a later draft or redirect the 
 Drafts are not persisted across a document reload or an external authorization round trip; after creation, the exact
 Agent's server snapshot restores the remaining setup steps.
 If a creation finishes after the user navigates away, it refreshes the Agent list without pulling the user back into setup.
+
+The creation form starts with the product name as the Agent name; matching the product name is intended, not a
+collision. The name field states the allowed characters before anything is typed, and a refused name gets a short
+error that does not repeat them. Why: a rule the reader only discovers by failing wastes an attempt, and repeating
+it in the error adds reading without new information. Create stays disabled until a Local Agent's runtime is chosen;
+no runtime is preselected, because the reader's computer may not have it.
 
 First-time setup stays full-screen throughout its current journey, even when Account admission completes before
 Computer or messaging setup. An Account-scoped, tab-local layout marker preserves this presentation across reloads
@@ -349,5 +361,9 @@ field, the method labels, and the installed states — goes through Paraglide. D
 copy into the message catalog as if it were an omission; the exception and its reason are recorded in
 `mcp-server-integration.md`.
 
-Controls use concise action labels. Errors explain what happened and what the user can do next. Do not rely on color,
+Controls use concise action labels. Errors explain what happened and what the user can do next. Messages stay short:
+they say what happened and the next step, without internal states (such as "already connected" or "nothing
+changed") or parenthetical mechanics. Explanatory text appears only when it adds information the reader needs, such
+as which computer a command is for. Why: fewer words and fewer controls make the next step easier to find, and
+internal details give the reader nothing to act on. Do not rely on color,
 placeholder text, an icon, or a tooltip as the only communication of essential information.

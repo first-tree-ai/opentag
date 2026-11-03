@@ -211,7 +211,16 @@ function ScheduleRow({
           </Text>
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-2">
-          <Button disabled={pendingId === item.id} onClick={() => onChange(item)} size="compact" variant="ghost">
+          {/* Not disabled while pending: disabling the focused button would drop keyboard focus to the
+              page when Pause turns into Resume. The click is ignored until the change settles. */}
+          <Button
+            aria-busy={pendingId === item.id || undefined}
+            onClick={() => {
+              if (pendingId !== item.id) onChange(item);
+            }}
+            size="compact"
+            variant="ghost"
+          >
             {item.enabled ? m.agents_schedules_pause() : m.agents_schedules_resume()}
           </Button>
         </div>

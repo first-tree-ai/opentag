@@ -62,7 +62,9 @@ export function SkillRow({
           className="skill-row-toggle"
           aria-label={m.skills_toggle_label({ name: skill.name })}
           checked={skill.enabled}
-          disabled={update.isPending}
+          // Not disabled while the write is pending: disabling the focused switch would drop keyboard
+          // focus to the page. `toggle` already ignores input until the write settles.
+          aria-busy={update.isPending || undefined}
           onCheckedChange={(next) => void toggle(next)}
           transitioning={update.isPending}
         />

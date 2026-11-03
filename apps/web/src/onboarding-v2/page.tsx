@@ -267,7 +267,21 @@ function AgentCreatePage({
   );
   const { draft, destinationConfirmed } = creation;
   const setDraft = (next: AgentDraft) => setCreation({ ...creation, draft: next });
-  const confirmDestination = () => setCreation({ ...creation, destinationConfirmed: true });
+  const stepFrame = useRef<HTMLDivElement>(null);
+  const focusNextStep = useRef(false);
+  const confirmDestination = () => {
+    focusNextStep.current = true;
+    setCreation({ ...creation, destinationConfirmed: true });
+  };
+  // Moving to the next step replaces the form the keyboard was in, so focus follows to its heading.
+  useEffect(() => {
+    if (!destinationConfirmed || !focusNextStep.current) return;
+    focusNextStep.current = false;
+    const heading = stepFrame.current?.querySelector<HTMLElement>("h1");
+    if (!heading) return;
+    heading.tabIndex = -1;
+    heading.focus();
+  }, [destinationConfirmed]);
   const [pending, setPending] = useState<PendingCreation | undefined>(
     () => memory?.values.get(CREATION_PENDING_KEY) as PendingCreation | undefined,
   );
@@ -433,7 +447,7 @@ function AgentCreatePage({
       )}
       <Main className={`otv2-frame mx-auto flex w-full flex-1 flex-col items-center gap-6 ${embedded ? "" : "p-6"}`}>
         {destinationConfirmed ? <StepRail steps={CREATE_STEPS} /> : null}
-        <div className="flex w-full flex-col gap-4">
+        <div className="flex w-full flex-col gap-4" ref={stepFrame}>
           {error ? (
             <div className="flex flex-col items-start gap-2" data-ui="agent-create-error">
               <Banner description={error} role="alert" variant="error" />

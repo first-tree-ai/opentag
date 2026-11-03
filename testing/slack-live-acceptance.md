@@ -155,8 +155,11 @@ Provoke and confirm the Agent surfaces the provider error instead of inventing s
 
 ## Cloud Agent `/slackauthticket` automatic setup
 
-1. Create a Cloud Agent (or open **Messaging** settings on an unbound Cloud Agent) and choose **Connect Slack**. Confirm
-   the UI opens the automatic `/slackauthticket` command + challenge code form by default and also offers **Manual setup**.
+1. Create a Cloud Agent (or open **Messaging** settings on an unbound Cloud Agent) with fresh browser state and choose
+   **Connect Slack**. Confirm the UI first opens the explicit existing-App / new-App choice (**View Apps** link to
+   `https://api.slack.com/apps`, **Manual setup**, and **Create App**) without requesting a ticket on mount. Select
+   **Create App** and confirm OpenTag sends `authorize` (`force: true`) and displays the `/slackauthticket <ticket>`
+   command + challenge code form.
 2. Paste `/slackauthticket <ticket>` in a channel or DM of a test workspace that requires app-installation approval,
    confirm permissions in Slack, paste the challenge code into OpenTag, and select **Connect**.
 3. Confirm OpenTag creates the App once, submits the installation approval request automatically, and displays
@@ -169,8 +172,10 @@ Provoke and confirm the Agent surfaces the provider error instead of inventing s
    Interactivity Request URLs verified. Send the Bot a DM and confirm its reply closes identity and reaches the Cloud Agent.
 6. **Server restart during unfinished setup:** start `/slackauthticket` setup for a second Cloud Agent up to
    `approval_pending`, then restart the OpenTag Server before selecting **Continue**. Confirm that selecting **Continue**
-   surfaces `authorization_failed` with guidance to check existing Slack Apps (`https://api.slack.com/apps`) and finish
-   via **Manual setup** so the already-created App is bound instead of creating a duplicate App.
+   returns `manual_required` (`Use manual setup for this App.`) and switches to **Manual setup** for the existing App
+   (`View Apps` link to `https://api.slack.com/apps`, with no **Reauthorize** action and no second `apps.manifest.create`),
+   and that opening **Connect Slack** on a fresh browser/device after the restart also presents the **View Apps** /
+   **Manual setup** / **Create App** gate before any new ticket is issued.
 
 ## Reauthorization
 

@@ -242,4 +242,43 @@ describe("reportedMessage", () => {
       serviceContext: { service: "opentag-web" },
     });
   });
+
+  it("includes a synthetic reportLocation when stack lacks V8 `at` frames", () => {
+    expect(
+      toReportedError({
+        source: "web",
+        message: "TypeError: Cannot read properties of undefined",
+        stack: "lazyRouteComponent (https://opentag.example/assets/index.js:1:4031)",
+        code: "typeerror",
+        url: "https://opentag.example/agents",
+        reportId: "r-1",
+        occurredAt,
+      }),
+    ).toEqual({
+      message:
+        "TypeError: Cannot read properties of undefined\nlazyRouteComponent (https://opentag.example/assets/index.js:1:4031)\n[reportId=r-1]",
+      filePath: "https://opentag.example/agents",
+      lineNumber: 0,
+      functionName: "typeerror",
+      serviceContext: { service: "opentag-web" },
+    });
+
+    expect(
+      toReportedError({
+        source: "web",
+        message: "resource_load_failed: /assets/chunk.js",
+        stack: "TypeError: Failed to fetch dynamically imported module: https://opentag.example/assets/chunk.js",
+        code: "resource_load_failed",
+        url: "https://opentag.example/agents",
+        occurredAt,
+      }),
+    ).toEqual({
+      message:
+        "resource_load_failed: /assets/chunk.js\nTypeError: Failed to fetch dynamically imported module: https://opentag.example/assets/chunk.js",
+      filePath: "https://opentag.example/agents",
+      lineNumber: 0,
+      functionName: "resource_load_failed",
+      serviceContext: { service: "opentag-web" },
+    });
+  });
 });

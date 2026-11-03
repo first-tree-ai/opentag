@@ -39,17 +39,18 @@ const SERVICE_BY_SOURCE: Record<ErrorReportRequest["source"], string> = {
   web: "opentag-web",
   cli: "opentag-cli",
 };
+const V8_STACK_FRAME = /(?:^|\n)\s*at\s+\S/;
 
 function defaultCreateClient(projectId: string, credentials?: ErrorReportingCredentials): ErrorReportingClient {
   /*
    * `reportMode: "always"`: the SDK otherwise reports only under NODE_ENV=production, and a staging
-   * container is the environment most likely to be watched. Log level 1 keeps the SDK's own console
-   * output to genuine errors such as missing credentials.
+   * container is the environment most likely to be watched. `logLevel: 0` silences the SDK's raw
+   * console dumps because `createErrorReporter` logs every callback failure through Pino.
    */
   const sdk = new ErrorReporting({
     projectId,
     reportMode: "always",
-    logLevel: 1,
+    logLevel: 0,
     ...(credentials ? { credentials } : {}),
   });
   return { report: (error, request, callback) => sdk.report(error, request, undefined, callback) };
@@ -110,9 +111,11 @@ export function toReportedError(event: ErrorReportRequest): Record<string, unkno
   };
   const user = reportedUser(event);
   const attribution = { ...(user ? { user } : {}), serviceContext };
-  if (event.stack) return { stack: withReportIdMarker(reportedMessage(event), event.reportId), ...attribution };
+  const text = withReportIdMarker(reportedMessage(event), event.reportId);
+  // Error Reporting rejects an empty reportLocation with HTTP 400 unless the text has V8 `at ...` frames.
+  if (event.stack && V8_STACK_FRAME.test(event.stack)) return { stack: text, ...attribution };
   return {
-    message: withReportIdMarker(event.message, event.reportId),
+    message: text,
     filePath: event.url ?? event.command ?? event.source,
     lineNumber: 0,
     functionName: event.code ?? "unknown",

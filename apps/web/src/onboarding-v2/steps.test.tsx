@@ -52,6 +52,22 @@ describe("creation step navigation", () => {
     expect(screen.getByRole("button", { name: "Creating agent…" }).hasAttribute("disabled")).toBe(true);
   });
 
+  it("names the runtime choice an Agent and never says Runtime", () => {
+    render(
+      <AgentStep
+        draft={{ destination: "local", name: "opentag", runtime: undefined }}
+        onChange={() => undefined}
+        onSubmit={() => undefined}
+        submitLabel="Create Agent"
+      />,
+    );
+
+    expect(screen.getByRole("group", { name: "Agent to use" })).toBeTruthy();
+    expect(screen.getByText("More agents coming soon.")).toBeTruthy();
+    expect(screen.getByText("Works with many model providers")).toBeTruthy();
+    expect(screen.queryByText(/runtime/i)).toBeNull();
+  });
+
   it("keeps Create Agent disabled until a Runtime is selected", () => {
     render(
       <AgentStep

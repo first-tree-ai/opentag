@@ -313,7 +313,6 @@ function RuntimePicker({
   return (
     <fieldset className={FIELDSET}>
       <legend className="font-medium text-kumo-strong">{m.onboarding_v2_agent_runtime_label()}</legend>
-      <p className={HINT}>{m.onboarding_v2_agent_runtime_hint()}</p>
       <ul className={CHOICE_GRID} data-ui="onboarding-v2-choices">
         {RUNTIMES.map((runtime) => (
           <li key={runtime}>

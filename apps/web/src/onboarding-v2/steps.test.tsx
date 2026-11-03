@@ -63,7 +63,7 @@ describe("creation step navigation", () => {
     );
 
     expect(screen.getByRole("group", { name: "Agent to use" })).toBeTruthy();
-    expect(screen.getByText("More agents coming soon.")).toBeTruthy();
+    expect(screen.queryByText(/coming soon/)).toBeNull();
     expect(screen.getByText("Works with many model providers")).toBeTruthy();
     expect(screen.queryByText(/runtime/i)).toBeNull();
   });

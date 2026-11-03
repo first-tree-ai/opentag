@@ -329,7 +329,6 @@ function RuntimePicker({
           </li>
         ))}
       </ul>
-      <p className="text-xs text-kumo-subtle m-0">{m.onboarding_v2_agent_runtime_footnote()}</p>
     </fieldset>
   );
 }

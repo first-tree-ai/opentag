@@ -5,7 +5,6 @@
   "onboarding_v2_agent_name_hint": "给 Agent 一个易于辨认的名称。",
   "onboarding_v2_agent_name_label": "Agent 名称",
   "onboarding_v2_agent_name_too_long_error": "名称不能超过 64 个字符。",
-  "onboarding_v2_agent_runtime_footnote": "更多 Agent 即将推出。",
   "onboarding_v2_agent_runtime_label": "使用的 Agent",
   "onboarding_v2_agent_title": "创建你的 Agent",
   "onboarding_v2_back_to_agents": "返回 Agent 列表",

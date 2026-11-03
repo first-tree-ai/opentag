@@ -144,14 +144,6 @@ interface TurnPhaseTimings {
   promptDurationMs?: number;
 }
 
-function formatTurnPhaseTimings(timings: TurnPhaseTimings): Record<string, number> {
-  const fields: Record<string, number> = {};
-  for (const [key, value] of Object.entries(timings)) {
-    if (typeof value === "number") fields[key] = value;
-  }
-  return fields;
-}
-
 export class AgentTurnRunner {
   readonly #bindingStore: SessionBindingStore;
   readonly #connection: AgentTurnRunnerOptions["connection"];
@@ -465,7 +457,7 @@ export class AgentTurnRunner {
         {
           ...fields,
           durationMs: Math.max(0, this.#now() - startedAt),
-          ...formatTurnPhaseTimings(phaseTimings),
+          ...phaseTimings,
           errorReason: completion.errorReason,
           ...errorFieldsForLog(error),
           outcome: completion.outcome,
@@ -493,7 +485,7 @@ export class AgentTurnRunner {
         {
           ...fields,
           durationMs: Math.max(0, this.#now() - startedAt),
-          ...formatTurnPhaseTimings(phaseTimings),
+          ...phaseTimings,
           outcome: completion.outcome,
         },
         "Turn completed",

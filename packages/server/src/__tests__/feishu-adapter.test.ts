@@ -1919,6 +1919,9 @@ describe("FeishuConnectionManager", () => {
     const repairWarmId = crypto.randomUUID();
     const heldWarmId = crypto.randomUUID();
     const postRepairWarmId = crypto.randomUUID();
+    const dirty1Id = crypto.randomUUID();
+    const dirty2Id = crypto.randomUUID();
+    const dirty3Id = crypto.randomUUID();
     const inbox = {
       ingest: vi
         .fn()
@@ -1927,7 +1930,10 @@ describe("FeishuConnectionManager", () => {
         .mockResolvedValueOnce({ messageId: heldWarmId, deliveryIds: ["d5"], duplicate: false })
         .mockResolvedValueOnce({ messageId: failedWarmId, deliveryIds: ["d3"], duplicate: false })
         .mockResolvedValueOnce({ messageId: repairWarmId, deliveryIds: ["d4"], duplicate: false })
-        .mockResolvedValueOnce({ messageId: postRepairWarmId, deliveryIds: ["d6"], duplicate: false }),
+        .mockResolvedValueOnce({ messageId: postRepairWarmId, deliveryIds: ["d6"], duplicate: false })
+        .mockResolvedValueOnce({ messageId: dirty1Id, deliveryIds: ["d7"], duplicate: false })
+        .mockResolvedValueOnce({ messageId: dirty2Id, deliveryIds: ["d8"], duplicate: false })
+        .mockResolvedValueOnce({ messageId: dirty3Id, deliveryIds: ["d9"], duplicate: false }),
     };
     const manager = new FeishuConnectionManager({
       database: connectionDatabase.database,
@@ -1975,6 +1981,7 @@ describe("FeishuConnectionManager", () => {
     let failNextImMessageUpdate = false;
     let holdNextImMessageUpdate = false;
     let rejectHeldUpdate: ((reason?: unknown) => void) | undefined;
+    let resolveHeldUpdate: (() => void) | undefined;
     const realUpdate = connectionDatabase.database.update.bind(connectionDatabase.database);
     const updateSpy = vi.spyOn(connectionDatabase.database, "update").mockImplementation(((table: unknown) => {
       const builder = realUpdate(table as never);
@@ -1988,9 +1995,10 @@ describe("FeishuConnectionManager", () => {
           updateWhereSqls.push(query.toSQL().sql);
           if (holdNextImMessageUpdate) {
             holdNextImMessageUpdate = false;
-            return new Promise((_, reject) => {
+            return new Promise<void>((resolve, reject) => {
+              resolveHeldUpdate = resolve;
               rejectHeldUpdate = reject;
-            }) as never;
+            }).then(() => query) as never;
           }
           if (failNextImMessageUpdate) {
             failNextImMessageUpdate = false;
@@ -2004,10 +2012,10 @@ describe("FeishuConnectionManager", () => {
     }) as typeof connectionDatabase.database.update);
 
     try {
-      const send = (eventId: string, messageId: string, createTime: number) =>
+      const send = (eventId: string, messageId: string, createTime: number, chatId = "oc_cold") =>
         fake.getHandlers().message?.({
           messageId,
-          chatId: "oc_cold",
+          chatId,
           chatType: "group",
           senderId: "ou_human",
           content: messageId,
@@ -2079,6 +2087,71 @@ describe("FeishuConnectionManager", () => {
         expect(updateWhereSqls).toHaveLength(6);
       });
       expect(updateWhereSqls.at(-1)).toContain('"im_messages"."id" =');
+
+      await connectionDatabase.database.insert(imMessages).values(
+        [
+          [dirty1Id, "ev_d1", "om_d1"],
+          [dirty3Id, "ev_d3", "om_d3"],
+        ].map(([id, providerEventId, externalMessageId]) => ({
+          id: id as string,
+          imBindingId: binding.id,
+          providerEventId: providerEventId as string,
+          channelId: "oc_dirty",
+          externalMessageId: externalMessageId as string,
+          providerRevisionKey: "1",
+          operation: "created" as const,
+          direction: "inbound" as const,
+          authorKind: "human" as const,
+          authorExternalId: "ou_human",
+          content: { version: 1 as const, fallbackText: externalMessageId as string, blocks: [], truncated: false },
+          providerContext: { provider: "feishu" as const, chatType: "group" },
+          occurredAt: connectionNow,
+          receivedAt: connectionNow,
+        })),
+      );
+
+      holdNextImMessageUpdate = true;
+      await send("ev_d1", "om_d1", 7, "oc_dirty");
+      await vi.waitFor(() => {
+        expect(updateWhereSqls).toHaveLength(7);
+      });
+      expect(updateWhereSqls.at(-1)).toContain('"channel_id" =');
+
+      resolveChatMetadata.mockResolvedValueOnce(undefined);
+      await send("ev_d2", "om_d2", 8, "oc_dirty");
+      resolveHeldUpdate?.();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      await connectionDatabase.database.insert(imMessages).values({
+        id: dirty2Id,
+        imBindingId: binding.id,
+        providerEventId: "ev_d2",
+        channelId: "oc_dirty",
+        externalMessageId: "om_d2",
+        providerRevisionKey: "1",
+        operation: "created",
+        direction: "inbound",
+        authorKind: "human",
+        authorExternalId: "ou_human",
+        content: { version: 1, fallbackText: "om_d2", blocks: [], truncated: false },
+        providerContext: { provider: "feishu", chatType: "group" },
+        occurredAt: connectionNow,
+        receivedAt: connectionNow,
+      });
+
+      await send("ev_d3", "om_d3", 9, "oc_dirty");
+      await vi.waitFor(async () => {
+        const [repairedDirty] = await connectionDatabase.database
+          .select({ providerContext: imMessages.providerContext })
+          .from(imMessages)
+          .where(eq(imMessages.id, dirty2Id));
+        expect(repairedDirty?.providerContext).toEqual({
+          provider: "feishu",
+          chatType: "group",
+          chatMode: "topic",
+        });
+      });
+      expect(updateWhereSqls.at(-1)).toContain('"channel_id" =');
     } finally {
       updateSpy.mockRestore();
       await manager.stop();

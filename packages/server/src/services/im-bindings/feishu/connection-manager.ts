@@ -80,7 +80,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
   readonly #afterActivationAgentLocked: (() => Promise<void>) | undefined;
   readonly #owned = new Map<string, OwnedChannel>();
   readonly #completedBackfills = new Map<string, symbol>();
-  readonly #pendingBackfills = new Map<string, Promise<void>>();
+  readonly #pendingBackfills = new Map<string, { promise: Promise<void>; dirty: boolean }>();
   readonly #maintenanceControllers = new Map<string, AbortController>();
   readonly #maintenanceFailures = new Map<string, number>();
   readonly #maintenanceNextAt = new Map<string, number>();
@@ -156,6 +156,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     this.#timer = undefined;
     const owned = [...this.#owned.entries()];
     this.#owned.clear();
+    for (const pending of this.#pendingBackfills.values()) pending.dirty = true;
     this.#completedBackfills.clear();
     this.#pendingBackfills.clear();
     await Promise.allSettled(
@@ -910,17 +911,29 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     }
   }
 
+  #markLookupInvalidation(
+    channelKey: string,
+    observedToken: symbol | undefined,
+    observedPending: { promise: Promise<void>; dirty: boolean } | undefined,
+  ): void {
+    this.#invalidateCompletedBackfill(channelKey, observedToken);
+    if (observedPending) observedPending.dirty = true;
+    const currentPending = this.#pendingBackfills.get(channelKey);
+    if (currentPending) currentPending.dirty = true;
+  }
+
   async #resolveChatPatch(adapter: FeishuAdapter, channelKey: string, chatId: string): Promise<string | undefined> {
     const observedToken = this.#completedBackfills.get(channelKey);
+    const observedPending = this.#pendingBackfills.get(channelKey);
     let metadata: Awaited<ReturnType<FeishuAdapter["resolveChatMetadata"]>>;
     try {
       metadata = await adapter.resolveChatMetadata?.({ chatId });
     } catch (error) {
-      this.#invalidateCompletedBackfill(channelKey, observedToken);
+      this.#markLookupInvalidation(channelKey, observedToken, observedPending);
       throw error;
     }
     if (!metadata?.chatMode) {
-      this.#invalidateCompletedBackfill(channelKey, observedToken);
+      this.#markLookupInvalidation(channelKey, observedToken, observedPending);
       return undefined;
     }
     return JSON.stringify({
@@ -983,7 +996,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     }
     const pending = this.#pendingBackfills.get(channelKey);
     if (pending) {
-      await pending;
+      await pending.promise;
       await this.#updateSingleMessageChatContext(
         channelKey,
         this.#completedBackfills.get(channelKey),
@@ -994,17 +1007,21 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
       return;
     }
     const nextToken = Symbol("backfilled");
+    const pendingEntry: { promise: Promise<void>; dirty: boolean } = { promise: Promise.resolve(), dirty: false };
     const backfill = this.#updateChatContext(
       and(eq(imMessages.imBindingId, input.imBindingId), eq(imMessages.channelId, input.chatId)),
       patchJson,
     ).then(() => {
-      this.#rememberCompletedBackfill(channelKey, nextToken);
+      if (!pendingEntry.dirty && this.#pendingBackfills.get(channelKey) === pendingEntry) {
+        this.#rememberCompletedBackfill(channelKey, nextToken);
+      }
     });
-    this.#pendingBackfills.set(channelKey, backfill);
+    pendingEntry.promise = backfill;
+    this.#pendingBackfills.set(channelKey, pendingEntry);
     try {
       await backfill;
     } finally {
-      if (this.#pendingBackfills.get(channelKey) === backfill) this.#pendingBackfills.delete(channelKey);
+      if (this.#pendingBackfills.get(channelKey) === pendingEntry) this.#pendingBackfills.delete(channelKey);
     }
   }
 

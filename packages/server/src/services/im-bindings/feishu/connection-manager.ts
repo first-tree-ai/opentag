@@ -80,7 +80,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
   readonly #afterActivationAgentLocked: (() => Promise<void>) | undefined;
   readonly #owned = new Map<string, OwnedChannel>();
   readonly #completedBackfills = new Map<string, symbol>();
-  readonly #pendingBackfills = new Map<string, { promise: Promise<void>; dirty: boolean }>();
+  readonly #pendingBackfills = new Map<string, { promise: Promise<void>; dirty: boolean; token: symbol }>();
   readonly #maintenanceControllers = new Map<string, AbortController>();
   readonly #maintenanceFailures = new Map<string, number>();
   readonly #maintenanceNextAt = new Map<string, number>();
@@ -914,9 +914,10 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
   #markLookupInvalidation(
     channelKey: string,
     observedToken: symbol | undefined,
-    observedPending: { promise: Promise<void>; dirty: boolean } | undefined,
+    observedPending: { promise: Promise<void>; dirty: boolean; token: symbol } | undefined,
   ): void {
     this.#invalidateCompletedBackfill(channelKey, observedToken);
+    this.#invalidateCompletedBackfill(channelKey, observedPending?.token);
     if (observedPending) observedPending.dirty = true;
     const currentPending = this.#pendingBackfills.get(channelKey);
     if (currentPending) currentPending.dirty = true;
@@ -1007,7 +1008,11 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
       return;
     }
     const nextToken = Symbol("backfilled");
-    const pendingEntry: { promise: Promise<void>; dirty: boolean } = { promise: Promise.resolve(), dirty: false };
+    const pendingEntry: { promise: Promise<void>; dirty: boolean; token: symbol } = {
+      promise: Promise.resolve(),
+      dirty: false,
+      token: nextToken,
+    };
     const backfill = this.#updateChatContext(
       and(eq(imMessages.imBindingId, input.imBindingId), eq(imMessages.channelId, input.chatId)),
       patchJson,

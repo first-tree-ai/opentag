@@ -1922,6 +1922,9 @@ describe("FeishuConnectionManager", () => {
     const dirty1Id = crypto.randomUUID();
     const dirty2Id = crypto.randomUUID();
     const dirty3Id = crypto.randomUUID();
+    const late1Id = crypto.randomUUID();
+    const late2Id = crypto.randomUUID();
+    const late3Id = crypto.randomUUID();
     const inbox = {
       ingest: vi
         .fn()
@@ -1933,7 +1936,10 @@ describe("FeishuConnectionManager", () => {
         .mockResolvedValueOnce({ messageId: postRepairWarmId, deliveryIds: ["d6"], duplicate: false })
         .mockResolvedValueOnce({ messageId: dirty1Id, deliveryIds: ["d7"], duplicate: false })
         .mockResolvedValueOnce({ messageId: dirty2Id, deliveryIds: ["d8"], duplicate: false })
-        .mockResolvedValueOnce({ messageId: dirty3Id, deliveryIds: ["d9"], duplicate: false }),
+        .mockResolvedValueOnce({ messageId: dirty3Id, deliveryIds: ["d9"], duplicate: false })
+        .mockResolvedValueOnce({ messageId: late1Id, deliveryIds: ["d10"], duplicate: false })
+        .mockResolvedValueOnce({ messageId: late2Id, deliveryIds: ["d11"], duplicate: false })
+        .mockResolvedValueOnce({ messageId: late3Id, deliveryIds: ["d12"], duplicate: false }),
     };
     const manager = new FeishuConnectionManager({
       database: connectionDatabase.database,
@@ -2146,6 +2152,80 @@ describe("FeishuConnectionManager", () => {
           .from(imMessages)
           .where(eq(imMessages.id, dirty2Id));
         expect(repairedDirty?.providerContext).toEqual({
+          provider: "feishu",
+          chatType: "group",
+          chatMode: "topic",
+        });
+      });
+      expect(updateWhereSqls.at(-1)).toContain('"channel_id" =');
+
+      await connectionDatabase.database.insert(imMessages).values(
+        [
+          [late1Id, "ev_l1", "om_l1"],
+          [late3Id, "ev_l3", "om_l3"],
+        ].map(([id, providerEventId, externalMessageId]) => ({
+          id: id as string,
+          imBindingId: binding.id,
+          providerEventId: providerEventId as string,
+          channelId: "oc_dirty_late",
+          externalMessageId: externalMessageId as string,
+          providerRevisionKey: "1",
+          operation: "created" as const,
+          direction: "inbound" as const,
+          authorKind: "human" as const,
+          authorExternalId: "ou_human",
+          content: { version: 1 as const, fallbackText: externalMessageId as string, blocks: [], truncated: false },
+          providerContext: { provider: "feishu" as const, chatType: "group" },
+          occurredAt: connectionNow,
+          receivedAt: connectionNow,
+        })),
+      );
+
+      holdNextImMessageUpdate = true;
+      await send("ev_l1", "om_l1", 10, "oc_dirty_late");
+      await vi.waitFor(() => {
+        expect(updateWhereSqls).toHaveLength(9);
+      });
+
+      let releaseLateLookup: ((metadata: FeishuChatMetadata | undefined) => void) | undefined;
+      resolveChatMetadata.mockImplementationOnce(
+        () =>
+          new Promise<FeishuChatMetadata | undefined>((resolve) => {
+            releaseLateLookup = resolve;
+          }),
+      );
+      await send("ev_l2", "om_l2", 11, "oc_dirty_late");
+
+      resolveHeldUpdate?.();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      releaseLateLookup?.(undefined);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      await connectionDatabase.database.insert(imMessages).values({
+        id: late2Id,
+        imBindingId: binding.id,
+        providerEventId: "ev_l2",
+        channelId: "oc_dirty_late",
+        externalMessageId: "om_l2",
+        providerRevisionKey: "1",
+        operation: "created",
+        direction: "inbound",
+        authorKind: "human",
+        authorExternalId: "ou_human",
+        content: { version: 1, fallbackText: "om_l2", blocks: [], truncated: false },
+        providerContext: { provider: "feishu", chatType: "group" },
+        occurredAt: connectionNow,
+        receivedAt: connectionNow,
+      });
+
+      await send("ev_l3", "om_l3", 12, "oc_dirty_late");
+      await vi.waitFor(async () => {
+        const [repairedLate] = await connectionDatabase.database
+          .select({ providerContext: imMessages.providerContext })
+          .from(imMessages)
+          .where(eq(imMessages.id, late2Id));
+        expect(repairedLate?.providerContext).toEqual({
           provider: "feishu",
           chatType: "group",
           chatMode: "topic",

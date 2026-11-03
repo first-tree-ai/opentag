@@ -388,3 +388,10 @@ actual work past deadline grace, maintenance and detached reads. Its 132 distinc
 cases pass, 19 native PostgreSQL. Batch 28 P2 corrections at 6c87b97c are independently
 confirmed closed. IM-F3 remains open for setup, high-level services, approval,
 detached callback/proof/capture tails and final main composition.
+
+[Complete service and approval drain](verification/sql-caller-repairs-30.md)
+passes 116 cases, 25 native PostgreSQL. High-level Slack/Context Tree runs now
+expose close ports through their final SQL, including a disconnected HTTP peer;
+main wiring is still required. Approval polling and admitted requests/decisions/
+completions drain through the Runtime route. Batch 29 review found no actionable
+defect. Feishu setup, detached callback/proof/capture tails and main remain IM-F3.

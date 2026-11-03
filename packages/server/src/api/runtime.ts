@@ -15,7 +15,7 @@ import { startClosingServerResources } from "../shutdown.js";
 export interface RuntimeRoutesOptions extends RuntimeSessionOptions {
   approvalOwner?: {
     businessOptions(): RuntimeBusinessOptions;
-    close(): void;
+    close(): void | Promise<void>;
   };
   agentRuntimeOptionsOwner?: AgentRuntimeOptionsOwner;
   agentRuntimeTestOwner?: AgentRuntimeTestOwner;

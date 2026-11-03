@@ -360,3 +360,36 @@ it("reads setup and preparation without discarded activity queries", async () =>
     await messaging.stop();
   }
 });
+
+it("joins the complete confirmed installation through inspection and final SQL on close", async () => {
+  const f = await fixture();
+  const running = f.auto.run(f.account.id, f.agent.id, { action: "connect" });
+  let drained = false;
+  try {
+    await f.sent.promise;
+    await f.finish({ status: "installed", credentials });
+    await f.entered.promise;
+    const closing = f.auto.close().then(() => {
+      drained = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(drained).toBe(false);
+    expect(await f.auto.run(f.account.id, f.agent.id, { action: "connect" })).toEqual({
+      status: "failed",
+      code: "computer_unavailable",
+    });
+    f.release.resolve();
+    await expect.poll(() => f.frames.length).toBe(2);
+    await f.finish({ status: "connected" });
+    expect(await running).toEqual({ status: "connected" });
+    await closing;
+    const [binding] = await f.client.database.select().from(imBindings).where(eq(imBindings.agentId, f.agent.id));
+    expect(binding?.status).toBe("active");
+    expect(binding?.provider).toBe("slack");
+    expect((await f.client.sql`select 1 as healthy`)[0]?.healthy).toBe(1);
+  } finally {
+    f.release.resolve();
+    await running.catch(() => undefined);
+    await f.auto.close();
+  }
+});

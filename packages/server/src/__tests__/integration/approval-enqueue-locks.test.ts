@@ -5,8 +5,9 @@ import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { createDatabaseClient } from "../../db/client.js";
 import { computers, imBindings } from "../../db/schema/index.js";
-import { type PendingApproval, PostgresApprovalStore } from "../../runtime/approval-store.js";
+import { type ApprovalStore, type PendingApproval, PostgresApprovalStore } from "../../runtime/approval-store.js";
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
+import { RuntimeApprovalOwner } from "../../runtime/runtime-approval-owner.js";
 import { deferred } from "../support/deferred.js";
 import { createSkillHarness } from "../support/skill-service-harness.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
@@ -168,4 +169,72 @@ it.each(["connection", "status", "expiry"] as const)("rejects a stale %s without
     await client.sql`update runtime_approvals set expires_at = now() - interval '1 second' where id = ${f.row.id}`;
   expect(await f.store.deliver(f.row, f.send)).toBe(false);
   expect(f.socket.send).not.toHaveBeenCalled();
+});
+
+it.each(["poll", "request"] as const)("joins actual approval %s SQL before close completes", async (phase) => {
+  const f = await fixture(),
+    entered = deferred(),
+    resume = deferred();
+  const store: ApprovalStore = f.store;
+  const owner = new RuntimeApprovalOwner({
+    store,
+    registry: f.registry,
+    serverInstanceId: f.row.serverInstanceId,
+    authority: async () => ({
+      imBindingId: f.row.imBindingId,
+      authority: f.row.authority,
+      deadlineAt: f.row.expiresAt,
+    }),
+    messenger: { post: vi.fn(), finish: vi.fn() },
+    onError: vi.fn(),
+  });
+  if (phase === "poll") {
+    const original = store.list.bind(store);
+    vi.spyOn(store, "list").mockImplementation(async (...args) => {
+      const result = await original(...args);
+      entered.resolve();
+      await resume.promise;
+      return result;
+    });
+  } else {
+    const original = store.insert.bind(store);
+    vi.spyOn(store, "insert").mockImplementation(async (...args) => {
+      const result = await original(...args);
+      entered.resolve();
+      await resume.promise;
+      return result;
+    });
+  }
+  let drained = false;
+  const operation =
+    phase === "poll"
+      ? owner.poll()
+      : owner.request(
+          { ...f.row.request, requestId: randomUUID() },
+          {
+            computerId: f.row.computerId,
+            instanceId: f.row.instanceId,
+            connectionId: f.row.connectionId,
+            installationId: "fixture",
+            signal: new AbortController().signal,
+          },
+        );
+  try {
+    await entered.promise;
+    const closing = owner.close().then(() => {
+      drained = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(drained).toBe(false);
+    resume.resolve();
+    await operation;
+    await closing;
+    expect(f.socket.send).not.toHaveBeenCalled();
+    expect((await client.sql`select 1 as healthy`)[0]?.healthy).toBe(1);
+  } finally {
+    resume.resolve();
+    await operation;
+    await owner.close();
+    vi.restoreAllMocks();
+  }
 });

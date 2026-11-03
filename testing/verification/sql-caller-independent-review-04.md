@@ -20,6 +20,7 @@ tests and evidence records without changing files or rerunning tests/Docker.
 | 27 | 8d5d88ce..79c767d2fc5c1da27c89b219b7b2a01cc8a66c53 | No actionable finding; disconnected instances retained and joined, stop initiation independent, pinned WebSocket rejects late upgrades. |
 | 28 initial | 79c767d2..0159bad5233576f6d25019779168c755820a1717 | Two P2: response rewrite could create handles after execution close; broker task policy omitted the cancellation signal. |
 | 28 correction | 0159bad5..6c87b97c9bed04125bd98fcdd3ff051bed2d74c5 | Both closed; actual adapter/transport capture gates and broker-to-GitHub policy controls cover late handles and cancellation. |
+| 29 | 6c87b97c..b7a76281a1e36d0e5549ec2fd8cae371f3812b52 | No actionable finding; actual work survives deadline grace, queued-drop/maintenance tails are joined, ready stop has no self-wait. |
 
 The reviewer also checked the remaining shutdown design against pinned Fastify
 5.12.3, Avvio 9.3.0 and websocket dependency source. Actual registration-time
@@ -34,5 +35,5 @@ complete Slack setup and Context Tree runs need a narrow explicit owner; normal
 HTTP waits do not establish that drain for disconnected clients. These are design
 review observations, not completed IM-F3 repair or full Server acceptance.
 
-Batch 29 and later changes require their own exact-commit review. CI, merge,
+Batch 30 and later changes require their own exact-commit review. CI, merge,
 deployment, private billing and live provider acceptance are not inferred.

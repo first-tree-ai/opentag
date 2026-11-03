@@ -131,6 +131,9 @@ container queries for page composition because the Sidebar changes the space ava
 the viewport. The shell follows the website app preview breakpoints: 240px Agent sidebar above 950px, 200px from 641px to 950px,
 and inline scrolling navigation at 640px and below. Compact controls retain account access and Agent switching.
 The same route outlet remains mounted across those changes. Agent roster rows stack identity above status below a 42rem roster container width, keeping names and setup actions readable at 320px.
+A roster row whose local coding assistant reports that it needs signing in also names the Computer to sign in on, and
+its link to Agent setup reads as a sign-in check rather than **Continue setup**: the Agent usually finished setup and
+was signed out later, and setup repeats the instruction and re-checks it.
 
 UI changes must be checked at these representative widths when the surface can render there:
 

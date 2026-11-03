@@ -108,3 +108,27 @@ describe("A row whose messaging is being re-verified", () => {
     expect(screen.getAllByRole("link", { name: "Continue setup" })).toHaveLength(1);
   });
 });
+
+describe("A row whose coding assistant needs signing in", () => {
+  it("names the state, the Computer to sign in on, and a way to check it", async () => {
+    const signedOut: AgentListItem = {
+      ...readyAgent,
+      runtimeProvider: "claude-code",
+      availability: {
+        ...readyAgent.availability,
+        state: "action_required",
+        reason: "runtime_unavailable",
+        dependencies: {
+          ...readyAgent.availability.dependencies,
+          runtime: { provider: "claude-code", status: "sign-in" },
+        },
+      },
+    };
+    await renderInRouter(<AgentList agents={[signedOut]} />);
+    expect(screen.getByText("Claude Code sign-in required")).toBeTruthy();
+    expect(screen.getByText("Sign in on Ada's Mac")).toBeTruthy();
+    const check = screen.getByRole("link", { name: "Check sign-in" });
+    expect(check.getAttribute("href")).toBe(`/agents/setup?agentId=${agentListItem.id}`);
+    expect(screen.queryByRole("link", { name: "Continue setup" })).toBeNull();
+  });
+});

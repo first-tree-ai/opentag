@@ -70,7 +70,7 @@ function boundAgent(): AgentDetail {
   return { ...agentWithoutComputer(), computer: { computerId, displayName: "Studio", platform: "darwin" } };
 }
 
-function onlineComputer(runtimeStatus: "ready" | "install"): AccountComputerSummary {
+function onlineComputer(runtimeStatus: "ready" | "install" | "sign-in"): AccountComputerSummary {
   return {
     computerId,
     displayName: "Studio",
@@ -99,7 +99,10 @@ function messagingBinding(bindingState: ImBindingSummary["bindingState"]): ImBin
   };
 }
 
-function bound(connectionStatus: "online" | "offline", runtimeStatus: "ready" | "install"): AgentAvailability {
+function bound(
+  connectionStatus: "online" | "offline",
+  runtimeStatus: "ready" | "install" | "sign-in",
+): AgentAvailability {
   const computer: AccountComputerSummary = { ...onlineComputer(runtimeStatus), connectionStatus };
   return projectAgentAvailability(boundAgent(), computer, undefined, undefined, true, true);
 }
@@ -147,6 +150,45 @@ describe("Finishing setup, offered from the Agent list", () => {
     // the dependency that broke is named. Sending this reader back to setup would restate a flow
     // they have already been through, for a problem it does not describe.
     expect(agentSetupContinuation({ availability: bound("offline", "ready"), id: agentId })).toBeUndefined();
+  });
+});
+
+describe("A coding assistant that needs signing in, as the Agent list reads it", () => {
+  function signedOut(): AgentDetailView {
+    const agent = boundAgent();
+    return {
+      ...agent,
+      availability: projectAgentAvailability(agent, onlineComputer("sign-in"), undefined, undefined, true, true),
+      messaging: { kind: "ready", value: undefined },
+    };
+  }
+
+  it("names the Computer to sign in on", () => {
+    const agent = signedOut();
+
+    expect(agent.availability.reason).toBe("runtime_unavailable");
+    expect(agentCardStatus(listed(agent))).toEqual({
+      detail: "Sign in on Studio",
+      label: "Codex sign-in required",
+      tone: "warning",
+    });
+  });
+
+  it("offers the setup page under a label for the sign-in rather than for unfinished setup", () => {
+    expect(agentSetupContinuation(signedOut())).toEqual({
+      label: "Check sign-in",
+      link: { search: { agentId }, to: "/agents/setup" },
+    });
+  });
+
+  it("leaves a missing installation on the ordinary setup continuation", () => {
+    expect(agentCardStatus(listed({ ...signedOut(), availability: bound("online", "install") }))).toEqual({
+      label: "Codex not installed",
+      tone: "warning",
+    });
+    expect(agentSetupContinuation({ availability: bound("online", "install"), id: agentId })?.label).toBe(
+      "Continue setup",
+    );
   });
 });
 

@@ -16,7 +16,9 @@ import type { AgentSettingsSection } from "./agent-settings/sections.js";
 /**
  * The card states what is true and how urgent it is. It carries no recovery of its own, because
  * what to do about a broken dependency depends on which one broke, and that explanation lives on
- * the Agent. The one exception is setup that never finished — see `agentSetupContinuation`.
+ * the Agent. The one exception is setup that never finished — see `agentSetupContinuation`. A
+ * signed-out coding assistant also names the Computer to sign in on, because that is a fact about
+ * where the problem is rather than a recovery procedure.
  */
 type AgentCardStatus = {
   detail?: string;
@@ -90,7 +92,14 @@ function runtimeAgentCardStatus(agent: AgentListItem): AgentCardStatus {
     return { label: m.agents_card_status_runtime_not_installed({ providerName }), tone: "warning" };
   }
   if (status === "sign-in") {
+    /*
+     * Sign-in happens on one specific machine, and an Account may own several. Naming it here is
+     * what turns the label into something the reader can act on without opening the Agent first.
+     */
     return {
+      detail: agent.computer
+        ? m.agents_card_runtime_sign_in_detail({ computerName: agent.computer.displayName })
+        : undefined,
       label: m.agents_card_status_runtime_sign_in_required({ providerName }),
       tone: "warning",
     };
@@ -394,7 +403,19 @@ export function agentSetupContinuation(agent: {
   availability: AgentAvailability;
   id: string;
 }): AgentDependencyStatus["action"] {
-  return SETUP_REASONS.has(agent.availability.reason) ? continueSetupAction(agent.id) : undefined;
+  if (!SETUP_REASONS.has(agent.availability.reason)) return undefined;
+  /*
+   * A signed-out coding assistant is often an Agent that worked yesterday, not one left mid-setup,
+   * so "Continue setup" misdescribes it. The destination is the same page, which repeats where to
+   * sign in and re-checks on its own; the label names that instead.
+   */
+  if (
+    agent.availability.reason === "runtime_unavailable" &&
+    agent.availability.dependencies.runtime.status === "sign-in"
+  ) {
+    return { label: m.agents_card_action_check_sign_in(), link: agentSetupLink(agent.id) };
+  }
+  return continueSetupAction(agent.id);
 }
 
 function settingsAction(

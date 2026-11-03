@@ -119,7 +119,7 @@ export function AgentRow({ agent }: { agent: AgentListItem }) {
       >
         <StatusIndicator label={status.label} tone={status.tone} />
         {status.detail ? (
-          <p className="text-sm text-kumo-subtle" data-ui="agent-row-state">
+          <p className="max-w-80 text-sm text-kumo-subtle [overflow-wrap:anywhere]" data-ui="agent-row-state">
             {status.detail}
           </p>
         ) : null}

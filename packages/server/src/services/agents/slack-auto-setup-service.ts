@@ -18,6 +18,8 @@ export class SlackAutoSetupService {
       agents: Pick<AgentService, "getConfigById">;
       slack: Pick<SlackConfigurationService, "view" | "configureToken">;
       owner: Pick<SlackAutoSetupOwner, "start">;
+      cloud?: Pick<SlackAutoSetupOwner, "start">;
+      computerKind?: (computerId: string) => Promise<"local" | "cloud" | undefined>;
       publicOrigin: string;
       officialSigningSecret?: string;
     },
@@ -62,7 +64,15 @@ export class SlackAutoSetupService {
       await this.options.slack.view(accountId, agentId, this.options.publicOrigin, this.options.officialSigningSecret),
     );
   }
-  #dispatch(computerId: string, agentId: string, input: SlackAutoSetupCommand) {
+  async #dispatch(
+    computerId: string,
+    agentId: string,
+    input: SlackAutoSetupCommand,
+  ): Promise<SlackAutoSetupRuntimeResult["result"]> {
+    if ((await this.options.computerKind?.(computerId)) === "cloud") {
+      if (!this.options.cloud) return { status: "failed", code: "capability_missing" };
+      return this.options.cloud.start({ computerId, agentId, input });
+    }
     return this.options.owner.start({ computerId, agentId, input });
   }
   #checkRecovery(view: SlackConfigurationView) {

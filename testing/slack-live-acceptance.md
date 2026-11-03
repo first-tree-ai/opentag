@@ -153,6 +153,30 @@ Provoke and confirm the Agent surfaces the provider error instead of inventing s
 - `invalid_auth` / `token_revoked` after the test App's bot token is revoked in Slack
 - `missing_scope` if a method is called without the matching granted scope (should not happen on a complete install)
 
+## Cloud Agent `/slackauthticket` automatic setup
+
+1. Create a Cloud Agent (or open **Messaging** settings on an unbound Cloud Agent) with fresh browser state and choose
+   **Connect Slack**. Confirm the UI first opens the explicit existing-App / new-App choice (**View Apps** link to
+   `https://api.slack.com/apps`, **Manual setup**, and **Create App**) without requesting a ticket on mount. Select
+   **Create App** and confirm OpenTag sends `authorize` (`force: true`) and displays the `/slackauthticket <ticket>`
+   command + challenge code form.
+2. Paste `/slackauthticket <ticket>` in a channel or DM of a test workspace that requires app-installation approval,
+   confirm permissions in Slack, paste the challenge code into OpenTag, and select **Connect**.
+3. Confirm OpenTag creates the App once, submits the installation approval request automatically, and displays
+   `Request submitted. Continue after approval.` with **View approval** (`https://app.slack.com/apps-manage/<teamId>`)
+   and `App: <appId> · Workspace: <teamId>` in **Diagnostics**.
+4. Select **Continue** before approving in Slack and confirm OpenTag stays in `approval_pending` for the same `appId`
+   without creating a second App or submitting a duplicate approval request.
+5. Approve the request in Slack's **Requests to install** as a Workspace Owner or App Manager, then select **Continue**
+   in OpenTag (within the same Server process). Confirm the same `appId` is installed, bound, and has its Events API and
+   Interactivity Request URLs verified. Send the Bot a DM and confirm its reply closes identity and reaches the Cloud Agent.
+6. **Server restart during unfinished setup:** start `/slackauthticket` setup for a second Cloud Agent up to
+   `approval_pending`, then restart the OpenTag Server before selecting **Continue**. Confirm that selecting **Continue**
+   returns `manual_required` (`Use manual setup for this App.`) and switches to **Manual setup** for the existing App
+   (`View Apps` link to `https://api.slack.com/apps`, with no **Reauthorize** action and no second `apps.manifest.create`),
+   and that opening **Connect Slack** on a fresh browser/device after the restart also presents the **View Apps** /
+   **Manual setup** / **Create App** gate before any new ticket is issued.
+
 ## Reauthorization
 
 1. After a required-scope expansion, an existing 7-scope (or otherwise incomplete) install must project

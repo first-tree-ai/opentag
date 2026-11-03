@@ -10,6 +10,7 @@ const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const bindingId = "6d93de68-ec32-4ac9-a41e-e96ed2d7dac0";
 const clients: QueryClient[] = [];
 afterEach(() => {
+  window.localStorage.clear();
   vi.useRealTimers();
   for (const client of clients.splice(0)) client.clear();
   vi.restoreAllMocks();

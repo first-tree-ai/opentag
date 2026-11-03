@@ -306,13 +306,16 @@ function TaskReportMeta({ report }: { report: TaskReport }) {
 /**
  * A report entry carries only what the conversation itself cannot show: a failure, or a notice about
  * the reply history. The runtime's final text repeats the reply the Agent already sent, so it is
- * never shown, and a report with nothing else to say leaves no entry.
+ * never shown, and a report with nothing else to say leaves no entry. A Turn still running gets no
+ * entry either until it sends a real reply: the Task status already says it is running.
  */
 function taskEntryVisible(
   entry: TaskTimelineEntry,
   provider: TaskSummary["source"]["provider"],
   capturedFeedSupplied: boolean,
 ): boolean {
+  // A running Turn already reads as running in the Task status; an entry saying so repeats it.
+  if (entry.kind === "status") return entry.turn.delivery.isRunning !== true;
   if (entry.kind !== "report") return true;
   return (
     Boolean(entry.report.errorReason) ||
@@ -368,7 +371,6 @@ function TaskReplyNotice({ report, capturedFeedSupplied }: { report: TaskReport;
 }
 
 function TaskUnreportedBody({ delivery }: { delivery: TaskTurn["delivery"] }) {
-  const running = delivery.isRunning === true;
   if (delivery.state === "terminal_rejected" && delivery.reason === "restore_required") {
     return <p className="text-sm text-kumo-danger">{m.tasks_failure_progress_restore_failed()}</p>;
   }
@@ -381,12 +383,8 @@ function TaskUnreportedBody({ delivery }: { delivery: TaskTurn["delivery"] }) {
     );
   }
   return (
-    <p className="text-sm text-kumo-subtle" data-state={running ? "progress" : "attention"}>
-      {running
-        ? m.tasks_work_in_progress()
-        : delivery.state === "accepted"
-          ? m.tasks_execution_report_unavailable()
-          : deliveryStateMessage(delivery)}
+    <p className="text-sm text-kumo-subtle" data-state="attention">
+      {delivery.state === "accepted" ? m.tasks_execution_report_unavailable() : deliveryStateMessage(delivery)}
     </p>
   );
 }

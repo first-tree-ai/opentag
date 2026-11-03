@@ -46,6 +46,7 @@ describe("OpenTag Web App Shell", () => {
     installApi({ bound: true, computerStatus: () => status });
     window.history.replaceState({}, "", "/agents/computers");
     render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Restore connection" }));
     expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
     status = "online";
     fireEvent(window, new Event("focus"));

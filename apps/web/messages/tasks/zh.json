@@ -122,7 +122,7 @@
   "tasks_status_filter_value": "状态：{status}",
   "tasks_status_label": "状态",
   "tasks_status_queued": "排队中",
-  "tasks_status_running": "执行中",
+  "tasks_status_running": "运行中",
   "tasks_table_region": "任务表格",
   "tasks_task_label": "任务",
   "tasks_tasks_unavailable": "任务不可用",
@@ -130,6 +130,5 @@
   "tasks_title": "任务",
   "tasks_try_again": "再试一次",
   "tasks_unavailable": "任务不可用",
-  "tasks_view_all": "查看全部",
-  "tasks_work_in_progress": "工作正在进行中。"
+  "tasks_view_all": "查看全部"
 }

@@ -18,6 +18,18 @@ Verified on 2026-10-15 against the built application with local API fixtures. En
 
 ![Chinese connection entry at 390 px](./multiple-computers-mobile.png)
 
+## Connecting another Computer from Agent settings
+
+Verified on 2026-11-03 with the Playwright journey “connects another Computer from Agent settings without moving the
+Agent”: built Web and Server, built CLI and daemon, and PostgreSQL. Agent settings → Computer offers **Connect another
+computer** next to the assigned Computer's own action. The link opens the Computers page, which starts one create command
+and drops the request from the URL. The new Computer appears online beside the existing one, and the Agent stays on its
+original Computer. At 390 px the two actions wrap onto separate lines without horizontal overflow.
+
+![Agent settings entry at 1440 px](./agent-settings-connect-another-desktop.png)
+
+![Agent settings entry at 390 px](./agent-settings-connect-another-mobile.png)
+
 ## Interaction verification
 
 - Compact and expanded layouts were checked at 320, 390, 768, and 1440 px without page-level horizontal overflow or axe violations. Desktop Cloud and local Online cards had equal heights; recovery content increases card height naturally.

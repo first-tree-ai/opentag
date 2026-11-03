@@ -197,7 +197,7 @@ describe("OpenTag Web App Shell", () => {
     expect(within(agentRow as HTMLElement).getByText("Working now · started 8m ago")).toBeTruthy();
   });
 
-  it("states an offline reason once and carries no exit of its own", async () => {
+  it("states an offline reason once with one exit to the Computer recovery", async () => {
     installApi({
       bound: true,
       computerStatus: () => "offline",
@@ -216,11 +216,13 @@ describe("OpenTag Web App Shell", () => {
     expect((agentRow as HTMLElement).querySelector('[data-ui="agent-row-state"]')).toBeNull();
     expect((status as HTMLElement).closest('[data-ui="agent-row-status"]')).toBeTruthy();
     /*
-     * No recovery exit beside the reason. Which page repairs an offline Computer is the Agent's
-     * business, so the card states the problem and the row link is the single way to follow it.
+     * The status itself stays plain text; the row adds one action to where an offline Computer is
+     * repaired, the same connection recovery the Agent page's Computer row opens.
      */
     expect(within(status as HTMLElement).queryByRole("link")).toBeNull();
-    expect(within(agentRow as HTMLElement).getAllByRole("link")).toEqual([open]);
+    const restore = within(agentRow as HTMLElement).getByRole("link", { name: /Restore connection/ });
+    expect(restore.getAttribute("href")).toMatch(/^\/agents\/computers\?computerId=/);
+    expect(within(agentRow as HTMLElement).getAllByRole("link")).toEqual([restore, open]);
   });
 
   it("opens the Agent from the row itself rather than from a trailing affordance", async () => {

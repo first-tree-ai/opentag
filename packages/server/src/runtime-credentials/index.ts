@@ -5,6 +5,7 @@ import type { ConnectionRegistry, RuntimeControlIdentity } from "../runtime/conn
 import type { RuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import type { ApplicationCipher } from "../services/crypto.js";
 import { ImOutboundCapture } from "../services/im/im-outbound-capture.js";
+import { startClosingServerResources } from "../shutdown.js";
 import { RuntimeCapabilityStore } from "./capability-store.js";
 import {
   type RuntimeConnectionFence,
@@ -160,7 +161,7 @@ export interface RuntimeCredentialServices {
   web?: WebGatewayServices;
   /** Present only when the MCP gateway is wired; the route needs both to serve a request. */
   mcp?: McpGatewayServices;
-  close(): void;
+  close(): Promise<void>;
 }
 
 /** Builds the optional web service exactly once per stack; absent config keeps it fully off. */
@@ -342,6 +343,7 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
   const unsubscribeHandles = executions.onClose((event) => {
     urlHandles.revokeExecution(event.executionId);
   });
+  let closing: Promise<void> | undefined;
   return {
     owner,
     transport,
@@ -354,9 +356,14 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
     ...(web ? { web } : {}),
     ...mcpServicesResult(mcp),
     close: () => {
-      unsubscribeHandles();
-      owner.close();
-      tenantTokens.clear();
+      closing ??= startClosingServerResources([
+        ["credential owner", () => owner.close()],
+        ["provider transport", () => transport.close()],
+      ]).finally(() => {
+        unsubscribeHandles();
+        tenantTokens.clear();
+      });
+      return closing;
     },
   };
 }

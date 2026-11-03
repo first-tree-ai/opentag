@@ -240,9 +240,9 @@ async function fixture(
   };
 }
 
-const cleanup: Array<() => void> = [];
-afterEach(() => {
-  for (const close of cleanup.splice(0)) close();
+const cleanup: Array<() => unknown> = [];
+afterEach(async () => {
+  for (const close of cleanup.splice(0)) await close();
 });
 
 describe("RuntimeCredentialOwner execution open", () => {

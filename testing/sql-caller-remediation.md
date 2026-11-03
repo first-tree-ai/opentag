@@ -370,3 +370,9 @@ retained connections even after physical peer disconnect. Ninety-three distinct
 cases pass, including two native PG controls through actual asynchronous plugin
 boot and an unrelated failing close. Remaining owners/transport and final main
 composition still keep IM-F3 open. Batch 26 independent review found no action.
+
+[Credential and provider transport drain](verification/sql-caller-repairs-28.md)
+joins actual SQL/stream work and retains revocation listeners until it settles.
+Two hundred distinct cases pass, including 41 native PostgreSQL cases. Batch 27
+independent review found no actionable defect. Remaining IM worker, setup,
+approval and detached tails plus actual main composition still keep IM-F3 open.

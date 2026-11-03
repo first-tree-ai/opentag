@@ -39,6 +39,7 @@ contents, and machine-specific operational logs outside the repository.
 - [SQL caller repairs: RuntimeSession and scheduler drain](verification/sql-caller-repairs-26.md)
 - [SQL caller repairs: Runtime and Runner route drain](verification/sql-caller-repairs-27.md)
 - [SQL caller repairs: credential and provider transport drain](verification/sql-caller-repairs-28.md)
+- [SQL caller repairs: IM worker and ready-wakeup drain](verification/sql-caller-repairs-29.md)
 - [SQL caller repairs: Runtime Domain drain](verification/sql-caller-repairs-25.md)
 - [SQL caller repairs: Feishu connection and Inbox drain](verification/sql-caller-repairs-24.md)
 - [SQL caller repairs: Provider preparation drain](verification/sql-caller-repairs-23.md)

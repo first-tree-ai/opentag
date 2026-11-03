@@ -382,3 +382,9 @@ missing broker-to-task-policy cancellation). The correction uses existing signal
 and passes 143 cases, five native PG; cumulative component coverage is 263 cases,
 41 native PG. Exact correction review is pending. Default outbound capture raw
 query tails remain included in final IM-F3 ownership work.
+
+[IM worker and ready-wakeup drain](verification/sql-caller-repairs-29.md) retains
+actual work past deadline grace, maintenance and detached reads. Its 132 distinct
+cases pass, 19 native PostgreSQL. Batch 28 P2 corrections at 6c87b97c are independently
+confirmed closed. IM-F3 remains open for setup, high-level services, approval,
+detached callback/proof/capture tails and final main composition.

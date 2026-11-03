@@ -169,6 +169,9 @@ function absentRuntimeMs(lastSeenAt: Date | null, now: number): number {
 }
 export class ImDeliveryWorker {
   #closed = false;
+  #closing: Promise<void> | undefined;
+  readonly #abort = new AbortController();
+  readonly #work = new Set<Promise<unknown>>();
   readonly #selector: ImDeliverySelector;
   #claimOperation: Promise<WorkerClaim | undefined> | undefined;
   readonly #readyWakeup: ImDeliveryReadyWakeup;
@@ -268,22 +271,14 @@ export class ImDeliveryWorker {
       now: this.#clock,
       runSession: (sessionId) => {
         this.#selector.invalidate(sessionId);
-        return this.#runOnce(sessionId);
+        return this.#runTracked(sessionId);
       },
       supervisor: this.#supervisor,
       onDiagnostic: this.#onDiagnostic,
     });
     const schedulers = createImDeliveryMaintenanceSchedulers({
-      expiryRun: async () => {
-        const options = {
-          ...this.#janitorConfig,
-          clock: this.#clock,
-          ...(this.#logger ? { logger: this.#logger } : {}),
-        };
-        await runImDeliveryExpiry(this.#database, options, this.#onDeliverySettled, this.#onDiagnostic);
-        await this.#cloudCoordinator.reconcileStoppedWork();
-      },
-      retentionRun: () => runImDeliveryRetention(this.#database, { ...this.#janitorConfig, clock: this.#clock }),
+      expiryRun: () => this.#track(this.#expire()),
+      retentionRun: () => this.#track(this.#retain()),
       supervisor: this.#supervisor,
       onDiagnostic: this.#onDiagnostic,
     });
@@ -302,20 +297,53 @@ export class ImDeliveryWorker {
     this.#retentionTimer.unref();
   }
 
-  stop(): void {
+  stop(): Promise<void> {
+    if (this.#closing) return this.#closing;
     this.#closed = true;
+    this.#abort.abort();
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = undefined;
     if (this.#janitorTimer) clearInterval(this.#janitorTimer);
     this.#janitorTimer = undefined;
     if (this.#retentionTimer) clearInterval(this.#retentionTimer);
     this.#retentionTimer = undefined;
-    this.#scheduler.close();
+    const scheduler = this.#scheduler.close();
     this.#selector.invalidate();
-    this.#readyWakeup.stop();
+    const wakeups = this.#readyWakeup.stop();
+    this.#closing = (async () => {
+      await Promise.allSettled([scheduler, wakeups]);
+      while (this.#work.size) await Promise.allSettled([...this.#work]);
+    })();
+    return this.#closing;
   }
 
-  async runJanitorOnce(): Promise<void> {
+  #track<T>(operation: Promise<T>): Promise<T> {
+    this.#work.add(operation);
+    void operation.then(
+      () => this.#work.delete(operation),
+      () => this.#work.delete(operation),
+    );
+    return operation;
+  }
+
+  async #expire(): Promise<void> {
+    if (this.#closed) return;
+    const options = { ...this.#janitorConfig, clock: this.#clock, ...(this.#logger ? { logger: this.#logger } : {}) };
+    await runImDeliveryExpiry(this.#database, options, this.#onDeliverySettled, this.#onDiagnostic);
+    if (!this.#closed) await this.#cloudCoordinator.reconcileStoppedWork();
+  }
+
+  async #retain(): Promise<void> {
+    if (this.#closed) return;
+    await runImDeliveryRetention(this.#database, { ...this.#janitorConfig, clock: this.#clock });
+  }
+
+  runJanitorOnce(): Promise<void> {
+    return this.#track(this.#runJanitor());
+  }
+
+  async #runJanitor(): Promise<void> {
+    if (this.#closed) return;
     await runImDeliveryJanitor(
       this.#database,
       {
@@ -326,11 +354,15 @@ export class ImDeliveryWorker {
       this.#onDeliverySettled,
       this.#onDiagnostic,
     );
-    await this.#cloudCoordinator.reconcileStoppedWork();
+    if (!this.#closed) await this.#cloudCoordinator.reconcileStoppedWork();
   }
 
   async runOnce(): Promise<void> {
-    await this.#runOnce();
+    await this.#runTracked();
+  }
+
+  #runTracked(sessionId?: string): Promise<void> {
+    return this.#track(this.#runOnce(sessionId));
   }
 
   async #runOnce(sessionId?: string): Promise<void> {
@@ -370,12 +402,15 @@ export class ImDeliveryWorker {
       try {
         await withOperationDeadline(
           this.#operationTimeoutMs,
-          async (signal) => {
-            await traceDeliveryClaim(claimed, async (claim) => {
-              if (claim.kind === "pending") await this.#deliver(claim, signal);
-              else if (claim.kind === "steer") await this.#deliverSteer(claim, signal);
-              else await this.#recover(claim);
-            });
+          async (deadlineSignal) => {
+            const signal = AbortSignal.any([deadlineSignal, this.#abort.signal]);
+            await this.#track(
+              traceDeliveryClaim(claimed, async (claim) => {
+                if (claim.kind === "pending") await this.#deliver(claim, signal);
+                else if (claim.kind === "steer") await this.#deliverSteer(claim, signal);
+                else await this.#recover(claim, signal);
+              }),
+            );
           },
           async () => {
             this.#onMetric({ name: "timeout", value: 1, agentId: claimed.agentId });
@@ -420,9 +455,9 @@ export class ImDeliveryWorker {
   }
 
   /** A Computer's runtime became usable again, so its offline-parked retries are due again. */
-  async notifyComputerReady(computerId: string): Promise<void> {
-    if (this.#closed) return;
-    await advanceParkedRetries(this.#database, computerId, this.#now());
+  notifyComputerReady(computerId: string): Promise<void> {
+    if (this.#closed) return Promise.resolve();
+    return this.#track(advanceParkedRetries(this.#database, computerId, this.#now()));
   }
 
   #schedule(): void {
@@ -980,6 +1015,7 @@ export class ImDeliveryWorker {
     }
     const runtime = persistedRequest?.runtime ?? (await this.#assembleRuntime(attempt, row.session.id, "delivery"));
     if (!runtime) return;
+    signal.throwIfAborted();
     // A late acceptance may commit after this delivery was claimed. Recheck at
     // the last boundary before any reconcile or delivery frame reaches runtime.
     // The subject is Local here (the Cloud branch returned above), so this is the
@@ -1126,7 +1162,7 @@ export class ImDeliveryWorker {
     await this.#cloudCoordinator.deliver(row, attempt, lease, signal);
   }
 
-  async #recover(claim: WorkerClaim & { kind: "recovery" }): Promise<void> {
+  async #recover(claim: WorkerClaim & { kind: "recovery" }, signal: AbortSignal): Promise<void> {
     const attempt = claimAttempt(claim, "recover");
     const deliveryId = claim.id;
     const [row] = await this.#database
@@ -1209,16 +1245,23 @@ export class ImDeliveryWorker {
     }
     if (!(await this.#validateRecoveryPayload(row, attempt))) return;
     try {
-      const result = await this.#domain.requestReconcile(row.computer.id, instanceId, {
-        type: "session:reconcile",
-        requestId: randomUUID(),
-        installationId: row.computer.currentInstallationId,
-        sessionId: row.session.id,
-        agentId: row.agent.id,
-        placementGeneration: row.placement.generation,
-        // Accepted work must settle before applying any snapshot, including after an upgrade.
-        desired: "stopped",
-      });
+      const result = await this.#domain.requestReconcile(
+        row.computer.id,
+        instanceId,
+        {
+          type: "session:reconcile",
+          requestId: randomUUID(),
+          installationId: row.computer.currentInstallationId,
+          sessionId: row.session.id,
+          agentId: row.agent.id,
+          placementGeneration: row.placement.generation,
+          // Accepted work must settle before applying any snapshot, including after an upgrade.
+          desired: "stopped",
+        },
+        undefined,
+        undefined,
+        signal,
+      );
       await this.#deferRecovery(attempt, row.delivery.attemptCount, RECOVERY_RETRY_CODES[result.status]);
     } catch {
       await this.#deferRecovery(attempt, row.delivery.attemptCount, "IM_DELIVERY_RECOVERY_FAILED");
@@ -1345,8 +1388,8 @@ export class ImDeliveryWorker {
 
   #recordFailure(attempt: DeliveryAttempt, code: string, options?: DeliveryFailureOptions): Promise<void> {
     if (attempt.phase === "recover" && code === "IM_DELIVERY_OPERATION_TIMEOUT")
-      return this.#deferRecovery(attempt, attempt.attemptCount, code);
-    return recordDeliveryFailure(this.#failures, attempt, code, options);
+      return this.#track(this.#deferRecovery(attempt, attempt.attemptCount, code));
+    return this.#track(recordDeliveryFailure(this.#failures, attempt, code, options));
   }
 
   #releaseDispatch(attempt: DeliveryAttempt, requestId: string, code: string): Promise<void> {

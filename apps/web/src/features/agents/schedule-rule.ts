@@ -15,28 +15,60 @@ export function scheduleRuleText(rule: AgentScheduleRule, timezone: string): str
   return cronText(rule.expression) ?? m.agents_schedules_cron({ expression: rule.expression });
 }
 
+/** The zone's offset from UTC, in minutes, at one instant (so daylight saving time is honoured). */
+function utcOffsetMinutes(timeZone: string, at: Date): number {
+  const name =
+    new Intl.DateTimeFormat("en-US", { timeZone, timeZoneName: "longOffset" })
+      .formatToParts(at)
+      .find((part) => part.type === "timeZoneName")?.value ?? "GMT";
+  const match = /GMT([+-])(\d{1,2})(?::(\d{2}))?/.exec(name);
+  if (!match) return 0;
+  const minutes = Number(match[2]) * 60 + Number(match[3] ?? 0);
+  return match[1] === "-" ? -minutes : minutes;
+}
+
+/**
+ * Whether a schedule's zone reads the same clock as the reader's at the given instant. Zones are
+ * compared by their UTC offset at that instant rather than by name, so Asia/Shanghai and
+ * Asia/Singapore are the same to a reader, while a zone that shifts for daylight saving time
+ * differs on the dates it shifts and not on others.
+ */
+export function sameClockAt(scheduleZone: string, instant: string | Date, readerZone = currentZone()): boolean {
+  if (scheduleZone === readerZone) return true;
+  const at = typeof instant === "string" ? new Date(instant) : instant;
+  return utcOffsetMinutes(scheduleZone, at) === utcOffsetMinutes(readerZone, at);
+}
+
+function currentZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
+
 /**
  * Month, day, weekday, and time in the schedule's zone, with the hour unpadded like the rules
- * ("9:00"); the zone is named only when it is not the reader's.
+ * ("9:00"). The zone follows the time ("9:30 (GMT+8)") only when the reader's clock reads a
+ * different time at that instant.
  */
-export function shortScheduleTime(instant: string, timezone: string): string {
-  const reader = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  return (
-    new Intl.DateTimeFormat(intlLocale(), {
-      month: "short",
-      day: "numeric",
-      weekday: "short",
-      hour: "numeric",
-      minute: "2-digit",
-      hourCycle: "h23",
-      timeZone: timezone,
-      ...(timezone === reader ? {} : { timeZoneName: "short" }),
-    })
-      .formatToParts(new Date(instant))
-      // Some locales pad a 24-hour hour even when asked for "numeric".
-      .map((part) => (part.type === "hour" ? String(Number(part.value)) : part.value))
-      .join("")
-  );
+export function shortScheduleTime(instant: string, timezone: string, readerZone = currentZone()): string {
+  const at = new Date(instant);
+  const time = new Intl.DateTimeFormat(intlLocale(), {
+    month: "short",
+    day: "numeric",
+    weekday: "short",
+    hour: "numeric",
+    minute: "2-digit",
+    hourCycle: "h23",
+    timeZone: timezone,
+  })
+    .formatToParts(at)
+    // Some locales pad a 24-hour hour even when asked for "numeric".
+    .map((part) => (part.type === "hour" ? String(Number(part.value)) : part.value))
+    .join("");
+  if (sameClockAt(timezone, at, readerZone)) return time;
+  const zone =
+    new Intl.DateTimeFormat(intlLocale(), { timeZone: timezone, timeZoneName: "short" })
+      .formatToParts(at)
+      .find((part) => part.type === "timeZoneName")?.value ?? timezone;
+  return m.agents_schedules_time_with_zone({ time, zone });
 }
 
 function intervalText(seconds: number): string {

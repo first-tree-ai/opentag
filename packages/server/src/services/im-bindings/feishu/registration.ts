@@ -33,6 +33,8 @@ export interface FeishuRegistrationResult {
 export interface FeishuRegistration {
   qrReady: Promise<{ url: string; expiresAt: Date }>;
   result: Promise<FeishuRegistrationResult>;
+  /** Actual SDK settlement; policy cancellation can reject result earlier. */
+  settled?: Promise<void>;
   abort(): void;
 }
 
@@ -79,22 +81,18 @@ export class DefaultFeishuRegistrationGateway implements FeishuRegistrationGatew
       resolveQr = resolve;
       rejectQr = reject;
     });
+    let sdkTask: ReturnType<typeof registerApp> | undefined;
     const result = this.#policy
       .run(
         "feishu.registration",
-        (signal) =>
-          this.#registerApp({
+        (signal) => {
+          const linked = AbortSignal.any([controller.signal, signal]);
+          linked.throwIfAborted();
+          sdkTask = this.#registerApp({
             ...(input.intent === "reauthorize" && input.existingAppId
               ? { appId: input.existingAppId }
               : { createOnly: false }),
-            signal: (() => {
-              const linked = new AbortController();
-              const abort = () => linked.abort(controller.signal.reason);
-              if (controller.signal.aborted) abort();
-              else controller.signal.addEventListener("abort", abort, { once: true });
-              signal.addEventListener("abort", () => linked.abort(signal.reason), { once: true });
-              return linked.signal;
-            })(),
+            signal: linked,
             source: "opentag",
             appPreset: {
               name: input.profile.name,
@@ -115,7 +113,9 @@ export class DefaultFeishuRegistrationGateway implements FeishuRegistrationGatew
             onQRCodeReady: ({ url, expireIn }) => {
               resolveQr({ url, expiresAt: new Date(Date.now() + expireIn * 1000) });
             },
-          }),
+          });
+          return sdkTask;
+        },
         {
           maxAttempts: 1,
           timeoutMs: REGISTRATION_DEADLINE_MS,
@@ -137,6 +137,17 @@ export class DefaultFeishuRegistrationGateway implements FeishuRegistrationGatew
         rejectQr(error);
         throw error;
       });
-    return { qrReady, result, abort: () => controller.abort() };
+    const settled = result
+      .then(
+        () => undefined,
+        () => undefined,
+      )
+      .then(async () => {
+        await sdkTask?.then(
+          () => undefined,
+          () => undefined,
+        );
+      });
+    return { qrReady, result, settled, abort: () => controller.abort() };
   }
 }

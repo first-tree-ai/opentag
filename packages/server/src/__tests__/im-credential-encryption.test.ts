@@ -9,6 +9,7 @@ import { feishuSetupAttemptContext } from "../services/im-bindings/credential-ma
 import type { FeishuRegistrationGateway } from "../services/im-bindings/feishu/index.js";
 import { FeishuSetupService } from "../services/im-bindings/feishu/index.js";
 import { ImBindingService } from "../services/im-bindings/index.js";
+import { abortableMockFeishuRegistration } from "./support/abortable-feishu-registration.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 /*
@@ -188,14 +189,16 @@ describe("IM credential v2 envelope at the service layer", () => {
     const pending = new Promise<{ appId: string; appSecret: string }>(() => undefined);
     void pending.catch(() => undefined);
     const gateway: FeishuRegistrationGateway = {
-      start: vi.fn(() => ({
-        qrReady: Promise.resolve({
-          url: "https://feishu.example/qr/aad",
-          expiresAt: new Date(Date.now() + 60_000),
+      start: vi.fn(() =>
+        abortableMockFeishuRegistration({
+          qrReady: Promise.resolve({
+            url: "https://feishu.example/qr/aad",
+            expiresAt: new Date(Date.now() + 60_000),
+          }),
+          result: pending,
+          abort: vi.fn(),
         }),
-        result: pending,
-        abort: vi.fn(),
-      })),
+      ),
     };
     const setup = new FeishuSetupService({
       database: unitDatabase.database,

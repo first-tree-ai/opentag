@@ -14,7 +14,8 @@ import type { FeishuChannel } from "../../services/im-bindings/feishu/index.js";
 import { encodeFeishuSetupCandidate } from "../../services/im-bindings/feishu/setup-context.js";
 import { FeishuSetupService } from "../../services/im-bindings/feishu/setup-service.js";
 import { ImBindingService } from "../../services/im-bindings/index.js";
-import { deferred, pausedBindingRead } from "../support/paused-binding-read.js";
+import { deferred } from "../support/deferred.js";
+import { pausedBindingRead } from "../support/paused-binding-read.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 /**
@@ -184,7 +185,7 @@ function createManager(
   harness: FakeAdapterHarness,
   options: {
     instanceId?: string;
-    runtimeReady?: boolean;
+    runtimeReady?: boolean | (() => Promise<boolean>);
     database?: DatabaseClient;
     onCardAction?: (event: unknown, bindingId: string, generation: number) => Promise<unknown>;
   } = {},
@@ -196,7 +197,9 @@ function createManager(
     imBindings: value.imBindings,
     createAdapter: harness.createAdapter,
     ...(options.onCardAction ? { onCardAction: options.onCardAction } : {}),
-    runtimeReady: vi.fn(async () => options.runtimeReady ?? true),
+    runtimeReady: vi.fn(async () =>
+      typeof options.runtimeReady === "function" ? options.runtimeReady() : (options.runtimeReady ?? true),
+    ),
     now: () => clock.now,
   });
 }
@@ -498,7 +501,7 @@ async function setupObservationFixture(credentialStatus: "ready" | "unconfirmed"
       start: () => ({
         qrReady: Promise.resolve({ url: "https://example.com/qr", expiresAt: new Date(clock.now.getTime() + 60_000) }),
         result: registration.promise,
-        abort: vi.fn(),
+        abort: vi.fn(() => registration.reject(Object.assign(new Error("Registration canceled"), { code: "abort" }))),
       }),
     },
     activation: {
@@ -597,8 +600,9 @@ describe("Feishu setup observation consistency", () => {
       expect(await pending).toMatchObject({ state: "validating", activation: { reason: "checking" } });
     } finally {
       value.pause.release();
-      await value.setup.stop();
+      const stopping = value.setup.stop();
       value.probe.resolve({ status: "waiting", reason: "temporary_failure", missingScopes: [] });
+      await stopping;
     }
   });
 });
@@ -876,3 +880,48 @@ it.each(["activation", "maintenance"] as const)(
     }
   },
 );
+
+it("joins original runtime readiness SQL after setup and policy cancellation", async () => {
+  const value = await fixture(),
+    harness = fakeAdapterFactory();
+  let enter!: () => void, release!: () => void;
+  const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    }),
+    gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+  const manager = createManager(value, harness, {
+    runtimeReady: async () => {
+      await value.client.sql`select 1`;
+      enter();
+      await gate;
+      return true;
+    },
+  });
+  const setup = createSetupService(value, manager);
+  const { attemptId, bindingId } = await insertCandidate(value.client.database, value.cipher, {
+    agentId: value.agent.id,
+  });
+  let drained = false;
+  const checking = setup.check(value.bootstrap.userId, attemptId);
+  try {
+    await entered;
+    const stopping = Promise.all([setup.stop(), manager.stop()]).then(() => {
+      drained = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(drained).toBe(false);
+    release();
+    await checking;
+    await stopping;
+    const [row] = await value.client.database.select().from(imBindings).where(eq(imBindings.id, bindingId));
+    expect(row?.setupState).toBe("pending_activation");
+    expect(row?.encryptedSetupContext).not.toBeNull();
+    expect((await value.client.sql`select 1 as healthy`)[0]?.healthy).toBe(1);
+  } finally {
+    release();
+    await checking;
+    await Promise.all([setup.stop(), manager.stop()]);
+  }
+});

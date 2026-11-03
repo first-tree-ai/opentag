@@ -395,3 +395,12 @@ expose close ports through their final SQL, including a disconnected HTTP peer;
 main wiring is still required. Approval polling and admitted requests/decisions/
 completions drain through the Runtime route. Batch 29 review found no actionable
 defect. Feishu setup, detached callback/proof/capture tails and main remain IM-F3.
+
+
+[Feishu setup actual-work drain](verification/sql-caller-repairs-31.md) passes
+355 distinct Docker cases, including 129 native PostgreSQL. It retains SDK and
+readiness work behind cancellation wrappers, includes late QR commit cleanup and
+preserves durable candidates. Pre-commit review P2 is corrected with two native
+late-slot controls; exact committed review remains pending. Batch 30 review found
+no actionable defect. Detached OAuth/proof/capture tails and main composition
+still keep IM-F3 open; no defect count is advanced for a partial global repair.

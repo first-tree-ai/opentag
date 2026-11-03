@@ -123,7 +123,10 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     this.#createAdapter = input.createAdapter ?? ((options) => new FeishuAdapter({ ...options, policy: this.#policy }));
     this.#leaseMs = input.leaseMs ?? DEFAULT_LEASE_MS;
     this.#maintenanceMs = input.maintenanceMs ?? DEFAULT_MAINTENANCE_MS;
-    this.#runtimeReady = async (agentId) => (await input.runtimeReady?.(agentId)) ?? true;
+    this.#runtimeReady = async (agentId) => {
+      if (this.#stopped && this.#shutdownEpoch > 0) return false;
+      return (await this.#track(Promise.resolve(input.runtimeReady?.(agentId)))) ?? true;
+    };
     this.#policy =
       input.policy ??
       new ExternalCallPolicy({

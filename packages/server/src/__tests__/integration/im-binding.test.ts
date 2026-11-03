@@ -59,6 +59,7 @@ import { SlackConfigurationService } from "../../services/im-bindings/slack/inde
 import { EffectiveRuntimeSnapshotAssembler } from "../../services/runtime-config/index.js";
 import { SessionService } from "../../services/sessions/index.js";
 import { AccountSetupService } from "../../services/setup/index.js";
+import { abortableMockFeishuRegistration } from "../support/abortable-feishu-registration.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 let testDatabase: MigratedTestDatabase;
@@ -740,7 +741,7 @@ describe("IM binding persistence", () => {
         value.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId)),
       ).resolves.toEqual([expect.objectContaining({ state: "terminal_rejected", reason: "computer_owner_mismatch" })]);
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -1127,7 +1128,7 @@ describe("IM binding persistence", () => {
       expect(runtime.frames).toEqual([expect.objectContaining({ type: "session:reconcile", desired: "stopped" })]);
     } finally {
       releaseSuspend.resolve();
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -1199,7 +1200,7 @@ describe("IM binding persistence", () => {
       expect(runtime.frames.at(-1)).toMatchObject({ type: "session:reconcile", desired: "stopped" });
     } finally {
       releaseDelivery.resolve();
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -1235,8 +1236,7 @@ describe("IM binding persistence", () => {
           await releaseOldStop.promise;
           await stopAgentSessions(value.database, targets, {
             currentInstanceId: () => instanceId,
-            requestReconcile: (computerId, currentInstanceId, request, onDispatched) =>
-              runtime.domain.requestReconcile(computerId, currentInstanceId, request, onDispatched),
+            requestReconcile: runtime.domain.requestReconcile.bind(runtime.domain),
           });
         },
       });
@@ -1266,7 +1266,7 @@ describe("IM binding persistence", () => {
     } finally {
       releaseOldStop.resolve();
       releaseDelivery.resolve();
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -1333,7 +1333,7 @@ describe("IM binding persistence", () => {
     } finally {
       releaseFirstAdmission.resolve();
       releaseSecondClaim.resolve();
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -1406,7 +1406,7 @@ describe("IM binding persistence", () => {
         status: "recorded",
       });
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -4203,7 +4203,7 @@ describe("IM binding persistence", () => {
         previousSequence = snapshot.revision.session.sequence;
       }
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await rm(clientHome, { recursive: true, force: true });
       await value.sql.end();
     }
@@ -4389,7 +4389,7 @@ describe("IM binding persistence", () => {
         updatedAgent.runtimeConfig.revision,
       );
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await rm(clientHome, { recursive: true, force: true });
       await value.sql.end();
     }
@@ -4627,7 +4627,7 @@ describe("IM binding persistence", () => {
         expect.objectContaining({ type: "im:deliver", deliveryId: secondDeliveryId }),
       ]);
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await rm(clientHome, { recursive: true, force: true });
       await value.sql.end();
     }
@@ -5078,7 +5078,7 @@ describe("IM binding persistence", () => {
         third.domain.handle({ ...report, requestId: crypto.randomUUID() }, third.context),
       ).resolves.toMatchObject({ status: "already_recorded" });
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -5176,7 +5176,7 @@ describe("IM binding persistence", () => {
       expect(ownerFrame).toBeDefined();
       expect(ownerFrame).not.toHaveProperty("replyRole");
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -5239,7 +5239,7 @@ describe("IM binding persistence", () => {
       ]);
       expect(second.frames[0]).not.toHaveProperty("runtime");
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -5368,7 +5368,7 @@ describe("IM binding persistence", () => {
           turnId,
         });
       } finally {
-        for (const owner of owners) owner.close();
+        for (const owner of owners) await owner.close();
         await value.sql.end();
       }
     },
@@ -5474,7 +5474,7 @@ describe("IM binding persistence", () => {
         turnId: `turn-${firstFrame.deliveryId}`,
       });
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -5768,7 +5768,7 @@ describe("IM binding persistence", () => {
         status: "stale_generation",
       });
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -5863,7 +5863,7 @@ describe("IM binding persistence", () => {
         ),
       ).resolves.toBe("stale_generation");
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -5910,7 +5910,7 @@ describe("IM binding persistence", () => {
         generation: 2,
       });
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -6034,7 +6034,7 @@ describe("IM binding persistence", () => {
       ).resolves.toMatchObject({ generation: 2 });
       expect((await clientStore.read(dispatched.agentId, dispatched.sessionId))?.unresolvedTurn).toBeUndefined();
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await rm(clientHome, { recursive: true, force: true });
       await value.sql.end();
     }
@@ -6148,7 +6148,7 @@ describe("IM binding persistence", () => {
           turnId,
         });
       } finally {
-        for (const owner of owners) owner.close();
+        for (const owner of owners) await owner.close();
         await value.sql.end();
       }
     },
@@ -6214,7 +6214,7 @@ describe("IM binding persistence", () => {
         (await value.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, pending.id)))[0],
       ).toMatchObject({ attemptCount: 0, state: "pending" });
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -6325,7 +6325,7 @@ describe("IM binding persistence", () => {
         teamBrand: "feishu";
       }>();
       let aborted = false;
-      const registration: FeishuRegistration = {
+      const registration: FeishuRegistration = abortableMockFeishuRegistration({
         qrReady: Promise.resolve({
           url: "https://open.feishu.cn/qr/example",
           expiresAt: new Date(Date.now() + 60_000),
@@ -6334,7 +6334,7 @@ describe("IM binding persistence", () => {
         abort: () => {
           aborted = true;
         },
-      };
+      });
       const gateway: FeishuRegistrationGateway = { start: () => registration };
       let validations = 0;
       const instanceId = crypto.randomUUID();
@@ -6445,14 +6445,15 @@ describe("IM binding persistence", () => {
       instanceId,
       imBindings: value.imBindingService,
       registrations: {
-        start: () => ({
-          qrReady: Promise.resolve({
-            url: "https://open.feishu.cn/qr/read-only",
-            expiresAt: new Date(Date.now() + 60_000),
+        start: () =>
+          abortableMockFeishuRegistration({
+            qrReady: Promise.resolve({
+              url: "https://open.feishu.cn/qr/read-only",
+              expiresAt: new Date(Date.now() + 60_000),
+            }),
+            result: completion.promise,
+            abort: () => undefined,
           }),
-          result: completion.promise,
-          abort: () => undefined,
-        }),
       },
       activation: { activateAtomicAttempt: vi.fn() },
     });
@@ -6523,14 +6524,15 @@ describe("IM binding persistence", () => {
       instanceId: crypto.randomUUID(),
       imBindings: value.imBindingService,
       registrations: {
-        start: () => ({
-          qrReady: Promise.resolve({
-            url: "https://open.feishu.cn/qr/failure",
-            expiresAt: new Date(Date.now() + 60_000),
+        start: () =>
+          abortableMockFeishuRegistration({
+            qrReady: Promise.resolve({
+              url: "https://open.feishu.cn/qr/failure",
+              expiresAt: new Date(Date.now() + 60_000),
+            }),
+            result: completion.promise,
+            abort: () => undefined,
           }),
-          result: completion.promise,
-          abort: () => undefined,
-        }),
       },
       activation: {
         activateAtomicAttempt: vi.fn().mockRejectedValue(new Error("FEISHU_CONNECTION_ERROR")),
@@ -6877,14 +6879,15 @@ describe("IM binding persistence", () => {
         instanceId,
         imBindings: value.imBindingService,
         registrations: {
-          start: () => ({
-            qrReady: Promise.resolve({
-              url: "https://open.feishu.cn/qr/already-bound",
-              expiresAt: new Date(Date.now() + 60_000),
+          start: () =>
+            abortableMockFeishuRegistration({
+              qrReady: Promise.resolve({
+                url: "https://open.feishu.cn/qr/already-bound",
+                expiresAt: new Date(Date.now() + 60_000),
+              }),
+              result: completion.promise,
+              abort: () => undefined,
             }),
-            result: completion.promise,
-            abort: () => undefined,
-          }),
         },
         activation: manager,
       });
@@ -7156,11 +7159,13 @@ describe("IM binding persistence", () => {
       appSecret: string;
       teamBrand: "feishu";
     }>();
-    const start = vi.fn(() => ({
-      qrReady: Promise.resolve({ url: "https://open.feishu.cn/qr/cancel", expiresAt: new Date(Date.now() + 60_000) }),
-      result: completion.promise,
-      abort: vi.fn(),
-    }));
+    const start = vi.fn(() =>
+      abortableMockFeishuRegistration({
+        qrReady: Promise.resolve({ url: "https://open.feishu.cn/qr/cancel", expiresAt: new Date(Date.now() + 60_000) }),
+        result: completion.promise,
+        abort: vi.fn(),
+      }),
+    );
     const activateAtomicAttempt = vi.fn();
     const setup = new FeishuSetupService({
       database: value.database,
@@ -7202,11 +7207,15 @@ describe("IM binding persistence", () => {
   it("admits a fresh Feishu attempt after the slot of a canceled one is released", async () => {
     const value = await unboundFixture();
     // Neither registration finishes authorizing: the Account cancels the first and starts again.
-    const openRegistration = () => ({
-      qrReady: Promise.resolve({ url: "https://open.feishu.cn/qr/release", expiresAt: new Date(Date.now() + 60_000) }),
-      result: new Promise<never>(() => undefined),
-      abort: vi.fn(),
-    });
+    const openRegistration = () =>
+      abortableMockFeishuRegistration({
+        qrReady: Promise.resolve({
+          url: "https://open.feishu.cn/qr/release",
+          expiresAt: new Date(Date.now() + 60_000),
+        }),
+        result: new Promise<never>(() => undefined),
+        abort: vi.fn(),
+      });
     const setup = new FeishuSetupService({
       database: value.database,
       cipher: value.cipher,
@@ -7307,14 +7316,16 @@ describe("IM binding persistence", () => {
       instanceId: crypto.randomUUID(),
       imBindings: value.imBindingService,
       registrations: {
-        start: vi.fn(() => ({
-          qrReady: Promise.resolve({
-            url: "https://open.feishu.cn/qr/cross-provider",
-            expiresAt: new Date(Date.now() + 60_000),
+        start: vi.fn(() =>
+          abortableMockFeishuRegistration({
+            qrReady: Promise.resolve({
+              url: "https://open.feishu.cn/qr/cross-provider",
+              expiresAt: new Date(Date.now() + 60_000),
+            }),
+            result: new Promise<never>(() => undefined),
+            abort: vi.fn(),
           }),
-          result: new Promise<never>(() => undefined),
-          abort: vi.fn(),
-        })),
+        ),
       },
       activation: { activateAtomicAttempt: vi.fn() },
     });

@@ -135,7 +135,7 @@ request. Keep one row per behaviour, not one per screenshot or width.
 
 | ID | Scenario | Steps | Expected result | Run | Verified today |
 | --- | --- | --- | --- | --- | --- |
-| TK-01 | Task list | Open Tasks, and an Agent's Tasks | Rows show title, Agent, source, status, last activity; loading, empty, and failure states are distinct | Core | unit: `features/tasks-page.test.tsx`, `__tests__/agent-tasks.test.tsx`; sweep |
+| TK-01 | Task list | Open an Agent's Tasks (in production builds the all-Agents `/tasks` route redirects to the Agent list) | Rows show title, Agent, source, status, last activity; loading, empty, and failure states are distinct | Core | unit: `features/tasks-page.test.tsx`, `__tests__/agent-tasks.test.tsx`; sweep |
 | TK-02 | Next page fails | Load more Tasks when the next page fails | Loaded Tasks stay; the failure offers a retry | Edge | unit: `__tests__/agent-tasks.test.tsx` |
 | TK-03 | Task detail | Open a Task | Uses the full page width; leads with the outcome | Core | unit: `features/task-conversation.test.tsx`; sweep |
 | TK-04 | Each reply once | Task with Agent replies | Each reply appears once in the timeline, without per-message status labels | Core | unit: `features/task-conversation.test.tsx`, `features/task-outgoing-replies.test.tsx` |
@@ -149,7 +149,7 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | AC-01 | Sign in and sign out | Sign in with a wrong, then the right password; sign out | Wrong input is kept with an error; the right one opens the product; sign out returns to sign-in | Core | smoke: `login-smoke.spec.ts`, `app.spec.ts`; unit: `__tests__/sign-out-escape-hatches.test.tsx` |
 | AC-02 | Protected routes | Open a protected page signed out | Redirects to sign-in and returns to the page after sign-in | Core | smoke: `browser-smoke.spec.ts`, `app.spec.ts` |
 | AC-03 | Registration | Register through the form | Account is created and setup opens | Core | smoke: `login-smoke.spec.ts` |
-| AC-04 | Account settings | Open Account | Readable beside the navigation; GitHub authorization can be retired | Core | smoke: `responsive-smoke.spec.ts`, `github-account-review.smoke.spec.ts`; unit: `__tests__/account.test.tsx` |
+| AC-04 | Account settings | Open Account | Readable beside the navigation; when a GitHub authorization exists, it can be retired | Core | smoke: `responsive-smoke.spec.ts`, `github-account-review.smoke.spec.ts`; unit: `__tests__/account.test.tsx` |
 | AC-05 | Account menu | Open the Account menu with the keyboard and by touch | Every destination is named and reachable; it closes on an outside click | Edge | smoke: `navigation-polish.spec.ts`, `browser-smoke.spec.ts` |
 | AC-06 | Cloud credits | Account with a Cloud credit banner | Banner actions keep touch-size targets on phones | Edge | smoke: `cloud-billing-smoke.spec.ts` |
 | AC-07 | Account profile reads plainly | Open Account | No page subtitle; the sign-in email is plain text, not a locked input; display name and language have no helper sentences | Edge | unit: `__tests__/account.test.tsx` |

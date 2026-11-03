@@ -271,6 +271,19 @@ describe("agent setup lab page", () => {
     expect(await screen.findByText("reviewer is ready.")).toBeTruthy();
   });
 
+  it("mirrors the production Back to Agents exit on every setup screen", async () => {
+    renderLabPage();
+    await chooseOption("Screen state", "Connect messaging");
+    expect(await screen.findByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Set up later" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Back to Agents" }));
+    expect(
+      await screen.findByText(
+        "The real product would open the Agents list here. The Lab keeps this in-memory run isolated.",
+      ),
+    ).toBeTruthy();
+  });
+
   it("drives Feishu and Slack without leaving the Lab", async () => {
     renderLabPage();
     await chooseOption("Screen state", "Connect messaging");

@@ -521,7 +521,7 @@ describe("AgentSetupPage messaging recovery", () => {
     await settle();
     continueFromPreparation();
 
-    expect(screen.getByText("Pick the app your team already works in.")).toBeTruthy();
+    expect(screen.queryByText("Pick the app your team already works in.")).toBeNull();
     expect(document.querySelector('[data-ui="agent-setup-messaging-choices"]')).toBeNull();
   });
 });

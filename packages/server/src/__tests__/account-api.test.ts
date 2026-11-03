@@ -1,4 +1,5 @@
 import {
+  AGENT_ACTIVITY_TASK_COUNT_HEADER,
   accountComputerByIdPath,
   accountComputerConnectCodePath,
   accountComputerDisconnectPath,
@@ -1024,6 +1025,43 @@ describe("Account-native management collections", () => {
       expect(response.statusCode).toBe(401);
     }
     expect(service.agentService.listForAccount).not.toHaveBeenCalled();
+  });
+
+  it("sends the running Task count only to clients that declare they read it", async () => {
+    const service = services();
+    service.agentService.listForAccount.mockResolvedValue({
+      agents: [{ ...agentListItem, activity: { state: "working", startedAt: agent.updatedAt, runningTaskCount: 2 } }],
+    });
+    const app = createApp({
+      authService: authService(),
+      agentService: service.agentService as unknown as AgentService,
+    });
+    apps.push(app);
+    // The working activity exactly as a client released before the count validates it.
+    const legacyActivity = z.discriminatedUnion("state", [
+      z.object({ state: z.literal("idle") }).strict(),
+      z.object({ state: z.literal("unknown") }).strict(),
+      z.object({ state: z.literal("working"), startedAt: z.string().datetime() }).strict(),
+    ]);
+
+    const legacy = await app.inject({ method: "GET", url: HTTP_PATHS.accountAgents, headers: authorization });
+    expect(legacy.statusCode).toBe(200);
+    expect(legacyActivity.parse(legacy.json().agents[0].activity)).toEqual({
+      state: "working",
+      startedAt: agent.updatedAt,
+    });
+
+    const current = await app.inject({
+      method: "GET",
+      url: HTTP_PATHS.accountAgents,
+      headers: { ...authorization, [AGENT_ACTIVITY_TASK_COUNT_HEADER]: "1" },
+    });
+    expect(current.json().agents[0].activity).toEqual({
+      state: "working",
+      startedAt: agent.updatedAt,
+      runningTaskCount: 2,
+    });
+    expect(() => legacyActivity.parse(current.json().agents[0].activity)).toThrow();
   });
 
   it("registers Account-native collections without the compatibility resolver", async () => {

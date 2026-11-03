@@ -660,8 +660,8 @@ describe("OpenTagApi against a newer Server", () => {
     agents: [
       {
         ...agentListItem,
-        activity: { state: "working", startedAt: agent.updatedAt, runningTaskCount: 2 },
-        computer: { ...agentListItem.computer, region: "eu" },
+        activity: { state: "working", startedAt: agent.updatedAt, queuedTaskCount: 2 },
+        computer: { ...agentListItem.computer, region: "value-must-not-be-logged" },
         brandNewField: { nested: [1, 2] },
       },
     ],
@@ -688,11 +688,11 @@ describe("OpenTagApi against a newer Server", () => {
     expect(debug).toHaveBeenCalledWith(
       expect.objectContaining({
         path: "/api/v1/agents",
-        ignoredKeys: expect.arrayContaining(["serverOnlyFlag", "agents.0.activity.runningTaskCount"]),
+        ignoredKeys: expect.arrayContaining(["serverOnlyFlag", "agents.0.activity.queuedTaskCount"]),
       }),
       expect.any(String),
     );
-    expect(JSON.stringify(debug.mock.calls)).not.toContain("eu");
+    expect(JSON.stringify(debug.mock.calls)).not.toContain("value-must-not-be-logged");
   });
 
   it("still rejects a newer Server's response that changes a known field", async () => {

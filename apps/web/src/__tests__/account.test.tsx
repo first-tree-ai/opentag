@@ -329,7 +329,7 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Connect your computer" })).toBeTruthy();
-    expect(screen.getByText("Reviewer runs on your computer; messages and results pass through openTag.")).toBeTruthy();
+    expect(screen.queryByText("Reviewer runs on your computer; messages and results pass through openTag.")).toBeNull();
     expect(screen.getByText("No computer connected")).toBeTruthy();
     expect(window.location.pathname).toBe("/agents/setup");
 

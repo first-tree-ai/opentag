@@ -24,6 +24,12 @@ type AgentCardStatus = {
 };
 
 export function agentCardStatus(agent: AgentListItem): AgentCardStatus {
+  const status = agentAvailabilityCardStatus(agent);
+  const detail = agentActivityDetail(agent, status.tone === "success");
+  return detail ? { ...status, detail } : status;
+}
+
+function agentAvailabilityCardStatus(agent: AgentListItem): AgentCardStatus {
   if (agent.status === "suspended" || agent.availability.state === "suspended") {
     return { label: m.agents_card_status_paused(), tone: "neutral" };
   }
@@ -31,7 +37,7 @@ export function agentCardStatus(agent: AgentListItem): AgentCardStatus {
     return { label: m.agents_card_status_unavailable(), tone: "neutral" };
   }
   if (agent.availability.state === "ready") {
-    return readyAgentCardStatus(agent);
+    return { label: m.agents_card_status_ready(), tone: "success" };
   }
   // A delivery check the Computer is still running resolves by itself, like a runtime check does.
   if (agent.availability.reason === "handoff_checking") {
@@ -46,15 +52,24 @@ export function agentCardStatus(agent: AgentListItem): AgentCardStatus {
   return blockedAgentCardStatus(agent);
 }
 
-function readyAgentCardStatus(agent: AgentListItem): AgentCardStatus {
-  return {
-    detail:
-      agent.activity.state === "working"
-        ? m.agents_card_activity_working({ elapsed: formatElapsedCompact(agent.activity.startedAt) })
-        : undefined,
-    label: m.agents_card_status_ready(),
-    tone: "success",
-  };
+/**
+ * How many Tasks the Agent is running. Work in progress is a fact whatever the Agent's status, so it
+ * shows on every row; "waiting" only shows beside Ready, where it is the useful thing to know rather
+ * than a contradiction of a blocked or paused status. An unknown activity says nothing.
+ */
+function agentActivityDetail(agent: AgentListItem, ready: boolean): string | undefined {
+  const { activity } = agent;
+  if (activity.state === "working") {
+    const count = activity.runningTaskCount;
+    if (count === undefined) {
+      // A Server without the count still reports when the work started.
+      return m.agents_card_activity_working({ elapsed: formatElapsedCompact(activity.startedAt) });
+    }
+    return count === 1
+      ? m.agents_card_activity_running_tasks_single({ count })
+      : m.agents_card_activity_running_tasks_plural({ count });
+  }
+  return activity.state === "idle" && ready ? m.agents_card_activity_waiting() : undefined;
 }
 
 function blockedAgentCardStatus(agent: AgentListItem): AgentCardStatus {

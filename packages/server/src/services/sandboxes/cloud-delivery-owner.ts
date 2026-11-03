@@ -26,9 +26,10 @@ import {
   users,
 } from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
-import type { RuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
+import type { DeliveryDispatchStatus, RuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
 import type { RuntimeBusinessContext } from "../../runtime/runtime-session.js";
 import type { RuntimeCredentialOwner } from "../../runtime-credentials/runtime-credential-owner.js";
+import { InboundReceiptPendingError } from "../im/inbound-admission.js";
 import type { SessionCliProofService } from "../sessions/session-cli-proof-service.js";
 import { CloudImSteering } from "./cloud-im-steering.js";
 import type { CloudModelGrantIssue } from "./cloud-model-grants.js";
@@ -36,6 +37,22 @@ import { type CloudConnectionRecord, type CloudRuntimeFence, cloudInstanceIdFor 
 import { loadManagedSandboxBySessionId, loadSandboxRecordBySessionId } from "./owned-sandbox.js";
 import type { RunnerControlSocket, RunnerHub, RunnerScope } from "./runner-hub.js";
 import type { SandboxAllocationReconciliation } from "./sandbox-runner-service.js";
+
+function assertCloudDispatchStatus(status: DeliveryDispatchStatus): void {
+  if (status === "inbound_pending") throw new InboundReceiptPendingError();
+  if (status === "stale_generation") {
+    throw new CloudDeliveryDispatchError("stale_generation", "The delivery placement generation is stale");
+  }
+  if (status === "conflict") {
+    throw new CloudDeliveryDispatchError("dispatch_conflict", "The delivery dispatch state conflicts");
+  }
+  if (status === "claimed") {
+    throw new CloudDeliveryDispatchError(
+      "environment_not_ready",
+      "The Sandbox environment is being reclaimed; the input stays pending",
+    );
+  }
+}
 
 /**
  * E4 Session-scoped Cloud IM delivery owner. Routes claimed IM deliveries to the exact Sandbox
@@ -344,18 +361,7 @@ export class CloudDeliveryOwner {
       computerId: input.computerId,
       instanceId: connection.instanceId,
     });
-    if (dispatch === "stale_generation") {
-      throw new CloudDeliveryDispatchError("stale_generation", "The delivery placement generation is stale");
-    }
-    if (dispatch === "conflict") {
-      throw new CloudDeliveryDispatchError("dispatch_conflict", "The delivery dispatch state conflicts");
-    }
-    if (dispatch === "claimed") {
-      throw new CloudDeliveryDispatchError(
-        "environment_not_ready",
-        "The Sandbox environment is being reclaimed; the input stays pending",
-      );
-    }
+    assertCloudDispatchStatus(dispatch);
     await this.#assertEnvironmentStillOwned(row, request, input.inputHash);
     const sent = this.#hub.sendToCurrent(row.id, socket, {
       type: "delivery:run",

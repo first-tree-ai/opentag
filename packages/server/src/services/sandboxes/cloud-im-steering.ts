@@ -12,6 +12,7 @@ import type { DatabaseClient } from "../../db/client.js";
 import { imMessageDeliveries } from "../../db/schema/index.js";
 import type { RuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
 import type { RuntimeBusinessContext } from "../../runtime/runtime-session.js";
+import { InboundReceiptPendingError } from "../im/inbound-admission.js";
 import type { CloudConnectionRecord } from "./cloud-runtime-fence.js";
 
 interface SteeringConnection {
@@ -46,6 +47,7 @@ export class CloudImSteering {
     if (!connection) throw new Error("CLOUD_STEER_UNAVAILABLE");
     const hash = computeRuntimeImSteerInputHash(request);
     const status = await this.options.custody.beginSteerDispatch(request, hash, connection.context);
+    if (status === "inbound_pending") throw new InboundReceiptPendingError();
     if (status !== "dispatched" && status !== "already_dispatched") throw new Error("CLOUD_STEER_DISPATCH_CONFLICT");
     const current = await this.options.connection(request.sessionId);
     if (current?.record.connectionId !== connection.record.connectionId) {

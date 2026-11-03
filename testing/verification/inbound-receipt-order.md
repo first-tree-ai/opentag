@@ -63,7 +63,7 @@ Local validation on the implementation based on main `8cb997b2`:
 
 | Check | Result |
 | --- | --- |
-| Affected unit regressions | 9 files, 260 tests passed |
+| Affected unit regressions | 10 files, 265 tests passed |
 | PostgreSQL regressions, one worker | 7 files, 89 tests passed |
 | Production SQL plan experiment | 3 cases passed, 24 plans inspected |
 | Server typecheck and build | Passed |
@@ -75,6 +75,12 @@ The PostgreSQL group includes `inbound-admission`, `inbound-receipt-recovery`,
 removal/connection errors and a Cloud parking timeout during concurrent local validation. The same
 seven files passed serially without changing timeouts, assertions or production code. This does not
 establish the cause of the parallel-run environment failures or a production capacity guarantee.
+
+The first remote Server coverage run exposed a stale fixture in `inbound-receipt-work-store`:
+its installation stored `B_WORK` as `externalBotId`, while its saved work used bot user `U_WORK`.
+The production installation writer stores the bot user ID in that column. Correcting the fixture
+to `U_WORK` makes all five existing recovery tests pass with the new identity fence intact. These
+five cases extend the earlier nine-file unit run; the production implementation is unchanged.
 
 Recording-runtime callbacks stand in for provider execution. No live Slack/Feishu, real model, native
 input injection, physical Cloud action, deployment or production replay is exercised. Existing receipt

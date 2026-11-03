@@ -6,6 +6,7 @@ import { channelConfig } from "../../core/channel/config.js";
 import { resolveChannelEnvironment } from "../../core/channel/environment.js";
 import * as commandPolicy from "../../core/command/policy.js";
 import { type ComputerConnectResult, runComputerConnect } from "../../core/computer/connect.js";
+import { describeConnectFailure, formatConnectFailure } from "../../core/computer/connect-messages.js";
 import { formatPreparationResultLines } from "../../core/computer/formatting.js";
 import {
   daemonServiceCommand,
@@ -87,16 +88,21 @@ async function connectOrPresentFailure(
   environment: NodeJS.ProcessEnv,
   options: ComputerConnectCommandOptions,
 ): Promise<ComputerConnectResult | undefined> {
+  const serverUrl = options.server ?? environment.OPENTAG_SERVER_URL ?? channelConfig.defaultServerUrl;
   try {
-    const serverUrl = options.server ?? environment.OPENTAG_SERVER_URL ?? channelConfig.defaultServerUrl;
     if (!serverUrl) throw new Error(`The ${channelConfig.channel} channel requires --server for Computer connect`);
     return await runComputerConnect({ code, home, noStart: options.start === false, serverUrl });
   } catch (error) {
     const commandError = commandPolicy.toCommandError(error, "request");
-    process.exitCode = commandPolicy.presentCommand(
-      { ok: false, error: commandError, exitCode: commandPolicy.commandExitCode(commandError) },
-      { json: options.json },
-    );
+    const exitCode = commandPolicy.commandExitCode(commandError);
+    if (options.json) {
+      process.exitCode = commandPolicy.presentCommand({ ok: false, error: commandError, exitCode }, { json: true });
+    } else {
+      const message = describeConnectFailure(commandError, { serverUrl, home });
+      const lines = formatConnectFailure(commandError, message).trimEnd().split("\n");
+      process.stderr.write(`${lines.map(safeLine).join("\n")}\n`);
+      process.exitCode = exitCode;
+    }
     return undefined;
   }
 }

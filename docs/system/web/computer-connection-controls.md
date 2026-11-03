@@ -44,7 +44,9 @@ Disconnect is an Account-authorized `POST /api/v1/computers/:computerId/disconne
 and CSRF boundary. It revokes active credentials and pending repair codes and clears presence. Computer identity,
 Agent bindings, configuration, and local files remain. Cloud Computers cannot be disconnected through this endpoint.
 
-The transaction records `computers.disconnected_at`; a successful targeted repair clears it. Onboarding reset also
+The transaction records `computers.disconnected_at`; a successful targeted repair clears it, and so does a create
+code redeemed from the same installation, which repairs that Computer in place instead of adding one (see
+[Server and Client Runtime boundary](../server-client-boundary.md)). Onboarding reset also
 clears this retention marker, so reset computers do not reappear in inventory. Deletion continues to hide the row.
 
 Inventory requests with `x-opentag-computer-access: 1` include explicitly disconnected computers and their

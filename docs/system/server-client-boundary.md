@@ -59,6 +59,28 @@ or timeout is logged separately and does not replace the committed exchange
 response. Cleanup targets only the revoked credential IDs, so a delayed close
 cannot evict a subsequent connection authenticated with another credential.
 
+Create-code redemption is idempotent per installation. `computer connect` keeps
+the home's existing installation ID for the same Server and sends its current
+machine token when it has one. Under the Account and code locks (then the target
+Agent, for a targeted code) the exchange locks the installation's live Computer
+and classifies it:
+
+| Installation's live Computer | Result |
+| --- | --- |
+| None (never seen, or deleted) | Create a new Computer (`created`). |
+| Another Account's, or the presented token belongs to another Account | `COMPUTER_ACCOUNT_CONFLICT` (409). Nothing is consumed or changed. |
+| Same Account, online, untargeted code, current token presented | `already_connected`: no credential rotation, code left unconsumed, no token returned. |
+| Same Account, otherwise (offline, disconnected, token stale or absent, targeted code) | Repair in place (`repaired`): same Computer ID, `disconnected_at` cleared, credentials rotated, code consumed. |
+
+The request fields `machineToken` and `reportOutcome` are optional. The Server
+answers `outcome` (and may omit the token) only to Clients that sent
+`reportOutcome`, so older Clients keep their strict response shape; a newer
+Client retries once without the optional fields when an older Server rejects them
+as unknown keys, which happens before redemption. Older Clients always send a new
+installation ID and therefore still create a new Computer on rerun. A local
+identity file that is gone (reinstall) also yields a new Computer; the previous
+one stays offline. Repair-mode codes keep their targeted behavior.
+
 The committed repair clears the current instance. Registration, heartbeat,
 and queued Runtime business frames independently validate the active credential;
 delivery and approval authority also require the current instance and connection.

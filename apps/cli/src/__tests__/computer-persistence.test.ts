@@ -118,9 +118,7 @@ describe.each([false, true])("post-exchange persistence (existing binding: %s)",
       if (stage === "credentials" && !committed) {
         expect(persisted).toEqual(beforeCredential);
         expect(await client.readComputerIdentity(home)).toEqual(beforeIdentity);
-        await expect(
-          repairLocalComputerConnection({ home, installationId: nextCredential.installationId }),
-        ).rejects.toMatchObject({ code: "COMPUTER_CREDENTIAL_UNAVAILABLE", retryability: "never" });
+        await expectUncommittedCredentialOutcome(existing, home, oldCredential, nextCredential);
         expect(await client.readMachineCredentials(home)).toEqual(beforeCredential);
         expect(await client.readComputerIdentity(home)).toEqual(beforeIdentity);
       } else {
@@ -227,3 +225,23 @@ describe("computer repair-local command", () => {
     expect(writer).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Without an earlier binding, the lost token cannot be recovered locally. With one, the rerun kept the
+ * installation identity, so the Server repaired that installation and the preserved local credential is
+ * the one it just rotated; a new code repairs it in place.
+ */
+async function expectUncommittedCredentialOutcome(
+  existing: boolean,
+  home: string,
+  oldCredential: { installationId: string },
+  nextCredential: { installationId: string },
+): Promise<void> {
+  if (existing) {
+    expect(nextCredential.installationId).toBe(oldCredential.installationId);
+    return;
+  }
+  await expect(
+    repairLocalComputerConnection({ home, installationId: nextCredential.installationId }),
+  ).rejects.toMatchObject({ code: "COMPUTER_CREDENTIAL_UNAVAILABLE", retryability: "never" });
+}

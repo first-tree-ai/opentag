@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   createReadStream,
   existsSync,
   mkdirSync,
@@ -493,5 +494,30 @@ test("portable installer --quiet only prints the result lines", { skip: platform
     assert.match(upToDate.stdout, /already installed and up to date; skipping download\./);
     assert.match(upToDate.stdout, /Run this installer with --force to reinstall the same version\./);
     assert.match(upToDate.stdout, /Command: /);
+  });
+});
+
+test("portable installer refuses an unwritable install location before downloading", {
+  skip: platform === null || process.getuid?.() === 0,
+}, async () => {
+  await withReleaseServer(async ({ baseUrl, releaseRoot, requests, root }) => {
+    buildRelease({ baseUrl, releaseRoot, version: "0.0.2-staging.1.1" });
+    const locked = join(root, "locked");
+    mkdirSync(locked, { mode: 0o555 });
+    try {
+      const result = await runInstaller({
+        baseUrl,
+        root,
+        args: ["--prefix", join(locked, "share", "opentag"), "--bin-dir", join(locked, "bin")],
+      });
+      assert.notEqual(result.status, 0);
+      const [reason] = result.stderr.split("\n");
+      assert.match(reason, /^opentag portable installer: openTag cannot write to .*locked .*permission denied\./);
+      assert.match(reason, /Fix the folder's permissions/);
+      assert.doesNotMatch(result.stderr, /mkdir:/);
+      assert.equal(requests.length, 0, "nothing is downloaded when the install location is unwritable");
+    } finally {
+      chmodSync(locked, 0o755);
+    }
   });
 });

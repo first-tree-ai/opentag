@@ -254,7 +254,27 @@ download_to() {
   elif command_exists wget; then
     wget -qO "$dest" "$url"
   else
-    die "curl or wget is required"
+    die "openTag setup needs curl or wget to download files, and neither is installed. Install curl (for example: sudo apt-get install curl), then run the same command again."
+  fi
+}
+
+# The nearest existing ancestor of a path that may not exist yet.
+existing_ancestor() {
+  dir="$1"
+  while [ ! -e "$dir" ]; do
+    dir="$(dirname "$dir")"
+  done
+  printf '%s' "$dir"
+}
+
+# Fail before downloading anything when the install root or shim directory cannot be created, with
+# one plain reason and a next step instead of a cascade of mkdir errors.
+require_writable() {
+  target="$1"
+  flag="$2"
+  ancestor="$(existing_ancestor "$target")"
+  if [ ! -d "$ancestor" ] || [ ! -w "$ancestor" ]; then
+    die "openTag cannot write to $ancestor (needed for $target): permission denied. Fix the folder's permissions for user $(id -un 2>/dev/null || printf 'this user'), or choose another folder with $flag, then run the same command again."
   fi
 }
 
@@ -538,6 +558,9 @@ cleanup() {
   fi
 }
 trap cleanup EXIT HUP INT TERM
+
+require_writable "$PREFIX" "--prefix"
+require_writable "$BIN_DIR" "--bin-dir"
 
 step "Detecting platform ..."
 PLATFORM="$(detect_platform)"

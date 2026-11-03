@@ -1205,6 +1205,7 @@ export async function startServer(): Promise<void> {
       ...optionalAllocationStatus(cloudRunnerRuntime),
       ...optionalNoteActivity(cloudRunnerRuntime),
       logger: serviceLogger("cloud-delivery"),
+      performanceLogger: perfLogger,
     });
     const cloudDeliveryOwner = cloudDelivery.cloudDeliveryOwner;
     cloudDeliveryOwnerRef = cloudDeliveryOwner;

@@ -87,34 +87,63 @@ export function extractExternalTransportCode(error: unknown): string | undefined
   return undefined;
 }
 
+const EXTERNAL_TIMEOUT_SYMBOL = Symbol.for("opentag.externalCallTimedOut");
+const TIMEOUT_TOKEN_PATTERN = /^(?:.*[_.:-])?timeout$/i;
+const DEADLINE_TOKEN_PATTERN = /_deadline_exceeded$/i;
+
+export function markExternalCallTimedOut<T extends object>(error: T): T {
+  try {
+    Object.defineProperty(error, EXTERNAL_TIMEOUT_SYMBOL, {
+      value: true,
+      enumerable: false,
+      configurable: true,
+    });
+  } catch {
+    // Frozen errors stay untouched.
+  }
+  return error;
+}
+
+function matchesTimeoutToken(candidate: unknown): boolean {
+  return (
+    typeof candidate === "string" &&
+    (TIMEOUT_TOKEN_PATTERN.test(candidate) ||
+      DEADLINE_TOKEN_PATTERN.test(candidate) ||
+      candidate.includes("exceeded its deadline") ||
+      /exceeded \d+ms/i.test(candidate))
+  );
+}
+
+function hasTimeoutCauseOrMarker(error: unknown): boolean {
+  if (matchesTimeoutToken(error)) return true;
+  let cursor: unknown = error;
+  for (let depth = 0; depth <= 3 && cursor && typeof cursor === "object"; depth += 1) {
+    try {
+      const record = cursor as Record<PropertyKey, unknown>;
+      if (record[EXTERNAL_TIMEOUT_SYMBOL] === true || record.timedOut === true) return true;
+      if (matchesTimeoutToken(record.code) || matchesTimeoutToken(record.name) || matchesTimeoutToken(record.message)) {
+        return true;
+      }
+      cursor = record.cause;
+    } catch {
+      break;
+    }
+  }
+  return false;
+}
+
 export function isExternalTimeoutError(error: unknown, code?: string, transportCode?: string): boolean {
   const resolvedCode = code ?? safePerformanceErrorCode(error);
-  if (
-    resolvedCode !== undefined &&
-    (resolvedCode.endsWith("_TIMEOUT") ||
-      resolvedCode.endsWith("_DEADLINE_EXCEEDED") ||
-      resolvedCode === "github_timeout" ||
-      resolvedCode === "timeout")
-  ) {
-    return true;
-  }
+  if (matchesTimeoutToken(resolvedCode)) return true;
   const resolvedTransport = transportCode ?? extractExternalTransportCode(error);
   if (
     resolvedTransport === "ETIMEDOUT" ||
     resolvedTransport === "TimeoutError" ||
-    (resolvedTransport?.startsWith("UND_ERR_") && resolvedTransport.endsWith("_TIMEOUT"))
+    matchesTimeoutToken(resolvedTransport)
   ) {
     return true;
   }
-  if (
-    error instanceof Error &&
-    (error.name === "TimeoutError" ||
-      error.message.endsWith("_TIMEOUT") ||
-      error.message.includes("exceeded its deadline"))
-  ) {
-    return true;
-  }
-  return false;
+  return hasTimeoutCauseOrMarker(error);
 }
 
 export interface ExternalCallTraceInput {
@@ -204,7 +233,11 @@ function resolveHttpMethod(input: unknown, init?: RequestInit): string {
   return "GET";
 }
 
-function wrapStreamingFetchResponse(response: Response, handle: PerformanceOperationHandle): Response {
+function wrapStreamingFetchResponse(
+  response: Response,
+  handle: PerformanceOperationHandle,
+  signal?: AbortSignal | null,
+): Response {
   const status = response.status;
   if (!response.body) {
     handle.complete({ status, attemptCount: 1, retryCount: 0 });
@@ -224,7 +257,9 @@ function wrapStreamingFetchResponse(response: Response, handle: PerformanceOpera
           controller.enqueue(value);
         } catch (error) {
           const transportCode = extractExternalTransportCode(error);
-          const timedOut = isExternalTimeoutError(error, undefined, transportCode);
+          const timedOut =
+            isExternalTimeoutError(error, undefined, transportCode) ||
+            (signal?.aborted === true && isExternalTimeoutError(signal.reason));
           handle.fail(
             error,
             {
@@ -304,7 +339,9 @@ export function createInstrumentedFetch(
       response = await runWithPerformanceContext(handle.context, () => baseFetch(input, init));
     } catch (error) {
       const transportCode = extractExternalTransportCode(error);
-      const timedOut = isExternalTimeoutError(error, undefined, transportCode);
+      const timedOut =
+        isExternalTimeoutError(error, undefined, transportCode) ||
+        (init?.signal?.aborted === true && isExternalTimeoutError(init.signal.reason));
       handle.fail(
         error,
         {
@@ -317,6 +354,6 @@ export function createInstrumentedFetch(
       );
       throw error;
     }
-    return wrapStreamingFetchResponse(response, handle);
+    return wrapStreamingFetchResponse(response, handle, init?.signal);
   }) as typeof fetch;
 }

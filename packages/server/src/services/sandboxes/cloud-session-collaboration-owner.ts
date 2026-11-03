@@ -24,6 +24,8 @@ import {
   sessions,
   users,
 } from "../../db/schema/index.js";
+import { markExternalCallTimedOut, traceExternalCall } from "../../observability/external-call-logger.js";
+import { type PerformanceLogger, updateCurrentPerformanceContext } from "../../observability/performance-logger.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import type { RuntimeDispatchAdmission } from "../../runtime/runtime-domain-owner.js";
 import {
@@ -340,6 +342,7 @@ export interface CloudSessionCollaborationOwnerOptions {
   /** E7 business-activity clock; best-effort, never on heartbeats. */
   noteActivity?: (sandboxId: string) => Promise<void>;
   logger?: Pick<ServiceLogger, "error" | "warn">;
+  performanceLogger?: PerformanceLogger;
   now?: () => number;
   requestTimeoutMs?: number;
   ensureTimeoutMs?: number;
@@ -381,6 +384,7 @@ class CloudSessionDispatchTimeoutError extends Error {
   constructor() {
     super("The Session message dispatch timed out");
     this.name = "CloudSessionDispatchTimeoutError";
+    markExternalCallTimedOut(this);
   }
 }
 
@@ -399,6 +403,16 @@ function isScheduledCloudDelivery(
   return "scheduledOrigin" in input.message;
 }
 
+function sessionMessageTraceAttributes(
+  outcome: { admitted: false } | { admitted: true; receipt: RunnerCloudSessionMessageReceivedFrame },
+): Record<string, unknown> {
+  if (!outcome.admitted) return { status: "not_admitted" };
+  return {
+    status: outcome.receipt.status,
+    ...(outcome.receipt.status === "accepted" ? { turnId: outcome.receipt.turnId } : {}),
+  };
+}
+
 export class CloudSessionCollaborationOwner {
   readonly #database: DatabaseClient;
   readonly #fence: CloudRuntimeFence;
@@ -413,6 +427,7 @@ export class CloudSessionCollaborationOwner {
   readonly #allocation?: CloudSessionCollaborationAllocationPort;
   readonly #noteActivity?: (sandboxId: string) => Promise<void>;
   readonly #logger?: Pick<ServiceLogger, "error" | "warn">;
+  readonly #perfLogger?: PerformanceLogger;
   readonly #now: () => number;
   readonly #requestTimeoutMs: number;
   readonly #ensureTimeoutMs: number;
@@ -443,6 +458,7 @@ export class CloudSessionCollaborationOwner {
     this.#allocation = options.allocation;
     this.#noteActivity = options.noteActivity;
     this.#logger = options.logger;
+    this.#perfLogger = options.performanceLogger;
     this.#now = options.now ?? (() => Date.now());
     this.#requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.#ensureTimeoutMs = options.ensureTimeoutMs ?? DEFAULT_ENSURE_TIMEOUT_MS;
@@ -547,41 +563,33 @@ export class CloudSessionCollaborationOwner {
       resourceName: sandbox.currentResourceName as string,
     };
     this.#work.register(workAllocation, message.id);
+    updateCurrentPerformanceContext({
+      agentId: route.agentId,
+      sessionId: route.targetSessionId,
+      sandboxId: sandbox.id,
+    });
     let receipt: RunnerCloudSessionMessageReceivedFrame;
     try {
-      const admitted = await admission(async (onDispatched) => {
-        signal?.throwIfAborted();
-        // Resolved INSIDE the authority admission: the freshest exact fenced connection is the
-        // only legal dispatch target, and the admission's row locks prove the route's authority.
-        const connection = this.#dispatchableConnection(sandbox);
-        if (!connection) throw new CloudSessionDispatchUnavailableError();
-        if (scheduled && connection.sessionCollaborationVersion !== 2) {
-          throw new CloudScheduledOriginUnsupportedError();
-        }
-        const socket = this.#socketFor(connection);
-        if (!socket) throw new CloudSessionDispatchUnavailableError();
-        const receiptPromise = this.#registerPending(connection, request.requestId);
-        if (scheduled) request.sentAt = new Date(this.#now()).toISOString();
-        const sent = this.#hub.sendToCurrent(sandbox.id, socket, {
-          type: "session:message:run",
-          requestId: request.requestId,
-          message: request,
-          sessionKind: envelope.sessionKind,
-          ...(envelope.outboxContext ? { outboxContext: envelope.outboxContext } : {}),
-        });
-        if (!sent) {
-          this.#failPending(request.requestId, new CloudSessionDispatchUnavailableError());
-          throw new CloudSessionDispatchUnavailableError();
-        }
-        onDispatched();
-        await this.#recordActivity(sandbox.id);
-        return receiptPromise;
-      });
+      const admitted = await traceExternalCall(
+        this.#perfLogger,
+        {
+          provider: "sandbox-runner",
+          operation: "external.sandbox-runner.sessionMessage",
+          agentId: route.agentId,
+          sessionId: route.targetSessionId,
+          sandboxId: sandbox.id,
+        },
+        () => this.#dispatchToRunnerForReceipt(sandbox, request, envelope, scheduled, admission, signal),
+        {
+          resultAttributes: sessionMessageTraceAttributes,
+          fallbackErrorCode: "CLOUD_SESSION_DISPATCH_FAILED",
+        },
+      );
       if (!admitted.admitted) {
         this.#work.settleUnassigned(workAllocation, message.id);
         return { status: "unreachable", code: "runtime_unavailable" };
       }
-      receipt = await admitted.result;
+      receipt = admitted.receipt;
     } catch (error) {
       this.#work.settleUnassigned(workAllocation, message.id);
       if (error instanceof CloudSessionDispatchUnavailableError) {
@@ -598,6 +606,55 @@ export class CloudSessionCollaborationOwner {
     const result = await this.#settleReceipt(sandbox, receipt, request, input.attemptCount);
     if (result.status !== "accepted") this.#work.settleUnassigned(workAllocation, message.id);
     return result;
+  }
+
+  async #dispatchToRunnerForReceipt(
+    sandbox: typeof sandboxes.$inferSelect,
+    request: SessionMessageDeliveryRequestV3,
+    envelope: CloudSessionTargetEnvelope,
+    scheduled: boolean,
+    admission: RuntimeDispatchAdmission<RunnerCloudSessionMessageReceivedFrame>,
+    signal?: AbortSignal,
+  ): Promise<{ admitted: false } | { admitted: true; receipt: RunnerCloudSessionMessageReceivedFrame }> {
+    const outcome = await admission((onDispatched) =>
+      this.#sendSessionMessageToRunner(sandbox, request, envelope, scheduled, onDispatched, signal),
+    );
+    if (!outcome.admitted) return { admitted: false };
+    return { admitted: true, receipt: await outcome.result };
+  }
+
+  async #sendSessionMessageToRunner(
+    sandbox: typeof sandboxes.$inferSelect,
+    request: SessionMessageDeliveryRequestV3,
+    envelope: CloudSessionTargetEnvelope,
+    scheduled: boolean,
+    onDispatched: () => void,
+    signal?: AbortSignal,
+  ): Promise<RunnerCloudSessionMessageReceivedFrame> {
+    signal?.throwIfAborted();
+    const connection = this.#dispatchableConnection(sandbox);
+    if (!connection) throw new CloudSessionDispatchUnavailableError();
+    if (scheduled && connection.sessionCollaborationVersion !== 2) {
+      throw new CloudScheduledOriginUnsupportedError();
+    }
+    const socket = this.#socketFor(connection);
+    if (!socket) throw new CloudSessionDispatchUnavailableError();
+    const receiptPromise = this.#registerPending(connection, request.requestId);
+    if (scheduled) request.sentAt = new Date(this.#now()).toISOString();
+    const sent = this.#hub.sendToCurrent(sandbox.id, socket, {
+      type: "session:message:run",
+      requestId: request.requestId,
+      message: request,
+      sessionKind: envelope.sessionKind,
+      ...(envelope.outboxContext ? { outboxContext: envelope.outboxContext } : {}),
+    });
+    if (!sent) {
+      this.#failPending(request.requestId, new CloudSessionDispatchUnavailableError());
+      throw new CloudSessionDispatchUnavailableError();
+    }
+    onDispatched();
+    await this.#recordActivity(sandbox.id);
+    return receiptPromise;
   }
 
   /**

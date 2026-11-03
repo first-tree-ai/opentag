@@ -1,5 +1,7 @@
 import type { RuntimeCredentialProvider } from "@opentag/shared";
 import type { DatabaseClient } from "../db/client.js";
+import { createInstrumentedFetch } from "../observability/external-call-logger.js";
+import type { PerformanceLogger } from "../observability/performance-logger.js";
 import type { ServiceLogger } from "../observability/service-logger.js";
 import type { ConnectionRegistry, RuntimeControlIdentity } from "../runtime/connection-registry.js";
 import type { RuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
@@ -109,6 +111,7 @@ export interface RuntimeCredentialServicesOptions {
   gitHubAdmission?: RuntimeGitHubAdmission;
   authority?: RuntimeExecutionAuthority;
   fetchImpl?: typeof fetch;
+  performanceLogger?: PerformanceLogger;
   /** Parent-provided adapters (e.g. GitHub). IM adapters are constructed by default. */
   adapters?: ReadonlyMap<RuntimeCredentialProvider, ProviderProxyAdapter>;
   /**
@@ -282,10 +285,11 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
       custody: options.custody,
       validationRuns,
     });
+  const feishuFetch = resolveProviderFetch(options, "feishu");
   const tenantTokens = new FeishuTenantTokenCache(
-    options.fetchImpl
+    feishuFetch
       ? {
-          exchange: (input) => exchangeFeishuTenantToken({ ...input, fetchImpl: options.fetchImpl as typeof fetch }),
+          exchange: (input) => exchangeFeishuTenantToken({ ...input, fetchImpl: feishuFetch }),
         }
       : {},
   );
@@ -384,6 +388,19 @@ function registryConnectionFence(registry: ConnectionRegistry): RuntimeConnectio
   };
 }
 
+function resolveProviderFetch(
+  options: RuntimeCredentialServicesOptions,
+  provider: "slack" | "feishu",
+): typeof fetch | undefined {
+  if (options.performanceLogger) {
+    return createInstrumentedFetch(options.performanceLogger, {
+      provider,
+      ...(options.fetchImpl ? { baseFetch: options.fetchImpl } : {}),
+    });
+  }
+  return options.fetchImpl;
+}
+
 /** Parent-provided adapters win; the Slack/Feishu IM adapters are constructed over their tables. */
 function createImAdapters(
   options: RuntimeCredentialServicesOptions,
@@ -400,6 +417,7 @@ function createImAdapters(
   ] as const;
   for (const [provider, operations] of defaults) {
     if (adapters.has(provider)) continue;
+    const providerFetch = resolveProviderFetch(options, provider);
     adapters.set(
       provider,
       new ImProviderProxyAdapter({
@@ -407,7 +425,7 @@ function createImAdapters(
         registry: new ProviderOperationRegistry(operations),
         urlHandles,
         outboundCapture,
-        ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+        ...(providerFetch ? { fetchImpl: providerFetch } : {}),
         ...(options.logger ? { logger: options.logger } : {}),
       }),
     );

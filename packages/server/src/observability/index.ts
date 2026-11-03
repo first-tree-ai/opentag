@@ -22,6 +22,7 @@ export {
   type ExternalCallTraceOptions,
   extractExternalTransportCode,
   isExternalTimeoutError,
+  markExternalCallTimedOut,
   sanitizeExternalUrl,
   traceExternalCall,
 } from "./external-call-logger.js";

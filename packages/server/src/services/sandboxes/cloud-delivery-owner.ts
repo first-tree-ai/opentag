@@ -25,7 +25,8 @@ import {
   sessions,
   users,
 } from "../../db/schema/index.js";
-import { updateCurrentPerformanceContext } from "../../observability/performance-logger.js";
+import { traceExternalCall } from "../../observability/external-call-logger.js";
+import { type PerformanceLogger, updateCurrentPerformanceContext } from "../../observability/performance-logger.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import type { DeliveryDispatchStatus, RuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
 import type { RuntimeBusinessContext } from "../../runtime/runtime-session.js";
@@ -149,6 +150,7 @@ export interface CloudDeliveryOwnerOptions {
    * connection, delivered on verified frames so every Cloud Session can create/send/list.
    */
   sessionProofs?: Pick<SessionCliProofService, "mintCloud">;
+  performanceLogger?: PerformanceLogger;
 }
 
 /**
@@ -198,6 +200,7 @@ export class CloudDeliveryOwner {
   readonly #allocationStatus?: (sandboxId: string) => Promise<SandboxAllocationReconciliation | undefined>;
   readonly #noteActivity?: (sandboxId: string) => Promise<void>;
   readonly #sessionProofs?: Pick<SessionCliProofService, "mintCloud">;
+  readonly #perfLogger?: PerformanceLogger;
   readonly #reportReplayWarnings = new Map<string, { connectionId: string; warnedAt: number }>();
   /**
    * Live model-grant ownership per turn: which connection is allowed to hand out or revoke this
@@ -234,6 +237,7 @@ export class CloudDeliveryOwner {
     this.#allocationStatus = options.allocationStatus;
     this.#noteActivity = options.noteActivity;
     this.#sessionProofs = options.sessionProofs;
+    this.#perfLogger = options.performanceLogger;
     this.#steering = new CloudImSteering({
       database: this.#database,
       custody: this.#custody,
@@ -335,6 +339,28 @@ export class CloudDeliveryOwner {
       sessionId: request.sessionId,
       deliveryId: request.deliveryId,
     });
+    await traceExternalCall(
+      this.#perfLogger,
+      {
+        provider: "sandbox-runner",
+        operation: "external.sandbox-runner.deliveryRun",
+        agentId: request.agentId,
+        computerId: input.computerId,
+        sessionId: request.sessionId,
+        deliveryId: request.deliveryId,
+      },
+      () => this.#executeDispatchDelivery(input),
+      { fallbackErrorCode: "CLOUD_DELIVERY_DISPATCH_FAILED" },
+    );
+  }
+
+  async #executeDispatchDelivery(input: {
+    computerId: string;
+    inputHash: string;
+    installationId: string;
+    request: DirectImMessageDeliveryRequest;
+  }): Promise<void> {
+    const request = input.request;
     const owned = await loadManagedSandboxBySessionId(this.#database, request.sessionId);
     if (!owned) throw new CloudDeliveryDispatchError("environment_not_ready", "The Session has no current Sandbox");
     const row = owned.sandbox;
@@ -1192,6 +1218,29 @@ export class CloudDeliveryOwner {
   }
 
   async #queryRunner(
+    connection: CloudConnectionRecord,
+    input: { deliveryId: string; turnId: string },
+  ): Promise<"none" | "received" | "started" | "reported" | undefined> {
+    return traceExternalCall(
+      this.#perfLogger,
+      {
+        provider: "sandbox-runner",
+        operation: "external.sandbox-runner.deliveryQuery",
+        computerId: connection.computerId,
+        sessionId: connection.scope.sessionId,
+        sandboxId: connection.scope.sandboxId,
+        deliveryId: input.deliveryId,
+        turnId: input.turnId,
+      },
+      () => this.#executeQueryRunner(connection, input),
+      {
+        resultAttributes: (phase) => (phase ? { phase } : { timedOut: true }),
+        fallbackErrorCode: "CLOUD_DELIVERY_QUERY_FAILED",
+      },
+    );
+  }
+
+  async #executeQueryRunner(
     connection: CloudConnectionRecord,
     input: { deliveryId: string; turnId: string },
   ): Promise<"none" | "received" | "started" | "reported" | undefined> {

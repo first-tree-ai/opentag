@@ -13,7 +13,13 @@ import {
   WSClient,
 } from "@larksuiteoapi/node-sdk";
 import { type NormalizedInboundImEvent, NormalizedInboundImEventSchema, truncateImText } from "@opentag/shared";
-import { emitRootSpan, imAttrs, outcomeAttrs } from "../../../observability/index.js";
+import {
+  emitRootSpan,
+  imAttrs,
+  outcomeAttrs,
+  type PerformanceLogger,
+  traceExternalCall,
+} from "../../../observability/index.js";
 import { ExternalCallPolicy } from "../../im/external-call-policy.js";
 import { type BotProfile, httpsAvatar } from "../bot-profile.js";
 import { contentBlocksWithMentions } from "../mention-content.js";
@@ -572,6 +578,7 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
   readonly #scopeList: () => Promise<FeishuScopeListResponse>;
   readonly #teamId: string | null;
   readonly #policy: ExternalCallPolicy;
+  readonly #perfLogger: PerformanceLogger | undefined;
 
   constructor(input: {
     onCardAction?: (event: unknown) => Promise<unknown>;
@@ -583,6 +590,7 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
     http?: FeishuHttpCapability;
     scopeList?: () => Promise<FeishuScopeListResponse>;
     /* type-only */ policy?: ExternalCallPolicy;
+    performanceLogger?: PerformanceLogger;
   }) {
     this.#appId = input.appId;
     this.#teamId = input.teamId;
@@ -591,6 +599,7 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
       new ExternalCallPolicy({
         allowedHosts: ["open.feishu.cn", "open.larksuite.com"],
       });
+    this.#perfLogger = input.performanceLogger ?? this.#policy.performanceLogger;
     const domain = feishuDomainForWorkspaceBrand(input.teamBrand);
     const clientOptions = {
       appId: input.appId,
@@ -646,31 +655,33 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
 
   async validateBinding(signal?: AbortSignal): Promise<VerifiedBotIdentity> {
     const channel = this.channel;
-    await channel.connect(signal);
+    await traceExternalCall(
+      this.#perfLogger,
+      {
+        provider: "feishu",
+        operation: "external.feishu.channel.connect",
+      },
+      () => channel.connect(signal),
+      { fallbackErrorCode: "FEISHU_CONNECT_FAILED" },
+    );
     const bot = channel.botIdentity;
     if (!bot) throw new Error("FEISHU_BOT_IDENTITY_MISSING");
     return { externalAppId: this.#appId, externalTeamId: this.#teamId ?? this.#appId, externalBotId: bot.openId };
   }
 
   async listGrantedWorkspaceScopes(): Promise<string[]> {
-    return this.#policy.run(
-      "feishu.scope.list",
-      async () => {
-        const response = await this.#scopeList();
-        if (response.code !== undefined && response.code !== 0) {
-          throw Object.assign(new Error("FEISHU_SCOPE_VALIDATION_FAILED"), { code: response.code });
-        }
-        if (!response.data?.scopes) throw new Error("FEISHU_SCOPE_VALIDATION_FAILED");
-        return [
-          ...new Set(
-            response.data.scopes
-              .filter((scope) => scope.grant_status === 1 && scope.scope_type !== "user")
-              .map((scope) => scope.scope_name),
-          ),
-        ].sort();
-      },
-      { circuitKey: `feishu:scope:${this.#appId}`, maxAttempts: 1 },
-    );
+    const response = await this.#scopeList();
+    if (response.code !== undefined && response.code !== 0) {
+      throw Object.assign(new Error("FEISHU_SCOPE_VALIDATION_FAILED"), { code: response.code });
+    }
+    if (!response.data?.scopes) throw new Error("FEISHU_SCOPE_VALIDATION_FAILED");
+    return [
+      ...new Set(
+        response.data.scopes
+          .filter((scope) => scope.grant_status === 1 && scope.scope_type !== "user")
+          .map((scope) => scope.scope_name),
+      ),
+    ].sort();
   }
 
   /**
@@ -679,31 +690,25 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
    * candidate must never open a socket just to answer that question.
    */
   async probeBotIdentity(): Promise<FeishuBotProbe> {
-    return this.#policy.run(
-      "feishu.bot.info",
-      async () => {
-        const response = await this.#client.request<{
-          code?: number;
-          bot?: { open_id?: string; activate_status?: number; app_name?: string; avatar_url?: string };
-        }>({ url: "/open-apis/bot/v3/info", method: "GET" });
-        if (response.code !== undefined && response.code !== 0) {
-          throw Object.assign(new Error("FEISHU_BOT_INFO_FAILED"), { code: response.code });
-        }
-        const openId = response.bot?.open_id;
-        if (!openId) {
-          throw Object.assign(new Error("FEISHU_BOT_IDENTITY_MISSING"), { code: "FEISHU_BOT_IDENTITY_MISSING" });
-        }
-        return {
-          openId,
-          activateStatus: response.bot?.activate_status ?? null,
-          profile: {
-            displayName: response.bot?.app_name?.slice(0, 255) || null,
-            avatarUrl: httpsAvatar(response.bot?.avatar_url),
-          },
-        };
+    const response = await this.#client.request<{
+      code?: number;
+      bot?: { open_id?: string; activate_status?: number; app_name?: string; avatar_url?: string };
+    }>({ url: "/open-apis/bot/v3/info", method: "GET" });
+    if (response.code !== undefined && response.code !== 0) {
+      throw Object.assign(new Error("FEISHU_BOT_INFO_FAILED"), { code: response.code });
+    }
+    const openId = response.bot?.open_id;
+    if (!openId) {
+      throw Object.assign(new Error("FEISHU_BOT_IDENTITY_MISSING"), { code: "FEISHU_BOT_IDENTITY_MISSING" });
+    }
+    return {
+      openId,
+      activateStatus: response.bot?.activate_status ?? null,
+      profile: {
+        displayName: response.bot?.app_name?.slice(0, 255) || null,
+        avatarUrl: httpsAvatar(response.bot?.avatar_url),
       },
-      { circuitKey: `feishu:bot-info:${this.#appId}`, maxAttempts: 1 },
-    );
+    };
   }
 
   normalizeInbound(input: VerifiedFeishuEnvelope): NormalizedInboundImEvent[] {

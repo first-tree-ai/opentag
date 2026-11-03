@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import { type Readable, Transform } from "node:stream";
@@ -5,6 +6,8 @@ import { domainToASCII } from "node:url";
 import { redactSensitive, type StructuredError, StructuredErrorSchema } from "@opentag/shared";
 import { traceExternalCall } from "../../observability/external-call-logger.js";
 import type { PerformanceLogger } from "../../observability/performance-logger.js";
+
+const activePolicyStorage = new AsyncLocalStorage<ReadonlySet<ExternalCallPolicy>>();
 
 export type PolicyErrorCategory = "security" | "transient" | "validation" | "availability";
 export type PolicyRetryability = "retryable" | "not_retryable";
@@ -281,6 +284,10 @@ export class ExternalCallPolicy {
     this.#perfLogger = options.performanceLogger;
   }
 
+  get performanceLogger(): PerformanceLogger | undefined {
+    return this.#perfLogger;
+  }
+
   /** Validate a provider URL before any credential-bearing request headers are constructed. */
   admitUrl(input: string | URL, options: Pick<ExternalCallOptions, "allowAnyHttpsHost"> = {}): URL {
     if (hasEncodedAuthority(input)) throw hostNotAllowedError("Encoded provider hosts are not allowed");
@@ -299,34 +306,42 @@ export class ExternalCallPolicy {
   }
 
   async run<T>(operation: string, action: PolicyAction<T>, options: ExternalCallOptions = {}): Promise<T> {
-    const provider = operation.startsWith("slack")
-      ? "slack"
-      : operation.startsWith("feishu")
-        ? "feishu"
-        : "im-provider";
-    let attemptsUsed = 0;
-    return traceExternalCall(
-      this.#perfLogger,
-      {
-        provider,
-        operation: `external.${operation}`,
-      },
-      () =>
-        this.#executeRun(operation, action, options, (attemptNumber) => {
-          attemptsUsed = attemptNumber;
-        }),
-      {
-        resultAttributes: () => ({
-          attemptCount: attemptsUsed,
-          retryCount: Math.max(0, attemptsUsed - 1),
-        }),
-        errorAttributes: () => ({
-          attemptCount: attemptsUsed,
-          retryCount: Math.max(0, attemptsUsed - 1),
-        }),
-        fallbackErrorCode: "IM_PROVIDER_CALL_FAILED",
-      },
-    );
+    const activePolicies = activePolicyStorage.getStore();
+    if (activePolicies?.has(this)) {
+      return action(options.signal ?? new AbortController().signal, randomUUID());
+    }
+    const nextPolicies = new Set(activePolicies);
+    nextPolicies.add(this);
+    return activePolicyStorage.run(nextPolicies, () => {
+      const provider = operation.startsWith("slack")
+        ? "slack"
+        : operation.startsWith("feishu")
+          ? "feishu"
+          : "im-provider";
+      let attemptsUsed = 0;
+      return traceExternalCall(
+        this.#perfLogger,
+        {
+          provider,
+          operation: `external.${operation}`,
+        },
+        () =>
+          this.#executeRun(operation, action, options, (attemptNumber) => {
+            attemptsUsed = attemptNumber;
+          }),
+        {
+          resultAttributes: () => ({
+            attemptCount: attemptsUsed,
+            retryCount: Math.max(0, attemptsUsed - 1),
+          }),
+          errorAttributes: () => ({
+            attemptCount: attemptsUsed,
+            retryCount: Math.max(0, attemptsUsed - 1),
+          }),
+          fallbackErrorCode: "IM_PROVIDER_CALL_FAILED",
+        },
+      );
+    });
   }
 
   async #executeRun<T>(

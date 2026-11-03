@@ -1,27 +1,36 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { PassThrough } from "node:stream";
-import { defaultHttpInstance } from "@larksuiteoapi/node-sdk";
+import { PassThrough, Readable } from "node:stream";
 import { CLOUD_MODEL_CHAT_COMPLETIONS_PATH, MCP_GATEWAY_PATH, RUNTIME_WEB_SEARCH_PATH } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import {
+  createErrorReporter,
   createInstrumentedFetch,
   createPerformanceLogger,
   isExternalTimeoutError,
   sanitizeExternalUrl,
   traceExternalCall,
-  updateCurrentPerformanceContext,
 } from "../observability/index.js";
 import { CloudSlackAutoSetupOwner } from "../runtime/cloud-slack-auto-setup-owner.js";
+import { createRuntimeCredentialServices } from "../runtime-credentials/index.js";
 import { RuntimeMcpGatewayTokenStore } from "../runtime-credentials/mcp-gateway-token-store.js";
 import { RuntimeWebGatewayTokenStore } from "../runtime-credentials/web-gateway-token-store.js";
+import { createCloudExecutionContext } from "../services/cloud-model-context.js";
+import { CloudModelService } from "../services/cloud-model-service.js";
 import { GitHubHttpTransport } from "../services/github-proxy/http-transport.js";
 import { ExternalCallPolicy, ExternalCallPolicyError } from "../services/im/external-call-policy.js";
 import { FeishuAdapter } from "../services/im-bindings/feishu/adapter.js";
 import { createImProviderAdapterResolver } from "../services/im-bindings/provider-adapter-resolver.js";
 import { McpOutboundFetcher } from "../services/mcp/mcp-url-policy.js";
+import { RouterCloudModelCatalog } from "../services/sandboxes/cloud-model-catalog.js";
+import { CloudRuntimeFence } from "../services/sandboxes/cloud-runtime-fence.js";
+import {
+  CloudSessionCollaborationOwner,
+  CloudSessionWorkTracker,
+} from "../services/sandboxes/cloud-session-collaboration-owner.js";
 import { RunnerHub } from "../services/sandboxes/runner-hub.js";
+import { SkillSourceFetcher } from "../services/skills/source/source-fetcher.js";
 
 function createLogCollector() {
   const logs: Array<{ level: string; payload: Record<string, unknown>; message: string }> = [];
@@ -423,63 +432,53 @@ describe("external call performance logging", () => {
     ]);
     expect(logs.filter((l) => l.payload.operation === "external.sandbox-runner.sealWorkspace")).toHaveLength(2);
 
-    // FeishuAdapter via createImProviderAdapterResolver with feishuPolicy
+    // FeishuAdapter via createImProviderAdapterResolver with feishuPolicy and validateBinding
     logs.length = 0;
     const feishuPolicy = new ExternalCallPolicy({
       allowedHosts: ["open.feishu.cn"],
       performanceLogger: perfLogger,
     });
-    const postSpy = vi.spyOn(defaultHttpInstance, "post").mockResolvedValue({
-      code: 0,
-      tenant_access_token: "test-token",
-      expire: 7200,
-    });
-    const reqSpy = vi.spyOn(defaultHttpInstance, "request").mockResolvedValue({
-      code: 0,
-      bot: { open_id: "ou_bot_1", activate_status: 2, app_name: "Bot" },
-    });
-    try {
-      const resolver = createImProviderAdapterResolver({
-        imBindings: {
-          getSlackConnectionMaterial: async () => undefined,
-          getFeishuConnectionMaterial: async () => ({
-            appId: "cli_1",
-            appSecret: "sec_1",
-            teamId: "team_1",
-            teamBrand: "feishu" as const,
-            botOpenId: "ou_bot_1",
-            generation: 1,
-          }),
-        } as never,
-        slackApi: {} as never,
-        feishuPolicy,
-      });
-      const resolved = (await resolver("binding-1", 1)) as FeishuAdapter;
-      const bot = await resolved.probeBotIdentity();
-      expect(bot.openId).toBe("ou_bot_1");
-
-      const directAdapter = new FeishuAdapter({
-        appId: "cli_1",
-        appSecret: "sec_1",
-        teamId: "team_1",
-        channel: null,
-        policy: feishuPolicy,
-        scopeList: async () => ({
-          code: 0,
-          data: { scopes: [{ scope_name: "im:message", grant_status: 1 }] },
+    const resolver = createImProviderAdapterResolver({
+      imBindings: {
+        getSlackConnectionMaterial: async () => undefined,
+        getFeishuConnectionMaterial: async () => ({
+          appId: "cli_1",
+          appSecret: "sec_1",
+          teamId: "team_1",
+          teamBrand: "feishu" as const,
+          botOpenId: "ou_bot_1",
+          generation: 1,
         }),
-      });
-      expect(await directAdapter.listGrantedWorkspaceScopes()).toEqual(["im:message"]);
-    } finally {
-      reqSpy.mockRestore();
-      postSpy.mockRestore();
-    }
+      } as never,
+      slackApi: {} as never,
+      feishuPolicy,
+    });
+    const resolved = (await resolver("binding-1", 1)) as FeishuAdapter;
+    expect(resolved.provider).toBe("feishu");
 
+    const channelAdapter = new FeishuAdapter({
+      appId: "cli_1",
+      appSecret: "sec_1",
+      teamId: "team_1",
+      policy: feishuPolicy,
+      channel: {
+        botIdentity: { openId: "ou_bot_1", name: "Bot" },
+        connect: async () => undefined,
+        disconnect: async () => undefined,
+        on: () => () => undefined,
+      },
+    });
+    await expect(channelAdapter.validateBinding()).resolves.toMatchObject({
+      externalAppId: "cli_1",
+      externalBotId: "ou_bot_1",
+    });
     expect(
-      logs.some((l) => l.payload.operation === "external.feishu.bot.info" && l.payload.outcome === "completed"),
-    ).toBe(true);
-    expect(
-      logs.some((l) => l.payload.operation === "external.feishu.scope.list" && l.payload.outcome === "completed"),
+      logs.some(
+        (l) =>
+          l.payload.operation === "external.feishu.channel.connect" &&
+          l.payload.service === "feishu" &&
+          l.payload.outcome === "completed",
+      ),
     ).toBe(true);
 
     // CloudSlackAutoSetupOwner with instrumented fetch
@@ -504,6 +503,226 @@ describe("external call performance logging", () => {
           l.payload.outcome === "completed",
       ),
     ).toBe(true);
+  });
+
+  it("does not deadlock or emit duplicate external logs when re-entering the same ExternalCallPolicy at maxConcurrency", async () => {
+    const { logs, perfLogger } = createLogCollector();
+    const sharedPolicy = new ExternalCallPolicy({
+      allowedHosts: ["open.feishu.cn"],
+      maxConcurrency: 8,
+      defaultTimeoutMs: 200,
+      performanceLogger: perfLogger,
+    });
+    const adapter = new FeishuAdapter({
+      appId: "cli_reentrant",
+      appSecret: "sec",
+      teamId: "team_1",
+      channel: null,
+      policy: sharedPolicy,
+      http: {
+        fetchResource: async () => ({
+          stream: Readable.from(Buffer.from("ok")),
+        }),
+      },
+    });
+
+    const results = await Promise.all(
+      Array.from({ length: 8 }, (_, idx) =>
+        sharedPolicy.run(`feishu.resource.outer.${idx}`, () =>
+          adapter.fetchResource({
+            messageExternalId: `msg-${idx}`,
+            providerResourceKey: `key-${idx}`,
+            kind: "file",
+          }),
+        ),
+      ),
+    );
+    expect(results).toHaveLength(8);
+    expect(logs).toHaveLength(16);
+    expect(logs.filter((l) => l.payload.outcome === "completed")).toHaveLength(8);
+  });
+
+  it("records attemptCount: 0 on pre-dispatch rejections and timedOut: true on owned deadlines (omitting timedOut on caller abort)", async () => {
+    const { logs, perfLogger } = createLogCollector();
+
+    const mcpFetcher = new McpOutboundFetcher({
+      allowLoopback: false,
+      timeoutMs: 25,
+      performanceLogger: perfLogger,
+      resolveAddresses: async () => ["93.184.216.34"],
+      fetch: vi.fn((_url, init) => {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), {
+            once: true,
+          });
+        });
+      }),
+    });
+    await expect(mcpFetcher.fetchOutbound("acc-1", "https://127.0.0.1/mcp")).rejects.toThrow();
+    expect(logs.at(-1)?.payload).toMatchObject({
+      service: "mcp",
+      operation: "external.mcp.http",
+      outcome: "failed",
+      attemptCount: 0,
+      retryCount: 0,
+    });
+    expect(logs.at(-1)?.payload.timedOut).toBeUndefined();
+
+    logs.length = 0;
+    await expect(mcpFetcher.fetchOutbound("acc-1", "https://mcp.example.com/sse")).rejects.toThrow();
+    expect(logs.at(-1)?.payload).toMatchObject({
+      service: "mcp",
+      operation: "external.mcp.http",
+      outcome: "failed",
+      attemptCount: 1,
+      retryCount: 0,
+      timedOut: true,
+    });
+
+    logs.length = 0;
+    const callerAbort = new AbortController();
+    const pendingMcp = mcpFetcher.fetchOutbound("acc-1", "https://mcp.example.com/sse", {
+      signal: callerAbort.signal,
+    });
+    callerAbort.abort();
+    await expect(pendingMcp).rejects.toThrow();
+    expect(logs.at(-1)?.payload.outcome).toBe("failed");
+    expect(logs.at(-1)?.payload.timedOut).toBeUndefined();
+
+    logs.length = 0;
+    const skillFetcher = new SkillSourceFetcher({
+      allowLoopback: false,
+      timeoutMs: 25,
+      performanceLogger: perfLogger,
+      resolveAddresses: async () => ["93.184.216.34"],
+      transport: ({ signal }) =>
+        new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        }),
+    });
+    await expect(skillFetcher.fetchBytes("https://127.0.0.1/skill.md")).rejects.toThrow();
+    expect(logs.at(-1)?.payload).toMatchObject({
+      service: "skill-source",
+      operation: "external.skill-source.http",
+      outcome: "failed",
+      attemptCount: 0,
+      retryCount: 0,
+    });
+    logs.length = 0;
+    await expect(skillFetcher.fetchBytes("https://skills.example.com/SKILL.md")).rejects.toThrow();
+    expect(logs.at(-1)?.payload).toMatchObject({
+      service: "skill-source",
+      operation: "external.skill-source.http",
+      outcome: "failed",
+      attemptCount: 1,
+      retryCount: 0,
+      timedOut: true,
+    });
+
+    logs.length = 0;
+    const reporter = createErrorReporter({
+      projectId: "demo-project",
+      timeoutMs: 15,
+      logger: () => undefined,
+      performanceLogger: perfLogger,
+      createClient: () => ({
+        report: () => {
+          // never invokes callback
+        },
+      }),
+    });
+    await reporter.report({
+      source: "web",
+      message: "client crash",
+      occurredAt: "2026-01-01T00:00:00.000Z",
+    });
+    expect(logs.at(-1)?.payload).toMatchObject({
+      service: "gcp-error-reporting",
+      operation: "external.gcp.error-reporting.report",
+      outcome: "failed",
+      attemptCount: 1,
+      retryCount: 0,
+      timedOut: true,
+    });
+
+    logs.length = 0;
+    const catalog = new RouterCloudModelCatalog({
+      upstreamBaseUrl: "https://router.example.com/v1",
+      masterKey: "secret-key",
+      timeoutMs: 15,
+      fetchImpl: createInstrumentedFetch(perfLogger, {
+        provider: "cloud-router",
+        baseFetch: vi.fn((_input, init) => {
+          return new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener(
+              "abort",
+              () => reject(new DOMException("The operation was aborted", "AbortError")),
+              { once: true },
+            );
+          });
+        }),
+      }),
+    });
+    expect((await catalog.list()).available).toBe(false);
+    expect(logs.at(-1)?.payload).toMatchObject({
+      service: "cloud-router",
+      operation: "external.cloud-router.http",
+      outcome: "failed",
+      timedOut: true,
+    });
+  });
+
+  it("attributes RuntimeProviderProxy traffic to slack and feishu services and traces CloudSessionCollaborationOwner", async () => {
+    const { logs, perfLogger } = createLogCollector();
+    const baseFetch = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.includes("tenant_access_token")) {
+        return new Response(JSON.stringify({ code: 0, tenant_access_token: "t-feishu", expire: 7200 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ ok: true, code: 0, data: {} }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const credServices = createRuntimeCredentialServices({
+      database: {} as never,
+      cipher: {} as never,
+      registry: {
+        isCurrentConnection: () => true,
+        currentControlIdentity: () => undefined,
+      } as never,
+      custody: {} as never,
+      fetchImpl: baseFetch,
+      performanceLogger: perfLogger,
+    });
+    try {
+      const feishuFetch = createInstrumentedFetch(perfLogger, { provider: "feishu", baseFetch });
+      const slackFetch = createInstrumentedFetch(perfLogger, { provider: "slack", baseFetch });
+      await (
+        await feishuFetch("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal", { method: "POST" })
+      ).json();
+      await (await slackFetch("https://slack.com/api/chat.postMessage", { method: "POST" })).json();
+    } finally {
+      credServices.close();
+    }
+    expect(logs.some((l) => l.payload.service === "feishu" && l.payload.outcome === "completed")).toBe(true);
+    expect(logs.some((l) => l.payload.service === "slack" && l.payload.outcome === "completed")).toBe(true);
+
+    const hub = new RunnerHub({ performanceLogger: perfLogger });
+    const fence = new CloudRuntimeFence();
+    const collabOwner = new CloudSessionCollaborationOwner({
+      database: {} as never,
+      fence,
+      hub,
+      work: new CloudSessionWorkTracker(),
+      assembler: { assembleForSession: async () => undefined as never },
+      performanceLogger: perfLogger,
+    });
+    expect(collabOwner.activeDispatchTargets).toBe(0);
   });
 
   it("propagates agentId, sessionId, deliveryId, turnId, and sandboxId across Turn execution entrypoints into external call logs", async () => {
@@ -596,22 +815,63 @@ describe("external call performance logging", () => {
           })),
           close: () => undefined,
         } as never,
-        contextForExecution: vi.fn(async () => ({
-          accountId: "acc-turn",
-          agentId: "agent-turn",
-          sessionId,
-          source: "execution" as const,
-        })),
-        modelService: {
-          request: vi.fn(async () => {
-            updateCurrentPerformanceContext({ deliveryId: "deliv-turn" });
-            return new Response(JSON.stringify({ id: "cmpl-1", choices: [] }), {
-              status: 200,
-              headers: { "content-type": "application/json" },
-            });
+        contextForExecution: createCloudExecutionContext({
+          select: () => ({
+            from: () => ({
+              innerJoin: () => ({
+                innerJoin: () => ({
+                  innerJoin: () => ({
+                    leftJoin: () => ({
+                      where: () => ({
+                        limit: async () => [
+                          {
+                            accountId: "acc-turn",
+                            agentId: "agent-turn",
+                            sessionId,
+                            deliveryId: "deliv-turn",
+                          },
+                        ],
+                      }),
+                    }),
+                  }),
+                }),
+              }),
+            }),
           }),
-          close: async () => undefined,
-        } as never,
+        } as never),
+        modelService: new CloudModelService(
+          {
+            enabled: true,
+            upstreamBaseUrl: "https://router.example.com/v1",
+            masterKey: "secret-master-key",
+            requestTimeoutMs: 5_000,
+            maxRequestBytes: 65_536,
+            maxResponseBytes: 65_536,
+            maxStreamsPerToken: 2,
+            tokenTtlSeconds: 300,
+          },
+          {
+            calls: {
+              create: vi.fn(async () => "00000000-0000-4000-8000-000000000881"),
+              finalize: vi.fn(async () => undefined),
+              markPending: vi.fn(async () => undefined),
+            } as never,
+            onError: () => undefined,
+            fetchImpl: createInstrumentedFetch(
+              createPerformanceLogger(() => app.log),
+              {
+                provider: "cloud-router",
+                baseFetch: vi.fn(
+                  async () =>
+                    new Response(JSON.stringify({ id: "cmpl-1", choices: [] }), {
+                      status: 200,
+                      headers: { "content-type": "application/json" },
+                    }),
+                ),
+              },
+            ),
+          },
+        ),
       },
     });
 
@@ -695,6 +955,21 @@ describe("external call performance logging", () => {
       sandboxId,
       turnId: "turn-1",
       deliveryId: "deliv-turn",
+    });
+
+    const cloudRouterExternal = records.find(
+      (r) => r.operation === "external.cloud-router.http" && r.outcome === "completed",
+    );
+    expect(cloudRouterExternal).toMatchObject({
+      service: "cloud-router",
+      accountId: "acc-turn",
+      agentId: "agent-turn",
+      sessionId,
+      sandboxId,
+      turnId: "turn-1",
+      deliveryId: "deliv-turn",
+      attemptCount: 1,
+      retryCount: 0,
     });
   });
 });

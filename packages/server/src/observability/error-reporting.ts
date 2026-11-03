@@ -2,7 +2,7 @@ import { ErrorReporting } from "@google-cloud/error-reporting";
 import { type ErrorReportRequest, redactSensitive } from "@opentag/shared";
 import type { FastifyBaseLogger } from "fastify";
 import type { ErrorReportingCredentials } from "../error-reporting-config.js";
-import { traceExternalCall } from "./external-call-logger.js";
+import { markExternalCallTimedOut, traceExternalCall } from "./external-call-logger.js";
 import type { PerformanceLogger } from "./performance-logger.js";
 
 /** Forwards one relayed client failure. Implementations never throw; a lost report is logged, not surfaced. */
@@ -184,7 +184,10 @@ export function createErrorReporter(options: ErrorReporterOptions): ErrorReporte
           );
         });
         const deadline = new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(() => reject(new Error(`Error report forwarding exceeded ${timeoutMs}ms`)), timeoutMs);
+          timer = setTimeout(
+            () => reject(markExternalCallTimedOut(new Error(`Error report forwarding exceeded ${timeoutMs}ms`))),
+            timeoutMs,
+          );
         });
         await traceExternalCall(
           options.performanceLogger,

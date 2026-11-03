@@ -57,6 +57,8 @@ beforeEach(async () => {
     database: client.database,
     owners: new DatabaseAgentOwnerResolver(client.database),
     proofs: {
+      assertCurrentSource: async () => undefined,
+      lockCurrentSource: async () => undefined,
       authenticate: async (token) => {
         const source = proofs.get(token);
         if (!source) throw new SessionCliProofError("invalid_proof", "unknown proof");
@@ -153,6 +155,7 @@ function registerProof(
   sessionKind: "channel" | "thread" | "internal",
 ) {
   proofs.set(token, {
+    proofId: crypto.randomUUID(),
     agentId: seed.agentId,
     computerId: randomUUID(),
     connectionInstanceId: randomUUID(),
@@ -345,6 +348,8 @@ describe("ScheduleService creation validation and DTO", () => {
 
   function serviceAuthenticate() {
     return {
+      assertCurrentSource: async () => undefined,
+      lockCurrentSource: async () => undefined,
       authenticate: async (token: string) => {
         const source = proofs.get(token);
         if (!source) throw new SessionCliProofError("invalid_proof", "unknown proof");

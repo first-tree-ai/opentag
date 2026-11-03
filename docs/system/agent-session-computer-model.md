@@ -97,6 +97,17 @@ locks when the send is marked, without waiting for the Runtime receipt. The tran
 also checks the current connection and cancellation signal, so delayed preparation cannot bypass
 a committed management change or send after the dispatch deadline.
 
+Schedule management follows the same Agent-first admission. Account writes recheck ownership
+under that guard. Runtime Skill and Schedule writes retain their complete authenticated Session
+source and lock binding → Session → placement → Computer → proof before their own mutation rows.
+Final proof validation uses the transaction executor and the existing Local connection or Cloud
+execution liveness rules. Their multi-query reads share a read-only snapshot; neither capability
+inherits the Agent configuration self-edit opt-in switch.
+
+Retained-report claims skip empty manifests. Nonempty claims lock the live Session with
+`FOR NO KEY UPDATE` before its placement with `FOR UPDATE`, matching failed-report recovery.
+Claims for a different Session are excluded before locking that Session's placement.
+
 The staging/development reset uses the same weaker guard during Computer access
 revocation. Its separate final cleanup verification keeps its existing lock.
 Agent creation, placement changes, and credential exchange retain their small

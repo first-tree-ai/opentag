@@ -63,6 +63,7 @@ async function fixture() {
       authenticate: async (proof) => {
         if (proof !== "valid-proof") throw new Error("invalid proof");
         return {
+          proofId: crypto.randomUUID(),
           agentId: agent.id,
           computerId: randomUUID(),
           connectionInstanceId: randomUUID(),

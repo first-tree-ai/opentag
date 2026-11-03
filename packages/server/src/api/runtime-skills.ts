@@ -12,7 +12,10 @@ import {
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import type { SessionCliProofService } from "../services/sessions/session-cli-proof-service.js";
+import type {
+  SessionCliProofService,
+  SessionCliSourceContext,
+} from "../services/sessions/session-cli-proof-service.js";
 import type { SkillPresetService, SkillService } from "../services/skills/index.js";
 import { parseRequest } from "./request-validation.js";
 import { sendSkillBundle } from "./skill-bundle.js";
@@ -31,7 +34,7 @@ import { registerSkillUploadRoute } from "./skill-upload.js";
 declare module "fastify" {
   interface FastifyRequest {
     /** Set by the session-proof authentication step before the body parser. */
-    skillAgentId?: string;
+    skillSource?: SessionCliSourceContext;
   }
 }
 
@@ -41,13 +44,13 @@ const PresetParamsSchema = z.object({ presetName: SkillNameSchema }).strict();
 async function authenticate(request: FastifyRequest, proofs: Pick<SessionCliProofService, "authenticate">) {
   const header = request.headers[SESSION_CLI_PROOF_HEADER];
   const source = await proofs.authenticate(typeof header === "string" ? header : "");
-  request.skillAgentId = source.agentId;
+  request.skillSource = source;
 }
 
-function authenticatedAgentId(request: FastifyRequest): string {
-  const agentId = request.skillAgentId;
-  if (!agentId) throw new Error("Authenticated Agent context is missing");
-  return agentId;
+function authenticatedSource(request: FastifyRequest): SessionCliSourceContext {
+  const source = request.skillSource;
+  if (!source) throw new Error("Authenticated Session context is missing");
+  return source;
 }
 
 export function registerRuntimeSkillRoutes(
@@ -58,14 +61,14 @@ export function registerRuntimeSkillRoutes(
 ): void {
   app.get(HTTP_PATHS.runtimeSkills, async (request, reply) => {
     const source = await proofs.authenticate(readProof(request));
-    const response = ListAgentSkillsResponseSchema.parse(await skillService.listForAgent(source.agentId));
+    const response = ListAgentSkillsResponseSchema.parse(await skillService.listForAgent(source));
     return reply.header("cache-control", "no-store").code(200).send(response);
   });
 
   app.get(RUNTIME_SKILL_BUNDLE_TEMPLATE, async (request, reply) => {
     const source = await proofs.authenticate(readProof(request));
     const { name } = parseRequest(BundleParamsSchema, request.params);
-    const bundle = await skillService.openBundleForAgent(source.agentId, name);
+    const bundle = await skillService.openBundleForAgent(source, name);
     return sendSkillBundle(reply, bundle);
   });
 
@@ -75,7 +78,7 @@ export function registerRuntimeSkillRoutes(
       await authenticate(request, proofs);
     },
     upload: async (request, frame) => {
-      return SkillDetailSchema.parse(await skillService.uploadForAgent(authenticatedAgentId(request), frame));
+      return SkillDetailSchema.parse(await skillService.uploadForAgent(authenticatedSource(request), frame));
     },
   });
 
@@ -83,16 +86,14 @@ export function registerRuntimeSkillRoutes(
 
   app.get(RUNTIME_SKILL_PRESETS_PATH, async (request, reply) => {
     const source = await proofs.authenticate(readProof(request));
-    const response = ListSkillPresetsResponseSchema.parse(await presetService.listForAgent(source.agentId));
+    const response = ListSkillPresetsResponseSchema.parse(await presetService.listForAgent(source));
     return reply.header("cache-control", "no-store").code(200).send(response);
   });
 
   app.post(RUNTIME_SKILL_PRESET_INSTALL_TEMPLATE, async (request, reply) => {
     const source = await proofs.authenticate(readProof(request));
     const { presetName } = parseRequest(PresetParamsSchema, request.params);
-    const response = InstallSkillPresetResponseSchema.parse(
-      await presetService.installForAgent(source.agentId, presetName),
-    );
+    const response = InstallSkillPresetResponseSchema.parse(await presetService.installForAgent(source, presetName));
     return reply.header("cache-control", "no-store").code(200).send(response);
   });
 }

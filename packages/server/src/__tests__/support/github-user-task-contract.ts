@@ -277,6 +277,7 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
     let now = new Date();
     const executionId = randomUUID();
     const authenticate = vi.fn(async (_proof: string, id?: string) => ({
+      proofId: crypto.randomUUID(),
       agentId: f.agent.id,
       computerId: randomUUID(),
       connectionInstanceId: randomUUID(),
@@ -289,7 +290,11 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
     const service = new ScheduleService({
       database: f.db,
       owners: new DatabaseAgentOwnerResolver(f.db),
-      proofs: { authenticate },
+      proofs: {
+        assertCurrentSource: async () => undefined,
+        lockCurrentSource: async () => undefined,
+        authenticate,
+      },
       publicUrl: "https://opentag.example",
       clock: { now: async () => now },
     });

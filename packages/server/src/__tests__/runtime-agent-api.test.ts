@@ -21,6 +21,7 @@ import { SessionCliProofError } from "../services/sessions/index.js";
 
 const accountId = randomUUID();
 const source = {
+  proofId: crypto.randomUUID(),
   agentId: randomUUID(),
   computerId: randomUUID(),
   connectionInstanceId: randomUUID(),

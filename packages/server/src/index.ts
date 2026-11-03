@@ -441,10 +441,11 @@ function createSkillRuntime(
   config: ServerConfig,
   database: DatabaseClient,
   logger: ServiceLogger,
+  proofs: SessionCliProofService,
 ): { service: SkillService; remote: RemoteSkillService; preset: SkillPresetService; gc?: SkillObjectGc } {
   const storage = config.skillStorage;
   if (!storage.enabled) {
-    const service = new SkillService({ database, keyPrefix: "skills", logger });
+    const service = new SkillService({ database, keyPrefix: "skills", logger, proofs });
     return {
       service,
       remote: new RemoteSkillService({ skills: service, logger }),
@@ -462,7 +463,7 @@ function createSkillRuntime(
     },
     logger,
   });
-  const service = new SkillService({ database, store, keyPrefix: storage.prefix, logger });
+  const service = new SkillService({ database, store, keyPrefix: storage.prefix, logger, proofs });
   const remote = new RemoteSkillService({ skills: service, logger });
   const preset = new SkillPresetService({ skills: service, logger });
   if (storage.gcIntervalSeconds <= 0) return { service, remote, preset };
@@ -970,7 +971,7 @@ export async function startServer(): Promise<void> {
       executions: platformRuntime.credentials.owner.executionRegistry,
       executionLive: (id) => platformRuntime.credentials.owner.isExecutionLive(id),
     });
-    const skillRuntime = createSkillRuntime(config, database, serviceLogger("skills"));
+    const skillRuntime = createSkillRuntime(config, database, serviceLogger("skills"), sessionCliProofService);
     const slackWorkingStore = new SlackWorkingStore(database);
     const domainOwner = new RuntimeDomainOwner(registry, custody, {
       onTurnActivity: (frame, context) => slackWorkingStore.record(frame, context),

@@ -18,8 +18,9 @@ A repaired original case does not close another extension of the same finding.
 | Batch | Findings and simplifications | State |
 | --- | --- | --- |
 | 1 — Agent/Task authority snapshot | AG-F11, TK-F1, AG-F1 including IM metadata | [Verified locally](verification/sql-caller-repairs-01.md): 275 distinct cases (183 native PG), server typecheck and pnpm check pass. |
-| 2 — Remaining mutation authority | SK-F1, SC-F1, AG-F3, AG-F5, AG-F12 | Pending current-source revalidation; preserve explicit Account/Computer/proof scope, final authority and lifecycle identity. |
-| 3 — Contention and admission | IM-F1, IM-F5, IM-F6, CR-F1 | Pending revalidation of newer IM implementation; reuse try-lock/SKIP LOCKED, compatible row order and existing durable receipt recovery. |
+| 2a — Skill/Schedule and compatible locks | SK-F1, SC-F1, IM-F5 | [Verified locally](verification/sql-caller-repairs-02.md): 294 distinct cases (153 native PG); full source contract and Session-first retained claims. |
+| 2b — Remaining mutation authority | AG-F3, AG-F5, AG-F12 | Pending current-source revalidation; preserve expected Computer and lifecycle/work/proof identities. |
+| 3 — Contention and admission | IM-F1, IM-F6, CR-F1 | Pending revalidation of newer IM implementation; reuse try-lock/SKIP LOCKED, compatible row order and existing durable receipt recovery. |
 | 4 — External effects and result fences | SW-F1, IM-F2, IM-F4, CR-F2, AG-F2, AP-F1 | Pending revalidation; preserve custody, exact status/attempt/Turn identities and failure classification. Official approval idle backstop remains; AP-F1 is bounded latency. |
 | 5 — Stop, drain and owner resources | IM-F3, BG-F1, BG-F3, AG-F4, AG-F7, AG-F9 | Pending revalidation of actual owners; stop admission and join underlying work, not only deadline wrappers. Reuse existing owner/cursor stores. |
 | 6 — Auth and OAuth recovery | AA-F1, AA-F2, BG-F2, MC-F1, AG-F13 | Pending revalidation against current Better Auth/MCP changes. Use official transactions/transport and distinguish preparation from uncertain exchange. |
@@ -56,11 +57,11 @@ to the initial rejection/response.
 Batch 1 latest-main RED regressions reproduced all six disputed interleavings
 (three original cases and three IM read surfaces). Local fixes and affected native
 regressions pass; type checking passes after building workspace preset dependencies.
-Repository gates and diff review pass. [Batch 1 evidence](verification/sql-caller-repairs-01.md) records 275 distinct cases; all other batches remain open. Tests/probes do not establish live provider or full
+Repository gates and diff review pass. [Batch 1 evidence](verification/sql-caller-repairs-01.md) records 275 distinct cases. [Batch 2a evidence](verification/sql-caller-repairs-02.md) records Skill/Schedule and retained-report fixes; all other batches remain open. Tests/probes do not establish live provider or full
 binary shutdown acceptance. Never label the whole remediation complete while a
 batch or unavailable boundary remains open.
 
-## Next design: complete Skill and Schedule authority
+## Confirmed design: complete Skill and Schedule authority
 
 The Account-only fixes in the original proposal do not by themselves close the
 Runtime variants. Latest-source inspection confirms that Runtime Skill routes
@@ -109,3 +110,14 @@ This adds source identity to existing internal service calls; it does not create
 a general authorization framework. Do not close SK-F1/SC-F1 after only their
 Account reproductions pass. If the lock compatibility check requires a different
 persistence design, present that change separately.
+
+## Batch 2a outcome
+
+The confirmed Skill/Schedule contract is implemented. Lock compatibility inspection
+reproduced IM-F5 on current main, so its previously proposed Session-first retained
+claim repair moved into this batch. No schema or timeout change is needed.
+[Evidence](verification/sql-caller-repairs-02.md) records the 21 new native fault
+cases, affected regressions, controlled Cloud boundary and replaced obsolete unit
+interleavings. Six original defects are now repaired locally across batches 1 and
+2a; 31 original defects, nine simplifications, five observations and the absent
+private implementation retain their explicit remaining scope.

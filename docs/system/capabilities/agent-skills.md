@@ -416,6 +416,16 @@ a conflicting name retains `SKILL_NAME_CONFLICT`, while a new name without a slo
 A failed admission uses the existing reference-aware object cleanup; an uncertain commit never
 justifies deleting a possibly referenced object.
 
+Enable, remove and replace also guard the current owned Agent before the row/revision CAS.
+Account, Computer and Runtime reads resolve authority and Skill rows in one read-only Repeatable
+Read snapshot. Archive preparation, PUT, download and cleanup stay outside those transactions.
+Runtime calls preserve their authenticated Session, proof ID, Computer, placement generation,
+installation and connection identity through presets and uploads. Final writes reuse Session CLI
+proof authority under the Agent guard, then lock binding → Session → placement → Computer → proof
+before the Skill mutation. An ended Session, replaced proof/placement, rebind or closed execution
+cannot authorize a later write. Skills remain available independently of the Agent configuration
+self-edit opt-in switch.
+
 Names are 1–64 characters of lowercase letters, numbers, and single hyphens; they may not start or
 end with a hyphen and may not contain consecutive hyphens (`SkillNameSchema`). Ten names are reserved
 because openTag already ships them and an upload must not shadow them: the six `context-tree-*`

@@ -189,7 +189,7 @@ describe("OpenTag Web App Shell", () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
-  it("shows the server's reason for a rejected sign-in rather than restating it", async () => {
+  it("says a rejected sign-in in the reader's language", async () => {
     installApi({
       authProviders: [{ id: "password", enabled: true, startUrl: null }],
       passwordSignInFails: true,
@@ -204,6 +204,6 @@ describe("OpenTag Web App Shell", () => {
 
     // Uniform by design: the server will not say which of the address or the password was wrong.
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toBe("The email address or password is incorrect");
+    expect(alert.textContent).toBe("The email address or password is incorrect.");
   });
 });

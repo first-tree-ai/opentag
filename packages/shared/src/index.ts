@@ -18,8 +18,10 @@ export {
   ListAccountComputersResponseSchema,
 } from "./account.js";
 export {
+  AGENT_NAME_PATTERN,
   AGENT_RUNTIME_PROVIDERS,
   AGENT_RUNTIME_TEST_FAILURE_CODES,
+  AGENT_SLUG_CHARACTERS,
   AGENT_USAGE_WINDOW_DAYS,
   AGENT_USAGE_WINDOW_OPTIONS,
   type AgentAdminConfig,

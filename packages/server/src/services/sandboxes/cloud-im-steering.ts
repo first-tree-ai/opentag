@@ -41,13 +41,21 @@ export class CloudImSteering {
     },
   ) {}
 
-  async request(request: RuntimeImSteerRequest, onDispatched: () => void): Promise<RuntimeImSteerResult> {
+  async request(
+    request: RuntimeImSteerRequest,
+    onDispatched: () => void,
+    signal?: AbortSignal,
+  ): Promise<RuntimeImSteerResult> {
+    signal?.throwIfAborted();
     const connection = await this.options.connection(request.sessionId);
+    signal?.throwIfAborted();
     if (!connection) throw new Error("CLOUD_STEER_UNAVAILABLE");
     const hash = computeRuntimeImSteerInputHash(request);
     const status = await this.options.custody.beginSteerDispatch(request, hash, connection.context);
+    signal?.throwIfAborted();
     if (status !== "dispatched" && status !== "already_dispatched") throw new Error("CLOUD_STEER_DISPATCH_CONFLICT");
     const current = await this.options.connection(request.sessionId);
+    signal?.throwIfAborted();
     if (current?.record.connectionId !== connection.record.connectionId) {
       if (status === "dispatched") await this.options.custody.releaseSteerDispatch(request, hash, "retry");
       throw new Error("CLOUD_STEER_CONNECTION_REPLACED");

@@ -831,8 +831,8 @@ export class ImDeliveryWorker {
         },
         (onDispatched) =>
           row.computer.kind === "cloud" && this.#cloudDelivery
-            ? this.#cloudDelivery.requestSteer(request, onDispatched)
-            : this.#domain.requestSteer(row.computer.id, instanceId, request, onDispatched),
+            ? this.#cloudDelivery.requestSteer(request, onDispatched, signal)
+            : this.#domain.requestSteer(row.computer.id, instanceId, request, onDispatched, signal),
         signal,
       );
       if (!admitted.admitted) {
@@ -996,6 +996,7 @@ export class ImDeliveryWorker {
       return;
     }
     if (!(await lease.assertOwned())) return;
+    let failureCode = "IM_DELIVERY_RUNTIME_FAILED";
     try {
       const admission = {
         agentId: row.agent.id,
@@ -1003,31 +1004,27 @@ export class ImDeliveryWorker {
         placementGeneration: row.placement.generation,
         sessionId: row.session.id,
       };
-      const admittedReconcile = await this.#withActiveAgentAdmission(
-        admission,
-        (onDispatched) =>
-          this.#domain.requestReconcile(
-            row.computer.id,
-            instanceId,
-            {
-              type: "session:reconcile",
-              requestId: randomUUID(),
-              installationId: row.computer.currentInstallationId,
-              sessionId: row.session.id,
-              agentId: row.agent.id,
-              placementGeneration: row.placement.generation,
-              desired: "ready",
-              runtime,
-            },
-            onDispatched,
-          ),
+      const reconcile = await this.#domain.requestReconcile(
+        row.computer.id,
+        instanceId,
+        {
+          type: "session:reconcile",
+          requestId: randomUUID(),
+          installationId: row.computer.currentInstallationId,
+          sessionId: row.session.id,
+          agentId: row.agent.id,
+          placementGeneration: row.placement.generation,
+          desired: "ready",
+          runtime,
+        },
+        undefined,
+        async (operation) => {
+          const admitted = await this.#withActiveAgentAdmission(admission, operation, signal);
+          if (!admitted.admitted) failureCode = "IM_DELIVERY_AGENT_NOT_ACTIVE";
+          return admitted;
+        },
         signal,
       );
-      if (!admittedReconcile.admitted) {
-        await this.#recordFailure(attempt, "IM_DELIVERY_AGENT_NOT_ACTIVE");
-        return;
-      }
-      const reconcile = await admittedReconcile.result;
       const [currentDelivery] = await this.#database
         .select({ state: imMessageDeliveries.state })
         .from(imMessageDeliveries)
@@ -1091,7 +1088,7 @@ export class ImDeliveryWorker {
       await this.#beforeDeliveryAdmission?.(signal);
       const admittedDelivery = await this.#withActiveAgentAdmission(
         admission,
-        (onDispatched) => this.#domain.requestDelivery(row.computer.id, instanceId, request, onDispatched),
+        (onDispatched) => this.#domain.requestDelivery(row.computer.id, instanceId, request, onDispatched, signal),
         signal,
       );
       if (!admittedDelivery.admitted) {
@@ -1100,16 +1097,14 @@ export class ImDeliveryWorker {
       }
       const result = await admittedDelivery.result;
       setActiveSpanAttributes(outcomeAttrs(result.status, "reason" in result ? result.reason : undefined));
-      if (
-        result.status === "rejected" &&
-        ["configuration_unsupported", "invalid_input"].includes(result.reason ?? "")
-      ) {
+      if (result.status !== "rejected") return;
+      if (["configuration_unsupported", "invalid_input"].includes(result.reason ?? "")) {
         await this.#reject(deliveryId, result.reason ?? "terminal_rejected", claimToken);
-      } else if (result.status === "rejected") {
+      } else {
         await this.#releaseDispatch(attempt, request.requestId, "IM_DELIVERY_RUNTIME_REJECTED");
       }
     } catch (error) {
-      await this.#recordOperationFailure(attempt, "IM_DELIVERY_RUNTIME_FAILED", error, signal);
+      await this.#recordOperationFailure(attempt, failureCode, error, signal);
     }
   }
 

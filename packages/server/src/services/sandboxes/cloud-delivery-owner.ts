@@ -288,8 +288,12 @@ export class CloudDeliveryOwner {
     );
   }
 
-  requestSteer(request: import("@opentag/shared").RuntimeImSteerRequest, onDispatched: () => void) {
-    return this.#steering.request(request, onDispatched);
+  requestSteer(
+    request: import("@opentag/shared").RuntimeImSteerRequest,
+    onDispatched: () => void,
+    signal?: AbortSignal,
+  ) {
+    return this.#steering.request(request, onDispatched, signal);
   }
 
   handleSteerResult(record: CloudConnectionRecord, frame: import("@opentag/shared").RunnerCloudSteerResultFrame) {
@@ -311,9 +315,12 @@ export class CloudDeliveryOwner {
     inputHash: string;
     installationId: string;
     request: DirectImMessageDeliveryRequest;
+    signal?: AbortSignal;
   }): Promise<void> {
+    input.signal?.throwIfAborted();
     const request = input.request;
     const owned = await loadManagedSandboxBySessionId(this.#database, request.sessionId);
+    input.signal?.throwIfAborted();
     if (!owned) throw new CloudDeliveryDispatchError("environment_not_ready", "The Session has no current Sandbox");
     const row = owned.sandbox;
     if (row.lifecycle !== "ready" || row.currentResourceName === null || row.idleReclaimAt !== null) {
@@ -337,6 +344,7 @@ export class CloudDeliveryOwner {
     if (!(await this.#modelGrants.isModelAllowed(request.runtime.model ?? ""))) {
       throw new CloudDeliveryDispatchError("model_unavailable", "The Session model is not offered by the Router");
     }
+    input.signal?.throwIfAborted();
     const connection = requireDispatchableConnection(this.#fence.connectionForSandbox(row.id), snapshot.scope);
     if (!supportsBatchRequest(request, connection))
       throw new CloudDeliveryDispatchError("runner_not_ready", "The Runner does not support batched input");
@@ -346,6 +354,7 @@ export class CloudDeliveryOwner {
       computerId: input.computerId,
       instanceId: connection.instanceId,
     });
+    input.signal?.throwIfAborted();
     if (dispatch === "stale_generation") {
       throw new CloudDeliveryDispatchError("stale_generation", "The delivery placement generation is stale");
     }
@@ -359,6 +368,7 @@ export class CloudDeliveryOwner {
       );
     }
     await this.#assertEnvironmentStillOwned(row, request, input.inputHash);
+    input.signal?.throwIfAborted();
     const sent = this.#hub.sendToCurrent(row.id, socket, {
       type: "delivery:run",
       requestId: request.requestId,

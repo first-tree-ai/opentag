@@ -334,6 +334,7 @@ export class RuntimeDomainOwner {
           onDispatched?.();
           operation = existing.promise;
         } else {
+          signal?.throwIfAborted();
           operation = preparation(computerId, instanceId, request).then((prepared) =>
             this.#withDispatchAdmission(
               admission,
@@ -393,6 +394,7 @@ export class RuntimeDomainOwner {
     instanceId: string,
     request: RuntimeImSteerRequest,
     onDispatched?: () => void,
+    signal?: AbortSignal,
   ): Promise<RuntimeImSteerResult> {
     if (this.#registry.currentInstanceId(computerId) !== instanceId) {
       throw new RuntimeDomainRequestError("authority_unavailable", "The Computer instance is not current");
@@ -410,12 +412,15 @@ export class RuntimeDomainOwner {
         inputHash,
         semanticHash,
         onDispatched,
+        signal,
       ) as Promise<RuntimeImSteerResult>;
     }
+    signal?.throwIfAborted();
     const dispatch = await this.#custody.beginSteerDispatch(request, inputHash, {
       computerId,
       instanceId,
     });
+    signal?.throwIfAborted();
     if (dispatch === "conflict") throw new RuntimeDomainConflictError("The steer dispatch conflicts");
     if (dispatch === "stale_generation") {
       throw new RuntimeDomainRequestError("stale_placement", "The steer dispatch placement is stale");
@@ -430,6 +435,7 @@ export class RuntimeDomainOwner {
         inputHash,
         semanticHash,
         onDispatched,
+        signal,
       ) as Promise<RuntimeImSteerResult>;
     } catch (error) {
       if (dispatch === "dispatched")
@@ -443,6 +449,7 @@ export class RuntimeDomainOwner {
     instanceId: string,
     request: DirectImMessageDeliveryRequest,
     onDispatched?: () => void,
+    signal?: AbortSignal,
   ): Promise<ImMessageDeliveryResult> {
     const attrs = runtimeAttrs({
       requestId: request.requestId,
@@ -456,7 +463,7 @@ export class RuntimeDomainOwner {
     });
     let operation: Promise<ImMessageDeliveryResult>;
     try {
-      operation = this.#requestDelivery(computerId, instanceId, request, onDispatched);
+      operation = this.#requestDelivery(computerId, instanceId, request, onDispatched, signal);
     } catch (error) {
       return tracePromise(
         "runtime.delivery",
@@ -549,6 +556,7 @@ export class RuntimeDomainOwner {
     instanceId: string,
     request: DirectImMessageDeliveryRequest,
     onDispatched?: () => void,
+    signal?: AbortSignal,
   ): Promise<ImMessageDeliveryResult> {
     const inputHash = computeDirectInputHash(request);
     const requestHash = hashTuple([request.deliveryId, inputHash]);
@@ -574,10 +582,11 @@ export class RuntimeDomainOwner {
         inputHash,
         undefined,
         onDispatched,
+        signal,
       ) as Promise<ImMessageDeliveryResult>;
     }
     this.#registry.assertSnapshotCompatible(computerId, instanceId, request);
-    const promise = this.#startDelivery(computerId, instanceId, request, requestHash, inputHash, onDispatched);
+    const promise = this.#startDelivery(computerId, instanceId, request, requestHash, inputHash, onDispatched, signal);
     const owner = { computerId, hash: requestHash, instanceId, promise };
     this.#startingDeliveries.set(request.requestId, owner);
     void promise.then(
@@ -600,11 +609,14 @@ export class RuntimeDomainOwner {
     requestHash: string,
     inputHash: string,
     onDispatched?: () => void,
+    signal?: AbortSignal,
   ): Promise<ImMessageDeliveryResult> {
+    signal?.throwIfAborted();
     const dispatch = await this.#custody.beginDeliveryDispatch(request, inputHash, {
       computerId,
       instanceId,
     });
+    signal?.throwIfAborted();
     if (dispatch === "conflict") throw new RuntimeDomainConflictError("The delivery dispatch conflicts");
     if (dispatch === "stale_generation") {
       throw new RuntimeDomainRequestError("stale_placement", "The delivery dispatch placement is stale");
@@ -619,6 +631,7 @@ export class RuntimeDomainOwner {
         inputHash,
         undefined,
         onDispatched,
+        signal,
       ) as Promise<ImMessageDeliveryResult>;
     } catch (error) {
       await this.#custody.releaseDeliveryDispatch(request, inputHash, "retry").catch(() => undefined);

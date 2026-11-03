@@ -47,6 +47,15 @@ starting the Provider, with `executionEffects: not_started`. Execution and Slack
 same budget calculation; a running Provider must still honor abort and complete its native cleanup
 before the Client can report. A Client upgrade does not change an already running Turn's timer.
 
+The Worker carries its existing operation signal into Local reconcile preparation,
+Local/Cloud direct dispatch and steer. Reconcile admission runs after preparation.
+Owners check the signal after asynchronous custody/model work and before the first
+frame; Cloud allocation checks it after the Sandbox lookup/ensure and before
+starting allocation. Already-issued SQL and shared model reads retain their own
+bounds. A cancelled unsent attempt retains committed dispatch correlation for
+identity-based recovery; cancellation never erases custody or rejects already-sent
+receipts and reports.
+
 For accepted Local custody, a reconcile response does not settle the delivery. `busy`, `running`,
 `reporting`, `recovery_required`, and `rejected` are recorded as distinct deferred status codes.
 `ready` and `stopped` without a recorded report mean `IM_DELIVERY_RECOVERY_AWAITING_REPORT`.

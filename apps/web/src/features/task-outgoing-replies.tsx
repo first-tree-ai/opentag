@@ -11,7 +11,8 @@ type OutgoingReply = OutgoingSnapshot["replies"][number];
 
 /**
  * A sent reply's header carries its send time, plus its kind only when the kind says something the
- * body may not — a card, an image, a shared chat. Plain text and unrecognized kinds go unlabelled.
+ * body may not — a card, an image, a shared chat. Plain text, rich text and unrecognized kinds go
+ * unlabelled.
  */
 export function TaskOutgoingReplyMeta({ reply }: { reply: OutgoingReply }) {
   const meta = [headerKindLabel(reply.content.msgType), replyTime(reply.createTime)].filter(Boolean).join(" · ");
@@ -31,7 +32,7 @@ export function TaskCapturedReplyMeta({ reply }: { reply: CapturedTaskReply }) {
 
 function headerKindLabel(msgType: string): string | undefined {
   const label = replyTypeLabel(msgType);
-  return msgType === "text" || label === m.tasks_reply_type_unknown() ? undefined : label;
+  return msgType === "text" || msgType === "post" || label === m.tasks_reply_type_unknown() ? undefined : label;
 }
 
 /**

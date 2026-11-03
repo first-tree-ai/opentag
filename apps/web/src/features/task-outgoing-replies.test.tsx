@@ -216,6 +216,15 @@ describe("actual outgoing reply content", () => {
     expect(meta.join(" ")).not.toMatch(/Text|Invalid/);
   });
 
+  it("labels neither plain nor rich text in the header", () => {
+    renderReplies([
+      { msgType: "text", text: "plain" },
+      { msgType: "post", text: "rich", raw: "{}" },
+    ]);
+    expect(document.querySelectorAll("small")).toHaveLength(0);
+    expect(screen.queryByText("Post")).toBeNull();
+  });
+
   it("always shows the reply kind, even when there is no time to show beside it", () => {
     renderReplies([{ msgType: "interactive", raw: "{}" }]);
 

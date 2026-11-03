@@ -26,6 +26,7 @@ import {
   ErrorReportingCredentialsJsonSchema,
   resolveErrorReportingConfig,
 } from "./error-reporting-config.js";
+import type { PerformanceLoggingConfig } from "./observability/performance-logger.js";
 import { normalizeSkillObjectPrefix } from "./services/skills/skill-object-prefix.js";
 import { type TrustProxyConfig, TrustProxySchema } from "./trust-proxy-config.js";
 
@@ -220,6 +221,7 @@ const EncryptionKeyRingSchema = z
 
 const ServerLogLevelSchema = z.enum(["trace", "debug", "info", "warn", "error", "fatal", "silent"]).default("info");
 export type ServerLogLevel = z.infer<typeof ServerLogLevelSchema>;
+const PerformanceLogLevelSchema = z.enum(["debug", "info", "warn"]).default("debug");
 
 function validateMcpGoogleClientPair(
   value: {
@@ -392,6 +394,9 @@ const ServerEnvironmentSchema = z
     /* Which reverse proxies may set X-Forwarded-*; decides the address rate limits key on. */
     OPENTAG_TRUST_PROXY: TrustProxySchema,
     OPENTAG_LOG_LEVEL: ServerLogLevelSchema,
+    OPENTAG_PERF_LOG_ENABLED: booleanString("true"),
+    OPENTAG_PERF_LOG_LEVEL: PerformanceLogLevelSchema,
+    OPENTAG_PERF_SLOW_THRESHOLD_MS: z.coerce.number().int().min(1).default(1_000),
     /*
      * The single overall Cloud switch. Off by default; enabling requires a valid storage prefix and
      * Runner SemVer release coordinate, and it also enables Cloud Runner allocation (with its own
@@ -762,6 +767,8 @@ export interface ServerConfig {
     };
     /** Where relayed Web App and CLI errors are forwarded; `projectId` unset keeps them in the server log only. */
     errorReporting: ErrorReportingConfig;
+    /** Start/end performance logging configuration across services, DB queries, and external calls. */
+    performance?: PerformanceLoggingConfig;
   };
   logLevel: ServerLogLevel;
   /**
@@ -963,6 +970,9 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_ERROR_REPORTING_CREDENTIALS_JSON: emptyToUndefined(environment.OPENTAG_ERROR_REPORTING_CREDENTIALS_JSON),
     OPENTAG_TRUST_PROXY: emptyToUndefined(environment.OPENTAG_TRUST_PROXY),
     OPENTAG_LOG_LEVEL: environment.OPENTAG_LOG_LEVEL,
+    OPENTAG_PERF_LOG_ENABLED: environment.OPENTAG_PERF_LOG_ENABLED,
+    OPENTAG_PERF_LOG_LEVEL: environment.OPENTAG_PERF_LOG_LEVEL,
+    OPENTAG_PERF_SLOW_THRESHOLD_MS: environment.OPENTAG_PERF_SLOW_THRESHOLD_MS,
     OPENTAG_CLOUD_IDENTITIES_ENABLED: environment.OPENTAG_CLOUD_IDENTITIES_ENABLED,
     OPENTAG_CLOUD_STORAGE_BASE: emptyToUndefined(environment.OPENTAG_CLOUD_STORAGE_BASE),
     OPENTAG_CLOUD_RUNNER_VERSION: emptyToUndefined(environment.OPENTAG_CLOUD_RUNNER_VERSION),
@@ -1050,6 +1060,11 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
         parsed.GOOGLE_CLOUD_PROJECT,
         parsed.OPENTAG_ERROR_REPORTING_CREDENTIALS_JSON,
       ),
+      performance: {
+        enabled: parsed.OPENTAG_PERF_LOG_ENABLED,
+        level: parsed.OPENTAG_PERF_LOG_LEVEL,
+        slowThresholdMs: parsed.OPENTAG_PERF_SLOW_THRESHOLD_MS,
+      },
     },
     port: parsed.OPENTAG_PORT,
     trustProxy: parsed.OPENTAG_TRUST_PROXY,

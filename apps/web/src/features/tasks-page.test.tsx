@@ -549,6 +549,16 @@ describe("Tasks view", () => {
     expect(computers).not.toHaveBeenCalled();
   });
 
+  it("keeps the Agent fact when an Agent's page shows another Agent's Task", async () => {
+    mockDetail(detail);
+    const otherAgentId = "99999999-9999-4999-8999-999999999999";
+    await renderInRouter(<TaskDetailPage agentId={otherAgentId} taskId={sessionId} />, {
+      path: `/agents/${otherAgentId}/tasks/${sessionId}`,
+    });
+    // A stale or mistyped link: the Task belongs to Atlas, so the fact naming it stays.
+    expect((await screen.findByLabelText("Task details")).textContent).toContain("Atlas");
+  });
+
   it("shows the agent logo in Task rows and the agent filter while preserving filter labels", async () => {
     const avatarPath = `/api/v1/agents/${agentId}/avatar`;
     vi.spyOn(browserApi, "tasks").mockResolvedValue({

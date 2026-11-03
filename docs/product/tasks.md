@@ -143,7 +143,8 @@ The detail title remains the page's `h1` and uses 16px medium text with a 24px l
 wrapping. It displays the complete stored title without an additional clamp. Task facts retain their
 order in two, three or five columns according to the content container width. On an Agent's own Task
 page the facts leave out the Agent, because the page around them already names it, and use two, three
-or four columns; the Agent fact appears only where Tasks from several Agents mix. Where the Agent fact
+or four columns. The Agent fact appears where Tasks from several Agents mix, and on an Agent's page
+that shows another Agent's Task (a stale or mistyped link), where it is the only fact naming the Agent. Where the Agent fact
 is shown, the start time spans both columns in the narrow layout so the complete date and time can wrap
 without squeezing the other facts.
 

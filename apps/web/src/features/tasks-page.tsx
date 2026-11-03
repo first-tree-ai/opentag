@@ -437,7 +437,7 @@ export function TaskDetailPage({
             {task.title}
           </Text>
         </div>
-        <TaskDetailFacts agentScoped={agentId !== undefined} status={status} task={task} />
+        <TaskDetailFacts agentScoped={agentId === task.agent.id} status={status} task={task} />
         <TaskCancelControl detailKey={detailKey} enabled={!showExamples} task={task} />
       </header>
 
@@ -837,7 +837,8 @@ function TaskTitleLink({
 
 /**
  * On an Agent's own Task page the Agent is already named by the page around it, so the facts start
- * with the source; the Agent fact appears only where Tasks from several Agents mix.
+ * with the source. The Agent fact stays where Tasks from several Agents mix, and on an Agent's page
+ * that shows another Agent's Task (a stale or mistyped link), where it is the only thing naming it.
  */
 function TaskDetailFacts({
   agentScoped,

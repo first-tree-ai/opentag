@@ -1163,6 +1163,11 @@ describe("Runner cancellation and connection lifetime", () => {
     const running = runRunnerServe(
       { ...serveConfig(wss.url), stateDir },
       {
+        env: {
+          OPENTAG_ENV: "staging",
+          OPENTAG_CLOUD_LATENCY_DIAGNOSTICS: "true",
+          OPENTAG_CLOUD_LATENCY_SESSION_IDS: WSS_SESSION_ID,
+        },
         cloudTurnSeams: {
           openExecution: async () => ({
             close: async () => undefined,
@@ -1225,7 +1230,8 @@ describe("Runner cancellation and connection lifetime", () => {
       .join("")
       .split("\n")
       .filter((line) => line.startsWith("{"))
-      .map((line) => JSON.parse(line));
+      .map((line) => JSON.parse(line))
+      .filter((record) => record.module === "cloud-pi");
     expect(diagnostics).toContainEqual(
       expect.objectContaining({
         module: "cloud-pi",
@@ -1260,6 +1266,13 @@ describe("Runner cancellation and connection lifetime", () => {
       turnId: reportFrame.report.turnId,
     });
     await waitFor(async () => (await readdir(join(stateDir, "journal"))).length === 0, "durable ack retirement");
+    await waitFor(() => output.chunks.stderr.some((line) => line.includes('"event":"summary"')), "latency ack summary");
+    const latency = output.chunks.stderr
+      .filter((line) => line.includes('"operation":"cloud.latency"'))
+      .map((line) => JSON.parse(line));
+    expect(latency.at(-1)).toMatchObject({ event: "summary", outcome: "completed", diagnosticIncomplete: false });
+    expect(latency.filter((record) => record.phase === "report_ack")).toHaveLength(2);
+    expect(JSON.stringify(latency)).not.toMatch(/unit-execution-token|ephemeral-proof|burst/);
     stop.abort();
     expect(await running).toBe(143);
   }, 30_000);

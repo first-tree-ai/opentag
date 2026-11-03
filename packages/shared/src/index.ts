@@ -122,6 +122,15 @@ export {
   ServiceIdSchema,
 } from "./channel.js";
 export * from "./cloud-billing.js";
+export {
+  type CloudLatencyCorrelation,
+  type CloudLatencyPhase,
+  CloudLatencyPhaseSchema,
+  type CloudLatencyRecord,
+  CloudLatencyRecorder,
+  CloudLatencyRecordSchema,
+  cloudLatencySessions,
+} from "./cloud-latency.js";
 export * from "./cloud-product.js";
 export * from "./cloud-runner.js";
 export {

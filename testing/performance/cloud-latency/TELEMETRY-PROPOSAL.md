@@ -1,8 +1,10 @@
-# Proposed live latency collection — awaiting human approval
+# Staging latency collection design
 
-This is a concrete design proposal, **not an implemented or authorized data path**. The workspace
-and repository AGENTS require human confirmation before log, persistence or read/write design
-changes. The current PR contains only synthetic fixture files and analysis of existing source.
+The user approved implementation of this proposal on 2026-11-03, from the version at
+`bc7b526dae643602c277799cca65456e7e172507`. The approval excludes deployment, real model calls,
+IM messages and task replay. The workspace/repository AGENTS still require human confirmation
+for material changes to the approved read/write design. [LIVE.md](LIVE.md) records the implemented
+first increment, bounds and remaining blind spots; this page retains the approved design scope.
 
 ## Proposed first increment
 
@@ -11,7 +13,8 @@ existing Pi diagnostics and trace identifiers. Add no database table, migration,
 protocol frame, persistent correlation ID, OTLP destination or production log-shipping change.
 The Server would continue writing to its existing Pino stdout; the Runner to its existing stderr.
 An opt-in `OPENTAG_CLOUD_LATENCY_DIAGNOSTICS=true` would gate the added records. Default is off.
-The flag and deployment would require a separate approved change.
+The implemented flag also requires a valid explicit allowlist of at most 16 Session UUIDs and
+`OPENTAG_ENV=staging`. Deployment and live execution remain separately authorized actions.
 
 | Item | Proposed contract |
 | --- | --- |
@@ -52,3 +55,11 @@ After approval and implementation, enable only in the named Staging environment 
 live-run plan specifying synthetic input, model request/spend cap, IM destination, sample count,
 CPU/memory settings and cleanup. Export and inspect an initial small sample before broad collection.
 Permission to review or merge that code does not itself authorize deployment or real executions.
+
+The first increment observes existing Server preparation/allocation calls and Runner occupation /
+report boundaries without changing their implementations. It reuses existing Pi ends. In-process
+quota bookkeeping retains at most 1,024 identities and suppresses repeat observations; it never
+evicts an identity to reopen a log budget. No application data cache is introduced. The reader is
+stdin-only (16 MiB / 10,000 rows, positive window at most 24 hours), with no automated query or
+raw-file storage. Ingress, individual model/tool/MCP/IM timing and timeout classification remain
+unavailable rather than being fabricated from the partial evidence.

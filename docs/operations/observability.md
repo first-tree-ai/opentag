@@ -192,9 +192,27 @@ evidence, not zero duration or a proven timeout.
 The [Cloud evaluation suite](https://github.com/first-tree-ai/opentag/blob/main/testing/performance/cloud-latency/README.md) provides a repeatable
 offline synthetic fixture, report generator and comparison guard. Its subprocess/model/tool/IM
 replacements do not measure production Cloud latency. Existing spans and Pi diagnostics do not
-form a complete end-to-end dataset, especially for allocation/restore, outbound CLI receipts and
-checkpoint/report acknowledgement. New collection, export or retention paths require their own
-approved read/write design.
+form a complete end-to-end dataset, especially for ingress, outbound CLI receipts and model/tool
+attribution. New collection, export or retention paths require their own approved read/write design.
+
+An opt-in Staging lane observes Cloud IM preparation/allocation calls and Runner workspace-ready,
+worker-execution, checkpoint and matching report-ack boundaries on the existing log streams.
+It requires `OPENTAG_ENV=staging`, `OPENTAG_CLOUD_LATENCY_DIAGNOSTICS=true` and an explicit
+`OPENTAG_CLOUD_LATENCY_SESSION_IDS` list of at most 16 UUIDs. It emits no added records by default
+or in other environments. `OPENTAG_REVISION` is a full lowercase Git SHA, otherwise `unknown`.
+
+Each observation reserves a summary within 32 records / 64 KiB. Observers retain at most 1,024
+identities for quota enforcement without evicting them to reopen budgets. Repeated delivery
+attempts and workspace preparations are not new observations. Records carry existing correlation
+IDs, a process clock identity, UTC and monotonic durations; they exclude content and credentials.
+Logging failures do not change operation outcomes, custody, retries or checkpoint policy.
+
+The [Staging report guide](https://github.com/first-tree-ai/opentag/blob/main/testing/performance/cloud-latency/LIVE.md)
+describes the exact boundaries, blind spots and manual stdin-only aggregator. It reuses existing
+Pi phase durations, rejects incomplete/conflicting evidence for complete-trace metrics, and emits
+aggregate counts/quantiles without resource IDs or raw files. It does not infer timeout or genuine
+end-to-end latency from missing records. Deployment, live collection and actual log arrival remain
+separate operational acceptance; no exporter, scheduler, storage or retention change is installed.
 
 ## Configuration
 

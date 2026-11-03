@@ -1,8 +1,9 @@
 # Cloud response-time evaluation
 
 This suite establishes the measurement contract and an executable offline fixture for issue #1108.
-It changes no production code, logs, telemetry destinations, database, cache, credential, delivery,
-or workspace persistence behavior. Read the [observability contract](../../../docs/operations/observability.md)
+An approved, default-off [Staging diagnostic/report lane](LIVE.md) adds bounded observations on
+existing log streams. Database, application cache, credential, delivery and workspace persistence
+semantics remain unchanged. Read the [observability contract](../../../docs/operations/observability.md)
 and [current baseline and gaps](REPORT.md) before interpreting a result.
 
 ## Endpoints and clocks
@@ -46,13 +47,17 @@ Stages are attribution boundaries, not a promise that the real path is serial or
 
 Canonical phase diagnostics already have bounded/redacted stderr records, version/sequence,
 compaction and missing-diagnostic semantics. Reuse them; adding another stream or exporter needs the
-separate [telemetry proposal](TELEMETRY-PROPOSAL.md) to be approved first. Server INFO logs are not
+separate [telemetry design](TELEMETRY-PROPOSAL.md) to be approved first. The first increment has
+human approval and is described in [LIVE.md](LIVE.md); the table above audits its original main
+baseline, not deployed behavior. Server INFO logs are not
 shipped by the production WARN-and-above pipeline, so querying Cloud Logging alone cannot recover
 the whole path.
 
 ## One-command offline run
 
-The fixture needs only Node built-ins and a writable OS temporary directory:
+The fixture logic needs only Node built-ins and a writable OS temporary directory. A host `run`
+also requires Git and an intact checkout for source identity; the staged-container form instead
+requires the explicit full revision and dirty-source metadata below.
 
 ```sh
 node scripts/e2e/cloud-latency/benchmark.mjs run 100 > /tmp/cloud-latency-results.json
@@ -148,6 +153,22 @@ child RSS. These counters are profiles, not production billing or per-stage memo
   not a Cloud SLO, an optimization target or evidence of statistically significant improvement.
   Missing image/resource controls refuse comparison; an unconstrained host smoke is report-only.
 
+The endpoint guard's relative allowance is `5% + 5 ms / baseline quantile`. Its fixed 5 ms term
+allows about 19–33% at the small fixture endpoints and less at the larger restore endpoints.
+Passing it cannot exclude a 2–3× regression in a sub-millisecond assembly/tool/IM stage: stage
+rows are reported but not guarded. Declare a separate stage target before testing such a candidate.
+Unexpected injection success fails `run`; when comparing archived data, changed injection outcomes
+can instead produce an insufficient-samples message. Inspect the outcome rows as well as the verdict.
+
+For the retained baseline's ingress-to-first-receipt P50, rejection requires an increase above:
+
+| Scenario | Baseline P50 (ms) | Allowed increase (ms) | Relative allowance |
+| --- | ---: | ---: | ---: |
+| cold-empty | 18.73 | 5.94 | 31.7% |
+| warm-64k | 18.02 | 5.90 | 32.7% |
+| restored-4m | 34.29 | 6.71 | 19.6% |
+| mcp-64k | 19.30 | 5.96 | 30.9% |
+
 ## Optimization and reporting loop
 
 1. Refresh source/evidence coverage before collecting anything. Reuse a sufficient authoritative
@@ -164,8 +185,10 @@ child RSS. These counters are profiles, not production billing or per-stage memo
    acceptance remain separate explicit gates. Update the versioned baseline only after checking
    the new evidence has the same boundary, workload and acceptance level.
 
-The `report` command is the repeatable offline reporting mechanism; no scheduler, second pipeline
-automation, live dashboard, production parser or operational query is installed. A future daily
+The `report` command is the repeatable offline reporting mechanism; the [Staging reader](LIVE.md)
+adds manual bounded stdin aggregation. No scheduler, second pipeline automation, live dashboard
+or automatic operational query is installed. A future daily
 live report must display day/version/cohort, eligible and sampled population, missing coverage,
 failures/timeouts, quantiles, resource configuration, clock uncertainty and comparison verdict.
-Its data collection/read/write design is pending human approval in the linked proposal.
+The first collection increment follows the approved linked design; deployment, real exports and
+broader collection still need their own authorization and acceptance.

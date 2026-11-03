@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  type CloudLatencyRecorder,
   computeDirectInputHash,
   type DirectImMessageDeliveryRequest,
   DirectImMessageDeliveryRequestSchema,
@@ -22,7 +23,9 @@ import {
   sessions,
   users,
 } from "../db/schema/index.js";
+import { CloudDeliveryLatency } from "../observability/cloud-latency.js";
 import { outcomeAttrs, setActiveSpanAttributes } from "../observability/index.js";
+import type { ServiceLogger } from "../observability/service-logger.js";
 import type { CloudDeliveryOwner } from "../services/sandboxes/cloud-delivery-owner.js";
 import { CloudDeliveryDispatchError } from "../services/sandboxes/cloud-delivery-owner.js";
 import { CloudCapacityExceededError } from "../services/sandboxes/errors.js";
@@ -81,6 +84,7 @@ export type ActiveAgentAdmission = <T>(
 ) => Promise<{ admitted: false } | { admitted: true; result: Promise<T> }>;
 
 export interface CloudDeliveryCoordinatorOptions {
+  logger?: ServiceLogger;
   database: DatabaseClient;
   cloudDelivery?: CloudDeliveryOwner;
   cloudAllocation?: CloudSessionAllocationPort;
@@ -114,19 +118,39 @@ export interface CloudDeliveryCoordinatorOptions {
 
 export class CloudDeliveryCoordinator {
   readonly #options: CloudDeliveryCoordinatorOptions;
+  readonly #latency: CloudDeliveryLatency;
 
   constructor(options: CloudDeliveryCoordinatorOptions) {
     this.#options = options;
+    this.#latency = new CloudDeliveryLatency(process.env, options.logger);
   }
 
   /** One claimed Cloud delivery: validate/refresh the dispatch and send it through the owner. */
   async deliver(row: CloudDeliveryClaimRow, attempt: DeliveryAttempt, lease: CloudClaimLease, signal: AbortSignal) {
+    const latency = this.#latency.begin(row.session.id, row.delivery.id, attempt.attemptCount);
+    try {
+      await this.#deliver(row, attempt, lease, signal, latency);
+      latency?.finish("completed");
+    } catch (error) {
+      latency?.finish("failed");
+      throw error;
+    }
+  }
+
+  async #deliver(
+    row: CloudDeliveryClaimRow,
+    attempt: DeliveryAttempt,
+    lease: CloudClaimLease,
+    signal: AbortSignal,
+    latency?: CloudLatencyRecorder,
+  ) {
     // Release a stale/expired dispatch FIRST: a dispatched row is outside the janitor's TTL bound,
     // so this is the only path back to the bounded deadline, and it must not depend on the model
     // path being configured.
     if (!(await lease.assertOwned())) return;
     if (await this.#releaseUnusableDispatch(row, attempt)) return;
-    const prepared = await this.#prepareDispatch(row, attempt);
+    const prepare = () => this.#prepareDispatch(row, attempt);
+    const prepared = latency ? await latency.measure("runtime_assembly", prepare) : await prepare();
     if (prepared.kind !== "continue") return;
     if (
       await this.#options.hasOtherCustody({
@@ -144,7 +168,8 @@ export class CloudDeliveryCoordinator {
       const built =
         prepared.persistedRequest ?? (await this.#buildFreshDispatch(row, prepared.replyRole, prepared.runtime));
       if (!(await lease.assertOwned())) return;
-      if (!(await this.#ensureEnvironment(row, attempt))) return;
+      const allocate = () => this.#ensureEnvironment(row, attempt);
+      if (!(latency ? await latency.measure("allocation_wait", allocate) : await allocate())) return;
       if (!(await lease.assertOwned())) return;
       const cloudDelivery = this.#options.cloudDelivery;
       if (!cloudDelivery) return;

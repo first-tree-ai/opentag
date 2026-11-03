@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { computeDirectInputHash, type RunnerServerFrame } from "@opentag/shared";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agentRuntimeConfigs,
   agents,
@@ -14,6 +14,7 @@ import {
   sessions,
   users,
 } from "../db/schema/index.js";
+import type { ServiceLogger } from "../observability/service-logger.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { dispatchClaimToken } from "../runtime/im-delivery-claim.js";
 import { ImDeliveryWorker } from "../runtime/im-delivery-worker.js";
@@ -59,6 +60,7 @@ beforeAll(async () => {
 }, 60_000);
 afterAll(async () => unit?.close());
 beforeEach(async () => unit.reset());
+afterEach(() => vi.unstubAllEnvs());
 
 async function cloudScope(options: { ready?: boolean } = {}) {
   const accountId = randomUUID();
@@ -328,12 +330,14 @@ function makeWorker(
   owner?: CloudDeliveryOwner,
   allocation?: AllocationCallLog,
   options: {
+    logger?: ServiceLogger;
     now?: () => Date;
     beforeDeliveryAdmission?: (signal: AbortSignal) => Promise<void>;
     readyAllocation?: CloudSessionAllocationPort["readyAllocation"];
   } = {},
 ) {
   return new ImDeliveryWorker({
+    ...(options.logger ? { logger: options.logger } : {}),
     assembler: new EffectiveRuntimeSnapshotAssembler(unit.database),
     database: unit.database,
     domain: {} as never,
@@ -770,31 +774,50 @@ describe("ImDeliveryWorker accepted Runner readiness wakeup", () => {
 });
 
 describe("ImDeliveryWorker Cloud routing", () => {
-  it("routes a Cloud Session delivery through the per-Sandbox owner, never the Local registry", async () => {
-    const { scope, cloud } = await cloudScope();
-    const stack = makeStack();
-    const sent: RunnerServerFrame[] = [];
-    const socket = fakeSocket(sent);
-    stack.hub.attach(scope, socket);
-    stack.hub.markReady(scope, READINESS, socket);
-    stack.fence.attach({ computerId: cloud.computerId, installationId: randomUUID(), scope });
-    const { deliveryId } = await pendingDelivery(scope.sessionId);
-    const worker = makeWorker(stack.owner);
-    await worker.runOnce();
-    const runs = sent.filter((frame) => frame.type === "delivery:run");
-    expect(runs).toHaveLength(1);
-    const run = runs[0] as Extract<RunnerServerFrame, { type: "delivery:run" }>;
-    expect(run.delivery.deliveryId).toBe(deliveryId);
-    expect(run.delivery.runtime.model).toBe(MODEL);
-    const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
-    if (!row) throw new Error("delivery row missing");
-    expect(row.state).toBe("pending");
-    expect(row.dispatchRequestId).toBe(run.requestId);
-    // The Local registry was never consulted for an instance: no computer online state changed.
-    const [computer] = await unit.database.select().from(computers).where(eq(computers.id, cloud.computerId));
-    if (!computer) throw new Error("computer row missing");
-    expect(computer.currentInstanceId).toBeNull();
-  });
+  it.each(["disabled", "enabled", "throwing"])(
+    "keeps per-Sandbox routing with %s latency diagnostics",
+    async (mode) => {
+      const { scope, cloud } = await cloudScope();
+      const stack = makeStack();
+      const sent: RunnerServerFrame[] = [];
+      const socket = fakeSocket(sent);
+      stack.hub.attach(scope, socket);
+      stack.hub.markReady(scope, READINESS, socket);
+      stack.fence.attach({ computerId: cloud.computerId, installationId: randomUUID(), scope });
+      const { deliveryId } = await pendingDelivery(scope.sessionId);
+      vi.stubEnv("OPENTAG_ENV", "staging");
+      vi.stubEnv("OPENTAG_CLOUD_LATENCY_DIAGNOSTICS", mode === "disabled" ? "false" : "true");
+      vi.stubEnv("OPENTAG_CLOUD_LATENCY_SESSION_IDS", scope.sessionId);
+      const info = vi.fn((bindings: Record<string, unknown>) => {
+        if (mode === "throwing" && bindings.operation === "cloud.latency") throw new Error("fixture logger failure");
+      });
+      const worker = makeWorker(stack.owner, undefined, {
+        logger: { debug: vi.fn(), info, warn: vi.fn(), error: vi.fn() },
+      });
+      await worker.runOnce();
+      const runs = sent.filter((frame) => frame.type === "delivery:run");
+      expect(runs).toHaveLength(1);
+      const run = runs[0] as Extract<RunnerServerFrame, { type: "delivery:run" }>;
+      expect(run.delivery.deliveryId).toBe(deliveryId);
+      expect(run.delivery.runtime.model).toBe(MODEL);
+      const [row] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, deliveryId));
+      if (!row) throw new Error("delivery row missing");
+      expect(row.state).toBe("pending");
+      expect(row.dispatchRequestId).toBe(run.requestId);
+      // The Local registry was never consulted for an instance: no computer online state changed.
+      const [computer] = await unit.database.select().from(computers).where(eq(computers.id, cloud.computerId));
+      if (!computer) throw new Error("computer row missing");
+      expect(computer.currentInstanceId).toBeNull();
+      const diagnostics = info.mock.calls
+        .map(([record]) => record)
+        .filter((record) => record.operation === "cloud.latency");
+      expect(diagnostics.length).toBe(mode === "disabled" ? 0 : 5);
+      expect(JSON.stringify(diagnostics)).not.toContain("fixture logger failure");
+    },
+  );
 
   it("keeps a Cloud delivery pending (transient) when the environment is not ready", async () => {
     const { scope } = await cloudScope({ ready: false });

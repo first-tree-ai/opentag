@@ -147,7 +147,8 @@ workspace styling. The steps say only what the rows and controls do not:
   so. The footer speaks only when the reader has something to do (finish the step above, or check again).
 - The messaging step's heading stands alone, without a "Set up {name}" subtitle repeating the Agent.
 - The Lark step shows its QR code from 768px up, with its expiry relative ("Expires in 15 min"). Below 768px the
-  reader is usually on the phone that would scan it, so the same authorization link opens in Lark instead.
+  reader is usually on the phone that would scan it, so the same authorization link opens in Lark instead, and the
+  instruction and waiting line say to confirm in Lark rather than to scan.
 
 The completion screen stays visible until the user navigates away. Its primary action, **View agent**
 (**查看 Agent** in Chinese), opens that Agent's overview. Global navigation provides the return to the Agent list;

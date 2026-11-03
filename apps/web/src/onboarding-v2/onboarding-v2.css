@@ -766,6 +766,14 @@
   gap: 1rem;
 }
 
+/* Below 768px the reader is usually on the phone that would scan the QR code, so it gives way to the
+   same authorization link opened in Lark (shown with `md:hidden`, the same 768px boundary). */
+@media (width < 48rem) {
+  .otv2-messaging-settings .otv2-connection-scan__content {
+    display: none;
+  }
+}
+
 .otv2-messaging-settings .otv2-connection-scan .ots-qr,
 .otv2-messaging-settings .otv2-connection-scan .ots-qr__image {
   width: 176px;

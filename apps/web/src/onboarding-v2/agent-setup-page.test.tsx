@@ -566,7 +566,8 @@ describe("AgentSetupPage stages", () => {
     expect(screen.getByText(/^Expires in \d+ min$/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
     // Below 768px the QR code (for a second device) gives way to the same link opened in Lark.
-    expect(qr.closest(".otv2-connection-scan__content")?.className).toContain("hidden md:block");
+    // (CSS hides the QR block below 768px; jsdom does not apply media queries.)
+    expect(qr.closest('[data-ui="agent-setup-feishu-qr"]')).toBeTruthy();
     const open = document.querySelector<HTMLAnchorElement>('[data-ui="agent-setup-feishu-open"]');
     expect(open?.textContent).toBe("Open in Lark");
     expect(open?.className).toContain("md:hidden");

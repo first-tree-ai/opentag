@@ -1815,22 +1815,32 @@ function FeishuAuthorizing({
             <strong>{spaceScriptBoundary(m.im_connect_feishu({ provider: providerTitle("feishu") }))}</strong>
           </Text>
         </div>
-        <p className={HINT}>
+        {/* The scanning instruction matches the QR code, which shows from 768px up; on a phone it
+            says to open Lark instead, matching the button below. */}
+        <p className={`${HINT} hidden md:block`}>
           {spaceScriptBoundary(m.onboarding_v2_messaging_lark_intro({ provider: providerTitle("feishu") }))}
+        </p>
+        <p className={`${HINT} md:hidden`}>
+          {spaceScriptBoundary(m.onboarding_v2_messaging_lark_intro_phone({ provider: providerTitle("feishu") }))}
         </p>
         <p className={WAITING_LINE} role="status">
           <span aria-hidden="true" className={qrValid ? "ots-pulse shrink-0" : "hidden"} />
-          {!qrValid
-            ? m.onboarding_v2_connection_qr_elapsed()
-            : messaging.qrUrl
-              ? m.onboarding_v2_messaging_waiting()
-              : m.onboarding_v2_connection_qr_loading()}
+          {!qrValid ? (
+            m.onboarding_v2_connection_qr_elapsed()
+          ) : messaging.qrUrl ? (
+            <>
+              <span className="hidden md:inline">{m.onboarding_v2_messaging_waiting()}</span>
+              <span className="md:hidden">{m.onboarding_v2_messaging_waiting_phone()}</span>
+            </>
+          ) : (
+            m.onboarding_v2_connection_qr_loading()
+          )}
         </p>
         {qrValid && messaging.qrUrl ? (
           <>
             {/* A QR code is for a second device; below 768px the reader is usually on the phone that
                 would scan it, so the same authorization link opens in Feishu instead. */}
-            <div className="otv2-connection-scan__content hidden md:block">
+            <div className="otv2-connection-scan__content" data-ui="agent-setup-feishu-qr">
               <QrCode value={messaging.qrUrl} />
             </div>
             <a

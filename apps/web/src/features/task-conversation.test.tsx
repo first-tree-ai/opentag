@@ -477,3 +477,12 @@ it("spans the page's full content width like the header above it", () => {
   expect(thread?.className).toContain("w-full");
   expect(thread?.className).not.toMatch(/max-w-/);
 });
+
+it("gives a running Turn no Agent entry until it sends a real reply", () => {
+  const running = turn();
+  running.report = null;
+  running.delivery.isRunning = true;
+  const { container } = render(<TaskActivity task={task} turns={[running]} pagination={null} />);
+  expect(container.querySelector('[data-ui="task-message-request"]')).toBeTruthy();
+  expect(container.querySelector('[data-ui="task-message-agent"]')).toBeNull();
+});

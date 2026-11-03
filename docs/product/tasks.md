@@ -87,8 +87,9 @@ The runtime's final text (`finalText`) is not shown: it repeats the reply the Ag
 never substitutes for captured sent replies. A Turn report appears in the conversation only when it adds
 something the sent replies cannot show — an execution failure or an unavailable or incomplete reply
 history; a completed report with nothing else to say leaves no entry, and a Turn that finished without
-a reply gets no placeholder text. A repeated reply or an empty-state line adds reading without telling
-the reader anything new about the run; the Task's status already says it completed. Sent reply bodies, captured
+a reply gets no placeholder text. A Turn still running gets no Agent entry until it sends a real reply.
+A repeated reply, an empty-state line or a "work in progress" line adds reading without telling the
+reader anything new about the run; the Task's status already says whether it is running or completed. Sent reply bodies, captured
 replies and legacy Lark text or rich-text receipts alike, render as chat Markdown: Markdown formatting
 applies, a single newline stays a line break, and typed HTML stays literal text, as the IM displays it.
 Truncated content remains visible. On Local Computers supporting detailed reports,
@@ -140,8 +141,14 @@ containers, with the full stored title available in the link's title attribute a
 
 The detail title remains the page's `h1` and uses 16px medium text with a 24px line height and natural
 wrapping. It displays the complete stored title without an additional clamp. Task facts retain their
-order in two, three or five columns according to the content container width. The start time spans both columns in the narrow layout so the complete
-date and time can wrap without squeezing the other facts.
+order in two, three or five columns according to the content container width. On an Agent's own Task
+page the facts leave out the Agent, because the page around them already names it, and use two, three
+or four columns; the Agent fact appears only where Tasks from several Agents mix. Where the Agent fact
+is shown, the start time spans both columns in the narrow layout so the complete date and time can wrap
+without squeezing the other facts.
+
+A running Task reads "运行中" ("Running") in Chinese everywhere, the same word the Agent list uses for its
+running-Task count, so one state never has two names.
 
 The conversation follows the facts without a visible Activity heading; its existing Activity heading
 remains available to assistive technology. Requests and sent replies use 14px

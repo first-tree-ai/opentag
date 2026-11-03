@@ -152,6 +152,23 @@ describe("runner tool probes", () => {
   });
 
   it.each([
+    { output: "1.0.2-alpha.202611020650", ok: true },
+    { output: "1.0.2", ok: false },
+    { output: "1.0.2-alpha.2026110206500", ok: false },
+    { output: "1.0.2-alpha.202611020651", ok: false },
+    { output: "context-tree 1.0.2-alpha.202611020650", ok: false },
+    { output: "1.0.2-alpha.202611020650 extra", ok: false },
+  ])("compares the complete Context Tree prerelease $output", async ({ output, ok }) => {
+    const probes = await probeRunnerTools({
+      execFile: router({ ...GOOD_OUTPUTS, "context-tree --version": `${output}\n` }),
+      env: { HOME: "/tmp" },
+      expected: { ...expectedFromIdentity(identity()), "context-tree": "1.0.2-alpha.202611020650" },
+    });
+    expect(probes.find((probe) => probe.name === "context-tree")?.ok).toBe(ok);
+    expect(runnerToolsReady(probes)).toBe(ok);
+  });
+
+  it.each([
     { name: "pi", key: "pi --version", output: "0.84.20\n", why: "suffix version 0.84.20 must not satisfy 0.84.2" },
     { name: "opentag", key: "opentag --version", output: "0.0.50\n", why: "0.0.50 must not satisfy 0.0.5" },
     { name: "node", key: "node --version", output: "v24.19.00\n", why: "v24.19.00 must not satisfy v24.19.0" },

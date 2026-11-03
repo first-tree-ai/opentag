@@ -36,7 +36,7 @@ const TOOL_VERSION_PATTERNS: Readonly<Record<string, RegExp>> = {
   git: /^git version (\d+\.\d+\.\d+)$/,
   gh: /^gh version (\d+\.\d+\.\d+) \([0-9-]+\)$/,
   pi: /^(\d+\.\d+\.\d+)$/,
-  "context-tree": /^(\d+\.\d+\.\d+)$/,
+  "context-tree": /^(\d+\.\d+\.\d+(?:-[\dA-Za-z-]+(?:\.[\dA-Za-z-]+)*)?)$/,
   opentag: /^(\d+\.\d+\.\d+(?:-staging\.\d+\.\d+)?)$/,
 };
 

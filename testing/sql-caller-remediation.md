@@ -357,3 +357,10 @@ pending releases as well as preparation/completion/send work. Actual route/main
 awaiting and the remaining owner/connection composition still keep IM-F3 open.
 Batch 24's late adapter/callback P2 findings are corrected at 4d6969bd and
 reviewer-confirmed closed; the earlier component counts include that correction.
+
+[RuntimeSession and scheduler drain](verification/sql-caller-repairs-26.md) is
+verified at component scope (74 cases, seven native PG). Instances expose an
+awaitable close, but actual Runtime route retention/join, Runner/transport,
+remaining owners and final main ordering remain open IM-F3. Failure-reaction
+ownership already used its existing pending map and was left simple. Batch 25's
+omitted-read/admission P2 is corrected at 0b09a346 and reviewer-confirmed closed.

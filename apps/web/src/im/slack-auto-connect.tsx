@@ -80,12 +80,14 @@ export function SlackAutoConnect({
   onBusy,
   onResult,
   onManual,
+  cloud = false,
   resume = false,
   hidden = false,
 }: {
   footerAction?: ReactNode;
   agentId: string;
   api?: { autoSetupSlack: typeof browserApi.autoSetupSlack };
+  cloud?: boolean;
   resume?: boolean;
   hidden?: boolean;
   onConnected: () => Promise<void>;
@@ -150,9 +152,11 @@ export function SlackAutoConnect({
         onResult?.(stored);
         return;
       }
+      if (cloud && !resume) return;
       void run(resume ? "connect" : "authorize");
     }
-  }, [agentId, onResult, run, resume]);
+  }, [agentId, cloud, onResult, run, resume]);
+  const awaitingCloudConfirmation = cloud && !resume && !result && !operation && error === undefined;
   return (
     <div hidden={hidden}>
       <form
@@ -163,6 +167,21 @@ export function SlackAutoConnect({
         }}
       >
         {operation ? <SlackSetupProgress key={operation} operation={operation} /> : null}
+        {awaitingCloudConfirmation ? (
+          <>
+            <p className="text-sm text-kumo-subtle">{m.im_slack_auto_uncertain()}</p>
+            <div>
+              <a
+                className={buttonClassName({ variant: "secondary" })}
+                href="https://api.slack.com/apps"
+                target="_blank"
+                rel="noreferrer"
+              >
+                {m.im_slack_your_apps()}
+              </a>
+            </div>
+          </>
+        ) : null}
         {result?.status === "authorization_required" ? (
           <SlackTicket
             ticket={result.ticket}
@@ -180,6 +199,7 @@ export function SlackAutoConnect({
           lastAction={lastAction.current}
           busy={busy}
           challenge={challenge}
+          awaitingCloudConfirmation={awaitingCloudConfirmation}
           run={run}
           onManual={onManual}
           footerAction={footerAction}
@@ -216,6 +236,7 @@ function SlackSetupActions({
   lastAction,
   busy,
   challenge,
+  awaitingCloudConfirmation = false,
   run,
   onManual,
   footerAction,
@@ -225,6 +246,7 @@ function SlackSetupActions({
   lastAction: "authorize" | "connect";
   busy: boolean;
   challenge: string;
+  awaitingCloudConfirmation?: boolean;
   run: (action: "authorize" | "connect", force?: boolean) => Promise<void>;
   onManual?: () => void;
   footerAction?: ReactNode;
@@ -238,6 +260,11 @@ function SlackSetupActions({
         </Button>
       ) : null}
       {footerAction}
+      {awaitingCloudConfirmation ? (
+        <Button type="button" disabled={busy} onClick={() => void run("authorize", true)}>
+          {m.im_slack_create_app()}
+        </Button>
+      ) : null}
       {result && !conflict ? (
         <SetupButton
           result={result}

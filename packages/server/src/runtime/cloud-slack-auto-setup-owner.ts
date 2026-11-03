@@ -1,5 +1,3 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
   SLACK_REQUIRED_BOT_SCOPES,
@@ -31,14 +29,11 @@ type CreationState =
       signingSecret?: string;
       approvalPending?: boolean;
       approvalDenied?: boolean;
+      connected?: boolean;
     };
 type ProjectState = {
   authorization: { ticket?: string; teamId?: string };
   creation?: CreationState;
-};
-type BackingStore = {
-  logins: Map<string, { updatedAt: number; teams: Map<string, NativeLogin> }>;
-  projects: Map<string, { updatedAt: number; state: ProjectState }>;
 };
 
 class SetupFailure extends Error {
@@ -55,13 +50,9 @@ const SLACK_CLI_VERSION = "4.10.0";
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1_000;
 const DEFAULT_MAX_ENTRIES = 256;
 const DEFAULT_MAX_TEAMS_PER_COMPUTER = 16;
-const MAX_FENCE_ENTRIES = 4_096;
 const TOKEN_ROTATION_WINDOW_SECONDS = 300;
 const APPROVAL_REQUEST_REASON =
   "This request has been automatically generated according to project environment settings.";
-
-const storesByFetch = new WeakMap<typeof fetch, BackingStore>();
-const storesByDir = new Map<string, BackingStore>();
 
 // Only fixed codes may cross the credential boundary. Never return upstream error messages or tokens.
 const SAFE_ERROR_CODES = new Set([
@@ -112,73 +103,15 @@ function safeErrorCode(error: unknown): string | undefined {
   return typeof error === "string" && SAFE_ERROR_CODES.has(error) ? error : undefined;
 }
 
-function resolveBackingStore(fetchImpl: typeof fetch | undefined, stateDir: string | undefined): BackingStore {
-  if (stateDir) {
-    let store = storesByDir.get(stateDir);
-    if (!store) {
-      store = loadStoreFromDisk(stateDir);
-      storesByDir.set(stateDir, store);
-    }
-    return store;
-  }
-  if (fetchImpl) {
-    let store = storesByFetch.get(fetchImpl);
-    if (!store) {
-      store = { logins: new Map(), projects: new Map() };
-      storesByFetch.set(fetchImpl, store);
-    }
-    return store;
-  }
-  return { logins: new Map(), projects: new Map() };
-}
-
-function loadStoreFromDisk(stateDir: string): BackingStore {
-  const store: BackingStore = { logins: new Map(), projects: new Map() };
-  try {
-    const file = join(stateDir, "state.json");
-    if (!existsSync(file)) return store;
-    const raw = JSON.parse(readFileSync(file, "utf8")) as {
-      projects?: Array<[string, { updatedAt: number; state: ProjectState }]>;
-      logins?: Array<[string, { updatedAt: number; teams: Array<[string, NativeLogin]> }]>;
-    };
-    for (const [key, value] of raw.projects ?? []) {
-      store.projects.set(key, value);
-    }
-    for (const [computerId, value] of raw.logins ?? []) {
-      store.logins.set(computerId, { updatedAt: value.updatedAt, teams: new Map(value.teams) });
-    }
-  } catch {
-    // Ignore unreadable state files and start fresh.
-  }
-  return store;
-}
-
-function persistStoreToDisk(stateDir: string | undefined, store: BackingStore): void {
-  if (!stateDir) return;
-  try {
-    mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-    const file = join(stateDir, "state.json");
-    const payload = {
-      projects: [...store.projects.entries()],
-      logins: [...store.logins.entries()].map(([computerId, entry]) => [
-        computerId,
-        { updatedAt: entry.updatedAt, teams: [...entry.teams.entries()] },
-      ]),
-    };
-    writeFileSync(file, JSON.stringify(payload), { mode: 0o600 });
-  } catch {
-    // Best-effort persistence.
-  }
-}
-
 /**
  * Direct HTTPS Slack App management for Cloud Agents.
  *
  * Secrets (workspace login tokens, pending tickets, and pre-bind signing secrets) are bounded by
  * TTL (`ttlMs`) and LRU caps (`maxEntries` Computers/projects and `maxTeamsPerComputer` teams per
- * Computer), while the lightweight App creation fence (`uncertain` / `created(appId, teamId)`) is
- * retained so TTL expiry, cross-account `authorize` traffic, or owner re-instantiation never
- * triggers a duplicate `apps.manifest.create`.
+ * Computer). Unresolved App creation fences (`uncertain` or `created` before `callbacks` completes)
+ * are never capacity-evicted within the process lifetime, and an unforced `authorize` or
+ * unchallenged `install` against an empty project fails closed with `manual_required` so a Server
+ * restart cannot silently issue a fresh ticket that creates a duplicate App.
  */
 export class CloudSlackAutoSetupOwner {
   readonly #fetch: typeof fetch;
@@ -188,9 +121,9 @@ export class CloudSlackAutoSetupOwner {
   readonly #ttlMs: number;
   readonly #maxEntries: number;
   readonly #maxTeamsPerComputer: number;
-  readonly #stateDir?: string;
-  readonly #store: BackingStore;
   #pending = new Map<string, { abort: () => void; finish: (result: Result) => void }>();
+  #logins = new Map<string, { updatedAt: number; teams: Map<string, NativeLogin> }>();
+  #projects = new Map<string, { updatedAt: number; state: ProjectState }>();
 
   constructor(
     options: {
@@ -201,7 +134,6 @@ export class CloudSlackAutoSetupOwner {
       ttlMs?: number;
       maxEntries?: number;
       maxTeamsPerComputer?: number;
-      stateDir?: string;
     } = {},
   ) {
     this.#fetch = options.fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
@@ -211,8 +143,6 @@ export class CloudSlackAutoSetupOwner {
     this.#ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
     this.#maxEntries = options.maxEntries ?? DEFAULT_MAX_ENTRIES;
     this.#maxTeamsPerComputer = options.maxTeamsPerComputer ?? DEFAULT_MAX_TEAMS_PER_COMPUTER;
-    this.#stateDir = options.stateDir;
-    this.#store = resolveBackingStore(options.fetchImpl, options.stateDir);
   }
 
   async start(input: Omit<SlackAutoSetupRuntimeRequest, "type" | "requestId">): Promise<Result> {
@@ -225,7 +155,6 @@ export class CloudSlackAutoSetupOwner {
         if (this.#pending.get(input.computerId) !== entry) return;
         clearTimeout(timer);
         this.#pending.delete(input.computerId);
-        persistStoreToDisk(this.#stateDir, this.#store);
         resolve(result);
       };
       const entry = { abort: () => controller.abort(), finish };
@@ -272,11 +201,11 @@ export class CloudSlackAutoSetupOwner {
   }
 
   #pruneProjects(now: number): void {
-    for (const [key, entry] of this.#store.projects) {
+    for (const [key, entry] of this.#projects) {
       if (now - entry.updatedAt < this.#ttlMs) continue;
       const { creation, authorization } = entry.state;
       if (!creation) {
-        this.#store.projects.delete(key);
+        this.#projects.delete(key);
         continue;
       }
       // Expire secrets/tickets after TTL while preserving the tiny App creation fence.
@@ -286,9 +215,9 @@ export class CloudSlackAutoSetupOwner {
   }
 
   #pruneLogins(now: number): void {
-    for (const [computerId, entry] of this.#store.logins) {
+    for (const [computerId, entry] of this.#logins) {
       if (now - entry.updatedAt >= this.#ttlMs) {
-        this.#store.logins.delete(computerId);
+        this.#logins.delete(computerId);
         continue;
       }
       this.#pruneTeamLogins(entry.teams, now);
@@ -302,23 +231,22 @@ export class CloudSlackAutoSetupOwner {
   }
 
   #project(key: string, now: number): ProjectState {
-    const projects = this.#store.projects;
-    const existing = projects.get(key);
+    const existing = this.#projects.get(key);
     if (existing) {
-      projects.delete(key);
+      this.#projects.delete(key);
       existing.updatedAt = now;
-      projects.set(key, existing);
+      this.#projects.set(key, existing);
       return existing.state;
     }
     this.#evictProjectsIfNeeded();
     const state: ProjectState = { authorization: {} };
-    projects.set(key, { updatedAt: now, state });
+    this.#projects.set(key, { updatedAt: now, state });
     return state;
   }
 
   #evictProjectsIfNeeded(): void {
-    const projects = this.#store.projects;
-    const activeCount = [...projects.values()].filter(
+    this.#evictResolvedProjectsIfNeeded();
+    const activeCount = [...this.#projects.values()].filter(
       (entry) =>
         !entry.state.creation ||
         Boolean(entry.state.authorization.ticket) ||
@@ -326,14 +254,14 @@ export class CloudSlackAutoSetupOwner {
     ).length;
     if (activeCount < this.#maxEntries) return;
     // Prefer evicting transient authorize-only entries so other tenants cannot drop an App creation fence.
-    for (const [candidateKey, candidate] of projects) {
+    for (const [candidateKey, candidate] of this.#projects) {
       if (!candidate.state.creation) {
-        projects.delete(candidateKey);
+        this.#projects.delete(candidateKey);
         return;
       }
     }
     // If all active entries have creation fences, strip secrets on the oldest one while keeping its fence.
-    for (const candidate of projects.values()) {
+    for (const candidate of this.#projects.values()) {
       const creation = candidate.state.creation;
       if (candidate.state.authorization.ticket || (creation?.status === "created" && creation.signingSecret)) {
         delete candidate.state.authorization.ticket;
@@ -341,27 +269,36 @@ export class CloudSlackAutoSetupOwner {
         break;
       }
     }
-    if (projects.size >= Math.max(this.#maxEntries * 16, MAX_FENCE_ENTRIES)) {
-      const oldest = projects.keys().next().value;
-      if (oldest !== undefined) projects.delete(oldest);
+  }
+
+  #evictResolvedProjectsIfNeeded(): void {
+    let resolvedCount = 0;
+    let oldestResolvedKey: string | undefined;
+    for (const [key, entry] of this.#projects) {
+      if (entry.state.creation?.status === "created" && entry.state.creation.connected) {
+        resolvedCount += 1;
+        oldestResolvedKey ??= key;
+      }
+    }
+    if (resolvedCount >= this.#maxEntries && oldestResolvedKey !== undefined) {
+      this.#projects.delete(oldestResolvedKey);
     }
   }
 
   #loginsFor(computerId: string, now: number): Map<string, NativeLogin> {
-    const logins = this.#store.logins;
-    const existing = logins.get(computerId);
+    const existing = this.#logins.get(computerId);
     if (existing) {
-      logins.delete(computerId);
+      this.#logins.delete(computerId);
       existing.updatedAt = now;
-      logins.set(computerId, existing);
+      this.#logins.set(computerId, existing);
       return existing.teams;
     }
-    if (logins.size >= this.#maxEntries) {
-      const oldest = logins.keys().next().value;
-      if (oldest !== undefined) logins.delete(oldest);
+    if (this.#logins.size >= this.#maxEntries) {
+      const oldest = this.#logins.keys().next().value;
+      if (oldest !== undefined) this.#logins.delete(oldest);
     }
     const teams = new Map<string, NativeLogin>();
-    logins.set(computerId, { updatedAt: now, teams });
+    this.#logins.set(computerId, { updatedAt: now, teams });
     return teams;
   }
 
@@ -394,6 +331,11 @@ export class CloudSlackAutoSetupOwner {
     const stored = project.authorization.teamId ? logins.get(project.authorization.teamId) : undefined;
     if (stored && !force && !project.authorization.ticket) {
       return { status: "authorized", teamName: stored.teamDomain };
+    }
+    // An unforced authorize against an empty Cloud project fails closed to manual_required so a
+    // Server restart cannot silently issue a fresh ticket that creates a duplicate App.
+    if (!project.creation && !project.authorization.teamId && !project.authorization.ticket && !force) {
+      return { status: "failed", code: "manual_required" };
     }
     const response = await this.#postForm(
       "apps.hosted.generateAuthTicket",
@@ -555,7 +497,7 @@ export class CloudSlackAutoSetupOwner {
       const manifest = slackAppCreationManifest(agentId, displayName);
       const payload = { manifest: JSON.stringify(manifest) };
       await this.#api("apps.manifest.validate", token, payload, signal, "failed");
-      // Fence before the creation request so an interrupted or ambiguous response never repeats creation.
+      // Fence before the creation request so an interrupted or ambiguous response within this Server process lifetime does not repeat creation.
       project.creation = { status: "uncertain" };
       const response = await this.#requestJson("apps.manifest.create", token, payload, signal, "create_uncertain");
       const rejected = z
@@ -595,6 +537,14 @@ export class CloudSlackAutoSetupOwner {
     input: Extract<SlackAutoSetupCommand, { action: "install" }>,
     signal: AbortSignal,
   ): Promise<Result> {
+    if (project.creation?.status === "uncertain") {
+      return { status: "failed", code: "create_uncertain" };
+    }
+    // An unchallenged Continue on an empty project means the Server restarted mid-setup; fence and require manual recovery.
+    if (!input.challenge && !project.creation && !project.authorization.teamId) {
+      project.creation = { status: "uncertain" };
+      return { status: "failed", code: "manual_required" };
+    }
     const { teamId, token } = await this.#team(project, logins, signal, input.challenge);
     const { appId, signingSecret } = await this.#create(project, agentId, input.displayName, teamId, token, signal);
     try {
@@ -873,6 +823,7 @@ export class CloudSlackAutoSetupOwner {
     ) {
       throw new SetupFailure("callbacks_failed");
     }
+    project.creation = { status: "created", appId: input.appId, teamId, connected: true };
     return { status: "connected" };
   }
 

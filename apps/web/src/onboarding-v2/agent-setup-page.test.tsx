@@ -2484,6 +2484,11 @@ describe("AgentSetupPage manual Slack verification", () => {
     await settle();
     fireEvent.click(messagingChoice(/Slack/));
     await settle();
+    if (kind === "cloud") {
+      expect(screen.getByRole("link", { name: "View Apps" })).toHaveProperty("href", "https://api.slack.com/apps");
+      fireEvent.click(screen.getByRole("button", { name: "Create App" }));
+      await settle();
+    }
     expect(screen.getByLabelText("Paste into Slack")).toHaveProperty("value", "/slackauthticket test-ticket");
     fireEvent.click(screen.getByRole("button", { name: "Manual setup" }));
     fireEvent.change(screen.getByLabelText("Bot Token"), { target: { value: "test-token" } });

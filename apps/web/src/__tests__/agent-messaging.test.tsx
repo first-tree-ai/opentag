@@ -604,6 +604,21 @@ describe("OpenTag Web App Shell", () => {
         expect(screen.getByRole("button", { name: "Connect Slack" })).not.toHaveProperty("disabled", true),
       );
       fireEvent.click(screen.getByRole("button", { name: "Connect Slack" }));
+      if (computerKind === "cloud") {
+        expect(await screen.findByRole("link", { name: "View Apps" })).toHaveProperty(
+          "href",
+          "https://api.slack.com/apps",
+        );
+        expect(
+          vi
+            .mocked(fetch)
+            .mock.calls.filter(
+              ([input, init]) =>
+                String(input).endsWith("/im-binding/slack/configuration/auto") && init?.method === "POST",
+            ),
+        ).toHaveLength(0);
+        fireEvent.click(screen.getByRole("button", { name: "Create App" }));
+      }
       expect(await screen.findByLabelText("Code")).toBeTruthy();
       expect(
         vi

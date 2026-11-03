@@ -341,3 +341,26 @@ it("restores approval_pending across a page reload and gates a lost Server state
   });
   expect(screen.queryByRole("button", { name: "Reauthorize" })).toBeNull();
 });
+
+it("gates fresh Cloud setup behind an explicit existing-App / manual-recovery choice before issuing a ticket", async () => {
+  window.localStorage.clear();
+  const api = vi
+    .spyOn(browserApi, "autoSetupSlack")
+    .mockResolvedValueOnce({ status: "authorization_required", ticket: "cloud-ticket" });
+  const onManual = vi.fn();
+  render(<SlackAutoConnect agentId="agent" cloud onBusy={vi.fn()} onConnected={vi.fn()} onManual={onManual} />);
+
+  // With fresh browser state on Cloud, no ticket is requested on mount; the user sees View Apps and Manual setup first.
+  expect(screen.getByText("Check existing Apps before proceeding. Do not create another copy.")).toBeTruthy();
+  expect(screen.getByRole("link", { name: "View Apps" })).toHaveProperty("href", "https://api.slack.com/apps");
+  expect(api).not.toHaveBeenCalled();
+
+  fireEvent.click(screen.getByRole("button", { name: "Manual setup" }));
+  expect(onManual).toHaveBeenCalledTimes(1);
+  expect(api).not.toHaveBeenCalled();
+
+  // Only an explicit Create App click requests a ticket with force: true.
+  fireEvent.click(screen.getByRole("button", { name: "Create App" }));
+  expect(await screen.findByLabelText("Paste into Slack")).toHaveProperty("value", "/slackauthticket cloud-ticket");
+  expect(api).toHaveBeenCalledExactlyOnceWith("agent", { action: "authorize", force: true });
+});

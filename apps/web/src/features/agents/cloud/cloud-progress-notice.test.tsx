@@ -60,6 +60,9 @@ it("finds save failures on later pages and gives no resource actions or identifi
   expect(await screen.findByText(SAVE_FAILURE)).toBeTruthy();
   expect(read).toHaveBeenNthCalledWith(1, AGENT, { limit: 100 });
   expect(read).toHaveBeenNthCalledWith(2, AGENT, { limit: 100, cursor: SESSION });
+  expect(screen.getByRole("link", { name: "Recover workspace" }).getAttribute("href")).toBe(
+    `/agents/${AGENT}?recovery=true`,
+  );
   expect(screen.queryByRole("button")).toBeNull();
   expect(document.body.textContent).not.toMatch(/workspace_save_failed|Runner|Sandbox|33333333|Save and release/);
 });

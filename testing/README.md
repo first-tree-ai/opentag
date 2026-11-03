@@ -13,6 +13,7 @@ contents, and machine-specific operational logs outside the repository.
 - [Slack local live acceptance](slack-live-acceptance.md)
 - [Agent usage and internal Session page benchmark](performance/agent-session/REPORT.md)
 - [Cloud response-time evaluation and offline baseline](performance/cloud-latency/README.md)
+- [Cloud startup performance](performance/cloud-startup/README.md)
 
 ## Verification by feature
 
@@ -66,6 +67,8 @@ contents, and machine-specific operational logs outside the repository.
 ## Web UI evidence
 
 Screenshots and browser checks for Web UI changes, one directory per change:
+
+- [Cloud workspace recovery](web-ui/cloud-workspace-recovery/README.md)
 
 - [Context Tree GitHub MCP authorization](web-ui/context-mcp-authorization/README.md)
 - [Agent status layout](web-ui/agent-status/README.md)

@@ -340,6 +340,10 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
       expect(prompt).toContain(
         "Do not react to messages you are not acting on, duplicate acknowledgments, or observer deliveries",
       );
+      expect(prompt).toContain(
+        "While working, do not send intermediate progress messages, status cards, steps, or todo lists to IM, or change the working reaction mid-task.",
+      );
+      expect(prompt).toContain("Questions needed to proceed and required approval requests are still allowed.");
       expect(prompt).not.toContain("optionally");
       expect(prompt).not.toContain("unnecessary");
       expect(prompt).toContain("OpenTag internal Sessions and Provider-native subagents are separate mechanisms");
@@ -364,6 +368,7 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
       expect(prompt).toContain("Creator Session: session-parent-1");
       expect(prompt).not.toContain("emoji");
       expect(prompt).not.toContain("be warm and natural");
+      expect(prompt).not.toContain("do not send intermediate progress messages");
       expect(prompt).not.toContain("## When to speak");
     }
   });

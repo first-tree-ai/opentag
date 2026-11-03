@@ -73,6 +73,16 @@ table, resource pool or lifecycle state. Existing idle reclamation remains in fo
 
 ## Recovery and release
 
+The Cloud Agent page offers a collapsed **Recover workspace** panel. Its direct destination is
+`/agents/<agentId>?recovery=true`. The panel lists conversation references and their current
+state using the existing paginated Account overview. It remains available when a Turn checkpoint
+failure has no release-error marker. Opening it does not allocate, release or discard anything.
+**Retry save and release** stops current work, saves the workspace, then releases the environment.
+Rows without a recorded save failure use **Save and release** rather than implying a previous
+failure. Running, queued and unknown work requires confirmation that release interrupts execution.
+**Discard changes and release** is available only when the Server permits it and requires a second
+confirmation of permanent unsaved-file loss. Neither action replays a task or undoes external effects.
+
 Use the existing task cancellation and Sandbox stop operations. Saving and releasing waits for
 archive persistence and verified deletion. A failed save retains the allocation and enables
 retry. Both save and discard requests require the captured `environmentGeneration`; stale

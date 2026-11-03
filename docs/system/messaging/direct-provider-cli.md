@@ -25,6 +25,11 @@ current Turn's provider reference selects which one applies. Git/GitHub guidance
 also live in the managed system prompt. Internal Sessions receive Git/GitHub guidance without IM
 outbox manuals.
 
+Visible Sessions keep routine progress out of IM: they do not send intermediate status cards,
+steps, todo lists, or progress messages, or change the working reaction mid-task. Questions needed
+to proceed and required approval requests remain available. The final result uses the normal
+provider CLI reply path.
+
 Each IM or visible collaboration input retains a short adjacent reminder that ordinary output is the
 OpenTag runtime console and only the provider CLI delivers human-visible messages. Per-Turn facts,
 provider targets, attention and reply-role restrictions remain beside the message. Empty Session

@@ -10,7 +10,7 @@ This is the openTag **Cloud Runner image**: a linux/amd64 Linux environment cons
 covers image construction and local toolchain acceptance; E3 documents the native Cloud path.
 
 The Runner is owned by `@opentag/client`. It shares the **CLI release coordinate**
-(`apps/cli`, currently `0.0.5`). Private Client `0.0.0` is not a Runner version.
+in `apps/cli/package.json`. Private Client `0.0.0` is not a Runner version.
 
 Publication follows the CLI workflow; environment activation and rollback are described in
 [Cloud Runner releases](../../operations/cloud-runner-release.md).
@@ -61,6 +61,12 @@ and Local Pi resource discovery are unchanged.
 
 Runtime credentials are supplied separately. The real acceptance harness injects only a filtered
 Pi configuration through `docker cp`; credentials are never Docker build args.
+
+The execution-local loopback adapter generates a fresh ECDSA P-256 certificate and private key
+for each execution. Its subject names, two-day validity, private-key permissions, and explicit
+CLI trust remain execution-scoped. The public certificate reaches the Sandbox; the private key
+stays in the trusted parent's disposable material directory. Certificates and keys are not reused
+across executions or saved with Session files.
 
 ## Build
 

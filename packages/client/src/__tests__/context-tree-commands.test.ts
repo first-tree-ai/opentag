@@ -39,6 +39,39 @@ async function directory() {
 }
 
 describe("Context Tree command boundary", () => {
+  it("returns a TIMEOUT result when a managed sync request is aborted", async () => {
+    const root = await directory();
+    const owner = parent();
+    let started!: () => void;
+    const running = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const gateway = new ContextTreeCommandGateway({
+      parent: owner.relay,
+      sources: [source],
+      workspace: root,
+      stateDirectory: join(root, "private"),
+      environment: () => ({}),
+      execute: async (_args, _environment, signal) => {
+        started();
+        return new Promise<never>((_, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      },
+    });
+    await gateway.listen("tcp");
+    cleanups.push(() => gateway.close());
+    const controller = new AbortController();
+    const result = runContextTreeCli({ root, cliPath: "unused", skillsPath: root }, ["sync"], {
+      env: { OPENTAG_CONTEXT_TREE_URL: `http://127.0.0.1:${gateway.port}` },
+      signal: controller.signal,
+    });
+    const checked = expect(result).resolves.toEqual({ payload: undefined, failureCode: "TIMEOUT" });
+    await running;
+    controller.abort();
+    await checked;
+  });
+
   it.each(["internal", "visible"])("preserves standalone commands in a legacy %s Session", async (kind) => {
     const root = await directory();
     const client = join(root, "client.mjs");

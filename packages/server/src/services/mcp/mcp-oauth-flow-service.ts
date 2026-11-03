@@ -9,8 +9,9 @@ import {
   type MCPCatalogEndpoint,
   type McpStaticOAuthBrand,
 } from "@opentag/shared";
-import { and, eq, isNull, or, sql } from "drizzle-orm";
+import { and, DrizzleQueryError, eq, isNull, or, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
+import { DatabaseQueryTimeoutError } from "../../db/query-deadline.js";
 import {
   agentMcpServers,
   agents,
@@ -202,115 +203,145 @@ export class McpOAuthFlowService {
     source: "account" | "agent-self" = "account",
   ): Promise<StartedMcpOAuth> {
     const context = await this.#prepareAuthorization(accountId, agentId, mcpServerId, source);
-    const effective = McpServerService.resolveEffectiveConfig(context.server, context.binding);
-    const existing = context.authorization;
+    try {
+      const effective = McpServerService.resolveEffectiveConfig(context.server, context.binding);
+      const existing = context.authorization;
 
-    const { metadata, client, registrationId, challengeScope, resource, prmScopes } = await this.#discoverForStart(
-      accountId,
-      effective.url,
-      existing?.authorizationServer ?? null,
-    );
-
-    const pkce = McpOAuthClient.createPkcePair();
-    const state = McpOAuthClient.createState();
-    const now = this.#now();
-    const expiresAt = new Date(now.getTime() + MCP_OAUTH_STATE_TTL_MS);
-    /*
-     * The protected resource's own scopes are the fallback the specification names, and for Google
-     * they are load-bearing: an authorization request with no `scope` at all is rejected outright.
-     */
-    const scopes = this.#oauth.resolveScopes(challengeScope, prmScopes, metadata, requestedScopes);
-    const authorizationUrl = this.#oauth.authorizationUrl({
-      metadata,
-      clientId: client.clientId,
-      state,
-      codeChallenge: pkce.challenge,
-      resource,
-      scopes,
-      ...(client.authorizationParams ? { authorizationParams: client.authorizationParams } : {}),
-    });
-
-    await this.#database.transaction(async (transaction) => {
-      await lockMcpCredentialBinding(transaction, accountId, agentId, mcpServerId, source);
-      const [current] = await readMcpAuthorizationContexts(
-        transaction,
-        and(eq(mcpServers.accountId, accountId), eq(mcpServers.id, mcpServerId), eq(agentMcpServers.agentId, agentId)),
+      const { metadata, client, registrationId, challengeScope, resource, prmScopes } = await this.#discoverForStart(
+        accountId,
+        effective.url,
+        existing?.authorizationServer ?? null,
       );
-      requireUnchangedMcpBinding(context, current, effective);
-      const root = current.credentialAuthorization;
-      const holder = root?.agentId ?? agentId;
-      const family = root
-        ? await transaction
-            .select({ id: mcpServerAuthorizations.id })
-            .from(mcpServerAuthorizations)
-            .where(eq(mcpServerAuthorizations.credentialSourceId, root.id))
-            .limit(1)
-        : [];
-      const sharedFormat =
-        this.#servers.reuseOAuth || Boolean(current.localAuthorization?.credentialSourceId) || family.length > 0;
-      const sealedPkce = sharedFormat
-        ? this.#cipher.encryptPkceFlow(
-            { mcpServerId, agentId: holder, authorizationServer: metadata.issuer },
-            {
-              version: 2,
-              accountId,
-              initiatingAgentId: agentId,
-              codeVerifier: pkce.verifier,
-              clientId: client.clientId,
-              registrationId,
-              scopes,
-              config: effective,
-            },
-          )
-        : this.#cipher.encryptPkceVerifier(
-            { mcpServerId, agentId: holder, authorizationServer: metadata.issuer },
-            pkce.verifier,
-          );
-      const flow = {
-        state: hashSecret(state),
-        stateExpiresAt: expiresAt,
-        pkceCiphertext: sealedPkce.ciphertext,
-        loginSessionHash: hashSecret(flowSecret),
-        flowAuthorizationServer: metadata.issuer,
-        flowOauthResource: resource,
-        updatedAt: now,
-      };
-      if (root) {
-        await transaction
-          .update(mcpServerAuthorizations)
-          .set({
+
+      const pkce = McpOAuthClient.createPkcePair();
+      const state = McpOAuthClient.createState();
+      const now = this.#now();
+      const expiresAt = new Date(now.getTime() + MCP_OAUTH_STATE_TTL_MS);
+      /*
+       * The protected resource's own scopes are the fallback the specification names, and for Google
+       * they are load-bearing: an authorization request with no `scope` at all is rejected outright.
+       */
+      const scopes = this.#oauth.resolveScopes(challengeScope, prmScopes, metadata, requestedScopes);
+      const authorizationUrl = this.#oauth.authorizationUrl({
+        metadata,
+        clientId: client.clientId,
+        state,
+        codeChallenge: pkce.challenge,
+        resource,
+        scopes,
+        ...(client.authorizationParams ? { authorizationParams: client.authorizationParams } : {}),
+      });
+
+      await this.#database.transaction(async (transaction) => {
+        await lockMcpCredentialBinding(transaction, accountId, agentId, mcpServerId, source);
+        const [current] = await readMcpAuthorizationContexts(
+          transaction,
+          and(
+            eq(mcpServers.accountId, accountId),
+            eq(mcpServers.id, mcpServerId),
+            eq(agentMcpServers.agentId, agentId),
+          ),
+        );
+        requireUnchangedMcpBinding(context, current, effective);
+        const root = current.credentialAuthorization;
+        const holder = root?.agentId ?? agentId;
+        const family = root
+          ? await transaction
+              .select({ id: mcpServerAuthorizations.id })
+              .from(mcpServerAuthorizations)
+              .where(eq(mcpServerAuthorizations.credentialSourceId, root.id))
+              .limit(1)
+          : [];
+        const sharedFormat =
+          this.#servers.reuseOAuth || Boolean(current.localAuthorization?.credentialSourceId) || family.length > 0;
+        const sealedPkce = sharedFormat
+          ? this.#cipher.encryptPkceFlow(
+              { mcpServerId, agentId: holder, authorizationServer: metadata.issuer },
+              {
+                version: 2,
+                accountId,
+                initiatingAgentId: agentId,
+                codeVerifier: pkce.verifier,
+                clientId: client.clientId,
+                registrationId,
+                scopes,
+                config: effective,
+              },
+            )
+          : this.#cipher.encryptPkceVerifier(
+              { mcpServerId, agentId: holder, authorizationServer: metadata.issuer },
+              pkce.verifier,
+            );
+        const flow = {
+          state: hashSecret(state),
+          stateExpiresAt: expiresAt,
+          pkceCiphertext: sealedPkce.ciphertext,
+          loginSessionHash: hashSecret(flowSecret),
+          flowAuthorizationServer: metadata.issuer,
+          flowOauthResource: resource,
+          updatedAt: now,
+        };
+        if (root) {
+          await transaction
+            .update(mcpServerAuthorizations)
+            .set({
+              ...flow,
+              kind: "oauth",
+              // The old credential and refresh claim remain valid until consent succeeds.
+              ...(!root.ciphertext
+                ? {
+                    kind: "oauth" as const,
+                    status: "pending" as const,
+                    authorizationServer: metadata.issuer,
+                    clientRegistrationId: registrationId,
+                    scopes,
+                    failureCode: null,
+                  }
+                : {}),
+              revision: sql`${mcpServerAuthorizations.revision} + 1`,
+            })
+            .where(eq(mcpServerAuthorizations.id, root.id));
+        } else {
+          await transaction.insert(mcpServerAuthorizations).values({
             ...flow,
+            agentId,
+            mcpServerId,
             kind: "oauth",
-            // The old credential and refresh claim remain valid until consent succeeds.
-            ...(!root.ciphertext
-              ? {
-                  kind: "oauth" as const,
-                  status: "pending" as const,
-                  authorizationServer: metadata.issuer,
-                  clientRegistrationId: registrationId,
-                  scopes,
-                  failureCode: null,
-                }
-              : {}),
-            revision: sql`${mcpServerAuthorizations.revision} + 1`,
-          })
-          .where(eq(mcpServerAuthorizations.id, root.id));
-      } else {
-        await transaction.insert(mcpServerAuthorizations).values({
-          ...flow,
-          agentId,
-          mcpServerId,
-          kind: "oauth",
-          status: "pending",
-          authorizationServer: metadata.issuer,
-          clientRegistrationId: registrationId,
-          scopes,
-          probeState: "pending",
-          createdAt: now,
-        });
-      }
-    });
-    return { authorizationUrl, expiresAt, state };
+            status: "pending",
+            authorizationServer: metadata.issuer,
+            clientRegistrationId: registrationId,
+            scopes,
+            probeState: "pending",
+            createdAt: now,
+          });
+        }
+      });
+      return { authorizationUrl, expiresAt, state };
+    } catch (error) {
+      await this.#failUnstartedAuthorization(context.credentialAuthorization);
+      throw error;
+    }
+  }
+
+  async #failUnstartedAuthorization(root: McpAuthorizationContext["credentialAuthorization"]): Promise<void> {
+    if (!root || root.status !== "pending" || root.state !== null || root.ciphertext !== null) return;
+    await this.#database
+      .update(mcpServerAuthorizations)
+      .set({
+        status: "error",
+        failureCode: MCP_ERROR_CODES.OAUTH_FAILED,
+        revision: sql`${mcpServerAuthorizations.revision} + 1`,
+        updatedAt: this.#now(),
+      })
+      .where(
+        and(
+          eq(mcpServerAuthorizations.id, root.id),
+          eq(mcpServerAuthorizations.revision, root.revision),
+          eq(mcpServerAuthorizations.status, "pending"),
+          isNull(mcpServerAuthorizations.state),
+          isNull(mcpServerAuthorizations.ciphertext),
+        ),
+      );
   }
 
   async #prepareAuthorization(
@@ -908,20 +939,9 @@ export class McpOAuthFlowService {
         iss: query.iss,
       });
     } catch (error) {
-      /*
-       * A failed exchange is terminal, so the flow is cleared and a terminal status is recorded —
-       * leaving the row awaiting a callback that will never come would only be a wait that ends in a
-       * timeout. A transient failure is left alone, because a retry can still succeed.
-       *
-       * The superseded case is re-thrown untouched: the flow already belongs to a newer decision, and
-       * clearing or failing it here would undo that decision.
-       */
+      // A consumed code is not retried; only this exact flow may be ended.
       if (error instanceof McpServiceError && error.code === MCP_ERROR_CODES.OAUTH_FLOW_INVALID) throw error;
-      await this.#failFlow(
-        authorization.id,
-        redeemState,
-        error instanceof McpServiceError && error.category === "transient" ? undefined : MCP_ERROR_CODES.OAUTH_FAILED,
-      );
+      await this.#failFlow(authorization.id, redeemState, MCP_ERROR_CODES.OAUTH_FAILED);
       throw error;
     }
     completedAgentId = await this.#flowReturnAgent(accountId, authorization.id, mcpServerId, initiatingAgentId);
@@ -1143,34 +1163,8 @@ export class McpOAuthFlowService {
     };
   }
 
-  /**
-   * End a flow that cannot succeed, so a waiter stops waiting.
-   *
-   * `status` must leave `pending`: the poll in `mcp authorize` and the page's probe indicator both end
-   * on a status other than `pending`, so a row that only had its state cleared kept a user waiting for
-   * the flow's full ten minutes after a denial. `failureCode` records the bounded reason.
-   *
-   * Passing no code means the failure is transient — the flow's state is cleared and the row is left
-   * `pending` for a retry, which is the one case where waiting is still the right answer.
-   */
-  /**
-   * End a flow that cannot succeed.
-   *
-   * `status` leaves `pending` only when there is no credential to protect: the poll in `mcp authorize`
-   * and the page's probe indicator both end on a status other than `pending`, and a row that only had
-   * its state cleared kept a user waiting for the flow's full ten minutes.
-   *
-   * But `status` is also what `resolveActiveCredential` gates on, so writing `error` unconditionally
-   * destroyed a working credential: an Agent that was authorized and working, whose user denied a
-   * *re*-authorization, came out unauthorized — the same outcome as the bug that stopped `start` from
-   * clearing it, reached by a different door. With a credential present the row keeps its status and
-   * only records the reason; the pending-probe pass re-probes it, because an active row with a pending
-   * probe is exactly what that pass runs, so nothing is left waiting either way.
-   *
-   * Passing no code means the failure is transient — the flow's state is cleared and the row is left
-   * `pending` for a retry, the one case where waiting is still the right answer.
-   */
-  async #failFlow(id: string, issuedState: string, failureCode: string | undefined): Promise<void> {
+  // A failed flow cannot discard a prior credential or overwrite a newer state.
+  async #failFlow(id: string, issuedState: string, failureCode: string): Promise<void> {
     await this.#database
       .update(mcpServerAuthorizations)
       .set({
@@ -1179,16 +1173,8 @@ export class McpOAuthFlowService {
         pkceCiphertext: null,
         loginSessionHash: null,
         flowOauthResource: null,
-        ...(failureCode === undefined
-          ? {}
-          : {
-              failureCode,
-              /*
-               * Downgraded only when there is nothing to lose. `ciphertext` is read in the same
-               * statement so the decision cannot go stale between a read and this write.
-               */
-              status: sql`case when ${mcpServerAuthorizations.ciphertext} is null then 'error' else ${mcpServerAuthorizations.status} end`,
-            }),
+        failureCode,
+        status: sql`case when ${mcpServerAuthorizations.ciphertext} is null then 'error' else ${mcpServerAuthorizations.status} end`,
         revision: sql`${mcpServerAuthorizations.revision} + 1`,
         updatedAt: this.#now(),
       })
@@ -1465,8 +1451,12 @@ export class McpOAuthFlowService {
     });
   }
 
-  async #releaseClaim(authorizationId: string, claimId: string): Promise<void> {
-    await this.#database
+  async #releaseClaim(
+    authorizationId: string,
+    claimId: string,
+    executor: Pick<DatabaseClient, "update"> = this.#database,
+  ): Promise<void> {
+    await executor
       .update(mcpServerAuthorizations)
       .set({ refreshClaimId: null, refreshClaimedAt: null })
       .where(and(eq(mcpServerAuthorizations.id, authorizationId), eq(mcpServerAuthorizations.refreshClaimId, claimId)));
@@ -1496,6 +1486,10 @@ export class McpOAuthFlowService {
     executor: Pick<DatabaseClient, "update"> = this.#database,
     requestDispatched = true,
   ): Promise<void> {
+    if (!requestDispatched && transientRefreshPreparation(error)) {
+      await this.#releaseClaim(authorizationId, claimId, executor);
+      return;
+    }
     const now = this.#now();
     const detail = error instanceof McpServiceError ? error.detail : undefined;
     const upstreamError = typeof detail?.error === "string" ? detail.error : undefined;
@@ -1541,6 +1535,14 @@ export class McpOAuthFlowService {
       })
       .where(and(eq(mcpServerAuthorizations.id, authorizationId), eq(mcpServerAuthorizations.refreshClaimId, claimId)));
   }
+}
+
+function transientRefreshPreparation(error: unknown): boolean {
+  return (
+    error instanceof DrizzleQueryError ||
+    error instanceof DatabaseQueryTimeoutError ||
+    (error instanceof McpServiceError && error.category === "transient")
+  );
 }
 
 /** Prefer the issuer the row already recorded; the remaining candidates keep their PRM order. */
@@ -1669,5 +1671,6 @@ function sameScopeSet(previous: string[] | null, next: string[]) {
 
 function refreshFailureCode(error: unknown, requestDispatched: boolean) {
   if (error instanceof McpServiceError) return error.code;
+  if (!requestDispatched && transientRefreshPreparation(error)) return MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE;
   return requestDispatched ? MCP_ERROR_CODES.REFRESH_OUTCOME_UNKNOWN : MCP_ERROR_CODES.OAUTH_FAILED;
 }

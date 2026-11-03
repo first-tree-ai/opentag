@@ -1736,7 +1736,7 @@ describe("McpOAuthFlowService.callback", () => {
     expect(row).toMatchObject({ status: "revoked", ciphertext: null });
   });
 
-  it("keeps a transient exchange failure retryable and a terminal one recorded", async () => {
+  it("ends a failed one-time exchange while allowing a new authorization", async () => {
     const ids = await seed();
     let transient = false;
     const { flows } = build({
@@ -1764,9 +1764,12 @@ describe("McpOAuthFlowService.callback", () => {
       flows.callback({ code: "c2", state: stateOf(restarted.authorizationUrl) }, FLOW_SECRET),
     ).rejects.toMatchObject({ code: MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE });
     const row = await readAuthorization(ids);
-    // Nothing was sent that could have rotated the token, so the flow is simply cleared for a retry.
     expect(row?.state).toBeNull();
-    expect(row?.failureCode).toBeNull();
+    expect(row?.status).toBe("error");
+    expect(row?.failureCode).toBe(MCP_ERROR_CODES.OAUTH_FAILED);
+    await expect(
+      flows.callback({ code: "c2", state: stateOf(restarted.authorizationUrl) }, FLOW_SECRET),
+    ).rejects.toMatchObject({ code: MCP_ERROR_CODES.OAUTH_FLOW_INVALID });
   });
 
   it("builds the fixed local return surface, with and without a bounded outcome", async () => {
@@ -2095,8 +2098,8 @@ describe("McpOAuthFlowService.refreshAuthorization", () => {
     });
     await flows.refreshAuthorization(row?.id as string);
     expect(await readAuthorization(ids)).toMatchObject({
-      status: "error",
-      failureCode: MCP_ERROR_CODES.UPSTREAM_ERROR,
+      status: "active",
+      failureCode: null,
       ciphertext: row?.ciphertext,
     });
   });
@@ -2554,7 +2557,8 @@ async function expectUnpublishedAuthorization(ids: { agentId: string; mcpServerI
       agentId: ids.agentId,
       mcpServerId: ids.mcpServerId,
       kind: "oauth",
-      status: "pending",
+      status: "error",
+      failureCode: MCP_ERROR_CODES.OAUTH_FAILED,
       state: null,
       pkceCiphertext: null,
       ciphertext: null,

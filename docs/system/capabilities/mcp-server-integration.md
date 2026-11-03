@@ -833,6 +833,9 @@ so those Agents must authorize again.
   write, so the previous callback URL is immediately unusable. The callback then validates the
   browser binding, then existence, then expiry, and expiry. A state CAS admits one code exchange, and final settlement clears the flow.
   Starting a newer flow or disconnecting fences late results; no provider I/O holds a transaction.
+  Failed discovery marks only its still-unpublished, credentialless pending root as failed. A failed
+  one-time code exchange clears that attempt and records `MCP_OAUTH_FAILED`; an existing usable
+  credential stays usable. Neither failure can overwrite a newer flow, and codes are never replayed.
 - **The client is the one `start` selected.** Shared-format flows seal client ID, registration, scopes,
   initiating Account/Agent and configuration in the existing PKCE envelope; live credential metadata
   remains separate. Starting consent preserves an existing access credential and refresh claim. The
@@ -902,7 +905,8 @@ has an unknown outcome; it fails closed instead of being taken over and replayed
 | Token endpoint 2xx | Success | New envelope, `refresh_generation += 1`, claim cleared; retain snapshots for token rotation alone, invalidate all member snapshots if resource scopes change |
 | `invalid_grant` | **Terminal** | `revoked`; the user must authorize again |
 | `invalid_client` | **Terminal** | `revoked`; the user must re-register the client |
-| Transport failure, timeout, 5xx, unparseable | **Outcome unknown** | `error` with `failure_code = MCP_REFRESH_OUTCOME_UNKNOWN`, clear potentially consumed credential material, require reauthorization, **never** auto-retry |
+| Preparation SQL/transport failure before the exchange | Nothing was sent | Release only the matching claim, preserve the credential, retry on a later pass |
+| Transport failure, timeout, 5xx, unparseable after dispatch | **Outcome unknown** | `error` with `failure_code = MCP_REFRESH_OUTCOME_UNKNOWN`, clear potentially consumed credential material, require reauthorization, **never** auto-retry |
 | Recorded resource no longer matches the effective endpoint | No call made | `error` with `failure_code = MCP_AUTHORIZATION_REQUIRED`, credential kept for a deliberate reauthorization |
 | Local envelope decryption failure | Nothing was sent | Release the claim, leave the state, retry next pass |
 | MCP Server returns 401/403 | Not evidence the credential is dead | Never clear the refresh token |

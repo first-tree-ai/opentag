@@ -38,7 +38,8 @@ const CREATE_STEPS: FlowState["steps"] = [
  * open the wrong Agent would be worse than no offer at all.
  */
 async function agentHoldingName(name: string): Promise<{ id: string; name: string } | undefined> {
-  const wanted = name.trim().toLowerCase();
+  // The Server stores names trimmed and NFC-normalized, and compares them without case.
+  const wanted = name.trim().normalize("NFC").toLowerCase();
   return browserApi.agents().then(
     ({ agents }) => {
       const holder = agents.find((candidate) => candidate.name.toLowerCase() === wanted);
@@ -102,7 +103,10 @@ interface PendingCreation {
 const CREATION_DRAFT_KEY = "agent-create";
 const CREATION_PENDING_KEY = "agent-create-pending";
 
-function creationErrorMessage(cause: unknown): string {
+export function creationErrorMessage(cause: unknown): string {
+  // A taken name is the reader's to fix, so it is said in their language rather than the Server's.
+  if (cause instanceof ApiError && cause.code === "AGENT_NAME_CONFLICT")
+    return m.onboarding_v2_agent_name_taken_error();
   return cause instanceof Error && cause.message ? cause.message : m.agent_create_failed();
 }
 

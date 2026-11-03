@@ -145,6 +145,10 @@ describe("Agent contracts", () => {
     "café",
     "まる",
     "한글",
+    // Kangxi and CJK radicals look like ordinary characters (⼀⼈ vs 一人) and NFC does not fold them.
+    "⼀⼈",
+    "⻌",
+    "々",
   ])("rejects invalid canonical name %j", (name) => expect(() => AgentNameSchema.parse(name)).toThrow());
 
   it.each([
@@ -153,6 +157,7 @@ describe("Agent contracts", () => {
     ["Code-Reviewer-2", "Code-Reviewer-2"],
     ["代码审查", "代码审查"],
     ["2号助手", "2号助手"],
+    ["𠀀", "𠀀"],
     ["小A-助手", "小A-助手"],
     ["  审查  ", "审查"],
   ])("accepts uppercase and Chinese name %j", (name, expected) => {

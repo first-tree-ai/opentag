@@ -4,6 +4,7 @@
   "onboarding_v2_agent_name_empty_error": "你的 Agent 需要一个名称。",
   "onboarding_v2_agent_name_hint": "支持字母（含大写）、数字、中文和连字符，不能以连字符开头。",
   "onboarding_v2_agent_name_label": "Agent 名称",
+  "onboarding_v2_agent_name_taken_error": "已有同名 Agent，名称不区分大小写。",
   "onboarding_v2_agent_name_too_long_error": "名称不能超过 64 个字符。",
   "onboarding_v2_agent_runtime_footnote": "更多运行时即将推出。",
   "onboarding_v2_agent_runtime_hint": "openTag 将使用的编程助手。",

@@ -12,14 +12,16 @@ import {
 } from "./runtime-config.js";
 
 /**
- * The Agent name charset: ASCII letters of either case, digits, Han characters and hyphens, never
- * starting with a hyphen. Case is limited to ASCII so JavaScript `toLowerCase()` and PostgreSQL
- * `lower()` agree on the case-insensitive uniqueness key; Han characters have no case.
+ * The Agent name charset: ASCII letters of either case, digits, CJK unified ideographs and hyphens,
+ * never starting with a hyphen. Case is limited to ASCII so JavaScript `toLowerCase()` and
+ * PostgreSQL `lower()` agree on the case-insensitive uniqueness key; ideographs have no case.
+ * `Unified_Ideograph` rather than `Script=Han`: the Han script also holds Kangxi and CJK radicals,
+ * which render like ordinary characters (`⼀⼈` vs `一人`) and which NFC does not fold.
  */
-export const AGENT_NAME_PATTERN = /^[A-Za-z0-9\p{Script=Han}][A-Za-z0-9\p{Script=Han}-]*$/u;
+export const AGENT_NAME_PATTERN = /^[A-Za-z0-9\p{Unified_Ideograph}][A-Za-z0-9\p{Unified_Ideograph}-]*$/u;
 /**
  * The widest name `AgentNameSchema` accepts in UTF-8: `.max()` counts UTF-16 code units, and a BMP
- * Han character is one unit but three bytes (astral Han characters are two units and four bytes).
+ * ideograph is one unit but three bytes (astral ideographs are two units and four bytes).
  * Byte budgets that include the name must reserve this, not an ASCII-length name.
  */
 export const AGENT_NAME_WIDEST = "中".repeat(AGENT_SLUG_MAX_LENGTH);
@@ -27,7 +29,7 @@ export const AGENT_NAME_WIDEST = "中".repeat(AGENT_SLUG_MAX_LENGTH);
 export const AgentNameSchema = z
   .string()
   .trim()
-  // Han compatibility ideographs render like their unified forms; NFC folds them into one name.
+  // Compatibility ideographs render like their unified forms; NFC folds them into one name.
   .normalize("NFC")
   .min(1, "Agent name is required")
   .max(AGENT_SLUG_MAX_LENGTH, `Agent name must be at most ${AGENT_SLUG_MAX_LENGTH} characters`)

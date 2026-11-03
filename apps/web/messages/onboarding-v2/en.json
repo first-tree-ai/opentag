@@ -4,6 +4,7 @@
   "onboarding_v2_agent_name_empty_error": "Your agent needs a name.",
   "onboarding_v2_agent_name_hint": "Letters, numbers, Chinese characters and hyphens, not starting with a hyphen.",
   "onboarding_v2_agent_name_label": "Agent name",
+  "onboarding_v2_agent_name_taken_error": "An Agent with this name already exists. Names are not case-sensitive.",
   "onboarding_v2_agent_name_too_long_error": "Keep the name to 64 characters or fewer.",
   "onboarding_v2_agent_runtime_footnote": "More runtimes coming soon.",
   "onboarding_v2_agent_runtime_hint": "The coding assistant openTag will use.",

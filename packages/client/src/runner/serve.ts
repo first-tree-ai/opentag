@@ -33,6 +33,7 @@ import {
 } from "./assignment-state.js";
 import type { CloudCredentialChannel } from "./cloud-credential-connection.js";
 import { CloudJournal } from "./cloud-journal.js";
+import { RunnerCloudLatencyObserver } from "./cloud-latency-observer.js";
 import { CloudTurnRunner, type CloudTurnRunnerOptions, type CloudTurnScope } from "./cloud-turns.js";
 import { CloudWorkspace } from "./cloud-workspace.js";
 import { type RunnerHealthListener, startRunnerHealthListener } from "./health.js";
@@ -257,6 +258,7 @@ export function defaultRunnerStateDir(sandboxName: string, temporaryRoot: string
 }
 
 interface WorkState {
+  latency?: RunnerCloudLatencyObserver;
   active?: { requestId: string; abort: AbortController; done: Promise<void> };
   probe: SandboxProbeResult;
   stopping: boolean;
@@ -379,6 +381,7 @@ async function ensureAssignmentCredential(
  * boundary with the E3 acceptance run so Cloud Turns wait instead of racing a destroy/relaunch.
  */
 function createCloudTurnRunner(input: {
+  latency: RunnerCloudLatencyObserver;
   bridge: RunnerChannelBridge;
   journal: CloudJournal;
   options: RunnerServeOptions;
@@ -425,16 +428,20 @@ function createCloudTurnRunner(input: {
           checkpoint: async (options) => {
             const workspace = input.state()?.workspace;
             if (!workspace) throw new Error("Workspace persistence is not initialized");
-            await workspace.checkpoint(options);
+            await input.latency.checkpoint(() => workspace.checkpoint(options));
           },
         }
       : {}),
     scope: () => input.bridge.scope,
-    send: (frame) => input.bridge.sendFrame(frame),
+    send: (frame) => {
+      input.bridge.sendFrame(frame);
+      input.latency.sent(frame);
+    },
     serverUrl: server.origin,
     stateDirectory: input.privateTurnRoot,
     log: (message) => logLine(input.options.stderr, message),
     onDiagnostic: (record) => {
+      input.latency.diagnostic(record);
       const probe = input.state()?.probe;
       writeDiagnostic(
         `${JSON.stringify({
@@ -513,7 +520,14 @@ function attachWorkspace(
   bridge: RunnerChannelBridge,
   web: { gateway: NativeSandboxWebGateway | undefined; extensionPath: string | undefined },
 ): void {
+  const writeLatency = createPiDiagnosticStderrWriter(options.stderr);
+  current.latency = new RunnerCloudLatencyObserver({
+    env: options.env ?? process.env,
+    scope: () => bridge.scope,
+    write: (record) => writeLatency(`${JSON.stringify(record)}\n`),
+  });
   current.turns = createCloudTurnRunner({
+    latency: current.latency,
     bridge,
     journal: current.journal,
     options,
@@ -1087,6 +1101,7 @@ async function serveOnce(
     };
     const handle = (data: RunnerServerFrame) =>
       dispatchFrame(data, {
+        ...(state.latency ? { latency: state.latency } : {}),
         closed,
         authenticated,
         welcomed: welcome !== undefined,
@@ -1199,7 +1214,9 @@ function prepareRunnerConnection(
     // (a fresh first bind may use the bearer minted for it at creation).
     await callbacks.ensureCredential();
     const currentWorkspace = state.workspace;
-    if (!currentWorkspace || !(await currentWorkspace.prepare()) || callbacks.isClosed()) return;
+    if (!currentWorkspace) return;
+    const prepare = () => currentWorkspace.prepare();
+    if (!(state.latency ? await state.latency.workspace(prepare) : await prepare()) || callbacks.isClosed()) return;
     await state.afterWorkspaceRestore?.();
     state.afterWorkspaceRestore = undefined;
     callbacks.ready();
@@ -1510,6 +1527,7 @@ function negotiatedRunnerSessionCollaborationVersion(data: RunnerWelcomeFrame): 
 }
 
 interface FrameDispatch {
+  latency?: RunnerCloudLatencyObserver;
   closed: boolean;
   authenticated: boolean;
   welcomed: boolean;
@@ -1690,7 +1708,10 @@ function dispatchCloudFrame(data: CloudServerFrame, c: FrameDispatch): void {
       c.turns.handleCancel(data.deliveryId);
       break;
     case "delivery:report:ack":
-      c.enqueueCloudControl("delivery:report:ack", () => c.turns.handleReportAck(data));
+      c.enqueueCloudControl("delivery:report:ack", async () => {
+        await c.turns.handleReportAck(data);
+        c.latency?.acknowledged(data);
+      });
       break;
     case "delivery:query":
       c.enqueueCloudControl("delivery:query", () => c.turns.handleQuery(data));
@@ -1705,7 +1726,10 @@ function dispatchCloudFrame(data: CloudServerFrame, c: FrameDispatch): void {
       c.turns.handleSessionMessageCancel(data.messageId);
       break;
     case "session:message:settled:ack":
-      c.enqueueCloudControl("session:message:settled:ack", () => c.turns.handleSessionMessageSettledAck(data));
+      c.enqueueCloudControl("session:message:settled:ack", async () => {
+        await c.turns.handleSessionMessageSettledAck(data);
+        c.latency?.acknowledged(data);
+      });
       break;
     case "credential:frame":
       c.bridge.emitCredential(data.frame);

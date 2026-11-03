@@ -203,7 +203,6 @@ function ScheduleRow({
 }) {
   const expanded = expandedId === item.id;
   const status = scheduleStatus(item);
-  const last = item.lastDispatch;
   return (
     <li className="grid gap-3 py-4 first:pt-0 last:pb-0" data-ui="agent-schedule-row">
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
@@ -214,34 +213,7 @@ function ScheduleRow({
             </Text>
             <StatusIndicator label={status.label} tone={status.tone} />
           </div>
-          <p className="flex flex-wrap items-center gap-y-1 text-sm text-kumo-subtle [&>*+*]:before:mx-2 [&>*+*]:before:content-['·']">
-            <span>{scheduleRuleSummary(item.schedule, item.timezone)}</span>
-            {item.enabled && item.nextTriggerAt && item.schedule.kind !== "at" ? (
-              <ScheduleTime
-                instant={item.nextTriggerAt}
-                timezone={item.timezone}
-                render={(time) => m.agents_schedules_next_short({ time })}
-              />
-            ) : null}
-            {last && !(item.schedule.kind === "at" && last.outcome === "accepted") ? (
-              <span>
-                {item.schedule.kind === "at" ? null : (
-                  <ScheduleTime
-                    instant={last.scheduledFor}
-                    timezone={item.timezone}
-                    render={(time) => m.agents_schedules_last_short({ time })}
-                  />
-                )}
-                {/* A received handoff is the normal case; only a failed or unconfirmed one is called out. */}
-                {last.outcome === "accepted" ? null : (
-                  <span className="text-kumo-danger">
-                    {item.schedule.kind === "at" ? "" : " "}
-                    {handoffOutcome(last.outcome)}
-                  </span>
-                )}
-              </span>
-            ) : null}
-          </p>
+          <ScheduleMeta item={item} />
         </div>
         <div className="flex shrink-0 items-center gap-1">
           {/* An enabled plan with no next occurrence has finished; pausing it would change nothing. */}
@@ -278,6 +250,42 @@ function ScheduleRow({
       </div>
       {expanded ? <ScheduleRowDetails detail={detail} /> : null}
     </li>
+  );
+}
+
+/** One line: how often, when next, and the latest handoff when it needs attention. */
+function ScheduleMeta({ item }: { item: AgentScheduleListItem }) {
+  const last = item.lastDispatch;
+  const once = item.schedule.kind === "at";
+  return (
+    <p className="flex flex-wrap items-center gap-y-1 text-sm text-kumo-subtle [&>*+*]:before:mx-2 [&>*+*]:before:content-['·']">
+      <span>{scheduleRuleSummary(item.schedule, item.timezone)}</span>
+      {item.enabled && item.nextTriggerAt && !once ? (
+        <ScheduleTime
+          instant={item.nextTriggerAt}
+          timezone={item.timezone}
+          render={(time) => m.agents_schedules_next_short({ time })}
+        />
+      ) : null}
+      {last && !(once && last.outcome === "accepted") ? (
+        <span>
+          {once ? null : (
+            <ScheduleTime
+              instant={last.scheduledFor}
+              timezone={item.timezone}
+              render={(time) => m.agents_schedules_last_short({ time })}
+            />
+          )}
+          {/* A received handoff is the normal case; only a failed or unconfirmed one is called out. */}
+          {last.outcome === "accepted" ? null : (
+            <span className="text-kumo-danger">
+              {once ? "" : " "}
+              {handoffOutcome(last.outcome)}
+            </span>
+          )}
+        </span>
+      ) : null}
+    </p>
   );
 }
 

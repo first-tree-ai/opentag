@@ -1,5 +1,5 @@
 import { LIVE_REFETCH_INTERVAL_MS } from "../../query/live.js";
-import type { AgentAvailability, AgentListItem } from "./agent-model.js";
+import type { AgentListItem } from "./agent-model.js";
 
 /**
  * Whether an Agent's current evidence is a moment of not knowing rather than an answer.
@@ -25,9 +25,10 @@ export function isTransientAgentAvailability(agent: Pick<AgentListItem, "availab
  * The list re-reads every dependency on a short cadence, so showing each transient answer as it
  * arrives made a healthy roster flicker through "checking" and "status unavailable" while nothing
  * was wrong. Instead the list keeps the Agent's last settled availability until the next settled
- * answer replaces it; activity and identity still come from the current read. A check with no
- * settled answer behind it is presented as ready, because it resolves to an answer the list then
- * shows; unreadable evidence with nothing settled behind it stays honestly unknown.
+ * answer replaces it; activity and identity still come from the current read. With nothing settled
+ * behind it there is nothing to hold, so the current read passes through: `observeAgentListStatus`
+ * shows a check as a neutral "Checking" (never Ready, which a first check that then found a problem
+ * would contradict seconds later), and unreadable evidence stays honestly unknown.
  *
  * Only the list does this. The Agent's own page keeps the exact current dependency states, where a
  * reader who is diagnosing an Agent needs them.
@@ -35,14 +36,12 @@ export function isTransientAgentAvailability(agent: Pick<AgentListItem, "availab
 export function steadyAgentListItem(agent: AgentListItem, lastSettled: AgentListItem | undefined): AgentListItem {
   if (!isTransientAgentAvailability(agent)) return agent;
   if (lastSettled) return { ...agent, availability: lastSettled.availability, evidenceConfirmed: true };
-  if (agent.evidenceConfirmed && agent.availability.state !== "unconfirmed") {
-    return { ...agent, availability: readyAvailability(agent.availability) };
-  }
   return agent;
 }
 
-function readyAvailability(availability: AgentAvailability): AgentAvailability {
-  return { ...availability, state: "ready", reason: null };
+/** A readable check still running, as opposed to evidence the Server could not read at all. */
+function isPendingCheck(agent: Pick<AgentListItem, "availability" | "evidenceConfirmed">): boolean {
+  return agent.evidenceConfirmed && agent.availability.state !== "unconfirmed";
 }
 
 /**
@@ -59,23 +58,25 @@ export type AgentListStatusMemory = Map<string, { settled?: AgentListItem; trans
  *
  * `refreshing` is true only for a row that holds a settled status while its evidence has stayed
  * transient for at least `AGENT_STATUS_REFRESHING_AFTER_MS`: the row keeps that status and adds a
- * quiet note, so one Agent's stuck reads never become a page-level notice. A row with nothing
- * settled already reads as unknown and needs no second note.
+ * quiet note, so one Agent's stuck reads never become a page-level notice. `checking` is true for a
+ * row with nothing settled whose check is still running; it reads "Checking" until the first answer.
+ * A row with nothing settled already reads as checking or unknown and needs no second note.
  */
 export function observeAgentListStatus(
   memory: AgentListStatusMemory,
   agent: AgentListItem,
   now: number,
-): { shown: AgentListItem; refreshing: boolean } {
+): { shown: AgentListItem; refreshing: boolean; checking: boolean } {
   const entry = memory.get(agent.id) ?? {};
   if (!isTransientAgentAvailability(agent)) {
     memory.set(agent.id, { settled: agent });
-    return { shown: agent, refreshing: false };
+    return { shown: agent, refreshing: false, checking: false };
   }
   const transientSince = entry.transientSince ?? now;
   memory.set(agent.id, { ...entry, transientSince });
   return {
     shown: steadyAgentListItem(agent, entry.settled),
     refreshing: entry.settled !== undefined && now - transientSince >= AGENT_STATUS_REFRESHING_AFTER_MS,
+    checking: entry.settled === undefined && isPendingCheck(agent),
   };
 }

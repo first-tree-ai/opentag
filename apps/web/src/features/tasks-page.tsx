@@ -39,7 +39,8 @@ import {
   type TaskStatusGroup,
   taskStatusGroup,
   taskStatusGroupLabel,
-  taskStatusGroupTone,
+  taskStatusLabel,
+  taskStatusTone,
 } from "./task-status.js";
 
 type TaskFilter = "all" | TaskStatusGroup;
@@ -414,7 +415,6 @@ export function TaskDetailPage({
   }
 
   const task = first.task;
-  const status = taskStatusGroup(task.status);
   const repliesStatus = <TaskRepliesStatus query={repliesQuery} />;
   const pagination = (
     <TaskActivityPagination loadMoreError={loadMoreError} repliesQuery={repliesQuery} taskQuery={taskQuery} />
@@ -437,7 +437,7 @@ export function TaskDetailPage({
             {task.title}
           </Text>
         </div>
-        <TaskDetailFacts agentScoped={agentId === task.agent.id} status={status} task={task} />
+        <TaskDetailFacts agentScoped={agentId === task.agent.id} task={task} />
         <TaskCancelControl detailKey={detailKey} enabled={!showExamples} task={task} />
       </header>
 
@@ -741,7 +741,6 @@ function TaskRow({
   task: TaskSummary;
 }) {
   const linkRef = useRef<HTMLAnchorElement>(null);
-  const status = taskStatusGroup(task.status);
   return (
     <Table.Row
       className="cursor-pointer transition-colors hover:bg-kumo-tint/50 grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 border-b border-kumo-line last:border-b-0 @min-[40rem]/content:table-row @min-[40rem]/content:border-b-0"
@@ -785,7 +784,7 @@ function TaskRow({
         </span>
       </Table.Cell>
       <Table.Cell className="col-start-2 row-start-1 justify-self-end" data-label={m.tasks_status_label()}>
-        <StatusIndicator label={taskStatusGroupLabel(status)} tone={taskStatusGroupTone(status)} />
+        <StatusIndicator label={taskStatusLabel(task.status)} tone={taskStatusTone(task.status)} />
       </Table.Cell>
       <Table.Cell
         className="col-start-2 row-start-2 justify-self-end self-center"
@@ -840,15 +839,7 @@ function TaskTitleLink({
  * with the source. The Agent fact stays where Tasks from several Agents mix, and on an Agent's page
  * that shows another Agent's Task (a stale or mistyped link), where it is the only thing naming it.
  */
-function TaskDetailFacts({
-  agentScoped,
-  status,
-  task,
-}: {
-  agentScoped: boolean;
-  status: TaskStatusGroup;
-  task: TaskSummary;
-}) {
+function TaskDetailFacts({ agentScoped, task }: { agentScoped: boolean; task: TaskSummary }) {
   return (
     <dl
       className={`grid grid-cols-2 gap-x-8 gap-y-4 border-y border-kumo-line py-4 @min-[36rem]/content:grid-cols-3 ${
@@ -890,7 +881,7 @@ function TaskDetailFacts({
         </time>
       </TaskDetailFact>
       <TaskDetailFact label={m.tasks_status_label()}>
-        <StatusIndicator label={taskStatusGroupLabel(status)} tone={taskStatusGroupTone(status)} />
+        <StatusIndicator label={taskStatusLabel(task.status)} tone={taskStatusTone(task.status)} />
       </TaskDetailFact>
     </dl>
   );

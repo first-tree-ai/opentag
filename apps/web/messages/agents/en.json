@@ -10,6 +10,7 @@
   "agents_card_activity_waiting": "Waiting",
   "agents_card_activity_working": "Working now · started {elapsed} ago",
   "agents_card_status_cannot_receive_messages": "Cannot receive messages",
+  "agents_card_status_checking": "Checking",
   "agents_card_status_checking_messaging": "Checking messaging",
   "agents_card_status_computer_offline": "Computer offline",
   "agents_card_status_messaging_connection_failed": "Messaging connection failed",

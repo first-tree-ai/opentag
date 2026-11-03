@@ -106,6 +106,43 @@ describe("creation step navigation", () => {
     expect(input.getAttribute("aria-invalid")).toBe("true");
   });
 
+  it("says a name is too long while typing, before blur or Create", () => {
+    const tooLong = "中".repeat(22);
+    const { rerender } = render(
+      <AgentStep
+        draft={{ destination: "local", name: "中".repeat(21), runtime: "codex" }}
+        onChange={() => undefined}
+        onSubmit={() => undefined}
+        submitLabel="Create Agent"
+      />,
+    );
+    const error = "The name is too long: up to 64 letters or 21 Chinese characters.";
+    expect(screen.queryByText(error)).toBeNull();
+
+    rerender(
+      <AgentStep
+        draft={{ destination: "local", name: tooLong, runtime: "codex" }}
+        onChange={() => undefined}
+        onSubmit={() => undefined}
+        submitLabel="Create Agent"
+      />,
+    );
+    expect(screen.getByText(error)).toBeTruthy();
+    expect(screen.getByLabelText("Agent name").getAttribute("aria-invalid")).toBe("true");
+  });
+
+  it("waits for blur before flagging other name problems", () => {
+    render(
+      <AgentStep
+        draft={{ destination: "local", name: "", runtime: "codex" }}
+        onChange={() => undefined}
+        onSubmit={() => undefined}
+        submitLabel="Create Agent"
+      />,
+    );
+    expect(screen.getByLabelText("Agent name").getAttribute("aria-invalid")).toBeNull();
+  });
+
   it("keeps Create Agent disabled until a Runtime is selected", () => {
     render(
       <AgentStep

@@ -116,6 +116,11 @@ The status is the topic's latest execution situation, read by precedence:
    deliveries), `cancelled` (a queued delivery the Account withdrew before it ran), or `expired` (a
    delivery that expired unprocessed, or an unreported Turn whose deadline has passed).
 
+The Web reads these in four groups (Queued, Running, Completed, Failed) for filtering: `ended` and
+`cancelled` filter with Completed, and `expired` with Failed. A `cancelled` Task still shows its own
+neutral **Cancelled** label rather than Completed. Why: the Account withdrew it before it ran, and
+"Completed" would claim work that never happened.
+
 Each detail Turn exposes `delivery.isRunning` from the same effective predicate as the list. The Web
 shows progress only when that value is true; persisted `accepted` alone does not prove liveness.
 An unreported inactive Turn, including data from older servers that omit the field, shows that no

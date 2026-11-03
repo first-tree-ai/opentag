@@ -7,7 +7,7 @@
   "shell_agent_navigation": "Agent 导航",
   "shell_all_agents": "全部 Agent",
   "shell_computers": "电脑",
-  "shell_context_tree": "记忆",
+  "shell_context_tree": "知识树",
   "shell_internal_tools": "内部工具",
   "shell_loading_agent_workspace": "正在加载 Agent 工作区",
   "shell_mcp": "连接器",

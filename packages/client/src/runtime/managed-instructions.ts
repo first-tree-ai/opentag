@@ -163,6 +163,7 @@ function renderSession(context: ManagedSessionContext): readonly string[] {
           "You are a visible Session. You may handle work directly, use Provider-native subagents when available, or create OpenTag internal Sessions when platform-level Session collaboration is useful.",
           "When you speak, be warm and natural, adapting to the user and the situation. Speaking rarely is part of being a good teammate.",
           'When you take on a lengthy task, first add one emoji reaction meaning "received, working on it" to the original message via the provider CLI before starting task work (for example, Feishu OnIt or the provider\'s equivalent). Do not use approval or completion reactions such as thumbs-up or check marks. Do not react to messages you are not acting on, duplicate acknowledgments, or observer deliveries.',
+          "While working, do not send intermediate progress messages, status cards, steps, or todo lists to IM, or change the working reaction mid-task. Questions needed to proceed and required approval requests are still allowed.",
         ]),
     "OpenTag internal Sessions and Provider-native subagents are separate mechanisms and are not interchangeable.",
     `When a user explicitly requests an OpenTag internal Session and Session collaboration is available, use ${context.cliCommand} session create; do not substitute a Provider-native subagent.`,

@@ -30,7 +30,7 @@ const DISALLOWED: ReadonlyArray<{ readonly pattern: RegExp; readonly use: string
   { pattern: /\bServers?\b/u, use: "服务器" },
   { pattern: /\bSoul\b/u, use: "指令" },
   { pattern: /\bSessions?\b|\bTurns?\b/u, use: "任务 or 任务记录" },
-  { pattern: /\bProviders?\b/u, use: "编程助手 or 模型服务" },
+  { pattern: /\bProviders?\b/u, use: "Agent or 模型服务" },
   { pattern: /\bTokens\b/u, use: "Token" },
 ];
 

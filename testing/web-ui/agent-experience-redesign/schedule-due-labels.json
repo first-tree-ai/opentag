@@ -1,0 +1,34 @@
+[
+  {
+    "locale": "en",
+    "width": 1440,
+    "state": "normal",
+    "documentOverflow": false,
+    "sectionOverflow": false,
+    "privateDetailReads": 0
+  },
+  {
+    "locale": "zh",
+    "width": 390,
+    "state": "normal",
+    "documentOverflow": false,
+    "sectionOverflow": false,
+    "privateDetailReads": 0
+  },
+  {
+    "locale": "en",
+    "width": 320,
+    "state": "due",
+    "documentOverflow": false,
+    "sectionOverflow": false,
+    "privateDetailReads": 0
+  },
+  {
+    "locale": "zh",
+    "width": 390,
+    "state": "overdue",
+    "documentOverflow": false,
+    "sectionOverflow": false,
+    "privateDetailReads": 0
+  }
+]

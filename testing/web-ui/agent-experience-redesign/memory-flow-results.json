@@ -1,0 +1,20 @@
+{
+  "evidenceType": "Real ContextTreeSettings component, production fixture build, synthetic API and delayed config refresh",
+  "requiredRepositoryField": { "ariaInvalid": "true", "errorDescribedByPresent": true },
+  "folderUrl": { "value": "https://github.com/example/product-knowledge/tree/main/docs", "rejectedBeforeApi": true },
+  "invalidDirectory": {
+    "value": "../outside",
+    "ariaInvalid": null,
+    "ariaDescribedBy": null,
+    "focus": "INPUT",
+    "axeViolations": []
+  },
+  "uncertainCreation": { "createEnabled": true, "recoveryLinks": 0, "draftRetained": true },
+  "disconnectPending": { "confirmationDialogs": 0, "operationCalls": 1, "visibleStatusRegions": 0 },
+  "lastDisconnectFocus": "BODY",
+  "firstConnectionFocus": { "afterDialogClosed": "BODY", "addTreeFocusWithin1500ms": false },
+  "cancelFocusAfterDialogClosed": "Connect Context Tree",
+  "successFeedback": { "text": "Context Tree settings saved.", "screenReaderOnly": true },
+  "offlineActive": { "disconnectAriaDisabled": "true", "copyClaimsDisconnectAvailable": true },
+  "cloudAuthenticationFailure": { "accountSettingsLinks": 0, "axeViolations": [] }
+}

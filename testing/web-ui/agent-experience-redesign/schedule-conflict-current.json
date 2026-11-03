@@ -1,0 +1,197 @@
+{
+  "scope": "Production App fixture with synthetic responses; exact pushed product code 0f0d3e5d",
+  "cases": [
+    {
+      "locale": "en",
+      "width": 320,
+      "fit": {
+        "width": 288,
+        "scroll": 288,
+        "viewport": 320,
+        "document": 320
+      },
+      "operations": [
+        {
+          "action": "delete",
+          "id": "schedule-0",
+          "revision": 2
+        },
+        {
+          "action": "delete",
+          "id": "schedule-0",
+          "revision": 3
+        }
+      ],
+      "detailReads": 0,
+      "unexpected": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "en",
+      "width": 390,
+      "fit": {
+        "width": 358,
+        "scroll": 358,
+        "viewport": 390,
+        "document": 390
+      },
+      "operations": [
+        {
+          "action": "delete",
+          "id": "schedule-0",
+          "revision": 2
+        },
+        {
+          "action": "delete",
+          "id": "schedule-0",
+          "revision": 3
+        }
+      ],
+      "detailReads": 0,
+      "unexpected": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "en",
+      "width": 768,
+      "fit": {
+        "width": 384,
+        "scroll": 384,
+        "viewport": 768,
+        "document": 768
+      },
+      "operations": [
+        {
+          "action": "delete",
+          "id": "schedule-0",
+          "revision": 2
+        },
+        {
+          "action": "delete",
+          "id": "schedule-0",
+          "revision": 3
+        }
+      ],
+      "detailReads": 0,
+      "unexpected": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "fit": {
+        "width": 384,
+        "scroll": 384,
+        "viewport": 1440,
+        "document": 1440
+      },
+      "operations": [
+        {
+          "action": "delete",
+          "id": "schedule-0",
+          "revision": 2
+        },
+        {
+          "action": "delete",
+          "id": "schedule-0",
+          "revision": 3
+        }
+      ],
+      "detailReads": 0,
+      "unexpected": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 320,
+      "fit": {
+        "width": 288,
+        "scroll": 288,
+        "viewport": 320,
+        "document": 320
+      },
+      "operations": [
+        {
+          "action": "delete",
+          "id": "schedule-0",
+          "revision": 2
+        },
+        {
+          "action": "delete",
+          "id": "schedule-0",
+          "revision": 3
+        }
+      ],
+      "detailReads": 0,
+      "unexpected": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 390,
+      "fit": {
+        "width": 358,
+        "scroll": 358,
+        "viewport": 390,
+        "document": 390
+      },
+      "operations": [
+        {
+          "action": "delete",
+          "id": "schedule-0",
+          "revision": 2
+        },
+        {
+          "action": "delete",
+          "id": "schedule-0",
+          "revision": 3
+        }
+      ],
+      "detailReads": 0,
+      "unexpected": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 768,
+      "fit": {
+        "width": 384,
+        "scroll": 384,
+        "viewport": 768,
+        "document": 768
+      },
+      "operations": [
+        {
+          "action": "delete",
+          "id": "schedule-0",
+          "revision": 2
+        },
+        {
+          "action": "delete",
+          "id": "schedule-0",
+          "revision": 3
+        }
+      ],
+      "detailReads": 0,
+      "unexpected": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    },
+    {
+      "locale": "zh",
+      "width": 1440,
+      "fit": {
+        "width": 384,
+        "scroll": 384,
+        "viewport": 1440,
+        "document": 1440
+      },
+      "operations": [
+        {
+          "action": "delete",
+          "id": "schedule-0",
+          "revision": 2
+        },
+        {
+          "action": "delete",
+          "id": "schedule-0",
+          "revision": 3
+        }
+      ],
+      "detailReads": 0,
+      "unexpected": ["/favicon.ico", "/favicon.ico", "/favicon.ico", "/favicon.ico"]
+    }
+  ]
+}

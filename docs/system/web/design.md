@@ -68,7 +68,11 @@ additional action or explanation line. Each row retains two line boxes even when
 and recovery never expand the card or move its divider; there is no larger fixed-height shell or reserved third line.
 For paused Agents, runtime failures open the existing local recovery guidance in a popover; they do not
 link to setup, which accepts only active Agents.
-Schedules retain their card layout. Tasks preserve server paging and Load more; the full Tasks page
+Schedules use a single card with compact divided rows. Each row keeps the schedule name, configuration state,
+friendly time rule and relative next occurrence visible; only exceptional or unconfirmed handoffs add a warning.
+The task opens in a focused dialog from its name;
+pause, resume and delete use a quiet action menu. Narrow rows stack trigger metadata below the identity.
+Tasks preserve server paging and Load more; the full Tasks page
 remains available through View all. Long Agent names, handles, and Computer identities outside the compact Overview status card wrap within
 their available space rather than widening the page.
 

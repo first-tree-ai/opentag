@@ -1,0 +1,137 @@
+{
+  "scope": "Production App synthetic API; expanded long instructions and list accessibility",
+  "cases": [
+    {
+      "locale": "en",
+      "width": 320,
+      "previewHeight": 91,
+      "expanded": {
+        "height": 1388,
+        "overflow": false
+      },
+      "bottom": {
+        "remainingScroll": 0,
+        "padding": 24,
+        "overflow": false
+      },
+      "keyboardExpandCollapse": true
+    },
+    {
+      "locale": "en",
+      "width": 390,
+      "previewHeight": 91,
+      "expanded": {
+        "height": 1092,
+        "overflow": false
+      },
+      "bottom": {
+        "remainingScroll": 0,
+        "padding": 24,
+        "overflow": false
+      },
+      "keyboardExpandCollapse": true
+    },
+    {
+      "locale": "en",
+      "width": 768,
+      "previewHeight": 91,
+      "expanded": {
+        "height": 546,
+        "overflow": false
+      },
+      "bottom": {
+        "remainingScroll": 0,
+        "padding": 24,
+        "overflow": false
+      },
+      "keyboardExpandCollapse": true
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "previewHeight": 91,
+      "expanded": {
+        "height": 546,
+        "overflow": false
+      },
+      "bottom": {
+        "remainingScroll": 0,
+        "padding": 24,
+        "overflow": false
+      },
+      "keyboardExpandCollapse": true
+    },
+    {
+      "locale": "zh",
+      "width": 320,
+      "previewHeight": 91,
+      "expanded": {
+        "height": 1388,
+        "overflow": false
+      },
+      "bottom": {
+        "remainingScroll": 0,
+        "padding": 24,
+        "overflow": false
+      },
+      "keyboardExpandCollapse": true
+    },
+    {
+      "locale": "zh",
+      "width": 390,
+      "previewHeight": 91,
+      "expanded": {
+        "height": 1092,
+        "overflow": false
+      },
+      "bottom": {
+        "remainingScroll": 0,
+        "padding": 24,
+        "overflow": false
+      },
+      "keyboardExpandCollapse": true
+    },
+    {
+      "locale": "zh",
+      "width": 768,
+      "previewHeight": 91,
+      "expanded": {
+        "height": 546,
+        "overflow": false
+      },
+      "bottom": {
+        "remainingScroll": 0,
+        "padding": 24,
+        "overflow": false
+      },
+      "keyboardExpandCollapse": true
+    },
+    {
+      "locale": "zh",
+      "width": 1440,
+      "previewHeight": 91,
+      "expanded": {
+        "height": 546,
+        "overflow": false
+      },
+      "bottom": {
+        "remainingScroll": 0,
+        "padding": 24,
+        "overflow": false
+      },
+      "keyboardExpandCollapse": true
+    }
+  ],
+  "axe": [
+    {
+      "locale": "en",
+      "width": 1440,
+      "violations": []
+    },
+    {
+      "locale": "zh",
+      "width": 390,
+      "violations": []
+    }
+  ]
+}

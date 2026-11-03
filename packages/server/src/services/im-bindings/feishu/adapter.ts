@@ -561,14 +561,17 @@ class ReliableFeishuChannel implements FeishuChannel {
       () => undefined,
     );
     await outboundPromise;
-    await this.#assertConnectActive(state, signal);
+    if (state.cancelled || this.#closed || signal?.aborted) {
+      await this.#failAbortedConnect(signal);
+    }
     await this.#ready;
-    await this.#assertConnectActive(state, signal);
+    if (state.cancelled || this.#closed || signal?.aborted) {
+      await this.#failAbortedConnect(signal);
+    }
     this.botIdentity = this.#outbound.botIdentity;
   }
 
-  async #assertConnectActive(state: { cancelled: boolean }, signal?: AbortSignal): Promise<void> {
-    if (!state.cancelled && !this.#closed && !signal?.aborted) return;
+  async #failAbortedConnect(signal?: AbortSignal): Promise<never> {
     this.botIdentity = undefined;
     await this.disconnect().catch(() => undefined);
     throw signal?.reason ?? new Error("FEISHU_CONNECT_ABORTED");

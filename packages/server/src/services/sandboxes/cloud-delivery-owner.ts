@@ -230,6 +230,8 @@ export class CloudDeliveryOwner {
     {
       connectionId: string;
       deliveryId: string;
+      attemptCount: number;
+      timer: ReturnType<typeof setTimeout>;
       handle: PerformanceOperationHandle;
     }
   >();
@@ -449,6 +451,31 @@ export class CloudDeliveryOwner {
     this.#startPendingDeliveryRunHandle(connectionId, sandboxId, computerId, request);
   }
 
+  #armDeliveryRunTimeout(requestId: string, deadlineAt?: string): ReturnType<typeof setTimeout> {
+    const parsedDeadline = deadlineAt === undefined ? Number.NaN : Date.parse(deadlineAt);
+    const timeoutMs = Number.isFinite(parsedDeadline) ? Math.max(0, parsedDeadline - Date.now()) : 30_000;
+    const timer = setTimeout(() => {
+      const pending = this.#pendingDeliveryRunHandles.get(requestId);
+      if (!pending) return;
+      this.#pendingDeliveryRunHandles.delete(requestId);
+      pending.handle.fail(
+        markExternalCallTimedOut(
+          Object.assign(new Error("Runner delivery run receipt timed out"), {
+            code: "RUNNER_DELIVERY_RUN_TIMEOUT",
+          }),
+        ),
+        {
+          timedOut: true,
+          attemptCount: pending.attemptCount,
+          retryCount: Math.max(0, pending.attemptCount - 1),
+        },
+        "RUNNER_DELIVERY_RUN_TIMEOUT",
+      );
+    }, timeoutMs);
+    timer.unref?.();
+    return timer;
+  }
+
   #startPendingDeliveryRunHandle(
     connectionId: string,
     sandboxId: string,
@@ -459,19 +486,29 @@ export class CloudDeliveryOwner {
     if (!perfLogger?.config.enabled) return;
     const existing = this.#pendingDeliveryRunHandles.get(request.requestId);
     if (existing) {
-      this.#pendingDeliveryRunHandles.delete(request.requestId);
-      existing.handle.complete({ superseded: true, attemptCount: 1, retryCount: 0 });
+      clearTimeout(existing.timer);
+      existing.connectionId = connectionId;
+      existing.deliveryId = request.deliveryId;
+      existing.attemptCount += 1;
+      existing.timer = this.#armDeliveryRunTimeout(request.requestId, request.deadlineAt);
+      return;
     }
     while (this.#pendingDeliveryRunHandles.size >= 512) {
       const oldestKey = this.#pendingDeliveryRunHandles.keys().next().value;
       if (oldestKey === undefined) break;
       const oldest = this.#pendingDeliveryRunHandles.get(oldestKey);
       this.#pendingDeliveryRunHandles.delete(oldestKey);
-      oldest?.handle.fail(
-        Object.assign(new Error("Delivery run telemetry evicted"), { code: "RUNNER_DELIVERY_RUN_EVICTED" }),
-        { attemptCount: 1, retryCount: 0 },
-        "RUNNER_DELIVERY_RUN_EVICTED",
-      );
+      if (oldest) {
+        clearTimeout(oldest.timer);
+        oldest.handle.fail(
+          Object.assign(new Error("Delivery run telemetry evicted"), { code: "RUNNER_DELIVERY_RUN_EVICTED" }),
+          {
+            attemptCount: oldest.attemptCount,
+            retryCount: Math.max(0, oldest.attemptCount - 1),
+          },
+          "RUNNER_DELIVERY_RUN_EVICTED",
+        );
+      }
     }
     const handle = perfLogger.startOperation({
       module: "external",
@@ -487,9 +524,12 @@ export class CloudDeliveryOwner {
         externalService: "sandbox-runner",
       },
     });
+    const timer = this.#armDeliveryRunTimeout(request.requestId, request.deadlineAt);
     this.#pendingDeliveryRunHandles.set(request.requestId, {
       connectionId,
       deliveryId: request.deliveryId,
+      attemptCount: 1,
+      timer,
       handle,
     });
   }
@@ -500,11 +540,12 @@ export class CloudDeliveryOwner {
   ): void {
     const pending = this.#pendingDeliveryRunHandles.get(frame.requestId);
     if (!pending || pending.connectionId !== connection.connectionId || pending.deliveryId !== frame.deliveryId) return;
+    clearTimeout(pending.timer);
     this.#pendingDeliveryRunHandles.delete(frame.requestId);
     pending.handle.complete({
       turnId: frame.turnId,
-      attemptCount: 1,
-      retryCount: 0,
+      attemptCount: pending.attemptCount,
+      retryCount: Math.max(0, pending.attemptCount - 1),
     });
   }
 
@@ -1503,12 +1544,16 @@ export class CloudDeliveryOwner {
     }
     for (const [requestId, pending] of [...this.#pendingDeliveryRunHandles.entries()]) {
       if (pending.connectionId !== connectionId) continue;
+      clearTimeout(pending.timer);
       this.#pendingDeliveryRunHandles.delete(requestId);
       pending.handle.fail(
         Object.assign(new Error("Runner connection detached before delivery receipt"), {
           code: "RUNNER_CONNECTION_DETACHED",
         }),
-        { attemptCount: 1, retryCount: 0 },
+        {
+          attemptCount: pending.attemptCount,
+          retryCount: Math.max(0, pending.attemptCount - 1),
+        },
         "RUNNER_CONNECTION_DETACHED",
       );
     }

@@ -1195,7 +1195,7 @@ describe("external call performance logging", () => {
       retryCount: 0,
     });
 
-    // 3) Reattach socket, send succeeds -> deliveryDispatch completes and deliveryRun settles on handleDeliveryReceived
+    // 3) Reattach socket, send persisted request twice before receipt -> aggregates attemptCount: 2, retryCount: 1
     logs.length = 0;
     throwOnSend = false;
     hub.attach(scope, socket);
@@ -1217,32 +1217,69 @@ describe("external call performance logging", () => {
       installationId: "inst-811",
       request: req,
     });
-    expect(
-      logs.find(
-        (l) => l.payload.operation === "external.sandbox-runner.deliveryDispatch" && l.payload.outcome === "completed",
-      )?.payload,
-    ).toMatchObject({
-      attemptCount: 1,
-      retryCount: 0,
+    await owner.dispatchDelivery({
+      computerId: "comp-811",
+      inputHash: "a".repeat(64),
+      installationId: "inst-811",
+      request: req,
     });
     expect(
-      logs.find(
+      logs.filter(
+        (l) => l.payload.operation === "external.sandbox-runner.deliveryDispatch" && l.payload.outcome === "completed",
+      ),
+    ).toHaveLength(2);
+    expect(
+      logs.filter(
         (l) => l.payload.operation === "external.sandbox-runner.deliveryRun" && l.payload.outcome === "started",
       ),
-    ).toBeDefined();
+    ).toHaveLength(1);
+    expect(
+      logs.filter(
+        (l) => l.payload.operation === "external.sandbox-runner.deliveryRun" && l.payload.outcome === "completed",
+      ),
+    ).toHaveLength(0);
 
     await owner.handleDeliveryReceived(conn, {
       deliveryId: req.deliveryId,
       requestId: req.requestId,
       turnId: "turn-811",
     });
-    expect(
-      logs.find(
-        (l) => l.payload.operation === "external.sandbox-runner.deliveryRun" && l.payload.outcome === "completed",
-      )?.payload,
-    ).toMatchObject({
+    await owner.handleDeliveryReceived(conn, {
+      deliveryId: req.deliveryId,
+      requestId: req.requestId,
+      turnId: "turn-811",
+    });
+    const deliveryRunCompletions = logs.filter(
+      (l) => l.payload.operation === "external.sandbox-runner.deliveryRun" && l.payload.outcome === "completed",
+    );
+    expect(deliveryRunCompletions).toHaveLength(1);
+    expect(deliveryRunCompletions[0]?.payload).toMatchObject({
       deliveryId: req.deliveryId,
       turnId: "turn-811",
+      attemptCount: 2,
+      retryCount: 1,
+    });
+
+    // 4) No receipt before request.deadlineAt -> settles as failed with RUNNER_DELIVERY_RUN_TIMEOUT, timedOut: true
+    logs.length = 0;
+    const timeoutReq = {
+      ...req,
+      requestId: "00000000-0000-4000-8000-000000000819",
+      deadlineAt: new Date(Date.now() + 20).toISOString(),
+    };
+    await owner.dispatchDelivery({
+      computerId: "comp-811",
+      inputHash: "a".repeat(64),
+      installationId: "inst-811",
+      request: timeoutReq,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(
+      logs.find((l) => l.payload.operation === "external.sandbox-runner.deliveryRun" && l.payload.outcome === "failed")
+        ?.payload,
+    ).toMatchObject({
+      errorCode: "RUNNER_DELIVERY_RUN_TIMEOUT",
+      timedOut: true,
       attemptCount: 1,
       retryCount: 0,
     });

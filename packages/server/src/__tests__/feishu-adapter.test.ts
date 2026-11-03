@@ -549,6 +549,18 @@ describe("Feishu adapter", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(abortedAdapter.channel.botIdentity).toBeUndefined();
       expect(outbound.disconnect.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+      // Two-microtask abort race when outbound.connect() and onReady resolve immediately
+      const microtaskAbort = new AbortController();
+      const racedAdapter = new module.FeishuAdapter({ appId: "cli_microtask", appSecret: "secret", teamId: null });
+      queueMicrotask(() => {
+        queueMicrotask(() => {
+          microtaskAbort.abort(new Error("FEISHU_MICROTASK_ABORT"));
+        });
+      });
+      await expect(racedAdapter.validateBinding(microtaskAbort.signal)).rejects.toThrow("FEISHU_MICROTASK_ABORT");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(racedAdapter.channel.botIdentity).toBeUndefined();
     } finally {
       vi.doUnmock("@larksuiteoapi/node-sdk");
       vi.resetModules();

@@ -19,7 +19,7 @@ const messagesRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../mes
 
 /** Each term maps to the word Chinese copy uses instead, as listed in the glossary. */
 const DISALLOWED: ReadonlyArray<{ readonly pattern: RegExp; readonly use: string }> = [
-  { pattern: /智能体/u, use: "Agent" },
+  { pattern: /智能体|编程助手|AI ?助手/u, use: "Agent" },
   { pattern: /\bAgents\b/u, use: "Agent" },
   { pattern: /计算机|\bComputers?\b/u, use: "电脑" },
   { pattern: /\bAccounts?\b/u, use: "账户" },

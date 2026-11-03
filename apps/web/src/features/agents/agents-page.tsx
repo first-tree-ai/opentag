@@ -85,16 +85,28 @@ export function AgentList({ agents }: { agents: AgentListItem[] }) {
       >
         {order.map((id) => {
           const row = byId.get(id);
-          return row ? <AgentRow agent={row.shown} key={id} refreshing={row.refreshing} /> : null;
+          return row ? (
+            <AgentRow agent={row.shown} checking={row.checking} key={id} refreshing={row.refreshing} />
+          ) : null;
         })}
       </div>
     </section>
   );
 }
 
-export function AgentRow({ agent, refreshing = false }: { agent: AgentListItem; refreshing?: boolean }) {
-  const status = agentCardStatus(agent);
-  const action = agentRowAction(agent);
+export function AgentRow({
+  agent,
+  checking = false,
+  refreshing = false,
+}: {
+  agent: AgentListItem;
+  /** The Agent's first check is still running, so there is no answer to show yet. */
+  checking?: boolean;
+  refreshing?: boolean;
+}) {
+  const card = agentCardStatus(agent);
+  const status = checking ? { ...card, label: m.agents_card_status_checking(), tone: "neutral" as const } : card;
+  const action = checking ? undefined : agentRowAction(agent);
   const channel = agent.availability.dependencies.channel.provider;
   return (
     <article

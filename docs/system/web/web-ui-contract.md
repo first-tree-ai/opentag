@@ -110,7 +110,9 @@ If a creation finishes after the user navigates away, it refreshes the Agent lis
 
 The creation form starts with the product name as the Agent name; matching the product name is intended, not a
 collision. The name field states the allowed characters before anything is typed, and a refused name gets a short
-error that does not repeat them. Why: a rule the reader only discovers by failing wastes an attempt, and repeating
+error that does not repeat them. A name past the length limit gets that error while typing, not only on Create,
+because more typing cannot fix it; other name errors wait for blur or Create, so an empty field is not flagged
+before anyone types. Why: a rule the reader only discovers by failing wastes an attempt, and repeating
 it in the error adds reading without new information. Create stays disabled until a Local Agent's runtime is chosen;
 no runtime is preselected, because the reader's computer may not have it.
 
@@ -168,8 +170,9 @@ to rows that have one, so every fixable state carries the same single link.
 Agent roster status stays steady through background refreshes. Transient evidence (a refresh that failed, a
 paused offline read, delivery credentials being re-verified, or a runtime Provider probe still running) does not
 replace a row's last settled status; the row keeps it until the next settled answer. A check with no settled answer
-behind it reads as Ready, while unreadable evidence with none reads as Status unavailable. A confirmed problem
-replaces Ready as soon as it is read. When a row's evidence stays transient for a full refresh interval, that row
+behind it reads as a neutral **Checking**, never Ready: right after a load the first check can still find a problem,
+and a row that flips from Ready to that problem seconds later has told the reader something false. Unreadable
+evidence with nothing settled reads as Status unavailable. A confirmed problem replaces Ready as soon as it is read. When a row's evidence stays transient for a full refresh interval, that row
 alone adds a quiet **Refreshing status** note under its held status; there is no page-level notice. A flickering
 status or a page-wide error reads as an outage when only one Agent's check is late, so the list keeps what it last
 knew and flags only the row whose answer is overdue. The Agent's own

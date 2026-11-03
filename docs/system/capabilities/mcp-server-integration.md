@@ -157,7 +157,9 @@ acquires a bearer over the existing credential control tunnel, and passes the Se
 to the disposable Sandbox worker through its stdin document. The Sandbox uses its existing public
 egress to call the Server's `/api/v1/mcp` endpoint. The Server checks the live execution, Agent
 scope, Sandbox generation, current control connection and custody on every call. Closing the
-execution revokes the bearer. Cloud's current topology requires one Server process while Runner
+execution revokes the bearer. Registry close events also reclaim child execution capabilities,
+proxy tickets and MCP/Web bearers immediately on cascading close, expiry or connection loss.
+Cloud's current topology requires one Server process while Runner
 control state is process-local; this path adds no separate WebSocket proxy or multi-Server promise.
 No Account MCP schema, upstream credential flow, or management UI changes are needed.
 

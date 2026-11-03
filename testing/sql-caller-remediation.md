@@ -27,7 +27,7 @@ A repaired original case does not close another extension of the same finding.
 | 4c — Send cancellation | IM-F2 | [Verified locally](verification/sql-caller-repairs-08.md): forward the existing operation signal, final reconcile admission, no new sends/allocation after deadline; 217 distinct cases (45 native PG). |
 | 4d — Preparation deadline | AG-F2 preparation portion | [Verified locally](verification/sql-caller-repairs-09.md): one existing preparation budget covers admitted dispatch waits and readiness; 65 distinct cases, including 2 native PG and 63 Docker unit cases. |
 | 5a — Background stop and GC work bound | BG-F1, BG-F3; IM-F3 GC portion | [Verified locally](verification/sql-caller-repairs-10.md): actual pass Promises replace running flags; page quota/cursor; 87 distinct cases (59 native PG). Main already awaits these stop ports. |
-| 5b — Stop, drain and owner resources | IM-F3 remaining, AG-F9 | Pending revalidation of actual owners; stop admission and join underlying work, not only deadline wrappers. Reuse existing owner/cursor stores. |
+| 5b — Stop, drain and owner resources | IM-F3 remaining, AG-F9 | AG-F9 [verified locally](verification/sql-caller-repairs-22.md): existing close event reclaims cascading grants/tickets/MCP/Web records. IM-F3 admission and underlying owner/connection drain remains pending. |
 | 5c — Client Context Tree resources | AG-F7, AG-F8 | [Verified locally](verification/sql-caller-repairs-11.md): memoized cleanup and bounded UTF-8 collection; 94 distinct cases, 27 repeated in Docker. AG-F8 moves from batch 8 to share the same client validation scope. |
 | 5d — Setup authority and read simplification | AG-F4; AG-S1, AG-S2 | [Verified locally](verification/sql-caller-repairs-12.md): exact callback target before send/success; shared one-query summary and direct creation replay; 162 distinct cases (21 native PG). |
 | 6a — Account/auth | AA-F1, AA-F2; AA-S1 | [Verified locally](verification/sql-caller-repairs-13.md): official adapter transaction and scoped internal Account read, precise errors and simpler setup; 199 distinct cases (106 native PG). |
@@ -306,3 +306,7 @@ lossy PostgreSQL proxy and run the actual fixture/CLI against disposable Docker.
 Batch 8c closes OP-F1. Thirty-five defects and all nine simplifications are
 repaired locally; AG-F9 and the final IM-F3 composition remain. Batch 20
 independent review P2 is corrected at 7b1b81fe and reviewer-confirmed closed.
+
+AG-F9 component reclamation is verified locally. Thirty-six defects and all
+nine simplifications are repaired at component scope; final IM-F3 remains,
+including async admission/stop races and listener lifetime through owner drain.

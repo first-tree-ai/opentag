@@ -85,12 +85,19 @@ export class RuntimeCredentialOwner {
   readonly #logger?: ServiceLogger;
   readonly #authority: RuntimeControlAuthority;
   readonly #sweep: ReturnType<typeof setInterval>;
+  readonly #unsubscribeExecutionClose: () => void;
   #closed = false;
 
   constructor(options: RuntimeCredentialOwnerOptions) {
     this.#options = options;
     this.#logger = options.logger;
     this.#authority = options.controlAuthority ?? registryControlAuthority(options.registry);
+    this.#unsubscribeExecutionClose = options.executions.onClose(({ executionId }) => {
+      options.capabilities.revokeExecution(executionId);
+      options.tickets.revokeExecution(executionId);
+      options.mcpGatewayTokens?.revokeExecution(executionId);
+      options.webGatewayTokens?.revokeExecution(executionId);
+    });
     this.#sweep = setInterval(() => this.#sweepStale(), options.sweepIntervalMs ?? 5_000);
     this.#sweep.unref?.();
   }
@@ -129,6 +136,7 @@ export class RuntimeCredentialOwner {
     for (const record of this.#options.executions.executions()) {
       this.#revokeExecution(record.executionId, "owner_lost", false);
     }
+    this.#unsubscribeExecutionClose();
   }
 
   /**
@@ -459,15 +467,6 @@ export class RuntimeCredentialOwner {
   #revokeExecution(executionId: string, code: RuntimeCredentialRevokedCode, notify: boolean): void {
     const record = this.#options.executions.close(executionId, code);
     if (!record) return;
-    this.#options.capabilities.revokeExecution(executionId);
-    this.#options.tickets.revokeExecution(executionId);
-    /*
-     * The one place every execution ends — explicit close, connection replacement, owner loss, and
-     * the stale sweep all land here. Revoking the gateway bearer at this single point is what makes
-     * "the token dies with the turn" true for every path rather than only the polite one.
-     */
-    this.#options.mcpGatewayTokens?.revokeExecution(executionId);
-    this.#options.webGatewayTokens?.revokeExecution(executionId);
     if (!notify) return;
     const frame: RuntimeCredentialServerFrame = { type: "runtime:credential:revoked", executionId, code };
     try {

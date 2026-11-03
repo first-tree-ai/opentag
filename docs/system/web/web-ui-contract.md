@@ -172,7 +172,11 @@ paused offline read, delivery credentials being re-verified, or a runtime Provid
 replace a row's last settled status; the row keeps it until the next settled answer. A check with no settled answer
 behind it reads as a neutral **Checking**, never Ready: right after a load the first check can still find a problem,
 and a row that flips from Ready to that problem seconds later has told the reader something false. Unreadable
-evidence with nothing settled reads as Status unavailable. A confirmed problem replaces Ready as soon as it is read. When a row's evidence stays transient for a full refresh interval, that row
+evidence with nothing settled reads as Status unavailable. A confirmed problem replaces Ready as soon as it is read.
+A confirmed problem also outranks a check: while a runtime Provider check is still running, a messaging binding the
+same read confirmed as needing new permissions, failed, or turned off is the row's status, with its action. Why: the
+check is not an answer, and showing Checking over a problem already known delays both the fact and its fix. A
+confirmed runtime problem still comes first, as the dependency the Agent needs before messaging matters. When a row's evidence stays transient for a full refresh interval, that row
 alone adds a quiet **Refreshing status** note under its held status; there is no page-level notice. A flickering
 status or a page-wide error reads as an outage when only one Agent's check is late, so the list keeps what it last
 knew and flags only the row whose answer is overdue. The Agent's own

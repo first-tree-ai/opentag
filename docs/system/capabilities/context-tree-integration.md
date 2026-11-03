@@ -126,7 +126,9 @@ Credentials come from the current execution and are never stored there.
 Server-side connection verification checks the selected directory and branch at an exact
 remote commit, using the current Agent's GitHub MCP authorization. It rechecks authorization
 and remote state before accepting the connection. Unrelated repository infrastructure does
-not affect subtree validation. Selected content cannot traverse symlinks or submodules.
+not affect subtree validation: Git entry enumeration is scoped to the literal selected path and
+its ancestors under the existing process output bound. Root selection covers the repository.
+Selected content cannot traverse symlinks or submodules.
 
 Before reconnecting, run `context-tree verify --tree-path DIRECTORY` in the selected tree.
 Remove symlink entries such as `CLAUDE.md` or `README.md` links, keeping any ordinary target files,

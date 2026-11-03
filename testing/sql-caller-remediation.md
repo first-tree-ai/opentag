@@ -36,7 +36,7 @@ A repaired original case does not close another extension of the same finding.
 | 7a — Stable Cloud ownership | SB-F1, SB-F2 | [Verified locally](verification/sql-caller-repairs-17.md): retained placement ownership and final locked reservation; 301 distinct cases (88 native PG). |
 | 7b — Cloud workspace routing | AG-F10 | [Verified locally](verification/sql-caller-repairs-18.md): workspace-owned hints, independent confirmed settlement and actual rebind/gateway recovery; 283 distinct cases, all repeated in Docker Linux. |
 | 8a — Bounded metadata and Thread root | IM-F7, BG-F4 | [Verified locally](verification/sql-caller-repairs-19.md): one projected root and streaming metadata bounds; 59 distinct cases (6 native PG). |
-| 8b — Git subtree verification | AG-F6 | Pending literal selected-path and ancestor mode listing, retaining trusted process bounds. |
+| 8b — Git subtree verification | AG-F6 | [Verified locally](verification/sql-caller-repairs-20.md): literal selected-path and separate ancestor entry listing; 41 host/Docker cases, existing process bounds retained. |
 | 8c — Operator cleanup | OP-F1 | Pending existing official database budgets/bounded close and independent owned-container cleanup. |
 | 6d — Remaining simplification | AG-S3, AG-S4, AG-S5, AG-S6, DW-S1 | [Verified locally](verification/sql-caller-repairs-16.md): direct Settings credential read, Local-only query removal, one owner read, locked MCP check and unreachable quota deletion; 225 distinct cases (94 native PG). |
 | Observations | AA-R1, CR-R1, IM-R1, IM-R2, TK-R1 | Review measured limits/consumer contracts separately; no outage or necessary code change inferred from a size observation. TK legacy projection requires consumer migration before retirement. |
@@ -272,3 +272,19 @@ Test no Content-Length, cancellation, split UTF-8 and subsequent normal recovery
 Batch 8a closes IM-F7/BG-F4. Thirty-three defects and all nine simplifications
 are repaired locally; AG-F6, OP-F1, AG-F9 and final IM-F3 remain. Independent
 review confirmed batch 18 at 7a257f49, including its corrected P2 settlement window.
+
+## Batch 8b concrete design
+
+AG-F6 lists each selected path component's exact nonrecursive entry separately,
+then recursively lists only the literal selected subtree. Git ls-tree treats its
+path arguments as patterns; combining ancestor and child patterns can still list
+unrelated siblings. Use --literal-pathspecs and one entry query per component,
+sequentially under the existing operation signal/process bounds. Existing path
+length bounds the number of components. Reject 120000/160000 modes before
+checkout, retain filesystem ancestor checks and pinned CLI verification. Root
+selection still lists the whole repository. Do not enlarge the 1-MiB output bound,
+change full fetch/checkout, cache or introduce parallel Git processes.
+
+Batch 8b closes AG-F6. Thirty-four defects and all nine simplifications are
+repaired locally; OP-F1, AG-F9 and final IM-F3 remain. Batch 19 independent
+review at b846c5e9 found no actionable issue.
